@@ -300,6 +300,7 @@ export async function processJob({ jobDir, outDir, dryRun = false, jobId: provid
 
   /* 3b️⃣ Analyze photos for consumer unit info */
   let photoAnalysis = "";
+  let questionsForInspector = [];
   const scaledPhotosDir = path.join(outDir, "photos_scaled");
 
   if (fssync.existsSync(scaledPhotosDir)) {
@@ -319,6 +320,22 @@ export async function processJob({ jobDir, outDir, dryRun = false, jobId: provid
       );
 
       log.info(`Photo analysis complete`, { photoCount: photoResult.photoCount });
+    }
+
+    // Save questions for inspector (extracted from CCU analysis Step 3h)
+    if (photoResult.questionsForInspector && photoResult.questionsForInspector.length > 0) {
+      questionsForInspector = photoResult.questionsForInspector;
+
+      await fs.writeFile(
+        path.join(outDir, "questions_for_inspector.json"),
+        JSON.stringify({ questions: questionsForInspector }, null, 2),
+        "utf8"
+      );
+
+      log.info(`CCU analysis has questions for inspector`, {
+        count: questionsForInspector.length,
+        questions: questionsForInspector
+      });
     }
   }
 
@@ -409,12 +426,16 @@ export async function processJob({ jobDir, outDir, dryRun = false, jobId: provid
 
   // Combine transcript with photo analysis for extraction
   let combinedContent = "";
+  const questionsContext = questionsForInspector.length > 0
+    ? `\n\n=== UNCERTAIN ITEMS FROM PHOTO ANALYSIS ===\nThe following could not be read clearly from the consumer unit photos. If the inspector clarified any of these during the audio recording, use their answers:\n${questionsForInspector.map((q, i) => `${i + 1}. ${q}`).join("\n")}\n`
+    : "";
+
   if (transcript && photoAnalysis) {
-    // Both audio and photos - include timing context
-    combinedContent = `${transcript}${photoTimingContext}\n\n=== PHOTO ANALYSIS (Consumer Unit Details, Circuit Layouts, Handwritten Forms) ===\n\n${photoAnalysis}`;
+    // Both audio and photos - include timing context and questions
+    combinedContent = `${transcript}${photoTimingContext}\n\n=== PHOTO ANALYSIS (Consumer Unit Details, Circuit Layouts, Handwritten Forms) ===\n\n${photoAnalysis}${questionsContext}`;
   } else if (photoAnalysis) {
     // Photos only mode
-    combinedContent = `=== PHOTO ANALYSIS (Consumer Unit Details, Circuit Layouts, Handwritten Forms) ===\n\n${photoAnalysis}`;
+    combinedContent = `=== PHOTO ANALYSIS (Consumer Unit Details, Circuit Layouts, Handwritten Forms) ===\n\n${photoAnalysis}${questionsContext}`;
     log.info("Using photo analysis as primary data source");
   } else if (transcript) {
     // Audio only (no photos)
@@ -753,7 +774,8 @@ export async function processJob({ jobDir, outDir, dryRun = false, jobId: provid
       board: "board_details.json",
       observations: "observations.json",
       missing: "missing_values.md",
-      salvage: "numeric_salvage.json"
+      salvage: "numeric_salvage.json",
+      questionsForInspector: questionsForInspector.length > 0 ? "questions_for_inspector.json" : null
     }
   };
 }

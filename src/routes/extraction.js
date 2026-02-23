@@ -354,13 +354,38 @@ router.post("/analyze-ccu", auth.requireAuth, upload.single("photo"), async (req
 
 ## TASK
 
-Extract every protective device from this consumer unit photo and return structured JSON.
+Extract every protective device from this consumer unit photo and return structured JSON. Before producing the JSON output, you MUST work through the following 4-step methodology internally to ensure accuracy.
 
-## NUMBERING
+## STEP 1: PHYSICAL DEVICE SCAN
+
+Scan the board left to right and identify every physical module. Use these width rules:
+- MCB = 1 module (narrow, single toggle lever)
+- RCBO = 2 modules (toggle lever + test button + RCD waveform symbol)
+- RCD = 2-4 modules (test button, protects multiple downstream circuits, is NOT itself a circuit breaker)
+- Main switch / isolator = 2 modules (usually red toggle)
+- SPD = 2-3 modules (has status indicator window, no toggle lever)
+- Blank / spare = 1 module (flat cover plate, no toggle)
+
+Count the total modules to verify against the board's stated ways.
+
+## STEP 2: MAP LABELS TO DEVICES
+
+RCDs and the main switch are NOT numbered circuits — circuit labels skip over them. If circuit number labels do not align with physical devices, note the discrepancy in the confidence message.
+
+## STEP 3: EXTRACT DATA
+
+### NUMBERING
 
 Find the main switch first. Circuit 1 starts from the device immediately next to the main switch, numbering outward. The main switch may be on the left or right.
 
-## FOR EACH DEVICE, EXTRACT:
+### AMP RATING — CRITICAL
+
+Read the amp rating from the DEVICE FACE, not assumed from the circuit label.
+- "Shower" does NOT mean 40A — read the actual breaker face.
+- "Cooker" does NOT mean 32A — read the actual breaker face.
+- If the rating is not legible, set to null and add to uncertain_fields. Do NOT guess from circuit name.
+
+### FOR EACH DEVICE, EXTRACT:
 
 Read directly from the photo where possible:
 - Manufacturer, model number, current rating, type curve (B/C/D)
@@ -374,14 +399,24 @@ If any of the following are NOT clearly readable on the device, use your knowled
 - **RCD type**: Look up whether this specific model range is Type A or Type AC. Different ranges from the same manufacturer have different RCD types — e.g., Hager ADA = Type A, Hager ADN = Type AC; MK H79xx = Type AC, MK H68xx = Type A; BG CURB = Type AC, BG CUCRB = Type A. Match by model prefix, not just manufacturer.
 - **Type curve**: If not visible, B is standard for domestic but flag as assumed.
 
-NEVER return "RCD" as an RCD type. Always return A, AC, F, B, or N/A.
+### RCD TYPE IDENTIFICATION — CRITICAL
 
-## BOARD INFO
+To identify RCD type, look for the waveform symbol box on the device face:
+- Type AC = ONE waveform line (simple sine wave)
+- Type A = TWO waveform lines stacked (sine wave + pulsating DC half-wave)
+- Type B = THREE waveform lines stacked
+- Type S = marked with letter "S" (time-delayed / selective)
+- Type F = marked with letter "F"
+- COUNT THE LINES in the waveform symbol: 1 line = AC, 2 lines = A, 3 lines = B.
+- RCDs and RCBOs within the same board can be DIFFERENT types — check each device individually.
+- NEVER return "RCD" as an rcd_type value. Always return one of: AC, A, B, F, S, or null if not determinable.
+
+### BOARD INFO
 
 - Identify manufacturer and model if visible (e.g. "Hager", "MK", "Wylex").
 - Note main switch position ("left" or "right").
 
-## MAIN SWITCH DETAILS
+### MAIN SWITCH DETAILS
 
 - Read the current rating in amps (e.g., "63", "80", "100").
 - Identify the type: "Isolator", "Switch Disconnector", "RCD", "RCCB", or other.
@@ -389,20 +424,20 @@ NEVER return "RCD" as an RCD type. Always return A, AC, F, B, or N/A.
 - Identify poles: "DP" (double pole), "TP" (triple pole), "TPN", "4P".
 - Read voltage rating if printed (e.g., "230", "400").
 
-## SPD (SURGE PROTECTION DEVICE)
+### SPD (SURGE PROTECTION DEVICE)
 
 - If an SPD module is visible, set spd_present to true and extract: BS/EN standard, SPD type ("Type 1", "Type 2", "Type 1+2", "Type 3"), rated current in amps, short circuit rating in kA.
 - If NO SPD is visible, set spd_present to false.
 
-## DEVICE TYPE MAPPING
+### DEVICE TYPE MAPPING
 
 For each circuit device:
-- If it is an RCBO (combined MCB+RCD): set is_rcbo=true, rcd_protected=true
-- If it is behind a standalone RCD: set is_rcbo=false, rcd_protected=true
-- If it is a plain MCB with no RCD protection: set is_rcbo=false, rcd_protected=false
+- If it is an RCBO (combined MCB+RCD): set is_rcbo=true, rcd_protected=true, and set rcd_type from the device's own waveform symbol
+- If it is behind a standalone RCD: set is_rcbo=false, rcd_protected=true, and set rcd_type from the upstream RCD's waveform symbol
+- If it is a plain MCB with no RCD protection: set is_rcbo=false, rcd_protected=false, rcd_type=null
 - Blank/spare positions: set ocpd_type to null, label to null
 
-## CIRCUIT LABELS — IMPORTANT
+### CIRCUIT LABELS — IMPORTANT
 
 Actively look for circuit names/labels. They are CRITICAL for the certificate. Check ALL of the following locations in the photo:
 - **Label chart/legend**: A printed or handwritten list mapping circuit numbers to names (often inside the door or below the board)
@@ -414,6 +449,16 @@ Actively look for circuit names/labels. They are CRITICAL for the certificate. C
 Common UK circuit names: "Lighting", "Ring Main", "Kitchen Sockets", "Cooker", "Shower", "Immersion", "Smoke Alarms", "Garage", "Garden", "Upstairs Sockets", "Downstairs Sockets", "Boiler", "Fridge Freezer", "Washer".
 
 If you can see ANY text that identifies what a circuit supplies, return it as the label. Only return null if there is genuinely no label visible for that circuit.
+
+## STEP 4: CROSS-CHECK
+
+Before outputting JSON, verify:
+- The count of MCBs + RCBOs matches the number of circuit labels/positions found.
+- The total module count is consistent with the board's stated ways.
+- Every amp rating was read from the device face (not assumed from the circuit label).
+- An RCD type (AC, A, B, F, or S) was identified for every RCD and every RCBO individually.
+- SPD presence was explicitly checked (present or absent).
+- If any check fails, note it in confidence.message and add relevant fields to uncertain_fields.
 
 ## OUTPUT FORMAT
 
@@ -439,6 +484,7 @@ Return ONLY valid JSON matching this exact schema:
     "uncertain_fields": ["circuits[2].ocpd_bs_en"],
     "message": "Brief note about any reading difficulties or looked-up values"
   },
+  "questionsForInspector": ["Question 1?", "Question 2?"],
   "circuits": [
     {
       "circuit_number": 1,
@@ -449,6 +495,7 @@ Return ONLY valid JSON matching this exact schema:
       "ocpd_breaking_capacity_ka": "6 or null",
       "is_rcbo": false,
       "rcd_protected": true,
+      "rcd_type": "AC|A|B|F|S or null",
       "rcd_rating_ma": "30 or null",
       "rcd_bs_en": "61008 or null"
     }
@@ -461,6 +508,10 @@ Return ONLY valid JSON matching this exact schema:
 - "image_quality": "clear", "partially_readable", or "poor".
 - "uncertain_fields": list field paths you had to guess or look up.
 - "message": include which values were looked up vs read, and any reading difficulties.
+
+## QUESTIONS FOR INSPECTOR
+
+If ANY information is unclear, illegible, or ambiguous, add plain English questions to the "questionsForInspector" array. Do NOT guess when uncertain — ask instead. Examples: "Is circuit 3 a 20A or 32A breaker? The rating is obscured.", "Is the board a 12-way or 14-way? Two positions are hidden behind cable trunking." If everything is clear, return an empty array.
 
 IMPORTANT: If you cannot read the BS/EN number from the device, use your knowledge to look it up based on manufacturer and model. Only leave as null if you cannot identify the device at all.`;
 
