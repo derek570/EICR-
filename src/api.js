@@ -12,7 +12,8 @@ import logger from "./logger.js";
 import * as storage from "./storage.js";
 import * as auth from "./auth.js";
 import * as billing from "./billing.js";
-import { getSubscriptionByCustomerId, upsertSubscription } from "./db.js";
+import { getSubscriptionByCustomerId, upsertSubscription, query } from "./db.js";
+import { getDeepgramKey, getAnthropicKey } from "./services/secrets.js";
 import swaggerUi from "swagger-ui-express";
 import yaml from "js-yaml";
 
@@ -168,6 +169,37 @@ app.get("/api/health", (req, res) => {
     storage: storage.isUsingS3() ? "s3" : "local",
     timestamp: new Date().toISOString()
   });
+});
+
+// Readiness check — verifies DB, Deepgram key, Anthropic key.
+// Used by ALB health checks and iOS pre-flight connectivity check.
+app.get("/api/health/ready", async (req, res) => {
+  const checks = { database: false, deepgram_key: false, anthropic_key: false };
+
+  try {
+    await query("SELECT 1");
+    checks.database = true;
+  } catch (err) {
+    logger.warn("Health readiness: DB check failed", { error: err.message });
+  }
+
+  try {
+    const dgKey = await getDeepgramKey();
+    checks.deepgram_key = !!dgKey;
+  } catch (err) {
+    logger.warn("Health readiness: Deepgram key check failed", { error: err.message });
+  }
+
+  try {
+    const akKey = await getAnthropicKey();
+    checks.anthropic_key = !!akKey;
+  } catch (err) {
+    logger.warn("Health readiness: Anthropic key check failed", { error: err.message });
+  }
+
+  const allOk = Object.values(checks).every(Boolean);
+  const status = allOk ? "ready" : "degraded";
+  res.status(allOk ? 200 : 503).json({ status, checks, timestamp: new Date().toISOString() });
 });
 
 // ============= Swagger UI =============
