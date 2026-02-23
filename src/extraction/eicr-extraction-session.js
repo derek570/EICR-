@@ -65,6 +65,9 @@ export class EICRExtractionSession {
     this.askedQuestions = [];
     this.extractedObservationTexts = []; // Track observations already sent to iOS for dedup
     this.turnCount = 0;
+    this.lastCompactedAtTurn = -1;
+    this.compactionFailures = 0;
+    this.lastCompactTime = 0;
     this.circuitSchedule = '';
     this.circuitScheduleIncluded = false;
     this.isActive = false;
@@ -227,6 +230,43 @@ export class EICRExtractionSession {
   }
 
   async compact() {
+    // Guard 1: Nothing to compact
+    if (this.conversationHistory.length <= 2) {
+      logger.info(`Session ${this.sessionId} Compact skipped: only ${this.conversationHistory.length} messages`);
+      return;
+    }
+
+    // Guard 2: Too small to justify cost
+    if (this.conversationTokenEstimate < 1500) {
+      logger.info(`Session ${this.sessionId} Compact skipped: only ~${this.conversationTokenEstimate} tokens`);
+      return;
+    }
+
+    // Guard 3: No new data since last compaction
+    if (this.turnCount === this.lastCompactedAtTurn) {
+      logger.info(`Session ${this.sessionId} Compact skipped: no new turns since last compaction`);
+      return;
+    }
+
+    // Guard 4: Failure backoff — require min(10, 2^failures) new turns after a failure
+    if (this.compactionFailures > 0) {
+      const requiredTurns = Math.min(10, Math.pow(2, this.compactionFailures));
+      const turnsSinceLastCompact = this.turnCount - this.lastCompactedAtTurn;
+      if (turnsSinceLastCompact < requiredTurns) {
+        logger.info(`Session ${this.sessionId} Compact skipped: backoff (${turnsSinceLastCompact}/${requiredTurns} turns, ${this.compactionFailures} failures)`);
+        return;
+      }
+    }
+
+    // Guard 5: Rate limit — 120s minimum between compaction attempts
+    const now = Date.now();
+    if (now - this.lastCompactTime < 120_000) {
+      logger.info(`Session ${this.sessionId} Compact skipped: rate limited (${Math.round((now - this.lastCompactTime) / 1000)}s since last)`);
+      return;
+    }
+
+    this.lastCompactTime = now;
+
     try {
       logger.info(`Session ${this.sessionId} Compacting: ${this.turnCount} turns, ~${this.conversationTokenEstimate} tokens`);
 
@@ -240,7 +280,7 @@ export class EICRExtractionSession {
         content: [{ type: 'text', text: `Summarize this EICR extraction conversation:\n\n${compactionInput}` }]
       }];
 
-      const response = await this.callWithRetry(compactionMessages, 3, COMPACTION_PROMPT, 2048);
+      const response = await this.callWithRetry(compactionMessages, 3, COMPACTION_PROMPT, 4096);
 
       const summaryText = response.content[0].text;
       const summary = JSON.parse(this.extractJSON(summaryText));
@@ -282,8 +322,13 @@ export class EICRExtractionSession {
       this.circuitScheduleIncluded = false;
 
       logger.info(`Session ${this.sessionId} Compacted to ~${this.conversationTokenEstimate} tokens`);
+      this.lastCompactedAtTurn = this.turnCount;
+      this.compactionFailures = 0;
     } catch (error) {
-      logger.error(`Session ${this.sessionId} Compaction failed: ${error.message}. Continuing without compaction.`);
+      this.compactionFailures++;
+      this.lastCompactedAtTurn = this.turnCount;
+      const nextRetryTurns = Math.min(10, Math.pow(2, this.compactionFailures));
+      logger.error(`Session ${this.sessionId} Compaction failed (attempt #${this.compactionFailures}, next retry after ${nextRetryTurns} turns): ${error.message}`);
     }
   }
 

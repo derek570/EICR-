@@ -5,7 +5,7 @@ name: CI/CD Pipeline
 
 on:
   push:
-    branches: [main, master]
+    branches: [main, master, develop]
   pull_request:
     branches: [main, master]
 
@@ -155,6 +155,7 @@ jobs:
           context: EICR_App
           file: EICR_App/docker/nextjs.Dockerfile
           push: false
+          load: true
           tags: eicr-frontend:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
@@ -165,17 +166,157 @@ jobs:
           context: EICR_App
           file: EICR_App/docker/backend.Dockerfile
           push: false
+          load: true
           tags: eicr-backend:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
   # ============================================
-  # Job 4: Deploy to AWS (main branch only)
+  # Job 3b: Scan Container Images with Trivy
   # ============================================
-  deploy:
-    name: Deploy to AWS ECS
+  scan-images:
+    name: Scan Container Images
     runs-on: ubuntu-latest
     needs: [build-images]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Frontend Image for Scan
+        uses: docker/build-push-action@v5
+        with:
+          context: EICR_App
+          file: EICR_App/docker/nextjs.Dockerfile
+          push: false
+          load: true
+          tags: eicr-frontend:${{ github.sha }}
+          cache-from: type=gha
+
+      - name: Build Backend Image for Scan
+        uses: docker/build-push-action@v5
+        with:
+          context: EICR_App
+          file: EICR_App/docker/backend.Dockerfile
+          push: false
+          load: true
+          tags: eicr-backend:${{ github.sha }}
+          cache-from: type=gha
+
+      - name: Scan Frontend Image
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: 'eicr-frontend:${{ github.sha }}'
+          format: 'table'
+          exit-code: '1'
+          severity: 'CRITICAL,HIGH'
+
+      - name: Scan Backend Image
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: 'eicr-backend:${{ github.sha }}'
+          format: 'table'
+          exit-code: '1'
+          severity: 'CRITICAL,HIGH'
+
+  # ============================================
+  # Job 4: Deploy to Staging (develop branch)
+  # ============================================
+  deploy-staging:
+    name: Deploy to Staging
+    runs-on: ubuntu-latest
+    needs: [scan-images]
+    if: github.ref == 'refs/heads/develop' && github.event_name == 'push'
+    environment: staging
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push Frontend to ECR (staging)
+        uses: docker/build-push-action@v5
+        with:
+          context: EICR_App
+          file: EICR_App/docker/nextjs.Dockerfile
+          push: true
+          tags: |
+            ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY_FRONTEND }}:staging-${{ github.sha }}
+            ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY_FRONTEND }}:staging-latest
+          build-args: |
+            NODE_ENV=staging
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build and push Backend to ECR (staging)
+        uses: docker/build-push-action@v5
+        with:
+          context: EICR_App
+          file: EICR_App/docker/backend.Dockerfile
+          push: true
+          tags: |
+            ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY_BACKEND }}:staging-${{ github.sha }}
+            ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY_BACKEND }}:staging-latest
+          build-args: |
+            NODE_ENV=staging
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Update ECS Staging Frontend Service
+        run: |
+          aws ecs update-service \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --service certmate-staging-frontend \
+            --force-new-deployment
+
+      - name: Update ECS Staging Backend Service
+        run: |
+          aws ecs update-service \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --service certmate-staging-backend \
+            --force-new-deployment
+
+      - name: Wait for Staging Frontend deployment
+        run: |
+          aws ecs wait services-stable \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --services certmate-staging-frontend
+
+      - name: Wait for Staging Backend deployment
+        run: |
+          aws ecs wait services-stable \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --services certmate-staging-backend
+
+      - name: Staging deployment complete
+        run: |
+          echo "Staging deployment successful!"
+          echo "Staging Frontend: https://staging.certomatic3000.co.uk"
+          echo "Commit: ${{ github.sha }}"
+
+  # ============================================
+  # Job 5: Deploy to Production (main branch, manual approval)
+  # ============================================
+  deploy:
+    name: Deploy to AWS ECS (Production)
+    runs-on: ubuntu-latest
+    needs: [scan-images]
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     environment: production
 
@@ -249,6 +390,6 @@ jobs:
 
       - name: Deployment complete
         run: |
-          echo "Deployment successful!"
+          echo "Production deployment successful!"
           echo "Frontend: https://certomatic3000.co.uk"
           echo "Commit: ${{ github.sha }}"

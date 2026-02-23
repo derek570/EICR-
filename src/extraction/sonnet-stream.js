@@ -149,6 +149,13 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
           case 'session_compact':
             if (currentSessionId && activeSessions.has(currentSessionId)) {
               const entry = activeSessions.get(currentSessionId);
+              const now = Date.now();
+              if (now - entry.lastClientCompactTime < 120_000) {
+                logger.info('Client compact rate-limited', { sessionId: currentSessionId, secondsSinceLast: Math.round((now - entry.lastClientCompactTime) / 1000) });
+                ws.send(JSON.stringify({ type: 'session_ack', status: 'compact_skipped', reason: 'rate_limited' }));
+                break;
+              }
+              entry.lastClientCompactTime = now;
               try {
                 await entry.session.compact();
                 ws.send(JSON.stringify({ type: 'session_ack', status: 'compacted' }));
@@ -246,7 +253,8 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
       jobId,
       lastRegexResults: [],
       isExtracting: false,
-      pendingTranscripts: []
+      pendingTranscripts: [],
+      lastClientCompactTime: 0
     });
 
     ws.send(JSON.stringify({ type: 'session_ack', status: 'started' }));

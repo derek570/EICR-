@@ -1,5 +1,7 @@
 /**
- * API keys and proxy routes — keys, Claude proxy, TTS proxies, remote config
+ * Proxy routes and remote config — Claude proxy, TTS proxies, remote config
+ * The GET /api/keys endpoint has been removed for security (never expose raw API keys to clients).
+ * iOS clients should use proxy endpoints or direct WebSocket connections instead.
  */
 
 import { Router } from "express";
@@ -10,36 +12,48 @@ import logger from "../logger.js";
 
 const router = Router();
 
-/**
- * Get API keys for direct iOS-to-service connections
- * GET /api/keys
- * Returns: { deepgram: string, anthropic: string, elevenlabs: string }
- */
-router.get("/keys", auth.requireAuth, async (req, res) => {
-  try {
-    const { getAnthropicKey, getElevenLabsKey } = await import("../services/secrets.js");
-    const [deepgramKey, anthropicKey, elevenLabsKey] = await Promise.all([
-      getDeepgramKey(),
-      getAnthropicKey(),
-      getElevenLabsKey(),
-    ]);
-    res.json({
-      deepgram: deepgramKey || null,
-      anthropic: anthropicKey || null,
-      elevenlabs: elevenLabsKey || null,
-    });
-  } catch (error) {
-    logger.error("Failed to retrieve API keys", { error: error.message });
-    res.status(500).json({ error: "Failed to retrieve API keys" });
-  }
-});
+// Allowed Claude models for proxy requests
+const ALLOWED_MODELS = new Set([
+  "claude-sonnet-4-5-20241022",
+  "claude-sonnet-4-5-latest",
+  "claude-haiku-4-5-20241022",
+  "claude-haiku-4-5-latest",
+  "claude-opus-4-6-latest",
+  "claude-opus-4-6-20250501",
+  "claude-3-5-sonnet-20241022",
+  "claude-3-5-haiku-20241022",
+]);
+
+const MAX_TOKENS_LIMIT = 8192;
 
 /**
- * Proxy Claude Anthropic API calls from the web app
+ * Proxy Claude Anthropic API calls
  * POST /api/proxy/claude
+ *
+ * Validates model whitelist and max_tokens before forwarding.
+ * Logs per-user cost data from Anthropic response usage.
  */
 router.post("/proxy/claude", auth.requireAuth, async (req, res) => {
   try {
+    // Validate request body
+    const { model, max_tokens, messages } = req.body;
+
+    if (!model || !ALLOWED_MODELS.has(model)) {
+      return res.status(400).json({
+        error: `Invalid model. Allowed: ${[...ALLOWED_MODELS].join(", ")}`,
+      });
+    }
+
+    if (!messages || !Array.isArray(messages) || messages.length === 0) {
+      return res.status(400).json({ error: "messages array is required" });
+    }
+
+    if (max_tokens && (typeof max_tokens !== "number" || max_tokens > MAX_TOKENS_LIMIT)) {
+      return res.status(400).json({
+        error: `max_tokens must be a number <= ${MAX_TOKENS_LIMIT}`,
+      });
+    }
+
     const { getAnthropicKey } = await import("../services/secrets.js");
     const anthropicKey = await getAnthropicKey();
     if (!anthropicKey) {
@@ -57,6 +71,18 @@ router.post("/proxy/claude", auth.requireAuth, async (req, res) => {
     });
 
     const data = await response.json();
+
+    // Log per-user cost tracking
+    const userId = req.user?.id || req.user?.userId || "unknown";
+    if (data.usage) {
+      logger.info("Claude proxy usage", {
+        userId,
+        model,
+        input_tokens: data.usage.input_tokens || 0,
+        output_tokens: data.usage.output_tokens || 0,
+      });
+    }
+
     res.status(response.status).json(data);
   } catch (error) {
     logger.error("Claude proxy error", { error: error.message });

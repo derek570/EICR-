@@ -20,6 +20,7 @@ import cors from "cors";
 import helmet from "helmet";
 import hpp from "hpp";
 import { getAllSecrets } from "./services/secrets.js";
+import { validateEnv } from "./env.js";
 import logger from "./logger.js";
 import {
   ensurePushSubscriptionsTable, ensureJobsUpdatedAt,
@@ -43,6 +44,9 @@ async function loadSecrets() {
 
 // Initialize secrets before starting
 await loadSecrets();
+
+// Validate required environment variables (after secrets are loaded)
+validateEnv();
 
 // Ensure DB tables exist and backfill
 await ensureJobsUpdatedAt();

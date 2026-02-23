@@ -190,7 +190,7 @@ app.use("/api/admin", auth.requireAuth, adminRouter);
 
 // Pre-existing route modules
 app.use("/api/auth", authLimiter, authRouter);
-app.use("/api", keysRouter);         // /api/keys, /api/proxy/*, /api/config/*
+app.use("/api", keysRouter);         // /api/proxy/*, /api/config/*
 app.use("/api", settingsRouter);     // /api/settings/*, /api/inspector-profiles/*, /api/schema/*, /api/regulations
 app.use("/api/push", pushRouter);    // /api/push/*
 app.use("/api", feedbackRouter);     // /api/feedback/*, /api/optimizer-report/*

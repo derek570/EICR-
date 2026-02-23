@@ -1131,4 +1131,15 @@ export async function query(text, params) {
   return pool.query(text, params);
 }
 
+/**
+ * Close the database connection pool (for graceful shutdown)
+ */
+export async function closePool() {
+  if (pool) {
+    await pool.end();
+    pool = null;
+    logger.info("Database pool closed");
+  }
+}
+
 export { usePostgres };

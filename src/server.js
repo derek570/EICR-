@@ -11,6 +11,7 @@ import { startWorker } from "./queue.js";
 import { initSocketIO } from "./realtime.js";
 import { initSonnetStream } from "./extraction/sonnet-stream.js";
 import { closeTransporter } from "./services/email.js";
+import { closePool } from "./db.js";
 
 // Import app (creates Express instance + middleware via app.js)
 // Import api.js which registers all routes on the app
@@ -83,16 +84,51 @@ httpServer.listen(PORT, "0.0.0.0", () => {
 });
 
 // Graceful shutdown
+let shuttingDown = false;
+
 async function gracefulShutdown(signal) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+
   logger.info(`Received ${signal}, starting graceful shutdown...`);
+
+  // Force exit after 10 seconds if cleanup stalls
+  const forceTimer = setTimeout(() => {
+    logger.error("Graceful shutdown timed out after 10s, forcing exit");
+    process.exit(1);
+  }, 10_000);
+  forceTimer.unref();
+
+  // 1. Stop accepting new connections
   httpServer.close(() => logger.info("HTTP server closed"));
+
+  // 2. Close WebSocket servers with 1001 (Going Away)
+  for (const ws of recordingWss.clients) {
+    ws.close(1001, "Server shutting down");
+  }
+  for (const ws of sonnetWss.clients) {
+    ws.close(1001, "Server shutting down");
+  }
+
+  // 3. Stop session cleanup interval
+  stopSessionCleanup();
+
+  // 4. Close job queue
   try {
     const { getJobQueue } = await import("./queue.js");
     const queue = getJobQueue();
     if (queue) await queue.close();
   } catch (_) {}
-  stopSessionCleanup();
+
+  // 5. Close email transporter
   closeTransporter();
+
+  // 6. Close database pool
+  try {
+    await closePool();
+  } catch (_) {}
+
+  logger.info("Graceful shutdown complete");
   process.exit(0);
 }
 
