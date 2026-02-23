@@ -16,6 +16,8 @@
     "e2e:headed": "playwright test --headed"
   },
   "dependencies": {
+    "@certmate/shared-types": "1.0.0",
+    "@certmate/shared-utils": "1.0.0",
     "@capacitor/camera": "^8.0.0",
     "@capacitor/cli": "^8.0.2",
     "@capacitor/core": "^8.0.2",

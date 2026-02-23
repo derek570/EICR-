@@ -4,6 +4,8 @@
   "main": "src/index.ts",
   "types": "src/index.ts",
   "dependencies": {
-    "@certmate/shared-types": "1.0.0"
+    "@certmate/shared-types": "1.0.0",
+    "clsx": "^2.1.1",
+    "tailwind-merge": "^3.4.0"
   }
 }

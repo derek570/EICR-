@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { Observation, Regulation, api, JobPhoto } from "@/lib/api";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -39,18 +39,34 @@ export function ObservationCard({ observation, index, userId, jobId, onChange, o
   const [photoUrls, setPhotoUrls] = useState<Record<string, string>>({});
   const [viewingPhoto, setViewingPhoto] = useState<string | null>(null);
 
-  // Load photo URLs when photos change
+  // Load photo blob URLs when photos change, revoke old ones on cleanup
   useEffect(() => {
-    const loadPhotoUrls = async () => {
-      if (!observation.photos || observation.photos.length === 0) return;
+    if (!observation.photos || observation.photos.length === 0) return;
 
+    let cancelled = false;
+    const blobUrls: string[] = [];
+
+    const loadPhotos = async () => {
       const urls: Record<string, string> = {};
-      for (const filename of observation.photos) {
-        urls[filename] = await api.getPhotoUrl(userId, jobId, filename);
+      for (const filename of observation.photos!) {
+        try {
+          const blob = await api.getPhotoBlob(userId, jobId, filename);
+          if (cancelled) return;
+          const url = URL.createObjectURL(blob);
+          blobUrls.push(url);
+          urls[filename] = url;
+        } catch {
+          // Skip failed photos
+        }
       }
-      setPhotoUrls(urls);
+      if (!cancelled) setPhotoUrls(urls);
     };
-    loadPhotoUrls();
+    loadPhotos();
+
+    return () => {
+      cancelled = true;
+      blobUrls.forEach((url) => URL.revokeObjectURL(url));
+    };
   }, [observation.photos, userId, jobId]);
 
   const updateField = (field: keyof Observation, value: string | string[]) => {
@@ -85,6 +101,18 @@ export function ObservationCard({ observation, index, userId, jobId, onChange, o
 
   const isLinkedToSchedule = !!observation.schedule_item;
 
+  // Close lightbox on Escape
+  const handleKeyDown = useCallback((e: KeyboardEvent) => {
+    if (e.key === "Escape") setViewingPhoto(null);
+  }, []);
+
+  useEffect(() => {
+    if (viewingPhoto) {
+      document.addEventListener("keydown", handleKeyDown);
+      return () => document.removeEventListener("keydown", handleKeyDown);
+    }
+  }, [viewingPhoto, handleKeyDown]);
+
   return (
     <div className="bg-white border rounded-lg p-4 space-y-3">
       <div className="flex items-start justify-between gap-3">
@@ -92,6 +120,7 @@ export function ObservationCard({ observation, index, userId, jobId, onChange, o
           <select
             value={observation.code}
             onChange={(e) => updateField("code", e.target.value as Observation["code"])}
+            aria-label="Observation severity code"
             className={cn("h-10 w-16 rounded-full text-white font-bold text-center appearance-none cursor-pointer", codeColors[observation.code])}
           >
             <option value="C1">C1</option>
@@ -187,7 +216,7 @@ export function ObservationCard({ observation, index, userId, jobId, onChange, o
                   // eslint-disable-next-line @next/next/no-img-element
                   <img
                     src={photoUrls[filename]}
-                    alt={filename}
+                    alt="Observation evidence photo"
                     className="w-full h-full object-cover"
                   />
                 ) : (
@@ -230,19 +259,23 @@ export function ObservationCard({ observation, index, userId, jobId, onChange, o
       {/* Photo lightbox - full screen view */}
       {viewingPhoto && photoUrls[viewingPhoto] && (
         <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="Photo lightbox"
           className="fixed inset-0 z-50 bg-black/90 flex items-center justify-center p-4"
           onClick={() => setViewingPhoto(null)}
         >
           <button
             className="absolute top-4 right-4 text-white bg-white/20 hover:bg-white/30 rounded-full p-2"
             onClick={() => setViewingPhoto(null)}
+            aria-label="Close photo"
           >
             <X className="h-6 w-6" />
           </button>
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
             src={photoUrls[viewingPhoto]}
-            alt={viewingPhoto}
+            alt="Observation evidence photo"
             className="max-w-full max-h-full object-contain rounded-lg"
             onClick={(e) => e.stopPropagation()}
           />

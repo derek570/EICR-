@@ -29,18 +29,34 @@ export function InlineObservationForm({
   const [showPhotoPicker, setShowPhotoPicker] = useState(false);
   const [photoUrls, setPhotoUrls] = useState<Record<string, string>>({});
 
-  // Load photo URLs when photos change
+  // Load photo blob URLs when photos change, revoke old ones on cleanup
   useEffect(() => {
-    const loadPhotoUrls = async () => {
-      if (!observation.photos || observation.photos.length === 0) return;
+    if (!observation.photos || observation.photos.length === 0) return;
 
+    let cancelled = false;
+    const blobUrls: string[] = [];
+
+    const loadPhotos = async () => {
       const urls: Record<string, string> = {};
-      for (const filename of observation.photos) {
-        urls[filename] = await api.getPhotoUrl(userId, jobId, filename);
+      for (const filename of observation.photos!) {
+        try {
+          const blob = await api.getPhotoBlob(userId, jobId, filename);
+          if (cancelled) return;
+          const url = URL.createObjectURL(blob);
+          blobUrls.push(url);
+          urls[filename] = url;
+        } catch {
+          // Skip failed photos
+        }
       }
-      setPhotoUrls(urls);
+      if (!cancelled) setPhotoUrls(urls);
     };
-    loadPhotoUrls();
+    loadPhotos();
+
+    return () => {
+      cancelled = true;
+      blobUrls.forEach((url) => URL.revokeObjectURL(url));
+    };
   }, [observation.photos, userId, jobId]);
 
   const updateField = (field: keyof Observation, value: string | string[]) => {
@@ -121,7 +137,7 @@ export function InlineObservationForm({
                 // eslint-disable-next-line @next/next/no-img-element
                 <img
                   src={photoUrls[filename]}
-                  alt={filename}
+                  alt="Observation evidence photo"
                   className="w-full h-full object-cover"
                 />
               ) : (

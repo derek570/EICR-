@@ -36,16 +36,29 @@ export function PhotoPicker({
     }
   }, [isOpen, userId, jobId, selectedPhotos]);
 
+  // Revoke blob URLs on unmount
+  useEffect(() => {
+    return () => {
+      Object.values(photoUrls).forEach((url) => URL.revokeObjectURL(url));
+    };
+  }, []);
+
   const loadPhotos = async () => {
     setLoading(true);
+    // Revoke any existing blob URLs
+    Object.values(photoUrls).forEach((url) => URL.revokeObjectURL(url));
     try {
       const data = await api.getJobPhotos(userId, jobId);
       setPhotos(data);
 
-      // Build URLs with auth tokens for each photo
       const urls: Record<string, string> = {};
       for (const photo of data) {
-        urls[photo.filename] = await api.getPhotoUrl(userId, jobId, photo.filename);
+        try {
+          const blob = await api.getPhotoBlob(userId, jobId, photo.filename);
+          urls[photo.filename] = URL.createObjectURL(blob);
+        } catch {
+          // Skip failed photos
+        }
       }
       setPhotoUrls(urls);
     } catch (error) {
@@ -121,7 +134,7 @@ export function PhotoPicker({
                     {/* eslint-disable-next-line @next/next/no-img-element */}
                     <img
                       src={photoUrls[photo.filename] || ""}
-                      alt={photo.filename}
+                      alt="Observation evidence photo"
                       className="w-full h-full object-cover"
                     />
                     {isSelected && (

@@ -44,421 +44,134 @@ interface JobState {
   refreshPendingCount: () => Promise<void>;
 }
 
-export const useJobStore = create<JobState>((set, get) => ({
-  currentJob: null,
-  userId: null,
-  isDirty: false,
-  isSyncing: false,
-  isOnline: typeof navigator !== "undefined" ? navigator.onLine : true,
-  pendingSyncCount: 0,
+function jobToLocal(job: JobDetail, userId: string, isDirty: boolean, lastSynced: number | null): LocalJob {
+  return {
+    id: job.id,
+    userId,
+    address: job.address,
+    status: job.status,
+    created_at: job.created_at,
+    certificate_type: job.certificate_type,
+    circuits: job.circuits,
+    observations: job.observations,
+    board_info: job.board_info,
+    boards: job.boards,
+    installation_details: job.installation_details,
+    supply_characteristics: job.supply_characteristics,
+    inspection_schedule: job.inspection_schedule,
+    inspector_id: job.inspector_id,
+    extent_and_type: job.extent_and_type,
+    design_construction: job.design_construction,
+    isDirty,
+    lastModified: Date.now(),
+    lastSynced,
+  };
+}
 
-  setUser: (userId) => set({ userId }),
-
-  loadJob: async (jobId, jobData, userId) => {
-    // Check if we have a local version with unsaved changes
-    const localJob = await getLocalJob(jobId);
-
-    if (localJob && localJob.isDirty) {
-      // Use local version if it has unsaved changes
-      set({
-        currentJob: {
-          id: localJob.id,
-          address: localJob.address,
-          status: localJob.status,
-          created_at: localJob.created_at,
-          certificate_type: localJob.certificate_type || "EICR",
-          circuits: localJob.circuits,
-          observations: localJob.observations,
-          board_info: localJob.board_info,
-          boards: localJob.boards,
-          installation_details: localJob.installation_details,
-          supply_characteristics: localJob.supply_characteristics,
-          inspection_schedule: localJob.inspection_schedule,
-          inspector_id: localJob.inspector_id,
-          extent_and_type: localJob.extent_and_type,
-          design_construction: localJob.design_construction,
-        },
-        userId,
-        isDirty: true,
-      });
-    } else {
-      // Use server version and cache it locally
-      const newLocalJob: LocalJob = {
-        id: jobId,
-        userId,
-        address: jobData.address,
-        status: jobData.status,
-        created_at: jobData.created_at,
-        certificate_type: jobData.certificate_type || "EICR",
-        circuits: jobData.circuits,
-        observations: jobData.observations,
-        board_info: jobData.board_info,
-        boards: jobData.boards,
-        installation_details: jobData.installation_details,
-        supply_characteristics: jobData.supply_characteristics,
-        inspection_schedule: jobData.inspection_schedule,
-        inspector_id: jobData.inspector_id,
-        extent_and_type: jobData.extent_and_type,
-        design_construction: jobData.design_construction,
-        isDirty: false,
-        lastModified: Date.now(),
-        lastSynced: Date.now(),
-      };
-      await saveLocalJob(newLocalJob);
-      set({ currentJob: jobData, userId, isDirty: false });
-    }
-
-    await get().refreshPendingCount();
-  },
-
-  updateCircuits: (circuits) => {
+export const useJobStore = create<JobState>((set, get) => {
+  /** Update one or more fields on the current job, persist to IndexedDB, and mark dirty. */
+  function updateJobFields(patch: Partial<JobDetail>) {
     const { currentJob, userId } = get();
     if (!currentJob || !userId) return;
 
-    const updatedJob = { ...currentJob, circuits };
+    const updatedJob = { ...currentJob, ...patch };
     set({ currentJob: updatedJob, isDirty: true });
-
-    // Persist to IndexedDB
-    const localJob: LocalJob = {
-      id: currentJob.id,
-      userId,
-      address: currentJob.address,
-      status: currentJob.status,
-      created_at: currentJob.created_at,
-      certificate_type: currentJob.certificate_type,
-      circuits,
-      observations: currentJob.observations,
-      board_info: currentJob.board_info,
-      boards: currentJob.boards,
-      installation_details: currentJob.installation_details,
-      supply_characteristics: currentJob.supply_characteristics,
-      inspection_schedule: currentJob.inspection_schedule,
-      inspector_id: currentJob.inspector_id,
-      extent_and_type: currentJob.extent_and_type,
-      design_construction: currentJob.design_construction,
-      isDirty: true,
-      lastModified: Date.now(),
-      lastSynced: null,
-    };
-    saveLocalJob(localJob);
+    saveLocalJob(jobToLocal(updatedJob, userId, true, null));
     get().refreshPendingCount();
-  },
+  }
 
-  updateObservations: (observations) => {
-    const { currentJob, userId } = get();
-    if (!currentJob || !userId) return;
+  return {
+    currentJob: null,
+    userId: null,
+    isDirty: false,
+    isSyncing: false,
+    isOnline: typeof navigator !== "undefined" ? navigator.onLine : true,
+    pendingSyncCount: 0,
 
-    const updatedJob = { ...currentJob, observations };
-    set({ currentJob: updatedJob, isDirty: true });
+    setUser: (userId) => set({ userId }),
 
-    const localJob: LocalJob = {
-      id: currentJob.id,
-      userId,
-      address: currentJob.address,
-      status: currentJob.status,
-      created_at: currentJob.created_at,
-      certificate_type: currentJob.certificate_type,
-      circuits: currentJob.circuits,
-      observations,
-      board_info: currentJob.board_info,
-      boards: currentJob.boards,
-      installation_details: currentJob.installation_details,
-      supply_characteristics: currentJob.supply_characteristics,
-      inspection_schedule: currentJob.inspection_schedule,
-      inspector_id: currentJob.inspector_id,
-      extent_and_type: currentJob.extent_and_type,
-      design_construction: currentJob.design_construction,
-      isDirty: true,
-      lastModified: Date.now(),
-      lastSynced: null,
-    };
-    saveLocalJob(localJob);
-    get().refreshPendingCount();
-  },
+    loadJob: async (jobId, jobData, userId) => {
+      // Check if we have a local version with unsaved changes
+      const localJob = await getLocalJob(jobId);
 
-  updateBoardInfo: (boardInfo) => {
-    const { currentJob, userId } = get();
-    if (!currentJob || !userId) return;
+      if (localJob && localJob.isDirty) {
+        // Use local version if it has unsaved changes
+        set({
+          currentJob: {
+            id: localJob.id,
+            address: localJob.address,
+            status: localJob.status,
+            created_at: localJob.created_at,
+            certificate_type: localJob.certificate_type || "EICR",
+            circuits: localJob.circuits,
+            observations: localJob.observations,
+            board_info: localJob.board_info,
+            boards: localJob.boards,
+            installation_details: localJob.installation_details,
+            supply_characteristics: localJob.supply_characteristics,
+            inspection_schedule: localJob.inspection_schedule,
+            inspector_id: localJob.inspector_id,
+            extent_and_type: localJob.extent_and_type,
+            design_construction: localJob.design_construction,
+          },
+          userId,
+          isDirty: true,
+        });
+      } else {
+        // Use server version and cache it locally
+        await saveLocalJob(jobToLocal(jobData, userId, false, Date.now()));
+        set({ currentJob: jobData, userId, isDirty: false });
+      }
 
-    const updatedJob = { ...currentJob, board_info: boardInfo };
-    set({ currentJob: updatedJob, isDirty: true });
+      await get().refreshPendingCount();
+    },
 
-    const localJob: LocalJob = {
-      id: currentJob.id,
-      userId,
-      address: currentJob.address,
-      status: currentJob.status,
-      created_at: currentJob.created_at,
-      certificate_type: currentJob.certificate_type,
-      circuits: currentJob.circuits,
-      observations: currentJob.observations,
-      board_info: boardInfo,
-      boards: currentJob.boards,
-      installation_details: currentJob.installation_details,
-      supply_characteristics: currentJob.supply_characteristics,
-      inspection_schedule: currentJob.inspection_schedule,
-      inspector_id: currentJob.inspector_id,
-      extent_and_type: currentJob.extent_and_type,
-      design_construction: currentJob.design_construction,
-      isDirty: true,
-      lastModified: Date.now(),
-      lastSynced: null,
-    };
-    saveLocalJob(localJob);
-    get().refreshPendingCount();
-  },
+    updateCircuits: (circuits) => updateJobFields({ circuits }),
+    updateObservations: (observations) => updateJobFields({ observations }),
+    updateBoardInfo: (boardInfo) => updateJobFields({ board_info: boardInfo }),
 
-  updateBoards: (boards) => {
-    const { currentJob, userId } = get();
-    if (!currentJob || !userId) return;
+    updateBoards: (boards) => {
+      const { currentJob } = get();
+      if (!currentJob) return;
 
-    // When updating boards, also sync flat board_info and circuits for backward compat
-    const primaryBoard = boards[0];
-    const flatBoardInfo = primaryBoard ? primaryBoard.board_info : currentJob.board_info;
-    const flatCircuits = boards.length === 1 && primaryBoard ? primaryBoard.circuits : currentJob.circuits;
+      // When updating boards, also sync flat board_info and circuits for backward compat
+      const primaryBoard = boards[0];
+      const board_info = primaryBoard ? primaryBoard.board_info : currentJob.board_info;
+      const circuits = boards.length === 1 && primaryBoard ? primaryBoard.circuits : currentJob.circuits;
 
-    const updatedJob = { ...currentJob, boards, board_info: flatBoardInfo, circuits: flatCircuits };
-    set({ currentJob: updatedJob, isDirty: true });
+      updateJobFields({ boards, board_info, circuits });
+    },
 
-    const localJob: LocalJob = {
-      id: currentJob.id,
-      userId,
-      address: currentJob.address,
-      status: currentJob.status,
-      created_at: currentJob.created_at,
-      certificate_type: currentJob.certificate_type,
-      circuits: flatCircuits,
-      observations: currentJob.observations,
-      board_info: flatBoardInfo,
-      boards,
-      installation_details: currentJob.installation_details,
-      supply_characteristics: currentJob.supply_characteristics,
-      inspection_schedule: currentJob.inspection_schedule,
-      inspector_id: currentJob.inspector_id,
-      extent_and_type: currentJob.extent_and_type,
-      design_construction: currentJob.design_construction,
-      isDirty: true,
-      lastModified: Date.now(),
-      lastSynced: null,
-    };
-    saveLocalJob(localJob);
-    get().refreshPendingCount();
-  },
+    updateInstallationDetails: (details) => updateJobFields({ installation_details: details }),
+    updateSupplyCharacteristics: (supply) => updateJobFields({ supply_characteristics: supply }),
+    updateInspectionSchedule: (schedule) => updateJobFields({ inspection_schedule: schedule }),
+    setInspectorId: (inspectorId) => updateJobFields({ inspector_id: inspectorId }),
+    updateExtentAndType: (extentAndType) => updateJobFields({ extent_and_type: extentAndType }),
+    updateDesignConstruction: (design) => updateJobFields({ design_construction: design }),
 
-  updateInstallationDetails: (details) => {
-    const { currentJob, userId } = get();
-    if (!currentJob || !userId) return;
+    setOnline: (online) => set({ isOnline: online }),
 
-    const updatedJob = { ...currentJob, installation_details: details };
-    set({ currentJob: updatedJob, isDirty: true });
+    setSyncing: (syncing) => set({ isSyncing: syncing }),
 
-    const localJob: LocalJob = {
-      id: currentJob.id,
-      userId,
-      address: currentJob.address,
-      status: currentJob.status,
-      created_at: currentJob.created_at,
-      certificate_type: currentJob.certificate_type,
-      circuits: currentJob.circuits,
-      observations: currentJob.observations,
-      board_info: currentJob.board_info,
-      boards: currentJob.boards,
-      installation_details: details,
-      supply_characteristics: currentJob.supply_characteristics,
-      inspection_schedule: currentJob.inspection_schedule,
-      inspector_id: currentJob.inspector_id,
-      extent_and_type: currentJob.extent_and_type,
-      design_construction: currentJob.design_construction,
-      isDirty: true,
-      lastModified: Date.now(),
-      lastSynced: null,
-    };
-    saveLocalJob(localJob);
-    get().refreshPendingCount();
-  },
+    markClean: () => {
+      const { currentJob } = get();
+      if (currentJob) {
+        db.jobs.update(currentJob.id, { isDirty: false, lastSynced: Date.now() });
+      }
+      set({ isDirty: false });
+      get().refreshPendingCount();
+    },
 
-  updateSupplyCharacteristics: (supply) => {
-    const { currentJob, userId } = get();
-    if (!currentJob || !userId) return;
+    clearJob: () => set({ currentJob: null, isDirty: false }),
 
-    const updatedJob = { ...currentJob, supply_characteristics: supply };
-    set({ currentJob: updatedJob, isDirty: true });
-
-    const localJob: LocalJob = {
-      id: currentJob.id,
-      userId,
-      address: currentJob.address,
-      status: currentJob.status,
-      created_at: currentJob.created_at,
-      certificate_type: currentJob.certificate_type,
-      circuits: currentJob.circuits,
-      observations: currentJob.observations,
-      board_info: currentJob.board_info,
-      boards: currentJob.boards,
-      installation_details: currentJob.installation_details,
-      supply_characteristics: supply,
-      inspection_schedule: currentJob.inspection_schedule,
-      inspector_id: currentJob.inspector_id,
-      extent_and_type: currentJob.extent_and_type,
-      design_construction: currentJob.design_construction,
-      isDirty: true,
-      lastModified: Date.now(),
-      lastSynced: null,
-    };
-    saveLocalJob(localJob);
-    get().refreshPendingCount();
-  },
-
-  updateInspectionSchedule: (schedule) => {
-    const { currentJob, userId } = get();
-    if (!currentJob || !userId) return;
-
-    const updatedJob = { ...currentJob, inspection_schedule: schedule };
-    set({ currentJob: updatedJob, isDirty: true });
-
-    const localJob: LocalJob = {
-      id: currentJob.id,
-      userId,
-      address: currentJob.address,
-      status: currentJob.status,
-      created_at: currentJob.created_at,
-      certificate_type: currentJob.certificate_type,
-      circuits: currentJob.circuits,
-      observations: currentJob.observations,
-      board_info: currentJob.board_info,
-      boards: currentJob.boards,
-      installation_details: currentJob.installation_details,
-      supply_characteristics: currentJob.supply_characteristics,
-      inspection_schedule: schedule,
-      inspector_id: currentJob.inspector_id,
-      extent_and_type: currentJob.extent_and_type,
-      design_construction: currentJob.design_construction,
-      isDirty: true,
-      lastModified: Date.now(),
-      lastSynced: null,
-    };
-    saveLocalJob(localJob);
-    get().refreshPendingCount();
-  },
-
-  setInspectorId: (inspectorId) => {
-    const { currentJob, userId } = get();
-    if (!currentJob || !userId) return;
-
-    const updatedJob = { ...currentJob, inspector_id: inspectorId };
-    set({ currentJob: updatedJob, isDirty: true });
-
-    const localJob: LocalJob = {
-      id: currentJob.id,
-      userId,
-      address: currentJob.address,
-      status: currentJob.status,
-      created_at: currentJob.created_at,
-      certificate_type: currentJob.certificate_type,
-      circuits: currentJob.circuits,
-      observations: currentJob.observations,
-      board_info: currentJob.board_info,
-      boards: currentJob.boards,
-      installation_details: currentJob.installation_details,
-      supply_characteristics: currentJob.supply_characteristics,
-      inspection_schedule: currentJob.inspection_schedule,
-      inspector_id: inspectorId,
-      extent_and_type: currentJob.extent_and_type,
-      design_construction: currentJob.design_construction,
-      isDirty: true,
-      lastModified: Date.now(),
-      lastSynced: null,
-    };
-    saveLocalJob(localJob);
-    get().refreshPendingCount();
-  },
-
-  updateExtentAndType: (extentAndType) => {
-    const { currentJob, userId } = get();
-    if (!currentJob || !userId) return;
-
-    const updatedJob = { ...currentJob, extent_and_type: extentAndType };
-    set({ currentJob: updatedJob, isDirty: true });
-
-    const localJob: LocalJob = {
-      id: currentJob.id,
-      userId,
-      address: currentJob.address,
-      status: currentJob.status,
-      created_at: currentJob.created_at,
-      certificate_type: currentJob.certificate_type,
-      circuits: currentJob.circuits,
-      observations: currentJob.observations,
-      board_info: currentJob.board_info,
-      boards: currentJob.boards,
-      installation_details: currentJob.installation_details,
-      supply_characteristics: currentJob.supply_characteristics,
-      inspection_schedule: currentJob.inspection_schedule,
-      inspector_id: currentJob.inspector_id,
-      extent_and_type: extentAndType,
-      design_construction: currentJob.design_construction,
-      isDirty: true,
-      lastModified: Date.now(),
-      lastSynced: null,
-    };
-    saveLocalJob(localJob);
-    get().refreshPendingCount();
-  },
-
-  updateDesignConstruction: (design) => {
-    const { currentJob, userId } = get();
-    if (!currentJob || !userId) return;
-
-    const updatedJob = { ...currentJob, design_construction: design };
-    set({ currentJob: updatedJob, isDirty: true });
-
-    const localJob: LocalJob = {
-      id: currentJob.id,
-      userId,
-      address: currentJob.address,
-      status: currentJob.status,
-      created_at: currentJob.created_at,
-      certificate_type: currentJob.certificate_type,
-      circuits: currentJob.circuits,
-      observations: currentJob.observations,
-      board_info: currentJob.board_info,
-      boards: currentJob.boards,
-      installation_details: currentJob.installation_details,
-      supply_characteristics: currentJob.supply_characteristics,
-      inspection_schedule: currentJob.inspection_schedule,
-      inspector_id: currentJob.inspector_id,
-      extent_and_type: currentJob.extent_and_type,
-      design_construction: design,
-      isDirty: true,
-      lastModified: Date.now(),
-      lastSynced: null,
-    };
-    saveLocalJob(localJob);
-    get().refreshPendingCount();
-  },
-
-  setOnline: (online) => set({ isOnline: online }),
-
-  setSyncing: (syncing) => set({ isSyncing: syncing }),
-
-  markClean: () => {
-    const { currentJob } = get();
-    if (currentJob) {
-      db.jobs.update(currentJob.id, { isDirty: false, lastSynced: Date.now() });
-    }
-    set({ isDirty: false });
-    get().refreshPendingCount();
-  },
-
-  clearJob: () => set({ currentJob: null, isDirty: false }),
-
-  refreshPendingCount: async () => {
-    const { userId } = get();
-    if (!userId) {
-      set({ pendingSyncCount: 0 });
-      return;
-    }
-    const dirtyJobs = await db.jobs.where({ userId }).filter(j => j.isDirty).count();
-    set({ pendingSyncCount: dirtyJobs });
-  },
-}));
+    refreshPendingCount: async () => {
+      const { userId } = get();
+      if (!userId) {
+        set({ pendingSyncCount: 0 });
+        return;
+      }
+      const dirtyJobs = await db.jobs.where({ userId }).filter(j => j.isDirty).count();
+      set({ pendingSyncCount: dirtyJobs });
+    },
+  };
+});

@@ -25,6 +25,7 @@ import type {
   WhatsAppStatus,
   AnalyticsData,
 } from "../types/api";
+import { downloadBlob } from "@certmate/shared-utils";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3000";
 
@@ -55,7 +56,7 @@ const IDEMPOTENT_METHODS = new Set(["GET", "HEAD", "OPTIONS", "PUT", "DELETE"]);
  * - Retries on: 5xx errors, network errors, timeouts
  * - Never retries: 4xx errors (client errors)
  * - Never retries: non-idempotent methods (POST)
- * - Delays: 1s → 2s → 4s (exponential backoff)
+ * - Delays: 1s, 2s, 4s (exponential backoff)
  */
 async function fetchWithRetry(
   url: string,
@@ -104,6 +105,34 @@ async function handleResponse<T>(response: Response): Promise<T> {
   return response.json();
 }
 
+/**
+ * Centralized auth wrapper. Injects Authorization header automatically.
+ * Uses fetchWithRetry for idempotent methods, plain fetch otherwise.
+ */
+function fetchWithAuth(
+  url: string,
+  options: RequestInit & { retry?: boolean } = {}
+): Promise<Response> {
+  const token = getToken();
+  const { retry = true, headers: extraHeaders, ...rest } = options;
+  const headers: Record<string, string> = { ...extraHeaders as Record<string, string> };
+  if (token) {
+    headers["Authorization"] = `Bearer ${token}`;
+  }
+  const fetchFn = retry ? fetchWithRetry : fetch;
+  return fetchFn(url, { ...rest, headers });
+}
+
+/** Auth fetch + JSON body shorthand */
+function fetchJsonWithAuth(
+  url: string,
+  options: RequestInit & { retry?: boolean } = {}
+): Promise<Response> {
+  const headers = (options.headers || {}) as Record<string, string>;
+  headers["Content-Type"] = "application/json";
+  return fetchWithAuth(url, { ...options, headers });
+}
+
 export const api = {
   baseUrl: API_BASE_URL,
 
@@ -130,74 +159,49 @@ export const api = {
   },
 
   async logout(): Promise<void> {
-    const token = getToken();
-    await fetch(`${API_BASE_URL}/api/auth/logout`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${token}`,
-      },
-    });
+    await fetchJsonWithAuth(`${API_BASE_URL}/api/auth/logout`, { method: "POST", retry: false });
   },
 
   async getMe(): Promise<User> {
-    const token = getToken();
-    const response = await fetch(`${API_BASE_URL}/api/auth/me`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
+    const response = await fetchWithAuth(`${API_BASE_URL}/api/auth/me`, { retry: false });
     return handleResponse(response);
   },
 
   async getJobs(userId: string): Promise<Job[]> {
-    const token = getToken();
-    const response = await fetchWithRetry(`${API_BASE_URL}/api/jobs/${userId}`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
+    const response = await fetchWithAuth(`${API_BASE_URL}/api/jobs/${userId}`);
     return handleResponse(response);
   },
 
   async getJob(userId: string, jobId: string): Promise<JobDetail> {
-    const token = getToken();
-    const response = await fetchWithRetry(`${API_BASE_URL}/api/job/${userId}/${jobId}`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
+    const response = await fetchWithAuth(`${API_BASE_URL}/api/job/${userId}/${jobId}`);
     return handleResponse(response);
   },
 
   async saveJob(userId: string, jobId: string, data: SaveJobData): Promise<{ success: boolean }> {
-    const token = getToken();
-    const response = await fetchWithRetry(`${API_BASE_URL}/api/job/${userId}/${jobId}`, {
+    const response = await fetchJsonWithAuth(`${API_BASE_URL}/api/job/${userId}/${jobId}`, {
       method: "PUT",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${token}`,
-      },
       body: JSON.stringify(data),
     });
     return handleResponse(response);
   },
 
   async uploadAndProcess(files: File[], certificateType: string = "EICR"): Promise<{ success: boolean; jobId: string; message: string }> {
-    const token = getToken();
     const formData = new FormData();
     formData.append("certificateType", certificateType);
     files.forEach((file) => formData.append("files", file));
 
-    // Note: uploadAndProcess doesn't use fetchWithRetry because it's a long-running
-    // operation that shouldn't be retried automatically
-    const response = await fetch(`${API_BASE_URL}/api/upload`, {
+    // Don't use retry - long-running upload shouldn't be auto-retried
+    const response = await fetchWithAuth(`${API_BASE_URL}/api/upload`, {
       method: "POST",
-      headers: { Authorization: `Bearer ${token}` },
       body: formData,
+      retry: false,
     });
     return handleResponse(response);
   },
 
   async generatePdf(userId: string, jobId: string): Promise<Blob> {
-    const token = getToken();
-    const response = await fetchWithRetry(`${API_BASE_URL}/api/job/${userId}/${jobId}/generate-pdf`, {
+    const response = await fetchWithAuth(`${API_BASE_URL}/api/job/${userId}/${jobId}/generate-pdf`, {
       method: "POST",
-      headers: { Authorization: `Bearer ${token}` },
     });
 
     if (!response.ok) {
@@ -210,42 +214,26 @@ export const api = {
 
   // Settings endpoints
   async getUserDefaults(userId: string): Promise<UserDefaults> {
-    const token = getToken();
-    const response = await fetchWithRetry(`${API_BASE_URL}/api/settings/${userId}/defaults`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
+    const response = await fetchWithAuth(`${API_BASE_URL}/api/settings/${userId}/defaults`);
     return handleResponse(response);
   },
 
   async saveUserDefaults(userId: string, defaults: UserDefaults): Promise<{ success: boolean }> {
-    const token = getToken();
-    const response = await fetchWithRetry(`${API_BASE_URL}/api/settings/${userId}/defaults`, {
+    const response = await fetchJsonWithAuth(`${API_BASE_URL}/api/settings/${userId}/defaults`, {
       method: "PUT",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${token}`,
-      },
       body: JSON.stringify(defaults),
     });
     return handleResponse(response);
   },
 
   async getCompanySettings(userId: string): Promise<CompanySettings> {
-    const token = getToken();
-    const response = await fetchWithRetry(`${API_BASE_URL}/api/settings/${userId}/company`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
+    const response = await fetchWithAuth(`${API_BASE_URL}/api/settings/${userId}/company`);
     return handleResponse(response);
   },
 
   async saveCompanySettings(userId: string, settings: CompanySettings): Promise<{ success: boolean }> {
-    const token = getToken();
-    const response = await fetchWithRetry(`${API_BASE_URL}/api/settings/${userId}/company`, {
+    const response = await fetchJsonWithAuth(`${API_BASE_URL}/api/settings/${userId}/company`, {
       method: "PUT",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${token}`,
-      },
       body: JSON.stringify(settings),
     });
     return handleResponse(response);
@@ -257,102 +245,87 @@ export const api = {
   },
 
   async getInspectorProfiles(userId: string): Promise<InspectorProfile[]> {
-    const token = getToken();
-    const response = await fetchWithRetry(`${API_BASE_URL}/api/inspector-profiles/${userId}`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
+    const response = await fetchWithAuth(`${API_BASE_URL}/api/inspector-profiles/${userId}`);
     return handleResponse(response);
   },
 
   async saveInspectorProfiles(userId: string, profiles: InspectorProfile[]): Promise<{ success: boolean }> {
-    const token = getToken();
-    const response = await fetchWithRetry(`${API_BASE_URL}/api/inspector-profiles/${userId}`, {
+    const response = await fetchJsonWithAuth(`${API_BASE_URL}/api/inspector-profiles/${userId}`, {
       method: "PUT",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${token}`,
-      },
       body: JSON.stringify(profiles),
     });
     return handleResponse(response);
   },
 
   async uploadSignature(userId: string, file: File): Promise<{ success: boolean; signature_file: string }> {
-    const token = getToken();
     const formData = new FormData();
     formData.append("signature", file);
 
-    const response = await fetch(`${API_BASE_URL}/api/inspector-profiles/${userId}/upload-signature`, {
+    const response = await fetchWithAuth(`${API_BASE_URL}/api/inspector-profiles/${userId}/upload-signature`, {
       method: "POST",
-      headers: { Authorization: `Bearer ${token}` },
       body: formData,
+      retry: false,
     });
     return handleResponse(response);
   },
 
   async createBlankJob(userId: string, certificateType: string): Promise<{ success: boolean; jobId: string }> {
-    const token = getToken();
-    const response = await fetchWithRetry(`${API_BASE_URL}/api/jobs/${userId}`, {
+    const response = await fetchJsonWithAuth(`${API_BASE_URL}/api/jobs/${userId}`, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${token}`,
-      },
       body: JSON.stringify({ certificate_type: certificateType }),
     });
     return handleResponse(response);
   },
 
   async deleteJob(userId: string, jobId: string): Promise<{ success: boolean }> {
-    const token = getToken();
-    const response = await fetch(`${API_BASE_URL}/api/job/${userId}/${jobId}`, {
+    const response = await fetchWithAuth(`${API_BASE_URL}/api/job/${userId}/${jobId}`, {
       method: "DELETE",
-      headers: { Authorization: `Bearer ${token}` },
+      retry: false,
     });
     return handleResponse(response);
   },
 
   // Photo endpoints for job photos
   async getJobPhotos(userId: string, jobId: string): Promise<JobPhoto[]> {
-    const token = getToken();
-    const response = await fetchWithRetry(`${API_BASE_URL}/api/job/${userId}/${jobId}/photos`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
+    const response = await fetchWithAuth(`${API_BASE_URL}/api/job/${userId}/${jobId}/photos`);
     return handleResponse(response);
   },
 
   async uploadJobPhoto(userId: string, jobId: string, file: File): Promise<{ success: boolean; photo: JobPhoto }> {
-    const token = getToken();
     const formData = new FormData();
     formData.append("photo", file);
 
-    const response = await fetch(`${API_BASE_URL}/api/job/${userId}/${jobId}/photos`, {
+    const response = await fetchWithAuth(`${API_BASE_URL}/api/job/${userId}/${jobId}/photos`, {
       method: "POST",
-      headers: { Authorization: `Bearer ${token}` },
       body: formData,
+      retry: false,
     });
     return handleResponse(response);
   },
 
+  async getPhotoBlob(userId: string, jobId: string, filename: string): Promise<Blob> {
+    const response = await fetchWithAuth(
+      `${API_BASE_URL}/api/job/${userId}/${jobId}/photos/${encodeURIComponent(filename)}`
+    );
+    if (!response.ok) {
+      throw new ApiError(response.status, "Failed to load photo");
+    }
+    return response.blob();
+  },
+
+  // Deprecated: leaks token in URL. Use getPhotoBlob() instead.
   async getPhotoUrl(userId: string, jobId: string, filename: string): Promise<string> {
-    // Return the direct URL for the photo
     const token = getToken();
     return `${API_BASE_URL}/api/job/${userId}/${jobId}/photos/${encodeURIComponent(filename)}?token=${token}`;
   },
 
   async getJobHistory(userId: string, jobId: string): Promise<JobVersion[]> {
-    const token = getToken();
-    const response = await fetchWithRetry(`${API_BASE_URL}/api/job/${userId}/${jobId}/history`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
+    const response = await fetchWithAuth(`${API_BASE_URL}/api/job/${userId}/${jobId}/history`);
     return handleResponse(response);
   },
 
   async getJobVersion(userId: string, jobId: string, versionId: string): Promise<JobVersionDetail> {
-    const token = getToken();
-    const response = await fetchWithRetry(`${API_BASE_URL}/api/job/${userId}/${jobId}/history/${versionId}`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
+    const response = await fetchWithAuth(`${API_BASE_URL}/api/job/${userId}/${jobId}/history/${versionId}`);
     return handleResponse(response);
   },
 
@@ -362,27 +335,18 @@ export const api = {
     newAddress: string,
     clearTestResults: boolean = false
   ): Promise<{ success: boolean; jobId: string; address: string }> {
-    const token = getToken();
-    const response = await fetchWithRetry(`${API_BASE_URL}/api/job/${userId}/${jobId}/clone`, {
+    const response = await fetchJsonWithAuth(`${API_BASE_URL}/api/job/${userId}/${jobId}/clone`, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${token}`,
-      },
       body: JSON.stringify({ newAddress, clearTestResults }),
     });
     return handleResponse(response);
   },
 
   async bulkDownload(userId: string, jobIds: string[]): Promise<void> {
-    const token = getToken();
-    const response = await fetch(`${API_BASE_URL}/api/jobs/${userId}/bulk-download`, {
+    const response = await fetchJsonWithAuth(`${API_BASE_URL}/api/jobs/${userId}/bulk-download`, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${token}`,
-      },
       body: JSON.stringify({ jobIds }),
+      retry: false,
     });
 
     if (!response.ok) {
@@ -390,26 +354,13 @@ export const api = {
       throw new ApiError(response.status, errorText);
     }
 
-    // Trigger browser download from the response blob
     const blob = await response.blob();
-    const url = window.URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    // Extract filename from Content-Disposition header if available
     const disposition = response.headers.get("Content-Disposition");
-    const filenameMatch = disposition?.match(/filename="?([^"]+)"?/);
-    a.download = filenameMatch?.[1] || `certificates_${new Date().toISOString().split("T")[0]}.zip`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    window.URL.revokeObjectURL(url);
+    downloadBlob(blob, `certificates_${new Date().toISOString().split("T")[0]}.zip`, disposition);
   },
 
   async exportCSV(userId: string, jobId: string): Promise<void> {
-    const token = getToken();
-    const response = await fetchWithRetry(`${API_BASE_URL}/api/job/${userId}/${jobId}/export/csv`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
+    const response = await fetchWithAuth(`${API_BASE_URL}/api/job/${userId}/${jobId}/export/csv`);
 
     if (!response.ok) {
       const errorText = await response.text().catch(() => "Unknown error");
@@ -417,23 +368,12 @@ export const api = {
     }
 
     const blob = await response.blob();
-    const url = window.URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
     const disposition = response.headers.get("Content-Disposition");
-    const filenameMatch = disposition?.match(/filename="?([^"]+)"?/);
-    a.download = filenameMatch?.[1] || `circuits_${jobId}.csv`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    window.URL.revokeObjectURL(url);
+    downloadBlob(blob, `circuits_${jobId}.csv`, disposition);
   },
 
   async exportExcel(userId: string, jobId: string): Promise<void> {
-    const token = getToken();
-    const response = await fetchWithRetry(`${API_BASE_URL}/api/job/${userId}/${jobId}/export/excel`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
+    const response = await fetchWithAuth(`${API_BASE_URL}/api/job/${userId}/${jobId}/export/excel`);
 
     if (!response.ok) {
       const errorText = await response.text().catch(() => "Unknown error");
@@ -441,89 +381,56 @@ export const api = {
     }
 
     const blob = await response.blob();
-    const url = window.URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
     const disposition = response.headers.get("Content-Disposition");
-    const filenameMatch = disposition?.match(/filename="?([^"]+)"?/);
-    a.download = filenameMatch?.[1] || `EICR_${jobId}.xlsx`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    window.URL.revokeObjectURL(url);
+    downloadBlob(blob, `EICR_${jobId}.xlsx`, disposition);
   },
 
   async sendEmail(userId: string, jobId: string, to: string, clientName?: string): Promise<{ ok: boolean }> {
-    const token = getToken();
-    const response = await fetchWithRetry(`${API_BASE_URL}/api/job/${userId}/${jobId}/email`, {
+    const response = await fetchJsonWithAuth(`${API_BASE_URL}/api/job/${userId}/${jobId}/email`, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${token}`,
-      },
       body: JSON.stringify({ to, clientName }),
     });
     return handleResponse(response);
   },
 
   async searchRegulations(query: string): Promise<Regulation[]> {
-    const token = getToken();
     const params = query ? `?q=${encodeURIComponent(query)}` : "";
-    const response = await fetchWithRetry(`${API_BASE_URL}/api/regulations${params}`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
+    const response = await fetchWithAuth(`${API_BASE_URL}/api/regulations${params}`);
     return handleResponse(response);
   },
 
   // ============= CRM: Clients =============
 
   async getClients(userId: string): Promise<Client[]> {
-    const token = getToken();
-    const response = await fetchWithRetry(`${API_BASE_URL}/api/clients/${userId}`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
+    const response = await fetchWithAuth(`${API_BASE_URL}/api/clients/${userId}`);
     return handleResponse(response);
   },
 
   async getClient(userId: string, clientId: string): Promise<ClientDetail> {
-    const token = getToken();
-    const response = await fetchWithRetry(`${API_BASE_URL}/api/clients/${userId}/${clientId}`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
+    const response = await fetchWithAuth(`${API_BASE_URL}/api/clients/${userId}/${clientId}`);
     return handleResponse(response);
   },
 
   async createClient(userId: string, data: CreateClientData): Promise<Client> {
-    const token = getToken();
-    const response = await fetchWithRetry(`${API_BASE_URL}/api/clients/${userId}`, {
+    const response = await fetchJsonWithAuth(`${API_BASE_URL}/api/clients/${userId}`, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${token}`,
-      },
       body: JSON.stringify(data),
     });
     return handleResponse(response);
   },
 
   async updateClient(userId: string, clientId: string, data: Partial<CreateClientData>): Promise<{ success: boolean }> {
-    const token = getToken();
-    const response = await fetchWithRetry(`${API_BASE_URL}/api/clients/${userId}/${clientId}`, {
+    const response = await fetchJsonWithAuth(`${API_BASE_URL}/api/clients/${userId}/${clientId}`, {
       method: "PUT",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${token}`,
-      },
       body: JSON.stringify(data),
     });
     return handleResponse(response);
   },
 
   async deleteClient(userId: string, clientId: string): Promise<{ success: boolean }> {
-    const token = getToken();
-    const response = await fetch(`${API_BASE_URL}/api/clients/${userId}/${clientId}`, {
+    const response = await fetchWithAuth(`${API_BASE_URL}/api/clients/${userId}/${clientId}`, {
       method: "DELETE",
-      headers: { Authorization: `Bearer ${token}` },
+      retry: false,
     });
     return handleResponse(response);
   },
@@ -531,46 +438,34 @@ export const api = {
   // ============= CRM: Properties =============
 
   async getProperties(userId: string): Promise<Property[]> {
-    const token = getToken();
-    const response = await fetchWithRetry(`${API_BASE_URL}/api/properties/${userId}`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
+    const response = await fetchWithAuth(`${API_BASE_URL}/api/properties/${userId}`);
     return handleResponse(response);
   },
 
   async createProperty(userId: string, data: CreatePropertyData): Promise<Property> {
-    const token = getToken();
-    const response = await fetchWithRetry(`${API_BASE_URL}/api/properties/${userId}`, {
+    const response = await fetchJsonWithAuth(`${API_BASE_URL}/api/properties/${userId}`, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${token}`,
-      },
       body: JSON.stringify(data),
     });
     return handleResponse(response);
   },
 
   async getPropertyHistory(userId: string, propertyId: string): Promise<PropertyJob[]> {
-    const token = getToken();
-    const response = await fetchWithRetry(`${API_BASE_URL}/api/properties/${userId}/${propertyId}/history`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
+    const response = await fetchWithAuth(`${API_BASE_URL}/api/properties/${userId}/${propertyId}/history`);
     return handleResponse(response);
   },
 
   // ============= OCR Certificate Extraction =============
 
   async ocrCertificate(file: File): Promise<OcrResult> {
-    const token = getToken();
     const formData = new FormData();
     formData.append("file", file);
 
-    // Don't use fetchWithRetry - OCR can take a while and shouldn't be auto-retried
-    const response = await fetch(`${API_BASE_URL}/api/ocr/certificate`, {
+    // Don't use retry - OCR can take a while and shouldn't be auto-retried
+    const response = await fetchWithAuth(`${API_BASE_URL}/api/ocr/certificate`, {
       method: "POST",
-      headers: { Authorization: `Bearer ${token}` },
       body: formData,
+      retry: false,
     });
     return handleResponse(response);
   },
@@ -579,13 +474,8 @@ export const api = {
     data: OcrExtractedData,
     certificateType: string = "EICR"
   ): Promise<{ success: boolean; jobId: string; address: string }> {
-    const token = getToken();
-    const response = await fetchWithRetry(`${API_BASE_URL}/api/ocr/create-job`, {
+    const response = await fetchJsonWithAuth(`${API_BASE_URL}/api/ocr/create-job`, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${token}`,
-      },
       body: JSON.stringify({ data, certificateType }),
     });
     return handleResponse(response);
@@ -594,34 +484,21 @@ export const api = {
   // ============= Billing =============
 
   async getBillingStatus(userId: string): Promise<BillingStatus> {
-    const token = getToken();
-    const response = await fetchWithRetry(`${API_BASE_URL}/api/billing/status`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
+    const response = await fetchWithAuth(`${API_BASE_URL}/api/billing/status`);
     return handleResponse(response);
   },
 
   async createCheckout(userId: string, priceId: string): Promise<{ url: string }> {
-    const token = getToken();
-    const response = await fetchWithRetry(`${API_BASE_URL}/api/billing/create-checkout`, {
+    const response = await fetchJsonWithAuth(`${API_BASE_URL}/api/billing/create-checkout`, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${token}`,
-      },
       body: JSON.stringify({ priceId }),
     });
     return handleResponse(response);
   },
 
   async openBillingPortal(userId: string): Promise<{ url: string }> {
-    const token = getToken();
-    const response = await fetchWithRetry(`${API_BASE_URL}/api/billing/portal`, {
+    const response = await fetchJsonWithAuth(`${API_BASE_URL}/api/billing/portal`, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${token}`,
-      },
     });
     return handleResponse(response);
   },
@@ -629,39 +506,25 @@ export const api = {
   // ============= Calendar / Scheduling =============
 
   async getCalendarAuthUrl(): Promise<{ url: string }> {
-    const token = getToken();
-    const response = await fetchWithRetry(`${API_BASE_URL}/api/calendar/auth-url`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
+    const response = await fetchWithAuth(`${API_BASE_URL}/api/calendar/auth-url`);
     return handleResponse(response);
   },
 
   async calendarCallback(code: string): Promise<{ success: boolean }> {
-    const token = getToken();
-    const response = await fetchWithRetry(`${API_BASE_URL}/api/calendar/callback`, {
+    const response = await fetchJsonWithAuth(`${API_BASE_URL}/api/calendar/callback`, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${token}`,
-      },
       body: JSON.stringify({ code }),
     });
     return handleResponse(response);
   },
 
   async getCalendarStatus(): Promise<CalendarStatus> {
-    const token = getToken();
-    const response = await fetchWithRetry(`${API_BASE_URL}/api/calendar/status`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
+    const response = await fetchWithAuth(`${API_BASE_URL}/api/calendar/status`);
     return handleResponse(response);
   },
 
   async getCalendarEvents(): Promise<{ events: CalendarEvent[] }> {
-    const token = getToken();
-    const response = await fetchWithRetry(`${API_BASE_URL}/api/calendar/events`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
+    const response = await fetchWithAuth(`${API_BASE_URL}/api/calendar/events`);
     return handleResponse(response);
   },
 
@@ -671,23 +534,17 @@ export const api = {
     start: string;
     description: string;
   }): Promise<{ success: boolean; jobId: string; address: string }> {
-    const token = getToken();
-    const response = await fetchWithRetry(`${API_BASE_URL}/api/calendar/create-job-from-event`, {
+    const response = await fetchJsonWithAuth(`${API_BASE_URL}/api/calendar/create-job-from-event`, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${token}`,
-      },
       body: JSON.stringify(event),
     });
     return handleResponse(response);
   },
 
   async disconnectCalendar(): Promise<{ success: boolean }> {
-    const token = getToken();
-    const response = await fetch(`${API_BASE_URL}/api/calendar/disconnect`, {
+    const response = await fetchWithAuth(`${API_BASE_URL}/api/calendar/disconnect`, {
       method: "DELETE",
-      headers: { Authorization: `Bearer ${token}` },
+      retry: false,
     });
     return handleResponse(response);
   },
@@ -695,46 +552,32 @@ export const api = {
   // ============= WhatsApp =============
 
   async sendWhatsApp(userId: string, jobId: string, phoneNumber: string): Promise<{ ok: boolean }> {
-    const token = getToken();
-    const response = await fetchWithRetry(`${API_BASE_URL}/api/job/${userId}/${jobId}/whatsapp`, {
+    const response = await fetchJsonWithAuth(`${API_BASE_URL}/api/job/${userId}/${jobId}/whatsapp`, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${token}`,
-      },
       body: JSON.stringify({ phoneNumber }),
     });
     return handleResponse(response);
   },
 
   async getWhatsAppStatus(): Promise<WhatsAppStatus> {
-    const token = getToken();
-    const response = await fetchWithRetry(`${API_BASE_URL}/api/whatsapp/status`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
+    const response = await fetchWithAuth(`${API_BASE_URL}/api/whatsapp/status`);
     return handleResponse(response);
   },
 
   // ============= Analytics =============
 
   async getAnalytics(userId: string): Promise<AnalyticsData> {
-    const token = getToken();
-    const response = await fetchWithRetry(`${API_BASE_URL}/api/analytics/${userId}`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
+    const response = await fetchWithAuth(`${API_BASE_URL}/api/analytics/${userId}`);
     return handleResponse(response);
   },
 
   async fetchKeys(): Promise<{ deepgram: string; anthropic?: string; elevenlabs?: string }> {
-    const token = getToken();
-    const response = await fetch(`${API_BASE_URL}/api/keys`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
+    const response = await fetchWithAuth(`${API_BASE_URL}/api/keys`, { retry: false });
     return handleResponse(response);
   },
 };
 
-// Types — re-exported from @/types for backward compatibility
+// Types -- re-exported from @/types for backward compatibility
 export type {
   Job,
   JobDetail,
