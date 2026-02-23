@@ -16,6 +16,8 @@ const router = Router();
 const ALLOWED_MODELS = new Set([
   "claude-sonnet-4-5-20241022",
   "claude-sonnet-4-5-latest",
+  "claude-sonnet-4-6",
+  "claude-sonnet-4-6-latest",
   "claude-haiku-4-5-20241022",
   "claude-haiku-4-5-latest",
   "claude-opus-4-6-latest",
@@ -183,6 +185,39 @@ router.post("/proxy/elevenlabs-tts", auth.requireAuth, async (req, res) => {
   } catch (error) {
     logger.error("ElevenLabs TTS proxy error", { error: error.message });
     res.status(500).json({ error: "ElevenLabs TTS proxy request failed" });
+  }
+});
+
+/**
+ * Get Deepgram streaming key for iOS WebSocket connections.
+ * POST /api/proxy/deepgram-streaming-key
+ *
+ * Returns ONLY the Deepgram API key. This is needed because the iOS app
+ * connects directly to Deepgram via WebSocket for real-time transcription,
+ * which cannot be proxied through the backend.
+ *
+ * This is more secure than the old GET /api/keys endpoint because:
+ * 1. Only the Deepgram key is returned (not Anthropic, ElevenLabs)
+ * 2. Requires authentication
+ * 3. Uses POST to prevent accidental caching/logging of the key in URLs
+ *
+ * TODO: Consider replacing with short-lived Deepgram project keys or
+ *       a backend-mediated WebSocket relay for even better security.
+ */
+router.post("/proxy/deepgram-streaming-key", auth.requireAuth, async (req, res) => {
+  try {
+    const deepgramKey = await getDeepgramKey();
+    if (!deepgramKey) {
+      return res.status(500).json({ error: "Deepgram API key not configured" });
+    }
+
+    const userId = req.user?.id || req.user?.userId || "unknown";
+    logger.info("Deepgram streaming key requested", { userId });
+
+    res.json({ key: deepgramKey });
+  } catch (error) {
+    logger.error("Deepgram streaming key error", { error: error.message });
+    res.status(500).json({ error: "Failed to retrieve Deepgram streaming key" });
   }
 });
 
