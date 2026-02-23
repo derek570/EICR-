@@ -1,0 +1,841 @@
+{
+  "version": "18th Edition Amendment 2",
+  "standard": "BS 7671:2018+A2:2022",
+  "description": "BS 7671 Regulation Reference Database for EICR/EIC Inspections",
+  "regulations": [
+    {
+      "ref": "132.16",
+      "section": "Section 1 - Scope, Object and Fundamental Principles",
+      "title": "Additions and alterations",
+      "description": "Every addition or alteration made to an existing installation shall comply with the regulations and shall not impair the safety of the existing installation.",
+      "common_observations": [
+        "Additions or alterations that do not comply with BS 7671",
+        "Alterations that have impaired the safety of the existing installation",
+        "Evidence of DIY or unqualified work"
+      ],
+      "recommended_action": "Review and rectify non-compliant additions or alterations to ensure compliance with BS 7671."
+    },
+    {
+      "ref": "311.1",
+      "section": "Section 3 - Assessment of General Characteristics",
+      "title": "Purpose, supplies and structure",
+      "description": "Assessment shall be made of the purpose of the installation, supply characteristics and structure of the installation.",
+      "common_observations": [
+        "Installation purpose not determined",
+        "Supply characteristics not assessed",
+        "Installation structure not documented"
+      ],
+      "recommended_action": "Carry out full assessment of the installation purpose, supply characteristics and installation structure."
+    },
+    {
+      "ref": "312.1",
+      "section": "Section 3 - Assessment of General Characteristics",
+      "title": "External influences",
+      "description": "External influences shall be assessed to determine requirements for the selection and erection of equipment.",
+      "common_observations": [
+        "External influences not assessed",
+        "Equipment not suitable for the environment",
+        "IP rating of equipment not appropriate for location"
+      ],
+      "recommended_action": "Assess external influences and ensure all equipment is suitable for its environment and has appropriate IP rating."
+    },
+    {
+      "ref": "313.1",
+      "section": "Section 3 - Assessment of General Characteristics",
+      "title": "Compatibility",
+      "description": "Assessment shall be made of any characteristics of equipment likely to have harmful effects on other equipment or the supply.",
+      "common_observations": [
+        "Harmonic producing equipment causing interference",
+        "Equipment not compatible with supply characteristics",
+        "Surge protection not provided where required"
+      ],
+      "recommended_action": "Assess compatibility of installed equipment and provide appropriate mitigation measures."
+    },
+    {
+      "ref": "314.1",
+      "section": "Section 3 - Assessment of General Characteristics",
+      "title": "Maintainability",
+      "description": "The frequency and quality of maintenance likely to be applied during the intended life of the installation shall be assessed.",
+      "common_observations": [
+        "Installation not maintainable",
+        "Access to equipment restricted or obstructed",
+        "Maintenance requirements not documented"
+      ],
+      "recommended_action": "Ensure all equipment is accessible for maintenance and inspection purposes."
+    },
+    {
+      "ref": "411.3.3",
+      "section": "Section 4 - Protection for Safety",
+      "title": "ADS - Protective earthing",
+      "description": "Exposed-conductive-parts shall be connected to a protective conductor under the rules of Section 543.",
+      "common_observations": [
+        "Missing earth connection to exposed-conductive-parts",
+        "Earth continuity not confirmed",
+        "Protective conductor disconnected or missing",
+        "Earthing conductor undersized"
+      ],
+      "recommended_action": "Ensure all exposed-conductive-parts are connected to a protective conductor of adequate size and continuity is confirmed."
+    },
+    {
+      "ref": "411.4.6",
+      "section": "Section 4 - Protection for Safety",
+      "title": "ADS - TN systems disconnection times",
+      "description": "In a TN system the maximum disconnection time for circuits not exceeding 32A shall be 0.4 seconds at 230V.",
+      "common_observations": [
+        "Disconnection time exceeds 0.4 seconds for final circuits up to 32A",
+        "Zs value exceeds maximum permitted for protective device",
+        "Earth fault loop impedance too high"
+      ],
+      "recommended_action": "Reduce earth fault loop impedance or install RCD protection to achieve disconnection within 0.4 seconds."
+    },
+    {
+      "ref": "411.4.7",
+      "section": "Section 4 - Protection for Safety",
+      "title": "ADS - TN systems distribution circuit disconnection",
+      "description": "Maximum disconnection time for distribution circuits in TN systems shall be 5 seconds.",
+      "common_observations": [
+        "Distribution circuit disconnection time exceeds 5 seconds",
+        "Zs at distribution board exceeds maximum value"
+      ],
+      "recommended_action": "Reduce earth fault loop impedance to ensure distribution circuit disconnection within 5 seconds."
+    },
+    {
+      "ref": "411.4.9",
+      "section": "Section 4 - Protection for Safety",
+      "title": "ADS - TT systems",
+      "description": "In TT systems, RCD protection is generally required as the sole means of fault protection. Maximum Zs depends on RCD rating.",
+      "common_observations": [
+        "TT system without RCD protection",
+        "RCD not suitable for the earth fault loop impedance",
+        "Earth electrode resistance too high",
+        "No periodic testing of earth electrode"
+      ],
+      "recommended_action": "Install appropriate RCD protection and verify earth electrode resistance is within acceptable limits for the RCD rating."
+    },
+    {
+      "ref": "411.5.2",
+      "section": "Section 4 - Protection for Safety",
+      "title": "Additional protection - RCDs",
+      "description": "Additional protection by RCDs with a rated residual operating current not exceeding 30 mA shall be provided for socket-outlets with rated current not exceeding 32A and mobile equipment with rated current not exceeding 32A for outdoor use.",
+      "common_observations": [
+        "Socket-outlets not protected by 30mA RCD",
+        "No RCD protection for socket-outlets rated up to 32A",
+        "Outdoor socket-outlets without additional protection",
+        "Mobile equipment circuits without RCD protection"
+      ],
+      "recommended_action": "Install 30mA RCD protection for all socket-outlet circuits rated up to 32A."
+    },
+    {
+      "ref": "411.6",
+      "section": "Section 4 - Protection for Safety",
+      "title": "Reduced low voltage (SELV and PELV)",
+      "description": "Protection by SELV or PELV requires the nominal voltage not to exceed 50V AC or 120V DC.",
+      "common_observations": [
+        "SELV/PELV system voltage exceeds limits",
+        "Separation between SELV and other circuits not maintained",
+        "SELV source not suitable"
+      ],
+      "recommended_action": "Verify SELV/PELV systems comply with voltage limits and separation requirements."
+    },
+    {
+      "ref": "412.1.1",
+      "section": "Section 4 - Protection for Safety",
+      "title": "Basic protection - Insulation of live parts",
+      "description": "Live parts shall be completely covered with insulation which can only be removed by destruction.",
+      "common_observations": [
+        "Damaged or deteriorated insulation on conductors",
+        "Live parts accessible due to damaged insulation",
+        "Cable sheathing damaged exposing cores",
+        "Insulation breakdown at terminations"
+      ],
+      "recommended_action": "Repair or replace damaged insulation to ensure all live parts are fully insulated."
+    },
+    {
+      "ref": "412.2.1",
+      "section": "Section 4 - Protection for Safety",
+      "title": "Basic protection - Barriers or enclosures",
+      "description": "Live parts shall be inside enclosures or behind barriers providing at least IP2X or IPXXB protection.",
+      "common_observations": [
+        "Live parts accessible without use of a tool",
+        "Missing blanking plates in consumer unit",
+        "Enclosure damaged allowing access to live parts",
+        "Barrier or enclosure not providing adequate IP rating"
+      ],
+      "recommended_action": "Ensure all live parts are behind barriers or within enclosures providing at least IP2X protection."
+    },
+    {
+      "ref": "416.2.2",
+      "section": "Section 4 - Protection for Safety",
+      "title": "Nominal voltage - ELV lighting",
+      "description": "For extra-low voltage lighting installations, transformers shall comply with relevant standards.",
+      "common_observations": [
+        "ELV lighting transformer not compliant",
+        "Incorrect class of transformer used",
+        "ELV lighting not properly isolated"
+      ],
+      "recommended_action": "Replace non-compliant transformers with those meeting the appropriate standard."
+    },
+    {
+      "ref": "421.1.201",
+      "section": "Section 4 - Protection for Safety",
+      "title": "Protection against fire - Consumer unit enclosures",
+      "description": "In domestic premises, consumer units and similar switchgear assemblies shall comply with BS EN 61439-3 and shall be enclosed in a non-combustible enclosure or cabinet.",
+      "common_observations": [
+        "Consumer unit enclosure is not non-combustible material",
+        "Plastic consumer unit not enclosed in non-combustible cabinet",
+        "Consumer unit does not comply with BS EN 61439-3",
+        "Non-metallic consumer unit in domestic premises"
+      ],
+      "recommended_action": "Replace consumer unit with one having a non-combustible enclosure or enclose existing unit in a non-combustible cabinet complying with BS EN 61439-3."
+    },
+    {
+      "ref": "421.1.7",
+      "section": "Section 4 - Protection for Safety",
+      "title": "Protection against fire - Arc fault detection",
+      "description": "Where the risk of fire is increased due to the nature of processed or stored materials, arc fault detection devices (AFDDs) shall be provided.",
+      "common_observations": [
+        "AFDD not installed where required by risk assessment",
+        "AFDD fitted but not functional"
+      ],
+      "recommended_action": "Install AFDD protection where the fire risk assessment indicates it is required."
+    },
+    {
+      "ref": "421.3",
+      "section": "Section 4 - Protection for Safety",
+      "title": "Protection against fire - Sealing of wiring system penetrations",
+      "description": "Where wiring systems pass through elements of building construction having specified fire resistance, the openings remaining shall be sealed to the degree of fire resistance of the element.",
+      "common_observations": [
+        "Fire barriers not sealed where cables penetrate fire-rated walls",
+        "Holes in fire-rated construction not properly sealed",
+        "Missing fire stopping around cable penetrations"
+      ],
+      "recommended_action": "Seal all cable penetrations through fire-rated elements to restore fire resistance rating."
+    },
+    {
+      "ref": "422.2.1",
+      "section": "Section 4 - Protection for Safety",
+      "title": "Protection against fire caused by electrical equipment",
+      "description": "Fixed equipment producing arcs, sparks or hot particles shall be enclosed in arc-resistant material or screened from building elements.",
+      "common_observations": [
+        "Equipment likely to produce sparks not suitably enclosed",
+        "Combustible materials stored near switchgear",
+        "Inadequate clearance from combustible materials"
+      ],
+      "recommended_action": "Ensure adequate clearance from combustible materials and that equipment is suitably enclosed."
+    },
+    {
+      "ref": "433.1",
+      "section": "Section 4 - Protection for Safety",
+      "title": "Overload protection",
+      "description": "The operating characteristics of a device for protection against overload shall satisfy the conditions of Regulation 433.1.1.",
+      "common_observations": [
+        "Overload protective device rating exceeds cable current-carrying capacity",
+        "Cable undersized for protective device rating",
+        "Overload protection not provided"
+      ],
+      "recommended_action": "Ensure protective device rating does not exceed the current-carrying capacity of the cable it protects."
+    },
+    {
+      "ref": "434.5.1",
+      "section": "Section 4 - Protection for Safety",
+      "title": "Fault current protection",
+      "description": "A device for protection against fault current shall have a breaking capacity not less than the prospective fault current at the point of installation.",
+      "common_observations": [
+        "Protective device breaking capacity inadequate for prospective fault current",
+        "Prospective fault current not determined",
+        "Breaking capacity of devices not verified"
+      ],
+      "recommended_action": "Verify prospective fault current and ensure all protective devices have adequate breaking capacity."
+    },
+    {
+      "ref": "443.4",
+      "section": "Section 4 - Protection for Safety",
+      "title": "Surge protection devices",
+      "description": "Where required by the risk assessment, surge protective devices (SPDs) shall be provided.",
+      "common_observations": [
+        "SPD not installed where required by risk assessment",
+        "SPD not suitable for the installation",
+        "No surge protection assessment carried out"
+      ],
+      "recommended_action": "Carry out surge protection risk assessment and install SPDs where required."
+    },
+    {
+      "ref": "511.1",
+      "section": "Section 5 - Selection and Erection of Equipment",
+      "title": "Compliance with standards",
+      "description": "Every item of equipment shall comply with the relevant British Standard or equivalent.",
+      "common_observations": [
+        "Equipment not compliant with relevant standards",
+        "Non-standard equipment installed",
+        "Equipment markings missing or illegible"
+      ],
+      "recommended_action": "Replace non-compliant equipment with items meeting the relevant British or European Standard."
+    },
+    {
+      "ref": "514.8.1",
+      "section": "Section 5 - Selection and Erection of Equipment",
+      "title": "Warning notices - Earthing and bonding",
+      "description": "A permanent label with the words 'Safety Electrical Connection - Do Not Remove' shall be permanently fixed in a visible position at or near the main earthing terminal and bonding connections.",
+      "common_observations": [
+        "Warning label missing at main earthing terminal",
+        "Safety electrical connection label missing from bonding connections",
+        "Labels deteriorated or illegible",
+        "Main bonding connections not labelled"
+      ],
+      "recommended_action": "Affix permanent warning labels stating 'Safety Electrical Connection - Do Not Remove' at main earthing terminal and all bonding connections."
+    },
+    {
+      "ref": "514.9.1",
+      "section": "Section 5 - Selection and Erection of Equipment",
+      "title": "Circuit identification and labelling",
+      "description": "Every fuse, circuit-breaker and switch shall be arranged and identified so that the circuit protected or controlled can be easily recognised.",
+      "common_observations": [
+        "Circuit chart missing or not up to date",
+        "Circuits not identified at consumer unit",
+        "Circuit labelling illegible or inaccurate",
+        "No schedule of circuits displayed"
+      ],
+      "recommended_action": "Provide an accurate and up-to-date circuit chart/schedule at the consumer unit identifying all circuits."
+    },
+    {
+      "ref": "514.11.1",
+      "section": "Section 5 - Selection and Erection of Equipment",
+      "title": "Warning notice - Dual supplies",
+      "description": "Where an installation includes alternative or additional sources of supply, a warning notice shall be provided.",
+      "common_observations": [
+        "No warning notice for dual supply",
+        "Solar PV installation without appropriate warning labels",
+        "Battery storage system not labelled"
+      ],
+      "recommended_action": "Provide warning notices indicating the presence of alternative or additional supply sources."
+    },
+    {
+      "ref": "514.12.1",
+      "section": "Section 5 - Selection and Erection of Equipment",
+      "title": "Warning notice - Non-standard colours",
+      "description": "Where an installation includes wiring using non-harmonised cable colours, a warning notice shall be provided.",
+      "common_observations": [
+        "Non-harmonised cable colours present without warning notice",
+        "Mixed old and new cable colours without notice",
+        "Warning notice for non-standard colours missing at consumer unit"
+      ],
+      "recommended_action": "Provide a warning notice at the consumer unit indicating the presence of non-harmonised (old) cable colours."
+    },
+    {
+      "ref": "514.14.1",
+      "section": "Section 5 - Selection and Erection of Equipment",
+      "title": "Warning notice - Periodic inspection label",
+      "description": "A notice of the date of the next recommended periodic inspection shall be provided at or near the consumer unit.",
+      "common_observations": [
+        "No periodic inspection notice displayed",
+        "Periodic inspection date label missing or out of date",
+        "Next inspection date not documented"
+      ],
+      "recommended_action": "Provide a notice at or near the consumer unit showing the date of the next recommended periodic inspection."
+    },
+    {
+      "ref": "514.15.1",
+      "section": "Section 5 - Selection and Erection of Equipment",
+      "title": "Warning notice - RCD quarterly test",
+      "description": "Where an RCD is provided, a notice shall be fixed in a prominent position stating that the RCD should be tested quarterly.",
+      "common_observations": [
+        "RCD quarterly test notice missing",
+        "No instruction label for RCD testing",
+        "RCD test button notice not displayed"
+      ],
+      "recommended_action": "Provide a notice in a prominent position advising that the RCD should be tested quarterly using the test button."
+    },
+    {
+      "ref": "521.5",
+      "section": "Section 5 - Selection and Erection of Equipment",
+      "title": "Electromechanical stresses",
+      "description": "Conductors and their connections shall be capable of withstanding without damage the electromechanical forces of any current including fault current.",
+      "common_observations": [
+        "Conductor connections showing signs of overheating",
+        "Loose terminations at switchgear",
+        "Evidence of arcing at connections"
+      ],
+      "recommended_action": "Check and re-tighten all terminations. Replace any damaged conductors or connections."
+    },
+    {
+      "ref": "521.10.202",
+      "section": "Section 5 - Selection and Erection of Equipment",
+      "title": "Cables concealed in walls - Protection zones",
+      "description": "Where cables are concealed in walls at a depth of less than 50mm, they shall be installed within prescribed zones or protected against mechanical damage.",
+      "common_observations": [
+        "Cables not in prescribed zones and without RCD protection",
+        "Concealed cables not protected by 30mA RCD",
+        "Cables not run in safe zones"
+      ],
+      "recommended_action": "Provide RCD protection for circuits with cables concealed in walls not in prescribed zones or at a depth of less than 50mm."
+    },
+    {
+      "ref": "521.11.201",
+      "section": "Section 5 - Selection and Erection of Equipment",
+      "title": "Cables through structural elements",
+      "description": "Where cables pass through or are installed in close proximity to thermal insulation, the cable current-carrying capacity shall be derated.",
+      "common_observations": [
+        "Cables surrounded by thermal insulation without derating",
+        "Cable current-carrying capacity not derated for insulation",
+        "Cables in contact with thermal insulation",
+        "Downlights insulation covering not provided"
+      ],
+      "recommended_action": "Derate cable current-carrying capacity or provide suitable separation from thermal insulation. Apply appropriate correction factors."
+    },
+    {
+      "ref": "522.6.6",
+      "section": "Section 5 - Selection and Erection of Equipment",
+      "title": "Protection against heat",
+      "description": "Cables shall be suitable for the highest and lowest temperatures they are likely to encounter during use.",
+      "common_observations": [
+        "Cable rating not suitable for ambient temperature",
+        "Cable exposed to excessive heat sources",
+        "Thermoplastic cable in contact with hot surfaces"
+      ],
+      "recommended_action": "Ensure cables are rated for the ambient temperature conditions and adequately separated from heat sources."
+    },
+    {
+      "ref": "522.8.1",
+      "section": "Section 5 - Selection and Erection of Equipment",
+      "title": "Protection against mechanical damage",
+      "description": "Cables shall be adequately protected against mechanical damage where they may be exposed to such damage.",
+      "common_observations": [
+        "Cables vulnerable to mechanical damage",
+        "No mechanical protection where cables are exposed",
+        "Surface-mounted cables in areas accessible to damage",
+        "Cable damaged or deteriorated"
+      ],
+      "recommended_action": "Provide adequate mechanical protection for cables or relocate cables to avoid areas where damage is likely."
+    },
+    {
+      "ref": "523.1",
+      "section": "Section 5 - Selection and Erection of Equipment",
+      "title": "Current-carrying capacity",
+      "description": "The current-carrying capacity of a conductor shall not be less than the maximum sustained current which it will carry in normal service.",
+      "common_observations": [
+        "Cable undersized for the load it carries",
+        "Current-carrying capacity exceeded",
+        "Cable derating factors not applied"
+      ],
+      "recommended_action": "Replace undersized cables or reduce the load to within the cable current-carrying capacity."
+    },
+    {
+      "ref": "524.1",
+      "section": "Section 5 - Selection and Erection of Equipment",
+      "title": "Cross-sectional area of conductors",
+      "description": "The cross-sectional area of every conductor shall be adequate for normal load current, voltage drop limits and thermal constraints.",
+      "common_observations": [
+        "Voltage drop exceeds permitted limits",
+        "Conductor CSA not adequate for circuit length",
+        "Excessive voltage drop causing equipment malfunction"
+      ],
+      "recommended_action": "Increase conductor size or reduce circuit length to bring voltage drop within permitted limits."
+    },
+    {
+      "ref": "526.1",
+      "section": "Section 5 - Selection and Erection of Equipment",
+      "title": "Electrical connections",
+      "description": "Every connection between conductors and between conductors and equipment shall provide durable electrical continuity and adequate mechanical strength.",
+      "common_observations": [
+        "Poor connections showing signs of overheating",
+        "Loose terminations",
+        "Connections not properly made or secured",
+        "Evidence of scorching at connections"
+      ],
+      "recommended_action": "Inspect, clean and re-tighten all connections. Replace any damaged termination equipment."
+    },
+    {
+      "ref": "526.3",
+      "section": "Section 5 - Selection and Erection of Equipment",
+      "title": "Accessible connections",
+      "description": "Every connection shall be accessible for inspection, testing and maintenance except for certain specified joints.",
+      "common_observations": [
+        "Junction boxes buried or inaccessible",
+        "Connections not accessible for inspection",
+        "Joints concealed without maintenance access"
+      ],
+      "recommended_action": "Provide access to all concealed connections or replace with maintenance-free joints where permitted."
+    },
+    {
+      "ref": "531.3.2",
+      "section": "Section 5 - Selection and Erection of Equipment",
+      "title": "Selection of RCDs - Type",
+      "description": "RCDs shall be selected to ensure correct operation with the type of residual current that may occur.",
+      "common_observations": [
+        "Type AC RCD used where Type A is required",
+        "Incorrect RCD type for the connected load",
+        "Equipment producing DC fault current without Type B RCD"
+      ],
+      "recommended_action": "Install the correct type of RCD (Type A or Type B) appropriate for the connected equipment."
+    },
+    {
+      "ref": "531.3.3",
+      "section": "Section 5 - Selection and Erection of Equipment",
+      "title": "RCD - Unwanted tripping",
+      "description": "Measures shall be taken to minimise the risk of unwanted tripping of RCDs due to excessive protective conductor currents.",
+      "common_observations": [
+        "Frequent nuisance tripping of RCD",
+        "Too many circuits on a single RCD",
+        "Standing earth leakage current excessive"
+      ],
+      "recommended_action": "Redistribute circuits across multiple RCDs or install RCBOs to reduce nuisance tripping."
+    },
+    {
+      "ref": "537.1.4",
+      "section": "Section 5 - Selection and Erection of Equipment",
+      "title": "Isolation - Means of isolation",
+      "description": "Every installation shall have a means of isolation from every source of electrical energy.",
+      "common_observations": [
+        "No suitable means of isolation provided",
+        "Main switch not suitable for isolation",
+        "Unable to isolate entire installation",
+        "Isolator not accessible"
+      ],
+      "recommended_action": "Provide suitable means of isolation for every source of supply and ensure accessibility."
+    },
+    {
+      "ref": "537.2.2",
+      "section": "Section 5 - Selection and Erection of Equipment",
+      "title": "Switching for mechanical maintenance",
+      "description": "Suitable means of switching shall be provided for equipment requiring maintenance involving a risk of physical injury.",
+      "common_observations": [
+        "No local isolator for mechanical equipment",
+        "Isolator not adjacent to equipment",
+        "Unable to lock off supply to equipment"
+      ],
+      "recommended_action": "Provide a local means of isolation adjacent to equipment requiring mechanical maintenance."
+    },
+    {
+      "ref": "542.1.2",
+      "section": "Section 5 - Selection and Erection of Equipment",
+      "title": "Earthing arrangements",
+      "description": "The earthing arrangement shall be verified as suitable for the type of system earthing.",
+      "common_observations": [
+        "Earthing arrangement not suitable or not verified",
+        "Earth electrode resistance too high for TT system",
+        "Main earthing terminal not provided"
+      ],
+      "recommended_action": "Verify and rectify earthing arrangements to ensure suitability for the system type."
+    },
+    {
+      "ref": "543.1.1",
+      "section": "Section 5 - Selection and Erection of Equipment",
+      "title": "Protective conductors - Cross-sectional area",
+      "description": "The cross-sectional area of protective conductors shall comply with Table 54.7 or be calculated.",
+      "common_observations": [
+        "Protective conductor undersized",
+        "CPC cross-sectional area inadequate",
+        "Earth conductor does not meet Table 54.7 requirements"
+      ],
+      "recommended_action": "Replace undersized protective conductors with conductors of adequate cross-sectional area per Table 54.7."
+    },
+    {
+      "ref": "544.1.1",
+      "section": "Section 5 - Selection and Erection of Equipment",
+      "title": "Main earthing terminal",
+      "description": "The main earthing terminal shall be provided for the connection of protective conductors, bonding conductors and the earthing conductor.",
+      "common_observations": [
+        "Main earthing terminal not provided",
+        "Main earth bar corroded or damaged",
+        "Insufficient capacity at main earthing terminal"
+      ],
+      "recommended_action": "Provide a suitable main earthing terminal with adequate capacity for all connections."
+    },
+    {
+      "ref": "544.2.1",
+      "section": "Section 5 - Selection and Erection of Equipment",
+      "title": "Earthing conductor",
+      "description": "The earthing conductor shall have a cross-sectional area not less than specified in Table 54.8.",
+      "common_observations": [
+        "Earthing conductor undersized",
+        "Earthing conductor not protected against corrosion",
+        "Earthing conductor not adequately connected"
+      ],
+      "recommended_action": "Replace earthing conductor with one of adequate size per Table 54.8 and ensure proper connection and protection."
+    },
+    {
+      "ref": "544.3.1",
+      "section": "Section 5 - Selection and Erection of Equipment",
+      "title": "Main protective bonding conductors",
+      "description": "Main protective bonding conductors shall connect to the main earthing terminal all extraneous-conductive-parts including water, gas and other metallic services.",
+      "common_observations": [
+        "Main bonding not connected to all extraneous-conductive-parts",
+        "Main bonding to water service missing",
+        "Main bonding to gas service missing",
+        "Main bonding conductor undersized",
+        "Bonding connection corroded or loose",
+        "Main bonding connected incorrectly (wrong side of meter)"
+      ],
+      "recommended_action": "Provide main protective bonding conductors to all extraneous-conductive-parts (water, gas, oil, structural steelwork) with adequate cross-sectional area."
+    },
+    {
+      "ref": "544.3.2",
+      "section": "Section 5 - Selection and Erection of Equipment",
+      "title": "Main bonding conductor size",
+      "description": "The cross-sectional area of main bonding conductors shall be not less than half the required cross-sectional area of the earthing conductor, subject to a minimum of 6mm2 Cu.",
+      "common_observations": [
+        "Main bonding conductors undersized (less than 10mm2 for TN-C-S)",
+        "Main bonding less than 6mm2",
+        "Bonding conductors do not meet minimum size requirements"
+      ],
+      "recommended_action": "Replace undersized main bonding conductors with 10mm2 copper minimum for TN-C-S supplies or 6mm2 for TN-S."
+    },
+    {
+      "ref": "415.2",
+      "section": "Section 4 - Protection for Safety",
+      "title": "Supplementary equipotential bonding",
+      "description": "Where the disconnection time cannot be achieved, supplementary equipotential bonding shall be provided.",
+      "common_observations": [
+        "Supplementary bonding missing in bathroom",
+        "Supplementary bonding not connected to all extraneous-conductive-parts in bathroom",
+        "Supplementary bonding undersized"
+      ],
+      "recommended_action": "Provide supplementary equipotential bonding connecting all extraneous-conductive-parts and exposed-conductive-parts within the location."
+    },
+    {
+      "ref": "612.2.1",
+      "section": "Section 6 - Inspection and Testing",
+      "title": "Continuity of protective conductors",
+      "description": "A continuity test shall be carried out on every protective conductor including main and supplementary bonding conductors.",
+      "common_observations": [
+        "Continuity of protective conductor not confirmed",
+        "High resistance on earth continuity test",
+        "Protective conductor continuity test failed"
+      ],
+      "recommended_action": "Investigate and rectify any failure or high resistance in protective conductor continuity."
+    },
+    {
+      "ref": "612.3",
+      "section": "Section 6 - Inspection and Testing",
+      "title": "Ring final circuit continuity",
+      "description": "A ring final circuit test shall verify that each conductor is continuous throughout the ring.",
+      "common_observations": [
+        "Ring final circuit found broken (operating as radial)",
+        "Ring continuity readings not balanced",
+        "Multiple spurs creating imbalanced ring"
+      ],
+      "recommended_action": "Investigate and repair broken ring final circuits to restore ring continuity."
+    },
+    {
+      "ref": "612.4",
+      "section": "Section 6 - Inspection and Testing",
+      "title": "Insulation resistance",
+      "description": "Insulation resistance between live conductors and earth shall be not less than the values stated in Table 61.",
+      "common_observations": [
+        "Insulation resistance below 1 megohm",
+        "Low insulation resistance indicating deterioration",
+        "Insulation resistance below minimum value"
+      ],
+      "recommended_action": "Investigate low insulation resistance and repair or replace cables with degraded insulation."
+    },
+    {
+      "ref": "612.7",
+      "section": "Section 6 - Inspection and Testing",
+      "title": "Earth fault loop impedance",
+      "description": "Earth fault loop impedance shall be measured to verify disconnection time requirements are met.",
+      "common_observations": [
+        "Earth fault loop impedance exceeds maximum permitted value",
+        "Zs value too high for protective device",
+        "High earth fault loop impedance preventing disconnection within required time"
+      ],
+      "recommended_action": "Reduce earth fault loop impedance or provide additional RCD protection to ensure disconnection within the required time."
+    },
+    {
+      "ref": "612.8",
+      "section": "Section 6 - Inspection and Testing",
+      "title": "RCD test",
+      "description": "Where RCDs are fitted, operation shall be verified by testing.",
+      "common_observations": [
+        "RCD failed to operate within required time",
+        "RCD tripping time exceeds 300ms at rated residual current",
+        "RCD test button not operating correctly"
+      ],
+      "recommended_action": "Replace the faulty RCD with one that operates within the required disconnection time."
+    },
+    {
+      "ref": "612.9",
+      "section": "Section 6 - Inspection and Testing",
+      "title": "Polarity test",
+      "description": "A polarity test shall verify that single-pole switching devices are connected in the line conductor only.",
+      "common_observations": [
+        "Single-pole switch connected in neutral conductor",
+        "Reversed polarity at socket-outlet",
+        "Cross-polarity identified at lighting point"
+      ],
+      "recommended_action": "Correct polarity by reconnecting single-pole devices in the line conductor."
+    },
+    {
+      "ref": "612.11",
+      "section": "Section 6 - Inspection and Testing",
+      "title": "Prospective fault current",
+      "description": "The prospective fault current shall be measured at the origin and at every relevant point in the installation.",
+      "common_observations": [
+        "Prospective fault current not measured",
+        "Protective devices not rated for prospective fault current",
+        "PFC exceeds protective device breaking capacity"
+      ],
+      "recommended_action": "Measure prospective fault current and ensure all protective devices have adequate breaking capacity."
+    },
+    {
+      "ref": "613.1",
+      "section": "Section 6 - Inspection and Testing",
+      "title": "Periodic inspection and testing",
+      "description": "Periodic inspection and testing shall be carried out to determine whether the installation is in a satisfactory condition for continued use.",
+      "common_observations": [
+        "Installation has not been periodically inspected within the recommended interval",
+        "Previous periodic inspection recommendations not actioned",
+        "No evidence of previous EICR"
+      ],
+      "recommended_action": "Carry out periodic inspection and testing at recommended intervals and action any recommendations."
+    },
+    {
+      "ref": "701.411.3.3",
+      "section": "Section 7 - Special Installations - Bathrooms",
+      "title": "Bathrooms - Additional protection",
+      "description": "All circuits in locations containing a bath or shower shall be protected by a 30mA RCD.",
+      "common_observations": [
+        "Bathroom circuit not protected by 30mA RCD",
+        "Electric shower without RCD protection",
+        "Lighting circuit in bathroom not RCD protected"
+      ],
+      "recommended_action": "Provide 30mA RCD protection for all circuits in the bathroom/shower room."
+    },
+    {
+      "ref": "701.512.3",
+      "section": "Section 7 - Special Installations - Bathrooms",
+      "title": "Bathrooms - Equipment zones",
+      "description": "Equipment shall only be installed in zones 0, 1 and 2 if it is suitable for the conditions in that zone.",
+      "common_observations": [
+        "Equipment not suitable for bathroom zone in which it is installed",
+        "Socket-outlet installed within Zone 2",
+        "Non-IP rated equipment in Zone 1",
+        "Equipment in Zone 0 not suitable"
+      ],
+      "recommended_action": "Replace equipment with items having the correct IP rating for the zone or relocate outside the zone."
+    },
+    {
+      "ref": "701.415.2",
+      "section": "Section 7 - Special Installations - Bathrooms",
+      "title": "Bathrooms - Supplementary bonding",
+      "description": "Local supplementary bonding may be omitted where all circuits comply with the requirements of Regulation 411.3.3 and are protected by a 30mA RCD.",
+      "common_observations": [
+        "Supplementary bonding missing and circuits not all RCD protected",
+        "Not all bathroom circuits on 30mA RCD therefore supplementary bonding required",
+        "Supplementary bonding connections loose or corroded"
+      ],
+      "recommended_action": "Either provide supplementary bonding or ensure all bathroom circuits are protected by 30mA RCDs."
+    },
+    {
+      "ref": "706.411.3.3",
+      "section": "Section 7 - Special Installations - Swimming Pools",
+      "title": "Swimming pools - Protection",
+      "description": "All circuits supplying equipment in zones 0, 1 and 2 of swimming pools shall be protected by SELV at 12V AC or 30V DC or 30mA RCD.",
+      "common_observations": [
+        "Swimming pool equipment not suitably protected",
+        "Incorrect IP rating for pool zone equipment",
+        "Lack of RCD protection for pool circuits"
+      ],
+      "recommended_action": "Ensure all swimming pool circuits are protected by SELV or 30mA RCD and equipment has the required IP rating."
+    },
+    {
+      "ref": "722.1",
+      "section": "Section 7 - Special Installations - EV Charging",
+      "title": "Electric vehicle charging installations",
+      "description": "Installations for electric vehicle charging shall comply with the requirements of Section 722.",
+      "common_observations": [
+        "EV charging point not on dedicated circuit",
+        "EV charger without Type A or Type B RCD protection",
+        "No isolation switch for EV charging point",
+        "EV circuit not correctly rated"
+      ],
+      "recommended_action": "Ensure EV charging installation complies with Section 722 including dedicated circuit, appropriate RCD type and isolation switch."
+    },
+    {
+      "ref": "712.1",
+      "section": "Section 7 - Special Installations - Solar PV",
+      "title": "Solar photovoltaic supply systems",
+      "description": "Installations of solar PV systems shall comply with the requirements of Section 712.",
+      "common_observations": [
+        "PV system warning labels missing",
+        "PV system isolator not accessible",
+        "PV system not compliant with Section 712",
+        "DC side of PV not adequately protected"
+      ],
+      "recommended_action": "Ensure PV installation complies with Section 712, all warning labels are present and isolation is accessible."
+    },
+    {
+      "ref": "422.3.13",
+      "section": "Section 4 - Protection for Safety",
+      "title": "Downlighters - Fire risk",
+      "description": "Recessed luminaires including downlighters shall be installed with regard to the fire resistance of the building elements and thermal effects.",
+      "common_observations": [
+        "Recessed downlighters in direct contact with thermal insulation",
+        "Non-fire-rated downlighters installed in fire-rated ceiling",
+        "No fire hoods fitted to recessed luminaires",
+        "Insulation packed around downlighters creating fire risk"
+      ],
+      "recommended_action": "Install fire-rated downlighters or fit appropriate fire hoods and ensure adequate separation from thermal insulation."
+    },
+    {
+      "ref": "559.6.1.5",
+      "section": "Section 5 - Selection and Erection of Equipment",
+      "title": "Outdoor lighting installations",
+      "description": "Outdoor lighting installations shall be protected against damage and suitable for external conditions.",
+      "common_observations": [
+        "Outdoor light fittings not suitable for external use",
+        "IP rating not adequate for outdoor installation",
+        "External cable entries not sealed"
+      ],
+      "recommended_action": "Replace outdoor lighting with fittings having adequate IP rating for the location."
+    },
+    {
+      "ref": "411.3.1.2",
+      "section": "Section 4 - Protection for Safety",
+      "title": "ADS - Protective equipotential bonding",
+      "description": "Main protective bonding conductors shall be provided connecting the main earthing terminal to extraneous-conductive-parts.",
+      "common_observations": [
+        "Main protective bonding missing or inadequate",
+        "No bonding to incoming water service",
+        "No bonding to incoming gas service",
+        "Bonding conductor undersized for supply"
+      ],
+      "recommended_action": "Provide main protective bonding to all extraneous-conductive-parts (water, gas, oil) in accordance with Table 54.8."
+    },
+    {
+      "ref": "537.3.1",
+      "section": "Section 5 - Selection and Erection of Equipment",
+      "title": "Emergency switching",
+      "description": "A means of emergency switching shall be provided where it may be necessary to disconnect the supply to remove an unexpected danger.",
+      "common_observations": [
+        "No emergency switch-off provided where required",
+        "Emergency switch not clearly identified or accessible",
+        "Main switch difficult to access in emergency"
+      ],
+      "recommended_action": "Provide readily accessible means of emergency switching clearly identified and accessible."
+    },
+    {
+      "ref": "542.2.1",
+      "section": "Section 5 - Selection and Erection of Equipment",
+      "title": "TN system earthing",
+      "description": "For TN systems, means of earthing shall be provided by the connection of the installation earthing conductor to the distributor's earth terminal.",
+      "common_observations": [
+        "Earthing conductor not connected to distributor's earth",
+        "Earth terminal not provided by distributor",
+        "Earthing arrangement deteriorated"
+      ],
+      "recommended_action": "Verify earthing conductor is correctly connected to the distributor's earth terminal and in good condition."
+    },
+    {
+      "ref": "543.3.3",
+      "section": "Section 5 - Selection and Erection of Equipment",
+      "title": "Protective conductors - Gas and water pipes",
+      "description": "A gas pipe, oil pipe or water pipe shall not be used as a protective conductor.",
+      "common_observations": [
+        "Gas or water pipe being used as an earth conductor",
+        "Earth continuity relying on metallic pipework",
+        "Protective conductor terminated on gas/water pipe"
+      ],
+      "recommended_action": "Provide a dedicated protective conductor and do not rely on gas or water pipes for earth continuity."
+    }
+  ]
+}

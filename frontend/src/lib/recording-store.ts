@@ -1,0 +1,116 @@
+// recording-store.ts
+// Zustand store for recording session state — separate from the job store.
+
+import { create } from "zustand";
+import type { DeepgramConnectionState } from "./recording/deepgram-service";
+import type { JobDetail } from "./api";
+
+// ---------------------------------------------------------------------------
+// Types (inline — will consolidate with server-ws-service.ts later)
+// ---------------------------------------------------------------------------
+
+export interface ServerCostUpdate {
+  deepgramCost: number;
+  sonnetCost: number;
+  totalSessionCost: number;
+  totalJobCost: number;
+  deepgramMinutes: number;
+  sonnetCalls: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  inputTokens: number;
+  outputTokens: number;
+}
+
+export interface UserQuestion {
+  id: string;
+  type: "orphaned" | "out_of_range" | "unclear";
+  fieldKey: string;
+  circuitNumber?: number;
+  question: string;
+  value?: string;
+}
+
+export type SleepState = "active" | "dozing" | "sleeping";
+
+export interface TranscriptHighlight {
+  keyword: string;
+  value: string;
+  fieldKey: string;
+  keywordCandidates: string[];
+}
+
+// ---------------------------------------------------------------------------
+// Store State + Actions
+// ---------------------------------------------------------------------------
+
+interface RecordingState {
+  // State
+  isRecording: boolean;
+  duration: number;
+  transcript: string;
+  interimTranscript: string;
+  deepgramState: DeepgramConnectionState;
+  serverConnected: boolean;
+  sleepState: SleepState;
+  cost: ServerCostUpdate | null;
+  currentQuestion: UserQuestion | null;
+  isTTSSpeaking: boolean;
+  highlight: TranscriptHighlight | null;
+  liveJob: JobDetail | null;
+
+  // Actions
+  setRecording: (isRecording: boolean) => void;
+  setDuration: (duration: number) => void;
+  setInterimTranscript: (text: string) => void;
+  setDeepgramState: (state: DeepgramConnectionState) => void;
+  setServerConnected: (connected: boolean) => void;
+  setSleepState: (state: SleepState) => void;
+  setCost: (cost: ServerCostUpdate | null) => void;
+  setCurrentQuestion: (question: UserQuestion | null) => void;
+  setTTSSpeaking: (speaking: boolean) => void;
+  setHighlight: (highlight: TranscriptHighlight | null) => void;
+  setLiveJob: (job: JobDetail | null) => void;
+  appendTranscript: (text: string) => void;
+  reset: () => void;
+}
+
+const initialState = {
+  isRecording: false,
+  duration: 0,
+  transcript: "",
+  interimTranscript: "",
+  deepgramState: "disconnected" as DeepgramConnectionState,
+  serverConnected: false,
+  sleepState: "active" as SleepState,
+  cost: null as ServerCostUpdate | null,
+  currentQuestion: null as UserQuestion | null,
+  isTTSSpeaking: false,
+  highlight: null as TranscriptHighlight | null,
+  liveJob: null as JobDetail | null,
+};
+
+export const useRecordingStore = create<RecordingState>((set) => ({
+  ...initialState,
+
+  setRecording: (isRecording) => set({ isRecording }),
+  setDuration: (duration) => set({ duration }),
+  setInterimTranscript: (interimTranscript) => set({ interimTranscript }),
+  setDeepgramState: (deepgramState) => set({ deepgramState }),
+  setServerConnected: (serverConnected) => set({ serverConnected }),
+  setSleepState: (sleepState) => set({ sleepState }),
+  setCost: (cost) => set({ cost }),
+  setCurrentQuestion: (currentQuestion) => set({ currentQuestion }),
+  setTTSSpeaking: (isTTSSpeaking) => set({ isTTSSpeaking }),
+  setHighlight: (highlight) => set({ highlight }),
+  setLiveJob: (liveJob) => set({ liveJob }),
+
+  appendTranscript: (text) =>
+    set((state) => ({
+      transcript: state.transcript
+        ? `${state.transcript} ${text}`
+        : text,
+    })),
+
+  reset: () => set(initialState),
+}));

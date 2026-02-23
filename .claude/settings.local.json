@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(streamlit run:*)",
+      "Bash(python3 -m streamlit:*)",
+      "Bash(open:*)",
+      "Bash(chmod:*)",
+      "Bash(ls:*)",
+      "Bash(node run_all.js:*)",
+      "Bash(find:*)",
+      "Bash(xargs cat:*)",
+      "Bash(python3:*)",
+      "Bash(cat:*)",
+      "Bash(grep:*)"
+    ]
+  }
+}

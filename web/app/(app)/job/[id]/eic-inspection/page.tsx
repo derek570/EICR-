@@ -1,0 +1,114 @@
+"use client";
+
+import { useJobContext } from "../layout";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { EIC_SCHEDULE_ITEMS } from "@/lib/constants";
+import { cn } from "@/lib/utils";
+
+type EICOutcome = "tick" | "N/A";
+
+const outcomeLabels: Record<EICOutcome, string> = {
+  tick: "\u2713",
+  "N/A": "N/A",
+};
+
+export default function EICInspectionPage() {
+  const { job, updateJob, certificateType } = useJobContext();
+
+  if (certificateType !== "EIC") {
+    return (
+      <div className="p-6">
+        <p className="text-gray-500">This page is for EIC certificates. Use the EICR Inspection tab for EICR certificates.</p>
+      </div>
+    );
+  }
+
+  const schedule = job.inspection_schedule || { items: {} };
+
+  const updateItem = (itemId: string, outcome: EICOutcome) => {
+    const updatedItems = {
+      ...schedule.items,
+      [itemId]: { ...schedule.items[itemId], outcome },
+    };
+    updateJob({ inspection_schedule: { items: updatedItems } });
+  };
+
+  const getOutcome = (itemId: string): EICOutcome => {
+    const outcome = schedule.items[itemId]?.outcome;
+    return outcome === "N/A" ? "N/A" : "tick";
+  };
+
+  const markAllTick = () => {
+    const updatedItems: Record<string, { outcome: EICOutcome }> = {};
+    Object.keys(EIC_SCHEDULE_ITEMS).forEach((itemId) => {
+      updatedItems[itemId] = { outcome: "tick" };
+    });
+    updateJob({ inspection_schedule: { items: updatedItems } });
+  };
+
+  return (
+    <div className="p-6 space-y-4 max-w-4xl">
+      <div className="flex items-center justify-between">
+        <h2 className="text-lg font-semibold">EIC Inspection Schedule</h2>
+        <button onClick={markAllTick} className="text-sm text-brand-blue hover:underline">
+          Mark All as Satisfactory
+        </button>
+      </div>
+
+      <p className="text-sm text-gray-500">
+        For new installations, verify each item has been inspected and is satisfactory, or mark as N/A if not applicable.
+      </p>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Inspection Items</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="divide-y">
+            {Object.entries(EIC_SCHEDULE_ITEMS).map(([itemId, description]) => {
+              const outcome = getOutcome(itemId);
+
+              return (
+                <div key={itemId} className="py-3 flex items-center gap-2">
+                  <div className="flex-1 min-w-0">
+                    <span className="font-medium text-sm mr-2">{itemId}</span>
+                    <span className="text-sm text-gray-500">{description}</span>
+                  </div>
+                  <div className="flex gap-1 flex-shrink-0">
+                    <button
+                      onClick={() => updateItem(itemId, "tick")}
+                      className={cn(
+                        "px-3 py-1 text-sm font-medium rounded border transition-colors",
+                        outcome === "tick"
+                          ? "bg-green-100 text-green-800 border-green-300"
+                          : "bg-white border-gray-200 text-gray-500 hover:border-gray-400",
+                      )}
+                    >
+                      {"\u2713"}
+                    </button>
+                    <button
+                      onClick={() => updateItem(itemId, "N/A")}
+                      className={cn(
+                        "px-3 py-1 text-sm font-medium rounded border transition-colors",
+                        outcome === "N/A"
+                          ? "bg-gray-100 text-gray-600 border-gray-300"
+                          : "bg-white border-gray-200 text-gray-500 hover:border-gray-400",
+                      )}
+                    >
+                      N/A
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </CardContent>
+      </Card>
+
+      <div className="text-xs text-gray-500">
+        <p><span className="font-medium">{"\u2713"}</span> = Inspected and verified compliant</p>
+        <p><span className="font-medium">N/A</span> = Not applicable to this installation</p>
+      </div>
+    </div>
+  );
+}

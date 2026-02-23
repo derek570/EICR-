@@ -1,0 +1,29 @@
+{
+  "mcpServers": {
+    "postgres": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-postgres",
+        "postgresql://eicr_admin:Cometpizza2207@eicr-db-production.cfo684yymx9d.eu-west-2.rds.amazonaws.com:5432/eicr"
+      ]
+    },
+    "memory": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-memory"]
+    },
+    "sequential-thinking": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-sequential-thinking"]
+    },
+    "fetch": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-fetch"]
+    },
+    "xcode-build": {
+      "command": "xcrun",
+      "args": ["xcodebuild"],
+      "env": {}
+    }
+  }
+}

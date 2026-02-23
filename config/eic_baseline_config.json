@@ -1,0 +1,177 @@
+{
+  "certificate_type": "EIC",
+  "installation_details": {
+    "description_of_premises": "Residential",
+    "installation_type": "new_installation",
+    "next_inspection_years": 10
+  },
+  "extent_and_limitations": {
+    "extent": "",
+    "comments_on_existing": ""
+  },
+  "supply_characteristics": {
+    "earthing_arrangement": "TN-C-S",
+    "live_conductors": "AC - 1-phase (2 wire)",
+    "nominal_voltage_u": "230",
+    "nominal_voltage_uo": "230",
+    "nominal_frequency": "50",
+    "supply_polarity_confirmed": true,
+    "prospective_fault_current": "",
+    "earth_loop_impedance_ze": "",
+    "number_of_supplies": "1",
+    "supply_protective_device": {
+      "bs_en": "",
+      "type": "",
+      "short_circuit_capacity": "",
+      "rated_current": ""
+    }
+  },
+  "particulars_of_installation": {
+    "means_of_earthing": {
+      "distributor_facility": true,
+      "earth_electrode": false
+    },
+    "earth_electrode": {
+      "type": "N/A",
+      "resistance_to_earth": "N/A",
+      "location": "N/A"
+    },
+    "maximum_demand": "",
+    "main_switch": {
+      "location": "",
+      "type_bs_en": "",
+      "number_of_poles": "",
+      "voltage_rating": "",
+      "rated_current": "",
+      "fuse_device_setting": "",
+      "conductor_material": "Copper",
+      "conductor_csa": ""
+    },
+    "rcd_main_switch": {
+      "operating_current": "",
+      "time_delay": "",
+      "operating_time": ""
+    },
+    "earthing_conductor": {
+      "conductor_material": "Copper",
+      "conductor_csa": "",
+      "continuity": true
+    },
+    "main_protective_bonding": {
+      "conductor_material": "Copper",
+      "conductor_csa": "",
+      "continuity": true
+    },
+    "bonding_of_extraneous_parts": {
+      "water": true,
+      "gas": true,
+      "oil": false,
+      "steel": false,
+      "lightning": false,
+      "other": "N/A"
+    }
+  },
+  "distribution_board": {
+    "board_name": "DB-1",
+    "location": "",
+    "manufacturer": "",
+    "supplied_from": "",
+    "polarity_confirmed": true,
+    "phases": "1",
+    "phases_confirmed": "",
+    "zs_at_db": "",
+    "ipf_at_db": "",
+    "rcd_trip_time": "",
+    "main_switch": {
+      "bs_en": "",
+      "voltage_rating": "",
+      "rated_current": "",
+      "ipf_rating": "",
+      "rcd_rating": ""
+    },
+    "spd_details": {
+      "type": "",
+      "status": ""
+    },
+    "overcurrent_device": {
+      "bs_en": "",
+      "voltage": "",
+      "current": ""
+    },
+    "test_equipment": {
+      "mft": "N/A",
+      "continuity": "N/A",
+      "insulation_resistance": "N/A",
+      "earth_fault_loop_impedance": "N/A",
+      "rcd": "N/A"
+    }
+  },
+  "design_construction": {
+    "departures_from_bs7671": "",
+    "permitted_exceptions": "",
+    "risk_assessment_attached": false
+  },
+  "inspection_schedule": {
+    "notes": "EIC simplified 14-item inspection schedule",
+    "items": {
+      "1.0": {
+        "description": "Condition of consumer's intake equipment (Visual inspection only)",
+        "outcome": "tick"
+      },
+      "2.0": {
+        "description": "Parallel or switched alternative sources of supply",
+        "outcome": "N/A"
+      },
+      "3.0": {
+        "description": "Protective measure: Automatic disconnection of supply",
+        "outcome": "tick"
+      },
+      "4.0": {
+        "description": "Basic protection",
+        "outcome": "tick"
+      },
+      "5.0": {
+        "description": "Protective measures other than ADS",
+        "outcome": "tick"
+      },
+      "6.0": {
+        "description": "Additional protection",
+        "outcome": "tick"
+      },
+      "7.0": {
+        "description": "Distribution equipment",
+        "outcome": "tick"
+      },
+      "8.0": {
+        "description": "Circuits (Distribution and final)",
+        "outcome": "tick"
+      },
+      "9.0": {
+        "description": "Isolation and switching",
+        "outcome": "tick"
+      },
+      "10.0": {
+        "description": "Current using equipment (permanently connected)",
+        "outcome": "tick"
+      },
+      "11.0": {
+        "description": "Identification and notices",
+        "outcome": "tick"
+      },
+      "12.0": {
+        "description": "Location(s) containing a bath or shower",
+        "outcome": "",
+        "auto_detect": true,
+        "keywords": ["bathroom", "bath", "shower", "en-suite", "ensuite", "wet room", "wetroom"]
+      },
+      "13.0": {
+        "description": "Other special installations or locations",
+        "outcome": "tick"
+      },
+      "14.0": {
+        "description": "Prosumer's low voltage electrical installation(s)",
+        "outcome": "N/A"
+      }
+    }
+  }
+}

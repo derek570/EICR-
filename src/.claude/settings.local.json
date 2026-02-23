@@ -1,0 +1,29 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(open \"/Users/Derek/Library/Mobile Documents/com~apple~CloudDocs/EICR_Automation/.env\")",
+      "Bash(node run_all.js:*)",
+      "Bash(ln:*)",
+      "Bash(chmod:*)",
+      "Bash(pip3 install:*)",
+      "Bash(python3:*)",
+      "Bash(timeout 120 python3:*)",
+      "Bash(pkill:*)",
+      "Bash(ls:*)",
+      "Bash(wc:*)",
+      "Bash(tee:*)",
+      "Bash(pgrep:*)",
+      "Bash(open:*)",
+      "Bash(node run_job.js:*)",
+      "Bash(kill:*)",
+      "Bash(timeout 120 node:*)",
+      "Bash(lsof:*)",
+      "Bash(curl:*)",
+      "Bash(node src/run_all.js:*)",
+      "Bash(find:*)",
+      "Bash(grep:*)",
+      "Bash(streamlit run:*)",
+      "Bash(pip3 show:*)"
+    ]
+  }
+}

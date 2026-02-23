@@ -1,0 +1,14 @@
+{
+  "profiles": [
+    {
+      "id": "derek_beckley",
+      "name": "Derek Beckley",
+      "organisation": "Beckley Electrical ",
+      "enrolment_number": "",
+      "mft_serial_number": "",
+      "signature_file": null,
+      "is_default": true
+    }
+  ],
+  "last_selected": "derek_beckley"
+}
