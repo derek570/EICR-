@@ -490,11 +490,12 @@ describe('EICRExtractionSession', () => {
 
   describe('compact', () => {
     test('should replace conversation history with summary', async () => {
-      // Set up some conversation history
+      // Set up conversation history large enough to pass compaction guards (>2 messages, >1500 token estimate)
+      const padding = 'x'.repeat(3000); // Ensure token estimate exceeds 1500 threshold
       session.conversationHistory = [
-        { role: 'user', content: [{ type: 'text', text: 'utterance 1' }] },
+        { role: 'user', content: [{ type: 'text', text: 'utterance 1 ' + padding }] },
         { role: 'assistant', content: [{ type: 'text', text: '{"extracted_readings":[{"circuit":1,"field":"zs","value":0.35}]}' }] },
-        { role: 'user', content: [{ type: 'text', text: 'utterance 2' }] },
+        { role: 'user', content: [{ type: 'text', text: 'utterance 2 ' + padding }] },
         { role: 'assistant', content: [{ type: 'text', text: '{"extracted_readings":[{"circuit":2,"field":"r1_plus_r2","value":0.47}]}' }] },
       ];
       session.turnCount = 2;
@@ -529,19 +530,24 @@ describe('EICRExtractionSession', () => {
     });
 
     test('should continue without compaction on failure', async () => {
+      const padding = 'x'.repeat(3000); // Ensure token estimate exceeds 1500 threshold
       session.conversationHistory = [
-        { role: 'user', content: 'test' },
+        { role: 'user', content: 'test ' + padding },
         { role: 'assistant', content: 'response' },
+        { role: 'user', content: 'test 2 ' + padding },
+        { role: 'assistant', content: 'response 2' },
       ];
-      session.turnCount = 1;
+      session.turnCount = 2;
 
       mockCreate.mockRejectedValue(new Error('API failure'));
 
       // Should not throw
       await session.compact();
 
-      // Conversation should remain unchanged
-      expect(session.conversationHistory).toHaveLength(2);
+      // Conversation should remain unchanged (compaction failed)
+      expect(session.conversationHistory).toHaveLength(4);
+      // Should track the failure
+      expect(session.compactionFailures).toBe(1);
     });
   });
 
