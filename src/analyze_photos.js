@@ -32,6 +32,13 @@ Count total modules and cross-check against the board's stated number of ways.
 **STEP 2: MAP CIRCUIT LABELS TO PHYSICAL DEVICES**
 Look at the circuit labels/numbers printed below or above the devices. Map each label to the physical device from Step 1.
 
+CIRCUIT NUMBERING RULE:
+- Find the main switch first. It may be on the LEFT or the RIGHT of the board.
+- Circuit 1 is the device immediately NEXT TO the main switch, numbering OUTWARD (away from the main switch).
+- Example: if the main switch is on the LEFT, Circuit 1 is the first device to its right, Circuit 2 is next, etc.
+- Example: if the main switch is on the RIGHT, Circuit 1 is the first device to its left, Circuit 2 is next, etc.
+- If visible circuit labels contradict this rule, follow the LABELS (the installer may have numbered differently).
+
 IMPORTANT:
 - RCDs and the main switch are NOT numbered circuits -- labels skip over them
 - Blank/spare positions may or may not have a label
