@@ -25,6 +25,12 @@ export async function syncDirtyJobs(): Promise<{ synced: number; failed: number 
           observations: job.observations,
           board_info: job.board_info,
           boards: job.boards,
+          installation_details: job.installation_details,
+          supply_characteristics: job.supply_characteristics,
+          inspection_schedule: job.inspection_schedule,
+          inspector_id: job.inspector_id,
+          extent_and_type: job.extent_and_type,
+          design_construction: job.design_construction,
         });
 
         await markJobClean(job.id);
@@ -67,6 +73,13 @@ export async function syncSingleJob(jobId: string): Promise<boolean> {
       circuits: job.circuits,
       observations: job.observations,
       board_info: job.board_info,
+      boards: job.boards,
+      installation_details: job.installation_details,
+      supply_characteristics: job.supply_characteristics,
+      inspection_schedule: job.inspection_schedule,
+      inspector_id: job.inspector_id,
+      extent_and_type: job.extent_and_type,
+      design_construction: job.design_construction,
     });
 
     await markJobClean(job.id);
@@ -102,6 +115,12 @@ export async function syncCurrentJob(): Promise<boolean> {
       observations: currentJob.observations,
       board_info: currentJob.board_info,
       boards: currentJob.boards,
+      installation_details: currentJob.installation_details,
+      supply_characteristics: currentJob.supply_characteristics,
+      inspection_schedule: currentJob.inspection_schedule,
+      inspector_id: currentJob.inspector_id,
+      extent_and_type: currentJob.extent_and_type,
+      design_construction: currentJob.design_construction,
     });
 
     await markJobClean(currentJob.id);

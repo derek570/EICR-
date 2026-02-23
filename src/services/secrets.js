@@ -77,6 +77,11 @@ async function loadSecretsFromAWS() {
         }
     }
 
+    // Propagate JWT_SECRET to process.env so auth.js can read it at startup
+    if (secrets.JWT_SECRET && !process.env.JWT_SECRET) {
+        process.env.JWT_SECRET = secrets.JWT_SECRET;
+    }
+
     secretsCache = secrets;
     return secretsCache;
 }
@@ -129,6 +134,7 @@ export async function getAllSecrets() {
         'TRADECERT_API_KEY',
         'DATABASE_PASSWORD',
         'DATABASE_URL',
+        'JWT_SECRET',
     ];
 
     for (const key of knownKeys) {

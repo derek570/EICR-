@@ -9,9 +9,12 @@ import * as db from "./db.js";
 import logger from "./logger.js";
 
 // Config
-const JWT_SECRET = process.env.JWT_SECRET || "dev-secret-change-in-production";
+const JWT_SECRET = process.env.JWT_SECRET;
+if (!JWT_SECRET) {
+  throw new Error("JWT_SECRET environment variable is required. Set it in .env or AWS Secrets Manager.");
+}
 const JWT_EXPIRY = "24h";
-const REFRESH_GRACE_SECONDS = 7 * 24 * 60 * 60; // 7 days — allow refresh up to 7 days after expiry
+const REFRESH_GRACE_SECONDS = 24 * 60 * 60; // 1 day — allow refresh up to 1 day after expiry
 const MAX_FAILED_ATTEMPTS = 5;
 const LOCKOUT_DURATION_MINUTES = 15;
 
@@ -161,8 +164,8 @@ export async function refreshToken(oldToken) {
       if (err.name !== "TokenExpiredError") {
         return { success: false, error: "Invalid token" };
       }
-      // Token is expired — decode without verification to check grace period
-      decoded = jwt.decode(oldToken);
+      // Token is expired — verify signature but ignore expiration to check grace period
+      decoded = jwt.verify(oldToken, JWT_SECRET, { ignoreExpiration: true });
       if (!decoded || !decoded.exp) {
         return { success: false, error: "Invalid token" };
       }

@@ -73,7 +73,7 @@ export async function saveLocalJob(job: LocalJob): Promise<void> {
 }
 
 export async function getDirtyJobs(userId: string): Promise<LocalJob[]> {
-  return db.jobs.where({ userId, isDirty: 1 }).toArray();
+  return db.jobs.where({ userId }).filter(j => j.isDirty === true).toArray();
 }
 
 export async function markJobClean(jobId: string): Promise<void> {

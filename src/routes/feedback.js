@@ -5,11 +5,25 @@
 import { Router } from "express";
 import express from "express";
 import * as storage from "../storage.js";
+import * as auth from "../auth.js";
 import logger from "../logger.js";
 
 const router = Router();
 
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Escape HTML special characters to prevent XSS
+ */
+function escapeHtml(str) {
+  if (typeof str !== "string") return "";
+  return str
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
 
 /**
  * Feedback form for session optimizer reports.
@@ -42,7 +56,7 @@ router.get("/feedback/:sessionId", async (req, res) => {
   <div class="container">
     <h1>Session Feedback</h1>
     <p class="subtitle">Correct the optimizer's analysis</p>
-    <form method="POST" action="/api/feedback/${sessionId}">
+    <form method="POST" action="/api/feedback/${escapeHtml(sessionId)}">
       <textarea name="feedback" placeholder="e.g. type A was for wiring type, not RCD type" required autofocus></textarea>
       <button type="submit">Send Feedback</button>
     </form>
@@ -64,7 +78,7 @@ router.post("/feedback/:sessionId", express.urlencoded({ extended: false }), asy
 
   if (!feedbackText) {
     return res.status(400).type("html").send(`<html><body style="font-family:sans-serif;background:#1a1a2e;color:#eee;padding:20px;text-align:center;">
-      <h2>No feedback provided</h2><p><a href="/api/feedback/${sessionId}" style="color:#6c63ff;">Go back</a></p>
+      <h2>No feedback provided</h2><p><a href="/api/feedback/${escapeHtml(sessionId)}" style="color:#6c63ff;">Go back</a></p>
     </body></html>`);
   }
 
@@ -75,7 +89,7 @@ router.post("/feedback/:sessionId", express.urlencoded({ extended: false }), asy
 
     if (!matchingManifest) {
       return res.status(404).type("html").send(`<html><body style="font-family:sans-serif;background:#1a1a2e;color:#eee;padding:20px;text-align:center;">
-        <h2>Session not found</h2><p>Session ID: ${sessionId}</p>
+        <h2>Session not found</h2><p>Session ID: ${escapeHtml(sessionId)}</p>
       </body></html>`);
     }
 
@@ -122,7 +136,7 @@ router.post("/feedback/:sessionId", express.urlencoded({ extended: false }), asy
     <div class="tick">&#10003;</div>
     <h1>Feedback Received</h1>
     <p>The optimizer will revert its previous changes and re-run with your correction on its next cycle (~2 minutes).</p>
-    <a href="/api/feedback/${sessionId}">Send more feedback</a>
+    <a href="/api/feedback/${escapeHtml(sessionId)}">Send more feedback</a>
   </div>
 </body>
 </html>`;
@@ -131,8 +145,8 @@ router.post("/feedback/:sessionId", express.urlencoded({ extended: false }), asy
   } catch (error) {
     logger.error("Session feedback submission failed", { sessionId, error: error.message });
     res.status(500).type("html").send(`<html><body style="font-family:sans-serif;background:#1a1a2e;color:#eee;padding:20px;text-align:center;">
-      <h2>Something went wrong</h2><p>${error.message}</p>
-      <p><a href="/api/feedback/${sessionId}" style="color:#6c63ff;">Try again</a></p>
+      <h2>Something went wrong</h2><p>${escapeHtml(error.message)}</p>
+      <p><a href="/api/feedback/${escapeHtml(sessionId)}" style="color:#6c63ff;">Try again</a></p>
     </body></html>`);
   }
 });
@@ -160,7 +174,7 @@ router.get("/optimizer-report/:reportId", async (req, res) => {
  * Accept selected recommendations
  * POST /api/optimizer-report/:reportId/accept
  */
-router.post("/optimizer-report/:reportId/accept", async (req, res) => {
+router.post("/optimizer-report/:reportId/accept", auth.requireAuth, async (req, res) => {
   const { reportId } = req.params;
   if (!UUID_REGEX.test(reportId)) {
     return res.status(400).json({ error: "Invalid report ID" });
@@ -184,7 +198,7 @@ router.post("/optimizer-report/:reportId/accept", async (req, res) => {
  * Reject all recommendations
  * POST /api/optimizer-report/:reportId/reject
  */
-router.post("/optimizer-report/:reportId/reject", async (req, res) => {
+router.post("/optimizer-report/:reportId/reject", auth.requireAuth, async (req, res) => {
   const { reportId } = req.params;
   if (!UUID_REGEX.test(reportId)) {
     return res.status(400).json({ error: "Invalid report ID" });
@@ -204,7 +218,7 @@ router.post("/optimizer-report/:reportId/reject", async (req, res) => {
  * Re-run analysis with additional context
  * POST /api/optimizer-report/:reportId/rerun
  */
-router.post("/optimizer-report/:reportId/rerun", async (req, res) => {
+router.post("/optimizer-report/:reportId/rerun", auth.requireAuth, async (req, res) => {
   const { reportId } = req.params;
   if (!UUID_REGEX.test(reportId)) {
     return res.status(400).json({ error: "Invalid report ID" });

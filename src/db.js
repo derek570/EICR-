@@ -219,6 +219,15 @@ export async function getJobByAddress(userId, address) {
 }
 
 /**
+ * Allowed columns for dynamic job updates (whitelist to prevent SQL injection)
+ */
+const ALLOWED_JOB_COLUMNS = new Set([
+  "status", "address", "client_name", "certificate_type", "folder_name",
+  "s3_prefix", "updated_at", "completed_at", "notes", "data",
+  "overall_result", "next_inspection_date", "postcode",
+]);
+
+/**
  * Update job fields
  */
 export async function updateJob(jobId, data) {
@@ -236,7 +245,11 @@ export async function updateJob(jobId, data) {
     let paramIndex = 1;
 
     for (const [key, value] of Object.entries(data)) {
-      updates.push(`${key} = $${paramIndex}`);
+      if (!ALLOWED_JOB_COLUMNS.has(key)) {
+        logger.warn("updateJob: rejected unknown column", { column: key, jobId });
+        continue;
+      }
+      updates.push(`"${key}" = $${paramIndex}`);
       params.push(value);
       paramIndex++;
     }
@@ -250,6 +263,7 @@ export async function updateJob(jobId, data) {
     );
   } catch (error) {
     logger.error("updateJob failed", { error: error.message });
+    throw error;
   }
 }
 

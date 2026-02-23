@@ -214,7 +214,7 @@ try {
 }
 
 // Mount admin routes
-app.use("/api/admin", adminRouter);
+app.use("/api/admin", auth.requireAuth, adminRouter);
 
 // Mount extracted route modules
 app.use("/api/auth", authRouter);
@@ -639,13 +639,14 @@ async function processJobAsync(userId, jobId) {
  * For cloud (S3): Downloads files from S3, processes, uploads results
  * For local: Processes files directly from filesystem
  */
-app.post("/api/process-job", routeTimeout(120000), async (req, res) => {
-  const { userId, jobId, jobFolder } = req.body;
+app.post("/api/process-job", auth.requireAuth, routeTimeout(120000), async (req, res) => {
+  const userId = req.user.id;
+  const { jobId, jobFolder } = req.body;
 
-  if (!userId || !jobId) {
+  if (!jobId) {
     return res.status(400).json({
       success: false,
-      error: "Missing required fields: userId and jobId"
+      error: "Missing required field: jobId"
     });
   }
 

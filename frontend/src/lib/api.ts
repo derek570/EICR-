@@ -48,10 +48,13 @@ function getToken(): string | null {
   return localStorage.getItem("token");
 }
 
+const IDEMPOTENT_METHODS = new Set(["GET", "HEAD", "OPTIONS", "PUT", "DELETE"]);
+
 /**
  * Fetch with automatic retry for network/server errors.
  * - Retries on: 5xx errors, network errors, timeouts
  * - Never retries: 4xx errors (client errors)
+ * - Never retries: non-idempotent methods (POST)
  * - Delays: 1s → 2s → 4s (exponential backoff)
  */
 async function fetchWithRetry(
@@ -59,9 +62,12 @@ async function fetchWithRetry(
   options: RequestInit,
   maxRetries = 3
 ): Promise<Response> {
+  const method = (options.method || "GET").toUpperCase();
+  const canRetry = IDEMPOTENT_METHODS.has(method);
+  const effectiveMaxRetries = canRetry ? maxRetries : 0;
   let lastError: Error | null = null;
 
-  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+  for (let attempt = 0; attempt <= effectiveMaxRetries; attempt++) {
     try {
       const response = await fetch(url, options);
 
@@ -70,7 +76,7 @@ async function fetchWithRetry(
         return response;
       }
 
-      // Retry server errors (5xx)
+      // Retry server errors (5xx) only for idempotent methods
       if (response.status >= 500) {
         throw new Error(`Server error: ${response.status}`);
       }
@@ -79,7 +85,7 @@ async function fetchWithRetry(
     } catch (error) {
       lastError = error as Error;
 
-      if (attempt < maxRetries) {
+      if (attempt < effectiveMaxRetries) {
         // Exponential backoff: 1s, 2s, 4s
         const delay = Math.pow(2, attempt) * 1000;
         await new Promise(resolve => setTimeout(resolve, delay));
