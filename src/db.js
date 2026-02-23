@@ -3,8 +3,22 @@
  * Connects to PostgreSQL in production or uses mock data for local development.
  */
 
+import fssync from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import pg from "pg";
 import logger from "./logger.js";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// Load RDS CA certificate for SSL verification in production
+let rdsCaCert = null;
+const caPath = path.join(__dirname, "..", "certs", "rds-combined-ca-bundle.pem");
+if (fssync.existsSync(caPath)) {
+  rdsCaCert = fssync.readFileSync(caPath, "utf8");
+  logger.info("Loaded RDS CA certificate for SSL verification");
+}
 
 const { Pool } = pg;
 
@@ -27,10 +41,10 @@ function getPool() {
       max: 10,
       idleTimeoutMillis: 30000,
       connectionTimeoutMillis: 2000,
-      // AWS RDS requires SSL
-      ssl: {
-        rejectUnauthorized: false,
-      },
+      // AWS RDS requires SSL — verify CA cert when available
+      ssl: rdsCaCert
+        ? { rejectUnauthorized: true, ca: rdsCaCert }
+        : { rejectUnauthorized: false },
     });
   }
   return pool;

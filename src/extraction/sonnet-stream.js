@@ -5,6 +5,7 @@ import { WebSocketServer } from 'ws';
 import { EICRExtractionSession } from './eicr-extraction-session.js';
 import { QuestionGate } from './question-gate.js';
 import * as storage from '../storage.js';
+import logger from '../logger.js';
 
 const activeSessions = new Map(); // sessionId -> { session, questionGate, ws, ... }
 
@@ -66,10 +67,10 @@ function validateAndCorrectFields(result, sessionId) {
 
         const corrected = FIELD_CORRECTIONS[reading.field];
         if (corrected) {
-            console.log(`[SonnetStream][${sessionId}] Field corrected: "${reading.field}" → "${corrected}"`);
+            logger.info('Field corrected', { sessionId, from: reading.field, to: corrected });
             reading.field = corrected;
         } else {
-            console.warn(`[SonnetStream][${sessionId}] Unknown field name: "${reading.field}" (circuit ${reading.circuit}, value ${reading.value})`);
+            logger.warn('Unknown field name from Sonnet', { sessionId, field: reading.field, circuit: reading.circuit, value: reading.value });
         }
     }
     return result;
@@ -80,7 +81,7 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
 
   // Return the WSS so api.js can route upgrades to it
   wss.on('connection', (ws, req, userId) => {
-    console.log(`[SonnetStream] Connection from user ${userId}`);
+    logger.info('SonnetStream connection', { userId });
     let currentSessionId = null;
     let preSessionBuffer = []; // Buffer transcripts that arrive before session_start
 
@@ -108,7 +109,7 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
             currentSessionId = msg.sessionId;
             // Replay any transcripts that arrived before session_start
             if (preSessionBuffer.length > 0) {
-              console.log(`[SonnetStream] Replaying ${preSessionBuffer.length} pre-session transcript(s)`);
+              logger.info('Replaying pre-session transcripts', { count: preSessionBuffer.length });
               const buffered = [...preSessionBuffer];
               preSessionBuffer.length = 0;
               for (const bufferedMsg of buffered) {
@@ -151,9 +152,9 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
               try {
                 await entry.session.compact();
                 ws.send(JSON.stringify({ type: 'session_ack', status: 'compacted' }));
-                console.log(`[SonnetStream] Session ${currentSessionId} compacted on request`);
+                logger.info('Session compacted on request', { sessionId: currentSessionId });
               } catch (error) {
-                console.error(`[SonnetStream] Compact failed for ${currentSessionId}:`, error.message);
+                logger.error('Compact failed', { sessionId: currentSessionId, error: error.message });
                 ws.send(JSON.stringify({ type: 'session_ack', status: 'compact_failed' }));
               }
             }
@@ -168,14 +169,14 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
             ws.send(JSON.stringify({ type: 'error', message: `Unknown message type: ${msg.type}` }));
         }
       } catch (error) {
-        console.error(`[SonnetStream] Error handling ${msg.type}:`, error.message);
+        logger.error('SonnetStream message handling error', { type: msg.type, error: error.message });
         ws.send(JSON.stringify({ type: 'error', message: error.message, recoverable: true }));
       }
     });
 
     ws.on('close', () => {
       clearInterval(pingInterval);
-      console.log(`[SonnetStream] Connection closed for user ${userId}`);
+      logger.info('SonnetStream connection closed', { userId });
       if (currentSessionId && activeSessions.has(currentSessionId)) {
         // Clean up after 30s timeout (allow reconnection)
         const entry = activeSessions.get(currentSessionId);
@@ -183,7 +184,7 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         // iOS may disconnect the WebSocket during auto-sleep (no audio for 60s) and reconnect
         // when speech resumes. The longer timeout keeps the Sonnet session alive in memory.
         entry.disconnectTimer = setTimeout(() => {
-          console.log(`[SonnetStream] Session ${currentSessionId} timed out, cleaning up`);
+          logger.info('Session timed out, cleaning up', { sessionId: currentSessionId });
           entry.questionGate.destroy();
           activeSessions.delete(currentSessionId);
         }, 300000);
@@ -218,7 +219,7 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         existing.session.updateJobState(jobState);
       }
       ws.send(JSON.stringify({ type: 'session_ack', status: 'reconnected' }));
-      console.log(`[SonnetStream] Session ${sessionId} reconnected (reusing existing conversation, turns=${existing.session.turnCount})`);
+      logger.info('Session reconnected', { sessionId, turns: existing.session.turnCount });
       return;
     }
 
@@ -249,12 +250,12 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
     });
 
     ws.send(JSON.stringify({ type: 'session_ack', status: 'started' }));
-    console.log(`[SonnetStream] Session ${sessionId} started for job ${jobId}`);
+    logger.info('Session started', { sessionId, jobId });
   }
 
   async function handleTranscript(ws, sessionId, msg) {
     if (!sessionId || !activeSessions.has(sessionId)) {
-      console.warn(`[SonnetStream] Transcript received but no active session (sessionId=${sessionId || 'null'})`);
+      logger.warn('Transcript received but no active session', { sessionId: sessionId || null });
       ws.send(JSON.stringify({ type: 'error', message: 'No active session — reconnecting', recoverable: true }));
       return;
     }
@@ -271,7 +272,7 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
     entry.isExtracting = true;
 
     try {
-      console.log(`[SonnetStream] Extracting from transcript: "${msg.text.substring(0, 80)}"`);
+      logger.info('Extracting from transcript', { sessionId, textPreview: msg.text.substring(0, 80) });
       const regexResults = msg.regexResults || entry.lastRegexResults || [];
       const result = await entry.session.extractFromUtterance(msg.text, regexResults, {
         confirmationsEnabled: msg.confirmations_enabled || false
@@ -281,7 +282,7 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
       // Validate and auto-correct field names before sending to iOS
       validateAndCorrectFields(result, sessionId);
 
-      console.log(`[SonnetStream] Extraction result: readings=${result.extracted_readings.length}, questions=${(result.questions_for_user || []).length}, confirmations=${(result.confirmations || []).length}`);
+      logger.info('Extraction result', { sessionId, readings: result.extracted_readings.length, questions: (result.questions_for_user || []).length, confirmations: (result.confirmations || []).length });
 
       // Send extraction result (strip questions_for_user — they go through QuestionGate)
       if (ws.readyState === ws.OPEN) {
@@ -310,15 +311,15 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         try {
           const reviewResult = await entry.session.reviewForOrphanedValues();
           if (reviewResult?.questions_for_user?.length > 0) {
-            console.log(`[SonnetStream] Orphaned review: ${reviewResult.questions_for_user.length} question(s)`);
+            logger.info('Orphaned review found questions', { sessionId, count: reviewResult.questions_for_user.length });
             entry.questionGate.enqueue(reviewResult.questions_for_user);
           }
         } catch (reviewErr) {
-          console.warn(`[SonnetStream] Orphaned review failed: ${reviewErr.message}`);
+          logger.warn('Orphaned review failed', { sessionId, error: reviewErr.message });
         }
       }
     } catch (error) {
-      console.error(`[SonnetStream] Extraction error:`, error.message);
+      logger.error('Extraction error', { sessionId, error: error.message });
       if (ws.readyState === ws.OPEN) {
         ws.send(JSON.stringify({ type: 'error', message: `Extraction failed: ${error.message}`, recoverable: true }));
       }
@@ -354,16 +355,16 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
     try {
       const s3Key = `session-analytics/${entry.userId}/${sessionId}/cost_summary.json`;
       await storage.uploadJson(summary, s3Key);
-      console.log(`[SonnetStream] Cost summary saved to ${s3Key}`);
+      logger.info('Cost summary saved', { s3Key });
     } catch (error) {
-      console.error(`[SonnetStream] Failed to save cost summary to S3:`, error.message);
+      logger.error('Failed to save cost summary to S3', { error: error.message });
     }
 
     if (ws.readyState === ws.OPEN) {
       ws.send(JSON.stringify({ type: 'session_ack', status: 'stopped', sessionStats: summary }));
     }
     activeSessions.delete(sessionId);
-    console.log(`[SonnetStream] Session ${sessionId} stopped`);
+    logger.info('Session stopped', { sessionId });
   }
 
   return wss;

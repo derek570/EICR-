@@ -195,11 +195,14 @@ export async function transcribeAudio(audioPath) {
         // Extract usage metadata from Gemini response
         const usage = json?.usageMetadata || null;
 
-        console.log(`[transcribe] ── GEMINI TRANSCRIPT ──`);
-        console.log(`[transcribe]   Model: ${model}, Attempt: ${attempt}`);
-        console.log(`[transcribe]   Length: ${transcript.length} chars`);
-        console.log(`[transcribe]   Tokens: prompt=${usage?.promptTokenCount || "?"}, response=${usage?.candidatesTokenCount || "?"}`);
-        console.log(`[transcribe]   Full transcript:\n${transcript}`);
+        logger.info('Gemini transcription complete', {
+          model,
+          attempt,
+          transcriptLength: transcript.length,
+          promptTokens: usage?.promptTokenCount || 0,
+          responseTokens: usage?.candidatesTokenCount || 0,
+        });
+        logger.debug('Gemini full transcript', { transcript });
 
         return { transcript, modelUsed: model, attempts: attempt, usage };
       } catch (err) {

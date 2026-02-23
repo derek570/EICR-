@@ -42,6 +42,11 @@ RUN npm ci --only=production
 # Install Playwright browsers (chromium only for PDF generation)
 RUN npx playwright install chromium
 
+# Download AWS RDS CA bundle for SSL verification
+RUN mkdir -p ./certs && \
+    curl -so ./certs/rds-combined-ca-bundle.pem \
+    https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem
+
 # Copy application code
 COPY src/ ./src/
 COPY config/ ./config/

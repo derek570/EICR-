@@ -2,6 +2,8 @@
 // Holds Sonnet questions for 2 seconds before sending to iOS,
 // allowing incomplete readings to be completed without interruption.
 
+import logger from '../logger.js';
+
 export class QuestionGate {
   constructor(sendCallback) {
     this.sendCallback = sendCallback; // function(questions) -- sends to iOS via WS
@@ -33,7 +35,7 @@ export class QuestionGate {
       return !resolvedFields.has(key);
     });
     if (this.pendingQuestions.length < before) {
-      console.log(`[QuestionGate] Resolved ${before - this.pendingQuestions.length} questions, ${this.pendingQuestions.length} remaining`);
+      logger.info('Questions resolved', { resolved: before - this.pendingQuestions.length, remaining: this.pendingQuestions.length });
     }
     // If all resolved, cancel timer
     if (this.pendingQuestions.length === 0 && this.gateTimer) {
@@ -50,7 +52,7 @@ export class QuestionGate {
   flush() {
     this.gateTimer = null;
     if (this.pendingQuestions.length > 0) {
-      console.log(`[QuestionGate] Flushing ${this.pendingQuestions.length} questions to iOS`);
+      logger.info('Flushing questions to iOS', { count: this.pendingQuestions.length });
       this.sendCallback(this.pendingQuestions);
       this.pendingQuestions = [];
     }

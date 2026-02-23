@@ -57,7 +57,7 @@ httpServer.on("upgrade", (request, socket, head) => {
           sonnetWss.emit('connection', ws, request, userId);
         });
       } catch (e) {
-        console.error('[SonnetStream] Auth failed:', e.message);
+        logger.error('SonnetStream auth failed', { error: e.message });
         socket.destroy();
       }
     })();

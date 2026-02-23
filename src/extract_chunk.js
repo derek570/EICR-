@@ -1,4 +1,5 @@
 import OpenAI from "openai";
+import logger from "./logger.js";
 
 function extractFirstJsonObject(text) {
   const start = text.indexOf("{");
@@ -117,11 +118,12 @@ export async function extractChunk(transcript, chunkIndex, chunkStartSeconds, co
   userMessage += `=== TRANSCRIPT WINDOW (last ~2 minutes of recording — extract NEW values only) ===\n`;
   userMessage += transcript;
 
-  console.log(`[extractChunk] ── SENDING TO GPT (chunk ${chunkIndex}) ──`);
-  console.log(`[extractChunk]   Transcript (${transcript.length} chars):\n${transcript}`);
-  if (existingFormData) {
-    console.log(`[extractChunk]   Existing formData: ${existingFormData.circuits?.length || 0} circuits, ${Object.keys(existingFormData.board_info || {}).length} board fields`);
-  }
+  logger.info('Sending to GPT for extraction', {
+    chunkIndex,
+    transcriptLength: transcript.length,
+    existingCircuits: existingFormData?.circuits?.length || 0,
+  });
+  logger.debug('extractChunk transcript', { transcript });
 
   let lastError = null;
   let delay = INITIAL_RETRY_DELAY_MS;
@@ -146,17 +148,21 @@ export async function extractChunk(transcript, chunkIndex, chunkStartSeconds, co
         completion_tokens: (totalUsage.completion_tokens || 0) + (usage.completion_tokens || 0),
       };
 
-      console.log(`[extractChunk] ── GPT RESPONSE (chunk ${chunkIndex}, attempt ${attempt}) ──`);
-      console.log(`[extractChunk]   Model: ${model}, Tokens: ${usage.prompt_tokens}+${usage.completion_tokens}`);
-      console.log(`[extractChunk]   Raw: ${raw}`);
-      if (parsed) {
-        console.log(`[extractChunk]   Circuits: ${parsed.circuits?.length || 0}, Observations: ${parsed.observations?.length || 0}`);
-      }
+      logger.info('GPT extraction response', {
+        chunkIndex,
+        attempt,
+        model,
+        promptTokens: usage.prompt_tokens,
+        completionTokens: usage.completion_tokens,
+        circuits: parsed?.circuits?.length || 0,
+        observations: parsed?.observations?.length || 0,
+      });
+      logger.debug('GPT raw response', { raw });
 
       if (!parsed) {
         // Got a response but couldn't parse JSON — retry if we have attempts left
         if (attempt < MAX_RETRIES) {
-          console.warn(`[extractChunk] JSON parse failed on attempt ${attempt}, retrying...`);
+          logger.warn('extractChunk JSON parse failed, retrying', { chunkIndex, attempt });
           await sleep(delay);
           delay = Math.min(delay * 2, 5000);
           continue;
@@ -182,16 +188,16 @@ export async function extractChunk(transcript, chunkIndex, chunkStartSeconds, co
       };
     } catch (error) {
       lastError = error;
-      console.error(`[extractChunk] attempt ${attempt}/${MAX_RETRIES} failed (chunk ${chunkIndex}):`, error.message);
+      logger.error('extractChunk attempt failed', { chunkIndex, attempt, maxRetries: MAX_RETRIES, error: error.message });
 
       // Only retry on transient errors
       if (!isRetryableError(error)) {
-        console.error(`[extractChunk] Non-retryable error, giving up immediately`);
+        logger.error('Non-retryable error, giving up', { chunkIndex });
         break;
       }
 
       if (attempt < MAX_RETRIES) {
-        console.log(`[extractChunk] Retrying in ${delay}ms...`);
+        logger.info('Retrying extractChunk', { chunkIndex, delay });
         await sleep(delay);
         delay = Math.min(delay * 2, 5000);
       }
@@ -199,7 +205,7 @@ export async function extractChunk(transcript, chunkIndex, chunkStartSeconds, co
   }
 
   // All retries exhausted
-  console.error(`[extractChunk] All ${MAX_RETRIES} attempts failed for chunk ${chunkIndex}:`, lastError?.message);
+  logger.error('All extractChunk attempts failed', { chunkIndex, maxRetries: MAX_RETRIES, error: lastError?.message });
   return {
     ...EMPTY_RESULT,
     usage: totalUsage,

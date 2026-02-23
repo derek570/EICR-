@@ -13,6 +13,7 @@
  */
 
 import { SecretsManagerClient, GetSecretValueCommand } from '@aws-sdk/client-secrets-manager';
+import logger from '../logger.js';
 
 // Cache for secrets (loaded once per process)
 let secretsCache = null;
@@ -39,15 +40,15 @@ async function loadSecretsFromAWS() {
         const response = await client.send(command);
         if (response.SecretString) {
             Object.assign(secrets, JSON.parse(response.SecretString));
-            console.log(`[secrets] Loaded secrets from AWS Secrets Manager: ${apiKeysSecretName}`);
+            logger.info(`[secrets] Loaded secrets from AWS Secrets Manager: ${apiKeysSecretName}`);
         }
     } catch (error) {
         if (error.name === 'ResourceNotFoundException') {
-            console.warn(`[secrets] Secret not found: ${apiKeysSecretName}`);
+            logger.warn(`[secrets] Secret not found: ${apiKeysSecretName}`);
         } else if (error.name === 'AccessDeniedException') {
-            console.warn('[secrets] Access denied to Secrets Manager. Check IAM permissions.');
+            logger.warn('[secrets] Access denied to Secrets Manager. Check IAM permissions.');
         } else {
-            console.error(`[secrets] Error retrieving API keys secret: ${error.message}`);
+            logger.error(`[secrets] Error retrieving API keys secret: ${error.message}`);
         }
     }
 
@@ -66,14 +67,14 @@ async function loadSecretsFromAWS() {
                 // URL-encode the password in case it has special characters
                 const encodedPassword = encodeURIComponent(dbConfig.password);
                 secrets.DATABASE_URL = `postgresql://${dbConfig.username}:${encodedPassword}@${dbConfig.host}:${port}/${dbConfig.database}`;
-                console.log(`[secrets] Constructed DATABASE_URL from ${dbSecretName}`);
+                logger.info(`[secrets] Constructed DATABASE_URL from ${dbSecretName}`);
             }
         }
     } catch (error) {
         if (error.name === 'ResourceNotFoundException') {
-            console.warn(`[secrets] Database secret not found: ${dbSecretName}`);
+            logger.warn(`[secrets] Database secret not found: ${dbSecretName}`);
         } else {
-            console.error(`[secrets] Error retrieving database secret: ${error.message}`);
+            logger.error(`[secrets] Error retrieving database secret: ${error.message}`);
         }
     }
 
@@ -110,7 +111,7 @@ export async function getSecret(key, defaultValue = null) {
     const value = process.env[key] || defaultValue;
 
     if (value === null) {
-        console.warn(`[secrets] Secret '${key}' not found in AWS or environment`);
+        logger.warn(`[secrets] Secret '${key}' not found in AWS or environment`);
     }
 
     return value;
@@ -210,7 +211,7 @@ export async function getDeepgramKey() {
             }
         } catch (error) {
             if (error.name !== 'ResourceNotFoundException') {
-                console.error(`[secrets] Error retrieving Deepgram key: ${error.message}`);
+                logger.error(`[secrets] Error retrieving Deepgram key: ${error.message}`);
             }
         }
     }
@@ -241,7 +242,7 @@ export async function getAnthropicKey() {
             }
         } catch (error) {
             if (error.name !== 'ResourceNotFoundException') {
-                console.error(`[secrets] Error retrieving Anthropic key: ${error.message}`);
+                logger.error(`[secrets] Error retrieving Anthropic key: ${error.message}`);
             }
         }
     }
