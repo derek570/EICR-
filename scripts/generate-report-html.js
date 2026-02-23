@@ -102,7 +102,7 @@ function buildCostDashboard() {
         <div class="cost-item-detail">${sn.turns || 0} turns, ${sn.compactions || 0} compactions</div>
         <div class="token-grid">
           <div class="token-row"><span class="token-label">Cache Read</span><span class="token-val">${formatTokens(tb.cache_read)}</span><span class="token-rate">$0.30/M</span></div>
-          <div class="token-row"><span class="token-label">Cache Write</span><span class="token-val">${formatTokens(tb.cache_write)}</span><span class="token-rate">$3.75/M</span></div>
+          <div class="token-row"><span class="token-label">Cache Write</span><span class="token-val">${formatTokens(tb.cache_write)}</span><span class="token-rate">$6.00/M</span></div>
           <div class="token-row"><span class="token-label">Input</span><span class="token-val">${formatTokens(tb.input)}</span><span class="token-rate">$3.00/M</span></div>
           <div class="token-row"><span class="token-label">Output</span><span class="token-val">${formatTokens(tb.output)}</span><span class="token-rate">$15.00/M</span></div>
         </div>

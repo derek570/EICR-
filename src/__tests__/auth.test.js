@@ -30,9 +30,10 @@ jest.unstable_mockModule('../logger.js', () => ({
   },
 }));
 
-const auth = await import('../auth.js');
-
 const JWT_SECRET = 'dev-secret-change-in-production';
+process.env.JWT_SECRET = JWT_SECRET;
+
+const auth = await import('../auth.js');
 
 describe('auth', () => {
   afterEach(() => {

@@ -8,10 +8,13 @@ import jwt from "jsonwebtoken";
 import * as db from "./db.js";
 import logger from "./logger.js";
 
-// Config
-const JWT_SECRET = process.env.JWT_SECRET;
-if (!JWT_SECRET) {
-  throw new Error("JWT_SECRET environment variable is required. Set it in .env or AWS Secrets Manager.");
+// Config — lazy accessor so secrets loaded from AWS at startup are available
+function getJwtSecret() {
+  const secret = process.env.JWT_SECRET;
+  if (!secret) {
+    throw new Error("JWT_SECRET environment variable is required. Set it in .env or AWS Secrets Manager.");
+  }
+  return secret;
 }
 const JWT_EXPIRY = "24h";
 const REFRESH_GRACE_SECONDS = 24 * 60 * 60; // 1 day — allow refresh up to 1 day after expiry
@@ -111,7 +114,7 @@ export async function authenticate(email, password, ipAddress = null) {
   // Generate token
   const token = jwt.sign(
     { userId: user.id, email: user.email },
-    JWT_SECRET,
+    getJwtSecret(),
     { expiresIn: JWT_EXPIRY }
   );
 
@@ -131,7 +134,7 @@ export async function authenticate(email, password, ipAddress = null) {
  */
 export async function verifyToken(token) {
   try {
-    const decoded = jwt.verify(token, JWT_SECRET);
+    const decoded = jwt.verify(token, getJwtSecret());
     const user = await db.getUserById(decoded.userId);
 
     if (!user || !user.is_active) {
@@ -159,13 +162,13 @@ export async function refreshToken(oldToken) {
     // First try normal verify (token might not actually be expired)
     let decoded;
     try {
-      decoded = jwt.verify(oldToken, JWT_SECRET);
+      decoded = jwt.verify(oldToken, getJwtSecret());
     } catch (err) {
       if (err.name !== "TokenExpiredError") {
         return { success: false, error: "Invalid token" };
       }
       // Token is expired — verify signature but ignore expiration to check grace period
-      decoded = jwt.verify(oldToken, JWT_SECRET, { ignoreExpiration: true });
+      decoded = jwt.verify(oldToken, getJwtSecret(), { ignoreExpiration: true });
       if (!decoded || !decoded.exp) {
         return { success: false, error: "Invalid token" };
       }
@@ -184,7 +187,7 @@ export async function refreshToken(oldToken) {
     // Issue a fresh token
     const token = jwt.sign(
       { userId: user.id, email: user.email },
-      JWT_SECRET,
+      getJwtSecret(),
       { expiresIn: JWT_EXPIRY }
     );
 

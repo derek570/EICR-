@@ -179,4 +179,48 @@ router.post("/job/:userId/:jobId/photos", auth.requireAuth, upload.single("photo
   }
 });
 
+/**
+ * Delete a photo from a job
+ * DELETE /api/job/:userId/:jobId/photos/:filename
+ */
+router.delete("/job/:userId/:jobId/photos/:filename", auth.requireAuth, async (req, res) => {
+  const { userId, jobId, filename } = req.params;
+
+  if (req.user.id !== userId) {
+    return res.status(403).json({ error: "Access denied" });
+  }
+
+  try {
+    const job = await resolveJob(userId, jobId);
+    const folderName = job?.address || jobId;
+
+    const possiblePaths = [
+      `jobs/${userId}/${folderName}/input/photos/${filename}`,
+      `jobs/${userId}/${folderName}/photos/${filename}`,
+      `jobs/${userId}/${folderName}/output/photos/${filename}`,
+      `jobs/${userId}/${folderName}/output/photos_scaled/${filename}`,
+    ];
+
+    let deleted = false;
+    for (const s3Path of possiblePaths) {
+      try {
+        await storage.deleteFile(s3Path);
+        deleted = true;
+      } catch (e) {
+        // Path doesn't exist, try next
+      }
+    }
+
+    if (!deleted) {
+      return res.status(404).json({ error: "Photo not found" });
+    }
+
+    logger.info("Photo deleted", { userId, jobId, filename });
+    res.json({ success: true, filename });
+  } catch (error) {
+    logger.error("Failed to delete photo", { userId, jobId, filename, error: error.message });
+    res.status(500).json({ error: "Failed to delete photo" });
+  }
+});
+
 export default router;

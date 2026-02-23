@@ -16,6 +16,7 @@ import { closeTransporter } from "./services/email.js";
 // Import api.js which registers all routes on the app
 // The wss export is the recording stream WebSocket server
 import app, { wss as recordingWss } from "./api.js";
+import { stopSessionCleanup } from "./routes/recording.js";
 
 const PORT = process.env.PORT || 3000;
 
@@ -90,6 +91,7 @@ async function gracefulShutdown(signal) {
     const queue = getJobQueue();
     if (queue) await queue.close();
   } catch (_) {}
+  stopSessionCleanup();
   closeTransporter();
   process.exit(0);
 }

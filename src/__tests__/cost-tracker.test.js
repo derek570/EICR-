@@ -24,7 +24,7 @@ describe('CostTracker', () => {
     test('should have correct rate constants', () => {
       expect(tracker.DEEPGRAM_RATE_PER_MIN).toBe(0.0077);
       expect(tracker.SONNET_RATES.cacheRead).toBe(0.30);
-      expect(tracker.SONNET_RATES.cacheWrite).toBe(3.75);
+      expect(tracker.SONNET_RATES.cacheWrite).toBe(6.00);
       expect(tracker.SONNET_RATES.input).toBe(3.00);
       expect(tracker.SONNET_RATES.output).toBe(15.00);
       expect(tracker.ELEVENLABS_RATE_PER_CHAR).toBe(0.000030);

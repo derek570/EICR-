@@ -137,7 +137,7 @@ export const useJobStore = create<JobState>((set, get) => {
       // When updating boards, also sync flat board_info and circuits for backward compat
       const primaryBoard = boards[0];
       const board_info = primaryBoard ? primaryBoard.board_info : currentJob.board_info;
-      const circuits = boards.length === 1 && primaryBoard ? primaryBoard.circuits : currentJob.circuits;
+      const circuits = boards.flatMap(b => b.circuits ?? []);
 
       updateJobFields({ boards, board_info, circuits });
     },

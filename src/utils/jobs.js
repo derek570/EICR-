@@ -216,6 +216,8 @@ export const routeTimeout = (ms) => (req, res, next) => {
       res.status(408).json({ error: "Request timed out" });
     }
   }, ms);
-  res.on("finish", () => clearTimeout(timer));
+  const cleanup = () => clearTimeout(timer);
+  res.on("finish", cleanup);
+  res.on("close", cleanup);
   next();
 };

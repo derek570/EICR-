@@ -6,10 +6,10 @@ export class CostTracker {
     // Deepgram Nova-3 streaming rate
     this.DEEPGRAM_RATE_PER_MIN = 0.0077;
 
-    // Sonnet 4.5 rates (per million tokens)
+    // Claude Sonnet 4.6 rates (1-hour extended cache) (per million tokens)
     this.SONNET_RATES = {
       cacheRead: 0.30,
-      cacheWrite: 3.75,
+      cacheWrite: 6.00,
       input: 3.00,
       output: 15.00
     };

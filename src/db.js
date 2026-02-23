@@ -249,16 +249,14 @@ export async function updateJob(jobId, data) {
 
   const pool = getPool();
   try {
-    // Always set updated_at on any update
-    if (!data.updated_at) {
-      data.updated_at = new Date().toISOString();
-    }
+    // Always set updated_at on any update — use a copy to avoid mutating caller's data
+    const updateData = data.updated_at ? data : { ...data, updated_at: new Date().toISOString() };
 
     const updates = [];
     const params = [];
     let paramIndex = 1;
 
-    for (const [key, value] of Object.entries(data)) {
+    for (const [key, value] of Object.entries(updateData)) {
       if (!ALLOWED_JOB_COLUMNS.has(key)) {
         logger.warn("updateJob: rejected unknown column", { column: key, jobId });
         continue;

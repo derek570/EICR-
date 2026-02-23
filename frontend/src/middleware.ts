@@ -23,7 +23,7 @@ function isTokenExpired(token: string): boolean {
     const decoded = JSON.parse(atob(payload));
     if (!decoded.exp) return false; // No exp claim means non-expiring token
     // exp is in seconds; compare to current time with 30s buffer
-    return decoded.exp * 1000 < Date.now() - 30_000;
+    return decoded.exp * 1000 < Date.now() + 30_000;
   } catch {
     return true; // Malformed token = treat as expired
   }

@@ -202,6 +202,7 @@ export const api = {
   async generatePdf(userId: string, jobId: string): Promise<Blob> {
     const response = await fetchWithAuth(`${API_BASE_URL}/api/job/${userId}/${jobId}/generate-pdf`, {
       method: "POST",
+      retry: false,
     });
 
     if (!response.ok) {
@@ -240,7 +241,7 @@ export const api = {
   },
 
   async getFieldSchema(): Promise<FieldSchema> {
-    const response = await fetchWithRetry(`${API_BASE_URL}/api/schema/fields`, {});
+    const response = await fetchWithAuth(`${API_BASE_URL}/api/schema/fields`, {});
     return handleResponse(response);
   },
 

@@ -20,6 +20,7 @@ import { generateAndSaveDebugReports } from "../generate_debug_report.js";
 import { createTokenAccumulator, logTokenUsage } from "../token_logger.js";
 import { stripMarkdown, isNoSpeechDescription } from "../utils/html.js";
 import { routeTimeout } from "../utils/jobs.js";
+import { activeSessions, getActiveSession, setActiveSession, deleteActiveSession } from "../state/recording-sessions.js";
 import logger from "../logger.js";
 
 const router = Router();
@@ -38,16 +39,6 @@ const upload = multer({
 // Debug audio keyword patterns
 const DEBUG_START = /\b(?:d[\s-]?bug|debug|dee\s*bug)\b/i;
 const DEBUG_END = /\b(?:end|stop|finish|done)\s+(?:d[\s-]?bug|debug)\b/i;
-
-// In-memory store for active recording sessions
-const activeSessions = new Map();
-
-/**
- * Get an active session by ID (used by extraction.js for gemini-extract debug state).
- */
-export function getActiveSession(sessionId) {
-  return activeSessions.get(sessionId);
-}
 
 /**
  * Save a recording session's accumulated data to the database and S3.
@@ -461,33 +452,48 @@ async function saveSession(sessionId, session, { address, certificateType = "EIC
 }
 
 // Clean up stale sessions every 5 minutes
-setInterval(() => {
-  const now = Date.now();
-  const staleThreshold = 30 * 60 * 1000;
-  for (const [sessionId, session] of activeSessions) {
-    if (now - session.lastActivity > staleThreshold) {
-      const hasData = session.eicrBuffer?.fullText?.length > 0 ||
-                      session.accumulator?.circuits?.length > 0 ||
-                      session.accumulator?.observations?.length > 0;
+let cleanupInterval = null;
 
-      if (hasData) {
-        logger.info("Stale session has data — auto-saving before cleanup", {
-          sessionId,
-          transcriptLength: session.eicrBuffer?.fullText?.length || 0,
-          circuits: session.accumulator?.circuits?.length || 0,
-          observations: session.accumulator?.observations?.length || 0,
-        });
-        saveSession(sessionId, session, { isStale: true }).catch(err => {
-          logger.error("Failed to auto-save stale session", { sessionId, error: err.message });
+export function startSessionCleanup() {
+  if (cleanupInterval) return;
+  cleanupInterval = setInterval(() => {
+    const now = Date.now();
+    const staleThreshold = 30 * 60 * 1000;
+    for (const [sessionId, session] of activeSessions) {
+      if (now - session.lastActivity > staleThreshold) {
+        const hasData = session.eicrBuffer?.fullText?.length > 0 ||
+                        session.accumulator?.circuits?.length > 0 ||
+                        session.accumulator?.observations?.length > 0;
+
+        if (hasData) {
+          logger.info("Stale session has data — auto-saving before cleanup", {
+            sessionId,
+            transcriptLength: session.eicrBuffer?.fullText?.length || 0,
+            circuits: session.accumulator?.circuits?.length || 0,
+            observations: session.accumulator?.observations?.length || 0,
+          });
+          saveSession(sessionId, session, { isStale: true }).catch(err => {
+            logger.error("Failed to auto-save stale session", { sessionId, error: err.message });
+            activeSessions.delete(sessionId);
+          });
+        } else {
+          logger.info("Cleaning up stale recording session (no data)", { sessionId });
           activeSessions.delete(sessionId);
-        });
-      } else {
-        logger.info("Cleaning up stale recording session (no data)", { sessionId });
-        activeSessions.delete(sessionId);
+        }
       }
     }
+  }, 5 * 60 * 1000);
+}
+
+export function stopSessionCleanup() {
+  if (cleanupInterval) {
+    clearInterval(cleanupInterval);
+    cleanupInterval = null;
   }
-}, 5 * 60 * 1000);
+}
+
+// Start cleanup on module load
+startSessionCleanup();
 
 // ============= Recording Endpoints =============
 

@@ -28,7 +28,12 @@ RUN apt-get update && apt-get install -y \
     libasound2 \
     libpango-1.0-0 \
     libcairo2 \
+    python3 \
+    python3-pip \
     && rm -rf /var/lib/apt/lists/*
+
+# Install Python PDF generation library
+RUN pip3 install reportlab --break-system-packages
 
 # Update ImageMagick policy to allow HEIC conversion
 RUN sed -i 's/pattern="{GIF,JPEG,PNG,WEBP}"/pattern="{GIF,JPEG,PNG,WEBP,HEIC,HEIF}"/' /etc/ImageMagick-6/policy.xml || true

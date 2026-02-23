@@ -11,6 +11,7 @@ import logger from "../logger.js";
 const router = Router();
 
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const SESSION_REGEX = /^[a-zA-Z0-9_-]{8,64}$/;
 
 /**
  * Escape HTML special characters to prevent XSS
@@ -31,6 +32,10 @@ function escapeHtml(str) {
  */
 router.get("/feedback/:sessionId", async (req, res) => {
   const { sessionId } = req.params;
+
+  if (!SESSION_REGEX.test(sessionId)) {
+    return res.status(400).send("Invalid session ID");
+  }
 
   const html = `<!DOCTYPE html>
 <html lang="en">
@@ -74,6 +79,11 @@ router.get("/feedback/:sessionId", async (req, res) => {
  */
 router.post("/feedback/:sessionId", express.urlencoded({ extended: false }), async (req, res) => {
   const { sessionId } = req.params;
+
+  if (!SESSION_REGEX.test(sessionId)) {
+    return res.status(400).send("Invalid session ID");
+  }
+
   const feedbackText = req.body?.feedback?.trim();
 
   if (!feedbackText) {

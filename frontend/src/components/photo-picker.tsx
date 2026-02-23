@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { Button } from "@/components/ui/button";
 import { api, JobPhoto } from "@/lib/api";
 import { toast } from "sonner";
@@ -28,46 +28,76 @@ export function PhotoPicker({
   const [photoUrls, setPhotoUrls] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
   const [selection, setSelection] = useState<Set<string>>(new Set(selectedPhotos));
+  const blobUrlsRef = useRef<string[]>([]);
 
   useEffect(() => {
-    if (isOpen) {
-      loadPhotos();
-      setSelection(new Set(selectedPhotos));
-    }
+    if (!isOpen) return;
+
+    setSelection(new Set(selectedPhotos));
+
+    let cancelled = false;
+    const localBlobUrls: string[] = [];
+
+    const loadPhotos = async () => {
+      setLoading(true);
+      try {
+        const data = await api.getJobPhotos(userId, jobId);
+        if (cancelled) return;
+        setPhotos(data);
+
+        const urls: Record<string, string> = {};
+        for (const photo of data) {
+          if (cancelled) return;
+          try {
+            const blob = await api.getPhotoBlob(userId, jobId, photo.filename);
+            if (cancelled) return;
+            const url = URL.createObjectURL(blob);
+            localBlobUrls.push(url);
+            blobUrlsRef.current.push(url);
+            urls[photo.filename] = url;
+          } catch {
+            // Skip failed photos
+          }
+        }
+        if (!cancelled) setPhotoUrls(urls);
+      } catch (error) {
+        if (!cancelled) {
+          console.error("Failed to load photos:", error);
+          toast.error("Failed to load job photos");
+        }
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    };
+    loadPhotos();
+
+    return () => {
+      cancelled = true;
+      localBlobUrls.forEach((url) => URL.revokeObjectURL(url));
+    };
   }, [isOpen, userId, jobId, selectedPhotos]);
 
-  // Revoke blob URLs on unmount
+  // Revoke all tracked blob URLs on unmount
   useEffect(() => {
     return () => {
-      Object.values(photoUrls).forEach((url) => URL.revokeObjectURL(url));
+      blobUrlsRef.current.forEach((url) => URL.revokeObjectURL(url));
+      blobUrlsRef.current = [];
     };
   }, []);
 
-  const loadPhotos = async () => {
-    setLoading(true);
-    // Revoke any existing blob URLs
-    Object.values(photoUrls).forEach((url) => URL.revokeObjectURL(url));
-    try {
-      const data = await api.getJobPhotos(userId, jobId);
-      setPhotos(data);
+  // Escape key handler
+  const handleKeyDown = useCallback(
+    (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    },
+    [onClose]
+  );
 
-      const urls: Record<string, string> = {};
-      for (const photo of data) {
-        try {
-          const blob = await api.getPhotoBlob(userId, jobId, photo.filename);
-          urls[photo.filename] = URL.createObjectURL(blob);
-        } catch {
-          // Skip failed photos
-        }
-      }
-      setPhotoUrls(urls);
-    } catch (error) {
-      console.error("Failed to load photos:", error);
-      toast.error("Failed to load job photos");
-    } finally {
-      setLoading(false);
-    }
-  };
+  useEffect(() => {
+    if (!isOpen) return;
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [isOpen, handleKeyDown]);
 
   const togglePhoto = (filename: string) => {
     const newSelection = new Set(selection);
@@ -87,10 +117,15 @@ export function PhotoPicker({
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="photo-picker-title"
+    >
       <div className="bg-white rounded-lg shadow-xl w-full max-w-3xl max-h-[90vh] overflow-hidden">
         <div className="flex items-center justify-between p-4 border-b">
-          <h2 className="text-lg font-semibold flex items-center gap-2">
+          <h2 id="photo-picker-title" className="text-lg font-semibold flex items-center gap-2">
             <ImageIcon className="h-5 w-5" />
             Select Photos
             {selection.size > 0 && (

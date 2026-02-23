@@ -10,6 +10,7 @@ import os from "node:os";
 import * as auth from "../auth.js";
 import * as storage from "../storage.js";
 import { geminiExtract } from "../gemini_extract.js";
+import { getActiveSession } from "../state/recording-sessions.js";
 import logger from "../logger.js";
 
 const router = Router();
@@ -123,8 +124,6 @@ router.post("/recording/gemini-extract", auth.requireAuth, async (req, res) => {
   }
 
   // Session awareness (for debug audio + transcript accumulation)
-  // activeSessions is managed by recording.js — we import it
-  const { getActiveSession } = await import("./recording.js");
   const session = getActiveSession(sessionId);
   if (session) {
     session.lastActivity = Date.now();

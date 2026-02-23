@@ -681,8 +681,8 @@ function analyzeSession(sessionDir) {
   if (sonnetPromptStats.estimated_tokens > 0) {
     const promptTokens = sonnetPromptStats.estimated_tokens;
     const turns = sonnetTurns || 1;
-    // First call: cache_write ($3.75/M), subsequent: cache_read ($0.30/M)
-    const firstCallCost = (promptTokens * 3.75) / 1_000_000;
+    // First call: cache_write ($6.00/M, 1-hour extended cache), subsequent: cache_read ($0.30/M)
+    const firstCallCost = (promptTokens * 6.00) / 1_000_000;
     const cachedCallCost = (promptTokens * 0.30) / 1_000_000;
     const promptCostPerSession = firstCallCost + (Math.max(0, turns - 1) * cachedCallCost);
     sonnetPromptAudit.cost_per_session = parseFloat(promptCostPerSession.toFixed(6));
