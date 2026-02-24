@@ -124,7 +124,7 @@ iOS (16kHz PCM) -> DeepgramService (direct Nova-3 WS)
 
 ## Environment Variables
 
-Cloud keys loaded automatically from AWS Secrets Manager: `eicr/api-keys`, `eicr/deepgram-api-key`, `eicr/anthropic-api-key`, `eicr/database`. No local `.env` needed for cloud deploys.
+Cloud keys loaded automatically from AWS Secrets Manager: `eicr/api-keys` (all API keys as a single JSON object) and `eicr/database` (DB credentials). No local `.env` needed for cloud deploys.
 
 > Full details: [docs/reference/architecture.md](docs/reference/architecture.md#environment-variables)
 

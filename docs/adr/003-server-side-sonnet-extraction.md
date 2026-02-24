@@ -42,7 +42,7 @@ The session manager (`sonnet-stream.js`) handles WebSocket lifecycle, authentica
 
 - **50% cost reduction.** Prompt caching + multi-turn conversation reduces session cost from ~$0.52 to ~$0.26. The system prompt is processed once and cached for the session duration.
 - **Better extraction accuracy.** Multi-turn conversation means Sonnet remembers which circuit is being discussed, what has already been extracted, and the inspector's speech patterns. Circuit misassignment is significantly reduced.
-- **API key stays server-side.** The Anthropic API key is loaded from AWS Secrets Manager (`eicr/anthropic-api-key`) and never leaves the backend. Only the Deepgram key (scoped, limited) is sent to the client.
+- **API key stays server-side.** The Anthropic API key is loaded from AWS Secrets Manager (`eicr/api-keys`) and never leaves the backend. Only the Deepgram streaming key is sent to the client (via authenticated proxy endpoint).
 - **Prompt tuning without app releases.** The extraction system prompt in `eicr-extraction-session.js` can be updated by deploying the backend (~2 minutes) without requiring a new iOS app build or App Store review.
 - **Real-time feedback preserved.** Inspectors still see extracted values appear in real time (1-2 seconds after speaking), just with a server round-trip instead of a client-side API call.
 - **Conversation compaction bounds costs.** Even long sessions (30+ minutes) stay within predictable token budgets due to automatic compaction at ~6,000 tokens.

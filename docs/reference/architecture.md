@@ -60,9 +60,7 @@ The cloud app gets API keys automatically from AWS Secrets Manager:
 
 | Secret | Contents |
 |--------|----------|
-| `eicr/api-keys` | OPENAI_API_KEY, GEMINI_API_KEY, TRADECERT_EMAIL, TRADECERT_PASSWORD |
-| `eicr/deepgram-api-key` | Deepgram API key for Nova-3 real-time transcription (served to iOS via GET /api/keys) |
-| `eicr/anthropic-api-key` | Anthropic API key for Claude Sonnet 4.5 rolling extraction (server-side only) |
+| `eicr/api-keys` | Single JSON with ALL API keys: OPENAI_API_KEY, GEMINI_API_KEY, ANTHROPIC_API_KEY, DEEPGRAM_API_KEY, ELEVENLABS_API_KEY, JWT_SECRET, etc. |
 | `eicr/database` | PostgreSQL host, port, database, username, password |
 
 **No action needed** - cloud deployment works without local API keys.

@@ -1,38 +1,40 @@
 #!/bin/bash
 # ============================================
-# EICR-oMatic 3000 - AWS Secrets Manager Setup
-# Securely store API keys and credentials
+# CertMate — AWS Secrets Manager Setup
+#
+# Creates/updates the combined eicr/api-keys secret
+# containing ALL API keys as a single JSON object.
+#
+# AWS secrets layout:
+#   eicr/api-keys  — all API keys (this script)
+#   eicr/database  — DB credentials (created separately)
 # ============================================
 
 set -e
 
-# Configuration
 AWS_REGION="eu-west-2"
-PROJECT_NAME="eicr"
-SECRET_NAME="${PROJECT_NAME}/api-keys"
+SECRET_NAME="eicr/api-keys"
 
-# Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
 
 echo "============================================"
-echo "  EICR-oMatic 3000 - Secrets Manager Setup"
+echo "  CertMate — Secrets Manager Setup"
 echo "  Region: ${AWS_REGION}"
+echo "  Secret: ${SECRET_NAME}"
 echo "============================================"
 echo ""
 
-# Check AWS CLI
+# Pre-flight checks
 if ! command -v aws &> /dev/null; then
-    echo -e "${RED}ERROR: AWS CLI is not installed.${NC}"
-    echo "Install with: brew install awscli"
+    echo -e "${RED}ERROR: AWS CLI is not installed. Install with: brew install awscli${NC}"
     exit 1
 fi
 
 if ! aws sts get-caller-identity &> /dev/null; then
-    echo -e "${RED}ERROR: AWS CLI is not configured.${NC}"
-    echo "Run: aws configure"
+    echo -e "${RED}ERROR: AWS CLI is not configured. Run: aws configure${NC}"
     exit 1
 fi
 
@@ -58,43 +60,53 @@ fi
 
 # Collect API keys
 echo ""
-echo "Enter your API keys (they will be stored securely in AWS):"
+echo "Enter your API keys (stored securely in AWS Secrets Manager):"
 echo ""
 
 read -p "OpenAI API Key (sk-...): " OPENAI_KEY
-if [ -z "$OPENAI_KEY" ]; then
-    echo -e "${RED}OpenAI API key is required.${NC}"
-    exit 1
-fi
+[ -z "$OPENAI_KEY" ] && echo -e "${RED}OpenAI API key is required.${NC}" && exit 1
 
 read -p "Gemini API Key: " GEMINI_KEY
-if [ -z "$GEMINI_KEY" ]; then
-    echo -e "${RED}Gemini API key is required.${NC}"
-    exit 1
-fi
+[ -z "$GEMINI_KEY" ] && echo -e "${RED}Gemini API key is required.${NC}" && exit 1
 
-read -p "Tradecert API Key (optional, press Enter to skip): " TRADECERT_KEY
+read -p "Anthropic API Key (sk-ant-...): " ANTHROPIC_KEY
+[ -z "$ANTHROPIC_KEY" ] && echo -e "${RED}Anthropic API key is required.${NC}" && exit 1
 
-# Build the secret JSON
-SECRET_JSON=$(cat <<EOF
-{
-    "OPENAI_API_KEY": "${OPENAI_KEY}",
-    "GEMINI_API_KEY": "${GEMINI_KEY}"
-EOF
-)
+read -p "Deepgram API Key: " DEEPGRAM_KEY
+[ -z "$DEEPGRAM_KEY" ] && echo -e "${RED}Deepgram API key is required.${NC}" && exit 1
 
-if [ -n "$TRADECERT_KEY" ]; then
-    SECRET_JSON=$(cat <<EOF
-{
-    "OPENAI_API_KEY": "${OPENAI_KEY}",
-    "GEMINI_API_KEY": "${GEMINI_KEY}",
-    "TRADECERT_API_KEY": "${TRADECERT_KEY}"
-}
-EOF
-)
+read -p "ElevenLabs API Key (optional, Enter to skip): " ELEVENLABS_KEY
+
+read -p "JWT Secret (min 32 chars): " JWT_SECRET
+[ -z "$JWT_SECRET" ] && echo -e "${RED}JWT secret is required.${NC}" && exit 1
+
+read -p "Tradecert API Key (optional, Enter to skip): " TRADECERT_KEY
+
+# Build the secret JSON using jq for proper escaping
+if command -v jq &> /dev/null; then
+    SECRET_JSON=$(jq -n \
+        --arg openai "$OPENAI_KEY" \
+        --arg gemini "$GEMINI_KEY" \
+        --arg anthropic "$ANTHROPIC_KEY" \
+        --arg deepgram "$DEEPGRAM_KEY" \
+        --arg elevenlabs "$ELEVENLABS_KEY" \
+        --arg jwt "$JWT_SECRET" \
+        --arg tradecert "$TRADECERT_KEY" \
+        '{
+            OPENAI_API_KEY: $openai,
+            GEMINI_API_KEY: $gemini,
+            ANTHROPIC_API_KEY: $anthropic,
+            DEEPGRAM_API_KEY: $deepgram,
+            JWT_SECRET: $jwt
+        }
+        + (if $elevenlabs != "" then {ELEVENLABS_API_KEY: $elevenlabs} else {} end)
+        + (if $tradecert != "" then {TRADECERT_API_KEY: $tradecert} else {} end)')
 else
-    SECRET_JSON="${SECRET_JSON}
-}"
+    # Fallback without jq — simple string construction
+    SECRET_JSON="{\"OPENAI_API_KEY\":\"${OPENAI_KEY}\",\"GEMINI_API_KEY\":\"${GEMINI_KEY}\",\"ANTHROPIC_API_KEY\":\"${ANTHROPIC_KEY}\",\"DEEPGRAM_API_KEY\":\"${DEEPGRAM_KEY}\",\"JWT_SECRET\":\"${JWT_SECRET}\""
+    [ -n "$ELEVENLABS_KEY" ] && SECRET_JSON="${SECRET_JSON},\"ELEVENLABS_API_KEY\":\"${ELEVENLABS_KEY}\""
+    [ -n "$TRADECERT_KEY" ] && SECRET_JSON="${SECRET_JSON},\"TRADECERT_API_KEY\":\"${TRADECERT_KEY}\""
+    SECRET_JSON="${SECRET_JSON}}"
 fi
 
 # Create or update the secret
@@ -109,7 +121,7 @@ else
     echo -e "${YELLOW}Creating secret...${NC}"
     aws secretsmanager create-secret \
         --name "${SECRET_NAME}" \
-        --description "API keys for EICR-oMatic 3000" \
+        --description "CertMate API keys (all services)" \
         --secret-string "${SECRET_JSON}" \
         --region "${AWS_REGION}"
 fi
@@ -118,23 +130,30 @@ echo ""
 echo -e "${GREEN}Secret stored successfully!${NC}"
 echo ""
 echo "============================================"
-echo "  Secret Details"
-echo "============================================"
-echo "  Name: ${SECRET_NAME}"
+echo "  Secret: ${SECRET_NAME}"
 echo "  Region: ${AWS_REGION}"
-echo "  ARN: $(aws secretsmanager describe-secret --secret-id "${SECRET_NAME}" --region "${AWS_REGION}" --query 'ARN' --output text)"
+echo "============================================"
 echo ""
 echo "Keys stored:"
 echo "  - OPENAI_API_KEY"
 echo "  - GEMINI_API_KEY"
+echo "  - ANTHROPIC_API_KEY"
+echo "  - DEEPGRAM_API_KEY"
+echo "  - JWT_SECRET"
+[ -n "$ELEVENLABS_KEY" ] && echo "  - ELEVENLABS_API_KEY"
 [ -n "$TRADECERT_KEY" ] && echo "  - TRADECERT_API_KEY"
 echo ""
 
-# Create IAM policy for accessing secrets
+# Create/update IAM policy
 echo -e "${YELLOW}Creating IAM policy for secrets access...${NC}"
 
-POLICY_NAME="${PROJECT_NAME}-secrets-policy"
+POLICY_NAME="eicr-secrets-policy"
 SECRET_ARN=$(aws secretsmanager describe-secret --secret-id "${SECRET_NAME}" --region "${AWS_REGION}" --query 'ARN' --output text)
+DB_SECRET_ARN=$(aws secretsmanager describe-secret --secret-id "eicr/database" --region "${AWS_REGION}" --query 'ARN' --output text 2>/dev/null || echo "")
+
+# Build resource list — include database secret if it exists
+RESOURCES="\"${SECRET_ARN}\""
+[ -n "$DB_SECRET_ARN" ] && RESOURCES="${RESOURCES}, \"${DB_SECRET_ARN}\""
 
 POLICY_DOC=$(cat <<EOF
 {
@@ -142,22 +161,18 @@ POLICY_DOC=$(cat <<EOF
     "Statement": [
         {
             "Effect": "Allow",
-            "Action": [
-                "secretsmanager:GetSecretValue"
-            ],
-            "Resource": "${SECRET_ARN}"
+            "Action": ["secretsmanager:GetSecretValue"],
+            "Resource": [${RESOURCES}]
         }
     ]
 }
 EOF
 )
 
-# Check if policy exists
 EXISTING_POLICY=$(aws iam list-policies --query "Policies[?PolicyName=='${POLICY_NAME}'].Arn" --output text)
 
 if [ -n "$EXISTING_POLICY" ]; then
-    echo "Policy already exists, updating..."
-    # Get policy version and create new version
+    echo "Policy exists, updating..."
     aws iam create-policy-version \
         --policy-arn "${EXISTING_POLICY}" \
         --policy-document "${POLICY_DOC}" \
@@ -171,32 +186,22 @@ else
 fi
 
 echo -e "${GREEN}IAM policy created/updated: ${POLICY_ARN}${NC}"
-echo ""
 
 # Attach to existing app user if it exists
-APP_USER="${PROJECT_NAME}-app-user"
+APP_USER="eicr-app-user"
 if aws iam get-user --user-name "${APP_USER}" 2>/dev/null; then
-    echo "Attaching policy to ${APP_USER}..."
     aws iam attach-user-policy --user-name "${APP_USER}" --policy-arn "${POLICY_ARN}"
-    echo -e "${GREEN}Policy attached to user.${NC}"
+    echo -e "${GREEN}Policy attached to ${APP_USER}.${NC}"
 fi
 
 echo ""
-echo "============================================"
-echo -e "${GREEN}Secrets Manager Setup Complete!${NC}"
-echo "============================================"
+echo -e "${GREEN}Setup complete.${NC}"
 echo ""
-echo "Your app can now retrieve secrets using:"
+echo "Usage in Node.js:"
+echo "  import { getAnthropicKey } from './src/services/secrets.js';"
+echo "  const key = await getAnthropicKey();"
 echo ""
-echo "  Python:"
-echo "    from secrets_manager import get_secret"
-echo "    api_key = get_secret('OPENAI_API_KEY')"
-echo ""
-echo "  Node.js:"
-echo "    import { getSecret } from './src/secrets.js'"
-echo "    const apiKey = await getSecret('OPENAI_API_KEY')"
-echo ""
-echo "Environment variable to set:"
-echo "  AWS_REGION=${AWS_REGION}"
+echo "Required env vars on ECS:"
 echo "  USE_AWS_SECRETS=true"
+echo "  AWS_REGION=${AWS_REGION}"
 echo ""

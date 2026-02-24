@@ -42,7 +42,7 @@ RUN sed -i 's/pattern="{GIF,JPEG,PNG,WEBP}"/pattern="{GIF,JPEG,PNG,WEBP,HEIC,HEI
 COPY package*.json ./
 
 # Install dependencies
-RUN npm ci --only=production
+RUN npm ci --only=production --ignore-scripts && npm rebuild
 
 # Install Playwright browsers (chromium only for PDF generation)
 RUN npx playwright install chromium

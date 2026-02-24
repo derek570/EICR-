@@ -39,7 +39,7 @@ iOS (16kHz PCM audio)
 
 **Field priority (3-tier):** Pre-existing (CCU photo, manual edit) > Sonnet > Regex
 
-**API keys:** iOS fetches Deepgram key from `GET /api/keys` (authenticated backend endpoint), then connects directly to Deepgram. Anthropic key stays server-side only (loaded via AWS Secrets `eicr/anthropic-api-key`).
+**API keys:** iOS fetches the Deepgram streaming key from `POST /api/proxy/deepgram-streaming-key` (authenticated). Anthropic and ElevenLabs calls are proxied through the backend — API keys never leave the server (loaded from `eicr/api-keys` in AWS Secrets Manager).
 
 **Key files:**
 
