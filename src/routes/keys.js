@@ -306,13 +306,27 @@ router.post('/proxy/deepgram-streaming-key', auth.requireAuth, async (req, res) 
   const userId = req.user?.id || req.user?.userId || 'unknown';
 
   try {
-    const tempKey = await createDeepgramTempKey(userId);
+    // Try to create a short-lived temp key first (preferred for security)
+    let key;
+    try {
+      key = await createDeepgramTempKey(userId);
+      logger.info('Deepgram temp key created', { userId, ttl: 600 });
+    } catch (tempKeyError) {
+      // Temp key creation requires keys:write scope on the Deepgram API key.
+      // Fall back to the master key if that scope is not available.
+      logger.warn('Deepgram temp key creation failed, using master key', {
+        userId,
+        error: tempKeyError.message,
+      });
+      key = await getDeepgramKey();
+      if (!key) {
+        throw new Error('Deepgram API key not configured');
+      }
+    }
 
-    logger.info('Deepgram temp key created', { userId, ttl: 600 });
-
-    res.json({ key: tempKey });
+    res.json({ key });
   } catch (error) {
-    logger.error('Deepgram temp key creation failed', { userId, error: error.message });
+    logger.error('Deepgram streaming key failed', { userId, error: error.message });
     res.status(500).json({ error: 'Failed to create Deepgram streaming key' });
   }
 });
