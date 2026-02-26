@@ -111,6 +111,8 @@ async function gracefulShutdown(signal) {
 
   // 1. Stop accepting new connections
   httpServer.close(() => logger.info('HTTP server closed'));
+  // Close idle keep-alive connections for faster drain (Node 18.2+)
+  httpServer.closeIdleConnections();
 
   // 2. Close WebSocket servers with 1001 (Going Away)
   for (const ws of recordingWss.clients) {

@@ -62,7 +62,8 @@ await ensureTokenVersionColumn();
 
 const app = express();
 
-// Trust the ALB proxy so express-rate-limit sees real client IPs
+// Trust exactly 1 proxy hop (AWS ALB). Do NOT set to true -- that trusts
+// all X-Forwarded-For hops, allowing client IP spoofing.
 app.set('trust proxy', 1);
 
 // CORS — explicit origin allowlist (no wildcard with credentials)
