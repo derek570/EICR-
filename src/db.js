@@ -341,6 +341,49 @@ export async function deleteJob(jobId, userId) {
 }
 
 /**
+ * Ensure users table has token_version column for JWT rotation
+ */
+export async function ensureTokenVersionColumn() {
+  if (!usePostgres()) return;
+
+  const pool = getPool();
+  try {
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS token_version INTEGER DEFAULT 0`);
+    logger.info('Token version column ensured on users table');
+  } catch (error) {
+    logger.error('ensureTokenVersionColumn failed', { error: error.message });
+  }
+}
+
+/**
+ * Set token_version to a specific value for a user
+ */
+export async function setTokenVersion(userId, version) {
+  if (!usePostgres()) return;
+
+  const pool = getPool();
+  try {
+    await pool.query(`UPDATE users SET token_version = $1 WHERE id = $2`, [version, userId]);
+  } catch (error) {
+    logger.error('setTokenVersion failed', { error: error.message });
+  }
+}
+
+/**
+ * Increment token_version by 1 (for theft detection / family invalidation)
+ */
+export async function incrementTokenVersion(userId) {
+  if (!usePostgres()) return;
+
+  const pool = getPool();
+  try {
+    await pool.query(`UPDATE users SET token_version = token_version + 1 WHERE id = $1`, [userId]);
+  } catch (error) {
+    logger.error('incrementTokenVersion failed', { error: error.message });
+  }
+}
+
+/**
  * Ensure jobs table has updated_at column and backfill from created_at
  */
 export async function ensureJobsUpdatedAt() {

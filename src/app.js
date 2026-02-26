@@ -27,6 +27,7 @@ import {
   ensureJobsUpdatedAt,
   ensureSubscriptionsTable,
   ensureCalendarTokensTable,
+  ensureTokenVersionColumn,
 } from './db.js';
 import { ensureJobVersionsTable, ensureCRMTables } from './db.js';
 
@@ -57,6 +58,7 @@ await ensureJobVersionsTable();
 await ensureCRMTables();
 await ensureSubscriptionsTable();
 await ensureCalendarTokensTable();
+await ensureTokenVersionColumn();
 
 const app = express();
 
