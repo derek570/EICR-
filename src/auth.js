@@ -3,21 +3,24 @@
  * Handles JWT token creation/verification and password validation.
  */
 
-import bcrypt from "bcryptjs";
-import jwt from "jsonwebtoken";
-import * as db from "./db.js";
-import logger from "./logger.js";
+import crypto from 'node:crypto';
+import bcrypt from 'bcryptjs';
+import jwt from 'jsonwebtoken';
+import * as db from './db.js';
+import logger from './logger.js';
 
 // Config — lazy accessor so secrets loaded from AWS at startup are available
 function getJwtSecret() {
   const secret = process.env.JWT_SECRET;
   if (!secret) {
-    throw new Error("JWT_SECRET environment variable is required. Set it in .env or AWS Secrets Manager.");
+    throw new Error(
+      'JWT_SECRET environment variable is required. Set it in .env or AWS Secrets Manager.'
+    );
   }
   return secret;
 }
-const JWT_EXPIRY = "24h";
-const REFRESH_GRACE_SECONDS = 24 * 60 * 60; // 1 day — allow refresh up to 1 day after expiry
+const JWT_EXPIRY = '24h';
+const REFRESH_GRACE_SECONDS = 60 * 60; // 1 hour — allow refresh up to 1 hour after expiry
 const MAX_FAILED_ATTEMPTS = 5;
 const LOCKOUT_DURATION_MINUTES = 15;
 
@@ -69,19 +72,19 @@ export async function authenticate(email, password, ipAddress = null) {
   const user = await db.getUserByEmail(email);
 
   if (!user) {
-    return { success: false, error: "Invalid email or password" };
+    return { success: false, error: 'Invalid email or password' };
   }
 
   // Check if active
   if (!user.is_active) {
-    await db.logAction(user.id, "login_failed", { reason: "account_disabled" }, ipAddress);
-    return { success: false, error: "Account has been disabled. Please contact support." };
+    await db.logAction(user.id, 'login_failed', { reason: 'account_disabled' }, ipAddress);
+    return { success: false, error: 'Account has been disabled. Please contact support.' };
   }
 
   // Check if locked
   if (isAccountLocked(user)) {
     const remaining = getLockoutRemaining(user);
-    await db.logAction(user.id, "login_failed", { reason: "account_locked" }, ipAddress);
+    await db.logAction(user.id, 'login_failed', { reason: 'account_locked' }, ipAddress);
     return { success: false, error: `Account is locked. Try again in ${remaining} minutes.` };
   }
 
@@ -94,26 +97,34 @@ export async function authenticate(email, password, ipAddress = null) {
       const lockTime = new Date();
       lockTime.setMinutes(lockTime.getMinutes() + LOCKOUT_DURATION_MINUTES);
       lockedUntil = lockTime.toISOString();
-      await db.logAction(user.id, "account_locked", { attempts }, ipAddress);
+      await db.logAction(user.id, 'account_locked', { attempts }, ipAddress);
     }
 
     await db.updateLoginAttempts(user.id, attempts, lockedUntil);
-    await db.logAction(user.id, "login_failed", { attempts }, ipAddress);
+    await db.logAction(user.id, 'login_failed', { attempts }, ipAddress);
 
     const remaining = MAX_FAILED_ATTEMPTS - attempts;
     if (remaining > 0) {
-      return { success: false, error: `Invalid email or password. ${remaining} attempts remaining.` };
+      return {
+        success: false,
+        error: `Invalid email or password. ${remaining} attempts remaining.`,
+      };
     }
     return { success: false, error: `Account locked for ${LOCKOUT_DURATION_MINUTES} minutes.` };
   }
 
   // Success - update last login
   await db.updateLastLogin(user.id);
-  await db.logAction(user.id, "login_success", {}, ipAddress);
+  await db.logAction(user.id, 'login_success', {}, ipAddress);
 
-  // Generate token
+  // Generate token with rotation claims
   const token = jwt.sign(
-    { userId: user.id, email: user.email },
+    {
+      userId: user.id,
+      email: user.email,
+      tv: user.token_version || 0,
+      jti: crypto.randomUUID(),
+    },
     getJwtSecret(),
     { expiresIn: JWT_EXPIRY }
   );
@@ -122,8 +133,8 @@ export async function authenticate(email, password, ipAddress = null) {
   const safeUser = {
     id: user.id,
     email: user.email,
-    name: user.name || "",
-    company_name: user.company_name || "",
+    name: user.name || '',
+    company_name: user.company_name || '',
   };
 
   return { success: true, token, user: safeUser };
@@ -144,11 +155,11 @@ export async function verifyToken(token) {
     return {
       id: user.id,
       email: user.email,
-      name: user.name || "",
-      company_name: user.company_name || "",
+      name: user.name || '',
+      company_name: user.company_name || '',
     };
   } catch (error) {
-    logger.debug("Token verification failed", { error: error.message });
+    logger.debug('Token verification failed', { error: error.message });
     return null;
   }
 }
@@ -164,29 +175,54 @@ export async function refreshToken(oldToken) {
     try {
       decoded = jwt.verify(oldToken, getJwtSecret());
     } catch (err) {
-      if (err.name !== "TokenExpiredError") {
-        return { success: false, error: "Invalid token" };
+      if (err.name !== 'TokenExpiredError') {
+        return { success: false, error: 'Invalid token' };
       }
       // Token is expired — verify signature but ignore expiration to check grace period
       decoded = jwt.verify(oldToken, getJwtSecret(), { ignoreExpiration: true });
       if (!decoded || !decoded.exp) {
-        return { success: false, error: "Invalid token" };
+        return { success: false, error: 'Invalid token' };
       }
       const expiredAgo = Math.floor(Date.now() / 1000) - decoded.exp;
       if (expiredAgo > REFRESH_GRACE_SECONDS) {
-        return { success: false, error: "Token expired too long ago" };
+        return { success: false, error: 'Token expired too long ago' };
       }
     }
 
     // Look up the user
     const user = await db.getUserById(decoded.userId);
     if (!user || !user.is_active) {
-      return { success: false, error: "User not found or disabled" };
+      return { success: false, error: 'User not found or disabled' };
     }
 
-    // Issue a fresh token
+    // Token rotation: check version matches
+    const presentedVersion = decoded.tv || 0;
+    const currentVersion = user.token_version || 0;
+
+    if (presentedVersion < currentVersion) {
+      // Reuse detected! Old token was stolen and already rotated.
+      // Invalidate entire family by bumping version again.
+      logger.warn('Token reuse detected -- possible theft', {
+        userId: user.id,
+        presentedVersion,
+        currentVersion,
+      });
+      await db.incrementTokenVersion(user.id);
+      return { success: false, error: 'Token has been revoked' };
+    }
+
+    // Rotate: increment version
+    const newVersion = currentVersion + 1;
+    await db.setTokenVersion(user.id, newVersion);
+
+    // Issue a fresh token with rotation claims
     const token = jwt.sign(
-      { userId: user.id, email: user.email },
+      {
+        userId: user.id,
+        email: user.email,
+        tv: newVersion,
+        jti: crypto.randomUUID(),
+      },
       getJwtSecret(),
       { expiresIn: JWT_EXPIRY }
     );
@@ -194,51 +230,44 @@ export async function refreshToken(oldToken) {
     const safeUser = {
       id: user.id,
       email: user.email,
-      name: user.name || "",
-      company_name: user.company_name || "",
+      name: user.name || '',
+      company_name: user.company_name || '',
     };
 
     return { success: true, token, user: safeUser };
   } catch (error) {
-    logger.error("Token refresh failed", { error: error.message });
-    return { success: false, error: "Token refresh failed" };
+    logger.error('Token refresh failed', { error: error.message });
+    return { success: false, error: 'Token refresh failed' };
   }
 }
 
 /**
  * Express middleware to require authentication
- * Accepts token from:
- * 1. Authorization header: "Bearer <token>"
- * 2. Query parameter: ?token=<token> (for img src and other resources)
+ * Accepts token from Authorization header: "Bearer <token>"
  */
 export function requireAuth(req, res, next) {
   let token = null;
 
-  // Try Authorization header first
+  // Authorization header only -- no query parameter fallback (CSRF risk)
   const authHeader = req.headers.authorization;
-  if (authHeader && authHeader.startsWith("Bearer ")) {
+  if (authHeader && authHeader.startsWith('Bearer ')) {
     token = authHeader.slice(7);
   }
 
-  // Fall back to query parameter (for img src, etc.)
-  if (!token && req.query.token) {
-    token = req.query.token;
-  }
-
   if (!token) {
-    return res.status(401).json({ error: "Authentication required" });
+    return res.status(401).json({ error: 'Authentication required' });
   }
 
   verifyToken(token)
     .then((user) => {
       if (!user) {
-        return res.status(401).json({ error: "Invalid or expired token" });
+        return res.status(401).json({ error: 'Invalid or expired token' });
       }
       req.user = user;
       next();
     })
     .catch((error) => {
-      logger.error("Auth middleware error", { error: error.message });
-      res.status(500).json({ error: "Authentication error" });
+      logger.error('Auth middleware error', { error: error.message });
+      res.status(500).json({ error: 'Authentication error' });
     });
 }
