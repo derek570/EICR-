@@ -2,18 +2,24 @@
  * Shared job utilities — resolveJob, loadJobData, parseCSV, data transformers
  */
 
-import * as db from "../db.js";
-import * as storage from "../storage.js";
-import logger from "../logger.js";
+import * as db from '../db.js';
+import * as storage from '../storage.js';
+import logger from '../logger.js';
 
 /**
  * Resolve a job by ID or address. Returns the job record or null.
  */
 export async function resolveJob(userId, jobId) {
   let job = await db.getJob(jobId);
-  if (!job) {
-    job = await db.getJobByAddress(userId, jobId);
+  if (job) {
+    // IDOR check: verify the job belongs to this user
+    if (job.user_id !== userId) {
+      return null; // Don't reveal that the job exists to unauthorized users
+    }
+    return job;
   }
+  // Fall back to address lookup (already scoped by userId in the query)
+  job = await db.getJobByAddress(userId, jobId);
   return job;
 }
 
@@ -29,17 +35,17 @@ export function getJobOutputPrefix(userId, job, jobId) {
  * Parse a CSV string into an array of row objects.
  */
 export function parseCSV(csvContent) {
-  const lines = csvContent.trim().split("\n");
+  const lines = csvContent.trim().split('\n');
   if (lines.length < 2) return [];
 
-  const headers = lines[0].split(",").map(h => h.trim().replace(/"/g, ""));
+  const headers = lines[0].split(',').map((h) => h.trim().replace(/"/g, ''));
   const rows = [];
 
   for (let i = 1; i < lines.length; i++) {
-    const values = lines[i].split(",").map(v => v.trim().replace(/"/g, ""));
+    const values = lines[i].split(',').map((v) => v.trim().replace(/"/g, ''));
     const row = {};
     headers.forEach((h, idx) => {
-      row[h] = values[idx] || "";
+      row[h] = values[idx] || '';
     });
     rows.push(row);
   }
@@ -53,19 +59,19 @@ export function parseCSV(csvContent) {
 export function transformObservations(pipelineObservations) {
   if (!Array.isArray(pipelineObservations)) return [];
 
-  return pipelineObservations.map(obs => {
+  return pipelineObservations.map((obs) => {
     let photos = obs.photos || [];
-    if (obs.photo && typeof obs.photo === "string") {
-      const filename = obs.photo.split("/").pop();
+    if (obs.photo && typeof obs.photo === 'string') {
+      const filename = obs.photo.split('/').pop();
       photos = [filename];
     }
 
     return {
-      code: obs.code || "C3",
-      item_location: obs.item_location || obs.title || "",
-      observation_text: obs.observation_text || obs.text || "",
-      schedule_item: obs.schedule_item || "",
-      schedule_description: obs.schedule_description || "",
+      code: obs.code || 'C3',
+      item_location: obs.item_location || obs.title || '',
+      observation_text: obs.observation_text || obs.text || '',
+      schedule_item: obs.schedule_item || '',
+      schedule_description: obs.schedule_description || '',
       photos,
     };
   });
@@ -79,59 +85,64 @@ export function transformExtractedData(extractedInstallation, extractedBoard) {
   const board = extractedBoard || {};
 
   const installation_details = {
-    client_name: installation.client_name || "",
-    address: installation.address || "",
-    postcode: installation.postcode || "",
-    town: installation.town || "",
-    county: installation.county || "",
-    premises_description: installation.premises_description || board.premises_description || "",
-    installation_records_available: installation.installation_records_available ?? board.installation_records_available ?? false,
-    evidence_of_additions_alterations: installation.evidence_of_additions_alterations ?? board.evidence_of_additions_alterations ?? false,
-    next_inspection_years: installation.next_inspection_years || board.next_inspection_years || "",
-    extent: installation.extent || board.extent || "",
-    agreed_limitations: installation.agreed_limitations || board.agreed_limitations || "",
-    agreed_with: installation.agreed_with || board.agreed_with || "",
-    operational_limitations: installation.operational_limitations || board.operational_limitations || "",
+    client_name: installation.client_name || '',
+    address: installation.address || '',
+    postcode: installation.postcode || '',
+    town: installation.town || '',
+    county: installation.county || '',
+    premises_description: installation.premises_description || board.premises_description || '',
+    installation_records_available:
+      installation.installation_records_available ?? board.installation_records_available ?? false,
+    evidence_of_additions_alterations:
+      installation.evidence_of_additions_alterations ??
+      board.evidence_of_additions_alterations ??
+      false,
+    next_inspection_years: installation.next_inspection_years || board.next_inspection_years || '',
+    extent: installation.extent || board.extent || '',
+    agreed_limitations: installation.agreed_limitations || board.agreed_limitations || '',
+    agreed_with: installation.agreed_with || board.agreed_with || '',
+    operational_limitations:
+      installation.operational_limitations || board.operational_limitations || '',
   };
 
   const supply_characteristics = {
-    earthing_arrangement: board.earthing_arrangement || "",
-    live_conductors: board.live_conductors || "",
-    number_of_supplies: board.number_of_supplies || "",
-    nominal_voltage_u: board.voltage_rating || board.nominal_voltage_u || "",
-    nominal_voltage_uo: board.nominal_voltage_uo || "",
-    nominal_frequency: board.nominal_frequency || "",
-    prospective_fault_current: board.ipf_at_db || board.prospective_fault_current || "",
-    earth_loop_impedance_ze: board.ze || board.earth_loop_impedance_ze || "",
+    earthing_arrangement: board.earthing_arrangement || '',
+    live_conductors: board.live_conductors || '',
+    number_of_supplies: board.number_of_supplies || '',
+    nominal_voltage_u: board.voltage_rating || board.nominal_voltage_u || '',
+    nominal_voltage_uo: board.nominal_voltage_uo || '',
+    nominal_frequency: board.nominal_frequency || '',
+    prospective_fault_current: board.ipf_at_db || board.prospective_fault_current || '',
+    earth_loop_impedance_ze: board.ze || board.earth_loop_impedance_ze || '',
     supply_polarity_confirmed: board.supply_polarity_confirmed ?? false,
-    spd_bs_en: board.spd_bs_en || "",
-    spd_type_supply: board.spd_type || board.spd_type_supply || "",
-    spd_short_circuit: board.spd_short_circuit || "",
-    spd_rated_current: board.spd_rated_current || board.rated_current || "",
+    spd_bs_en: board.spd_bs_en || '',
+    spd_type_supply: board.spd_type || board.spd_type_supply || '',
+    spd_short_circuit: board.spd_short_circuit || '',
+    spd_rated_current: board.spd_rated_current || board.rated_current || '',
   };
 
   const board_info = {
-    name: board.name || "",
-    location: board.location || "",
-    manufacturer: board.manufacturer || "",
-    phases: board.phases || "",
-    earthing_arrangement: board.earthing_arrangement || "",
-    ze: board.ze || "",
-    zs_at_db: board.zs_at_db || "",
-    ipf_at_db: board.ipf_at_db || "",
-    main_switch_bs_en: board.main_switch_bs_en || "",
-    main_switch_poles: board.main_switch_poles || "",
-    main_switch_voltage: board.voltage_rating || "",
-    main_switch_current: board.rated_current || "",
-    rcd_rating: board.rcd_rating || "",
-    rcd_trip_time: board.rcd_trip_time || "",
-    tails_material: board.tails_material || "",
-    tails_csa: board.tails_csa || "",
-    earthing_conductor_material: board.earthing_conductor_material || "",
-    earthing_conductor_csa: board.earthing_conductor_csa || "",
-    bonding_conductor_material: board.bonding_conductor_material || "",
-    bonding_conductor_csa: board.bonding_conductor_csa || "",
-    notes: board.notes || "",
+    name: board.name || '',
+    location: board.location || '',
+    manufacturer: board.manufacturer || '',
+    phases: board.phases || '',
+    earthing_arrangement: board.earthing_arrangement || '',
+    ze: board.ze || '',
+    zs_at_db: board.zs_at_db || '',
+    ipf_at_db: board.ipf_at_db || '',
+    main_switch_bs_en: board.main_switch_bs_en || '',
+    main_switch_poles: board.main_switch_poles || '',
+    main_switch_voltage: board.voltage_rating || '',
+    main_switch_current: board.rated_current || '',
+    rcd_rating: board.rcd_rating || '',
+    rcd_trip_time: board.rcd_trip_time || '',
+    tails_material: board.tails_material || '',
+    tails_csa: board.tails_csa || '',
+    earthing_conductor_material: board.earthing_conductor_material || '',
+    earthing_conductor_csa: board.earthing_conductor_csa || '',
+    bonding_conductor_material: board.bonding_conductor_material || '',
+    bonding_conductor_csa: board.bonding_conductor_csa || '',
+    notes: board.notes || '',
   };
 
   return {
@@ -158,12 +169,14 @@ export async function loadJobData(userId, jobId) {
       circuits = parseCSV(csvContent);
     }
   } catch (e) {
-    logger.warn("No circuits CSV found for export", { jobId });
+    logger.warn('No circuits CSV found for export', { jobId });
   }
 
   let extractedData = {};
 
-  const combinedJsonContent = await storage.downloadText(`${s3Prefix}extracted_data.json`).catch(() => null);
+  const combinedJsonContent = await storage
+    .downloadText(`${s3Prefix}extracted_data.json`)
+    .catch(() => null);
 
   if (combinedJsonContent) {
     extractedData = JSON.parse(combinedJsonContent);
@@ -189,7 +202,10 @@ export async function loadJobData(userId, jobId) {
         extractedData.observations = transformObservations(JSON.parse(observationsJson));
       }
     } catch (innerError) {
-      logger.warn("Failed to load extracted data files for export", { jobId, error: innerError.message });
+      logger.warn('Failed to load extracted data files for export', {
+        jobId,
+        error: innerError.message,
+      });
     }
   }
 
@@ -213,11 +229,11 @@ export async function loadJobData(userId, jobId) {
 export const routeTimeout = (ms) => (req, res, next) => {
   const timer = setTimeout(() => {
     if (!res.headersSent) {
-      res.status(408).json({ error: "Request timed out" });
+      res.status(408).json({ error: 'Request timed out' });
     }
   }, ms);
   const cleanup = () => clearTimeout(timer);
-  res.on("finish", cleanup);
-  res.on("close", cleanup);
+  res.on('finish', cleanup);
+  res.on('close', cleanup);
   next();
 };
