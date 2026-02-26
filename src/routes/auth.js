@@ -3,25 +3,20 @@
  */
 
 import { Router } from 'express';
-import rateLimit from 'express-rate-limit';
 import * as auth from '../auth.js';
 import * as db from '../db.js';
 import logger from '../logger.js';
 
 const router = Router();
 
-const loginLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 20, // max 20 login attempts per window
-  message: { error: 'Too many login attempts, try again later' },
-});
-
 /**
  * Login
  * POST /api/auth/login
  * Body: { email: string, password: string }
+ *
+ * Rate limiting handled by authLimiter applied to all /api/auth/* routes in api.js
  */
-router.post('/login', loginLimiter, async (req, res) => {
+router.post('/login', async (req, res) => {
   try {
     const { email, password } = req.body;
 
