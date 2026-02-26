@@ -26,6 +26,7 @@ import {
   routeTimeout,
 } from '../utils/jobs.js';
 import logger from '../logger.js';
+import { parsePagination, paginatedResponse } from '../utils/pagination.js';
 import { sanitizeS3Path } from '../utils/sanitize.js';
 import { createFileFilter, IMAGE_MIMES, AUDIO_MIMES, handleUploadError } from '../utils/upload.js';
 
@@ -57,7 +58,19 @@ router.get('/jobs/:userId', auth.requireAuth, async (req, res) => {
   }
 
   try {
-    const dbJobs = await db.getJobsByUser(userId);
+    const isPaginated = req.query.limit !== undefined || req.query.offset !== undefined;
+    const { limit, offset } = parsePagination(req.query);
+
+    let dbJobs;
+    let total;
+    if (isPaginated) {
+      const result = await db.getJobsByUserPaginated(userId, limit, offset);
+      dbJobs = result.rows;
+      total = result.total;
+    } else {
+      dbJobs = await db.getJobsByUser(userId);
+      total = dbJobs.length;
+    }
 
     let jobs = dbJobs.map((j) => {
       let address = j.address;
@@ -105,7 +118,12 @@ router.get('/jobs/:userId', auth.requireAuth, async (req, res) => {
       return bDate - aDate;
     });
 
-    res.json(jobs);
+    // Backward compatibility: legacy clients (no pagination params) get flat array
+    if (isPaginated) {
+      res.json(paginatedResponse(jobs, total, { limit, offset }));
+    } else {
+      res.json(jobs);
+    }
   } catch (error) {
     logger.error('Failed to list jobs', { userId, error: error.message });
     res.status(500).json({ error: 'Failed to list jobs' });
@@ -830,8 +848,16 @@ router.get('/job/:userId/:jobId/history', auth.requireAuth, async (req, res) => 
   }
 
   try {
-    const versions = await getJobVersions(jobId);
-    res.json(versions);
+    const isPaginated = req.query.limit !== undefined || req.query.offset !== undefined;
+
+    if (isPaginated) {
+      const { limit, offset } = parsePagination(req.query);
+      const { rows, total } = await db.getJobVersionsPaginated(jobId, limit, offset);
+      res.json(paginatedResponse(rows, total, { limit, offset }));
+    } else {
+      const versions = await getJobVersions(jobId);
+      res.json(versions);
+    }
   } catch (error) {
     logger.error('Failed to get job history', { userId, jobId, error: error.message });
     res.status(500).json({ error: 'Failed to get job history' });

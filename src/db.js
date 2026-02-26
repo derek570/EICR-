@@ -189,6 +189,31 @@ export async function getJobsByUser(userId) {
 }
 
 /**
+ * Get jobs for a user with pagination (LIMIT/OFFSET).
+ * Returns { rows, total } for paginated responses.
+ */
+export async function getJobsByUserPaginated(userId, limit, offset) {
+  if (!usePostgres()) {
+    return { rows: [], total: 0 };
+  }
+
+  const pool = getPool();
+  try {
+    const [countResult, dataResult] = await Promise.all([
+      pool.query('SELECT COUNT(*) FROM jobs WHERE user_id = $1', [userId]),
+      pool.query(
+        `SELECT * FROM jobs WHERE user_id = $1 ORDER BY COALESCE(updated_at, created_at::TIMESTAMP) DESC LIMIT $2 OFFSET $3`,
+        [userId, limit, offset]
+      ),
+    ]);
+    return { rows: dataResult.rows, total: Number(countResult.rows[0].count) };
+  } catch (error) {
+    logger.error('getJobsByUserPaginated failed', { error: error.message });
+    return { rows: [], total: 0 };
+  }
+}
+
+/**
  * Create a job record
  */
 export async function createJob(job) {
@@ -610,6 +635,31 @@ export async function getJobVersions(jobId) {
 }
 
 /**
+ * Get versions for a job with pagination (LIMIT/OFFSET).
+ * Returns { rows, total } for paginated responses.
+ */
+export async function getJobVersionsPaginated(jobId, limit, offset) {
+  if (!usePostgres()) {
+    return { rows: [], total: 0 };
+  }
+
+  const pool = getPool();
+  try {
+    const [countResult, dataResult] = await Promise.all([
+      pool.query('SELECT COUNT(*) FROM job_versions WHERE job_id = $1', [jobId]),
+      pool.query(
+        'SELECT id, version_number, user_id, changes_summary, created_at FROM job_versions WHERE job_id = $1 ORDER BY version_number DESC LIMIT $2 OFFSET $3',
+        [jobId, limit, offset]
+      ),
+    ]);
+    return { rows: dataResult.rows, total: Number(countResult.rows[0].count) };
+  } catch (error) {
+    logger.error('getJobVersionsPaginated failed', { error: error.message });
+    return { rows: [], total: 0 };
+  }
+}
+
+/**
  * Get a specific version with full data snapshot
  */
 export async function getJobVersion(versionId, jobId, userId) {
@@ -690,6 +740,32 @@ export async function getClients(userId) {
   } catch (error) {
     logger.error('getClients failed', { error: error.message });
     return [];
+  }
+}
+
+/**
+ * Get clients for a user with pagination (LIMIT/OFFSET).
+ * Returns { rows, total } for paginated responses.
+ */
+export async function getClientsPaginated(userId, limit, offset) {
+  if (!usePostgres()) {
+    return { rows: [], total: 0 };
+  }
+
+  const pool = getPool();
+  try {
+    const [countResult, dataResult] = await Promise.all([
+      pool.query('SELECT COUNT(*) FROM clients WHERE user_id = $1', [userId]),
+      pool.query('SELECT * FROM clients WHERE user_id = $1 ORDER BY name ASC LIMIT $2 OFFSET $3', [
+        userId,
+        limit,
+        offset,
+      ]),
+    ]);
+    return { rows: dataResult.rows, total: Number(countResult.rows[0].count) };
+  } catch (error) {
+    logger.error('getClientsPaginated failed', { error: error.message });
+    return { rows: [], total: 0 };
   }
 }
 
@@ -793,6 +869,36 @@ export async function getProperties(userId) {
   } catch (error) {
     logger.error('getProperties failed', { error: error.message });
     return [];
+  }
+}
+
+/**
+ * Get properties for a user with pagination (LIMIT/OFFSET).
+ * Returns { rows, total } for paginated responses.
+ */
+export async function getPropertiesPaginated(userId, limit, offset) {
+  if (!usePostgres()) {
+    return { rows: [], total: 0 };
+  }
+
+  const pool = getPool();
+  try {
+    const [countResult, dataResult] = await Promise.all([
+      pool.query('SELECT COUNT(*) FROM properties WHERE user_id = $1', [userId]),
+      pool.query(
+        `SELECT p.*, c.name as client_name
+         FROM properties p
+         LEFT JOIN clients c ON p.client_id = c.id
+         WHERE p.user_id = $1
+         ORDER BY p.address ASC
+         LIMIT $2 OFFSET $3`,
+        [userId, limit, offset]
+      ),
+    ]);
+    return { rows: dataResult.rows, total: Number(countResult.rows[0].count) };
+  } catch (error) {
+    logger.error('getPropertiesPaginated failed', { error: error.message });
+    return { rows: [], total: 0 };
   }
 }
 
