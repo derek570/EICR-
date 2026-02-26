@@ -2,16 +2,17 @@
  * Extraction routes — Gemini chunked audio extraction, CCU photo analysis, observation enhancement
  */
 
-import { Router } from "express";
-import multer from "multer";
-import fs from "node:fs/promises";
-import path from "node:path";
-import os from "node:os";
-import * as auth from "../auth.js";
-import * as storage from "../storage.js";
-import { geminiExtract } from "../gemini_extract.js";
-import { getActiveSession } from "../state/recording-sessions.js";
-import logger from "../logger.js";
+import { Router } from 'express';
+import multer from 'multer';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import os from 'node:os';
+import * as auth from '../auth.js';
+import * as storage from '../storage.js';
+import { geminiExtract } from '../gemini_extract.js';
+import { getActiveSession } from '../state/recording-sessions.js';
+import logger from '../logger.js';
+import { createFileFilter, IMAGE_MIMES, handleUploadError } from '../utils/upload.js';
 
 const router = Router();
 
@@ -19,11 +20,12 @@ const upload = multer({
   storage: multer.diskStorage({
     destination: os.tmpdir(),
     filename: (_req, file, cb) => {
-      const ext = path.extname(file.originalname) || ".jpg";
+      const ext = path.extname(file.originalname) || '.jpg';
       cb(null, `${file.fieldname}-${Date.now()}${ext}`);
     },
   }),
   limits: { fileSize: 100 * 1024 * 1024 },
+  fileFilter: createFileFilter(IMAGE_MIMES),
 });
 
 // Debug audio keyword patterns
@@ -36,20 +38,20 @@ const geminiChunkLimits = new Map();
  * BS/EN standard number lookup by device type
  */
 const BS_EN_LOOKUP = {
-  MCB: "60898-1",
-  B: "60898-1",
-  C: "60898-1",
-  D: "60898-1",
-  RCBO: "61009",
-  RCD: "61008",
-  RCCB: "61008",
-  MCCB: "60947-2",
-  SWITCH: "60947-3",
-  ISOLATOR: "60947-3",
-  "gG": "60269-2",
-  HRC: "60269-2",
-  REWIREABLE: "3036",
-  CARTRIDGE: "1361",
+  MCB: '60898-1',
+  B: '60898-1',
+  C: '60898-1',
+  D: '60898-1',
+  RCBO: '61009',
+  RCD: '61008',
+  RCCB: '61008',
+  MCCB: '60947-2',
+  SWITCH: '60947-3',
+  ISOLATOR: '60947-3',
+  gG: '60269-2',
+  HRC: '60269-2',
+  REWIREABLE: '3036',
+  CARTRIDGE: '1361',
 };
 
 /**
@@ -59,10 +61,12 @@ function applyBsEnFallback(analysis) {
   if (!analysis?.circuits) return analysis;
 
   for (const circuit of analysis.circuits) {
-    const ocpdType = (circuit.ocpd_type || "").toUpperCase();
-    const isRcbo = circuit.is_rcbo === true ||
-                   (circuit.rcd_protected === true && circuit.rcd_rating_ma &&
-                    ["B", "C", "D"].includes(ocpdType));
+    const ocpdType = (circuit.ocpd_type || '').toUpperCase();
+    const isRcbo =
+      circuit.is_rcbo === true ||
+      (circuit.rcd_protected === true &&
+        circuit.rcd_rating_ma &&
+        ['B', 'C', 'D'].includes(ocpdType));
 
     if (!circuit.ocpd_bs_en) {
       if (isRcbo) {
@@ -70,16 +74,16 @@ function applyBsEnFallback(analysis) {
         circuit.rcd_bs_en = BS_EN_LOOKUP.RCBO;
       } else if (BS_EN_LOOKUP[ocpdType]) {
         circuit.ocpd_bs_en = BS_EN_LOOKUP[ocpdType];
-      } else if (ocpdType === "MCCB") {
+      } else if (ocpdType === 'MCCB') {
         circuit.ocpd_bs_en = BS_EN_LOOKUP.MCCB;
-      } else if (ocpdType === "GG" || ocpdType === "HRC") {
+      } else if (ocpdType === 'GG' || ocpdType === 'HRC') {
         circuit.ocpd_bs_en = BS_EN_LOOKUP.gG;
       }
     }
 
     if (!circuit.ocpd_breaking_capacity_ka) {
-      if (["B", "C", "D"].includes(ocpdType) || isRcbo) {
-        circuit.ocpd_breaking_capacity_ka = "6";
+      if (['B', 'C', 'D'].includes(ocpdType) || isRcbo) {
+        circuit.ocpd_breaking_capacity_ka = '6';
       }
     }
 
@@ -95,12 +99,21 @@ function applyBsEnFallback(analysis) {
  * Gemini chunked audio extraction
  * POST /api/recording/gemini-extract
  */
-router.post("/recording/gemini-extract", auth.requireAuth, async (req, res) => {
+router.post('/recording/gemini-extract', auth.requireAuth, async (req, res) => {
   const userId = req.user.id;
-  const { sessionId, audio, audioMimeType, previousAudio, previousAudioMimeType, context, chunkIndex, chunkDuration } = req.body;
+  const {
+    sessionId,
+    audio,
+    audioMimeType,
+    previousAudio,
+    previousAudioMimeType,
+    context,
+    chunkIndex,
+    chunkDuration,
+  } = req.body;
 
   if (!audio || !sessionId) {
-    return res.status(400).json({ error: "Missing required fields: audio, sessionId" });
+    return res.status(400).json({ error: 'Missing required fields: audio, sessionId' });
   }
 
   // Rate limiting: 20 chunks/minute per user, 200 chunks per session
@@ -112,15 +125,15 @@ router.post("/recording/gemini-extract", auth.requireAuth, async (req, res) => {
   }
   limits.count++;
   if (limits.count > 20) {
-    logger.warn("Gemini extract rate limited", { userId, sessionId, count: limits.count });
-    return res.status(429).json({ error: "Rate limited: max 20 chunks/minute" });
+    logger.warn('Gemini extract rate limited', { userId, sessionId, count: limits.count });
+    return res.status(429).json({ error: 'Rate limited: max 20 chunks/minute' });
   }
 
   const sessionCount = (limits.sessionChunks.get(sessionId) || 0) + 1;
   limits.sessionChunks.set(sessionId, sessionCount);
   if (sessionCount > 200) {
-    logger.warn("Gemini extract session limit", { userId, sessionId, sessionCount });
-    return res.status(429).json({ error: "Session limit: max 200 chunks per session" });
+    logger.warn('Gemini extract session limit', { userId, sessionId, sessionCount });
+    return res.status(429).json({ error: 'Session limit: max 200 chunks per session' });
   }
 
   // Session awareness (for debug audio + transcript accumulation)
@@ -132,35 +145,38 @@ router.post("/recording/gemini-extract", auth.requireAuth, async (req, res) => {
 
   // Save raw audio chunk to S3 for debugging
   try {
-    const ext = (audioMimeType || "audio/flac").includes("flac") ? "flac"
-      : (audioMimeType || "").includes("wav") ? "wav"
-      : (audioMimeType || "").includes("mp4") || (audioMimeType || "").includes("m4a") ? "m4a"
-      : "bin";
-    const chunkKey = `debug/${userId}/${sessionId}/chunk_${String(chunkIndex ?? 0).padStart(3, "0")}.${ext}`;
-    const audioBuffer = Buffer.from(audio, "base64");
-    storage.uploadBytes(audioBuffer, chunkKey, audioMimeType || "audio/flac").catch(e => {
-      logger.warn("Failed to save debug audio chunk", { chunkKey, error: e.message });
+    const ext = (audioMimeType || 'audio/flac').includes('flac')
+      ? 'flac'
+      : (audioMimeType || '').includes('wav')
+        ? 'wav'
+        : (audioMimeType || '').includes('mp4') || (audioMimeType || '').includes('m4a')
+          ? 'm4a'
+          : 'bin';
+    const chunkKey = `debug/${userId}/${sessionId}/chunk_${String(chunkIndex ?? 0).padStart(3, '0')}.${ext}`;
+    const audioBuffer = Buffer.from(audio, 'base64');
+    storage.uploadBytes(audioBuffer, chunkKey, audioMimeType || 'audio/flac').catch((e) => {
+      logger.warn('Failed to save debug audio chunk', { chunkKey, error: e.message });
     });
   } catch (e) {
-    logger.warn("Debug audio chunk save error", { error: e.message });
+    logger.warn('Debug audio chunk save error', { error: e.message });
   }
 
   try {
     const result = await geminiExtract(
       audio,
-      audioMimeType || "audio/flac",
-      context || "",
+      audioMimeType || 'audio/flac',
+      context || '',
       previousAudio || null,
       previousAudioMimeType || null
     );
 
-    const transcript = result.transcript || "";
+    const transcript = result.transcript || '';
 
     // Debug audio capture — keyword detection (mirrors standard chunk handler)
     if (session) {
       if (session.debugMode && DEBUG_END.test(transcript)) {
-        const debugText = transcript.replace(DEBUG_END, "").trim();
-        if (debugText) session.debugBuffer += " " + debugText;
+        const debugText = transcript.replace(DEBUG_END, '').trim();
+        if (debugText) session.debugBuffer += ' ' + debugText;
 
         session.debugSegments.push({
           transcript: session.debugBuffer.trim(),
@@ -170,10 +186,11 @@ router.post("/recording/gemini-extract", auth.requireAuth, async (req, res) => {
 
         session.geminiFullTranscript = session.preDebugContext;
         session.debugMode = false;
-        session.debugBuffer = "";
+        session.debugBuffer = '';
 
-        logger.info("── DEBUG MODE ENDED (Gemini) ──", {
-          sessionId, chunkIndex,
+        logger.info('── DEBUG MODE ENDED (Gemini) ──', {
+          sessionId,
+          chunkIndex,
           segmentCount: session.debugSegments.length,
           segmentLength: session.debugSegments[session.debugSegments.length - 1].transcript.length,
         });
@@ -181,16 +198,16 @@ router.post("/recording/gemini-extract", auth.requireAuth, async (req, res) => {
         session.debugLog.push({
           chunkIndex,
           timestamp: new Date().toISOString(),
-          transcript: "(debug exit)",
+          transcript: '(debug exit)',
           isDebugChunk: true,
-          modelUsed: "gemini-extract",
+          modelUsed: 'gemini-extract',
           inputTokens: result.usage?.inputTokens ?? 0,
           outputTokens: result.usage?.outputTokens ?? 0,
         });
 
         return res.json({
           ...result,
-          transcript: "",
+          transcript: '',
           circuits: [],
           supply: null,
           installation: null,
@@ -202,9 +219,10 @@ router.post("/recording/gemini-extract", auth.requireAuth, async (req, res) => {
       }
 
       if (session.debugMode) {
-        session.debugBuffer += " " + transcript;
-        logger.info("── DEBUG MODE — buffering (Gemini) ──", {
-          sessionId, chunkIndex,
+        session.debugBuffer += ' ' + transcript;
+        logger.info('── DEBUG MODE — buffering (Gemini) ──', {
+          sessionId,
+          chunkIndex,
           debugBufferLength: session.debugBuffer.length,
           preview: transcript.substring(0, 100),
         });
@@ -212,16 +230,16 @@ router.post("/recording/gemini-extract", auth.requireAuth, async (req, res) => {
         session.debugLog.push({
           chunkIndex,
           timestamp: new Date().toISOString(),
-          transcript: transcript || "(empty)",
+          transcript: transcript || '(empty)',
           isDebugChunk: true,
-          modelUsed: "gemini-extract",
+          modelUsed: 'gemini-extract',
           inputTokens: result.usage?.inputTokens ?? 0,
           outputTokens: result.usage?.outputTokens ?? 0,
         });
 
         return res.json({
           ...result,
-          transcript: "",
+          transcript: '',
           circuits: [],
           supply: null,
           installation: null,
@@ -235,15 +253,16 @@ router.post("/recording/gemini-extract", auth.requireAuth, async (req, res) => {
         session.preDebugContext = session.geminiFullTranscript;
         session.debugMode = true;
         session.debugStartTime = new Date().toISOString();
-        session.debugBuffer = "";
+        session.debugBuffer = '';
 
         const parts = transcript.split(DEBUG_START);
-        const beforeDebug = parts[0]?.trim() || "";
-        const afterDebug = parts.slice(1).join(" ").trim() || "";
+        const beforeDebug = parts[0]?.trim() || '';
+        const afterDebug = parts.slice(1).join(' ').trim() || '';
         if (afterDebug) session.debugBuffer = afterDebug;
 
-        logger.info("── DEBUG MODE STARTED (Gemini) ──", {
-          sessionId, chunkIndex,
+        logger.info('── DEBUG MODE STARTED (Gemini) ──', {
+          sessionId,
+          chunkIndex,
           beforeDebug: beforeDebug.substring(0, 100),
           afterDebug: afterDebug.substring(0, 100),
         });
@@ -251,9 +270,9 @@ router.post("/recording/gemini-extract", auth.requireAuth, async (req, res) => {
         session.debugLog.push({
           chunkIndex,
           timestamp: new Date().toISOString(),
-          transcript: transcript || "(empty)",
+          transcript: transcript || '(empty)',
           isDebugChunk: true,
-          modelUsed: "gemini-extract",
+          modelUsed: 'gemini-extract',
           inputTokens: result.usage?.inputTokens ?? 0,
           outputTokens: result.usage?.outputTokens ?? 0,
         });
@@ -261,7 +280,7 @@ router.post("/recording/gemini-extract", auth.requireAuth, async (req, res) => {
         if (!beforeDebug) {
           return res.json({
             ...result,
-            transcript: "",
+            transcript: '',
             circuits: [],
             supply: null,
             installation: null,
@@ -271,27 +290,27 @@ router.post("/recording/gemini-extract", auth.requireAuth, async (req, res) => {
           });
         }
 
-        session.geminiFullTranscript += (session.geminiFullTranscript ? " " : "") + beforeDebug;
+        session.geminiFullTranscript += (session.geminiFullTranscript ? ' ' : '') + beforeDebug;
       }
 
       if (!session.debugMode && transcript) {
-        session.geminiFullTranscript += (session.geminiFullTranscript ? " " : "") + transcript;
+        session.geminiFullTranscript += (session.geminiFullTranscript ? ' ' : '') + transcript;
       }
 
       if (!session.debugMode || !DEBUG_START.test(transcript)) {
         session.debugLog.push({
           chunkIndex,
           timestamp: new Date().toISOString(),
-          transcript: transcript || "(empty)",
+          transcript: transcript || '(empty)',
           isDebugChunk: false,
-          modelUsed: "gemini-extract",
+          modelUsed: 'gemini-extract',
           inputTokens: result.usage?.inputTokens ?? 0,
           outputTokens: result.usage?.outputTokens ?? 0,
         });
       }
     }
 
-    logger.info("Gemini extract chunk", {
+    logger.info('Gemini extract chunk', {
       userId,
       sessionId,
       chunkIndex,
@@ -310,15 +329,14 @@ router.post("/recording/gemini-extract", auth.requireAuth, async (req, res) => {
       ...result,
       debug_mode: session?.debugMode ?? false,
     });
-
   } catch (error) {
-    logger.error("Gemini extract failed", {
+    logger.error('Gemini extract failed', {
       userId,
       sessionId,
       chunkIndex,
       error: error.message,
     });
-    res.status(500).json({ error: "Extraction failed: " + error.message });
+    res.status(500).json({ error: 'Extraction failed: ' + error.message });
   }
 });
 
@@ -326,29 +344,29 @@ router.post("/recording/gemini-extract", auth.requireAuth, async (req, res) => {
  * Analyze a consumer unit (fuseboard) photo using GPT Vision
  * POST /api/analyze-ccu
  */
-router.post("/analyze-ccu", auth.requireAuth, upload.single("photo"), async (req, res) => {
+router.post('/analyze-ccu', auth.requireAuth, upload.single('photo'), async (req, res) => {
   const tempPath = req.file?.path;
 
   try {
     if (!req.file) {
-      return res.status(400).json({ error: "No photo uploaded" });
+      return res.status(400).json({ error: 'No photo uploaded' });
     }
 
     const apiKey = process.env.OPENAI_API_KEY;
     if (!apiKey) {
-      return res.status(500).json({ error: "OpenAI API key not configured" });
+      return res.status(500).json({ error: 'OpenAI API key not configured' });
     }
 
-    const model = (process.env.CCU_MODEL || "gpt-5.2").trim();
+    const model = (process.env.CCU_MODEL || 'gpt-5.2').trim();
 
-    logger.info("CCU photo analysis requested", {
+    logger.info('CCU photo analysis requested', {
       userId: req.user.id,
       fileSize: req.file.size,
       model,
     });
 
     const imageBytes = await fs.readFile(tempPath);
-    const base64 = Buffer.from(imageBytes).toString("base64");
+    const base64 = Buffer.from(imageBytes).toString('base64');
 
     const prompt = `You are an expert UK electrician analysing a photo of a consumer unit for an EICR certificate.
 
@@ -515,7 +533,7 @@ If ANY information is unclear, illegible, or ambiguous, add plain English questi
 
 IMPORTANT: If you cannot read the BS/EN number from the device, use your knowledge to look it up based on manufacturer and model. Only leave as null if you cannot identify the device at all.`;
 
-    const OpenAI = (await import("openai")).default;
+    const OpenAI = (await import('openai')).default;
     const openai = new OpenAI({ apiKey });
 
     const dataUrl = `data:image/jpeg;base64,${base64}`;
@@ -524,24 +542,24 @@ IMPORTANT: If you cannot read the BS/EN number from the device, use your knowled
       model,
       max_completion_tokens: 8192,
       temperature: 0,
-      response_format: { type: "json_object" },
+      response_format: { type: 'json_object' },
       messages: [
         {
-          role: "user",
+          role: 'user',
           content: [
-            { type: "image_url", image_url: { url: dataUrl, detail: "high" } },
-            { type: "text", text: prompt },
+            { type: 'image_url', image_url: { url: dataUrl, detail: 'high' } },
+            { type: 'text', text: prompt },
           ],
         },
       ],
     });
 
-    const content = response.choices?.[0]?.message?.content || "";
+    const content = response.choices?.[0]?.message?.content || '';
     const promptTokens = response.usage?.prompt_tokens || 0;
     const completionTokens = response.usage?.completion_tokens || 0;
-    const finishReason = response.choices?.[0]?.finish_reason || "unknown";
+    const finishReason = response.choices?.[0]?.finish_reason || 'unknown';
 
-    logger.info("CCU analysis complete", {
+    logger.info('CCU analysis complete', {
       userId: req.user.id,
       model,
       promptTokens,
@@ -551,9 +569,12 @@ IMPORTANT: If you cannot read the BS/EN number from the device, use your knowled
       rawContentPreview: content.slice(0, 500),
     });
 
-    if (finishReason === "length") {
-      logger.error("CCU analysis truncated by token limit", {
-        userId: req.user.id, model, completionTokens, responseLength: content.length,
+    if (finishReason === 'length') {
+      logger.error('CCU analysis truncated by token limit', {
+        userId: req.user.id,
+        model,
+        completionTokens,
+        responseLength: content.length,
       });
       return res.status(502).json({
         error: `Response truncated (${completionTokens} tokens). The model hit its output limit. Try a clearer photo or retry.`,
@@ -561,12 +582,12 @@ IMPORTANT: If you cannot read the BS/EN number from the device, use your knowled
     }
 
     let jsonStr = content;
-    if (jsonStr.startsWith("```json")) {
+    if (jsonStr.startsWith('```json')) {
       jsonStr = jsonStr.slice(7);
-    } else if (jsonStr.startsWith("```")) {
+    } else if (jsonStr.startsWith('```')) {
       jsonStr = jsonStr.slice(3);
     }
-    if (jsonStr.endsWith("```")) {
+    if (jsonStr.endsWith('```')) {
       jsonStr = jsonStr.slice(0, -3);
     }
     jsonStr = jsonStr.trim();
@@ -579,36 +600,38 @@ IMPORTANT: If you cannot read the BS/EN number from the device, use your knowled
       analysis.main_switch_current = analysis.main_switch_rating;
     }
     if (!analysis.main_switch_bs_en) {
-      analysis.main_switch_bs_en = "60947-3";
+      analysis.main_switch_bs_en = '60947-3';
     }
     if (!analysis.main_switch_poles) {
-      analysis.main_switch_poles = "DP";
+      analysis.main_switch_poles = 'DP';
     }
     if (!analysis.main_switch_voltage) {
-      analysis.main_switch_voltage = "230";
+      analysis.main_switch_voltage = '230';
     }
 
-    const inputCost = promptTokens * 0.002 / 1000;
-    const outputCost = completionTokens * 0.012 / 1000;
+    const inputCost = (promptTokens * 0.002) / 1000;
+    const outputCost = (completionTokens * 0.012) / 1000;
     analysis.gptVisionCost = {
       cost_usd: parseFloat((inputCost + outputCost).toFixed(6)),
       input_tokens: promptTokens,
       output_tokens: completionTokens,
-      image_count: 1
+      image_count: 1,
     };
 
-    const labelledCircuits = (analysis.circuits || []).filter(c => c.label && c.label !== "null").length;
+    const labelledCircuits = (analysis.circuits || []).filter(
+      (c) => c.label && c.label !== 'null'
+    ).length;
     const totalCircuits = analysis.circuits?.length || 0;
 
-    logger.info("CCU analysis parsed", {
+    logger.info('CCU analysis parsed', {
       userId: req.user.id,
       model,
       boardManufacturer: analysis.board_manufacturer,
       boardModel: analysis.board_model,
       circuitCount: totalCircuits,
       labelledCircuits,
-      labelCoverage: totalCircuits > 0 ? `${labelledCircuits}/${totalCircuits}` : "0/0",
-      circuitLabels: (analysis.circuits || []).map(c => c.label || null),
+      labelCoverage: totalCircuits > 0 ? `${labelledCircuits}/${totalCircuits}` : '0/0',
+      circuitLabels: (analysis.circuits || []).map((c) => c.label || null),
       mainSwitchCurrent: analysis.main_switch_current,
       spdPresent: analysis.spd_present,
       confidenceOverall: analysis.confidence?.overall,
@@ -620,14 +643,18 @@ IMPORTANT: If you cannot read the BS/EN number from the device, use your knowled
 
     res.json(analysis);
   } catch (error) {
-    logger.error("CCU analysis failed", {
+    logger.error('CCU analysis failed', {
       userId: req.user.id,
       error: error.message,
     });
     res.status(500).json({ error: error.message });
   } finally {
     if (tempPath) {
-      try { await fs.unlink(tempPath); } catch {}
+      try {
+        await fs.unlink(tempPath);
+      } catch {
+        /* ignore cleanup errors */
+      }
     }
   }
 });
@@ -636,30 +663,30 @@ IMPORTANT: If you cannot read the BS/EN number from the device, use your knowled
  * Enhance an observation using GPT
  * POST /api/enhance-observation
  */
-router.post("/enhance-observation", auth.requireAuth, async (req, res) => {
+router.post('/enhance-observation', auth.requireAuth, async (req, res) => {
   try {
     const { observation_text, code, item_location } = req.body;
 
     if (!observation_text || !observation_text.trim()) {
-      return res.status(400).json({ error: "observation_text is required" });
+      return res.status(400).json({ error: 'observation_text is required' });
     }
 
     const apiKey = process.env.OPENAI_API_KEY;
     if (!apiKey) {
-      return res.status(500).json({ error: "OpenAI API key not configured" });
+      return res.status(500).json({ error: 'OpenAI API key not configured' });
     }
 
-    const model = (process.env.EXTRACTION_MODEL || "gpt-5.2").trim();
+    const model = (process.env.EXTRACTION_MODEL || 'gpt-5.2').trim();
 
-    logger.info("Observation enhancement requested", {
+    logger.info('Observation enhancement requested', {
       userId: req.user.id,
-      code: code || "unknown",
-      location: item_location || "unknown",
+      code: code || 'unknown',
+      location: item_location || 'unknown',
       textLength: observation_text.length,
       model,
     });
 
-    const OpenAI = (await import("openai")).default;
+    const OpenAI = (await import('openai')).default;
     const openai = new OpenAI({ apiKey });
 
     const systemPrompt = `You are a qualified UK electrician writing observations for an Electrical Installation Condition Report (EICR) to BS 7671 (18th Edition IET Wiring Regulations).
@@ -699,23 +726,23 @@ Return ONLY valid JSON with no markdown formatting:
   "schedule_item": "4.X"
 }`;
 
-    const userPrompt = `Observation code: ${code || "C3"}
-Location: ${item_location || "Not specified"}
+    const userPrompt = `Observation code: ${code || 'C3'}
+Location: ${item_location || 'Not specified'}
 Raw observation: ${observation_text}`;
 
     const response = await openai.chat.completions.create({
       model,
       messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: userPrompt },
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userPrompt },
       ],
       temperature: 0.2,
       max_completion_tokens: 500,
     });
 
-    const content = response.choices?.[0]?.message?.content?.trim() || "";
+    const content = response.choices?.[0]?.message?.content?.trim() || '';
 
-    logger.info("Observation enhancement complete", {
+    logger.info('Observation enhancement complete', {
       userId: req.user.id,
       model,
       tokens: response.usage?.total_tokens,
@@ -723,12 +750,12 @@ Raw observation: ${observation_text}`;
     });
 
     let jsonStr = content;
-    if (jsonStr.startsWith("```json")) {
+    if (jsonStr.startsWith('```json')) {
       jsonStr = jsonStr.slice(7);
-    } else if (jsonStr.startsWith("```")) {
+    } else if (jsonStr.startsWith('```')) {
       jsonStr = jsonStr.slice(3);
     }
-    if (jsonStr.endsWith("```")) {
+    if (jsonStr.endsWith('```')) {
       jsonStr = jsonStr.slice(0, -3);
     }
     jsonStr = jsonStr.trim();
@@ -736,10 +763,10 @@ Raw observation: ${observation_text}`;
     const enhanced = JSON.parse(jsonStr);
 
     if (!enhanced.observation_text) {
-      throw new Error("GPT response missing observation_text");
+      throw new Error('GPT response missing observation_text');
     }
 
-    logger.info("Observation enhancement parsed", {
+    logger.info('Observation enhancement parsed', {
       userId: req.user.id,
       regulation: enhanced.regulation,
       scheduleItem: enhanced.schedule_item,
@@ -755,12 +782,15 @@ Raw observation: ${observation_text}`;
       },
     });
   } catch (error) {
-    logger.error("Observation enhancement failed", {
+    logger.error('Observation enhancement failed', {
       userId: req.user.id,
       error: error.message,
     });
     res.status(500).json({ error: error.message });
   }
 });
+
+// Handle Multer file filter rejections with 400 status
+router.use(handleUploadError);
 
 export default router;

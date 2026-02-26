@@ -27,6 +27,7 @@ import {
 } from '../utils/jobs.js';
 import logger from '../logger.js';
 import { sanitizeS3Path } from '../utils/sanitize.js';
+import { createFileFilter, IMAGE_MIMES, AUDIO_MIMES, handleUploadError } from '../utils/upload.js';
 
 const router = Router();
 
@@ -39,6 +40,7 @@ const upload = multer({
     },
   }),
   limits: { fileSize: 100 * 1024 * 1024 },
+  fileFilter: createFileFilter([...IMAGE_MIMES, ...AUDIO_MIMES]),
 });
 
 // ============= Job List =============
@@ -1103,5 +1105,8 @@ router.get('/queue/health', auth.requireAuth, async (req, res) => {
     res.status(500).json({ error: 'Failed to get queue health' });
   }
 });
+
+// Handle Multer file filter rejections with 400 status
+router.use(handleUploadError);
 
 export default router;
