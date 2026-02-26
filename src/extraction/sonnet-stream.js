@@ -7,73 +7,151 @@ import { QuestionGate } from './question-gate.js';
 import * as storage from '../storage.js';
 import logger from '../logger.js';
 
+// --- Per-connection rate limiting for transcript messages ---
+const WS_RATE_LIMIT = {
+  maxTranscripts: 60, // max transcript messages per sliding window
+  windowMs: 60_000, // 1-minute window
+};
+
+/**
+ * Sliding-window rate limiter. Returns an object with a check() method
+ * that returns true if the message is allowed, false if rate-limited.
+ */
+function createMessageRateLimiter(maxMessages, windowMs) {
+  const timestamps = [];
+  return {
+    check() {
+      const now = Date.now();
+      // Evict timestamps outside the window
+      while (timestamps.length > 0 && timestamps[0] <= now - windowMs) {
+        timestamps.shift();
+      }
+      if (timestamps.length >= maxMessages) {
+        return false;
+      }
+      timestamps.push(now);
+      return true;
+    },
+  };
+}
+
 const activeSessions = new Map(); // sessionId -> { session, questionGate, ws, ... }
 
 // Known valid field names that iOS can handle
 const KNOWN_FIELDS = new Set([
-    // Supply fields
-    'ze', 'pfc', 'earthing_arrangement', 'main_earth_conductor_csa', 'main_bonding_conductor_csa',
-    'bonding_water', 'bonding_gas', 'earth_electrode_type', 'earth_electrode_resistance',
-    'supply_voltage', 'nominal_voltage', 'nominal_voltage_u', 'supply_frequency', 'nominal_frequency',
-    'supply_polarity_confirmed', 'manufacturer', 'zs_at_db',
-    // Installation fields
-    'address', 'client_name', 'client_phone', 'client_email', 'reason_for_report',
-    'occupier_name', 'date_of_previous_inspection', 'previous_certificate_number',
-    'estimated_age_of_installation', 'general_condition', 'next_inspection_years', 'premises_description',
-    // Circuit fields
-    'zs', 'insulation_resistance_l_e', 'insulation_resistance_l_l', 'r1_plus_r2', 'r1_r2', 'r1r2',
-    'r2', 'earth_continuity', 'ring_continuity_r1', 'ring_continuity_rn', 'ring_continuity_r2',
-    'rcd_trip_time', 'rcd_time', 'rcd_rating_a', 'rcd_rating',
-    'polarity', 'cable_size', 'cable_size_earth', 'cpc_csa_mm2', 'cpc_csa',
-    'ocpd_type', 'ocpd_rating', 'number_of_points',
-    'wiring_type', 'ref_method',
-    'rcd_button_confirmed', 'afdd_button_confirmed',
-    'circuit_description', 'designation',
-    'ir_live_earth', 'ir_live_live', 'earth_fault_loop_impedance'
+  // Supply fields
+  'ze',
+  'pfc',
+  'earthing_arrangement',
+  'main_earth_conductor_csa',
+  'main_bonding_conductor_csa',
+  'bonding_water',
+  'bonding_gas',
+  'earth_electrode_type',
+  'earth_electrode_resistance',
+  'supply_voltage',
+  'nominal_voltage',
+  'nominal_voltage_u',
+  'supply_frequency',
+  'nominal_frequency',
+  'supply_polarity_confirmed',
+  'manufacturer',
+  'zs_at_db',
+  // Installation fields
+  'address',
+  'client_name',
+  'client_phone',
+  'client_email',
+  'reason_for_report',
+  'occupier_name',
+  'date_of_previous_inspection',
+  'previous_certificate_number',
+  'estimated_age_of_installation',
+  'general_condition',
+  'next_inspection_years',
+  'premises_description',
+  // Circuit fields
+  'zs',
+  'insulation_resistance_l_e',
+  'insulation_resistance_l_l',
+  'r1_plus_r2',
+  'r1_r2',
+  'r1r2',
+  'r2',
+  'earth_continuity',
+  'ring_continuity_r1',
+  'ring_continuity_rn',
+  'ring_continuity_r2',
+  'rcd_trip_time',
+  'rcd_time',
+  'rcd_rating_a',
+  'rcd_rating',
+  'polarity',
+  'cable_size',
+  'cable_size_earth',
+  'cpc_csa_mm2',
+  'cpc_csa',
+  'ocpd_type',
+  'ocpd_rating',
+  'number_of_points',
+  'wiring_type',
+  'ref_method',
+  'rcd_button_confirmed',
+  'afdd_button_confirmed',
+  'circuit_description',
+  'designation',
+  'ir_live_earth',
+  'ir_live_live',
+  'earth_fault_loop_impedance',
 ]);
 
 // Common misspellings / variants → correct field name
 const FIELD_CORRECTIONS = {
-    'insulation_resistance_le': 'insulation_resistance_l_e',
-    'insulation_resistance_ll': 'insulation_resistance_l_l',
-    'earth_loop_impedance_ze': 'ze',
-    'prospective_fault_current': 'pfc',
-    // r1_plus_r2 is in KNOWN_FIELDS (iOS handles both r1_plus_r2 and r1_r2)
-    'rcd_trip_time_ms': 'rcd_trip_time',
-    'rcd_rating_ma': 'rcd_rating_a',
-    'cable_size_live': 'cable_size',
-    'cable_size_cpc': 'cable_size_earth',
-    'cpc_size': 'cable_size_earth',
-    'ir_l_e': 'insulation_resistance_l_e',
-    'ir_l_l': 'insulation_resistance_l_l',
-    'ir_le': 'insulation_resistance_l_e',
-    'ir_ll': 'insulation_resistance_l_l',
-    'loop_impedance': 'zs',
-    'earth_loop_impedance': 'zs',
-    'ring_r1': 'ring_continuity_r1',
-    'ring_rn': 'ring_continuity_rn',
-    'ring_r2': 'ring_continuity_r2',
-    'mcb_type': 'ocpd_type',
-    'mcb_rating': 'ocpd_rating',
-    'breaker_type': 'ocpd_type',
-    'breaker_rating': 'ocpd_rating',
+  insulation_resistance_le: 'insulation_resistance_l_e',
+  insulation_resistance_ll: 'insulation_resistance_l_l',
+  earth_loop_impedance_ze: 'ze',
+  prospective_fault_current: 'pfc',
+  // r1_plus_r2 is in KNOWN_FIELDS (iOS handles both r1_plus_r2 and r1_r2)
+  rcd_trip_time_ms: 'rcd_trip_time',
+  rcd_rating_ma: 'rcd_rating_a',
+  cable_size_live: 'cable_size',
+  cable_size_cpc: 'cable_size_earth',
+  cpc_size: 'cable_size_earth',
+  ir_l_e: 'insulation_resistance_l_e',
+  ir_l_l: 'insulation_resistance_l_l',
+  ir_le: 'insulation_resistance_l_e',
+  ir_ll: 'insulation_resistance_l_l',
+  loop_impedance: 'zs',
+  earth_loop_impedance: 'zs',
+  ring_r1: 'ring_continuity_r1',
+  ring_rn: 'ring_continuity_rn',
+  ring_r2: 'ring_continuity_r2',
+  mcb_type: 'ocpd_type',
+  mcb_rating: 'ocpd_rating',
+  breaker_type: 'ocpd_type',
+  breaker_rating: 'ocpd_rating',
 };
 
 function validateAndCorrectFields(result, sessionId) {
-    if (!result.extracted_readings) return result;
-    for (const reading of result.extracted_readings) {
-        if (!reading.field) continue;
-        if (KNOWN_FIELDS.has(reading.field)) continue;
+  if (!result.extracted_readings) return result;
+  for (const reading of result.extracted_readings) {
+    if (!reading.field) continue;
+    if (KNOWN_FIELDS.has(reading.field)) continue;
 
-        const corrected = FIELD_CORRECTIONS[reading.field];
-        if (corrected) {
-            logger.info('Field corrected', { sessionId, from: reading.field, to: corrected });
-            reading.field = corrected;
-        } else {
-            logger.warn('Unknown field name from Sonnet', { sessionId, field: reading.field, circuit: reading.circuit, value: reading.value });
-        }
+    const corrected = FIELD_CORRECTIONS[reading.field];
+    if (corrected) {
+      logger.info('Field corrected', { sessionId, from: reading.field, to: corrected });
+      reading.field = corrected;
+    } else {
+      logger.warn('Unknown field name from Sonnet', {
+        sessionId,
+        field: reading.field,
+        circuit: reading.circuit,
+        value: reading.value,
+      });
     }
-    return result;
+  }
+  return result;
 }
 
 export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
@@ -84,6 +162,10 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
     logger.info('SonnetStream connection', { userId });
     let currentSessionId = null;
     let preSessionBuffer = []; // Buffer transcripts that arrive before session_start
+    const transcriptLimiter = createMessageRateLimiter(
+      WS_RATE_LIMIT.maxTranscripts,
+      WS_RATE_LIMIT.windowMs
+    );
 
     // Keepalive: respond to pings (ws library handles pong automatically)
     // and send pings every 30s to prevent ALB idle timeout
@@ -119,6 +201,21 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
             break;
 
           case 'transcript':
+            if (!transcriptLimiter.check()) {
+              logger.warn('WebSocket transcript rate limit exceeded', {
+                userId,
+                sessionId: currentSessionId,
+              });
+              ws.send(
+                JSON.stringify({
+                  type: 'error',
+                  message: 'Rate limit exceeded — too many transcript messages',
+                  recoverable: false,
+                })
+              );
+              ws.close(1008, 'Rate limit exceeded');
+              return;
+            }
             await handleTranscript(ws, currentSessionId, msg, preSessionBuffer);
             break;
 
@@ -151,8 +248,17 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
               const entry = activeSessions.get(currentSessionId);
               const now = Date.now();
               if (now - entry.lastClientCompactTime < 120_000) {
-                logger.info('Client compact rate-limited', { sessionId: currentSessionId, secondsSinceLast: Math.round((now - entry.lastClientCompactTime) / 1000) });
-                ws.send(JSON.stringify({ type: 'session_ack', status: 'compact_skipped', reason: 'rate_limited' }));
+                logger.info('Client compact rate-limited', {
+                  sessionId: currentSessionId,
+                  secondsSinceLast: Math.round((now - entry.lastClientCompactTime) / 1000),
+                });
+                ws.send(
+                  JSON.stringify({
+                    type: 'session_ack',
+                    status: 'compact_skipped',
+                    reason: 'rate_limited',
+                  })
+                );
                 break;
               }
               entry.lastClientCompactTime = now;
@@ -161,7 +267,10 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
                 ws.send(JSON.stringify({ type: 'session_ack', status: 'compacted' }));
                 logger.info('Session compacted on request', { sessionId: currentSessionId });
               } catch (error) {
-                logger.error('Compact failed', { sessionId: currentSessionId, error: error.message });
+                logger.error('Compact failed', {
+                  sessionId: currentSessionId,
+                  error: error.message,
+                });
                 ws.send(JSON.stringify({ type: 'session_ack', status: 'compact_failed' }));
               }
             }
@@ -173,10 +282,15 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
             break;
 
           default:
-            ws.send(JSON.stringify({ type: 'error', message: `Unknown message type: ${msg.type}` }));
+            ws.send(
+              JSON.stringify({ type: 'error', message: `Unknown message type: ${msg.type}` })
+            );
         }
       } catch (error) {
-        logger.error('SonnetStream message handling error', { type: msg.type, error: error.message });
+        logger.error('SonnetStream message handling error', {
+          type: msg.type,
+          error: error.message,
+        });
         ws.send(JSON.stringify({ type: 'error', message: error.message, recoverable: true }));
       }
     });
@@ -254,7 +368,7 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
       lastRegexResults: [],
       isExtracting: false,
       pendingTranscripts: [],
-      lastClientCompactTime: 0
+      lastClientCompactTime: 0,
     });
 
     ws.send(JSON.stringify({ type: 'session_ack', status: 'started' }));
@@ -264,7 +378,13 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
   async function handleTranscript(ws, sessionId, msg) {
     if (!sessionId || !activeSessions.has(sessionId)) {
       logger.warn('Transcript received but no active session', { sessionId: sessionId || null });
-      ws.send(JSON.stringify({ type: 'error', message: 'No active session — reconnecting', recoverable: true }));
+      ws.send(
+        JSON.stringify({
+          type: 'error',
+          message: 'No active session — reconnecting',
+          recoverable: true,
+        })
+      );
       return;
     }
 
@@ -280,17 +400,25 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
     entry.isExtracting = true;
 
     try {
-      logger.info('Extracting from transcript', { sessionId, textPreview: msg.text.substring(0, 80) });
+      logger.info('Extracting from transcript', {
+        sessionId,
+        textPreview: msg.text.substring(0, 80),
+      });
       const regexResults = msg.regexResults || entry.lastRegexResults || [];
       const result = await entry.session.extractFromUtterance(msg.text, regexResults, {
-        confirmationsEnabled: msg.confirmations_enabled || false
+        confirmationsEnabled: msg.confirmations_enabled || false,
       });
       entry.lastRegexResults = [];
 
       // Validate and auto-correct field names before sending to iOS
       validateAndCorrectFields(result, sessionId);
 
-      logger.info('Extraction result', { sessionId, readings: result.extracted_readings.length, questions: (result.questions_for_user || []).length, confirmations: (result.confirmations || []).length });
+      logger.info('Extraction result', {
+        sessionId,
+        readings: result.extracted_readings.length,
+        questions: (result.questions_for_user || []).length,
+        confirmations: (result.confirmations || []).length,
+      });
 
       // Send extraction result (strip questions_for_user — they go through QuestionGate)
       if (ws.readyState === ws.OPEN) {
@@ -309,7 +437,7 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
       // Resolve any pending questions based on newly extracted readings
       if (result.extracted_readings && result.extracted_readings.length > 0) {
         const resolvedFields = new Set(
-          result.extracted_readings.map(r => `${r.field}:${r.circuit}`)
+          result.extracted_readings.map((r) => `${r.field}:${r.circuit}`)
         );
         entry.questionGate.resolveByFields(resolvedFields);
       }
@@ -319,7 +447,10 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         try {
           const reviewResult = await entry.session.reviewForOrphanedValues();
           if (reviewResult?.questions_for_user?.length > 0) {
-            logger.info('Orphaned review found questions', { sessionId, count: reviewResult.questions_for_user.length });
+            logger.info('Orphaned review found questions', {
+              sessionId,
+              count: reviewResult.questions_for_user.length,
+            });
             entry.questionGate.enqueue(reviewResult.questions_for_user);
           }
         } catch (reviewErr) {
@@ -329,7 +460,13 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
     } catch (error) {
       logger.error('Extraction error', { sessionId, error: error.message });
       if (ws.readyState === ws.OPEN) {
-        ws.send(JSON.stringify({ type: 'error', message: `Extraction failed: ${error.message}`, recoverable: true }));
+        ws.send(
+          JSON.stringify({
+            type: 'error',
+            message: `Extraction failed: ${error.message}`,
+            recoverable: true,
+          })
+        );
       }
     } finally {
       entry.isExtracting = false;
@@ -350,8 +487,6 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
     const correctionText = `CORRECTION: The value for ${msg.field} on circuit ${msg.circuit} should be ${msg.value}`;
     await handleTranscript(ws, sessionId, { text: correctionText });
   }
-
-
 
   async function handleSessionStop(ws, sessionId) {
     if (!sessionId || !activeSessions.has(sessionId)) return;
