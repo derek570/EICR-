@@ -1,10 +1,30 @@
-import fs from "node:fs/promises";
-import path from "node:path";
-import OpenAI from "openai";
-import logger from "./logger.js";
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import OpenAI from 'openai';
+import logger from './logger.js';
 
-const IMAGE_EXTS = new Set([".jpg", ".jpeg", ".png", ".webp"]);
+const IMAGE_EXTS = new Set(['.jpg', '.jpeg', '.png', '.webp']);
 
+// HISTORY (0c75976, 2026-02-23): CCU extraction prompt v2 — structured 4-step methodology.
+// The original prompt was a flat list of instructions that GPT Vision would often skip steps
+// for (especially the cross-check in Step 4). The v2 prompt enforces a strict 4-step order:
+// (1) physical device scan left-to-right, (2) map circuit labels to devices, (3) extract
+// details per device, (4) mandatory cross-check. This dramatically improved accuracy for
+// circuit numbering (which depends on main switch position) and RCD type identification
+// (Type AC vs Type A — counting waveform lines in the symbol box).
+//
+// HISTORY (491366c, 2026-02-23): Added circuit numbering rule to Step 2. The prompt now
+// explicitly states that Circuit 1 is next to the main switch, numbering outward. Before
+// this, GPT Vision would often number circuits from left-to-right regardless of where the
+// main switch was, causing circuit misalignment.
+//
+// HISTORY: Model was briefly switched from GPT-5.2 to Gemini 3 Pro, but Gemini truncated
+// responses at ~146 tokens on complex boards. Reverted to GPT-5.2 which handles the full
+// 4-step methodology reliably.
+//
+// Step 3h (Questions for Inspector) was added so the CCU analysis can flag uncertainties
+// (e.g. "can't read the RCD type symbol") as plain-English questions that get read aloud
+// to the inspector via TTS during the recording session, allowing them to clarify verbally.
 const PHOTO_ANALYSIS_PROMPT = `You are analyzing a photo from an EICR (Electrical Installation Condition Report) inspection.
 
 This photo could be one of several types - analyze accordingly:
@@ -186,39 +206,41 @@ Describe:
 
 function mimeFromExt(filePath) {
   switch (path.extname(filePath).toLowerCase()) {
-    case ".jpg":
-    case ".jpeg":
-      return "image/jpeg";
-    case ".png":
-      return "image/png";
-    case ".webp":
-      return "image/webp";
+    case '.jpg':
+    case '.jpeg':
+      return 'image/jpeg';
+    case '.png':
+      return 'image/png';
+    case '.webp':
+      return 'image/webp';
     default:
-      return "image/jpeg";
+      return 'image/jpeg';
   }
 }
 
 async function analyzeImage(openai, model, imagePath) {
   const mimeType = mimeFromExt(imagePath);
   const bytes = await fs.readFile(imagePath);
-  const base64 = Buffer.from(bytes).toString("base64");
+  const base64 = Buffer.from(bytes).toString('base64');
   const dataUrl = `data:${mimeType};base64,${base64}`;
 
   const response = await openai.chat.completions.create({
     model,
-    messages: [{
-      role: "user",
-      content: [
-        { type: "text", text: PHOTO_ANALYSIS_PROMPT },
-        { type: "image_url", image_url: { url: dataUrl } }
-      ]
-    }],
-    temperature: 0
+    messages: [
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: PHOTO_ANALYSIS_PROMPT },
+          { type: 'image_url', image_url: { url: dataUrl } },
+        ],
+      },
+    ],
+    temperature: 0,
   });
 
   return {
-    analysis: response.choices?.[0]?.message?.content?.trim() || "",
-    usage: response.usage || null
+    analysis: response.choices?.[0]?.message?.content?.trim() || '',
+    usage: response.usage || null,
   };
 }
 
@@ -227,24 +249,24 @@ async function analyzeImage(openai, model, imagePath) {
  */
 export async function analyzePhotos(photosDir) {
   const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) throw new Error("Missing OPENAI_API_KEY in .env");
+  if (!apiKey) throw new Error('Missing OPENAI_API_KEY in .env');
 
-  const model = (process.env.EXTRACTION_MODEL || "gpt-5.2").trim();
+  const model = (process.env.EXTRACTION_MODEL || 'gpt-5.2').trim();
   const openai = new OpenAI({ apiKey });
 
   let files = [];
   try {
     files = await fs.readdir(photosDir);
   } catch {
-    return { analysis: "", photoCount: 0, usage: null, model };
+    return { analysis: '', photoCount: 0, usage: null, model };
   }
 
-  const imageFiles = files.filter(f =>
-    IMAGE_EXTS.has(path.extname(f).toLowerCase()) && !f.startsWith(".")
+  const imageFiles = files.filter(
+    (f) => IMAGE_EXTS.has(path.extname(f).toLowerCase()) && !f.startsWith('.')
   );
 
   if (imageFiles.length === 0) {
-    return { analysis: "", photoCount: 0, usage: null, model };
+    return { analysis: '', photoCount: 0, usage: null, model };
   }
 
   const results = [];
@@ -258,7 +280,7 @@ export async function analyzePhotos(photosDir) {
       const { analysis, usage } = await analyzeImage(openai, model, imagePath);
       results.push({
         file,
-        analysis
+        analysis,
       });
 
       if (usage) {
@@ -270,7 +292,7 @@ export async function analyzePhotos(photosDir) {
       logger.error(`Failed to analyze photo`, { file, error: err.message });
       results.push({
         file,
-        analysis: `[Analysis failed: ${err.message}]`
+        analysis: `[Analysis failed: ${err.message}]`,
       });
     }
   }
@@ -278,7 +300,7 @@ export async function analyzePhotos(photosDir) {
   // Combine all analyses
   const combined = results
     .map((r, i) => `=== Photo ${i + 1}: ${r.file} ===\n\n${r.analysis}`)
-    .join("\n\n");
+    .join('\n\n');
 
   return {
     analysis: combined,
@@ -286,7 +308,7 @@ export async function analyzePhotos(photosDir) {
     details: results,
     usage: totalUsage.total_tokens > 0 ? totalUsage : null,
     model,
-    questionsForInspector: extractQuestions(combined)
+    questionsForInspector: extractQuestions(combined),
   };
 }
 
@@ -301,7 +323,7 @@ function extractQuestions(analysisText) {
   if (!match) return [];
 
   return match[1]
-    .split("\n")
-    .map(line => line.replace(/^[-*\d.)\s]+/, "").trim())
-    .filter(line => line.length > 10 && line.includes("?"));
+    .split('\n')
+    .map((line) => line.replace(/^[-*\d.)\s]+/, '').trim())
+    .filter((line) => line.length > 10 && line.includes('?'));
 }

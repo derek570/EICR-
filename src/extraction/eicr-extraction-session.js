@@ -1,6 +1,16 @@
 // eicr-extraction-session.js
 // Core multi-turn Sonnet conversation manager for EICR extraction.
 // Maintains conversation history with prompt caching and custom compaction.
+//
+// HISTORY (029b91f, 2026-02-23): Compaction was causing a cost blowout in production.
+// The compact() method was being called too aggressively — even on small conversations,
+// after failures, and in rapid succession. This wasted Anthropic API credits on
+// summaries that often failed or produced truncated JSON. Five guards were added to
+// compact() to prevent this: minimum message count, minimum token estimate, no-new-turns
+// check, exponential failure backoff, and a 120-second rate limit. The max_tokens for
+// compaction was also increased from 2048 to 4096 to prevent JSON truncation on long
+// sessions. A client-side 120s rate limit was added to the session_compact WebSocket
+// handler in sonnet-stream.js to match.
 
 import fssync from 'node:fs';
 import path from 'node:path';
@@ -54,7 +64,6 @@ Rules:
 - questions_asked prevents re-asking the same questions
 - unresolved_values captures anything flagged but not yet confirmed`;
 
-
 export class EICRExtractionSession {
   constructor(apiKey, sessionId) {
     this.client = new Anthropic({ apiKey });
@@ -76,7 +85,7 @@ export class EICRExtractionSession {
   // Extract text from a message content (handles both string and content block array formats)
   static messageText(content) {
     if (typeof content === 'string') return content;
-    if (Array.isArray(content)) return content.map(b => b.text || '').join('');
+    if (Array.isArray(content)) return content.map((b) => b.text || '').join('');
     return '';
   }
 
@@ -137,12 +146,14 @@ export class EICRExtractionSession {
       ...this.conversationHistory,
       {
         role: 'user',
-        content: [{
-          type: 'text',
-          text: userMessage,
-          cache_control: { type: 'ephemeral', ttl: '1h' }
-        }]
-      }
+        content: [
+          {
+            type: 'text',
+            text: userMessage,
+            cache_control: { type: 'ephemeral', ttl: '1h' },
+          },
+        ],
+      },
     ];
 
     // Add mid-conversation breakpoints if >20 blocks
@@ -151,7 +162,7 @@ export class EICRExtractionSession {
     const response = await this.callWithRetry(messages);
 
     // Extract text response
-    const textBlock = response.content.find(b => b.type === 'text');
+    const textBlock = response.content.find((b) => b.type === 'text');
     if (!textBlock || !textBlock.text) {
       // Still push to conversation history to keep it in sync
       this.conversationHistory.push(
@@ -162,7 +173,15 @@ export class EICRExtractionSession {
     }
 
     const rawText = textBlock.text;
-    const EMPTY_RESULT = { extracted_readings: [], field_clears: [], circuit_updates: [], observations: [], validation_alerts: [], questions_for_user: [], confirmations: [] };
+    const EMPTY_RESULT = {
+      extracted_readings: [],
+      field_clears: [],
+      circuit_updates: [],
+      observations: [],
+      validation_alerts: [],
+      questions_for_user: [],
+      confirmations: [],
+    };
     let result;
 
     try {
@@ -170,13 +189,17 @@ export class EICRExtractionSession {
       const parsed = JSON.parse(resultJSON);
       // Validate expected array fields
       result = {
-        extracted_readings: Array.isArray(parsed.extracted_readings) ? parsed.extracted_readings : [],
+        extracted_readings: Array.isArray(parsed.extracted_readings)
+          ? parsed.extracted_readings
+          : [],
         field_clears: Array.isArray(parsed.field_clears) ? parsed.field_clears : [],
         circuit_updates: Array.isArray(parsed.circuit_updates) ? parsed.circuit_updates : [],
         observations: Array.isArray(parsed.observations) ? parsed.observations : [],
         validation_alerts: Array.isArray(parsed.validation_alerts) ? parsed.validation_alerts : [],
-        questions_for_user: Array.isArray(parsed.questions_for_user) ? parsed.questions_for_user : [],
-        confirmations: Array.isArray(parsed.confirmations) ? parsed.confirmations : []
+        questions_for_user: Array.isArray(parsed.questions_for_user)
+          ? parsed.questions_for_user
+          : [],
+        confirmations: Array.isArray(parsed.confirmations) ? parsed.confirmations : [],
       };
     } catch (parseError) {
       logger.warn(`Session ${this.sessionId} Failed to parse Sonnet JSON: ${parseError.message}`);
@@ -193,7 +216,9 @@ export class EICRExtractionSession {
     this.turnCount++;
     this.extractedReadingsCount += result.extracted_readings.length;
     if (result.questions_for_user.length > 0) {
-      const newQuestions = result.questions_for_user.map(q => `${q.field || 'unknown'}:${q.circuit || 'unknown'}`);
+      const newQuestions = result.questions_for_user.map(
+        (q) => `${q.field || 'unknown'}:${q.circuit || 'unknown'}`
+      );
       this.askedQuestions.push(...newQuestions);
       // Cap at 30 entries
       while (this.askedQuestions.length > 30) {
@@ -203,19 +228,21 @@ export class EICRExtractionSession {
 
     // Dedup observations: filter out any that match already-sent observations
     if (result.observations.length > 0) {
-      result.observations = result.observations.filter(obs => {
+      result.observations = result.observations.filter((obs) => {
         const text = (obs.observation_text || '').toLowerCase();
         if (!text) return false;
-        const isDupe = this.extractedObservationTexts.some(prev => {
+        const isDupe = this.extractedObservationTexts.some((prev) => {
           // Check word overlap: >50% shared words = duplicate
           const prevWords = new Set(prev.split(/\s+/));
           const newWords = text.split(/\s+/);
           if (newWords.length === 0) return true;
-          const overlap = newWords.filter(w => prevWords.has(w)).length;
+          const overlap = newWords.filter((w) => prevWords.has(w)).length;
           return overlap / newWords.length > 0.5;
         });
         if (isDupe) {
-          logger.info(`Session ${this.sessionId} Observation deduped (server): ${text.substring(0, 60)}`);
+          logger.info(
+            `Session ${this.sessionId} Observation deduped (server): ${text.substring(0, 60)}`
+          );
         } else {
           this.extractedObservationTexts.push(text);
         }
@@ -229,16 +256,28 @@ export class EICRExtractionSession {
     return result;
   }
 
+  // HISTORY (029b91f, 2026-02-23): compact() was the source of a production cost blowout.
+  // Before these 5 guards were added, compact() would fire on almost every utterance once the
+  // conversation exceeded the token threshold. Each compaction call costs ~$0.02-0.05 in API
+  // credits, and failed compactions (JSON truncation at 2048 max_tokens) would just retry on
+  // the next utterance — burning money with no benefit. The 5 guards below (message count,
+  // token estimate, no-new-turns, failure backoff, rate limit) together reduced compaction
+  // costs by ~90%. The max_tokens was also raised from 2048→4096 to prevent JSON truncation
+  // which was the primary cause of compaction failures.
   async compact() {
     // Guard 1: Nothing to compact
     if (this.conversationHistory.length <= 2) {
-      logger.info(`Session ${this.sessionId} Compact skipped: only ${this.conversationHistory.length} messages`);
+      logger.info(
+        `Session ${this.sessionId} Compact skipped: only ${this.conversationHistory.length} messages`
+      );
       return;
     }
 
     // Guard 2: Too small to justify cost
     if (this.conversationTokenEstimate < 1500) {
-      logger.info(`Session ${this.sessionId} Compact skipped: only ~${this.conversationTokenEstimate} tokens`);
+      logger.info(
+        `Session ${this.sessionId} Compact skipped: only ~${this.conversationTokenEstimate} tokens`
+      );
       return;
     }
 
@@ -248,38 +287,60 @@ export class EICRExtractionSession {
       return;
     }
 
-    // Guard 4: Failure backoff — require min(10, 2^failures) new turns after a failure
+    // Guard 4: Failure backoff — require min(10, 2^failures) new turns after a failure.
+    // This is exponential backoff: after 1 failure wait 2 turns, after 2 failures wait 4
+    // turns, etc., capping at 10. This prevents hammering the API when compaction keeps
+    // failing (e.g. conversation structure that Sonnet can't summarise cleanly).
     if (this.compactionFailures > 0) {
       const requiredTurns = Math.min(10, Math.pow(2, this.compactionFailures));
       const turnsSinceLastCompact = this.turnCount - this.lastCompactedAtTurn;
       if (turnsSinceLastCompact < requiredTurns) {
-        logger.info(`Session ${this.sessionId} Compact skipped: backoff (${turnsSinceLastCompact}/${requiredTurns} turns, ${this.compactionFailures} failures)`);
+        logger.info(
+          `Session ${this.sessionId} Compact skipped: backoff (${turnsSinceLastCompact}/${requiredTurns} turns, ${this.compactionFailures} failures)`
+        );
         return;
       }
     }
 
-    // Guard 5: Rate limit — 120s minimum between compaction attempts
+    // Guard 5: Rate limit — 120s minimum between compaction attempts.
+    // Matches the client-side rate limit in sonnet-stream.js session_compact handler.
     const now = Date.now();
     if (now - this.lastCompactTime < 120_000) {
-      logger.info(`Session ${this.sessionId} Compact skipped: rate limited (${Math.round((now - this.lastCompactTime) / 1000)}s since last)`);
+      logger.info(
+        `Session ${this.sessionId} Compact skipped: rate limited (${Math.round((now - this.lastCompactTime) / 1000)}s since last)`
+      );
       return;
     }
 
     this.lastCompactTime = now;
 
     try {
-      logger.info(`Session ${this.sessionId} Compacting: ${this.turnCount} turns, ~${this.conversationTokenEstimate} tokens`);
+      logger.info(
+        `Session ${this.sessionId} Compacting: ${this.turnCount} turns, ~${this.conversationTokenEstimate} tokens`
+      );
 
-      const compactionInput = this.conversationHistory.map((msg, i) => {
-        const text = EICRExtractionSession.messageText(msg.content);
-        return `[Turn ${Math.floor(i / 2) + 1} ${msg.role}]: ${text}`;
-      }).join('\n\n');
+      const compactionInput = this.conversationHistory
+        .map((msg, i) => {
+          const text = EICRExtractionSession.messageText(msg.content);
+          return `[Turn ${Math.floor(i / 2) + 1} ${msg.role}]: ${text}`;
+        })
+        .join('\n\n');
 
-      const compactionMessages = [{
-        role: 'user',
-        content: [{ type: 'text', text: `Summarize this EICR extraction conversation:\n\n${compactionInput}` }]
-      }];
+      const compactionMessages = [
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'text',
+              text: `Summarize this EICR extraction conversation:\n\n${compactionInput}`,
+            },
+          ],
+        },
+      ];
 
+      // max_tokens raised from 2048→4096 (029b91f) to prevent JSON truncation on long sessions.
+      // At 2048 tokens, compaction output for sessions with >15 turns would get cut off mid-JSON,
+      // causing parse failures that triggered the failure backoff path above.
       const response = await this.callWithRetry(compactionMessages, 3, COMPACTION_PROMPT, 4096);
 
       const summaryText = response.content[0].text;
@@ -288,7 +349,9 @@ export class EICRExtractionSession {
       // Validate
       const readingCount = (summary.confirmed_readings || []).length;
       if (readingCount < this.extractedReadingsCount * 0.8) {
-        logger.warn(`Session ${this.sessionId} Compaction may have lost data: expected ~${this.extractedReadingsCount}, got ${readingCount}`);
+        logger.warn(
+          `Session ${this.sessionId} Compaction may have lost data: expected ~${this.extractedReadingsCount}, got ${readingCount}`
+        );
       }
 
       // Track compaction cost
@@ -298,7 +361,7 @@ export class EICRExtractionSession {
       const ackResponse = JSON.stringify({
         extracted_readings: [],
         validation_alerts: [],
-        questions_for_user: []
+        questions_for_user: [],
       });
 
       // Clear askedQuestions on compaction (summary already includes questions_asked)
@@ -307,39 +370,47 @@ export class EICRExtractionSession {
       this.conversationHistory = [
         {
           role: 'user',
-          content: [{
-            type: 'text',
-            text: `SESSION SUMMARY (compacted from ${this.turnCount} previous turns):\n${JSON.stringify(summary, null, 2)}\n\nContinue extracting from new transcript buffers. All readings in confirmed_readings are already saved -- do not re-extract them. All observations in observations_created are already saved -- do not re-extract them. REMINDER: There is NO active circuit. Each utterance stands alone -- if it does not contain a circuit reference, set circuit to -1.`
-          }]
+          content: [
+            {
+              type: 'text',
+              text: `SESSION SUMMARY (compacted from ${this.turnCount} previous turns):\n${JSON.stringify(summary, null, 2)}\n\nContinue extracting from new transcript buffers. All readings in confirmed_readings are already saved -- do not re-extract them. All observations in observations_created are already saved -- do not re-extract them. REMINDER: There is NO active circuit. Each utterance stands alone -- if it does not contain a circuit reference, set circuit to -1.`,
+            },
+          ],
         },
         {
           role: 'assistant',
-          content: [{ type: 'text', text: ackResponse }]
-        }
+          content: [{ type: 'text', text: ackResponse }],
+        },
       ];
 
       // Reset the circuit schedule flag so it gets re-sent after compaction
       this.circuitScheduleIncluded = false;
 
-      logger.info(`Session ${this.sessionId} Compacted to ~${this.conversationTokenEstimate} tokens`);
+      logger.info(
+        `Session ${this.sessionId} Compacted to ~${this.conversationTokenEstimate} tokens`
+      );
       this.lastCompactedAtTurn = this.turnCount;
       this.compactionFailures = 0;
     } catch (error) {
       this.compactionFailures++;
       this.lastCompactedAtTurn = this.turnCount;
       const nextRetryTurns = Math.min(10, Math.pow(2, this.compactionFailures));
-      logger.error(`Session ${this.sessionId} Compaction failed (attempt #${this.compactionFailures}, next retry after ${nextRetryTurns} turns): ${error.message}`);
+      logger.error(
+        `Session ${this.sessionId} Compaction failed (attempt #${this.compactionFailures}, next retry after ${nextRetryTurns} turns): ${error.message}`
+      );
     }
   }
 
   async callWithRetry(messages, maxRetries = 3, systemPrompt = null, maxTokens = 1280) {
     const system = systemPrompt
       ? systemPrompt
-      : [{
-          type: 'text',
-          text: EICR_SYSTEM_PROMPT,
-          cache_control: { type: 'ephemeral', ttl: '1h' }
-        }];
+      : [
+          {
+            type: 'text',
+            text: EICR_SYSTEM_PROMPT,
+            cache_control: { type: 'ephemeral', ttl: '1h' },
+          },
+        ];
 
     let lastError;
     for (let attempt = 0; attempt < maxRetries; attempt++) {
@@ -348,14 +419,16 @@ export class EICRExtractionSession {
           model: 'claude-sonnet-4-6',
           max_tokens: maxTokens,
           system,
-          messages
+          messages,
         });
       } catch (error) {
         lastError = error;
         if (error.status === 429 || error.status >= 500) {
           const delay = Math.pow(2, attempt) * 1000 + Math.random() * 500;
-          logger.warn(`Session ${this.sessionId} Sonnet error ${error.status}, retry ${attempt + 1}/${maxRetries} after ${delay}ms`);
-          await new Promise(r => setTimeout(r, delay));
+          logger.warn(
+            `Session ${this.sessionId} Sonnet error ${error.status}, retry ${attempt + 1}/${maxRetries} after ${delay}ms`
+          );
+          await new Promise((r) => setTimeout(r, delay));
           continue;
         }
         throw error; // Client errors -- don't retry
@@ -398,14 +471,18 @@ export class EICRExtractionSession {
     }
     // Only include circuit schedule on first message and after job state updates
     if (this.circuitSchedule && !this.circuitScheduleIncluded) {
-      parts.push(`CIRCUIT SCHEDULE (confirmed values -- do NOT question these):\n${this.circuitSchedule}`);
+      parts.push(
+        `CIRCUIT SCHEDULE (confirmed values -- do NOT question these):\n${this.circuitSchedule}`
+      );
       this.circuitScheduleIncluded = true;
     }
     if (this.askedQuestions.length > 0) {
       parts.push(`Already asked (skip): ${this.askedQuestions.join('; ')}`);
     }
     if (this.extractedObservationTexts.length > 0) {
-      parts.push(`Observations already created (do NOT re-extract): ${this.extractedObservationTexts.map(t => t.substring(0, 60)).join('; ')}`);
+      parts.push(
+        `Observations already created (do NOT re-extract): ${this.extractedObservationTexts.map((t) => t.substring(0, 60)).join('; ')}`
+      );
     }
     return parts.join('\n\n');
   }
@@ -415,7 +492,8 @@ export class EICRExtractionSession {
     const lines = [];
     for (const circuit of jobState.circuits) {
       const num = circuit.ref || circuit.circuitNumber || circuit.number || '?';
-      const desc = circuit.designation || circuit.description || circuit.circuit_description || 'unnamed';
+      const desc =
+        circuit.designation || circuit.description || circuit.circuit_description || 'unnamed';
       const fields = [];
 
       // Derive circuit type from designation
@@ -425,7 +503,13 @@ export class EICRExtractionSession {
         const d = (desc || '').toLowerCase();
         if (d.includes('socket') || d.includes('ring')) fields.push('Ring');
         else if (d.includes('light')) fields.push('Lighting');
-        else if (d.includes('cooker') || d.includes('shower') || d.includes('oven') || d.includes('hob')) fields.push('Radial');
+        else if (
+          d.includes('cooker') ||
+          d.includes('shower') ||
+          d.includes('oven') ||
+          d.includes('hob')
+        )
+          fields.push('Radial');
       }
 
       // OCPD
@@ -442,21 +526,28 @@ export class EICRExtractionSession {
       else if (liveCsa) fields.push(`cable=${liveCsa}mm`);
 
       // Wiring and ref method
-      if (circuit.wiringType || circuit.wiring_type) fields.push(`wiring=${circuit.wiringType || circuit.wiring_type}`);
-      if (circuit.refMethod || circuit.ref_method) fields.push(`ref=${circuit.refMethod || circuit.ref_method}`);
+      if (circuit.wiringType || circuit.wiring_type)
+        fields.push(`wiring=${circuit.wiringType || circuit.wiring_type}`);
+      if (circuit.refMethod || circuit.ref_method)
+        fields.push(`ref=${circuit.refMethod || circuit.ref_method}`);
 
       // Test readings
-      if (circuit.measuredZsOhm || circuit.zs) fields.push(`zs=${circuit.measuredZsOhm || circuit.zs}`);
-      if (circuit.r1R2Ohm || circuit.r1_plus_r2) fields.push(`r1r2=${circuit.r1R2Ohm || circuit.r1_plus_r2}`);
+      if (circuit.measuredZsOhm || circuit.zs)
+        fields.push(`zs=${circuit.measuredZsOhm || circuit.zs}`);
+      if (circuit.r1R2Ohm || circuit.r1_plus_r2)
+        fields.push(`r1r2=${circuit.r1R2Ohm || circuit.r1_plus_r2}`);
       if (circuit.r2Ohm || circuit.r2) fields.push(`r2=${circuit.r2Ohm || circuit.r2}`);
       if (circuit.ringR1Ohm) fields.push(`ringR1=${circuit.ringR1Ohm}`);
       if (circuit.ringRnOhm) fields.push(`ringRn=${circuit.ringRnOhm}`);
       if (circuit.ringR2Ohm) fields.push(`ringR2=${circuit.ringR2Ohm}`);
-      if (circuit.irLiveEarthMohm || circuit.insulation_resistance_l_e) fields.push(`irLE=${circuit.irLiveEarthMohm || circuit.insulation_resistance_l_e}`);
-      if (circuit.irLiveLiveMohm || circuit.insulation_resistance_l_l) fields.push(`irLL=${circuit.irLiveLiveMohm || circuit.insulation_resistance_l_l}`);
+      if (circuit.irLiveEarthMohm || circuit.insulation_resistance_l_e)
+        fields.push(`irLE=${circuit.irLiveEarthMohm || circuit.insulation_resistance_l_e}`);
+      if (circuit.irLiveLiveMohm || circuit.insulation_resistance_l_l)
+        fields.push(`irLL=${circuit.irLiveLiveMohm || circuit.insulation_resistance_l_l}`);
 
       // Polarity
-      if (circuit.polarityConfirmed || circuit.polarity) fields.push(`polarity=${circuit.polarityConfirmed || circuit.polarity}`);
+      if (circuit.polarityConfirmed || circuit.polarity)
+        fields.push(`polarity=${circuit.polarityConfirmed || circuit.polarity}`);
 
       // RCD
       const rcdTime = circuit.rcdTimeMs || circuit.rcd_trip_time;
@@ -470,7 +561,8 @@ export class EICRExtractionSession {
       if (circuit.afddButtonConfirmed) fields.push(`afddBtn=OK`);
 
       // Points
-      if (circuit.numberOfPoints || circuit.number_of_points) fields.push(`points=${circuit.numberOfPoints || circuit.number_of_points}`);
+      if (circuit.numberOfPoints || circuit.number_of_points)
+        fields.push(`points=${circuit.numberOfPoints || circuit.number_of_points}`);
 
       lines.push(`  Circuit ${num}: ${desc} [${fields.join(', ')}]`);
     }
@@ -479,18 +571,28 @@ export class EICRExtractionSession {
     if (jobState.supply) {
       const s = jobState.supply;
       const supplyFields = [];
-      if (s.earthingArrangement || s.earthing_arrangement) supplyFields.push(`earthing=${s.earthingArrangement || s.earthing_arrangement}`);
+      if (s.earthingArrangement || s.earthing_arrangement)
+        supplyFields.push(`earthing=${s.earthingArrangement || s.earthing_arrangement}`);
       if (s.pfc || s.pfc_at_origin) supplyFields.push(`PFC=${s.pfc || s.pfc_at_origin}kA`);
       if (s.ze) supplyFields.push(`Ze=${s.ze}ohms`);
       if (s.zsAtDb || s.zs_at_db) supplyFields.push(`ZsDb=${s.zsAtDb || s.zs_at_db}`);
-      if (s.earthingConductorCsa || s.main_earth_conductor_csa) supplyFields.push(`earthConductor=${s.earthingConductorCsa || s.main_earth_conductor_csa}mm2`);
-      if (s.mainBondingCsa || s.main_bonding_conductor_csa) supplyFields.push(`bonding=${s.mainBondingCsa || s.main_bonding_conductor_csa}mm2`);
+      if (s.earthingConductorCsa || s.main_earth_conductor_csa)
+        supplyFields.push(
+          `earthConductor=${s.earthingConductorCsa || s.main_earth_conductor_csa}mm2`
+        );
+      if (s.mainBondingCsa || s.main_bonding_conductor_csa)
+        supplyFields.push(`bonding=${s.mainBondingCsa || s.main_bonding_conductor_csa}mm2`);
       if (s.bondingWater || s.bonding_water) supplyFields.push(`water=Yes`);
       if (s.bondingGas || s.bonding_gas) supplyFields.push(`gas=Yes`);
-      if (s.earthElectrodeType || s.earth_electrode_type) supplyFields.push(`electrodeType=${s.earthElectrodeType || s.earth_electrode_type}`);
-      if (s.earthElectrodeResistance || s.earth_electrode_resistance) supplyFields.push(`electrodeRA=${s.earthElectrodeResistance || s.earth_electrode_resistance}`);
+      if (s.earthElectrodeType || s.earth_electrode_type)
+        supplyFields.push(`electrodeType=${s.earthElectrodeType || s.earth_electrode_type}`);
+      if (s.earthElectrodeResistance || s.earth_electrode_resistance)
+        supplyFields.push(
+          `electrodeRA=${s.earthElectrodeResistance || s.earth_electrode_resistance}`
+        );
       if (s.supplyPolarity || s.supply_polarity_confirmed) supplyFields.push(`polarity=confirmed`);
-      if (s.supplyVoltage || s.supply_voltage) supplyFields.push(`voltage=${s.supplyVoltage || s.supply_voltage}V`);
+      if (s.supplyVoltage || s.supply_voltage)
+        supplyFields.push(`voltage=${s.supplyVoltage || s.supply_voltage}V`);
       lines.unshift(`  Supply: [${supplyFields.join(', ')}]`);
     }
     return lines.join('\n');
@@ -509,19 +611,21 @@ export class EICRExtractionSession {
       ...this.conversationHistory,
       {
         role: 'user',
-        content: [{
-          type: 'text',
-          text: reviewMessage,
-          cache_control: { type: 'ephemeral', ttl: '1h' }
-        }]
-      }
+        content: [
+          {
+            type: 'text',
+            text: reviewMessage,
+            cache_control: { type: 'ephemeral', ttl: '1h' },
+          },
+        ],
+      },
     ];
 
     this.addMidConversationBreakpoints(messages);
 
     const response = await this.callWithRetry(messages, 2, null, 512);
 
-    const textBlock = response.content.find(b => b.type === 'text');
+    const textBlock = response.content.find((b) => b.type === 'text');
     if (!textBlock || !textBlock.text) return null;
 
     let result;

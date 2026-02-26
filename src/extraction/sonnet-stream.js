@@ -1,5 +1,17 @@
 // sonnet-stream.js
-// WebSocket handler for server-side Sonnet extraction sessions
+// WebSocket handler for server-side Sonnet extraction sessions.
+//
+// HISTORY: This is the server-side counterpart to the iOS ServerWebSocketService.
+// iOS connects via wss://backend/api/sonnet-stream, sends transcript buffers, and
+// receives extraction results + cost updates + gated questions in real time.
+//
+// Key evolution:
+// - (029b91f) Added 120s client-side rate limit on session_compact handler to match
+//   the server-side compact() guards in eicr-extraction-session.js. Before this,
+//   iOS could request compaction every few seconds, each costing ~$0.02-0.05.
+// - Session reconnection: 5-minute timeout (300s) preserves conversation history
+//   across Deepgram sleep/wake cycles. iOS disconnects the WebSocket during auto-sleep
+//   (no audio for 60s) and reconnects when speech resumes.
 
 import { WebSocketServer } from 'ws';
 import { EICRExtractionSession } from './eicr-extraction-session.js';
@@ -231,18 +243,41 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
 
           case 'session_pause':
             if (currentSessionId && activeSessions.has(currentSessionId)) {
-              activeSessions.get(currentSessionId).session.pause();
+              const pauseEntry = activeSessions.get(currentSessionId);
+              pauseEntry.session.pause();
+              pauseEntry.pauseStartTime = Date.now();
+              logger.info('Session paused (sleep/dozing)', {
+                sessionId: currentSessionId,
+                turns: pauseEntry.session.turnCount,
+              });
               ws.send(JSON.stringify({ type: 'session_ack', status: 'paused' }));
             }
             break;
 
           case 'session_resume':
             if (currentSessionId && activeSessions.has(currentSessionId)) {
-              activeSessions.get(currentSessionId).session.resume();
+              const resumeEntry = activeSessions.get(currentSessionId);
+              resumeEntry.session.resume();
+              const pauseDurationMs = resumeEntry.pauseStartTime
+                ? Date.now() - resumeEntry.pauseStartTime
+                : null;
+              resumeEntry.pauseStartTime = null;
+              logger.info('Session resumed (wake from sleep)', {
+                sessionId: currentSessionId,
+                pauseDurationMs,
+                pauseDurationSec: pauseDurationMs ? Math.round(pauseDurationMs / 1000) : null,
+                turns: resumeEntry.session.turnCount,
+              });
               ws.send(JSON.stringify({ type: 'session_ack', status: 'resumed' }));
             }
             break;
 
+          // HISTORY (029b91f, 2026-02-23): Client-side 120s rate limit on compaction requests.
+          // This mirrors the server-side Guard 5 in eicr-extraction-session.js compact().
+          // Before this guard, the iOS app could trigger compaction every few seconds
+          // (e.g. during rapid speech), each call costing API credits even if the
+          // server-side guards would skip it — because the WebSocket message still
+          // had to be parsed, the session looked up, and the guards evaluated.
           case 'session_compact':
             if (currentSessionId && activeSessions.has(currentSessionId)) {
               const entry = activeSessions.get(currentSessionId);
@@ -301,9 +336,13 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
       if (currentSessionId && activeSessions.has(currentSessionId)) {
         // Clean up after 30s timeout (allow reconnection)
         const entry = activeSessions.get(currentSessionId);
-        // 5-minute timeout to preserve conversation history across Deepgram sleep/wake cycles.
-        // iOS may disconnect the WebSocket during auto-sleep (no audio for 60s) and reconnect
-        // when speech resumes. The longer timeout keeps the Sonnet session alive in memory.
+        // DELIBERATE: 5-minute timeout (300s) to preserve conversation history across
+        // Deepgram sleep/wake cycles. iOS disconnects the WebSocket during auto-sleep
+        // (no audio for 60s) and reconnects when speech resumes. The original 30s timeout
+        // was too short — inspectors frequently pause between circuits (putting down meter
+        // probes, moving to next board) and would lose their entire extraction context.
+        // 5 minutes covers the vast majority of between-circuit pauses without leaking
+        // memory from abandoned sessions.
         entry.disconnectTimer = setTimeout(() => {
           logger.info('Session timed out, cleaning up', { sessionId: currentSessionId });
           entry.questionGate.destroy();

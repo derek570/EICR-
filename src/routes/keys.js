@@ -2,6 +2,19 @@
  * Proxy routes and remote config — Claude proxy, TTS proxies, remote config
  * The GET /api/keys endpoint has been removed for security (never expose raw API keys to clients).
  * iOS clients should use proxy endpoints or direct WebSocket connections instead.
+ *
+ * HISTORY (3ea46f3, 2026-02-24): The original implementation sent the master Deepgram API key
+ * directly to the iOS client. This was replaced with short-lived temp keys (600s TTL) created
+ * via the Deepgram REST API, so the master key never leaves the server. The Claude proxy was
+ * also hardened with a field whitelist — only model, messages, max_tokens, system, temperature,
+ * top_p, and stop_sequences are forwarded. Any extra fields from the client are stripped and logged.
+ *
+ * HISTORY (a3e0759, 2026-02-26): Temp key creation requires the keys:write scope on the
+ * Deepgram API key (which requires a Member-level role). When the Deepgram key only has
+ * basic scopes, createDeepgramTempKey() throws a 403. Rather than returning a 500 to the
+ * iOS client (which would break the recording session), we fall back to the master key.
+ * This is a security trade-off: master key exposure to the client is worse than temp keys,
+ * but a broken recording session is worse than either.
  */
 
 import { Router } from 'express';
@@ -74,6 +87,10 @@ router.post('/proxy/claude', auth.requireAuth, async (req, res) => {
       max_tokens: max_tokens || 4096,
     };
 
+    // HISTORY (3ea46f3, 2026-02-24): Only whitelisted Anthropic API fields are forwarded.
+    // The client used to be able to send arbitrary fields (like stream: true, tools, etc.)
+    // which could be used to abuse the API key. Now only safe fields are forwarded, and
+    // any extra fields are stripped and logged as a warning.
     // Include optional Anthropic Messages API fields only if present and valid
     if (typeof req.body.system === 'string') {
       forwardBody.system = req.body.system;
@@ -306,7 +323,12 @@ router.post('/proxy/deepgram-streaming-key', auth.requireAuth, async (req, res) 
   const userId = req.user?.id || req.user?.userId || 'unknown';
 
   try {
-    // Try to create a short-lived temp key first (preferred for security)
+    // HISTORY (a3e0759, 2026-02-26): Two-tier key strategy. First try to create a
+    // short-lived temp key (600s TTL, usage:write scope only) which is the secure path.
+    // If that fails (keys:write scope missing, Deepgram API down, etc.), fall back to
+    // the master key so the iOS recording session doesn't break. The fallback was added
+    // after production failures where Deepgram's key creation endpoint returned 403
+    // because our API key lacked the keys:write scope (requires Member role, not Admin).
     let key;
     try {
       key = await createDeepgramTempKey(userId);
