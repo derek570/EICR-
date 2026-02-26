@@ -3,21 +3,21 @@
  * Connects to PostgreSQL in production or uses mock data for local development.
  */
 
-import fssync from "node:fs";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
-import pg from "pg";
-import logger from "./logger.js";
+import fssync from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import pg from 'pg';
+import logger from './logger.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 // Load RDS CA certificate for SSL verification in production
 let rdsCaCert = null;
-const caPath = path.join(__dirname, "..", "certs", "rds-combined-ca-bundle.pem");
+const caPath = path.join(__dirname, '..', 'certs', 'rds-combined-ca-bundle.pem');
 if (fssync.existsSync(caPath)) {
-  rdsCaCert = fssync.readFileSync(caPath, "utf8");
-  logger.info("Loaded RDS CA certificate for SSL verification");
+  rdsCaCert = fssync.readFileSync(caPath, 'utf8');
+  logger.info('Loaded RDS CA certificate for SSL verification');
 }
 
 const { Pool } = pg;
@@ -31,7 +31,7 @@ function getDatabaseUrl() {
 
 function usePostgres() {
   const url = getDatabaseUrl();
-  return url && url.startsWith("postgres");
+  return url && url.startsWith('postgres');
 }
 
 function getPool() {
@@ -42,9 +42,7 @@ function getPool() {
       idleTimeoutMillis: 30000,
       connectionTimeoutMillis: 2000,
       // AWS RDS requires SSL — verify CA cert when available
-      ssl: rdsCaCert
-        ? { rejectUnauthorized: true, ca: rdsCaCert }
-        : { rejectUnauthorized: false },
+      ssl: rdsCaCert ? { rejectUnauthorized: true, ca: rdsCaCert } : { rejectUnauthorized: false },
     });
   }
   return pool;
@@ -55,19 +53,16 @@ function getPool() {
  */
 export async function getUserByEmail(email) {
   if (!usePostgres()) {
-    logger.warn("Database not configured, auth will not work");
+    logger.warn('Database not configured, auth will not work');
     return null;
   }
 
   const pool = getPool();
   try {
-    const result = await pool.query(
-      "SELECT * FROM users WHERE email = $1",
-      [email.toLowerCase()]
-    );
+    const result = await pool.query('SELECT * FROM users WHERE email = $1', [email.toLowerCase()]);
     return result.rows[0] || null;
   } catch (error) {
-    logger.error("getUserByEmail failed", { error: error.message });
+    logger.error('getUserByEmail failed', { error: error.message });
     throw error;
   }
 }
@@ -82,13 +77,10 @@ export async function getUserById(userId) {
 
   const pool = getPool();
   try {
-    const result = await pool.query(
-      "SELECT * FROM users WHERE id = $1",
-      [userId]
-    );
+    const result = await pool.query('SELECT * FROM users WHERE id = $1', [userId]);
     return result.rows[0] || null;
   } catch (error) {
-    logger.error("getUserById failed", { error: error.message });
+    logger.error('getUserById failed', { error: error.message });
     throw error;
   }
 }
@@ -106,7 +98,7 @@ export async function updateLastLogin(userId) {
       [new Date().toISOString(), userId]
     );
   } catch (error) {
-    logger.error("updateLastLogin failed", { error: error.message });
+    logger.error('updateLastLogin failed', { error: error.message });
   }
 }
 
@@ -123,7 +115,7 @@ export async function updateLoginAttempts(userId, attempts, lockedUntil) {
       [attempts, lockedUntil, userId]
     );
   } catch (error) {
-    logger.error("updateLoginAttempts failed", { error: error.message });
+    logger.error('updateLoginAttempts failed', { error: error.message });
   }
 }
 
@@ -142,7 +134,7 @@ export async function logAction(userId, action, details = {}, ipAddress = null) 
       [id, userId, action, JSON.stringify(details), ipAddress, new Date().toISOString()]
     );
   } catch (error) {
-    logger.error("logAction failed", { error: error.message });
+    logger.error('logAction failed', { error: error.message });
   }
 }
 
@@ -163,7 +155,7 @@ export async function getJobsByUser(userId) {
     );
     return result.rows;
   } catch (error) {
-    logger.error("getJobsByUser failed", { error: error.message });
+    logger.error('getJobsByUser failed', { error: error.message });
     return [];
   }
 }
@@ -180,12 +172,22 @@ export async function createJob(job) {
     await pool.query(
       `INSERT INTO jobs (id, user_id, folder_name, certificate_type, status, address, client_name, created_at, updated_at, s3_prefix)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
-      [job.id, job.user_id, job.folder_name, job.certificate_type || 'EICR',
-       job.status || 'pending', job.address, job.client_name, now, now, job.s3_prefix]
+      [
+        job.id,
+        job.user_id,
+        job.folder_name,
+        job.certificate_type || 'EICR',
+        job.status || 'pending',
+        job.address,
+        job.client_name,
+        now,
+        now,
+        job.s3_prefix,
+      ]
     );
     return job;
   } catch (error) {
-    logger.error("createJob failed", { error: error.message });
+    logger.error('createJob failed', { error: error.message });
     throw error;
   }
 }
@@ -200,13 +202,10 @@ export async function getJob(jobId) {
 
   const pool = getPool();
   try {
-    const result = await pool.query(
-      `SELECT * FROM jobs WHERE id = $1`,
-      [jobId]
-    );
+    const result = await pool.query(`SELECT * FROM jobs WHERE id = $1`, [jobId]);
     return result.rows[0] || null;
   } catch (error) {
-    logger.error("getJob failed", { error: error.message });
+    logger.error('getJob failed', { error: error.message });
     throw error;
   }
 }
@@ -227,7 +226,7 @@ export async function getJobByAddress(userId, address) {
     );
     return result.rows[0] || null;
   } catch (error) {
-    logger.error("getJobByAddress failed", { error: error.message });
+    logger.error('getJobByAddress failed', { error: error.message });
     throw error;
   }
 }
@@ -236,9 +235,19 @@ export async function getJobByAddress(userId, address) {
  * Allowed columns for dynamic job updates (whitelist to prevent SQL injection)
  */
 const ALLOWED_JOB_COLUMNS = new Set([
-  "status", "address", "client_name", "certificate_type", "folder_name",
-  "s3_prefix", "updated_at", "completed_at", "notes", "data",
-  "overall_result", "next_inspection_date", "postcode",
+  'status',
+  'address',
+  'client_name',
+  'certificate_type',
+  'folder_name',
+  's3_prefix',
+  'updated_at',
+  'completed_at',
+  'notes',
+  'data',
+  'overall_result',
+  'next_inspection_date',
+  'postcode',
 ]);
 
 /**
@@ -258,7 +267,7 @@ export async function updateJob(jobId, data) {
 
     for (const [key, value] of Object.entries(updateData)) {
       if (!ALLOWED_JOB_COLUMNS.has(key)) {
-        logger.warn("updateJob: rejected unknown column", { column: key, jobId });
+        logger.warn('updateJob: rejected unknown column', { column: key, jobId });
         continue;
       }
       updates.push(`"${key}" = $${paramIndex}`);
@@ -269,12 +278,9 @@ export async function updateJob(jobId, data) {
     if (updates.length === 0) return;
 
     params.push(jobId);
-    await pool.query(
-      `UPDATE jobs SET ${updates.join(", ")} WHERE id = $${paramIndex}`,
-      params
-    );
+    await pool.query(`UPDATE jobs SET ${updates.join(', ')} WHERE id = $${paramIndex}`, params);
   } catch (error) {
-    logger.error("updateJob failed", { error: error.message });
+    logger.error('updateJob failed', { error: error.message });
     throw error;
   }
 }
@@ -287,7 +293,7 @@ export async function updateJobStatus(jobId, userId, status, address = null) {
 
   const pool = getPool();
   try {
-    const updates = ["status = $1"];
+    const updates = ['status = $1'];
     const params = [status];
     let paramIndex = 2;
 
@@ -297,7 +303,7 @@ export async function updateJobStatus(jobId, userId, status, address = null) {
       paramIndex++;
     }
 
-    if (status === "done") {
+    if (status === 'done') {
       updates.push(`completed_at = $${paramIndex}`);
       params.push(new Date().toISOString());
       paramIndex++;
@@ -310,11 +316,11 @@ export async function updateJobStatus(jobId, userId, status, address = null) {
 
     params.push(jobId, userId);
     await pool.query(
-      `UPDATE jobs SET ${updates.join(", ")} WHERE id = $${paramIndex} AND user_id = $${paramIndex + 1}`,
+      `UPDATE jobs SET ${updates.join(', ')} WHERE id = $${paramIndex} AND user_id = $${paramIndex + 1}`,
       params
     );
   } catch (error) {
-    logger.error("updateJobStatus failed", { error: error.message });
+    logger.error('updateJobStatus failed', { error: error.message });
   }
 }
 
@@ -326,13 +332,10 @@ export async function deleteJob(jobId, userId) {
 
   const pool = getPool();
   try {
-    await pool.query(
-      `DELETE FROM jobs WHERE id = $1 AND user_id = $2`,
-      [jobId, userId]
-    );
-    logger.info("Job deleted from database", { jobId, userId });
+    await pool.query(`DELETE FROM jobs WHERE id = $1 AND user_id = $2`, [jobId, userId]);
+    logger.info('Job deleted from database', { jobId, userId });
   } catch (error) {
-    logger.error("deleteJob failed", { error: error.message });
+    logger.error('deleteJob failed', { error: error.message });
     throw error;
   }
 }
@@ -354,18 +357,20 @@ export async function ensureJobsUpdatedAt() {
     if (colCheck.rows.length === 0) {
       // Column doesn't exist — add as TIMESTAMP to match created_at
       await pool.query(`ALTER TABLE jobs ADD COLUMN updated_at TIMESTAMP`);
-      logger.info("ensureJobsUpdatedAt: added updated_at column as TIMESTAMP");
+      logger.info('ensureJobsUpdatedAt: added updated_at column as TIMESTAMP');
     } else if (colCheck.rows[0].data_type === 'text') {
       // Column exists as TEXT — migrate to TIMESTAMP
-      await pool.query(`ALTER TABLE jobs ALTER COLUMN updated_at TYPE TIMESTAMP USING updated_at::TIMESTAMP`);
-      logger.info("ensureJobsUpdatedAt: migrated updated_at from TEXT to TIMESTAMP");
+      await pool.query(
+        `ALTER TABLE jobs ALTER COLUMN updated_at TYPE TIMESTAMP USING updated_at::TIMESTAMP`
+      );
+      logger.info('ensureJobsUpdatedAt: migrated updated_at from TEXT to TIMESTAMP');
     }
 
     // Backfill NULLs from created_at so existing jobs keep their original timestamp
     await pool.query(`UPDATE jobs SET updated_at = created_at::TIMESTAMP WHERE updated_at IS NULL`);
-    logger.info("ensureJobsUpdatedAt: NULLs backfilled");
+    logger.info('ensureJobsUpdatedAt: NULLs backfilled');
   } catch (error) {
-    logger.error("ensureJobsUpdatedAt failed", { error: error.message });
+    logger.error('ensureJobsUpdatedAt failed', { error: error.message });
   }
 }
 
@@ -389,7 +394,7 @@ export async function ensurePushSubscriptionsTable() {
       )
     `);
   } catch (error) {
-    logger.error("ensurePushSubscriptionsTable failed", { error: error.message });
+    logger.error('ensurePushSubscriptionsTable failed', { error: error.message });
   }
 }
 
@@ -409,7 +414,7 @@ export async function savePushSubscription(userId, subscription) {
       [userId, subscription.endpoint, subscription.keys.p256dh, subscription.keys.auth]
     );
   } catch (error) {
-    logger.error("savePushSubscription failed", { error: error.message });
+    logger.error('savePushSubscription failed', { error: error.message });
     throw error;
   }
 }
@@ -423,12 +428,12 @@ export async function getPushSubscriptions(userId) {
   const pool = getPool();
   try {
     const result = await pool.query(
-      "SELECT endpoint, p256dh, auth FROM push_subscriptions WHERE user_id = $1",
+      'SELECT endpoint, p256dh, auth FROM push_subscriptions WHERE user_id = $1',
       [userId]
     );
     return result.rows;
   } catch (error) {
-    logger.error("getPushSubscriptions failed", { error: error.message });
+    logger.error('getPushSubscriptions failed', { error: error.message });
     throw error;
   }
 }
@@ -441,12 +446,12 @@ export async function deletePushSubscription(userId, endpoint) {
 
   const pool = getPool();
   try {
-    await pool.query(
-      "DELETE FROM push_subscriptions WHERE user_id = $1 AND endpoint = $2",
-      [userId, endpoint]
-    );
+    await pool.query('DELETE FROM push_subscriptions WHERE user_id = $1 AND endpoint = $2', [
+      userId,
+      endpoint,
+    ]);
   } catch (error) {
-    logger.error("deletePushSubscription failed", { error: error.message });
+    logger.error('deletePushSubscription failed', { error: error.message });
     throw error;
   }
 }
@@ -473,7 +478,7 @@ export async function ensureJobVersionsTable() {
     `);
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_job_versions_job ON job_versions(job_id)`);
   } catch (error) {
-    logger.error("ensureJobVersionsTable failed", { error: error.message });
+    logger.error('ensureJobVersionsTable failed', { error: error.message });
   }
 }
 
@@ -484,10 +489,16 @@ export async function saveJobVersion(jobId, userId, dataSnapshot, changesSummary
   if (!usePostgres()) return null;
 
   const pool = getPool();
+  const client = await pool.connect();
   try {
     const id = `ver_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
-    const result = await pool.query(
+    await client.query('BEGIN');
+    // Advisory lock keyed on job_id hash -- serializes version inserts per job.
+    // Auto-released on COMMIT/ROLLBACK. Different job_ids are not blocked.
+    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [jobId]);
+
+    const result = await client.query(
       `INSERT INTO job_versions (id, job_id, user_id, version_number, changes_summary, data_snapshot)
        VALUES ($1, $2, $3,
          (SELECT COALESCE(MAX(version_number), 0) + 1 FROM job_versions WHERE job_id = $2),
@@ -495,11 +506,16 @@ export async function saveJobVersion(jobId, userId, dataSnapshot, changesSummary
        RETURNING version_number`,
       [id, jobId, userId, changesSummary, JSON.stringify(dataSnapshot)]
     );
+
+    await client.query('COMMIT');
     const versionNumber = result.rows[0].version_number;
     return { id, versionNumber };
   } catch (error) {
-    logger.error("saveJobVersion failed", { error: error.message });
+    await client.query('ROLLBACK').catch(() => {});
+    logger.error('saveJobVersion failed', { error: error.message });
     return null;
+  } finally {
+    client.release();
   }
 }
 
@@ -512,12 +528,12 @@ export async function getJobVersions(jobId) {
   const pool = getPool();
   try {
     const result = await pool.query(
-      "SELECT id, version_number, user_id, changes_summary, created_at FROM job_versions WHERE job_id = $1 ORDER BY version_number DESC",
+      'SELECT id, version_number, user_id, changes_summary, created_at FROM job_versions WHERE job_id = $1 ORDER BY version_number DESC',
       [jobId]
     );
     return result.rows;
   } catch (error) {
-    logger.error("getJobVersions failed", { error: error.message });
+    logger.error('getJobVersions failed', { error: error.message });
     return [];
   }
 }
@@ -531,12 +547,12 @@ export async function getJobVersion(versionId, jobId, userId) {
   const pool = getPool();
   try {
     const result = await pool.query(
-      "SELECT * FROM job_versions WHERE id = $1 AND job_id = $2 AND user_id = $3",
+      'SELECT * FROM job_versions WHERE id = $1 AND job_id = $2 AND user_id = $3',
       [versionId, jobId, userId]
     );
     return result.rows[0] || null;
   } catch (error) {
-    logger.error("getJobVersion failed", { error: error.message });
+    logger.error('getJobVersion failed', { error: error.message });
     return null;
   }
 }
@@ -582,9 +598,9 @@ export async function ensureCRMTables() {
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_properties_user ON properties(user_id)`);
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_properties_client ON properties(client_id)`);
 
-    logger.info("CRM tables ensured");
+    logger.info('CRM tables ensured');
   } catch (error) {
-    logger.error("ensureCRMTables failed", { error: error.message });
+    logger.error('ensureCRMTables failed', { error: error.message });
   }
 }
 
@@ -596,13 +612,12 @@ export async function getClients(userId) {
 
   const pool = getPool();
   try {
-    const result = await pool.query(
-      "SELECT * FROM clients WHERE user_id = $1 ORDER BY name ASC",
-      [userId]
-    );
+    const result = await pool.query('SELECT * FROM clients WHERE user_id = $1 ORDER BY name ASC', [
+      userId,
+    ]);
     return result.rows;
   } catch (error) {
-    logger.error("getClients failed", { error: error.message });
+    logger.error('getClients failed', { error: error.message });
     return [];
   }
 }
@@ -619,12 +634,19 @@ export async function createClient(client) {
     await pool.query(
       `INSERT INTO clients (id, user_id, name, email, phone, company, notes)
        VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-      [id, client.user_id, client.name, client.email || null, client.phone || null,
-       client.company || null, client.notes || null]
+      [
+        id,
+        client.user_id,
+        client.name,
+        client.email || null,
+        client.phone || null,
+        client.company || null,
+        client.notes || null,
+      ]
     );
     return { ...client, id };
   } catch (error) {
-    logger.error("createClient failed", { error: error.message });
+    logger.error('createClient failed', { error: error.message });
     throw error;
   }
 }
@@ -641,7 +663,7 @@ export async function updateClient(clientId, data) {
     const params = [];
     let paramIndex = 1;
 
-    const allowedFields = ["name", "email", "phone", "company", "notes"];
+    const allowedFields = ['name', 'email', 'phone', 'company', 'notes'];
     for (const [key, value] of Object.entries(data)) {
       if (allowedFields.includes(key)) {
         updates.push(`${key} = $${paramIndex}`);
@@ -657,12 +679,9 @@ export async function updateClient(clientId, data) {
     paramIndex++;
 
     params.push(clientId);
-    await pool.query(
-      `UPDATE clients SET ${updates.join(", ")} WHERE id = $${paramIndex}`,
-      params
-    );
+    await pool.query(`UPDATE clients SET ${updates.join(', ')} WHERE id = $${paramIndex}`, params);
   } catch (error) {
-    logger.error("updateClient failed", { error: error.message });
+    logger.error('updateClient failed', { error: error.message });
     throw error;
   }
 }
@@ -675,13 +694,10 @@ export async function deleteClient(clientId, userId) {
 
   const pool = getPool();
   try {
-    await pool.query(
-      "DELETE FROM clients WHERE id = $1 AND user_id = $2",
-      [clientId, userId]
-    );
-    logger.info("Client deleted", { clientId, userId });
+    await pool.query('DELETE FROM clients WHERE id = $1 AND user_id = $2', [clientId, userId]);
+    logger.info('Client deleted', { clientId, userId });
   } catch (error) {
-    logger.error("deleteClient failed", { error: error.message });
+    logger.error('deleteClient failed', { error: error.message });
     throw error;
   }
 }
@@ -704,7 +720,7 @@ export async function getProperties(userId) {
     );
     return result.rows;
   } catch (error) {
-    logger.error("getProperties failed", { error: error.message });
+    logger.error('getProperties failed', { error: error.message });
     return [];
   }
 }
@@ -721,12 +737,19 @@ export async function createProperty(property) {
     await pool.query(
       `INSERT INTO properties (id, client_id, user_id, address, postcode, property_type, notes)
        VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-      [id, property.client_id || null, property.user_id, property.address,
-       property.postcode || null, property.property_type || null, property.notes || null]
+      [
+        id,
+        property.client_id || null,
+        property.user_id,
+        property.address,
+        property.postcode || null,
+        property.property_type || null,
+        property.notes || null,
+      ]
     );
     return { ...property, id };
   } catch (error) {
-    logger.error("createProperty failed", { error: error.message });
+    logger.error('createProperty failed', { error: error.message });
     throw error;
   }
 }
@@ -740,12 +763,12 @@ export async function getPropertiesByClient(clientId) {
   const pool = getPool();
   try {
     const result = await pool.query(
-      "SELECT * FROM properties WHERE client_id = $1 ORDER BY address ASC",
+      'SELECT * FROM properties WHERE client_id = $1 ORDER BY address ASC',
       [clientId]
     );
     return result.rows;
   } catch (error) {
-    logger.error("getPropertiesByClient failed", { error: error.message });
+    logger.error('getPropertiesByClient failed', { error: error.message });
     return [];
   }
 }
@@ -759,12 +782,12 @@ export async function getPropertyByAddress(userId, address) {
   const pool = getPool();
   try {
     const result = await pool.query(
-      "SELECT * FROM properties WHERE user_id = $1 AND address = $2",
+      'SELECT * FROM properties WHERE user_id = $1 AND address = $2',
       [userId, address]
     );
     return result.rows[0] || null;
   } catch (error) {
-    logger.error("getPropertyByAddress failed", { error: error.message });
+    logger.error('getPropertyByAddress failed', { error: error.message });
     return null;
   }
 }
@@ -777,13 +800,10 @@ export async function getClient(clientId) {
 
   const pool = getPool();
   try {
-    const result = await pool.query(
-      "SELECT * FROM clients WHERE id = $1",
-      [clientId]
-    );
+    const result = await pool.query('SELECT * FROM clients WHERE id = $1', [clientId]);
     return result.rows[0] || null;
   } catch (error) {
-    logger.error("getClient failed", { error: error.message });
+    logger.error('getClient failed', { error: error.message });
     return null;
   }
 }
@@ -815,10 +835,12 @@ export async function ensureSubscriptionsTable() {
       )
     `);
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_subscriptions_user ON subscriptions(user_id)`);
-    await pool.query(`CREATE INDEX IF NOT EXISTS idx_subscriptions_stripe_customer ON subscriptions(stripe_customer_id)`);
-    logger.info("Subscriptions table ensured");
+    await pool.query(
+      `CREATE INDEX IF NOT EXISTS idx_subscriptions_stripe_customer ON subscriptions(stripe_customer_id)`
+    );
+    logger.info('Subscriptions table ensured');
   } catch (error) {
-    logger.error("ensureSubscriptionsTable failed", { error: error.message });
+    logger.error('ensureSubscriptionsTable failed', { error: error.message });
   }
 }
 
@@ -830,13 +852,10 @@ export async function getSubscription(userId) {
 
   const pool = getPool();
   try {
-    const result = await pool.query(
-      "SELECT * FROM subscriptions WHERE user_id = $1",
-      [userId]
-    );
+    const result = await pool.query('SELECT * FROM subscriptions WHERE user_id = $1', [userId]);
     return result.rows[0] || null;
   } catch (error) {
-    logger.error("getSubscription failed", { error: error.message });
+    logger.error('getSubscription failed', { error: error.message });
     return null;
   }
 }
@@ -849,13 +868,12 @@ export async function getSubscriptionByCustomerId(stripeCustomerId) {
 
   const pool = getPool();
   try {
-    const result = await pool.query(
-      "SELECT * FROM subscriptions WHERE stripe_customer_id = $1",
-      [stripeCustomerId]
-    );
+    const result = await pool.query('SELECT * FROM subscriptions WHERE stripe_customer_id = $1', [
+      stripeCustomerId,
+    ]);
     return result.rows[0] || null;
   } catch (error) {
-    logger.error("getSubscriptionByCustomerId failed", { error: error.message });
+    logger.error('getSubscriptionByCustomerId failed', { error: error.message });
     return null;
   }
 }
@@ -894,9 +912,9 @@ export async function upsertSubscription(userId, data) {
         data.cancel_at_period_end ?? null,
       ]
     );
-    logger.info("Subscription upserted", { userId, plan: data.plan, status: data.status });
+    logger.info('Subscription upserted', { userId, plan: data.plan, status: data.status });
   } catch (error) {
-    logger.error("upsertSubscription failed", { error: error.message });
+    logger.error('upsertSubscription failed', { error: error.message });
     throw error;
   }
 }
@@ -924,10 +942,12 @@ export async function ensureCalendarTokensTable() {
         updated_at TIMESTAMP DEFAULT NOW()
       )
     `);
-    await pool.query(`CREATE INDEX IF NOT EXISTS idx_calendar_tokens_user ON calendar_tokens(user_id)`);
-    logger.info("Calendar tokens table ensured");
+    await pool.query(
+      `CREATE INDEX IF NOT EXISTS idx_calendar_tokens_user ON calendar_tokens(user_id)`
+    );
+    logger.info('Calendar tokens table ensured');
   } catch (error) {
-    logger.error("ensureCalendarTokensTable failed", { error: error.message });
+    logger.error('ensureCalendarTokensTable failed', { error: error.message });
   }
 }
 
@@ -959,9 +979,9 @@ export async function saveCalendarTokens(userId, tokens) {
         tokens.scope || null,
       ]
     );
-    logger.info("Calendar tokens saved", { userId });
+    logger.info('Calendar tokens saved', { userId });
   } catch (error) {
-    logger.error("saveCalendarTokens failed", { error: error.message });
+    logger.error('saveCalendarTokens failed', { error: error.message });
     throw error;
   }
 }
@@ -975,7 +995,7 @@ export async function getCalendarTokens(userId) {
   const pool = getPool();
   try {
     const result = await pool.query(
-      "SELECT access_token, refresh_token, expiry_date, token_type, scope FROM calendar_tokens WHERE user_id = $1",
+      'SELECT access_token, refresh_token, expiry_date, token_type, scope FROM calendar_tokens WHERE user_id = $1',
       [userId]
     );
     if (!result.rows[0]) return null;
@@ -989,7 +1009,7 @@ export async function getCalendarTokens(userId) {
       scope: row.scope,
     };
   } catch (error) {
-    logger.error("getCalendarTokens failed", { error: error.message });
+    logger.error('getCalendarTokens failed', { error: error.message });
     return null;
   }
 }
@@ -1002,13 +1022,10 @@ export async function deleteCalendarTokens(userId) {
 
   const pool = getPool();
   try {
-    await pool.query(
-      "DELETE FROM calendar_tokens WHERE user_id = $1",
-      [userId]
-    );
-    logger.info("Calendar tokens deleted", { userId });
+    await pool.query('DELETE FROM calendar_tokens WHERE user_id = $1', [userId]);
+    logger.info('Calendar tokens deleted', { userId });
   } catch (error) {
-    logger.error("deleteCalendarTokens failed", { error: error.message });
+    logger.error('deleteCalendarTokens failed', { error: error.message });
     throw error;
   }
 }
@@ -1046,7 +1063,7 @@ export async function getJobStats(userId) {
       eic_count: Number(row.eic_count),
     };
   } catch (error) {
-    logger.error("getJobStats failed", { error: error.message });
+    logger.error('getJobStats failed', { error: error.message });
     return { total: 0, completed: 0, processing: 0, failed: 0, eicr_count: 0, eic_count: 0 };
   }
 }
@@ -1075,12 +1092,12 @@ export async function getJobsPerWeek(userId, weeks = 12) {
        ORDER BY week_start ASC`,
       [userId, String(safeWeeks)]
     );
-    return result.rows.map(row => ({
+    return result.rows.map((row) => ({
       week_start: row.week_start,
       job_count: Number(row.job_count),
     }));
   } catch (error) {
-    logger.error("getJobsPerWeek failed", { error: error.message });
+    logger.error('getJobsPerWeek failed', { error: error.message });
     return [];
   }
 }
@@ -1114,7 +1131,7 @@ export async function getProcessingTimes(userId) {
       max_minutes: row.max_minutes ? Number(row.max_minutes) : 0,
     };
   } catch (error) {
-    logger.error("getProcessingTimes failed", { error: error.message });
+    logger.error('getProcessingTimes failed', { error: error.message });
     return { avg_minutes: 0, min_minutes: 0, max_minutes: 0 };
   }
 }
@@ -1124,7 +1141,7 @@ export async function getProcessingTimes(userId) {
  */
 export async function query(text, params) {
   if (!usePostgres()) {
-    throw new Error("Database not configured");
+    throw new Error('Database not configured');
   }
 
   const pool = getPool();
@@ -1138,7 +1155,7 @@ export async function closePool() {
   if (pool) {
     await pool.end();
     pool = null;
-    logger.info("Database pool closed");
+    logger.info('Database pool closed');
   }
 }
 
