@@ -34,6 +34,35 @@ function usePostgres() {
   return url && url.startsWith('postgres');
 }
 
+/**
+ * Build SSL config for the PostgreSQL connection.
+ * - Production (or REQUIRE_SSL=true): CA cert is mandatory — throw if missing.
+ * - Development with cert: use verified SSL.
+ * - Development without cert: warn and allow unverified (local-only fallback).
+ */
+function getSslConfig() {
+  const isProduction = process.env.NODE_ENV === 'production';
+  const requireSsl = process.env.REQUIRE_SSL === 'true';
+
+  if (isProduction || requireSsl) {
+    if (!rdsCaCert) {
+      throw new Error(
+        'SSL CA certificate is required in production (set REQUIRE_SSL=true or NODE_ENV=production). ' +
+          'Place rds-combined-ca-bundle.pem in the certs/ directory.'
+      );
+    }
+    return { rejectUnauthorized: true, ca: rdsCaCert };
+  }
+
+  // Development environment
+  if (rdsCaCert) {
+    return { rejectUnauthorized: true, ca: rdsCaCert };
+  }
+
+  logger.warn('No SSL CA certificate found — using unverified SSL for local development only');
+  return { rejectUnauthorized: false };
+}
+
 function getPool() {
   if (!pool && usePostgres()) {
     pool = new Pool({
@@ -41,8 +70,7 @@ function getPool() {
       max: 10,
       idleTimeoutMillis: 30000,
       connectionTimeoutMillis: 2000,
-      // AWS RDS requires SSL — verify CA cert when available
-      ssl: rdsCaCert ? { rejectUnauthorized: true, ca: rdsCaCert } : { rejectUnauthorized: false },
+      ssl: getSslConfig(),
     });
   }
   return pool;
@@ -1130,10 +1158,10 @@ export async function getJobsPerWeek(userId, weeks = 12) {
          COUNT(*) AS job_count
        FROM jobs
        WHERE user_id = $1
-         AND created_at >= NOW() - ($2 || ' weeks')::interval
+         AND created_at >= NOW() - make_interval(weeks => $2)
        GROUP BY week_start
        ORDER BY week_start ASC`,
-      [userId, String(safeWeeks)]
+      [userId, safeWeeks]
     );
     return result.rows.map((row) => ({
       week_start: row.week_start,
