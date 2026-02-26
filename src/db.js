@@ -394,6 +394,7 @@ export async function deleteJob(jobId, userId) {
 }
 
 /**
+ * @deprecated -- Use migrations/001_baseline.cjs instead. No longer called at startup.
  * Ensure users table has token_version column for JWT rotation
  */
 export async function ensureTokenVersionColumn() {

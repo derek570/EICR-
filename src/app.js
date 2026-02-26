@@ -22,14 +22,6 @@ import hpp from 'hpp';
 import { getAllSecrets } from './services/secrets.js';
 import { validateEnv } from './env.js';
 import logger from './logger.js';
-import {
-  ensurePushSubscriptionsTable,
-  ensureJobsUpdatedAt,
-  ensureSubscriptionsTable,
-  ensureCalendarTokensTable,
-  ensureTokenVersionColumn,
-} from './db.js';
-import { ensureJobVersionsTable, ensureCRMTables } from './db.js';
 
 // Load secrets from AWS Secrets Manager into process.env at startup
 async function loadSecrets() {
@@ -51,14 +43,9 @@ await loadSecrets();
 // Validate required environment variables (after secrets are loaded)
 validateEnv();
 
-// Ensure DB tables exist and backfill
-await ensureJobsUpdatedAt();
-await ensurePushSubscriptionsTable();
-await ensureJobVersionsTable();
-await ensureCRMTables();
-await ensureSubscriptionsTable();
-await ensureCalendarTokensTable();
-await ensureTokenVersionColumn();
+// Schema migrations now handled by node-pg-migrate
+// Run: npm run migrate:up (or automatically in deployment pipeline)
+// See migrations/ directory for migration files
 
 const app = express();
 
