@@ -5,7 +5,7 @@
 > - Hub CLAUDE.md is an **index only** — add detail to reference files, not here.
 > - Add a row to the [Changelog](#changelog) for any user-facing or architectural change.
 > - Delete stale content rather than commenting it out. Keep every file under its target line count.
-> - **Commit after each logical unit of work.** Small, focused commits with clear messages — not one giant commit at the end.
+> - **Commit automatically after each logical unit of work — do NOT wait to be asked.** Small, focused commits with detailed messages explaining both what changed and WHY the code exists.
 
 Automated EICR/EIC certificate creation for electrical inspectors using an iOS-first workflow.
 
@@ -134,10 +134,15 @@ Cloud keys loaded automatically from AWS Secrets Manager: `eicr/api-keys` (all A
 - **EIC** - Electrical Installation Certificate (new installations)
 
 ## Commit Rules
-- Always write detailed, descriptive commit messages
-- Explain WHY changes were made, not just what changed
-- Flag any deliberate UI/layout decisions in commit messages
-- Note if a change fixes a problem caused by a previous refactor
+- **Auto-commit after every logical unit of work.** Do NOT wait for the user to ask — commit immediately when a meaningful change is complete (a bug fix, a feature addition, a refactor, a config change, etc.). Multiple small commits are always better than one large commit.
+- **Commit messages must be detailed and explain the WHY, not just the WHAT.** Every commit message should answer:
+  1. **What** changed (a brief summary line)
+  2. **Why** the change was needed (what problem existed, what was broken, what feature was missing)
+  3. **Why this approach** (why the code is written the way it is — design decisions, trade-offs, alternatives considered)
+  4. **Context** — flag any deliberate UI/layout decisions, note if a change fixes a problem caused by a previous refactor, mention if a pattern was chosen for consistency with existing code
+- Use multi-line commit messages: a short subject line, then a blank line, then a detailed body paragraph.
+- If a change touches multiple concerns, split into separate commits — one per concern.
+- Never batch unrelated changes into a single commit.
 
 ## Development Notes
 
@@ -182,6 +187,7 @@ When modifying UI fields: update `config/field_schema.json` + [field-reference.m
 
 | Date | Change | File(s) |
 |------|--------|---------|
+| 2026-02-28 | Fix extraction quality regression: raise COMPACTION_THRESHOLD 6000→60000 to effectively disable compaction for normal sessions. The 6000 threshold caused compaction to fire after ~15-20 utterances, replacing full conversation history with a dry summary — destroying Sonnet's ability to infer circuit assignment from recent conversational flow. With prompt caching (1h TTL, cache reads at 10% rate), full history costs ~$0.25-0.35/session. 60000 threshold preserves full context for all normal inspections. | eicr-extraction-session.js |
 | 2026-02-23 | Fix compaction cost blowout: 5 guards on compact() (min messages, min tokens, no-new-turns, failure backoff, 120s rate limit), increase max_tokens 2048→4096, client-side 120s rate limit on session_compact handler | eicr-extraction-session.js, sonnet-stream.js, eicr-extraction-session.test.js |
 | 2026-02-23 | Fix audio loss during VAD warm-up: remove premature ring buffer reset, add reconnect audio queue (5s cap), extract shared chunk handler, increase reconnect timeout to 5s, flush queued audio after reconnect. Fix server connection failures: add /api/health/ready readiness endpoint (DB/Deepgram/Anthropic checks), add iOS pre-flight connectivity check with NetworkMonitor + server health, dropped-audio logging in DeepgramService | SleepManager.swift, DeepgramRecordingViewModel.swift, DeepgramService.swift, APIClient.swift, api.js |
 | 2026-02-23 | CCU extraction prompt v2: 4-step structured methodology (physical scan, label mapping, extraction, cross-check), RCD waveform type identification, device-face amp reading enforcement, questions-for-inspector TTS, ported to live /api/analyze-ccu endpoint, wired questions into batch pipeline | src/analyze_photos.js, src/routes/extraction.js, src/process_job.js |

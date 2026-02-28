@@ -106,6 +106,8 @@ send_pushover_message() {
   local PRIORITY="${3:-0}"
   local FEEDBACK_URL="${4:-}"
 
+  log "  Pushover: title='$TITLE' url='$FEEDBACK_URL'"
+
   local CURL_ARGS=(
     -s -X POST https://api.pushover.net/1/messages.json
     -d "token=$PUSHOVER_TOKEN"
@@ -119,9 +121,13 @@ send_pushover_message() {
   if [ -n "$FEEDBACK_URL" ]; then
     CURL_ARGS+=(--data-urlencode "url=$FEEDBACK_URL")
     CURL_ARGS+=(--data-urlencode "url_title=View Report")
+  else
+    log "  WARNING: No URL provided for Pushover message"
   fi
 
-  curl "${CURL_ARGS[@]}" > /dev/null 2>&1 || true
+  local PUSHOVER_RESPONSE
+  PUSHOVER_RESPONSE=$(curl "${CURL_ARGS[@]}" 2>&1) || true
+  log "  Pushover API response: $PUSHOVER_RESPONSE"
 }
 
 notify_full_report() {

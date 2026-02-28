@@ -22,8 +22,16 @@ import logger from '../logger.js';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Compaction threshold -- compact when conversation exceeds this many estimated tokens
-const COMPACTION_THRESHOLD = 6000;
+// Compaction threshold -- compact when conversation exceeds this many estimated tokens.
+// HISTORY (2026-02-28): Raised from 6000 to 60000 to effectively disable compaction for
+// normal sessions. With Anthropic prompt caching (1h TTL, cache reads at 10% of input rate),
+// full conversation history is cheap (~$0.25-0.35 per 30-turn session). The old 6000 threshold
+// caused compaction to fire after ~15-20 utterances, replacing rich conversational context with
+// a dry field:value summary. This destroyed Sonnet's ability to infer circuit assignment from
+// recent conversational flow (e.g. "Circuit 3" said 2 utterances ago). The 60000 threshold
+// keeps compaction as a safety valve for extraordinarily long sessions (~150+ turns) while
+// preserving full context for all normal inspections.
+const COMPACTION_THRESHOLD = 60000;
 
 // Load externalized system prompt at module init
 // Must be >=1024 tokens for Sonnet 4.5 prompt caching
