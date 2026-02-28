@@ -466,7 +466,7 @@ function analyzeSession(sessionDir) {
   try {
     const extractionSessionPath = path.resolve(
       decodeURIComponent(path.dirname(new URL(import.meta.url).pathname)),
-      "../src/eicr-extraction-session.js"
+      "../src/extraction/eicr-extraction-session.js"
     );
     const extractionSource = fs.readFileSync(extractionSessionPath, "utf8");
 
@@ -695,7 +695,7 @@ function analyzeSession(sessionDir) {
     try {
       const extractionSessionPath = path.resolve(
         decodeURIComponent(path.dirname(new URL(import.meta.url).pathname)),
-        "../src/eicr-extraction-session.js"
+        "../src/extraction/eicr-extraction-session.js"
       );
       const extractionSource = fs.readFileSync(extractionSessionPath, "utf8");
       const promptMatch = extractionSource.match(
@@ -740,6 +740,96 @@ function analyzeSession(sessionDir) {
     })
     .sort((a, b) => b.times_spoken - a.times_spoken);
 
+  // ── 14. VAD Sleep/Wake Analysis ──
+  // Analyse sleep manager events to understand Deepgram cost savings and wake reliability.
+  // Events from DebugLogger: sleep_state_dozing, sleep_state_sleeping, sleep_state_wake,
+  // sleep_enter_dozing, sleep_enter_sleeping, sleep_wake, buffer_replayed,
+  // reconnect_queue_flushed, reconnect_timeout, post_wake_no_transcript
+  // Events from DeepgramService: STREAM_PAUSED, STREAM_RESUMED, BUFFER_REPLAY
+
+  const sleepEvents = events.filter((e) =>
+    [
+      "sleep_state_dozing", "sleep_state_sleeping", "sleep_state_wake",
+      "sleep_enter_dozing", "sleep_enter_sleeping", "sleep_wake",
+    ].includes(e.event)
+  );
+  const bufferReplayEvents = events.filter((e) =>
+    ["buffer_replayed", "BUFFER_REPLAY"].includes(e.event)
+  );
+  const streamPauseEvents = events.filter((e) =>
+    ["STREAM_PAUSED"].includes(e.event)
+  );
+  const streamResumeEvents = events.filter((e) =>
+    ["STREAM_RESUMED"].includes(e.event)
+  );
+  const reconnectQueueEvents = events.filter((e) => e.event === "reconnect_queue_flushed");
+  const reconnectTimeoutEvents = events.filter((e) => e.event === "reconnect_timeout");
+  const postWakeNoTranscriptEvents = events.filter((e) => e.event === "post_wake_no_transcript");
+
+  // Build sleep cycles: each dozing event starts a cycle, wake ends it
+  const sleepCycles = [];
+  const dozingEvents = sleepEvents.filter((e) =>
+    ["sleep_state_dozing", "sleep_enter_dozing"].includes(e.event)
+  );
+  const wakeEvents = sleepEvents.filter((e) =>
+    ["sleep_state_wake", "sleep_wake"].includes(e.event)
+  );
+  const sleepingEvents = sleepEvents.filter((e) =>
+    ["sleep_state_sleeping", "sleep_enter_sleeping"].includes(e.event)
+  );
+
+  for (let i = 0; i < dozingEvents.length; i++) {
+    const dozeTime = new Date(dozingEvents[i].timestamp).getTime();
+
+    // Find the next wake event after this doze
+    const nextWake = wakeEvents.find((w) => new Date(w.timestamp).getTime() > dozeTime);
+    const wakeTime = nextWake ? new Date(nextWake.timestamp).getTime() : null;
+
+    // Did it transition to sleeping before waking?
+    const wentToSleep = sleepingEvents.some((s) => {
+      const sleepTime = new Date(s.timestamp).getTime();
+      return sleepTime > dozeTime && (!wakeTime || sleepTime < wakeTime);
+    });
+
+    // Find buffer replay for this cycle
+    const cycleReplay = bufferReplayEvents.find((r) => {
+      const replayTime = new Date(r.timestamp).getTime();
+      return wakeTime && Math.abs(replayTime - wakeTime) < 5000;
+    });
+
+    const cycle = {
+      doze_start: dozingEvents[i].timestamp,
+      wake_time: nextWake?.timestamp || null,
+      reached_sleeping: wentToSleep,
+      duration_sec: wakeTime ? Math.round((wakeTime - dozeTime) / 1000) : null,
+      wake_from: nextWake?.data?.fromState || nextWake?.data?.from || (wentToSleep ? "sleeping" : "dozing"),
+      buffer_replayed: !!cycleReplay,
+      buffer_bytes: cycleReplay?.data?.bytes || 0,
+    };
+
+    sleepCycles.push(cycle);
+  }
+
+  // Calculate Deepgram cost savings from sleep
+  const totalSleepDurationSec = sleepCycles.reduce((sum, c) => sum + (c.duration_sec || 0), 0);
+  const deepgramSavedMinutes = totalSleepDurationSec / 60;
+  const deepgramSavedCostUsd = deepgramSavedMinutes * DEEPGRAM_RATE;
+
+  const vadSleepAnalysis = {
+    total_sleep_cycles: sleepCycles.length,
+    cycles: sleepCycles,
+    total_sleep_duration_sec: totalSleepDurationSec,
+    total_sleep_duration_min: parseFloat(deepgramSavedMinutes.toFixed(2)),
+    deepgram_saved_usd: parseFloat(deepgramSavedCostUsd.toFixed(6)),
+    stream_pauses: streamPauseEvents.length,
+    stream_resumes: streamResumeEvents.length,
+    buffer_replays: bufferReplayEvents.length,
+    reconnect_queue_flushes: reconnectQueueEvents.length,
+    reconnect_timeouts: reconnectTimeoutEvents.length,
+    post_wake_no_transcript: postWakeNoTranscriptEvents.length,
+    deepgram_streaming_stopped: sleepCycles.length > 0,
+  };
+
   // ── Build analysis output ──
 
   const analysis = {
@@ -758,6 +848,7 @@ function analyzeSession(sessionDir) {
     cost_breakdown: costBreakdown,
     sonnet_prompt_audit: sonnetPromptAudit,
     repeated_values: repeatedValues,
+    vad_sleep_analysis: vadSleepAnalysis,
     job_snapshot: jobSnapshot,
     cost_summary: costSummary,
   };
@@ -781,6 +872,10 @@ function analyzeSession(sessionDir) {
   const uncapturedCount = utteranceAnalysis.reduce((sum, u) => sum + u.uncaptured_values.length, 0);
   console.log(`  Uncaptured values: ${uncapturedCount}`);
   console.log(`  Repeated values: ${repeatedValues.length}`);
+  console.log(`  Sleep cycles: ${vadSleepAnalysis.total_sleep_cycles}`);
+  console.log(`  Sleep duration: ${vadSleepAnalysis.total_sleep_duration_min}min (saved $${vadSleepAnalysis.deepgram_saved_usd.toFixed(4)} Deepgram)`);
+  console.log(`  Buffer replays: ${vadSleepAnalysis.buffer_replays}`);
+  console.log(`  Wake failures: ${vadSleepAnalysis.post_wake_no_transcript}`);
   console.log(`  Total cost (USD): $${costBreakdown.total_usd.toFixed(4)}`);
 
   return analysis;

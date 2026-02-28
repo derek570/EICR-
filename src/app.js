@@ -88,7 +88,7 @@ app.use((req, res, next) => {
         directives: {
           defaultSrc: ["'none'"],
           styleSrc: ["'self'", "'unsafe-inline'"],
-          scriptSrc: ["'none'"],
+          scriptSrc: ["'unsafe-inline'"],
           imgSrc: ["'self'", 'data:'],
           fontSrc: ["'self'"],
           connectSrc: ["'self'"],

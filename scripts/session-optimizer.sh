@@ -621,8 +621,8 @@ process_session() {
   local KEYWORD_BOOSTS=""
   local SONNET_PROMPT=""
 
-  if [ -f "$IOS_DIR/Sources/Whisper/TranscriptFieldMatcher.swift" ]; then
-    REGEX_PATTERNS=$(head -300 "$IOS_DIR/Sources/Whisper/TranscriptFieldMatcher.swift" 2>/dev/null || echo "Could not read")
+  if [ -f "$IOS_DIR/Sources/Recording/TranscriptFieldMatcher.swift" ]; then
+    REGEX_PATTERNS=$(head -300 "$IOS_DIR/Sources/Recording/TranscriptFieldMatcher.swift" 2>/dev/null || echo "Could not read")
   fi
   if [ -f "$IOS_DIR/Resources/default_config.json" ]; then
     KEYWORD_BOOSTS=$(cat "$IOS_DIR/Resources/default_config.json" 2>/dev/null || echo "{}")
@@ -651,8 +651,8 @@ print(count,tokens)
   local TOKEN_BUDGET=450
   local TOKEN_HEADROOM=$((TOKEN_BUDGET - KEYWORD_TOKENS))
   # Server-side Sonnet extraction session (primary prompt for optimization)
-  if [ -f "$BACKEND_DIR/src/eicr-extraction-session.js" ]; then
-    SONNET_PROMPT=$(head -200 "$BACKEND_DIR/src/eicr-extraction-session.js" 2>/dev/null || echo "Could not read")
+  if [ -f "$BACKEND_DIR/src/extraction/eicr-extraction-session.js" ]; then
+    SONNET_PROMPT=$(head -200 "$BACKEND_DIR/src/extraction/eicr-extraction-session.js" 2>/dev/null || echo "Could not read")
   fi
 
   # Collect debug reports context
@@ -722,80 +722,75 @@ Do NOT repeat the same mistake."
     FIELD_SOURCES_DATA=$(cat "$SESSION_DIR/field_sources.json" 2>/dev/null || echo "{}")
   fi
 
-  # Write prompt to temp file to avoid nested quoting issues
+  # Write prompt to temp file using printf for data (safe from shell expansion)
+  # and quoted heredocs for static text (no command substitution)
   local PROMPT_FILE
   PROMPT_FILE=$(mktemp)
-  cat > "$PROMPT_FILE" <<PROMPT_EOF
+  {
+    cat <<'PROMPT_INTRO'
 You are the CertMate Session Optimizer. You have READ-ONLY access to the codebase.
 Your job is to analyze a recording session, find why values were missed, and produce
 structured JSON recommendations for code changes. You do NOT apply changes yourself.
 
 ## Session Analysis (from analyze-session.js)
-$ANALYSIS
-
-=== FULL TRANSCRIPT ===
-$TRANSCRIPT_DATA
-
-=== SONNET INPUTS/OUTPUTS ===
-$SONNET_IO
-
-=== REGEX MATCHES ===
-$REGEX_DATA
-
-=== SONNET EXTRACTIONS ===
-$SONNET_DATA
-
-=== DEBUG ISSUES ===
-$DEBUG_ISSUES
-
-=== FIELD SOURCES ===
-$FIELD_SOURCES_DATA
-
+PROMPT_INTRO
+    printf '%s\n\n' "$ANALYSIS"
+    printf '%s\n' "=== FULL TRANSCRIPT ==="
+    printf '%s\n\n' "$TRANSCRIPT_DATA"
+    printf '%s\n' "=== SONNET INPUTS/OUTPUTS ==="
+    printf '%s\n\n' "$SONNET_IO"
+    printf '%s\n' "=== REGEX MATCHES ==="
+    printf '%s\n\n' "$REGEX_DATA"
+    printf '%s\n' "=== SONNET EXTRACTIONS ==="
+    printf '%s\n\n' "$SONNET_DATA"
+    printf '%s\n' "=== DEBUG ISSUES ==="
+    printf '%s\n\n' "$DEBUG_ISSUES"
+    printf '%s\n' "=== FIELD SOURCES ==="
+    printf '%s\n\n' "$FIELD_SOURCES_DATA"
+    cat <<'PROMPT_UNCAPTURED'
 === UTTERANCES WITH UNCAPTURED VALUES ===
 These utterances contain number values that were NOT captured by regex or Sonnet.
 Each entry has: timestamp, text, uncaptured_values (numbers spoken but not assigned to any field),
 and any regex/sonnet captures that DID happen for that utterance.
 Focus your recommendations on catching these missed values.
-$UTTERANCE_DATA
-
+PROMPT_UNCAPTURED
+    printf '%s\n\n' "$UTTERANCE_DATA"
+    cat <<'PROMPT_REPEATED'
 === REPEATED VALUES ===
 Values spoken 2+ times without being captured. The user is likely repeating themselves because
 the system didn't acknowledge the value. High priority for regex improvements.
-$REPEATED_VALUES_DATA
-
-## Current Regex Patterns (TranscriptFieldMatcher.swift — first 300 lines)
-$REGEX_PATTERNS
-
-## Current Remote Config (default_config.json — keyword boosts + regex overrides)
-$KEYWORD_BOOSTS
-
-### KEYWORD TOKEN BUDGET: $KEYWORD_COUNT entries using ~$KEYWORD_TOKENS/$TOKEN_BUDGET estimated tokens ($TOKEN_HEADROOM tokens free)
+PROMPT_REPEATED
+    printf '%s\n\n' "$REPEATED_VALUES_DATA"
+    printf '%s\n' "## Current Regex Patterns (TranscriptFieldMatcher.swift — first 300 lines)"
+    printf '%s\n\n' "$REGEX_PATTERNS"
+    printf '%s\n' "## Current Remote Config (default_config.json — keyword boosts + regex overrides)"
+    printf '%s\n\n' "$KEYWORD_BOOSTS"
+    printf '%s\n' "### KEYWORD TOKEN BUDGET: ${KEYWORD_COUNT} entries using ~${KEYWORD_TOKENS}/${TOKEN_BUDGET} estimated tokens (${TOKEN_HEADROOM} tokens free)"
+    cat <<'PROMPT_KEYWORDS'
 Deepgram Nova-3 has a 500-TOKEN limit across all keyterms (BPE-style tokenization).
-iOS KeywordBoostGenerator uses a two-tier token-budget strategy (budget: $TOKEN_BUDGET tokens):
+iOS KeywordBoostGenerator uses a two-tier token-budget strategy:
 - **Tier 1 (boost >= 2.0)**: Sent WITH boost suffix (e.g. keyterm=circuit:3.0). Costs ~(words*2 + 4) tokens.
 - **Tier 2 (boost < 2.0)**: Sent as PLAIN keyterm (e.g. keyterm=MCB). Costs ~(words*2) tokens. Still activates keyterm prompting but without priority boosting.
-This allows ALL $KEYWORD_COUNT config keywords to fit (~$KEYWORD_TOKENS tokens) with $TOKEN_HEADROOM tokens headroom for board-specific CCU keywords.
 - Keywords with boost >= 2.0 are critical — they get Deepgram priority boosting.
 - Keywords with boost < 2.0 still improve recognition but without priority weighting.
 - New keywords at boost >= 2.0 cost ~6 tokens (text + boost suffix); at < 2.0 cost ~2 tokens (text only).
 - NEVER add case-insensitive duplicates of existing keywords.
 - keyword_removal is now LESS necessary since all keywords fit, but still useful for removing genuinely unhelpful terms.
 
-## Current Sonnet Extraction (server-side eicr-extraction-session.js — first 200 lines)
-$SONNET_PROMPT
-
-## User Feedback (corrections from previous optimizer run)
-${FEEDBACK_CONTEXT:-No user feedback for this session.}
-
-## Debug Reports (user-reported issues from voice debug commands)
-${DEBUG_CONTEXT:-No debug reports for this session.}
-${RERUN_CONTEXT:+
-
-=== USER FEEDBACK FOR RE-RUN (HIGH PRIORITY) ===
-The user reviewed the previous recommendations and provided this additional context:
-$RERUN_CONTEXT
-Take this feedback into account when making your recommendations.
-}
+PROMPT_KEYWORDS
+    printf '%s\n' "## Current Sonnet Extraction (server-side eicr-extraction-session.js — first 200 lines)"
+    printf '%s\n\n' "$SONNET_PROMPT"
+    printf '%s\n' "## User Feedback (corrections from previous optimizer run)"
+    printf '%s\n\n' "${FEEDBACK_CONTEXT:-No user feedback for this session.}"
+    printf '%s\n' "## Debug Reports (user-reported issues from voice debug commands)"
+    printf '%s\n' "${DEBUG_CONTEXT:-No debug reports for this session.}"
+    if [ -n "$RERUN_CONTEXT" ]; then
+      printf '\n%s\n' "=== USER FEEDBACK FOR RE-RUN (HIGH PRIORITY) ==="
+      printf '%s\n' "The user reviewed the previous recommendations and provided this additional context:"
+      printf '%s\n' "$RERUN_CONTEXT"
+      printf '%s\n' "Take this feedback into account when making your recommendations."
+    fi
+    cat <<'PROMPT_INSTRUCTIONS'
 
 ## INSTRUCTIONS — READ CAREFULLY
 
@@ -837,11 +832,11 @@ The user explicitly told you what's wrong. Investigate the root cause in the cod
 
 ### 3. Investigate the root cause
 Use Read, Glob, and Grep to explore the codebase. Look at:
-- **Regex patterns**: CertMateUnified/Sources/Whisper/TranscriptFieldMatcher.swift
-- **Number normaliser**: CertMateUnified/Sources/Whisper/NumberNormaliser.swift
+- **Regex patterns**: CertMateUnified/Sources/Recording/TranscriptFieldMatcher.swift
+- **Number normaliser**: CertMateUnified/Sources/Recording/NumberNormaliser.swift
 - **Keyword boosts**: CertMateUnified/Sources/Resources/default_config.json (Xcode build source) AND CertMateUnified/Resources/default_config.json (keep both in sync)
-- **Keyword generator**: CertMateUnified/Sources/Whisper/KeywordBoostGenerator.swift
-- **Sonnet extraction session**: EICR_App/src/eicr-extraction-session.js (EICR_SYSTEM_PROMPT — the main rolling extraction prompt)
+- **Keyword generator**: CertMateUnified/Sources/Recording/KeywordBoostGenerator.swift
+- **Sonnet extraction session**: EICR_App/src/extraction/eicr-extraction-session.js (EICR_SYSTEM_PROMPT — the main rolling extraction prompt)
 - **Server WS handler**: EICR_App/src/sonnet-stream.js (WebSocket message routing)
 - **iOS model fields**: CertMateUnified model files (RollingExtractionResult, etc.)
 - **Alert/question logic**: CertMateUnified/Sources/Services/AlertManager.swift
@@ -871,8 +866,8 @@ New regex patterns MUST NOT false-match existing patterns for different fields. 
    the distinguishing word. E.g., require "supply voltage" not just "voltage"; require "supply frequency"
    not just "frequency". Prefer precision over recall — a missed regex match falls back to Sonnet safely,
    but a false match writes the wrong value to the wrong field with no recovery.
-3. **Handle Deepgram number splitting**: Deepgram often splits numbers into separate digits ("240" → "2 40",
-   "299" → "2 9 9"). Your regex capture group MUST handle this — use `(\d[\d\s]*\d)` not `(\d+)` for
+3. **Handle Deepgram number splitting**: Deepgram often splits numbers into separate digits ("240" -> "2 40",
+   "299" -> "2 9 9"). Your regex capture group MUST handle this — use (\d[\d\s]*\d) not (\d+) for
    multi-digit values, and strip spaces before validation. Check NumberNormaliser.swift for existing
    handling patterns.
 4. **Validate ranges defensively**: Always validate captured numbers against realistic ranges for the field.
@@ -928,7 +923,8 @@ If no changes are needed, output:
   },
   "summary": "Session analyzed — no code changes needed. All fields captured correctly."
 }
-PROMPT_EOF
+PROMPT_INSTRUCTIONS
+  } > "$PROMPT_FILE"
 
   # Invoke Claude Code with read-only access
   local CLAUDE_OUTPUT
@@ -1105,11 +1101,11 @@ Take this feedback into account when making your recommendations.
 
 1. Read the bug report carefully. The user told you exactly what's wrong.
 2. Investigate the root cause in the codebase:
-   - Regex patterns: CertMateUnified/Sources/Whisper/TranscriptFieldMatcher.swift
-   - Sonnet extraction session: EICR_App/src/eicr-extraction-session.js (system prompt + extraction)
+   - Regex patterns: CertMateUnified/Sources/Recording/TranscriptFieldMatcher.swift
+   - Sonnet extraction session: EICR_App/src/extraction/eicr-extraction-session.js (system prompt + extraction)
    - Server WS handler: EICR_App/src/sonnet-stream.js (message routing + question gate)
    - Backend extraction (batch): EICR_App/src/extract.js, EICR_App/src/api.js
-   - Number normalisation: CertMateUnified/Sources/Whisper/NumberNormaliser.swift
+   - Number normalisation: CertMateUnified/Sources/Recording/NumberNormaliser.swift
    - Keyword boosts: CertMateUnified/Resources/default_config.json
    - Any other relevant file
 3. DO NOT edit files. Output recommendations as structured JSON.

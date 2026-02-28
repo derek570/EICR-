@@ -133,6 +133,12 @@ Cloud keys loaded automatically from AWS Secrets Manager: `eicr/api-keys` (all A
 - **EICR** - Electrical Installation Condition Report (periodic inspection)
 - **EIC** - Electrical Installation Certificate (new installations)
 
+## Commit Rules
+- Always write detailed, descriptive commit messages
+- Explain WHY changes were made, not just what changed
+- Flag any deliberate UI/layout decisions in commit messages
+- Note if a change fixes a problem caused by a previous refactor
+
 ## Development Notes
 
 - All Node.js uses ES modules (`"type": "module"` in package.json)
