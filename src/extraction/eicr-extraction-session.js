@@ -17,6 +17,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import Anthropic from '@anthropic-ai/sdk';
 import { CostTracker } from './cost-tracker.js';
+import { lookupPostcode } from '../postcode_lookup.js';
 import logger from '../logger.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -144,7 +145,39 @@ export class EICRExtractionSession {
       await this.compact();
     }
 
-    let userMessage = this.buildUserMessage(transcriptText, regexResults);
+    // Check if regex results contain a postcode — if so, look it up via postcodes.io
+    let postcodeLookupResult = null;
+    if (regexResults && regexResults.length > 0) {
+      const postcodeEntry = regexResults.find((r) => r.field === 'install.postcode' && r.value);
+      if (postcodeEntry) {
+        try {
+          const lookup = await lookupPostcode(postcodeEntry.value);
+          if (lookup) {
+            postcodeLookupResult = {
+              postcode: lookup.postcode,
+              town: lookup.town,
+              county: lookup.county,
+              valid: true,
+            };
+            logger.info(
+              `Session ${this.sessionId} Postcode lookup: ${postcodeEntry.value} → ${lookup.town}, ${lookup.county}`
+            );
+          } else {
+            postcodeLookupResult = {
+              postcode: postcodeEntry.value,
+              valid: false,
+            };
+            logger.info(
+              `Session ${this.sessionId} Postcode lookup: ${postcodeEntry.value} → not found`
+            );
+          }
+        } catch (err) {
+          logger.warn(`Session ${this.sessionId} Postcode lookup failed: ${err.message}`);
+        }
+      }
+    }
+
+    let userMessage = this.buildUserMessage(transcriptText, regexResults, postcodeLookupResult);
     if (options.confirmationsEnabled) {
       userMessage += '\n\n[CONFIRMATIONS ENABLED]';
     }
@@ -471,11 +504,20 @@ export class EICRExtractionSession {
     }
   }
 
-  buildUserMessage(transcriptText, regexResults = []) {
+  buildUserMessage(transcriptText, regexResults = [], postcodeLookup = null) {
     const parts = [];
     parts.push(`NEW utterance: ${transcriptText}`);
     if (regexResults && regexResults.length > 0) {
       parts.push(`Regex pre-filled fields (confirm or correct): ${JSON.stringify(regexResults)}`);
+    }
+    if (postcodeLookup) {
+      if (postcodeLookup.valid) {
+        parts.push(
+          `POSTCODE LOOKUP: "${postcodeLookup.postcode}" → ${postcodeLookup.town}, ${postcodeLookup.county} (valid)`
+        );
+      } else {
+        parts.push(`POSTCODE LOOKUP: "${postcodeLookup.postcode}" → not found (invalid postcode)`);
+      }
     }
     // Only include circuit schedule on first message and after job state updates
     if (this.circuitSchedule && !this.circuitScheduleIncluded) {

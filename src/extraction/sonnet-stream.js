@@ -71,6 +71,9 @@ const KNOWN_FIELDS = new Set([
   'zs_at_db',
   // Installation fields
   'address',
+  'postcode',
+  'town',
+  'county',
   'client_name',
   'client_phone',
   'client_email',

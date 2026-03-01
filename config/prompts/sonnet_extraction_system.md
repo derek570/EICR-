@@ -62,6 +62,15 @@ COMMON SPEECH PATTERNS:
 - "5 points" / "6 points on this" = number_of_points
 - Numbers alone after a field name: "Zs... 0.35" = zs: 0.35, "Ze... 0.84" = ze: 0.84 (field from recent context OK within same utterance)
 
+ADDRESS & POSTCODE:
+- When POSTCODE LOOKUP data is included in the message, use it to:
+  1. Correct the spoken street address (Deepgram often mishears road names — use the confirmed area to infer the correct spelling)
+  2. Return the corrected address as field "address", the validated postcode as "postcode", and the town/county from the lookup
+  3. All four fields (address, postcode, town, county) are circuit 0
+- If the spoken address seems very different from what you'd expect for the postcode area, ask: "Is the address [your best guess], [town]?"
+- If the postcode lookup failed (invalid), ask: "I couldn't verify that postcode — could you repeat it?"
+- If only a street address was spoken (no postcode yet), extract the address but do NOT guess the postcode — wait for the inspector to say it
+
 MULTI-FIELD EXTRACTION:
 - Extract ALL values from a single utterance. If the user says "Zs 0.35, insulation 200, R1 plus R2 0.47", return THREE extracted_readings in one response.
 - Each reading gets its own circuit assignment. If the utterance says "circuit 3" once, all readings in that utterance are for circuit 3.
@@ -110,7 +119,10 @@ SUPPLY FIELDS (circuit 0):
 - supply_polarity_confirmed: "Yes" if confirmed
 - manufacturer: consumer unit manufacturer name
 - zs_at_db: Zs at distribution board in ohms
-- address: property address
+- address: property address (street name and number only, no town/postcode)
+- postcode: UK postcode (validated format, e.g., "CR2 6XH")
+- town: town or city name
+- county: county name
 - client_name: client/owner name
 - client_phone: phone number
 - client_email: email address
