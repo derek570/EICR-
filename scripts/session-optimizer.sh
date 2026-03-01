@@ -714,7 +714,7 @@ Do NOT repeat the same mistake."
 
   # Extract data sections from analysis for Claude prompt
   local TRANSCRIPT_DATA SONNET_IO REGEX_DATA SONNET_DATA DEBUG_ISSUES FIELD_SOURCES_DATA UTTERANCE_DATA REPEATED_VALUES_DATA
-  TRANSCRIPT_DATA=$(echo "$ANALYSIS" | jq -r '.transcript_utterances // [] | map(.text) | join("\n")' 2>/dev/null || echo "No transcript available")
+  TRANSCRIPT_DATA=$(echo "$ANALYSIS" | jq -r '.utterance_analysis // [] | map(.text) | join("\n")' 2>/dev/null || echo "No transcript available")
   SONNET_IO=$(echo "$ANALYSIS" | jq -c '.sonnet_performance // {}' 2>/dev/null || echo "{}")
   REGEX_DATA=$(echo "$ANALYSIS" | jq -c '.regex_performance // {}' 2>/dev/null || echo "{}")
   SONNET_DATA=$(echo "$ANALYSIS" | jq -c '.field_report // []' 2>/dev/null || echo "[]")
@@ -840,7 +840,7 @@ The user explicitly told you what's wrong. Investigate the root cause in the cod
 Use Read, Glob, and Grep to explore the codebase. Look at:
 - **Regex patterns**: CertMateUnified/Sources/Recording/TranscriptFieldMatcher.swift
 - **Number normaliser**: CertMateUnified/Sources/Recording/NumberNormaliser.swift
-- **Keyword boosts**: CertMateUnified/Sources/Resources/default_config.json (Xcode build source) AND CertMateUnified/Resources/default_config.json (keep both in sync)
+- **Keyword boosts**: CertMateUnified/Sources/Resources/default_config.json (primary — the optimizer auto-applies to the Resources/ copy too, so emit only ONE recommendation per change using this path)
 - **Keyword generator**: CertMateUnified/Sources/Recording/KeywordBoostGenerator.swift
 - **Sonnet extraction session**: EICR_App/src/extraction/eicr-extraction-session.js (EICR_SYSTEM_PROMPT — the main rolling extraction prompt)
 - **Server WS handler**: EICR_App/src/sonnet-stream.js (WebSocket message routing)
@@ -1264,6 +1264,21 @@ apply_accepted_recommendations() {
           fs.writeFileSync(rec.file, updated, 'utf8');
           applied++;
           console.log('Applied: ' + rec.title);
+          // Auto-duplicate config changes to the Resources/ copy
+          if (rec.file.includes('Sources/Resources/default_config.json')) {
+            const mirrorPath = rec.file.replace('Sources/Resources/default_config.json', 'Resources/default_config.json');
+            try {
+              const mirrorContent = fs.readFileSync(mirrorPath, 'utf8');
+              if (mirrorContent.includes(rec.old_code)) {
+                fs.writeFileSync(mirrorPath, mirrorContent.replace(rec.old_code, rec.new_code), 'utf8');
+                console.log('Auto-mirrored to Resources/ copy: ' + rec.title);
+              } else {
+                console.error('Mirror old_code not found in ' + mirrorPath);
+              }
+            } catch (e) {
+              console.error('Mirror failed for ' + mirrorPath + ': ' + e.message);
+            }
+          }
         } else {
           console.error('old_code not found in ' + rec.file + ': ' + rec.title);
           failed++;

@@ -25,6 +25,7 @@ const DEEPGRAM_CONFIG = {
   channels: 1,
   interim_results: true,
   utterance_end_ms: 1500,
+  vad_events: true,
   keywords: [
     'Ze:2',
     'Zs:2',
@@ -163,8 +164,12 @@ async function handleStreamStart(ws, msg, request) {
     }
   });
 
-  deepgramWs.on('close', () => {
-    logger.info('Deepgram WebSocket closed', { sessionId });
+  deepgramWs.on('close', (code, reason) => {
+    logger.info('Deepgram WebSocket closed', {
+      sessionId,
+      closeCode: code,
+      reason: reason?.toString() || 'none',
+    });
   });
 
   deepgramWs.on('error', (err) => {
@@ -217,6 +222,10 @@ function handleDeepgramMessage(state, dgMsg) {
         })
       );
     }
+  }
+
+  if (dgMsg.type === 'SpeechStarted') {
+    logger.info('Deepgram speech started (VAD)', { sessionId: state.sessionId });
   }
 
   if (dgMsg.type === 'UtteranceEnd') {
