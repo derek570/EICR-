@@ -29,7 +29,7 @@ PUSHOVER_USER="uexvmxgxpccjgvjzjk2qnqrnyrncgb"
 PUSHOVER_TOKEN="adcgd8wx7t6ct7fhz9dyeyt1ne3gcn"
 
 # Project paths
-CODEBASE="$HOME/Library/Mobile Documents/com~apple~CloudDocs/EICR_Automation"
+CODEBASE="$HOME/Developer/EICR_Automation"
 SCRIPTS_DIR="$CODEBASE/EICR_App/scripts"
 IOS_DIR="$CODEBASE/CertMateUnified"
 BACKEND_DIR="$CODEBASE/EICR_App"
