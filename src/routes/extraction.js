@@ -205,6 +205,29 @@ If you cannot determine the type, reply: {"rcd_type": null, "source": "not found
       filled,
       total: needsLookup.length,
     });
+
+    // Prune stale questionsForInspector — GPT adds RCD type questions BEFORE
+    // this web search pass runs. If we resolved those types, the questions are
+    // now stale and would cause unnecessary TTS interruptions on the iOS app.
+    if (filled > 0 && Array.isArray(analysis.questionsForInspector)) {
+      const before = analysis.questionsForInspector.length;
+      const stillMissing = circuits.filter((c) => c.rcd_protected && !c.rcd_type);
+      if (stillMissing.length === 0) {
+        // All RCD types resolved — remove any RCD-related questions
+        analysis.questionsForInspector = analysis.questionsForInspector.filter(
+          (q) => !/\brcd\s*type\b/i.test(q)
+        );
+      }
+      const after = analysis.questionsForInspector.length;
+      if (before !== after) {
+        logger.info('Pruned stale RCD type questions after web search', {
+          userId,
+          before,
+          after,
+          removed: before - after,
+        });
+      }
+    }
   } catch (err) {
     // Non-fatal — log and continue with null rcd_types
     logger.warn('RCD type web search failed (non-fatal)', {
