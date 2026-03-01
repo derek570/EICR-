@@ -124,32 +124,31 @@ async function lookupMissingRcdTypes(analysis, openai, logger, userId) {
 
   if (needsLookup.length === 0) return analysis;
 
-  // Group by unique device model to avoid duplicate lookups
-  const uniqueModels = new Set();
+  // Gather any device info GPT extracted — RCBO model markings, ratings, etc.
+  const boardModel = analysis.board_model || '';
+  const deviceDescriptions = [];
   for (const c of needsLookup) {
-    // Use ocpd_bs_en or other identifiers if available, but the key info
-    // is manufacturer + any model marking GPT extracted
-    const model = c.model_number || c.device_model || null;
-    if (model) uniqueModels.add(model);
+    const parts = [`Circuit ${c.circuit_number}`];
+    if (c.is_rcbo) parts.push('RCBO');
+    if (c.ocpd_rating_a) parts.push(`${c.ocpd_rating_a}A`);
+    if (c.rcd_rating_ma) parts.push(`${c.rcd_rating_ma}mA`);
+    deviceDescriptions.push(parts.join(' '));
   }
 
-  // Build the search query — ask about specific models or the board's RCD
-  const boardModel = analysis.board_model || '';
-  const modelList =
-    uniqueModels.size > 0
-      ? `Models: ${[...uniqueModels].join(', ')}.`
-      : `Board: ${manufacturer} ${boardModel}.`;
+  // Also check if there's a standalone RCD protecting these circuits
+  const hasStandaloneRcd = needsLookup.some((c) => !c.is_rcbo && c.rcd_protected);
 
-  const searchPrompt = `What RCD type (AC, A, B, F, or S) are the following UK electrical devices?
-${modelList}
-Manufacturer: ${manufacturer}.
+  const searchPrompt = `I have a UK consumer unit: ${manufacturer} ${boardModel}.
+It contains ${needsLookup.length} RCD-protected circuits where I need to determine the RCD type.
+${hasStandaloneRcd ? 'Some circuits are protected by a standalone RCD/RCCB in the board.' : 'The circuits use RCBOs (combined MCB+RCD).'}
 
-Look up the manufacturer datasheet or technical specifications. For each device,
-tell me if it is Type AC (single waveform), Type A (includes pulsating DC),
-Type B (includes smooth DC), Type F, or Type S (time-delayed).
+Circuits needing RCD type: ${deviceDescriptions.join(', ')}.
 
-Reply ONLY with valid JSON: {"results": [{"model": "...", "rcd_type": "AC|A|B|F|S"}]}
-If you cannot determine the type for a device, omit it from results.`;
+Search for the ${manufacturer} ${boardModel} consumer unit datasheet or technical specifications.
+What RCD type do the RCDs/RCBOs in this board provide? Type AC, Type A, Type B, Type F, or Type S?
+
+Reply ONLY with valid JSON: {"rcd_type": "AC" or "A" or "B" or "F" or "S", "source": "brief description of where you found this"}
+If you cannot determine the type, reply: {"rcd_type": null, "source": "not found"}`;
 
   try {
     logger.info('RCD type web search lookup starting', {
@@ -157,14 +156,13 @@ If you cannot determine the type for a device, omit it from results.`;
       manufacturer,
       boardModel,
       circuitsNeedingLookup: needsLookup.length,
-      uniqueModels: [...uniqueModels],
+      deviceDescriptions,
     });
 
     const searchResponse = await openai.chat.completions.create({
       model: 'gpt-5-search-api',
       web_search_options: {},
       messages: [{ role: 'user', content: searchPrompt }],
-      temperature: 0,
     });
 
     const searchContent = searchResponse.choices?.[0]?.message?.content || '';
@@ -177,27 +175,27 @@ If you cannot determine the type for a device, omit it from results.`;
       rawPreview: searchContent.slice(0, 300),
     });
 
-    // Parse the search result — extract any JSON from the response
+    // Parse the search result — extract JSON from the response
     let searchJson = searchContent;
-    const jsonMatch = searchContent.match(/\{[\s\S]*\}/);
+    const jsonMatch = searchContent.match(/\{[\s\S]*?\}/);
     if (jsonMatch) searchJson = jsonMatch[0];
 
     const searchResult = JSON.parse(searchJson);
     const validTypes = ['AC', 'A', 'B', 'F', 'S'];
+    const rcdType = searchResult.rcd_type?.toUpperCase()?.trim();
 
-    if (searchResult.results && Array.isArray(searchResult.results)) {
-      // If we got specific model results, apply them
-      for (const result of searchResult.results) {
-        const rcdType = result.rcd_type?.toUpperCase()?.trim();
-        if (!rcdType || !validTypes.includes(rcdType)) continue;
-
-        // Apply to all circuits that need it (same manufacturer/board)
-        for (const c of needsLookup) {
-          if (!c.rcd_type) {
-            c.rcd_type = rcdType;
-          }
+    if (rcdType && validTypes.includes(rcdType)) {
+      // Apply the looked-up type to all circuits that need it
+      for (const c of needsLookup) {
+        if (!c.rcd_type) {
+          c.rcd_type = rcdType;
         }
       }
+      logger.info('RCD type web search found type', {
+        userId,
+        rcdType,
+        source: searchResult.source || 'unknown',
+      });
     }
 
     // Count how many we filled
