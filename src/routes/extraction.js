@@ -429,9 +429,9 @@ If any of the following are NOT clearly readable on the device, use your knowled
 - **RCD type**: Look up whether this specific model range is Type A or Type AC. Different ranges from the same manufacturer have different RCD types — e.g., Hager ADA = Type A, Hager ADN = Type AC; MK H79xx = Type AC, MK H68xx = Type A; BG CURB = Type AC, BG CUCRB = Type A. Match by model prefix, not just manufacturer.
 - **Type curve**: If not visible, B is standard for domestic but flag as assumed.
 
-### RCD TYPE IDENTIFICATION — CRITICAL
+### RCD TYPE — TWO-STEP DETERMINATION (CRITICAL)
 
-To identify RCD type, look for the waveform symbol box on the device face:
+STEP A: Read the waveform symbol on the device face.
 - Type AC = ONE waveform line (simple sine wave)
 - Type A = TWO waveform lines stacked (sine wave + pulsating DC half-wave)
 - Type B = THREE waveform lines stacked
@@ -439,7 +439,21 @@ To identify RCD type, look for the waveform symbol box on the device face:
 - Type F = marked with letter "F"
 - COUNT THE LINES in the waveform symbol: 1 line = AC, 2 lines = A, 3 lines = B.
 - RCDs and RCBOs within the same board can be DIFFERENT types — check each device individually.
-- NEVER return "RCD" as an rcd_type value. Always return one of: AC, A, B, F, S, or null if not determinable.
+
+STEP B: If the symbol is not visible or legible, LOOK UP the type from the
+manufacturer and model number you identified. This is MANDATORY — do not
+leave rcd_type as null without attempting a lookup. Common UK device mappings:
+- Hager ADA/ADC = Type A, Hager ADN = Type AC
+- MK H68xx/Sentry = Type A, MK H79xx = Type AC
+- BG CUCRB = Type A, BG CURB = Type AC
+- Wylex NHXS = Type A, Wylex NHX = Type AC
+- Schneider Acti9 iID/iC60H RCBO variants = Type A
+- Contactum CPBR = Type A
+Match by the MODEL PREFIX, not just manufacturer.
+
+If BOTH steps fail, set rcd_type to null and add a question to
+questionsForInspector asking the inspector to confirm the RCD type.
+NEVER return "RCD" or "RCBO" as an rcd_type value. Always return one of: AC, A, B, F, S, or null.
 
 ### BOARD INFO
 
@@ -541,7 +555,11 @@ Return ONLY valid JSON matching this exact schema:
 
 ## QUESTIONS FOR INSPECTOR
 
-If ANY information is unclear, illegible, or ambiguous, add plain English questions to the "questionsForInspector" array. Do NOT guess when uncertain — ask instead. Examples: "Is circuit 3 a 20A or 32A breaker? The rating is obscured.", "Is the board a 12-way or 14-way? Two positions are hidden behind cable trunking." If everything is clear, return an empty array.
+If ANY information is unclear, illegible, or ambiguous, add plain English questions to the "questionsForInspector" array. Do NOT guess when uncertain — ask instead.
+
+Always ask about RCD type when you could not determine it from the waveform symbol or model lookup. Example: "What is the RCD type for circuits 1-5? I can see it's a Hager ADN but the waveform symbol is not legible."
+
+Other examples: "Is circuit 3 a 20A or 32A breaker? The rating is obscured.", "Is the board a 12-way or 14-way? Two positions are hidden behind cable trunking." If everything is clear, return an empty array.
 
 IMPORTANT: If you cannot read the BS/EN number from the device, use your knowledge to look it up based on manufacturer and model. Only leave as null if you cannot identify the device at all.`;
 
