@@ -682,9 +682,20 @@ Return ONLY valid JSON matching this exact schema:
 
 ## QUESTIONS FOR INSPECTOR
 
-If ANY information is unclear, illegible, or ambiguous, add plain English questions to the "questionsForInspector" array. Do NOT guess when uncertain — ask instead.
+ONLY add questions to "questionsForInspector" when you have set a field to NULL because
+you genuinely could not determine the value. Do NOT ask about values you DID extract —
+if you extracted a value (even with moderate confidence), use it and note any uncertainty
+in the confidence.uncertain_fields array instead.
 
-Always ask about RCD type when you could not determine it from the waveform symbol or model lookup. Example: "What is the RCD type for circuits 1-5? I can see it's a Hager ADN but the waveform symbol is not legible."
+Valid reasons to add a question:
+- RCD type is null because you could not read the waveform symbol AND could not look it up from the model
+- Circuit labels are null because no labelling was visible
+- A critical field is null and cannot be determined from the photo
+
+Do NOT ask questions like "Can you confirm the main switch is 63A?" — if you read 63A, just return 63A.
+Do NOT ask about values you set to a non-null value. The inspector will correct any errors during recording.
+
+Always ask about RCD type when you set rcd_type to null. Example: "What is the RCD type for circuits 1-5? I can see it's a Hager ADN but the waveform symbol is not legible."
 
 Other examples: "Is circuit 3 a 20A or 32A breaker? The rating is obscured.", "Is the board a 12-way or 14-way? Two positions are hidden behind cable trunking." If everything is clear, return an empty array.
 
