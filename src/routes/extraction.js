@@ -108,6 +108,117 @@ function applyBsEnFallback(analysis) {
 }
 
 /**
+ * Web search pass for missing RCD types.
+ * For circuits where GPT Vision couldn't determine the RCD type from the
+ * waveform symbol or its training data, use gpt-5-search-api to look up
+ * the manufacturer datasheet and determine the correct type.
+ * Only fires when there are circuits with null rcd_type but known model info.
+ */
+async function lookupMissingRcdTypes(analysis, openai, logger, userId) {
+  const circuits = analysis.circuits || [];
+  const manufacturer = analysis.board_manufacturer;
+
+  // Collect circuits needing RCD type lookup — must have a model/manufacturer
+  // and be RCD-protected (RCBO or behind an RCD) but missing the type
+  const needsLookup = circuits.filter((c) => c.rcd_protected && !c.rcd_type && manufacturer);
+
+  if (needsLookup.length === 0) return analysis;
+
+  // Group by unique device model to avoid duplicate lookups
+  const uniqueModels = new Set();
+  for (const c of needsLookup) {
+    // Use ocpd_bs_en or other identifiers if available, but the key info
+    // is manufacturer + any model marking GPT extracted
+    const model = c.model_number || c.device_model || null;
+    if (model) uniqueModels.add(model);
+  }
+
+  // Build the search query — ask about specific models or the board's RCD
+  const boardModel = analysis.board_model || '';
+  const modelList =
+    uniqueModels.size > 0
+      ? `Models: ${[...uniqueModels].join(', ')}.`
+      : `Board: ${manufacturer} ${boardModel}.`;
+
+  const searchPrompt = `What RCD type (AC, A, B, F, or S) are the following UK electrical devices?
+${modelList}
+Manufacturer: ${manufacturer}.
+
+Look up the manufacturer datasheet or technical specifications. For each device,
+tell me if it is Type AC (single waveform), Type A (includes pulsating DC),
+Type B (includes smooth DC), Type F, or Type S (time-delayed).
+
+Reply ONLY with valid JSON: {"results": [{"model": "...", "rcd_type": "AC|A|B|F|S"}]}
+If you cannot determine the type for a device, omit it from results.`;
+
+  try {
+    logger.info('RCD type web search lookup starting', {
+      userId,
+      manufacturer,
+      boardModel,
+      circuitsNeedingLookup: needsLookup.length,
+      uniqueModels: [...uniqueModels],
+    });
+
+    const searchResponse = await openai.chat.completions.create({
+      model: 'gpt-5-search-api',
+      web_search_options: {},
+      messages: [{ role: 'user', content: searchPrompt }],
+      temperature: 0,
+    });
+
+    const searchContent = searchResponse.choices?.[0]?.message?.content || '';
+    const searchTokens = searchResponse.usage?.completion_tokens || 0;
+
+    logger.info('RCD type web search complete', {
+      userId,
+      responseLength: searchContent.length,
+      searchTokens,
+      rawPreview: searchContent.slice(0, 300),
+    });
+
+    // Parse the search result — extract any JSON from the response
+    let searchJson = searchContent;
+    const jsonMatch = searchContent.match(/\{[\s\S]*\}/);
+    if (jsonMatch) searchJson = jsonMatch[0];
+
+    const searchResult = JSON.parse(searchJson);
+    const validTypes = ['AC', 'A', 'B', 'F', 'S'];
+
+    if (searchResult.results && Array.isArray(searchResult.results)) {
+      // If we got specific model results, apply them
+      for (const result of searchResult.results) {
+        const rcdType = result.rcd_type?.toUpperCase()?.trim();
+        if (!rcdType || !validTypes.includes(rcdType)) continue;
+
+        // Apply to all circuits that need it (same manufacturer/board)
+        for (const c of needsLookup) {
+          if (!c.rcd_type) {
+            c.rcd_type = rcdType;
+          }
+        }
+      }
+    }
+
+    // Count how many we filled
+    const filled = needsLookup.filter((c) => c.rcd_type).length;
+    logger.info('RCD type web search applied', {
+      userId,
+      filled,
+      total: needsLookup.length,
+    });
+  } catch (err) {
+    // Non-fatal — log and continue with null rcd_types
+    logger.warn('RCD type web search failed (non-fatal)', {
+      userId,
+      error: err.message,
+    });
+  }
+
+  return analysis;
+}
+
+/**
  * Gemini chunked audio extraction
  * POST /api/recording/gemini-extract
  */
@@ -620,6 +731,11 @@ IMPORTANT: If you cannot read the BS/EN number from the device, use your knowled
     let analysis = JSON.parse(jsonStr);
 
     analysis = applyBsEnFallback(analysis);
+
+    // Pass 2: Web search for missing RCD types — GPT Vision can't always read
+    // the waveform symbol, and its training data doesn't cover obscure RCBOs.
+    // Use gpt-5-search-api to look up the actual RCD type from datasheets.
+    analysis = await lookupMissingRcdTypes(analysis, openai, logger, req.user.id);
 
     if (!analysis.main_switch_current && analysis.main_switch_rating) {
       analysis.main_switch_current = analysis.main_switch_rating;
