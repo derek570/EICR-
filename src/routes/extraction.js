@@ -90,6 +90,18 @@ function applyBsEnFallback(analysis) {
     if (circuit.rcd_protected && !circuit.rcd_bs_en && !isRcbo) {
       circuit.rcd_bs_en = BS_EN_LOOKUP.RCD;
     }
+
+    // Validate rcd_type — GPT sometimes returns "RCD" or "RCBO" instead of the actual type
+    const validRcdTypes = ['AC', 'A', 'B', 'F', 'S'];
+    if (circuit.rcd_type) {
+      const normalised = circuit.rcd_type.toUpperCase().trim();
+      if (validRcdTypes.includes(normalised)) {
+        circuit.rcd_type = normalised;
+      } else {
+        // "RCD", "RCBO", or garbage — null it so iOS falls back gracefully
+        circuit.rcd_type = null;
+      }
+    }
   }
 
   return analysis;
@@ -632,6 +644,7 @@ IMPORTANT: If you cannot read the BS/EN number from the device, use your knowled
       labelledCircuits,
       labelCoverage: totalCircuits > 0 ? `${labelledCircuits}/${totalCircuits}` : '0/0',
       circuitLabels: (analysis.circuits || []).map((c) => c.label || null),
+      circuitRcdTypes: (analysis.circuits || []).map((c) => c.rcd_type || null),
       mainSwitchCurrent: analysis.main_switch_current,
       spdPresent: analysis.spd_present,
       confidenceOverall: analysis.confidence?.overall,
