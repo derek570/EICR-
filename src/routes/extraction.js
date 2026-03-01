@@ -440,16 +440,11 @@ STEP A: Read the waveform symbol on the device face.
 - COUNT THE LINES in the waveform symbol: 1 line = AC, 2 lines = A, 3 lines = B.
 - RCDs and RCBOs within the same board can be DIFFERENT types — check each device individually.
 
-STEP B: If the symbol is not visible or legible, LOOK UP the type from the
-manufacturer and model number you identified. This is MANDATORY — do not
-leave rcd_type as null without attempting a lookup. Common UK device mappings:
-- Hager ADA/ADC = Type A, Hager ADN = Type AC
-- MK H68xx/Sentry = Type A, MK H79xx = Type AC
-- BG CUCRB = Type A, BG CURB = Type AC
-- Wylex NHXS = Type A, Wylex NHX = Type AC
-- Schneider Acti9 iID/iC60H RCBO variants = Type A
-- Contactum CPBR = Type A
-Match by the MODEL PREFIX, not just manufacturer.
+STEP B: If the symbol is not visible or legible, use your knowledge to LOOK UP
+the RCD type from the manufacturer and model number you identified. This is
+MANDATORY — do not leave rcd_type as null without attempting a lookup first.
+Different model ranges from the same manufacturer have different RCD types, so
+match by the specific model prefix, not just manufacturer name.
 
 If BOTH steps fail, set rcd_type to null and add a question to
 questionsForInspector asking the inspector to confirm the RCD type.
