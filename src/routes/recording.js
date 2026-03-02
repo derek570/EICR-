@@ -76,6 +76,7 @@ const analyticsUpload = multer({
   limits: uploadLimits,
   fileFilter: createFileFilter([
     'application/json',
+    'application/x-ndjson',
     'application/octet-stream',
     ...AUDIO_MIMES,
     ...IMAGE_MIMES,
