@@ -47,8 +47,8 @@ export default function AdminSystemPage() {
   const loadData = async () => {
     try {
       const [healthData, statsData] = await Promise.all([
-        api.getAdminHealth() as Promise<HealthData>,
-        api.getAdminStats() as Promise<StatsData>,
+        api.getAdminHealth() as unknown as Promise<HealthData>,
+        api.getAdminStats() as unknown as Promise<StatsData>,
       ]);
       setHealth(healthData);
       setStats(statsData);
