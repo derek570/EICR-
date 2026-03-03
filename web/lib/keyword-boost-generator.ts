@@ -8,17 +8,17 @@
  *   1.0: Circuit labels, circuit numbers, general terms
  */
 
-import type { Circuit, BoardInfo } from "./types";
+import type { Circuit, BoardInfo } from './types';
 
 // ============= Config (from default_config.json) =============
 
 const BASE_ELECTRICAL: Record<string, number> = {
   megohms: 3.0,
-  "mega ohms": 3.0,
+  'mega ohms': 3.0,
   Zs: 2.0,
   Ze: 2.0,
   Zeddy: 2.0,
-  "Zed e": 2.0,
+  'Zed e': 2.0,
   RCD: 1.5,
   RCBO: 1.5,
   MCB: 1.5,
@@ -27,64 +27,70 @@ const BASE_ELECTRICAL: Record<string, number> = {
   R2: 2.0,
   Rn: 1.5,
   CPC: 1.5,
-  "R1 plus R2": 3.0,
-  "loop impedance": 1.5,
-  "insulation resistance": 2.5,
+  'R1 plus R2': 3.0,
+  'loop impedance': 1.5,
+  'insulation resistance': 2.5,
   insulation: 1.5,
-  "ring continuity": 2.0,
-  "ring continuity lives": 2.0,
-  "ring continuity neutrals": 2.0,
-  "ring continuity earths": 2.0,
+  'ring continuity': 2.0,
+  'ring continuity lives': 2.0,
+  'ring continuity neutrals': 2.0,
+  'ring continuity earths': 2.0,
   lives: 1.5,
   neutrals: 1.5,
   earths: 2.0,
-  "live to live": 2.0,
-  "live to earth": 2.0,
-  "live to neutral": 1.5,
-  "greater than": 2.0,
-  "test voltage": 1.5,
+  'live to live': 2.0,
+  'live to earth': 2.0,
+  'live to neutral': 1.5,
+  'greater than': 2.0,
+  'test voltage': 1.5,
   radial: 1.0,
   spur: 1.0,
   polarity: 1.0,
-  "trip time": 1.5,
+  'trip time': 1.5,
   megger: 1.5,
-  "earth fault": 1.5,
+  'earth fault': 1.5,
   continuity: 1.5,
   milliamps: 1.0,
   milliseconds: 1.0,
   circuit: 1.5,
-  "first circuit": 1.5,
-  "second circuit": 1.5,
-  "nought point": 1.5,
+  'first circuit': 1.5,
+  'second circuit': 1.5,
+  'nought point': 1.5,
   nought: 2.0,
-  "nought point eight eight": 2.0,
-  "main earth": 1.5,
+  'nought point eight eight': 2.0,
+  'main earth': 1.5,
   bonding: 1.5,
   earthing: 2.0,
   Earthing: 2.0,
-  "TN-C-S": 2.0,
-  "TN-C": 2.0,
-  "TN-S": 2.0,
+  'TN-C-S': 2.0,
+  'TN-C': 2.0,
+  'TN-S': 2.0,
   TT: 1.5,
   PME: 1.5,
-  "prospective fault current": 1.5,
+  'prospective fault current': 1.5,
   PFC: 1.5,
-  "type B": 1.5,
-  "type C": 1.5,
-  "number of points": 1.5,
-  "cable size": 1.5,
-  "circuit number": 1.5,
+  'type B': 1.5,
+  'type C': 1.5,
+  '60898': 2.0,
+  '61009': 2.0,
+  '61008': 2.0,
+  '60947': 2.0,
+  'BS EN': 2.0,
+  '3036': 1.5,
+  'number of points': 1.5,
+  'cable size': 1.5,
+  'circuit number': 1.5,
   upstairs: 1.0,
   downstairs: 1.0,
-  "twenty four": 1.5,
+  'twenty four': 1.5,
   wiring: 2.0,
-  "wiring type": 2.0,
-  "reference method": 2.0,
-  "ref method": 2.0,
-  "wiring method": 2.0,
+  'wiring type': 2.0,
+  'reference method': 2.0,
+  'ref method': 2.0,
+  'wiring method': 2.0,
   correction: 1.5,
   debug: 2.0,
-  "end debug": 2.0,
+  'end debug': 2.0,
   postcode: 1.5,
   customer: 1.5,
   client: 1.5,
@@ -104,24 +110,24 @@ const BOARD_TYPES: Record<string, number> = {
 
 // Common words to skip from circuit label extraction
 const STOP_WORDS = new Set([
-  "the",
-  "a",
-  "an",
-  "and",
-  "or",
-  "of",
-  "for",
-  "to",
-  "in",
-  "on",
-  "no",
-  "n/a",
-  "na",
-  "spare",
-  "blank",
-  "circuit",
-  "way",
-  "cct",
+  'the',
+  'a',
+  'an',
+  'and',
+  'or',
+  'of',
+  'for',
+  'to',
+  'in',
+  'on',
+  'no',
+  'n/a',
+  'na',
+  'spare',
+  'blank',
+  'circuit',
+  'way',
+  'cct',
 ]);
 
 // ============= Public API =============
@@ -132,7 +138,7 @@ const STOP_WORDS = new Set([
  */
 export function generateKeywordBoosts(
   boardInfo?: BoardInfo | null,
-  circuits?: Circuit[] | null,
+  circuits?: Circuit[] | null
 ): Array<[string, number]> {
   const boosts = generateFromConfig();
 
@@ -216,7 +222,7 @@ function extractOCPDTypes(circuits: Circuit[]): string[] {
     }
     // Check for RCD-related fields
     if (circuit.rcd_type) {
-      types.add("RCD");
+      types.add('RCD');
     }
   }
 
@@ -239,8 +245,7 @@ function extractLabelTerms(circuits: Circuit[]): string[] {
     for (const word of words) {
       if (STOP_WORDS.has(word.toLowerCase())) continue;
       // Capitalise first letter
-      const capitalised =
-        word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
+      const capitalised = word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
       terms.add(capitalised);
     }
 

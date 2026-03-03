@@ -95,6 +95,12 @@ const baseKeywordBoosts: [string, number][] = [
   ['hertz', 1.5],
   ['type B', 1.5],
   ['type C', 1.5],
+  ['60898', 2.0],
+  ['61009', 2.0],
+  ['61008', 2.0],
+  ['60947', 2.0],
+  ['BS EN', 2.0],
+  ['3036', 1.5],
   ['number of points', 1.5],
   ['smokes', 1.5],
   ['smoke detectors', 1.5],
@@ -153,8 +159,24 @@ const boardTypeBoosts: [string, number][] = [
 // ── Label Stop Words ──
 
 const STOP_WORDS = new Set([
-  'the', 'a', 'an', 'and', 'or', 'of', 'for', 'to', 'in', 'on',
-  'no', 'n/a', 'na', 'spare', 'blank', 'circuit', 'way', 'cct',
+  'the',
+  'a',
+  'an',
+  'and',
+  'or',
+  'of',
+  'for',
+  'to',
+  'in',
+  'on',
+  'no',
+  'n/a',
+  'na',
+  'spare',
+  'blank',
+  'circuit',
+  'way',
+  'cct',
 ]);
 
 // ── Private Helpers ──
@@ -180,9 +202,10 @@ function extractLabelTerms(circuits: Circuit[]): string[] {
     if (!label) continue;
 
     // Split label into individual words (non-alphanumeric separators)
-    const words = label.split(/[^a-zA-Z0-9]+/)
-      .map(w => w.trim())
-      .filter(w => w.length >= 3);
+    const words = label
+      .split(/[^a-zA-Z0-9]+/)
+      .map((w) => w.trim())
+      .filter((w) => w.length >= 3);
 
     for (const word of words) {
       const lower = word.toLowerCase();
@@ -203,7 +226,7 @@ function extractLabelTerms(circuits: Circuit[]): string[] {
 }
 
 function extractCircuitNumbers(circuits: Circuit[]): string[] {
-  return circuits.map(c => `circuit ${c.circuit_ref}`);
+  return circuits.map((c) => `circuit ${c.circuit_ref}`);
 }
 
 function extractRCDRatings(circuits: Circuit[]): string[] {
@@ -268,13 +291,10 @@ function dedupAndCap(boosts: [string, number][]): [string, number][] {
  */
 export function generateKeywordBoosts(
   boardInfo?: BoardInfo | null,
-  circuits?: Circuit[],
+  circuits?: Circuit[]
 ): [string, number][] {
   // Start with config-based keywords
-  const boosts: [string, number][] = [
-    ...baseKeywordBoosts,
-    ...boardTypeBoosts,
-  ];
+  const boosts: [string, number][] = [...baseKeywordBoosts, ...boardTypeBoosts];
 
   if (!boardInfo && (!circuits || circuits.length === 0)) {
     return dedupAndCap(boosts);

@@ -108,6 +108,8 @@ const KNOWN_FIELDS = new Set([
   'cpc_csa',
   'ocpd_type',
   'ocpd_rating',
+  'ocpd_bs_en',
+  'rcd_bs_en',
   'number_of_points',
   'wiring_type',
   'ref_method',
@@ -145,6 +147,9 @@ const FIELD_CORRECTIONS = {
   mcb_rating: 'ocpd_rating',
   breaker_type: 'ocpd_type',
   breaker_rating: 'ocpd_rating',
+  bs_en: 'ocpd_bs_en',
+  ocpd_standard: 'ocpd_bs_en',
+  rcd_standard: 'rcd_bs_en',
 };
 
 function validateAndCorrectFields(result, sessionId) {

@@ -58,6 +58,15 @@ COMMON SPEECH PATTERNS:
 - "that's good" / "that's fine" / "pass" after a test = IGNORE, not a value
 - "all good on polarity" = polarity: "correct"
 - "type B 32" = TWO readings: ocpd_type: "B" AND ocpd_rating: 32
+- BS EN NUMBERS: Deepgram often splits these into separate digits. Reconstruct:
+  "6 0 8 9 8" / "608 98" / "60898" = ocpd_bs_en: "60898-1" (MCB standard)
+  "6 1 0 0 9" / "610 09" / "61009" = ocpd_bs_en: "61009" (RCBO standard) — also set rcd_bs_en: "61009"
+  "6 1 0 0 8" / "610 08" / "61008" = rcd_bs_en: "61008" (RCD/RCCB standard)
+  "6 0 9 4 7" / "60947" = ocpd_bs_en: "60947-2" (MCCB) or "60947-3" (isolator/switch)
+  "3 0 3 6" / "3036" = ocpd_bs_en: "3036" (rewireable fuse)
+  "1 3 6 1" / "1361" = ocpd_bs_en: "1361" (cartridge fuse)
+  "the MCB is a 60898" / "circuit breaker is 608 98" / "BS EN 60898" = ocpd_bs_en: "60898-1"
+  "the RCD is a 61009" / "RCBO 61009" = rcd_bs_en: "61009" AND ocpd_bs_en: "61009"
 - "2.5 and 1.5" for cable = cable_size: "2.5" AND cable_size_earth: "1.5"
 - "5 points" / "6 points on this" = number_of_points
 - Numbers alone after a field name: "Zs... 0.35" = zs: 0.35, "Ze... 0.84" = ze: 0.84 (field from recent context OK within same utterance)
@@ -84,6 +93,8 @@ BULK OPERATIONS:
 CIRCUIT FIELDS (per circuit):
 - ocpd_type: MCB type letter (B, C, D)
 - ocpd_rating: rating in amps (e.g., 6, 16, 20, 32, 40, 50)
+- ocpd_bs_en: BS EN standard number for the overcurrent device (e.g., "60898-1" for MCB, "61009" for RCBO, "60947-2" for MCCB, "3036" for rewireable fuse). Extract when the inspector states the standard number.
+- rcd_bs_en: BS EN standard number for the RCD (e.g., "61008" for standalone RCD/RCCB, "61009" for RCBO). Extract when stated.
 - cable_size: live conductor mm2 (e.g., "2.5", "4.0", "6.0", "10.0")
 - cable_size_earth: earth conductor mm2 (e.g., "1.5", "2.5")
 - wiring_type: cable/wiring type (e.g., "Twin & Earth", "T&E", "SWA", "MICC", "FP200", "Flex", "Armoured"). NOT the reference method letter -- that is ref_method.
