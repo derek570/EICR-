@@ -166,6 +166,141 @@ export async function logAction(userId, action, details = {}, ipAddress = null) 
   }
 }
 
+// ============= Admin: User Management =============
+
+/**
+ * Get all users (admin only). Returns safe user data (no password hashes).
+ */
+export async function listUsers() {
+  if (!usePostgres()) return [];
+
+  const pool = getPool();
+  try {
+    const result = await pool.query(
+      `SELECT id, email, name, company_name, role, is_active,
+              last_login, created_at, failed_login_attempts, locked_until
+       FROM users ORDER BY created_at DESC`
+    );
+    return result.rows;
+  } catch (error) {
+    logger.error('listUsers failed', { error: error.message });
+    throw error;
+  }
+}
+
+/**
+ * Get paginated user list (admin only).
+ */
+export async function listUsersPaginated(limit, offset) {
+  if (!usePostgres()) return { rows: [], total: 0 };
+
+  const pool = getPool();
+  try {
+    const [countResult, dataResult] = await Promise.all([
+      pool.query('SELECT COUNT(*) FROM users'),
+      pool.query(
+        `SELECT id, email, name, company_name, role, is_active,
+                last_login, created_at, failed_login_attempts, locked_until
+         FROM users ORDER BY created_at DESC LIMIT $1 OFFSET $2`,
+        [limit, offset]
+      ),
+    ]);
+    return { rows: dataResult.rows, total: Number(countResult.rows[0].count) };
+  } catch (error) {
+    logger.error('listUsersPaginated failed', { error: error.message });
+    throw error;
+  }
+}
+
+/**
+ * Create a new user (admin only).
+ */
+export async function createUser({ email, name, company_name, password_hash, role }) {
+  if (!usePostgres()) throw new Error('Database not configured');
+
+  const pool = getPool();
+  try {
+    const id = `user_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const result = await pool.query(
+      `INSERT INTO users (id, email, name, company_name, password_hash, role, is_active, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, true, NOW())
+       RETURNING id, email, name, company_name, role, is_active, created_at`,
+      [id, email.toLowerCase(), name, company_name || null, password_hash, role || 'user']
+    );
+    return result.rows[0];
+  } catch (error) {
+    logger.error('createUser failed', { error: error.message });
+    throw error;
+  }
+}
+
+/**
+ * Update a user (admin only). Whitelist approach — only allowed fields are updated.
+ */
+export async function updateUser(userId, data) {
+  if (!usePostgres()) return;
+
+  const pool = getPool();
+  try {
+    const allowedFields = ['name', 'email', 'company_name', 'role', 'is_active'];
+    const updates = [];
+    const params = [];
+    let paramIndex = 1;
+
+    for (const [key, value] of Object.entries(data)) {
+      if (allowedFields.includes(key)) {
+        updates.push(`${key} = $${paramIndex}`);
+        params.push(key === 'email' ? value.toLowerCase() : value);
+        paramIndex++;
+      }
+    }
+
+    if (updates.length === 0) return;
+
+    params.push(userId);
+    await pool.query(`UPDATE users SET ${updates.join(', ')} WHERE id = $${paramIndex}`, params);
+  } catch (error) {
+    logger.error('updateUser failed', { error: error.message });
+    throw error;
+  }
+}
+
+/**
+ * Reset a user's password (admin only). Also clears any lockout state.
+ */
+export async function resetUserPassword(userId, passwordHash) {
+  if (!usePostgres()) return;
+
+  const pool = getPool();
+  try {
+    await pool.query(
+      `UPDATE users SET password_hash = $1, failed_login_attempts = 0, locked_until = NULL WHERE id = $2`,
+      [passwordHash, userId]
+    );
+  } catch (error) {
+    logger.error('resetUserPassword failed', { error: error.message });
+    throw error;
+  }
+}
+
+/**
+ * Unlock a locked user account (admin only). Clears failed attempts and lockout timestamp.
+ */
+export async function unlockUser(userId) {
+  if (!usePostgres()) return;
+
+  const pool = getPool();
+  try {
+    await pool.query(
+      `UPDATE users SET failed_login_attempts = 0, locked_until = NULL WHERE id = $1`,
+      [userId]
+    );
+  } catch (error) {
+    logger.error('unlockUser failed', { error: error.message });
+    throw error;
+  }
+}
+
 /**
  * Get all jobs for a user from S3-based storage
  * Jobs are stored as S3 prefixes, not in the database for now
