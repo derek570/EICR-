@@ -2,7 +2,7 @@
  * API client for EICR-oMatic 3000
  */
 
-import type { Job, JobDetail, SaveJobData, JobPhoto, InspectorProfile } from "../types/job";
+import type { Job, JobDetail, SaveJobData, JobPhoto, InspectorProfile } from '../types/job';
 import type {
   User,
   UserDefaults,
@@ -24,14 +24,17 @@ import type {
   CalendarEvent,
   WhatsAppStatus,
   AnalyticsData,
-} from "../types/api";
-import { downloadBlob } from "@certmate/shared-utils";
+  AdminUser,
+  CreateUserData,
+  UpdateUserData,
+} from '../types/api';
+import { downloadBlob } from '@certmate/shared-utils';
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3000";
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000';
 
 // Debug: log the API URL on load
-if (typeof window !== "undefined") {
-  console.log("[API] Base URL:", API_BASE_URL);
+if (typeof window !== 'undefined') {
+  console.log('[API] Base URL:', API_BASE_URL);
 }
 
 export class ApiError extends Error {
@@ -40,16 +43,16 @@ export class ApiError extends Error {
     message: string
   ) {
     super(message);
-    this.name = "ApiError";
+    this.name = 'ApiError';
   }
 }
 
 function getToken(): string | null {
-  if (typeof window === "undefined") return null;
-  return localStorage.getItem("token");
+  if (typeof window === 'undefined') return null;
+  return localStorage.getItem('token');
 }
 
-const IDEMPOTENT_METHODS = new Set(["GET", "HEAD", "OPTIONS", "PUT", "DELETE"]);
+const IDEMPOTENT_METHODS = new Set(['GET', 'HEAD', 'OPTIONS', 'PUT', 'DELETE']);
 
 /**
  * Fetch with automatic retry for network/server errors.
@@ -63,7 +66,7 @@ async function fetchWithRetry(
   options: RequestInit,
   maxRetries = 3
 ): Promise<Response> {
-  const method = (options.method || "GET").toUpperCase();
+  const method = (options.method || 'GET').toUpperCase();
   const canRetry = IDEMPOTENT_METHODS.has(method);
   const effectiveMaxRetries = canRetry ? maxRetries : 0;
   let lastError: Error | null = null;
@@ -89,7 +92,7 @@ async function fetchWithRetry(
       if (attempt < effectiveMaxRetries) {
         // Exponential backoff: 1s, 2s, 4s
         const delay = Math.pow(2, attempt) * 1000;
-        await new Promise(resolve => setTimeout(resolve, delay));
+        await new Promise((resolve) => setTimeout(resolve, delay));
       }
     }
   }
@@ -99,7 +102,7 @@ async function fetchWithRetry(
 
 async function handleResponse<T>(response: Response): Promise<T> {
   if (!response.ok) {
-    const errorText = await response.text().catch(() => "Unknown error");
+    const errorText = await response.text().catch(() => 'Unknown error');
     throw new ApiError(response.status, errorText);
   }
   return response.json();
@@ -115,9 +118,9 @@ function fetchWithAuth(
 ): Promise<Response> {
   const token = getToken();
   const { retry = true, headers: extraHeaders, ...rest } = options;
-  const headers: Record<string, string> = { ...extraHeaders as Record<string, string> };
+  const headers: Record<string, string> = { ...(extraHeaders as Record<string, string>) };
   if (token) {
-    headers["Authorization"] = `Bearer ${token}`;
+    headers['Authorization'] = `Bearer ${token}`;
   }
   const fetchFn = retry ? fetchWithRetry : fetch;
   return fetchFn(url, { ...rest, headers });
@@ -129,7 +132,7 @@ function fetchJsonWithAuth(
   options: RequestInit & { retry?: boolean } = {}
 ): Promise<Response> {
   const headers = (options.headers || {}) as Record<string, string>;
-  headers["Content-Type"] = "application/json";
+  headers['Content-Type'] = 'application/json';
   return fetchWithAuth(url, { ...options, headers });
 }
 
@@ -143,23 +146,23 @@ export const api = {
 
   async login(email: string, password: string): Promise<{ token: string; user: User }> {
     const url = `${API_BASE_URL}/api/auth/login`;
-    console.log("[API] Login request to:", url);
+    console.log('[API] Login request to:', url);
     try {
       const response = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email, password }),
       });
-      console.log("[API] Login response status:", response.status);
+      console.log('[API] Login response status:', response.status);
       return handleResponse(response);
     } catch (error) {
-      console.error("[API] Login fetch error:", error);
+      console.error('[API] Login fetch error:', error);
       throw error;
     }
   },
 
   async logout(): Promise<void> {
-    await fetchJsonWithAuth(`${API_BASE_URL}/api/auth/logout`, { method: "POST", retry: false });
+    await fetchJsonWithAuth(`${API_BASE_URL}/api/auth/logout`, { method: 'POST', retry: false });
   },
 
   async getMe(): Promise<User> {
@@ -179,20 +182,23 @@ export const api = {
 
   async saveJob(userId: string, jobId: string, data: SaveJobData): Promise<{ success: boolean }> {
     const response = await fetchJsonWithAuth(`${API_BASE_URL}/api/job/${userId}/${jobId}`, {
-      method: "PUT",
+      method: 'PUT',
       body: JSON.stringify(data),
     });
     return handleResponse(response);
   },
 
-  async uploadAndProcess(files: File[], certificateType: string = "EICR"): Promise<{ success: boolean; jobId: string; message: string }> {
+  async uploadAndProcess(
+    files: File[],
+    certificateType: string = 'EICR'
+  ): Promise<{ success: boolean; jobId: string; message: string }> {
     const formData = new FormData();
-    formData.append("certificateType", certificateType);
-    files.forEach((file) => formData.append("files", file));
+    formData.append('certificateType', certificateType);
+    files.forEach((file) => formData.append('files', file));
 
     // Don't use retry - long-running upload shouldn't be auto-retried
     const response = await fetchWithAuth(`${API_BASE_URL}/api/upload`, {
-      method: "POST",
+      method: 'POST',
       body: formData,
       retry: false,
     });
@@ -200,13 +206,16 @@ export const api = {
   },
 
   async generatePdf(userId: string, jobId: string): Promise<Blob> {
-    const response = await fetchWithAuth(`${API_BASE_URL}/api/job/${userId}/${jobId}/generate-pdf`, {
-      method: "POST",
-      retry: false,
-    });
+    const response = await fetchWithAuth(
+      `${API_BASE_URL}/api/job/${userId}/${jobId}/generate-pdf`,
+      {
+        method: 'POST',
+        retry: false,
+      }
+    );
 
     if (!response.ok) {
-      const errorText = await response.text().catch(() => "Unknown error");
+      const errorText = await response.text().catch(() => 'Unknown error');
       throw new ApiError(response.status, errorText);
     }
 
@@ -221,7 +230,7 @@ export const api = {
 
   async saveUserDefaults(userId: string, defaults: UserDefaults): Promise<{ success: boolean }> {
     const response = await fetchJsonWithAuth(`${API_BASE_URL}/api/settings/${userId}/defaults`, {
-      method: "PUT",
+      method: 'PUT',
       body: JSON.stringify(defaults),
     });
     return handleResponse(response);
@@ -232,9 +241,12 @@ export const api = {
     return handleResponse(response);
   },
 
-  async saveCompanySettings(userId: string, settings: CompanySettings): Promise<{ success: boolean }> {
+  async saveCompanySettings(
+    userId: string,
+    settings: CompanySettings
+  ): Promise<{ success: boolean }> {
     const response = await fetchJsonWithAuth(`${API_BASE_URL}/api/settings/${userId}/company`, {
-      method: "PUT",
+      method: 'PUT',
       body: JSON.stringify(settings),
     });
     return handleResponse(response);
@@ -250,29 +262,41 @@ export const api = {
     return handleResponse(response);
   },
 
-  async saveInspectorProfiles(userId: string, profiles: InspectorProfile[]): Promise<{ success: boolean }> {
+  async saveInspectorProfiles(
+    userId: string,
+    profiles: InspectorProfile[]
+  ): Promise<{ success: boolean }> {
     const response = await fetchJsonWithAuth(`${API_BASE_URL}/api/inspector-profiles/${userId}`, {
-      method: "PUT",
+      method: 'PUT',
       body: JSON.stringify(profiles),
     });
     return handleResponse(response);
   },
 
-  async uploadSignature(userId: string, file: File): Promise<{ success: boolean; signature_file: string }> {
+  async uploadSignature(
+    userId: string,
+    file: File
+  ): Promise<{ success: boolean; signature_file: string }> {
     const formData = new FormData();
-    formData.append("signature", file);
+    formData.append('signature', file);
 
-    const response = await fetchWithAuth(`${API_BASE_URL}/api/inspector-profiles/${userId}/upload-signature`, {
-      method: "POST",
-      body: formData,
-      retry: false,
-    });
+    const response = await fetchWithAuth(
+      `${API_BASE_URL}/api/inspector-profiles/${userId}/upload-signature`,
+      {
+        method: 'POST',
+        body: formData,
+        retry: false,
+      }
+    );
     return handleResponse(response);
   },
 
-  async createBlankJob(userId: string, certificateType: string): Promise<{ success: boolean; jobId: string }> {
+  async createBlankJob(
+    userId: string,
+    certificateType: string
+  ): Promise<{ success: boolean; jobId: string }> {
     const response = await fetchJsonWithAuth(`${API_BASE_URL}/api/jobs/${userId}`, {
-      method: "POST",
+      method: 'POST',
       body: JSON.stringify({ certificate_type: certificateType }),
     });
     return handleResponse(response);
@@ -280,7 +304,7 @@ export const api = {
 
   async deleteJob(userId: string, jobId: string): Promise<{ success: boolean }> {
     const response = await fetchWithAuth(`${API_BASE_URL}/api/job/${userId}/${jobId}`, {
-      method: "DELETE",
+      method: 'DELETE',
       retry: false,
     });
     return handleResponse(response);
@@ -292,12 +316,16 @@ export const api = {
     return handleResponse(response);
   },
 
-  async uploadJobPhoto(userId: string, jobId: string, file: File): Promise<{ success: boolean; photo: JobPhoto }> {
+  async uploadJobPhoto(
+    userId: string,
+    jobId: string,
+    file: File
+  ): Promise<{ success: boolean; photo: JobPhoto }> {
     const formData = new FormData();
-    formData.append("photo", file);
+    formData.append('photo', file);
 
     const response = await fetchWithAuth(`${API_BASE_URL}/api/job/${userId}/${jobId}/photos`, {
-      method: "POST",
+      method: 'POST',
       body: formData,
       retry: false,
     });
@@ -309,7 +337,7 @@ export const api = {
       `${API_BASE_URL}/api/job/${userId}/${jobId}/photos/${encodeURIComponent(filename)}`
     );
     if (!response.ok) {
-      throw new ApiError(response.status, "Failed to load photo");
+      throw new ApiError(response.status, 'Failed to load photo');
     }
     return response.blob();
   },
@@ -326,7 +354,9 @@ export const api = {
   },
 
   async getJobVersion(userId: string, jobId: string, versionId: string): Promise<JobVersionDetail> {
-    const response = await fetchWithAuth(`${API_BASE_URL}/api/job/${userId}/${jobId}/history/${versionId}`);
+    const response = await fetchWithAuth(
+      `${API_BASE_URL}/api/job/${userId}/${jobId}/history/${versionId}`
+    );
     return handleResponse(response);
   },
 
@@ -337,7 +367,7 @@ export const api = {
     clearTestResults: boolean = false
   ): Promise<{ success: boolean; jobId: string; address: string }> {
     const response = await fetchJsonWithAuth(`${API_BASE_URL}/api/job/${userId}/${jobId}/clone`, {
-      method: "POST",
+      method: 'POST',
       body: JSON.stringify({ newAddress, clearTestResults }),
     });
     return handleResponse(response);
@@ -345,31 +375,31 @@ export const api = {
 
   async bulkDownload(userId: string, jobIds: string[]): Promise<void> {
     const response = await fetchJsonWithAuth(`${API_BASE_URL}/api/jobs/${userId}/bulk-download`, {
-      method: "POST",
+      method: 'POST',
       body: JSON.stringify({ jobIds }),
       retry: false,
     });
 
     if (!response.ok) {
-      const errorText = await response.text().catch(() => "Unknown error");
+      const errorText = await response.text().catch(() => 'Unknown error');
       throw new ApiError(response.status, errorText);
     }
 
     const blob = await response.blob();
-    const disposition = response.headers.get("Content-Disposition");
-    downloadBlob(blob, `certificates_${new Date().toISOString().split("T")[0]}.zip`, disposition);
+    const disposition = response.headers.get('Content-Disposition');
+    downloadBlob(blob, `certificates_${new Date().toISOString().split('T')[0]}.zip`, disposition);
   },
 
   async exportCSV(userId: string, jobId: string): Promise<void> {
     const response = await fetchWithAuth(`${API_BASE_URL}/api/job/${userId}/${jobId}/export/csv`);
 
     if (!response.ok) {
-      const errorText = await response.text().catch(() => "Unknown error");
+      const errorText = await response.text().catch(() => 'Unknown error');
       throw new ApiError(response.status, errorText);
     }
 
     const blob = await response.blob();
-    const disposition = response.headers.get("Content-Disposition");
+    const disposition = response.headers.get('Content-Disposition');
     downloadBlob(blob, `circuits_${jobId}.csv`, disposition);
   },
 
@@ -377,25 +407,30 @@ export const api = {
     const response = await fetchWithAuth(`${API_BASE_URL}/api/job/${userId}/${jobId}/export/excel`);
 
     if (!response.ok) {
-      const errorText = await response.text().catch(() => "Unknown error");
+      const errorText = await response.text().catch(() => 'Unknown error');
       throw new ApiError(response.status, errorText);
     }
 
     const blob = await response.blob();
-    const disposition = response.headers.get("Content-Disposition");
+    const disposition = response.headers.get('Content-Disposition');
     downloadBlob(blob, `EICR_${jobId}.xlsx`, disposition);
   },
 
-  async sendEmail(userId: string, jobId: string, to: string, clientName?: string): Promise<{ ok: boolean }> {
+  async sendEmail(
+    userId: string,
+    jobId: string,
+    to: string,
+    clientName?: string
+  ): Promise<{ ok: boolean }> {
     const response = await fetchJsonWithAuth(`${API_BASE_URL}/api/job/${userId}/${jobId}/email`, {
-      method: "POST",
+      method: 'POST',
       body: JSON.stringify({ to, clientName }),
     });
     return handleResponse(response);
   },
 
   async searchRegulations(query: string): Promise<Regulation[]> {
-    const params = query ? `?q=${encodeURIComponent(query)}` : "";
+    const params = query ? `?q=${encodeURIComponent(query)}` : '';
     const response = await fetchWithAuth(`${API_BASE_URL}/api/regulations${params}`);
     return handleResponse(response);
   },
@@ -414,15 +449,19 @@ export const api = {
 
   async createClient(userId: string, data: CreateClientData): Promise<Client> {
     const response = await fetchJsonWithAuth(`${API_BASE_URL}/api/clients/${userId}`, {
-      method: "POST",
+      method: 'POST',
       body: JSON.stringify(data),
     });
     return handleResponse(response);
   },
 
-  async updateClient(userId: string, clientId: string, data: Partial<CreateClientData>): Promise<{ success: boolean }> {
+  async updateClient(
+    userId: string,
+    clientId: string,
+    data: Partial<CreateClientData>
+  ): Promise<{ success: boolean }> {
     const response = await fetchJsonWithAuth(`${API_BASE_URL}/api/clients/${userId}/${clientId}`, {
-      method: "PUT",
+      method: 'PUT',
       body: JSON.stringify(data),
     });
     return handleResponse(response);
@@ -430,7 +469,7 @@ export const api = {
 
   async deleteClient(userId: string, clientId: string): Promise<{ success: boolean }> {
     const response = await fetchWithAuth(`${API_BASE_URL}/api/clients/${userId}/${clientId}`, {
-      method: "DELETE",
+      method: 'DELETE',
       retry: false,
     });
     return handleResponse(response);
@@ -445,14 +484,16 @@ export const api = {
 
   async createProperty(userId: string, data: CreatePropertyData): Promise<Property> {
     const response = await fetchJsonWithAuth(`${API_BASE_URL}/api/properties/${userId}`, {
-      method: "POST",
+      method: 'POST',
       body: JSON.stringify(data),
     });
     return handleResponse(response);
   },
 
   async getPropertyHistory(userId: string, propertyId: string): Promise<PropertyJob[]> {
-    const response = await fetchWithAuth(`${API_BASE_URL}/api/properties/${userId}/${propertyId}/history`);
+    const response = await fetchWithAuth(
+      `${API_BASE_URL}/api/properties/${userId}/${propertyId}/history`
+    );
     return handleResponse(response);
   },
 
@@ -460,11 +501,11 @@ export const api = {
 
   async ocrCertificate(file: File): Promise<OcrResult> {
     const formData = new FormData();
-    formData.append("file", file);
+    formData.append('file', file);
 
     // Don't use retry - OCR can take a while and shouldn't be auto-retried
     const response = await fetchWithAuth(`${API_BASE_URL}/api/ocr/certificate`, {
-      method: "POST",
+      method: 'POST',
       body: formData,
       retry: false,
     });
@@ -473,10 +514,10 @@ export const api = {
 
   async createJobFromOcr(
     data: OcrExtractedData,
-    certificateType: string = "EICR"
+    certificateType: string = 'EICR'
   ): Promise<{ success: boolean; jobId: string; address: string }> {
     const response = await fetchJsonWithAuth(`${API_BASE_URL}/api/ocr/create-job`, {
-      method: "POST",
+      method: 'POST',
       body: JSON.stringify({ data, certificateType }),
     });
     return handleResponse(response);
@@ -491,7 +532,7 @@ export const api = {
 
   async createCheckout(userId: string, priceId: string): Promise<{ url: string }> {
     const response = await fetchJsonWithAuth(`${API_BASE_URL}/api/billing/create-checkout`, {
-      method: "POST",
+      method: 'POST',
       body: JSON.stringify({ priceId }),
     });
     return handleResponse(response);
@@ -499,7 +540,7 @@ export const api = {
 
   async openBillingPortal(userId: string): Promise<{ url: string }> {
     const response = await fetchJsonWithAuth(`${API_BASE_URL}/api/billing/portal`, {
-      method: "POST",
+      method: 'POST',
     });
     return handleResponse(response);
   },
@@ -513,7 +554,7 @@ export const api = {
 
   async calendarCallback(code: string): Promise<{ success: boolean }> {
     const response = await fetchJsonWithAuth(`${API_BASE_URL}/api/calendar/callback`, {
-      method: "POST",
+      method: 'POST',
       body: JSON.stringify({ code }),
     });
     return handleResponse(response);
@@ -536,7 +577,7 @@ export const api = {
     description: string;
   }): Promise<{ success: boolean; jobId: string; address: string }> {
     const response = await fetchJsonWithAuth(`${API_BASE_URL}/api/calendar/create-job-from-event`, {
-      method: "POST",
+      method: 'POST',
       body: JSON.stringify(event),
     });
     return handleResponse(response);
@@ -544,7 +585,7 @@ export const api = {
 
   async disconnectCalendar(): Promise<{ success: boolean }> {
     const response = await fetchWithAuth(`${API_BASE_URL}/api/calendar/disconnect`, {
-      method: "DELETE",
+      method: 'DELETE',
       retry: false,
     });
     return handleResponse(response);
@@ -553,10 +594,13 @@ export const api = {
   // ============= WhatsApp =============
 
   async sendWhatsApp(userId: string, jobId: string, phoneNumber: string): Promise<{ ok: boolean }> {
-    const response = await fetchJsonWithAuth(`${API_BASE_URL}/api/job/${userId}/${jobId}/whatsapp`, {
-      method: "POST",
-      body: JSON.stringify({ phoneNumber }),
-    });
+    const response = await fetchJsonWithAuth(
+      `${API_BASE_URL}/api/job/${userId}/${jobId}/whatsapp`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ phoneNumber }),
+      }
+    );
     return handleResponse(response);
   },
 
@@ -574,6 +618,57 @@ export const api = {
 
   async fetchKeys(): Promise<{ deepgram: string; anthropic?: string; elevenlabs?: string }> {
     const response = await fetchWithAuth(`${API_BASE_URL}/api/keys`, { retry: false });
+    return handleResponse(response);
+  },
+
+  // ============= Admin: User Management =============
+
+  async getAdminUsers(): Promise<AdminUser[]> {
+    const response = await fetchWithAuth(`${API_BASE_URL}/api/admin/users`);
+    return handleResponse(response);
+  },
+
+  async createAdminUser(data: CreateUserData): Promise<AdminUser> {
+    const response = await fetchJsonWithAuth(`${API_BASE_URL}/api/admin/users`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+    return handleResponse(response);
+  },
+
+  async updateAdminUser(userId: string, data: UpdateUserData): Promise<{ success: boolean }> {
+    const response = await fetchJsonWithAuth(`${API_BASE_URL}/api/admin/users/${userId}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    });
+    return handleResponse(response);
+  },
+
+  async resetAdminUserPassword(userId: string, password: string): Promise<{ success: boolean }> {
+    const response = await fetchJsonWithAuth(
+      `${API_BASE_URL}/api/admin/users/${userId}/reset-password`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ password }),
+      }
+    );
+    return handleResponse(response);
+  },
+
+  async unlockAdminUser(userId: string): Promise<{ success: boolean }> {
+    const response = await fetchJsonWithAuth(`${API_BASE_URL}/api/admin/users/${userId}/unlock`, {
+      method: 'POST',
+    });
+    return handleResponse(response);
+  },
+
+  async getAdminHealth(): Promise<Record<string, unknown>> {
+    const response = await fetchWithAuth(`${API_BASE_URL}/api/admin/health`);
+    return handleResponse(response);
+  },
+
+  async getAdminStats(): Promise<Record<string, unknown>> {
+    const response = await fetchWithAuth(`${API_BASE_URL}/api/admin/stats`);
     return handleResponse(response);
   },
 };
@@ -596,7 +691,7 @@ export type {
   ExtentAndType,
   DesignConstruction,
   CertificateType,
-} from "../types/job";
+} from '../types/job';
 
 export type {
   User,
@@ -624,4 +719,7 @@ export type {
   AnalyticsWeekly,
   AnalyticsTiming,
   AnalyticsData,
-} from "../types/api";
+  AdminUser,
+  CreateUserData,
+  UpdateUserData,
+} from '../types/api';

@@ -28,4 +28,7 @@ export type {
   AnalyticsWeekly,
   AnalyticsTiming,
   AnalyticsData,
-} from "@certmate/shared-types";
+  AdminUser,
+  CreateUserData,
+  UpdateUserData,
+} from '@certmate/shared-types';
