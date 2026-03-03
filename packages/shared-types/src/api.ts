@@ -13,6 +13,37 @@ export interface User {
   email: string;
   name: string;
   company_name?: string;
+  role?: 'admin' | 'user';
+}
+
+// Admin — user management
+export interface AdminUser {
+  id: string;
+  email: string;
+  name: string;
+  company_name: string | null;
+  role: 'admin' | 'user';
+  is_active: boolean;
+  last_login: string | null;
+  created_at: string;
+  failed_login_attempts: number;
+  locked_until: string | null;
+}
+
+export interface CreateUserData {
+  email: string;
+  name: string;
+  password: string;
+  company_name?: string;
+  role?: 'admin' | 'user';
+}
+
+export interface UpdateUserData {
+  name?: string;
+  email?: string;
+  company_name?: string;
+  role?: 'admin' | 'user';
+  is_active?: boolean;
 }
 
 // Settings
