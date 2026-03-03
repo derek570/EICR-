@@ -373,7 +373,10 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
       existing.questionGate = new QuestionGate((questions) => {
         for (const q of questions) {
           if (ws.readyState === ws.OPEN) {
-            ws.send(JSON.stringify({ type: 'question', ...q }));
+            // Rename Sonnet's question 'type' (unclear/orphaned/out_of_range) to
+            // 'question_type' so it doesn't overwrite the WS message type: 'question'
+            const { type: questionType, ...rest } = q;
+            ws.send(JSON.stringify({ type: 'question', question_type: questionType, ...rest }));
           }
         }
       });
@@ -394,7 +397,10 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
       // Send gated questions to iOS
       for (const q of questions) {
         if (ws.readyState === ws.OPEN) {
-          ws.send(JSON.stringify({ type: 'question', ...q }));
+          // Rename Sonnet's question 'type' (unclear/orphaned/out_of_range) to
+          // 'question_type' so it doesn't overwrite the WS message type: 'question'
+          const { type: questionType, ...rest } = q;
+          ws.send(JSON.stringify({ type: 'question', question_type: questionType, ...rest }));
         }
       }
     });
