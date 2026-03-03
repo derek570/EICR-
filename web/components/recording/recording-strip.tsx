@@ -1,11 +1,11 @@
-"use client";
+'use client';
 
-import { cn } from "@/lib/utils";
-import type { RecordingState, RecordingActions } from "@/hooks/use-recording";
-import { RecordingControls } from "./recording-controls";
-import { TranscriptDisplay } from "./transcript-display";
-import { AlertCard } from "./alert-card";
-import { DebugDashboard } from "./debug-dashboard";
+import { cn } from '@/lib/utils';
+import type { RecordingState, RecordingActions } from '@/hooks/use-recording';
+import { RecordingControls } from './recording-controls';
+import { TranscriptDisplay } from './transcript-display';
+import { AlertCard } from './alert-card';
+import { DebugDashboard } from './debug-dashboard';
 
 interface RecordingStripProps {
   state: RecordingState;
@@ -20,10 +20,8 @@ export function RecordingStrip({ state, actions }: RecordingStripProps) {
   return (
     <div
       className={cn(
-        "space-y-3 rounded-lg border p-4 transition-colors",
-        state.isRecording
-          ? "border-red-200 bg-red-50/30"
-          : "border-gray-200 bg-gray-50",
+        'space-y-3 rounded-lg border p-4 transition-colors',
+        state.isRecording ? 'border-red-200 bg-red-50/30' : 'border-gray-200 bg-gray-50'
       )}
     >
       {/* Controls row */}
@@ -44,6 +42,7 @@ export function RecordingStrip({ state, actions }: RecordingStripProps) {
           interimTranscript={state.interimTranscript}
           isRecording={state.isRecording}
           fieldSources={state.fieldSources}
+          highlights={state.highlights}
         />
       )}
 
