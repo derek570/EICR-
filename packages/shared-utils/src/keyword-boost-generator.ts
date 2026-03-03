@@ -26,16 +26,16 @@ const baseKeywordBoosts: [string, number][] = [
   ['zed e', 2.0],
   ['Z e', 2.0],
   ['ze is', 2.0],
-  ['RCD', 1.5],
-  ['RCBO', 1.5],
-  ['MCB', 1.5],
+  ['RCD', 2.0],
+  ['RCBO', 2.0],
+  ['MCB', 2.0],
   ['AFDD', 1.5],
   ['R1', 2.0],
   ['R2', 2.0],
   ['Rn', 1.5],
   ['CPC', 1.5],
   ['R1 plus R2', 3.0],
-  ['loop impedance', 1.5],
+  ['loop impedance', 2.0],
   ['insulation resistance', 2.5],
   ['insulation', 1.5],
   ['ring continuity', 2.0],
@@ -53,14 +53,14 @@ const baseKeywordBoosts: [string, number][] = [
   ['test voltage', 1.5],
   ['radial', 1.0],
   ['spur', 1.0],
-  ['polarity', 1.0],
+  ['polarity', 1.5],
   ['push button', 1.5],
   ['push button works', 2.0],
-  ['trip time', 1.5],
+  ['trip time', 2.0],
   ['megger', 1.5],
   ['earth fault', 1.5],
-  ['continuity', 1.5],
-  ['milliamps', 1.0],
+  ['continuity', 2.0],
+  ['milliamps', 1.5],
   ['milliseconds', 1.0],
   ['circuit', 3.0],
   ['first circuit', 1.5],
@@ -93,8 +93,8 @@ const baseKeywordBoosts: [string, number][] = [
   ['volts', 1.0],
   ['frequency', 1.5],
   ['hertz', 1.5],
-  ['type B', 1.5],
-  ['type C', 1.5],
+  ['type B', 2.0],
+  ['type C', 2.0],
   ['60898', 2.0],
   ['61009', 2.0],
   ['61008', 2.0],
@@ -253,7 +253,9 @@ const TOKEN_BUDGET = 450;
 
 // Keywords with boost >= this keep their suffix; below are sent as plain keyterms
 // (still activates prompting, just without priority boosting) to save ~4 tokens each.
-const BOOST_THRESHOLD = 2.0;
+// Raised from 2.0→3.0: only the 6 most critical terms (megohms, R1+R2, circuit,
+// TN-C-S, TN-S, LIM) get explicit boost. This frees URL space for ~30 more keywords.
+const BOOST_THRESHOLD = 3.0;
 
 /**
  * Deduplicate (case-insensitive, keeping highest boost), sort by boost descending,
