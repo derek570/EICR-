@@ -135,6 +135,7 @@ export async function authenticate(email, password, ipAddress = null) {
     email: user.email,
     name: user.name || '',
     company_name: user.company_name || '',
+    role: user.role || 'user',
   };
 
   return { success: true, token, user: safeUser };
@@ -157,6 +158,7 @@ export async function verifyToken(token) {
       email: user.email,
       name: user.name || '',
       company_name: user.company_name || '',
+      role: user.role || 'user',
     };
   } catch (error) {
     logger.debug('Token verification failed', { error: error.message });
@@ -232,6 +234,7 @@ export async function refreshToken(oldToken) {
       email: user.email,
       name: user.name || '',
       company_name: user.company_name || '',
+      role: user.role || 'user',
     };
 
     return { success: true, token, user: safeUser };
@@ -270,4 +273,15 @@ export function requireAuth(req, res, next) {
       logger.error('Auth middleware error', { error: error.message });
       res.status(500).json({ error: 'Authentication error' });
     });
+}
+
+/**
+ * Express middleware to require admin role.
+ * Must be used AFTER requireAuth (so req.user is set).
+ */
+export function requireAdmin(req, res, next) {
+  if (!req.user || req.user.role !== 'admin') {
+    return res.status(403).json({ error: 'Admin access required' });
+  }
+  next();
 }
