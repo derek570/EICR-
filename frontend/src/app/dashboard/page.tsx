@@ -1,29 +1,33 @@
-"use client";
+'use client';
 
-import { useEffect, useState, useCallback, useRef } from "react";
-import { useRouter } from "next/navigation";
-import { toast } from "sonner";
-import { FolderOpen, Plus, RefreshCw, CloudOff, Bell, Download, CheckSquare, XSquare } from "lucide-react";
-
-import { Button } from "@/components/ui/button";
+import { useEffect, useState, useCallback, useRef } from 'react';
+import { useRouter } from 'next/navigation';
+import { toast } from 'sonner';
 import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardTitle,
-} from "@/components/ui/card";
-import { api } from "@/lib/api";
-import type { User, Job } from "@/lib/api";
-import { useJobStore } from "@/lib/store";
-import { getAllLocalJobs, type LocalJob } from "@/lib/db";
-import { InspectorModal } from "@/components/inspector-modal";
-import { DefaultsModal } from "@/components/defaults-modal";
-import { CloneDialog } from "@/components/clone-dialog";
-import { connectSocket, disconnectSocket, onJobCompleted, onJobFailed } from "@/lib/socket";
-import { subscribeToPush } from "@/lib/push";
-import { DashboardHeader } from "@/components/dashboard/dashboard-header";
-import { JobCard } from "@/components/dashboard/job-card";
-import type { DashboardJob } from "@/components/dashboard/job-card";
+  FolderOpen,
+  Plus,
+  RefreshCw,
+  CloudOff,
+  Bell,
+  Download,
+  CheckSquare,
+  XSquare,
+} from 'lucide-react';
+
+import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardDescription, CardTitle } from '@/components/ui/card';
+import { api } from '@/lib/api';
+import type { User, Job } from '@/lib/api';
+import { useJobStore } from '@/lib/store';
+import { getAllLocalJobs, type LocalJob } from '@/lib/db';
+import { InspectorModal } from '@/components/inspector-modal';
+import { DefaultsModal } from '@/components/defaults-modal';
+import { CloneDialog } from '@/components/clone-dialog';
+import { connectSocket, disconnectSocket, onJobCompleted, onJobFailed } from '@/lib/socket';
+import { subscribeToPush } from '@/lib/push';
+import { DashboardHeader } from '@/components/dashboard/dashboard-header';
+import { JobCard } from '@/components/dashboard/job-card';
+import type { DashboardJob } from '@/components/dashboard/job-card';
 
 export default function DashboardPage() {
   const router = useRouter();
@@ -39,65 +43,67 @@ export default function DashboardPage() {
   const [cloneTarget, setCloneTarget] = useState<{ jobId: string; address: string } | null>(null);
   const [selectedJobIds, setSelectedJobIds] = useState<Set<string>>(new Set());
   const [downloading, setDownloading] = useState(false);
-  const [creatingJob, setCreatingJob] = useState<"EICR" | "EIC" | null>(null);
+  const [creatingJob, setCreatingJob] = useState<'EICR' | 'EIC' | null>(null);
 
   // Get online status from the store
   const { isOnline, setOnline, setUser: setStoreUser, refreshPendingCount } = useJobStore();
 
   // Merge API jobs with local dirty jobs
-  const mergeJobsWithLocal = useCallback(async (apiJobs: Job[], userId: string): Promise<DashboardJob[]> => {
-    try {
-      const localJobs = await getAllLocalJobs(userId);
+  const mergeJobsWithLocal = useCallback(
+    async (apiJobs: Job[], userId: string): Promise<DashboardJob[]> => {
+      try {
+        const localJobs = await getAllLocalJobs(userId);
 
-      // Create maps for lookup by both id and address
-      const localJobById = new Map<string, LocalJob>();
-      const localJobByAddress = new Map<string, LocalJob>();
-      localJobs.forEach(job => {
-        localJobById.set(job.id, job);
-        if (job.address) localJobByAddress.set(job.address, job);
-      });
+        // Create maps for lookup by both id and address
+        const localJobById = new Map<string, LocalJob>();
+        const localJobByAddress = new Map<string, LocalJob>();
+        localJobs.forEach((job) => {
+          localJobById.set(job.id, job);
+          if (job.address) localJobByAddress.set(job.address, job);
+        });
 
-      // Mark API jobs that have local dirty versions (check by id OR address)
-      const mergedJobs: DashboardJob[] = apiJobs.map(job => {
-        const localByID = localJobById.get(job.id);
-        const localByAddress = job.address ? localJobByAddress.get(job.address) : undefined;
-        const localJob = localByID || localByAddress;
-        return {
-          ...job,
-          isLocalDirty: localJob?.isDirty || false,
-        };
-      });
+        // Mark API jobs that have local dirty versions (check by id OR address)
+        const mergedJobs: DashboardJob[] = apiJobs.map((job) => {
+          const localByID = localJobById.get(job.id);
+          const localByAddress = job.address ? localJobByAddress.get(job.address) : undefined;
+          const localJob = localByID || localByAddress;
+          return {
+            ...job,
+            isLocalDirty: localJob?.isDirty || false,
+          };
+        });
 
-      // Add any local-only jobs (shouldn't happen often, but handles edge cases)
-      // Check both id AND address to prevent duplicates when job ID changes after processing
-      localJobs.forEach(localJob => {
-        const alreadyExists = mergedJobs.find(j =>
-          j.id === localJob.id ||
-          (localJob.address && j.address === localJob.address)
-        );
-        if (!alreadyExists) {
-          mergedJobs.push({
-            id: localJob.id,
-            address: localJob.address,
-            status: localJob.status,
-            created_at: localJob.created_at,
-            isLocalDirty: localJob.isDirty,
-          });
-        }
-      });
+        // Add any local-only jobs (shouldn't happen often, but handles edge cases)
+        // Check both id AND address to prevent duplicates when job ID changes after processing
+        localJobs.forEach((localJob) => {
+          const alreadyExists = mergedJobs.find(
+            (j) => j.id === localJob.id || (localJob.address && j.address === localJob.address)
+          );
+          if (!alreadyExists) {
+            mergedJobs.push({
+              id: localJob.id,
+              address: localJob.address,
+              status: localJob.status,
+              created_at: localJob.created_at,
+              isLocalDirty: localJob.isDirty,
+            });
+          }
+        });
 
-      return mergedJobs;
-    } catch {
-      // If IndexedDB fails, just return API jobs without local markers
-      return apiJobs.map(job => ({ ...job, isLocalDirty: false }));
-    }
-  }, []);
+        return mergedJobs;
+      } catch {
+        // If IndexedDB fails, just return API jobs without local markers
+        return apiJobs.map((job) => ({ ...job, isLocalDirty: false }));
+      }
+    },
+    []
+  );
 
   // Load jobs from IndexedDB when offline
   const loadOfflineJobs = useCallback(async (userId: string): Promise<DashboardJob[]> => {
     try {
       const localJobs = await getAllLocalJobs(userId);
-      return localJobs.map(job => ({
+      return localJobs.map((job) => ({
         id: job.id,
         address: job.address,
         status: job.status,
@@ -122,15 +128,15 @@ export default function DashboardPage() {
       } else {
         const offlineJobs = await loadOfflineJobs(user.id);
         setJobs(offlineJobs);
-        setOfflineMessage("Showing cached jobs. Connect to internet to refresh.");
+        setOfflineMessage('Showing cached jobs. Connect to internet to refresh.');
       }
     } catch (error) {
-      console.error("Failed to refresh jobs:", error);
+      console.error('Failed to refresh jobs:', error);
       // If API fails, try loading from cache
       const offlineJobs = await loadOfflineJobs(user.id);
       if (offlineJobs.length > 0) {
         setJobs(offlineJobs);
-        setOfflineMessage("Unable to reach server. Showing cached jobs.");
+        setOfflineMessage('Unable to reach server. Showing cached jobs.');
       }
     } finally {
       setRefreshing(false);
@@ -145,11 +151,11 @@ export default function DashboardPage() {
     };
     const handleOffline = () => {
       setOnline(false);
-      setOfflineMessage("You are offline. Showing cached jobs.");
+      setOfflineMessage('You are offline. Showing cached jobs.');
     };
 
-    window.addEventListener("online", handleOnline);
-    window.addEventListener("offline", handleOffline);
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
 
     // Set initial state
     if (!navigator.onLine) {
@@ -157,8 +163,8 @@ export default function DashboardPage() {
     }
 
     return () => {
-      window.removeEventListener("online", handleOnline);
-      window.removeEventListener("offline", handleOffline);
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
     };
   }, [setOnline]);
 
@@ -188,15 +194,15 @@ export default function DashboardPage() {
       try {
         const jobsList = await api.getJobs(currentUser.id);
         const mergedJobs = await mergeJobsRef.current(jobsList, currentUser.id);
-        prevJobsRef.current = new Map(mergedJobs.map(j => [j.id, j.status]));
+        prevJobsRef.current = new Map(mergedJobs.map((j) => [j.id, j.status]));
         setJobs(mergedJobs);
       } catch (err) {
-        console.error("Failed to refresh after job:completed", err);
+        console.error('Failed to refresh after job:completed', err);
       }
 
-      const pendingJobId = localStorage.getItem("pendingJobId");
+      const pendingJobId = localStorage.getItem('pendingJobId');
       if (pendingJobId === event.jobId) {
-        localStorage.removeItem("pendingJobId");
+        localStorage.removeItem('pendingJobId');
         routerRef.current.push(`/job/${event.jobId}`);
       }
     });
@@ -211,15 +217,15 @@ export default function DashboardPage() {
       try {
         const jobsList = await api.getJobs(currentUser.id);
         const mergedJobs = await mergeJobsRef.current(jobsList, currentUser.id);
-        prevJobsRef.current = new Map(mergedJobs.map(j => [j.id, j.status]));
+        prevJobsRef.current = new Map(mergedJobs.map((j) => [j.id, j.status]));
         setJobs(mergedJobs);
       } catch (err) {
-        console.error("Failed to refresh after job:failed", err);
+        console.error('Failed to refresh after job:failed', err);
       }
 
-      const pendingJobId = localStorage.getItem("pendingJobId");
+      const pendingJobId = localStorage.getItem('pendingJobId');
       if (pendingJobId === event.jobId) {
-        localStorage.removeItem("pendingJobId");
+        localStorage.removeItem('pendingJobId');
       }
     });
 
@@ -232,7 +238,7 @@ export default function DashboardPage() {
 
   // Fallback poll every 30 seconds for resilience (in case socket disconnects)
   useEffect(() => {
-    const hasProcessingJobs = jobs.some(job => job.status === "processing");
+    const hasProcessingJobs = jobs.some((job) => job.status === 'processing');
 
     if (!hasProcessingJobs || !isOnline || !user) {
       return () => {};
@@ -246,27 +252,27 @@ export default function DashboardPage() {
         const jobsList = await api.getJobs(currentUser.id);
         const mergedJobs = await mergeJobsRef.current(jobsList, currentUser.id);
 
-        const pendingJobId = localStorage.getItem("pendingJobId");
-        mergedJobs.forEach(job => {
+        const pendingJobId = localStorage.getItem('pendingJobId');
+        mergedJobs.forEach((job) => {
           const prevStatus = prevJobsRef.current.get(job.id);
-          if (prevStatus === "processing" && job.status === "done") {
+          if (prevStatus === 'processing' && job.status === 'done') {
             toast.success(`Job completed: ${job.address}`);
             if (pendingJobId === job.id) {
-              localStorage.removeItem("pendingJobId");
+              localStorage.removeItem('pendingJobId');
               routerRef.current.push(`/job/${job.id}`);
             }
-          } else if (prevStatus === "processing" && job.status === "failed") {
+          } else if (prevStatus === 'processing' && job.status === 'failed') {
             toast.error(`Job failed: ${job.address}`);
             if (pendingJobId === job.id) {
-              localStorage.removeItem("pendingJobId");
+              localStorage.removeItem('pendingJobId');
             }
           }
         });
 
-        prevJobsRef.current = new Map(mergedJobs.map(j => [j.id, j.status]));
+        prevJobsRef.current = new Map(mergedJobs.map((j) => [j.id, j.status]));
         setJobs(mergedJobs);
       } catch (error) {
-        console.error("Fallback poll failed:", error);
+        console.error('Fallback poll failed:', error);
       }
     }, 30000);
 
@@ -276,15 +282,15 @@ export default function DashboardPage() {
   // Initialize previous job statuses when jobs first load
   useEffect(() => {
     if (jobs.length > 0) {
-      prevJobsRef.current = new Map(jobs.map(j => [j.id, j.status]));
+      prevJobsRef.current = new Map(jobs.map((j) => [j.id, j.status]));
     }
   }, []);
 
   useEffect(() => {
     // Check if logged in
-    const storedUser = localStorage.getItem("user");
+    const storedUser = localStorage.getItem('user');
     if (!storedUser) {
-      router.push("/login");
+      router.push('/login');
       return;
     }
 
@@ -304,15 +310,15 @@ export default function DashboardPage() {
           // Offline: load from IndexedDB
           const offlineJobs = await loadOfflineJobs(userData.id);
           setJobs(offlineJobs);
-          setOfflineMessage("You are offline. Showing cached jobs.");
+          setOfflineMessage('You are offline. Showing cached jobs.');
         }
       } catch (error) {
-        console.error("Failed to load jobs:", error);
+        console.error('Failed to load jobs:', error);
         // If API fails, try loading from cache
         const offlineJobs = await loadOfflineJobs(userData.id);
         if (offlineJobs.length > 0) {
           setJobs(offlineJobs);
-          setOfflineMessage("Unable to reach server. Showing cached jobs.");
+          setOfflineMessage('Unable to reach server. Showing cached jobs.');
         }
       } finally {
         setLoading(false);
@@ -327,24 +333,24 @@ export default function DashboardPage() {
   // Show push notification prompt once (after user loads)
   useEffect(() => {
     if (!user) return;
-    if (typeof window === "undefined") return;
-    if (!("Notification" in window)) return;
+    if (typeof window === 'undefined') return;
+    if (!('Notification' in window)) return;
 
-    const pushAsked = localStorage.getItem("push-asked");
-    if (!pushAsked && Notification.permission === "default") {
+    const pushAsked = localStorage.getItem('push-asked');
+    if (!pushAsked && Notification.permission === 'default') {
       setShowPushBanner(true);
     }
   }, [user]);
 
   const handleAcceptPush = async () => {
     setShowPushBanner(false);
-    localStorage.setItem("push-asked", "true");
+    localStorage.setItem('push-asked', 'true');
     await subscribeToPush();
   };
 
   const handleDismissPush = () => {
     setShowPushBanner(false);
-    localStorage.setItem("push-asked", "dismissed");
+    localStorage.setItem('push-asked', 'dismissed');
   };
 
   const handleLogout = async () => {
@@ -354,11 +360,11 @@ export default function DashboardPage() {
     } catch {
       // Ignore errors, clear local storage anyway
     }
-    localStorage.removeItem("token");
-    localStorage.removeItem("user");
+    localStorage.removeItem('token');
+    localStorage.removeItem('user');
     // Clear cookie for middleware
-    document.cookie = "token=; path=/; max-age=0";
-    router.push("/login");
+    document.cookie = 'token=; path=/; max-age=0';
+    router.push('/login');
   };
 
   const handleDeleteJob = async (e: React.MouseEvent, jobId: string, jobAddress: string) => {
@@ -367,7 +373,9 @@ export default function DashboardPage() {
 
     if (!user) return;
 
-    const confirmed = window.confirm(`Are you sure you want to delete "${jobAddress}"?\n\nThis action cannot be undone.`);
+    const confirmed = window.confirm(
+      `Are you sure you want to delete "${jobAddress}"?\n\nThis action cannot be undone.`
+    );
     if (!confirmed) return;
 
     setDeletingJobId(jobId);
@@ -375,10 +383,10 @@ export default function DashboardPage() {
       await api.deleteJob(user.id, jobId);
       toast.success(`Job deleted: ${jobAddress}`);
       // Remove from local state
-      setJobs(prev => prev.filter(j => j.id !== jobId));
+      setJobs((prev) => prev.filter((j) => j.id !== jobId));
     } catch (error) {
-      console.error("Failed to delete job:", error);
-      toast.error("Failed to delete job. Please try again.");
+      console.error('Failed to delete job:', error);
+      toast.error('Failed to delete job. Please try again.');
     } finally {
       setDeletingJobId(null);
     }
@@ -403,18 +411,18 @@ export default function DashboardPage() {
       // Navigate to the new job
       router.push(`/job/${result.jobId}`);
     } catch (error) {
-      console.error("Failed to clone job:", error);
-      toast.error("Failed to clone job. Please try again.");
+      console.error('Failed to clone job:', error);
+      toast.error('Failed to clone job. Please try again.');
     }
   };
 
   // Multi-select handlers for bulk download
-  const doneJobs = jobs.filter(j => j.status === "done");
+  const doneJobs = jobs.filter((j) => j.status === 'done');
 
   const toggleJobSelection = (e: React.MouseEvent, jobId: string) => {
     e.preventDefault();
     e.stopPropagation();
-    setSelectedJobIds(prev => {
+    setSelectedJobIds((prev) => {
       const next = new Set(prev);
       if (next.has(jobId)) {
         next.delete(jobId);
@@ -426,7 +434,7 @@ export default function DashboardPage() {
   };
 
   const selectAllDone = () => {
-    setSelectedJobIds(new Set(doneJobs.map(j => j.id)));
+    setSelectedJobIds(new Set(doneJobs.map((j) => j.id)));
   };
 
   const clearSelection = () => {
@@ -441,14 +449,16 @@ export default function DashboardPage() {
       toast.success(`Downloading ${selectedJobIds.size} certificates`);
       setSelectedJobIds(new Set());
     } catch (error) {
-      console.error("Bulk download failed:", error);
-      toast.error("Bulk download failed. Make sure PDFs have been generated for all selected jobs.");
+      console.error('Bulk download failed:', error);
+      toast.error(
+        'Bulk download failed. Make sure PDFs have been generated for all selected jobs.'
+      );
     } finally {
       setDownloading(false);
     }
   };
 
-  const handleNewJob = async (type: "EICR" | "EIC") => {
+  const handleNewJob = async (type: 'EICR' | 'EIC') => {
     if (!user) return;
     setCreatingJob(type);
     try {
@@ -456,8 +466,8 @@ export default function DashboardPage() {
       toast.success(`New ${type} job created`);
       router.push(`/record?type=${type}&jobId=${result.jobId}`);
     } catch (error) {
-      console.error("Failed to create job:", error);
-      toast.error("Failed to create job");
+      console.error('Failed to create job:', error);
+      toast.error('Failed to create job');
     } finally {
       setCreatingJob(null);
     }
@@ -475,6 +485,7 @@ export default function DashboardPage() {
     <div className="min-h-screen bg-slate-50">
       <DashboardHeader
         userEmail={user?.email}
+        userRole={user?.role}
         onShowInspectors={() => setShowInspectorModal(true)}
         onShowDefaults={() => setShowDefaultsModal(true)}
         onLogout={handleLogout}
@@ -503,7 +514,11 @@ export default function DashboardPage() {
               <Button size="sm" variant="outline" onClick={handleDismissPush}>
                 No thanks
               </Button>
-              <Button size="sm" className="bg-blue-600 hover:bg-blue-700" onClick={handleAcceptPush}>
+              <Button
+                size="sm"
+                className="bg-blue-600 hover:bg-blue-700"
+                onClick={handleAcceptPush}
+              >
                 Enable
               </Button>
             </div>
@@ -516,9 +531,9 @@ export default function DashboardPage() {
             <Button
               disabled={!isOnline || creatingJob !== null}
               className="bg-blue-600 hover:bg-blue-700 w-full col-span-1"
-              onClick={() => handleNewJob("EICR")}
+              onClick={() => handleNewJob('EICR')}
             >
-              {creatingJob === "EICR" ? (
+              {creatingJob === 'EICR' ? (
                 <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
               ) : (
                 <Plus className="h-4 w-4 mr-2" />
@@ -528,17 +543,23 @@ export default function DashboardPage() {
             <Button
               disabled={!isOnline || creatingJob !== null}
               className="bg-emerald-600 hover:bg-emerald-700 w-full col-span-1"
-              onClick={() => handleNewJob("EIC")}
+              onClick={() => handleNewJob('EIC')}
             >
-              {creatingJob === "EIC" ? (
+              {creatingJob === 'EIC' ? (
                 <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
               ) : (
                 <Plus className="h-4 w-4 mr-2" />
               )}
               Record EIC
             </Button>
-            <Button variant="outline" size="sm" onClick={refreshJobs} disabled={refreshing} className="col-span-2 sm:col-span-1">
-              <RefreshCw className={`h-4 w-4 mr-2 ${refreshing ? "animate-spin" : ""}`} />
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={refreshJobs}
+              disabled={refreshing}
+              className="col-span-2 sm:col-span-1"
+            >
+              <RefreshCw className={`h-4 w-4 mr-2 ${refreshing ? 'animate-spin' : ''}`} />
               Refresh
             </Button>
           </div>
@@ -565,9 +586,7 @@ export default function DashboardPage() {
               )}
             </Button>
             {selectedJobIds.size > 0 && (
-              <span className="text-sm text-muted-foreground">
-                {selectedJobIds.size} selected
-              </span>
+              <span className="text-sm text-muted-foreground">{selectedJobIds.size} selected</span>
             )}
           </div>
         )}
@@ -584,9 +603,9 @@ export default function DashboardPage() {
                 <Button
                   disabled={!isOnline || creatingJob !== null}
                   className="bg-blue-600 hover:bg-blue-700"
-                  onClick={() => handleNewJob("EICR")}
+                  onClick={() => handleNewJob('EICR')}
                 >
-                  {creatingJob === "EICR" ? (
+                  {creatingJob === 'EICR' ? (
                     <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
                   ) : (
                     <Plus className="h-4 w-4 mr-2" />
@@ -596,9 +615,9 @@ export default function DashboardPage() {
                 <Button
                   disabled={!isOnline || creatingJob !== null}
                   className="bg-emerald-600 hover:bg-emerald-700"
-                  onClick={() => handleNewJob("EIC")}
+                  onClick={() => handleNewJob('EIC')}
                 >
-                  {creatingJob === "EIC" ? (
+                  {creatingJob === 'EIC' ? (
                     <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
                   ) : (
                     <Plus className="h-4 w-4 mr-2" />
@@ -639,10 +658,7 @@ export default function DashboardPage() {
             ) : (
               <Download className="h-5 w-5" />
             )}
-            {downloading
-              ? "Preparing ZIP..."
-              : `Download ${selectedJobIds.size} Certificates`
-            }
+            {downloading ? 'Preparing ZIP...' : `Download ${selectedJobIds.size} Certificates`}
           </Button>
         </div>
       )}
@@ -664,7 +680,7 @@ export default function DashboardPage() {
             isOpen={!!cloneTarget}
             onClose={() => setCloneTarget(null)}
             onConfirm={handleCloneConfirm}
-            sourceAddress={cloneTarget?.address || ""}
+            sourceAddress={cloneTarget?.address || ''}
           />
         </>
       )}
