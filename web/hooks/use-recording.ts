@@ -667,7 +667,6 @@ export function useRecording(
         matcher.current = new TranscriptFieldMatcher();
         alertManager.current?.clearAll();
         alertManager.current?.resetQuestionTracking();
-        alertManager.current?.setDeepgramApiKey(keys.deepgramKey);
 
         // Start debug logger
         const sessionId = `web_${Date.now()}`;

@@ -3,15 +3,15 @@
  *
  * Manages validation alerts from Claude Sonnet during recording.
  * Two delivery channels:
- *   1. Voice via Deepgram Aura TTS (falls back to Web Speech API)
+ *   1. Voice via ElevenLabs TTS backend proxy (falls back to Web Speech API)
  *   2. On-screen card (managed by React component via state callbacks)
  *
  * Echo suppression: isTTSSpeaking flag + 0.8s cooldown after TTS finishes.
  * Question dedup: tracks asked questions by field+circuit key, max 2 asks per key.
  */
 
-import type { ValidationAlert, UserQuestion } from "./types";
-import { normalise as normaliseNumber } from "./number-normaliser";
+import type { ValidationAlert, UserQuestion } from './types';
+import { normalise as normaliseNumber } from './number-normaliser';
 
 // ============= Types =============
 
@@ -28,7 +28,7 @@ export interface AlertCallbacks {
   onCorrectionReceived?: (
     field: string | null,
     circuit: number | null,
-    correctedValue: string,
+    correctedValue: string
   ) => void;
 }
 
@@ -39,80 +39,120 @@ const AUTO_DISMISS_DELAY = 15_000; // ms
 const INTER_ALERT_DELAY = 1500; // ms
 const RESOLUTION_DELAY = 1200; // ms
 
-const DEEPGRAM_TTS_MODEL = "aura-2-draco-en";
-const DEEPGRAM_TTS_ENDPOINT = "https://api.deepgram.com/v1/speak";
+// TTS abbreviation expansion — matches iOS AlertManager.expandForTTS()
+// so ElevenLabs pronounces EICR technical terms correctly.
+const TTS_EXPANSIONS: Array<[RegExp, string]> = [
+  [/\bZe\/Zs\b/g, 'zed E over zed S'],
+  [/\bZe\b/g, 'zed E'],
+  [/\bZs\b/g, 'zed S'],
+  [/mm²/g, 'millimetres squared'],
+  [/mm2\b/g, 'millimetres squared'],
+  [/\bMΩ\b/g, 'megohms'],
+  [/\bmΩ\b/g, 'milliohms'],
+  [/\bkA\b/g, 'kiloamps'],
+  [/\bmA\b/g, 'milliamps'],
+  [/\bΩ\b/g, 'ohms'],
+  [/\bRCD\b/g, 'R C D'],
+  [/\bRCBO\b/g, 'R C B O'],
+  [/\bMCB\b/g, 'M C B'],
+  [/\bSPD\b/g, 'S P D'],
+  [/\bBSEN\b/g, 'B S E N'],
+  [/\bBS\s*EN\b/g, 'B S E N'],
+  [/\bBS\s*7671\b/g, 'B S 7671'],
+  [/\bR1\+R2\b/g, 'R1 plus R2'],
+  [/\bR2\b/g, 'R 2'],
+  [/\bR1\b/g, 'R 1'],
+  [/\bTN-C-S\b/g, 'T N C S'],
+  [/\bTN-S\b/g, 'T N S'],
+  [/\bTT\b/g, 'T T'],
+  [/\bPME\b/g, 'P M E'],
+  [/\bPFC\b/g, 'P F C'],
+  [/\bPSCC\b/g, 'P S C C'],
+  [/\bEICR\b/g, 'E I C R'],
+  [/\bEIC\b/g, 'E I C'],
+  [/\bCPC\b/g, 'C P C'],
+  [/\bAFDD\b/g, 'A F D D'],
+];
+
+function expandForTTS(text: string): string {
+  let expanded = text;
+  for (const [pattern, replacement] of TTS_EXPANSIONS) {
+    expanded = expanded.replace(pattern, replacement);
+  }
+  return expanded;
+}
 
 const AFFIRMATIVE_KEYWORDS = new Set([
-  "yes",
-  "yeah",
-  "yep",
-  "yup",
-  "correct",
-  "right",
-  "move it",
-  "that one",
-  "do it",
-  "go ahead",
-  "sure",
-  "okay",
-  "ok",
-  "absolutely",
-  "affirmative",
-  "confirmed",
+  'yes',
+  'yeah',
+  'yep',
+  'yup',
+  'correct',
+  'right',
+  'move it',
+  'that one',
+  'do it',
+  'go ahead',
+  'sure',
+  'okay',
+  'ok',
+  'absolutely',
+  'affirmative',
+  'confirmed',
 ]);
 
 const NEGATIVE_KEYWORDS = new Set([
-  "no",
-  "nah",
-  "nope",
-  "keep it",
-  "leave it",
+  'no',
+  'nah',
+  'nope',
+  'keep it',
+  'leave it',
   "it's right",
-  "its right",
-  "ignore",
-  "skip",
-  "cancel",
+  'its right',
+  'ignore',
+  'skip',
+  'cancel',
   "don't",
-  "dont",
-  "negative",
-  "wrong",
-  "not that",
+  'dont',
+  'negative',
+  'wrong',
+  'not that',
 ]);
 
 const CORRECTION_PREFIXES = [
   "no it's ",
-  "no its ",
+  'no its ',
   "it's actually ",
-  "its actually ",
-  "should be ",
+  'its actually ',
+  'should be ',
   "actually it's ",
-  "actually its ",
-  "actually ",
+  'actually its ',
+  'actually ',
   "it's ",
-  "its ",
+  'its ',
 ];
 
 const NUMBER_WORDS: Record<number, string> = {
-  1: "one",
-  2: "two",
-  3: "three",
-  4: "four",
-  5: "five",
-  6: "six",
-  7: "seven",
-  8: "eight",
-  9: "nine",
-  10: "ten",
-  11: "eleven",
-  12: "twelve",
-  13: "thirteen",
-  14: "fourteen",
-  15: "fifteen",
-  16: "sixteen",
-  17: "seventeen",
-  18: "eighteen",
-  19: "nineteen",
-  20: "twenty",
+  1: 'one',
+  2: 'two',
+  3: 'three',
+  4: 'four',
+  5: 'five',
+  6: 'six',
+  7: 'seven',
+  8: 'eight',
+  9: 'nine',
+  10: 'ten',
+  11: 'eleven',
+  12: 'twelve',
+  13: 'thirteen',
+  14: 'fourteen',
+  15: 'fifteen',
+  16: 'sixteen',
+  17: 'seventeen',
+  18: 'eighteen',
+  19: 'nineteen',
+  20: 'twenty',
 };
 
 // ============= Service =============
@@ -133,7 +173,6 @@ export class AlertManager {
   private ttsCooldownTimer: ReturnType<typeof setTimeout> | null = null;
   private currentAudio: HTMLAudioElement | null = null;
   private currentUtterance: SpeechSynthesisUtterance | null = null;
-  private deepgramApiKey: string | null = null;
 
   // Question dedup
   private askedQuestionKeys = new Set<string>();
@@ -168,10 +207,6 @@ export class AlertManager {
     this.callbacks = callbacks;
   }
 
-  setDeepgramApiKey(key: string): void {
-    this.deepgramApiKey = key;
-  }
-
   // ---- Question Dedup ----
 
   /**
@@ -179,7 +214,7 @@ export class AlertManager {
    * Returns true if the question should be asked.
    */
   shouldAskQuestion(question: UserQuestion): boolean {
-    const key = `${question.fieldKey ?? ""}:${question.circuitRef ?? ""}`;
+    const key = `${question.fieldKey ?? ''}:${question.circuitRef ?? ''}`;
     const count = this.questionAskCounts.get(key) ?? 0;
     return count < AlertManager.MAX_ASKS_PER_KEY;
   }
@@ -188,12 +223,9 @@ export class AlertManager {
    * Record that a question was asked for dedup tracking.
    */
   recordQuestionAsked(question: UserQuestion): void {
-    const key = `${question.fieldKey ?? ""}:${question.circuitRef ?? ""}`;
+    const key = `${question.fieldKey ?? ''}:${question.circuitRef ?? ''}`;
     this.askedQuestionKeys.add(key);
-    this.questionAskCounts.set(
-      key,
-      (this.questionAskCounts.get(key) ?? 0) + 1,
-    );
+    this.questionAskCounts.set(key, (this.questionAskCounts.get(key) ?? 0) + 1);
   }
 
   /**
@@ -234,7 +266,7 @@ export class AlertManager {
 
     const alert: ValidationAlert = {
       type: question.type,
-      severity: "info",
+      severity: 'info',
       message: question.question,
       suggestedAction: undefined,
     };
@@ -350,7 +382,7 @@ export class AlertManager {
       const wordCount = lowered.split(/\s+/).length;
       if (wordCount < 5) {
         const normalised = normaliseNumber(lowered);
-        const trimmed = normalised.trim().replace(/[.?!]+$/, "");
+        const trimmed = normalised.trim().replace(/[.?!]+$/, '');
         if (/^[\d]+\.?[\d]*$/.test(trimmed)) {
           return trimmed;
         }
@@ -362,7 +394,7 @@ export class AlertManager {
 
   private extractCircuitRedirect(text: string): number | null {
     const lowered = text.toLowerCase();
-    if (!lowered.includes("circuit")) return null;
+    if (!lowered.includes('circuit')) return null;
 
     // Match "circuit N" with digits
     const digitMatch = lowered.match(/circuit\s*(\d+)/);
@@ -373,10 +405,7 @@ export class AlertManager {
     // Match "circuit five" — iterate longest words first
     for (let num = 20; num >= 1; num--) {
       const word = NUMBER_WORDS[num] ?? String(num);
-      if (
-        lowered.includes(`circuit ${word}`) ||
-        lowered.includes(`circuit${word}`)
-      ) {
+      if (lowered.includes(`circuit ${word}`) || lowered.includes(`circuit${word}`)) {
         return num;
       }
     }
@@ -411,10 +440,10 @@ export class AlertManager {
 
     if (accepted) {
       this.callbacks.onAlertAccepted?.(alert);
-      this.speakResponse("Updated");
+      this.speakResponse('Updated');
     } else {
       this.callbacks.onAlertRejected?.(alert);
-      this.speakResponse("Okay, keeping it");
+      this.speakResponse('Okay, keeping it');
     }
 
     setTimeout(() => {
@@ -434,11 +463,9 @@ export class AlertManager {
     this._isAwaitingResponse = false;
 
     this.callbacks.onCorrectionReceived?.(
-      alert.type === "orphaned" || alert.type === "out_of_range"
-        ? alert.type
-        : null,
+      alert.type === 'orphaned' || alert.type === 'out_of_range' ? alert.type : null,
       null,
-      value,
+      value
     );
     this.speakResponse(`Got it, ${value}`);
 
@@ -459,14 +486,10 @@ export class AlertManager {
     this._isAwaitingResponse = false;
 
     if (alert.suggestedAction) {
-      this.callbacks.onCorrectionReceived?.(
-        alert.type,
-        toCircuit,
-        alert.suggestedAction,
-      );
+      this.callbacks.onCorrectionReceived?.(alert.type, toCircuit, alert.suggestedAction);
       this.speakResponse(`Moved to circuit ${toCircuit}`);
     } else {
-      this.speakResponse("Okay, noted");
+      this.speakResponse('Okay, noted');
     }
 
     setTimeout(() => {
@@ -498,29 +521,21 @@ export class AlertManager {
   // ---- Voice Playback ----
 
   private speakAlertMessage(message: string): void {
-    this.speakWithDeepgram(message, 1.1, 0.9);
+    this.speakWithElevenLabs(message, 1.1, 0.9);
   }
 
   private speakResponse(text: string): void {
-    this.speakWithDeepgram(text, 1.0, 0.8);
+    this.speakWithElevenLabs(text, 1.0, 0.8);
   }
 
   /**
-   * Speak text via Deepgram Aura TTS. Falls back to Web Speech API.
+   * Speak text via ElevenLabs TTS backend proxy. Falls back to Web Speech API.
    */
-  private speakWithDeepgram(
-    text: string,
-    fallbackRate: number,
-    volume: number,
-  ): void {
+  private speakWithElevenLabs(text: string, fallbackRate: number, volume: number): void {
+    const expanded = expandForTTS(text);
     this.markTTSStarted();
 
-    if (!this.deepgramApiKey) {
-      this.speakWithWebSpeech(text, fallbackRate, volume);
-      return;
-    }
-
-    this.fetchDeepgramTTS(text, this.deepgramApiKey)
+    this.fetchElevenLabsTTS(expanded)
       .then((audioBlob) => {
         const url = URL.createObjectURL(audioBlob);
         const audio = new Audio(url);
@@ -536,32 +551,28 @@ export class AlertManager {
           URL.revokeObjectURL(url);
           this.currentAudio = null;
           // Fall back to Web Speech
-          this.speakWithWebSpeech(text, fallbackRate, volume);
+          this.speakWithWebSpeech(expanded, fallbackRate, volume);
         };
 
         audio.play().catch(() => {
           URL.revokeObjectURL(url);
           this.currentAudio = null;
-          this.speakWithWebSpeech(text, fallbackRate, volume);
+          this.speakWithWebSpeech(expanded, fallbackRate, volume);
         });
       })
       .catch(() => {
-        this.speakWithWebSpeech(text, fallbackRate, volume);
+        this.speakWithWebSpeech(expanded, fallbackRate, volume);
       });
   }
 
-  private speakWithWebSpeech(
-    text: string,
-    rate: number,
-    volume: number,
-  ): void {
-    if (!("speechSynthesis" in window)) {
+  private speakWithWebSpeech(text: string, rate: number, volume: number): void {
+    if (!('speechSynthesis' in window)) {
       this.markTTSFinished();
       return;
     }
 
     const utterance = new SpeechSynthesisUtterance(text);
-    utterance.lang = "en-GB";
+    utterance.lang = 'en-GB';
     utterance.rate = rate;
     utterance.volume = volume;
     this.currentUtterance = utterance;
@@ -578,24 +589,22 @@ export class AlertManager {
     window.speechSynthesis.speak(utterance);
   }
 
-  private async fetchDeepgramTTS(
-    text: string,
-    _apiKey: string,
-  ): Promise<Blob> {
-    // Route through backend proxy to avoid CORS and protect API key
-    const apiBaseUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3000";
-    const token = typeof window !== "undefined" ? localStorage.getItem("token") : null;
-    const res = await fetch(`${apiBaseUrl}/api/proxy/deepgram-tts`, {
-      method: "POST",
+  private async fetchElevenLabsTTS(text: string): Promise<Blob> {
+    // Route through backend proxy — the backend injects the ElevenLabs API key,
+    // voice ID, and voice settings server-side.
+    const apiBaseUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000';
+    const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null;
+    const res = await fetch(`${apiBaseUrl}/api/proxy/elevenlabs-tts`, {
+      method: 'POST',
       headers: {
-        "Content-Type": "application/json",
+        'Content-Type': 'application/json',
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
       },
       body: JSON.stringify({ text }),
     });
 
     if (!res.ok) {
-      throw new Error(`Deepgram TTS proxy returned status ${res.status}`);
+      throw new Error(`ElevenLabs TTS proxy returned status ${res.status}`);
     }
 
     return res.blob();
@@ -634,7 +643,7 @@ export class AlertManager {
   }
 
   private stopAllSpeech(): void {
-    // Stop Deepgram audio
+    // Stop ElevenLabs audio
     if (this.currentAudio) {
       this.currentAudio.pause();
       this.currentAudio = null;
