@@ -834,6 +834,300 @@ IMPORTANT: If you cannot read the BS/EN number from the device, use your knowled
 });
 
 /**
+ * Extract certificate data from a photo of a previous certificate, handwritten notes, etc.
+ * Returns the same { success, formData } shape as /api/recording/extract-transcript
+ * so the iOS app can merge results via CertificateMerger.
+ *
+ * POST /api/analyze-document
+ */
+router.post('/analyze-document', auth.requireAuth, upload.single('photo'), async (req, res) => {
+  const tempPath = req.file?.path;
+
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: 'No photo uploaded' });
+    }
+
+    const apiKey = process.env.OPENAI_API_KEY;
+    if (!apiKey) {
+      return res.status(500).json({ error: 'OpenAI API key not configured' });
+    }
+
+    const model = (process.env.DOC_EXTRACT_MODEL || process.env.CCU_MODEL || 'gpt-5.2').trim();
+
+    logger.info('Document extraction requested', {
+      userId: req.user.id,
+      fileSize: req.file.size,
+      model,
+    });
+
+    const imageBytes = await fs.readFile(tempPath);
+    const base64 = Buffer.from(imageBytes).toString('base64');
+
+    const prompt = `You are an expert UK electrician extracting data from a document for an EICR (Electrical Installation Condition Report) or EIC (Electrical Installation Certificate).
+
+## TASK
+
+The user has uploaded a photo of one of the following:
+- A previous EICR or EIC certificate
+- Handwritten inspection notes
+- A printed or typed test results sheet
+- Any document containing electrical installation data
+
+Extract ALL readable data and return structured JSON. Be thorough — extract every field you can read.
+
+## WHAT TO EXTRACT
+
+### Installation Details
+- Client name, address (including postcode, town, county)
+- Description of premises (e.g., "3 bed semi-detached house")
+- Reason for report (e.g., "Periodic inspection", "Change of tenancy")
+- Occupier name
+- Date of previous inspection
+- Previous certificate number
+- Estimated age of installation (years)
+- General condition of installation
+- Next inspection recommended interval (years)
+- Installation records available (yes/no)
+- Evidence of additions/alterations (yes/no)
+
+### Supply Characteristics
+- Earthing arrangement (TN-C-S, TN-S, TT, IT)
+- Nominal voltage (e.g., "230")
+- Nominal frequency (e.g., "50")
+- Prospective fault current in kA (e.g., "0.88")
+- External earth loop impedance Ze in ohms (e.g., "0.35")
+
+### Board Info
+- Manufacturer and model
+- Main switch rating (amps), BS/EN, poles, voltage
+- SPD status (fitted/not fitted), type, rating
+
+### Circuits (test results)
+For each circuit found, extract:
+- Circuit reference number and designation/description
+- Cable sizes (live and CPC in mm²)
+- Wiring type and reference method
+- Number of points
+- OCPD: type (B/C/D), rating (A), BS/EN, breaking capacity (kA)
+- RCD: type (AC/A/B/F/S), operating current (mA), BS/EN
+- Ring continuity: R1, Rn, R2 (ohms)
+- r1+r2 and r2 values (ohms)
+- Insulation resistance: live-live and live-earth (MΩ) — prefix with > if greater than
+- Earth fault loop impedance Zs (ohms)
+- Polarity confirmed (true/false)
+- RCD trip time (ms)
+- RCD button test confirmed (true/false)
+
+### Observations
+For each observation/defect noted:
+- Classification code: C1 (danger present), C2 (potentially dangerous), C3 (improvement recommended), FI (further investigation)
+- Observation text (the defect description)
+- Item/location
+- Schedule item reference
+- Regulation reference
+
+## RULES
+- Only extract data you can actually read — do NOT guess or fabricate values
+- For illegible fields, omit them (do not set to null)
+- For insulation resistance values shown as ">200" or "≥200", return ">200"
+- Circuit numbers should be integers
+- Amp ratings should be strings (e.g., "32" not 32)
+- Ohm values should be strings (e.g., "0.35")
+- If multiple boards are shown, extract all circuits
+
+## OUTPUT FORMAT
+
+Return ONLY valid JSON matching this exact schema:
+{
+  "installation_details": {
+    "client_name": "string or omit",
+    "address": "string or omit",
+    "postcode": "string or omit",
+    "town": "string or omit",
+    "county": "string or omit",
+    "premises_description": "string or omit",
+    "reason_for_report": "string or omit",
+    "occupier_name": "string or omit",
+    "date_of_previous_inspection": "string or omit",
+    "previous_certificate_number": "string or omit",
+    "estimated_age_of_installation": "string or omit",
+    "general_condition_of_installation": "string or omit",
+    "next_inspection_years": 5,
+    "installation_records_available": "Yes or No or omit",
+    "evidence_of_additions_alterations": "Yes or No or omit"
+  },
+  "supply_characteristics": {
+    "earthing_arrangement": "TN-C-S or TN-S or TT or IT",
+    "nominal_voltage_u": "230",
+    "nominal_frequency": "50",
+    "prospective_fault_current": "string kA",
+    "earth_loop_impedance_ze": "string ohms"
+  },
+  "board_info": {
+    "manufacturer": "string or omit",
+    "name": "string — board model or omit",
+    "rated_current": "string amps or omit",
+    "main_switch_bs_en": "string or omit",
+    "spd_status": "Fitted or Not Fitted or omit"
+  },
+  "circuits": [
+    {
+      "circuit_ref": "1",
+      "circuit_designation": "Ring Main",
+      "live_csa_mm2": "2.5",
+      "cpc_csa_mm2": "1.5",
+      "wiring_type": "string or omit",
+      "ref_method": "string or omit",
+      "number_of_points": "string or omit",
+      "ocpd_type": "B",
+      "ocpd_rating_a": "32",
+      "ocpd_bs_en": "60898-1",
+      "ocpd_breaking_capacity_ka": "6",
+      "rcd_type": "A",
+      "rcd_operating_current_ma": "30",
+      "rcd_bs_en": "61009",
+      "ring_r1_ohm": "0.88",
+      "ring_rn_ohm": "0.91",
+      "ring_r2_ohm": "1.11",
+      "r1_r2_ohm": "0.89",
+      "r2_ohm": "0.45",
+      "ir_live_live_mohm": ">200",
+      "ir_live_earth_mohm": ">200",
+      "measured_zs_ohm": "0.45",
+      "polarity_confirmed": "true",
+      "rcd_time_ms": "18",
+      "rcd_button_confirmed": "true"
+    }
+  ],
+  "observations": [
+    {
+      "code": "C2",
+      "observation_text": "Description of defect",
+      "item_location": "Distribution board",
+      "schedule_item": "4.2",
+      "regulation": "Reg 421.1.201"
+    }
+  ]
+}`;
+
+    const OpenAI = (await import('openai')).default;
+    const openai = new OpenAI({ apiKey });
+
+    const dataUrl = `data:image/jpeg;base64,${base64}`;
+
+    const response = await openai.chat.completions.create({
+      model,
+      max_completion_tokens: 16384,
+      temperature: 0,
+      response_format: { type: 'json_object' },
+      messages: [
+        {
+          role: 'user',
+          content: [
+            { type: 'image_url', image_url: { url: dataUrl, detail: 'high' } },
+            { type: 'text', text: prompt },
+          ],
+        },
+      ],
+    });
+
+    const content = response.choices?.[0]?.message?.content || '';
+    const promptTokens = response.usage?.prompt_tokens || 0;
+    const completionTokens = response.usage?.completion_tokens || 0;
+    const finishReason = response.choices?.[0]?.finish_reason || 'unknown';
+
+    logger.info('Document extraction complete', {
+      userId: req.user.id,
+      model,
+      promptTokens,
+      completionTokens,
+      responseLength: content.length,
+      finishReason,
+    });
+
+    if (finishReason === 'length') {
+      logger.error('Document extraction truncated by token limit', {
+        userId: req.user.id,
+        model,
+        completionTokens,
+      });
+      return res.status(502).json({
+        error: `Response truncated (${completionTokens} tokens). Try a clearer photo or retry.`,
+      });
+    }
+
+    let jsonStr = content;
+    if (jsonStr.startsWith('```json')) {
+      jsonStr = jsonStr.slice(7);
+    } else if (jsonStr.startsWith('```')) {
+      jsonStr = jsonStr.slice(3);
+    }
+    if (jsonStr.endsWith('```')) {
+      jsonStr = jsonStr.slice(0, -3);
+    }
+    jsonStr = jsonStr.trim();
+
+    const extracted = JSON.parse(jsonStr);
+
+    // Convert circuits: ensure polarity_confirmed and rcd_button_confirmed are strings
+    if (extracted.circuits) {
+      for (const c of extracted.circuits) {
+        if (typeof c.polarity_confirmed === 'boolean') {
+          c.polarity_confirmed = c.polarity_confirmed ? '✓' : '';
+        }
+        if (typeof c.rcd_button_confirmed === 'boolean') {
+          c.rcd_button_confirmed = c.rcd_button_confirmed ? '✓' : '';
+        }
+        // Ensure circuit_ref is a string
+        if (typeof c.circuit_ref === 'number') {
+          c.circuit_ref = String(c.circuit_ref);
+        }
+      }
+    }
+
+    // Wrap in { success, formData } envelope to match TranscriptExtractionResponse
+    const formData = {
+      circuits: extracted.circuits || [],
+      observations: extracted.observations || [],
+      installation_details: extracted.installation_details || {},
+      supply_characteristics: extracted.supply_characteristics || {},
+      board_info: extracted.board_info || {},
+    };
+
+    const inputCost = (promptTokens * 0.002) / 1000;
+    const outputCost = (completionTokens * 0.012) / 1000;
+
+    logger.info('Document extraction parsed', {
+      userId: req.user.id,
+      model,
+      circuitCount: formData.circuits.length,
+      observationCount: formData.observations.length,
+      hasInstallation: Object.keys(formData.installation_details).length > 0,
+      hasSupply: Object.keys(formData.supply_characteristics).length > 0,
+      hasBoard: Object.keys(formData.board_info).length > 0,
+      costUsd: parseFloat((inputCost + outputCost).toFixed(6)),
+    });
+
+    res.json({ success: true, formData });
+  } catch (error) {
+    logger.error('Document extraction failed', {
+      userId: req.user.id,
+      error: error.message,
+    });
+    res.status(500).json({ error: error.message });
+  } finally {
+    if (tempPath) {
+      try {
+        await fs.unlink(tempPath);
+      } catch {
+        /* ignore cleanup errors */
+      }
+    }
+  }
+});
+
+/**
  * Enhance an observation using GPT
  * POST /api/enhance-observation
  */
