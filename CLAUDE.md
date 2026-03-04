@@ -13,7 +13,8 @@ Automated EICR/EIC certificate creation for electrical inspectors using an iOS-f
 
 1. **Photo Capture** - Inspector photographs consumer unit (CCU) via iOS app
 2. **CCU Analysis** - GPT Vision extracts circuit data from consumer unit photos
-3. **Voice Recording** - Inspector dictates test readings and observations into iOS app
+3. **Document Extraction** - GPT Vision extracts certificate data from previous certificates, handwritten notes, or photos
+4. **Voice Recording** - Inspector dictates test readings and observations into iOS app
 4. **Live Transcription** - Deepgram Nova-3 transcribes speech in real time (direct from iOS)
 5. **Live Extraction** - Server-side Sonnet 4.5 extracts structured certificate data via multi-turn conversation
 6. **Review & Edit** - Inspector reviews populated certificate in iOS app tabs
@@ -27,6 +28,7 @@ Automated EICR/EIC certificate creation for electrical inspectors using an iOS-f
 | Transcription | Deepgram Nova-3 (direct WebSocket from iOS) |
 | Live Extraction | Claude Sonnet 4.5 (server-side multi-turn via WebSocket) |
 | CCU Photo AI | GPT Vision (consumer unit analysis) |
+| Document Extraction AI | GPT Vision (certificate/notes data extraction) |
 | Backend | Node.js (ES modules) — API, WebSocket, S3 |
 | PDF (iOS) | WKWebView HTML->PDF (EICRHTMLTemplate.swift) |
 | PDF (server) | Python ReportLab + Playwright |
@@ -187,6 +189,7 @@ When modifying UI fields: update `config/field_schema.json` + [field-reference.m
 
 | Date | Change | File(s) |
 |------|--------|---------|
+| 2026-03-04 | Add /api/analyze-document endpoint: GPT Vision extracts all EICR/EIC fields from photos of previous certificates, handwritten notes, or typed test sheets. Returns { success, formData } envelope matching extract-transcript shape. iOS app gets new "Extract Doc" button in recording overlay bar and CircuitsTab. Supports camera, photo library, and file picker (images + PDFs). | src/routes/extraction.js, iOS: CircuitsTab.swift, JobDetailView.swift, RecordingOverlay.swift, JobViewModel.swift, APIClient.swift |
 | 2026-02-28 | Fix extraction quality regression: raise COMPACTION_THRESHOLD 6000→60000 to effectively disable compaction for normal sessions. The 6000 threshold caused compaction to fire after ~15-20 utterances, replacing full conversation history with a dry summary — destroying Sonnet's ability to infer circuit assignment from recent conversational flow. With prompt caching (1h TTL, cache reads at 10% rate), full history costs ~$0.25-0.35/session. 60000 threshold preserves full context for all normal inspections. | eicr-extraction-session.js |
 | 2026-02-23 | Fix compaction cost blowout: 5 guards on compact() (min messages, min tokens, no-new-turns, failure backoff, 120s rate limit), increase max_tokens 2048→4096, client-side 120s rate limit on session_compact handler | eicr-extraction-session.js, sonnet-stream.js, eicr-extraction-session.test.js |
 | 2026-02-23 | Fix audio loss during VAD warm-up: remove premature ring buffer reset, add reconnect audio queue (5s cap), extract shared chunk handler, increase reconnect timeout to 5s, flush queued audio after reconnect. Fix server connection failures: add /api/health/ready readiness endpoint (DB/Deepgram/Anthropic checks), add iOS pre-flight connectivity check with NetworkMonitor + server health, dropped-audio logging in DeepgramService | SleepManager.swift, DeepgramRecordingViewModel.swift, DeepgramService.swift, APIClient.swift, api.js |
