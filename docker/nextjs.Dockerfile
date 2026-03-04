@@ -9,14 +9,20 @@ WORKDIR /app
 ARG APP_DIR
 ARG NEXT_PUBLIC_API_URL=https://certomatic3000.co.uk
 
-# Copy package files
-COPY ${APP_DIR}/package*.json ./
+# Copy workspace root package files for workspace resolution
+COPY package.json package-lock.json ./
 
-# Install dependencies
-RUN npm ci
+# Copy workspace packages that the frontend depends on
+COPY packages/ ./packages/
 
-# Copy app source
-COPY ${APP_DIR}/ ./
+# Copy the target app's source
+COPY ${APP_DIR}/ ./${APP_DIR}/
+
+# Install all workspace dependencies (resolves @certmate/* packages locally)
+# --ignore-scripts skips the root "prepare" hook (husky) which isn't needed in Docker
+RUN npm ci --ignore-scripts
+
+WORKDIR /app/${APP_DIR}
 
 ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
 
@@ -30,6 +36,9 @@ RUN npm run build
 FROM node:20-alpine AS runner
 WORKDIR /app
 
+ARG APP_DIR
+ENV APP_DIR=${APP_DIR}
+
 # Install wget for health checks
 RUN apk add --no-cache wget
 
@@ -38,9 +47,10 @@ RUN addgroup --system --gid 1001 nodejs
 RUN adduser --system --uid 1001 nextjs
 
 # Copy built application
-COPY --from=builder /app/.next/standalone ./
-COPY --from=builder /app/.next/static ./.next/static
-COPY --from=builder /app/public ./public
+# Standalone output in a monorepo preserves the workspace directory structure
+COPY --from=builder /app/${APP_DIR}/.next/standalone ./
+COPY --from=builder /app/${APP_DIR}/.next/static ./${APP_DIR}/.next/static
+COPY --from=builder /app/${APP_DIR}/public ./${APP_DIR}/public
 
 # Set ownership
 RUN chown -R nextjs:nodejs /app
@@ -54,4 +64,4 @@ ENV HOSTNAME="0.0.0.0"
 
 EXPOSE 3000
 
-CMD ["node", "server.js"]
+CMD node ${APP_DIR}/server.js

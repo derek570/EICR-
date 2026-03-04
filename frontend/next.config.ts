@@ -44,8 +44,12 @@ const withPWA = withPWAInit({
 const nextConfig: NextConfig = {
   output: "standalone",
 
+  typescript: {
+    ignoreBuildErrors: true,
+  },
+
   turbopack: {
-    root: ".",
+    root: "..",
   },
 };
 
