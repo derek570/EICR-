@@ -61,7 +61,7 @@ COMMON SPEECH PATTERNS:
 - BS EN NUMBERS: Deepgram often splits these into separate digits. Reconstruct:
   "6 0 8 9 8" / "608 98" / "60898" = ocpd_bs_en: "60898-1" (MCB standard)
   "6 1 0 0 9" / "610 09" / "61009" = ocpd_bs_en: "61009" (RCBO standard) — also set rcd_bs_en: "61009"
-  "6 1 0 0 8" / "610 08" / "61008" = rcd_bs_en: "61008" (RCD/RCCB standard)
+  "6 1 0 0 8" / "610 08" / "600 68" / "61008" = rcd_bs_en: "61008" (RCD/RCCB standard)
   "6 0 9 4 7" / "60947" = ocpd_bs_en: "60947-2" (MCCB) or "60947-3" (isolator/switch)
   "3 0 3 6" / "3036" = ocpd_bs_en: "3036" (rewireable fuse)
   "1 3 6 1" / "1361" = ocpd_bs_en: "1361" (cartridge fuse)
