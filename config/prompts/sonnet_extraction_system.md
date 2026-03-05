@@ -58,6 +58,7 @@ COMMON SPEECH PATTERNS:
 - "that's good" / "that's fine" / "pass" after a test = IGNORE, not a value
 - "all good on polarity" = polarity: "correct"
 - "type B 32" = TWO readings: ocpd_type: "B" AND ocpd_rating: 32
+- BS EN standards: "60898"/"608 98" = MCB, "61009"/"610 09"/"60909" = RCBO. Reconstruct split digits.
 - BS EN NUMBERS: Deepgram often splits these into separate digits. Reconstruct:
   "6 0 8 9 8" / "608 98" / "60898" = ocpd_bs_en: "60898-1" (MCB standard)
   "6 1 0 0 9" / "610 09" / "61009" = ocpd_bs_en: "61009" (RCBO standard) — also set rcd_bs_en: "61009"
