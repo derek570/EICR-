@@ -359,12 +359,8 @@ export function useRecording(jobId: string, userId: string, initialJob: JobDetai
     if (isRecordingRef.current) return;
 
     try {
-      // 1. Fetch API keys
-      const keys = await api.fetchKeys();
-      const deepgramKey = keys.deepgram;
-      if (!deepgramKey) {
-        throw new Error('No Deepgram API key returned');
-      }
+      // 1. Fetch short-lived Deepgram streaming key (secure temp key, 600s TTL)
+      const deepgramKey = await api.fetchDeepgramStreamingKey();
       deepgramKeyRef.current = deepgramKey;
 
       // 2. Build server WS URL

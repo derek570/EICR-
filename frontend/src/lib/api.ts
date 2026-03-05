@@ -616,9 +616,13 @@ export const api = {
     return handleResponse(response);
   },
 
-  async fetchKeys(): Promise<{ deepgram: string; anthropic?: string; elevenlabs?: string }> {
-    const response = await fetchWithAuth(`${API_BASE_URL}/api/keys`, { retry: false });
-    return handleResponse(response);
+  async fetchDeepgramStreamingKey(): Promise<string> {
+    const response = await fetchJsonWithAuth(`${API_BASE_URL}/api/proxy/deepgram-streaming-key`, {
+      method: 'POST',
+    });
+    const data = await handleResponse<{ key: string }>(response);
+    if (!data.key) throw new Error('No Deepgram streaming key returned');
+    return data.key;
   },
 
   // ============= Admin: User Management =============
