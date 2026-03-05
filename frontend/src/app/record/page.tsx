@@ -1,17 +1,17 @@
-"use client";
+'use client';
 
-import { Suspense, useEffect, useState, useCallback } from "react";
-import { useSearchParams, useRouter } from "next/navigation";
-import { ArrowLeft, Loader2, AlertTriangle, RefreshCw } from "lucide-react";
-import { toast } from "sonner";
+import { Suspense, useEffect, useState, useCallback } from 'react';
+import { useSearchParams, useRouter } from 'next/navigation';
+import { ArrowLeft, Loader2, AlertTriangle, RefreshCw } from 'lucide-react';
+import { toast } from 'sonner';
 
-import { api, type JobDetail } from "@/lib/api";
-import { useRecordingStore } from "@/lib/recording-store";
-import { useRecording } from "@/hooks/use-recording";
-import { LiveFillView } from "@/components/recording/live-fill-view";
-import { TranscriptBar } from "@/components/recording/transcript-bar";
-import { RecordingControls } from "@/components/recording/recording-controls";
-import { AlertCard } from "@/components/recording/alert-card";
+import { api, type JobDetail } from '@/lib/api';
+import { useRecordingStore } from '@/lib/recording-store';
+import { useRecording } from '@/hooks/use-recording';
+import { LiveFillView } from '@/components/recording/live-fill-view';
+import { TranscriptBar } from '@/components/recording/transcript-bar';
+import { RecordingControls } from '@/components/recording/recording-controls';
+import { AlertCard } from '@/components/recording/alert-card';
 
 // ============================================================================
 // RecordPageContent (wrapped in Suspense for useSearchParams)
@@ -20,8 +20,8 @@ import { AlertCard } from "@/components/recording/alert-card";
 function RecordPageContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const jobId = searchParams.get("jobId") ?? "";
-  const certificateType = searchParams.get("type") === "EIC" ? "EIC" : "EICR";
+  const jobId = searchParams.get('jobId') ?? '';
+  const certificateType = searchParams.get('type') === 'EIC' ? 'EIC' : 'EICR';
 
   // Auth
   const [userId, setUserId] = useState<string | null>(null);
@@ -40,22 +40,23 @@ function RecordPageContent() {
   const deepgramState = useRecordingStore((s) => s.deepgramState);
   const serverConnected = useRecordingStore((s) => s.serverConnected);
   const sleepState = useRecordingStore((s) => s.sleepState);
+  const vadState = useRecordingStore((s) => s.vadState);
   const cost = useRecordingStore((s) => s.cost);
   const currentQuestion = useRecordingStore((s) => s.currentQuestion);
   const highlight = useRecordingStore((s) => s.highlight);
 
   // Recording hook (pass loaded job as initial data)
-  const recording = useRecording(jobId, userId ?? "", job);
+  const recording = useRecording(jobId, userId ?? '', job);
 
   // --------------------------------------------------------------------------
   // Auth check
   // --------------------------------------------------------------------------
   useEffect(() => {
-    const token = localStorage.getItem("token");
-    const storedUser = localStorage.getItem("user");
+    const token = localStorage.getItem('token');
+    const storedUser = localStorage.getItem('user');
 
     if (!token || !storedUser) {
-      router.push("/login");
+      router.push('/login');
       return;
     }
 
@@ -63,7 +64,7 @@ function RecordPageContent() {
       const userData = JSON.parse(storedUser) as { id: string };
       setUserId(userData.id);
     } catch {
-      router.push("/login");
+      router.push('/login');
       return;
     }
 
@@ -83,8 +84,7 @@ function RecordPageContent() {
       const data = await api.getJob(userId, jobId);
       setJob(data);
     } catch (err) {
-      const message =
-        err instanceof Error ? err.message : "Failed to load job";
+      const message = err instanceof Error ? err.message : 'Failed to load job';
       setJobError(message);
       toast.error(message);
     } finally {
@@ -111,7 +111,7 @@ function RecordPageContent() {
   const handleBack = useCallback(() => {
     if (isRecording) {
       const confirmed = window.confirm(
-        "Recording is in progress. Are you sure you want to leave? Your session will be stopped.",
+        'Recording is in progress. Are you sure you want to leave? Your session will be stopped.'
       );
       if (!confirmed) return;
       recording.stopRecording();
@@ -120,7 +120,7 @@ function RecordPageContent() {
     if (jobId) {
       router.push(`/job/${jobId}`);
     } else {
-      router.push("/dashboard");
+      router.push('/dashboard');
     }
   }, [isRecording, jobId, router, recording]);
 
@@ -128,14 +128,12 @@ function RecordPageContent() {
     try {
       await recording.startRecording();
     } catch (err) {
-      toast.error(
-        err instanceof Error ? err.message : "Failed to start recording",
-      );
+      toast.error(err instanceof Error ? err.message : 'Failed to start recording');
     }
   }, [recording]);
 
   const handleStop = useCallback(() => {
-    const confirmed = window.confirm("Stop recording?");
+    const confirmed = window.confirm('Stop recording?');
     if (!confirmed) return;
 
     recording.stopRecording();
@@ -171,15 +169,11 @@ function RecordPageContent() {
       <div className="flex min-h-dvh items-center justify-center bg-zinc-950 p-6">
         <div className="w-full max-w-sm rounded-2xl bg-zinc-900 p-6 text-center">
           <AlertTriangle className="mx-auto mb-4 h-12 w-12 text-amber-500" />
-          <h2 className="mb-2 text-xl font-bold text-zinc-100">
-            Failed to Load Job
-          </h2>
+          <h2 className="mb-2 text-xl font-bold text-zinc-100">Failed to Load Job</h2>
           <p className="mb-6 text-sm text-zinc-400">{jobError}</p>
           <div className="flex gap-3">
             <button
-              onClick={() =>
-                router.push(jobId ? `/job/${jobId}` : "/dashboard")
-              }
+              onClick={() => router.push(jobId ? `/job/${jobId}` : '/dashboard')}
               className="flex-1 rounded-lg border border-zinc-700 px-4 py-2 text-sm text-zinc-300 transition-colors hover:bg-zinc-800"
             >
               Go Back
@@ -206,7 +200,7 @@ function RecordPageContent() {
       {isRecording && (
         <div
           className="pointer-events-none fixed inset-0 z-50 border-2 border-red-500"
-          style={{ animation: "record-pulse 2s ease-in-out infinite" }}
+          style={{ animation: 'record-pulse 2s ease-in-out infinite' }}
         />
       )}
 
@@ -239,9 +233,9 @@ function RecordPageContent() {
           {/* Center: certificate type badge */}
           <span
             className={`rounded-full px-3 py-1 text-xs font-bold ${
-              certificateType === "EIC"
-                ? "bg-emerald-600/80 text-white"
-                : "bg-blue-600/80 text-white"
+              certificateType === 'EIC'
+                ? 'bg-emerald-600/80 text-white'
+                : 'bg-blue-600/80 text-white'
             }`}
           >
             {certificateType}
@@ -251,9 +245,7 @@ function RecordPageContent() {
           {isRecording ? (
             <div className="flex items-center gap-2 rounded-full bg-red-600/90 px-3 py-1">
               <span className="h-2 w-2 animate-pulse rounded-full bg-white" />
-              <span className="font-mono text-xs font-bold text-white">
-                REC
-              </span>
+              <span className="font-mono text-xs font-bold text-white">REC</span>
             </div>
           ) : (
             <div className="w-16" />
@@ -303,6 +295,7 @@ function RecordPageContent() {
           deepgramState={deepgramState}
           serverConnected={serverConnected}
           sleepState={sleepState}
+          vadState={vadState}
           cost={cost}
           onStart={handleStart}
           onStop={handleStop}

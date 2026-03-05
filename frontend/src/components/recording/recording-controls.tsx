@@ -1,8 +1,8 @@
-"use client";
+'use client';
 
-import { Mic, Square } from "lucide-react";
-import type { DeepgramConnectionState } from "@/lib/recording/deepgram-service";
-import type { SleepState } from "@/lib/recording-store";
+import { Mic, Square } from 'lucide-react';
+import type { DeepgramConnectionState } from '@/lib/recording/deepgram-service';
+import type { SleepState, VadState } from '@/lib/recording-store';
 
 // ---------------------------------------------------------------------------
 // Props
@@ -14,6 +14,7 @@ interface RecordingControlsProps {
   deepgramState: DeepgramConnectionState;
   serverConnected: boolean;
   sleepState: SleepState;
+  vadState: VadState;
   cost: { totalJobCost: number } | null;
   onStart: () => void;
   onStop: () => void;
@@ -26,7 +27,7 @@ interface RecordingControlsProps {
 function formatDuration(seconds: number): string {
   const m = Math.floor(seconds / 60);
   const s = seconds % 60;
-  return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+  return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
 }
 
 function formatCost(cost: number): string {
@@ -37,25 +38,62 @@ function formatCost(cost: number): string {
 // Status dot
 // ---------------------------------------------------------------------------
 
-type DotStatus = "connected" | "connecting" | "disconnected";
+type DotStatus = 'connected' | 'connecting' | 'disconnected';
 
 function StatusDot({ status, label }: { status: DotStatus; label: string }) {
   const colorClass =
-    status === "connected"
-      ? "bg-green-500"
-      : status === "connecting"
-        ? "bg-amber-500 animate-pulse"
-        : "bg-red-500";
+    status === 'connected'
+      ? 'bg-green-500'
+      : status === 'connecting'
+        ? 'bg-amber-500 animate-pulse'
+        : 'bg-red-500';
 
   return (
     <div className="flex items-center gap-1">
       <div className={`h-1.5 w-1.5 rounded-full ${colorClass}`} />
+      <span className="text-[10px] text-zinc-500 uppercase tracking-wide">{label}</span>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// VAD indicator (matches iOS VADIndicatorView)
+// ---------------------------------------------------------------------------
+
+const vadColorMap: Record<VadState, string> = {
+  idle: 'bg-zinc-500',
+  listening: 'bg-amber-400',
+  speaking: 'bg-green-500 animate-pulse',
+  trailing: 'bg-orange-500',
+};
+
+const vadLabelMap: Record<VadState, string> = {
+  idle: 'Idle',
+  listening: 'Listening',
+  speaking: 'Speech',
+  trailing: 'Trailing',
+};
+
+function VadIndicator({ state }: { state: VadState }) {
+  return (
+    <div className="flex items-center gap-1">
+      <div className={`h-2 w-2 rounded-full ${vadColorMap[state]}`} />
       <span className="text-[10px] text-zinc-500 uppercase tracking-wide">
-        {label}
+        {vadLabelMap[state]}
       </span>
     </div>
   );
 }
+
+// ---------------------------------------------------------------------------
+// Sleep state label
+// ---------------------------------------------------------------------------
+
+const sleepLabelMap: Record<SleepState, { text: string; className: string }> = {
+  active: { text: 'Active', className: 'text-green-400' },
+  dozing: { text: 'Dozing', className: 'text-amber-400 animate-pulse' },
+  sleeping: { text: 'Sleeping', className: 'text-zinc-500' },
+};
 
 // ---------------------------------------------------------------------------
 // Component
@@ -67,30 +105,42 @@ export function RecordingControls({
   deepgramState,
   serverConnected,
   sleepState,
+  vadState,
   cost,
   onStart,
   onStop,
 }: RecordingControlsProps) {
   const dgStatus: DotStatus =
-    deepgramState === "connected"
-      ? "connected"
-      : deepgramState === "connecting" || deepgramState === "reconnecting"
-        ? "connecting"
-        : "disconnected";
+    deepgramState === 'connected'
+      ? 'connected'
+      : deepgramState === 'connecting' || deepgramState === 'reconnecting'
+        ? 'connecting'
+        : 'disconnected';
 
-  const aiStatus: DotStatus = serverConnected ? "connected" : "disconnected";
+  const aiStatus: DotStatus = serverConnected ? 'connected' : 'disconnected';
+  const sleepLabel = sleepLabelMap[sleepState];
 
   return (
     <div className="bg-zinc-900/95 border-t border-zinc-800 p-3">
       <div className="flex items-center justify-between max-w-lg mx-auto">
         {/* Left: Status indicators */}
-        <div className="flex flex-col gap-1 min-w-[48px]">
+        <div className="flex flex-col gap-1 min-w-[60px]">
           <StatusDot status={dgStatus} label="DG" />
           <StatusDot status={aiStatus} label="AI" />
-          {isRecording && sleepState !== "active" && (
-            <span className="text-[10px] text-zinc-600">
-              {sleepState === "dozing" ? "Saving power..." : "Paused"}
-            </span>
+          {isRecording && (
+            <>
+              <div className="flex items-center gap-1">
+                <div
+                  className={`h-1.5 w-1.5 rounded-full ${sleepLabel.className.includes('animate') ? 'bg-amber-400 animate-pulse' : sleepState === 'active' ? 'bg-green-500' : 'bg-zinc-500'}`}
+                />
+                <span
+                  className={`text-[10px] font-medium uppercase tracking-wide ${sleepLabel.className}`}
+                >
+                  {sleepLabel.text}
+                </span>
+              </div>
+              {sleepState !== 'active' && <VadIndicator state={vadState} />}
+            </>
           )}
         </div>
 
@@ -118,13 +168,9 @@ export function RecordingControls({
 
         {/* Right: Duration + Cost */}
         <div className="flex flex-col items-end gap-0.5 min-w-[48px]">
-          <span className="font-mono text-sm text-zinc-200">
-            {formatDuration(duration)}
-          </span>
+          <span className="font-mono text-sm text-zinc-200">{formatDuration(duration)}</span>
           {cost != null && (
-            <span className="font-mono text-xs text-zinc-500">
-              {formatCost(cost.totalJobCost)}
-            </span>
+            <span className="font-mono text-xs text-zinc-500">{formatCost(cost.totalJobCost)}</span>
           )}
         </div>
       </div>
