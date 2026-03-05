@@ -603,9 +603,13 @@ function analyzeSession(sessionDir) {
   const deepgramCostData = costSummary?.deepgram || {};
   const elevenLabsCostData = costSummary?.elevenlabs || {};
 
-  const deepgramMinutes = deepgramCostData.minutes || parseFloat(manifest.recordingDurationMin || "0");
+  // Prefer iOS-reported streaming minutes (accurate, excludes VAD doze pauses)
+  // over backend timer (which may not know about iOS-side pauses).
+  const deepgramMinutes = manifest.deepgramStreamingMinutes
+    || deepgramCostData.minutes
+    || parseFloat(manifest.recordingDurationMin || "0");
   const DEEPGRAM_RATE = 0.0077;
-  const deepgramCostUsd = deepgramCostData.cost || (deepgramMinutes * DEEPGRAM_RATE);
+  const deepgramCostUsd = deepgramMinutes * DEEPGRAM_RATE;
 
   const sonnetTokenBreakdown = {
     cache_read: sonnetCostData.cacheReads || 0,
