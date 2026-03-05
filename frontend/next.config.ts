@@ -51,6 +51,20 @@ const nextConfig: NextConfig = {
   turbopack: {
     root: "..",
   },
+
+  // Ensure WASM and ONNX files served from /vad/ have correct MIME types
+  // and CORS headers for ONNX Runtime Web (used by Silero VAD)
+  async headers() {
+    return [
+      {
+        source: "/vad/:path*",
+        headers: [
+          { key: "Cross-Origin-Embedder-Policy", value: "require-corp" },
+          { key: "Cross-Origin-Opener-Policy", value: "same-origin" },
+        ],
+      },
+    ];
+  },
 };
 
 export default withPWA(nextConfig);

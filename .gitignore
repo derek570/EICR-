@@ -38,6 +38,9 @@ docker-compose.override.yml
 *.log
 logs/
 
+# ===== Silero VAD WASM/ONNX (copied from node_modules by postinstall) =====
+frontend/public/vad/
+
 # ===== Temporary Files =====
 tmp/
 temp/

@@ -1,9 +1,9 @@
 // recording-store.ts
 // Zustand store for recording session state — separate from the job store.
 
-import { create } from "zustand";
-import type { DeepgramConnectionState } from "./recording/deepgram-service";
-import type { JobDetail } from "./api";
+import { create } from 'zustand';
+import type { DeepgramConnectionState } from './recording/deepgram-service';
+import type { JobDetail } from './api';
 
 // ---------------------------------------------------------------------------
 // Types (inline — will consolidate with server-ws-service.ts later)
@@ -24,14 +24,15 @@ export interface ServerCostUpdate {
 
 export interface UserQuestion {
   id: string;
-  type: "orphaned" | "out_of_range" | "unclear";
+  type: 'orphaned' | 'out_of_range' | 'unclear';
   fieldKey: string;
   circuitNumber?: number;
   question: string;
   value?: string;
 }
 
-export type SleepState = "active" | "dozing" | "sleeping";
+export type SleepState = 'active' | 'dozing' | 'sleeping';
+export type VadState = 'idle' | 'listening' | 'speaking' | 'trailing';
 
 export interface TranscriptHighlight {
   keyword: string;
@@ -53,6 +54,7 @@ interface RecordingState {
   deepgramState: DeepgramConnectionState;
   serverConnected: boolean;
   sleepState: SleepState;
+  vadState: VadState;
   cost: ServerCostUpdate | null;
   currentQuestion: UserQuestion | null;
   isTTSSpeaking: boolean;
@@ -66,6 +68,7 @@ interface RecordingState {
   setDeepgramState: (state: DeepgramConnectionState) => void;
   setServerConnected: (connected: boolean) => void;
   setSleepState: (state: SleepState) => void;
+  setVadState: (state: VadState) => void;
   setCost: (cost: ServerCostUpdate | null) => void;
   setCurrentQuestion: (question: UserQuestion | null) => void;
   setTTSSpeaking: (speaking: boolean) => void;
@@ -78,11 +81,12 @@ interface RecordingState {
 const initialState = {
   isRecording: false,
   duration: 0,
-  transcript: "",
-  interimTranscript: "",
-  deepgramState: "disconnected" as DeepgramConnectionState,
+  transcript: '',
+  interimTranscript: '',
+  deepgramState: 'disconnected' as DeepgramConnectionState,
   serverConnected: false,
-  sleepState: "active" as SleepState,
+  sleepState: 'active' as SleepState,
+  vadState: 'idle' as VadState,
   cost: null as ServerCostUpdate | null,
   currentQuestion: null as UserQuestion | null,
   isTTSSpeaking: false,
@@ -99,6 +103,7 @@ export const useRecordingStore = create<RecordingState>((set) => ({
   setDeepgramState: (deepgramState) => set({ deepgramState }),
   setServerConnected: (serverConnected) => set({ serverConnected }),
   setSleepState: (sleepState) => set({ sleepState }),
+  setVadState: (vadState) => set({ vadState }),
   setCost: (cost) => set({ cost }),
   setCurrentQuestion: (currentQuestion) => set({ currentQuestion }),
   setTTSSpeaking: (isTTSSpeaking) => set({ isTTSSpeaking }),
@@ -107,9 +112,7 @@ export const useRecordingStore = create<RecordingState>((set) => ({
 
   appendTranscript: (text) =>
     set((state) => ({
-      transcript: state.transcript
-        ? `${state.transcript} ${text}`
-        : text,
+      transcript: state.transcript ? `${state.transcript} ${text}` : text,
     })),
 
   reset: () => set(initialState),

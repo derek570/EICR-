@@ -1,30 +1,29 @@
-"use client";
+'use client';
 
-import { useCallback, useEffect, useRef } from "react";
-import { api } from "../lib/api";
-import type { JobDetail, SaveJobData } from "../lib/api";
-import { DeepgramService } from "../lib/recording/deepgram-service";
-import type { DeepgramWord } from "../lib/recording/deepgram-service";
+import { useCallback, useEffect, useRef } from 'react';
+import { api } from '../lib/api';
+import type { JobDetail, SaveJobData } from '../lib/api';
+import { DeepgramService } from '../lib/recording/deepgram-service';
+import type { DeepgramWord } from '../lib/recording/deepgram-service';
 import {
   ServerWebSocketService,
   type RollingExtractionResult,
   type ServerCostUpdate as WsCostUpdate,
   type UserQuestion,
-} from "../lib/recording/server-ws-service";
-import { SleepManager } from "../lib/recording/sleep-manager";
-import type { SleepState } from "../lib/recording/sleep-manager";
-import { AlertManager } from "../lib/recording/alert-manager";
-import { normalise } from "../lib/recording/number-normaliser";
-import { generateKeywordBoosts } from "../lib/recording/keyword-boost-generator";
-import { useRecordingStore } from "../lib/recording-store";
-import type { ServerCostUpdate as StoreCostUpdate } from "../lib/recording-store";
+} from '../lib/recording/server-ws-service';
+import { SleepManager } from '../lib/recording/sleep-manager';
+import type { SleepState, VadState } from '../lib/recording/sleep-manager';
+import { AlertManager } from '../lib/recording/alert-manager';
+import { normalise } from '../lib/recording/number-normaliser';
+import { generateKeywordBoosts } from '../lib/recording/keyword-boost-generator';
+import { useRecordingStore } from '../lib/recording-store';
+import type { ServerCostUpdate as StoreCostUpdate } from '../lib/recording-store';
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
-const API_BASE_URL =
-  process.env.NEXT_PUBLIC_API_URL || "http://localhost:3000";
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000';
 
 const SAVE_DEBOUNCE_MS = 2000;
 
@@ -33,73 +32,69 @@ const SAVE_DEBOUNCE_MS = 2000;
 // ---------------------------------------------------------------------------
 
 const SUPPLY_FIELDS = new Set([
-  "ze",
-  "pfc",
-  "earthing_arrangement",
-  "main_earth_conductor_csa",
-  "main_bonding_conductor_csa",
-  "bonding_water",
-  "bonding_gas",
-  "earth_electrode_type",
-  "earth_electrode_resistance",
-  "supply_voltage",
-  "supply_frequency",
-  "supply_polarity_confirmed",
-  "nominal_voltage_u",
-  "nominal_voltage_uo",
-  "nominal_frequency",
-  "prospective_fault_current",
-  "earth_loop_impedance_ze",
-  "zs_at_db",
-  "manufacturer",
-  "main_switch_bs_en",
-  "main_switch_poles",
-  "main_switch_voltage",
-  "main_switch_current",
-  "main_switch_fuse_setting",
-  "main_switch_location",
-  "main_switch_conductor_material",
-  "main_switch_conductor_csa",
-  "earthing_conductor_material",
-  "earthing_conductor_csa",
-  "earthing_conductor_continuity",
-  "bonding_conductor_material",
-  "bonding_conductor_csa",
-  "bonding_conductor_continuity",
-  "rcd_operating_current",
-  "rcd_time_delay",
-  "rcd_operating_time",
+  'ze',
+  'pfc',
+  'earthing_arrangement',
+  'main_earth_conductor_csa',
+  'main_bonding_conductor_csa',
+  'bonding_water',
+  'bonding_gas',
+  'earth_electrode_type',
+  'earth_electrode_resistance',
+  'supply_voltage',
+  'supply_frequency',
+  'supply_polarity_confirmed',
+  'nominal_voltage_u',
+  'nominal_voltage_uo',
+  'nominal_frequency',
+  'prospective_fault_current',
+  'earth_loop_impedance_ze',
+  'zs_at_db',
+  'manufacturer',
+  'main_switch_bs_en',
+  'main_switch_poles',
+  'main_switch_voltage',
+  'main_switch_current',
+  'main_switch_fuse_setting',
+  'main_switch_location',
+  'main_switch_conductor_material',
+  'main_switch_conductor_csa',
+  'earthing_conductor_material',
+  'earthing_conductor_csa',
+  'earthing_conductor_continuity',
+  'bonding_conductor_material',
+  'bonding_conductor_csa',
+  'bonding_conductor_continuity',
+  'rcd_operating_current',
+  'rcd_time_delay',
+  'rcd_operating_time',
 ]);
 
 const INSTALLATION_FIELDS = new Set([
-  "client_name",
-  "address",
-  "postcode",
-  "town",
-  "county",
-  "premises_description",
-  "next_inspection_years",
-  "reason_for_report",
-  "occupier_name",
-  "client_phone",
-  "client_email",
-  "date_of_previous_inspection",
-  "previous_certificate_number",
-  "estimated_age_of_installation",
-  "general_condition",
-  "installation_records_available",
-  "evidence_of_additions_alterations",
-  "extent",
-  "agreed_limitations",
-  "agreed_with",
-  "operational_limitations",
+  'client_name',
+  'address',
+  'postcode',
+  'town',
+  'county',
+  'premises_description',
+  'next_inspection_years',
+  'reason_for_report',
+  'occupier_name',
+  'client_phone',
+  'client_email',
+  'date_of_previous_inspection',
+  'previous_certificate_number',
+  'estimated_age_of_installation',
+  'general_condition',
+  'installation_records_available',
+  'evidence_of_additions_alterations',
+  'extent',
+  'agreed_limitations',
+  'agreed_with',
+  'operational_limitations',
 ]);
 
-const BOARD_FIELDS = new Set([
-  "location",
-  "phases",
-  "name",
-]);
+const BOARD_FIELDS = new Set(['location', 'phases', 'name']);
 
 // ---------------------------------------------------------------------------
 // Sonnet field name → JobDetail field name mapping
@@ -107,36 +102,36 @@ const BOARD_FIELDS = new Set([
 // ---------------------------------------------------------------------------
 
 const SUPPLY_FIELD_MAP: Record<string, string> = {
-  ze: "earth_loop_impedance_ze",
-  pfc: "prospective_fault_current",
-  supply_voltage: "nominal_voltage_u",
-  supply_frequency: "nominal_frequency",
-  main_earth_conductor_csa: "earthing_conductor_csa",
-  main_bonding_conductor_csa: "bonding_conductor_csa",
+  ze: 'earth_loop_impedance_ze',
+  pfc: 'prospective_fault_current',
+  supply_voltage: 'nominal_voltage_u',
+  supply_frequency: 'nominal_frequency',
+  main_earth_conductor_csa: 'earthing_conductor_csa',
+  main_bonding_conductor_csa: 'bonding_conductor_csa',
 };
 
 const CIRCUIT_FIELD_MAP: Record<string, string> = {
-  ocpd_type: "ocpd_type",
-  ocpd_rating: "ocpd_rating_a",
-  cable_size: "live_csa_mm2",
-  cable_size_earth: "cpc_csa_mm2",
-  wiring_type: "wiring_type",
-  ref_method: "ref_method",
-  circuit_description: "circuit_designation",
-  zs: "measured_zs_ohm",
-  insulation_resistance_l_l: "ir_live_live_mohm",
-  insulation_resistance_l_e: "ir_live_earth_mohm",
-  r1_plus_r2: "r1_r2_ohm",
-  ring_continuity_r1: "ring_r1_ohm",
-  ring_continuity_rn: "ring_rn_ohm",
-  ring_continuity_r2: "ring_r2_ohm",
-  r2: "r2_ohm",
-  rcd_trip_time: "rcd_time_ms",
-  rcd_rating_a: "rcd_operating_current_ma",
-  polarity: "polarity_confirmed",
-  number_of_points: "number_of_points",
-  rcd_button_confirmed: "rcd_button_confirmed",
-  afdd_button_confirmed: "afdd_button_confirmed",
+  ocpd_type: 'ocpd_type',
+  ocpd_rating: 'ocpd_rating_a',
+  cable_size: 'live_csa_mm2',
+  cable_size_earth: 'cpc_csa_mm2',
+  wiring_type: 'wiring_type',
+  ref_method: 'ref_method',
+  circuit_description: 'circuit_designation',
+  zs: 'measured_zs_ohm',
+  insulation_resistance_l_l: 'ir_live_live_mohm',
+  insulation_resistance_l_e: 'ir_live_earth_mohm',
+  r1_plus_r2: 'r1_r2_ohm',
+  ring_continuity_r1: 'ring_r1_ohm',
+  ring_continuity_rn: 'ring_rn_ohm',
+  ring_continuity_r2: 'ring_r2_ohm',
+  r2: 'r2_ohm',
+  rcd_trip_time: 'rcd_time_ms',
+  rcd_rating_a: 'rcd_operating_current_ma',
+  polarity: 'polarity_confirmed',
+  number_of_points: 'number_of_points',
+  rcd_button_confirmed: 'rcd_button_confirmed',
+  afdd_button_confirmed: 'afdd_button_confirmed',
 };
 
 // ---------------------------------------------------------------------------
@@ -144,7 +139,7 @@ const CIRCUIT_FIELD_MAP: Record<string, string> = {
 // ---------------------------------------------------------------------------
 
 function buildServerWSURL(): string {
-  const base = API_BASE_URL.replace(/^http/, "ws");
+  const base = API_BASE_URL.replace(/^http/, 'ws');
   return `${base}/api/sonnet-stream`;
 }
 
@@ -152,8 +147,7 @@ function mapCostUpdate(ws: WsCostUpdate): StoreCostUpdate {
   return {
     deepgramCost: ws.deepgram?.cost ?? 0,
     sonnetCost: ws.sonnet?.cost ?? 0,
-    totalSessionCost:
-      (ws.deepgram?.cost ?? 0) + (ws.sonnet?.cost ?? 0),
+    totalSessionCost: (ws.deepgram?.cost ?? 0) + (ws.sonnet?.cost ?? 0),
     totalJobCost: ws.totalJobCost ?? 0,
     deepgramMinutes: ws.deepgram?.minutes ?? 0,
     sonnetCalls: ws.sonnet?.turns ?? 0,
@@ -188,18 +182,17 @@ export function useRecording(jobId: string, userId: string, initialJob: JobDetai
   // --- Refs for service instances ---
   const audioContextRef = useRef<AudioContext | null>(null);
   const workletNodeRef = useRef<AudioWorkletNode | null>(null);
-  const analyserRef = useRef<AnalyserNode | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const deepgramRef = useRef<DeepgramService | null>(null);
   const serverWSRef = useRef<ServerWebSocketService | null>(null);
   const sleepManagerRef = useRef<SleepManager | null>(null);
   const alertManagerRef = useRef<AlertManager | null>(null);
   const durationIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const sessionIdRef = useRef<string>("");
+  const sessionIdRef = useRef<string>('');
 
   // --- Mutable state refs ---
   const jobRef = useRef<JobDetail | null>(initialJob);
-  const deepgramKeyRef = useRef<string>("");
+  const deepgramKeyRef = useRef<string>('');
   const keywordsRef = useRef<Array<[string, number]>>([]);
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isRecordingRef = useRef(false);
@@ -230,7 +223,7 @@ export function useRecording(jobId: string, userId: string, initialJob: JobDetai
         inspection_schedule: job.inspection_schedule,
       };
       api.saveJob(userId, jobId, data).catch((err) => {
-        console.error("[useRecording] save failed:", err);
+        console.error('[useRecording] save failed:', err);
       });
     }, SAVE_DEBOUNCE_MS);
   }, [userId, jobId]);
@@ -255,8 +248,8 @@ export function useRecording(jobId: string, userId: string, initialJob: JobDetai
         observations: [...(job.observations ?? [])],
       };
 
-      let lastHighlightField = "";
-      let lastHighlightValue = "";
+      let lastHighlightField = '';
+      let lastHighlightValue = '';
 
       for (const reading of result.readings) {
         const { field, value, circuit } = reading;
@@ -277,12 +270,12 @@ export function useRecording(jobId: string, userId: string, initialJob: JobDetai
           // Supply characteristic
           if (!updatedJob.supply_characteristics) {
             updatedJob.supply_characteristics = {
-              earthing_arrangement: "",
-              live_conductors: "",
-              number_of_supplies: "",
-              nominal_voltage_u: "",
-              nominal_voltage_uo: "",
-              nominal_frequency: "",
+              earthing_arrangement: '',
+              live_conductors: '',
+              number_of_supplies: '',
+              nominal_voltage_u: '',
+              nominal_voltage_uo: '',
+              nominal_frequency: '',
             };
           }
           const mappedField = SUPPLY_FIELD_MAP[field] ?? field;
@@ -294,9 +287,9 @@ export function useRecording(jobId: string, userId: string, initialJob: JobDetai
           // Installation detail
           if (!updatedJob.installation_details) {
             updatedJob.installation_details = {
-              client_name: "",
-              address: "",
-              premises_description: "",
+              client_name: '',
+              address: '',
+              premises_description: '',
               installation_records_available: false,
               evidence_of_additions_alterations: false,
               next_inspection_years: 5,
@@ -316,12 +309,12 @@ export function useRecording(jobId: string, userId: string, initialJob: JobDetai
           // Sonnet circuit=0 means supply-level — also try supply mapping
           if (!updatedJob.supply_characteristics) {
             updatedJob.supply_characteristics = {
-              earthing_arrangement: "",
-              live_conductors: "",
-              number_of_supplies: "",
-              nominal_voltage_u: "",
-              nominal_voltage_uo: "",
-              nominal_frequency: "",
+              earthing_arrangement: '',
+              live_conductors: '',
+              number_of_supplies: '',
+              nominal_voltage_u: '',
+              nominal_voltage_uo: '',
+              nominal_frequency: '',
             };
           }
           const mappedField = SUPPLY_FIELD_MAP[field] ?? field;
@@ -336,9 +329,9 @@ export function useRecording(jobId: string, userId: string, initialJob: JobDetai
       if (result.observations && result.observations.length > 0) {
         for (const obs of result.observations) {
           updatedJob.observations.push({
-            code: obs.code as "C1" | "C2" | "C3" | "FI",
+            code: obs.code as 'C1' | 'C2' | 'C3' | 'FI',
             observation_text: obs.text,
-            item_location: obs.location ?? "",
+            item_location: obs.location ?? '',
             schedule_item: obs.scheduleItem,
           });
         }
@@ -358,7 +351,7 @@ export function useRecording(jobId: string, userId: string, initialJob: JobDetai
       store.setLiveJob(updatedJob);
       debouncedSave();
     },
-    [debouncedSave, store],
+    [debouncedSave, store]
   );
 
   // --- Start Recording ---
@@ -370,7 +363,7 @@ export function useRecording(jobId: string, userId: string, initialJob: JobDetai
       const keys = await api.fetchKeys();
       const deepgramKey = keys.deepgram;
       if (!deepgramKey) {
-        throw new Error("No Deepgram API key returned");
+        throw new Error('No Deepgram API key returned');
       }
       deepgramKeyRef.current = deepgramKey;
 
@@ -396,20 +389,14 @@ export function useRecording(jobId: string, userId: string, initialJob: JobDetai
       const source = audioContext.createMediaStreamSource(stream);
 
       // 6. Load AudioWorklet processor
-      await audioContext.audioWorklet.addModule("/audio-worklet-processor.js");
+      await audioContext.audioWorklet.addModule('/audio-worklet-processor.js');
 
       // 7. Create AudioWorkletNode
-      const workletNode = new AudioWorkletNode(audioContext, "pcm-capture-processor");
+      const workletNode = new AudioWorkletNode(audioContext, 'pcm-capture-processor');
       workletNodeRef.current = workletNode;
 
-      // 8. Create AnalyserNode
-      const analyser = audioContext.createAnalyser();
-      analyser.fftSize = 2048;
-      analyserRef.current = analyser;
-
-      // 9. Connect audio graph (NO destination — we don't play back audio)
+      // 8. Connect audio graph (NO destination — we don't play back audio)
       source.connect(workletNode);
-      source.connect(analyser);
 
       // 10. Generate session ID
       const sessionId = crypto.randomUUID();
@@ -419,7 +406,7 @@ export function useRecording(jobId: string, userId: string, initialJob: JobDetai
       const alertManager = new AlertManager({
         onQuestionDisplayed: (q) => {
           store.setCurrentQuestion({
-            id: `${q.field}:${q.circuit ?? "supply"}`,
+            id: `${q.field}:${q.circuit ?? 'supply'}`,
             type: q.type,
             fieldKey: q.field,
             circuitNumber: q.circuit,
@@ -441,13 +428,9 @@ export function useRecording(jobId: string, userId: string, initialJob: JobDetai
         onInterimTranscript: (text: string, _confidence: number) => {
           store.setInterimTranscript(text);
         },
-        onFinalTranscript: (
-          text: string,
-          _confidence: number,
-          _words: DeepgramWord[],
-        ) => {
+        onFinalTranscript: (text: string, _confidence: number, _words: DeepgramWord[]) => {
           // Clear interim
-          store.setInterimTranscript("");
+          store.setInterimTranscript('');
 
           // Echo suppression: skip if TTS is speaking
           if (alertManagerRef.current?.isTTSSpeaking) return;
@@ -466,7 +449,7 @@ export function useRecording(jobId: string, userId: string, initialJob: JobDetai
           // No-op for now — could gate questions here later
         },
         onError: (error: Error) => {
-          console.error("[useRecording] Deepgram error:", error);
+          console.error('[useRecording] Deepgram error:', error);
         },
         onConnectionStateChange: (state) => {
           store.setDeepgramState(state);
@@ -486,13 +469,10 @@ export function useRecording(jobId: string, userId: string, initialJob: JobDetai
           store.setCost(mapCostUpdate(cost));
         },
         onError: (msg: string, recoverable: boolean) => {
-          console.error(
-            `[useRecording] Server WS error (recoverable=${recoverable}):`,
-            msg,
-          );
+          console.error(`[useRecording] Server WS error (recoverable=${recoverable}):`, msg);
         },
         onSessionAck: (status: string) => {
-          console.log("[useRecording] session_ack:", status);
+          console.log('[useRecording] session_ack:', status);
           // Flush any buffered messages after server confirms session
           serverWSRef.current?.flushPendingMessages();
         },
@@ -507,7 +487,7 @@ export function useRecording(jobId: string, userId: string, initialJob: JobDetai
             serverWSRef.current.sendSessionStart(
               sid,
               jobId,
-              buildJobState(job ?? ({} as JobDetail)),
+              buildJobState(job ?? ({} as JobDetail))
             );
           }
         },
@@ -517,26 +497,26 @@ export function useRecording(jobId: string, userId: string, initialJob: JobDetai
       });
       serverWSRef.current = serverWS;
 
-      // 14. Create SleepManager
+      // 14. Create SleepManager with Silero VAD
       const sleepManager = new SleepManager({
         onEnterDozing: () => {
-          store.setSleepState("dozing");
+          store.setSleepState('dozing');
           deepgramRef.current?.pauseAudioStream();
           serverWSRef.current?.sendPause();
         },
         onEnterSleeping: () => {
-          store.setSleepState("sleeping");
+          store.setSleepState('sleeping');
           deepgramRef.current?.disconnect();
         },
         onWake: (fromState: SleepState) => {
-          store.setSleepState("active");
+          store.setSleepState('active');
 
-          if (fromState === "sleeping") {
+          if (fromState === 'sleeping') {
             // Reconnect Deepgram and replay ring buffer
             if (deepgramKeyRef.current) {
               deepgramRef.current?.connect(
                 deepgramKeyRef.current,
-                keywordsRef.current.map(([kw, boost]: [string, number]) => ({ keyword: kw, boost })),
+                keywordsRef.current.map(([kw, boost]: [string, number]) => ({ keyword: kw, boost }))
               );
             }
             const bufferedData = sleepManagerRef.current?.ringBuffer.drain();
@@ -546,7 +526,7 @@ export function useRecording(jobId: string, userId: string, initialJob: JobDetai
                 deepgramRef.current?.replayBuffer(bufferedData);
               }, 500);
             }
-          } else if (fromState === "dozing") {
+          } else if (fromState === 'dozing') {
             deepgramRef.current?.resumeAudioStream();
             const bufferedData = sleepManagerRef.current?.ringBuffer.drain();
             if (bufferedData && bufferedData.byteLength > 0) {
@@ -556,16 +536,18 @@ export function useRecording(jobId: string, userId: string, initialJob: JobDetai
 
           serverWSRef.current?.sendResume();
         },
+        onVadStateChange: (vadState: VadState) => {
+          store.setVadState(vadState);
+        },
       });
-      sleepManager.setAnalyser(analyser);
       sleepManagerRef.current = sleepManager;
+
+      // 14b. Initialize Silero VAD (async — runs its own mic stream)
+      await sleepManager.initVAD();
 
       // 15. Generate keyword boosts from job data
       const job = jobRef.current;
-      const boostTuples = generateKeywordBoosts(
-        job?.board_info,
-        job?.circuits,
-      );
+      const boostTuples = generateKeywordBoosts(job?.board_info, job?.circuits);
       const keywords = boostTuples.map(([keyword, boost]) => ({
         keyword,
         boost,
@@ -576,10 +558,7 @@ export function useRecording(jobId: string, userId: string, initialJob: JobDetai
       deepgram.connect(deepgramKey, keywords);
 
       // 17. Connect Server WS
-      const token =
-        typeof window !== "undefined"
-          ? localStorage.getItem("token") ?? ""
-          : "";
+      const token = typeof window !== 'undefined' ? (localStorage.getItem('token') ?? '') : '';
       serverWS.connect(serverWSURL, token);
 
       // 18. session_start is now sent from onConnect callback (above)
@@ -606,16 +585,15 @@ export function useRecording(jobId: string, userId: string, initialJob: JobDetai
       // 22. Update store
       isRecordingRef.current = true;
       store.setRecording(true);
-      store.setSleepState("active");
-      store.setDeepgramState("connecting");
+      store.setSleepState('active');
+      store.setDeepgramState('connecting');
       store.setLiveJob(jobRef.current);
-
     } catch (err) {
-      console.error("[useRecording] startRecording failed:", err);
+      console.error('[useRecording] startRecording failed:', err);
       // Clean up anything that was partially created
       streamRef.current?.getTracks().forEach((t) => t.stop());
       streamRef.current = null;
-      if (audioContextRef.current?.state !== "closed") {
+      if (audioContextRef.current?.state !== 'closed') {
         audioContextRef.current?.close().catch(() => {});
       }
       audioContextRef.current = null;
@@ -663,11 +641,10 @@ export function useRecording(jobId: string, userId: string, initialJob: JobDetai
     }
 
     // 9. Close AudioContext
-    if (audioContextRef.current && audioContextRef.current.state !== "closed") {
+    if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
       audioContextRef.current.close().catch(() => {});
     }
     audioContextRef.current = null;
-    analyserRef.current = null;
 
     // 10. Update store
     store.setRecording(false);
@@ -691,7 +668,7 @@ export function useRecording(jobId: string, userId: string, initialJob: JobDetai
           inspection_schedule: job.inspection_schedule,
         };
         api.saveJob(userId, jobId, data).catch((err) => {
-          console.error("[useRecording] final save failed:", err);
+          console.error('[useRecording] final save failed:', err);
         });
       }
     }
@@ -706,12 +683,12 @@ export function useRecording(jobId: string, userId: string, initialJob: JobDetai
           clearInterval(durationIntervalRef.current);
           durationIntervalRef.current = null;
         }
-        sleepManagerRef.current?.stop();
+        sleepManagerRef.current?.destroy();
         deepgramRef.current?.destroy();
         serverWSRef.current?.destroy();
         alertManagerRef.current?.destroy();
         streamRef.current?.getTracks().forEach((t) => t.stop());
-        if (audioContextRef.current && audioContextRef.current.state !== "closed") {
+        if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
           audioContextRef.current.close().catch(() => {});
         }
         if (saveTimerRef.current) {
@@ -731,6 +708,7 @@ export function useRecording(jobId: string, userId: string, initialJob: JobDetai
     deepgramState: store.deepgramState,
     serverConnected: store.serverConnected,
     sleepState: store.sleepState,
+    vadState: store.vadState,
     cost: store.cost,
     currentQuestion: store.currentQuestion,
     isTTSSpeaking: store.isTTSSpeaking,
