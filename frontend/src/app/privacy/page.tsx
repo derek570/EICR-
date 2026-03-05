@@ -6,10 +6,10 @@ export const metadata: Metadata = {
 
 export default function PrivacyPage() {
   return (
-    <div className="min-h-screen bg-white">
+    <div className="min-h-screen bg-background">
       <div className="max-w-3xl mx-auto px-6 py-12">
         <h1 className="text-3xl font-bold mb-2">Privacy Policy</h1>
-        <p className="text-sm text-gray-500 mb-8">Last updated: 3 March 2026</p>
+        <p className="text-sm text-muted-foreground mb-8">Last updated: 3 March 2026</p>
 
         <p className="mb-6">
           CertMate (&quot;EICR-oMatic 3000&quot;) is operated by Beckley Electrical Ltd
@@ -159,7 +159,7 @@ function Section({ title, children }: { title: string; children: React.ReactNode
   return (
     <section className="mb-8">
       <h2 className="text-xl font-semibold mb-3">{title}</h2>
-      <div className="text-gray-700 leading-relaxed">{children}</div>
+      <div className="text-foreground leading-relaxed">{children}</div>
     </section>
   );
 }

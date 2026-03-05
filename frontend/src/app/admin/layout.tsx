@@ -42,9 +42,9 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
   ];
 
   return (
-    <div className="min-h-screen bg-slate-50">
+    <div className="min-h-screen bg-background">
       {/* Header */}
-      <header className="bg-white border-b sticky top-0 z-10">
+      <header className="bg-card border-b border-border sticky top-0 z-10">
         <div className="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between">
           <div className="flex items-center gap-4">
             <Link href="/dashboard">
@@ -65,7 +65,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
       </header>
 
       {/* Tab navigation */}
-      <nav className="bg-white border-b">
+      <nav className="bg-card border-b border-border">
         <div className="max-w-7xl mx-auto px-4">
           <div className="flex gap-1">
             {tabs.map((tab) => {

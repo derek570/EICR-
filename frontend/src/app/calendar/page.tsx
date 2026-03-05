@@ -1,9 +1,9 @@
-"use client";
+'use client';
 
-import { useEffect, useState, useCallback, Suspense } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
-import { toast } from "sonner";
-import Link from "next/link";
+import { useEffect, useState, useCallback, Suspense } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
+import { toast } from 'sonner';
+import Link from 'next/link';
 import {
   CalendarDays,
   ArrowLeft,
@@ -14,17 +14,11 @@ import {
   Unplug,
   RefreshCw,
   Loader2,
-} from "lucide-react";
+} from 'lucide-react';
 
-import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
-import { api, CalendarEvent, CalendarStatus } from "@/lib/api";
+import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { api, CalendarEvent, CalendarStatus } from '@/lib/api';
 
 function CalendarPageContent() {
   const router = useRouter();
@@ -44,7 +38,7 @@ function CalendarPageContent() {
       setStatus(s);
       return s;
     } catch (error) {
-      console.error("Failed to load calendar status:", error);
+      console.error('Failed to load calendar status:', error);
       setStatus({ configured: false, connected: false });
       return null;
     }
@@ -56,11 +50,11 @@ function CalendarPageContent() {
       const result = await api.getCalendarEvents();
       setEvents(result.events);
     } catch (error: unknown) {
-      const msg = error instanceof Error ? error.message : "Failed to load events";
+      const msg = error instanceof Error ? error.message : 'Failed to load events';
       // If 401, tokens were revoked
-      if (msg.includes("401") || msg.includes("revoked")) {
+      if (msg.includes('401') || msg.includes('revoked')) {
         setStatus({ configured: true, connected: false });
-        toast.error("Calendar access was revoked. Please reconnect.");
+        toast.error('Calendar access was revoked. Please reconnect.');
       } else {
         toast.error(msg);
       }
@@ -71,22 +65,22 @@ function CalendarPageContent() {
 
   // Handle OAuth callback code from URL
   useEffect(() => {
-    const code = searchParams.get("code");
+    const code = searchParams.get('code');
     if (code) {
       setConnecting(true);
       api
         .calendarCallback(code)
         .then(() => {
-          toast.success("Google Calendar connected!");
+          toast.success('Google Calendar connected!');
           // Remove the code from the URL
-          router.replace("/calendar");
+          router.replace('/calendar');
           // Reload status + events
           loadStatus().then((s) => {
             if (s?.connected) loadEvents();
           });
         })
         .catch((err) => {
-          toast.error("Failed to connect: " + err.message);
+          toast.error('Failed to connect: ' + err.message);
         })
         .finally(() => setConnecting(false));
     }
@@ -110,20 +104,20 @@ function CalendarPageContent() {
       // Redirect to Google OAuth
       window.location.href = url;
     } catch (error) {
-      toast.error("Failed to start calendar connection");
+      toast.error('Failed to start calendar connection');
     }
   };
 
   const handleDisconnect = async () => {
-    if (!confirm("Disconnect your Google Calendar? You can reconnect at any time.")) return;
+    if (!confirm('Disconnect your Google Calendar? You can reconnect at any time.')) return;
     setDisconnecting(true);
     try {
       await api.disconnectCalendar();
       setStatus({ configured: true, connected: false });
       setEvents([]);
-      toast.success("Calendar disconnected");
+      toast.success('Calendar disconnected');
     } catch (error) {
-      toast.error("Failed to disconnect calendar");
+      toast.error('Failed to disconnect calendar');
     } finally {
       setDisconnecting(false);
     }
@@ -131,7 +125,7 @@ function CalendarPageContent() {
 
   const handleCreateJob = async (event: CalendarEvent) => {
     if (!event.location) {
-      toast.error("This event has no address/location set");
+      toast.error('This event has no address/location set');
       return;
     }
     setCreatingJob(event.id);
@@ -145,7 +139,7 @@ function CalendarPageContent() {
       toast.success(`Job created for ${result.address}`);
       router.push(`/job/${result.jobId}`);
     } catch (error: unknown) {
-      const msg = error instanceof Error ? error.message : "Failed to create job";
+      const msg = error instanceof Error ? error.message : 'Failed to create job';
       toast.error(msg);
     } finally {
       setCreatingJob(null);
@@ -153,39 +147,39 @@ function CalendarPageContent() {
   };
 
   const formatDateTime = (iso: string) => {
-    if (!iso) return "";
+    if (!iso) return '';
     const date = new Date(iso);
     // Check if it's a date-only string (no time component)
     if (iso.length === 10) {
-      return date.toLocaleDateString("en-GB", {
-        weekday: "short",
-        day: "numeric",
-        month: "short",
-        year: "numeric",
+      return date.toLocaleDateString('en-GB', {
+        weekday: 'short',
+        day: 'numeric',
+        month: 'short',
+        year: 'numeric',
       });
     }
-    return date.toLocaleDateString("en-GB", {
-      weekday: "short",
-      day: "numeric",
-      month: "short",
-      year: "numeric",
-      hour: "2-digit",
-      minute: "2-digit",
+    return date.toLocaleDateString('en-GB', {
+      weekday: 'short',
+      day: 'numeric',
+      month: 'short',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
     });
   };
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-slate-50 flex items-center justify-center">
+      <div className="min-h-screen bg-background flex items-center justify-center">
         <Loader2 className="h-8 w-8 animate-spin text-primary" />
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen bg-slate-50">
+    <div className="min-h-screen bg-background">
       {/* Header */}
-      <header className="bg-white border-b sticky top-0 z-10">
+      <header className="bg-card border-b border-border sticky top-0 z-10">
         <div className="max-w-4xl mx-auto px-4 py-3 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <Link href="/dashboard">
@@ -209,7 +203,7 @@ function CalendarPageContent() {
                   onClick={() => loadEvents()}
                   disabled={eventsLoading}
                 >
-                  <RefreshCw className={`h-4 w-4 mr-1 ${eventsLoading ? "animate-spin" : ""}`} />
+                  <RefreshCw className={`h-4 w-4 mr-1 ${eventsLoading ? 'animate-spin' : ''}`} />
                   Refresh
                 </Button>
                 <Button
@@ -220,7 +214,7 @@ function CalendarPageContent() {
                   className="text-red-600 hover:text-red-700"
                 >
                   <Unplug className="h-4 w-4 mr-1" />
-                  {disconnecting ? "Disconnecting..." : "Disconnect"}
+                  {disconnecting ? 'Disconnecting...' : 'Disconnect'}
                 </Button>
               </>
             )}
@@ -235,9 +229,9 @@ function CalendarPageContent() {
             <CardHeader>
               <CardTitle>Google Calendar Not Configured</CardTitle>
               <CardDescription>
-                Google Calendar integration requires GOOGLE_CLIENT_ID and
-                GOOGLE_CLIENT_SECRET environment variables to be set on the server.
-                Contact your administrator to enable this feature.
+                Google Calendar integration requires GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET
+                environment variables to be set on the server. Contact your administrator to enable
+                this feature.
               </CardDescription>
             </CardHeader>
           </Card>
@@ -250,9 +244,8 @@ function CalendarPageContent() {
               <CalendarDays className="h-12 w-12 text-primary mx-auto mb-2" />
               <CardTitle>Connect Google Calendar</CardTitle>
               <CardDescription>
-                View your upcoming inspection appointments and create jobs directly
-                from your calendar events. Only events related to electrical
-                inspections will be shown.
+                View your upcoming inspection appointments and create jobs directly from your
+                calendar events. Only events related to electrical inspections will be shown.
               </CardDescription>
             </CardHeader>
             <CardContent className="flex justify-center">
@@ -290,17 +283,18 @@ function CalendarPageContent() {
                   <CalendarDays className="h-10 w-10 text-muted-foreground mx-auto mb-2" />
                   <CardTitle className="text-lg">No Upcoming Inspections</CardTitle>
                   <CardDescription>
-                    No inspection-related events found in the next 30 days. Events
-                    must contain keywords like &quot;EICR&quot;, &quot;EIC&quot;,
-                    &quot;inspection&quot;, &quot;electrical&quot;, or
-                    &quot;test&quot; in their title, description, or location.
+                    No inspection-related events found in the next 30 days. Events must contain
+                    keywords like &quot;EICR&quot;, &quot;EIC&quot;, &quot;inspection&quot;,
+                    &quot;electrical&quot;, or &quot;test&quot; in their title, description, or
+                    location.
                   </CardDescription>
                 </CardHeader>
               </Card>
             ) : (
               <div className="space-y-3">
                 <p className="text-sm text-muted-foreground">
-                  {events.length} upcoming inspection{events.length !== 1 ? "s" : ""} in the next 30 days
+                  {events.length} upcoming inspection{events.length !== 1 ? 's' : ''} in the next 30
+                  days
                 </p>
 
                 {events.map((event) => (
@@ -309,7 +303,7 @@ function CalendarPageContent() {
                       <div className="flex items-start justify-between gap-4">
                         <div className="flex-1 min-w-0">
                           <h3 className="font-medium text-base truncate">
-                            {event.summary || "Untitled event"}
+                            {event.summary || 'Untitled event'}
                           </h3>
 
                           <div className="mt-1.5 space-y-1">
@@ -320,9 +314,9 @@ function CalendarPageContent() {
                                 <>
                                   <span>-</span>
                                   <span>
-                                    {new Date(event.end).toLocaleTimeString("en-GB", {
-                                      hour: "2-digit",
-                                      minute: "2-digit",
+                                    {new Date(event.end).toLocaleTimeString('en-GB', {
+                                      hour: '2-digit',
+                                      minute: '2-digit',
                                     })}
                                   </span>
                                 </>
@@ -359,9 +353,7 @@ function CalendarPageContent() {
                               Create Job
                             </Button>
                           ) : (
-                            <span className="text-xs text-muted-foreground italic">
-                              No address
-                            </span>
+                            <span className="text-xs text-muted-foreground italic">No address</span>
                           )}
                         </div>
                       </div>
@@ -381,7 +373,7 @@ export default function CalendarPage() {
   return (
     <Suspense
       fallback={
-        <div className="min-h-screen bg-slate-50 flex items-center justify-center">
+        <div className="min-h-screen bg-background flex items-center justify-center">
           <Loader2 className="h-8 w-8 animate-spin text-primary" />
         </div>
       }

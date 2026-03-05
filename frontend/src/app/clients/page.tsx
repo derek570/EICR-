@@ -1,46 +1,52 @@
-"use client";
+'use client';
 
-import { useEffect, useState, useMemo } from "react";
-import { useRouter } from "next/navigation";
-import Link from "next/link";
-import { toast } from "sonner";
+import { useEffect, useState, useMemo } from 'react';
+import { useRouter } from 'next/navigation';
+import Link from 'next/link';
+import { toast } from 'sonner';
 import {
-  ArrowLeft, Plus, Search, UserPlus, Trash2, RefreshCw,
-  Phone, Mail, Building2, Users,
-} from "lucide-react";
+  ArrowLeft,
+  Plus,
+  Search,
+  UserPlus,
+  Trash2,
+  RefreshCw,
+  Phone,
+  Mail,
+  Building2,
+  Users,
+} from 'lucide-react';
 
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Textarea } from "@/components/ui/textarea";
-import {
-  Card, CardContent, CardDescription, CardHeader, CardTitle,
-} from "@/components/ui/card";
-import { api, User, Client, CreateClientData } from "@/lib/api";
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Textarea } from '@/components/ui/textarea';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { api, User, Client, CreateClientData } from '@/lib/api';
 
 export default function ClientsPage() {
   const router = useRouter();
   const [user, setUser] = useState<User | null>(null);
   const [clients, setClients] = useState<Client[]>([]);
   const [loading, setLoading] = useState(true);
-  const [search, setSearch] = useState("");
+  const [search, setSearch] = useState('');
   const [showAddForm, setShowAddForm] = useState(false);
   const [saving, setSaving] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
 
   // New client form
   const [newClient, setNewClient] = useState<CreateClientData>({
-    name: "",
-    email: "",
-    phone: "",
-    company: "",
-    notes: "",
+    name: '',
+    email: '',
+    phone: '',
+    company: '',
+    notes: '',
   });
 
   useEffect(() => {
-    const storedUser = localStorage.getItem("user");
+    const storedUser = localStorage.getItem('user');
     if (!storedUser) {
-      router.push("/login");
+      router.push('/login');
       return;
     }
 
@@ -52,8 +58,8 @@ export default function ClientsPage() {
         const clientsList = await api.getClients(userData.id);
         setClients(clientsList);
       } catch (error) {
-        console.error("Failed to load clients:", error);
-        toast.error("Failed to load clients");
+        console.error('Failed to load clients:', error);
+        toast.error('Failed to load clients');
       } finally {
         setLoading(false);
       }
@@ -76,7 +82,7 @@ export default function ClientsPage() {
 
   const handleAddClient = async () => {
     if (!user || !newClient.name.trim()) {
-      toast.error("Client name is required");
+      toast.error('Client name is required');
       return;
     }
 
@@ -84,12 +90,12 @@ export default function ClientsPage() {
     try {
       const created = await api.createClient(user.id, newClient);
       setClients((prev) => [...prev, created].sort((a, b) => a.name.localeCompare(b.name)));
-      setNewClient({ name: "", email: "", phone: "", company: "", notes: "" });
+      setNewClient({ name: '', email: '', phone: '', company: '', notes: '' });
       setShowAddForm(false);
       toast.success(`Client "${created.name}" created`);
     } catch (error) {
-      console.error("Failed to create client:", error);
-      toast.error("Failed to create client");
+      console.error('Failed to create client:', error);
+      toast.error('Failed to create client');
     } finally {
       setSaving(false);
     }
@@ -111,8 +117,8 @@ export default function ClientsPage() {
       setClients((prev) => prev.filter((c) => c.id !== clientId));
       toast.success(`Client "${clientName}" deleted`);
     } catch (error) {
-      console.error("Failed to delete client:", error);
-      toast.error("Failed to delete client");
+      console.error('Failed to delete client:', error);
+      toast.error('Failed to delete client');
     } finally {
       setDeletingId(null);
     }
@@ -127,9 +133,9 @@ export default function ClientsPage() {
   }
 
   return (
-    <div className="min-h-screen bg-slate-50">
+    <div className="min-h-screen bg-background">
       {/* Header */}
-      <header className="bg-white border-b sticky top-0 z-10">
+      <header className="bg-card border-b border-border sticky top-0 z-10">
         <div className="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <Link href="/dashboard">
@@ -183,7 +189,7 @@ export default function ClientsPage() {
                   <Label htmlFor="new-company">Company</Label>
                   <Input
                     id="new-company"
-                    value={newClient.company || ""}
+                    value={newClient.company || ''}
                     onChange={(e) => setNewClient((prev) => ({ ...prev, company: e.target.value }))}
                     placeholder="Company name"
                   />
@@ -195,7 +201,7 @@ export default function ClientsPage() {
                   <Input
                     id="new-email"
                     type="email"
-                    value={newClient.email || ""}
+                    value={newClient.email || ''}
                     onChange={(e) => setNewClient((prev) => ({ ...prev, email: e.target.value }))}
                     placeholder="client@example.com"
                   />
@@ -205,7 +211,7 @@ export default function ClientsPage() {
                   <Input
                     id="new-phone"
                     type="tel"
-                    value={newClient.phone || ""}
+                    value={newClient.phone || ''}
                     onChange={(e) => setNewClient((prev) => ({ ...prev, phone: e.target.value }))}
                     placeholder="07700 900000"
                   />
@@ -215,7 +221,7 @@ export default function ClientsPage() {
                 <Label htmlFor="new-notes">Notes</Label>
                 <Textarea
                   id="new-notes"
-                  value={newClient.notes || ""}
+                  value={newClient.notes || ''}
                   onChange={(e) => setNewClient((prev) => ({ ...prev, notes: e.target.value }))}
                   placeholder="Any notes about this client..."
                   rows={2}
@@ -226,7 +232,7 @@ export default function ClientsPage() {
                   variant="outline"
                   onClick={() => {
                     setShowAddForm(false);
-                    setNewClient({ name: "", email: "", phone: "", company: "", notes: "" });
+                    setNewClient({ name: '', email: '', phone: '', company: '', notes: '' });
                   }}
                 >
                   Cancel
@@ -255,12 +261,12 @@ export default function ClientsPage() {
             <CardContent className="flex flex-col items-center justify-center py-12">
               <Users className="h-12 w-12 text-muted-foreground mb-4" />
               <CardTitle className="mb-2">
-                {search ? "No matching clients" : "No clients yet"}
+                {search ? 'No matching clients' : 'No clients yet'}
               </CardTitle>
               <CardDescription className="text-center mb-4">
                 {search
-                  ? "Try a different search term."
-                  : "Add your first client to start building your CRM."}
+                  ? 'Try a different search term.'
+                  : 'Add your first client to start building your CRM.'}
               </CardDescription>
               {!search && (
                 <Button onClick={() => setShowAddForm(true)}>
