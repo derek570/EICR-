@@ -1,5 +1,5 @@
 /**
- * Tests for QuestionGate — holds Sonnet questions for 2s before sending to iOS.
+ * Tests for QuestionGate — holds Sonnet questions for 2.5s before sending to iOS.
  */
 
 import { jest } from '@jest/globals';
@@ -26,11 +26,11 @@ describe('QuestionGate', () => {
       expect(sendCallback).not.toHaveBeenCalled();
     });
 
-    test('should send after 2 second delay', () => {
+    test('should send after 2.5 second delay', () => {
       const questions = [{ field: 'zs', circuit: 1, question: 'Which circuit?' }];
       gate.enqueue(questions);
 
-      jest.advanceTimersByTime(2000);
+      jest.advanceTimersByTime(2500);
 
       expect(sendCallback).toHaveBeenCalledTimes(1);
       expect(sendCallback).toHaveBeenCalledWith(questions);
@@ -59,18 +59,18 @@ describe('QuestionGate', () => {
       jest.advanceTimersByTime(500);
       gate.enqueue([{ field: 'r1_plus_r2', circuit: 2 }]);
 
-      jest.advanceTimersByTime(2000);
+      jest.advanceTimersByTime(2500);
 
       expect(sendCallback).toHaveBeenCalledTimes(1);
       expect(sendCallback).toHaveBeenCalledWith([
         { field: 'zs', circuit: 1 },
-        { field: 'r1_plus_r2', circuit: 2 }
+        { field: 'r1_plus_r2', circuit: 2 },
       ]);
     });
 
     test('should clear pending questions after flush', () => {
       gate.enqueue([{ field: 'zs', circuit: 1 }]);
-      jest.advanceTimersByTime(2000);
+      jest.advanceTimersByTime(2500);
       expect(sendCallback).toHaveBeenCalledTimes(1);
 
       // After flush, no more sends even if we wait
@@ -87,14 +87,14 @@ describe('QuestionGate', () => {
       jest.advanceTimersByTime(1500);
       expect(sendCallback).not.toHaveBeenCalled();
 
-      // New utterance resets the 2s timer
+      // New utterance resets the 2.5s timer
       gate.onNewUtterance();
 
-      // 1.5s after reset — still not flushed
-      jest.advanceTimersByTime(1500);
+      // 2s after reset — still not flushed
+      jest.advanceTimersByTime(2000);
       expect(sendCallback).not.toHaveBeenCalled();
 
-      // 2s total after reset — now flushed
+      // 2.5s total after reset — now flushed
       jest.advanceTimersByTime(500);
       expect(sendCallback).toHaveBeenCalledTimes(1);
     });
@@ -110,16 +110,14 @@ describe('QuestionGate', () => {
     test('should remove questions matching resolved fields', () => {
       gate.enqueue([
         { field: 'zs', circuit: 1 },
-        { field: 'r1_plus_r2', circuit: 2 }
+        { field: 'r1_plus_r2', circuit: 2 },
       ]);
 
       gate.resolveByFields(new Set(['zs:1']));
 
-      jest.advanceTimersByTime(2000);
+      jest.advanceTimersByTime(2500);
 
-      expect(sendCallback).toHaveBeenCalledWith([
-        { field: 'r1_plus_r2', circuit: 2 }
-      ]);
+      expect(sendCallback).toHaveBeenCalledWith([{ field: 'r1_plus_r2', circuit: 2 }]);
     });
 
     test('should cancel timer when all questions resolved', () => {
@@ -132,19 +130,14 @@ describe('QuestionGate', () => {
     });
 
     test('should handle questions with undefined field/circuit', () => {
-      gate.enqueue([
-        { question: 'What was that?' },
-        { field: 'zs', circuit: 1 }
-      ]);
+      gate.enqueue([{ question: 'What was that?' }, { field: 'zs', circuit: 1 }]);
 
       gate.resolveByFields(new Set(['unknown:unknown']));
 
-      jest.advanceTimersByTime(2000);
+      jest.advanceTimersByTime(2500);
 
       // The question with undefined field/circuit matches 'unknown:unknown'
-      expect(sendCallback).toHaveBeenCalledWith([
-        { field: 'zs', circuit: 1 }
-      ]);
+      expect(sendCallback).toHaveBeenCalledWith([{ field: 'zs', circuit: 1 }]);
     });
 
     test('should not remove questions for non-matching fields', () => {
@@ -152,7 +145,7 @@ describe('QuestionGate', () => {
 
       gate.resolveByFields(new Set(['r1_plus_r2:1']));
 
-      jest.advanceTimersByTime(2000);
+      jest.advanceTimersByTime(2500);
 
       expect(sendCallback).toHaveBeenCalledWith([{ field: 'zs', circuit: 1 }]);
     });

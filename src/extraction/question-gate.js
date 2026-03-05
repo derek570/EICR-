@@ -1,5 +1,5 @@
 // question-gate.js
-// Holds Sonnet questions for 2 seconds before sending to iOS,
+// Holds Sonnet questions for 2.5 seconds before sending to iOS,
 // allowing incomplete readings to be completed without interruption.
 
 import logger from '../logger.js';
@@ -9,7 +9,7 @@ export class QuestionGate {
     this.sendCallback = sendCallback; // function(questions) -- sends to iOS via WS
     this.pendingQuestions = [];
     this.gateTimer = null;
-    this.GATE_DELAY_MS = 2000;
+    this.GATE_DELAY_MS = 2500;
   }
 
   // Sonnet returned questions -- enqueue and start/reset timer
@@ -30,12 +30,15 @@ export class QuestionGate {
   resolveByFields(resolvedFields) {
     // resolvedFields: Set of "field:circuit" strings
     const before = this.pendingQuestions.length;
-    this.pendingQuestions = this.pendingQuestions.filter(q => {
+    this.pendingQuestions = this.pendingQuestions.filter((q) => {
       const key = `${q.field || 'unknown'}:${q.circuit || 'unknown'}`;
       return !resolvedFields.has(key);
     });
     if (this.pendingQuestions.length < before) {
-      logger.info('Questions resolved', { resolved: before - this.pendingQuestions.length, remaining: this.pendingQuestions.length });
+      logger.info('Questions resolved', {
+        resolved: before - this.pendingQuestions.length,
+        remaining: this.pendingQuestions.length,
+      });
     }
     // If all resolved, cancel timer
     if (this.pendingQuestions.length === 0 && this.gateTimer) {
