@@ -1,26 +1,22 @@
-"use client";
+'use client';
 
-import { useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
-import Link from "next/link";
-import { Zap, ArrowLeft, Settings, FileText, CreditCard, UserCheck } from "lucide-react";
+import { useEffect, useState } from 'react';
+import { useRouter } from 'next/navigation';
+import Link from 'next/link';
+import { Zap, ArrowLeft, Settings, FileText, CreditCard, UserCheck } from 'lucide-react';
 
-import { Button } from "@/components/ui/button";
-import { User } from "@/lib/api";
-import { OfflineIndicator } from "@/components/offline-indicator";
+import { Button } from '@/components/ui/button';
+import { User } from '@/lib/api';
+import { OfflineIndicator } from '@/components/offline-indicator';
 
-export default function SettingsLayout({
-  children,
-}: {
-  children: React.ReactNode;
-}) {
+export default function SettingsLayout({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const [user, setUser] = useState<User | null>(null);
 
   useEffect(() => {
-    const storedUser = localStorage.getItem("user");
+    const storedUser = localStorage.getItem('user');
     if (!storedUser) {
-      router.push("/login");
+      router.push('/login');
       return;
     }
     setUser(JSON.parse(storedUser) as User);
@@ -35,9 +31,9 @@ export default function SettingsLayout({
   }
 
   return (
-    <div className="min-h-screen bg-slate-50">
+    <div className="min-h-screen bg-background">
       {/* Header */}
-      <header className="bg-white border-b sticky top-0 z-10">
+      <header className="bg-card border-b border-border sticky top-0 z-10">
         <div className="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between">
           <div className="flex items-center gap-4">
             <Link href="/dashboard">
@@ -58,29 +54,41 @@ export default function SettingsLayout({
       </header>
 
       {/* Tab navigation */}
-      <nav className="bg-white border-b">
+      <nav className="bg-card border-b border-border">
         <div className="max-w-7xl mx-auto px-4">
           <div className="flex gap-1">
             <Link href="/settings/defaults">
-              <Button variant="ghost" className="rounded-none border-b-2 border-transparent data-[active=true]:border-primary">
+              <Button
+                variant="ghost"
+                className="rounded-none border-b-2 border-transparent data-[active=true]:border-primary"
+              >
                 <FileText className="h-4 w-4 mr-2" />
                 Circuit Defaults
               </Button>
             </Link>
             <Link href="/settings/company">
-              <Button variant="ghost" className="rounded-none border-b-2 border-transparent data-[active=true]:border-primary">
+              <Button
+                variant="ghost"
+                className="rounded-none border-b-2 border-transparent data-[active=true]:border-primary"
+              >
                 <Settings className="h-4 w-4 mr-2" />
                 Company Info
               </Button>
             </Link>
             <Link href="/settings/inspectors">
-              <Button variant="ghost" className="rounded-none border-b-2 border-transparent data-[active=true]:border-primary">
+              <Button
+                variant="ghost"
+                className="rounded-none border-b-2 border-transparent data-[active=true]:border-primary"
+              >
                 <UserCheck className="h-4 w-4 mr-2" />
                 Inspectors
               </Button>
             </Link>
             <Link href="/settings/billing">
-              <Button variant="ghost" className="rounded-none border-b-2 border-transparent data-[active=true]:border-primary">
+              <Button
+                variant="ghost"
+                className="rounded-none border-b-2 border-transparent data-[active=true]:border-primary"
+              >
                 <CreditCard className="h-4 w-4 mr-2" />
                 Billing
               </Button>

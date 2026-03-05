@@ -482,7 +482,7 @@ export default function DashboardPage() {
   }
 
   return (
-    <div className="min-h-screen bg-slate-50">
+    <div className="min-h-screen bg-background">
       <DashboardHeader
         userEmail={user?.email}
         userRole={user?.role}
@@ -495,18 +495,18 @@ export default function DashboardPage() {
       <main className="max-w-7xl mx-auto px-4 py-6">
         {/* Offline message banner */}
         {offlineMessage && (
-          <div className="mb-4 px-4 py-3 rounded-lg bg-amber-50 border border-amber-200 flex items-center gap-2">
-            <CloudOff className="h-4 w-4 text-amber-600 flex-shrink-0" />
-            <span className="text-sm text-amber-800">{offlineMessage}</span>
+          <div className="mb-4 px-4 py-3 rounded-lg bg-amber-950/50 border border-amber-800 flex items-center gap-2">
+            <CloudOff className="h-4 w-4 text-amber-400 flex-shrink-0" />
+            <span className="text-sm text-amber-300">{offlineMessage}</span>
           </div>
         )}
 
         {/* Push notification prompt */}
         {showPushBanner && (
-          <div className="mb-4 px-4 py-3 rounded-lg bg-blue-50 border border-blue-200 flex items-center justify-between gap-3">
+          <div className="mb-4 px-4 py-3 rounded-lg bg-blue-950/50 border border-blue-800 flex items-center justify-between gap-3">
             <div className="flex items-center gap-2">
-              <Bell className="h-4 w-4 text-blue-600 flex-shrink-0" />
-              <span className="text-sm text-blue-800">
+              <Bell className="h-4 w-4 text-blue-400 flex-shrink-0" />
+              <span className="text-sm text-blue-300">
                 Get notified when your certificates are ready?
               </span>
             </div>

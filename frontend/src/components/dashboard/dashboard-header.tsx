@@ -39,7 +39,7 @@ export function DashboardHeader({
   }, [menuOpen]);
 
   return (
-    <header className="bg-white border-b sticky top-0 z-10">
+    <header className="bg-card border-b border-border sticky top-0 z-10">
       <div className="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between">
         {/* Logo / App Name */}
         <div className="flex items-center gap-2">
@@ -84,13 +84,13 @@ export function DashboardHeader({
             </Button>
 
             {menuOpen && (
-              <div className="absolute right-0 mt-1 w-48 rounded-md bg-white border shadow-lg py-1 z-20">
+              <div className="absolute right-0 mt-1 w-48 rounded-md bg-card border border-border shadow-lg py-1 z-20">
                 <button
                   onClick={() => {
                     setMenuOpen(false);
                     onShowInspectors();
                   }}
-                  className="flex items-center gap-2 w-full px-3 py-2 text-sm hover:bg-slate-50"
+                  className="flex items-center gap-2 w-full px-3 py-2 text-sm hover:bg-accent text-foreground"
                 >
                   <UserCheck className="h-4 w-4 text-muted-foreground" />
                   Inspectors
@@ -100,7 +100,7 @@ export function DashboardHeader({
                     setMenuOpen(false);
                     onShowDefaults();
                   }}
-                  className="flex items-center gap-2 w-full px-3 py-2 text-sm hover:bg-slate-50"
+                  className="flex items-center gap-2 w-full px-3 py-2 text-sm hover:bg-accent text-foreground"
                 >
                   <FileText className="h-4 w-4 text-muted-foreground" />
                   Circuit Defaults
@@ -111,7 +111,7 @@ export function DashboardHeader({
                     setMenuOpen(false);
                     onLogout();
                   }}
-                  className="flex items-center gap-2 w-full px-3 py-2 text-sm text-red-600 hover:bg-red-50"
+                  className="flex items-center gap-2 w-full px-3 py-2 text-sm text-red-400 hover:bg-red-950/50"
                 >
                   <LogOut className="h-4 w-4" />
                   Log out

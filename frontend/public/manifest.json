@@ -4,8 +4,8 @@
   "description": "Electrical Installation Condition Report automation",
   "start_url": "/dashboard",
   "display": "standalone",
-  "background_color": "#1E3A5F",
-  "theme_color": "#1E3A5F",
+  "background_color": "#1a1a2e",
+  "theme_color": "#1a1a2e",
   "orientation": "portrait-primary",
   "icons": [
     {
