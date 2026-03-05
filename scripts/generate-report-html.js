@@ -993,25 +993,33 @@ const html = `<!DOCTYPE html>
     // ── Accept/Reject/Rerun ──
 
     function acceptSelected() {
-      var checkboxes = document.querySelectorAll('input[name="accepted"]:checked');
-      var checked = [];
-      for (var i = 0; i < checkboxes.length; i++) { checked.push(parseInt(checkboxes[i].value)); }
-      if (checked.length === 0) { showResult("No recommendations selected", false); return; }
-      disableButtons();
-      showResult("Applying changes...", true);
-      fetch(API_BASE + "/api/optimizer-report/" + REPORT_ID + "/accept", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ accepted: checked })
-      }).then(function(res) { return res.json(); }).then(function(data) {
-        if (data.success) {
-          showResult("Changes queued. Pushover confirmation when applied (~2 min).", true);
-        } else {
-          showResult("Error: " + (data.error || "Unknown error"), false);
-        }
-      }).catch(function(e) {
-        showResult("Network error: " + e.message, false);
-      });
+      try {
+        var checkboxes = document.querySelectorAll('input[name="accepted"]:checked');
+        var checked = [];
+        for (var i = 0; i < checkboxes.length; i++) { checked.push(parseInt(checkboxes[i].value)); }
+        if (checked.length === 0) { showResult("No recommendations selected", false); return; }
+        disableButtons();
+        showResult("Applying changes...", true);
+        var url = API_BASE + "/api/optimizer-report/" + REPORT_ID + "/accept";
+        fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ accepted: checked })
+        }).then(function(res) {
+          if (!res.ok) throw new Error("HTTP " + res.status);
+          return res.json();
+        }).then(function(data) {
+          if (data.success) {
+            showResult("Changes queued. Pushover confirmation when applied (~2 min).", true);
+          } else {
+            showResult("Error: " + (data.error || "Unknown error"), false);
+          }
+        }).catch(function(e) {
+          showResult("Network error: " + e.message + " (URL: " + url + ")", false);
+        });
+      } catch(e) {
+        showResult("JS error: " + e.message, false);
+      }
     }
 
     function rejectAll() {
