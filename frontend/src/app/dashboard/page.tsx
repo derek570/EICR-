@@ -12,6 +12,10 @@ import {
   Download,
   CheckSquare,
   XSquare,
+  Mic,
+  Settings,
+  Users,
+  FileAudio,
 } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
@@ -483,19 +487,13 @@ export default function DashboardPage() {
 
   return (
     <div className="min-h-screen bg-background">
-      <DashboardHeader
-        userEmail={user?.email}
-        userRole={user?.role}
-        onShowInspectors={() => setShowInspectorModal(true)}
-        onShowDefaults={() => setShowDefaultsModal(true)}
-        onLogout={handleLogout}
-      />
+      <DashboardHeader userEmail={user?.email} userRole={user?.role} onLogout={handleLogout} />
 
       {/* Main content */}
-      <main className="max-w-7xl mx-auto px-4 py-6">
+      <main className="max-w-lg mx-auto px-4 py-6 space-y-6">
         {/* Offline message banner */}
         {offlineMessage && (
-          <div className="mb-4 px-4 py-3 rounded-lg bg-amber-950/50 border border-amber-800 flex items-center gap-2">
+          <div className="px-4 py-3 rounded-lg bg-amber-950/50 border border-amber-800 flex items-center gap-2">
             <CloudOff className="h-4 w-4 text-amber-400 flex-shrink-0" />
             <span className="text-sm text-amber-300">{offlineMessage}</span>
           </div>
@@ -503,7 +501,7 @@ export default function DashboardPage() {
 
         {/* Push notification prompt */}
         {showPushBanner && (
-          <div className="mb-4 px-4 py-3 rounded-lg bg-blue-950/50 border border-blue-800 flex items-center justify-between gap-3">
+          <div className="px-4 py-3 rounded-lg bg-blue-950/50 border border-blue-800 flex items-center justify-between gap-3">
             <div className="flex items-center gap-2">
               <Bell className="h-4 w-4 text-blue-400 flex-shrink-0" />
               <span className="text-sm text-blue-300">
@@ -525,123 +523,138 @@ export default function DashboardPage() {
           </div>
         )}
 
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between mb-6 gap-3">
-          <h1 className="text-2xl font-bold">Your Jobs</h1>
-          <div className="grid grid-cols-2 sm:flex gap-2">
+        {/* Section 1: Start Recording — matching iOS DashboardView */}
+        <section className="space-y-3">
+          <div className="grid grid-cols-2 gap-3">
             <Button
               disabled={!isOnline || creatingJob !== null}
-              className="bg-blue-600 hover:bg-blue-700 w-full col-span-1"
+              className="bg-blue-600 hover:bg-blue-700 h-14 text-base font-semibold"
               onClick={() => handleNewJob('EICR')}
             >
               {creatingJob === 'EICR' ? (
-                <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
+                <RefreshCw className="h-5 w-5 mr-2 animate-spin" />
               ) : (
-                <Plus className="h-4 w-4 mr-2" />
+                <Mic className="h-5 w-5 mr-2" />
               )}
-              Record EICR
+              Start EICR
             </Button>
             <Button
               disabled={!isOnline || creatingJob !== null}
-              className="bg-emerald-600 hover:bg-emerald-700 w-full col-span-1"
+              className="bg-emerald-600 hover:bg-emerald-700 h-14 text-base font-semibold"
               onClick={() => handleNewJob('EIC')}
             >
               {creatingJob === 'EIC' ? (
-                <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
+                <RefreshCw className="h-5 w-5 mr-2 animate-spin" />
               ) : (
-                <Plus className="h-4 w-4 mr-2" />
+                <Mic className="h-5 w-5 mr-2" />
               )}
-              Record EIC
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={refreshJobs}
-              disabled={refreshing}
-              className="col-span-2 sm:col-span-1"
-            >
-              <RefreshCw className={`h-4 w-4 mr-2 ${refreshing ? 'animate-spin' : ''}`} />
-              Refresh
+              Start EIC
             </Button>
           </div>
-        </div>
+          <Button
+            variant="secondary"
+            className="w-full h-11"
+            onClick={() => router.push('/upload')}
+            disabled={!isOnline}
+          >
+            <FileAudio className="h-4 w-4 mr-2" />
+            Import Audio
+          </Button>
+        </section>
 
-        {/* Multi-select controls - shown when there are completed jobs */}
-        {doneJobs.length >= 2 && (
-          <div className="flex items-center gap-2 mb-4">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={selectedJobIds.size === doneJobs.length ? clearSelection : selectAllDone}
-            >
-              {selectedJobIds.size === doneJobs.length ? (
-                <>
-                  <XSquare className="h-4 w-4 mr-2" />
-                  Clear Selection
-                </>
-              ) : (
-                <>
-                  <CheckSquare className="h-4 w-4 mr-2" />
-                  Select All ({doneJobs.length})
-                </>
-              )}
+        {/* Section 2: Quick Settings — matching iOS DashboardView */}
+        <section className="space-y-3">
+          <div className="grid grid-cols-2 gap-3">
+            <Button variant="secondary" className="h-11" onClick={() => setShowDefaultsModal(true)}>
+              <Settings className="h-4 w-4 mr-2" />
+              Set Defaults
             </Button>
-            {selectedJobIds.size > 0 && (
-              <span className="text-sm text-muted-foreground">{selectedJobIds.size} selected</span>
-            )}
+            <Button
+              variant="secondary"
+              className="h-11"
+              onClick={() => router.push('/settings/company')}
+            >
+              <Settings className="h-4 w-4 mr-2" />
+              Company Details
+            </Button>
           </div>
-        )}
+          <div className="grid grid-cols-2 gap-3">
+            <Button
+              variant="secondary"
+              className="h-11"
+              onClick={() => setShowInspectorModal(true)}
+            >
+              <Users className="h-4 w-4 mr-2" />
+              Staff
+            </Button>
+            <Button variant="secondary" className="h-11" onClick={() => router.push('/settings')}>
+              <Settings className="h-4 w-4 mr-2" />
+              Settings
+            </Button>
+          </div>
+        </section>
 
-        {jobs.length === 0 ? (
-          <Card>
-            <CardContent className="flex flex-col items-center justify-center py-12">
+        {/* Section 3: Jobs list — matching iOS DashboardView */}
+        <section>
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="text-lg font-semibold text-foreground">Jobs</h2>
+            <Button variant="ghost" size="sm" onClick={refreshJobs} disabled={refreshing}>
+              <RefreshCw className={`h-4 w-4 ${refreshing ? 'animate-spin' : ''}`} />
+            </Button>
+          </div>
+
+          {/* Multi-select controls */}
+          {doneJobs.length >= 2 && (
+            <div className="flex items-center gap-2 mb-3">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={selectedJobIds.size === doneJobs.length ? clearSelection : selectAllDone}
+              >
+                {selectedJobIds.size === doneJobs.length ? (
+                  <>
+                    <XSquare className="h-4 w-4 mr-1" />
+                    Clear
+                  </>
+                ) : (
+                  <>
+                    <CheckSquare className="h-4 w-4 mr-1" />
+                    Select All ({doneJobs.length})
+                  </>
+                )}
+              </Button>
+              {selectedJobIds.size > 0 && (
+                <span className="text-sm text-muted-foreground">
+                  {selectedJobIds.size} selected
+                </span>
+              )}
+            </div>
+          )}
+
+          {jobs.length === 0 ? (
+            <div className="flex flex-col items-center justify-center py-12 rounded-lg border border-border bg-card">
               <FolderOpen className="h-12 w-12 text-muted-foreground mb-4" />
-              <CardTitle className="mb-2">No jobs yet</CardTitle>
-              <CardDescription className="text-center mb-4">
-                Record audio and take photos to create your first job.
-              </CardDescription>
-              <div className="flex gap-3">
-                <Button
-                  disabled={!isOnline || creatingJob !== null}
-                  className="bg-blue-600 hover:bg-blue-700"
-                  onClick={() => handleNewJob('EICR')}
-                >
-                  {creatingJob === 'EICR' ? (
-                    <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
-                  ) : (
-                    <Plus className="h-4 w-4 mr-2" />
-                  )}
-                  Record EICR
-                </Button>
-                <Button
-                  disabled={!isOnline || creatingJob !== null}
-                  className="bg-emerald-600 hover:bg-emerald-700"
-                  onClick={() => handleNewJob('EIC')}
-                >
-                  {creatingJob === 'EIC' ? (
-                    <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
-                  ) : (
-                    <Plus className="h-4 w-4 mr-2" />
-                  )}
-                  Record EIC
-                </Button>
-              </div>
-            </CardContent>
-          </Card>
-        ) : (
-          <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-            {jobs.map((job) => (
-              <JobCard
-                key={job.id}
-                job={job}
-                isSelected={selectedJobIds.has(job.id)}
-                deletingJobId={deletingJobId}
-                onToggleSelection={toggleJobSelection}
-                onClone={handleCloneClick}
-                onDelete={handleDeleteJob}
-              />
-            ))}
-          </div>
-        )}
+              <p className="font-medium mb-1">No jobs yet</p>
+              <p className="text-sm text-muted-foreground text-center">
+                Tap Start EICR or Start EIC above to begin.
+              </p>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {jobs.map((job) => (
+                <JobCard
+                  key={job.id}
+                  job={job}
+                  isSelected={selectedJobIds.has(job.id)}
+                  deletingJobId={deletingJobId}
+                  onToggleSelection={toggleJobSelection}
+                  onClone={handleCloneClick}
+                  onDelete={handleDeleteJob}
+                />
+              ))}
+            </div>
+          )}
+        </section>
       </main>
 
       {/* Floating bulk download button */}

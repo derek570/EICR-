@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { Zap, Settings, Shield, LogOut, UserCheck, FileText, ChevronDown } from 'lucide-react';
+import { Zap, Shield, LogOut, ChevronDown } from 'lucide-react';
 import { useState, useRef, useEffect } from 'react';
 
 import { Button } from '@/components/ui/button';
@@ -10,18 +10,10 @@ import { OfflineIndicator } from '@/components/offline-indicator';
 interface DashboardHeaderProps {
   userEmail?: string;
   userRole?: string;
-  onShowInspectors: () => void;
-  onShowDefaults: () => void;
   onLogout: () => void;
 }
 
-export function DashboardHeader({
-  userEmail,
-  userRole,
-  onShowInspectors,
-  onShowDefaults,
-  onLogout,
-}: DashboardHeaderProps) {
+export function DashboardHeader({ userEmail, userRole, onLogout }: DashboardHeaderProps) {
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
 
@@ -40,34 +32,27 @@ export function DashboardHeader({
 
   return (
     <header className="bg-card border-b border-border sticky top-0 z-10">
-      <div className="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between">
+      <div className="max-w-lg mx-auto px-4 py-3 flex items-center justify-between">
         {/* Logo / App Name */}
         <div className="flex items-center gap-2">
           <div className="flex h-8 w-8 items-center justify-center rounded-full bg-primary">
             <Zap className="h-4 w-4 text-primary-foreground" />
           </div>
-          <span className="font-semibold hidden sm:inline">CertMate</span>
+          <span className="font-semibold">CertMate</span>
         </div>
 
-        {/* Right side: nav + menu */}
+        {/* Right side */}
         <div className="flex items-center gap-2">
           <OfflineIndicator />
 
           {userRole === 'admin' && (
             <Link href="/admin">
               <Button variant="outline" size="sm">
-                <Shield className="h-4 w-4 mr-2 text-red-600" />
+                <Shield className="h-4 w-4 mr-2 text-red-400" />
                 Admin
               </Button>
             </Link>
           )}
-
-          <Link href="/settings">
-            <Button variant="ghost" size="sm">
-              <Settings className="h-4 w-4" />
-              <span className="hidden sm:inline ml-2">Settings</span>
-            </Button>
-          </Link>
 
           {/* User menu dropdown */}
           <div className="relative" ref={menuRef}>
@@ -85,27 +70,6 @@ export function DashboardHeader({
 
             {menuOpen && (
               <div className="absolute right-0 mt-1 w-48 rounded-md bg-card border border-border shadow-lg py-1 z-20">
-                <button
-                  onClick={() => {
-                    setMenuOpen(false);
-                    onShowInspectors();
-                  }}
-                  className="flex items-center gap-2 w-full px-3 py-2 text-sm hover:bg-accent text-foreground"
-                >
-                  <UserCheck className="h-4 w-4 text-muted-foreground" />
-                  Inspectors
-                </button>
-                <button
-                  onClick={() => {
-                    setMenuOpen(false);
-                    onShowDefaults();
-                  }}
-                  className="flex items-center gap-2 w-full px-3 py-2 text-sm hover:bg-accent text-foreground"
-                >
-                  <FileText className="h-4 w-4 text-muted-foreground" />
-                  Circuit Defaults
-                </button>
-                <div className="border-t my-1" />
                 <button
                   onClick={() => {
                     setMenuOpen(false);
