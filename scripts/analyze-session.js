@@ -801,7 +801,8 @@ function analyzeSession(sessionDir) {
       doze_start: dozingEvents[i].timestamp,
       wake_time: nextWake?.timestamp || null,
       reached_sleeping: wentToSleep,
-      duration_sec: wakeTime ? Math.round((wakeTime - dozeTime) / 1000) : null,
+      duration_ms: wakeTime ? wakeTime - dozeTime : null,
+      duration_sec: wakeTime ? parseFloat(((wakeTime - dozeTime) / 1000).toFixed(3)) : null,
       wake_from: nextWake?.data?.fromState || nextWake?.data?.from || (wentToSleep ? "sleeping" : "dozing"),
       buffer_replayed: !!cycleReplay,
       buffer_bytes: cycleReplay?.data?.bytes || 0,
@@ -810,16 +811,31 @@ function analyzeSession(sessionDir) {
     sleepCycles.push(cycle);
   }
 
-  // Calculate Deepgram cost savings from sleep
-  const totalSleepDurationSec = sleepCycles.reduce((sum, c) => sum + (c.duration_sec || 0), 0);
-  const deepgramSavedMinutes = totalSleepDurationSec / 60;
-  const deepgramSavedCostUsd = deepgramSavedMinutes * DEEPGRAM_RATE;
+  // Calculate Deepgram cost savings from sleep cycles
+  const totalSleepDurationMs = sleepCycles.reduce((sum, c) => sum + (c.duration_ms || 0), 0);
+  const totalSleepDurationSec = parseFloat((totalSleepDurationMs / 1000).toFixed(3));
+  const deepgramSavedMinutes = totalSleepDurationMs / 60000;
+
+  // Calculate total stream pause time (doze + TTS + any other pauses) from STREAM_PAUSED/RESUMED pairs
+  let totalStreamPausedMs = 0;
+  const sortedPauses = streamPauseEvents.map((e) => new Date(e.timestamp).getTime()).sort((a, b) => a - b);
+  const sortedResumes = streamResumeEvents.map((e) => new Date(e.timestamp).getTime()).sort((a, b) => a - b);
+  for (const pauseTime of sortedPauses) {
+    const nextResume = sortedResumes.find((r) => r > pauseTime);
+    if (nextResume) {
+      totalStreamPausedMs += nextResume - pauseTime;
+    }
+  }
+  const totalStreamPausedMin = totalStreamPausedMs / 60000;
+  const deepgramSavedCostUsd = totalStreamPausedMin * DEEPGRAM_RATE;
 
   const vadSleepAnalysis = {
     total_sleep_cycles: sleepCycles.length,
     cycles: sleepCycles,
     total_sleep_duration_sec: totalSleepDurationSec,
-    total_sleep_duration_min: parseFloat(deepgramSavedMinutes.toFixed(2)),
+    total_sleep_duration_min: parseFloat(deepgramSavedMinutes.toFixed(3)),
+    total_stream_paused_ms: totalStreamPausedMs,
+    total_stream_paused_min: parseFloat(totalStreamPausedMin.toFixed(2)),
     deepgram_saved_usd: parseFloat(deepgramSavedCostUsd.toFixed(6)),
     stream_pauses: streamPauseEvents.length,
     stream_resumes: streamResumeEvents.length,
@@ -873,7 +889,8 @@ function analyzeSession(sessionDir) {
   console.log(`  Uncaptured values: ${uncapturedCount}`);
   console.log(`  Repeated values: ${repeatedValues.length}`);
   console.log(`  Sleep cycles: ${vadSleepAnalysis.total_sleep_cycles}`);
-  console.log(`  Sleep duration: ${vadSleepAnalysis.total_sleep_duration_min}min (saved $${vadSleepAnalysis.deepgram_saved_usd.toFixed(4)} Deepgram)`);
+  console.log(`  Sleep duration: ${vadSleepAnalysis.total_sleep_duration_sec}s (${vadSleepAnalysis.total_sleep_cycles} cycles)`);
+  console.log(`  Total stream paused: ${vadSleepAnalysis.total_stream_paused_min}min (saved $${vadSleepAnalysis.deepgram_saved_usd.toFixed(4)} Deepgram)`);
   console.log(`  Buffer replays: ${vadSleepAnalysis.buffer_replays}`);
   console.log(`  Wake failures: ${vadSleepAnalysis.post_wake_no_transcript}`);
   console.log(`  Total cost (USD): $${costBreakdown.total_usd.toFixed(4)}`);
