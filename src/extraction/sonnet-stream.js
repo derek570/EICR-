@@ -69,6 +69,12 @@ const KNOWN_FIELDS = new Set([
   'supply_polarity_confirmed',
   'manufacturer',
   'zs_at_db',
+  // Main switch/fuse fields
+  'main_switch_bs_en',
+  'main_switch_current',
+  'main_switch_fuse_setting',
+  'main_switch_poles',
+  'main_switch_voltage',
   // Installation fields
   'address',
   'postcode',
@@ -120,6 +126,12 @@ const KNOWN_FIELDS = new Set([
   'ir_live_earth',
   'ir_live_live',
   'earth_fault_loop_impedance',
+  // EIC-specific fields
+  'extent_of_installation',
+  'installation_type',
+  'departures_from_bs7671',
+  'departure_details',
+  'design_comments',
 ]);
 
 // Common misspellings / variants → correct field name
@@ -150,6 +162,14 @@ const FIELD_CORRECTIONS = {
   bs_en: 'ocpd_bs_en',
   ocpd_standard: 'ocpd_bs_en',
   rcd_standard: 'rcd_bs_en',
+  main_switch_rating: 'main_switch_current',
+  main_fuse_rating: 'main_switch_current',
+  main_fuse_current: 'main_switch_current',
+  main_fuse_bs_en: 'main_switch_bs_en',
+  main_fuse_type: 'main_switch_bs_en',
+  main_switch_type: 'main_switch_bs_en',
+  supply_fuse_rating: 'main_switch_current',
+  supply_fuse_type: 'main_switch_bs_en',
 };
 
 function validateAndCorrectFields(result, sessionId) {
@@ -397,7 +417,9 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
     const apiKey = await getAnthropicKey();
     if (!apiKey) throw new Error('Anthropic API key not available');
 
-    const session = new EICRExtractionSession(apiKey, sessionId);
+    const certType = jobState?.certificateType || 'eicr';
+    const session = new EICRExtractionSession(apiKey, sessionId, certType);
+    logger.info('Session using prompt', { sessionId, certType });
     const questionGate = new QuestionGate((questions) => {
       // Send gated questions to iOS
       for (const q of questions) {

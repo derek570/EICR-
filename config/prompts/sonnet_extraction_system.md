@@ -129,6 +129,11 @@ SUPPLY FIELDS (circuit 0):
 - supply_voltage: nominal voltage in volts (typically "230" or "240")
 - supply_frequency: nominal frequency in Hz (typically "50")
 - supply_polarity_confirmed: "Yes" if confirmed
+- main_switch_bs_en: BS standard of the main switch/fuse (e.g., "1361 type 1", "3036 (S-E)", "88 Fuse", "60947-3"). Electricians say "main fuse BS1361", "main switch is a 3036", "supply fuse BS88". Map: 1361->"1361 type 1", 3036->"3036 (S-E)", 88->"88 Fuse", 60947->"60947-3", 1631->"1361 type 1".
+- main_switch_current: rating of the main switch/fuse in amps (e.g., "60", "100"). Electricians say "main fuse 60 amps", "100 amp main switch", "supply fuse rated at 80".
+- main_switch_fuse_setting: fuse/setting rating in amps if different from current rating
+- main_switch_poles: number of poles ("DP", "TP", "TPN", "4P"). "double pole"="DP", "2 pole"="DP", "triple pole"="TP".
+- main_switch_voltage: voltage rating in volts (typically "230" or "400")
 - manufacturer: consumer unit manufacturer name
 - zs_at_db: Zs at distribution board in ohms
 - address: property address (street name and number only, no town/postcode)
