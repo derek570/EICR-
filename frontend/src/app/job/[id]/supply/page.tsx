@@ -1,10 +1,10 @@
-"use client";
+'use client';
 
-import { useJob } from "../layout";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { SupplyCharacteristics } from "@/lib/api";
+import { useJob } from '../layout';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { SupplyCharacteristics } from '@/lib/api';
 import {
   EARTHING_ARRANGEMENTS,
   LIVE_CONDUCTORS,
@@ -22,78 +22,85 @@ import {
   CONDUCTOR_CSA,
   BONDING_CSA,
   RCD_OPERATING_CURRENT,
-} from "@/lib/constants";
+} from '@/lib/constants';
 
 export default function SupplyPage() {
   const { job, updateJob } = useJob();
   const supply: SupplyCharacteristics = job.supply_characteristics || {
     // Section 1: Supply Characteristics & Earthing
-    earthing_arrangement: "TN-C-S",
-    live_conductors: "AC - 1-phase (2 wire)",
-    number_of_supplies: "1",
-    nominal_voltage_u: "230",
-    nominal_voltage_uo: "230",
-    nominal_frequency: "50",
-    prospective_fault_current: "",
-    earth_loop_impedance_ze: "",
-    supply_polarity_confirmed: "",
+    earthing_arrangement: 'TN-C-S',
+    live_conductors: 'AC - 1-phase (2 wire)',
+    number_of_supplies: '1',
+    nominal_voltage_u: '230',
+    nominal_voltage_uo: '230',
+    nominal_frequency: '50',
+    prospective_fault_current: '',
+    earth_loop_impedance_ze: '',
+    supply_polarity_confirmed: '',
     // Section 2: Supply Protective Device
-    spd_bs_en: "",
-    spd_type_supply: "",
-    spd_short_circuit: "",
-    spd_rated_current: "",
+    spd_bs_en: '',
+    spd_type_supply: '',
+    spd_short_circuit: '',
+    spd_rated_current: '',
     // Section 3: Means of Earthing
     means_earthing_distributor: false,
     means_earthing_electrode: false,
     // Section 4: Main Switch/Fuse/CB/RCD
-    main_switch_bs_en: "",
-    main_switch_poles: "",
-    main_switch_voltage: "",
-    main_switch_current: "",
-    main_switch_fuse_setting: "",
-    main_switch_location: "",
-    main_switch_conductor_material: "",
-    main_switch_conductor_csa: "",
+    main_switch_bs_en: '',
+    main_switch_poles: '',
+    main_switch_voltage: '',
+    main_switch_current: '',
+    main_switch_fuse_setting: '',
+    main_switch_location: '',
+    main_switch_conductor_material: '',
+    main_switch_conductor_csa: '',
     // Section 5: RCD
-    rcd_operating_current: "",
-    rcd_time_delay: "",
-    rcd_operating_time: "",
-    rcd_operating_current_test: "",
-    rcd_time_delay_test: "",
-    rcd_operating_time_test: "",
+    rcd_operating_current: '',
+    rcd_time_delay: '',
+    rcd_operating_time: '',
+    rcd_operating_current_test: '',
+    rcd_time_delay_test: '',
+    rcd_operating_time_test: '',
     // Section 6: Earthing Conductor
-    earthing_conductor_material: "",
-    earthing_conductor_csa: "",
-    earthing_conductor_continuity: "",
+    earthing_conductor_material: '',
+    earthing_conductor_csa: '',
+    earthing_conductor_continuity: '',
     // Section 7: Main Protective Bonding
-    bonding_conductor_material: "",
-    bonding_conductor_csa: "",
-    bonding_conductor_continuity: "",
+    bonding_conductor_material: '',
+    bonding_conductor_csa: '',
+    bonding_conductor_continuity: '',
     // Section 8: Bonding of Extraneous Parts
-    bonding_water: "",
-    bonding_gas: "",
-    bonding_oil: "",
-    bonding_structural_steel: "",
-    bonding_lightning: "",
-    bonding_other: "",
+    bonding_water: '',
+    bonding_gas: '',
+    bonding_oil: '',
+    bonding_structural_steel: '',
+    bonding_lightning: '',
+    bonding_other: '',
     bonding_other_na: false,
   };
 
-  const updateField = <K extends keyof SupplyCharacteristics>(field: K, value: SupplyCharacteristics[K]) => {
+  const updateField = <K extends keyof SupplyCharacteristics>(
+    field: K,
+    value: SupplyCharacteristics[K]
+  ) => {
     updateJob({ supply_characteristics: { ...supply, [field]: value } });
   };
 
   // Button group component for YES/NO/LIM
-  const YesNoLimButtons = ({ field, value }: { field: keyof SupplyCharacteristics; value: string | undefined }) => (
+  const YesNoLimButtons = ({
+    field,
+    value,
+  }: {
+    field: keyof SupplyCharacteristics;
+    value: string | undefined;
+  }) => (
     <div className="flex gap-1">
-      {["YES", "NO", "LIM"].map((opt) => (
+      {['YES', 'NO', 'LIM'].map((opt) => (
         <button
           key={opt}
           onClick={() => updateField(field, opt)}
           className={`px-3 py-1 text-sm rounded border ${
-            value === opt
-              ? "bg-primary text-primary-foreground"
-              : "bg-background hover:bg-muted"
+            value === opt ? 'bg-primary text-primary-foreground' : 'bg-background hover:bg-muted'
           }`}
         >
           {opt}
@@ -103,20 +110,26 @@ export default function SupplyPage() {
   );
 
   // Button group component for PASS/FAIL/LIM/N/A
-  const PassFailButtons = ({ field, value }: { field: keyof SupplyCharacteristics; value: string | undefined }) => (
+  const PassFailButtons = ({
+    field,
+    value,
+  }: {
+    field: keyof SupplyCharacteristics;
+    value: string | undefined;
+  }) => (
     <div className="flex gap-1">
-      {["PASS", "FAIL", "LIM", "N/A"].map((opt) => (
+      {['PASS', 'FAIL', 'LIM', 'N/A'].map((opt) => (
         <button
           key={opt}
           onClick={() => updateField(field, opt)}
           className={`px-3 py-1 text-sm rounded border ${
             value === opt
-              ? opt === "PASS"
-                ? "bg-green-600 text-white"
-                : opt === "FAIL"
-                ? "bg-red-600 text-white"
-                : "bg-primary text-primary-foreground"
-              : "bg-background hover:bg-muted"
+              ? opt === 'PASS'
+                ? 'bg-green-600 text-white'
+                : opt === 'FAIL'
+                  ? 'bg-red-600 text-white'
+                  : 'bg-primary text-primary-foreground'
+              : 'bg-background hover:bg-muted'
           }`}
         >
           {opt}
@@ -126,16 +139,20 @@ export default function SupplyPage() {
   );
 
   // Quick buttons for N/A and LIM (for RCD dropdowns)
-  const NALIMButtons = ({ field, value }: { field: keyof SupplyCharacteristics; value: string | undefined }) => (
+  const NALIMButtons = ({
+    field,
+    value,
+  }: {
+    field: keyof SupplyCharacteristics;
+    value: string | undefined;
+  }) => (
     <div className="flex gap-1 mt-1">
-      {["N/A", "LIM"].map((opt) => (
+      {['N/A', 'LIM'].map((opt) => (
         <button
           key={opt}
           onClick={() => updateField(field, opt)}
           className={`px-2 py-0.5 text-xs rounded border ${
-            value === opt
-              ? "bg-primary text-primary-foreground"
-              : "bg-background hover:bg-muted"
+            value === opt ? 'bg-primary text-primary-foreground' : 'bg-background hover:bg-muted'
           }`}
         >
           {opt}
@@ -162,7 +179,7 @@ export default function SupplyPage() {
       <Label htmlFor={id}>{label}</Label>
       <select
         id={id}
-        value={value || ""}
+        value={value || ''}
         onChange={(e) => updateField(field, e.target.value)}
         className="w-full h-10 rounded-md border border-input px-3 bg-background"
       >
@@ -191,7 +208,7 @@ export default function SupplyPage() {
       <Label htmlFor={id}>{label}</Label>
       <select
         id={id}
-        value={value || ""}
+        value={value || ''}
         onChange={(e) => updateField(field, e.target.value)}
         className="w-full h-10 rounded-md border border-input px-3 bg-background"
       >
@@ -202,11 +219,11 @@ export default function SupplyPage() {
         ))}
       </select>
       <button
-        onClick={() => updateField(field, "Copper")}
+        onClick={() => updateField(field, 'Copper')}
         className={`mt-1 px-2 py-0.5 text-xs rounded border ${
-          value === "Copper"
-            ? "bg-amber-600 text-white"
-            : "bg-background hover:bg-amber-100 text-amber-700 border-amber-300"
+          value === 'Copper'
+            ? 'bg-amber-600 text-white'
+            : 'bg-background hover:bg-amber-100 text-amber-700 border-amber-300'
         }`}
       >
         Copper
@@ -240,7 +257,7 @@ export default function SupplyPage() {
       <Label htmlFor={id}>{label}</Label>
       <select
         id={id}
-        value={dropdownValue || ""}
+        value={dropdownValue || ''}
         onChange={(e) => updateField(dropdownField, e.target.value)}
         className="w-full h-10 rounded-md border border-input px-3 bg-background"
       >
@@ -256,13 +273,13 @@ export default function SupplyPage() {
       </div>
       <div className="relative">
         <Input
-          value={testValue || ""}
+          value={testValue || ''}
           onChange={(e) => updateField(testField, e.target.value)}
           placeholder="Test result"
           className="pr-8"
         />
         <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-muted-foreground">
-          {"\u03A9"}
+          {'\u03A9'}
         </span>
       </div>
     </div>
@@ -325,8 +342,8 @@ export default function SupplyPage() {
               <Label htmlFor="pfc">Prospective Fault Current (kA)</Label>
               <Input
                 id="pfc"
-                value={supply.prospective_fault_current || ""}
-                onChange={(e) => updateField("prospective_fault_current", e.target.value)}
+                value={supply.prospective_fault_current || ''}
+                onChange={(e) => updateField('prospective_fault_current', e.target.value)}
                 placeholder="e.g., 2.5"
               />
             </div>
@@ -334,14 +351,17 @@ export default function SupplyPage() {
               <Label htmlFor="ze">External Earth Loop Impedance Ze (Ohm)</Label>
               <Input
                 id="ze"
-                value={supply.earth_loop_impedance_ze || ""}
-                onChange={(e) => updateField("earth_loop_impedance_ze", e.target.value)}
+                value={supply.earth_loop_impedance_ze || ''}
+                onChange={(e) => updateField('earth_loop_impedance_ze', e.target.value)}
                 placeholder="e.g., 0.35"
               />
             </div>
             <div>
               <Label>Supply Polarity Confirmed</Label>
-              <YesNoLimButtons field="supply_polarity_confirmed" value={supply.supply_polarity_confirmed as string} />
+              <YesNoLimButtons
+                field="supply_polarity_confirmed"
+                value={supply.supply_polarity_confirmed as string}
+              />
             </div>
           </div>
         </CardContent>
@@ -365,8 +385,8 @@ export default function SupplyPage() {
               <Label htmlFor="spd_type">Type</Label>
               <Input
                 id="spd_type"
-                value={supply.spd_type_supply || ""}
-                onChange={(e) => updateField("spd_type_supply", e.target.value)}
+                value={supply.spd_type_supply || ''}
+                onChange={(e) => updateField('spd_type_supply', e.target.value)}
                 placeholder="e.g., B, gG"
               />
             </div>
@@ -400,8 +420,8 @@ export default function SupplyPage() {
               <input
                 type="checkbox"
                 checked={supply.means_earthing_distributor || false}
-                onChange={(e) => updateField("means_earthing_distributor", e.target.checked)}
-                className="h-4 w-4 rounded border-gray-300"
+                onChange={(e) => updateField('means_earthing_distributor', e.target.checked)}
+                className="h-4 w-4 rounded border-border"
               />
               <span className="text-sm">Distributor&apos;s Facility</span>
             </label>
@@ -409,8 +429,8 @@ export default function SupplyPage() {
               <input
                 type="checkbox"
                 checked={supply.means_earthing_electrode || false}
-                onChange={(e) => updateField("means_earthing_electrode", e.target.checked)}
-                className="h-4 w-4 rounded border-gray-300"
+                onChange={(e) => updateField('means_earthing_electrode', e.target.checked)}
+                className="h-4 w-4 rounded border-border"
               />
               <span className="text-sm">Earth Electrode</span>
             </label>
@@ -457,8 +477,8 @@ export default function SupplyPage() {
               <Label htmlFor="main_switch_fuse">Fuse/Setting</Label>
               <Input
                 id="main_switch_fuse"
-                value={supply.main_switch_fuse_setting || ""}
-                onChange={(e) => updateField("main_switch_fuse_setting", e.target.value)}
+                value={supply.main_switch_fuse_setting || ''}
+                onChange={(e) => updateField('main_switch_fuse_setting', e.target.value)}
                 placeholder="e.g., 100A"
               />
             </div>
@@ -466,8 +486,8 @@ export default function SupplyPage() {
               <Label htmlFor="main_switch_location">Location</Label>
               <Input
                 id="main_switch_location"
-                value={supply.main_switch_location || ""}
-                onChange={(e) => updateField("main_switch_location", e.target.value)}
+                value={supply.main_switch_location || ''}
+                onChange={(e) => updateField('main_switch_location', e.target.value)}
                 placeholder="e.g., Under stairs"
               />
             </div>
@@ -510,7 +530,7 @@ export default function SupplyPage() {
               label="RCD time delay I\u0394n"
               dropdownField="rcd_time_delay"
               testField="rcd_time_delay_test"
-              options={["Select...", "0", "S", "N/A", "LIM"]}
+              options={['Select...', '0', 'S', 'N/A', 'LIM']}
               dropdownValue={supply.rcd_time_delay}
               testValue={supply.rcd_time_delay_test}
               unit="ms"
@@ -521,7 +541,7 @@ export default function SupplyPage() {
               label="RCD operating time I\u0394n"
               dropdownField="rcd_operating_time"
               testField="rcd_operating_time_test"
-              options={["Select...", "N/A", "LIM"]}
+              options={['Select...', 'N/A', 'LIM']}
               dropdownValue={supply.rcd_operating_time}
               testValue={supply.rcd_operating_time_test}
               unit="ms"
@@ -553,7 +573,10 @@ export default function SupplyPage() {
             />
             <div>
               <Label>Continuity</Label>
-              <PassFailButtons field="earthing_conductor_continuity" value={supply.earthing_conductor_continuity} />
+              <PassFailButtons
+                field="earthing_conductor_continuity"
+                value={supply.earthing_conductor_continuity}
+              />
             </div>
           </div>
         </CardContent>
@@ -581,7 +604,10 @@ export default function SupplyPage() {
             />
             <div>
               <Label>Continuity</Label>
-              <PassFailButtons field="bonding_conductor_continuity" value={supply.bonding_conductor_continuity} />
+              <PassFailButtons
+                field="bonding_conductor_continuity"
+                value={supply.bonding_conductor_continuity}
+              />
             </div>
           </div>
         </CardContent>
@@ -608,7 +634,10 @@ export default function SupplyPage() {
             </div>
             <div>
               <Label className="text-center block mb-2">Structural Steel</Label>
-              <PassFailButtons field="bonding_structural_steel" value={supply.bonding_structural_steel} />
+              <PassFailButtons
+                field="bonding_structural_steel"
+                value={supply.bonding_structural_steel}
+              />
             </div>
             <div>
               <Label className="text-center block mb-2">Lightning</Label>
@@ -625,23 +654,23 @@ export default function SupplyPage() {
                   type="checkbox"
                   checked={supply.bonding_other_na || false}
                   onChange={(e) => {
-                    updateField("bonding_other_na", e.target.checked);
+                    updateField('bonding_other_na', e.target.checked);
                     if (e.target.checked) {
-                      updateField("bonding_other", "");
+                      updateField('bonding_other', '');
                     }
                   }}
-                  className="h-4 w-4 rounded border-gray-300"
+                  className="h-4 w-4 rounded border-border"
                 />
                 <span className="text-sm text-muted-foreground">N/A</span>
               </label>
             </div>
             <Input
               id="bonding_other"
-              value={supply.bonding_other || ""}
-              onChange={(e) => updateField("bonding_other", e.target.value)}
+              value={supply.bonding_other || ''}
+              onChange={(e) => updateField('bonding_other', e.target.value)}
               placeholder="Extraneous bonding to other service(s)"
               disabled={supply.bonding_other_na}
-              className={supply.bonding_other_na ? "bg-muted" : ""}
+              className={supply.bonding_other_na ? 'bg-muted' : ''}
             />
           </div>
         </CardContent>

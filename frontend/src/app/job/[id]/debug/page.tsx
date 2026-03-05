@@ -1,16 +1,10 @@
-"use client";
+'use client';
 
-import { useEffect, useState, useRef } from "react";
-import { useParams } from "next/navigation";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
-import { Play, Pause, AlertTriangle, Check, Clock, Volume2 } from "lucide-react";
+import { useEffect, useState, useRef } from 'react';
+import { useParams } from 'next/navigation';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import { Play, Pause, AlertTriangle, Check, Clock, Volume2 } from 'lucide-react';
 
 interface DebugChunk {
   chunkIndex: number;
@@ -44,7 +38,7 @@ interface DebugData {
 function formatTime(seconds: number): string {
   const mins = Math.floor(seconds / 60);
   const secs = seconds % 60;
-  return `${mins}:${String(secs).padStart(2, "0")}`;
+  return `${mins}:${String(secs).padStart(2, '0')}`;
 }
 
 function formatBytes(bytes: number): string {
@@ -78,12 +72,7 @@ function AudioPlayer({ url, label }: { url: string; label: string }) {
         onLoadedMetadata={() => setDuration(audioRef.current?.duration || 0)}
         onEnded={() => setIsPlaying(false)}
       />
-      <Button
-        size="sm"
-        variant="outline"
-        onClick={togglePlay}
-        className="h-8 w-8 p-0"
-      >
+      <Button size="sm" variant="outline" onClick={togglePlay} className="h-8 w-8 p-0">
         {isPlaying ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}
       </Button>
       <span className="text-xs text-muted-foreground">
@@ -104,22 +93,19 @@ export default function DebugPage() {
     async function loadDebugData() {
       try {
         const token = document.cookie
-          .split("; ")
-          .find((row) => row.startsWith("token="))
-          ?.split("=")[1];
+          .split('; ')
+          .find((row) => row.startsWith('token='))
+          ?.split('=')[1];
 
         // Get userId from token or session
-        const userRes = await fetch(
-          `${process.env.NEXT_PUBLIC_API_URL || ""}/api/auth/me`,
-          {
-            headers: { Authorization: `Bearer ${token}` },
-          }
-        );
+        const userRes = await fetch(`${process.env.NEXT_PUBLIC_API_URL || ''}/api/auth/me`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
         const userData = await userRes.json();
         const userId = userData.id;
 
         const res = await fetch(
-          `${process.env.NEXT_PUBLIC_API_URL || ""}/api/job/${userId}/${jobId}/debug`,
+          `${process.env.NEXT_PUBLIC_API_URL || ''}/api/job/${userId}/${jobId}/debug`,
           {
             headers: { Authorization: `Bearer ${token}` },
           }
@@ -127,13 +113,13 @@ export default function DebugPage() {
 
         if (!res.ok) {
           const errData = await res.json();
-          throw new Error(errData.error || "Failed to load debug data");
+          throw new Error(errData.error || 'Failed to load debug data');
         }
 
         const data = await res.json();
         setDebugData(data);
       } catch (err) {
-        setError(err instanceof Error ? err.message : "Unknown error");
+        setError(err instanceof Error ? err.message : 'Unknown error');
       } finally {
         setLoading(false);
       }
@@ -184,9 +170,7 @@ export default function DebugPage() {
       <Card>
         <CardHeader>
           <CardTitle>Transcription Debug</CardTitle>
-          <CardDescription>
-            Compare what was recorded vs what was transcribed
-          </CardDescription>
+          <CardDescription>Compare what was recorded vs what was transcribed</CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           {/* Summary Stats */}
@@ -205,9 +189,13 @@ export default function DebugPage() {
               <p className="text-sm text-muted-foreground">Total Audio</p>
               <p className="text-lg font-semibold">{formatBytes(totalAudioBytes)}</p>
             </div>
-            <div className={`p-3 rounded ${emptyChunks.length > 0 ? "bg-yellow-100" : "bg-green-100"}`}>
+            <div
+              className={`p-3 rounded ${emptyChunks.length > 0 ? 'bg-yellow-100' : 'bg-green-100'}`}
+            >
               <p className="text-sm text-muted-foreground">Empty Chunks</p>
-              <p className={`text-lg font-semibold ${emptyChunks.length > 0 ? "text-yellow-700" : "text-green-700"}`}>
+              <p
+                className={`text-lg font-semibold ${emptyChunks.length > 0 ? 'text-yellow-700' : 'text-green-700'}`}
+              >
                 {emptyChunks.length}
               </p>
             </div>
@@ -216,7 +204,8 @@ export default function DebugPage() {
           {/* Extracted Data Summary */}
           <div className="flex gap-4 text-sm">
             <span className="text-muted-foreground">
-              Extracted: {debugData.extractedCircuits} circuits, {debugData.extractedObservations} observations
+              Extracted: {debugData.extractedCircuits} circuits, {debugData.extractedObservations}{' '}
+              observations
             </span>
           </div>
         </CardContent>
@@ -230,7 +219,8 @@ export default function DebugPage() {
             Audio Chunks
           </CardTitle>
           <CardDescription>
-            Listen to each chunk and see what was transcribed. Yellow highlights indicate chunks where no speech was detected.
+            Listen to each chunk and see what was transcribed. Yellow highlights indicate chunks
+            where no speech was detected.
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -239,9 +229,7 @@ export default function DebugPage() {
               <div
                 key={chunk.chunkIndex}
                 className={`border rounded-lg p-4 ${
-                  chunk.isEmpty
-                    ? "border-yellow-300 bg-yellow-50"
-                    : "border-gray-200"
+                  chunk.isEmpty ? 'border-yellow-300 bg-yellow-50' : 'border-border'
                 }`}
               >
                 <div className="flex items-start justify-between gap-4">
@@ -282,10 +270,10 @@ export default function DebugPage() {
                       <p className="text-xs text-muted-foreground mb-1">Transcribed:</p>
                       <p
                         className={`text-sm ${
-                          chunk.isEmpty ? "text-yellow-600 italic" : "text-gray-800"
+                          chunk.isEmpty ? 'text-yellow-600 italic' : 'text-foreground'
                         }`}
                       >
-                        {chunk.transcript || "(no speech detected)"}
+                        {chunk.transcript || '(no speech detected)'}
                       </p>
                     </div>
                   </div>
@@ -300,14 +288,12 @@ export default function DebugPage() {
       <Card>
         <CardHeader>
           <CardTitle>Full Transcript</CardTitle>
-          <CardDescription>
-            Complete accumulated transcript from all chunks
-          </CardDescription>
+          <CardDescription>Complete accumulated transcript from all chunks</CardDescription>
         </CardHeader>
         <CardContent>
           <div className="bg-muted p-4 rounded-lg">
             <p className="whitespace-pre-wrap text-sm">
-              {debugData.fullTranscript || "(empty transcript)"}
+              {debugData.fullTranscript || '(empty transcript)'}
             </p>
           </div>
         </CardContent>
@@ -321,20 +307,21 @@ export default function DebugPage() {
         <CardContent>
           <ul className="list-disc list-inside space-y-2 text-sm text-muted-foreground">
             <li>
-              <strong>Yellow chunks:</strong> Audio was sent but no speech detected.
-              Play the audio to check if speech is audible. Background noise or low volume may cause this.
+              <strong>Yellow chunks:</strong> Audio was sent but no speech detected. Play the audio
+              to check if speech is audible. Background noise or low volume may cause this.
             </li>
             <li>
-              <strong>Missing values:</strong> If you hear yourself saying values that don&apos;t appear in the transcript,
-              try speaking more clearly or louder. Gemini may miss quiet or mumbled speech.
+              <strong>Missing values:</strong> If you hear yourself saying values that don&apos;t
+              appear in the transcript, try speaking more clearly or louder. Gemini may miss quiet
+              or mumbled speech.
             </li>
             <li>
-              <strong>Short chunks concatenated:</strong> Very short audio clips are combined with the next chunk
-              for better transcription accuracy.
+              <strong>Short chunks concatenated:</strong> Very short audio clips are combined with
+              the next chunk for better transcription accuracy.
             </li>
             <li>
-              <strong>Context matters:</strong> Say &quot;Ze is 0.35&quot; instead of just &quot;0.35&quot; so the system knows
-              which field the value belongs to.
+              <strong>Context matters:</strong> Say &quot;Ze is 0.35&quot; instead of just
+              &quot;0.35&quot; so the system knows which field the value belongs to.
             </li>
           </ul>
         </CardContent>

@@ -1,11 +1,11 @@
-"use client";
+'use client';
 
-import { useEffect, useState } from "react";
-import { useJob } from "../layout";
-import { api, JobVersion, JobVersionDetail } from "@/lib/api";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
-import { History, ChevronDown, ChevronUp, Clock, Loader2 } from "lucide-react";
+import { useEffect, useState } from 'react';
+import { useJob } from '../layout';
+import { api, JobVersion, JobVersionDetail } from '@/lib/api';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import { History, ChevronDown, ChevronUp, Clock, Loader2 } from 'lucide-react';
 
 export default function HistoryPage() {
   const { job, user } = useJob();
@@ -23,7 +23,7 @@ export default function HistoryPage() {
         const data = await api.getJobHistory(user!.id, job.id);
         setVersions(data);
       } catch (error) {
-        console.error("Failed to fetch job history:", error);
+        console.error('Failed to fetch job history:', error);
       } finally {
         setLoading(false);
       }
@@ -47,7 +47,7 @@ export default function HistoryPage() {
         const detail = await api.getJobVersion(user!.id, job.id, versionId);
         setSnapshotData((prev) => ({ ...prev, [versionId]: detail }));
       } catch (error) {
-        console.error("Failed to fetch version snapshot:", error);
+        console.error('Failed to fetch version snapshot:', error);
       } finally {
         setLoadingSnapshot(null);
       }
@@ -56,7 +56,7 @@ export default function HistoryPage() {
 
   const formatDate = (dateStr: string) => {
     const date = new Date(dateStr);
-    return `${date.toLocaleDateString()} at ${date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
+    return `${date.toLocaleDateString()} at ${date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
   };
 
   if (loading) {
@@ -96,7 +96,7 @@ export default function HistoryPage() {
                     </div>
                     <div>
                       <CardTitle className="text-sm font-medium">
-                        {version.changes_summary || "Saved"}
+                        {version.changes_summary || 'Saved'}
                       </CardTitle>
                       <div className="flex items-center gap-1 text-xs text-muted-foreground mt-0.5">
                         <Clock className="h-3 w-3" />
@@ -104,11 +104,7 @@ export default function HistoryPage() {
                       </div>
                     </div>
                   </div>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => toggleVersion(version.id)}
-                  >
+                  <Button variant="ghost" size="sm" onClick={() => toggleVersion(version.id)}>
                     {expandedVersion === version.id ? (
                       <>
                         <ChevronUp className="h-4 w-4 mr-1" />
@@ -130,13 +126,11 @@ export default function HistoryPage() {
                       <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
                     </div>
                   ) : snapshotData[version.id] ? (
-                    <pre className="bg-slate-50 border rounded-md p-3 text-xs overflow-x-auto max-h-96 overflow-y-auto">
+                    <pre className="bg-muted border rounded-md p-3 text-xs overflow-x-auto max-h-96 overflow-y-auto">
                       {JSON.stringify(snapshotData[version.id].data_snapshot, null, 2)}
                     </pre>
                   ) : (
-                    <p className="text-sm text-muted-foreground">
-                      Failed to load snapshot data.
-                    </p>
+                    <p className="text-sm text-muted-foreground">Failed to load snapshot data.</p>
                   )}
                 </CardContent>
               )}
