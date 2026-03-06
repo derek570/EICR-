@@ -212,7 +212,7 @@ router.post('/proxy/elevenlabs-tts', auth.requireAuth, async (req, res) => {
       return res.status(400).json({ error: 'text field required' });
     }
 
-    const voiceId = 'JBFqnCBsd6RMkjVDRZzb'; // George
+    const voiceId = 'onwK4e9ZLuTAKqWW03F9'; // Daniel (British male)
     const response = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`, {
       method: 'POST',
       headers: {
