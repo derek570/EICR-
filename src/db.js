@@ -223,7 +223,7 @@ export async function createUser({ email, name, company_name, password_hash, rol
     const id = `user_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const result = await pool.query(
       `INSERT INTO users (id, email, name, company_name, password_hash, role, is_active, created_at)
-       VALUES ($1, $2, $3, $4, $5, $6, true, NOW())
+       VALUES ($1, $2, $3, $4, $5, $6, 1, NOW())
        RETURNING id, email, name, company_name, role, is_active, created_at`,
       [id, email.toLowerCase(), name, company_name || null, password_hash, role || 'user']
     );

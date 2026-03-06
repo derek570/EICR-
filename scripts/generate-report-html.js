@@ -15,7 +15,12 @@ if (!recsPath || !summaryPath || !reportId || !outputPath) {
   process.exit(1);
 }
 
-const recommendations = JSON.parse(fs.readFileSync(recsPath, "utf8"));
+let recommendations;
+try {
+  recommendations = JSON.parse(fs.readFileSync(recsPath, "utf8"));
+} catch {
+  recommendations = [];
+}
 const summary = JSON.parse(fs.readFileSync(summaryPath, "utf8"));
 
 const USD_TO_GBP = 0.79;

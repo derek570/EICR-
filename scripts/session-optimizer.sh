@@ -940,7 +940,10 @@ PROMPT_INSTRUCTIONS
 
   # Parse JSON recommendations from Claude's output (last JSON object)
   local JSON_OUTPUT
-  JSON_OUTPUT=$(echo "$CLAUDE_OUTPUT" | perl -0777 -ne 'print $1 if /.*(\{[\s\S]*\})/m' 2>/dev/null || echo '{"recommendations":[],"summary":"Could not parse Claude output"}')
+  JSON_OUTPUT=$(echo "$CLAUDE_OUTPUT" | perl -0777 -ne 'print $1 if /.*(\{[\s\S]*\})/m' 2>/dev/null)
+  if [ -z "$JSON_OUTPUT" ]; then
+    JSON_OUTPUT='{"recommendations":[],"summary":"Could not parse Claude output"}'
+  fi
 
   local RECOMMENDATIONS
   RECOMMENDATIONS=$(echo "$JSON_OUTPUT" | jq -c '.recommendations // []' 2>/dev/null || echo "[]")
@@ -1139,7 +1142,10 @@ PROMPT_EOF
 
   # Parse recommendations from Claude output
   local JSON_OUTPUT
-  JSON_OUTPUT=$(echo "$CLAUDE_OUTPUT" | perl -0777 -ne 'print $1 if /.*(\{[\s\S]*\})/m' 2>/dev/null || echo '{"recommendations":[],"summary":"Could not parse output"}')
+  JSON_OUTPUT=$(echo "$CLAUDE_OUTPUT" | perl -0777 -ne 'print $1 if /.*(\{[\s\S]*\})/m' 2>/dev/null)
+  if [ -z "$JSON_OUTPUT" ]; then
+    JSON_OUTPUT='{"recommendations":[],"summary":"Could not parse output"}'
+  fi
 
   local RECOMMENDATIONS
   RECOMMENDATIONS=$(echo "$JSON_OUTPUT" | jq -c '.recommendations // []' 2>/dev/null || echo '[]')

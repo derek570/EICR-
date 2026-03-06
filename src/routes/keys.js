@@ -234,11 +234,16 @@ router.post('/proxy/elevenlabs-tts', auth.requireAuth, async (req, res) => {
 
     if (!response.ok) {
       const errorText = await response.text();
+      logger.error('ElevenLabs API rejected request', {
+        status: response.status,
+        error: errorText.substring(0, 200),
+      });
       return res.status(response.status).json({ error: errorText });
     }
 
     res.set('Content-Type', 'audio/mpeg');
     const buffer = Buffer.from(await response.arrayBuffer());
+    logger.info('ElevenLabs TTS success', { bytes: buffer.length });
     res.send(buffer);
   } catch (error) {
     logger.error('ElevenLabs TTS proxy error', { error: error.message });

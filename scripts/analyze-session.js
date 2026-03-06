@@ -772,15 +772,11 @@ function analyzeSession(sessionDir) {
 
   // Build sleep cycles: each dozing event starts a cycle, wake ends it
   const sleepCycles = [];
-  const dozingEvents = sleepEvents.filter((e) =>
-    ["sleep_state_dozing", "sleep_enter_dozing"].includes(e.event)
-  );
-  const wakeEvents = sleepEvents.filter((e) =>
-    ["sleep_state_wake", "sleep_wake"].includes(e.event)
-  );
-  const sleepingEvents = sleepEvents.filter((e) =>
-    ["sleep_state_sleeping", "sleep_enter_sleeping"].includes(e.event)
-  );
+  // Use only one event name per transition to avoid double-counting
+  // (SleepManager logs both audio-category and session-category events)
+  const dozingEvents = sleepEvents.filter((e) => e.event === "sleep_enter_dozing");
+  const wakeEvents = sleepEvents.filter((e) => e.event === "sleep_wake");
+  const sleepingEvents = sleepEvents.filter((e) => e.event === "sleep_enter_sleeping");
 
   for (let i = 0; i < dozingEvents.length; i++) {
     const dozeTime = new Date(dozingEvents[i].timestamp).getTime();

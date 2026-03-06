@@ -34,10 +34,15 @@ const __dirname = path.dirname(__filename);
 // preserving full context for all normal inspections.
 const COMPACTION_THRESHOLD = 60000;
 
-// Load externalized system prompt at module init
+// Load externalized system prompts at module init
 // Must be >=1024 tokens for Sonnet 4.5 prompt caching
 export const EICR_SYSTEM_PROMPT = fssync.readFileSync(
   path.join(__dirname, '..', '..', 'config', 'prompts', 'sonnet_extraction_system.md'),
+  'utf8'
+);
+
+export const EIC_SYSTEM_PROMPT = fssync.readFileSync(
+  path.join(__dirname, '..', '..', 'config', 'prompts', 'sonnet_extraction_eic_system.md'),
   'utf8'
 );
 
@@ -74,9 +79,11 @@ Rules:
 - unresolved_values captures anything flagged but not yet confirmed`;
 
 export class EICRExtractionSession {
-  constructor(apiKey, sessionId) {
+  constructor(apiKey, sessionId, certType = 'eicr') {
     this.client = new Anthropic({ apiKey });
     this.sessionId = sessionId;
+    this.certType = certType; // 'eicr' or 'eic'
+    this.systemPrompt = certType === 'eic' ? EIC_SYSTEM_PROMPT : EICR_SYSTEM_PROMPT;
     this.conversationHistory = []; // Array of { role, content } messages
     this.costTracker = new CostTracker();
     this.extractedReadingsCount = 0;
@@ -448,7 +455,7 @@ export class EICRExtractionSession {
       : [
           {
             type: 'text',
-            text: EICR_SYSTEM_PROMPT,
+            text: this.systemPrompt,
             cache_control: { type: 'ephemeral', ttl: '1h' },
           },
         ];
