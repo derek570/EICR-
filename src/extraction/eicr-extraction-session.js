@@ -491,6 +491,21 @@ export class EICRExtractionSession {
     // Anthropic allows max 4 cache_control blocks total.
     // 1 is on the system prompt, 1 on the latest user message,
     // so we can place at most 2 mid-conversation breakpoints.
+    //
+    // IMPORTANT: First strip ALL stale cache_control from conversation history
+    // messages (all except the last one, which is the new user message).
+    // Previous calls to this method mutate the shared message objects via
+    // shallow copy, so old breakpoints accumulate and exceed the 4-block limit.
+    for (let i = 0; i < blockCount - 1; i++) {
+      const msg = messages[i];
+      if (msg.role === 'user' && Array.isArray(msg.content)) {
+        for (const block of msg.content) {
+          if (block.cache_control) {
+            delete block.cache_control;
+          }
+        }
+      }
+    }
     // Collect all eligible positions, then keep only the last 2
     // (nearest the end) for best cache hit rates.
     const candidates = [];
@@ -505,9 +520,7 @@ export class EICRExtractionSession {
     for (const idx of selected) {
       const msg = messages[idx];
       const lastBlock = msg.content[msg.content.length - 1];
-      if (!lastBlock.cache_control) {
-        lastBlock.cache_control = { type: 'ephemeral', ttl: '1h' };
-      }
+      lastBlock.cache_control = { type: 'ephemeral', ttl: '1h' };
     }
   }
 
