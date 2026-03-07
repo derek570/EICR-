@@ -1437,9 +1437,20 @@ process_feedback() {
   notify "Feedback received — reverting" "Reverting previous changes and re-running optimizer with your corrections." 0
 }
 
+HEARTBEAT_COUNTER=0
+HEARTBEAT_INTERVAL=15  # Log heartbeat every 15 cycles (~30 min)
+
 log "Session optimizer (v3) started. Polling every ${POLL_INTERVAL}s."
 
 while true; do
+
+  # ── Periodic heartbeat so the log shows the optimizer is alive ──
+  HEARTBEAT_COUNTER=$((HEARTBEAT_COUNTER + 1))
+  if [ "$HEARTBEAT_COUNTER" -ge "$HEARTBEAT_INTERVAL" ]; then
+    PROCESSED_COUNT=$(jq '.processed_sessions | length' "$STATE_FILE" 2>/dev/null || echo "?")
+    log "Heartbeat: alive, ${PROCESSED_COUNT} sessions processed. Waiting for new uploads."
+    HEARTBEAT_COUNTER=0
+  fi
 
   # ── Poll for new session analytics ──
 
