@@ -593,7 +593,8 @@ build_session_summary() {
       sonnet_prompt_audit: a.sonnet_prompt_audit || null,
       empty_fields: a.empty_fields || [],
       repeated_values: a.repeated_values || [],
-      regex_opportunities: a.regex_opportunities || []
+      regex_opportunities: a.regex_opportunities || [],
+      vad_analysis: a.vad_sleep_analysis || null
     }));
   " > "$OUTPUT_FILE"
 }

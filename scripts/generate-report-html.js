@@ -437,7 +437,69 @@ function buildRecommendationCards(recs) {
   `).join("\n");
 }
 
-// ── Section 6: Sonnet Prompt Audit ──
+// ── Section 6: VAD Sleep/Wake Analysis ──
+
+function buildVadAnalysis() {
+  const vad = summary.vad_analysis;
+  if (!vad || !vad.total_sleep_cycles) {
+    return `<div class="card"><p class="muted">No sleep/wake data for this session.</p></div>`;
+  }
+
+  const cycles = vad.cycles || [];
+  const wakeFailures = vad.post_wake_no_transcript || 0;
+
+  let html = `
+    <div class="vad-grid">
+      <div class="vad-stat">
+        <span class="vad-stat-value">${vad.total_sleep_cycles}</span>
+        <span class="vad-stat-label">Sleep Cycles</span>
+      </div>
+      <div class="vad-stat">
+        <span class="vad-stat-value">${(vad.total_sleep_duration_sec || 0).toFixed(1)}s</span>
+        <span class="vad-stat-label">Total Doze</span>
+      </div>
+      <div class="vad-stat">
+        <span class="vad-stat-value">${vad.buffer_replays || 0}</span>
+        <span class="vad-stat-label">Replays</span>
+      </div>
+      <div class="vad-stat">
+        <span class="vad-stat-value ${wakeFailures > 0 ? 'audit-warning' : ''}">${wakeFailures}</span>
+        <span class="vad-stat-label">Wake Fails</span>
+      </div>
+    </div>`;
+
+  if (vad.total_stream_paused_min) {
+    html += `<div class="card" style="margin-bottom:12px;">
+      <span style="font-size:13px;color:#888;">Stream paused: </span>
+      <span style="font-weight:600;color:#22c55e;">${vad.total_stream_paused_min.toFixed(2)} min</span>
+      <span style="font-size:13px;color:#888;"> (saved </span>
+      <span style="font-weight:600;color:#22c55e;">&pound;${toGBP(vad.deepgram_saved_usd || 0)}</span>
+      <span style="font-size:13px;color:#888;"> Deepgram)</span>
+    </div>`;
+  }
+
+  if (cycles.length > 0) {
+    html += `<div class="card"><div class="vad-cycles">`;
+    for (const c of cycles) {
+      const dozeTime = c.doze_start ? new Date(c.doze_start).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "?";
+      const dur = c.duration_sec != null ? c.duration_sec.toFixed(1) + "s" : "ongoing";
+      const fromClass = c.wake_from === "sleeping" ? "vad-from-sleeping" : "vad-from-dozing";
+      const fromLabel = c.wake_from === "sleeping" ? "Deep" : "Doze";
+      html += `
+        <div class="vad-cycle">
+          <span class="vad-cycle-time">${escapeHtml(dozeTime)}</span>
+          <span class="vad-cycle-from ${fromClass}">${fromLabel}</span>
+          <span class="vad-cycle-dur">${dur}</span>
+          ${c.buffer_replayed ? '<span class="vad-cycle-replay">replayed</span>' : ''}
+        </div>`;
+    }
+    html += `</div></div>`;
+  }
+
+  return html;
+}
+
+// ── Section 7: Sonnet Prompt Audit ──
 
 function buildPromptAudit() {
   const audit = summary.sonnet_prompt_audit;
@@ -660,10 +722,12 @@ const html = `<!DOCTYPE html>
     .audit-net-change { margin-top: 12px; padding: 10px 14px; background: #16213e; border-radius: 8px; border: 1px solid #2a2a4a; font-size: 13px; color: #ccc; }
 
     /* ── Actions ── */
-    .actions { position: sticky; bottom: 0; background: #1a1a2e; padding: 12px 0; border-top: 1px solid #2a2a4a; z-index: 50; }
-    .btn { display: block; width: 100%; padding: 14px; border: none; border-radius: 10px; font-size: 16px; font-weight: 600; cursor: pointer; margin-bottom: 8px; }
+    .actions-bar { position: sticky; bottom: 0; background: #1a1a2e; padding: 12px 16px; border-top: 1px solid #2a2a4a; z-index: 50; margin: 0 -16px; }
+    .btn { display: block; width: 100%; padding: 14px; border: none; border-radius: 10px; font-size: 16px; font-weight: 600; cursor: pointer; margin-bottom: 8px; -webkit-tap-highlight-color: rgba(46,204,113,0.3); }
     .btn-accept { background: #2ecc71; color: #fff; }
+    .btn-accept:active { background: #27ae60; }
     .btn-reject { background: #444; color: #ccc; }
+    .btn-reject:active { background: #555; }
     .btn-rerun { background: #3498db; color: #fff; }
     .btn:disabled { opacity: 0.5; }
     textarea { width: 100%; min-height: 80px; padding: 12px; border-radius: 8px; border: 1px solid #2a2a4a; background: #16213e; color: #e0e0e0; font-size: 14px; font-family: inherit; resize: vertical; margin-bottom: 8px; }
@@ -672,6 +736,21 @@ const html = `<!DOCTYPE html>
     .result-msg { padding: 14px; border-radius: 10px; text-align: center; font-size: 15px; margin-bottom: 12px; display: none; }
     .result-ok { background: #1f3d2a; color: #2ecc71; }
     .result-err { background: #3d1f1f; color: #ff6b6b; }
+
+    /* ── VAD Sleep/Wake Analysis ── */
+    .vad-grid { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+    .vad-stat { flex: 1; min-width: 70px; background: #16213e; border-radius: 10px; padding: 10px 8px; text-align: center; border: 1px solid #2a2a4a; }
+    .vad-stat-value { font-size: 20px; font-weight: 800; color: #e0e0e0; display: block; }
+    .vad-stat-label { font-size: 11px; color: #888; display: block; margin-top: 2px; }
+    .vad-cycles { margin-top: 8px; }
+    .vad-cycle { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-bottom: 1px solid #1a1a2e; font-size: 12px; color: #ccc; }
+    .vad-cycle:last-child { border-bottom: none; }
+    .vad-cycle-time { font-family: monospace; min-width: 60px; color: #888; }
+    .vad-cycle-dur { font-weight: 600; min-width: 50px; text-align: right; }
+    .vad-cycle-from { font-size: 11px; padding: 1px 6px; border-radius: 4px; }
+    .vad-from-dozing { background: #eab30822; color: #eab308; }
+    .vad-from-sleeping { background: #a855f722; color: #a855f7; }
+    .vad-cycle-replay { font-size: 10px; color: #22c55e; }
 
     /* ── Debug issues ── */
     .debug-section { background: #2a1a1a; border: 1px solid #4a2a2a; border-radius: 10px; padding: 14px; margin-bottom: 16px; }
@@ -686,6 +765,7 @@ const html = `<!DOCTYPE html>
     <a href="#section-transcript" onclick="scrollToSection('section-transcript')">Transcript</a>
     <a href="#section-missed" onclick="scrollToSection('section-missed')">Missed</a>
     <a href="#section-recs" onclick="scrollToSection('section-recs')">Recs</a>
+    <a href="#section-vad" onclick="scrollToSection('section-vad')">Sleep</a>
     <a href="#section-audit" onclick="scrollToSection('section-audit')">Audit</a>
   </nav>
 
@@ -772,17 +852,30 @@ const html = `<!DOCTYPE html>
         <div id="recommendations">
           ${buildRecommendationCards(recommendations)}
         </div>
-
-        <div id="result-msg" class="result-msg"></div>
-
-        <div class="actions">
-          <button class="btn btn-accept" id="btn-accept" onclick="acceptSelected()">Accept Selected</button>
-          <button class="btn btn-reject" id="btn-reject" onclick="rejectAll()">Reject All</button>
-        </div>
       </div>
     </div>
 
-    <!-- Section 6: Sonnet Prompt Audit -->
+    <!-- Actions bar: OUTSIDE section-body to avoid overflow:hidden clipping -->
+    ${recommendations.length > 0 ? `
+    <div id="result-msg" class="result-msg"></div>
+    <div class="actions-bar">
+      <button class="btn btn-accept" id="btn-accept" onclick="acceptSelected()">Accept Selected</button>
+      <button class="btn btn-reject" id="btn-reject" onclick="rejectAll()">Reject All</button>
+    </div>
+    ` : ''}
+
+    <!-- Section 6: VAD Sleep/Wake Analysis -->
+    <div class="section" id="section-vad">
+      <div class="section-title" onclick="toggleSection('vad')">
+        <span>Sleep/Wake Analysis</span>
+        <span class="collapse-icon" id="icon-vad">&#9660;</span>
+      </div>
+      <div class="section-body" id="body-vad">
+        ${buildVadAnalysis()}
+      </div>
+    </div>
+
+    <!-- Section 7: Sonnet Prompt Audit -->
     <div class="section" id="section-audit">
       <div class="section-title" onclick="toggleSection('audit')">
         <span>Sonnet Prompt Audit</span>
@@ -845,7 +938,7 @@ const html = `<!DOCTYPE html>
     }
 
     // Update nav on scroll
-    var navSections = ["section-cost", "section-fields", "section-transcript", "section-missed", "section-recs", "section-audit"];
+    var navSections = ["section-cost", "section-fields", "section-transcript", "section-missed", "section-recs", "section-vad", "section-audit"];
     window.addEventListener("scroll", function() {
       var scrollPos = window.scrollY + 60;
       for (var i = navSections.length - 1; i >= 0; i--) {
@@ -1004,7 +1097,7 @@ const html = `<!DOCTYPE html>
         for (var i = 0; i < checkboxes.length; i++) { checked.push(parseInt(checkboxes[i].value)); }
         if (checked.length === 0) { showResult("No recommendations selected", false); return; }
         disableButtons();
-        showResult("Applying changes...", true);
+        showResult("Applying " + checked.length + " change(s)...", true);
         var url = API_BASE + "/api/optimizer-report/" + REPORT_ID + "/accept";
         fetch(url, {
           method: "POST",
@@ -1015,15 +1108,21 @@ const html = `<!DOCTYPE html>
           return res.json();
         }).then(function(data) {
           if (data.success) {
-            showResult("Changes queued. Pushover confirmation when applied (~2 min).", true);
+            var msg = "Changes queued. Pushover confirmation when applied (~2 min).";
+            showResult(msg, true);
+            try { window.alert(msg); } catch(e) {}
           } else {
             showResult("Error: " + (data.error || "Unknown error"), false);
           }
         }).catch(function(e) {
-          showResult("Network error: " + e.message + " (URL: " + url + ")", false);
+          var msg = "Network error: " + e.message;
+          showResult(msg, false);
+          try { window.alert(msg + "\\n\\nURL: " + url); } catch(e2) {}
         });
       } catch(e) {
-        showResult("JS error: " + e.message, false);
+        var msg = "JS error: " + e.message;
+        showResult(msg, false);
+        try { window.alert(msg); } catch(e2) {}
       }
     }
 
