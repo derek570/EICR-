@@ -1,8 +1,8 @@
-"use client";
+'use client';
 
-import { useState } from "react";
-import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { useState } from 'react';
+import Link from 'next/link';
+import { usePathname } from 'next/navigation';
 import {
   LayoutDashboard,
   Settings,
@@ -10,30 +10,30 @@ import {
   Building2,
   ChevronLeft,
   ChevronRight,
-  Zap,
   Users,
   Calendar,
   Sun,
   Moon,
   Monitor,
-} from "lucide-react";
-import { cn } from "@/lib/utils";
-import { useTheme } from "@/hooks/use-theme";
-import type { Theme } from "@/hooks/use-theme";
+} from 'lucide-react';
+import { cn } from '@/lib/utils';
+import { useTheme } from '@/hooks/use-theme';
+import type { Theme } from '@/hooks/use-theme';
+import { CertMateLogo, CertMateIcon } from '@/components/brand/certmate-logo';
 
 const navItems = [
-  { href: "/dashboard", icon: LayoutDashboard, label: "Dashboard" },
-  { href: "/clients", icon: Users, label: "Clients" },
-  { href: "/calendar", icon: Calendar, label: "Calendar" },
-  { href: "/settings", icon: Settings, label: "Settings" },
-  { href: "/settings/inspector", icon: UserCheck, label: "Inspector" },
-  { href: "/settings/company", icon: Building2, label: "Company" },
+  { href: '/dashboard', icon: LayoutDashboard, label: 'Dashboard' },
+  { href: '/clients', icon: Users, label: 'Clients' },
+  { href: '/calendar', icon: Calendar, label: 'Calendar' },
+  { href: '/settings', icon: Settings, label: 'Settings' },
+  { href: '/settings/inspector', icon: UserCheck, label: 'Inspector' },
+  { href: '/settings/company', icon: Building2, label: 'Company' },
 ];
 
 const themeOptions: { value: Theme; icon: typeof Sun; label: string }[] = [
-  { value: "light", icon: Sun, label: "Light" },
-  { value: "dark", icon: Moon, label: "Dark" },
-  { value: "system", icon: Monitor, label: "System" },
+  { value: 'light', icon: Sun, label: 'Light' },
+  { value: 'dark', icon: Moon, label: 'Dark' },
+  { value: 'system', icon: Monitor, label: 'System' },
 ];
 
 export function Sidebar() {
@@ -42,7 +42,7 @@ export function Sidebar() {
   const { theme, setTheme } = useTheme();
 
   const cycleTheme = () => {
-    const order: Theme[] = ["light", "dark", "system"];
+    const order: Theme[] = ['light', 'dark', 'system'];
     const idx = order.indexOf(theme);
     setTheme(order[(idx + 1) % order.length]);
   };
@@ -53,40 +53,50 @@ export function Sidebar() {
   return (
     <aside
       className={cn(
-        "flex flex-col h-screen bg-brand-navy text-white transition-all duration-200 ease-in-out flex-shrink-0",
-        collapsed ? "w-16" : "w-60",
+        'flex flex-col h-screen bg-[#0B1120] text-white transition-all duration-200 ease-in-out flex-shrink-0 relative',
+        collapsed ? 'w-16' : 'w-60'
       )}
     >
+      {/* Subtle gradient accent along the right edge */}
+      <div className="absolute right-0 top-0 bottom-0 w-px bg-gradient-to-b from-blue-500/30 via-cyan-400/20 to-green-500/30" />
+
       {/* Logo */}
-      <div className="flex items-center gap-3 px-4 h-16 border-b border-white/10">
-        <Zap className="h-6 w-6 text-brand-blue flex-shrink-0" />
-        {!collapsed && (
-          <span className="text-lg font-semibold whitespace-nowrap">CertMate</span>
+      <div className="flex items-center h-16 px-3 border-b border-white/5">
+        {collapsed ? (
+          <div className="mx-auto">
+            <CertMateIcon size="sm" />
+          </div>
+        ) : (
+          <CertMateLogoWhite size="sm" />
         )}
       </div>
 
       {/* Navigation */}
       <nav className="flex-1 py-4 space-y-1 px-2">
         {navItems.map((item) => {
-          // Exact match for /settings (don't highlight for /settings/inspector or /settings/company)
           const isActive =
-            item.href === "/settings"
-              ? pathname === "/settings"
-              : pathname === item.href || pathname.startsWith(item.href + "/");
+            item.href === '/settings'
+              ? pathname === '/settings'
+              : pathname === item.href || pathname.startsWith(item.href + '/');
           return (
             <Link
               key={item.href}
               href={item.href}
               className={cn(
-                "flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors",
+                'flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-150',
                 isActive
-                  ? "bg-white/15 text-white"
-                  : "text-white/70 hover:bg-white/10 hover:text-white",
-                collapsed && "justify-center px-2",
+                  ? 'bg-gradient-to-r from-blue-500/15 to-cyan-500/10 text-white border border-blue-500/20'
+                  : 'text-white/60 hover:bg-white/5 hover:text-white/90',
+                collapsed && 'justify-center px-2'
               )}
               title={collapsed ? item.label : undefined}
             >
-              <item.icon className="h-5 w-5 flex-shrink-0" />
+              <item.icon
+                className={cn(
+                  'h-5 w-5 flex-shrink-0 transition-colors',
+                  isActive ? 'text-blue-400' : ''
+                )}
+              />
               {!collapsed && <span>{item.label}</span>}
             </Link>
           );
@@ -97,9 +107,9 @@ export function Sidebar() {
       <button
         onClick={cycleTheme}
         className={cn(
-          "flex items-center gap-3 mx-2 mb-2 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors",
-          "text-white/70 hover:bg-white/10 hover:text-white",
-          collapsed && "justify-center px-2",
+          'flex items-center gap-3 mx-2 mb-2 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors',
+          'text-white/50 hover:bg-white/5 hover:text-white/80',
+          collapsed && 'justify-center px-2'
         )}
         title={collapsed ? `Theme: ${currentThemeOption.label}` : undefined}
       >
@@ -110,14 +120,30 @@ export function Sidebar() {
       {/* Collapse toggle */}
       <button
         onClick={() => setCollapsed(!collapsed)}
-        className="flex items-center justify-center h-12 border-t border-white/10 text-white/50 hover:text-white hover:bg-white/5 transition-colors"
+        className="flex items-center justify-center h-12 border-t border-white/5 text-white/30 hover:text-white/70 hover:bg-white/5 transition-colors"
       >
-        {collapsed ? (
-          <ChevronRight className="h-5 w-5" />
-        ) : (
-          <ChevronLeft className="h-5 w-5" />
-        )}
+        {collapsed ? <ChevronRight className="h-4 w-4" /> : <ChevronLeft className="h-4 w-4" />}
       </button>
     </aside>
+  );
+}
+
+/** White logo variant for the sidebar — imported from brand components */
+function CertMateLogoWhite({ size = 'sm' }: { size?: 'sm' | 'md' | 'lg' }) {
+  const s = {
+    sm: { icon: 28, text: 14, gap: 8 },
+    md: { icon: 36, text: 18, gap: 10 },
+    lg: { icon: 48, text: 24, gap: 14 },
+  }[size];
+  return (
+    <div className="flex items-center" style={{ gap: s.gap }}>
+      <CertMateIcon size={size} />
+      <span className="font-bold tracking-tight text-white" style={{ fontSize: s.text }}>
+        Cert
+        <span className="bg-gradient-to-r from-blue-400 via-cyan-300 to-green-400 bg-clip-text text-transparent">
+          Mate
+        </span>
+      </span>
+    </div>
   );
 }
