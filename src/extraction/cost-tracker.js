@@ -8,27 +8,27 @@ export class CostTracker {
 
     // Claude Sonnet 4.6 rates (1-hour extended cache) (per million tokens)
     this.SONNET_RATES = {
-      cacheRead: 0.30,
-      cacheWrite: 6.00,
-      input: 3.00,
-      output: 15.00
+      cacheRead: 0.3,
+      cacheWrite: 6.0,
+      input: 3.0,
+      output: 15.0,
     };
 
     // ElevenLabs pricing: $0.030 per 1,000 characters (Scale plan)
-    this.ELEVENLABS_RATE_PER_CHAR = 0.000030;
+    this.ELEVENLABS_RATE_PER_CHAR = 0.00003;
 
     // GPT Vision pricing (per token, per image)
     this.GPT_VISION_RATES = {
-      inputPerToken: 0.01 / 1000,   // $0.01 per 1K input tokens
-      outputPerToken: 0.03 / 1000,  // $0.03 per 1K output tokens
-      perImage: 0.01                 // $0.01 per image
+      inputPerToken: 0.01 / 1000, // $0.01 per 1K input tokens
+      outputPerToken: 0.03 / 1000, // $0.03 per 1K output tokens
+      perImage: 0.01, // $0.01 per image
     };
 
     this.deepgram = {
       recordingStartTime: null,
       totalRecordingMs: 0,
       isPaused: false,
-      pauseStartTime: null
+      pauseStartTime: null,
     };
 
     this.sonnet = {
@@ -37,7 +37,7 @@ export class CostTracker {
       cacheReadTokens: 0,
       cacheWriteTokens: 0,
       inputTokens: 0,
-      outputTokens: 0
+      outputTokens: 0,
     };
 
     this.elevenLabsCharacters = 0;
@@ -45,7 +45,7 @@ export class CostTracker {
     this.gptVision = {
       photos: 0,
       inputTokens: 0,
-      outputTokens: 0
+      outputTokens: 0,
     };
   }
 
@@ -95,6 +95,12 @@ export class CostTracker {
     this.sonnet.outputTokens += usage.output_tokens || 0;
   }
 
+  // Voice command usage — single-turn calls outside the extraction conversation
+  addVoiceCommandCost(usage) {
+    this.sonnet.inputTokens += usage.input_tokens || 0;
+    this.sonnet.outputTokens += usage.output_tokens || 0;
+  }
+
   // ElevenLabs TTS usage
   addElevenLabsUsage(characterCount) {
     this.elevenLabsCharacters += characterCount;
@@ -113,9 +119,9 @@ export class CostTracker {
 
   get gptVisionCost() {
     return (
-      (this.gptVision.inputTokens * this.GPT_VISION_RATES.inputPerToken) +
-      (this.gptVision.outputTokens * this.GPT_VISION_RATES.outputPerToken) +
-      (this.gptVision.photos * this.GPT_VISION_RATES.perImage)
+      this.gptVision.inputTokens * this.GPT_VISION_RATES.inputPerToken +
+      this.gptVision.outputTokens * this.GPT_VISION_RATES.outputPerToken +
+      this.gptVision.photos * this.GPT_VISION_RATES.perImage
     );
   }
 
@@ -131,10 +137,10 @@ export class CostTracker {
   get sonnetCost() {
     const { cacheReadTokens, cacheWriteTokens, inputTokens, outputTokens } = this.sonnet;
     return (
-      (cacheReadTokens * this.SONNET_RATES.cacheRead / 1_000_000) +
-      (cacheWriteTokens * this.SONNET_RATES.cacheWrite / 1_000_000) +
-      (inputTokens * this.SONNET_RATES.input / 1_000_000) +
-      (outputTokens * this.SONNET_RATES.output / 1_000_000)
+      (cacheReadTokens * this.SONNET_RATES.cacheRead) / 1_000_000 +
+      (cacheWriteTokens * this.SONNET_RATES.cacheWrite) / 1_000_000 +
+      (inputTokens * this.SONNET_RATES.input) / 1_000_000 +
+      (outputTokens * this.SONNET_RATES.output) / 1_000_000
     );
   }
 
@@ -153,23 +159,23 @@ export class CostTracker {
         input: this.sonnet.inputTokens,
         output: this.sonnet.outputTokens,
         compactions: this.sonnet.compactions,
-        cost: parseFloat(this.sonnetCost.toFixed(6))
+        cost: parseFloat(this.sonnetCost.toFixed(6)),
       },
       deepgram: {
         minutes: parseFloat(this.deepgramMinutes.toFixed(2)),
-        cost: parseFloat(this.deepgramCost.toFixed(6))
+        cost: parseFloat(this.deepgramCost.toFixed(6)),
       },
       elevenlabs: {
         characters: this.elevenLabsCharacters,
-        cost: parseFloat(this.elevenLabsCost.toFixed(6))
+        cost: parseFloat(this.elevenLabsCost.toFixed(6)),
       },
       gptVision: {
         photos: this.gptVision.photos,
         inputTokens: this.gptVision.inputTokens,
         outputTokens: this.gptVision.outputTokens,
-        cost: parseFloat(this.gptVisionCost.toFixed(6))
+        cost: parseFloat(this.gptVisionCost.toFixed(6)),
       },
-      totalJobCost: parseFloat(this.totalCost.toFixed(6))
+      totalJobCost: parseFloat(this.totalCost.toFixed(6)),
     };
   }
 
@@ -180,8 +186,8 @@ export class CostTracker {
       type: 'session_summary',
       extraction: {
         turns: this.sonnet.turns,
-        compactions: this.sonnet.compactions
-      }
+        compactions: this.sonnet.compactions,
+      },
     };
   }
 }

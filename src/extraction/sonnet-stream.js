@@ -14,6 +14,7 @@
 //   (no audio for 60s) and reconnects when speech resumes.
 
 import { WebSocketServer } from 'ws';
+import Anthropic from '@anthropic-ai/sdk';
 import { EICRExtractionSession } from './eicr-extraction-session.js';
 import { QuestionGate } from './question-gate.js';
 import * as storage from '../storage.js';
@@ -297,6 +298,10 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
 
           case 'correction':
             await handleCorrection(ws, currentSessionId, msg);
+            break;
+
+          case 'voice_command':
+            await handleVoiceCommand(ws, currentSessionId, msg, getAnthropicKey);
             break;
 
           case 'session_pause':
@@ -591,6 +596,200 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
     // Send correction as a transcript so Sonnet can process it in context
     const correctionText = `CORRECTION: The value for ${msg.field} on circuit ${msg.circuit} should be ${msg.value}`;
     await handleTranscript(ws, sessionId, { text: correctionText });
+  }
+
+  // Voice command prompt for Sonnet — interprets natural language commands into structured actions.
+  // Uses a separate Sonnet call (not the extraction session) to keep the extraction conversation clean.
+  const VOICE_COMMAND_SYSTEM_PROMPT = `You are CertMate, an AI assistant for UK electrical inspectors using the CertMate app to fill in EICR/EIC certificates. The inspector has spoken a voice command after saying your wake word "CertMate".
+
+Your job is to interpret their natural language command and return a structured JSON action that the app can execute.
+
+AVAILABLE ACTIONS:
+
+1. reorder_circuits — Move circuits to new positions
+   Example commands: "move circuits 7 and 8 to positions 2 and 3", "put circuit 5 first", "swap circuits 2 and 4"
+   Response: { "action": { "type": "reorder_circuits", "params": { "circuit_moves": [{"from": 7, "to": 2}, {"from": 8, "to": 3}] } } }
+
+2. add_circuit — Add a new circuit
+   Example: "add a new circuit for the cooker", "add circuit called shower"
+   Response: { "action": { "type": "add_circuit", "params": { "description": "Cooker" } } }
+
+3. delete_circuit — Delete a circuit by its number
+   Example: "delete circuit 5", "remove the last circuit"
+   Response: { "action": { "type": "delete_circuit", "params": { "circuit_ref": "5" } } }
+
+4. update_field — Update a specific field value
+   Example: "set the Ze to 0.35", "change circuit 3 designation to shower"
+   Response: { "action": { "type": "update_field", "params": { "field": "ze", "value": "0.35" } } }
+   For circuit fields: { "action": { "type": "update_field", "params": { "field": "circuit_designation", "circuit": 3, "value": "Shower" } } }
+
+5. query_field — Answer a question about current data (no mutation)
+   Example: "what's the Zs for circuit 3?", "what's the client name?", "how many circuits do I have?"
+   Response: { "action": { "type": "query_field", "params": { "field": "zs", "circuit": 3 } } }
+
+6. query_summary — Provide a summary of the current state
+   Example: "give me a summary", "what have we filled in so far?", "what's missing?"
+   Response: { "action": { "type": "query_summary", "params": {} } }
+
+FIELD NAMES (use these exact names in actions):
+- Supply: ze, pfc, earthing_arrangement, main_switch_rating, main_switch_bs_en
+- Circuit: circuit_designation, cable_size, ocpd_rating, ocpd_type, zs, r1_r2, r2, ir_live_earth, ir_live_live, rcd_trip_time, polarity
+- Installation: client_name, address, postcode, phone, email, premises_description
+- Board: manufacturer, zs_at_db
+
+RESPONSE FORMAT — Always respond with valid JSON:
+{
+  "understood": true/false,
+  "spoken_response": "Brief natural speech to say back to the inspector via TTS",
+  "action": { "type": "...", "params": { ... } } or null if not understood
+}
+
+GUIDELINES:
+- Keep spoken_response SHORT (under 15 words). The inspector is busy working.
+- For queries, include the answer in spoken_response. Example: "The Zs for circuit 3 is 0.35 ohms"
+- For mutations, confirm what was done. Example: "Done, circuits 7 and 8 moved to positions 2 and 3"
+- If you can't understand the command, set understood=false and spoken_response to a helpful clarification
+- Use the job state context to answer queries accurately
+- For "swap" commands, calculate the correct moves to achieve the swap
+- For "move circuit X to position Y" with multiple circuits, process them so the final positions match what the user asked for
+- Circuit refs are 1-based (circuit 1 is the first circuit)`;
+
+  async function handleVoiceCommand(ws, sessionId, msg, getAnthropicKey) {
+    const { command, jobState } = msg;
+    if (!command) {
+      ws.send(
+        JSON.stringify({
+          type: 'voice_command_response',
+          understood: false,
+          spoken_response: "I didn't catch that. Try again?",
+          action: null,
+        })
+      );
+      return;
+    }
+
+    logger.info('Processing voice command', {
+      sessionId,
+      command: command.substring(0, 120),
+    });
+
+    try {
+      const apiKey = await getAnthropicKey();
+      if (!apiKey) throw new Error('Anthropic API key not available');
+
+      const client = new Anthropic({ apiKey });
+
+      // Build context from job state
+      let context = '';
+      if (jobState) {
+        context += '\n\nCURRENT JOB STATE:\n';
+        if (jobState.circuits && Array.isArray(jobState.circuits)) {
+          context += `Circuits (${jobState.circuits.length} total):\n`;
+          for (const c of jobState.circuits) {
+            const parts = [`Circuit ${c.circuitRef || c.circuit_ref || '?'}`];
+            if (c.circuitDesignation || c.circuit_designation)
+              parts.push(`"${c.circuitDesignation || c.circuit_designation}"`);
+            if (c.cableSize || c.cable_size) parts.push(`cable: ${c.cableSize || c.cable_size}`);
+            if (c.ocpdRating || c.ocpd_rating)
+              parts.push(
+                `OCPD: ${c.ocpdType || c.ocpd_type || ''}${c.ocpdRating || c.ocpd_rating}A`
+              );
+            if (c.zs) parts.push(`Zs: ${c.zs}`);
+            context += `  ${parts.join(', ')}\n`;
+          }
+        }
+        if (jobState.supplyCharacteristics || jobState.supply_characteristics) {
+          const supply = jobState.supplyCharacteristics || jobState.supply_characteristics;
+          context += 'Supply: ';
+          const parts = [];
+          if (supply.earthingArrangement || supply.earthing_arrangement)
+            parts.push(`Earthing: ${supply.earthingArrangement || supply.earthing_arrangement}`);
+          if (supply.ze) parts.push(`Ze: ${supply.ze}`);
+          if (supply.prospectiveFaultCurrent || supply.prospective_fault_current)
+            parts.push(
+              `PFC: ${supply.prospectiveFaultCurrent || supply.prospective_fault_current}`
+            );
+          context += parts.join(', ') + '\n';
+        }
+        if (jobState.installationDetails || jobState.installation_details) {
+          const install = jobState.installationDetails || jobState.installation_details;
+          const parts = [];
+          if (install.clientName || install.client_name)
+            parts.push(`Client: ${install.clientName || install.client_name}`);
+          if (install.address) parts.push(`Address: ${install.address}`);
+          if (install.postcode) parts.push(`Postcode: ${install.postcode}`);
+          if (parts.length > 0) context += `Installation: ${parts.join(', ')}\n`;
+        }
+      }
+
+      const response = await client.messages.create({
+        model: 'claude-sonnet-4-6',
+        max_tokens: 512,
+        system: VOICE_COMMAND_SYSTEM_PROMPT,
+        messages: [
+          {
+            role: 'user',
+            content: `VOICE COMMAND: "${command}"${context}`,
+          },
+        ],
+      });
+
+      const text = response.content[0]?.text || '';
+
+      // Parse JSON from response (handle markdown code blocks)
+      let parsed;
+      try {
+        const jsonMatch =
+          text.match(/```json\s*([\s\S]*?)```/) || text.match(/```\s*([\s\S]*?)```/);
+        const jsonStr = jsonMatch ? jsonMatch[1].trim() : text.trim();
+        parsed = JSON.parse(jsonStr);
+      } catch {
+        logger.warn('Voice command response not valid JSON', {
+          sessionId,
+          text: text.substring(0, 200),
+        });
+        parsed = {
+          understood: false,
+          spoken_response: 'Sorry, I had trouble processing that. Try again?',
+          action: null,
+        };
+      }
+
+      // Track cost (voice commands are cheap — single-turn, small response)
+      if (sessionId && activeSessions.has(sessionId)) {
+        const entry = activeSessions.get(sessionId);
+        if (response.usage) {
+          entry.session.costTracker.addVoiceCommandCost(response.usage);
+          // Send updated cost
+          ws.send(JSON.stringify(entry.session.costTracker.toCostUpdate()));
+        }
+      }
+
+      // Send response to iOS
+      ws.send(
+        JSON.stringify({
+          type: 'voice_command_response',
+          ...parsed,
+        })
+      );
+
+      logger.info('Voice command processed', {
+        sessionId,
+        understood: parsed.understood,
+        action: parsed.action?.type || 'none',
+        response: (parsed.spoken_response || '').substring(0, 80),
+      });
+    } catch (error) {
+      logger.error('Voice command error', { sessionId, error: error.message });
+      ws.send(
+        JSON.stringify({
+          type: 'voice_command_response',
+          understood: false,
+          spoken_response: 'Sorry, I had trouble with that command.',
+          action: null,
+        })
+      );
+    }
   }
 
   async function handleSessionStop(ws, sessionId) {
