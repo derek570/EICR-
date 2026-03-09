@@ -71,6 +71,11 @@ COMMON SPEECH PATTERNS:
 - "2.5 and 1.5" for cable = cable_size: "2.5" AND cable_size_earth: "1.5"
 - "5 points" / "6 points on this" = number_of_points
 - Numbers alone after a field name: "Zs... 0.35" = zs: 0.35, "Ze... 0.84" = ze: 0.84 (field from recent context OK within same utterance)
+- "Ze at DB 0.34" / "Ze at the board" / "Ze at the fuse board" = zs_at_db: 0.34 (circuit 0). The "at DB/board" qualifier routes to zs_at_db regardless of whether they say Ze or Zs.
+- "Zs at DB 0.35" / "Zs at the board" / "Zs at the fuse board" = zs_at_db: 0.35 (circuit 0). Same field — electricians use Ze/Zs interchangeably for the board reading.
+- "Ze 0.34" / "Ze is 0.34" (bare, no location) = ze: 0.34 (circuit 0). Only bare Ze without "at DB/board" goes to the ze field.
+- "main switch 100 amps" / "current rating 100" / "its current rating is 100" / "main fuse rated 60" = main_switch_current (circuit 0, supply field)
+- "main switch BS1361" / "main fuse is a 3036" = main_switch_bs_en (circuit 0, supply field)
 
 ADDRESS & POSTCODE:
 - When POSTCODE LOOKUP data is included in the message, use it to:
@@ -116,8 +121,8 @@ CIRCUIT FIELDS (per circuit):
 - rcd_button_confirmed: "OK" if test button works
 - afdd_button_confirmed: "OK" if AFDD fitted and tested
 
-SUPPLY FIELDS (circuit 0):
-- ze: external earth fault loop impedance in ohms
+SUPPLY FIELDS (circuit 0 — ALWAYS use circuit: 0, NEVER circuit: -1):
+- ze: external earth fault loop impedance (Ze) in ohms. Only use for BARE "Ze 0.34" or "Ze is 0.34" WITHOUT a location qualifier. If the electrician says "Ze at DB", "Ze at the board", "Ze at the fuse board" — use zs_at_db instead (see below).
 - pfc: prospective fault current at origin in kA
 - earthing_arrangement: "TN-S", "TN-C-S", "TT"
 - main_earth_conductor_csa: mm2
@@ -130,12 +135,12 @@ SUPPLY FIELDS (circuit 0):
 - supply_frequency: nominal frequency in Hz (typically "50")
 - supply_polarity_confirmed: "Yes" if confirmed
 - main_switch_bs_en: BS standard of the main switch/fuse (e.g., "1361 type 1", "3036 (S-E)", "88 Fuse", "60947-3"). Electricians say "main fuse BS1361", "main switch is a 3036", "supply fuse BS88". Map: 1361->"1361 type 1", 3036->"3036 (S-E)", 88->"88 Fuse", 60947->"60947-3", 1631->"1361 type 1".
-- main_switch_current: rating of the main switch/fuse in amps (e.g., "60", "100"). Electricians say "main fuse 60 amps", "100 amp main switch", "supply fuse rated at 80".
+- main_switch_current: rating of the main switch/fuse in amps (e.g., "60", "100"). Electricians say "main fuse 60 amps", "100 amp main switch", "supply fuse rated at 80", "current rating 100", "its current rating is 100 amps". CRITICAL: "current rating" or "rating" in the context of the main switch/fuse = main_switch_current (supply field, circuit 0), NOT ocpd_rating (which is per-circuit).
 - main_switch_fuse_setting: fuse/setting rating in amps if different from current rating
 - main_switch_poles: number of poles ("DP", "TP", "TPN", "4P"). "double pole"="DP", "2 pole"="DP", "triple pole"="TP".
 - main_switch_voltage: voltage rating in volts (typically "230" or "400")
 - manufacturer: consumer unit manufacturer name
-- zs_at_db: Zs at distribution board in ohms
+- zs_at_db: impedance at the distribution board in ohms. CRITICAL: ANY reading "at DB", "at the board", "at the fuse board", "at the consumer unit" goes here — whether the electrician says "Ze at DB" or "Zs at DB". Electricians use Ze and Zs interchangeably when referring to the board measurement. The "at DB/board" qualifier is what matters.
 - address: property address (street name and number only, no town/postcode)
 - postcode: UK postcode (validated format, e.g., "CR2 6XH")
 - town: town or city name
