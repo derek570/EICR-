@@ -647,6 +647,18 @@ function analyzeSession(sessionDir) {
 
   const totalCostUsd = deepgramCostUsd + sonnetCostUsd + gptVisionCostUsd + elevenLabsCostUsd;
 
+  // Doze savings: compare actual streaming minutes to total session duration
+  const sessionDurationMin = parseFloat(manifest.recordingDurationMin || "0");
+  const dozeSavedMinutes = sessionDurationMin > 0 ? Math.max(0, sessionDurationMin - deepgramMinutes) : 0;
+  const dozeSavedCostUsd = dozeSavedMinutes * DEEPGRAM_RATE;
+  const hypotheticalDeepgramCostUsd = sessionDurationMin * DEEPGRAM_RATE;
+  const dozeSavingsPercent = hypotheticalDeepgramCostUsd > 0
+    ? parseFloat(((dozeSavedCostUsd / hypotheticalDeepgramCostUsd) * 100).toFixed(1))
+    : 0;
+  const streamingPercent = sessionDurationMin > 0
+    ? parseFloat(((deepgramMinutes / sessionDurationMin) * 100).toFixed(1))
+    : 100;
+
   const costBreakdown = {
     deepgram: {
       cost_usd: parseFloat(deepgramCostUsd.toFixed(6)),
@@ -668,6 +680,15 @@ function analyzeSession(sessionDir) {
       characters: elevenLabsChars,
     },
     total_usd: parseFloat(totalCostUsd.toFixed(6)),
+    doze_savings: {
+      session_duration_min: parseFloat(sessionDurationMin.toFixed(2)),
+      streaming_min: parseFloat(deepgramMinutes.toFixed(2)),
+      streaming_percent: streamingPercent,
+      saved_min: parseFloat(dozeSavedMinutes.toFixed(2)),
+      saved_usd: parseFloat(dozeSavedCostUsd.toFixed(4)),
+      savings_percent: dozeSavingsPercent,
+      hypothetical_deepgram_usd: parseFloat(hypotheticalDeepgramCostUsd.toFixed(4)),
+    },
   };
 
   // ── 12. Sonnet prompt audit ──
@@ -894,6 +915,12 @@ function analyzeSession(sessionDir) {
   console.log(`  Buffer replays: ${vadSleepAnalysis.buffer_replays}`);
   console.log(`  Wake failures: ${vadSleepAnalysis.post_wake_no_transcript}`);
   console.log(`  Total cost (USD): $${costBreakdown.total_usd.toFixed(4)}`);
+  if (costBreakdown.doze_savings.session_duration_min > 0) {
+    console.log(`  ── Doze Savings ──`);
+    console.log(`  Session duration: ${costBreakdown.doze_savings.session_duration_min}min, Streamed: ${costBreakdown.doze_savings.streaming_min}min (${costBreakdown.doze_savings.streaming_percent}%)`);
+    console.log(`  Deepgram saved: $${costBreakdown.doze_savings.saved_usd.toFixed(4)} (${costBreakdown.doze_savings.savings_percent}% reduction)`);
+    console.log(`  Without doze: $${costBreakdown.doze_savings.hypothetical_deepgram_usd.toFixed(4)} → With doze: $${costBreakdown.deepgram.cost_usd.toFixed(4)}`);
+  }
 
   return analysis;
 }
