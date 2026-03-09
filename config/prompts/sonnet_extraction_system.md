@@ -118,6 +118,11 @@ CIRCUIT FIELDS (per circuit):
 - rcd_rating_a: RCD rating in mA (typically 30)
 - polarity: "correct" or "reversed" or "OK"
 - number_of_points: count of outlets/points on circuit
+- rcd_type: RCD type ("AC", "A", "B", "F", "B+")
+- rcd_operating_current_ma: per-circuit RCD operating current in mA (typically "30")
+- max_disconnect_time: maximum disconnection time in seconds (e.g., "0.4", "5")
+- ocpd_breaking_capacity: OCPD breaking capacity in kA (e.g., "6", "10")
+- ir_test_voltage: insulation resistance test voltage in volts (typically "250", "500")
 - rcd_button_confirmed: "OK" if test button works
 - afdd_button_confirmed: "OK" if AFDD fitted and tested
 
@@ -139,7 +144,29 @@ SUPPLY FIELDS (circuit 0 — ALWAYS use circuit: 0, NEVER circuit: -1):
 - main_switch_fuse_setting: fuse/setting rating in amps if different from current rating
 - main_switch_poles: number of poles ("DP", "TP", "TPN", "4P"). "double pole"="DP", "2 pole"="DP", "triple pole"="TP".
 - main_switch_voltage: voltage rating in volts (typically "230" or "400")
+- main_switch_location: location of main switch (e.g., "hallway", "under stairs", "garage")
+- main_switch_conductor_material: conductor material ("Copper", "Aluminium")
+- main_switch_conductor_csa: conductor CSA in mm2
+- rcd_operating_current: supply-level RCD operating current in mA (e.g., "30", "100", "300")
+- rcd_time_delay: supply-level RCD time delay in ms
+- rcd_operating_time: supply-level RCD operating/trip time in ms
 - manufacturer: consumer unit manufacturer name
+- live_conductors: supply type ("AC single phase", "AC three phase", "DC")
+- number_of_supplies: number of supply sources (typically "1")
+- nominal_voltage_uo: line-to-neutral voltage in volts (typically "230")
+- earth_electrode_location: location of earth electrode (e.g., "front garden", "near meter")
+- earthing_conductor_material: earthing conductor material ("Copper", "Aluminium")
+- earthing_conductor_continuity: continuity confirmed ("Satisfactory", "Yes")
+- main_bonding_material: main bonding conductor material ("Copper", "Aluminium")
+- main_bonding_continuity: bonding continuity confirmed ("Satisfactory", "Yes")
+- bonding_oil: "Yes" if oil installation bonding present
+- bonding_structural_steel: "Yes" if structural steel bonding present
+- bonding_lightning: "Yes" if lightning conductor bonding present
+- bonding_other: description of other bonding (e.g., "swimming pool", "central heating")
+- spd_bs_en: SPD BS standard number (e.g., "BS EN 61643-11")
+- spd_type_supply: SPD type ("Type 1", "Type 2", "Type 3", "Type 1+2")
+- spd_short_circuit: SPD short circuit rating in kA
+- spd_rated_current: SPD rated discharge current in amps/kA
 - zs_at_db: impedance at the distribution board in ohms. CRITICAL: ANY reading "at DB", "at the board", "at the fuse board", "at the consumer unit" goes here — whether the electrician says "Ze at DB" or "Zs at DB". Electricians use Ze and Zs interchangeably when referring to the board measurement. The "at DB/board" qualifier is what matters.
 - address: property address (street name and number only, no town/postcode)
 - postcode: UK postcode (validated format, e.g., "CR2 6XH")
