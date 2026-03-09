@@ -1,23 +1,39 @@
-import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
-import { Toaster } from "sonner";
-import { ThemeProvider } from "@/components/layout/theme-provider";
-import { ThemeScript } from "@/components/layout/theme-script";
-import "./globals.css";
+import type { Metadata } from 'next';
+import { Geist, Geist_Mono } from 'next/font/google';
+import { Toaster } from 'sonner';
+import { ThemeProvider } from '@/components/layout/theme-provider';
+import { ThemeScript } from '@/components/layout/theme-script';
+import './globals.css';
 
 const geistSans = Geist({
-  variable: "--font-geist-sans",
-  subsets: ["latin"],
+  variable: '--font-geist-sans',
+  subsets: ['latin'],
 });
 
 const geistMono = Geist_Mono({
-  variable: "--font-geist-mono",
-  subsets: ["latin"],
+  variable: '--font-geist-mono',
+  subsets: ['latin'],
 });
 
 export const metadata: Metadata = {
-  title: "CertMate Desktop",
-  description: "EICR/EIC Certificate Management",
+  title: 'CertMate — Talk. Certify. Done.',
+  description:
+    'Voice-powered EICR certificate creation for UK electrical inspectors. Speak your findings on-site, AI fills the form, send the PDF before you leave.',
+  keywords: [
+    'EICR',
+    'electrical certificate',
+    'BS 7671',
+    'electrical inspection',
+    'CertMate',
+    'voice to certificate',
+  ],
+  openGraph: {
+    title: 'CertMate — Talk. Certify. Done.',
+    description:
+      "Speak your inspection findings — AI fills out the EICR certificate so it's ready to send before you leave site.",
+    siteName: 'CertMate',
+    type: 'website',
+  },
 };
 
 export default function RootLayout({
@@ -30,9 +46,7 @@ export default function RootLayout({
       <head>
         <ThemeScript />
       </head>
-      <body
-        className={`${geistSans.variable} ${geistMono.variable} antialiased`}
-      >
+      <body className={`${geistSans.variable} ${geistMono.variable} antialiased`}>
         <ThemeProvider>
           {children}
           <Toaster position="top-right" richColors />
