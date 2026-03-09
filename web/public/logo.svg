@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 50" fill="none">
+  <defs>
+    <linearGradient id="brandGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#2563EB"/>
+      <stop offset="50%" stop-color="#06B6D4"/>
+      <stop offset="100%" stop-color="#22C55E"/>
+    </linearGradient>
+    <linearGradient id="iconGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#3B82F6"/>
+      <stop offset="100%" stop-color="#22C55E"/>
+    </linearGradient>
+    <filter id="glow">
+      <feGaussianBlur stdDeviation="1.5" result="blur"/>
+      <feComposite in="SourceGraphic" in2="blur" operator="over"/>
+    </filter>
+  </defs>
+  <!-- Speech bubble with microphone -->
+  <g transform="translate(4,5)" filter="url(#glow)">
+    <!-- Speech bubble -->
+    <path d="M2 8C2 4.686 4.686 2 8 2H30C33.314 2 36 4.686 36 8V26C36 29.314 33.314 32 30 32H22L18 38L14 32H8C4.686 32 2 29.314 2 26V8Z" fill="url(#iconGrad)" opacity="0.15"/>
+    <path d="M2 8C2 4.686 4.686 2 8 2H30C33.314 2 36 4.686 36 8V26C36 29.314 33.314 32 30 32H22L18 38L14 32H8C4.686 32 2 29.314 2 26V8Z" stroke="url(#iconGrad)" stroke-width="2" fill="none"/>
+    <!-- Microphone -->
+    <rect x="15" y="8" width="8" height="14" rx="4" fill="url(#iconGrad)"/>
+    <path d="M12 18C12 22.418 14.582 25 19 25C23.418 25 26 22.418 26 18" stroke="url(#iconGrad)" stroke-width="2" stroke-linecap="round" fill="none"/>
+    <line x1="19" y1="25" x2="19" y2="28" stroke="url(#iconGrad)" stroke-width="2" stroke-linecap="round"/>
+    <!-- Checkmark -->
+    <circle cx="30" cy="8" r="5" fill="#22C55E"/>
+    <path d="M27.5 8L29 9.5L32.5 6" stroke="white" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+  <!-- CertMate text -->
+  <text x="50" y="24" font-family="system-ui, -apple-system, sans-serif" font-weight="700" font-size="20" fill="currentColor">
+    <tspan>Cert</tspan><tspan fill="url(#brandGrad)">Mate</tspan>
+  </text>
+  <!-- Tagline -->
+  <text x="50" y="40" font-family="system-ui, -apple-system, sans-serif" font-weight="400" font-size="9" fill="currentColor" opacity="0.5">Talk. Certify. Done.</text>
+</svg>

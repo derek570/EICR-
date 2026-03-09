@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40" fill="none">
+  <defs>
+    <linearGradient id="g1" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#3B82F6"/>
+      <stop offset="100%" stop-color="#22C55E"/>
+    </linearGradient>
+    <filter id="glow">
+      <feGaussianBlur stdDeviation="1" result="blur"/>
+      <feComposite in="SourceGraphic" in2="blur" operator="over"/>
+    </filter>
+  </defs>
+  <g filter="url(#glow)">
+    <!-- Speech bubble -->
+    <path d="M3 9C3 5.134 6.134 2 10 2H30C33.866 2 37 5.134 37 9V25C37 28.866 33.866 32 30 32H23L20 37L17 32H10C6.134 32 3 28.866 3 25V9Z" fill="url(#g1)" opacity="0.15"/>
+    <path d="M3 9C3 5.134 6.134 2 10 2H30C33.866 2 37 5.134 37 9V25C37 28.866 33.866 32 30 32H23L20 37L17 32H10C6.134 32 3 28.866 3 25V9Z" stroke="url(#g1)" stroke-width="2" fill="none"/>
+    <!-- Microphone -->
+    <rect x="16" y="8" width="8" height="13" rx="4" fill="url(#g1)"/>
+    <path d="M13 17.5C13 21.642 16.134 24 20 24C23.866 24 27 21.642 27 17.5" stroke="url(#g1)" stroke-width="2" stroke-linecap="round" fill="none"/>
+    <line x1="20" y1="24" x2="20" y2="27" stroke="url(#g1)" stroke-width="2" stroke-linecap="round"/>
+    <!-- Checkmark badge -->
+    <circle cx="31" cy="8" r="5.5" fill="#22C55E"/>
+    <path d="M28.5 8L30 9.5L33.5 6" stroke="white" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+</svg>
