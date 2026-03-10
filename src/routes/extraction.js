@@ -755,10 +755,6 @@ IMPORTANT: If you cannot read the BS/EN number from the device, use your knowled
             { type: 'text', text: prompt },
           ],
         },
-        {
-          role: 'assistant',
-          content: [{ type: 'text', text: '{' }],
-        },
       ],
     });
 
@@ -791,9 +787,8 @@ IMPORTANT: If you cannot read the BS/EN number from the device, use your knowled
       });
     }
 
-    // Extract JSON from response — prefill forces response to start as JSON continuation
-    // Prepend the '{' from the assistant prefill since the response continues from there
-    let jsonStr = '{' + content;
+    // Extract JSON from response — Claude may include reasoning text before the JSON
+    let jsonStr = content;
     // Try to find a JSON code block first (in case model still wraps in code block)
     const jsonBlockMatch = jsonStr.match(/```json\s*([\s\S]*?)```/);
     if (jsonBlockMatch) {
