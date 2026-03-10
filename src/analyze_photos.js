@@ -52,16 +52,16 @@ Count total modules and cross-check against the board's stated number of ways.
 **STEP 2: MAP CIRCUIT LABELS TO PHYSICAL DEVICES**
 Look at the circuit labels/numbers printed below or above the devices. Map each label to the physical device from Step 1.
 
-CIRCUIT NUMBERING RULE:
+CIRCUIT NUMBERING RULE (ALWAYS follow this -- do NOT use label numbers):
 - Find the main switch first. It may be on the LEFT or the RIGHT of the board.
 - Circuit 1 is the device immediately NEXT TO the main switch, numbering OUTWARD (away from the main switch).
 - Example: if the main switch is on the LEFT, Circuit 1 is the first device to its right, Circuit 2 is next, etc.
 - Example: if the main switch is on the RIGHT, Circuit 1 is the first device to its left, Circuit 2 is next, etc.
-- If visible circuit labels contradict this rule, follow the LABELS (the installer may have numbered differently).
+- ALWAYS number from the main switch outward. Even if printed circuit labels show different numbers, use the main-switch-outward rule.
 
 IMPORTANT:
 - RCDs and the main switch are NOT numbered circuits -- labels skip over them
-- Blank/spare positions may or may not have a label
+- BLANK WAYS MUST BE COUNTED as circuit positions. Every blank plate / spare way gets a circuit number and label "Spare". Do NOT skip blank positions when numbering.
 - If labels don't align with the physical device count, STOP and note the discrepancy -- do NOT shift ratings to force a match
 
 **STEP 3: EXTRACT DETAILS FOR EACH DEVICE**
@@ -127,18 +127,20 @@ Do NOT guess when uncertain -- ask instead. These questions will be read aloud t
 
 **STEP 4: CROSS-CHECK (mandatory)**
 Before finishing, verify ALL of the following:
-1. Does the number of MCBs + RCBOs match the number of circuit labels?
-2. Does the total module count add up to the board's number of ways?
+1. Does the number of MCBs + RCBOs + SPARE WAYS match the board's number of ways (minus main switch and RCDs)?
+2. Does the total module count add up to the board's stated number of ways?
 3. Are there any labels without a matching device, or devices without a label?
 4. Have you read each breaker's amp rating from the device face (not assumed from the circuit name)?
 5. Have you identified the RCD type (AC, A, B, etc.) for every RCD and RCBO?
 6. Have you checked for an SPD?
+7. Are ALL blank/spare ways included in the circuit list with label "Spare"?
+8. Is Circuit 1 next to the main switch, numbering outward?
 If ANYTHING doesn't add up, state the discrepancy explicitly.
 
 CRITICAL REMINDERS:
 - Stand-alone RCDs are NOT circuit rows. Their type and IDn go into the RCD fields of the circuits they protect.
 - RCBOs ARE circuit rows. Their RCD details also go into the RCD fields for that circuit.
-- BLANK / SPARE WAYS: list as "Spare" with NO device type, NO BS/EN, NO rating.
+- BLANK / SPARE WAYS: ALWAYS include in the circuit list with label "Spare", NO device type, NO BS/EN, NO rating. Blank ways count as circuit positions and MUST be numbered.
 - Do NOT assume amp ratings from circuit labels -- read the actual device face.
 - RCD types can differ between devices in the same board -- check each one.
 
