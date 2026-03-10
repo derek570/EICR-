@@ -531,7 +531,7 @@ Handwritten text on consumer units is often faint, at an angle, or in poor light
 
 ## STEP 2: PHYSICAL DEVICE SCAN
 
-Scan the ENTIRE board from one end to the other and identify EVERY physical module, including blank/spare positions. You MUST account for every single device on the board — do NOT stop partway through. If the board has 12 ways, you must find 12 devices. If it has 16 ways, you must find 16 devices. Use these width rules:
+Start by finding the MAIN SWITCH — it has a red toggle and is usually the largest device on the board. Begin your scan FROM the main switch and work outward, identifying EVERY physical module in order, including blank/spare positions. You MUST account for every single device on the board — do NOT stop partway through. If the board has 12 ways, you must find 12 devices. If it has 16 ways, you must find 16 devices. Use these width rules:
 - MCB = 1 module (narrow, single toggle lever, NO test button)
 - RCBO = 2 modules — ALWAYS has BOTH a toggle lever AND a small test button on the same device, plus an RCD waveform symbol. If a device has a test button, it is an RCBO, not an MCB.
 - RCD = 2-4 modules (test button, protects multiple downstream circuits, is NOT itself a circuit breaker)
