@@ -415,9 +415,9 @@ function buildRecommendationCards(recs) {
     return `<div class="card"><p class="muted">No code changes recommended for this session.</p></div>`;
   }
   return recs.map((rec, i) => `
-    <div class="card rec-card" id="rec-${i}">
+    <div class="card rec-card" id="rec-${i}" onclick="toggleRec(event, ${i})">
       <div class="card-header">
-        <label class="checkbox-label">
+        <label class="checkbox-label" onclick="event.stopPropagation()">
           <input type="checkbox" name="accepted" value="${i}" checked>
           <span class="rec-title">${escapeHtml(rec.title)}</span>
         </label>
@@ -426,7 +426,7 @@ function buildRecommendationCards(recs) {
       </div>
       <p class="rec-desc">${escapeHtml(rec.description)}</p>
       <div class="file-path">${escapeHtml(rec.file)}</div>
-      <details>
+      <details onclick="event.stopPropagation()">
         <summary>View diff</summary>
         <div class="diff">
           <div class="diff-old">- ${escapeHtml(rec.old_code)}</div>
@@ -598,7 +598,7 @@ const html = `<!DOCTYPE html>
     .section-title { font-size: 17px; font-weight: 700; color: #fff; margin-bottom: 12px; padding-bottom: 6px; border-bottom: 1px solid #2a2a4a; display: flex; align-items: center; justify-content: space-between; cursor: pointer; }
     .section-title .collapse-icon { font-size: 14px; color: #666; transition: transform 0.2s; }
     .section-title .collapse-icon.collapsed { transform: rotate(-90deg); }
-    .section-body { overflow: hidden; transition: max-height 0.3s ease; }
+    .section-body { overflow: visible; transition: max-height 0.3s ease; }
     .section-body.collapsed { max-height: 0 !important; overflow: hidden; }
 
     /* ── Card ── */
@@ -701,7 +701,10 @@ const html = `<!DOCTYPE html>
     .diff { font-family: monospace; font-size: 12px; margin-top: 6px; overflow-x: auto; white-space: pre-wrap; word-break: break-all; }
     .diff-old { background: #3d1f1f; color: #ff6b6b; padding: 4px 8px; border-radius: 4px; margin-bottom: 2px; }
     .diff-new { background: #1f3d2a; color: #51cf66; padding: 4px 8px; border-radius: 4px; }
-    input[type="checkbox"] { width: 18px; height: 18px; accent-color: #2ecc71; }
+    input[type="checkbox"] { width: 24px; height: 24px; accent-color: #2ecc71; min-width: 24px; }
+    .rec-card { cursor: pointer; -webkit-tap-highlight-color: rgba(46,204,113,0.2); transition: border-color 0.15s; }
+    .rec-card:active { border-color: #2ecc71; }
+    .rec-card.deselected { opacity: 0.5; }
     .category-badge { display: inline-block; font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 10px; color: #fff; margin-left: 6px; white-space: nowrap; vertical-align: middle; }
     .token-badge { display: inline-block; font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 10px; margin-left: 4px; white-space: nowrap; vertical-align: middle; }
     .token-plus { background: #ef444422; border: 1px solid #ef4444; color: #ef4444; }
@@ -858,6 +861,7 @@ const html = `<!DOCTYPE html>
     <!-- Actions bar: OUTSIDE section-body to avoid overflow:hidden clipping -->
     ${recommendations.length > 0 ? `
     <div id="result-msg" class="result-msg"></div>
+    <div style="height:80px;"></div>
     <div class="actions-bar">
       <button class="btn btn-accept" id="btn-accept" onclick="acceptSelected()">Accept Selected</button>
       <button class="btn btn-reject" id="btn-reject" onclick="rejectAll()">Reject All</button>
@@ -1086,6 +1090,19 @@ const html = `<!DOCTYPE html>
     function disableButtons() {
       document.getElementById("btn-accept").disabled = true;
       document.getElementById("btn-reject").disabled = true;
+    }
+
+    // ── Toggle recommendation card ──
+
+    function toggleRec(event, idx) {
+      var cb = document.querySelector('#rec-' + idx + ' input[type="checkbox"]');
+      if (!cb) return;
+      cb.checked = !cb.checked;
+      var card = document.getElementById('rec-' + idx);
+      if (card) {
+        if (cb.checked) { card.classList.remove('deselected'); }
+        else { card.classList.add('deselected'); }
+      }
     }
 
     // ── Accept/Reject/Rerun ──
