@@ -516,25 +516,38 @@ router.post('/analyze-ccu', auth.requireAuth, upload.single('photo'), async (req
 
 ## TASK
 
-Extract every protective device from this consumer unit photo and return structured JSON. Before producing the JSON output, you MUST work through the following 4-step methodology internally to ensure accuracy.
+Extract every protective device from this consumer unit photo and return structured JSON. Before producing the JSON output, you MUST work through the following 5-step methodology internally to ensure accuracy.
 
-## STEP 1: PHYSICAL DEVICE SCAN
+## STEP 1: READ ALL VISIBLE TEXT FIRST (CRITICAL)
 
-Scan the board left to right and identify every physical module. Use these width rules:
-- MCB = 1 module (narrow, single toggle lever)
-- RCBO = 2 modules (toggle lever + test button + RCD waveform symbol)
+Before identifying devices, carefully scan the ENTIRE photo for ALL visible text, including:
+- **Handwritten text** in pen, marker, or pencil on the board, cover, blanking plates, or surrounding area
+- **Label charts/legends** — printed or handwritten lists mapping circuit numbers to names (often stuck inside the door, above, or below the board)
+- **Adhesive stickers** next to or below each device
+- **Printed label strips** or engraved markings from the manufacturer
+- **Text on cover plates** between devices
+
+Handwritten text on consumer units is often faint, at an angle, or in poor lighting — look carefully. Note down every piece of text you can read before proceeding.
+
+## STEP 2: PHYSICAL DEVICE SCAN
+
+Scan the ENTIRE board from one end to the other and identify EVERY physical module, including blank/spare positions. You MUST account for every single device on the board — do NOT stop partway through. If the board has 12 ways, you must find 12 devices. If it has 16 ways, you must find 16 devices. Use these width rules:
+- MCB = 1 module (narrow, single toggle lever, NO test button)
+- RCBO = 2 modules — ALWAYS has BOTH a toggle lever AND a small test button on the same device, plus an RCD waveform symbol. If a device has a test button, it is an RCBO, not an MCB.
 - RCD = 2-4 modules (test button, protects multiple downstream circuits, is NOT itself a circuit breaker)
 - Main switch / isolator = 2 modules (usually red toggle)
 - SPD = 2-3 modules (has status indicator window, no toggle lever)
-- Blank / spare = 1 module (flat cover plate, no toggle)
+- Blank / spare = 1 module (flat cover plate, no toggle) — MUST be included in the circuits array
+
+Every module position must be accounted for. If a position has a blank cover plate with no device behind it, include it as a circuit entry with ocpd_type: null and label: null. Do NOT skip blank positions.
 
 Count the total modules to verify against the board's stated ways.
 
-## STEP 2: MAP LABELS TO DEVICES
+## STEP 3: MAP LABELS TO DEVICES
 
-RCDs and the main switch are NOT numbered circuits — circuit labels skip over them. If circuit number labels do not align with physical devices, note the discrepancy in the confidence message.
+Match the text/labels you found in Step 1 to the physical devices from Step 2. RCDs and the main switch are NOT numbered circuits — circuit labels skip over them. If circuit number labels do not align with physical devices, note the discrepancy in the confidence message.
 
-## STEP 3: EXTRACT DATA
+## STEP 4: EXTRACT DATA
 
 ### NUMBERING
 
@@ -563,20 +576,21 @@ If any of the following are NOT clearly readable on the device, use your knowled
 
 ### RCD TYPE — TWO-STEP DETERMINATION (CRITICAL)
 
-STEP A: Read the waveform symbol on the device face.
-- Type AC = ONE waveform line (simple sine wave)
-- Type A = TWO waveform lines stacked (sine wave + pulsating DC half-wave)
+STEP A: Read the waveform symbol on the device face. ALWAYS TRUST THE VISIBLE SYMBOL OVER ANY LOOKUP.
+- Type AC = ONE waveform line (simple sine wave) — this is the MOST COMMON type in UK domestic boards
+- Type A = TWO waveform lines stacked (sine wave + pulsating DC half-wave below it)
 - Type B = THREE waveform lines stacked
 - Type S = marked with letter "S" (time-delayed / selective)
 - Type F = marked with letter "F"
-- COUNT THE LINES in the waveform symbol: 1 line = AC, 2 lines = A, 3 lines = B.
+- COUNT THE LINES in the waveform symbol carefully: 1 line = AC, 2 lines = A, 3 lines = B.
+- COMMON MISTAKE: Do not confuse a single sine wave (Type AC) with Type A. If you see only ONE waveform curve, it is Type AC. Type A requires a SECOND distinct line below the first.
 - RCDs and RCBOs within the same board can be DIFFERENT types — check each device individually.
 
-STEP B: If the symbol is not visible or legible, use your knowledge to LOOK UP
-the RCD type from the manufacturer and model number you identified. This is
-MANDATORY — do not leave rcd_type as null without attempting a lookup first.
+STEP B: ONLY if the symbol is not visible or legible, use your knowledge to LOOK UP
+the RCD type from the manufacturer and model number you identified.
 Different model ranges from the same manufacturer have different RCD types, so
 match by the specific model prefix, not just manufacturer name.
+IMPORTANT: If you CAN see the waveform symbol, use it — do NOT override what you see with a lookup.
 
 If BOTH steps fail, set rcd_type to null and add a question to
 questionsForInspector asking the inspector to confirm the RCD type.
@@ -608,23 +622,20 @@ For each circuit device:
 - If it is a plain MCB with no RCD protection: set is_rcbo=false, rcd_protected=false, rcd_type=null
 - Blank/spare positions: set ocpd_type to null, label to null
 
-### CIRCUIT LABELS — IMPORTANT
+### CIRCUIT LABELS — CRITICAL
 
-Actively look for circuit names/labels. They are CRITICAL for the certificate. Check ALL of the following locations in the photo:
-- **Label chart/legend**: A printed or handwritten list mapping circuit numbers to names (often inside the door or below the board)
-- **Adhesive stickers**: Individual labels stuck next to or below each device
-- **Handwritten labels**: Pen/marker writing on the board, cover, or blanking plates
-- **Printed panels**: Manufacturer-provided label strips or engraved markings
-- **Cover plate text**: Text printed on the plastic blanking strips between devices
+You MUST use the text you identified in Step 1. Circuit labels are essential for the certificate — missing labels means the certificate is incomplete.
 
 Common UK circuit names: "Lighting", "Ring Main", "Kitchen Sockets", "Cooker", "Shower", "Immersion", "Smoke Alarms", "Garage", "Garden", "Upstairs Sockets", "Downstairs Sockets", "Boiler", "Fridge Freezer", "Washer".
 
-If you can see ANY text that identifies what a circuit supplies, return it as the label. Only return null if there is genuinely no label visible for that circuit.
+If you can see ANY text that identifies what a circuit supplies — whether handwritten, printed, on a sticker, or on a label chart — return it EXACTLY as written. Do not substitute similar words (e.g. do not return "Sockets" if it says "Boiler"). Only return null if there is genuinely no label visible for that circuit.
 
-## STEP 4: CROSS-CHECK
+## STEP 5: CROSS-CHECK
 
 Before outputting JSON, verify:
-- The count of MCBs + RCBOs matches the number of circuit labels/positions found.
+- You have extracted EVERY device on the board. Go back to the photo and count the physical devices again — if your circuits array has fewer entries than the number of physical devices visible, you have MISSED some. Scan the entire board again and add any missing devices.
+- Every circuit has a label if ANY text was visible for it — re-check the text from Step 1.
+- The count of MCBs + RCBOs + blanks matches the number of physical positions on the board.
 - The total module count is consistent with the board's stated ways.
 - Every amp rating was read from the device face (not assumed from the circuit label).
 - An RCD type (AC, A, B, F, or S) was identified for every RCD and every RCBO individually.
