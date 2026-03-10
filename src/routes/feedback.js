@@ -184,8 +184,50 @@ router.get('/optimizer-report/:reportId', async (req, res) => {
     return res.status(400).send('Invalid report ID');
   }
   try {
-    const html = await storage.downloadText(`optimizer-reports/${reportId}/report.html`);
+    let html = await storage.downloadText(`optimizer-reports/${reportId}/report.html`);
     if (!html) return res.status(404).send('Report not found');
+
+    // Patch old reports: fix overflow, sticky actions, card tappability
+    const patch = `<style>
+.section-body { overflow: visible !important; }
+.section-body.collapsed { overflow: hidden !important; }
+input[type="checkbox"] { width: 24px; height: 24px; min-width: 24px; }
+.rec-card { cursor: pointer; -webkit-tap-highlight-color: rgba(46,204,113,0.2); }
+.rec-card:active { border-color: #2ecc71; }
+.rec-card.deselected { opacity: 0.5; }
+.actions, .actions-bar { position: sticky; bottom: 0; background: #1a1a2e; padding: 12px 16px; border-top: 1px solid #2a2a4a; z-index: 50; margin: 0 -16px; }
+</style>
+<script>
+if (typeof toggleRec === 'undefined') {
+  function toggleRec(event, idx) {
+    var cb = document.querySelector('#rec-' + idx + ' input[type="checkbox"]');
+    if (!cb) return;
+    cb.checked = !cb.checked;
+    var card = document.getElementById('rec-' + idx);
+    if (card) {
+      if (cb.checked) { card.classList.remove('deselected'); }
+      else { card.classList.add('deselected'); }
+    }
+  }
+  document.addEventListener('DOMContentLoaded', function() {
+    var cards = document.querySelectorAll('.card');
+    cards.forEach(function(card, i) {
+      if (card.querySelector('input[name="accepted"]')) {
+        card.classList.add('rec-card');
+        card.id = card.id || ('rec-' + i);
+        var idx = parseInt((card.querySelector('input[name="accepted"]') || {}).value || i);
+        card.setAttribute('onclick', 'toggleRec(event,' + idx + ')');
+        var label = card.querySelector('label');
+        if (label) label.setAttribute('onclick', 'event.stopPropagation()');
+        var details = card.querySelector('details');
+        if (details) details.setAttribute('onclick', 'event.stopPropagation()');
+      }
+    });
+  });
+}
+</script>`;
+    html = html.replace('</body>', patch + '</body>');
+
     res.set('Content-Type', 'text/html');
     res.send(html);
   } catch (err) {
