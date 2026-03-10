@@ -496,12 +496,12 @@ router.post('/analyze-ccu', auth.requireAuth, upload.single('photo'), async (req
       return res.status(400).json({ error: 'No photo uploaded' });
     }
 
-    const apiKey = process.env.OPENAI_API_KEY;
-    if (!apiKey) {
-      return res.status(500).json({ error: 'OpenAI API key not configured' });
+    const anthropicKey = process.env.ANTHROPIC_API_KEY;
+    if (!anthropicKey) {
+      return res.status(500).json({ error: 'Anthropic API key not configured' });
     }
 
-    const model = (process.env.CCU_MODEL || 'gpt-5.2').trim();
+    const model = (process.env.CCU_MODEL || 'claude-sonnet-4-6').trim();
 
     logger.info('CCU photo analysis requested', {
       userId: req.user.id,
@@ -531,7 +531,12 @@ Handwritten text on consumer units is often faint, at an angle, or in poor light
 
 ## STEP 2: PHYSICAL DEVICE SCAN
 
-Start by finding the MAIN SWITCH — it has a red toggle and is usually the largest device on the board. Begin your scan FROM the main switch and work outward, identifying EVERY physical module in order, including blank/spare positions. You MUST account for every single device on the board — do NOT stop partway through. If the board has 12 ways, you must find 12 devices. If it has 16 ways, you must find 16 devices. Use these width rules:
+Start by finding the MAIN SWITCH — it has a red toggle and is usually the largest device on the board. IMPORTANT: Many UK consumer units are SPLIT BOARDS where the main switch is in the MIDDLE, with circuits going BOTH directions:
+- One side has "CIRCUITS PROTECTED BY RCD" (behind a standalone RCD)
+- The other side has "CIRCUITS NOT RCD PROTECTED"
+You MUST scan BOTH sides of the main switch — left AND right — and include ALL devices from both sides. Do NOT stop after scanning one side.
+
+Identify EVERY physical module, including blank/spare positions. You MUST account for every single device on the board — do NOT stop partway through. If the board has 8 ways, you must find 8 devices (plus the main switch, RCD, etc.). Use these width rules:
 - MCB = 1 module (narrow, single toggle lever, NO test button)
 - RCBO = 2 modules — ALWAYS has BOTH a toggle lever AND a small test button on the same device, plus an RCD waveform symbol. If a device has a test button, it is an RCBO, not an MCB.
 - RCD = 2-4 modules (test button, protects multiple downstream circuits, is NOT itself a circuit breaker)
@@ -545,13 +550,26 @@ Count the total modules to verify against the board's stated ways.
 
 ## STEP 3: MAP LABELS TO DEVICES
 
-Match the text/labels you found in Step 1 to the physical devices from Step 2. RCDs and the main switch are NOT numbered circuits — circuit labels skip over them. If circuit number labels do not align with physical devices, note the discrepancy in the confidence message.
+Match the text/labels you found in Step 1 to the physical devices from Step 2 based on PHYSICAL PROXIMITY — each label belongs to the device it is physically closest to. RCDs and the main switch are NOT numbered circuits — circuit labels skip over them.
+
+CRITICAL: If the board has printed or handwritten circuit NUMBERS (e.g. "1", "2", "3" next to devices), IGNORE THESE NUMBERS COMPLETELY. These numbers are frequently wrong, out of date, or do not match the actual device positions. Only use the descriptive TEXT labels (e.g. "Cooker", "Lights", "Smoke Detector") and match them to devices by physical proximity. If a number and a text label appear together (e.g. "3 - Kitchen"), use the text "Kitchen" but ignore the number "3".
 
 ## STEP 4: EXTRACT DATA
 
-### NUMBERING
+### NUMBERING — CRITICAL
 
-Find the main switch first. Circuit 1 starts from the device immediately next to the main switch, numbering outward. The main switch may be on the left or right.
+ALWAYS start from the RED MAIN SWITCH and number outward away from it. This is the ONLY method you must use — physical position from the main switch determines circuit order.
+
+Circuit 1 is the device IMMEDIATELY next to the main switch (the red toggle). Circuit 2 is the next device after that, and so on, moving outward away from the main switch. Every 18mm-wide module position counts as one circuit way — MCBs and RCBOs are each 18mm (one way). Blank/spare cover plates are also 18mm and MUST be counted and included with label: null and ocpd_type: null.
+
+IMPORTANT: Do NOT count standalone RCDs as circuit ways — they are double-width (36mm) protection devices that sit between the main switch and the circuits they protect. Skip over them when numbering.
+
+**IGNORE PRINTED/HANDWRITTEN CIRCUIT NUMBERS ON THE BOARD.** Any numbers printed on the board cover, label strips, or handwritten next to devices are often WRONG or out of date. Do NOT use them for ordering. ALWAYS determine circuit order by physical position starting from the red main switch and moving outward. Map the handwritten/printed LABELS (e.g. "Cooker", "Lights") to devices based on their physical proximity to that device, but NEVER use the printed NUMBERS.
+
+On split boards where the main switch is in the middle or at one end:
+- Number the non-RCD side FIRST: Circuit 1 starts from the device nearest the main switch on that side, numbering outward
+- Then number the RCD-protected side: Circuit numbering continues from where the non-RCD side left off, starting from the device nearest the main switch (or nearest the RCD which is closest to the main switch), numbering outward
+- In the output JSON, list the non-RCD side circuits FIRST, then the RCD-protected side circuits
 
 ### AMP RATING — CRITICAL
 
@@ -577,23 +595,29 @@ If any of the following are NOT clearly readable on the device, use your knowled
 ### RCD TYPE — TWO-STEP DETERMINATION (CRITICAL)
 
 STEP A: Read the waveform symbol on the device face. ALWAYS TRUST THE VISIBLE SYMBOL OVER ANY LOOKUP.
-- Type AC = ONE waveform line (simple sine wave) — this is the MOST COMMON type in UK domestic boards
-- Type A = TWO waveform lines stacked (sine wave + pulsating DC half-wave below it)
+- Type AC = ONE waveform line only (a simple sine wave with nothing below it)
+- Type A = TWO waveform lines stacked (sine wave on top + pulsating DC half-wave below it)
 - Type B = THREE waveform lines stacked
 - Type S = marked with letter "S" (time-delayed / selective)
 - Type F = marked with letter "F"
 - COUNT THE LINES in the waveform symbol carefully: 1 line = AC, 2 lines = A, 3 lines = B.
-- COMMON MISTAKE: Do not confuse a single sine wave (Type AC) with Type A. If you see only ONE waveform curve, it is Type AC. Type A requires a SECOND distinct line below the first.
+- CRITICAL: Look very carefully at the waveform. If there is ANY indication of a second line below the sine wave — even if faint or partially obscured — it is Type A, NOT Type AC. Type AC has ONLY a single clean sine wave with empty space below it.
 - RCDs and RCBOs within the same board can be DIFFERENT types — check each device individually.
+- If you CANNOT clearly count the waveform lines (e.g. due to photo angle, glare, resolution), set rcd_type to NULL. Do NOT guess — a wrong RCD type is worse than a missing one.
 
 STEP B: ONLY if the symbol is not visible or legible, use your knowledge to LOOK UP
 the RCD type from the manufacturer and model number you identified.
 Different model ranges from the same manufacturer have different RCD types, so
-match by the specific model prefix, not just manufacturer name.
+match by the specific model prefix, not just manufacturer name. Examples:
+- Hager: ADA/ADN series — ADA = Type A, ADN = Type AC
+- MK: H79xx = Type AC, H68xx = Type A
+- BG: CURB = Type AC, CUCRB = Type A
+- Wylex: WRS = Type AC, WRSA = Type A; NSEM = Type A RCBO, NSB = MCB (no RCD type)
+- Contactum: CRBO = Type A RCBO series
 IMPORTANT: If you CAN see the waveform symbol, use it — do NOT override what you see with a lookup.
 
-If BOTH steps fail, set rcd_type to null and add a question to
-questionsForInspector asking the inspector to confirm the RCD type.
+If BOTH steps fail, or if you are uncertain between AC and A, set rcd_type to null.
+The system will perform a web search lookup to determine the correct type.
 NEVER return "RCD" or "RCBO" as an rcd_type value. Always return one of: AC, A, B, F, S, or null.
 
 ### BOARD INFO
@@ -693,50 +717,57 @@ Return ONLY valid JSON matching this exact schema:
 
 ## QUESTIONS FOR INSPECTOR
 
-ONLY add questions to "questionsForInspector" when you have set a field to NULL because
-you genuinely could not determine the value. Do NOT ask about values you DID extract —
-if you extracted a value (even with moderate confidence), use it and note any uncertainty
-in the confidence.uncertain_fields array instead.
+CRITICAL: These questions are READ ALOUD via text-to-speech to an inspector on site. Keep them EXTREMELY short and conversational — no technical numbers, no BS/EN references, no amp ratings.
 
-Valid reasons to add a question:
-- RCD type is null because you could not read the waveform symbol AND could not look it up from the model
-- Circuit labels are null because no labelling was visible
-- A critical field is null and cannot be determined from the photo
+Return an EMPTY array [] unless you absolutely could not determine the RCD type for a circuit.
 
-Do NOT ask questions like "Can you confirm the main switch is 63A?" — if you read 63A, just return 63A.
-Do NOT ask about values you set to a non-null value. The inspector will correct any errors during recording.
+The ONLY valid reason to add a question is:
+- RCD type is null because you could not read the waveform symbol AND could not look it up — ask simply: "What is the RCD type for circuit N? Type A or AC?"
 
-Always ask about RCD type when you set rcd_type to null. Example: "What is the RCD type for circuits 1-5? I can see it's a Hager ADN but the waveform symbol is not legible."
+NEVER include in questions:
+- BS/EN numbers, breaking capacity, or any technical specifications
+- Board manufacturer, model, or any board details
+- Main switch rating, type, or poles
+- Confirmation of ANY value you already set
+- Image quality concerns (put those in confidence.message)
+- SPD details
+- Circuit labels you DID extract
+- Long sentences with multiple data points
 
-Other examples: "Is circuit 3 a 20A or 32A breaker? The rating is obscured.", "Is the board a 12-way or 14-way? Two positions are hidden behind cable trunking." If everything is clear, return an empty array.
+If everything was readable, return an EMPTY array []. Most photos should result in zero questions.
 
 IMPORTANT: If you cannot read the BS/EN number from the device, use your knowledge to look it up based on manufacturer and model. Only leave as null if you cannot identify the device at all.`;
 
-    const OpenAI = (await import('openai')).default;
-    const openai = new OpenAI({ apiKey });
+    const Anthropic = (await import('@anthropic-ai/sdk')).default;
+    const anthropic = new Anthropic({ apiKey: anthropicKey });
 
-    const dataUrl = `data:image/jpeg;base64,${base64}`;
-
-    const response = await openai.chat.completions.create({
+    const response = await anthropic.messages.create({
       model,
-      max_completion_tokens: 8192,
-      temperature: 0,
-      response_format: { type: 'json_object' },
+      max_tokens: 8192,
       messages: [
         {
           role: 'user',
           content: [
-            { type: 'image_url', image_url: { url: dataUrl, detail: 'high' } },
+            {
+              type: 'image',
+              source: { type: 'base64', media_type: 'image/jpeg', data: base64 },
+            },
             { type: 'text', text: prompt },
           ],
+        },
+        {
+          role: 'assistant',
+          content: [{ type: 'text', text: '{' }],
         },
       ],
     });
 
-    const content = response.choices?.[0]?.message?.content || '';
-    const promptTokens = response.usage?.prompt_tokens || 0;
-    const completionTokens = response.usage?.completion_tokens || 0;
-    const finishReason = response.choices?.[0]?.finish_reason || 'unknown';
+    // Extract text content (skip thinking blocks)
+    const textBlocks = (response.content || []).filter((b) => b.type === 'text');
+    const content = textBlocks.map((b) => b.text).join('') || '';
+    const promptTokens = response.usage?.input_tokens || 0;
+    const completionTokens = response.usage?.output_tokens || 0;
+    const stopReason = response.stop_reason || 'unknown';
 
     logger.info('CCU analysis complete', {
       userId: req.user.id,
@@ -744,11 +775,11 @@ IMPORTANT: If you cannot read the BS/EN number from the device, use your knowled
       promptTokens,
       completionTokens,
       responseLength: content.length,
-      finishReason,
+      stopReason,
       rawContentPreview: content.slice(0, 500),
     });
 
-    if (finishReason === 'length') {
+    if (stopReason === 'max_tokens') {
       logger.error('CCU analysis truncated by token limit', {
         userId: req.user.id,
         model,
@@ -760,14 +791,20 @@ IMPORTANT: If you cannot read the BS/EN number from the device, use your knowled
       });
     }
 
-    let jsonStr = content;
-    if (jsonStr.startsWith('```json')) {
-      jsonStr = jsonStr.slice(7);
-    } else if (jsonStr.startsWith('```')) {
-      jsonStr = jsonStr.slice(3);
-    }
-    if (jsonStr.endsWith('```')) {
-      jsonStr = jsonStr.slice(0, -3);
+    // Extract JSON from response — prefill forces response to start as JSON continuation
+    // Prepend the '{' from the assistant prefill since the response continues from there
+    let jsonStr = '{' + content;
+    // Try to find a JSON code block first (in case model still wraps in code block)
+    const jsonBlockMatch = jsonStr.match(/```json\s*([\s\S]*?)```/);
+    if (jsonBlockMatch) {
+      jsonStr = jsonBlockMatch[1].trim();
+    } else {
+      // Find the first { and last } to extract the JSON object
+      const firstBrace = jsonStr.indexOf('{');
+      const lastBrace = jsonStr.lastIndexOf('}');
+      if (firstBrace !== -1 && lastBrace > firstBrace) {
+        jsonStr = jsonStr.slice(firstBrace, lastBrace + 1);
+      }
     }
     jsonStr = jsonStr.trim();
 
@@ -775,10 +812,15 @@ IMPORTANT: If you cannot read the BS/EN number from the device, use your knowled
 
     analysis = applyBsEnFallback(analysis);
 
-    // Pass 2: Web search for missing RCD types — GPT Vision can't always read
-    // the waveform symbol, and its training data doesn't cover obscure RCBOs.
+    // Pass 2: Web search for missing RCD types — Opus may still miss some.
     // Use gpt-5-search-api to look up the actual RCD type from datasheets.
-    analysis = await lookupMissingRcdTypes(analysis, openai, logger, req.user.id);
+    // We still need an OpenAI client for this web search step.
+    const openaiKey = process.env.OPENAI_API_KEY;
+    if (openaiKey) {
+      const OpenAI = (await import('openai')).default;
+      const openai = new OpenAI({ apiKey: openaiKey });
+      analysis = await lookupMissingRcdTypes(analysis, openai, logger, req.user.id);
+    }
 
     if (!analysis.main_switch_current && analysis.main_switch_rating) {
       analysis.main_switch_current = analysis.main_switch_rating;
@@ -793,8 +835,9 @@ IMPORTANT: If you cannot read the BS/EN number from the device, use your knowled
       analysis.main_switch_voltage = '230';
     }
 
-    const inputCost = (promptTokens * 0.002) / 1000;
-    const outputCost = (completionTokens * 0.012) / 1000;
+    // Sonnet 4.6 pricing: $3/1M input, $15/1M output
+    const inputCost = (promptTokens * 0.003) / 1000;
+    const outputCost = (completionTokens * 0.015) / 1000;
     analysis.gptVisionCost = {
       cost_usd: parseFloat((inputCost + outputCost).toFixed(6)),
       input_tokens: promptTokens,
