@@ -12,6 +12,7 @@ import * as storage from '../storage.js';
 import { geminiExtract } from '../gemini_extract.js';
 import { getActiveSession } from '../state/recording-sessions.js';
 import logger from '../logger.js';
+import sharp from 'sharp';
 import { createFileFilter, IMAGE_MIMES, handleUploadError } from '../utils/upload.js';
 
 const router = Router();
@@ -509,7 +510,23 @@ router.post('/analyze-ccu', auth.requireAuth, upload.single('photo'), async (req
       model,
     });
 
-    const imageBytes = await fs.readFile(tempPath);
+    // Resize image if base64 would exceed Anthropic's 5MB limit (~3.75MB raw)
+    const MAX_BASE64_BYTES = 5 * 1024 * 1024;
+    const MAX_RAW_BYTES = Math.floor(MAX_BASE64_BYTES * 0.74); // ~3.7MB raw → <5MB base64
+    let imageBytes = await fs.readFile(tempPath);
+
+    if (imageBytes.length > MAX_RAW_BYTES) {
+      logger.info('CCU image too large for API, resizing with sharp', {
+        originalBytes: imageBytes.length,
+        maxBytes: MAX_RAW_BYTES,
+      });
+      imageBytes = await sharp(imageBytes)
+        .resize(2048, 2048, { fit: 'inside', withoutEnlargement: true })
+        .jpeg({ quality: 80 })
+        .toBuffer();
+      logger.info('CCU image resized', { newBytes: imageBytes.length });
+    }
+
     const base64 = Buffer.from(imageBytes).toString('base64');
 
     const prompt = `You are an expert UK electrician analysing a photo of a consumer unit for an EICR certificate.
