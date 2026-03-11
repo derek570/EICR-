@@ -80,7 +80,7 @@ app.use(
   })
 );
 
-// Security middleware — restrictive CSP for optimizer reports (inline styles OK, scripts blocked)
+// Security middleware — restrictive CSP for optimizer reports (inline styles + scripts OK for report interactivity)
 app.use((req, res, next) => {
   if (req.path.match(/^\/api\/optimizer-report\/[0-9a-f-]+$/i)) {
     return helmet({
@@ -89,6 +89,7 @@ app.use((req, res, next) => {
           defaultSrc: ["'none'"],
           styleSrc: ["'self'", "'unsafe-inline'"],
           scriptSrc: ["'unsafe-inline'"],
+          scriptSrcAttr: ["'unsafe-inline'"],
           imgSrc: ["'self'", 'data:'],
           fontSrc: ["'self'"],
           connectSrc: ["'self'"],
