@@ -1,9 +1,10 @@
-"use client";
+'use client';
 
-import Link from "next/link";
-import { usePathname } from "next/navigation";
+import Link from 'next/link';
+import { usePathname } from 'next/navigation';
 import {
   Home,
+  Mic,
   Building2,
   Zap,
   CircuitBoard,
@@ -15,9 +16,9 @@ import {
   Settings2,
   Ruler,
   PenTool,
-} from "lucide-react";
-import { cn } from "@/lib/utils";
-import type { CertificateType } from "@/lib/types";
+} from 'lucide-react';
+import { cn } from '@/lib/utils';
+import type { CertificateType } from '@/lib/types';
 
 interface TabItem {
   name: string;
@@ -26,30 +27,32 @@ interface TabItem {
 }
 
 const eicrTabs: TabItem[] = [
-  { name: "Overview", href: "", icon: Home },
-  { name: "Installation", href: "/installation", icon: Building2 },
-  { name: "Supply", href: "/supply", icon: Zap },
-  { name: "Board", href: "/board", icon: CircuitBoard },
-  { name: "Circuits", href: "/circuits", icon: List },
-  { name: "Observations", href: "/observations", icon: AlertTriangle },
-  { name: "Inspection", href: "/inspection", icon: ClipboardCheck },
-  { name: "Defaults", href: "/defaults", icon: Settings2 },
-  { name: "Inspector", href: "/inspector", icon: UserCheck },
-  { name: "PDF", href: "/pdf", icon: FileText },
+  { name: 'Overview', href: '', icon: Home },
+  { name: 'Record', href: '/record', icon: Mic },
+  { name: 'Installation', href: '/installation', icon: Building2 },
+  { name: 'Supply', href: '/supply', icon: Zap },
+  { name: 'Board', href: '/board', icon: CircuitBoard },
+  { name: 'Circuits', href: '/circuits', icon: List },
+  { name: 'Observations', href: '/observations', icon: AlertTriangle },
+  { name: 'Inspection', href: '/inspection', icon: ClipboardCheck },
+  { name: 'Defaults', href: '/defaults', icon: Settings2 },
+  { name: 'Inspector', href: '/inspector', icon: UserCheck },
+  { name: 'PDF', href: '/pdf', icon: FileText },
 ];
 
 const eicTabs: TabItem[] = [
-  { name: "Overview", href: "", icon: Home },
-  { name: "Installation", href: "/installation", icon: Building2 },
-  { name: "Extent & Type", href: "/extent", icon: Ruler },
-  { name: "Supply", href: "/supply", icon: Zap },
-  { name: "Board", href: "/board", icon: CircuitBoard },
-  { name: "Circuits", href: "/circuits", icon: List },
-  { name: "Inspection", href: "/eic-inspection", icon: ClipboardCheck },
-  { name: "Design", href: "/design", icon: PenTool },
-  { name: "Defaults", href: "/defaults", icon: Settings2 },
-  { name: "Inspector", href: "/inspector", icon: UserCheck },
-  { name: "PDF", href: "/pdf", icon: FileText },
+  { name: 'Overview', href: '', icon: Home },
+  { name: 'Record', href: '/record', icon: Mic },
+  { name: 'Installation', href: '/installation', icon: Building2 },
+  { name: 'Extent & Type', href: '/extent', icon: Ruler },
+  { name: 'Supply', href: '/supply', icon: Zap },
+  { name: 'Board', href: '/board', icon: CircuitBoard },
+  { name: 'Circuits', href: '/circuits', icon: List },
+  { name: 'Inspection', href: '/eic-inspection', icon: ClipboardCheck },
+  { name: 'Design', href: '/design', icon: PenTool },
+  { name: 'Defaults', href: '/defaults', icon: Settings2 },
+  { name: 'Inspector', href: '/inspector', icon: UserCheck },
+  { name: 'PDF', href: '/pdf', icon: FileText },
 ];
 
 interface JobTabNavProps {
@@ -60,13 +63,13 @@ interface JobTabNavProps {
 export function JobTabNav({ jobId, certificateType }: JobTabNavProps) {
   const pathname = usePathname();
   const basePath = `/job/${jobId}`;
-  const tabs = certificateType === "EIC" ? eicTabs : eicrTabs;
+  const tabs = certificateType === 'EIC' ? eicTabs : eicrTabs;
 
   return (
     <nav className="w-[180px] flex-shrink-0 border-r bg-gray-50/50 py-2 overflow-y-auto">
       {tabs.map((tab) => {
         const href = `${basePath}${tab.href}`;
-        const isActive = pathname === href || (tab.href === "" && pathname === basePath);
+        const isActive = pathname === href || (tab.href === '' && pathname === basePath);
         const Icon = tab.icon;
 
         return (
@@ -74,10 +77,10 @@ export function JobTabNav({ jobId, certificateType }: JobTabNavProps) {
             key={tab.name}
             href={href}
             className={cn(
-              "flex items-center gap-2.5 px-4 py-2 text-sm transition-colors mx-1 rounded-md",
+              'flex items-center gap-2.5 px-4 py-2 text-sm transition-colors mx-1 rounded-md',
               isActive
-                ? "bg-brand-blue/10 text-brand-blue font-medium"
-                : "text-gray-600 hover:bg-gray-100 hover:text-gray-900",
+                ? 'bg-brand-blue/10 text-brand-blue font-medium'
+                : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900'
             )}
           >
             <Icon className="h-4 w-4 flex-shrink-0" />

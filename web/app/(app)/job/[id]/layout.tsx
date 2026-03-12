@@ -1,27 +1,27 @@
-"use client";
+'use client';
 
-import { createContext, useContext, useEffect } from "react";
-import { useParams, useRouter } from "next/navigation";
-import { Loader2 } from "lucide-react";
+import { createContext, useContext, useEffect } from 'react';
+import { useParams, useRouter } from 'next/navigation';
+import { Loader2 } from 'lucide-react';
 
-import { JobHeader } from "@/components/job/job-header";
-import { JobTabNav } from "@/components/job/job-tab-nav";
-import { useJob } from "@/hooks/use-job";
-import { useKeyboardShortcuts } from "@/hooks/use-keyboard-shortcuts";
-import type { JobDetail, User } from "@/lib/types";
+import { JobHeader } from '@/components/job/job-header';
+import { JobTabNav } from '@/components/job/job-tab-nav';
+import { useJob } from '@/hooks/use-job';
+import { useKeyboardShortcuts } from '@/hooks/use-keyboard-shortcuts';
+import type { JobDetail, User } from '@/lib/types';
 
 interface JobContextType {
   job: JobDetail;
   updateJob: (updates: Partial<JobDetail>) => void;
   user: User | null;
-  certificateType: "EICR" | "EIC";
+  certificateType: 'EICR' | 'EIC';
 }
 
 const JobContext = createContext<JobContextType | null>(null);
 
 export function useJobContext() {
   const ctx = useContext(JobContext);
-  if (!ctx) throw new Error("useJobContext must be used inside job layout");
+  if (!ctx) throw new Error('useJobContext must be used inside job layout');
   return ctx;
 }
 
@@ -30,22 +30,14 @@ export default function JobLayout({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const jobId = params.id as string;
 
-  const {
-    job,
-    user,
-    loading,
-    isDirty,
-    isSyncing,
-    updateJob,
-    save,
-    certificateType,
-  } = useJob(jobId);
+  const { job, user, loading, isDirty, isSyncing, updateJob, save, certificateType } =
+    useJob(jobId);
 
   // Keyboard shortcuts: Ctrl+S to save, Ctrl+P for PDF, Ctrl+R for recording (circuits page)
   useKeyboardShortcuts({
-    "ctrl+s": save,
-    "ctrl+p": () => router.push(`/job/${jobId}/pdf`),
-    "ctrl+r": () => router.push(`/job/${jobId}/circuits`),
+    'ctrl+s': save,
+    'ctrl+p': () => router.push(`/job/${jobId}/pdf`),
+    'ctrl+r': () => router.push(`/job/${jobId}/record`),
   });
 
   // Warn on unload if dirty
@@ -53,8 +45,8 @@ export default function JobLayout({ children }: { children: React.ReactNode }) {
     const handler = (e: BeforeUnloadEvent) => {
       if (isDirty) e.preventDefault();
     };
-    window.addEventListener("beforeunload", handler);
-    return () => window.removeEventListener("beforeunload", handler);
+    window.addEventListener('beforeunload', handler);
+    return () => window.removeEventListener('beforeunload', handler);
   }, [isDirty]);
 
   if (loading || !job) {
