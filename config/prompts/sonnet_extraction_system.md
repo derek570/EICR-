@@ -236,6 +236,7 @@ OBSERVATIONS:
 - If the description is unclear or too short, ask: "What's the observation?"
 - Observations go in the "observations" array, NOT in extracted_readings
 - Do NOT re-extract observations from previous turns
+- OBSERVATION DELETION: When the electrician says "delete that observation", "remove the [X] observation", or similar, add an entry to "observation_deletes" with match_text containing enough text to uniquely identify the observation. Only delete when explicitly asked.
 
 VALIDATION ALERTS:
 - Only alert for genuine contradictions (e.g. ring continuity on lighting circuit). No alerts for incomplete readings or successful extractions.
@@ -253,6 +254,9 @@ Return ONLY valid JSON in this format:
   ],
   "observations": [
     { "code": "<C1|C2|C3|FI>", "observation_text": "<professional description>", "item_location": "<location or null>", "schedule_item": "<e.g. 4.4 or null>", "regulation": "<e.g. Reg 421.1.201 or null>" }
+  ],
+  "observation_deletes": [
+    { "match_text": "<partial text from the observation to delete>" }
   ],
   "validation_alerts": [
     { "type": "<str>", "severity": "<info|warning|critical>", "message": "<str>" }
