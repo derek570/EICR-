@@ -10,9 +10,46 @@ export interface SleepManagerCallbacks {
   onVadStateChange?: (state: VadState) => void;
 }
 
-const SILENCE_TIMEOUT = 60_000; // 60s silence -> dozing
-const DOZING_TIMEOUT = 300_000; // 5min dozing -> sleeping
-const VAD_FRAMES_REQUIRED = 3; // consecutive speech frames to wake (matches iOS vadFramesRequired = 3)
+// --- Configuration: aligned with iOS SleepManager.swift ---
+
+/** Seconds of no FINAL_TRANSCRIPT before entering doze.
+ *  10s gives inspectors time for brief pauses between readings while
+ *  still catching idle sessions quickly. With reliable VAD wake,
+ *  aggressive doze is safe because waking is fast and accurate.
+ *  (iOS: noTranscriptTimeout = 10.0) */
+const NO_TRANSCRIPT_TIMEOUT = 10_000;
+
+/** Dozing → Sleeping timeout. 30 minutes matches iOS dozingTimeout.
+ *  Sleeping disconnects Deepgram entirely; dozing just pauses the stream.
+ *  (iOS: dozingTimeout = 1800.0) */
+const DOZING_TIMEOUT = 1_800_000;
+
+/** Sliding window size in frames. The @ricky0123/vad-web library fires
+ *  onSpeechStart/onSpeechEnd callbacks per "speech segment", which we
+ *  treat as individual frames in the window. 30 frames provides ~960ms
+ *  of analysis at 32ms/frame equivalent.
+ *  (iOS: vadWindowSize = 30) */
+const VAD_WINDOW_SIZE = 30;
+
+/** Speech frames required within the sliding window to trigger wake.
+ *  12 out of 30 = need ~384ms of sustained speech within any ~960ms window.
+ *  Filters noise bursts while catching normal conversational speech.
+ *  (iOS: vadWakeFramesRequired = 12) */
+const VAD_WAKE_FRAMES_REQUIRED = 12;
+
+/** VAD probability threshold for speech detection.
+ *  With AGC effects reduced during doze, room noise reads 0.01-0.20
+ *  and speech reads 0.80+. 0.80 catches quieter/distant speech.
+ *  Configured via @ricky0123/vad-web positiveSpeechThreshold.
+ *  (iOS: vadWakeThreshold = 0.80) */
+const VAD_WAKE_THRESHOLD = 0.8;
+
+/** Number of VAD callbacks to skip after entering doze.
+ *  When entering doze, the audio pipeline may still have AGC-boosted
+ *  frames in flight. Processing these causes immediate false wakes.
+ *  Skipping ~63 callbacks gives the pipeline time to settle.
+ *  (iOS: vadCooldownFrames = 63) */
+const VAD_COOLDOWN_FRAMES = 63;
 
 export class SleepManager {
   private _state: SleepState = 'active';
@@ -21,7 +58,12 @@ export class SleepManager {
 
   private silenceTimer: ReturnType<typeof setTimeout> | null = null;
   private dozingTimer: ReturnType<typeof setTimeout> | null = null;
-  private consecutiveSpeechFrames = 0;
+
+  // Sliding window VAD state (matches iOS implementation)
+  private vadWindow: boolean[];
+  private vadWindowIndex = 0;
+  private vadSpeechCount = 0;
+  private vadCooldownRemaining = 0;
 
   // VAD instance from @ricky0123/vad-web (loaded dynamically)
   private micVAD: {
@@ -43,11 +85,13 @@ export class SleepManager {
 
   constructor(callbacks: SleepManagerCallbacks) {
     this.callbacks = callbacks;
+    this.vadWindow = new Array(VAD_WINDOW_SIZE).fill(false);
   }
 
   /**
    * Initialize Silero VAD. Must be called once after construction.
    * Uses dynamic import to avoid SSR issues with WASM/ONNX.
+   * Configured with 0.80 threshold matching iOS vadWakeThreshold.
    */
   async initVAD(): Promise<void> {
     if (this.micVAD || this.vadInitializing) return;
@@ -62,10 +106,12 @@ export class SleepManager {
         onnxWASMBasePath: '/vad/',
         model: 'v5',
         startOnLoad: false,
+        // Match iOS vadWakeThreshold = 0.80 (default was 0.50)
+        positiveSpeechThreshold: VAD_WAKE_THRESHOLD,
 
         onSpeechStart: () => {
           this.setVadState('speaking');
-          this.onSpeechDetected();
+          this.onSpeechFrame(true);
         },
 
         onSpeechRealStart: () => {
@@ -75,7 +121,7 @@ export class SleepManager {
 
         onSpeechEnd: () => {
           this.setVadState('trailing');
-          this.consecutiveSpeechFrames = 0;
+          this.onSpeechFrame(false);
           // After trailing period, go back to listening
           setTimeout(() => {
             if (this._vadState === 'trailing') {
@@ -87,8 +133,8 @@ export class SleepManager {
         },
 
         onVADMisfire: () => {
-          // Brief sound that wasn't real speech
-          this.consecutiveSpeechFrames = 0;
+          // Brief sound that wasn't real speech — mark as non-speech frame
+          this.onSpeechFrame(false);
         },
       });
     } catch (err) {
@@ -100,7 +146,7 @@ export class SleepManager {
 
   start(): void {
     this._state = 'active';
-    this.consecutiveSpeechFrames = 0;
+    this.resetVADWindow();
     this.ringBuffer.reset();
     this.clearAllTimers();
     this.startSilenceTimer();
@@ -110,7 +156,7 @@ export class SleepManager {
   stop(): void {
     this.clearAllTimers();
     this._state = 'active';
-    this.consecutiveSpeechFrames = 0;
+    this.resetVADWindow();
     this.ringBuffer.reset();
     this.stopVAD();
     this.setVadState('idle');
@@ -136,7 +182,14 @@ export class SleepManager {
     }
   }
 
-  // --- VAD state management ---
+  // --- Sliding window VAD (matches iOS SleepManager.processChunk) ---
+
+  private resetVADWindow(): void {
+    this.vadWindow = new Array(VAD_WINDOW_SIZE).fill(false);
+    this.vadWindowIndex = 0;
+    this.vadSpeechCount = 0;
+    this.vadCooldownRemaining = 0;
+  }
 
   private setVadState(state: VadState): void {
     if (this._vadState !== state) {
@@ -145,11 +198,44 @@ export class SleepManager {
     }
   }
 
-  private onSpeechDetected(): void {
+  /**
+   * Process a VAD callback as a frame in the sliding window.
+   * The @ricky0123/vad-web library handles raw audio → Silero inference
+   * internally and fires onSpeechStart/onSpeechEnd callbacks. We map
+   * those into a sliding window identical to iOS's frame-by-frame approach.
+   *
+   * On iOS, processChunk() is called per 32ms audio chunk and runs Silero
+   * inference directly. On web, the vad-web library batches this internally
+   * and fires the callbacks, which we treat as equivalent frames.
+   */
+  private onSpeechFrame(isSpeech: boolean): void {
     if (this._state !== 'dozing' && this._state !== 'sleeping') return;
 
-    this.consecutiveSpeechFrames++;
-    if (this.consecutiveSpeechFrames >= VAD_FRAMES_REQUIRED) {
+    // Cooldown: skip VAD processing for first N frames after doze entry.
+    // The audio pipeline may still have AGC-boosted frames in flight,
+    // causing immediate false wakes. Let them drain first.
+    if (this.vadCooldownRemaining > 0) {
+      this.vadCooldownRemaining--;
+      return;
+    }
+
+    // Slide the window: remove the oldest frame's contribution
+    if (this.vadWindow[this.vadWindowIndex]) {
+      this.vadSpeechCount--;
+    }
+
+    // Insert the new frame
+    this.vadWindow[this.vadWindowIndex] = isSpeech;
+    if (isSpeech) {
+      this.vadSpeechCount++;
+    }
+    this.vadWindowIndex = (this.vadWindowIndex + 1) % VAD_WINDOW_SIZE;
+
+    // Check wake condition: enough speech frames in the window
+    if (this.vadSpeechCount >= VAD_WAKE_FRAMES_REQUIRED) {
+      console.log(
+        `[SleepManager] VAD wake triggered: ${this.vadSpeechCount}/${VAD_WINDOW_SIZE} speech frames (${VAD_WAKE_FRAMES_REQUIRED} required)`
+      );
       this.wake();
     }
   }
@@ -158,28 +244,40 @@ export class SleepManager {
 
   private enterDozing(): void {
     this._state = 'dozing';
-    this.consecutiveSpeechFrames = 0;
+    this.resetVADWindow();
+    // Start cooldown — skip VAD callbacks for the first ~2s after doze entry.
+    // Matches iOS vadCooldownFrames = 63 (~2s at 32ms/frame).
+    this.vadCooldownRemaining = VAD_COOLDOWN_FRAMES;
     this.ringBuffer.reset();
     this.startVAD();
     this.startDozingTimer();
+    console.log(
+      `[SleepManager] ENTER_DOZING — ${NO_TRANSCRIPT_TIMEOUT / 1000}s no transcript, cooldown=${VAD_COOLDOWN_FRAMES} frames`
+    );
     this.callbacks.onEnterDozing();
   }
 
   private enterSleeping(): void {
     this._state = 'sleeping';
-    this.consecutiveSpeechFrames = 0;
+    this.resetVADWindow();
     // VAD continues from dozing state
+    console.log(
+      `[SleepManager] ENTER_SLEEPING — ${DOZING_TIMEOUT / 1000}s dozing elapsed, disconnecting Deepgram entirely`
+    );
     this.callbacks.onEnterSleeping();
   }
 
   private wake(): void {
     const fromState = this._state;
     this._state = 'active';
-    this.consecutiveSpeechFrames = 0;
+    this.resetVADWindow();
     this.stopVAD();
     this.clearDozingTimer();
     this.startSilenceTimer();
     this.setVadState('idle');
+    console.log(
+      `[SleepManager] WAKE — from ${fromState}, speechFrames=${this.vadSpeechCount}/${VAD_WINDOW_SIZE}`
+    );
     this.callbacks.onWake(fromState);
   }
 
@@ -202,7 +300,7 @@ export class SleepManager {
     }
   }
 
-  // --- Silence timer (active state) ---
+  // --- No-transcript timer (active state → dozing) ---
 
   private startSilenceTimer(): void {
     this.clearSilenceTimer();
@@ -210,7 +308,7 @@ export class SleepManager {
       if (this._state === 'active') {
         this.enterDozing();
       }
-    }, SILENCE_TIMEOUT);
+    }, NO_TRANSCRIPT_TIMEOUT);
   }
 
   private resetSilenceTimer(): void {
@@ -224,7 +322,7 @@ export class SleepManager {
     }
   }
 
-  // --- Dozing timer ---
+  // --- Dozing timer (dozing → sleeping) ---
 
   private startDozingTimer(): void {
     this.clearDozingTimer();
@@ -247,5 +345,20 @@ export class SleepManager {
   private clearAllTimers(): void {
     this.clearSilenceTimer();
     this.clearDozingTimer();
+  }
+
+  /**
+   * Called when Deepgram disconnects during doze. Stays in doze rather than
+   * forcing sleeping — Deepgram's KeepAlive connection is unreliable (~20s
+   * timeout), so this prevents premature sleeping. On wake, reconnect handles
+   * the connection regardless of previous state.
+   * (Matches iOS onDeepgramDisconnected behaviour)
+   */
+  onDeepgramDisconnected(): void {
+    if (this._state === 'dozing') {
+      console.log(
+        '[SleepManager] Deepgram disconnected during doze — staying in doze (reconnect on wake)'
+      );
+    }
   }
 }
