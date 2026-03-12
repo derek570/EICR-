@@ -170,7 +170,7 @@ function LoginForm() {
       </div>
 
       {/* Right side — Login form */}
-      <div className="flex-1 flex flex-col items-center justify-center p-8 bg-white dark:bg-[#0F172A]">
+      <div className="flex-1 flex flex-col items-center justify-center p-8 bg-[#0F172A]">
         <div className="w-full max-w-sm">
           {/* Mobile logo */}
           <div className="lg:hidden mb-8 flex justify-center">
@@ -178,18 +178,13 @@ function LoginForm() {
           </div>
 
           <div className="mb-8">
-            <h2 className="text-2xl font-bold text-gray-900 dark:text-white">Welcome back</h2>
-            <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
-              Sign in to manage your certificates
-            </p>
+            <h2 className="text-2xl font-bold text-white">Welcome back</h2>
+            <p className="text-sm text-gray-400 mt-1">Sign in to manage your certificates</p>
           </div>
 
           <form onSubmit={handleSubmit} className="space-y-5">
             <div className="space-y-2">
-              <Label
-                htmlFor="email"
-                className="text-sm font-medium text-gray-700 dark:text-gray-300"
-              >
+              <Label htmlFor="email" className="text-sm font-medium text-gray-300">
                 Email
               </Label>
               <Input
@@ -200,14 +195,11 @@ function LoginForm() {
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 disabled={isLoading}
-                className="h-11 bg-gray-50 border-gray-200 dark:bg-white/5 dark:border-white/10 dark:text-white"
+                className="h-11 bg-white/5 border-white/10 text-white placeholder:text-gray-500"
               />
             </div>
             <div className="space-y-2">
-              <Label
-                htmlFor="password"
-                className="text-sm font-medium text-gray-700 dark:text-gray-300"
-              >
+              <Label htmlFor="password" className="text-sm font-medium text-gray-300">
                 Password
               </Label>
               <Input
@@ -218,7 +210,7 @@ function LoginForm() {
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 disabled={isLoading}
-                className="h-11 bg-gray-50 border-gray-200 dark:bg-white/5 dark:border-white/10 dark:text-white"
+                className="h-11 bg-white/5 border-white/10 text-white placeholder:text-gray-500"
               />
             </div>
             <Button
@@ -240,27 +232,18 @@ function LoginForm() {
             </Button>
           </form>
 
-          <div className="mt-8 text-center text-xs text-gray-400 dark:text-gray-500 space-y-1">
+          <div className="mt-8 text-center text-xs text-gray-500 space-y-1">
             <p>EICR-oMatic 3000 &middot; certomatic3000.co.uk</p>
             <p>
-              <a
-                href="/legal/terms"
-                className="hover:text-gray-600 dark:hover:text-gray-300 transition-colors"
-              >
+              <a href="/legal/terms" className="hover:text-gray-300 transition-colors">
                 Terms
               </a>
               {' · '}
-              <a
-                href="/legal/privacy"
-                className="hover:text-gray-600 dark:hover:text-gray-300 transition-colors"
-              >
+              <a href="/legal/privacy" className="hover:text-gray-300 transition-colors">
                 Privacy
               </a>
               {' · '}
-              <a
-                href="/legal/eula"
-                className="hover:text-gray-600 dark:hover:text-gray-300 transition-colors"
-              >
+              <a href="/legal/eula" className="hover:text-gray-300 transition-colors">
                 EULA
               </a>
             </p>

@@ -1,10 +1,10 @@
-"use client";
+'use client';
 
-import { useJobContext } from "../layout";
-import { ObservationCard } from "@/components/observations/observation-card";
-import { Button } from "@/components/ui/button";
-import { Plus } from "lucide-react";
-import type { Observation } from "@/lib/types";
+import { useJobContext } from '../layout';
+import { ObservationCard } from '@/components/observations/observation-card';
+import { Button } from '@/components/ui/button';
+import { Plus } from 'lucide-react';
+import type { Observation } from '@/lib/types';
 
 export default function ObservationsPage() {
   const { job, updateJob } = useJobContext();
@@ -27,7 +27,7 @@ export default function ObservationsPage() {
         ...job.inspection_schedule,
         items: {
           ...job.inspection_schedule.items,
-          [scheduleItem]: { outcome: "tick" as const },
+          [scheduleItem]: { outcome: 'tick' as const },
         },
       };
       updateJob({
@@ -41,10 +41,10 @@ export default function ObservationsPage() {
 
   const addObservation = () => {
     const newObs: Observation = {
-      code: "C3",
-      item_location: "",
-      observation_text: "",
-      schedule_item: "",
+      code: 'C3',
+      item_location: '',
+      observation_text: '',
+      schedule_item: '',
       photos: [],
     };
     updateJob({ observations: [...job.observations, newObs] });
@@ -68,10 +68,11 @@ export default function ObservationsPage() {
       )}
 
       {job.observations.length === 0 ? (
-        <div className="text-center py-12 bg-white rounded-lg border">
+        <div className="text-center py-12 bg-[#1e293b] rounded-lg border border-white/8">
           <p className="text-gray-500 mb-4">No observations recorded</p>
           <p className="text-sm text-gray-500 mb-4">
-            Tip: You can add observations directly from the Inspection Schedule by selecting C1, C2, or C3.
+            Tip: You can add observations directly from the Inspection Schedule by selecting C1, C2,
+            or C3.
           </p>
           <Button onClick={addObservation}>
             <Plus className="h-4 w-4 mr-2" />

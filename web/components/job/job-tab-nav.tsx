@@ -66,7 +66,7 @@ export function JobTabNav({ jobId, certificateType }: JobTabNavProps) {
   const tabs = certificateType === 'EIC' ? eicTabs : eicrTabs;
 
   return (
-    <nav className="w-[180px] flex-shrink-0 border-r bg-gray-50/50 py-2 overflow-y-auto">
+    <nav className="w-[180px] flex-shrink-0 border-r border-white/5 bg-[#0F172A] py-2 overflow-y-auto">
       {tabs.map((tab) => {
         const href = `${basePath}${tab.href}`;
         const isActive = pathname === href || (tab.href === '' && pathname === basePath);
@@ -80,7 +80,7 @@ export function JobTabNav({ jobId, certificateType }: JobTabNavProps) {
               'flex items-center gap-2.5 px-4 py-2 text-sm transition-colors mx-1 rounded-md',
               isActive
                 ? 'bg-brand-blue/10 text-brand-blue font-medium'
-                : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900'
+                : 'text-gray-400 hover:bg-white/5 hover:text-white'
             )}
           >
             <Icon className="h-4 w-4 flex-shrink-0" />

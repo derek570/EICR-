@@ -7,9 +7,9 @@ export function Header() {
   const { isOnline, isSyncing, pendingSyncCount } = useJobStore();
 
   return (
-    <header className="h-14 border-b border-gray-100 bg-white/80 backdrop-blur-md flex items-center justify-between px-6 dark:border-white/5 dark:bg-[#0F172A]/80">
+    <header className="h-14 border-b border-white/5 bg-[#0F172A]/80 backdrop-blur-md flex items-center justify-between px-6">
       <div className="flex items-center gap-2">
-        <h1 className="text-sm font-medium text-gray-400 dark:text-white/40">CertMate Desktop</h1>
+        <h1 className="text-sm font-medium text-white/40">CertMate Desktop</h1>
       </div>
 
       <div className="flex items-center gap-4">
@@ -31,12 +31,12 @@ export function Header() {
           {isOnline ? (
             <>
               <div className="w-1.5 h-1.5 rounded-full bg-green-400 shadow-sm shadow-green-400/50" />
-              <span className="text-gray-400 dark:text-white/40">Online</span>
+              <span className="text-white/40">Online</span>
             </>
           ) : (
             <>
-              <div className="w-1.5 h-1.5 rounded-full bg-gray-300" />
-              <span className="text-gray-400 dark:text-white/30">Offline</span>
+              <div className="w-1.5 h-1.5 rounded-full bg-gray-600" />
+              <span className="text-white/30">Offline</span>
             </>
           )}
         </div>

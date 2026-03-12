@@ -78,7 +78,7 @@ export default function DashboardPage() {
   if (loading) {
     return (
       <div className="flex items-center justify-center h-64">
-        <div className="animate-pulse text-gray-400 dark:text-gray-500">Loading jobs...</div>
+        <div className="animate-pulse text-gray-500">Loading jobs...</div>
       </div>
     );
   }
@@ -90,8 +90,8 @@ export default function DashboardPage() {
       {/* Dashboard header with gradient accent */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Dashboard</h1>
-          <p className="text-sm text-gray-400 dark:text-gray-500 mt-1">{user?.email}</p>
+          <h1 className="text-2xl font-bold text-white">Dashboard</h1>
+          <p className="text-sm text-gray-500 mt-1">{user?.email}</p>
         </div>
         <div className="flex items-center gap-2">
           <Button
@@ -99,7 +99,7 @@ export default function DashboardPage() {
             size="sm"
             onClick={handleRefresh}
             disabled={refreshing}
-            className="border-gray-200 dark:border-white/10"
+            className="border-white/10 text-gray-300 hover:text-white hover:bg-white/5"
           >
             <RefreshCw className={`h-4 w-4 mr-2 ${refreshing ? 'animate-spin' : ''}`} />
             Refresh
@@ -115,7 +115,7 @@ export default function DashboardPage() {
             variant="ghost"
             size="sm"
             onClick={handleLogout}
-            className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
+            className="text-gray-400 hover:text-gray-300"
           >
             <LogOut className="h-4 w-4 mr-2" />
             Sign out
@@ -129,14 +129,12 @@ export default function DashboardPage() {
           <div className="w-20 h-20 rounded-2xl bg-gradient-to-br from-blue-500/10 to-green-500/10 border border-blue-500/20 flex items-center justify-center mb-6">
             <Mic className="h-8 w-8 text-blue-400" />
           </div>
-          <h2 className="text-xl font-semibold text-gray-800 dark:text-white mb-2">
-            Ready to certify
-          </h2>
-          <p className="text-gray-500 dark:text-gray-400 mb-2 max-w-md">
+          <h2 className="text-xl font-semibold text-white mb-2">Ready to certify</h2>
+          <p className="text-gray-400 mb-2 max-w-md">
             Create your first job, then just talk — CertMate fills out the form so it&apos;s ready
             to send before you leave site.
           </p>
-          <div className="flex items-center gap-4 text-xs text-gray-400 dark:text-gray-500 mb-8">
+          <div className="flex items-center gap-4 text-xs text-gray-500 mb-8">
             <span className="flex items-center gap-1">
               <Mic className="h-3 w-3" /> Voice-powered
             </span>

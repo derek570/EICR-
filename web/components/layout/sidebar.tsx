@@ -12,13 +12,8 @@ import {
   ChevronRight,
   Users,
   SlidersHorizontal,
-  Sun,
-  Moon,
-  Monitor,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { useTheme } from '@/hooks/use-theme';
-import type { Theme } from '@/hooks/use-theme';
 import { CertMateLogo, CertMateIcon } from '@/components/brand/certmate-logo';
 
 const navItems = [
@@ -30,25 +25,9 @@ const navItems = [
   { href: '/settings/company', icon: Building2, label: 'Company' },
 ];
 
-const themeOptions: { value: Theme; icon: typeof Sun; label: string }[] = [
-  { value: 'light', icon: Sun, label: 'Light' },
-  { value: 'dark', icon: Moon, label: 'Dark' },
-  { value: 'system', icon: Monitor, label: 'System' },
-];
-
 export function Sidebar() {
   const [collapsed, setCollapsed] = useState(false);
   const pathname = usePathname();
-  const { theme, setTheme } = useTheme();
-
-  const cycleTheme = () => {
-    const order: Theme[] = ['light', 'dark', 'system'];
-    const idx = order.indexOf(theme);
-    setTheme(order[(idx + 1) % order.length]);
-  };
-
-  const currentThemeOption = themeOptions.find((t) => t.value === theme) ?? themeOptions[2];
-  const ThemeIcon = currentThemeOption.icon;
 
   return (
     <aside
@@ -102,20 +81,6 @@ export function Sidebar() {
           );
         })}
       </nav>
-
-      {/* Theme toggle */}
-      <button
-        onClick={cycleTheme}
-        className={cn(
-          'flex items-center gap-3 mx-2 mb-2 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors',
-          'text-white/50 hover:bg-white/5 hover:text-white/80',
-          collapsed && 'justify-center px-2'
-        )}
-        title={collapsed ? `Theme: ${currentThemeOption.label}` : undefined}
-      >
-        <ThemeIcon className="h-5 w-5 flex-shrink-0" />
-        {!collapsed && <span>{currentThemeOption.label}</span>}
-      </button>
 
       {/* Collapse toggle */}
       <button
