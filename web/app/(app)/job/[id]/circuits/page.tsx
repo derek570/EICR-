@@ -1,14 +1,15 @@
-"use client";
+'use client';
 
-import { useState, useCallback } from "react";
-import { useJobContext } from "../layout";
-import { CircuitTable } from "@/components/circuits/circuit-table";
-import { Button } from "@/components/ui/button";
-import { Plus, Trash2, Wand2, Loader2 } from "lucide-react";
-import type { Circuit, Board, JobDetail } from "@/lib/types";
-import { api } from "@/lib/api-client";
-import { toast } from "sonner";
-import { cn } from "@/lib/utils";
+import { useState, useCallback, useEffect, useRef } from 'react';
+import { useJobContext } from '../layout';
+import { CircuitTable } from '@/components/circuits/circuit-table';
+import { Button } from '@/components/ui/button';
+import { Plus, Trash2, Wand2, Loader2 } from 'lucide-react';
+import type { Circuit, Board, JobDetail, UserDefaults } from '@/lib/types';
+import { api } from '@/lib/api-client';
+import { applyDefaultsToCircuit, applyDefaultsToCircuits } from '@/lib/apply-defaults';
+import { toast } from 'sonner';
+import { cn } from '@/lib/utils';
 
 function ensureBoards(job: JobDetail): Board[] {
   if (job.boards && job.boards.length > 0) {
@@ -16,9 +17,9 @@ function ensureBoards(job: JobDetail): Board[] {
   }
   return [
     {
-      id: "board_1",
-      designation: "Main Board",
-      location: job.board_info?.location || "",
+      id: 'board_1',
+      designation: 'Main Board',
+      location: job.board_info?.location || '',
       board_info: { ...job.board_info },
       circuits: job.circuits || [],
     },
@@ -39,9 +40,7 @@ export default function CircuitsPage() {
     (circuits: Circuit[]) => {
       if (hasMultipleBoards) {
         const validIndex = Math.min(activeBoardIndex, boards.length - 1);
-        const newBoards = boards.map((b, i) =>
-          i === validIndex ? { ...b, circuits } : b,
-        );
+        const newBoards = boards.map((b, i) => (i === validIndex ? { ...b, circuits } : b));
         const allCircuits = newBoards.flatMap((b) => b.circuits);
         updateJob({ boards: newBoards, circuits: allCircuits });
       } else {
@@ -49,18 +48,31 @@ export default function CircuitsPage() {
         updateJob({ boards: newBoards, circuits });
       }
     },
-    [boards, activeBoardIndex, hasMultipleBoards, updateJob],
+    [boards, activeBoardIndex, hasMultipleBoards, updateJob]
   );
+
+  // Pre-load user defaults so they can be applied to new circuits instantly
+  const defaultsRef = useRef<UserDefaults>({});
+  useEffect(() => {
+    if (!user) return;
+    api
+      .getUserDefaults(user.id)
+      .then((d) => {
+        defaultsRef.current = d;
+      })
+      .catch(() => {
+        /* non-critical */
+      });
+  }, [user]);
 
   const addCircuit = () => {
     const nextRef = (activeCircuits.length + 1).toString();
-    const newCircuit: Circuit = {
+    // Start with minimal scaffold, then apply user defaults (only-fill-empty)
+    const scaffold: Circuit = {
       circuit_ref: nextRef,
-      circuit_designation: "",
-      wiring_type: "A",
-      ocpd_type: "B",
-      ir_test_voltage_v: "500",
+      circuit_designation: '',
     };
+    const newCircuit = applyDefaultsToCircuit(scaffold, defaultsRef.current);
     updateBoardCircuits([...activeCircuits, newCircuit]);
   };
 
@@ -71,37 +83,29 @@ export default function CircuitsPage() {
 
   const applyDefaults = async () => {
     if (!user) {
-      toast.error("Not logged in");
+      toast.error('Not logged in');
       return;
     }
     if (activeCircuits.length === 0) {
-      toast.info("No circuits to apply defaults to");
+      toast.info('No circuits to apply defaults to');
       return;
     }
 
     setApplying(true);
     try {
       const defaults = await api.getUserDefaults(user.id);
+      defaultsRef.current = defaults; // refresh cache
       if (Object.keys(defaults).length === 0) {
-        toast.info("No defaults configured. Go to Settings to set defaults.");
+        toast.info('No defaults configured. Go to Defaults to set up defaults.');
         return;
       }
 
-      const updatedCircuits = activeCircuits.map((circuit) => {
-        const updated = { ...circuit };
-        for (const [key, value] of Object.entries(defaults)) {
-          if (value && (!updated[key] || updated[key] === "")) {
-            updated[key] = value;
-          }
-        }
-        return updated;
-      });
-
+      const updatedCircuits = applyDefaultsToCircuits(activeCircuits, defaults);
       updateBoardCircuits(updatedCircuits);
-      toast.success("Defaults applied to empty fields");
+      toast.success('Defaults applied to empty fields');
     } catch (error) {
-      console.error("Failed to apply defaults:", error);
-      toast.error("Failed to load defaults");
+      console.error('Failed to apply defaults:', error);
+      toast.error('Failed to load defaults');
     } finally {
       setApplying(false);
     }
@@ -117,10 +121,10 @@ export default function CircuitsPage() {
               key={b.id}
               onClick={() => setActiveBoardIndex(index)}
               className={cn(
-                "shrink-0 px-4 py-2 text-sm font-medium border-b-2 transition-colors whitespace-nowrap",
+                'shrink-0 px-4 py-2 text-sm font-medium border-b-2 transition-colors whitespace-nowrap',
                 index === activeBoardIndex
-                  ? "border-brand-blue text-brand-blue bg-blue-50"
-                  : "border-transparent text-gray-500 hover:text-gray-900 hover:bg-gray-50",
+                  ? 'border-brand-blue text-brand-blue bg-blue-50'
+                  : 'border-transparent text-gray-500 hover:text-gray-900 hover:bg-gray-50'
               )}
             >
               {b.designation} ({b.circuits.length})
@@ -162,7 +166,7 @@ export default function CircuitsPage() {
 
       <p className="text-sm text-gray-500">
         Click any cell to edit. Use Tab to move between cells, Enter to move down.
-        {hasMultipleBoards && " Use the board tabs above to switch between boards."}
+        {hasMultipleBoards && ' Use the board tabs above to switch between boards.'}
       </p>
 
       <CircuitTable circuits={activeCircuits} onChange={updateBoardCircuits} />

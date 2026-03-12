@@ -11,6 +11,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Users,
+  SlidersHorizontal,
   Sun,
   Moon,
   Monitor,
@@ -23,6 +24,7 @@ import { CertMateLogo, CertMateIcon } from '@/components/brand/certmate-logo';
 const navItems = [
   { href: '/dashboard', icon: LayoutDashboard, label: 'Dashboard' },
   { href: '/staff', icon: Users, label: 'Staff' },
+  { href: '/defaults', icon: SlidersHorizontal, label: 'Defaults' },
   { href: '/settings', icon: Settings, label: 'Settings' },
   { href: '/settings/inspector', icon: UserCheck, label: 'Inspector' },
   { href: '/settings/company', icon: Building2, label: 'Company' },

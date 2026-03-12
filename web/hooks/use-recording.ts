@@ -30,12 +30,14 @@ import { AlertManager, type AlertManagerDelegate } from '@/lib/alert-manager';
 import { DebugLogger } from '@/lib/debug-logger';
 import { api } from '@/lib/api-client';
 import { getToken } from '@/lib/auth';
+import { applyDefaultsToCircuit } from '@/lib/apply-defaults';
 import type {
   JobDetail,
   Circuit,
   BoardInfo,
   RollingExtractionResult,
   ValidationAlert,
+  UserDefaults,
 } from '@/lib/types';
 
 // ============= Types =============
@@ -202,6 +204,26 @@ export function useRecording(
   const regexMatchCountRef = useRef(0);
   const discrepancyCountRef = useRef(0);
   const audioSourceRef = useRef<AudioSource>('local');
+  const userDefaultsRef = useRef<UserDefaults>({});
+
+  // Eagerly load user defaults so they're ready when new circuits are created
+  useEffect(() => {
+    const storedUser = localStorage.getItem('user');
+    if (!storedUser) return;
+    try {
+      const userData = JSON.parse(storedUser);
+      api
+        .getUserDefaults(userData.id)
+        .then((d) => {
+          userDefaultsRef.current = d;
+        })
+        .catch(() => {
+          /* non-critical — defaults just won't be applied */
+        });
+    } catch {
+      /* ignore */
+    }
+  }, []);
 
   // Keep job ref updated
   useEffect(() => {
@@ -333,17 +355,15 @@ export function useRecording(
         circuitsChanged = true;
       }
 
-      // New circuits
+      // New circuits — apply user defaults to fill configuration fields
       for (const nc of result.newCircuits) {
         const exists = circuits.some((c) => c.circuit_ref === nc.circuitRef);
         if (exists) continue;
-        circuits = [
-          ...circuits,
-          {
-            circuit_ref: nc.circuitRef,
-            circuit_designation: nc.designation,
-          },
-        ];
+        const scaffold: Circuit = {
+          circuit_ref: nc.circuitRef,
+          circuit_designation: nc.designation,
+        };
+        circuits = [...circuits, applyDefaultsToCircuit(scaffold, userDefaultsRef.current)];
         circuitsChanged = true;
         matchCount++;
       }

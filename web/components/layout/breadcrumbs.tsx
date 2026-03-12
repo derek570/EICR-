@@ -17,7 +17,7 @@ const labelMap: Record<string, string> = {
   observations: 'Observations',
   inspection: 'Inspection',
   'eic-inspection': 'EIC Inspection',
-  defaults: 'Defaults',
+  defaults: 'Circuit Defaults',
   inspector: 'Inspector',
   extent: 'Extent & Type',
   design: 'Design',
