@@ -635,6 +635,14 @@ AVAILABLE ACTIONS:
    Example: "give me a summary", "what have we filled in so far?", "what's missing?"
    Response: { "action": { "type": "query_summary", "params": {} } }
 
+7. calculate_impedance — Calculate Zs (from Ze + R1+R2) or R1+R2 (from Zs - Ze) for circuits
+   The formula is: Ze + R1+R2 = Zs. The app will perform the arithmetic — just return the structured action.
+   "calculate" must be "zs" or "r1_r2". Scope: "circuits": "all" for all circuits, "circuit": N for one, or "circuit_from"/"circuit_to" for a range.
+   Example: "calculate Zs for all circuits", "work out R1+R2 for circuit 3", "calculate Zs for circuits 1 to 5"
+   All circuits: { "action": { "type": "calculate_impedance", "params": { "calculate": "zs", "circuits": "all" } } }
+   Single: { "action": { "type": "calculate_impedance", "params": { "calculate": "r1_r2", "circuit": 3 } } }
+   Range: { "action": { "type": "calculate_impedance", "params": { "calculate": "zs", "circuit_from": 1, "circuit_to": 5 } } }
+
 FIELD NAMES (use these exact names in actions):
 - Supply: ze, pfc, earthing_arrangement, main_switch_rating, main_switch_bs_en
 - Circuit: circuit_designation, cable_size, ocpd_rating, ocpd_type, zs, r1_r2, r2, ir_live_earth, ir_live_live, rcd_trip_time, polarity
@@ -690,20 +698,23 @@ GUIDELINES:
         if (jobState.circuits && Array.isArray(jobState.circuits)) {
           context += `Circuits (${jobState.circuits.length} total):\n`;
           for (const c of jobState.circuits) {
-            const parts = [`Circuit ${c.circuitRef || c.circuit_ref || '?'}`];
-            if (c.circuitDesignation || c.circuit_designation)
-              parts.push(`"${c.circuitDesignation || c.circuit_designation}"`);
-            if (c.cableSize || c.cable_size) parts.push(`cable: ${c.cableSize || c.cable_size}`);
-            if (c.ocpdRating || c.ocpd_rating)
+            const parts = [`Circuit ${c.circuitRef || c.circuit_ref || c.ref || '?'}`];
+            if (c.circuitDesignation || c.circuit_designation || c.designation)
+              parts.push(`"${c.circuitDesignation || c.circuit_designation || c.designation}"`);
+            if (c.cableSize || c.cable_size || c.liveCsaMm2)
+              parts.push(`cable: ${c.cableSize || c.cable_size || c.liveCsaMm2}`);
+            if (c.ocpdRating || c.ocpd_rating || c.ocpdRatingA)
               parts.push(
-                `OCPD: ${c.ocpdType || c.ocpd_type || ''}${c.ocpdRating || c.ocpd_rating}A`
+                `OCPD: ${c.ocpdType || c.ocpd_type || ''}${c.ocpdRating || c.ocpd_rating || c.ocpdRatingA}A`
               );
-            if (c.zs) parts.push(`Zs: ${c.zs}`);
+            if (c.zs || c.measuredZsOhm) parts.push(`Zs: ${c.zs || c.measuredZsOhm}`);
+            if (c.r1R2Ohm || c.r1_r2) parts.push(`R1+R2: ${c.r1R2Ohm || c.r1_r2}`);
             context += `  ${parts.join(', ')}\n`;
           }
         }
-        if (jobState.supplyCharacteristics || jobState.supply_characteristics) {
-          const supply = jobState.supplyCharacteristics || jobState.supply_characteristics;
+        if (jobState.supplyCharacteristics || jobState.supply_characteristics || jobState.supply) {
+          const supply =
+            jobState.supplyCharacteristics || jobState.supply_characteristics || jobState.supply;
           context += 'Supply: ';
           const parts = [];
           if (supply.earthingArrangement || supply.earthing_arrangement)
@@ -715,8 +726,13 @@ GUIDELINES:
             );
           context += parts.join(', ') + '\n';
         }
-        if (jobState.installationDetails || jobState.installation_details) {
-          const install = jobState.installationDetails || jobState.installation_details;
+        if (
+          jobState.installationDetails ||
+          jobState.installation_details ||
+          jobState.installation
+        ) {
+          const install =
+            jobState.installationDetails || jobState.installation_details || jobState.installation;
           const parts = [];
           if (install.clientName || install.client_name)
             parts.push(`Client: ${install.clientName || install.client_name}`);
@@ -727,6 +743,14 @@ GUIDELINES:
           if (install.clientPostcode || install.client_postcode)
             parts.push(`Client Postcode: ${install.clientPostcode || install.client_postcode}`);
           if (parts.length > 0) context += `Installation: ${parts.join(', ')}\n`;
+        }
+        if (jobState.boards && Array.isArray(jobState.boards)) {
+          for (const b of jobState.boards) {
+            const parts = [`Board "${b.name || b.designation || ''}"`];
+            if (b.ze) parts.push(`Ze: ${b.ze}`);
+            if (b.mainSwitchRating) parts.push(`Main switch: ${b.mainSwitchRating}A`);
+            context += `  ${parts.join(', ')}\n`;
+          }
         }
       }
 
