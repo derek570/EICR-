@@ -1,39 +1,38 @@
-"use client";
+'use client';
 
-import Link from "next/link";
-import { usePathname } from "next/navigation";
-import { ChevronRight } from "lucide-react";
+import Link from 'next/link';
+import { usePathname } from 'next/navigation';
+import { ChevronRight } from 'lucide-react';
 
 const labelMap: Record<string, string> = {
-  dashboard: "Dashboard",
-  job: "Job",
-  settings: "Settings",
-  clients: "Clients",
-  calendar: "Calendar",
-  login: "Login",
-  installation: "Installation",
-  supply: "Supply",
-  board: "Board",
-  circuits: "Circuits",
-  observations: "Observations",
-  inspection: "Inspection",
-  "eic-inspection": "EIC Inspection",
-  defaults: "Defaults",
-  inspector: "Inspector",
-  extent: "Extent & Type",
-  design: "Design",
-  pdf: "PDF",
-  company: "Company",
+  dashboard: 'Dashboard',
+  job: 'Job',
+  settings: 'Settings',
+  staff: 'Staff',
+  login: 'Login',
+  installation: 'Installation',
+  supply: 'Supply',
+  board: 'Board',
+  circuits: 'Circuits',
+  observations: 'Observations',
+  inspection: 'Inspection',
+  'eic-inspection': 'EIC Inspection',
+  defaults: 'Defaults',
+  inspector: 'Inspector',
+  extent: 'Extent & Type',
+  design: 'Design',
+  pdf: 'PDF',
+  company: 'Company',
 };
 
 export function Breadcrumbs() {
   const pathname = usePathname();
-  const segments = pathname.split("/").filter(Boolean);
+  const segments = pathname.split('/').filter(Boolean);
 
   if (segments.length <= 1) return null;
 
   const crumbs = segments.map((segment, index) => {
-    const href = "/" + segments.slice(0, index + 1).join("/");
+    const href = '/' + segments.slice(0, index + 1).join('/');
     const label = labelMap[segment] || segment;
     const isLast = index === segments.length - 1;
 
@@ -43,7 +42,10 @@ export function Breadcrumbs() {
         {isLast ? (
           <span className="text-sm text-gray-700 font-medium dark:text-foreground">{label}</span>
         ) : (
-          <Link href={href} className="text-sm text-gray-500 hover:text-gray-700 dark:text-muted-foreground dark:hover:text-foreground">
+          <Link
+            href={href}
+            className="text-sm text-gray-500 hover:text-gray-700 dark:text-muted-foreground dark:hover:text-foreground"
+          >
             {label}
           </Link>
         )}
