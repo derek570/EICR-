@@ -447,6 +447,30 @@ deploy_backend() {
   cd "$CODEBASE"
 }
 
+deploy_testflight() {
+  log "  Deploying iOS to TestFlight..."
+
+  cd "$IOS_DIR"
+
+  if [ ! -f "./deploy-testflight.sh" ]; then
+    log "  ERROR: deploy-testflight.sh not found in $IOS_DIR"
+    return 1
+  fi
+
+  ./deploy-testflight.sh 2>&1 | tee -a "$LOG_FILE"
+  local EXIT_CODE=${PIPESTATUS[0]}
+
+  if [ "$EXIT_CODE" -eq 0 ]; then
+    log "  TestFlight deploy succeeded"
+    send_pushover_message "TestFlight Build" "New build uploaded after optimizer changes" 0
+  else
+    log "  ERROR: TestFlight deploy failed (exit $EXIT_CODE)"
+    send_pushover_message "TestFlight FAILED" "Auto-deploy after optimizer changes failed — check log" 1
+  fi
+
+  cd "$CODEBASE"
+}
+
 generate_change_report() {
   local SESSION_ID="$1"
   local S3_PATH="$2"
@@ -1322,10 +1346,12 @@ apply_accepted_recommendations() {
     NOTIFY_MSG+=" and backend deployed"
   fi
   if [ "$IOS_CHANGED" = "true" ]; then
-    NOTIFY_MSG+=". iOS needs Xcode rebuild"
+    NOTIFY_MSG+=". Deploying to TestFlight..."
+    send_pushover_message "Changes Applied" "$NOTIFY_MSG" 0
+    deploy_testflight
+  else
+    send_pushover_message "Changes Applied" "$NOTIFY_MSG" 0
   fi
-
-  send_pushover_message "Changes Applied" "$NOTIFY_MSG" 0
 
   log "  Recommendations applied and committed for report $REPORT_ID"
 
