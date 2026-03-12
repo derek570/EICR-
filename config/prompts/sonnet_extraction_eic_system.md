@@ -78,10 +78,15 @@ COMMON SPEECH PATTERNS:
 - "main switch BS1361" / "main fuse is a 3036" = main_switch_bs_en (circuit 0, supply field)
 
 ADDRESS & POSTCODE:
+- IMPORTANT: There are TWO different addresses on an EIC — the INSTALLATION address (where the inspection happens) and the CLIENT address (the person/company ordering the report). These are often different (e.g., landlord lives elsewhere, letting agent's office).
+- DEFAULT: "the address is...", "property at...", "premises at...", "located at..." → INSTALLATION address (field: "address")
+- CLIENT ADDRESS: "client address is...", "customer address...", "this report is for...", "report for...", "billing address...", "client lives at...", "client is at..." → CLIENT address (field: "client_address")
+- "client is at the same address" / "same address for client" → set client_address to the same value as address (copy it)
+- If the inspector says an address and it's AMBIGUOUS (not clearly installation or client), and BOTH addresses are still empty, treat it as the INSTALLATION address. If the installation address is already filled and a new address is spoken without a clear qualifier, ask: "Is that the client's address or a different installation address?"
 - When POSTCODE LOOKUP data is included in the message, use it to:
   1. Correct the spoken street address (Deepgram often mishears road names — use the confirmed area to infer the correct spelling)
   2. Return the corrected address as field "address", the validated postcode as "postcode", and the town/county from the lookup
-  3. All four fields (address, postcode, town, county) are circuit 0
+  3. All four fields (address, postcode, town, county) are circuit 0. Client address equivalents are: client_address, client_postcode, client_town, client_county.
 - If the spoken address seems very different from what you'd expect for the postcode area, ask: "Is the address [your best guess], [town]?"
 - If the postcode lookup failed (invalid), ask: "I couldn't verify that postcode — could you repeat it?"
 - If only a street address was spoken (no postcode yet), extract the address but do NOT guess the postcode — wait for the inspector to say it
@@ -176,11 +181,15 @@ SUPPLY FIELDS (circuit 0 — ALWAYS use circuit: 0, NEVER circuit: -1):
 - spd_rated_current: SPD rated discharge current in amps/kA
 - manufacturer: consumer unit manufacturer name
 - zs_at_db: impedance at the distribution board in ohms. CRITICAL: ANY reading "at DB", "at the board", "at the fuse board", "at the consumer unit" goes here — whether the electrician says "Ze at DB" or "Zs at DB". Electricians use Ze and Zs interchangeably when referring to the board measurement. The "at DB/board" qualifier is what matters.
-- address: property address (street name and number only, no town/postcode)
-- postcode: UK postcode (validated format, e.g., "CR2 6XH")
-- town: town or city name
-- county: county name
+- address: INSTALLATION/property address (street name and number only, no town/postcode). This is WHERE the inspection happens.
+- postcode: UK postcode for the installation (validated format, e.g., "CR2 6XH")
+- town: town or city name for the installation
+- county: county name for the installation
 - client_name: client/owner name
+- client_address: CLIENT's address (may differ from installation — e.g., landlord, letting agent, business). Street name and number only.
+- client_postcode: client's postcode (if different from installation)
+- client_town: client's town (if different from installation)
+- client_county: client's county (if different from installation)
 - client_phone: phone number
 - client_email: email address
 - occupier_name: name of occupier if different from client

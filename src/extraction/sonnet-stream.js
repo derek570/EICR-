@@ -107,6 +107,10 @@ const KNOWN_FIELDS = new Set([
   'town',
   'county',
   'client_name',
+  'client_address',
+  'client_postcode',
+  'client_town',
+  'client_county',
   'client_phone',
   'client_email',
   'reason_for_report',
@@ -634,7 +638,7 @@ AVAILABLE ACTIONS:
 FIELD NAMES (use these exact names in actions):
 - Supply: ze, pfc, earthing_arrangement, main_switch_rating, main_switch_bs_en
 - Circuit: circuit_designation, cable_size, ocpd_rating, ocpd_type, zs, r1_r2, r2, ir_live_earth, ir_live_live, rcd_trip_time, polarity
-- Installation: client_name, address, postcode, phone, email, premises_description
+- Installation: client_name, address, postcode, phone, email, premises_description, client_address, client_postcode, client_town, client_county
 - Board: manufacturer, zs_at_db
 
 RESPONSE FORMAT — Always respond with valid JSON:
@@ -716,8 +720,12 @@ GUIDELINES:
           const parts = [];
           if (install.clientName || install.client_name)
             parts.push(`Client: ${install.clientName || install.client_name}`);
-          if (install.address) parts.push(`Address: ${install.address}`);
+          if (install.address) parts.push(`Installation Address: ${install.address}`);
           if (install.postcode) parts.push(`Postcode: ${install.postcode}`);
+          if (install.clientAddress || install.client_address)
+            parts.push(`Client Address: ${install.clientAddress || install.client_address}`);
+          if (install.clientPostcode || install.client_postcode)
+            parts.push(`Client Postcode: ${install.clientPostcode || install.client_postcode}`);
           if (parts.length > 0) context += `Installation: ${parts.join(', ')}\n`;
         }
       }
