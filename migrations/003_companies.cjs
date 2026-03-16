@@ -24,7 +24,7 @@ exports.up = (pgm) => {
       id: { type: 'text', primaryKey: true },
       name: { type: 'text', notNull: true },
       is_active: { type: 'boolean', default: true, notNull: true },
-      settings: { type: 'jsonb', default: "'{}'" },
+      settings: { type: 'jsonb', default: pgm.func("'{}'::jsonb") },
       created_at: { type: 'timestamp', default: pgm.func('NOW()') },
       updated_at: { type: 'timestamp', default: pgm.func('NOW()') },
     },
@@ -73,7 +73,8 @@ exports.up = (pgm) => {
   });
 
   // Composite index for company-level job listing (ordered by date)
-  pgm.createIndex('jobs', ['company_id', pgm.func('COALESCE(updated_at, created_at) DESC')], {
+  // updated_at is timestamp; sufficient for sorting since it's always set
+  pgm.createIndex('jobs', ['company_id', 'updated_at'], {
     name: 'idx_jobs_company_date',
     ifNotExists: true,
   });
