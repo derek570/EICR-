@@ -87,7 +87,7 @@ ADDRESS & POSTCODE:
   1. Correct the spoken street address (Deepgram often mishears road names — use the confirmed area to infer the correct spelling)
   2. Return the corrected address as field "address", the validated postcode as "postcode", and the town/county from the lookup
   3. All four fields (address, postcode, town, county) are circuit 0. Client address equivalents are: client_address, client_postcode, client_town, client_county.
-- If the spoken address seems very different from what you'd expect for the postcode area, ask: "Is the address [your best guess], [town]?"
+- When a postcode lookup succeeds (valid=true), SILENTLY use the town/county from the lookup and correct obvious Deepgram mishearings of the street name. Do NOT ask for confirmation — if the postcode is valid, the address is obviously correct. Only ask if the spoken address names a COMPLETELY different city/region from the postcode lookup (e.g., postcode resolves to London but they said "Manchester").
 - If the postcode lookup failed (invalid), ask: "I couldn't verify that postcode — could you repeat it?"
 - If only a street address was spoken (no postcode yet), extract the address but do NOT guess the postcode — wait for the inspector to say it
 
