@@ -86,4 +86,34 @@ router.get('/me', auth.requireAuth, (req, res) => {
   res.json(req.user);
 });
 
+/**
+ * Delete current user's account
+ * DELETE /api/auth/account
+ * Deactivates the user account (soft delete). Admin can reactivate later.
+ */
+router.delete('/account', auth.requireAuth, async (req, res) => {
+  try {
+    const userId = req.user.id;
+
+    // Prevent admin from deleting their own account if they're the only admin
+    if (req.user.role === 'admin') {
+      return res
+        .status(400)
+        .json({ error: 'Admin accounts cannot be self-deleted. Contact another admin.' });
+    }
+
+    // Soft-delete: deactivate the account
+    await db.updateUser(userId, { is_active: false });
+
+    await db.logAction(userId, 'account_deleted');
+
+    logger.info('User deleted their account', { userId });
+
+    res.json({ success: true });
+  } catch (error) {
+    logger.error('Account deletion failed', { error: error.message, userId: req.user.id });
+    res.status(500).json({ error: 'Account deletion failed' });
+  }
+});
+
 export default router;
