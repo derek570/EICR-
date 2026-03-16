@@ -35,6 +35,7 @@ import clientsRouter from './routes/clients.js';
 import analyticsRouter from './routes/analytics.js';
 import adminRouter from './admin_api.js';
 import adminUsersRouter from './routes/admin-users.js';
+import companiesRouter from './routes/companies.js';
 
 // Route modules (decomposed from this file)
 import jobsRouter from './routes/jobs.js';
@@ -234,6 +235,7 @@ try {
 // Admin
 app.use('/api/admin', auth.requireAuth, adminRouter);
 app.use('/api/admin/users', auth.requireAuth, auth.requireAdmin, adminUsersRouter);
+app.use('/api/companies', auth.requireAuth, companiesRouter);
 
 // Pre-existing route modules
 app.use('/api/auth', authLimiter, authRouter);

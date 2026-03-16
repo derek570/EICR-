@@ -136,6 +136,8 @@ export async function authenticate(email, password, ipAddress = null) {
     name: user.name || '',
     company_name: user.company_name || '',
     role: user.role || 'user',
+    company_id: user.company_id || null,
+    company_role: user.company_role || 'employee',
   };
 
   return { success: true, token, user: safeUser };
@@ -159,6 +161,8 @@ export async function verifyToken(token) {
       name: user.name || '',
       company_name: user.company_name || '',
       role: user.role || 'user',
+      company_id: user.company_id || null,
+      company_role: user.company_role || 'employee',
     };
   } catch (error) {
     logger.debug('Token verification failed', { error: error.message });
@@ -235,6 +239,8 @@ export async function refreshToken(oldToken) {
       name: user.name || '',
       company_name: user.company_name || '',
       role: user.role || 'user',
+      company_id: user.company_id || null,
+      company_role: user.company_role || 'employee',
     };
 
     return { success: true, token, user: safeUser };
@@ -284,4 +290,52 @@ export function requireAdmin(req, res, next) {
     return res.status(403).json({ error: 'Admin access required' });
   }
   next();
+}
+
+/**
+ * Express middleware to require company admin/owner role.
+ * Must be used AFTER requireAuth (so req.user is set).
+ * System admins (role === 'admin') also pass this check.
+ */
+export function requireCompanyAdmin(req, res, next) {
+  if (!req.user) {
+    return res.status(401).json({ error: 'Authentication required' });
+  }
+
+  // System-level admins always have company admin access
+  if (req.user.role === 'admin') {
+    return next();
+  }
+
+  // Company-level admins/owners
+  if (['owner', 'admin'].includes(req.user.company_role)) {
+    return next();
+  }
+
+  return res.status(403).json({ error: 'Company admin access required' });
+}
+
+/**
+ * Helper: check if the authenticated user can access a given userId's resources.
+ * Returns true if:
+ * - req.user.id === targetUserId (own data)
+ * - req.user is a system admin
+ * - req.user is a company admin/owner AND targetUserId belongs to the same company
+ */
+export async function canAccessUser(req, targetUserId) {
+  // Own data
+  if (req.user.id === targetUserId) return true;
+
+  // System admin
+  if (req.user.role === 'admin') return true;
+
+  // Company admin — check same company
+  if (['owner', 'admin'].includes(req.user.company_role) && req.user.company_id) {
+    const targetUser = await db.getUserById(targetUserId);
+    if (targetUser && targetUser.company_id === req.user.company_id) {
+      return true;
+    }
+  }
+
+  return false;
 }

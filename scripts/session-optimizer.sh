@@ -576,8 +576,12 @@ build_session_summary() {
 
   node -e "
     const fs = require('fs');
+    const path = require('path');
     const a = JSON.parse(fs.readFileSync('$ANALYSIS_FILE', 'utf8'));
     const m = fs.existsSync('$MANIFEST_FILE') ? JSON.parse(fs.readFileSync('$MANIFEST_FILE', 'utf8')) : {};
+    // Fallback: read address from job_snapshot.json (survives crash_recovery manifests)
+    const snapshotPath = path.join(path.dirname('$MANIFEST_FILE'), 'job_snapshot.json');
+    const snap = fs.existsSync(snapshotPath) ? JSON.parse(fs.readFileSync(snapshotPath, 'utf8')) : {};
     const fr = a.field_report || [];
     const regex = fr.filter(f => f.final_source === 'regex').length;
     const sonnet = fr.filter(f => f.final_source === 'sonnet').length;
@@ -589,7 +593,7 @@ build_session_summary() {
     const ua = a.utterance_analysis || [];
     const uncapturedCount = ua.reduce((sum, u) => sum + (u.uncaptured_values || []).length, 0);
     console.log(JSON.stringify({
-      address: m.address || a.session_meta && a.session_meta.address || 'Unknown',
+      address: m.address || (a.session_meta && a.session_meta.address) || snap.address || 'Unknown',
       date: (m.timestamp || '').split('T')[0] || new Date().toISOString().split('T')[0],
       duration: m.duration || (a.session_meta && a.session_meta.durationSeconds ? Math.floor(a.session_meta.durationSeconds / 60) + 'm ' + (a.session_meta.durationSeconds % 60) + 's' : '?'),
       regexFields: regex,

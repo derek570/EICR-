@@ -26,7 +26,8 @@ const router = Router();
 
 router.get('/clients/:userId', auth.requireAuth, async (req, res) => {
   const { userId } = req.params;
-  if (req.user.id !== userId) {
+  const hasAccess = await auth.canAccessUser(req, userId);
+  if (!hasAccess) {
     return res.status(403).json({ error: 'Access denied' });
   }
   try {
@@ -49,7 +50,8 @@ router.get('/clients/:userId', auth.requireAuth, async (req, res) => {
 router.post('/clients/:userId', auth.requireAuth, async (req, res) => {
   const { userId } = req.params;
   const { name, email, phone, company, notes } = req.body;
-  if (req.user.id !== userId) {
+  const hasAccess = await auth.canAccessUser(req, userId);
+  if (!hasAccess) {
     return res.status(403).json({ error: 'Access denied' });
   }
   if (!name || !name.trim()) {
@@ -74,7 +76,8 @@ router.post('/clients/:userId', auth.requireAuth, async (req, res) => {
 
 router.put('/clients/:userId/:clientId', auth.requireAuth, async (req, res) => {
   const { userId, clientId } = req.params;
-  if (req.user.id !== userId) {
+  const hasAccess = await auth.canAccessUser(req, userId);
+  if (!hasAccess) {
     return res.status(403).json({ error: 'Access denied' });
   }
   try {
@@ -93,7 +96,8 @@ router.put('/clients/:userId/:clientId', auth.requireAuth, async (req, res) => {
 
 router.delete('/clients/:userId/:clientId', auth.requireAuth, async (req, res) => {
   const { userId, clientId } = req.params;
-  if (req.user.id !== userId) {
+  const hasAccess = await auth.canAccessUser(req, userId);
+  if (!hasAccess) {
     return res.status(403).json({ error: 'Access denied' });
   }
   try {
@@ -107,7 +111,8 @@ router.delete('/clients/:userId/:clientId', auth.requireAuth, async (req, res) =
 
 router.get('/clients/:userId/:clientId', auth.requireAuth, async (req, res) => {
   const { userId, clientId } = req.params;
-  if (req.user.id !== userId) {
+  const hasAccess = await auth.canAccessUser(req, userId);
+  if (!hasAccess) {
     return res.status(403).json({ error: 'Access denied' });
   }
   try {
@@ -134,7 +139,8 @@ router.get('/clients/:userId/:clientId', auth.requireAuth, async (req, res) => {
 
 router.get('/properties/:userId', auth.requireAuth, async (req, res) => {
   const { userId } = req.params;
-  if (req.user.id !== userId) {
+  const hasAccess = await auth.canAccessUser(req, userId);
+  if (!hasAccess) {
     return res.status(403).json({ error: 'Access denied' });
   }
   try {
@@ -157,7 +163,8 @@ router.get('/properties/:userId', auth.requireAuth, async (req, res) => {
 router.post('/properties/:userId', auth.requireAuth, async (req, res) => {
   const { userId } = req.params;
   const { address, postcode, property_type, client_id, notes } = req.body;
-  if (req.user.id !== userId) {
+  const hasAccess = await auth.canAccessUser(req, userId);
+  if (!hasAccess) {
     return res.status(403).json({ error: 'Access denied' });
   }
   if (!address || !address.trim()) {
@@ -182,7 +189,8 @@ router.post('/properties/:userId', auth.requireAuth, async (req, res) => {
 
 router.get('/properties/:userId/:propertyId/history', auth.requireAuth, async (req, res) => {
   const { userId, propertyId } = req.params;
-  if (req.user.id !== userId) {
+  const hasAccess = await auth.canAccessUser(req, userId);
+  if (!hasAccess) {
     return res.status(403).json({ error: 'Access denied' });
   }
   try {

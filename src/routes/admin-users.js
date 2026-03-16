@@ -53,11 +53,11 @@ router.get('/', async (req, res) => {
 
 /**
  * POST /api/admin/users
- * Create a new user. Body: { email, name, password, company_name?, role? }
+ * Create a new user. Body: { email, name, password, company_name?, role?, company_id?, company_role? }
  */
 router.post('/', async (req, res) => {
   try {
-    const { email, name, password, company_name, role } = req.body;
+    const { email, name, password, company_name, role, company_id, company_role } = req.body;
 
     if (!email || !email.trim()) {
       return res.status(400).json({ error: 'Email is required' });
@@ -70,6 +70,11 @@ router.post('/', async (req, res) => {
     }
     if (role && !['admin', 'user'].includes(role)) {
       return res.status(400).json({ error: 'Role must be "admin" or "user"' });
+    }
+    if (company_role && !['owner', 'admin', 'employee'].includes(company_role)) {
+      return res
+        .status(400)
+        .json({ error: 'company_role must be "owner", "admin", or "employee"' });
     }
 
     // Check for existing user with this email
@@ -86,6 +91,8 @@ router.post('/', async (req, res) => {
       company_name: company_name?.trim() || null,
       password_hash,
       role: role || 'user',
+      company_id: company_id || null,
+      company_role: company_role || 'employee',
     });
 
     await logAction(req.user.id, 'admin_create_user', {

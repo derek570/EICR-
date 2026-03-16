@@ -49,11 +49,17 @@ const upload = multer({
 /**
  * List all jobs for a user
  * GET /api/jobs/:userId
+ *
+ * Access rules:
+ * - Own data: always allowed
+ * - System admin: always allowed
+ * - Company admin/owner: allowed if target user is in the same company
  */
 router.get('/jobs/:userId', auth.requireAuth, async (req, res) => {
   const { userId } = req.params;
 
-  if (req.user.id !== userId) {
+  const hasAccess = await auth.canAccessUser(req, userId);
+  if (!hasAccess) {
     return res.status(403).json({ error: 'Access denied' });
   }
 
@@ -139,7 +145,8 @@ router.get('/jobs/:userId', auth.requireAuth, async (req, res) => {
 router.post('/jobs/:userId', auth.requireAuth, async (req, res) => {
   const { userId } = req.params;
 
-  if (req.user.id !== userId) {
+  // Only the user themselves or a system admin can create jobs on their behalf
+  if (req.user.id !== userId && req.user.role !== 'admin') {
     return res.status(403).json({ error: 'Access denied' });
   }
 
@@ -483,7 +490,8 @@ router.post('/process-job', auth.requireAuth, routeTimeout(120000), async (req, 
 router.get('/job/:userId/:jobId', auth.requireAuth, async (req, res) => {
   const { userId, jobId } = req.params;
 
-  if (req.user.id !== userId) {
+  const hasAccess = await auth.canAccessUser(req, userId);
+  if (!hasAccess) {
     return res.status(403).json({ error: 'Access denied' });
   }
 
@@ -611,7 +619,8 @@ router.get('/job/:userId/:jobId', auth.requireAuth, async (req, res) => {
 router.get('/job/:userId/:jobId/debug', auth.requireAuth, async (req, res) => {
   const { userId, jobId } = req.params;
 
-  if (req.user.id !== userId) {
+  const hasAccess = await auth.canAccessUser(req, userId);
+  if (!hasAccess) {
     return res.status(403).json({ error: 'Access denied' });
   }
 
@@ -670,7 +679,8 @@ router.put('/job/:userId/:jobId', auth.requireAuth, async (req, res) => {
     design_construction,
   } = req.body;
 
-  if (req.user.id !== userId) {
+  const hasAccess = await auth.canAccessUser(req, userId);
+  if (!hasAccess) {
     return res.status(403).json({ error: 'Access denied' });
   }
 
@@ -804,7 +814,8 @@ router.put('/job/:userId/:jobId', auth.requireAuth, async (req, res) => {
 router.delete('/job/:userId/:jobId', auth.requireAuth, async (req, res) => {
   const { userId, jobId } = req.params;
 
-  if (req.user.id !== userId) {
+  const hasAccess = await auth.canAccessUser(req, userId);
+  if (!hasAccess) {
     return res.status(403).json({ error: 'Access denied' });
   }
 
@@ -843,7 +854,8 @@ router.delete('/job/:userId/:jobId', auth.requireAuth, async (req, res) => {
 router.get('/job/:userId/:jobId/history', auth.requireAuth, async (req, res) => {
   const { userId, jobId } = req.params;
 
-  if (req.user.id !== userId) {
+  const hasAccess = await auth.canAccessUser(req, userId);
+  if (!hasAccess) {
     return res.status(403).json({ error: 'Access denied' });
   }
 
@@ -871,7 +883,8 @@ router.get('/job/:userId/:jobId/history', auth.requireAuth, async (req, res) => 
 router.get('/job/:userId/:jobId/history/:versionId', auth.requireAuth, async (req, res) => {
   const { userId, jobId, versionId } = req.params;
 
-  if (req.user.id !== userId) {
+  const hasAccess = await auth.canAccessUser(req, userId);
+  if (!hasAccess) {
     return res.status(403).json({ error: 'Access denied' });
   }
 
@@ -897,7 +910,8 @@ router.post('/job/:userId/:jobId/clone', auth.requireAuth, async (req, res) => {
   const { userId, jobId } = req.params;
   const { newAddress, clearTestResults } = req.body;
 
-  if (req.user.id !== userId) {
+  const hasAccess = await auth.canAccessUser(req, userId);
+  if (!hasAccess) {
     return res.status(403).json({ error: 'Access denied' });
   }
 
@@ -1067,7 +1081,8 @@ router.post('/jobs/:userId/bulk-download', auth.requireAuth, async (req, res) =>
   const { userId } = req.params;
   const { jobIds } = req.body;
 
-  if (req.user.id !== userId) {
+  const hasAccess = await auth.canAccessUser(req, userId);
+  if (!hasAccess) {
     return res.status(403).json({ error: 'Access denied' });
   }
 

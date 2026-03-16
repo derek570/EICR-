@@ -177,9 +177,12 @@ export async function listUsers() {
   const pool = getPool();
   try {
     const result = await pool.query(
-      `SELECT id, email, name, company_name, role, is_active,
-              last_login, created_at, failed_login_attempts, locked_until
-       FROM users ORDER BY created_at DESC`
+      `SELECT u.id, u.email, u.name, u.company_name, u.role, u.is_active,
+              u.last_login, u.created_at, u.failed_login_attempts, u.locked_until,
+              u.company_id, u.company_role, c.name as company_display_name
+       FROM users u
+       LEFT JOIN companies c ON u.company_id = c.id
+       ORDER BY u.created_at DESC`
     );
     return result.rows;
   } catch (error) {
@@ -199,9 +202,12 @@ export async function listUsersPaginated(limit, offset) {
     const [countResult, dataResult] = await Promise.all([
       pool.query('SELECT COUNT(*) FROM users'),
       pool.query(
-        `SELECT id, email, name, company_name, role, is_active,
-                last_login, created_at, failed_login_attempts, locked_until
-         FROM users ORDER BY created_at DESC LIMIT $1 OFFSET $2`,
+        `SELECT u.id, u.email, u.name, u.company_name, u.role, u.is_active,
+                u.last_login, u.created_at, u.failed_login_attempts, u.locked_until,
+                u.company_id, u.company_role, c.name as company_display_name
+         FROM users u
+         LEFT JOIN companies c ON u.company_id = c.id
+         ORDER BY u.created_at DESC LIMIT $1 OFFSET $2`,
         [limit, offset]
       ),
     ]);
@@ -214,18 +220,36 @@ export async function listUsersPaginated(limit, offset) {
 
 /**
  * Create a new user (admin only).
+ * Supports optional company_id and company_role for multi-tenant setup.
  */
-export async function createUser({ email, name, company_name, password_hash, role }) {
+export async function createUser({
+  email,
+  name,
+  company_name,
+  password_hash,
+  role,
+  company_id,
+  company_role,
+}) {
   if (!usePostgres()) throw new Error('Database not configured');
 
   const pool = getPool();
   try {
     const id = `user_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const result = await pool.query(
-      `INSERT INTO users (id, email, name, company_name, password_hash, role, is_active, created_at)
-       VALUES ($1, $2, $3, $4, $5, $6, 1, NOW())
-       RETURNING id, email, name, company_name, role, is_active, created_at`,
-      [id, email.toLowerCase(), name, company_name || null, password_hash, role || 'user']
+      `INSERT INTO users (id, email, name, company_name, password_hash, role, company_id, company_role, is_active, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 1, NOW())
+       RETURNING id, email, name, company_name, role, company_id, company_role, is_active, created_at`,
+      [
+        id,
+        email.toLowerCase(),
+        name,
+        company_name || null,
+        password_hash,
+        role || 'user',
+        company_id || null,
+        company_role || 'employee',
+      ]
     );
     return result.rows[0];
   } catch (error) {
@@ -242,7 +266,15 @@ export async function updateUser(userId, data) {
 
   const pool = getPool();
   try {
-    const allowedFields = ['name', 'email', 'company_name', 'role', 'is_active'];
+    const allowedFields = [
+      'name',
+      'email',
+      'company_name',
+      'role',
+      'is_active',
+      'company_id',
+      'company_role',
+    ];
     const updates = [];
     const params = [];
     let paramIndex = 1;
@@ -349,7 +381,9 @@ export async function getJobsByUserPaginated(userId, limit, offset) {
 }
 
 /**
- * Create a job record
+ * Create a job record.
+ * If company_id is not provided but the user belongs to a company, it will be
+ * looked up and set automatically so company admins can see the job.
  */
 export async function createJob(job) {
   if (!usePostgres()) return job;
@@ -357,9 +391,19 @@ export async function createJob(job) {
   const pool = getPool();
   try {
     const now = new Date().toISOString();
+
+    // Auto-resolve company_id from user if not explicitly provided
+    let companyId = job.company_id || null;
+    if (!companyId && job.user_id) {
+      const user = await getUserById(job.user_id);
+      if (user?.company_id) {
+        companyId = user.company_id;
+      }
+    }
+
     await pool.query(
-      `INSERT INTO jobs (id, user_id, folder_name, certificate_type, status, address, client_name, created_at, updated_at, s3_prefix)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+      `INSERT INTO jobs (id, user_id, folder_name, certificate_type, status, address, client_name, created_at, updated_at, s3_prefix, company_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
       [
         job.id,
         job.user_id,
@@ -371,9 +415,10 @@ export async function createJob(job) {
         now,
         now,
         job.s3_prefix,
+        companyId,
       ]
     );
-    return job;
+    return { ...job, company_id: companyId };
   } catch (error) {
     logger.error('createJob failed', { error: error.message });
     throw error;
@@ -436,6 +481,7 @@ const ALLOWED_JOB_COLUMNS = new Set([
   'overall_result',
   'next_inspection_date',
   'postcode',
+  'company_id',
 ]);
 
 /**
@@ -1118,6 +1164,240 @@ export async function getClient(clientId) {
   } catch (error) {
     logger.error('getClient failed', { error: error.message });
     return null;
+  }
+}
+
+// ============= Companies (Multi-User Admin) =============
+
+/**
+ * Create a company
+ */
+export async function createCompany({ name, settings }) {
+  if (!usePostgres()) throw new Error('Database not configured');
+
+  const pool = getPool();
+  try {
+    const id = `company_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const result = await pool.query(
+      `INSERT INTO companies (id, name, is_active, settings, created_at, updated_at)
+       VALUES ($1, $2, true, $3, NOW(), NOW())
+       RETURNING *`,
+      [id, name, JSON.stringify(settings || {})]
+    );
+    return result.rows[0];
+  } catch (error) {
+    logger.error('createCompany failed', { error: error.message });
+    throw error;
+  }
+}
+
+/**
+ * Get a company by ID
+ */
+export async function getCompany(companyId) {
+  if (!usePostgres()) return null;
+
+  const pool = getPool();
+  try {
+    const result = await pool.query('SELECT * FROM companies WHERE id = $1', [companyId]);
+    return result.rows[0] || null;
+  } catch (error) {
+    logger.error('getCompany failed', { error: error.message });
+    throw error;
+  }
+}
+
+/**
+ * List all companies (system admin only)
+ */
+export async function listCompanies() {
+  if (!usePostgres()) return [];
+
+  const pool = getPool();
+  try {
+    const result = await pool.query(
+      `SELECT c.*,
+              (SELECT COUNT(*) FROM users WHERE company_id = c.id) as user_count,
+              (SELECT COUNT(*) FROM jobs WHERE company_id = c.id) as job_count
+       FROM companies c ORDER BY c.created_at DESC`
+    );
+    return result.rows;
+  } catch (error) {
+    logger.error('listCompanies failed', { error: error.message });
+    throw error;
+  }
+}
+
+/**
+ * Update a company
+ */
+export async function updateCompany(companyId, data) {
+  if (!usePostgres()) return;
+
+  const pool = getPool();
+  try {
+    const allowedFields = ['name', 'is_active', 'settings'];
+    const updates = [];
+    const params = [];
+    let paramIndex = 1;
+
+    for (const [key, value] of Object.entries(data)) {
+      if (allowedFields.includes(key)) {
+        updates.push(`${key} = $${paramIndex}`);
+        params.push(key === 'settings' ? JSON.stringify(value) : value);
+        paramIndex++;
+      }
+    }
+
+    if (updates.length === 0) return;
+
+    updates.push(`updated_at = $${paramIndex}`);
+    params.push(new Date().toISOString());
+    paramIndex++;
+
+    params.push(companyId);
+    await pool.query(
+      `UPDATE companies SET ${updates.join(', ')} WHERE id = $${paramIndex}`,
+      params
+    );
+  } catch (error) {
+    logger.error('updateCompany failed', { error: error.message });
+    throw error;
+  }
+}
+
+/**
+ * Get all users belonging to a company
+ */
+export async function getUsersByCompany(companyId) {
+  if (!usePostgres()) return [];
+
+  const pool = getPool();
+  try {
+    const result = await pool.query(
+      `SELECT id, email, name, company_name, role, company_role, is_active,
+              last_login, created_at, failed_login_attempts, locked_until
+       FROM users WHERE company_id = $1 ORDER BY created_at DESC`,
+      [companyId]
+    );
+    return result.rows;
+  } catch (error) {
+    logger.error('getUsersByCompany failed', { error: error.message });
+    throw error;
+  }
+}
+
+/**
+ * Get all jobs for a company (admin sees all employees' jobs)
+ */
+export async function getJobsByCompany(companyId) {
+  if (!usePostgres()) return [];
+
+  const pool = getPool();
+  try {
+    const result = await pool.query(
+      `SELECT j.*, u.name as employee_name, u.email as employee_email
+       FROM jobs j
+       LEFT JOIN users u ON j.user_id = u.id
+       WHERE j.company_id = $1
+       ORDER BY COALESCE(j.updated_at, j.created_at::TIMESTAMP) DESC`,
+      [companyId]
+    );
+    return result.rows;
+  } catch (error) {
+    logger.error('getJobsByCompany failed', { error: error.message });
+    return [];
+  }
+}
+
+/**
+ * Get jobs for a company with pagination
+ */
+export async function getJobsByCompanyPaginated(companyId, limit, offset) {
+  if (!usePostgres()) return { rows: [], total: 0 };
+
+  const pool = getPool();
+  try {
+    const [countResult, dataResult] = await Promise.all([
+      pool.query('SELECT COUNT(*) FROM jobs WHERE company_id = $1', [companyId]),
+      pool.query(
+        `SELECT j.*, u.name as employee_name, u.email as employee_email
+         FROM jobs j
+         LEFT JOIN users u ON j.user_id = u.id
+         WHERE j.company_id = $1
+         ORDER BY COALESCE(j.updated_at, j.created_at::TIMESTAMP) DESC
+         LIMIT $2 OFFSET $3`,
+        [companyId, limit, offset]
+      ),
+    ]);
+    return { rows: dataResult.rows, total: Number(countResult.rows[0].count) };
+  } catch (error) {
+    logger.error('getJobsByCompanyPaginated failed', { error: error.message });
+    return { rows: [], total: 0 };
+  }
+}
+
+/**
+ * Get company stats — job counts by status, employee count, recent activity
+ */
+export async function getCompanyStats(companyId) {
+  if (!usePostgres()) return {};
+
+  const pool = getPool();
+  try {
+    const [statusResult, employeeResult, recentResult] = await Promise.all([
+      pool.query(
+        `SELECT status, COUNT(*) as count FROM jobs WHERE company_id = $1 GROUP BY status`,
+        [companyId]
+      ),
+      pool.query(`SELECT COUNT(*) as count FROM users WHERE company_id = $1 AND is_active = true`, [
+        companyId,
+      ]),
+      pool.query(
+        `SELECT COUNT(*) as count FROM jobs WHERE company_id = $1 AND created_at > NOW() - INTERVAL '7 days'`,
+        [companyId]
+      ),
+    ]);
+
+    const statusCounts = {};
+    for (const row of statusResult.rows) {
+      statusCounts[row.status] = Number(row.count);
+    }
+
+    return {
+      jobs_by_status: statusCounts,
+      total_jobs: Object.values(statusCounts).reduce((a, b) => a + b, 0),
+      active_employees: Number(employeeResult.rows[0].count),
+      jobs_last_7_days: Number(recentResult.rows[0].count),
+    };
+  } catch (error) {
+    logger.error('getCompanyStats failed', { error: error.message });
+    return {};
+  }
+}
+
+/**
+ * Assign a user to a company with a specific company_role
+ */
+export async function assignUserToCompany(userId, companyId, companyRole = 'employee') {
+  if (!usePostgres()) return;
+
+  const pool = getPool();
+  try {
+    await pool.query(`UPDATE users SET company_id = $1, company_role = $2 WHERE id = $3`, [
+      companyId,
+      companyRole,
+      userId,
+    ]);
+
+    // Also update any existing jobs for this user to be tagged with the company
+    await pool.query(`UPDATE jobs SET company_id = $1 WHERE user_id = $2 AND company_id IS NULL`, [
+      companyId,
+      userId,
+    ]);
+  } catch (error) {
+    logger.error('assignUserToCompany failed', { error: error.message });
+    throw error;
   }
 }
 
