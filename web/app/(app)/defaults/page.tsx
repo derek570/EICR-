@@ -59,7 +59,7 @@ const fieldGroups: FieldGroup[] = [
     icon: Cable,
     description: 'Wiring type and reference method defaults',
     fields: [
-      { key: 'wiring_type', label: 'Wiring Type', placeholder: 'e.g. T+E' },
+      { key: 'wiring_type', label: 'Wiring Type', placeholder: 'e.g. A' },
       { key: 'ref_method', label: 'Reference Method', placeholder: 'e.g. C' },
     ],
   },

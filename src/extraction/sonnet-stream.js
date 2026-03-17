@@ -207,6 +207,38 @@ const FIELD_CORRECTIONS = {
   supply_fuse_type: 'main_switch_bs_en',
 };
 
+// Map cable description strings to BS 7671 wiring type letter codes
+const WIRING_TYPE_DESC_TO_CODE = {
+  'TWIN & EARTH': 'A',
+  'TWIN AND EARTH': 'A',
+  'T&E': 'A',
+  'T+E': 'A',
+  SHEATHED: 'A',
+  'PVC SHEATHED': 'A',
+  'FLAT TWIN': 'A',
+  'FLAT T&E': 'A',
+  FLEX: 'A',
+  FP200: 'A',
+  CONDUIT: 'B',
+  'IN CONDUIT': 'B',
+  'SINGLE IN CONDUIT': 'B',
+  TRUNKING: 'C',
+  'IN TRUNKING': 'C',
+  'SINGLE IN TRUNKING': 'C',
+  SWA: 'D',
+  ARMOURED: 'D',
+  MICC: 'D',
+  MINERAL: 'D',
+};
+const VALID_WIRING_CODES = new Set(['A', 'B', 'C', 'D']);
+
+function normaliseWiringType(value) {
+  if (!value) return value;
+  const upper = value.trim().toUpperCase();
+  if (upper.length === 1 && VALID_WIRING_CODES.has(upper)) return upper;
+  return WIRING_TYPE_DESC_TO_CODE[upper] || upper;
+}
+
 function validateAndCorrectFields(result, sessionId) {
   if (!result.extracted_readings) return result;
   for (const reading of result.extracted_readings) {
@@ -224,6 +256,16 @@ function validateAndCorrectFields(result, sessionId) {
         circuit: reading.circuit,
         value: reading.value,
       });
+    }
+  }
+  // Normalise wiring_type values from descriptions to letter codes
+  for (const reading of result.extracted_readings) {
+    if (reading.field === 'wiring_type' && reading.value) {
+      const normalised = normaliseWiringType(reading.value);
+      if (normalised !== reading.value) {
+        logger.info('Wiring type normalised', { sessionId, from: reading.value, to: normalised });
+        reading.value = normalised;
+      }
     }
   }
   return result;
