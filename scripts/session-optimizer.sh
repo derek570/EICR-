@@ -926,6 +926,7 @@ Output ONLY a JSON object (no markdown fences, no explanation before or after) w
     {
       "title": "Short title of the change",
       "description": "Why this change is needed and what it fixes",
+      "explanation": "Plain-English explanation of WHAT this change does and WHY, written for a non-technical user (e.g. 'Adds a pattern to recognise when you say Ze is followed by a number, so the app captures it instantly instead of waiting for AI'). 1-2 sentences max.",
       "category": "regex_improvement|number_normaliser|keyword_boost|keyword_removal|sonnet_prompt_trim|sonnet_prompt_addition|config_change|bug_fix",
       "token_impact": 0,
       "file": "/absolute/path/to/file.swift",
@@ -943,6 +944,7 @@ Output ONLY a JSON object (no markdown fences, no explanation before or after) w
 }
 
 Notes on fields:
+- "explanation": REQUIRED. A user-facing plain-English summary of what this change does and why. No code, no jargon. Written as if explaining to the electrician using the app.
 - "token_impact": Estimated token delta for Sonnet prompt changes. Positive = adds tokens, negative = saves tokens. 0 for non-prompt changes (regex, config, bug fixes).
 - "category": MUST be one of the 8 categories listed above.
 - "sonnet_prompt_audit": Always include this section, even if no trims are suggested.
@@ -1071,6 +1073,31 @@ PROMPT_INSTRUCTIONS
   if [ "$SS_UNCAPTURED" -gt 0 ]; then
     PUSHOVER_MSG+="Uncaptured values: ${SS_UNCAPTURED}\n"
   fi
+  # Add per-recommendation one-liner explanations
+  if [ "$REC_COUNT" -gt 0 ]; then
+    PUSHOVER_MSG+="\n"
+    local REC_IDX=0
+    while IFS= read -r rec_line; do
+      local REC_EXPLAIN
+      REC_EXPLAIN=$(echo "$rec_line" | jq -r '.explanation // .description // .title' | head -c 120)
+      local REC_CAT
+      REC_CAT=$(echo "$rec_line" | jq -r '.category // ""' | head -c 20)
+      case "$REC_CAT" in
+        regex_improvement) REC_CAT="Regex" ;;
+        keyword_boost) REC_CAT="Keyword" ;;
+        sonnet_prompt_trim) REC_CAT="Trim" ;;
+        sonnet_prompt_addition) REC_CAT="Sonnet" ;;
+        bug_fix) REC_CAT="Fix" ;;
+        config_change) REC_CAT="Config" ;;
+        number_normaliser) REC_CAT="Numbers" ;;
+        keyword_removal) REC_CAT="Keyword" ;;
+        *) REC_CAT="Change" ;;
+      esac
+      PUSHOVER_MSG+="• <b>${REC_CAT}:</b> ${REC_EXPLAIN}\n"
+      REC_IDX=$((REC_IDX + 1))
+      [ "$REC_IDX" -ge 6 ] && break  # Max 6 to fit Pushover limit
+    done < <(echo "$RECOMMENDATIONS" | jq -c '.[]' 2>/dev/null)
+  fi
   PUSHOVER_MSG+="\n${SUMMARY}"
 
   send_pushover_message \
@@ -1154,6 +1181,7 @@ Take this feedback into account when making your recommendations.
     {
       "title": "Short description of the fix",
       "description": "Why this change is needed",
+      "explanation": "Plain-English explanation of WHAT this change does and WHY, written for a non-technical user. 1-2 sentences max.",
       "file": "/absolute/path/to/file",
       "old_code": "exact string to find in file",
       "new_code": "replacement string"

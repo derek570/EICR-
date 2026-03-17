@@ -424,6 +424,7 @@ function buildRecommendationCards(recs) {
         ${buildCategoryBadge(rec.category)}
         ${buildTokenImpactBadge(rec)}
       </div>
+      ${rec.explanation ? `<div class="rec-explanation">${escapeHtml(rec.explanation)}</div>` : ""}
       <p class="rec-desc">${escapeHtml(rec.description)}</p>
       <div class="file-path">${escapeHtml(rec.file)}</div>
       <details onclick="event.stopPropagation()">
@@ -694,6 +695,7 @@ const html = `<!DOCTYPE html>
     .card-header { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; flex-wrap: wrap; }
     .checkbox-label { display: flex; align-items: center; gap: 8px; cursor: pointer; }
     .rec-title { font-weight: 600; font-size: 15px; color: #fff; }
+    .rec-explanation { font-size: 14px; color: #e0e0e0; background: rgba(46,204,113,0.08); border-left: 3px solid #2ecc71; padding: 8px 12px; margin: 8px 0; border-radius: 4px; line-height: 1.5; }
     .rec-desc { font-size: 13px; color: #aaa; margin-bottom: 8px; line-height: 1.4; }
     .file-path { font-family: monospace; font-size: 12px; color: #4cc9f0; margin-bottom: 6px; }
     details { margin-top: 6px; }
