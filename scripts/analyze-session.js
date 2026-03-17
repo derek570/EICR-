@@ -303,8 +303,11 @@ function analyzeSession(sessionDir) {
   // ── 5. Empty fields ──
 
   // Get final transcript to check what was spoken
-  const finalTranscriptEvt = events.find((e) => e.event === "final_transcript");
-  const fullTranscript = (finalTranscriptEvt?.data?.transcript || "").toLowerCase();
+  const finalTranscriptEvt = events.find(
+    (e) => e.event === "final_transcript" && e.category === "session"
+  );
+  const fullTranscriptOriginal = finalTranscriptEvt?.data?.transcript || "";
+  const fullTranscript = fullTranscriptOriginal.toLowerCase();
 
   // Build expected field keys from circuits and supply
   const emptyFields = [];
@@ -587,7 +590,7 @@ function analyzeSession(sessionDir) {
 
     return {
       timestamp: utt.timestamp,
-      text: text.substring(0, 300),
+      text: text,
       regex_captures: regexCaptures,
       sonnet_captures: sonnetCaptures,
       uncaptured_values: uncapturedValues,
@@ -867,6 +870,53 @@ function analyzeSession(sessionDir) {
     deepgram_streaming_stopped: sleepCycles.length > 0,
   };
 
+  // ── 15. Voice commands ──
+  // Extract voice_command_sent/response events to surface user intentions expressed via voice commands.
+
+  const voiceCommandSent = events.filter((e) => e.event === "voice_command_sent");
+  const voiceCommandResponse = events.filter((e) => e.event === "voice_command_response");
+  const voiceCommandUnknown = events.filter((e) => e.event === "voice_command_unknown_action");
+  const voiceCommandReorder = events.filter((e) => e.event === "voice_command_reorder_complete");
+  const voiceCommandAddCircuit = events.filter((e) => e.event === "voice_command_add_circuit");
+  const voiceCommandDeleteCircuit = events.filter((e) => e.event === "voice_command_delete_circuit");
+
+  const voiceCommandsList = voiceCommandSent.map((sent) => {
+    const sentTime = new Date(sent.timestamp).getTime();
+    // Find matching response within 10s
+    const response = voiceCommandResponse.find((r) => {
+      const rTime = new Date(r.timestamp).getTime();
+      return rTime >= sentTime && rTime - sentTime < 10000;
+    });
+    return {
+      timestamp: sent.timestamp,
+      command: sent.data?.command || "",
+      understood: response?.data?.understood ?? null,
+      action: response?.data?.action || null,
+      response_text: response?.data?.response || null,
+    };
+  });
+
+  const voiceCommands = {
+    total_sent: voiceCommandSent.length,
+    total_understood: voiceCommandsList.filter((c) => c.understood === true).length,
+    total_failed: voiceCommandsList.filter((c) => c.understood === false).length,
+    unknown_actions: voiceCommandUnknown.length,
+    reorders: voiceCommandReorder.length,
+    circuits_added: voiceCommandAddCircuit.length,
+    circuits_deleted: voiceCommandDeleteCircuit.length,
+    commands: voiceCommandsList,
+  };
+
+  // ── 16. TTS-discarded utterances ──
+  // User speech that was discarded because TTS was playing at the time.
+
+  const ttsDiscarded = events
+    .filter((e) => e.event === "tts_echo_discarded")
+    .map((e) => ({
+      timestamp: e.timestamp,
+      text: e.data?.text || "",
+    }));
+
   // ── Build analysis output ──
 
   const analysis = {
@@ -886,6 +936,10 @@ function analyzeSession(sessionDir) {
     sonnet_prompt_audit: sonnetPromptAudit,
     repeated_values: repeatedValues,
     vad_sleep_analysis: vadSleepAnalysis,
+    // Full transcript and voice commands (intent visibility)
+    full_transcript: fullTranscriptOriginal,
+    voice_commands: voiceCommands,
+    tts_discarded: ttsDiscarded,
     job_snapshot: jobSnapshot,
     cost_summary: costSummary,
   };
@@ -909,6 +963,9 @@ function analyzeSession(sessionDir) {
   const uncapturedCount = utteranceAnalysis.reduce((sum, u) => sum + u.uncaptured_values.length, 0);
   console.log(`  Uncaptured values: ${uncapturedCount}`);
   console.log(`  Repeated values: ${repeatedValues.length}`);
+  console.log(`  Full transcript: ${fullTranscriptOriginal.length} chars`);
+  console.log(`  Voice commands: ${voiceCommands.total_sent} sent, ${voiceCommands.total_understood} understood, ${voiceCommands.total_failed} failed`);
+  console.log(`  TTS-discarded utterances: ${ttsDiscarded.length}`);
   console.log(`  Sleep cycles: ${vadSleepAnalysis.total_sleep_cycles}`);
   console.log(`  Sleep duration: ${vadSleepAnalysis.total_sleep_duration_sec}s (${vadSleepAnalysis.total_sleep_cycles} cycles)`);
   console.log(`  Total stream paused: ${vadSleepAnalysis.total_stream_paused_min}min (saved $${vadSleepAnalysis.deepgram_saved_usd.toFixed(4)} Deepgram)`);
