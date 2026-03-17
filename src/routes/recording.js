@@ -20,6 +20,7 @@ import {
   injectRingReading,
   injectReading,
 } from '../chunk_accumulator.js';
+import { enqueueJob } from '../queue.js';
 import {
   createEICRBuffer,
   addTranscript,
@@ -1463,6 +1464,18 @@ router.post(
       }
 
       logger.info('Session analytics uploaded', { sessionId, userId, s3Prefix });
+
+      // Fire-and-forget: enqueue job for processing after analytics upload
+      const session = activeSessions.get(sessionId);
+      const jobId = session?.jobId || sessionId;
+      enqueueJob(userId, jobId).catch((err) =>
+        logger.error('Failed to enqueue job after analytics upload', {
+          sessionId,
+          jobId,
+          error: err.message,
+        })
+      );
+
       res.json({ success: true });
     } catch (error) {
       logger.error('Session analytics upload failed', { sessionId, userId, error: error.message });
