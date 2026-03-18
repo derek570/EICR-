@@ -1,8 +1,9 @@
 /**
- * Auth routes — login, logout, refresh, me
+ * Auth routes — login, logout, refresh, me, change-password
  */
 
 import { Router } from 'express';
+import bcrypt from 'bcryptjs';
 import * as auth from '../auth.js';
 import * as db from '../db.js';
 import logger from '../logger.js';
@@ -113,6 +114,48 @@ router.delete('/account', auth.requireAuth, async (req, res) => {
   } catch (error) {
     logger.error('Account deletion failed', { error: error.message, userId: req.user.id });
     res.status(500).json({ error: 'Account deletion failed' });
+  }
+});
+
+/**
+ * Change password
+ * PUT /api/auth/change-password
+ * Body: { currentPassword: string, newPassword: string }
+ */
+router.put('/change-password', auth.requireAuth, async (req, res) => {
+  try {
+    const { currentPassword, newPassword } = req.body;
+
+    if (!currentPassword || !newPassword) {
+      return res.status(400).json({ error: 'Current password and new password are required' });
+    }
+
+    if (newPassword.length < 6) {
+      return res.status(400).json({ error: 'New password must be at least 6 characters' });
+    }
+
+    // Get full user record (with password_hash)
+    const user = await db.getUserById(req.user.id);
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    // Verify current password
+    if (!auth.verifyPassword(currentPassword, user.password_hash)) {
+      return res.status(401).json({ error: 'Current password is incorrect' });
+    }
+
+    // Hash new password and update
+    const newHash = bcrypt.hashSync(newPassword, 10);
+    await db.resetUserPassword(req.user.id, newHash);
+
+    await db.logAction(req.user.id, 'password_changed');
+    logger.info('User changed their password', { userId: req.user.id });
+
+    res.json({ success: true, message: 'Password changed successfully' });
+  } catch (error) {
+    logger.error('Password change failed', { error: error.message, userId: req.user.id });
+    res.status(500).json({ error: 'Password change failed' });
   }
 });
 
