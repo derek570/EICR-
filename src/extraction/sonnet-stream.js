@@ -115,6 +115,7 @@ const KNOWN_FIELDS = new Set([
   'client_email',
   'reason_for_report',
   'occupier_name',
+  'date_of_inspection',
   'date_of_previous_inspection',
   'previous_certificate_number',
   'estimated_age_of_installation',
@@ -199,6 +200,11 @@ const FIELD_CORRECTIONS = {
   rcd_standard: 'rcd_bs_en',
   main_switch_rating: 'main_switch_current',
   main_switch_type: 'main_switch_bs_en',
+  // Date field variants
+  inspection_date: 'date_of_inspection',
+  test_date: 'date_of_inspection',
+  previous_inspection_date: 'date_of_previous_inspection',
+  last_inspection_date: 'date_of_previous_inspection',
   // "Main fuse" / "supply fuse" = Supply Protective Device (DNO cutout), NOT the CU main switch
   main_fuse_rating: 'spd_rated_current',
   main_fuse_current: 'spd_rated_current',

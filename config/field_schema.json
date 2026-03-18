@@ -382,6 +382,18 @@
       "description": "Evidence of additions or alterations not recorded",
       "ai_guidance": "Set to true if inspector mentions seeing work that wasn't in the records, or alterations not certified."
     },
+    "date_of_inspection": {
+      "label": "Date of Inspection",
+      "type": "text",
+      "description": "Date the inspection/testing was carried out",
+      "ai_guidance": "DD/MM/YYYY format (e.g., '18/03/2026'). Listen for 'today's date is', 'date of inspection', 'tested on', 'inspection date', 'carried out on'. If the electrician says a date near the start of a session without context, it's likely the inspection date."
+    },
+    "date_of_previous_inspection": {
+      "label": "Date of Previous Inspection",
+      "type": "text",
+      "description": "Date of the previous inspection/test",
+      "ai_guidance": "DD/MM/YYYY format (e.g., '15/06/2021'). Listen for 'previous inspection', 'last test', 'last inspection was', 'previous certificate dated'."
+    },
     "next_inspection_years": {
       "label": "Recommended Interval (Years)",
       "type": "select",

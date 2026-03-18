@@ -6,6 +6,8 @@ Shape:
     "client_name": "Client/customer name if mentioned",
     "postcode": "Postcode if mentioned (UK format)",
     "premises_description": "Residential|Commercial|Industrial|Agricultural|Other",
+    "date_of_inspection": "DD/MM/YYYY — date the inspection was carried out (e.g., 18/03/2026)",
+    "date_of_previous_inspection": "DD/MM/YYYY — date of the previous inspection (e.g., 15/06/2021)",
     "installation_records_available": false,
     "evidence_of_additions_alterations": false,
     "next_inspection_years": 5,
