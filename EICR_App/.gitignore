@@ -1,0 +1,89 @@
+# EICR-oMatic 3000 - Git Ignore
+
+# ===== Environment & Secrets =====
+.env
+.env.local
+.env.development
+.env.production
+*.pem
+*.key
+secrets/
+
+# ===== Data Directories =====
+# Job data contains sensitive customer information
+data/
+!data/.gitkeep
+
+# ===== Node.js =====
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.npm
+# package-lock.json — no longer gitignored (needed for npm ci)
+
+# ===== IDE & Editors =====
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# ===== Docker =====
+docker-compose.override.yml
+
+# ===== Logs =====
+*.log
+logs/
+
+# ===== Silero VAD WASM/ONNX (copied from node_modules by postinstall) =====
+frontend/public/vad/
+
+# ===== Temporary Files =====
+tmp/
+temp/
+*.tmp
+*.bak
+
+# ===== SQLite Database =====
+*.db
+*.sqlite
+*.sqlite3
+
+# ===== Generated PDFs (keep templates) =====
+# Don't commit generated certificates
+data/OUTPUT_*/
+data/DONE_*/
+data/FAILED_*/
+
+# ===== Swift Package Manager =====
+CertMate/.build/
+.build/
+.swiftpm/
+
+# ===== Next.js Frontend =====
+frontend/.next/
+frontend/node_modules/
+frontend/out/
+frontend/ios/
+
+# ===== Corrupted Git Backup =====
+.git_corrupted/
+
+# ===== Backups =====
+backups/
+
+# ===== OS Generated =====
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+
+# Terraform
+*.tfvars
+.terraform/
+.terraform.lock.hcl

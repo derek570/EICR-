@@ -1,0 +1,153 @@
+{
+  "installation_details": {
+    "description_of_premises": "Residential",
+    "installation_records_available": false,
+    "evidence_of_additions_alterations": false,
+    "next_inspection_years": 5
+  },
+  "extent_and_limitations": {
+    "extent": "Fixed electrical wiring installation.\n20% of accessories opened",
+    "agreed_limitations": "No loft spaces entered. No lifting of floors. HVAC control cables not tested. No testing of heating controls. No destructive inspections, readily visible accessories only.",
+    "agreed_with": "Occupier",
+    "operational_limitations": ""
+  },
+  "supply_characteristics": {
+    "earthing_arrangement": "TN-C-S",
+    "live_conductors": "AC - 1-phase (2 wire)",
+    "nominal_voltage_u": "230",
+    "nominal_voltage_uo": "230",
+    "nominal_frequency": "50",
+    "supply_polarity_confirmed": true,
+    "prospective_fault_current": "",
+    "earth_loop_impedance_ze": "",
+    "number_of_supplies": "1",
+    "supply_protective_device": {
+      "bs_en": "LIM",
+      "type": "",
+      "short_circuit_capacity": "",
+      "rated_current": ""
+    }
+  },
+  "particulars_of_installation": {
+    "means_of_earthing": {
+      "distributor_facility": true,
+      "earth_electrode": false
+    },
+    "earth_electrode": {
+      "type": "N/A",
+      "resistance_to_earth": "N/A",
+      "location": "N/A"
+    },
+    "main_switch": {
+      "location": "",
+      "type_bs_en": "60947-3",
+      "number_of_poles": "2",
+      "voltage_rating": "230",
+      "rated_current": "100",
+      "fuse_device_setting": "N/A",
+      "conductor_material": "Copper",
+      "conductor_csa": "25"
+    },
+    "rcd_main_switch": {
+      "operating_current": "N/A",
+      "time_delay": "N/A",
+      "operating_time": "N/A"
+    },
+    "earthing_conductor": {
+      "conductor_material": "Copper",
+      "conductor_csa": "16",
+      "continuity": true
+    },
+    "main_protective_bonding": {
+      "conductor_material": "Copper",
+      "conductor_csa": "10",
+      "continuity": true
+    },
+    "bonding_of_extraneous_parts": {
+      "water": true,
+      "gas": true,
+      "oil": false,
+      "steel": false,
+      "lightning": false,
+      "other": "N/A"
+    }
+  },
+  "distribution_board": {
+    "board_name": "DB-1",
+    "location": "",
+    "manufacturer": "",
+    "supplied_from": "",
+    "polarity_confirmed": true,
+    "phases": "1",
+    "phases_confirmed": "N/A",
+    "zs_at_db": "",
+    "ipf_at_db": "",
+    "rcd_trip_time": "",
+    "main_switch": {
+      "bs_en": "",
+      "voltage_rating": "",
+      "rated_current": "",
+      "ipf_rating": "",
+      "rcd_rating": ""
+    },
+    "spd_details": {
+      "type": "",
+      "status": ""
+    },
+    "overcurrent_device": {
+      "bs_en": "",
+      "voltage": "",
+      "current": ""
+    },
+    "test_equipment": {
+      "mft": "N/A",
+      "continuity": "N/A",
+      "insulation_resistance": "N/A",
+      "earth_fault_loop_impedance": "N/A",
+      "rcd": "N/A"
+    }
+  },
+  "inspection_schedule": {
+    "notes": "Section 6 (bath/shower) = tick, Section 7 (special locations) = N/A",
+    "default_code": "tick",
+    "items": {
+      "1.1": "tick",
+      "1.1.1": "N/A",
+      "1.2": "N/A",
+      "1.3": "tick",
+      "2.0": "N/A",
+      "6.1": "tick",
+      "6.2": "tick",
+      "6.3": "tick",
+      "6.4": "tick",
+      "6.5": "tick",
+      "6.6": "tick",
+      "6.7": "tick",
+      "6.8": "tick",
+      "7.02": "N/A",
+      "7.03": "N/A",
+      "7.04": "N/A",
+      "7.05": "N/A",
+      "7.06": "N/A",
+      "7.08": "N/A",
+      "7.09": "N/A",
+      "7.10": "N/A",
+      "7.11": "N/A",
+      "7.12": "N/A",
+      "7.14": "N/A",
+      "7.15": "N/A",
+      "7.17": "N/A",
+      "7.21": "N/A",
+      "7.22": "N/A",
+      "7.29": "N/A",
+      "7.30": "N/A",
+      "7.40": "N/A",
+      "7.53": "N/A"
+    }
+  },
+  "observation_settings": {
+    "suppress_audio_quality_fi": true,
+    "suppress_low_confidence": true,
+    "min_confidence_threshold": 0.6
+  }
+}

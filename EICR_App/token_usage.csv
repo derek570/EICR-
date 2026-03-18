@@ -1,0 +1,2 @@
+timestamp,job_id,address,gemini_tokens,gemini_cost,gpt_tokens,gpt_cost,total_tokens,total_cost
+2026-01-24T00:11:09.210Z,test_breakdown,"37 Clifton Park Road, Caversham",15235,0.021868,15945,0.285790,31180,0.307657

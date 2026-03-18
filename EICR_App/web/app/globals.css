@@ -1,0 +1,114 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:is(.dark *));
+
+/* Dark-only theme (matches iOS .preferredColorScheme(.dark)) */
+:root {
+  --background: #0F172A;
+  --foreground: #e2e8f0;
+  --card: #1e293b;
+  --card-foreground: #e2e8f0;
+  --muted: #1e293b;
+  --muted-foreground: #94a3b8;
+  --border: rgba(255, 255, 255, 0.08);
+  --input: rgba(255, 255, 255, 0.08);
+  --ring: #3b82f6;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+
+  /* CertMate Brand — updated palette */
+  --color-brand-navy: #0B1120;
+  --color-brand-blue: #3B82F6;
+  --color-brand-cyan: #06B6D4;
+  --color-brand-green: #22C55E;
+
+  /* Status Colors */
+  --color-status-satisfactory: #22C55E;
+  --color-status-unsatisfactory: #EF4444;
+  --color-status-c1: #EF4444;
+  --color-status-c2: #F97316;
+  --color-status-c3: #3B82F6;
+  --color-status-fi: #8B5CF6;
+  --color-status-limitation: #A855F7;
+  --color-status-pending: #6B7280;
+
+  /* Recording Colors */
+  --color-recording-idle: #22C55E;
+  --color-recording-processing: #F97316;
+  --color-recording-confirmed: #22C55E;
+  --color-recording-paused: #F97316;
+
+  /* Transcript Colors */
+  --color-transcript-keyword: #3B82F6;
+  --color-transcript-value: #22C55E;
+
+  /* Sidebar widths */
+  --spacing-sidebar-expanded: 240px;
+  --spacing-sidebar-collapsed: 64px;
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans, system-ui, -apple-system, sans-serif);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Form element overrides for dark theme */
+input,
+textarea,
+select {
+  background-color: rgba(255, 255, 255, 0.05);
+  border-color: rgba(255, 255, 255, 0.1);
+  color: var(--foreground);
+}
+
+[data-sonner-toaster] {
+  --normal-bg: var(--card);
+  --normal-text: var(--card-foreground);
+  --normal-border: var(--border);
+}
+
+/* Brand gradient utility */
+.brand-gradient-text {
+  background: linear-gradient(135deg, #3B82F6, #06B6D4, #22C55E);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+/* Glassmorphism card */
+.glass-card {
+  background: rgba(255, 255, 255, 0.05);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+/* Subtle scrollbar styling */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(100, 116, 139, 0.3);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(100, 116, 139, 0.5);
+}

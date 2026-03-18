@@ -1,0 +1,23 @@
+# Media files
+*.png
+*.PNG
+*.jpg
+*.JPG
+*.jpeg
+*.JPEG
+*.heic
+*.HEIC
+*.mp4
+*.MP4
+*.pdf
+
+# OS files
+.DS_Store
+.DS_Store?
+._*
+
+# Archive
+_archive/
+
+# Backups
+backups/

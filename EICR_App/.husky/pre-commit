@@ -1,0 +1,8 @@
+npx lint-staged
+
+# Check for common secret patterns in staged files
+SECRETS_PATTERN='(AKIA[0-9A-Z]{16}|sk-[a-zA-Z0-9]{48}|password\s*=\s*["\x27][^"\x27]+["\x27])'
+if git diff --cached --diff-filter=d -U0 | grep -qE "$SECRETS_PATTERN"; then
+  echo "ERROR: Possible secret detected in staged files. Review before committing."
+  exit 1
+fi

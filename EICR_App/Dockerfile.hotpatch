@@ -1,0 +1,12 @@
+FROM eicr-backend:latest
+
+USER root
+
+# Update source code, config, and scripts on top of cached image
+COPY src/ ./src/
+COPY config/ ./config/
+COPY scripts/ ./scripts/
+
+RUN chown -R certmate:nodejs /app
+
+USER certmate

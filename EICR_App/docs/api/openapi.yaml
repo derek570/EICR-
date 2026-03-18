@@ -1,0 +1,2941 @@
+openapi: 3.1.0
+info:
+  title: CertMate (EICR-oMatic 3000) API
+  version: 1.0.0
+  description: |
+    Backend API for CertMate — automated EICR/EIC electrical certificate creation
+    for electrical inspectors. Powered by Express/Node.js with ES modules.
+
+    ## Authentication
+    Most endpoints require a Bearer JWT token obtained via `POST /api/auth/login`.
+    Pass the token in the `Authorization` header: `Bearer <token>`.
+
+    ## Certificate Types
+    - **EICR** — Electrical Installation Condition Report (periodic inspection)
+    - **EIC** — Electrical Installation Certificate (new installations)
+  contact:
+    name: CertMate Support
+  license:
+    name: Proprietary
+
+servers:
+  - url: https://certomatic3000.co.uk
+    description: Production
+  - url: http://localhost:3000
+    description: Local development
+
+tags:
+  - name: Health
+    description: Health check endpoints
+  - name: Auth
+    description: Authentication — login, logout, refresh, current user
+  - name: Jobs
+    description: EICR/EIC job CRUD and processing
+  - name: Job Data
+    description: Get/update full job details, photos, history
+  - name: Recording
+    description: Real-time recording sessions (audio chunks, photos, finish)
+  - name: CCU
+    description: Consumer unit (fuseboard) photo analysis via GPT Vision
+  - name: PDF
+    description: PDF certificate generation
+  - name: Export
+    description: CSV, Excel, and bulk PDF export
+  - name: Email & WhatsApp
+    description: Certificate delivery via email or WhatsApp
+  - name: OCR
+    description: OCR extraction from existing certificates
+  - name: Settings
+    description: User defaults, company settings, inspector profiles, schema, regulations
+  - name: Clients
+    description: CRM — clients and properties
+  - name: Analytics
+    description: Job statistics and analytics
+  - name: Billing
+    description: Stripe subscription billing
+  - name: Calendar
+    description: Google Calendar integration
+  - name: Push
+    description: Web push notifications
+  - name: Keys & Proxy
+    description: API keys for iOS and proxy endpoints for Claude/TTS
+  - name: Feedback
+    description: Session feedback and optimizer reports
+  - name: Admin
+    description: System health, queue status, statistics
+  - name: Queue
+    description: Job queue status and health
+  - name: Debug
+    description: Debug reports and session diagnostics
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
+      required: [error]
+
+    Success:
+      type: object
+      properties:
+        success:
+          type: boolean
+
+    User:
+      type: object
+      properties:
+        id:
+          type: string
+        email:
+          type: string
+          format: email
+        name:
+          type: string
+
+    JobSummary:
+      type: object
+      properties:
+        id:
+          type: string
+        address:
+          type: string
+          nullable: true
+        status:
+          type: string
+          enum: [pending, processing, done, failed]
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    Circuit:
+      type: object
+      description: A single circuit's test results and metadata
+      properties:
+        circuit_ref:
+          type: string
+        circuit_designation:
+          type: string
+        ocpd_type:
+          type: string
+        ocpd_rating_a:
+          type: string
+        ocpd_bs_en:
+          type: string
+        rcd_protected:
+          type: boolean
+        rcd_rating_ma:
+          type: string
+        measured_zs_ohm:
+          type: string
+        r1_r2_ohm:
+          type: string
+        ir_live_live_mohm:
+          type: string
+        ir_live_earth_mohm:
+          type: string
+        rcd_time_ms:
+          type: string
+        polarity_confirmed:
+          type: string
+
+    Observation:
+      type: object
+      properties:
+        code:
+          type: string
+          description: "Classification code: C1, C2, C3, FI, or N/A"
+        item_location:
+          type: string
+        observation_text:
+          type: string
+        schedule_item:
+          type: string
+        schedule_description:
+          type: string
+        photos:
+          type: array
+          items:
+            type: string
+
+    InstallationDetails:
+      type: object
+      properties:
+        client_name:
+          type: string
+        address:
+          type: string
+        postcode:
+          type: string
+        town:
+          type: string
+        county:
+          type: string
+        premises_description:
+          type: string
+        installation_records_available:
+          type: boolean
+        evidence_of_additions_alterations:
+          type: boolean
+        next_inspection_years:
+          type: string
+        extent:
+          type: string
+        agreed_limitations:
+          type: string
+        agreed_with:
+          type: string
+        operational_limitations:
+          type: string
+
+    SupplyCharacteristics:
+      type: object
+      properties:
+        earthing_arrangement:
+          type: string
+        live_conductors:
+          type: string
+        nominal_voltage_u:
+          type: string
+        nominal_frequency:
+          type: string
+        prospective_fault_current:
+          type: string
+        earth_loop_impedance_ze:
+          type: string
+        supply_polarity_confirmed:
+          type: boolean
+
+    BoardInfo:
+      type: object
+      properties:
+        name:
+          type: string
+        location:
+          type: string
+        manufacturer:
+          type: string
+        phases:
+          type: string
+        ze:
+          type: string
+        zs_at_db:
+          type: string
+        ipf_at_db:
+          type: string
+
+    JobDetail:
+      type: object
+      properties:
+        id:
+          type: string
+        address:
+          type: string
+        status:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        certificate_type:
+          type: string
+          enum: [EICR, EIC]
+        circuits:
+          type: array
+          items:
+            $ref: "#/components/schemas/Circuit"
+        observations:
+          type: array
+          items:
+            $ref: "#/components/schemas/Observation"
+        board_info:
+          $ref: "#/components/schemas/BoardInfo"
+        boards:
+          type: array
+          items:
+            $ref: "#/components/schemas/BoardInfo"
+          nullable: true
+        installation_details:
+          $ref: "#/components/schemas/InstallationDetails"
+        supply_characteristics:
+          $ref: "#/components/schemas/SupplyCharacteristics"
+        inspection_schedule:
+          type: object
+          nullable: true
+        inspector_id:
+          type: string
+          nullable: true
+        extent_and_type:
+          type: object
+          nullable: true
+        design_construction:
+          type: object
+          nullable: true
+
+    Photo:
+      type: object
+      properties:
+        filename:
+          type: string
+        url:
+          type: string
+        thumbnail_url:
+          type: string
+
+    Client:
+      type: object
+      properties:
+        id:
+          type: string
+        user_id:
+          type: string
+        name:
+          type: string
+        email:
+          type: string
+          nullable: true
+        phone:
+          type: string
+          nullable: true
+        company:
+          type: string
+          nullable: true
+        notes:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+
+    Property:
+      type: object
+      properties:
+        id:
+          type: string
+        user_id:
+          type: string
+        client_id:
+          type: string
+          nullable: true
+        address:
+          type: string
+        postcode:
+          type: string
+          nullable: true
+        property_type:
+          type: string
+          nullable: true
+        notes:
+          type: string
+          nullable: true
+
+    RecordingFormData:
+      type: object
+      properties:
+        circuits:
+          type: array
+          items:
+            $ref: "#/components/schemas/Circuit"
+        observations:
+          type: array
+          items:
+            $ref: "#/components/schemas/Observation"
+        installation_details:
+          $ref: "#/components/schemas/InstallationDetails"
+        supply_characteristics:
+          $ref: "#/components/schemas/SupplyCharacteristics"
+        board_info:
+          $ref: "#/components/schemas/BoardInfo"
+
+    SubscriptionStatus:
+      type: object
+      properties:
+        plan:
+          type: string
+          enum: [free, pro]
+        status:
+          type: string
+        stripe_subscription_id:
+          type: string
+          nullable: true
+        current_period_end:
+          type: string
+          format: date-time
+          nullable: true
+        cancel_at_period_end:
+          type: boolean
+        billing_configured:
+          type: boolean
+
+security:
+  - BearerAuth: []
+
+paths:
+  # ============= Health =============
+  /health:
+    get:
+      tags: [Health]
+      summary: Basic health check
+      security: []
+      responses:
+        "200":
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+                  timestamp:
+                    type: string
+                    format: date-time
+
+  /api/health:
+    get:
+      tags: [Health]
+      summary: API health check with storage info
+      security: []
+      responses:
+        "200":
+          description: API health status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+                  service:
+                    type: string
+                    example: eicr-backend
+                  version:
+                    type: string
+                    example: "1.0.0"
+                  storage:
+                    type: string
+                    enum: [s3, local]
+                  timestamp:
+                    type: string
+                    format: date-time
+
+  # ============= Auth =============
+  /api/auth/login:
+    post:
+      tags: [Auth]
+      summary: Authenticate user
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email:
+                  type: string
+                  format: email
+                password:
+                  type: string
+      responses:
+        "200":
+          description: Login successful
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  token:
+                    type: string
+                  user:
+                    $ref: "#/components/schemas/User"
+        "400":
+          description: Missing email or password
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "429":
+          description: Too many login attempts
+
+  /api/auth/logout:
+    post:
+      tags: [Auth]
+      summary: Logout current user
+      responses:
+        "200":
+          description: Logout successful
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Success"
+
+  /api/auth/refresh:
+    post:
+      tags: [Auth]
+      summary: Refresh an expired JWT token
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token:
+                  type: string
+      responses:
+        "200":
+          description: Token refreshed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  token:
+                    type: string
+                  user:
+                    $ref: "#/components/schemas/User"
+        "401":
+          description: Invalid or expired token
+
+  /api/auth/me:
+    get:
+      tags: [Auth]
+      summary: Get current authenticated user
+      responses:
+        "200":
+          description: Current user info
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+
+  # ============= Jobs =============
+  /api/jobs/{userId}:
+    get:
+      tags: [Jobs]
+      summary: List all jobs for a user
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: List of job summaries
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/JobSummary"
+        "403":
+          description: Access denied
+    post:
+      tags: [Jobs]
+      summary: Create a blank job (no file upload)
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                certificate_type:
+                  type: string
+                  enum: [EICR, EIC]
+                  default: EICR
+                address:
+                  type: string
+                  nullable: true
+      responses:
+        "200":
+          description: Job created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/JobSummary"
+        "403":
+          description: Access denied
+
+  /api/upload:
+    post:
+      tags: [Jobs]
+      summary: Upload files and start processing
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [files]
+              properties:
+                files:
+                  type: array
+                  items:
+                    type: string
+                    format: binary
+                  maxItems: 20
+                certificateType:
+                  type: string
+                  enum: [EICR, EIC]
+                  default: EICR
+      responses:
+        "200":
+          description: Files uploaded, processing started
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  jobId:
+                    type: string
+                  message:
+                    type: string
+        "400":
+          description: No files uploaded
+
+  /api/process-job:
+    post:
+      tags: [Jobs]
+      summary: Process an existing job
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [userId, jobId]
+              properties:
+                userId:
+                  type: string
+                jobId:
+                  type: string
+                jobFolder:
+                  type: string
+                  description: Optional local filesystem path
+      responses:
+        "200":
+          description: Processing complete
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  jobId:
+                    type: string
+                  result:
+                    type: object
+                    properties:
+                      ok:
+                        type: boolean
+                      address:
+                        type: string
+                      outputs:
+                        type: object
+        "400":
+          description: Missing required fields
+
+  # ============= Job Data =============
+  /api/job/{userId}/{jobId}:
+    get:
+      tags: [Job Data]
+      summary: Get full job details
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: jobId
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Database job ID or folder name/address
+      responses:
+        "200":
+          description: Full job data
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/JobDetail"
+        "404":
+          description: Job not found
+    put:
+      tags: [Job Data]
+      summary: Update full job data
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: jobId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                circuits:
+                  type: array
+                  items:
+                    $ref: "#/components/schemas/Circuit"
+                observations:
+                  type: array
+                  items:
+                    $ref: "#/components/schemas/Observation"
+                board_info:
+                  $ref: "#/components/schemas/BoardInfo"
+                boards:
+                  type: array
+                  items:
+                    $ref: "#/components/schemas/BoardInfo"
+                installation_details:
+                  $ref: "#/components/schemas/InstallationDetails"
+                supply_characteristics:
+                  $ref: "#/components/schemas/SupplyCharacteristics"
+                inspection_schedule:
+                  type: object
+                inspector_id:
+                  type: string
+                extent_and_type:
+                  type: object
+                design_construction:
+                  type: object
+      responses:
+        "200":
+          description: Job updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Success"
+    delete:
+      tags: [Job Data]
+      summary: Delete a job
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: jobId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Job deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Success"
+
+  /api/job/{userId}/{jobId}/debug:
+    get:
+      tags: [Debug]
+      summary: Get debug transcription data for a job
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: jobId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Debug transcription data with audio URLs
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  sessionId:
+                    type: string
+                  jobId:
+                    type: string
+                  chunks:
+                    type: array
+                    items:
+                      type: object
+                  fullTranscript:
+                    type: string
+        "404":
+          description: Debug data not found
+
+  /api/job/{userId}/{jobId}/history:
+    get:
+      tags: [Job Data]
+      summary: Get version history for a job
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: jobId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: List of version snapshots
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id:
+                      type: string
+                    created_at:
+                      type: string
+                      format: date-time
+                    summary:
+                      type: string
+
+  /api/job/{userId}/{jobId}/history/{versionId}:
+    get:
+      tags: [Job Data]
+      summary: Get a specific version snapshot
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: jobId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: versionId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Version snapshot data
+          content:
+            application/json:
+              schema:
+                type: object
+        "404":
+          description: Version not found
+
+  # ============= Photos =============
+  /api/job/{userId}/{jobId}/photos:
+    get:
+      tags: [Job Data]
+      summary: Get all photos for a job
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: jobId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: List of photos
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Photo"
+    post:
+      tags: [Job Data]
+      summary: Upload a new photo to a job
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: jobId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [photo]
+              properties:
+                photo:
+                  type: string
+                  format: binary
+      responses:
+        "200":
+          description: Photo uploaded
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  photo:
+                    $ref: "#/components/schemas/Photo"
+
+  /api/job/{userId}/{jobId}/photos/{filename}:
+    get:
+      tags: [Job Data]
+      summary: Get a specific photo (binary)
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: jobId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: filename
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: thumbnail
+          in: query
+          schema:
+            type: boolean
+      responses:
+        "200":
+          description: Photo binary data
+          content:
+            image/jpeg:
+              schema:
+                type: string
+                format: binary
+            image/png:
+              schema:
+                type: string
+                format: binary
+        "404":
+          description: Photo not found
+
+  # ============= Recording =============
+  /api/recording/start:
+    post:
+      tags: [Recording]
+      summary: Start a new real-time recording session
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                address:
+                  type: string
+                jobId:
+                  type: string
+                  description: Link to an existing job
+      responses:
+        "200":
+          description: Session started
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  sessionId:
+                    type: string
+                  jobId:
+                    type: string
+                    nullable: true
+                  message:
+                    type: string
+
+  /api/recording/{sessionId}/chunk:
+    post:
+      tags: [Recording]
+      summary: Process an audio chunk and return updated form data
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [audio]
+              properties:
+                audio:
+                  type: string
+                  format: binary
+                  description: Audio file (1-minute chunk)
+                chunkIndex:
+                  type: integer
+                chunkStartSeconds:
+                  type: integer
+      responses:
+        "200":
+          description: Chunk processed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  chunkIndex:
+                    type: integer
+                  formData:
+                    $ref: "#/components/schemas/RecordingFormData"
+                  message:
+                    type: string
+        "404":
+          description: Session not found
+        "422":
+          description: Empty transcript (silence)
+
+  /api/recording/{sessionId}/photo:
+    post:
+      tags: [Recording]
+      summary: Add a photo to an active recording session
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [photo, audioSeconds]
+              properties:
+                photo:
+                  type: string
+                  format: binary
+                audioSeconds:
+                  type: integer
+                  description: Timestamp in the recording when photo was taken
+      responses:
+        "200":
+          description: Photo added
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  filename:
+                    type: string
+                  audioSeconds:
+                    type: integer
+                  formData:
+                    $ref: "#/components/schemas/RecordingFormData"
+        "404":
+          description: Session not found
+
+  /api/recording/{sessionId}/finish:
+    post:
+      tags: [Recording]
+      summary: Finish recording session and save as a job
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                address:
+                  type: string
+                certificateType:
+                  type: string
+                  enum: [EICR, EIC]
+                  default: EICR
+                jobData:
+                  type: object
+                  description: iOS Whisper mode on-device extracted data
+                whisperDebugLog:
+                  type: object
+                  description: Debug log from iOS Whisper mode
+      responses:
+        "200":
+          description: Session saved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  jobId:
+                    type: string
+                  address:
+                    type: string
+                  formData:
+                    $ref: "#/components/schemas/RecordingFormData"
+                  message:
+                    type: string
+        "404":
+          description: Session not found
+
+  /api/recording/{sessionId}:
+    get:
+      tags: [Recording]
+      summary: Get current recording session state
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Session state
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  sessionId:
+                    type: string
+                  formData:
+                    $ref: "#/components/schemas/RecordingFormData"
+                  chunksReceived:
+                    type: integer
+                  photosCount:
+                    type: integer
+                  startedAt:
+                    type: integer
+                    description: Unix timestamp in milliseconds
+        "404":
+          description: Session not found
+
+  /api/recording/extract-transcript:
+    post:
+      tags: [Recording]
+      summary: Extract structured data from pre-transcribed text (WhisperKit mode)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [transcript]
+              properties:
+                transcript:
+                  type: string
+                  minLength: 10
+                sessionId:
+                  type: string
+                existingData:
+                  type: object
+                  description: Existing job data for context
+      responses:
+        "200":
+          description: Extraction successful
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  formData:
+                    $ref: "#/components/schemas/RecordingFormData"
+        "400":
+          description: Transcript too short
+
+  /api/recording/gemini-extract:
+    post:
+      tags: [Recording]
+      summary: Gemini chunked audio extraction (base64 audio)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [sessionId, audio]
+              properties:
+                sessionId:
+                  type: string
+                audio:
+                  type: string
+                  description: Base64-encoded audio
+                audioMimeType:
+                  type: string
+                  default: audio/flac
+                previousAudio:
+                  type: string
+                  description: Base64-encoded previous audio for context
+                previousAudioMimeType:
+                  type: string
+                context:
+                  type: object
+                chunkIndex:
+                  type: integer
+                chunkDuration:
+                  type: number
+      responses:
+        "200":
+          description: Extraction result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  transcript:
+                    type: string
+                  formData:
+                    $ref: "#/components/schemas/RecordingFormData"
+        "429":
+          description: Rate limited
+
+  /api/session/{sessionId}/analytics:
+    post:
+      tags: [Recording]
+      summary: Upload session analytics files from iOS
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                debug_log:
+                  type: string
+                  format: binary
+                  description: JSONL debug log
+                field_sources:
+                  type: string
+                  format: binary
+                  description: Field sources JSON
+                manifest:
+                  type: string
+                  format: binary
+                  description: Session manifest JSON
+                job_snapshot:
+                  type: string
+                  format: binary
+                  description: Full job state snapshot JSON
+      responses:
+        "200":
+          description: Analytics uploaded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Success"
+        "207":
+          description: Partial upload (some files failed)
+
+  # ============= CCU =============
+  /api/analyze-ccu:
+    post:
+      tags: [CCU]
+      summary: Analyze consumer unit photo via GPT Vision
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [photo]
+              properties:
+                photo:
+                  type: string
+                  format: binary
+                  description: JPEG photo of consumer unit
+      responses:
+        "200":
+          description: Analysis result with circuits and board info
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  analysis:
+                    type: object
+                    properties:
+                      circuits:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/Circuit"
+                      board_info:
+                        $ref: "#/components/schemas/BoardInfo"
+        "400":
+          description: No photo uploaded
+
+  /api/enhance-observation:
+    post:
+      tags: [CCU]
+      summary: Enhance an observation with BS 7671 regulation references
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [observation_text]
+              properties:
+                observation_text:
+                  type: string
+                code:
+                  type: string
+                  description: "Classification code (C1, C2, C3, etc.)"
+                item_location:
+                  type: string
+      responses:
+        "200":
+          description: Enhanced observation
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  enhanced:
+                    type: object
+                    properties:
+                      observation_text:
+                        type: string
+                      regulation:
+                        type: string
+                        nullable: true
+                      schedule_item:
+                        type: string
+                        nullable: true
+
+  # ============= PDF =============
+  /api/job/{userId}/{jobId}/generate-pdf:
+    post:
+      tags: [PDF]
+      summary: Generate PDF certificate for a job
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: jobId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: PDF generated and returned
+          content:
+            application/pdf:
+              schema:
+                type: string
+                format: binary
+        "404":
+          description: Job not found
+
+  /api/job/{userId}/{jobId}/clone:
+    post:
+      tags: [Jobs]
+      summary: Clone a job to a new address
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: jobId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [newAddress]
+              properties:
+                newAddress:
+                  type: string
+                clearTestResults:
+                  type: boolean
+                  description: If true, clears test result values
+      responses:
+        "200":
+          description: Job cloned
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  jobId:
+                    type: string
+                  address:
+                    type: string
+        "400":
+          description: New address required
+        "404":
+          description: Source job not found
+
+  # ============= Export =============
+  /api/job/{userId}/{jobId}/export/csv:
+    get:
+      tags: [Export]
+      summary: Download circuits as CSV file
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: jobId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: CSV file
+          content:
+            text/csv:
+              schema:
+                type: string
+        "404":
+          description: Job not found
+
+  /api/job/{userId}/{jobId}/export/excel:
+    get:
+      tags: [Export]
+      summary: Download full job data as Excel workbook
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: jobId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Excel workbook
+          content:
+            application/vnd.openxmlformats-officedocument.spreadsheetml.sheet:
+              schema:
+                type: string
+                format: binary
+        "404":
+          description: Job not found
+
+  /api/jobs/{userId}/bulk-download:
+    post:
+      tags: [Export]
+      summary: Bulk download PDFs as ZIP archive
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [jobIds]
+              properties:
+                jobIds:
+                  type: array
+                  items:
+                    type: string
+                  maxItems: 50
+      responses:
+        "200":
+          description: ZIP archive
+          content:
+            application/zip:
+              schema:
+                type: string
+                format: binary
+        "400":
+          description: Invalid jobIds
+
+  # ============= Email & WhatsApp =============
+  /api/job/{userId}/{jobId}/email:
+    post:
+      tags: [Email & WhatsApp]
+      summary: Send certificate via email
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: jobId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [to]
+              properties:
+                to:
+                  type: string
+                  format: email
+                clientName:
+                  type: string
+      responses:
+        "200":
+          description: Email sent
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+        "404":
+          description: Job or PDF not found
+        "503":
+          description: Email not configured
+
+  /api/email/status:
+    get:
+      tags: [Email & WhatsApp]
+      summary: Check email configuration status
+      responses:
+        "200":
+          description: Email configuration status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  configured:
+                    type: boolean
+                  verified:
+                    type: boolean
+
+  /api/job/{userId}/{jobId}/whatsapp:
+    post:
+      tags: [Email & WhatsApp]
+      summary: Send certificate via WhatsApp
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: jobId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [phoneNumber]
+              properties:
+                phoneNumber:
+                  type: string
+      responses:
+        "200":
+          description: WhatsApp message sent
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+        "400":
+          description: Invalid phone number
+        "503":
+          description: WhatsApp not configured
+
+  /api/whatsapp/status:
+    get:
+      tags: [Email & WhatsApp]
+      summary: Check WhatsApp configuration status
+      responses:
+        "200":
+          description: WhatsApp configuration status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  configured:
+                    type: boolean
+
+  # ============= OCR =============
+  /api/ocr/certificate:
+    post:
+      tags: [OCR]
+      summary: Extract data from an existing certificate via OCR
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: PDF, JPG, JPEG, or PNG file
+      responses:
+        "200":
+          description: Extraction successful
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: object
+                    description: Extracted certificate data in CertMate format
+                  meta:
+                    type: object
+                    properties:
+                      model:
+                        type: string
+                      tokens:
+                        type: integer
+                      source_file:
+                        type: string
+        "400":
+          description: No file or unsupported type
+
+  /api/ocr/create-job:
+    post:
+      tags: [OCR]
+      summary: Create a job from OCR-extracted data
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [data]
+              properties:
+                data:
+                  type: object
+                  description: Extracted certificate data
+                certificateType:
+                  type: string
+                  enum: [EICR, EIC]
+      responses:
+        "200":
+          description: Job created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  jobId:
+                    type: string
+                  address:
+                    type: string
+
+  # ============= Settings =============
+  /api/settings/{userId}/defaults:
+    get:
+      tags: [Settings]
+      summary: Get user circuit field defaults
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: User defaults object
+          content:
+            application/json:
+              schema:
+                type: object
+    put:
+      tags: [Settings]
+      summary: Update user circuit field defaults
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        "200":
+          description: Defaults updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Success"
+
+  /api/settings/{userId}/company:
+    get:
+      tags: [Settings]
+      summary: Get company settings
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Company settings
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  company_name:
+                    type: string
+                  company_address:
+                    type: string
+                  company_phone:
+                    type: string
+                  company_email:
+                    type: string
+                  company_website:
+                    type: string
+                  company_registration:
+                    type: string
+                  logo_file:
+                    type: string
+                    nullable: true
+    put:
+      tags: [Settings]
+      summary: Update company settings
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        "200":
+          description: Settings updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Success"
+
+  /api/inspector-profiles/{userId}:
+    get:
+      tags: [Settings]
+      summary: Get inspector profiles for a user
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Array of inspector profiles
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+    put:
+      tags: [Settings]
+      summary: Update inspector profiles
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: array
+              items:
+                type: object
+      responses:
+        "200":
+          description: Profiles updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Success"
+
+  /api/inspector-profiles/{userId}/upload-signature:
+    post:
+      tags: [Settings]
+      summary: Upload inspector signature image
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [signature]
+              properties:
+                signature:
+                  type: string
+                  format: binary
+      responses:
+        "200":
+          description: Signature uploaded
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  signature_file:
+                    type: string
+
+  /api/schema/fields:
+    get:
+      tags: [Settings]
+      summary: Get field schema for building UI
+      security: []
+      responses:
+        "200":
+          description: Field schema JSON
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /api/regulations:
+    get:
+      tags: [Settings]
+      summary: Search BS 7671 regulations
+      parameters:
+        - name: q
+          in: query
+          schema:
+            type: string
+          description: Search term
+      responses:
+        "200":
+          description: Matching regulations (max 20)
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    ref:
+                      type: string
+                    section:
+                      type: string
+                    title:
+                      type: string
+                    description:
+                      type: string
+
+  # ============= Clients =============
+  /api/clients/{userId}:
+    get:
+      tags: [Clients]
+      summary: List all clients for a user
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: List of clients
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Client"
+    post:
+      tags: [Clients]
+      summary: Create a new client
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:
+                  type: string
+                email:
+                  type: string
+                phone:
+                  type: string
+                company:
+                  type: string
+                notes:
+                  type: string
+      responses:
+        "200":
+          description: Client created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Client"
+        "400":
+          description: Name required
+
+  /api/clients/{userId}/{clientId}:
+    get:
+      tags: [Clients]
+      summary: Get client detail with properties and job history
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: clientId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Client with properties
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Client"
+                  - type: object
+                    properties:
+                      properties:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/Property"
+        "404":
+          description: Client not found
+    put:
+      tags: [Clients]
+      summary: Update a client
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: clientId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                email:
+                  type: string
+                phone:
+                  type: string
+                company:
+                  type: string
+                notes:
+                  type: string
+      responses:
+        "200":
+          description: Client updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Success"
+    delete:
+      tags: [Clients]
+      summary: Delete a client
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: clientId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Client deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Success"
+
+  # ============= Properties =============
+  /api/properties/{userId}:
+    get:
+      tags: [Clients]
+      summary: List all properties for a user
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: List of properties
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Property"
+    post:
+      tags: [Clients]
+      summary: Create a new property
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [address]
+              properties:
+                address:
+                  type: string
+                postcode:
+                  type: string
+                property_type:
+                  type: string
+                client_id:
+                  type: string
+                notes:
+                  type: string
+      responses:
+        "200":
+          description: Property created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Property"
+        "400":
+          description: Address required
+
+  /api/properties/{userId}/{propertyId}/history:
+    get:
+      tags: [Clients]
+      summary: Get inspection history for a property
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: propertyId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: List of jobs at this property
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/JobSummary"
+        "404":
+          description: Property not found
+
+  # ============= Analytics =============
+  /api/analytics/{userId}:
+    get:
+      tags: [Analytics]
+      summary: Get job statistics and analytics
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Analytics data
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  stats:
+                    type: object
+                    description: Job counts and status breakdown
+                  weekly:
+                    type: array
+                    description: Jobs per week for past 12 weeks
+                    items:
+                      type: object
+                  timing:
+                    type: object
+                    description: Processing time statistics
+
+  # ============= Billing =============
+  /api/billing/webhook:
+    post:
+      tags: [Billing]
+      summary: Stripe webhook endpoint
+      security: []
+      description: |
+        Handles Stripe webhook events. Requires raw body with Stripe signature verification.
+        Events handled: checkout.session.completed, invoice.paid,
+        customer.subscription.updated, customer.subscription.deleted.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        "200":
+          description: Webhook processed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  received:
+                    type: boolean
+        "400":
+          description: Missing or invalid signature
+        "503":
+          description: Billing not configured
+
+  /api/billing/status:
+    get:
+      tags: [Billing]
+      summary: Get current user's subscription status
+      responses:
+        "200":
+          description: Subscription status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SubscriptionStatus"
+
+  /api/billing/create-checkout:
+    post:
+      tags: [Billing]
+      summary: Create a Stripe Checkout session
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [priceId]
+              properties:
+                priceId:
+                  type: string
+      responses:
+        "200":
+          description: Checkout session URL
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  url:
+                    type: string
+                    format: uri
+        "400":
+          description: priceId required
+        "503":
+          description: Billing not configured
+
+  /api/billing/portal:
+    post:
+      tags: [Billing]
+      summary: Create a Stripe Customer Portal session
+      responses:
+        "200":
+          description: Portal session URL
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  url:
+                    type: string
+                    format: uri
+        "400":
+          description: No billing account
+        "503":
+          description: Billing not configured
+
+  # ============= Calendar =============
+  /api/calendar/auth-url:
+    get:
+      tags: [Calendar]
+      summary: Get Google OAuth consent URL
+      responses:
+        "200":
+          description: Auth URL
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  url:
+                    type: string
+                    format: uri
+        "503":
+          description: Calendar not configured
+
+  /api/calendar/callback:
+    post:
+      tags: [Calendar]
+      summary: Exchange Google OAuth code for tokens
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code]
+              properties:
+                code:
+                  type: string
+      responses:
+        "200":
+          description: Calendar connected
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Success"
+        "400":
+          description: Code required
+        "503":
+          description: Calendar not configured
+
+  /api/calendar/status:
+    get:
+      tags: [Calendar]
+      summary: Check calendar connection status
+      responses:
+        "200":
+          description: Calendar status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  configured:
+                    type: boolean
+                  connected:
+                    type: boolean
+
+  /api/calendar/events:
+    get:
+      tags: [Calendar]
+      summary: Get upcoming inspection events
+      responses:
+        "200":
+          description: Calendar events
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  events:
+                    type: array
+                    items:
+                      type: object
+        "400":
+          description: Calendar not connected
+        "503":
+          description: Calendar not configured
+
+  /api/calendar/create-job-from-event:
+    post:
+      tags: [Calendar]
+      summary: Create a job from a calendar event
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [location]
+              properties:
+                summary:
+                  type: string
+                location:
+                  type: string
+                start:
+                  type: string
+                description:
+                  type: string
+      responses:
+        "200":
+          description: Job created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  jobId:
+                    type: string
+                  address:
+                    type: string
+        "400":
+          description: No location
+
+  /api/calendar/disconnect:
+    delete:
+      tags: [Calendar]
+      summary: Disconnect Google Calendar
+      responses:
+        "200":
+          description: Calendar disconnected
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Success"
+
+  # ============= Push =============
+  /api/push/vapid-key:
+    get:
+      tags: [Push]
+      summary: Get VAPID public key for push subscriptions
+      security: []
+      responses:
+        "200":
+          description: VAPID key
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  publicKey:
+                    type: string
+        "503":
+          description: Push not configured
+
+  /api/push/subscribe:
+    post:
+      tags: [Push]
+      summary: Subscribe to push notifications
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [subscription]
+              properties:
+                subscription:
+                  type: object
+                  required: [endpoint, keys]
+                  properties:
+                    endpoint:
+                      type: string
+                      format: uri
+                    keys:
+                      type: object
+                      required: [p256dh, auth]
+                      properties:
+                        p256dh:
+                          type: string
+                        auth:
+                          type: string
+      responses:
+        "200":
+          description: Subscription saved
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Success"
+        "400":
+          description: Invalid subscription
+
+  /api/push/unsubscribe:
+    post:
+      tags: [Push]
+      summary: Unsubscribe from push notifications
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [endpoint]
+              properties:
+                endpoint:
+                  type: string
+      responses:
+        "200":
+          description: Unsubscribed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Success"
+        "400":
+          description: Endpoint required
+
+  # ============= Keys & Proxy =============
+  /api/keys:
+    get:
+      tags: [Keys & Proxy]
+      summary: Get API keys for direct iOS-to-service connections
+      responses:
+        "200":
+          description: API keys
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deepgram:
+                    type: string
+                    nullable: true
+                  anthropic:
+                    type: string
+                    nullable: true
+                  elevenlabs:
+                    type: string
+                    nullable: true
+
+  /api/proxy/claude:
+    post:
+      tags: [Keys & Proxy]
+      summary: Proxy Claude Anthropic API calls
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: Anthropic Messages API request body
+      responses:
+        "200":
+          description: Proxied response from Anthropic
+
+  /api/proxy/deepgram-tts:
+    post:
+      tags: [Keys & Proxy]
+      summary: Proxy Deepgram TTS calls
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [text]
+              properties:
+                text:
+                  type: string
+      responses:
+        "200":
+          description: MP3 audio
+          content:
+            audio/mpeg:
+              schema:
+                type: string
+                format: binary
+
+  /api/proxy/elevenlabs-tts:
+    post:
+      tags: [Keys & Proxy]
+      summary: Proxy ElevenLabs TTS calls
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [text]
+              properties:
+                text:
+                  type: string
+      responses:
+        "200":
+          description: MP3 audio
+          content:
+            audio/mpeg:
+              schema:
+                type: string
+                format: binary
+
+  /api/config/certmate:
+    get:
+      tags: [Keys & Proxy]
+      summary: Get remote config for CertMate iOS app
+      security: []
+      responses:
+        "200":
+          description: Remote configuration JSON
+          content:
+            application/json:
+              schema:
+                type: object
+
+  # ============= Feedback =============
+  /api/feedback/{sessionId}:
+    get:
+      tags: [Feedback]
+      summary: Feedback form HTML page for session optimizer
+      security: []
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: HTML feedback form
+          content:
+            text/html:
+              schema:
+                type: string
+    post:
+      tags: [Feedback]
+      summary: Submit feedback for a session optimizer report
+      security: []
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required: [feedback]
+              properties:
+                feedback:
+                  type: string
+      responses:
+        "200":
+          description: Feedback received (HTML confirmation)
+          content:
+            text/html:
+              schema:
+                type: string
+        "404":
+          description: Session not found
+
+  /api/optimizer-report/{reportId}:
+    get:
+      tags: [Feedback]
+      summary: Serve optimizer report HTML
+      security: []
+      parameters:
+        - name: reportId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Report HTML
+          content:
+            text/html:
+              schema:
+                type: string
+        "404":
+          description: Report not found
+
+  /api/optimizer-report/{reportId}/accept:
+    post:
+      tags: [Feedback]
+      summary: Accept selected optimizer recommendations
+      security: []
+      parameters:
+        - name: reportId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [accepted]
+              properties:
+                accepted:
+                  type: array
+                  items:
+                    type: integer
+                  description: Array of recommendation indices to accept
+      responses:
+        "200":
+          description: Changes queued
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  message:
+                    type: string
+
+  /api/optimizer-report/{reportId}/reject:
+    post:
+      tags: [Feedback]
+      summary: Reject all optimizer recommendations
+      security: []
+      parameters:
+        - name: reportId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Rejection queued
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Success"
+
+  /api/optimizer-report/{reportId}/rerun:
+    post:
+      tags: [Feedback]
+      summary: Re-run analysis with additional context
+      security: []
+      parameters:
+        - name: reportId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [context]
+              properties:
+                context:
+                  type: string
+      responses:
+        "200":
+          description: Re-run queued
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  message:
+                    type: string
+
+  # ============= Debug =============
+  /api/debug-report:
+    post:
+      tags: [Debug]
+      summary: Upload a debug report from iOS
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [sessionId, issueText]
+              properties:
+                sessionId:
+                  type: string
+                issueText:
+                  type: string
+                  maxLength: 5000
+                address:
+                  type: string
+                jobId:
+                  type: string
+      responses:
+        "200":
+          description: Report uploaded
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  reportId:
+                    type: string
+
+  # ============= Queue =============
+  /api/queue/status/{jobId}:
+    get:
+      tags: [Queue]
+      summary: Get queue status for a specific job
+      parameters:
+        - name: jobId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Queue status
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /api/queue/health:
+    get:
+      tags: [Queue]
+      summary: Get queue health
+      responses:
+        "200":
+          description: Queue health
+          content:
+            application/json:
+              schema:
+                type: object
+
+  # ============= Admin =============
+  /api/admin/health:
+    get:
+      tags: [Admin]
+      summary: Comprehensive system health check
+      security: []
+      responses:
+        "200":
+          description: System health
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  service:
+                    type: string
+                  timestamp:
+                    type: string
+                    format: date-time
+                  uptime:
+                    type: number
+                  memory:
+                    type: object
+                    properties:
+                      rss:
+                        type: integer
+                      heapUsed:
+                        type: integer
+                      heapTotal:
+                        type: integer
+                  database:
+                    type: string
+                    enum: [connected, disconnected, unknown]
+                  storage:
+                    type: string
+                    enum: [s3, local]
+                  nodeVersion:
+                    type: string
+
+  /api/admin/queue/status:
+    get:
+      tags: [Admin]
+      summary: Job queue status
+      security: []
+      responses:
+        "200":
+          description: Queue status
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /api/admin/queue/health:
+    get:
+      tags: [Admin]
+      summary: Queue health check
+      security: []
+      responses:
+        "200":
+          description: Queue health
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /api/admin/stats:
+    get:
+      tags: [Admin]
+      summary: Basic system statistics
+      security: []
+      responses:
+        "200":
+          description: System stats
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  timestamp:
+                    type: string
+                    format: date-time
+                  jobs:
+                    type: object
+                    properties:
+                      total:
+                        type: integer
+                  users:
+                    type: object
+                    properties:
+                      total:
+                        type: integer
+                  uptime:
+                    type: number
+                  storage:
+                    type: string

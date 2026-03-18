@@ -1,0 +1,897 @@
+{
+  "version": "2.0",
+  "description": "Central field schema for EICR/EIC certificates - SINGLE SOURCE OF TRUTH for UI and AI extraction. When UI changes, update this file and the AI will automatically know the new fields.",
+  "last_updated": "2026-01-25",
+  "update_instructions": "When adding/modifying UI fields, update this schema. The AI extraction (extract.js) reads this file to know exactly what fields to extract.",
+
+  "circuit_fields": {
+    "circuit_ref": {
+      "label": "Circuit Reference",
+      "type": "text",
+      "description": "Circuit number/reference",
+      "ai_guidance": "Sequential circuit numbers starting from 1. Examples: 1, 2, 3, or custom like 1a, 1b",
+      "pdf_column": "Cct ref",
+      "group": "Circuit Details"
+    },
+    "circuit_designation": {
+      "label": "Designation",
+      "type": "text",
+      "description": "Circuit description/purpose",
+      "ai_guidance": "Brief description of circuit purpose. Format: 'Lights Kitchen', 'Sockets Ring', 'Cooker', 'Shower', 'Smoke Alarms'. Be specific about location.",
+      "pdf_column": "Circuit designation",
+      "group": "Circuit Details"
+    },
+    "wiring_type": {
+      "label": "Wiring Type",
+      "type": "select",
+      "options": ["A", "B", "C", "D"],
+      "default": "A",
+      "description": "Type of wiring installation",
+      "ai_guidance": "Usually 'A' for domestic (enclosed in conduit in thermally insulating wall). Only use B/C/D if specifically mentioned.",
+      "pdf_column": "Type of wiring",
+      "group": "Circuit Details"
+    },
+    "ref_method": {
+      "label": "Reference Method",
+      "type": "select",
+      "options": ["A", "B", "C", "D"],
+      "default": "A",
+      "description": "Cable sizing reference method per BS7671",
+      "ai_guidance": "Reference method for cable current-carrying capacity. Usually 'A' or 'C' for domestic.",
+      "pdf_column": "Ref method",
+      "group": "Circuit Details"
+    },
+    "number_of_points": {
+      "label": "Number of Points",
+      "type": "text",
+      "description": "Number of outlets/points on circuit",
+      "ai_guidance": "Count of sockets, lights, or outlets on this circuit. Typical: 1-12 for lighting, 4-8 for sockets.",
+      "pdf_column": "No. of points",
+      "group": "Circuit Details"
+    },
+    "live_csa_mm2": {
+      "label": "Live CSA (mm2)",
+      "type": "text",
+      "description": "Live conductor cross-sectional area",
+      "ai_guidance": "Cable size in mm2. Common values: 1.0 (lighting), 2.5 (radials/rings), 4.0, 6.0 (cooker), 10.0 (shower), 16.0",
+      "pdf_column": "Live CSA mm2",
+      "group": "Circuit Details",
+      "defaults_by_circuit": {
+        "lighting": "1.0",
+        "socket": "2.5",
+        "cooker": "6.0",
+        "shower": "10.0",
+        "immersion": "2.5"
+      }
+    },
+    "cpc_csa_mm2": {
+      "label": "CPC CSA (mm2)",
+      "type": "text",
+      "description": "Circuit protective conductor cross-sectional area",
+      "ai_guidance": "Earth/CPC cable size in mm2. Usually: 1.0 (with 1.0 live), 1.5 (with 2.5 live), 2.5 (with 6.0 live), 4.0 (with 10.0 live)",
+      "pdf_column": "CPC CSA mm2",
+      "group": "Circuit Details",
+      "defaults_by_circuit": {
+        "lighting": "1.0",
+        "socket": "1.5",
+        "cooker": "2.5",
+        "shower": "4.0",
+        "immersion": "1.5"
+      }
+    },
+    "max_disconnect_time_s": {
+      "label": "Max Disconnect Time (s)",
+      "type": "text",
+      "description": "Maximum permitted disconnection time",
+      "ai_guidance": "BS7671 max disconnection time. Usually 0.4s for socket circuits, 0.2s for 3-phase, 5s for distribution circuits.",
+      "pdf_column": "Max disc time",
+      "group": "Circuit Details",
+      "default": "0.4"
+    },
+    "ocpd_bs_en": {
+      "label": "OCPD BS/EN",
+      "type": "text",
+      "description": "OCPD British/European Standard reference",
+      "ai_guidance": "Standard number. Common: 60898 (MCB), 61009 (RCBO), 88-2 (rewireable fuse), 1361 (cartridge fuse)",
+      "pdf_column": "BS(EN)",
+      "group": "OCPD"
+    },
+    "ocpd_type": {
+      "label": "OCPD Type",
+      "type": "select",
+      "options": ["B", "C", "D", "gG", "gM", "aM", "N/A"],
+      "description": "Overcurrent protective device type",
+      "ai_guidance": "MCB type. 'B' for domestic (general loads), 'C' for inductive loads (motors), 'D' for high inrush. gG/gM for fuses.",
+      "pdf_column": "Type",
+      "group": "OCPD",
+      "default": "B"
+    },
+    "ocpd_rating_a": {
+      "label": "OCPD Rating (A)",
+      "type": "text",
+      "description": "OCPD current rating in amps",
+      "ai_guidance": "Breaker/fuse rating. Common: 6A (lighting), 16A (radial), 20A (radial), 32A (ring/cooker), 40A (shower), 45A (shower)",
+      "pdf_column": "Rating A",
+      "group": "OCPD",
+      "defaults_by_circuit": {
+        "lighting": "6",
+        "socket": "32",
+        "cooker": "32",
+        "shower": "40",
+        "immersion": "16"
+      }
+    },
+    "ocpd_breaking_capacity_ka": {
+      "label": "Breaking Capacity (kA)",
+      "type": "text",
+      "description": "OCPD fault current breaking capacity",
+      "ai_guidance": "Breaking capacity in kA. Typical domestic: 6kA or 10kA. Check consumer unit label.",
+      "pdf_column": "Breaking cap kA",
+      "group": "OCPD",
+      "default": "6"
+    },
+    "ocpd_max_zs_ohm": {
+      "label": "Max Zs (ohm)",
+      "type": "text",
+      "description": "Maximum permitted earth fault loop impedance",
+      "ai_guidance": "Maximum Zs from BS7671 tables. Depends on OCPD type and rating. Example: Type B 32A = 1.37 ohm",
+      "pdf_column": "Max Zs",
+      "group": "OCPD"
+    },
+    "rcd_bs_en": {
+      "label": "RCD BS/EN",
+      "type": "text",
+      "description": "RCD British/European Standard reference",
+      "ai_guidance": "Standard number. Common: 61008 (RCCB), 61009 (RCBO), 62423 (Type F RCD)",
+      "pdf_column": "BS(EN)",
+      "group": "RCD"
+    },
+    "rcd_type": {
+      "label": "RCD Type",
+      "type": "select",
+      "options": ["", "AC", "A", "F", "B", "S", "N/A"],
+      "description": "RCD sensitivity type",
+      "ai_guidance": "RCD type. 'A' most common (AC + pulsating DC). 'AC' for AC only. 'F' for variable speed drives. 'B' for smooth DC.",
+      "pdf_column": "Type",
+      "group": "RCD"
+    },
+    "rcd_operating_current_ma": {
+      "label": "RCD Operating Current (mA)",
+      "type": "text",
+      "description": "RCD trip current in milliamps",
+      "ai_guidance": "RCD sensitivity. Usually 30mA for socket circuits (additional protection). 100mA or 300mA for fire protection.",
+      "pdf_column": "IΔn mA",
+      "group": "RCD",
+      "default": "30"
+    },
+    "ring_r1_ohm": {
+      "label": "r1 (ohm)",
+      "type": "text",
+      "description": "Ring circuit r1 end-to-end resistance",
+      "ai_guidance": "Ring final circuit r1 reading. Should be similar to rn and r2. Typical range 0.2-0.8 ohm depending on cable length.",
+      "pdf_column": "r1",
+      "group": "Ring Final"
+    },
+    "ring_rn_ohm": {
+      "label": "rn (ohm)",
+      "type": "text",
+      "description": "Ring circuit rn end-to-end resistance",
+      "ai_guidance": "Ring final circuit rn reading. Should be similar to r1 and r2.",
+      "pdf_column": "rn",
+      "group": "Ring Final"
+    },
+    "ring_r2_ohm": {
+      "label": "r2 (ohm)",
+      "type": "text",
+      "description": "Ring circuit r2 end-to-end resistance",
+      "ai_guidance": "Ring final circuit r2 (CPC) reading. Should be similar to r1 and rn but slightly higher due to smaller CPC.",
+      "pdf_column": "r2",
+      "group": "Ring Final"
+    },
+    "r1_r2_ohm": {
+      "label": "R1+R2 (ohm)",
+      "type": "text",
+      "description": "Continuity of circuit protective conductor",
+      "ai_guidance": "R1+R2 continuity reading. For radials, measured at furthest point. Typical range 0.1-2.0 ohm depending on length.",
+      "pdf_column": "R1+R2",
+      "group": "Continuity"
+    },
+    "r2_ohm": {
+      "label": "R2 (ohm)",
+      "type": "text",
+      "description": "CPC continuity reading",
+      "ai_guidance": "R2 continuity reading (CPC only). Usually smaller than R1+R2.",
+      "pdf_column": "R2",
+      "group": "Continuity"
+    },
+    "ir_test_voltage_v": {
+      "label": "IR Test Voltage (V)",
+      "type": "text",
+      "description": "Insulation resistance test voltage",
+      "ai_guidance": "Test voltage used. Usually 500V for circuits over 50V. Use 250V for electronic equipment.",
+      "pdf_column": "Test V",
+      "group": "Insulation Resistance",
+      "default": "500"
+    },
+    "ir_live_live_mohm": {
+      "label": "IR L-L (Mohm)",
+      "type": "text",
+      "description": "Insulation resistance between live conductors",
+      "ai_guidance": "IR reading between L-N. Must be >1M ohm. Typical values 50-200+ Mohm for healthy circuits.",
+      "pdf_column": "L-N",
+      "group": "Insulation Resistance"
+    },
+    "ir_live_earth_mohm": {
+      "label": "IR L-E (Mohm)",
+      "type": "text",
+      "description": "Insulation resistance live to earth",
+      "ai_guidance": "IR reading between L-E and N-E combined. Must be >1M ohm. Typical values 50-200+ Mohm. '>200' or '999' if meter maxed out.",
+      "pdf_column": "L-E",
+      "group": "Insulation Resistance"
+    },
+    "polarity_confirmed": {
+      "label": "Polarity",
+      "type": "select",
+      "options": ["", "OK", "Y", "N"],
+      "description": "Polarity check confirmed",
+      "ai_guidance": "Polarity confirmed correct. Usually 'OK' or 'Y' for pass. 'N' indicates reversed polarity (fault).",
+      "pdf_column": "Polarity",
+      "group": "Test Results"
+    },
+    "measured_zs_ohm": {
+      "label": "Measured Zs (ohm)",
+      "type": "text",
+      "description": "Measured earth fault loop impedance",
+      "ai_guidance": "Zs reading from loop impedance test. Must be less than max Zs for the OCPD. Typical domestic range 0.3-1.5 ohm.",
+      "pdf_column": "Zs",
+      "group": "Test Results"
+    },
+    "rcd_time_ms": {
+      "label": "RCD Time (ms)",
+      "type": "text",
+      "description": "RCD trip time in milliseconds",
+      "ai_guidance": "RCD trip time at rated current (1x IΔn). Must be <300ms for general RCDs, <40ms for S-type at 5x. Typical values 15-30ms.",
+      "pdf_column": "RCD time ms",
+      "group": "Test Results"
+    },
+    "rcd_button_confirmed": {
+      "label": "RCD Test Button",
+      "type": "select",
+      "options": ["", "OK", "Y", "N"],
+      "description": "RCD test button operation confirmed",
+      "ai_guidance": "RCD test button checked and working. 'OK' or 'Y' for pass.",
+      "pdf_column": "RCD btn",
+      "group": "Test Results"
+    },
+    "afdd_button_confirmed": {
+      "label": "AFDD Test Button",
+      "type": "select",
+      "options": ["", "OK", "Y", "N"],
+      "description": "AFDD test button operation confirmed",
+      "ai_guidance": "AFDD test button checked and working (if AFDD fitted). 'OK' or 'Y' for pass. Leave blank if no AFDD.",
+      "pdf_column": "AFDD btn",
+      "group": "Test Results"
+    }
+  },
+
+  "board_fields": {
+    "name": {
+      "label": "Board Name",
+      "type": "text",
+      "description": "Distribution board identifier",
+      "ai_guidance": "Board designation, e.g., 'DB-1', 'Main CU', 'Consumer Unit'"
+    },
+    "location": {
+      "label": "Location",
+      "type": "text",
+      "description": "Physical location of the board",
+      "ai_guidance": "Where the board is installed, e.g., 'Under stairs', 'Garage', 'Utility room'"
+    },
+    "manufacturer": {
+      "label": "Manufacturer",
+      "type": "text",
+      "description": "Board manufacturer",
+      "ai_guidance": "Consumer unit make, e.g., 'Hager', 'MK', 'Wylex', 'Crabtree', 'BG'"
+    },
+    "phases": {
+      "label": "Phases",
+      "type": "select",
+      "options": ["1", "3"],
+      "description": "Number of phases",
+      "ai_guidance": "Usually '1' for domestic single-phase. '3' for three-phase commercial."
+    },
+    "earthing_arrangement": {
+      "label": "Earthing Arrangement",
+      "type": "select",
+      "options": ["TN-C-S", "TN-S", "TT", "TN-C", "IT"],
+      "description": "System earthing type",
+      "ai_guidance": "TN-C-S (PME) most common UK domestic. TN-S has separate earth. TT uses local earth electrode."
+    },
+    "ze": {
+      "label": "Ze (ohm)",
+      "type": "text",
+      "description": "External earth fault loop impedance",
+      "ai_guidance": "Ze reading at origin. TN-C-S typically <0.35 ohm. TN-S typically <0.8 ohm. TT can be much higher."
+    },
+    "zs_at_db": {
+      "label": "Zs at DB (ohm)",
+      "type": "text",
+      "description": "Zs measured at distribution board",
+      "ai_guidance": "Loop impedance at the board. Should be Ze + R1+R2 of main circuit."
+    },
+    "ipf_at_db": {
+      "label": "Ipf at DB (kA)",
+      "type": "text",
+      "description": "Prospective fault current at DB",
+      "ai_guidance": "PFC/PSCC reading. Domestic typically 1-6kA. Must not exceed OCPD breaking capacity."
+    }
+  },
+
+  "installation_details_fields": {
+    "_ui_tab": "Installation Details",
+    "_ui_description": "Client information, premises details, and extent/limitations",
+    "client_name": {
+      "label": "Client Name",
+      "type": "text",
+      "description": "Client/customer name",
+      "ai_guidance": "Name of the client or property owner. Listen for 'Mrs Smith', 'Mr Jones', 'the tenant', etc."
+    },
+    "address": {
+      "label": "Installation Address",
+      "type": "text",
+      "description": "Full property address",
+      "ai_guidance": "Full property address. Listen for street name, house number, town. Format: '14 High Street, Reading, Berkshire'"
+    },
+    "postcode": {
+      "label": "Postcode",
+      "type": "text",
+      "description": "Property postcode",
+      "ai_guidance": "UK postcode format like 'RG1 1AA'. Listen for postcode mentioned separately."
+    },
+    "town": {
+      "label": "Town/City",
+      "type": "text",
+      "description": "Town or city name",
+      "ai_guidance": "Town or city if explicitly mentioned in transcript. Leave empty if not mentioned - will be resolved from postcode automatically."
+    },
+    "county": {
+      "label": "County",
+      "type": "text",
+      "description": "County name",
+      "ai_guidance": "County if explicitly mentioned in transcript. Leave empty if not mentioned - will be resolved from postcode automatically."
+    },
+    "premises_description": {
+      "label": "Description of Premises",
+      "type": "select",
+      "options": ["Residential", "Commercial", "Industrial", "Agricultural", "Other"],
+      "default": "Residential",
+      "description": "Type of premises",
+      "ai_guidance": "Usually 'Residential' for houses/flats. 'Commercial' for shops/offices. 'Industrial' for factories/warehouses."
+    },
+    "installation_records_available": {
+      "label": "Installation Records Available",
+      "type": "boolean",
+      "default": false,
+      "description": "Whether previous installation records were available",
+      "ai_guidance": "Set to true if inspector mentions having previous certificates, records, or documentation available."
+    },
+    "evidence_of_additions_alterations": {
+      "label": "Evidence of Additions/Alterations",
+      "type": "boolean",
+      "default": false,
+      "description": "Evidence of additions or alterations not recorded",
+      "ai_guidance": "Set to true if inspector mentions seeing work that wasn't in the records, or alterations not certified."
+    },
+    "next_inspection_years": {
+      "label": "Recommended Interval (Years)",
+      "type": "select",
+      "options": [1, 2, 3, 4, 5, 10],
+      "default": 5,
+      "description": "Recommended interval until next inspection",
+      "ai_guidance": "Typically 5 years for domestic. 3 years for rented/HMO. Listen for 'recommend X years'."
+    },
+    "extent": {
+      "label": "Extent of Installation Covered",
+      "type": "text",
+      "description": "Description of what was covered by the inspection",
+      "ai_guidance": "What was inspected. Examples: 'Whole installation', 'Main consumer unit only', 'Excluding outbuildings', 'Ground floor only'."
+    },
+    "agreed_limitations": {
+      "label": "Agreed Limitations",
+      "type": "text",
+      "description": "Any agreed limitations to the inspection",
+      "ai_guidance": "What couldn't be accessed/inspected by agreement. Examples: 'No access to loft', 'Floor boxes not lifted', 'Tenant refused bedroom access'."
+    },
+    "agreed_with": {
+      "label": "Limitations Agreed With",
+      "type": "text",
+      "description": "Name of person who agreed to limitations",
+      "ai_guidance": "Who agreed to the limitations. Examples: 'Mrs Smith', 'The tenant', 'Property manager', 'John the landlord'."
+    },
+    "operational_limitations": {
+      "label": "Operational Limitations",
+      "type": "text",
+      "description": "Operational limitations encountered during inspection",
+      "ai_guidance": "Technical limitations during testing. Examples: 'Could not isolate supply', 'Circuits could not be isolated', 'Freezer could not be turned off'."
+    }
+  },
+
+  "supply_characteristics_fields": {
+    "_ui_tab": "Supply Characteristics",
+    "_ui_description": "Earthing arrangement, voltage, frequency, and supply protective device",
+    "earthing_arrangement": {
+      "label": "Earthing Arrangement",
+      "type": "select",
+      "options": ["TN-S", "TN-C-S", "TT", "IT", "TN-C"],
+      "default": "TN-C-S",
+      "description": "System earthing type",
+      "ai_guidance": "TN-C-S (PME) most common UK. Listen for 'PME', 'combined neutral earth', 'TN-C-S'. TN-S if 'separate earth', 'lead sheath earth'. TT if 'earth rod', 'earth electrode'."
+    },
+    "live_conductors": {
+      "label": "Live Conductors",
+      "type": "select",
+      "options": ["AC - 1-phase (2 wire)", "AC - 1-phase (3 wire)", "AC - 3-phase (3 wire)", "AC - 3-phase (4 wire)", "DC - 2 pole", "DC - 3 pole"],
+      "default": "AC - 1-phase (2 wire)",
+      "description": "Supply conductor configuration",
+      "ai_guidance": "Usually 'AC - 1-phase (2 wire)' for domestic single phase. 'AC - 3-phase (4 wire)' for three-phase commercial."
+    },
+    "number_of_supplies": {
+      "label": "Number of Supplies",
+      "type": "select",
+      "options": ["1", "2", "3", "4", "5", "N/A"],
+      "default": "1",
+      "description": "Number of incoming supplies",
+      "ai_guidance": "Usually '1' for domestic. Multiple supplies in commercial or if separate meter for heating."
+    },
+    "nominal_voltage_u": {
+      "label": "Nominal Voltage U (V)",
+      "type": "select",
+      "options": ["230", "400", "110", "N/A", "Other"],
+      "default": "230",
+      "description": "Line-to-line voltage",
+      "ai_guidance": "230V for single phase domestic. 400V for three-phase."
+    },
+    "nominal_voltage_uo": {
+      "label": "Nominal Voltage Uo (V)",
+      "type": "select",
+      "options": ["230", "400", "110", "N/A", "Other"],
+      "default": "230",
+      "description": "Line-to-neutral voltage",
+      "ai_guidance": "230V for UK domestic. Same as U for single-phase."
+    },
+    "nominal_frequency": {
+      "label": "Nominal Frequency (Hz)",
+      "type": "select",
+      "options": ["50", "60", "N/A"],
+      "default": "50",
+      "description": "Supply frequency",
+      "ai_guidance": "Always 50Hz in UK."
+    },
+    "prospective_fault_current": {
+      "label": "Prospective Fault Current (kA)",
+      "type": "text",
+      "description": "PFC/PSCC at origin",
+      "ai_guidance": "Listen for 'PFC', 'prospective fault current', 'PSCC'. Typical domestic 1-6 kA. Format: '2.5' not '2.5kA'."
+    },
+    "earth_loop_impedance_ze": {
+      "label": "External Earth Loop Impedance Ze (ohm)",
+      "type": "text",
+      "description": "Ze reading at origin",
+      "ai_guidance": "Listen for 'Ze', 'external earth', 'earth loop at the meter'. TN-C-S typical <0.35. TN-S typical <0.8. Format: '0.32' ohms."
+    },
+    "supply_polarity_confirmed": {
+      "label": "Supply Polarity Confirmed",
+      "type": "boolean",
+      "default": false,
+      "description": "Whether supply polarity was verified correct",
+      "ai_guidance": "Set to true if inspector confirms polarity at origin is correct."
+    },
+    "spd_bs_en": {
+      "label": "Supply Protective Device BS/EN",
+      "type": "text",
+      "description": "Standard number for supply protective device",
+      "ai_guidance": "Standard for the main fuse/breaker. Common: 60898 (MCB), 88-2.2 (BS fuse), 1361 (cartridge fuse)."
+    },
+    "spd_type_supply": {
+      "label": "Supply Protective Device Type",
+      "type": "text",
+      "description": "Type of supply protective device",
+      "ai_guidance": "Main fuse/breaker type. 'B' for MCB, 'gG' for fuse, 'BS 88' for cutout fuse."
+    },
+    "spd_short_circuit": {
+      "label": "Supply PD Short Circuit Capacity (kA)",
+      "type": "text",
+      "description": "Breaking capacity of supply protective device",
+      "ai_guidance": "Breaking capacity of main fuse/breaker. Usually 6kA domestic, higher for commercial."
+    },
+    "spd_rated_current": {
+      "label": "Supply PD Rated Current (A)",
+      "type": "text",
+      "description": "Current rating of supply protective device",
+      "ai_guidance": "Main fuse rating. Common: 60A, 80A, 100A. Listen for 'main fuse', 'cutout'."
+    },
+    "means_earthing_distributor": {
+      "label": "Distributor's Facility",
+      "type": "boolean",
+      "default": false,
+      "description": "Means of earthing via distributor's facility",
+      "ai_guidance": "Set to true if earthing is provided by the distributor (most common for TN-C-S/PME systems)"
+    },
+    "means_earthing_electrode": {
+      "label": "Earth Electrode",
+      "type": "boolean",
+      "default": false,
+      "description": "Means of earthing via earth electrode",
+      "ai_guidance": "Set to true if installation has local earth electrode (TT systems). Listen for 'earth rod', 'earth spike', 'earth electrode'"
+    },
+    "earth_electrode_type": {
+      "label": "Earth Electrode Type",
+      "type": "select",
+      "options": ["Rod", "Plate", "Tape", "Mat", "Foundation", "Other", "N/A"],
+      "description": "Type of earth electrode installed",
+      "ai_guidance": "Listen for 'earth rod', 'earth plate', 'earth spike', 'foundation earth'. Only relevant for TT earthing arrangements."
+    },
+    "earth_electrode_resistance": {
+      "label": "Earth Electrode Resistance (Ω)",
+      "type": "text",
+      "description": "Measured resistance of earth electrode to earth",
+      "ai_guidance": "Earth resistance reading in ohms. Typical range 5-200 ohm for TT systems. Format as number, e.g., '12.5'"
+    },
+    "earth_electrode_location": {
+      "label": "Earth Electrode Location",
+      "type": "text",
+      "description": "Physical location where earth electrode is installed",
+      "ai_guidance": "Where the electrode is physically located. Examples: 'Front garden', 'Outside meter box', 'Rear of property'"
+    },
+    "main_switch_bs_en": {
+      "label": "Main Switch BS(EN)",
+      "type": "select",
+      "options": ["60947-3", "61008 RCD", "60947-2 MCCB", "3036 (S-E)", "1361 type 1", "4293 RCD", "88 type gG", "N/A"],
+      "description": "BS/EN standard for main switch/isolator",
+      "ai_guidance": "Standard number for main switch. Common: 60947-3 (switch disconnector), 61008 (RCD), 60947-2 (MCCB)"
+    },
+    "main_switch_poles": {
+      "label": "Number of Poles",
+      "type": "select",
+      "options": ["1", "2", "3", "4", "N/A"],
+      "description": "Number of poles on main switch",
+      "ai_guidance": "Usually 2 for single-phase domestic (L+N switched), 4 for three-phase"
+    },
+    "main_switch_voltage": {
+      "label": "Main Switch Voltage (V)",
+      "type": "select",
+      "options": ["230", "240", "400", "415", "N/A"],
+      "description": "Voltage rating of main switch",
+      "ai_guidance": "Usually 230V single-phase, 400V three-phase"
+    },
+    "main_switch_current": {
+      "label": "Main Switch Current (A)",
+      "type": "select",
+      "options": ["40", "63", "80", "100", "125", "160", "200", "N/A"],
+      "description": "Current rating of main switch",
+      "ai_guidance": "Main switch rating. Listen for 'main switch rating', 'isolator'. Common domestic: 63A, 80A, 100A"
+    },
+    "main_switch_fuse_setting": {
+      "label": "Fuse Device Setting (A)",
+      "type": "text",
+      "description": "Fuse device setting if applicable",
+      "ai_guidance": "Setting of adjustable fuse device. Often same as rated current for fixed devices."
+    },
+    "main_switch_location": {
+      "label": "Main Switch Location",
+      "type": "text",
+      "description": "Location of main switch",
+      "ai_guidance": "Where main switch is located. Examples: 'Integral to CU', 'Separate isolator above meter', 'Adjacent to meter'"
+    },
+    "main_switch_conductor_material": {
+      "label": "Main Conductor Material",
+      "type": "select",
+      "options": ["Copper", "Aluminium", "N/A"],
+      "description": "Material of supply cables",
+      "ai_guidance": "Usually 'Copper' for meter tails in domestic. 'Aluminium' sometimes in older installations."
+    },
+    "main_switch_conductor_csa": {
+      "label": "Main Conductor CSA (mm²)",
+      "type": "select",
+      "options": ["16", "25", "35", "50", "70", "95", "N/A"],
+      "description": "CSA of supply cables",
+      "ai_guidance": "Size of meter tails. Common domestic: 16mm² (60A), 25mm² (100A). Listen for 'tails', 'meter cable size'"
+    },
+    "rcd_operating_current": {
+      "label": "RCD IΔn (mA)",
+      "type": "select",
+      "options": ["10", "30", "100", "300", "500", "1000", "N/A"],
+      "description": "Main RCD operating current",
+      "ai_guidance": "Main RCD sensitivity if fitted. Usually 100mA or 300mA for main switch RCD."
+    },
+    "rcd_time_delay": {
+      "label": "RCD Time Delay",
+      "type": "text",
+      "description": "RCD time delay setting",
+      "ai_guidance": "Time delay if S-type RCD. Usually blank for non-delayed types."
+    },
+    "rcd_operating_time": {
+      "label": "RCD Operating Time (ms)",
+      "type": "text",
+      "description": "Measured RCD operating time",
+      "ai_guidance": "Measured trip time of main RCD at rated current. Should be <300ms (or <150ms at 5x for S-type)."
+    },
+    "rcd_operating_current_test": {
+      "label": "RCD Operating Current Test Result (ohm)",
+      "type": "text",
+      "description": "Actual test reading in ohms for RCD operating current",
+      "ai_guidance": "Numeric test result reading for the RCD operating current test. Enter the measured value in ohms."
+    },
+    "rcd_time_delay_test": {
+      "label": "RCD Time Delay Test Result (ohm)",
+      "type": "text",
+      "description": "Actual test reading in ohms for RCD time delay",
+      "ai_guidance": "Numeric test result reading for the RCD time delay test. Enter the measured value in ohms."
+    },
+    "rcd_operating_time_test": {
+      "label": "RCD Operating Time Test Result (ohm)",
+      "type": "text",
+      "description": "Actual test reading in ohms for RCD operating time",
+      "ai_guidance": "Numeric test result reading for the RCD operating time test. Enter the measured value in ohms."
+    },
+    "earthing_conductor_material": {
+      "label": "Earthing Conductor Material",
+      "type": "select",
+      "options": ["Copper", "Aluminium", "Steel", "N/A"],
+      "description": "Material of earthing conductor",
+      "ai_guidance": "Usually 'Copper' for earthing conductor. Listen for 'earth cable', 'earthing conductor'"
+    },
+    "earthing_conductor_csa": {
+      "label": "Earthing Conductor CSA (mm²)",
+      "type": "select",
+      "options": ["6", "10", "16", "25", "35", "50", "N/A"],
+      "description": "CSA of earthing conductor",
+      "ai_guidance": "Size of main earthing conductor. Minimum 10mm² Cu or 16mm² Al for TN-C-S."
+    },
+    "earthing_conductor_continuity": {
+      "label": "Earthing Conductor Continuity",
+      "type": "select",
+      "options": ["PASS", "FAIL", "LIM", "N/A"],
+      "description": "Continuity verification result",
+      "ai_guidance": "'PASS' if continuity verified satisfactory, 'FAIL' if broken/disconnected"
+    },
+    "bonding_conductor_material": {
+      "label": "Bonding Conductor Material",
+      "type": "select",
+      "options": ["Copper", "Aluminium", "N/A"],
+      "description": "Material of main protective bonding",
+      "ai_guidance": "Usually 'Copper' for bonding conductors"
+    },
+    "bonding_conductor_csa": {
+      "label": "Bonding Conductor CSA (mm²)",
+      "type": "select",
+      "options": ["6", "10", "16", "25", "N/A"],
+      "description": "CSA of main protective bonding",
+      "ai_guidance": "Size of main bonding conductor in mm². Listen for: 'bonding size', 'earth bonding size', 'main bonding', 'bonding is X mil', 'bonding is X millimeter'. Minimum 10mm² for PME. Just extract the number (e.g., '10' for 10mm²)."
+    },
+    "bonding_conductor_continuity": {
+      "label": "Bonding Conductor Continuity",
+      "type": "select",
+      "options": ["PASS", "FAIL", "LIM", "N/A"],
+      "description": "Continuity verification result",
+      "ai_guidance": "'PASS' if bonding continuity verified satisfactory"
+    },
+    "bonding_water": {
+      "label": "Water Bonding",
+      "type": "select",
+      "options": ["PASS", "FAIL", "LIM", "N/A"],
+      "description": "Bonding to water pipes verified",
+      "ai_guidance": "'PASS' if water bonding present and satisfactory. 'N/A' if no metallic water pipes"
+    },
+    "bonding_gas": {
+      "label": "Gas Bonding",
+      "type": "select",
+      "options": ["PASS", "FAIL", "LIM", "N/A"],
+      "description": "Bonding to gas pipes verified",
+      "ai_guidance": "'PASS' if gas bonding present and satisfactory. 'N/A' if no gas supply"
+    },
+    "bonding_oil": {
+      "label": "Oil Bonding",
+      "type": "select",
+      "options": ["PASS", "FAIL", "LIM", "N/A"],
+      "description": "Bonding to oil pipes verified",
+      "ai_guidance": "'PASS' if oil bonding present. 'N/A' if no oil supply (most common)"
+    },
+    "bonding_structural_steel": {
+      "label": "Structural Steel Bonding",
+      "type": "select",
+      "options": ["PASS", "FAIL", "LIM", "N/A"],
+      "description": "Bonding to structural steel verified",
+      "ai_guidance": "'PASS' if structural steel bonded. 'N/A' if no exposed structural steel (most domestic)"
+    },
+    "bonding_lightning": {
+      "label": "Lightning Bonding",
+      "type": "select",
+      "options": ["PASS", "FAIL", "LIM", "N/A"],
+      "description": "Bonding to lightning protection verified",
+      "ai_guidance": "'PASS' if lightning protection bonded. 'N/A' if no lightning protection system (most common)"
+    },
+    "bonding_other": {
+      "label": "Other Bonding",
+      "type": "text",
+      "description": "Other extraneous conductive parts bonded",
+      "ai_guidance": "Other items bonded. Examples: 'Central heating', 'Air conditioning', 'Swimming pool'"
+    },
+    "bonding_other_na": {
+      "label": "Other Bonding N/A",
+      "type": "boolean",
+      "default": false,
+      "description": "Whether other bonding is not applicable",
+      "ai_guidance": "Set to true if no other extraneous conductive parts require bonding at this installation."
+    }
+  },
+
+  "inspector_profile_fields": {
+    "_ui_tab": "Inspector Profile (Home Page Modal)",
+    "_ui_description": "Inspector details for certificate signing",
+    "name": {
+      "label": "Inspector Name",
+      "type": "text",
+      "description": "Full name of the inspector",
+      "ai_guidance": "Name of person conducting the inspection if mentioned."
+    },
+    "organisation": {
+      "label": "Organisation",
+      "type": "text",
+      "description": "Company/organisation name",
+      "ai_guidance": "Company name if mentioned."
+    },
+    "enrolment_number": {
+      "label": "Enrolment Number",
+      "type": "text",
+      "description": "Registration/enrolment number with scheme provider",
+      "ai_guidance": "NICEIC, NAPIT, or other scheme registration number."
+    },
+    "position": {
+      "label": "Position",
+      "type": "text",
+      "description": "Job title/position",
+      "ai_guidance": "Job title like 'Qualified Supervisor', 'Electrician', 'Director'."
+    },
+    "signature_file": {
+      "label": "Signature File",
+      "type": "file",
+      "description": "Path to signature image file",
+      "ai_guidance": "Not extracted from audio - managed via UI upload."
+    }
+  },
+
+  "eic_extent_and_type_fields": {
+    "_ui_tab": "Extent & Type (EIC only)",
+    "_ui_description": "EIC-specific: Installation type and extent description",
+    "extent": {
+      "label": "Extent",
+      "type": "text",
+      "description": "Description of work covered",
+      "ai_guidance": "What work was done. Examples: 'New consumer unit', 'New kitchen circuits', 'Full rewire', 'Addition of shower circuit'."
+    },
+    "installation_type": {
+      "label": "Installation Type",
+      "type": "select",
+      "options": ["new_installation", "addition", "alteration"],
+      "description": "Type of work: new, addition, or alteration",
+      "ai_guidance": "'new_installation' for full new install/rewire. 'addition' for adding new circuits. 'alteration' for modifying existing."
+    },
+    "comments": {
+      "label": "Comments",
+      "type": "text",
+      "description": "Additional comments about the work",
+      "ai_guidance": "Any additional notes about the installation work."
+    }
+  },
+
+  "eic_design_construction_fields": {
+    "_ui_tab": "Design & Construction (EIC only)",
+    "_ui_description": "EIC-specific: BS7671 departures",
+    "departures_from_bs7671": {
+      "label": "Departures from BS7671",
+      "type": "text",
+      "description": "Whether there are any departures from the wiring regulations",
+      "ai_guidance": "Listen for 'departure', 'doesn't comply', 'non-compliant'. Usually 'None' for compliant installations."
+    },
+    "departure_details": {
+      "label": "Departure Details",
+      "type": "text",
+      "description": "Details of any departures",
+      "ai_guidance": "Explanation of what doesn't comply and why it's acceptable."
+    }
+  },
+
+  "inspection_schedule_fields": {
+    "_ui_tab": "Inspection Schedule (EICR)",
+    "_ui_description": "BS7671 inspection checklist items - outcomes for each schedule item",
+    "_outcome_options": ["tick", "N/A", "C1", "C2", "C3", "LIM"],
+    "_outcome_meanings": {
+      "tick": "Inspected and satisfactory",
+      "N/A": "Not applicable",
+      "C1": "Danger present - requires urgent attention",
+      "C2": "Potentially dangerous - requires improvement",
+      "C3": "Improvement recommended",
+      "LIM": "Limitation - unable to inspect"
+    },
+    "_ai_guidance": "The inspection schedule is a checklist of BS7671 items. Each item gets an outcome. Link observations to specific schedule items using the schedule_item field. Common items to flag: 3.6 (bonding size), 4.4 (fire-rated CU), 4.9 (circuit labelling), 5.12.1 (RCD protection for sockets)."
+  },
+
+  "observation_fields": {
+    "code": {
+      "label": "Code",
+      "type": "select",
+      "options": ["C1", "C2", "C3", "FI", "NC"],
+      "description": "Observation classification code per BPG4 Issue 7.1",
+      "ai_guidance": "C1=Danger present (immediate), C2=Potentially dangerous, C3=Improvement recommended, FI=Further investigation, NC=Non-conformity (not recorded on EICR)"
+    },
+    "item_location": {
+      "label": "Item/Location",
+      "type": "text",
+      "description": "Location of the observation",
+      "ai_guidance": "Where the issue was found, e.g., 'Kitchen socket', 'Consumer unit', 'Bathroom light'"
+    },
+    "observation_text": {
+      "label": "Observation",
+      "type": "text",
+      "description": "Description of the issue",
+      "ai_guidance": "Clear description of the defect or issue found. Describe the defect, not the remedy."
+    },
+    "schedule_item": {
+      "label": "Schedule Item",
+      "type": "text",
+      "description": "Related inspection schedule item",
+      "ai_guidance": "BS7671 schedule reference, e.g., '4.5', '5.3', '6.1'"
+    },
+    "regulation": {
+      "label": "Regulation",
+      "type": "text",
+      "description": "BS7671 regulation being breached",
+      "ai_guidance": "Include BOTH the regulation number AND the actual regulation text. Example: 'Reg 411.3.3 — Compliance with the requirements for automatic disconnection of supply'"
+    },
+    "bpg4_basis": {
+      "label": "BPG4 Basis",
+      "type": "text",
+      "description": "BPG4 classification basis for the assigned code",
+      "ai_guidance": "Brief explanation of why this code was assigned, referencing the BPG4 table entry if one matches. Null if the electrician explicitly stated the code."
+    },
+    "suppress_from_report": {
+      "label": "Suppress from Report",
+      "type": "boolean",
+      "default": false,
+      "description": "Whether to suppress this observation from the EICR certificate",
+      "ai_guidance": "Set to true for NC observations that should not appear on the EICR certificate but are logged for the electrician's information."
+    }
+  },
+
+  "field_groups": [
+    {
+      "name": "Circuit Details",
+      "fields": ["wiring_type", "ref_method", "number_of_points", "live_csa_mm2", "cpc_csa_mm2", "max_disconnect_time_s"]
+    },
+    {
+      "name": "OCPD",
+      "fields": ["ocpd_bs_en", "ocpd_type", "ocpd_rating_a", "ocpd_breaking_capacity_ka", "ocpd_max_zs_ohm"]
+    },
+    {
+      "name": "RCD",
+      "fields": ["rcd_bs_en", "rcd_type", "rcd_operating_current_ma"]
+    },
+    {
+      "name": "Ring Final",
+      "fields": ["ring_r1_ohm", "ring_rn_ohm", "ring_r2_ohm"]
+    },
+    {
+      "name": "Continuity",
+      "fields": ["r1_r2_ohm", "r2_ohm"]
+    },
+    {
+      "name": "Insulation Resistance",
+      "fields": ["ir_test_voltage_v", "ir_live_live_mohm", "ir_live_earth_mohm"]
+    },
+    {
+      "name": "Test Results",
+      "fields": ["polarity_confirmed", "measured_zs_ohm", "rcd_time_ms", "rcd_button_confirmed", "afdd_button_confirmed"]
+    }
+  ]
+}
