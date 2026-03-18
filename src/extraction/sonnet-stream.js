@@ -198,13 +198,14 @@ const FIELD_CORRECTIONS = {
   ocpd_standard: 'ocpd_bs_en',
   rcd_standard: 'rcd_bs_en',
   main_switch_rating: 'main_switch_current',
-  main_fuse_rating: 'main_switch_current',
-  main_fuse_current: 'main_switch_current',
-  main_fuse_bs_en: 'main_switch_bs_en',
-  main_fuse_type: 'main_switch_bs_en',
   main_switch_type: 'main_switch_bs_en',
-  supply_fuse_rating: 'main_switch_current',
-  supply_fuse_type: 'main_switch_bs_en',
+  // "Main fuse" / "supply fuse" = Supply Protective Device (DNO cutout), NOT the CU main switch
+  main_fuse_rating: 'spd_rated_current',
+  main_fuse_current: 'spd_rated_current',
+  main_fuse_bs_en: 'spd_bs_en',
+  main_fuse_type: 'spd_type_supply',
+  supply_fuse_rating: 'spd_rated_current',
+  supply_fuse_type: 'spd_bs_en',
 };
 
 // Map cable description strings to BS 7671 wiring type letter codes
