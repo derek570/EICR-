@@ -593,13 +593,19 @@ export class EICRExtractionSession {
       this.circuitScheduleIncluded = false;
     }
 
-    // Add state snapshot if we have extracted data
+    // Add state snapshot if we have extracted data or circuit schedule.
+    // The snapshot now includes the circuit schedule (designations, supply info)
+    // so Sonnet retains full context even when older messages drop from the window.
     const snapshot = this.buildStateSnapshotMessage();
     if (snapshot) {
       window.push(
         { role: 'user', content: [{ type: 'text', text: snapshot }] },
         { role: 'assistant', content: [{ type: 'text', text: '{"acknowledged": true}' }] }
       );
+      // Mark circuit schedule as included so buildUserMessage doesn't duplicate it
+      if (this.circuitSchedule) {
+        this.circuitScheduleIncluded = true;
+      }
     }
 
     // Add last N exchanges from conversation history
@@ -678,24 +684,54 @@ export class EICRExtractionSession {
   /**
    * Build a compact state snapshot message for the API.
    * Returns null if nothing has been extracted yet.
+   *
+   * Includes the circuit schedule (designations, supply info, hardware) alongside
+   * extracted values so Sonnet retains full context even when older conversational
+   * messages drop out of the sliding window.
    */
   buildStateSnapshotMessage() {
     const hasCircuits = Object.keys(this.stateSnapshot.circuits).length > 0;
     const hasPending = this.stateSnapshot.pending_readings.length > 0;
     const hasObs = this.stateSnapshot.observations.length > 0;
     const hasAlerts = this.stateSnapshot.validation_alerts.length > 0;
+    const hasSchedule = !!this.circuitSchedule;
 
-    if (!hasCircuits && !hasPending && !hasObs && !hasAlerts) {
+    if (!hasCircuits && !hasPending && !hasObs && !hasAlerts && !hasSchedule) {
       return null;
     }
 
+    const parts = [];
+
+    // Include circuit schedule so Sonnet knows circuit designations, supply info,
+    // and hardware details even after early messages drop from the sliding window.
+    // Without this, Sonnet loses context after ~6 exchanges and can't assign readings
+    // to the correct circuits, producing empty extractions.
+    if (hasSchedule) {
+      parts.push(
+        `CIRCUIT SCHEDULE (confirmed values — do NOT question these):\n${this.circuitSchedule}`
+      );
+    }
+
+    // Extracted readings accumulated across the full session
     const snapshot = {};
     if (hasCircuits) snapshot.circuits = this.stateSnapshot.circuits;
     if (hasPending) snapshot.pending_readings = this.stateSnapshot.pending_readings;
-    if (hasObs) snapshot.observations = this.stateSnapshot.observations;
     if (hasAlerts) snapshot.validation_alerts = this.stateSnapshot.validation_alerts;
 
-    return `CONFIRMED STATE (all values extracted so far — do NOT re-extract these):\n${JSON.stringify(snapshot)}`;
+    if (Object.keys(snapshot).length > 0) {
+      parts.push(
+        `EXTRACTED READINGS (all test readings extracted so far — do NOT re-extract these):\n${JSON.stringify(snapshot)}`
+      );
+    }
+
+    // Observations as a separate, clear section
+    if (hasObs) {
+      parts.push(
+        `OBSERVATIONS ALREADY RECORDED (do NOT re-extract):\n${this.stateSnapshot.observations.map((o, i) => `${i + 1}. ${o}`).join('\n')}`
+      );
+    }
+
+    return parts.join('\n\n');
   }
 
   buildCircuitSchedule(jobState) {
