@@ -34,6 +34,11 @@ const __dirname = path.dirname(__filename);
 // preserving full context for all normal inspections.
 const COMPACTION_THRESHOLD = 60000;
 
+// Number of user+assistant exchange pairs to include in the API sliding window.
+// Full conversation history is always stored internally; only the last N exchanges
+// are sent to the API, preceded by a state snapshot of all extracted values.
+const SLIDING_WINDOW_SIZE = 6;
+
 // Load externalized system prompts at module init
 // Must be >=1024 tokens for Sonnet 4.5 prompt caching
 export const EICR_SYSTEM_PROMPT = fssync.readFileSync(
@@ -96,6 +101,15 @@ export class EICRExtractionSession {
     this.circuitSchedule = '';
     this.circuitScheduleIncluded = false;
     this.isActive = false;
+
+    // Rolling state snapshot: accumulates all extracted values across the session.
+    // Used to provide context in the sliding window without sending full history.
+    this.stateSnapshot = {
+      circuits: {}, // { circuitNum: { field: value, ... } }
+      pending_readings: [], // readings with circuit -1 (unassigned)
+      observations: [], // deduped observation texts
+      validation_alerts: [],
+    };
   }
 
   // Extract text from a message content (handles both string and content block array formats)
@@ -184,14 +198,17 @@ export class EICRExtractionSession {
       }
     }
 
+    // Build the windowed message history first (may reset circuitScheduleIncluded flag)
+    const windowMessages = this.buildMessageWindow();
+
     let userMessage = this.buildUserMessage(transcriptText, regexResults, postcodeLookupResult);
     if (options.confirmationsEnabled) {
       userMessage += '\n\n[CONFIRMATIONS ENABLED]';
     }
 
-    // Build messages array with cache_control on latest user message
+    // Build messages array: sliding window + new user message with cache_control
     const messages = [
-      ...this.conversationHistory,
+      ...windowMessages,
       {
         role: 'user',
         content: [
@@ -297,6 +314,9 @@ export class EICRExtractionSession {
         return !isDupe;
       });
     }
+
+    // Update rolling state snapshot with this response
+    this.updateStateSnapshot(result);
 
     // Track token costs
     this.costTracker.addSonnetUsage(response.usage);
@@ -557,6 +577,127 @@ export class EICRExtractionSession {
     return parts.join('\n\n');
   }
 
+  /**
+   * Build the sliding window of messages to send to the API.
+   * Returns: [stateSnapshot, ack, ...lastNExchanges] or just [...lastNExchanges]
+   * Full conversation history remains in this.conversationHistory for storage.
+   */
+  buildMessageWindow() {
+    const window = [];
+    const maxMessages = SLIDING_WINDOW_SIZE * 2; // each exchange = user + assistant
+    const startIdx = Math.max(0, this.conversationHistory.length - maxMessages);
+
+    // If circuit schedule was included in a message now outside the window, reset flag
+    // so buildUserMessage re-includes it in the next user message
+    if (this.circuitSchedule && this.circuitScheduleIncluded && startIdx > 0) {
+      this.circuitScheduleIncluded = false;
+    }
+
+    // Add state snapshot if we have extracted data
+    const snapshot = this.buildStateSnapshotMessage();
+    if (snapshot) {
+      window.push(
+        { role: 'user', content: [{ type: 'text', text: snapshot }] },
+        { role: 'assistant', content: [{ type: 'text', text: '{"acknowledged": true}' }] }
+      );
+    }
+
+    // Add last N exchanges from conversation history
+    window.push(...this.conversationHistory.slice(startIdx));
+
+    logger.info(
+      `Session ${this.sessionId} Window: ${window.length} msgs sent (${this.conversationHistory.length} stored, snapshot=${!!snapshot})`
+    );
+
+    return window;
+  }
+
+  /**
+   * Update the rolling state snapshot with values from a Sonnet response.
+   * Called after every extractFromUtterance to keep the snapshot current.
+   */
+  updateStateSnapshot(result) {
+    if (!result) return;
+
+    // Process extracted readings
+    if (result.extracted_readings && result.extracted_readings.length > 0) {
+      for (const reading of result.extracted_readings) {
+        const circuit = reading.circuit;
+        const field = reading.field;
+        if (circuit === -1) {
+          // Unassigned reading — track as pending
+          this.stateSnapshot.pending_readings.push({
+            field,
+            value: reading.value,
+            unit: reading.unit || null,
+          });
+        } else {
+          // Circuit-level (or supply at circuit 0) reading
+          if (!this.stateSnapshot.circuits[circuit]) {
+            this.stateSnapshot.circuits[circuit] = {};
+          }
+          this.stateSnapshot.circuits[circuit][field] = reading.value;
+          // Resolve any pending readings that match this field+value
+          this.stateSnapshot.pending_readings = this.stateSnapshot.pending_readings.filter(
+            (p) => !(p.field === field && p.value === reading.value)
+          );
+        }
+      }
+    }
+
+    // Process field clears
+    if (result.field_clears && result.field_clears.length > 0) {
+      for (const clear of result.field_clears) {
+        if (clear.circuit != null && this.stateSnapshot.circuits[clear.circuit]) {
+          delete this.stateSnapshot.circuits[clear.circuit][clear.field];
+        }
+      }
+    }
+
+    // Accumulate observations (dedup by text match)
+    if (result.observations && result.observations.length > 0) {
+      for (const obs of result.observations) {
+        const text = (obs.observation_text || '').toLowerCase();
+        if (text && !this.stateSnapshot.observations.includes(text)) {
+          this.stateSnapshot.observations.push(text);
+        }
+      }
+    }
+
+    // Accumulate validation alerts (dedup by JSON equality)
+    if (result.validation_alerts && result.validation_alerts.length > 0) {
+      for (const alert of result.validation_alerts) {
+        const key = JSON.stringify(alert);
+        if (!this.stateSnapshot.validation_alerts.some((a) => JSON.stringify(a) === key)) {
+          this.stateSnapshot.validation_alerts.push(alert);
+        }
+      }
+    }
+  }
+
+  /**
+   * Build a compact state snapshot message for the API.
+   * Returns null if nothing has been extracted yet.
+   */
+  buildStateSnapshotMessage() {
+    const hasCircuits = Object.keys(this.stateSnapshot.circuits).length > 0;
+    const hasPending = this.stateSnapshot.pending_readings.length > 0;
+    const hasObs = this.stateSnapshot.observations.length > 0;
+    const hasAlerts = this.stateSnapshot.validation_alerts.length > 0;
+
+    if (!hasCircuits && !hasPending && !hasObs && !hasAlerts) {
+      return null;
+    }
+
+    const snapshot = {};
+    if (hasCircuits) snapshot.circuits = this.stateSnapshot.circuits;
+    if (hasPending) snapshot.pending_readings = this.stateSnapshot.pending_readings;
+    if (hasObs) snapshot.observations = this.stateSnapshot.observations;
+    if (hasAlerts) snapshot.validation_alerts = this.stateSnapshot.validation_alerts;
+
+    return `CONFIRMED STATE (all values extracted so far — do NOT re-extract these):\n${JSON.stringify(snapshot)}`;
+  }
+
   buildCircuitSchedule(jobState) {
     if (!jobState || !jobState.circuits) return '';
     const lines = [];
@@ -678,7 +819,7 @@ export class EICRExtractionSession {
     const reviewMessage = `REVIEW CHECK: Look back through this session. Are there any test readings (Zs, insulation resistance, R1+R2, R2, RCD trip time, ring continuity) that were spoken WITHOUT a clear circuit assignment and still haven't been resolved? If so, generate questions asking which circuit they belong to. Only include genuinely unresolved orphaned values. If everything is assigned, return empty arrays.`;
 
     const messages = [
-      ...this.conversationHistory,
+      ...this.buildMessageWindow(),
       {
         role: 'user',
         content: [

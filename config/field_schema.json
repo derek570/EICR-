@@ -821,9 +821,9 @@
     "code": {
       "label": "Code",
       "type": "select",
-      "options": ["C1", "C2", "C3", "FI"],
-      "description": "Observation classification code",
-      "ai_guidance": "C1=Danger present (immediate), C2=Potentially dangerous, C3=Improvement recommended, FI=Further investigation"
+      "options": ["C1", "C2", "C3", "FI", "NC"],
+      "description": "Observation classification code per BPG4 Issue 7.1",
+      "ai_guidance": "C1=Danger present (immediate), C2=Potentially dangerous, C3=Improvement recommended, FI=Further investigation, NC=Non-conformity (not recorded on EICR)"
     },
     "item_location": {
       "label": "Item/Location",
@@ -835,13 +835,32 @@
       "label": "Observation",
       "type": "text",
       "description": "Description of the issue",
-      "ai_guidance": "Clear description of the defect or issue found"
+      "ai_guidance": "Clear description of the defect or issue found. Describe the defect, not the remedy."
     },
     "schedule_item": {
       "label": "Schedule Item",
       "type": "text",
       "description": "Related inspection schedule item",
       "ai_guidance": "BS7671 schedule reference, e.g., '4.5', '5.3', '6.1'"
+    },
+    "regulation": {
+      "label": "Regulation",
+      "type": "text",
+      "description": "BS7671 regulation being breached",
+      "ai_guidance": "Include BOTH the regulation number AND the actual regulation text. Example: 'Reg 411.3.3 — Compliance with the requirements for automatic disconnection of supply'"
+    },
+    "bpg4_basis": {
+      "label": "BPG4 Basis",
+      "type": "text",
+      "description": "BPG4 classification basis for the assigned code",
+      "ai_guidance": "Brief explanation of why this code was assigned, referencing the BPG4 table entry if one matches. Null if the electrician explicitly stated the code."
+    },
+    "suppress_from_report": {
+      "label": "Suppress from Report",
+      "type": "boolean",
+      "default": false,
+      "description": "Whether to suppress this observation from the EICR certificate",
+      "ai_guidance": "Set to true for NC observations that should not appear on the EICR certificate but are logged for the electrician's information."
     }
   },
 

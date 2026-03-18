@@ -177,7 +177,8 @@ export async function listUsers() {
   const pool = getPool();
   try {
     const result = await pool.query(
-      `SELECT u.id, u.email, u.name, u.company_name, u.role, u.is_active,
+      `SELECT u.id, u.email, u.name, u.company_name, u.role,
+              u.is_active::boolean as is_active,
               u.last_login, u.created_at, u.failed_login_attempts, u.locked_until,
               u.company_id, u.company_role, c.name as company_display_name
        FROM users u
@@ -202,7 +203,8 @@ export async function listUsersPaginated(limit, offset) {
     const [countResult, dataResult] = await Promise.all([
       pool.query('SELECT COUNT(*) FROM users'),
       pool.query(
-        `SELECT u.id, u.email, u.name, u.company_name, u.role, u.is_active,
+        `SELECT u.id, u.email, u.name, u.company_name, u.role,
+                u.is_active::boolean as is_active,
                 u.last_login, u.created_at, u.failed_login_attempts, u.locked_until,
                 u.company_id, u.company_role, c.name as company_display_name
          FROM users u
@@ -238,7 +240,7 @@ export async function createUser({
     const id = `user_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const result = await pool.query(
       `INSERT INTO users (id, email, name, company_name, password_hash, role, company_id, company_role, is_active, created_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 1, NOW())
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, true, NOW())
        RETURNING id, email, name, company_name, role, company_id, company_role, is_active, created_at`,
       [
         id,
@@ -1275,7 +1277,8 @@ export async function getUsersByCompany(companyId) {
   const pool = getPool();
   try {
     const result = await pool.query(
-      `SELECT id, email, name, company_name, role, company_role, is_active,
+      `SELECT id, email, name, company_name, role, company_role,
+              is_active::boolean as is_active,
               last_login, created_at, failed_login_attempts, locked_until
        FROM users WHERE company_id = $1 ORDER BY created_at DESC`,
       [companyId]
