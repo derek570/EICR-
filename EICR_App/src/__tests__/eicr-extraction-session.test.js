@@ -24,6 +24,15 @@ describe('EICRExtractionSession', () => {
     mockCreate.mockReset();
   });
 
+  afterEach(() => {
+    // Clean up batch timeouts to prevent leaking between tests
+    if (session.batchTimeoutHandle) {
+      clearTimeout(session.batchTimeoutHandle);
+      session.batchTimeoutHandle = null;
+    }
+    session.utteranceBuffer = [];
+  });
+
   describe('constructor', () => {
     test('should initialize with correct defaults', () => {
       expect(session.sessionId).toBe('test-session-id');
@@ -235,7 +244,129 @@ describe('EICRExtractionSession', () => {
     });
   });
 
-  describe('extractFromUtterance', () => {
+  describe('utterance batching', () => {
+    test('should buffer utterances and return empty result until batch is full', async () => {
+      session.start(null);
+
+      // First call: buffers, returns empty
+      const r1 = await session.extractFromUtterance('utterance 1');
+      expect(r1.extracted_readings).toEqual([]);
+      expect(session.utteranceBuffer).toHaveLength(1);
+      expect(mockCreate).not.toHaveBeenCalled();
+
+      // Second call: still buffers
+      const r2 = await session.extractFromUtterance('utterance 2');
+      expect(r2.extracted_readings).toEqual([]);
+      expect(session.utteranceBuffer).toHaveLength(2);
+      expect(mockCreate).not.toHaveBeenCalled();
+    });
+
+    test('should process batch when buffer reaches BATCH_SIZE (3)', async () => {
+      const mockResponse = {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            extracted_readings: [
+              { circuit: 1, field: 'zs', value: 0.35 }
+            ],
+            field_clears: [],
+            circuit_updates: [],
+            observations: [],
+            validation_alerts: [],
+            questions_for_user: [],
+            confirmations: []
+          })
+        }],
+        usage: { input_tokens: 200, output_tokens: 80 }
+      };
+      mockCreate.mockResolvedValue(mockResponse);
+
+      session.start(null);
+      await session.extractFromUtterance('utterance 1');
+      await session.extractFromUtterance('utterance 2');
+      // Third call triggers the batch
+      const result = await session.extractFromUtterance('utterance 3');
+
+      expect(mockCreate).toHaveBeenCalledTimes(1);
+      expect(result.extracted_readings).toHaveLength(1);
+      expect(session.utteranceBuffer).toHaveLength(0);
+    });
+
+    test('should combine transcript texts with separator', async () => {
+      mockCreate.mockResolvedValue({
+        content: [{ type: 'text', text: '{"extracted_readings":[]}' }],
+        usage: { input_tokens: 10, output_tokens: 5 }
+      });
+
+      session.start(null);
+      await session.extractFromUtterance('Zs is 0.35');
+      await session.extractFromUtterance('on circuit 1');
+      await session.extractFromUtterance('r1 plus r2 is 0.47');
+
+      // Check that the combined text was sent
+      const callArgs = mockCreate.mock.calls[0][0];
+      const lastUserMsg = callArgs.messages[callArgs.messages.length - 1];
+      const msgText = lastUserMsg.content[0].text;
+      expect(msgText).toContain('Zs is 0.35 ... on circuit 1 ... r1 plus r2 is 0.47');
+    });
+
+    test('should merge regex results from all buffered utterances', async () => {
+      mockCreate.mockResolvedValue({
+        content: [{ type: 'text', text: '{"extracted_readings":[]}' }],
+        usage: { input_tokens: 10, output_tokens: 5 }
+      });
+
+      session.start(null);
+      await session.extractFromUtterance('Zs 0.35', [{ field: 'zs', value: '0.35' }]);
+      await session.extractFromUtterance('R2 0.12', [{ field: 'r2', value: '0.12' }]);
+      await session.extractFromUtterance('more text');
+
+      const callArgs = mockCreate.mock.calls[0][0];
+      const lastUserMsg = callArgs.messages[callArgs.messages.length - 1];
+      const msgText = lastUserMsg.content[0].text;
+      expect(msgText).toContain('zs');
+      expect(msgText).toContain('r2');
+    });
+
+    test('flushUtteranceBuffer should process partial batch', async () => {
+      mockCreate.mockResolvedValue({
+        content: [{
+          type: 'text',
+          text: JSON.stringify({ extracted_readings: [{ circuit: 2, field: 'r2', value: 0.12 }] })
+        }],
+        usage: { input_tokens: 10, output_tokens: 5 }
+      });
+
+      session.start(null);
+      await session.extractFromUtterance('R2 is 0.12 on circuit 2');
+      expect(mockCreate).not.toHaveBeenCalled();
+
+      // Flush the partial batch
+      const result = await session.flushUtteranceBuffer();
+      expect(mockCreate).toHaveBeenCalledTimes(1);
+      expect(result.extracted_readings).toHaveLength(1);
+      expect(session.utteranceBuffer).toHaveLength(0);
+    });
+
+    test('flushUtteranceBuffer should return null when buffer is empty', async () => {
+      session.start(null);
+      const result = await session.flushUtteranceBuffer();
+      expect(result).toBeNull();
+    });
+
+    test('stop should clear batch timeout', () => {
+      session.start(null);
+      // Simulate a buffered utterance with pending timeout
+      session.utteranceBuffer.push({ transcriptText: 'test', regexResults: [], options: {} });
+      session.batchTimeoutHandle = setTimeout(() => {}, 10000);
+
+      session.stop();
+      expect(session.batchTimeoutHandle).toBeNull();
+    });
+  });
+
+  describe('extractFromUtterance (via flush)', () => {
+    // These tests use flushUtteranceBuffer to trigger the API call after buffering
     test('should parse valid extraction response', async () => {
       const mockResponse = {
         content: [{
@@ -262,7 +393,8 @@ describe('EICRExtractionSession', () => {
       mockCreate.mockResolvedValue(mockResponse);
 
       session.start(null);
-      const result = await session.extractFromUtterance('Zs is 0.35 on circuit 1');
+      await session.extractFromUtterance('Zs is 0.35 on circuit 1');
+      const result = await session.flushUtteranceBuffer();
 
       expect(result.extracted_readings).toHaveLength(1);
       expect(result.extracted_readings[0].field).toBe('zs');
@@ -278,7 +410,8 @@ describe('EICRExtractionSession', () => {
       });
 
       session.start(null);
-      const result = await session.extractFromUtterance('hello');
+      await session.extractFromUtterance('hello');
+      const result = await session.flushUtteranceBuffer();
 
       expect(result.extracted_readings).toEqual([]);
       expect(result.questions_for_user).toEqual([]);
@@ -291,7 +424,8 @@ describe('EICRExtractionSession', () => {
       });
 
       session.start(null);
-      const result = await session.extractFromUtterance('test');
+      await session.extractFromUtterance('test');
+      const result = await session.flushUtteranceBuffer();
 
       expect(result.extracted_readings).toEqual([]);
       // Should still push to conversation history
@@ -305,7 +439,8 @@ describe('EICRExtractionSession', () => {
       });
 
       session.start(null);
-      await expect(session.extractFromUtterance('test')).rejects.toThrow('No text block');
+      await session.extractFromUtterance('test');
+      await expect(session.flushUtteranceBuffer()).rejects.toThrow('No text block');
     });
 
     test('should track questions asked', async () => {
@@ -324,6 +459,7 @@ describe('EICRExtractionSession', () => {
 
       session.start(null);
       await session.extractFromUtterance('Zs 0.35');
+      await session.flushUtteranceBuffer();
 
       expect(session.askedQuestions).toContain('zs:-1');
     });
@@ -348,6 +484,7 @@ describe('EICRExtractionSession', () => {
 
       session.start(null);
       await session.extractFromUtterance('test');
+      await session.flushUtteranceBuffer();
 
       expect(session.askedQuestions.length).toBeLessThanOrEqual(30);
     });
@@ -370,7 +507,8 @@ describe('EICRExtractionSession', () => {
       });
 
       session.start(null);
-      const result = await session.extractFromUtterance('test');
+      await session.extractFromUtterance('test');
+      const result = await session.flushUtteranceBuffer();
 
       expect(result.observations).toHaveLength(1);
       expect(result.observations[0].code).toBe('C3');
@@ -389,7 +527,8 @@ describe('EICRExtractionSession', () => {
       });
 
       session.start(null);
-      const result = await session.extractFromUtterance('Zs 0.35 circuit 1', [], { confirmationsEnabled: true });
+      await session.extractFromUtterance('Zs 0.35 circuit 1', [], { confirmationsEnabled: true });
+      const result = await session.flushUtteranceBuffer();
 
       // Check that CONFIRMATIONS ENABLED was sent
       const userMsg = session.conversationHistory[0].content[0].text;

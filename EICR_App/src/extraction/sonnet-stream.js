@@ -115,6 +115,7 @@ const KNOWN_FIELDS = new Set([
   'client_email',
   'reason_for_report',
   'occupier_name',
+  'date_of_inspection',
   'date_of_previous_inspection',
   'previous_certificate_number',
   'estimated_age_of_installation',
@@ -198,13 +199,19 @@ const FIELD_CORRECTIONS = {
   ocpd_standard: 'ocpd_bs_en',
   rcd_standard: 'rcd_bs_en',
   main_switch_rating: 'main_switch_current',
-  main_fuse_rating: 'main_switch_current',
-  main_fuse_current: 'main_switch_current',
-  main_fuse_bs_en: 'main_switch_bs_en',
-  main_fuse_type: 'main_switch_bs_en',
   main_switch_type: 'main_switch_bs_en',
-  supply_fuse_rating: 'main_switch_current',
-  supply_fuse_type: 'main_switch_bs_en',
+  // Date field variants
+  inspection_date: 'date_of_inspection',
+  test_date: 'date_of_inspection',
+  previous_inspection_date: 'date_of_previous_inspection',
+  last_inspection_date: 'date_of_previous_inspection',
+  // "Main fuse" / "supply fuse" = Supply Protective Device (DNO cutout), NOT the CU main switch
+  main_fuse_rating: 'spd_rated_current',
+  main_fuse_current: 'spd_rated_current',
+  main_fuse_bs_en: 'spd_bs_en',
+  main_fuse_type: 'spd_type_supply',
+  supply_fuse_rating: 'spd_rated_current',
+  supply_fuse_type: 'spd_bs_en',
 };
 
 // Map cable description strings to BS 7671 wiring type letter codes
@@ -512,6 +519,30 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         }
       }
     });
+
+    // Set up batch flush callback — when the batch timeout fires asynchronously,
+    // this delivers the extraction result to iOS the same way handleTranscript does.
+    session.onBatchResult = (result) => {
+      try {
+        validateAndCorrectFields(result, sessionId);
+        if (ws.readyState === ws.OPEN) {
+          const { questions_for_user, ...resultWithoutQuestions } = result;
+          ws.send(JSON.stringify({ type: 'extraction', result: resultWithoutQuestions }));
+          ws.send(JSON.stringify(session.costTracker.toCostUpdate()));
+        }
+        if (result.questions_for_user && result.questions_for_user.length > 0) {
+          questionGate.enqueue(result.questions_for_user);
+        }
+        if (result.extracted_readings && result.extracted_readings.length > 0) {
+          const resolvedFields = new Set(
+            result.extracted_readings.map((r) => `${r.field}:${r.circuit}`)
+          );
+          questionGate.resolveByFields(resolvedFields);
+        }
+      } catch (err) {
+        logger.error('Batch flush callback error', { sessionId, error: err.message });
+      }
+    };
 
     session.start(jobState);
 
@@ -869,6 +900,13 @@ GUIDELINES:
   async function handleSessionStop(ws, sessionId) {
     if (!sessionId || !activeSessions.has(sessionId)) return;
     const entry = activeSessions.get(sessionId);
+
+    // Flush any buffered utterances before stopping so no readings are lost
+    const flushResult = await entry.session.flushUtteranceBuffer();
+    if (flushResult && entry.session.onBatchResult) {
+      entry.session.onBatchResult(flushResult);
+    }
+
     const summary = entry.session.stop();
     entry.questionGate.destroy();
 

@@ -39,6 +39,13 @@ const COMPACTION_THRESHOLD = 60000;
 // are sent to the API, preceded by a state snapshot of all extracted values.
 const SLIDING_WINDOW_SIZE = 6;
 
+// Utterance batching — buffer consecutive transcript chunks before making a Sonnet
+// API call. A 72-turn session with BATCH_SIZE=3 becomes ~24 API calls, cutting
+// Sonnet cost by ~60%. With BATCH_SIZE=2, it's ~36 calls (~50% reduction).
+// The timeout ensures buffered utterances are processed even if the speaker pauses.
+const BATCH_SIZE = 3;
+const BATCH_TIMEOUT_MS = 3500; // ms to wait for more utterances before flushing
+
 // Load externalized system prompts at module init
 // Must be >=1024 tokens for Sonnet 4.5 prompt caching
 export const EICR_SYSTEM_PROMPT = fssync.readFileSync(
@@ -102,12 +109,17 @@ export class EICRExtractionSession {
     this.circuitScheduleIncluded = false;
     this.isActive = false;
 
+    // Utterance batching state
+    this.utteranceBuffer = []; // Buffered { transcriptText, regexResults, options }
+    this.batchTimeoutHandle = null;
+    this.onBatchResult = null; // Callback for async batch flush results: (result) => void
+
     // Rolling state snapshot: accumulates all extracted values across the session.
     // Used to provide context in the sliding window without sending full history.
     this.stateSnapshot = {
-      circuits: {},         // { circuitNum: { field: value, ... } }
+      circuits: {}, // { circuitNum: { field: value, ... } }
       pending_readings: [], // readings with circuit -1 (unassigned)
-      observations: [],     // deduped observation texts
+      observations: [], // deduped observation texts
       validation_alerts: [],
     };
   }
@@ -146,6 +158,12 @@ export class EICRExtractionSession {
   }
 
   stop() {
+    // Clear batch timeout — caller should call flushUtteranceBuffer() before stop()
+    // to ensure no utterances are lost.
+    if (this.batchTimeoutHandle) {
+      clearTimeout(this.batchTimeoutHandle);
+      this.batchTimeoutHandle = null;
+    }
     this.isActive = false;
     this.costTracker.stopRecording();
     const summary = this.costTracker.toSessionSummary();
@@ -160,7 +178,104 @@ export class EICRExtractionSession {
     this.circuitScheduleIncluded = false; // Force re-send on next utterance
   }
 
+  /**
+   * Public entry point for transcript chunks. Buffers utterances and batches them
+   * to reduce Sonnet API calls. Returns immediately with an empty result for
+   * buffered (non-full) batches; returns the real extraction result when the
+   * batch fires (buffer full) or when flushed via timeout/stop.
+   */
   async extractFromUtterance(transcriptText, regexResults = [], options = {}) {
+    // Add to buffer
+    this.utteranceBuffer.push({ transcriptText, regexResults, options });
+
+    // Clear any existing flush timeout
+    if (this.batchTimeoutHandle) {
+      clearTimeout(this.batchTimeoutHandle);
+      this.batchTimeoutHandle = null;
+    }
+
+    // If buffer is full, process batch immediately
+    if (this.utteranceBuffer.length >= BATCH_SIZE) {
+      return this._processUtteranceBatch();
+    }
+
+    // Buffer not full — set timeout to flush and return empty result.
+    // The timeout ensures utterances don't sit in the buffer indefinitely
+    // if the speaker pauses (e.g., waiting for feedback after a question).
+    this.batchTimeoutHandle = setTimeout(() => {
+      this._flushBatchAsync();
+    }, BATCH_TIMEOUT_MS);
+
+    logger.info(
+      `Session ${this.sessionId} Batched utterance ${this.utteranceBuffer.length}/${BATCH_SIZE}, waiting for more`
+    );
+
+    return {
+      extracted_readings: [],
+      field_clears: [],
+      circuit_updates: [],
+      observations: [],
+      validation_alerts: [],
+      questions_for_user: [],
+      confirmations: [],
+    };
+  }
+
+  /**
+   * Combine buffered utterances and process as a single Sonnet API call.
+   */
+  async _processUtteranceBatch() {
+    const batch = this.utteranceBuffer.splice(0); // drain buffer
+    if (batch.length === 0) return null;
+
+    // Combine transcript texts with separator
+    const combinedText = batch.map((b) => b.transcriptText).join(' ... ');
+
+    // Merge all regex results
+    const combinedRegex = batch.flatMap((b) => b.regexResults || []);
+
+    // Merge options: confirmations enabled if any item had it
+    const combinedOptions = {
+      confirmationsEnabled: batch.some((b) => b.options?.confirmationsEnabled),
+    };
+
+    logger.info(
+      `Session ${this.sessionId} Processing batch of ${batch.length} utterances as single API call`
+    );
+
+    return this._extractSingle(combinedText, combinedRegex, combinedOptions);
+  }
+
+  /**
+   * Async flush triggered by batch timeout. Delivers result via onBatchResult callback.
+   */
+  async _flushBatchAsync() {
+    this.batchTimeoutHandle = null;
+    if (this.utteranceBuffer.length === 0) return;
+    try {
+      const result = await this._processUtteranceBatch();
+      if (result && this.onBatchResult) {
+        this.onBatchResult(result);
+      }
+    } catch (error) {
+      logger.error(`Session ${this.sessionId} Batch flush error: ${error.message}`);
+    }
+  }
+
+  /**
+   * Explicitly flush buffered utterances. Call before stop() to ensure
+   * no utterances are lost. Returns the extraction result or null if empty.
+   */
+  async flushUtteranceBuffer() {
+    if (this.batchTimeoutHandle) {
+      clearTimeout(this.batchTimeoutHandle);
+      this.batchTimeoutHandle = null;
+    }
+    if (this.utteranceBuffer.length === 0) return null;
+    return this._processUtteranceBatch();
+  }
+
+  async _extractSingle(transcriptText, regexResults = [], options = {}) {
     // Check if compaction needed
     if (this.conversationTokenEstimate > COMPACTION_THRESHOLD) {
       await this.compact();
@@ -593,13 +708,19 @@ export class EICRExtractionSession {
       this.circuitScheduleIncluded = false;
     }
 
-    // Add state snapshot if we have extracted data
+    // Add state snapshot if we have extracted data or circuit schedule.
+    // The snapshot now includes the circuit schedule (designations, supply info)
+    // so Sonnet retains full context even when older messages drop from the window.
     const snapshot = this.buildStateSnapshotMessage();
     if (snapshot) {
       window.push(
         { role: 'user', content: [{ type: 'text', text: snapshot }] },
         { role: 'assistant', content: [{ type: 'text', text: '{"acknowledged": true}' }] }
       );
+      // Mark circuit schedule as included so buildUserMessage doesn't duplicate it
+      if (this.circuitSchedule) {
+        this.circuitScheduleIncluded = true;
+      }
     }
 
     // Add last N exchanges from conversation history
@@ -678,24 +799,54 @@ export class EICRExtractionSession {
   /**
    * Build a compact state snapshot message for the API.
    * Returns null if nothing has been extracted yet.
+   *
+   * Includes the circuit schedule (designations, supply info, hardware) alongside
+   * extracted values so Sonnet retains full context even when older conversational
+   * messages drop out of the sliding window.
    */
   buildStateSnapshotMessage() {
     const hasCircuits = Object.keys(this.stateSnapshot.circuits).length > 0;
     const hasPending = this.stateSnapshot.pending_readings.length > 0;
     const hasObs = this.stateSnapshot.observations.length > 0;
     const hasAlerts = this.stateSnapshot.validation_alerts.length > 0;
+    const hasSchedule = !!this.circuitSchedule;
 
-    if (!hasCircuits && !hasPending && !hasObs && !hasAlerts) {
+    if (!hasCircuits && !hasPending && !hasObs && !hasAlerts && !hasSchedule) {
       return null;
     }
 
+    const parts = [];
+
+    // Include circuit schedule so Sonnet knows circuit designations, supply info,
+    // and hardware details even after early messages drop from the sliding window.
+    // Without this, Sonnet loses context after ~6 exchanges and can't assign readings
+    // to the correct circuits, producing empty extractions.
+    if (hasSchedule) {
+      parts.push(
+        `CIRCUIT SCHEDULE (confirmed values — do NOT question these):\n${this.circuitSchedule}`
+      );
+    }
+
+    // Extracted readings accumulated across the full session
     const snapshot = {};
     if (hasCircuits) snapshot.circuits = this.stateSnapshot.circuits;
     if (hasPending) snapshot.pending_readings = this.stateSnapshot.pending_readings;
-    if (hasObs) snapshot.observations = this.stateSnapshot.observations;
     if (hasAlerts) snapshot.validation_alerts = this.stateSnapshot.validation_alerts;
 
-    return `CONFIRMED STATE (all values extracted so far — do NOT re-extract these):\n${JSON.stringify(snapshot)}`;
+    if (Object.keys(snapshot).length > 0) {
+      parts.push(
+        `EXTRACTED READINGS (all test readings extracted so far — do NOT re-extract these):\n${JSON.stringify(snapshot)}`
+      );
+    }
+
+    // Observations as a separate, clear section
+    if (hasObs) {
+      parts.push(
+        `OBSERVATIONS ALREADY RECORDED (do NOT re-extract):\n${this.stateSnapshot.observations.map((o, i) => `${i + 1}. ${o}`).join('\n')}`
+      );
+    }
+
+    return parts.join('\n\n');
   }
 
   buildCircuitSchedule(jobState) {
