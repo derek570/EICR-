@@ -90,6 +90,25 @@ notify() {
   local SAFE_TITLE="${TITLE//\"/\\\"}"
   local SAFE_MESSAGE="${MESSAGE//\"/\\\"}"
 
+  # ── Deduplication: skip if same title+message was sent within last 10 minutes ──
+  local DEDUP_DIR="$HOME/.certmate/pushover_dedup"
+  mkdir -p "$DEDUP_DIR"
+  local MSG_HASH
+  MSG_HASH=$(echo -n "${TITLE}|${MESSAGE}" | md5 2>/dev/null || echo -n "${TITLE}|${MESSAGE}" | md5sum | cut -d' ' -f1)
+  local DEDUP_FILE="$DEDUP_DIR/$MSG_HASH"
+  local NOW
+  NOW=$(date +%s)
+  if [ -f "$DEDUP_FILE" ]; then
+    local LAST_SENT
+    LAST_SENT=$(cat "$DEDUP_FILE" 2>/dev/null || echo 0)
+    local ELAPSED=$(( NOW - LAST_SENT ))
+    if [ "$ELAPSED" -lt 600 ]; then
+      log "  Notification DEDUP: Skipping '$TITLE' — same message sent ${ELAPSED}s ago (< 600s)"
+      return 0
+    fi
+  fi
+  echo "$NOW" > "$DEDUP_FILE"
+
   # macOS notification
   osascript -e "display notification \"$SAFE_MESSAGE\" with title \"CertMate\" subtitle \"$SAFE_TITLE\"" 2>/dev/null || true
 
@@ -111,6 +130,27 @@ send_pushover_message() {
   local MESSAGE="$2"
   local PRIORITY="${3:-0}"
   local FEEDBACK_URL="${4:-}"
+
+  # ── Deduplication: skip if same title+message was sent within last 10 minutes ──
+  local DEDUP_DIR="$HOME/.certmate/pushover_dedup"
+  mkdir -p "$DEDUP_DIR"
+  local MSG_HASH
+  MSG_HASH=$(echo -n "${TITLE}|${MESSAGE}" | md5 2>/dev/null || echo -n "${TITLE}|${MESSAGE}" | md5sum | cut -d' ' -f1)
+  local DEDUP_FILE="$DEDUP_DIR/$MSG_HASH"
+  local NOW
+  NOW=$(date +%s)
+  if [ -f "$DEDUP_FILE" ]; then
+    local LAST_SENT
+    LAST_SENT=$(cat "$DEDUP_FILE" 2>/dev/null || echo 0)
+    local ELAPSED=$(( NOW - LAST_SENT ))
+    if [ "$ELAPSED" -lt 600 ]; then
+      log "  Pushover DEDUP: Skipping '$TITLE' — same message sent ${ELAPSED}s ago (< 600s)"
+      return 0
+    fi
+  fi
+  echo "$NOW" > "$DEDUP_FILE"
+  # Clean up dedup files older than 1 hour
+  find "$DEDUP_DIR" -type f -mmin +60 -delete 2>/dev/null || true
 
   log "  Pushover: title='$TITLE' url='$FEEDBACK_URL'"
 
@@ -1559,7 +1599,12 @@ apply_accepted_recommendations() {
       if (!rec) { console.error('Invalid index: ' + idx); failed++; continue; }
       try {
         const content = fs.readFileSync(rec.file, 'utf8');
-        if (content.includes(rec.old_code)) {
+        // Idempotency: skip if new_code is already present (prevents re-applying
+        // when old_code is a substring of new_code)
+        if (content.includes(rec.new_code)) {
+          console.log('Already applied (idempotent skip): ' + rec.title);
+          applied++;
+        } else if (content.includes(rec.old_code)) {
           const updated = content.replace(rec.old_code, rec.new_code);
           fs.writeFileSync(rec.file, updated, 'utf8');
           applied++;
