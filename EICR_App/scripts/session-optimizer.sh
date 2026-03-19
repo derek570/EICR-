@@ -73,6 +73,12 @@ if ! jq -e '.retry_counts' "$STATE_FILE" > /dev/null 2>&1; then
     && mv "${STATE_FILE}.tmp" "$STATE_FILE"
 fi
 
+# Migrate state file: add first_seen if missing (tracks when sessions without debug_log were first discovered)
+if ! jq -e '.first_seen' "$STATE_FILE" > /dev/null 2>&1; then
+  jq '. + {first_seen: {}}' "$STATE_FILE" > "${STATE_FILE}.tmp" \
+    && mv "${STATE_FILE}.tmp" "$STATE_FILE"
+fi
+
 log() {
   echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG_FILE"
 }
@@ -83,6 +89,25 @@ notify() {
   local PRIORITY="${3:-0}"  # 0=normal, 1=high (bypasses quiet hours)
   local SAFE_TITLE="${TITLE//\"/\\\"}"
   local SAFE_MESSAGE="${MESSAGE//\"/\\\"}"
+
+  # ── Deduplication: skip if same title+message was sent within last 10 minutes ──
+  local DEDUP_DIR="$HOME/.certmate/pushover_dedup"
+  mkdir -p "$DEDUP_DIR"
+  local MSG_HASH
+  MSG_HASH=$(echo -n "${TITLE}|${MESSAGE}" | md5 2>/dev/null || echo -n "${TITLE}|${MESSAGE}" | md5sum | cut -d' ' -f1)
+  local DEDUP_FILE="$DEDUP_DIR/$MSG_HASH"
+  local NOW
+  NOW=$(date +%s)
+  if [ -f "$DEDUP_FILE" ]; then
+    local LAST_SENT
+    LAST_SENT=$(cat "$DEDUP_FILE" 2>/dev/null || echo 0)
+    local ELAPSED=$(( NOW - LAST_SENT ))
+    if [ "$ELAPSED" -lt 600 ]; then
+      log "  Notification DEDUP: Skipping '$TITLE' — same message sent ${ELAPSED}s ago (< 600s)"
+      return 0
+    fi
+  fi
+  echo "$NOW" > "$DEDUP_FILE"
 
   # macOS notification
   osascript -e "display notification \"$SAFE_MESSAGE\" with title \"CertMate\" subtitle \"$SAFE_TITLE\"" 2>/dev/null || true
@@ -105,6 +130,27 @@ send_pushover_message() {
   local MESSAGE="$2"
   local PRIORITY="${3:-0}"
   local FEEDBACK_URL="${4:-}"
+
+  # ── Deduplication: skip if same title+message was sent within last 10 minutes ──
+  local DEDUP_DIR="$HOME/.certmate/pushover_dedup"
+  mkdir -p "$DEDUP_DIR"
+  local MSG_HASH
+  MSG_HASH=$(echo -n "${TITLE}|${MESSAGE}" | md5 2>/dev/null || echo -n "${TITLE}|${MESSAGE}" | md5sum | cut -d' ' -f1)
+  local DEDUP_FILE="$DEDUP_DIR/$MSG_HASH"
+  local NOW
+  NOW=$(date +%s)
+  if [ -f "$DEDUP_FILE" ]; then
+    local LAST_SENT
+    LAST_SENT=$(cat "$DEDUP_FILE" 2>/dev/null || echo 0)
+    local ELAPSED=$(( NOW - LAST_SENT ))
+    if [ "$ELAPSED" -lt 600 ]; then
+      log "  Pushover DEDUP: Skipping '$TITLE' — same message sent ${ELAPSED}s ago (< 600s)"
+      return 0
+    fi
+  fi
+  echo "$NOW" > "$DEDUP_FILE"
+  # Clean up dedup files older than 1 hour
+  find "$DEDUP_DIR" -type f -mmin +60 -delete 2>/dev/null || true
 
   log "  Pushover: title='$TITLE' url='$FEEDBACK_URL'"
 
@@ -457,8 +503,10 @@ deploy_testflight() {
     return 1
   fi
 
-  ./deploy-testflight.sh 2>&1 | tee -a "$LOG_FILE"
-  local EXIT_CODE=${PIPESTATUS[0]}
+  # Run deploy in a subshell to isolate failure from set -euo pipefail.
+  # Without this, a build failure kills the entire optimizer process.
+  local EXIT_CODE=0
+  (./deploy-testflight.sh 2>&1 | tee -a "$LOG_FILE") || EXIT_CODE=$?
 
   if [ "$EXIT_CODE" -eq 0 ]; then
     log "  TestFlight deploy succeeded"
@@ -625,6 +673,235 @@ build_session_summary() {
       vad_analysis: a.vad_sleep_analysis || null
     }));
   " > "$OUTPUT_FILE"
+}
+
+# ── Fallback Session Processing (no debug_log.jsonl) ──
+# When debug_log.jsonl is missing but manifest.json and job_snapshot.json exist,
+# run a lighter analysis extracting field fill rates and cost data without
+# the full debug log parsing / Claude analysis pipeline.
+
+process_session_fallback() {
+  local SESSION_DIR="$1"
+  local SESSION_ID="$2"
+
+  log "  Running fallback analysis (no debug_log.jsonl)..."
+
+  # Read job_snapshot.json for field fill rates
+  local JOB_SNAPSHOT="{}"
+  if [ -f "$SESSION_DIR/job_snapshot.json" ]; then
+    JOB_SNAPSHOT=$(cat "$SESSION_DIR/job_snapshot.json")
+  else
+    log "  ERROR: job_snapshot.json not found for fallback"
+    return 1
+  fi
+
+  # Read cost_summary.json if available
+  local COST_SUMMARY="{}"
+  if [ -f "$SESSION_DIR/cost_summary.json" ]; then
+    COST_SUMMARY=$(cat "$SESSION_DIR/cost_summary.json")
+  fi
+
+  # Read manifest.json for session metadata
+  local MANIFEST="{}"
+  if [ -f "$SESSION_DIR/manifest.json" ]; then
+    MANIFEST=$(cat "$SESSION_DIR/manifest.json")
+  fi
+
+  # Read field_sources.json if available
+  local FIELD_SOURCES="{}"
+  if [ -f "$SESSION_DIR/field_sources.json" ]; then
+    FIELD_SOURCES=$(cat "$SESSION_DIR/field_sources.json")
+  fi
+
+  # Build a lightweight session summary using node (no analysis.json dependency)
+  local REPORT_WORK_DIR
+  REPORT_WORK_DIR=$(mktemp -d)
+
+  # Write inputs to temp files to avoid ARG_MAX limits on large snapshots
+  echo "$MANIFEST" > "$REPORT_WORK_DIR/_manifest.json"
+  echo "$JOB_SNAPSHOT" > "$REPORT_WORK_DIR/_job_snapshot.json"
+  echo "$COST_SUMMARY" > "$REPORT_WORK_DIR/_cost_summary.json"
+  echo "$FIELD_SOURCES" > "$REPORT_WORK_DIR/_field_sources.json"
+
+  node -e "
+    const fs = require('fs');
+    const manifest = JSON.parse(fs.readFileSync(process.argv[1], 'utf8'));
+    const snapshot = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+    const costs = JSON.parse(fs.readFileSync(process.argv[3], 'utf8'));
+    const fieldSources = JSON.parse(fs.readFileSync(process.argv[4], 'utf8'));
+
+    // Count filled vs empty fields from job_snapshot
+    const fields = snapshot.fields || snapshot.formData || snapshot;
+    let filledCount = 0;
+    let emptyCount = 0;
+    const filledFields = [];
+    const emptyFields = [];
+
+    function countFields(obj, prefix) {
+      if (!obj || typeof obj !== 'object') return;
+      for (const [key, val] of Object.entries(obj)) {
+        if (key.startsWith('_')) continue;
+        const fullKey = prefix ? prefix + '.' + key : key;
+        if (val && typeof val === 'object' && !Array.isArray(val)) {
+          countFields(val, fullKey);
+        } else if (val !== null && val !== undefined && val !== '' && val !== 0) {
+          filledCount++;
+          filledFields.push(fullKey);
+        } else {
+          emptyCount++;
+          emptyFields.push(fullKey);
+        }
+      }
+    }
+    countFields(fields, '');
+
+    // Count field sources if available
+    let regexFields = 0;
+    let sonnetFields = 0;
+    let preExistingFields = 0;
+    if (fieldSources && typeof fieldSources === 'object') {
+      for (const [, src] of Object.entries(fieldSources)) {
+        const source = (typeof src === 'string') ? src : (src && src.source) || '';
+        if (source.includes('regex')) regexFields++;
+        else if (source.includes('sonnet') || source.includes('ai')) sonnetFields++;
+        else if (source.includes('preExisting') || source.includes('existing')) preExistingFields++;
+      }
+    }
+
+    const fillRate = filledCount + emptyCount > 0
+      ? ((filledCount / (filledCount + emptyCount)) * 100).toFixed(1)
+      : '0.0';
+
+    const summary = {
+      address: manifest.address || snapshot.address || 'Unknown',
+      date: (manifest.timestamp || '').split('T')[0] || new Date().toISOString().split('T')[0],
+      duration: manifest.duration || '?',
+      regexFields: regexFields,
+      sonnetFields: sonnetFields,
+      preExistingFields: preExistingFields,
+      missedFields: 0,
+      uncapturedValues: 0,
+      totalCost: costs.totalJobCost || parseFloat(manifest.sonnetCostUSD || '0'),
+      deepgramCost: costs.deepgram ? costs.deepgram.cost : null,
+      deepgramMinutes: costs.deepgram ? costs.deepgram.minutes : null,
+      sonnetCost: costs.sonnet ? costs.sonnet.cost : null,
+      sonnetInput: costs.sonnet ? costs.sonnet.input : null,
+      sonnetOutput: costs.sonnet ? costs.sonnet.output : null,
+      sonnetCacheReads: costs.sonnet ? costs.sonnet.cacheReads : null,
+      sonnetCacheWrites: costs.sonnet ? costs.sonnet.cacheWrites : null,
+      elevenLabsCost: costs.elevenlabs ? costs.elevenlabs.cost : null,
+      // Fallback-specific data
+      fallback: true,
+      fallbackReason: 'debug_log.jsonl not available',
+      filledFields: filledCount,
+      emptyFieldCount: emptyCount,
+      fillRate: fillRate,
+      filledFieldNames: filledFields.slice(0, 50),
+      emptyFieldNames: emptyFields.slice(0, 50),
+      field_report: [],
+      utterance_analysis: [],
+      empty_fields: [],
+      repeated_values: [],
+      cost_breakdown: null,
+      sonnet_prompt_audit: null,
+      vad_analysis: null
+    };
+    fs.writeFileSync(process.argv[5], JSON.stringify(summary));
+  " "$REPORT_WORK_DIR/_manifest.json" "$REPORT_WORK_DIR/_job_snapshot.json" "$REPORT_WORK_DIR/_cost_summary.json" "$REPORT_WORK_DIR/_field_sources.json" "$REPORT_WORK_DIR/session-summary.json" >> "$LOG_FILE" 2>&1 || {
+    log "  ERROR: fallback session summary generation failed"
+    rm -rf "$REPORT_WORK_DIR"
+    return 1
+  }
+
+  # No Claude analysis — empty recommendations with a summary noting fallback
+  local FILL_RATE
+  FILL_RATE=$(jq -r '.fillRate // "?"' "$REPORT_WORK_DIR/session-summary.json" 2>/dev/null || echo "?")
+  local FILLED_COUNT
+  FILLED_COUNT=$(jq -r '.filledFields // 0' "$REPORT_WORK_DIR/session-summary.json" 2>/dev/null || echo 0)
+  local EMPTY_COUNT
+  EMPTY_COUNT=$(jq -r '.emptyFieldCount // 0' "$REPORT_WORK_DIR/session-summary.json" 2>/dev/null || echo 0)
+
+  echo '[]' > "$REPORT_WORK_DIR/recommendations.json"
+
+  # Generate report ID
+  local REPORT_ID
+  REPORT_ID=$(uuidgen | tr '[:upper:]' '[:lower:]')
+
+  # Generate HTML report
+  node "$SCRIPTS_DIR/generate-report-html.js" \
+    "$REPORT_WORK_DIR/recommendations.json" \
+    "$REPORT_WORK_DIR/session-summary.json" \
+    "$REPORT_ID" \
+    "$REPORT_WORK_DIR/report.html" >> "$LOG_FILE" 2>&1 || {
+    log "  ERROR: generate-report-html.js failed for fallback report"
+    rm -rf "$REPORT_WORK_DIR"
+    return 1
+  }
+
+  # Extract address for notification
+  local ADDRESS
+  ADDRESS=$(jq -r '.address // "Unknown"' "$REPORT_WORK_DIR/session-summary.json" 2>/dev/null || echo "Unknown")
+
+  # Extract userId from session path
+  local SESSION_USER_ID
+  SESSION_USER_ID=$(echo "$SESSION_ID" | cut -d'/' -f2)
+
+  # Build meta.json — note type as fallback
+  local META_JSON
+  META_JSON=$(jq -n \
+    --arg sessionPath "$SESSION_ID" \
+    --arg userId "$SESSION_USER_ID" \
+    --arg address "$ADDRESS" \
+    --arg timestamp "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    --arg reportId "$REPORT_ID" \
+    --arg status "pending" \
+    '{
+      sessionPath: $sessionPath,
+      userId: $userId,
+      address: $address,
+      timestamp: $timestamp,
+      reportId: $reportId,
+      status: $status,
+      type: "fallback",
+      fallbackReason: "debug_log.jsonl not available"
+    }')
+  echo "$META_JSON" > "$REPORT_WORK_DIR/meta.json"
+
+  # Upload report artifacts to S3
+  local S3_REPORT_PREFIX="optimizer-reports/${REPORT_ID}"
+  aws s3 cp "$REPORT_WORK_DIR/report.html" "s3://${BUCKET}/${S3_REPORT_PREFIX}/report.html" \
+    --region "$AWS_REGION" --content-type "text/html"
+  aws s3 cp "$REPORT_WORK_DIR/recommendations.json" "s3://${BUCKET}/${S3_REPORT_PREFIX}/recommendations.json" \
+    --region "$AWS_REGION" --content-type "application/json"
+  aws s3 cp "$REPORT_WORK_DIR/session-summary.json" "s3://${BUCKET}/${S3_REPORT_PREFIX}/session-summary.json" \
+    --region "$AWS_REGION" --content-type "application/json"
+  aws s3 cp "$REPORT_WORK_DIR/meta.json" "s3://${BUCKET}/${S3_REPORT_PREFIX}/meta.json" \
+    --region "$AWS_REGION" --content-type "application/json"
+
+  log "  Fallback report uploaded: s3://${BUCKET}/${S3_REPORT_PREFIX}/"
+
+  # Send Pushover notification — clearly marked as fallback
+  local REPORT_URL="https://certomatic3000.co.uk/api/optimizer-report/${REPORT_ID}"
+  local TOTAL_COST
+  TOTAL_COST=$(jq -r '.totalCost // 0' "$REPORT_WORK_DIR/session-summary.json" 2>/dev/null || echo 0)
+  local TOTAL_GBP
+  TOTAL_GBP=$(echo "$TOTAL_COST" | awk '{printf "%.2f", $1 * 0.79}')
+
+  local PUSHOVER_MSG=""
+  PUSHOVER_MSG+="<b>Fallback report (no debug log)</b>\n"
+  PUSHOVER_MSG+="Cost: £${TOTAL_GBP}\n"
+  PUSHOVER_MSG+="Fields: ${FILLED_COUNT} filled / ${EMPTY_COUNT} empty (${FILL_RATE}% fill rate)\n"
+  PUSHOVER_MSG+="\nNo code recommendations — debug_log.jsonl was not uploaded for this session."
+
+  send_pushover_message \
+    "Fallback: ${ADDRESS:0:50}" \
+    "$PUSHOVER_MSG" \
+    0 \
+    "$REPORT_URL"
+
+  log "  Fallback Pushover sent for report $REPORT_ID"
+
+  rm -rf "$REPORT_WORK_DIR"
 }
 
 # ── Session Processing ──
@@ -1322,7 +1599,12 @@ apply_accepted_recommendations() {
       if (!rec) { console.error('Invalid index: ' + idx); failed++; continue; }
       try {
         const content = fs.readFileSync(rec.file, 'utf8');
-        if (content.includes(rec.old_code)) {
+        // Idempotency: skip if new_code is already present (prevents re-applying
+        // when old_code is a substring of new_code)
+        if (content.includes(rec.new_code)) {
+          console.log('Already applied (idempotent skip): ' + rec.title);
+          applied++;
+        } else if (content.includes(rec.old_code)) {
           const updated = content.replace(rec.old_code, rec.new_code);
           fs.writeFileSync(rec.file, updated, 'utf8');
           applied++;
@@ -1532,6 +1814,24 @@ while true; do
       continue
     fi
 
+    # Grace period: give 2.5 min for all files to finish uploading before processing
+    FIRST_SEEN=$(jq -r ".first_seen.\"${SESSION_PATH}\" // empty" "$STATE_FILE" 2>/dev/null || true)
+    NOW_GRACE=$(date +%s)
+
+    if [ -z "$FIRST_SEEN" ]; then
+      # First discovery of this session — record timestamp, skip this cycle
+      log "New session discovered: $SESSION_PATH — starting 150s grace period"
+      jq ".first_seen.\"${SESSION_PATH}\" = ${NOW_GRACE}" "$STATE_FILE" > "${STATE_FILE}.tmp" \
+        && mv "${STATE_FILE}.tmp" "$STATE_FILE"
+      continue
+    fi
+
+    GRACE_ELAPSED=$((NOW_GRACE - FIRST_SEEN))
+    if [ "$GRACE_ELAPSED" -lt 150 ]; then
+      log "Grace period: waiting for files to finish uploading ($SESSION_PATH, ${GRACE_ELAPSED}s/150s)"
+      continue
+    fi
+
     log "New session analytics: $SESSION_PATH"
 
     # Download session files
@@ -1547,9 +1847,40 @@ while true; do
     aws s3 cp "s3://${BUCKET}/${SESSION_PATH}/cost_summary.json" "$SESSION_LOCAL/cost_summary.json" --region "$AWS_REGION" 2>/dev/null || true
 
     if [ ! -f "$SESSION_LOCAL/debug_log.jsonl" ]; then
-      log "  SKIP: No debug_log.jsonl found — analytics incomplete"
-      jq ".processed_sessions += [\"$SESSION_PATH\"]" "$STATE_FILE" > "${STATE_FILE}.tmp" \
-        && mv "${STATE_FILE}.tmp" "$STATE_FILE"
+      # Staleness check: don't permanently skip — allow retries until 1 hour has passed
+      FIRST_SEEN=$(jq -r ".first_seen.\"${SESSION_PATH}\" // empty" "$STATE_FILE" 2>/dev/null || true)
+      NOW=$(date +%s)
+
+      if [ -z "$FIRST_SEEN" ]; then
+        # First time seeing this session without debug_log — record timestamp and retry next cycle
+        log "  No debug_log.jsonl — recording first_seen, will retry next cycle"
+        jq ".first_seen.\"${SESSION_PATH}\" = ${NOW}" "$STATE_FILE" > "${STATE_FILE}.tmp" \
+          && mv "${STATE_FILE}.tmp" "$STATE_FILE"
+      elif [ $((NOW - FIRST_SEEN)) -ge 3600 ]; then
+        # Over 1 hour old — debug_log never arrived
+        # Try fallback analysis if manifest.json and job_snapshot.json exist
+        if [ -f "$SESSION_LOCAL/manifest.json" ] && [ -f "$SESSION_LOCAL/job_snapshot.json" ]; then
+          log "  No debug_log.jsonl after 1+ hour — running fallback analysis with manifest + job_snapshot"
+          if process_session_fallback "$SESSION_LOCAL" "$SESSION_PATH"; then
+            log "  Fallback analysis succeeded for $SESSION_PATH"
+            jq ".processed_sessions += [\"${SESSION_PATH}\"] | del(.first_seen.\"${SESSION_PATH}\")" "$STATE_FILE" > "${STATE_FILE}.tmp" \
+              && mv "${STATE_FILE}.tmp" "$STATE_FILE"
+          else
+            log "  Fallback analysis failed for $SESSION_PATH — marking as processed anyway"
+            notify "Session Skipped" "Session ${SESSION_PATH} — fallback analysis failed (no debug_log.jsonl)" 0
+            jq ".processed_sessions += [\"${SESSION_PATH}\"] | del(.first_seen.\"${SESSION_PATH}\")" "$STATE_FILE" > "${STATE_FILE}.tmp" \
+              && mv "${STATE_FILE}.tmp" "$STATE_FILE"
+          fi
+        else
+          log "  SKIP: No debug_log.jsonl after 1+ hour and missing manifest/job_snapshot — marking as processed"
+          notify "Session Skipped" "Session ${SESSION_PATH} skipped — no debug_log.jsonl or job_snapshot after 1+ hour" 0
+          jq ".processed_sessions += [\"${SESSION_PATH}\"] | del(.first_seen.\"${SESSION_PATH}\")" "$STATE_FILE" > "${STATE_FILE}.tmp" \
+            && mv "${STATE_FILE}.tmp" "$STATE_FILE"
+        fi
+      else
+        ELAPSED=$((NOW - FIRST_SEEN))
+        log "  No debug_log.jsonl — waiting (first seen ${ELAPSED}s ago, will skip after 3600s)"
+      fi
       rm -rf "$WORK_DIR"
       continue
     fi
@@ -1583,7 +1914,7 @@ while true; do
     # Process the session (with any matching debug reports)
     if process_session "$SESSION_LOCAL" "$SESSION_PATH" "$DEBUG_REPORTS_LOCAL"; then
       log "  Done: $SESSION_PATH"
-      jq ".processed_sessions += [\"$SESSION_PATH\"] | del(.retry_counts.\"$SESSION_PATH\")" "$STATE_FILE" > "${STATE_FILE}.tmp" \
+      jq ".processed_sessions += [\"$SESSION_PATH\"] | del(.retry_counts.\"$SESSION_PATH\") | del(.first_seen.\"$SESSION_PATH\")" "$STATE_FILE" > "${STATE_FILE}.tmp" \
         && mv "${STATE_FILE}.tmp" "$STATE_FILE"
     else
       # Track retry count — give up after 5 attempts
@@ -1591,7 +1922,7 @@ while true; do
       RETRY_COUNT=$((RETRY_COUNT + 1))
       if [ "$RETRY_COUNT" -ge 5 ]; then
         log "  FAILED: $SESSION_PATH (giving up after $RETRY_COUNT attempts)"
-        jq ".processed_sessions += [\"$SESSION_PATH\"] | del(.retry_counts.\"$SESSION_PATH\")" "$STATE_FILE" > "${STATE_FILE}.tmp" \
+        jq ".processed_sessions += [\"$SESSION_PATH\"] | del(.retry_counts.\"$SESSION_PATH\") | del(.first_seen.\"$SESSION_PATH\")" "$STATE_FILE" > "${STATE_FILE}.tmp" \
           && mv "${STATE_FILE}.tmp" "$STATE_FILE"
       else
         log "  FAILED: $SESSION_PATH (attempt $RETRY_COUNT/5, will retry next cycle)"
@@ -1698,6 +2029,10 @@ while true; do
     CMD_WORK_DIR=$(mktemp -d)
     aws s3 cp "s3://${BUCKET}/${CMD_KEY}" "$CMD_WORK_DIR/command.json" --region "$AWS_REGION"
 
+    # Delete the command file BEFORE processing to prevent crash-restart loops.
+    # The command is safely saved in CMD_WORK_DIR/command.json for local processing.
+    aws s3 rm "s3://${BUCKET}/${CMD_KEY}" --region "$AWS_REGION"
+
     if [ "$CMD_TYPE" = "accept_command" ]; then
       ACCEPTED=$(jq -c '.accepted' "$CMD_WORK_DIR/command.json")
       log "  Applying accepted recommendations for report $REPORT_ID: $ACCEPTED"
@@ -1719,11 +2054,61 @@ while true; do
       rm -f "$REJECT_META"
     fi
 
-    # Delete the command file after processing
-    aws s3 rm "s3://${BUCKET}/${CMD_KEY}" --region "$AWS_REGION"
-
     rm -rf "$CMD_WORK_DIR"
   done
+
+  # ── Missed sessions audit: catch any sessions that slipped through all tracking ──
+  # List S3 sessions from last 24h, compare against state file, find gaps
+  AUDIT_CUTOFF=$(date -v-24H +%Y-%m-%d 2>/dev/null || date -d '24 hours ago' +%Y-%m-%d 2>/dev/null || true)
+
+  if [ -n "$AUDIT_CUTOFF" ]; then
+    AUDIT_SESSIONS=$(aws s3 ls "s3://${BUCKET}/${SESSION_PREFIX}" --recursive --region "$AWS_REGION" 2>/dev/null \
+      | grep 'manifest.json' \
+      | awk -v cutoff="$AUDIT_CUTOFF" '$1 >= cutoff {print $4}' || true)
+
+    MISSED_COUNT=0
+    for AUDIT_MANIFEST in $AUDIT_SESSIONS; do
+      AUDIT_PATH="${AUDIT_MANIFEST%/manifest.json}"
+
+      # Skip if already processed
+      if jq -e ".processed_sessions | index(\"$AUDIT_PATH\")" "$STATE_FILE" > /dev/null 2>&1; then
+        continue
+      fi
+
+      # Skip if currently being tracked (grace period or staleness wait)
+      if jq -e ".first_seen.\"${AUDIT_PATH}\"" "$STATE_FILE" > /dev/null 2>&1; then
+        continue
+      fi
+
+      # Skip if in retry queue
+      if jq -e ".retry_counts.\"${AUDIT_PATH}\"" "$STATE_FILE" > /dev/null 2>&1; then
+        continue
+      fi
+
+      # Check if optimization_report.json already exists on S3
+      if aws s3 ls "s3://${BUCKET}/${AUDIT_PATH}/optimization_report.json" --region "$AWS_REGION" > /dev/null 2>&1; then
+        # Report exists but session not in processed list — fix state
+        log "AUDIT: Session $AUDIT_PATH has report but was not in processed list — adding"
+        jq ".processed_sessions += [\"$AUDIT_PATH\"]" "$STATE_FILE" > "${STATE_FILE}.tmp" \
+          && mv "${STATE_FILE}.tmp" "$STATE_FILE"
+        continue
+      fi
+
+      # Truly missed — no report, not tracked anywhere
+      MISSED_COUNT=$((MISSED_COUNT + 1))
+      log "AUDIT WARNING: Missed session detected — $AUDIT_PATH (not processed, no report, not tracked)"
+
+      # Add to first_seen so the normal pipeline picks it up next cycle
+      NOW_AUDIT=$(date +%s)
+      jq ".first_seen.\"${AUDIT_PATH}\" = ${NOW_AUDIT}" "$STATE_FILE" > "${STATE_FILE}.tmp" \
+        && mv "${STATE_FILE}.tmp" "$STATE_FILE"
+    done
+
+    if [ "$MISSED_COUNT" -gt 0 ]; then
+      log "AUDIT: Found $MISSED_COUNT missed session(s) — added to tracking for next cycle"
+      notify "Missed Sessions Detected" "$MISSED_COUNT session(s) from last 24h were not tracked — now queued for processing" 0
+    fi
+  fi
 
   sleep "$POLL_INTERVAL"
 done
