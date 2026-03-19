@@ -193,6 +193,7 @@ SUPPLY FIELDS (circuit 0 — ALWAYS use circuit: 0, NEVER circuit: -1):
 - client_phone: phone number
 - client_email: email address
 - occupier_name: name of occupier if different from client
+- date_of_inspection: date the inspection/testing was carried out. DD/MM/YYYY format (e.g., "18/03/2026"). Listen for "today's date is", "date of inspection", "tested on", "inspection date", "carried out on". If the electrician just says a date without context near the start of a session, it's likely the inspection date.
 - next_inspection_years: integer 1-10
 - premises_description: Residential|Commercial|Industrial|Agricultural|Other
 

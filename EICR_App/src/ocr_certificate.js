@@ -5,13 +5,13 @@
  * certificates (PDF or photo). Returns data in CertMate's standard format.
  */
 
-import fs from "node:fs/promises";
-import path from "node:path";
-import OpenAI from "openai";
-import logger from "./logger.js";
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import OpenAI from 'openai';
+import logger from './logger.js';
 
-const SUPPORTED_IMAGE_EXTS = new Set([".jpg", ".jpeg", ".png"]);
-const SUPPORTED_EXTS = new Set([".jpg", ".jpeg", ".png", ".pdf"]);
+const SUPPORTED_IMAGE_EXTS = new Set(['.jpg', '.jpeg', '.png']);
+const SUPPORTED_EXTS = new Set(['.jpg', '.jpeg', '.png', '.pdf']);
 
 /**
  * Build the system prompt that tells GPT-4o how to read an EICR certificate.
@@ -122,7 +122,7 @@ Return a JSON object with these top-level keys (include all, use empty strings/a
 - nominal_frequency: Usually "50"
 - prospective_fault_current: PFC/Ipf value in kA (just the number, e.g., "2.5")
 - earth_loop_impedance_ze: Ze value in ohms (just the number)
-- spd_rated_current: Main fuse/supply protective device rating in A
+- spd_rated_current: DNO supply cutout fuse rating in A (NOT the main switch — only if a separate supply fuse/cutout is visible)
 
 **Board Info:**
 - name: Board designation (DB-1, Main CU, etc.)
@@ -185,15 +185,15 @@ Extract ALL circuits visible in the schedule. Each row in the test results sched
 function mimeFromExt(filePath) {
   const ext = path.extname(filePath).toLowerCase();
   switch (ext) {
-    case ".jpg":
-    case ".jpeg":
-      return "image/jpeg";
-    case ".png":
-      return "image/png";
-    case ".pdf":
-      return "application/pdf";
+    case '.jpg':
+    case '.jpeg':
+      return 'image/jpeg';
+    case '.png':
+      return 'image/png';
+    case '.pdf':
+      return 'application/pdf';
     default:
-      return "image/jpeg";
+      return 'image/jpeg';
   }
 }
 
@@ -206,7 +206,7 @@ function mimeFromExt(filePath) {
 export async function extractFromCertificate(filePath) {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) {
-    throw new Error("Missing OPENAI_API_KEY - cannot perform OCR extraction");
+    throw new Error('Missing OPENAI_API_KEY - cannot perform OCR extraction');
   }
 
   const ext = path.extname(filePath).toLowerCase();
@@ -215,40 +215,40 @@ export async function extractFromCertificate(filePath) {
   }
 
   const openai = new OpenAI({ apiKey });
-  const model = "gpt-4o";
+  const model = 'gpt-4o';
 
-  logger.info("Starting OCR certificate extraction", { filePath, ext, model });
+  logger.info('Starting OCR certificate extraction', { filePath, ext, model });
 
   // Read file as base64
   const fileBytes = await fs.readFile(filePath);
-  const base64 = Buffer.from(fileBytes).toString("base64");
+  const base64 = Buffer.from(fileBytes).toString('base64');
   const mimeType = mimeFromExt(filePath);
   const dataUrl = `data:${mimeType};base64,${base64}`;
 
   // Build the content array for the vision request
   const content = [
     {
-      type: "text",
-      text: "Extract all data from this EICR/EIC certificate into the JSON format specified in your instructions. Include every circuit, every observation, and all installation details visible.",
+      type: 'text',
+      text: 'Extract all data from this EICR/EIC certificate into the JSON format specified in your instructions. Include every circuit, every observation, and all installation details visible.',
     },
   ];
 
-  if (ext === ".pdf") {
+  if (ext === '.pdf') {
     // For PDFs, send as image_url with PDF data URI
     content.push({
-      type: "image_url",
+      type: 'image_url',
       image_url: {
         url: dataUrl,
-        detail: "high",
+        detail: 'high',
       },
     });
   } else {
     // For images, send as image_url
     content.push({
-      type: "image_url",
+      type: 'image_url',
       image_url: {
         url: dataUrl,
-        detail: "high",
+        detail: 'high',
       },
     });
   }
@@ -258,26 +258,26 @@ export async function extractFromCertificate(filePath) {
       model,
       messages: [
         {
-          role: "system",
+          role: 'system',
           content: OCR_SYSTEM_PROMPT,
         },
         {
-          role: "user",
+          role: 'user',
           content,
         },
       ],
-      response_format: { type: "json_object" },
+      response_format: { type: 'json_object' },
       temperature: 0,
       max_completion_tokens: 16000,
     });
 
     const rawText = response.choices?.[0]?.message?.content?.trim();
     if (!rawText) {
-      throw new Error("Empty response from GPT-4o Vision");
+      throw new Error('Empty response from GPT-4o Vision');
     }
 
     const usage = response.usage || null;
-    logger.info("OCR extraction complete", {
+    logger.info('OCR extraction complete', {
       tokens: usage?.total_tokens || 0,
       model,
     });
@@ -287,85 +287,106 @@ export async function extractFromCertificate(filePath) {
     try {
       extracted = JSON.parse(rawText);
     } catch (parseErr) {
-      logger.error("Failed to parse OCR JSON response", {
+      logger.error('Failed to parse OCR JSON response', {
         error: parseErr.message,
         rawText: rawText.substring(0, 500),
       });
-      throw new Error("Failed to parse extraction result as JSON");
+      throw new Error('Failed to parse extraction result as JSON');
     }
 
     // Ensure all expected top-level keys exist with defaults
     const result = {
       installation_details: extracted.installation_details || {
-        client_name: "",
-        address: "",
-        postcode: "",
-        premises_description: "Residential",
+        client_name: '',
+        address: '',
+        postcode: '',
+        premises_description: 'Residential',
         installation_records_available: false,
         evidence_of_additions_alterations: false,
         next_inspection_years: 5,
-        extent: "",
-        agreed_limitations: "",
-        agreed_with: "",
-        operational_limitations: "",
+        extent: '',
+        agreed_limitations: '',
+        agreed_with: '',
+        operational_limitations: '',
       },
       supply_characteristics: extracted.supply_characteristics || {
-        earthing_arrangement: "",
-        live_conductors: "",
-        number_of_supplies: "",
-        nominal_voltage_u: "",
-        nominal_voltage_uo: "",
-        nominal_frequency: "",
-        prospective_fault_current: "",
-        earth_loop_impedance_ze: "",
+        earthing_arrangement: '',
+        live_conductors: '',
+        number_of_supplies: '',
+        nominal_voltage_u: '',
+        nominal_voltage_uo: '',
+        nominal_frequency: '',
+        prospective_fault_current: '',
+        earth_loop_impedance_ze: '',
         supply_polarity_confirmed: false,
-        spd_bs_en: "",
-        spd_type_supply: "",
-        spd_short_circuit: "",
-        spd_rated_current: "",
+        spd_bs_en: '',
+        spd_type_supply: '',
+        spd_short_circuit: '',
+        spd_rated_current: '',
       },
       board_info: extracted.board_info || {
-        name: "",
-        location: "",
-        manufacturer: "",
-        phases: "",
-        earthing_arrangement: "",
-        ze: "",
-        zs_at_db: "",
-        ipf_at_db: "",
+        name: '',
+        location: '',
+        manufacturer: '',
+        phases: '',
+        earthing_arrangement: '',
+        ze: '',
+        zs_at_db: '',
+        ipf_at_db: '',
       },
       circuits: Array.isArray(extracted.circuits) ? extracted.circuits : [],
       observations: Array.isArray(extracted.observations)
         ? extracted.observations.map((obs) => ({
-            code: obs.code || "C3",
-            item_location: obs.item_location || obs.title || "",
-            observation_text: obs.observation_text || obs.text || "",
-            schedule_item: obs.schedule_item || "",
+            code: obs.code || 'C3',
+            item_location: obs.item_location || obs.title || '',
+            observation_text: obs.observation_text || obs.text || '',
+            schedule_item: obs.schedule_item || '',
           }))
         : [],
     };
 
     // Ensure each circuit has all 29 fields (fill missing with empty string)
     const circuitFields = [
-      "circuit_ref", "circuit_designation", "wiring_type", "ref_method",
-      "number_of_points", "live_csa_mm2", "cpc_csa_mm2", "max_disconnect_time_s",
-      "ocpd_bs_en", "ocpd_type", "ocpd_rating_a", "ocpd_breaking_capacity_ka",
-      "ocpd_max_zs_ohm", "rcd_bs_en", "rcd_type", "rcd_operating_current_ma",
-      "ring_r1_ohm", "ring_rn_ohm", "ring_r2_ohm", "r1_r2_ohm", "r2_ohm",
-      "ir_test_voltage_v", "ir_live_live_mohm", "ir_live_earth_mohm",
-      "polarity_confirmed", "measured_zs_ohm", "rcd_time_ms",
-      "rcd_button_confirmed", "afdd_button_confirmed",
+      'circuit_ref',
+      'circuit_designation',
+      'wiring_type',
+      'ref_method',
+      'number_of_points',
+      'live_csa_mm2',
+      'cpc_csa_mm2',
+      'max_disconnect_time_s',
+      'ocpd_bs_en',
+      'ocpd_type',
+      'ocpd_rating_a',
+      'ocpd_breaking_capacity_ka',
+      'ocpd_max_zs_ohm',
+      'rcd_bs_en',
+      'rcd_type',
+      'rcd_operating_current_ma',
+      'ring_r1_ohm',
+      'ring_rn_ohm',
+      'ring_r2_ohm',
+      'r1_r2_ohm',
+      'r2_ohm',
+      'ir_test_voltage_v',
+      'ir_live_live_mohm',
+      'ir_live_earth_mohm',
+      'polarity_confirmed',
+      'measured_zs_ohm',
+      'rcd_time_ms',
+      'rcd_button_confirmed',
+      'afdd_button_confirmed',
     ];
 
     result.circuits = result.circuits.map((circuit) => {
       const normalized = {};
       for (const field of circuitFields) {
-        normalized[field] = circuit[field] != null ? String(circuit[field]) : "";
+        normalized[field] = circuit[field] != null ? String(circuit[field]) : '';
       }
       return normalized;
     });
 
-    logger.info("OCR extraction validated", {
+    logger.info('OCR extraction validated', {
       circuits: result.circuits.length,
       observations: result.observations.length,
       hasAddress: !!result.installation_details.address,
@@ -378,11 +399,11 @@ export async function extractFromCertificate(filePath) {
     };
   } catch (err) {
     // Rethrow parse/validation errors as-is
-    if (err.message.includes("parse") || err.message.includes("Empty response")) {
+    if (err.message.includes('parse') || err.message.includes('Empty response')) {
       throw err;
     }
 
-    logger.error("OCR extraction API call failed", {
+    logger.error('OCR extraction API call failed', {
       error: err.message,
       status: err.status,
     });

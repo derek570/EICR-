@@ -6,6 +6,8 @@ Shape:
     "client_name": "Client/customer name if mentioned",
     "postcode": "Postcode if mentioned (UK format)",
     "premises_description": "Residential|Commercial|Industrial|Agricultural|Other",
+    "date_of_inspection": "DD/MM/YYYY — date the inspection was carried out (e.g., 18/03/2026)",
+    "date_of_previous_inspection": "DD/MM/YYYY — date of the previous inspection (e.g., 15/06/2021)",
     "installation_records_available": false,
     "evidence_of_additions_alterations": false,
     "next_inspection_years": 5,
@@ -24,10 +26,10 @@ Shape:
     "prospective_fault_current": "PFC in kA (e.g., 2.5)",
     "earth_loop_impedance_ze": "Ze in ohms (e.g., 0.35)",
     "supply_polarity_confirmed": false,
-    "spd_bs_en": "Main fuse standard",
-    "spd_type_supply": "Main fuse type",
-    "spd_short_circuit": "Breaking capacity kA",
-    "spd_rated_current": "Main fuse rating A"
+    "spd_bs_en": "DNO supply cutout fuse standard (e.g. 1361, 88) — NOT the consumer's main switch",
+    "spd_type_supply": "DNO supply cutout fuse type (e.g. gG) — NOT the consumer's main switch",
+    "spd_short_circuit": "Supply cutout breaking capacity kA",
+    "spd_rated_current": "DNO supply cutout fuse rating A — NOT the main switch rating. Only populate if a SEPARATE supply fuse/cutout is identified. Do NOT copy the main switch value here."
   },
   "board": {
     "name": "DB-1",

@@ -186,7 +186,8 @@ SUPPLY FIELDS (circuit 0 — ALWAYS use circuit: 0, NEVER circuit: -1):
 - client_email: email address
 - reason_for_report: reason for inspection
 - occupier_name: name of occupier if different from client
-- date_of_previous_inspection: date string
+- date_of_inspection: date the inspection/testing was carried out. DD/MM/YYYY format (e.g., "18/03/2026"). Listen for "today's date is", "date of inspection", "tested on", "inspection date", "carried out on". If the electrician just says a date without context near the start of a session, it's likely the inspection date.
+- date_of_previous_inspection: date of the previous inspection/test. DD/MM/YYYY format (e.g., "15/06/2021"). Listen for "previous inspection", "last test", "last inspection was", "previous certificate dated".
 - previous_certificate_number: reference number
 - estimated_age_of_installation: years or description
 - general_condition: overall condition assessment

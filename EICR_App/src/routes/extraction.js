@@ -654,6 +654,7 @@ NEVER return "RCD" or "RCBO" as an rcd_type value. Always return one of: AC, A, 
 
 - If an SPD module is visible, set spd_present to true and extract: BS/EN standard, SPD type ("Type 1", "Type 2", "Type 1+2", "Type 3"), rated current in amps, short circuit rating in kA.
 - If NO SPD is visible, set spd_present to false.
+- CRITICAL: SPD fields are for a dedicated surge protection device ONLY. Do NOT copy the main switch rating into spd_rated_current_a. The main switch (e.g. 100A isolator) goes ONLY in main_switch_current/main_switch_rating. These are completely different components.
 
 ### DEVICE TYPE MAPPING
 
@@ -845,6 +846,21 @@ IMPORTANT: If you cannot read the BS/EN number from the device, use your knowled
     }
     if (!analysis.main_switch_voltage) {
       analysis.main_switch_voltage = '230';
+    }
+
+    // Populate Supply Protective Device fields from main switch data as fallback.
+    // In most domestic installations the CU main switch rating is the relevant value
+    // for the "Supply Protective Device" section on the EICR form. These fields use
+    // the supply_characteristics schema keys (spd_rated_current, spd_bs_en, etc.)
+    // which are distinct from the CU surge-protector fields (spd_rated_current_a, etc.).
+    if (!analysis.spd_rated_current && analysis.main_switch_current) {
+      analysis.spd_rated_current = analysis.main_switch_current;
+    }
+    if (!analysis.spd_bs_en && analysis.main_switch_bs_en) {
+      analysis.spd_bs_en = analysis.main_switch_bs_en;
+    }
+    if (!analysis.spd_type_supply && analysis.main_switch_type) {
+      analysis.spd_type_supply = analysis.main_switch_type;
     }
 
     // Sonnet 4.6 pricing: $3/1M input, $15/1M output

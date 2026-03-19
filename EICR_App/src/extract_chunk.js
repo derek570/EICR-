@@ -1,9 +1,9 @@
-import OpenAI from "openai";
-import logger from "./logger.js";
+import OpenAI from 'openai';
+import logger from './logger.js';
 
 function extractFirstJsonObject(text) {
-  const start = text.indexOf("{");
-  const end = text.lastIndexOf("}");
+  const start = text.indexOf('{');
+  const end = text.lastIndexOf('}');
   if (start === -1 || end === -1 || end <= start) return null;
   try {
     return JSON.parse(text.slice(start, end + 1));
@@ -18,7 +18,7 @@ const SYSTEM_PROMPT = `Extract EICR data from transcript. Return STRICT JSON ONL
 circuit_ref must be a number (1,2,3...). Interpret "first/second/third" or "number one/two" as 1/2/3.
 Circuit: circuit_ref, circuit_designation, wiring_type, ref_method, number_of_points, live_csa_mm2, cpc_csa_mm2, max_disconnect_time_s, ocpd_bs_en, ocpd_type, ocpd_rating_a, ocpd_breaking_capacity_ka, ocpd_max_zs_ohm, rcd_bs_en, rcd_type, rcd_operating_current_ma, ring_r1_ohm, ring_rn_ohm, ring_r2_ohm, r1_r2_ohm, r2_ohm, ir_test_voltage_v, ir_live_live_mohm, ir_live_earth_mohm, polarity_confirmed, measured_zs_ohm, rcd_time_ms, rcd_button_confirmed, afdd_button_confirmed
 Board: name, location, manufacturer, phases, earthing_arrangement, ze, zs_at_db, ipf_at_db
-Installation: client_name, address, postcode, premises_description, next_inspection_years, extent, agreed_limitations, agreed_with, operational_limitations
+Installation: client_name, address, postcode, premises_description, date_of_inspection (DD/MM/YYYY), date_of_previous_inspection (DD/MM/YYYY), next_inspection_years, extent, agreed_limitations, agreed_with, operational_limitations
 Supply: earthing_arrangement, live_conductors, nominal_voltage_u, nominal_frequency, prospective_fault_current, earth_loop_impedance_ze, spd_type_supply, spd_rated_current, bonding_conductor_csa, earthing_conductor_csa, main_switch_conductor_csa
 Observations: code(C1/C2/C3/FI), item_location, observation_text, schedule_item, regulation
 Rewrite observation_text in professional BS7671 language. Include the regulation reference breached (e.g. "544.1.1"). Set schedule_item to the inspection schedule section (e.g. "5.4" for bonding, "4.4" for enclosure fire rating).
@@ -66,20 +66,31 @@ function sleep(ms) {
  * Determine if an error is retryable (transient server/network issue).
  */
 function isRetryableError(error) {
-  const msg = String(error?.message || "").toLowerCase();
+  const msg = String(error?.message || '').toLowerCase();
   const status = error?.status || error?.statusCode || error?.response?.status;
 
   // HTTP 429 (rate limit), 500, 502, 503, 504 are retryable
   if ([429, 500, 502, 503, 504].includes(status)) return true;
 
   // Network-level failures
-  if (msg.includes("fetch failed") || msg.includes("econnreset") ||
-      msg.includes("etimedout") || msg.includes("socket hang up") ||
-      msg.includes("network") || msg.includes("timeout")) return true;
+  if (
+    msg.includes('fetch failed') ||
+    msg.includes('econnreset') ||
+    msg.includes('etimedout') ||
+    msg.includes('socket hang up') ||
+    msg.includes('network') ||
+    msg.includes('timeout')
+  )
+    return true;
 
   // OpenAI-specific transient errors
-  if (msg.includes("rate limit") || msg.includes("overloaded") ||
-      msg.includes("server error") || msg.includes("bad gateway")) return true;
+  if (
+    msg.includes('rate limit') ||
+    msg.includes('overloaded') ||
+    msg.includes('server error') ||
+    msg.includes('bad gateway')
+  )
+    return true;
 
   return false;
 }
@@ -94,24 +105,33 @@ function isRetryableError(error) {
  * @param {Object|null} existingFormData - Cumulative formData extracted so far (circuits, board, etc.)
  * @returns {Promise<Object>} Extracted data with circuits, observations, board, installation, supply_characteristics, usage
  */
-export async function extractChunk(transcript, chunkIndex, chunkStartSeconds, context = {}, existingFormData = null) {
+export async function extractChunk(
+  transcript,
+  chunkIndex,
+  chunkStartSeconds,
+  context = {},
+  existingFormData = null
+) {
   if (!transcript || !transcript.trim()) {
     return { ...EMPTY_RESULT };
   }
 
   const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-  const model = (process.env.EXTRACTION_MODEL || "gpt-5.2").trim();
+  const model = (process.env.EXTRACTION_MODEL || 'gpt-5.2').trim();
 
   // Build context-aware user message
-  let userMessage = "";
+  let userMessage = '';
 
   // 1. Include existing formData as context (if available)
-  if (existingFormData && (existingFormData.circuits?.length > 0 ||
+  if (
+    existingFormData &&
+    (existingFormData.circuits?.length > 0 ||
       Object.keys(existingFormData.board_info || {}).length > 0 ||
       Object.keys(existingFormData.installation_details || {}).length > 0 ||
-      Object.keys(existingFormData.supply_characteristics || {}).length > 0)) {
+      Object.keys(existingFormData.supply_characteristics || {}).length > 0)
+  ) {
     userMessage += `=== ALREADY EXTRACTED DATA (do NOT re-extract these values) ===\n`;
-    userMessage += JSON.stringify(existingFormData, null, 0) + "\n\n";
+    userMessage += JSON.stringify(existingFormData, null, 0) + '\n\n';
   }
 
   // 2. The transcript window to extract from
@@ -134,13 +154,13 @@ export async function extractChunk(transcript, chunkIndex, chunkStartSeconds, co
       const resp = await openai.chat.completions.create({
         model,
         messages: [
-          { role: "system", content: SYSTEM_PROMPT },
-          { role: "user", content: userMessage },
+          { role: 'system', content: SYSTEM_PROMPT },
+          { role: 'user', content: userMessage },
         ],
         temperature: 0,
       });
 
-      const raw = resp.choices?.[0]?.message?.content || "";
+      const raw = resp.choices?.[0]?.message?.content || '';
       const parsed = extractFirstJsonObject(raw);
       const usage = resp.usage || { prompt_tokens: 0, completion_tokens: 0 };
       totalUsage = {
@@ -175,12 +195,18 @@ export async function extractChunk(transcript, chunkIndex, chunkStartSeconds, co
       }
 
       // Filter out empty objects ({} or objects with only empty string values)
-      const isEmptyObj = (obj) => !obj || Object.keys(obj).length === 0 ||
-        Object.values(obj).every(v => v === "" || v === null || v === undefined);
+      const isEmptyObj = (obj) =>
+        !obj ||
+        Object.keys(obj).length === 0 ||
+        Object.values(obj).every((v) => v === '' || v === null || v === undefined);
 
       return {
-        circuits: Array.isArray(parsed.circuits) ? parsed.circuits.filter(c => !isEmptyObj(c)) : [],
-        observations: Array.isArray(parsed.observations) ? parsed.observations.filter(o => !isEmptyObj(o)) : [],
+        circuits: Array.isArray(parsed.circuits)
+          ? parsed.circuits.filter((c) => !isEmptyObj(c))
+          : [],
+        observations: Array.isArray(parsed.observations)
+          ? parsed.observations.filter((o) => !isEmptyObj(o))
+          : [],
         board: parsed.board || {},
         installation: parsed.installation || {},
         supply_characteristics: parsed.supply_characteristics || {},
@@ -188,7 +214,12 @@ export async function extractChunk(transcript, chunkIndex, chunkStartSeconds, co
       };
     } catch (error) {
       lastError = error;
-      logger.error('extractChunk attempt failed', { chunkIndex, attempt, maxRetries: MAX_RETRIES, error: error.message });
+      logger.error('extractChunk attempt failed', {
+        chunkIndex,
+        attempt,
+        maxRetries: MAX_RETRIES,
+        error: error.message,
+      });
 
       // Only retry on transient errors
       if (!isRetryableError(error)) {
@@ -205,7 +236,11 @@ export async function extractChunk(transcript, chunkIndex, chunkStartSeconds, co
   }
 
   // All retries exhausted
-  logger.error('All extractChunk attempts failed', { chunkIndex, maxRetries: MAX_RETRIES, error: lastError?.message });
+  logger.error('All extractChunk attempts failed', {
+    chunkIndex,
+    maxRetries: MAX_RETRIES,
+    error: lastError?.message,
+  });
   return {
     ...EMPTY_RESULT,
     usage: totalUsage,

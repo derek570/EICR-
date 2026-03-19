@@ -382,6 +382,18 @@
       "description": "Evidence of additions or alterations not recorded",
       "ai_guidance": "Set to true if inspector mentions seeing work that wasn't in the records, or alterations not certified."
     },
+    "date_of_inspection": {
+      "label": "Date of Inspection",
+      "type": "text",
+      "description": "Date the inspection/testing was carried out",
+      "ai_guidance": "DD/MM/YYYY format (e.g., '18/03/2026'). Listen for 'today's date is', 'date of inspection', 'tested on', 'inspection date', 'carried out on'. If the electrician says a date near the start of a session without context, it's likely the inspection date."
+    },
+    "date_of_previous_inspection": {
+      "label": "Date of Previous Inspection",
+      "type": "text",
+      "description": "Date of the previous inspection/test",
+      "ai_guidance": "DD/MM/YYYY format (e.g., '15/06/2021'). Listen for 'previous inspection', 'last test', 'last inspection was', 'previous certificate dated'."
+    },
     "next_inspection_years": {
       "label": "Recommended Interval (Years)",
       "type": "select",
@@ -490,25 +502,25 @@
       "label": "Supply Protective Device BS/EN",
       "type": "text",
       "description": "Standard number for supply protective device",
-      "ai_guidance": "Standard for the main fuse/breaker. Common: 60898 (MCB), 88-2.2 (BS fuse), 1361 (cartridge fuse)."
+      "ai_guidance": "Standard for DNO supply cutout fuse (NOT the consumer's main switch). Common: 88-2.2 (BS fuse), 1361 (cartridge fuse). Only populate if a separate supply fuse/cutout is identified."
     },
     "spd_type_supply": {
       "label": "Supply Protective Device Type",
       "type": "text",
       "description": "Type of supply protective device",
-      "ai_guidance": "Main fuse/breaker type. 'B' for MCB, 'gG' for fuse, 'BS 88' for cutout fuse."
+      "ai_guidance": "DNO supply cutout fuse type (NOT the consumer's main switch type). 'gG' for fuse, 'BS 88' for cutout. Only populate if a separate supply fuse/cutout is identified."
     },
     "spd_short_circuit": {
       "label": "Supply PD Short Circuit Capacity (kA)",
       "type": "text",
       "description": "Breaking capacity of supply protective device",
-      "ai_guidance": "Breaking capacity of main fuse/breaker. Usually 6kA domestic, higher for commercial."
+      "ai_guidance": "Breaking capacity of DNO supply cutout fuse (NOT the consumer's main switch). Usually 6kA domestic, higher for commercial."
     },
     "spd_rated_current": {
       "label": "Supply PD Rated Current (A)",
       "type": "text",
       "description": "Current rating of supply protective device",
-      "ai_guidance": "Main fuse rating. Common: 60A, 80A, 100A. Listen for 'main fuse', 'cutout'."
+      "ai_guidance": "DNO supply cutout fuse rating. NOT the consumer's main switch rating — do NOT copy the main switch value here. Only populate if a separate supply fuse/cutout is mentioned. Listen for 'cutout', 'supply fuse', 'DNO fuse'. Common: 60A, 80A, 100A."
     },
     "means_earthing_distributor": {
       "label": "Distributor's Facility",

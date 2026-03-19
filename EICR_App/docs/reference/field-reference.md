@@ -42,10 +42,10 @@
 | `prospective_fault_current` | text | - | Listen for "PFC", "prospective fault current". Format: "2.5" |
 | `earth_loop_impedance_ze` | text | - | Listen for "Ze", "external earth". TN-C-S typical <0.35 |
 | `supply_polarity_confirmed` | boolean | - | True if origin polarity confirmed correct |
-| `spd_bs_en` | text | - | Main fuse standard: "60898", "88-2.2" |
-| `spd_type_supply` | text | - | Main fuse type: "B", "gG" |
-| `spd_short_circuit` | text | - | Breaking capacity kA |
-| `spd_rated_current` | text | - | Main fuse rating: "60", "80", "100" |
+| `spd_bs_en` | text | - | DNO supply cutout fuse standard: "88-2.2", "1361" (NOT the main switch) |
+| `spd_type_supply` | text | - | DNO supply cutout fuse type: "gG" (NOT the main switch) |
+| `spd_short_circuit` | text | - | Supply cutout breaking capacity kA |
+| `spd_rated_current` | text | - | DNO supply cutout fuse rating: "60", "80", "100" (NOT the main switch rating) |
 
 ## Board Info Tab (`/job/[id]/board`)
 
