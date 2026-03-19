@@ -14,12 +14,12 @@ export interface User {
 
 // ============= Jobs =============
 
-export type CertificateType = "EICR" | "EIC";
+export type CertificateType = 'EICR' | 'EIC';
 
 export interface Job {
   id: string;
   address: string;
-  status: "pending" | "processing" | "done" | "failed";
+  status: 'pending' | 'processing' | 'done' | 'failed';
   created_at: string;
   updated_at?: string;
   certificate_type?: CertificateType;
@@ -90,7 +90,7 @@ export interface Circuit {
 // ============= Observations =============
 
 export interface Observation {
-  code: "C1" | "C2" | "C3" | "FI" | "NC";
+  code: 'C1' | 'C2' | 'C3' | 'FI' | 'NC';
   item_location: string;
   observation_text: string;
   schedule_item?: string;
@@ -199,7 +199,7 @@ export interface SupplyCharacteristics {
 // ============= Inspection Schedule =============
 
 export interface InspectionItem {
-  outcome: "tick" | "N/A" | "C1" | "C2" | "C3" | "LIM";
+  outcome: 'tick' | 'N/A' | 'C1' | 'C2' | 'C3' | 'LIM';
   observation_text?: string;
 }
 
@@ -225,7 +225,7 @@ export interface InspectorProfile {
 
 export interface ExtentAndType {
   extent: string;
-  installation_type: "new_installation" | "addition" | "alteration";
+  installation_type: 'new_installation' | 'addition' | 'alteration';
   comments?: string;
 }
 
@@ -264,7 +264,7 @@ export interface FieldSchema {
 
 export interface FieldDefinition {
   label: string;
-  type: "text" | "select";
+  type: 'text' | 'select';
   options?: string[];
   default?: string;
   description: string;
@@ -458,7 +458,7 @@ export interface CCUCircuit {
 
 export interface CCUConfidence {
   overall: number;
-  image_quality: "clear" | "partially_readable" | "poor";
+  image_quality: 'clear' | 'partially_readable' | 'poor';
   uncertain_fields: string[];
   message: string;
 }
@@ -467,7 +467,7 @@ export interface CCUAnalysisResult {
   board_manufacturer: string | null;
   board_model: string | null;
   main_switch_rating: string | null;
-  main_switch_position: "left" | "right" | null;
+  main_switch_position: 'left' | 'right' | null;
   main_switch_bs_en: string | null;
   main_switch_type: string | null;
   main_switch_poles: string | null;
@@ -502,7 +502,7 @@ export interface ExtractedReading {
 
 export interface ValidationAlert {
   type: string;
-  severity: "info" | "warning" | "error";
+  severity: 'info' | 'warning' | 'error';
   message: string;
   suggestedAction?: string;
 }
@@ -512,7 +512,13 @@ export interface UserQuestion {
   fieldKey: string;
   circuitRef?: string;
   heardValue?: string;
-  type: "orphaned" | "out_of_range" | "unclear" | "tt_confirmation" | "circuit_disambiguation" | "observation_confirmation";
+  type:
+    | 'orphaned'
+    | 'out_of_range'
+    | 'unclear'
+    | 'tt_confirmation'
+    | 'circuit_disambiguation'
+    | 'observation_confirmation';
 }
 
 export interface ContextUpdate {

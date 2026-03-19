@@ -13,12 +13,12 @@ import type {
   ValidationAlert,
   UserQuestion,
   ContextUpdate,
-} from "./types";
+} from './types';
 
 // ============= Additional Types =============
 
 export interface ReviewFinding {
-  severity: "error" | "warning" | "info" | "success";
+  severity: 'error' | 'warning' | 'info' | 'success';
   message: string;
   circuit?: number;
   field?: string;
@@ -64,10 +64,10 @@ export class ClaudeServiceError extends Error {
   constructor(
     message: string,
     public code?: string,
-    public statusCode?: number,
+    public statusCode?: number
   ) {
     super(message);
-    this.name = "ClaudeServiceError";
+    this.name = 'ClaudeServiceError';
   }
 }
 
@@ -76,9 +76,9 @@ export class ClaudeServiceError extends Error {
 export class ClaudeService {
   // Configuration
   // Route through backend proxy to avoid CORS and protect API key
-  private static readonly ENDPOINT = "/api/proxy/claude";
-  private static readonly MODEL = "claude-sonnet-4-6";
-  private static readonly ANTHROPIC_VERSION = "2023-06-01";
+  private static readonly ENDPOINT = '/api/proxy/claude';
+  private static readonly MODEL = 'claude-sonnet-4-6';
+  private static readonly ANTHROPIC_VERSION = '2023-06-01';
   private static readonly MAX_RETRIES = 3;
 
   // Cost per million tokens (Sonnet 4.5)
@@ -126,25 +126,19 @@ export class ClaudeService {
   }): Promise<RollingExtractionResult> {
     const userContent = this.buildRollingExtractionUserMessage(opts);
 
-    const maxTokens =
-      opts.debugIssues && opts.debugIssues.length > 0 ? 1792 : 1280;
+    const maxTokens = opts.debugIssues && opts.debugIssues.length > 0 ? 1792 : 1280;
     const response = await this.callClaudeAPI(
       ClaudeService.ROLLING_EXTRACTION_SYSTEM_PROMPT,
       userContent,
-      maxTokens,
+      maxTokens
     );
 
-    const textBlock = response.content.find((b) => b.type === "text");
+    const textBlock = response.content.find((b) => b.type === 'text');
     if (!textBlock?.text) {
-      throw new ClaudeServiceError(
-        "No text content in Claude response",
-        "malformed_response",
-      );
+      throw new ClaudeServiceError('No text content in Claude response', 'malformed_response');
     }
 
-    const raw = this.parseJSONFromText<RawRollingExtractionResult>(
-      textBlock.text,
-    );
+    const raw = this.parseJSONFromText<RawRollingExtractionResult>(textBlock.text);
     const result = mapRollingExtractionResult(raw);
 
     const cost = this.calculateCost(response.usage);
@@ -154,26 +148,19 @@ export class ClaudeService {
     return result;
   }
 
-  async fullCertificateReview(
-    certificateData: string,
-  ): Promise<CertificateReviewResult> {
+  async fullCertificateReview(certificateData: string): Promise<CertificateReviewResult> {
     const response = await this.callClaudeAPI(
       ClaudeService.FULL_REVIEW_SYSTEM_PROMPT,
       certificateData,
-      2048,
+      2048
     );
 
-    const textBlock = response.content.find((b) => b.type === "text");
+    const textBlock = response.content.find((b) => b.type === 'text');
     if (!textBlock?.text) {
-      throw new ClaudeServiceError(
-        "No text content in Claude response",
-        "malformed_response",
-      );
+      throw new ClaudeServiceError('No text content in Claude response', 'malformed_response');
     }
 
-    const raw = this.parseJSONFromText<RawCertificateReviewResult>(
-      textBlock.text,
-    );
+    const raw = this.parseJSONFromText<RawCertificateReviewResult>(textBlock.text);
     const result = mapCertificateReviewResult(raw);
 
     const cost = this.calculateCost(response.usage);
@@ -185,27 +172,22 @@ export class ClaudeService {
 
   async fullTranscriptExtraction(
     transcript: string,
-    circuitSchedule: string,
+    circuitSchedule: string
   ): Promise<RollingExtractionResult> {
     const userContent = `Full recording transcript:\n${transcript}\n\nCircuit schedule:\n${circuitSchedule}`;
 
     const response = await this.callClaudeAPI(
       ClaudeService.FULL_TRANSCRIPT_EXTRACTION_SYSTEM_PROMPT,
       userContent,
-      4096,
+      4096
     );
 
-    const textBlock = response.content.find((b) => b.type === "text");
+    const textBlock = response.content.find((b) => b.type === 'text');
     if (!textBlock?.text) {
-      throw new ClaudeServiceError(
-        "No text content in Claude response",
-        "malformed_response",
-      );
+      throw new ClaudeServiceError('No text content in Claude response', 'malformed_response');
     }
 
-    const raw = this.parseJSONFromText<RawRollingExtractionResult>(
-      textBlock.text,
-    );
+    const raw = this.parseJSONFromText<RawRollingExtractionResult>(textBlock.text);
     const result = mapRollingExtractionResult(raw);
 
     const cost = this.calculateCost(response.usage);
@@ -220,31 +202,28 @@ export class ClaudeService {
   private async callClaudeAPI(
     systemPrompt: string,
     userContent: string,
-    maxTokens: number,
+    maxTokens: number
   ): Promise<ClaudeAPIResponse> {
     if (!this.apiKey || this.apiKey.length === 0) {
-      throw new ClaudeServiceError(
-        "Claude API key not configured",
-        "not_configured",
-      );
+      throw new ClaudeServiceError('Claude API key not configured', 'not_configured');
     }
 
     const requestBody: ClaudeAPIRequest = {
       model: ClaudeService.MODEL,
       max_tokens: maxTokens,
       system: systemPrompt,
-      messages: [{ role: "user", content: userContent }],
+      messages: [{ role: 'user', content: userContent }],
     };
 
     let lastError: Error | null = null;
 
     for (let attempt = 0; attempt < ClaudeService.MAX_RETRIES; attempt++) {
       try {
-        const token = typeof window !== "undefined" ? localStorage.getItem("token") : null;
+        const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null;
         const res = await fetch(ClaudeService.ENDPOINT, {
-          method: "POST",
+          method: 'POST',
           headers: {
-            "Content-Type": "application/json",
+            'Content-Type': 'application/json',
             ...(token ? { Authorization: `Bearer ${token}` } : {}),
           },
           body: JSON.stringify(requestBody),
@@ -257,16 +236,12 @@ export class ClaudeService {
 
         // Rate limited -- retry
         if (res.status === 429) {
-          const retryAfterHeader = res.headers.get("retry-after");
+          const retryAfterHeader = res.headers.get('retry-after');
           const delay = retryAfterHeader
             ? parseFloat(retryAfterHeader)
             : this.backoffDelay(attempt);
           await this.sleep(delay * 1000);
-          lastError = new ClaudeServiceError(
-            "Rate limited",
-            "rate_limited",
-            429,
-          );
+          lastError = new ClaudeServiceError('Rate limited', 'rate_limited', 429);
           continue;
         }
 
@@ -277,8 +252,8 @@ export class ClaudeService {
           await this.sleep(delay * 1000);
           lastError = new ClaudeServiceError(
             errorMsg ?? `Server error ${res.status}`,
-            "server_error",
-            res.status,
+            'server_error',
+            res.status
           );
           continue;
         }
@@ -287,16 +262,16 @@ export class ClaudeService {
         const errorMsg = await this.parseErrorMessage(res);
         throw new ClaudeServiceError(
           errorMsg ?? `Client error ${res.status}`,
-          "client_error",
-          res.status,
+          'client_error',
+          res.status
         );
       } catch (error) {
         if (error instanceof ClaudeServiceError) {
           // Re-throw non-retryable errors immediately
           if (
-            error.code === "client_error" ||
-            error.code === "not_configured" ||
-            error.code === "malformed_response"
+            error.code === 'client_error' ||
+            error.code === 'not_configured' ||
+            error.code === 'malformed_response'
           ) {
             throw error;
           }
@@ -305,21 +280,12 @@ export class ClaudeService {
           // Network errors -- retry
           const delay = this.backoffDelay(attempt);
           await this.sleep(delay * 1000);
-          lastError =
-            error instanceof Error
-              ? error
-              : new Error(String(error));
+          lastError = error instanceof Error ? error : new Error(String(error));
         }
       }
     }
 
-    throw (
-      lastError ??
-      new ClaudeServiceError(
-        "Max retries exceeded",
-        "max_retries_exceeded",
-      )
-    );
+    throw lastError ?? new ClaudeServiceError('Max retries exceeded', 'max_retries_exceeded');
   }
 
   // ---- JSON Parsing ----
@@ -333,7 +299,7 @@ export class ClaudeService {
       const preview = cleaned.slice(0, 500);
       throw new ClaudeServiceError(
         `JSON decode failed: ${error instanceof Error ? error.message : String(error)}\nResponse preview: ${preview}`,
-        "decoding_error",
+        'decoding_error'
       );
     }
   }
@@ -343,28 +309,26 @@ export class ClaudeService {
 
     // Try to extract from ```json ... ``` or ``` ... ```
     const fenceStart =
-      trimmed.indexOf("```json") !== -1
-        ? trimmed.indexOf("```json")
-        : trimmed.indexOf("```");
+      trimmed.indexOf('```json') !== -1 ? trimmed.indexOf('```json') : trimmed.indexOf('```');
     if (fenceStart !== -1) {
       const contentStart =
-        trimmed.indexOf("\n", fenceStart) !== -1
-          ? trimmed.indexOf("\n", fenceStart) + 1
-          : fenceStart + (trimmed.startsWith("```json", fenceStart) ? 7 : 3);
-      const fenceEnd = trimmed.indexOf("```", contentStart);
+        trimmed.indexOf('\n', fenceStart) !== -1
+          ? trimmed.indexOf('\n', fenceStart) + 1
+          : fenceStart + (trimmed.startsWith('```json', fenceStart) ? 7 : 3);
+      const fenceEnd = trimmed.indexOf('```', contentStart);
       if (fenceEnd !== -1) {
         return trimmed.slice(contentStart, fenceEnd).trim();
       }
     }
 
     // If the text starts with { or [, assume raw JSON
-    if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+    if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
       return trimmed;
     }
 
     // Last resort: find first { and last }
-    const firstBrace = trimmed.indexOf("{");
-    const lastBrace = trimmed.lastIndexOf("}");
+    const firstBrace = trimmed.indexOf('{');
+    const lastBrace = trimmed.lastIndexOf('}');
     if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
       return trimmed.slice(firstBrace, lastBrace + 1);
     }
@@ -397,7 +361,7 @@ export class ClaudeService {
   }
 
   private calculateCost(
-    usage?: { input_tokens: number; output_tokens: number } | null,
+    usage?: { input_tokens: number; output_tokens: number } | null
   ): ClaudeCostEstimate {
     if (!usage) {
       return {
@@ -408,10 +372,8 @@ export class ClaudeService {
         totalCostUSD: 0,
       };
     }
-    const inputCost =
-      (usage.input_tokens * ClaudeService.INPUT_COST_PER_MILLION) / 1_000_000;
-    const outputCost =
-      (usage.output_tokens * ClaudeService.OUTPUT_COST_PER_MILLION) / 1_000_000;
+    const inputCost = (usage.input_tokens * ClaudeService.INPUT_COST_PER_MILLION) / 1_000_000;
+    const outputCost = (usage.output_tokens * ClaudeService.OUTPUT_COST_PER_MILLION) / 1_000_000;
     return {
       inputTokens: usage.input_tokens,
       outputTokens: usage.output_tokens,
@@ -441,37 +403,35 @@ export class ClaudeService {
 
     if (opts.previousTranscript && opts.previousTranscript.length > 0) {
       parts.push(
-        `Previous transcript (context only, already processed \u2014 do NOT re-extract): ${opts.previousTranscript}`,
+        `Previous transcript (context only, already processed \u2014 do NOT re-extract): ${opts.previousTranscript}`
       );
     }
-    parts.push(
-      `NEW transcript buffer (extract from THIS): ${opts.transcriptBuffer}`,
-    );
+    parts.push(`NEW transcript buffer (extract from THIS): ${opts.transcriptBuffer}`);
     if (opts.currentCircuit) {
       parts.push(`Current circuit: ${opts.currentCircuit}`);
     }
     parts.push(
-      `Circuit schedule (CONFIRMED values \u2014 do NOT question these): ${opts.circuitSchedule}`,
+      `Circuit schedule (CONFIRMED values \u2014 do NOT question these): ${opts.circuitSchedule}`
     );
     parts.push(`Recent readings: ${opts.recentReadings}`);
 
     if (opts.debugIssues && opts.debugIssues.length > 0) {
-      const issueList = opts.debugIssues.map((i) => `- ${i}`).join("\n");
+      const issueList = opts.debugIssues.map((i) => `- ${i}`).join('\n');
       parts.push(
-        `USER REPORTED ISSUES (spoken during recording):\n${issueList}\nLook specifically for these issues. Search the FULL TRANSCRIPT below for any values that match these fields but were not captured. The user likely already spoke the values earlier in the session. Extract them even if they appeared much earlier in the transcript.`,
+        `USER REPORTED ISSUES (spoken during recording):\n${issueList}\nLook specifically for these issues. Search the FULL TRANSCRIPT below for any values that match these fields but were not captured. The user likely already spoke the values earlier in the session. Extract them even if they appeared much earlier in the transcript.`
       );
       if (opts.fullTranscript && opts.fullTranscript.length > 0) {
         parts.push(
-          `Full session transcript (search this for missed values):\n${opts.fullTranscript}`,
+          `Full session transcript (search this for missed values):\n${opts.fullTranscript}`
         );
       }
     }
 
     if (opts.askedQuestions && opts.askedQuestions.length > 0) {
-      parts.push(`Already asked (skip): ${opts.askedQuestions.join("; ")}`);
+      parts.push(`Already asked (skip): ${opts.askedQuestions.join('; ')}`);
     }
 
-    return parts.join("\n");
+    return parts.join('\n');
   }
 
   // ---- System Prompts ----
@@ -642,7 +602,7 @@ interface RawExtractedReading {
 
 interface RawValidationAlert {
   type: string;
-  severity: "info" | "warning" | "error";
+  severity: 'info' | 'warning' | 'error';
   message: string;
   suggested_action?: string | null;
   from_circuit?: number | null;
@@ -655,7 +615,13 @@ interface RawUserQuestion {
   field?: string | null;
   circuit?: number | null;
   heard_value?: string | null;
-  type: "orphaned" | "out_of_range" | "unclear" | "tt_confirmation" | "circuit_disambiguation" | "observation_confirmation";
+  type:
+    | 'orphaned'
+    | 'out_of_range'
+    | 'unclear'
+    | 'tt_confirmation'
+    | 'circuit_disambiguation'
+    | 'observation_confirmation';
 }
 
 interface RawContextUpdate {
@@ -671,7 +637,7 @@ interface RawRollingExtractionResult {
 }
 
 interface RawReviewFinding {
-  severity: "error" | "warning" | "info" | "success";
+  severity: 'error' | 'warning' | 'info' | 'success';
   message: string;
   circuit?: number | null;
   field?: string | null;
@@ -687,18 +653,16 @@ interface RawCertificateReviewResult {
 
 // ============= Mappers (snake_case -> camelCase) =============
 
-function mapRollingExtractionResult(
-  raw: RawRollingExtractionResult,
-): RollingExtractionResult {
+function mapRollingExtractionResult(raw: RawRollingExtractionResult): RollingExtractionResult {
   return {
     extractedReadings: (raw.extracted_readings ?? []).map(
       (r): ExtractedReading => ({
         circuit: r.circuit != null ? String(r.circuit) : undefined,
         field: r.field,
-        value: typeof r.value === "boolean" ? String(r.value) : r.value,
+        value: typeof r.value === 'boolean' ? String(r.value) : r.value,
         unit: r.unit ?? undefined,
         confidence: r.confidence,
-      }),
+      })
     ),
     validationAlerts: (raw.validation_alerts ?? []).map(
       (a): ValidationAlert => ({
@@ -706,16 +670,16 @@ function mapRollingExtractionResult(
         severity: a.severity,
         message: a.message,
         suggestedAction: a.suggested_action ?? undefined,
-      }),
+      })
     ),
     questionsForUser: (raw.questions_for_user ?? []).map(
       (q): UserQuestion => ({
         question: q.question,
-        fieldKey: q.field ?? "",
+        fieldKey: q.field ?? '',
         circuitRef: q.circuit != null ? String(q.circuit) : undefined,
         heardValue: q.heard_value ?? undefined,
         type: q.type,
-      }),
+      })
     ),
     contextUpdate: raw.context_update
       ? {
@@ -723,16 +687,13 @@ function mapRollingExtractionResult(
             raw.context_update.active_circuit != null
               ? String(raw.context_update.active_circuit)
               : undefined,
-          activeTestType:
-            raw.context_update.active_test_type ?? undefined,
+          activeTestType: raw.context_update.active_test_type ?? undefined,
         }
       : undefined,
   };
 }
 
-function mapCertificateReviewResult(
-  raw: RawCertificateReviewResult,
-): CertificateReviewResult {
+function mapCertificateReviewResult(raw: RawCertificateReviewResult): CertificateReviewResult {
   return {
     findings: (raw.findings ?? []).map(
       (f): ReviewFinding => ({
@@ -742,7 +703,7 @@ function mapCertificateReviewResult(
         field: f.field ?? undefined,
         suggestedValue: f.suggested_value ?? undefined,
         suggestedAction: f.suggested_action ?? undefined,
-      }),
+      })
     ),
     completionPercentage: raw.completion_percentage,
     summary: raw.summary,

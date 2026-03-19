@@ -23,7 +23,7 @@ export function createAccumulator() {
  * Merge a field value, preferring non-empty values.
  */
 function mergeField(existing, incoming) {
-  if (!incoming || incoming === "") return existing || "";
+  if (!incoming || incoming === '') return existing || '';
   return incoming;
 }
 
@@ -32,12 +32,12 @@ function mergeField(existing, incoming) {
  * and filling in new ones from incoming data.
  */
 function mergeObject(existing, incoming) {
-  if (!incoming || typeof incoming !== "object") return existing;
+  if (!incoming || typeof incoming !== 'object') return existing;
   const result = { ...existing };
   for (const [key, value] of Object.entries(incoming)) {
-    if (value !== undefined && value !== null && value !== "") {
+    if (value !== undefined && value !== null && value !== '') {
       // Only overwrite if existing is empty
-      if (!result[key] || result[key] === "") {
+      if (!result[key] || result[key] === '') {
         result[key] = value;
       }
     }
@@ -54,15 +54,22 @@ function isObservationDuplicate(existing, incoming) {
     const locMatch = existing.item_location.toLowerCase() === incoming.item_location.toLowerCase();
     if (locMatch) {
       // Check text similarity (simple: same first 50 chars)
-      const existText = (existing.observation_text || existing.text || "").toLowerCase().substring(0, 50);
-      const incomText = (incoming.observation_text || incoming.text || "").toLowerCase().substring(0, 50);
+      const existText = (existing.observation_text || existing.text || '')
+        .toLowerCase()
+        .substring(0, 50);
+      const incomText = (incoming.observation_text || incoming.text || '')
+        .toLowerCase()
+        .substring(0, 50);
       if (existText === incomText) return true;
     }
   }
   // Same schedule item and code
-  if (existing.schedule_item && incoming.schedule_item &&
-      existing.schedule_item === incoming.schedule_item &&
-      existing.code === incoming.code) {
+  if (
+    existing.schedule_item &&
+    incoming.schedule_item &&
+    existing.schedule_item === incoming.schedule_item &&
+    existing.code === incoming.code
+  ) {
     return true;
   }
   return false;
@@ -82,20 +89,23 @@ export function addChunk(accumulator, chunkData) {
   if (chunkData.circuits && chunkData.circuits.length > 0) {
     for (const incoming of chunkData.circuits) {
       const ref = incoming.circuit_ref;
-      const name = (incoming.circuit_designation || "").toLowerCase().trim();
+      const name = (incoming.circuit_designation || '').toLowerCase().trim();
 
       // Find existing circuit by ref OR by name match
       let existingIdx = -1;
       if (ref) {
-        existingIdx = accumulator.circuits.findIndex(c => c.circuit_ref === ref);
+        existingIdx = accumulator.circuits.findIndex((c) => c.circuit_ref === ref);
       }
       if (existingIdx < 0 && name) {
-        existingIdx = accumulator.circuits.findIndex(c => {
-          const existingName = (c.circuit_designation || "").toLowerCase().trim();
+        existingIdx = accumulator.circuits.findIndex((c) => {
+          const existingName = (c.circuit_designation || '').toLowerCase().trim();
           if (!existingName) return false;
           // Match if either name contains the other (handles "cooker Downstairs" vs "downstairs cooker circuit")
-          return existingName.includes(name) || name.includes(existingName) ||
-            existingName.split(/\s+/).sort().join(" ") === name.split(/\s+/).sort().join(" ");
+          return (
+            existingName.includes(name) ||
+            name.includes(existingName) ||
+            existingName.split(/\s+/).sort().join(' ') === name.split(/\s+/).sort().join(' ')
+          );
         });
       }
       // If no ref and no name, merge into the most recent circuit (test values for active circuit)
@@ -107,8 +117,8 @@ export function addChunk(accumulator, chunkData) {
         // Merge: fill in missing values from incoming
         const existing = accumulator.circuits[existingIdx];
         for (const [key, value] of Object.entries(incoming)) {
-          if (value !== undefined && value !== null && value !== "") {
-            if (!existing[key] || existing[key] === "") {
+          if (value !== undefined && value !== null && value !== '') {
+            if (!existing[key] || existing[key] === '') {
               existing[key] = value;
             }
           }
@@ -123,22 +133,25 @@ export function addChunk(accumulator, chunkData) {
   if (chunkData.observations && chunkData.observations.length > 0) {
     for (const incoming of chunkData.observations) {
       // Skip empty observation objects
-      const hasContent = incoming.observation_text || incoming.text || incoming.item_location || incoming.title;
+      const hasContent =
+        incoming.observation_text || incoming.text || incoming.item_location || incoming.title;
       if (!hasContent) continue;
 
       // Normalize field names (AI might return title/text instead of item_location/observation_text)
       const normalized = {
         ...incoming,
-        item_location: incoming.item_location || incoming.title || "",
-        observation_text: incoming.observation_text || incoming.text || "",
-        code: incoming.code || "C3",
-        schedule_item: incoming.schedule_item || "",
-        regulation: incoming.regulation || "",
+        item_location: incoming.item_location || incoming.title || '',
+        observation_text: incoming.observation_text || incoming.text || '',
+        code: incoming.code || 'C3',
+        schedule_item: incoming.schedule_item || '',
+        regulation: incoming.regulation || '',
         bpg4_basis: incoming.bpg4_basis || null,
         suppress_from_report: incoming.suppress_from_report || false,
       };
 
-      const isDuplicate = accumulator.observations.some(obs => isObservationDuplicate(obs, normalized));
+      const isDuplicate = accumulator.observations.some((obs) =>
+        isObservationDuplicate(obs, normalized)
+      );
       if (!isDuplicate) {
         accumulator.observations.push(normalized);
       }
@@ -156,7 +169,10 @@ export function addChunk(accumulator, chunkData) {
   }
 
   // Merge supply characteristics
-  if (chunkData.supply_characteristics && Object.keys(chunkData.supply_characteristics).length > 0) {
+  if (
+    chunkData.supply_characteristics &&
+    Object.keys(chunkData.supply_characteristics).length > 0
+  ) {
     accumulator.supply = mergeObject(accumulator.supply, chunkData.supply_characteristics);
   }
 }
@@ -165,9 +181,9 @@ export function addChunk(accumulator, chunkData) {
  * Field mapping from ring reading slot to accumulator circuit field.
  */
 const RING_FIELD_MAP = {
-  r1: "ring_r1_ohm",
-  rn: "ring_rn_ohm",
-  r2: "ring_r2_ohm",
+  r1: 'ring_r1_ohm',
+  rn: 'ring_rn_ohm',
+  r2: 'ring_r2_ohm',
 };
 
 /**
@@ -178,16 +194,19 @@ export function injectRingReading(accumulator, circuitName, field, value) {
   const accField = RING_FIELD_MAP[field];
   if (!accField) return false;
 
-  const nameLower = (circuitName || "").toLowerCase().trim();
+  const nameLower = (circuitName || '').toLowerCase().trim();
 
   // Find existing circuit by name (same fuzzy logic as addChunk)
   let existingIdx = -1;
   if (nameLower) {
-    existingIdx = accumulator.circuits.findIndex(c => {
-      const existingName = (c.circuit_designation || "").toLowerCase().trim();
+    existingIdx = accumulator.circuits.findIndex((c) => {
+      const existingName = (c.circuit_designation || '').toLowerCase().trim();
       if (!existingName) return false;
-      return existingName.includes(nameLower) || nameLower.includes(existingName) ||
-        existingName.split(/\s+/).sort().join(" ") === nameLower.split(/\s+/).sort().join(" ");
+      return (
+        existingName.includes(nameLower) ||
+        nameLower.includes(existingName) ||
+        existingName.split(/\s+/).sort().join(' ') === nameLower.split(/\s+/).sort().join(' ')
+      );
     });
   }
 
@@ -198,12 +217,15 @@ export function injectRingReading(accumulator, circuitName, field, value) {
 
   if (existingIdx >= 0) {
     // Only set if not already filled (don't overwrite GPT-extracted values)
-    if (!accumulator.circuits[existingIdx][accField] || accumulator.circuits[existingIdx][accField] === "") {
+    if (
+      !accumulator.circuits[existingIdx][accField] ||
+      accumulator.circuits[existingIdx][accField] === ''
+    ) {
       accumulator.circuits[existingIdx][accField] = String(value);
     }
   } else {
     // No circuit exists yet — create one with the circuit name
-    const newCircuit = { circuit_designation: circuitName || "" };
+    const newCircuit = { circuit_designation: circuitName || '' };
     newCircuit[accField] = String(value);
     accumulator.circuits.push(newCircuit);
   }
@@ -225,9 +247,9 @@ export function injectRingReading(accumulator, circuitName, field, value) {
 export function injectReading(accumulator, reading) {
   const { target, field, value, circuitName } = reading;
 
-  if (target === "supply") {
+  if (target === 'supply') {
     // Supply-level field: set on accumulator.supply if empty
-    if (!accumulator.supply[field] || accumulator.supply[field] === "") {
+    if (!accumulator.supply[field] || accumulator.supply[field] === '') {
       accumulator.supply[field] = String(value);
       return true;
     }
@@ -235,15 +257,18 @@ export function injectReading(accumulator, reading) {
   }
 
   // Circuit-level field: find by name (fuzzy match) or most recent circuit
-  const nameLower = (circuitName || "").toLowerCase().trim();
+  const nameLower = (circuitName || '').toLowerCase().trim();
 
   let existingIdx = -1;
   if (nameLower) {
-    existingIdx = accumulator.circuits.findIndex(c => {
-      const existingName = (c.circuit_designation || "").toLowerCase().trim();
+    existingIdx = accumulator.circuits.findIndex((c) => {
+      const existingName = (c.circuit_designation || '').toLowerCase().trim();
       if (!existingName) return false;
-      return existingName.includes(nameLower) || nameLower.includes(existingName) ||
-        existingName.split(/\s+/).sort().join(" ") === nameLower.split(/\s+/).sort().join(" ");
+      return (
+        existingName.includes(nameLower) ||
+        nameLower.includes(existingName) ||
+        existingName.split(/\s+/).sort().join(' ') === nameLower.split(/\s+/).sort().join(' ')
+      );
     });
   }
 
@@ -254,7 +279,10 @@ export function injectReading(accumulator, reading) {
 
   if (existingIdx >= 0) {
     // Only fill empty fields — never overwrite
-    if (!accumulator.circuits[existingIdx][field] || accumulator.circuits[existingIdx][field] === "") {
+    if (
+      !accumulator.circuits[existingIdx][field] ||
+      accumulator.circuits[existingIdx][field] === ''
+    ) {
       accumulator.circuits[existingIdx][field] = String(value);
       return true;
     }
@@ -262,7 +290,7 @@ export function injectReading(accumulator, reading) {
   }
 
   // No circuit exists yet — create one with the circuit name and value
-  const newCircuit = { circuit_designation: circuitName || "" };
+  const newCircuit = { circuit_designation: circuitName || '' };
   newCircuit[field] = String(value);
   accumulator.circuits.push(newCircuit);
   return true;
@@ -313,8 +341,8 @@ export function addPhoto(accumulator, filename, audioSeconds) {
 export function getFormData(accumulator) {
   // Build linked photos array
   const linked_photos = accumulator.photos
-    .filter(p => p.linkedToObservation !== null)
-    .map(p => ({
+    .filter((p) => p.linkedToObservation !== null)
+    .map((p) => ({
       filename: p.filename,
       observationIndex: p.linkedToObservation,
       audioSeconds: p.audioSeconds,
@@ -364,9 +392,9 @@ export function finalize(accumulator) {
 
   // Ensure all observations have required fields
   for (const obs of accumulator.observations) {
-    obs.code = obs.code || "C3";
-    obs.item_location = obs.item_location || obs.title || "";
-    obs.observation_text = obs.observation_text || obs.text || "";
+    obs.code = obs.code || 'C3';
+    obs.item_location = obs.item_location || obs.title || '';
+    obs.observation_text = obs.observation_text || obs.text || '';
     obs.photos = obs.photos || [];
   }
 
