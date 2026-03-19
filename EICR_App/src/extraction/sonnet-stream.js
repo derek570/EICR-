@@ -6,9 +6,7 @@
 // receives extraction results + cost updates + gated questions in real time.
 //
 // Key evolution:
-// - (029b91f) Added 120s client-side rate limit on session_compact handler to match
-//   the server-side compact() guards in eicr-extraction-session.js. Before this,
-//   iOS could request compaction every few seconds, each costing ~$0.02-0.05.
+// - Compaction removed — sliding window keeps context bounded, making compaction dead code.
 // - Session reconnection: 5-minute timeout (300s) preserves conversation history
 //   across Deepgram sleep/wake cycles. iOS disconnects the WebSocket during auto-sleep
 //   (no audio for 60s) and reconnects when speech resumes.
@@ -388,43 +386,16 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
             }
             break;
 
-          // HISTORY (029b91f, 2026-02-23): Client-side 120s rate limit on compaction requests.
-          // This mirrors the server-side Guard 5 in eicr-extraction-session.js compact().
-          // Before this guard, the iOS app could trigger compaction every few seconds
-          // (e.g. during rapid speech), each call costing API credits even if the
-          // server-side guards would skip it — because the WebSocket message still
-          // had to be parsed, the session looked up, and the guards evaluated.
+          // Compaction removed — sliding window keeps context at ~14K tokens, well under
+          // the old 60K threshold. Respond with ack so iOS clients don't hang.
           case 'session_compact':
-            if (currentSessionId && activeSessions.has(currentSessionId)) {
-              const entry = activeSessions.get(currentSessionId);
-              const now = Date.now();
-              if (now - entry.lastClientCompactTime < 120_000) {
-                logger.info('Client compact rate-limited', {
-                  sessionId: currentSessionId,
-                  secondsSinceLast: Math.round((now - entry.lastClientCompactTime) / 1000),
-                });
-                ws.send(
-                  JSON.stringify({
-                    type: 'session_ack',
-                    status: 'compact_skipped',
-                    reason: 'rate_limited',
-                  })
-                );
-                break;
-              }
-              entry.lastClientCompactTime = now;
-              try {
-                await entry.session.compact();
-                ws.send(JSON.stringify({ type: 'session_ack', status: 'compacted' }));
-                logger.info('Session compacted on request', { sessionId: currentSessionId });
-              } catch (error) {
-                logger.error('Compact failed', {
-                  sessionId: currentSessionId,
-                  error: error.message,
-                });
-                ws.send(JSON.stringify({ type: 'session_ack', status: 'compact_failed' }));
-              }
-            }
+            ws.send(
+              JSON.stringify({
+                type: 'session_ack',
+                status: 'compact_skipped',
+                reason: 'deprecated',
+              })
+            );
             break;
 
           case 'session_stop':
@@ -555,7 +526,6 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
       lastRegexResults: [],
       isExtracting: false,
       pendingTranscripts: [],
-      lastClientCompactTime: 0,
     });
 
     ws.send(JSON.stringify({ type: 'session_ack', status: 'started' }));
@@ -629,8 +599,8 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         entry.questionGate.resolveByFields(resolvedFields);
       }
 
-      // Periodic orphaned value review — every 5 extraction turns
-      if (entry.session.turnCount > 0 && entry.session.turnCount % 5 === 0) {
+      // Periodic orphaned value review — every 10 extraction turns
+      if (entry.session.turnCount > 0 && entry.session.turnCount % 10 === 0) {
         try {
           const reviewResult = await entry.session.reviewForOrphanedValues();
           if (reviewResult?.questions_for_user?.length > 0) {
