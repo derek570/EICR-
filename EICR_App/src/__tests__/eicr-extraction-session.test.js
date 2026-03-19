@@ -14,7 +14,8 @@ jest.unstable_mockModule('@anthropic-ai/sdk', () => ({
   })),
 }));
 
-const { EICRExtractionSession, EICR_SYSTEM_PROMPT, containsExtractableData } = await import('../extraction/eicr-extraction-session.js');
+const { EICRExtractionSession, EICR_SYSTEM_PROMPT } =
+  await import('../extraction/eicr-extraction-session.js');
 
 describe('EICRExtractionSession', () => {
   let session;
@@ -61,7 +62,10 @@ describe('EICRExtractionSession', () => {
     });
 
     test('should join content block array', () => {
-      const blocks = [{ type: 'text', text: 'hello ' }, { type: 'text', text: 'world' }];
+      const blocks = [
+        { type: 'text', text: 'hello ' },
+        { type: 'text', text: 'world' },
+      ];
       expect(EICRExtractionSession.messageText(blocks)).toBe('hello world');
     });
 
@@ -76,19 +80,6 @@ describe('EICRExtractionSession', () => {
     });
   });
 
-  describe('conversationTokenEstimate', () => {
-    test('should estimate 0 for empty conversation', () => {
-      expect(session.conversationTokenEstimate).toBe(0);
-    });
-
-    test('should estimate roughly 4 chars per token', () => {
-      session.conversationHistory = [
-        { role: 'user', content: 'a'.repeat(400) }, // ~100 tokens
-      ];
-      expect(session.conversationTokenEstimate).toBe(100);
-    });
-  });
-
   describe('start', () => {
     test('should set isActive and start cost tracker', () => {
       session.start(null);
@@ -97,9 +88,7 @@ describe('EICRExtractionSession', () => {
 
     test('should build circuit schedule from job state', () => {
       session.start({
-        circuits: [
-          { ref: '1', designation: 'Kitchen Sockets', ocpd_type: 'B', ocpd_rating: 32 }
-        ]
+        circuits: [{ ref: '1', designation: 'Kitchen Sockets', ocpd_type: 'B', ocpd_rating: 32 }],
       });
 
       expect(session.circuitSchedule).toContain('Circuit 1');
@@ -171,16 +160,18 @@ describe('EICRExtractionSession', () => {
 
     test('should format circuit with all fields', () => {
       const schedule = session.buildCircuitSchedule({
-        circuits: [{
-          ref: '1',
-          designation: 'Ring Final',
-          ocpd_type: 'B',
-          ocpd_rating: 32,
-          cable_size: '2.5',
-          cable_size_earth: '1.5',
-          zs: '0.35',
-          r1_plus_r2: '0.47',
-        }]
+        circuits: [
+          {
+            ref: '1',
+            designation: 'Ring Final',
+            ocpd_type: 'B',
+            ocpd_rating: 32,
+            cable_size: '2.5',
+            cable_size_earth: '1.5',
+            zs: '0.35',
+            r1_plus_r2: '0.47',
+          },
+        ],
       });
 
       expect(schedule).toContain('Circuit 1: Ring Final');
@@ -195,7 +186,7 @@ describe('EICRExtractionSession', () => {
         circuits: [
           { ref: '1', designation: 'Kitchen Sockets' },
           { ref: '2', designation: 'Upstairs Lighting' },
-        ]
+        ],
       });
 
       expect(schedule).toContain('Ring');
@@ -209,7 +200,7 @@ describe('EICRExtractionSession', () => {
           earthingArrangement: 'TN-C-S',
           pfc: '1.2',
           ze: '0.35',
-        }
+        },
       });
 
       expect(schedule).toContain('Supply:');
@@ -248,44 +239,38 @@ describe('EICRExtractionSession', () => {
     test('should buffer utterances and return empty result until batch is full', async () => {
       session.start(null);
 
-      // First call: buffers, returns empty (text has data signals to pass pre-filter)
+      // First call: buffers, returns empty
       const r1 = await session.extractFromUtterance('Zs is 0.35');
       expect(r1.extracted_readings).toEqual([]);
       expect(session.utteranceBuffer).toHaveLength(1);
       expect(mockCreate).not.toHaveBeenCalled();
 
-      // Second call: still buffers
-      const r2 = await session.extractFromUtterance('R2 is 0.12');
-      expect(r2.extracted_readings).toEqual([]);
-      expect(session.utteranceBuffer).toHaveLength(2);
-      expect(mockCreate).not.toHaveBeenCalled();
     });
 
-    test('should process batch when buffer reaches BATCH_SIZE (3)', async () => {
+    test('should process batch when buffer reaches BATCH_SIZE (2)', async () => {
       const mockResponse = {
-        content: [{
-          type: 'text',
-          text: JSON.stringify({
-            extracted_readings: [
-              { circuit: 1, field: 'zs', value: 0.35 }
-            ],
-            field_clears: [],
-            circuit_updates: [],
-            observations: [],
-            validation_alerts: [],
-            questions_for_user: [],
-            confirmations: []
-          })
-        }],
-        usage: { input_tokens: 200, output_tokens: 80 }
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({
+              extracted_readings: [{ circuit: 1, field: 'zs', value: 0.35 }],
+              field_clears: [],
+              circuit_updates: [],
+              observations: [],
+              validation_alerts: [],
+              questions_for_user: [],
+              confirmations: [],
+            }),
+          },
+        ],
+        usage: { input_tokens: 200, output_tokens: 80 },
       };
       mockCreate.mockResolvedValue(mockResponse);
 
       session.start(null);
       await session.extractFromUtterance('Zs is 0.35');
-      await session.extractFromUtterance('on circuit 1');
-      // Third call triggers the batch
-      const result = await session.extractFromUtterance('R2 is 0.12');
+      // Second call triggers the batch
+      const result = await session.extractFromUtterance('on circuit 1');
 
       expect(mockCreate).toHaveBeenCalledTimes(1);
       expect(result.extracted_readings).toHaveLength(1);
@@ -295,31 +280,29 @@ describe('EICRExtractionSession', () => {
     test('should combine transcript texts with separator', async () => {
       mockCreate.mockResolvedValue({
         content: [{ type: 'text', text: '{"extracted_readings":[]}' }],
-        usage: { input_tokens: 10, output_tokens: 5 }
+        usage: { input_tokens: 10, output_tokens: 5 },
       });
 
       session.start(null);
       await session.extractFromUtterance('Zs is 0.35');
       await session.extractFromUtterance('on circuit 1');
-      await session.extractFromUtterance('r1 plus r2 is 0.47');
 
       // Check that the combined text was sent
       const callArgs = mockCreate.mock.calls[0][0];
       const lastUserMsg = callArgs.messages[callArgs.messages.length - 1];
       const msgText = lastUserMsg.content[0].text;
-      expect(msgText).toContain('Zs is 0.35 ... on circuit 1 ... r1 plus r2 is 0.47');
+      expect(msgText).toContain('Zs is 0.35 ... on circuit 1');
     });
 
     test('should merge regex results from all buffered utterances', async () => {
       mockCreate.mockResolvedValue({
         content: [{ type: 'text', text: '{"extracted_readings":[]}' }],
-        usage: { input_tokens: 10, output_tokens: 5 }
+        usage: { input_tokens: 10, output_tokens: 5 },
       });
 
       session.start(null);
       await session.extractFromUtterance('Zs 0.35', [{ field: 'zs', value: '0.35' }]);
       await session.extractFromUtterance('R2 0.12', [{ field: 'r2', value: '0.12' }]);
-      await session.extractFromUtterance('continuity on circuit 3');
 
       const callArgs = mockCreate.mock.calls[0][0];
       const lastUserMsg = callArgs.messages[callArgs.messages.length - 1];
@@ -330,11 +313,15 @@ describe('EICRExtractionSession', () => {
 
     test('flushUtteranceBuffer should process partial batch', async () => {
       mockCreate.mockResolvedValue({
-        content: [{
-          type: 'text',
-          text: JSON.stringify({ extracted_readings: [{ circuit: 2, field: 'r2', value: 0.12 }] })
-        }],
-        usage: { input_tokens: 10, output_tokens: 5 }
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({
+              extracted_readings: [{ circuit: 2, field: 'r2', value: 0.12 }],
+            }),
+          },
+        ],
+        usage: { input_tokens: 10, output_tokens: 5 },
       });
 
       session.start(null);
@@ -365,210 +352,30 @@ describe('EICRExtractionSession', () => {
     });
   });
 
-  describe('containsExtractableData (pre-filter)', () => {
-    test('should detect decimal numbers (test readings)', () => {
-      expect(containsExtractableData('Zs is 0.35')).toBe(true);
-      expect(containsExtractableData('insulation resistance 200.5')).toBe(true);
-    });
-
-    test('should detect multi-digit integers', () => {
-      expect(containsExtractableData('rated at 32 amps')).toBe(true);
-      expect(containsExtractableData('trip time 18')).toBe(true);
-    });
-
-    test('should detect test field names', () => {
-      expect(containsExtractableData('the Zs reading')).toBe(true);
-      expect(containsExtractableData('R1 plus R2')).toBe(true);
-      expect(containsExtractableData('check the RCD')).toBe(true);
-      expect(containsExtractableData('Ze at the board')).toBe(true);
-    });
-
-    test('should detect circuit references', () => {
-      expect(containsExtractableData('circuit three')).toBe(true);
-      expect(containsExtractableData('the ring final')).toBe(true);
-      expect(containsExtractableData('radial to cooker')).toBe(true);
-      expect(containsExtractableData('upstairs lighting')).toBe(true);
-      expect(containsExtractableData('kitchen socket')).toBe(true);
-    });
-
-    test('should detect measurement units', () => {
-      expect(containsExtractableData('reading in ohms')).toBe(true);
-      expect(containsExtractableData('measured in megohms')).toBe(true);
-      expect(containsExtractableData('thirty mA')).toBe(true);
-      expect(containsExtractableData('two hundred volts')).toBe(true);
-    });
-
-    test('should detect EICR-specific terms', () => {
-      expect(containsExtractableData('insulation test')).toBe(true);
-      expect(containsExtractableData('continuity reading')).toBe(true);
-      expect(containsExtractableData('earth bonding')).toBe(true);
-      expect(containsExtractableData('polarity confirmed')).toBe(true);
-    });
-
-    test('should detect observation codes', () => {
-      expect(containsExtractableData('this is a C2')).toBe(true);
-      expect(containsExtractableData('mark it as C1')).toBe(true);
-      expect(containsExtractableData('FI further investigation')).toBe(true);
-    });
-
-    test('should detect pass/fail keywords', () => {
-      expect(containsExtractableData('that one passed')).toBe(true);
-      expect(containsExtractableData('unsatisfactory result')).toBe(true);
-    });
-
-    test('should detect correction signals', () => {
-      expect(containsExtractableData('actually that was wrong')).toBe(true);
-      expect(containsExtractableData('sorry I meant the other one')).toBe(true);
-    });
-
-    test('should detect UK postcodes', () => {
-      expect(containsExtractableData('postcode is SW1A 1AA')).toBe(true);
-      expect(containsExtractableData('B15 2TT')).toBe(true);
-    });
-
-    test('should detect supply/installation terms', () => {
-      expect(containsExtractableData('TN-C-S earthing')).toBe(true);
-      expect(containsExtractableData('single phase supply')).toBe(true);
-    });
-
-    test('should reject pure greetings', () => {
-      expect(containsExtractableData('hello')).toBe(false);
-      expect(containsExtractableData('good morning')).toBe(false);
-      expect(containsExtractableData('hi there how are you')).toBe(false);
-    });
-
-    test('should reject filler speech and pauses', () => {
-      expect(containsExtractableData('um')).toBe(false);
-      expect(containsExtractableData('uh yeah')).toBe(false);
-      expect(containsExtractableData('right okay')).toBe(false);
-      expect(containsExtractableData('you know what I mean')).toBe(false);
-    });
-
-    test('should reject simple acknowledgements', () => {
-      expect(containsExtractableData('okay')).toBe(false);
-      expect(containsExtractableData('yes')).toBe(false);
-      expect(containsExtractableData('no')).toBe(false);
-      expect(containsExtractableData('alright')).toBe(false);
-      expect(containsExtractableData('sure')).toBe(false);
-    });
-
-    test('should reject inaudible/pause markers', () => {
-      expect(containsExtractableData('[inaudible]')).toBe(false);
-      expect(containsExtractableData('[pause]')).toBe(false);
-      expect(containsExtractableData('...')).toBe(false);
-    });
-
-    test('should return false for empty/null input', () => {
-      expect(containsExtractableData('')).toBe(false);
-      expect(containsExtractableData(null)).toBe(false);
-      expect(containsExtractableData(undefined)).toBe(false);
-      expect(containsExtractableData(42)).toBe(false);
-    });
-
-    test('should detect consumer unit and board references', () => {
-      expect(containsExtractableData('at the consumer unit')).toBe(true);
-      expect(containsExtractableData('the distribution board')).toBe(true);
-    });
-
-    test('should detect address/client info', () => {
-      expect(containsExtractableData('the client name is Smith')).toBe(true);
-      expect(containsExtractableData('the address is')).toBe(true);
-    });
-  });
-
-  describe('pre-filter integration with extractFromUtterance', () => {
-    test('should skip utterances with no data signals', async () => {
-      session.start(null);
-
-      const result = await session.extractFromUtterance('hello good morning');
-      expect(result.extracted_readings).toEqual([]);
-      expect(session.utteranceBuffer).toHaveLength(0);
-      expect(session.skippedUtteranceCount).toBe(1);
-      expect(mockCreate).not.toHaveBeenCalled();
-    });
-
-    test('should not skip utterances with data signals', async () => {
-      session.start(null);
-
-      await session.extractFromUtterance('Zs is 0.35 on circuit 1');
-      expect(session.utteranceBuffer).toHaveLength(1);
-      expect(session.skippedUtteranceCount).toBe(0);
-    });
-
-    test('should not skip utterances with regex results even if text has no signals', async () => {
-      session.start(null);
-
-      await session.extractFromUtterance('okay yes', [{ field: 'zs', value: '0.35' }]);
-      expect(session.utteranceBuffer).toHaveLength(1);
-      expect(session.skippedUtteranceCount).toBe(0);
-    });
-
-    test('should count multiple skipped utterances', async () => {
-      session.start(null);
-
-      await session.extractFromUtterance('hello');
-      await session.extractFromUtterance('yeah okay');
-      await session.extractFromUtterance('um right');
-
-      expect(session.skippedUtteranceCount).toBe(3);
-      expect(session.utteranceBuffer).toHaveLength(0);
-      expect(mockCreate).not.toHaveBeenCalled();
-    });
-
-    test('should include skipped count in session summary', () => {
-      session.start(null);
-      session.skippedUtteranceCount = 5;
-      const summary = session.stop();
-      expect(summary.extraction.utterancesSkippedByPreFilter).toBe(5);
-    });
-
-    test('should allow data utterances through while skipping filler', async () => {
-      mockCreate.mockResolvedValue({
-        content: [{ type: 'text', text: '{"extracted_readings":[]}' }],
-        usage: { input_tokens: 10, output_tokens: 5 }
-      });
-
-      session.start(null);
-
-      // These should be skipped (no data)
-      await session.extractFromUtterance('hello');
-      await session.extractFromUtterance('um okay');
-
-      // These should be buffered (have data signals)
-      await session.extractFromUtterance('Zs is 0.35');
-      await session.extractFromUtterance('on circuit 1');
-      await session.extractFromUtterance('R2 is 0.12');
-
-      // 2 skipped, 3 buffered (triggers batch at BATCH_SIZE=3)
-      expect(session.skippedUtteranceCount).toBe(2);
-      expect(mockCreate).toHaveBeenCalledTimes(1);
-    });
-  });
-
   describe('extractFromUtterance (via flush)', () => {
     // These tests use flushUtteranceBuffer to trigger the API call after buffering
     test('should parse valid extraction response', async () => {
       const mockResponse = {
-        content: [{
-          type: 'text',
-          text: JSON.stringify({
-            extracted_readings: [
-              { circuit: 1, field: 'zs', value: 0.35, confidence: 0.9 }
-            ],
-            field_clears: [],
-            circuit_updates: [],
-            observations: [],
-            validation_alerts: [],
-            questions_for_user: [],
-            confirmations: []
-          })
-        }],
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({
+              extracted_readings: [{ circuit: 1, field: 'zs', value: 0.35, confidence: 0.9 }],
+              field_clears: [],
+              circuit_updates: [],
+              observations: [],
+              validation_alerts: [],
+              questions_for_user: [],
+              confirmations: [],
+            }),
+          },
+        ],
         usage: {
           cache_read_input_tokens: 100,
           cache_creation_input_tokens: 50,
           input_tokens: 200,
-          output_tokens: 80
-        }
+          output_tokens: 80,
+        },
       };
       mockCreate.mockResolvedValue(mockResponse);
 
@@ -586,7 +393,7 @@ describe('EICRExtractionSession', () => {
     test('should handle empty/null response text gracefully', async () => {
       mockCreate.mockResolvedValue({
         content: [{ type: 'text', text: '{}' }],
-        usage: { input_tokens: 10, output_tokens: 5 }
+        usage: { input_tokens: 10, output_tokens: 5 },
       });
 
       session.start(null);
@@ -600,7 +407,7 @@ describe('EICRExtractionSession', () => {
     test('should handle malformed JSON response', async () => {
       mockCreate.mockResolvedValue({
         content: [{ type: 'text', text: 'not valid json at all' }],
-        usage: { input_tokens: 10, output_tokens: 5 }
+        usage: { input_tokens: 10, output_tokens: 5 },
       });
 
       session.start(null);
@@ -615,7 +422,7 @@ describe('EICRExtractionSession', () => {
     test('should throw if no text block in response', async () => {
       mockCreate.mockResolvedValue({
         content: [{ type: 'image' }],
-        usage: { input_tokens: 10, output_tokens: 5 }
+        usage: { input_tokens: 10, output_tokens: 5 },
       });
 
       session.start(null);
@@ -625,16 +432,16 @@ describe('EICRExtractionSession', () => {
 
     test('should track questions asked', async () => {
       mockCreate.mockResolvedValue({
-        content: [{
-          type: 'text',
-          text: JSON.stringify({
-            extracted_readings: [],
-            questions_for_user: [
-              { field: 'zs', circuit: -1, question: 'Which circuit?' }
-            ]
-          })
-        }],
-        usage: { input_tokens: 10, output_tokens: 5 }
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({
+              extracted_readings: [],
+              questions_for_user: [{ field: 'zs', circuit: -1, question: 'Which circuit?' }],
+            }),
+          },
+        ],
+        usage: { input_tokens: 10, output_tokens: 5 },
       });
 
       session.start(null);
@@ -649,17 +456,19 @@ describe('EICRExtractionSession', () => {
       session.askedQuestions = Array.from({ length: 29 }, (_, i) => `field${i}:${i}`);
 
       mockCreate.mockResolvedValue({
-        content: [{
-          type: 'text',
-          text: JSON.stringify({
-            extracted_readings: [],
-            questions_for_user: [
-              { field: 'a', circuit: 1 },
-              { field: 'b', circuit: 2 }
-            ]
-          })
-        }],
-        usage: { input_tokens: 10, output_tokens: 5 }
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({
+              extracted_readings: [],
+              questions_for_user: [
+                { field: 'a', circuit: 1 },
+                { field: 'b', circuit: 2 },
+              ],
+            }),
+          },
+        ],
+        usage: { input_tokens: 10, output_tokens: 5 },
       });
 
       session.start(null);
@@ -673,17 +482,19 @@ describe('EICRExtractionSession', () => {
       session.extractedObservationTexts = ['missing earth bond at consumer unit'];
 
       mockCreate.mockResolvedValue({
-        content: [{
-          type: 'text',
-          text: JSON.stringify({
-            extracted_readings: [],
-            observations: [
-              { code: 'C2', observation_text: 'Missing earth bond at consumer unit' }, // dupe
-              { code: 'C3', observation_text: 'Labelling not present on distribution board' } // new
-            ]
-          })
-        }],
-        usage: { input_tokens: 10, output_tokens: 5 }
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({
+              extracted_readings: [],
+              observations: [
+                { code: 'C2', observation_text: 'Missing earth bond at consumer unit' }, // dupe
+                { code: 'C3', observation_text: 'Labelling not present on distribution board' }, // new
+              ],
+            }),
+          },
+        ],
+        usage: { input_tokens: 10, output_tokens: 5 },
       });
 
       session.start(null);
@@ -696,14 +507,16 @@ describe('EICRExtractionSession', () => {
 
     test('should include confirmations when enabled', async () => {
       mockCreate.mockResolvedValue({
-        content: [{
-          type: 'text',
-          text: JSON.stringify({
-            extracted_readings: [{ circuit: 1, field: 'zs', value: 0.35 }],
-            confirmations: [{ text: 'Circuit 1, 0.35', field: 'zs', circuit: 1 }]
-          })
-        }],
-        usage: { input_tokens: 10, output_tokens: 5 }
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({
+              extracted_readings: [{ circuit: 1, field: 'zs', value: 0.35 }],
+              confirmations: [{ text: 'Circuit 1, 0.35', field: 'zs', circuit: 1 }],
+            }),
+          },
+        ],
+        usage: { input_tokens: 10, output_tokens: 5 },
       });
 
       session.start(null);
@@ -721,14 +534,14 @@ describe('EICRExtractionSession', () => {
     test('should not add breakpoints for short conversations', () => {
       const messages = Array.from({ length: 10 }, (_, i) => ({
         role: i % 2 === 0 ? 'user' : 'assistant',
-        content: [{ type: 'text', text: 'msg' }]
+        content: [{ type: 'text', text: 'msg' }],
       }));
 
       session.addMidConversationBreakpoints(messages);
 
       // No cache_control should be added
-      const withCache = messages.filter(m =>
-        Array.isArray(m.content) && m.content.some(b => b.cache_control)
+      const withCache = messages.filter(
+        (m) => Array.isArray(m.content) && m.content.some((b) => b.cache_control)
       );
       expect(withCache).toHaveLength(0);
     });
@@ -736,14 +549,14 @@ describe('EICRExtractionSession', () => {
     test('should add breakpoints for long conversations', () => {
       const messages = Array.from({ length: 40 }, (_, i) => ({
         role: i % 2 === 0 ? 'user' : 'assistant',
-        content: [{ type: 'text', text: `message ${i}` }]
+        content: [{ type: 'text', text: `message ${i}` }],
       }));
 
       session.addMidConversationBreakpoints(messages);
 
       // Should have max 2 mid-conversation breakpoints
-      const withCache = messages.filter(m =>
-        Array.isArray(m.content) && m.content.some(b => b.cache_control)
+      const withCache = messages.filter(
+        (m) => Array.isArray(m.content) && m.content.some((b) => b.cache_control)
       );
       expect(withCache.length).toBeLessThanOrEqual(2);
       expect(withCache.length).toBeGreaterThanOrEqual(1);
@@ -754,7 +567,7 @@ describe('EICRExtractionSession', () => {
     test('should rebuild circuit schedule and reset flag', () => {
       session.circuitScheduleIncluded = true;
       session.updateJobState({
-        circuits: [{ ref: '5', designation: 'New Circuit' }]
+        circuits: [{ ref: '5', designation: 'New Circuit' }],
       });
 
       expect(session.circuitSchedule).toContain('Circuit 5');
@@ -792,7 +605,9 @@ describe('EICRExtractionSession', () => {
 
       mockCreate.mockRejectedValue(error400);
 
-      await expect(session.callWithRetry([{ role: 'user', content: 'test' }])).rejects.toThrow('bad request');
+      await expect(session.callWithRetry([{ role: 'user', content: 'test' }])).rejects.toThrow(
+        'bad request'
+      );
       expect(mockCreate).toHaveBeenCalledTimes(1);
     });
 
@@ -802,72 +617,11 @@ describe('EICRExtractionSession', () => {
 
       mockCreate.mockRejectedValue(error500);
 
-      await expect(session.callWithRetry([{ role: 'user', content: 'test' }], 2)).rejects.toThrow('server error');
+      await expect(session.callWithRetry([{ role: 'user', content: 'test' }], 2)).rejects.toThrow(
+        'server error'
+      );
       expect(mockCreate).toHaveBeenCalledTimes(2);
     }, 10000);
-  });
-
-  describe('compact', () => {
-    test('should replace conversation history with summary', async () => {
-      // Set up conversation history large enough to pass compaction guards (>2 messages, >1500 token estimate)
-      const padding = 'x'.repeat(3000); // Ensure token estimate exceeds 1500 threshold
-      session.conversationHistory = [
-        { role: 'user', content: [{ type: 'text', text: 'utterance 1 ' + padding }] },
-        { role: 'assistant', content: [{ type: 'text', text: '{"extracted_readings":[{"circuit":1,"field":"zs","value":0.35}]}' }] },
-        { role: 'user', content: [{ type: 'text', text: 'utterance 2 ' + padding }] },
-        { role: 'assistant', content: [{ type: 'text', text: '{"extracted_readings":[{"circuit":2,"field":"r1_plus_r2","value":0.47}]}' }] },
-      ];
-      session.turnCount = 2;
-      session.extractedReadingsCount = 2;
-
-      mockCreate.mockResolvedValue({
-        content: [{
-          type: 'text',
-          text: JSON.stringify({
-            confirmed_readings: [
-              { circuit: 1, field: 'zs', value: 0.35 },
-              { circuit: 2, field: 'r1_plus_r2', value: 0.47 }
-            ],
-            pending_readings: [],
-            observations_created: [],
-            active_circuit: null,
-            session_context: 'Testing circuits',
-            questions_asked: [],
-            unresolved_values: []
-          })
-        }],
-        usage: { input_tokens: 500, output_tokens: 200 }
-      });
-
-      await session.compact();
-
-      // Conversation should be replaced with 2 messages (summary + ack)
-      expect(session.conversationHistory).toHaveLength(2);
-      expect(session.conversationHistory[0].content[0].text).toContain('SESSION SUMMARY');
-      expect(session.circuitScheduleIncluded).toBe(false);
-      expect(session.askedQuestions).toEqual([]);
-    });
-
-    test('should continue without compaction on failure', async () => {
-      const padding = 'x'.repeat(3000); // Ensure token estimate exceeds 1500 threshold
-      session.conversationHistory = [
-        { role: 'user', content: 'test ' + padding },
-        { role: 'assistant', content: 'response' },
-        { role: 'user', content: 'test 2 ' + padding },
-        { role: 'assistant', content: 'response 2' },
-      ];
-      session.turnCount = 2;
-
-      mockCreate.mockRejectedValue(new Error('API failure'));
-
-      // Should not throw
-      await session.compact();
-
-      // Conversation should remain unchanged (compaction failed)
-      expect(session.conversationHistory).toHaveLength(4);
-      // Should track the failure
-      expect(session.compactionFailures).toBe(1);
-    });
   });
 
   describe('pause and resume', () => {

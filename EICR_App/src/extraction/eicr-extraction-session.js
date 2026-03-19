@@ -1,16 +1,6 @@
 // eicr-extraction-session.js
 // Core multi-turn Sonnet conversation manager for EICR extraction.
-// Maintains conversation history with prompt caching and custom compaction.
-//
-// HISTORY (029b91f, 2026-02-23): Compaction was causing a cost blowout in production.
-// The compact() method was being called too aggressively — even on small conversations,
-// after failures, and in rapid succession. This wasted Anthropic API credits on
-// summaries that often failed or produced truncated JSON. Five guards were added to
-// compact() to prevent this: minimum message count, minimum token estimate, no-new-turns
-// check, exponential failure backoff, and a 120-second rate limit. The max_tokens for
-// compaction was also increased from 2048 to 4096 to prevent JSON truncation on long
-// sessions. A client-side 120s rate limit was added to the session_compact WebSocket
-// handler in sonnet-stream.js to match.
+// Maintains conversation history with prompt caching and sliding window.
 
 import fssync from 'node:fs';
 import path from 'node:path';
@@ -23,60 +13,21 @@ import logger from '../logger.js';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Compaction threshold -- compact when conversation exceeds this many estimated tokens.
-// HISTORY (2026-02-28): Raised from 6000 to 60000 to effectively disable compaction for
-// normal sessions. With Anthropic prompt caching (1h TTL, cache reads at 10% of input rate),
-// full conversation history is cheap (~$0.25-0.35 per 30-turn session). The old 6000 threshold
-// caused compaction to fire after ~15-20 utterances, replacing rich conversational context with
-// a dry field:value summary. This destroyed Sonnet's ability to infer circuit assignment from
-// recent conversational flow (e.g. "Circuit 3" said 2 utterances ago). The 60000 threshold
-// keeps compaction as a safety valve for extraordinarily long sessions (~150+ turns) while
-// preserving full context for all normal inspections.
-const COMPACTION_THRESHOLD = 60000;
-
 // Number of user+assistant exchange pairs to include in the API sliding window.
 // Full conversation history is always stored internally; only the last N exchanges
 // are sent to the API, preceded by a state snapshot of all extracted values.
 const SLIDING_WINDOW_SIZE = 6;
 
 // Utterance batching — buffer consecutive transcript chunks before making a Sonnet
-// API call. A 72-turn session with BATCH_SIZE=3 becomes ~24 API calls, cutting
-// Sonnet cost by ~60%. With BATCH_SIZE=2, it's ~36 calls (~50% reduction).
+// API call. A 72-turn session with BATCH_SIZE=2 becomes ~36 API calls, cutting
+// Sonnet cost by ~50% while keeping latency under 4s for isolated readings.
 // The timeout ensures buffered utterances are processed even if the speaker pauses.
-const BATCH_SIZE = 3;
-const BATCH_TIMEOUT_MS = 3500; // ms to wait for more utterances before flushing
+const BATCH_SIZE = 2;
+const BATCH_TIMEOUT_MS = 2000; // ms to wait for more utterances before flushing
 
-// Pre-filter: detect if a transcript chunk likely contains extractable EICR data.
-// Chunks with only greetings, filler speech, pauses, or acknowledgements are skipped
-// before they reach the batching buffer, eliminating ~10-20% of unnecessary API calls.
-const DATA_SIGNAL_PATTERNS = [
-  /\d+\.\d+/,                                                  // Decimal numbers (0.35, 1.2, 200.5)
-  /\b\d{2,}\b/,                                                // Multi-digit integers (32, 100, 16)
-  /\b(?:zs|ze|r1|r2|r1\s*\+\s*r2|r1r2|rcd|ir|ipf|pfc)\b/i,   // Test field names
-  /\b(?:pass(?:ed)?|fail(?:ed|ure)?|satisfactory|unsatisfactory|compliant|non-compliant)\b/i, // Test result keywords
-  /\b(?:circuit|ring|radial|lighting|socket|spur|mcb|rcbo|breaker|afdd)\b/i, // Circuit references
-  /\b(?:ohms?|megohms?|milliohms?|m[aA]|volts?|amps?)\b/i,    // Measurement units
-  /\b(?:insulation|resistance|continuity|polarity|earth|bonding|conductor|cable)\b/i, // EICR terms
-  /\b(?:board|consumer\s*unit|distribution|cu|db)\b/i,         // Board/CU references
-  /\b(?:c1|c2|c3|fi)\b/i,                                     // Observation codes
-  /\b(?:tn-?[cs]|tt|supply|phase|voltage|current|rating)\b/i,  // Supply/installation terms
-  /\b(?:address|postcode|client|occupier|contractor|inspector)\b/i, // Property/client info
-  /\b(?:correction|actually|sorry|change|update|wrong|meant)\b/i,  // Correction signals
-  /\b[A-Z]{1,2}\d{1,2}\s*\d[A-Z]{2}\b/i,                     // UK postcode pattern
-];
-
-/**
- * Check if transcript text contains signals of extractable EICR data.
- * Returns true if the text likely contains test readings, circuit references,
- * measurement values, or other data worth sending to Sonnet.
- * Returns false for pure greetings, filler speech, pauses, and acknowledgements.
- */
-export function containsExtractableData(text) {
-  if (!text || typeof text !== 'string') return false;
-  const trimmed = text.trim();
-  if (trimmed.length === 0) return false;
-  return DATA_SIGNAL_PATTERNS.some((pattern) => pattern.test(trimmed));
-}
+// Cache keepalive — send a minimal API call after 4 minutes of silence to refresh
+// the 5-minute prompt cache before it expires. Costs ~$0.003 per keepalive (cache reads only).
+const CACHE_KEEPALIVE_MS = 4 * 60 * 1000; // 4 minutes
 
 // Load externalized system prompts at module init
 // Must be >=1024 tokens for Sonnet 4.5 prompt caching
@@ -90,38 +41,6 @@ export const EIC_SYSTEM_PROMPT = fssync.readFileSync(
   'utf8'
 );
 
-const COMPACTION_PROMPT = `You are summarizing an EICR electrical inspection recording session for continued extraction.
-
-CRITICAL: You must preserve ALL confirmed readings exactly as extracted. This summary replaces the conversation history.
-
-Output format -- return ONLY this JSON:
-{
-  "confirmed_readings": [
-    { "circuit": <int>, "field": "<str>", "value": <number|string>, "unit": "<str|null>" }
-  ],
-  "pending_readings": [
-    { "circuit": -1, "field": "<str>", "value": <number|string>, "unit": "<str|null>" }
-  ],
-  "observations_created": [
-    { "code": "<C1|C2|C3|FI>", "observation_text": "<str>", "schedule_item": "<str|null>" }
-  ],
-  "active_circuit": <int|null>,
-  "session_context": "<1-2 sentences about what the electrician is currently doing>",
-  "questions_asked": ["<field:circuit pairs already asked about>"],
-  "unresolved_values": [
-    { "circuit": <int|null>, "field": "<str|null>", "heard_value": "<str>", "issue": "<str>" }
-  ]
-}
-
-Rules:
-- Every reading from extracted_readings across ALL turns MUST appear in confirmed_readings
-- Readings with circuit: -1 (unassigned) go in pending_readings
-- Every observation from observations arrays across ALL turns MUST appear in observations_created -- do NOT re-extract these
-- active_circuit should be null (no active circuit tracking between utterances)
-- session_context should capture what part of the inspection they are on
-- questions_asked prevents re-asking the same questions
-- unresolved_values captures anything flagged but not yet confirmed`;
-
 export class EICRExtractionSession {
   constructor(apiKey, sessionId, certType = 'eicr') {
     this.client = new Anthropic({ apiKey });
@@ -134,20 +53,17 @@ export class EICRExtractionSession {
     this.askedQuestions = [];
     this.extractedObservationTexts = []; // Track observations already sent to iOS for dedup
     this.turnCount = 0;
-    this.lastCompactedAtTurn = -1;
-    this.compactionFailures = 0;
-    this.lastCompactTime = 0;
     this.circuitSchedule = '';
     this.circuitScheduleIncluded = false;
     this.isActive = false;
-
-    // Pre-filter stats
-    this.skippedUtteranceCount = 0;
 
     // Utterance batching state
     this.utteranceBuffer = []; // Buffered { transcriptText, regexResults, options }
     this.batchTimeoutHandle = null;
     this.onBatchResult = null; // Callback for async batch flush results: (result) => void
+
+    // Cache keepalive — refreshes 5-min prompt cache during silence
+    this.cacheKeepaliveHandle = null;
 
     // Rolling state snapshot: accumulates all extracted values across the session.
     // Used to provide context in the sliding window without sending full history.
@@ -166,29 +82,25 @@ export class EICRExtractionSession {
     return '';
   }
 
-  // Rough token estimate (4 chars per token)
-  get conversationTokenEstimate() {
-    return this.conversationHistory.reduce((sum, msg) => {
-      return sum + Math.ceil(EICRExtractionSession.messageText(msg.content).length / 4);
-    }, 0);
-  }
-
   start(jobState) {
     this.isActive = true;
     this.costTracker.startRecording();
     if (jobState) {
       this.circuitSchedule = this.buildCircuitSchedule(jobState);
     }
+    this._resetCacheKeepalive();
     logger.info(`Session ${this.sessionId} Started`);
   }
 
   pause() {
+    this._clearCacheKeepalive();
     this.costTracker.pauseRecording();
     logger.info(`Session ${this.sessionId} Paused`);
   }
 
   resume() {
     this.costTracker.resumeRecording();
+    this._resetCacheKeepalive();
     logger.info(`Session ${this.sessionId} Resumed`);
   }
 
@@ -199,16 +111,61 @@ export class EICRExtractionSession {
       clearTimeout(this.batchTimeoutHandle);
       this.batchTimeoutHandle = null;
     }
+    this._clearCacheKeepalive();
     this.isActive = false;
     this.costTracker.stopRecording();
     const summary = this.costTracker.toSessionSummary();
     summary.extraction.readingsExtracted = this.extractedReadingsCount;
     summary.extraction.questionsAsked = this.askedQuestions.length;
-    summary.extraction.utterancesSkippedByPreFilter = this.skippedUtteranceCount;
     logger.info(
-      `Session ${this.sessionId} Stopped. Cost: $${summary.totalJobCost.toFixed(4)}, pre-filter skipped: ${this.skippedUtteranceCount}`
+      `Session ${this.sessionId} Stopped. Cost: $${summary.totalJobCost.toFixed(4)}`
     );
     return summary;
+  }
+
+  /**
+   * Send a minimal API call to keep the prompt cache warm during silence.
+   * Only sends the system prompt + a tiny keepalive message — no conversation
+   * history, no state snapshot. Costs ~$0.003 (cache reads only).
+   */
+  async _sendCacheKeepalive() {
+    if (!this.isActive) return;
+    try {
+      const response = await this.client.messages.create({
+        model: 'claude-sonnet-4-6',
+        max_tokens: 1,
+        system: [
+          {
+            type: 'text',
+            text: this.systemPrompt,
+            cache_control: { type: 'ephemeral', ttl: '5m' },
+          },
+        ],
+        messages: [
+          { role: 'user', content: [{ type: 'text', text: '[keepalive]' }] },
+        ],
+      });
+      this.costTracker.addSonnetUsage(response.usage);
+      logger.info(`Session ${this.sessionId} Cache keepalive sent`);
+    } catch (error) {
+      logger.warn(`Session ${this.sessionId} Cache keepalive failed: ${error.message}`);
+    }
+    // Schedule next keepalive
+    this._resetCacheKeepalive();
+  }
+
+  _resetCacheKeepalive() {
+    this._clearCacheKeepalive();
+    if (this.isActive) {
+      this.cacheKeepaliveHandle = setTimeout(() => this._sendCacheKeepalive(), CACHE_KEEPALIVE_MS);
+    }
+  }
+
+  _clearCacheKeepalive() {
+    if (this.cacheKeepaliveHandle) {
+      clearTimeout(this.cacheKeepaliveHandle);
+      this.cacheKeepaliveHandle = null;
+    }
   }
 
   updateJobState(jobState) {
@@ -223,26 +180,6 @@ export class EICRExtractionSession {
    * batch fires (buffer full) or when flushed via timeout/stop.
    */
   async extractFromUtterance(transcriptText, regexResults = [], options = {}) {
-    // Pre-filter: skip utterances with no extractable data signals.
-    // If regex already found matches, always keep the utterance (regex = confirmed data).
-    // Otherwise check transcript text for keywords/patterns indicating EICR data.
-    const hasRegexData = regexResults && regexResults.length > 0;
-    if (!hasRegexData && !containsExtractableData(transcriptText)) {
-      this.skippedUtteranceCount = (this.skippedUtteranceCount || 0) + 1;
-      logger.info(
-        `Session ${this.sessionId} Pre-filter skipped utterance (no data signals): "${(transcriptText || '').substring(0, 80)}"`
-      );
-      return {
-        extracted_readings: [],
-        field_clears: [],
-        circuit_updates: [],
-        observations: [],
-        validation_alerts: [],
-        questions_for_user: [],
-        confirmations: [],
-      };
-    }
-
     // Add to buffer
     this.utteranceBuffer.push({ transcriptText, regexResults, options });
 
@@ -334,11 +271,6 @@ export class EICRExtractionSession {
   }
 
   async _extractSingle(transcriptText, regexResults = [], options = {}) {
-    // Check if compaction needed
-    if (this.conversationTokenEstimate > COMPACTION_THRESHOLD) {
-      await this.compact();
-    }
-
     // Check if regex results contain a postcode — if so, look it up via postcodes.io
     let postcodeLookupResult = null;
     if (regexResults && regexResults.length > 0) {
@@ -388,7 +320,7 @@ export class EICRExtractionSession {
           {
             type: 'text',
             text: userMessage,
-            cache_control: { type: 'ephemeral', ttl: '1h' },
+            cache_control: { type: 'ephemeral', ttl: '5m' },
           },
         ],
       },
@@ -398,6 +330,9 @@ export class EICRExtractionSession {
     this.addMidConversationBreakpoints(messages);
 
     const response = await this.callWithRetry(messages);
+
+    // Reset cache keepalive timer — real API call just refreshed the cache
+    this._resetCacheKeepalive();
 
     // Extract text response
     const textBlock = response.content.find((b) => b.type === 'text');
@@ -497,151 +432,6 @@ export class EICRExtractionSession {
     return result;
   }
 
-  // HISTORY (029b91f, 2026-02-23): compact() was the source of a production cost blowout.
-  // Before these 5 guards were added, compact() would fire on almost every utterance once the
-  // conversation exceeded the token threshold. Each compaction call costs ~$0.02-0.05 in API
-  // credits, and failed compactions (JSON truncation at 2048 max_tokens) would just retry on
-  // the next utterance — burning money with no benefit. The 5 guards below (message count,
-  // token estimate, no-new-turns, failure backoff, rate limit) together reduced compaction
-  // costs by ~90%. The max_tokens was also raised from 2048→4096 to prevent JSON truncation
-  // which was the primary cause of compaction failures.
-  async compact() {
-    // Guard 1: Nothing to compact
-    if (this.conversationHistory.length <= 2) {
-      logger.info(
-        `Session ${this.sessionId} Compact skipped: only ${this.conversationHistory.length} messages`
-      );
-      return;
-    }
-
-    // Guard 2: Too small to justify cost
-    if (this.conversationTokenEstimate < 1500) {
-      logger.info(
-        `Session ${this.sessionId} Compact skipped: only ~${this.conversationTokenEstimate} tokens`
-      );
-      return;
-    }
-
-    // Guard 3: No new data since last compaction
-    if (this.turnCount === this.lastCompactedAtTurn) {
-      logger.info(`Session ${this.sessionId} Compact skipped: no new turns since last compaction`);
-      return;
-    }
-
-    // Guard 4: Failure backoff — require min(10, 2^failures) new turns after a failure.
-    // This is exponential backoff: after 1 failure wait 2 turns, after 2 failures wait 4
-    // turns, etc., capping at 10. This prevents hammering the API when compaction keeps
-    // failing (e.g. conversation structure that Sonnet can't summarise cleanly).
-    if (this.compactionFailures > 0) {
-      const requiredTurns = Math.min(10, Math.pow(2, this.compactionFailures));
-      const turnsSinceLastCompact = this.turnCount - this.lastCompactedAtTurn;
-      if (turnsSinceLastCompact < requiredTurns) {
-        logger.info(
-          `Session ${this.sessionId} Compact skipped: backoff (${turnsSinceLastCompact}/${requiredTurns} turns, ${this.compactionFailures} failures)`
-        );
-        return;
-      }
-    }
-
-    // Guard 5: Rate limit — 120s minimum between compaction attempts.
-    // Matches the client-side rate limit in sonnet-stream.js session_compact handler.
-    const now = Date.now();
-    if (now - this.lastCompactTime < 120_000) {
-      logger.info(
-        `Session ${this.sessionId} Compact skipped: rate limited (${Math.round((now - this.lastCompactTime) / 1000)}s since last)`
-      );
-      return;
-    }
-
-    this.lastCompactTime = now;
-
-    try {
-      logger.info(
-        `Session ${this.sessionId} Compacting: ${this.turnCount} turns, ~${this.conversationTokenEstimate} tokens`
-      );
-
-      const compactionInput = this.conversationHistory
-        .map((msg, i) => {
-          const text = EICRExtractionSession.messageText(msg.content);
-          return `[Turn ${Math.floor(i / 2) + 1} ${msg.role}]: ${text}`;
-        })
-        .join('\n\n');
-
-      const compactionMessages = [
-        {
-          role: 'user',
-          content: [
-            {
-              type: 'text',
-              text: `Summarize this EICR extraction conversation:\n\n${compactionInput}`,
-            },
-          ],
-        },
-      ];
-
-      // max_tokens raised from 2048→4096 (029b91f) to prevent JSON truncation on long sessions.
-      // At 2048 tokens, compaction output for sessions with >15 turns would get cut off mid-JSON,
-      // causing parse failures that triggered the failure backoff path above.
-      const response = await this.callWithRetry(compactionMessages, 3, COMPACTION_PROMPT, 4096);
-
-      const summaryText = response.content[0].text;
-      const summary = JSON.parse(this.extractJSON(summaryText));
-
-      // Validate
-      const readingCount = (summary.confirmed_readings || []).length;
-      if (readingCount < this.extractedReadingsCount * 0.8) {
-        logger.warn(
-          `Session ${this.sessionId} Compaction may have lost data: expected ~${this.extractedReadingsCount}, got ${readingCount}`
-        );
-      }
-
-      // Track compaction cost
-      this.costTracker.addCompactionUsage(response.usage);
-
-      // Replace conversation with compact summary
-      const ackResponse = JSON.stringify({
-        extracted_readings: [],
-        validation_alerts: [],
-        questions_for_user: [],
-      });
-
-      // Clear askedQuestions on compaction (summary already includes questions_asked)
-      this.askedQuestions = [];
-
-      this.conversationHistory = [
-        {
-          role: 'user',
-          content: [
-            {
-              type: 'text',
-              text: `SESSION SUMMARY (compacted from ${this.turnCount} previous turns):\n${JSON.stringify(summary, null, 2)}\n\nContinue extracting from new transcript buffers. All readings in confirmed_readings are already saved -- do not re-extract them. All observations in observations_created are already saved -- do not re-extract them. REMINDER: There is NO active circuit. Each utterance stands alone -- if it does not contain a circuit reference, set circuit to -1.`,
-            },
-          ],
-        },
-        {
-          role: 'assistant',
-          content: [{ type: 'text', text: ackResponse }],
-        },
-      ];
-
-      // Reset the circuit schedule flag so it gets re-sent after compaction
-      this.circuitScheduleIncluded = false;
-
-      logger.info(
-        `Session ${this.sessionId} Compacted to ~${this.conversationTokenEstimate} tokens`
-      );
-      this.lastCompactedAtTurn = this.turnCount;
-      this.compactionFailures = 0;
-    } catch (error) {
-      this.compactionFailures++;
-      this.lastCompactedAtTurn = this.turnCount;
-      const nextRetryTurns = Math.min(10, Math.pow(2, this.compactionFailures));
-      logger.error(
-        `Session ${this.sessionId} Compaction failed (attempt #${this.compactionFailures}, next retry after ${nextRetryTurns} turns): ${error.message}`
-      );
-    }
-  }
-
   async callWithRetry(messages, maxRetries = 3, systemPrompt = null, maxTokens = 1280) {
     const system = systemPrompt
       ? systemPrompt
@@ -649,7 +439,7 @@ export class EICRExtractionSession {
           {
             type: 'text',
             text: this.systemPrompt,
-            cache_control: { type: 'ephemeral', ttl: '1h' },
+            cache_control: { type: 'ephemeral', ttl: '5m' },
           },
         ];
 
@@ -1035,7 +825,7 @@ export class EICRExtractionSession {
           {
             type: 'text',
             text: reviewMessage,
-            cache_control: { type: 'ephemeral', ttl: '1h' },
+            cache_control: { type: 'ephemeral', ttl: '5m' },
           },
         ],
       },
@@ -1057,7 +847,7 @@ export class EICRExtractionSession {
     }
 
     // Do NOT push review exchange to conversationHistory — it's a meta-instruction,
-    // not part of the extraction dialogue. Including it would pollute compaction input.
+    // not part of the extraction dialogue.
     // Do NOT increment turnCount — this is not an extraction turn.
     this.costTracker.addSonnetUsage(response.usage);
 
