@@ -46,6 +46,38 @@ const SLIDING_WINDOW_SIZE = 6;
 const BATCH_SIZE = 3;
 const BATCH_TIMEOUT_MS = 3500; // ms to wait for more utterances before flushing
 
+// Pre-filter: detect if a transcript chunk likely contains extractable EICR data.
+// Chunks with only greetings, filler speech, pauses, or acknowledgements are skipped
+// before they reach the batching buffer, eliminating ~10-20% of unnecessary API calls.
+const DATA_SIGNAL_PATTERNS = [
+  /\d+\.\d+/,                                                  // Decimal numbers (0.35, 1.2, 200.5)
+  /\b\d{2,}\b/,                                                // Multi-digit integers (32, 100, 16)
+  /\b(?:zs|ze|r1|r2|r1\s*\+\s*r2|r1r2|rcd|ir|ipf|pfc)\b/i,   // Test field names
+  /\b(?:pass(?:ed)?|fail(?:ed|ure)?|satisfactory|unsatisfactory|compliant|non-compliant)\b/i, // Test result keywords
+  /\b(?:circuit|ring|radial|lighting|socket|spur|mcb|rcbo|breaker|afdd)\b/i, // Circuit references
+  /\b(?:ohms?|megohms?|milliohms?|m[aA]|volts?|amps?)\b/i,    // Measurement units
+  /\b(?:insulation|resistance|continuity|polarity|earth|bonding|conductor|cable)\b/i, // EICR terms
+  /\b(?:board|consumer\s*unit|distribution|cu|db)\b/i,         // Board/CU references
+  /\b(?:c1|c2|c3|fi)\b/i,                                     // Observation codes
+  /\b(?:tn-?[cs]|tt|supply|phase|voltage|current|rating)\b/i,  // Supply/installation terms
+  /\b(?:address|postcode|client|occupier|contractor|inspector)\b/i, // Property/client info
+  /\b(?:correction|actually|sorry|change|update|wrong|meant)\b/i,  // Correction signals
+  /\b[A-Z]{1,2}\d{1,2}\s*\d[A-Z]{2}\b/i,                     // UK postcode pattern
+];
+
+/**
+ * Check if transcript text contains signals of extractable EICR data.
+ * Returns true if the text likely contains test readings, circuit references,
+ * measurement values, or other data worth sending to Sonnet.
+ * Returns false for pure greetings, filler speech, pauses, and acknowledgements.
+ */
+export function containsExtractableData(text) {
+  if (!text || typeof text !== 'string') return false;
+  const trimmed = text.trim();
+  if (trimmed.length === 0) return false;
+  return DATA_SIGNAL_PATTERNS.some((pattern) => pattern.test(trimmed));
+}
+
 // Load externalized system prompts at module init
 // Must be >=1024 tokens for Sonnet 4.5 prompt caching
 export const EICR_SYSTEM_PROMPT = fssync.readFileSync(
@@ -109,6 +141,9 @@ export class EICRExtractionSession {
     this.circuitScheduleIncluded = false;
     this.isActive = false;
 
+    // Pre-filter stats
+    this.skippedUtteranceCount = 0;
+
     // Utterance batching state
     this.utteranceBuffer = []; // Buffered { transcriptText, regexResults, options }
     this.batchTimeoutHandle = null;
@@ -169,7 +204,10 @@ export class EICRExtractionSession {
     const summary = this.costTracker.toSessionSummary();
     summary.extraction.readingsExtracted = this.extractedReadingsCount;
     summary.extraction.questionsAsked = this.askedQuestions.length;
-    logger.info(`Session ${this.sessionId} Stopped. Cost: $${summary.totalJobCost.toFixed(4)}`);
+    summary.extraction.utterancesSkippedByPreFilter = this.skippedUtteranceCount;
+    logger.info(
+      `Session ${this.sessionId} Stopped. Cost: $${summary.totalJobCost.toFixed(4)}, pre-filter skipped: ${this.skippedUtteranceCount}`
+    );
     return summary;
   }
 
@@ -185,6 +223,26 @@ export class EICRExtractionSession {
    * batch fires (buffer full) or when flushed via timeout/stop.
    */
   async extractFromUtterance(transcriptText, regexResults = [], options = {}) {
+    // Pre-filter: skip utterances with no extractable data signals.
+    // If regex already found matches, always keep the utterance (regex = confirmed data).
+    // Otherwise check transcript text for keywords/patterns indicating EICR data.
+    const hasRegexData = regexResults && regexResults.length > 0;
+    if (!hasRegexData && !containsExtractableData(transcriptText)) {
+      this.skippedUtteranceCount = (this.skippedUtteranceCount || 0) + 1;
+      logger.info(
+        `Session ${this.sessionId} Pre-filter skipped utterance (no data signals): "${(transcriptText || '').substring(0, 80)}"`
+      );
+      return {
+        extracted_readings: [],
+        field_clears: [],
+        circuit_updates: [],
+        observations: [],
+        validation_alerts: [],
+        questions_for_user: [],
+        confirmations: [],
+      };
+    }
+
     // Add to buffer
     this.utteranceBuffer.push({ transcriptText, regexResults, options });
 

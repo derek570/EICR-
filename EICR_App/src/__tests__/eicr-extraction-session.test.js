@@ -14,7 +14,7 @@ jest.unstable_mockModule('@anthropic-ai/sdk', () => ({
   })),
 }));
 
-const { EICRExtractionSession, EICR_SYSTEM_PROMPT } = await import('../extraction/eicr-extraction-session.js');
+const { EICRExtractionSession, EICR_SYSTEM_PROMPT, containsExtractableData } = await import('../extraction/eicr-extraction-session.js');
 
 describe('EICRExtractionSession', () => {
   let session;
@@ -248,14 +248,14 @@ describe('EICRExtractionSession', () => {
     test('should buffer utterances and return empty result until batch is full', async () => {
       session.start(null);
 
-      // First call: buffers, returns empty
-      const r1 = await session.extractFromUtterance('utterance 1');
+      // First call: buffers, returns empty (text has data signals to pass pre-filter)
+      const r1 = await session.extractFromUtterance('Zs is 0.35');
       expect(r1.extracted_readings).toEqual([]);
       expect(session.utteranceBuffer).toHaveLength(1);
       expect(mockCreate).not.toHaveBeenCalled();
 
       // Second call: still buffers
-      const r2 = await session.extractFromUtterance('utterance 2');
+      const r2 = await session.extractFromUtterance('R2 is 0.12');
       expect(r2.extracted_readings).toEqual([]);
       expect(session.utteranceBuffer).toHaveLength(2);
       expect(mockCreate).not.toHaveBeenCalled();
@@ -282,10 +282,10 @@ describe('EICRExtractionSession', () => {
       mockCreate.mockResolvedValue(mockResponse);
 
       session.start(null);
-      await session.extractFromUtterance('utterance 1');
-      await session.extractFromUtterance('utterance 2');
+      await session.extractFromUtterance('Zs is 0.35');
+      await session.extractFromUtterance('on circuit 1');
       // Third call triggers the batch
-      const result = await session.extractFromUtterance('utterance 3');
+      const result = await session.extractFromUtterance('R2 is 0.12');
 
       expect(mockCreate).toHaveBeenCalledTimes(1);
       expect(result.extracted_readings).toHaveLength(1);
@@ -319,7 +319,7 @@ describe('EICRExtractionSession', () => {
       session.start(null);
       await session.extractFromUtterance('Zs 0.35', [{ field: 'zs', value: '0.35' }]);
       await session.extractFromUtterance('R2 0.12', [{ field: 'r2', value: '0.12' }]);
-      await session.extractFromUtterance('more text');
+      await session.extractFromUtterance('continuity on circuit 3');
 
       const callArgs = mockCreate.mock.calls[0][0];
       const lastUserMsg = callArgs.messages[callArgs.messages.length - 1];
@@ -362,6 +362,186 @@ describe('EICRExtractionSession', () => {
 
       session.stop();
       expect(session.batchTimeoutHandle).toBeNull();
+    });
+  });
+
+  describe('containsExtractableData (pre-filter)', () => {
+    test('should detect decimal numbers (test readings)', () => {
+      expect(containsExtractableData('Zs is 0.35')).toBe(true);
+      expect(containsExtractableData('insulation resistance 200.5')).toBe(true);
+    });
+
+    test('should detect multi-digit integers', () => {
+      expect(containsExtractableData('rated at 32 amps')).toBe(true);
+      expect(containsExtractableData('trip time 18')).toBe(true);
+    });
+
+    test('should detect test field names', () => {
+      expect(containsExtractableData('the Zs reading')).toBe(true);
+      expect(containsExtractableData('R1 plus R2')).toBe(true);
+      expect(containsExtractableData('check the RCD')).toBe(true);
+      expect(containsExtractableData('Ze at the board')).toBe(true);
+    });
+
+    test('should detect circuit references', () => {
+      expect(containsExtractableData('circuit three')).toBe(true);
+      expect(containsExtractableData('the ring final')).toBe(true);
+      expect(containsExtractableData('radial to cooker')).toBe(true);
+      expect(containsExtractableData('upstairs lighting')).toBe(true);
+      expect(containsExtractableData('kitchen socket')).toBe(true);
+    });
+
+    test('should detect measurement units', () => {
+      expect(containsExtractableData('reading in ohms')).toBe(true);
+      expect(containsExtractableData('measured in megohms')).toBe(true);
+      expect(containsExtractableData('thirty mA')).toBe(true);
+      expect(containsExtractableData('two hundred volts')).toBe(true);
+    });
+
+    test('should detect EICR-specific terms', () => {
+      expect(containsExtractableData('insulation test')).toBe(true);
+      expect(containsExtractableData('continuity reading')).toBe(true);
+      expect(containsExtractableData('earth bonding')).toBe(true);
+      expect(containsExtractableData('polarity confirmed')).toBe(true);
+    });
+
+    test('should detect observation codes', () => {
+      expect(containsExtractableData('this is a C2')).toBe(true);
+      expect(containsExtractableData('mark it as C1')).toBe(true);
+      expect(containsExtractableData('FI further investigation')).toBe(true);
+    });
+
+    test('should detect pass/fail keywords', () => {
+      expect(containsExtractableData('that one passed')).toBe(true);
+      expect(containsExtractableData('unsatisfactory result')).toBe(true);
+    });
+
+    test('should detect correction signals', () => {
+      expect(containsExtractableData('actually that was wrong')).toBe(true);
+      expect(containsExtractableData('sorry I meant the other one')).toBe(true);
+    });
+
+    test('should detect UK postcodes', () => {
+      expect(containsExtractableData('postcode is SW1A 1AA')).toBe(true);
+      expect(containsExtractableData('B15 2TT')).toBe(true);
+    });
+
+    test('should detect supply/installation terms', () => {
+      expect(containsExtractableData('TN-C-S earthing')).toBe(true);
+      expect(containsExtractableData('single phase supply')).toBe(true);
+    });
+
+    test('should reject pure greetings', () => {
+      expect(containsExtractableData('hello')).toBe(false);
+      expect(containsExtractableData('good morning')).toBe(false);
+      expect(containsExtractableData('hi there how are you')).toBe(false);
+    });
+
+    test('should reject filler speech and pauses', () => {
+      expect(containsExtractableData('um')).toBe(false);
+      expect(containsExtractableData('uh yeah')).toBe(false);
+      expect(containsExtractableData('right okay')).toBe(false);
+      expect(containsExtractableData('you know what I mean')).toBe(false);
+    });
+
+    test('should reject simple acknowledgements', () => {
+      expect(containsExtractableData('okay')).toBe(false);
+      expect(containsExtractableData('yes')).toBe(false);
+      expect(containsExtractableData('no')).toBe(false);
+      expect(containsExtractableData('alright')).toBe(false);
+      expect(containsExtractableData('sure')).toBe(false);
+    });
+
+    test('should reject inaudible/pause markers', () => {
+      expect(containsExtractableData('[inaudible]')).toBe(false);
+      expect(containsExtractableData('[pause]')).toBe(false);
+      expect(containsExtractableData('...')).toBe(false);
+    });
+
+    test('should return false for empty/null input', () => {
+      expect(containsExtractableData('')).toBe(false);
+      expect(containsExtractableData(null)).toBe(false);
+      expect(containsExtractableData(undefined)).toBe(false);
+      expect(containsExtractableData(42)).toBe(false);
+    });
+
+    test('should detect consumer unit and board references', () => {
+      expect(containsExtractableData('at the consumer unit')).toBe(true);
+      expect(containsExtractableData('the distribution board')).toBe(true);
+    });
+
+    test('should detect address/client info', () => {
+      expect(containsExtractableData('the client name is Smith')).toBe(true);
+      expect(containsExtractableData('the address is')).toBe(true);
+    });
+  });
+
+  describe('pre-filter integration with extractFromUtterance', () => {
+    test('should skip utterances with no data signals', async () => {
+      session.start(null);
+
+      const result = await session.extractFromUtterance('hello good morning');
+      expect(result.extracted_readings).toEqual([]);
+      expect(session.utteranceBuffer).toHaveLength(0);
+      expect(session.skippedUtteranceCount).toBe(1);
+      expect(mockCreate).not.toHaveBeenCalled();
+    });
+
+    test('should not skip utterances with data signals', async () => {
+      session.start(null);
+
+      await session.extractFromUtterance('Zs is 0.35 on circuit 1');
+      expect(session.utteranceBuffer).toHaveLength(1);
+      expect(session.skippedUtteranceCount).toBe(0);
+    });
+
+    test('should not skip utterances with regex results even if text has no signals', async () => {
+      session.start(null);
+
+      await session.extractFromUtterance('okay yes', [{ field: 'zs', value: '0.35' }]);
+      expect(session.utteranceBuffer).toHaveLength(1);
+      expect(session.skippedUtteranceCount).toBe(0);
+    });
+
+    test('should count multiple skipped utterances', async () => {
+      session.start(null);
+
+      await session.extractFromUtterance('hello');
+      await session.extractFromUtterance('yeah okay');
+      await session.extractFromUtterance('um right');
+
+      expect(session.skippedUtteranceCount).toBe(3);
+      expect(session.utteranceBuffer).toHaveLength(0);
+      expect(mockCreate).not.toHaveBeenCalled();
+    });
+
+    test('should include skipped count in session summary', () => {
+      session.start(null);
+      session.skippedUtteranceCount = 5;
+      const summary = session.stop();
+      expect(summary.extraction.utterancesSkippedByPreFilter).toBe(5);
+    });
+
+    test('should allow data utterances through while skipping filler', async () => {
+      mockCreate.mockResolvedValue({
+        content: [{ type: 'text', text: '{"extracted_readings":[]}' }],
+        usage: { input_tokens: 10, output_tokens: 5 }
+      });
+
+      session.start(null);
+
+      // These should be skipped (no data)
+      await session.extractFromUtterance('hello');
+      await session.extractFromUtterance('um okay');
+
+      // These should be buffered (have data signals)
+      await session.extractFromUtterance('Zs is 0.35');
+      await session.extractFromUtterance('on circuit 1');
+      await session.extractFromUtterance('R2 is 0.12');
+
+      // 2 skipped, 3 buffered (triggers batch at BATCH_SIZE=3)
+      expect(session.skippedUtteranceCount).toBe(2);
+      expect(mockCreate).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -410,7 +590,7 @@ describe('EICRExtractionSession', () => {
       });
 
       session.start(null);
-      await session.extractFromUtterance('hello');
+      await session.extractFromUtterance('insulation resistance check');
       const result = await session.flushUtteranceBuffer();
 
       expect(result.extracted_readings).toEqual([]);
@@ -424,7 +604,7 @@ describe('EICRExtractionSession', () => {
       });
 
       session.start(null);
-      await session.extractFromUtterance('test');
+      await session.extractFromUtterance('Zs reading on circuit 1');
       const result = await session.flushUtteranceBuffer();
 
       expect(result.extracted_readings).toEqual([]);
@@ -439,7 +619,7 @@ describe('EICRExtractionSession', () => {
       });
 
       session.start(null);
-      await session.extractFromUtterance('test');
+      await session.extractFromUtterance('R2 on circuit 2');
       await expect(session.flushUtteranceBuffer()).rejects.toThrow('No text block');
     });
 
@@ -483,7 +663,7 @@ describe('EICRExtractionSession', () => {
       });
 
       session.start(null);
-      await session.extractFromUtterance('test');
+      await session.extractFromUtterance('circuit 1 reading');
       await session.flushUtteranceBuffer();
 
       expect(session.askedQuestions.length).toBeLessThanOrEqual(30);
@@ -507,7 +687,7 @@ describe('EICRExtractionSession', () => {
       });
 
       session.start(null);
-      await session.extractFromUtterance('test');
+      await session.extractFromUtterance('earth bond observation');
       const result = await session.flushUtteranceBuffer();
 
       expect(result.observations).toHaveLength(1);
