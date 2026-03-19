@@ -115,11 +115,10 @@ export function transformExtractedData(extractedInstallation, extractedBoard) {
     prospective_fault_current: board.ipf_at_db || board.prospective_fault_current || '',
     earth_loop_impedance_ze: board.ze || board.earth_loop_impedance_ze || '',
     supply_polarity_confirmed: board.supply_polarity_confirmed ?? false,
-    spd_bs_en: board.spd_bs_en || board.main_switch_bs_en || '',
+    spd_bs_en: board.spd_bs_en || '',
     spd_type_supply: board.spd_type_supply || board.spd_type || '',
     spd_short_circuit: board.spd_short_circuit || '',
-    spd_rated_current:
-      board.spd_rated_current || board.rated_current || board.main_switch_current || '',
+    spd_rated_current: board.spd_rated_current || '',
   };
 
   const board_info = {
