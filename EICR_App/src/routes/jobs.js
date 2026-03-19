@@ -95,34 +95,18 @@ router.get('/jobs/:userId', auth.requireAuth, async (req, res) => {
       };
     });
 
-    if (storage.isUsingS3()) {
-      const s3Prefix = `jobs/${userId}/`;
-      const s3Folders = await storage.listJobFolders(s3Prefix);
-
-      const dbIdentifiers = new Set(
-        dbJobs.flatMap((j) => [j.id, j.address, j.folder_name].filter(Boolean))
-      );
-      for (const folder of s3Folders) {
-        if (!dbIdentifiers.has(folder.name)) {
-          if (folder.name.startsWith('job_') || /^Job \d{4}-\d{2}-\d{2}$/.test(folder.name)) {
-            continue;
-          }
-          jobs.push({
-            id: folder.name,
-            address: folder.name,
-            status: 'done',
-            created_at: folder.lastModified || new Date().toISOString(),
-            updated_at: folder.lastModified || new Date().toISOString(),
-          });
-        }
-      }
-    }
+    // NOTE: S3 folder merge removed — it caused "ghost jobs" to reappear after
+    // deletion when the S3 cleanup missed orphaned folders. The database is the
+    // single source of truth for the job list. S3 is only used for file storage.
 
     jobs.sort((a, b) => {
       const aDate = new Date(a.updated_at || a.created_at);
       const bDate = new Date(b.updated_at || b.created_at);
       return bDate - aDate;
     });
+
+    // Allow clients to cache the list briefly to reduce redundant fetches
+    res.set('Cache-Control', 'private, max-age=30');
 
     // Backward compatibility: legacy clients (no pagination params) get flat array
     if (isPaginated) {
@@ -823,16 +807,29 @@ router.delete('/job/:userId/:jobId', auth.requireAuth, async (req, res) => {
 
   try {
     const job = await resolveJob(userId, jobId);
-    const folderName = sanitizeS3Path(job?.address) || jobId;
 
     if (storage.isUsingS3()) {
-      const s3Prefix = `jobs/${userId}/${folderName}/`;
-      logger.info('Deleting job from S3', { s3Prefix, folderName });
-      const deleteResult = await storage.deletePrefix(s3Prefix);
-      logger.info('S3 delete result', {
-        deleted: deleteResult.deleted,
-        errors: deleteResult.errors,
-      });
+      // Build a set of all possible S3 folder names to ensure full cleanup.
+      // Previously only one name was tried, which left orphaned folders when
+      // the sanitized address didn't match the actual S3 folder name.
+      const candidates = new Set();
+      if (job?.address) candidates.add(job.address);
+      if (job?.address) candidates.add(sanitizeS3Path(job.address));
+      if (job?.folder_name) candidates.add(job.folder_name);
+      if (job?.folder_name) candidates.add(sanitizeS3Path(job.folder_name));
+      candidates.add(jobId);
+      candidates.delete(null);
+      candidates.delete(undefined);
+      candidates.delete('');
+
+      for (const folder of candidates) {
+        const s3Prefix = `jobs/${userId}/${folder}/`;
+        logger.info('Deleting job from S3', { s3Prefix, folder });
+        const deleteResult = await storage.deletePrefix(s3Prefix);
+        if (deleteResult.deleted > 0) {
+          logger.info('S3 delete result', { folder, deleted: deleteResult.deleted });
+        }
+      }
     }
 
     await db.deleteJob(jobId, userId);
