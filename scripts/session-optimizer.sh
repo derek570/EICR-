@@ -463,8 +463,10 @@ deploy_testflight() {
     return 1
   fi
 
-  ./deploy-testflight.sh 2>&1 | tee -a "$LOG_FILE"
-  local EXIT_CODE=${PIPESTATUS[0]}
+  # Run deploy in a subshell to isolate failure from set -euo pipefail.
+  # Without this, a build failure kills the entire optimizer process.
+  local EXIT_CODE=0
+  (./deploy-testflight.sh 2>&1 | tee -a "$LOG_FILE") || EXIT_CODE=$?
 
   if [ "$EXIT_CODE" -eq 0 ]; then
     log "  TestFlight deploy succeeded"
@@ -1982,6 +1984,10 @@ while true; do
     CMD_WORK_DIR=$(mktemp -d)
     aws s3 cp "s3://${BUCKET}/${CMD_KEY}" "$CMD_WORK_DIR/command.json" --region "$AWS_REGION"
 
+    # Delete the command file BEFORE processing to prevent crash-restart loops.
+    # The command is safely saved in CMD_WORK_DIR/command.json for local processing.
+    aws s3 rm "s3://${BUCKET}/${CMD_KEY}" --region "$AWS_REGION"
+
     if [ "$CMD_TYPE" = "accept_command" ]; then
       ACCEPTED=$(jq -c '.accepted' "$CMD_WORK_DIR/command.json")
       log "  Applying accepted recommendations for report $REPORT_ID: $ACCEPTED"
@@ -2002,9 +2008,6 @@ while true; do
       fi
       rm -f "$REJECT_META"
     fi
-
-    # Delete the command file after processing
-    aws s3 rm "s3://${BUCKET}/${CMD_KEY}" --region "$AWS_REGION"
 
     rm -rf "$CMD_WORK_DIR"
   done
