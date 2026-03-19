@@ -339,7 +339,7 @@ export async function unlockUser(userId) {
  * Get all jobs for a user from S3-based storage
  * Jobs are stored as S3 prefixes, not in the database for now
  */
-export async function getJobsByUser(userId) {
+export async function getJobsByUser(userId, limit = 100) {
   if (!usePostgres()) {
     return [];
   }
@@ -347,8 +347,11 @@ export async function getJobsByUser(userId) {
   const pool = getPool();
   try {
     const result = await pool.query(
-      `SELECT * FROM jobs WHERE user_id = $1 ORDER BY COALESCE(updated_at, created_at::TIMESTAMP) DESC`,
-      [userId]
+      `SELECT id, user_id, address, folder_name, certificate_type, status, created_at, updated_at, s3_prefix, company_id
+       FROM jobs WHERE user_id = $1
+       ORDER BY COALESCE(updated_at, created_at::TIMESTAMP) DESC
+       LIMIT $2`,
+      [userId, limit]
     );
     return result.rows;
   } catch (error) {
