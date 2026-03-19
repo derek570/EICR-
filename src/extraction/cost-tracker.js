@@ -9,7 +9,7 @@ export class CostTracker {
     // Claude Sonnet 4.6 rates (1-hour extended cache) (per million tokens)
     this.SONNET_RATES = {
       cacheRead: 0.3,
-      cacheWrite: 6.0,
+      cacheWrite: 3.75,
       input: 3.0,
       output: 15.0,
     };

@@ -23,19 +23,20 @@ describe('CostTracker', () => {
 
     test('should have correct rate constants', () => {
       expect(tracker.DEEPGRAM_RATE_PER_MIN).toBe(0.0077);
-      expect(tracker.SONNET_RATES.cacheRead).toBe(0.30);
-      expect(tracker.SONNET_RATES.cacheWrite).toBe(6.00);
-      expect(tracker.SONNET_RATES.input).toBe(3.00);
-      expect(tracker.SONNET_RATES.output).toBe(15.00);
-      expect(tracker.ELEVENLABS_RATE_PER_CHAR).toBe(0.000030);
+      expect(tracker.SONNET_RATES.cacheRead).toBe(0.3);
+      expect(tracker.SONNET_RATES.cacheWrite).toBe(3.75);
+      expect(tracker.SONNET_RATES.input).toBe(3.0);
+      expect(tracker.SONNET_RATES.output).toBe(15.0);
+      expect(tracker.ELEVENLABS_RATE_PER_CHAR).toBe(0.00003);
     });
   });
 
   describe('Deepgram cost tracking', () => {
     test('should calculate cost for recording duration', () => {
       const now = Date.now();
-      jest.spyOn(Date, 'now')
-        .mockReturnValueOnce(now)          // startRecording
+      jest
+        .spyOn(Date, 'now')
+        .mockReturnValueOnce(now) // startRecording
         .mockReturnValueOnce(now + 60000); // stopRecording (1 minute)
 
       tracker.startRecording();
@@ -49,12 +50,13 @@ describe('CostTracker', () => {
 
     test('should handle pause and resume', () => {
       const now = Date.now();
-      jest.spyOn(Date, 'now')
-        .mockReturnValueOnce(now)            // startRecording
-        .mockReturnValueOnce(now + 30000)    // pauseRecording (30s recorded)
-        .mockReturnValueOnce(now + 30000)    // pauseStartTime
-        .mockReturnValueOnce(now + 60000)    // resumeRecording
-        .mockReturnValueOnce(now + 90000)    // stopRecording (another 30s)
+      jest
+        .spyOn(Date, 'now')
+        .mockReturnValueOnce(now) // startRecording
+        .mockReturnValueOnce(now + 30000) // pauseRecording (30s recorded)
+        .mockReturnValueOnce(now + 30000) // pauseStartTime
+        .mockReturnValueOnce(now + 60000) // resumeRecording
+        .mockReturnValueOnce(now + 90000); // stopRecording (another 30s)
 
       tracker.startRecording();
       tracker.pauseRecording();
@@ -69,10 +71,11 @@ describe('CostTracker', () => {
 
     test('should not double-count when pausing twice', () => {
       const now = Date.now();
-      jest.spyOn(Date, 'now')
-        .mockReturnValueOnce(now)          // startRecording
-        .mockReturnValueOnce(now + 30000)  // first pauseRecording
-        .mockReturnValueOnce(now + 30000)  // pauseStartTime
+      jest
+        .spyOn(Date, 'now')
+        .mockReturnValueOnce(now) // startRecording
+        .mockReturnValueOnce(now + 30000) // first pauseRecording
+        .mockReturnValueOnce(now + 30000) // pauseStartTime
         .mockReturnValueOnce(now + 60000); // stopRecording (still paused)
 
       tracker.startRecording();
@@ -97,14 +100,14 @@ describe('CostTracker', () => {
         cache_read_input_tokens: 1000,
         cache_creation_input_tokens: 500,
         input_tokens: 200,
-        output_tokens: 100
+        output_tokens: 100,
       });
 
       tracker.addSonnetUsage({
         cache_read_input_tokens: 2000,
         cache_creation_input_tokens: 0,
         input_tokens: 300,
-        output_tokens: 150
+        output_tokens: 150,
       });
 
       expect(tracker.sonnet.turns).toBe(2);
@@ -119,10 +122,10 @@ describe('CostTracker', () => {
         cache_read_input_tokens: 1000000, // $0.30
         cache_creation_input_tokens: 0,
         input_tokens: 0,
-        output_tokens: 0
+        output_tokens: 0,
       });
 
-      expect(tracker.sonnetCost).toBeCloseTo(0.30, 2);
+      expect(tracker.sonnetCost).toBeCloseTo(0.3, 2);
     });
 
     test('should handle missing usage fields gracefully', () => {
@@ -136,7 +139,7 @@ describe('CostTracker', () => {
     test('should track compaction usage separately', () => {
       tracker.addCompactionUsage({
         input_tokens: 500,
-        output_tokens: 200
+        output_tokens: 200,
       });
 
       expect(tracker.sonnet.compactions).toBe(1);
@@ -153,7 +156,7 @@ describe('CostTracker', () => {
       tracker.addElevenLabsUsage(200);
 
       expect(tracker.elevenLabsCharacters).toBe(300);
-      expect(tracker.elevenLabsCost).toBeCloseTo(300 * 0.000030, 6);
+      expect(tracker.elevenLabsCost).toBeCloseTo(300 * 0.00003, 6);
     });
   });
 
@@ -175,7 +178,7 @@ describe('CostTracker', () => {
       tracker.addGptVisionUsage(1000, 1000, 1);
 
       // 1000 input * $0.01/1K + 1000 output * $0.03/1K + 1 image * $0.01
-      const expectedCost = (1000 * 0.01 / 1000) + (1000 * 0.03 / 1000) + (1 * 0.01);
+      const expectedCost = (1000 * 0.01) / 1000 + (1000 * 0.03) / 1000 + 1 * 0.01;
       expect(tracker.gptVisionCost).toBeCloseTo(expectedCost, 6);
     });
   });
@@ -187,7 +190,7 @@ describe('CostTracker', () => {
         cache_read_input_tokens: 0,
         cache_creation_input_tokens: 0,
         input_tokens: 1000,
-        output_tokens: 500
+        output_tokens: 500,
       });
 
       // Add ElevenLabs
@@ -197,7 +200,9 @@ describe('CostTracker', () => {
       tracker.addGptVisionUsage(100, 50, 1);
 
       const total = tracker.totalCost;
-      expect(total).toBe(tracker.deepgramCost + tracker.sonnetCost + tracker.elevenLabsCost + tracker.gptVisionCost);
+      expect(total).toBe(
+        tracker.deepgramCost + tracker.sonnetCost + tracker.elevenLabsCost + tracker.gptVisionCost
+      );
     });
   });
 
@@ -207,7 +212,7 @@ describe('CostTracker', () => {
         cache_read_input_tokens: 1000,
         cache_creation_input_tokens: 200,
         input_tokens: 300,
-        output_tokens: 100
+        output_tokens: 100,
       });
       tracker.addElevenLabsUsage(50);
       tracker.addGptVisionUsage(100, 50, 1);
@@ -236,7 +241,7 @@ describe('CostTracker', () => {
         cache_read_input_tokens: 0,
         cache_creation_input_tokens: 0,
         input_tokens: 100,
-        output_tokens: 50
+        output_tokens: 50,
       });
       tracker.addCompactionUsage({ input_tokens: 50, output_tokens: 25 });
 
