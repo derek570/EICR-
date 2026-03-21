@@ -688,9 +688,17 @@ AVAILABLE ACTIONS:
 
 FIELD NAMES (use these exact names in actions):
 - Supply: ze, pfc, earthing_arrangement, main_switch_rating, main_switch_bs_en
-- Circuit: circuit_designation, cable_size, ocpd_rating, ocpd_type, zs, r1_r2, r2, ir_live_earth, ir_live_live, rcd_trip_time, polarity
+- Circuit: circuit_designation, cable_size, cable_size_earth, ocpd_rating, ocpd_type, ocpd_bs_en, zs, r1_r2, r2, ir_live_earth, ir_live_live, rcd_trip_time, rcd_rating, rcd_bs_en, polarity, wiring_type, ref_method, number_of_points, max_disconnect_time, ring_continuity_r1, ring_continuity_rn, ring_continuity_r2
 - Installation: client_name, address, postcode, phone, email, premises_description, client_address, client_postcode, client_town, client_county
 - Board: manufacturer, zs_at_db
+
+DISAMBIGUATION — These fields have similar-sounding values. Use context to pick the right field:
+- "wiring type A" or "wiring type is A" → field: wiring_type, value: "A". Wiring types are single letters: A (Twin & Earth), B (Conduit), C (Trunking), D (SWA/Armoured).
+- "reference method C" or "ref method C" → field: ref_method, value: "C". Reference methods are single letters A-D.
+- "type B 32" or "32 amp type B" or "MCB type B" → field: ocpd_type, value: "B" (and ocpd_rating: "32"). MCB/breaker types are B, C, or D.
+- If the inspector says "MCB", "breaker", or "OCPD", always use ocpd_type and ocpd_rating — never mcb_type or breaker_type.
+- If the inspector says "wiring type" or describes cable (e.g. "twin and earth", "SWA", "conduit"), use wiring_type with the letter code (A/B/C/D), not the description.
+- Always use canonical field names from the list above. Never use mcb_type, mcb_rating, breaker_type, breaker_rating, or protective_device.
 
 RESPONSE FORMAT — Always respond with valid JSON:
 {
@@ -752,6 +760,15 @@ GUIDELINES:
               );
             if (c.zs || c.measuredZsOhm) parts.push(`Zs: ${c.zs || c.measuredZsOhm}`);
             if (c.r1R2Ohm || c.r1_r2) parts.push(`R1+R2: ${c.r1R2Ohm || c.r1_r2}`);
+            if (c.wiringType || c.wiring_type)
+              parts.push(`wiring: ${c.wiringType || c.wiring_type}`);
+            if (c.refMethod || c.ref_method) parts.push(`ref: ${c.refMethod || c.ref_method}`);
+            if (c.cpcCsaMm2 || c.cable_size_earth)
+              parts.push(`CPC: ${c.cpcCsaMm2 || c.cable_size_earth}`);
+            if (c.rcdTimeMs || c.rcd_trip_time)
+              parts.push(`RCD: ${c.rcdTimeMs || c.rcd_trip_time}ms`);
+            if (c.rcdRatingA || c.rcd_rating)
+              parts.push(`RCD rating: ${c.rcdRatingA || c.rcd_rating}A`);
             context += `  ${parts.join(', ')}\n`;
           }
         }
@@ -828,6 +845,31 @@ GUIDELINES:
           spoken_response: 'Sorry, I had trouble processing that. Try again?',
           action: null,
         };
+      }
+
+      // Apply field correction and wiring type normalization to voice command actions
+      // (same corrections the extraction pipeline applies, but voice commands were missing them)
+      if (parsed.action?.params?.field) {
+        const field = parsed.action.params.field;
+        if (!KNOWN_FIELDS.has(field) && FIELD_CORRECTIONS[field]) {
+          logger.info('Voice command field corrected', {
+            sessionId,
+            from: field,
+            to: FIELD_CORRECTIONS[field],
+          });
+          parsed.action.params.field = FIELD_CORRECTIONS[field];
+        }
+        if (parsed.action.params.field === 'wiring_type' && parsed.action.params.value) {
+          const normalised = normaliseWiringType(parsed.action.params.value);
+          if (normalised !== parsed.action.params.value) {
+            logger.info('Voice command wiring type normalised', {
+              sessionId,
+              from: parsed.action.params.value,
+              to: normalised,
+            });
+            parsed.action.params.value = normalised;
+          }
+        }
       }
 
       // Track cost (voice commands are cheap — single-turn, small response)
