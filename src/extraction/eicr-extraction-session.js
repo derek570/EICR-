@@ -19,43 +19,15 @@ const __dirname = path.dirname(__filename);
 const SLIDING_WINDOW_SIZE = 6;
 
 // Utterance batching — buffer consecutive transcript chunks before making a Sonnet
-// API call. A 72-turn session with BATCH_SIZE=3 becomes ~24 API calls, cutting
-// Sonnet cost by ~60%. With BATCH_SIZE=2, it's ~36 calls (~50% reduction).
+// API call. A 72-turn session with BATCH_SIZE=2 becomes ~36 API calls, cutting
+// Sonnet cost by ~50% while keeping latency under 4s for isolated readings.
 // The timeout ensures buffered utterances are processed even if the speaker pauses.
-const BATCH_SIZE = 3;
-const BATCH_TIMEOUT_MS = 3500; // ms to wait for more utterances before flushing
+const BATCH_SIZE = 2;
+const BATCH_TIMEOUT_MS = 2000; // ms to wait for more utterances before flushing
 
-// Pre-filter: detect if a transcript chunk likely contains extractable EICR data.
-// Chunks with only greetings, filler speech, pauses, or acknowledgements are skipped
-// before they reach the batching buffer, eliminating ~10-20% of unnecessary API calls.
-const DATA_SIGNAL_PATTERNS = [
-  /\d+\.\d+/, // Decimal numbers (0.35, 1.2, 200.5)
-  /\b\d{2,}\b/, // Multi-digit integers (32, 100, 16)
-  /\b(?:zs|ze|r1|r2|r1\s*\+\s*r2|r1r2|rcd|ir|ipf|pfc)\b/i, // Test field names
-  /\b(?:pass(?:ed)?|fail(?:ed|ure)?|satisfactory|unsatisfactory|compliant|non-compliant)\b/i, // Test result keywords
-  /\b(?:circuit|ring|radial|lighting|socket|spur|mcb|rcbo|breaker|afdd)\b/i, // Circuit references
-  /\b(?:ohms?|megohms?|milliohms?|m[aA]|volts?|amps?)\b/i, // Measurement units
-  /\b(?:insulation|resistance|continuity|polarity|earth|bonding|conductor|cable)\b/i, // EICR terms
-  /\b(?:board|consumer\s*unit|distribution|cu|db)\b/i, // Board/CU references
-  /\b(?:c1|c2|c3|fi)\b/i, // Observation codes
-  /\b(?:tn-?[cs]|tt|supply|phase|voltage|current|rating)\b/i, // Supply/installation terms
-  /\b(?:address|postcode|client|occupier|contractor|inspector)\b/i, // Property/client info
-  /\b(?:correction|actually|sorry|change|update|wrong|meant)\b/i, // Correction signals
-  /\b[A-Z]{1,2}\d{1,2}\s*\d[A-Z]{2}\b/i, // UK postcode pattern
-];
-
-/**
- * Check if transcript text contains signals of extractable EICR data.
- * Returns true if the text likely contains test readings, circuit references,
- * measurement values, or other data worth sending to Sonnet.
- * Returns false for pure greetings, filler speech, pauses, and acknowledgements.
- */
-export function containsExtractableData(text) {
-  if (!text || typeof text !== 'string') return false;
-  const trimmed = text.trim();
-  if (trimmed.length === 0) return false;
-  return DATA_SIGNAL_PATTERNS.some((pattern) => pattern.test(trimmed));
-}
+// Cache keepalive — send a minimal API call after 4 minutes of silence to refresh
+// the 5-minute prompt cache before it expires. Costs ~$0.003 per keepalive (cache reads only).
+const CACHE_KEEPALIVE_MS = 4 * 60 * 1000; // 4 minutes
 
 // Load externalized system prompts at module init
 // Must be >=1024 tokens for Sonnet 4.5 prompt caching
@@ -85,13 +57,13 @@ export class EICRExtractionSession {
     this.circuitScheduleIncluded = false;
     this.isActive = false;
 
-    // Pre-filter stats
-    this.skippedUtteranceCount = 0;
-
     // Utterance batching state
     this.utteranceBuffer = []; // Buffered { transcriptText, regexResults, options }
     this.batchTimeoutHandle = null;
     this.onBatchResult = null; // Callback for async batch flush results: (result) => void
+
+    // Cache keepalive — refreshes 5-min prompt cache during silence
+    this.cacheKeepaliveHandle = null;
 
     // Rolling state snapshot: accumulates all extracted values across the session.
     // Used to provide context in the sliding window without sending full history.
@@ -116,16 +88,19 @@ export class EICRExtractionSession {
     if (jobState) {
       this.circuitSchedule = this.buildCircuitSchedule(jobState);
     }
+    this._resetCacheKeepalive();
     logger.info(`Session ${this.sessionId} Started`);
   }
 
   pause() {
+    this._clearCacheKeepalive();
     this.costTracker.pauseRecording();
     logger.info(`Session ${this.sessionId} Paused`);
   }
 
   resume() {
     this.costTracker.resumeRecording();
+    this._resetCacheKeepalive();
     logger.info(`Session ${this.sessionId} Resumed`);
   }
 
@@ -136,16 +111,57 @@ export class EICRExtractionSession {
       clearTimeout(this.batchTimeoutHandle);
       this.batchTimeoutHandle = null;
     }
+    this._clearCacheKeepalive();
     this.isActive = false;
     this.costTracker.stopRecording();
     const summary = this.costTracker.toSessionSummary();
     summary.extraction.readingsExtracted = this.extractedReadingsCount;
     summary.extraction.questionsAsked = this.askedQuestions.length;
-    summary.extraction.utterancesSkippedByPreFilter = this.skippedUtteranceCount;
-    logger.info(
-      `Session ${this.sessionId} Stopped. Cost: $${summary.totalJobCost.toFixed(4)}, pre-filter skipped: ${this.skippedUtteranceCount}`
-    );
+    logger.info(`Session ${this.sessionId} Stopped. Cost: $${summary.totalJobCost.toFixed(4)}`);
     return summary;
+  }
+
+  /**
+   * Send a minimal API call to keep the prompt cache warm during silence.
+   * Only sends the system prompt + a tiny keepalive message — no conversation
+   * history, no state snapshot. Costs ~$0.003 (cache reads only).
+   */
+  async _sendCacheKeepalive() {
+    if (!this.isActive) return;
+    try {
+      const response = await this.client.messages.create({
+        model: 'claude-sonnet-4-6',
+        max_tokens: 1,
+        system: [
+          {
+            type: 'text',
+            text: this.systemPrompt,
+            cache_control: { type: 'ephemeral', ttl: '5m' },
+          },
+        ],
+        messages: [{ role: 'user', content: [{ type: 'text', text: '[keepalive]' }] }],
+      });
+      this.costTracker.addSonnetUsage(response.usage);
+      logger.info(`Session ${this.sessionId} Cache keepalive sent`);
+    } catch (error) {
+      logger.warn(`Session ${this.sessionId} Cache keepalive failed: ${error.message}`);
+    }
+    // Schedule next keepalive
+    this._resetCacheKeepalive();
+  }
+
+  _resetCacheKeepalive() {
+    this._clearCacheKeepalive();
+    if (this.isActive) {
+      this.cacheKeepaliveHandle = setTimeout(() => this._sendCacheKeepalive(), CACHE_KEEPALIVE_MS);
+    }
+  }
+
+  _clearCacheKeepalive() {
+    if (this.cacheKeepaliveHandle) {
+      clearTimeout(this.cacheKeepaliveHandle);
+      this.cacheKeepaliveHandle = null;
+    }
   }
 
   updateJobState(jobState) {
@@ -160,26 +176,6 @@ export class EICRExtractionSession {
    * batch fires (buffer full) or when flushed via timeout/stop.
    */
   async extractFromUtterance(transcriptText, regexResults = [], options = {}) {
-    // Pre-filter: skip utterances with no extractable data signals.
-    // If regex already found matches, always keep the utterance (regex = confirmed data).
-    // Otherwise check transcript text for keywords/patterns indicating EICR data.
-    const hasRegexData = regexResults && regexResults.length > 0;
-    if (!hasRegexData && !containsExtractableData(transcriptText)) {
-      this.skippedUtteranceCount = (this.skippedUtteranceCount || 0) + 1;
-      logger.info(
-        `Session ${this.sessionId} Pre-filter skipped utterance (no data signals): "${(transcriptText || '').substring(0, 80)}"`
-      );
-      return {
-        extracted_readings: [],
-        field_clears: [],
-        circuit_updates: [],
-        observations: [],
-        validation_alerts: [],
-        questions_for_user: [],
-        confirmations: [],
-      };
-    }
-
     // Add to buffer
     this.utteranceBuffer.push({ transcriptText, regexResults, options });
 
@@ -320,7 +316,7 @@ export class EICRExtractionSession {
           {
             type: 'text',
             text: userMessage,
-            cache_control: { type: 'ephemeral', ttl: '1h' },
+            cache_control: { type: 'ephemeral', ttl: '5m' },
           },
         ],
       },
@@ -330,6 +326,9 @@ export class EICRExtractionSession {
     this.addMidConversationBreakpoints(messages);
 
     const response = await this.callWithRetry(messages);
+
+    // Reset cache keepalive timer — real API call just refreshed the cache
+    this._resetCacheKeepalive();
 
     // Extract text response
     const textBlock = response.content.find((b) => b.type === 'text');
@@ -436,7 +435,7 @@ export class EICRExtractionSession {
           {
             type: 'text',
             text: this.systemPrompt,
-            cache_control: { type: 'ephemeral', ttl: '1h' },
+            cache_control: { type: 'ephemeral', ttl: '5m' },
           },
         ];
 
@@ -822,7 +821,7 @@ export class EICRExtractionSession {
           {
             type: 'text',
             text: reviewMessage,
-            cache_control: { type: 'ephemeral', ttl: '1h' },
+            cache_control: { type: 'ephemeral', ttl: '5m' },
           },
         ],
       },

@@ -7,11 +7,11 @@ export class CostTracker {
     this.DEEPGRAM_RATE_PER_MIN = 0.0077;
 
     // Claude Sonnet 4.6 rates (per million tokens)
-    // Cache write = 2x base input ($3.00) for 1-hour ephemeral TTL = $6.00
+    // Cache write = 1.25x base input ($3.00) for 5-minute ephemeral TTL = $3.75
     // Cache read = 0.1x base input = $0.30
     this.SONNET_RATES = {
       cacheRead: 0.3,
-      cacheWrite: 6.0,
+      cacheWrite: 3.75,
       input: 3.0,
       output: 15.0,
     };
