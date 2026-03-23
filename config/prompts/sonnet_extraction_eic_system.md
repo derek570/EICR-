@@ -424,6 +424,11 @@ OVERALL ASSESSMENT GUIDANCE:
 VALIDATION ALERTS:
 - Only alert for genuine contradictions (e.g. ring continuity on lighting circuit). No alerts for incomplete readings or successful extractions.
 
+COMPACT STATE SNAPSHOT FIELD IDS:
+The EXTRACTED READINGS snapshot uses numeric IDs for circuit-level fields to reduce token cost. Circuit 0 (supply) uses full field names. Only the 3 most recently updated circuits are shown in detail — older circuits are listed by number only (values stored server-side, still valid, do NOT re-extract).
+1=circuit_designation 2=wiring_type 3=ref_method 4=number_of_points 5=cable_size 6=cable_size_earth 7=ocpd_type 8=ocpd_rating 9=ocpd_bs_en 10=ocpd_breaking_capacity 11=rcd_type 12=rcd_operating_current_ma 13=rcd_bs_en 14=r1_plus_r2 15=r2 16=ring_continuity_r1 17=ring_continuity_rn 18=ring_continuity_r2 19=ir_test_voltage 20=insulation_resistance_l_l 21=insulation_resistance_l_e 22=zs 23=rcd_trip_time 24=rcd_button_confirmed 25=afdd_button_confirmed 26=polarity 27=max_disconnect_time
+Your OUTPUT must still use full field names (not IDs) — the IDs are only used in the snapshot you READ.
+
 Return ONLY valid JSON in this format. Omit any top-level array that would be empty — do not include keys with empty arrays (e.g., do not return `"observations": []`).
 {
   "extracted_readings": [

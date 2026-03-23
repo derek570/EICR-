@@ -29,6 +29,43 @@ const BATCH_TIMEOUT_MS = 2000; // ms to wait for more utterances before flushing
 // the 5-minute prompt cache before it expires. Costs ~$0.003 per keepalive (cache reads only).
 const CACHE_KEEPALIVE_MS = 4 * 60 * 1000; // 4 minutes
 
+// Number of most-recently-updated circuits to include in full detail in the state snapshot.
+// Older circuits are listed by number only (values stored server-side, not sent to API).
+const SNAPSHOT_RECENT_CIRCUITS = 3;
+
+// Compact field ID mapping for state snapshot — reduces per-circuit token cost ~55%.
+// Only circuit-level fields that repeat across circuits are mapped.
+// Supply fields (circuit 0) use full names since they appear only once.
+const FIELD_ID_MAP = {
+  circuit_designation: 1,
+  wiring_type: 2,
+  ref_method: 3,
+  number_of_points: 4,
+  cable_size: 5,
+  cable_size_earth: 6,
+  ocpd_type: 7,
+  ocpd_rating: 8,
+  ocpd_bs_en: 9,
+  ocpd_breaking_capacity: 10,
+  rcd_type: 11,
+  rcd_operating_current_ma: 12,
+  rcd_bs_en: 13,
+  r1_plus_r2: 14,
+  r2: 15,
+  ring_continuity_r1: 16,
+  ring_continuity_rn: 17,
+  ring_continuity_r2: 18,
+  ir_test_voltage: 19,
+  insulation_resistance_l_l: 20,
+  insulation_resistance_l_e: 21,
+  zs: 22,
+  rcd_trip_time: 23,
+  rcd_button_confirmed: 24,
+  afdd_button_confirmed: 25,
+  polarity: 26,
+  max_disconnect_time: 27,
+};
+
 // Load externalized system prompts at module init
 // Must be >=1024 tokens for Sonnet 4.5 prompt caching
 export const EICR_SYSTEM_PROMPT = fssync.readFileSync(
@@ -73,6 +110,10 @@ export class EICRExtractionSession {
       observations: [], // deduped observation texts
       validation_alerts: [],
     };
+
+    // Tracks order in which circuits were last updated, for snapshot windowing.
+    // Most recently updated circuits appear at the end.
+    this.recentCircuitOrder = [];
   }
 
   // Extract text from a message content (handles both string and content block array formats)
@@ -602,6 +643,12 @@ export class EICRExtractionSession {
             this.stateSnapshot.circuits[circuit] = {};
           }
           this.stateSnapshot.circuits[circuit][field] = reading.value;
+          // Track recency for snapshot windowing (circuit 0 excluded — always shown)
+          if (circuit !== 0) {
+            const idx = this.recentCircuitOrder.indexOf(circuit);
+            if (idx !== -1) this.recentCircuitOrder.splice(idx, 1);
+            this.recentCircuitOrder.push(circuit);
+          }
           // Resolve any pending readings that match this field+value
           this.stateSnapshot.pending_readings = this.stateSnapshot.pending_readings.filter(
             (p) => !(p.field === field && p.value === reading.value)
@@ -671,15 +718,53 @@ export class EICRExtractionSession {
       );
     }
 
-    // Extracted readings accumulated across the full session
-    const snapshot = {};
-    if (hasCircuits) snapshot.circuits = this.stateSnapshot.circuits;
-    if (hasPending) snapshot.pending_readings = this.stateSnapshot.pending_readings;
-    if (hasAlerts) snapshot.validation_alerts = this.stateSnapshot.validation_alerts;
+    // Build compact extracted readings section.
+    // Circuit 0 (supply) always included with full field names (appears once).
+    // Most recent N circuits included with compact numeric field IDs.
+    // Older circuits listed by number only — values stored server-side.
+    if (hasCircuits || hasPending) {
+      const lines = [];
 
-    if (Object.keys(snapshot).length > 0) {
+      // Circuit 0 — supply fields, full names (only appears once)
+      const supplyData = this.stateSnapshot.circuits[0];
+      if (supplyData && Object.keys(supplyData).length > 0) {
+        lines.push(`0:${JSON.stringify(supplyData)}`);
+      }
+
+      // Split non-supply circuits into recent (detailed) and older (summary)
+      const recentNums = this.recentCircuitOrder.slice(-SNAPSHOT_RECENT_CIRCUITS);
+      const allNonSupply = Object.keys(this.stateSnapshot.circuits)
+        .map(Number)
+        .filter((n) => n !== 0);
+      const olderNums = allNonSupply.filter((n) => !recentNums.includes(n)).sort((a, b) => a - b);
+
+      if (olderNums.length > 0) {
+        lines.push(`${olderNums.length} earlier circuits (${olderNums.join(',')}) extracted`);
+      }
+
+      // Recent circuits — compact field IDs
+      for (const num of recentNums) {
+        const fields = this.stateSnapshot.circuits[num];
+        if (!fields) continue;
+        const compact = {};
+        for (const [field, value] of Object.entries(fields)) {
+          const id = FIELD_ID_MAP[field];
+          compact[id != null ? id : field] = value;
+        }
+        lines.push(`${num}:${JSON.stringify(compact)}`);
+      }
+
+      // Pending readings (unassigned to a circuit)
+      if (hasPending) {
+        lines.push(`pending:${JSON.stringify(this.stateSnapshot.pending_readings)}`);
+      }
+
+      if (hasAlerts) {
+        lines.push(`alerts:${JSON.stringify(this.stateSnapshot.validation_alerts)}`);
+      }
+
       parts.push(
-        `EXTRACTED READINGS (all test readings extracted so far — do NOT re-extract these):\n${JSON.stringify(snapshot)}`
+        `EXTRACTED (do NOT re-extract — field IDs per system prompt):\n${lines.join('\n')}`
       );
     }
 
