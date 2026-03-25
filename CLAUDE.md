@@ -9603,9 +9603,651 @@ Silero VAD v3's LSTM state can get stuck at probability ~1.0 during silence. Wor
 
 
 
+
 ## WhatsApp Context
 > Auto-synced from WhatsApp assistant memories on 2026-03-25. Do not edit manually.
 
+
+### anchoring-strategy
+
+# CertMate Psychological Anchoring Strategy
+
+**Date:** 25 March 2026
+**Purpose:** Design a complete psychological anchoring strategy for Derek's 4-tier pricing (Free/Starter £15/Pro £30/Company £60) to maximise Pro tier selection, using decoy pricing, centre-stage bias, loss aversion, and strategic feature gating.
+
+**Based on:** price-validation.md (competitor & margin analysis) and research-pricing-psychology.md (psychology principles)
+
+
+## Executive Summary
+
+The 4-tier structure creates a natural "double decoy" system. **Starter (£15) is the primary decoy** — it exists to make Pro look like extraordinary value. **Company (£60) is the price anchor** — it makes Pro feel affordable. **Pro (£30) is the target tier** where 50-60% of paid users should land. The Free tier's job is to create the endowment effect (taste the AI magic, feel the pain of limits).
+
+At £1/cert API cost and realistic ~50% utilisation on Pro, margins are healthy (64%). The strategy below engineers every touchpoint — layout, copy, feature gates, upgrade prompts — to funnel users from Free → Pro.
+
+
+## 1. Decoy Pricing Analysis
+
+### The Role of Each Tier
+
+| Tier | Psychological Role | Purpose |
+|------|-------------------|---------|
+| **Free (£0/1 cert)** | Endowment trigger | Let users experience AI voice-to-cert, build emotional ownership, hit limits fast |
+| **Starter (£15/8 certs)** | Primary decoy | Exist to make Pro look like the obvious upgrade — "only £15 more for 2.5x the certs" |
+| **Pro (£30/20 certs)** | Target tier | The plan we want 50-60% of paid users on. Best perceived value per cert |
+| **Company (£60/50 certs)** | Price anchor + capture tier | Makes Pro feel cheap; captures firms who need team features |
+
+### Why Starter Is the Decoy (Not Company)
+
+The classic decoy effect (Huber, Payne & Puto, 1982) works by introducing an option that is **asymmetrically dominated** by the target. Starter is dominated by Pro on value:
+
+```
+Per-cert economics (what the user sees):
+
+  Starter:  £15 ÷ 8 certs  = £1.88/cert
+  Pro:      £30 ÷ 20 certs = £1.50/cert  ← 20% cheaper per cert
+  Company:  £60 ÷ 50 certs = £1.20/cert
+
+Value multiplier:
+  Starter → Pro:     2x price → 2.5x certs (25% more value per £)
+  Pro → Company:     2x price → 2.5x certs (25% more value per £)
+  Starter → Company: 4x price → 6.25x certs (56% more value per £)
+```
+
+**The "£15 more" frame is critical.** When a user on Starter considers Pro, the question becomes: "Is 12 extra certificates worth £15?" At their hourly rate of £50-60, each cert saves 30-60 min of admin. That's £25-60 of time value per extra cert. Twelve extra certs = £300-720 of time value for £15. The answer is obviously yes.
+
+This is textbook decoy design: the Starter-to-Pro jump delivers disproportionate value, making Pro feel like "the smart choice."
+
+### Why Company Works as the Price Anchor
+
+The Company tier at £60 performs two functions:
+
+1. **Makes Pro look affordable.** £30 feels like "half price" compared to the visible £60 anchor. Without Company, £30 is the most expensive option on the page and feels "premium." With Company, £30 is the middle — where centre-stage bias directs attention.
+
+2. **Captures high-volume firms.** Small electrical firms doing 30-50 EICRs/month need the capacity. At £1.20/cert, they're paying less than Tradecert's effective per-cert cost (~£1.00-1.10 + token overage). Company exists for a real market segment, not just as a decoy.
+
+### The "Double Decoy" Effect
+
+CertMate's 4-tier structure creates two complementary decoy relationships:
+
+```
+Free ──(endowment gap)──→ Starter ──(value gap)──→ PRO ←──(anchor)── Company
+          "I need more"              "Pro is smarter"        "Pro is affordable"
+```
+
+- **Free → Starter gap:** "I've used my 1 free cert, I need more" (functional need)
+- **Starter → Pro gap:** "For only £15 more I get 2.5x the certs + premium features" (value logic)
+- **Company → Pro anchor:** "£30 is half the price of Company — Pro is the sweet spot" (price reference)
+
+Research suggests 3 tiers produce 30% higher ARPU than 4+, but the 4-tier structure works IF Starter is clearly positioned as a stepping stone, not a resting place. The feature gating in Section 5 ensures this.
+
+
+## 2. Value Framing for Each Tier
+
+### Free Tier — "See What You're Missing"
+
+**Frame:** The free tier is a **demo**, not a product. Users should complete one certificate and immediately feel the contrast between AI-generated and manual.
+
+| Element | Frame |
+|---------|-------|
+| **Headline** | "Try your first AI certificate — free" |
+| **Subtext** | "See how CertMate turns a 90-minute job into 5 minutes" |
+| **CTA** | "Generate your first certificate" (not "Sign up free") |
+| **Value anchor** | "Worth £50-120 of your admin time" |
+| **Limitation signal** | Show "1 of 1 certificates used" prominently after use |
+
+**Key psychological lever:** The **endowment effect**. After generating one AI certificate, the user has experienced the future. Going back to manual feels like a loss. The free tier doesn't sell CertMate — it sells the pain of not having CertMate.
+
+### Starter Tier (£15/mo) — "Get Started, But You'll Want More"
+
+**Frame:** Starter is for electricians who are "dipping their toes in" — part-timers, newly qualified, or sceptics who want to try before committing. It's deliberately positioned as the **training wheels** tier.
+
+| Element | Frame |
+|---------|-------|
+| **Headline** | "Starter — £15/month" |
+| **Subtext** | "8 AI certificates/month — perfect for getting started" |
+| **Value anchor** | "Less than the cost of one manual EICR's admin time" |
+| **Per-cert callout** | "Just £1.88 per certificate" |
+| **Upgrade nudge** | "Need more than 8/month? See Pro →" (always visible) |
+
+**Key psychological lever:** **Scarcity + upgrade desire.** 8 certs/month is enough for a part-timer (1-2/week) but will feel constraining for anyone doing 3+ jobs/week. The cap is the built-in upgrade trigger. Most full-time sole traders do 10-20+ EICRs/month — they'll hit the wall by week 2.
+
+### Pro Tier (£30/mo) — "The Complete Package"
+
+**Frame:** Pro is the **real product**. Everything about it should communicate "this is what CertMate was built for." It gets the visual emphasis, the "Most Popular" badge, and the most detailed feature callouts.
+
+| Element | Frame |
+|---------|-------|
+| **Headline** | "Pro — £30/month" |
+| **Badge** | "MOST POPULAR" (top of card, contrasting colour) |
+| **Subtext** | "20 AI certificates/month — built for full-time electricians" |
+| **Value anchor** | "Pays for itself after your first certificate" |
+| **ROI callout** | "Save 20-40 hours/month on paperwork" |
+| **Per-cert callout** | "Just £1.50 per certificate — less than a coffee" |
+| **Social proof** | "Chosen by X% of CertMate users" (once data exists) |
+
+**Key psychological lever:** **Centre-stage bias + social proof.** Eye-tracking studies show the middle option gets 60% of visual attention. The "Most Popular" badge adds social validation — "if others chose it, it must be right" (conformity bias). Research shows this combination increases middle-tier selection by **38% (centre-stage) + 12-15% (badge)**.
+
+**The ROI maths that sells Pro:**
+
+```
+Monthly investment:         £30
+Certs included:             20
+Admin time saved per cert:  30-60 minutes
+Hourly rate:                £50-60
+Time value saved per cert:  £25-60
+Total monthly time value:   £500-1,200
+ROI:                        17-40x return
+
+Pro pays for itself: after certificate #1
+```
+
+### Company Tier (£60/mo) — "Scale Your Business"
+
+**Frame:** Company is for **established firms**, not sole traders. The language shifts from personal productivity to business operations. This tier should feel aspirational but not necessary for the individual electrician — reinforcing that Pro is "enough" for them.
+
+| Element | Frame |
+|---------|-------|
+| **Headline** | "Company — £60/month" |
+| **Subtext** | "50 AI certificates/month — for firms and growing teams" |
+| **Value anchor** | "Cheaper than 4 separate iCertifi licenses" |
+| **Per-cert callout** | "Best value at £1.20 per certificate" |
+| **Differentiator** | Team features, multi-user access, priority support |
+| **Target audience signal** | "For electrical firms doing 30+ jobs/month" |
+
+**Key psychological lever:** **Self-selection through language.** By saying "for firms and growing teams," sole traders automatically think "that's not for me — Pro is my tier." This is intentional. Company exists to (a) anchor Pro as affordable and (b) capture the firms segment. The language prevents sole traders from over-buying or feeling pressured.
+
+
+## 3. Centre-Stage Bias Layout
+
+### Pricing Page Visual Hierarchy
+
+Research (ConversionXL eye-tracking studies) shows customers scan pricing pages in an **F-pattern**, with disproportionate attention on the centre option. The layout must exploit this:
+
+```
+┌─────────────┐  ┌─══════════════════╗  ┌─────────────┐  ┌─────────────┐
+│   FREE      │  ║   STARTER         ║  │   ★ PRO ★    │  │  COMPANY    │
+│             │  ║                   ║  │  MOST POPULAR │  │             │
+│   £0/mo     │  ║   £15/mo          ║  │   £30/mo     │  │   £60/mo    │
+│             │  ║                   ║  │              │  │             │
+│   1 cert    │  ║   8 certs         ║  │   20 certs   │  │   50 certs  │
+│             │  ║                   ║  │              │  │             │
+│  [Try Free] │  ║  [Get Started]    ║  │ [Start Trial]│  │  [Contact]  │
+└─────────────┘  ╚═══════════════════╝  └─────────────┘  └─────────────┘
+     muted           standard              ELEVATED            standard
+    smallest          normal               LARGEST              normal
+```
+
+Wait — there's a layout tension with 4 tiers. With 3 tiers, the target naturally sits in the centre. With 4, the visual centre falls between Starter and Pro. The solution:
+
+### Recommended 4-Tier Layout Strategy
+
+**Option A: Asymmetric Elevation (Recommended)**
+
+Position Pro as the 3rd of 4 columns but give it 20-30% more visual weight:
+
+```
+┌──────────┐  ┌──────────┐  ┌═══════════════╗  ┌──────────┐
+│  FREE    │  │ STARTER  │  ║   ★ PRO ★      ║  │ COMPANY  │
+│  £0/mo   │  │ £15/mo   │  ║   £30/mo       ║  │ £60/mo   │
+│  1 cert  │  │ 8 certs  │  ║   20 certs     ║  │ 50 certs │
+│          │  │          │  ║   MOST POPULAR  ║  │          │
+│ [Try It] │  │ [Start]  │  ║ [Start Trial]  ║  │[Contact] │
+└──────────┘  └──────────┘  ╚════════════════╝  └──────────┘
+   muted        normal          ELEVATED           normal
+   grey bg     white bg       primary border      white bg
+                              shadow + scale(1.05)
+                              "MOST POPULAR" badge
+                              slightly taller card
+```
+
+**Visual techniques for Pro elevation:**
+- **Card height:** 10-15px taller than siblings (extends above and below)
+- **Border:** 2px solid primary colour (other cards: 1px neutral border)
+- **Shadow:** Elevated shadow (`0 8px 24px rgba(primary, 0.15)`)
+- **Scale:** `transform: scale(1.03)` on desktop
+- **Badge:** "MOST POPULAR" ribbon/pill at top of card in primary colour
+- **CTA colour:** Primary filled button (others: outlined or ghost buttons)
+- **Background:** Subtle primary tint or white (others: neutral-50 or transparent)
+
+**Option B: 3+1 Layout (Alternative)**
+
+Show Free/Starter/Pro as a classic 3-column layout with Company below or as a separate "Enterprise" row:
+
+```
+┌──────────┐  ┌═══════════════╗  ┌──────────┐
+│  FREE    │  ║   ★ PRO ★      ║  │ STARTER  │
+│  £0/mo   │  ║   £30/mo       ║  │ £15/mo   │
+└──────────┘  ╚════════════════╝  └──────────┘
+
+    ┌─────────────────────────────────────┐
+    │  COMPANY — £60/mo                   │
+    │  For firms. 50 certs/mo. Contact →  │
+    └─────────────────────────────────────┘
+```
+
+This exploits the 3-tier advantage (30% higher ARPU per Price Intelligently) while keeping Company as a visible anchor. However, it de-emphasises Company and may lose some anchor effect.
+
+**Recommendation: Option A** — 4 columns with Pro visually elevated. This keeps Company visible as the price anchor while directing attention to Pro.
+
+### Mobile Layout (< 768px)
+
+On mobile, cards stack vertically. Ordering matters even more:
+
+```
+1. Pro (MOST POPULAR) — shown first, expanded by default
+2. Starter — collapsed, "Starting from £15/mo"
+3. Company — collapsed, "For teams from £60/mo"
+4. Free — at bottom, "Try 1 certificate free"
+```
+
+**Why Pro first on mobile:** The primacy effect (first item seen gets disproportionate attention) replaces centre-stage bias on vertical layouts. Showing Pro first with an expanded card and prominent CTA maximises mobile conversion.
+
+
+## 4. Loss Aversion Upgrade Prompts
+
+Loss aversion (Kahneman & Tversky, 1979) shows the **pain of losing is ~2x more motivating** than the pleasure of gaining. Every upgrade prompt should frame the current tier's limitations as a loss, not the next tier's features as a gain.
+
+### Free → Starter Upgrade Prompts
+
+**Trigger:** User completes their 1 free certificate.
+
+| Timing | Loss-Framed Prompt | Where |
+|--------|-------------------|-------|
+| After 1st cert | "You've seen CertMate cut 90 minutes to 5. **Your next customer is waiting** — upgrade to keep going." | In-app modal |
+| Cert limit hit | "You've used your free certificate this month. **Every manual report costs you £50-120 in billable time.** Upgrade from £15/mo." | Blocking modal (soft — dismissible) |
+| 7 days after signup | "You generated a certificate 7 days ago. Since then, you've done **[estimated X] EICRs manually** — that's [X hours] of admin you could have saved." | Email / push notification |
+| Next month reset | "Your free certificate has refreshed. But last month you could have saved **[X] hours** on the [X] jobs you did manually." | In-app banner |
+
+### Free → Pro Upgrade Prompts (Skip Starter)
+
+**Trigger:** User behaviour suggests they're a full-time electrician (checked daily, or explicitly asked about higher volumes).
+
+| Timing | Loss-Framed Prompt | Where |
+|--------|-------------------|-------|
+| High engagement signal | "Doing more than 2 EICRs a week? **You're losing £100-240/week in admin time.** Pro handles 20 certs/month for just £30." | In-app prompt |
+| After cert limit | "You need more than 1 cert/month. **At your rate, manual paperwork costs more per month than Pro does per year.** Skip Starter — go Pro." | Smart upgrade modal |
+
+### Starter → Pro Upgrade Prompts
+
+**Trigger:** User approaches or hits 8-cert limit, or is on Starter for 2+ months.
+
+| Timing | Loss-Framed Prompt | Where |
+|--------|-------------------|-------|
+| 6/8 certs used | "You've used 6 of 8 certificates. At this pace, you'll **run out before month-end** — and go back to manual. Pro gives you 20/month for £15 more." | In-app warning banner |
+| 8/8 certs used | "**You've hit your Starter limit.** Every cert you do manually from now until [date] costs you 30-60 minutes. Upgrade to Pro and never hit a wall." | Blocking modal |
+| 8/8 + tries to create cert | "You're trying to create a certificate but you've used all 8. **This EICR will take you 90 minutes manually — or 5 minutes on Pro.** Upgrade now?" | Blocking modal with ROI calc |
+| Steady 7-8/month usage | "You've used 7+ certs for 2 months running. **You're paying £1.88/cert on Starter when Pro drops that to £1.50.** More certs, lower cost. Upgrade →" | In-app banner |
+| Approaching renewal | "Your Starter renews in 3 days. Last month you **hit your limit on day [X]** and had to do [Y] certs manually. Pro eliminates that ceiling for £15/mo more." | Email / push |
+
+**Key Starter → Pro copy framework:**
+- Always reference the **£15 gap**, not the £30 total: "just £15 more" not "upgrade to £30/month"
+- Always quantify what they're losing: hours, money, or certs they couldn't generate
+- Always make the maths obvious: "12 extra certs × 30 min saved = 6 hours back"
+
+### Pro → Company Upgrade Prompts
+
+**Trigger:** User consistently uses 15+ of 20 certs, or asks about team features.
+
+| Timing | Loss-Framed Prompt | Where |
+|--------|-------------------|-------|
+| 18/20 certs used | "You're almost at capacity. **If you take on one more job this week, you'll have to do the cert manually.** Company gives you 50/month." | In-app banner |
+| 20/20 + growing business | "You've maxed out Pro for [X] months. **You're turning down AI-assisted work.** Company at £60/mo means you never say no to a job." | Email |
+| Multi-device/user request | "Want your team on CertMate? **Every engineer doing certs manually is costing your business £500+/month in admin time.** Company supports your whole team." | In-app prompt |
+
+### Churn Prevention (Cancellation Flow)
+
+When any paid user attempts to cancel:
+
+```
+Step 1: "Before you go — here's what you'll lose:"
+  - "Your [X] saved customer records"
+  - "Your [X] certificate templates"
+  - "Your report history (used for re-inspections)"
+  - "[X] hours saved this month alone"
+
+Step 2: "Downgrade instead?"
+  - Pro → Starter: "Keep 8 certs/month for £15 instead of losing everything"
+  - Starter → Free: "Keep 1 cert/month and your data, free forever"
+
+Step 3: If still cancelling:
+  - "We'll keep your data for 90 days in case you change your mind.
+     After that, your [X] customer records and [X] certificates
+     will be permanently deleted."
+```
+
+**The 90-day data retention window is critical.** It creates an ongoing loss aversion: "My data is still there, I could go back." This is standard SaaS practice and dramatically improves win-back rates (research shows 15-25% of churned users with data retention return within 90 days).
+
+
+## 5. Feature Gating Matrix
+
+### Design Principle: Create Desire, Not Satisfaction
+
+Feature gating must follow one rule: **lower tiers should make users want more, not feel content with less.** Every gate should create a moment of "I wish I had that" — not "eh, I don't need it."
+
+The gates fall into three categories:
+1. **Hard gates:** Feature completely unavailable (e.g., no team features on Starter)
+2. **Soft gates:** Feature available but limited or degraded (e.g., basic AI vs full AI)
+3. **Visibility gates:** Feature visible but locked — user can see what they're missing
+
+### Complete Feature Gating Matrix
+
+| Feature | Free (£0) | Starter (£15) | Pro (£30) | Company (£60) |
+|---------|-----------|---------------|-----------|---------------|
+| **Certificates/month** | 1 | 8 | 20 | 50 |
+| **AI voice-to-certificate** | 1 cert only | Yes | Yes | Yes |
+| **Certificate types** | EICR only | EICR + Minor Works | All types (EICR, EIC, Minor Works, PAT) | All types |
+| **AI compliance checking** | Basic (pass/fail) | Standard | Advanced (with explanations + fix suggestions) | Advanced + audit trail |
+| **Photo documentation** | No | 3 photos/cert | Unlimited photos/cert | Unlimited + auto-organise |
+| **Report branding** | CertMate watermark | CertMate footer | Your logo + no CertMate branding | Full white-label |
+| **Customer database** | No | Up to 50 customers | Unlimited customers | Unlimited + import/export |
+| **Certificate history** | 90 days | 12 months | Unlimited | Unlimited + version control |
+| **Export formats** | PDF only (watermarked) | PDF | PDF + print-optimised | PDF + CSV + API |
+| **BS 7671 updates** | Manual | Notified | Auto-applied to templates | Auto-applied + change log |
+| **Re-inspection reminders** | No | No | Yes (automated) | Yes + client-facing notifications |
+| **Job scheduling** | No | No | No | Yes |
+| **Team members** | 1 | 1 | 1 | Up to 5 (+ £10/user) |
+| **Support** | Community/FAQ | Email (48hr) | Email (24hr) + chat | Priority (4hr) + phone |
+| **Analytics dashboard** | No | No | Basic (monthly summary) | Full (revenue, time saved, compliance score) |
+| **Template customisation** | No | No | Yes | Yes + shared team templates |
+| **Offline mode** | No | No | Yes (sync when online) | Yes |
+
+### Strategic Gate Analysis: Why Each Gate Creates Desire
+
+**Gate 1: Certificate types (Free/Starter = limited)**
+- Free users can only do EICRs. When they get a Minor Works job, they hit the wall.
+- Starter users can do EICRs + Minor Works but not EICs or PATs. As their business grows, they naturally need more certificate types.
+- **Desire trigger:** "I just got a PAT testing job but CertMate won't let me do it on Starter. Pro would handle this."
+
+**Gate 2: Photo documentation (Free = none, Starter = 3/cert)**
+- Photos are increasingly important for EICR evidence. Limiting to 3 per cert on Starter creates friction on complex installations.
+- A 12-circuit board with 3 defects needs more than 3 photos.
+- **Desire trigger:** "I need 6 photos for this board but I can only attach 3. Pro has unlimited."
+
+**Gate 3: Report branding (Free = watermarked, Starter = CertMate footer)**
+- Sole traders are proud of their business brand. Having "CertMate" on their certificates is functional but feels unprofessional to clients.
+- **Desire trigger:** "My customer asked why the cert says 'CertMate' at the bottom. I want my own logo on there."
+
+**Gate 4: Customer database (Free = none, Starter = 50 max)**
+- The customer database creates switching cost (endowment effect). Once an electrician has 40+ customers stored, leaving CertMate means losing that data.
+- The 50-customer cap on Starter means growing businesses hit it after 6-12 months — right when they're most locked in.
+- **Desire trigger:** "I've got 48 customers stored. I need to keep adding, but I'm almost at the limit."
+
+**Gate 5: Re-inspection reminders (Pro only)**
+- This is a **revenue-generating feature** for electricians. EICRs expire every 5 years. Automated reminders to past customers = rebooking without marketing.
+- Withholding this from Starter makes Pro feel like a business growth tool, not just a cert app.
+- **Desire trigger:** "Pro would automatically remind my old customers when their EICR expires. That's free repeat business."
+
+**Gate 6: Compliance explanations (Pro = advanced with fix suggestions)**
+- Free/Starter get basic pass/fail compliance checking. Pro gets detailed explanations of failures AND suggested fixes.
+- For a sole trader, the difference between "C2 fail" and "C2 fail — suggest rewiring to TN-S earthing arrangement per Regulation 411.4.2" is massive.
+- **Desire trigger:** "The AI told me it failed but not why. On Pro, it would tell me exactly how to fix it."
+
+**Gate 7: Offline mode (Pro only)**
+- Electricians work in basements, meter cupboards, and building sites with poor signal. Offline mode is a genuine workflow need.
+- **Desire trigger:** "I was on a job in a basement with no signal and couldn't generate the cert. Pro works offline."
+
+**Gate 8: Analytics dashboard (Pro = basic, Company = full)**
+- Sole traders on Pro see monthly summaries (certs generated, time saved, revenue tracked).
+- Company users see firm-wide analytics: revenue per engineer, compliance scores, job efficiency.
+- **Desire trigger for Pro users:** Company analytics creates aspiration for growing businesses.
+
+### The "Visibility Gate" Strategy
+
+Some Pro features should be **visible but locked** on Starter, not completely hidden. This uses the **Zeigarnik effect** — people remember incomplete tasks more than complete ones. Showing a locked feature is more motivating than hiding it.
+
+**Features to show-but-lock on Starter:**
+- Re-inspection reminders: Show "Re-inspection Reminders (Pro)" in the sidebar with a lock icon. When tapped, show a preview of what it does with an upgrade CTA.
+- Analytics: Show "Your Monthly Summary" card with blurred/placeholder data and "Upgrade to Pro to unlock."
+- Template customisation: Show "Customise Templates (Pro)" in settings. Tapping shows a preview gallery.
+- Offline mode: When device goes offline, show "Offline Mode is a Pro feature. Upgrade to work without internet."
+
+**Features to completely hide on Free:**
+- Customer database (show after first cert with "Upgrade to save this customer")
+- Photo documentation (show camera icon greyed out with "Photos available on Starter+")
+- Export (show "Upgrade to remove watermark" on the PDF preview)
+
+
+## 6. Pricing Page Copy — Complete Framework
+
+### Above the Fold
+
+```
+Headline:    "Stop spending hours on EICR paperwork"
+Subhead:     "Speak your observations. Get a BS 7671-compliant certificate in minutes."
+Trust line:  "Join [X] UK electricians saving 20+ hours a month"
+```
+
+### Annual/Monthly Toggle
+
+```
+┌─────────────────────────────────┐
+│  Monthly    [●━━━━━]  Annual    │
+│                                 │
+│        💰 Save up to 17%        │
+│     "Get 2 months free"         │
+└─────────────────────────────────┘
+```
+Default the toggle to Annual. Show savings badge. When toggled to Monthly, show the higher prices with a subtle "Switch to annual to save £X/year" reminder.
+
+### Tier Cards (Desktop)
+
+**Free Card (muted, leftmost):**
+```
+FREE
+£0/month
+
+1 AI certificate per month
+EICR only
+Basic compliance check
+PDF with watermark
+
+[Try Free →]
+(greyed/muted CTA)
+```
+
+**Starter Card (standard):**
+```
+STARTER
+£15/month
+  or £150/year (save £30)
+
+8 AI certificates per month
+EICR + Minor Works
+Standard compliance check
+3 photos per cert
+Customer database (50)
+12-month history
+Unbranded PDF export
+Email support
+
+[Get Started]
+```
+
+**Pro Card (ELEVATED — primary border, badge, taller):**
+```
+★ MOST POPULAR ★
+
+PRO
+£30/month
+  or £290/year (save £70 — 2 months free)
+
+20 AI certificates per month
+All certificate types
+Advanced AI with fix suggestions
+Unlimited photos
+Your logo — no CertMate branding
+Unlimited customer database
+Unlimited history
+Re-inspection reminders
+Template customisation
+Offline mode
+Basic analytics
+Priority email + chat support
+
+"Pays for itself after your first certificate"
+
+[Start Free Trial]
+(primary filled button, largest)
+```
+
+**Company Card (standard, rightmost):**
+```
+COMPANY
+£60/month
+  or £600/year (save £120)
+
+50 AI certificates per month
+Everything in Pro, plus:
+Up to 5 team members
+Full analytics dashboard
+Job scheduling
+White-label reports
+API & CSV export
+Audit trail
+Priority phone support
+Dedicated onboarding
+
+"For firms doing 30+ jobs/month"
+
+[Contact Sales]
+```
+
+### Below the Tier Cards
+
+**ROI Calculator (interactive):**
+```
+┌─────────────────────────────────────────────────────┐
+│  How many EICRs do you do per month?                │
+│  ───○────────────── 12 certs/month                  │
+│                                                     │
+│  Without CertMate:    18 hours/month on paperwork   │
+│  With CertMate Pro:   2 hours/month                 │
+│  Time saved:          16 hours/month                │
+│  Value at £50/hr:     £800/month saved              │
+│                                                     │
+│  Pro costs £30/mo → 27x return on investment        │
+│                                                     │
+│  [Start Free Trial — Save 16 Hours This Month]      │
+└─────────────────────────────────────────────────────┘
+```
+
+**Comparison with Competitors:**
+```
+"Why pay £15/mo for a form-filler when CertMate does the work for you?"
+
+                    iCertifi    Tradecert   CertMate Pro
+Certs included      Unlimited   Unlimited   20/month
+AI approach         Camera→Form Token-based  Voice→Certificate
+Fill out forms?     Yes         Yes          No forms at all
+Monthly price       £5-15       £18+tokens   £30
+
+"iCertifi speeds up form-filling. CertMate eliminates forms entirely."
+```
+
+**FAQ Section (address objections):**
+```
+Q: "Why pay £30 when iCertifi is £8/month?"
+A: "iCertifi is a digital form — you still type every field. CertMate
+    generates the entire certificate from your voice notes. At £50/hr,
+    the 60 minutes you save per cert is worth more than the monthly difference."
+
+Q: "What if I don't use all 20 certificates?"
+A: "Most Pro users do 10-15 certs/month. At £1.50-3.00 per cert,
+    it's still cheaper than the admin time for even one manual certificate.
+    You're paying for time freedom, not just certificates."
+
+Q: "Can I try before I commit?"
+A: "Generate your first certificate completely free — no card required.
+    See the AI in action, then decide."
+```
+
+
+## 7. Overprovisioning Strategy
+
+### Why 20 Certs on Pro Works at £1/cert API Cost
+
+The £1/cert API cost creates an interesting dynamic: **overprovisioning the cert allocation is a feature, not a bug.**
+
+**Usage distribution model (based on SaaS usage patterns):**
+
+| Usage Pattern | % of Pro Users | Certs Used/mo | API Cost | Revenue | Margin |
+|---------------|---------------|---------------|----------|---------|--------|
+| Light (part-time) | 25% | 5-8 | £5-8 | £30 | 73-83% |
+| Moderate (typical) | 40% | 10-14 | £10-14 | £30 | 53-67% |
+| Heavy (full-time) | 25% | 15-18 | £15-18 | £30 | 40-50% |
+| Max (power user) | 10% | 19-20 | £19-20 | £30 | 33-37% |
+| **Blended average** | 100% | ~12 | ~£12 | £30 | **60%** |
+
+**The 20-cert allocation is psychologically powerful because:**
+
+1. **Abundance mindset:** Users who feel they have "plenty" use the product more freely and build deeper habits. A user with 20 certs who uses 12 feels comfortable and grateful. A user with 12 certs who uses 12 feels anxious and constrained.
+
+2. **Reduced "meter anxiety":** Per the research doc, flat-rate bias means users prefer overpaying for a flat rate vs paying exactly what they use. The unused 8 certs are the "peace of mind premium."
+
+3. **Margin buffer:** The 60% blended margin at ~12 certs average usage is healthy. Even at 75% utilisation (15 certs), margin is 50% — still viable.
+
+4. **Upgrade prevention:** If Pro were 12 certs and users averaged 12, half would hit the cap monthly and churn from frustration. 20 certs means the cap is invisible for 90% of users — they feel satisfied, not constrained. The 10% who hit 20 are exactly the right candidates for Company.
+
+**The overprovision is the product.** CertMate Pro at 20 certs doesn't sell 20 certificates — it sells "never worrying about running out."
+
+
+## 8. Implementation Priorities
+
+### Phase 1: Pricing Page Launch
+1. Build 4-tier layout with Pro elevated (centre-stage bias)
+2. Implement "Most Popular" badge on Pro
+3. Annual/monthly toggle defaulting to Annual
+4. ROI calculator below tier cards
+5. Loss-framed copy on all tier descriptions
+
+### Phase 2: In-App Upgrade Triggers
+1. Cert counter visible at all times ("X of Y used this month")
+2. 75% usage warning banner (loss-framed)
+3. Limit-hit modal with upgrade CTA
+4. Visibility gates on Starter (locked Pro features visible)
+5. Post-first-cert upgrade prompt for Free users
+
+### Phase 3: Lifecycle Messaging
+1. Onboarding email sequence (3-email: welcome → value → upgrade)
+2. Approaching-limit email triggers
+3. Monthly usage summary with "time saved" metrics
+4. Cancellation flow with loss-framed retention
+5. 90-day data retention with win-back emails
+
+### Phase 4: Optimisation
+1. A/B test Starter at £15 vs removing Starter (3-tier)
+2. A/B test Pro at £29 vs £30
+3. Track tier distribution — target 50-60% Pro adoption
+4. Monitor Starter-to-Pro conversion rate — target 40%+ within 3 months
+5. Track Company self-selection from Pro power users
+
+
+## 9. Key Metrics to Monitor
+
+| Metric | Target | Danger Zone | Action |
+|--------|--------|-------------|--------|
+| % paid users on Pro | 50-60% | <40% (Starter cannibalising) | Widen feature gap, raise Starter price |
+| Starter → Pro upgrade rate | 40%+ within 90 days | <25% | Tighten Starter feature gates |
+| Pro average utilisation | 50-65% (10-13 certs) | >75% (margin compression) | Consider reducing allocation or raising price |
+| Free → Paid conversion | 8-12% | <5% | Improve free cert experience, better upgrade prompts |
+| Company adoption | 10-15% of paid | <5% | Adjust Company features/price, improve team pitch |
+| Monthly churn (Pro) | <5% | >8% | Review value delivery, add retention features |
+| Blended gross margin | >55% | <45% | Reduce cert allocations or raise prices |
+
+
+## Sources
+
+- Huber, Payne & Puto (1982) — decoy effect (asymmetric dominance)
+- Kahneman & Tversky (1979) — loss aversion, ~2x pain vs pleasure
+- Price Intelligently — 512 SaaS companies, 3 tiers = 30% higher ARPU
+- ConversionXL — eye-tracking, centre-stage bias +38% mid-tier selection
+- Buffer — centre-focused design +31% mid-tier selection
+- McKinsey — loss-framed messaging +21% conversion
+- American Marketing Association — decoy pricing +40% target plan selection
+- Bain & Company — perceived value drives 80% of B2B decisions
+- Simon-Kucher & Partners — anchoring +15-20% contract values
+- CertMate price-validation.md — competitor pricing, margin analysis
+- CertMate research-pricing-psychology.md — psychology principles, charm pricing, annual discounts
 
 ### appstore-connect
 
@@ -9636,6 +10278,80 @@ Located at: `~/Developer/EICR_Automation/_archive/CertMate_EICR_App/ExportOption
 ## Known Issues
 - **onnxruntime.framework** (SPM 1.20.0) ships without `MinimumOSVersion` in its Info.plist — deploy script patches it during archive export
 - Only Development signing cert available locally — must use `-allowProvisioningUpdates` with API key for cloud distribution signing
+
+### behavior-ops-marketing
+
+# Behavior Ops Manual — CertMate Marketing Playbook
+
+Key frameworks from Chase Hughes' "The Behavior Ops Manual" applied to CertMate's pricing, marketing, and conversion strategy.
+
+## 1. FATE Model (Focus, Authority, Tribe, Emotion)
+Ancestral survival priorities that drive all human behavior:
+- **Focus** — Capture attention immediately. Lead with the problem (cert compliance pain).
+- **Authority** — Position CertMate as THE professional tool. Use NICEIC/NAPIT association language.
+- **Tribe** — "Join thousands of UK electricians who..." Electricians identify strongly with their trade.
+- **Emotion** — Fear of failed inspections, pride in professionalism, relief from paperwork burden.
+
+## 2. Six-Axis Model of Influence
+Six axes: Suggestibility, Focus, Openness, Connection, Compliance, Expectancy.
+Only 3 of 6 need to be present for persuasion. **For sales pages/landing pages, prioritize:**
+1. **Suggestibility** — Social proof, testimonials, "most popular" badges
+2. **Focus** — Clean design, single CTA, remove distractions
+3. **Expectancy** — Set expectations early ("In 2 minutes you'll have your first cert")
+
+## 3. Decision Map — Electrician Persona
+Six decision styles. UK electricians skew toward:
+- **Investment** — "Is this a valuable return on my money?" → ROI calculator showing time saved × hourly rate
+- **Necessity** — "Why do I need this vs what I have?" → Emphasize compliance risk, upcoming regulation changes
+- Secondary: **Conformity** — "What are other sparks using?" → Trade-specific social proof
+
+## 4. Cognitive Biases for Pricing Page
+- **Anchoring** — Show annual cost of manual process FIRST (£2,400+/year in wasted time), then CertMate at £15-30/mo feels tiny
+- **Zero-risk bias** — Free tier eliminates all risk. "Try it free, no card required"
+- **Default effect** — Make Pro (£30/mo) the visually highlighted "Most Popular" option
+- **Endowment effect** — Once they use free tier and create certs, they value the system more and won't leave
+- **IKEA effect** — Let users customize templates, cert layouts → increases perceived value
+- **Bandwagon** — "X electricians signed up this month" counter
+- **Recency bias** — At the decision point (pricing page CTA), remind of positive attributes just experienced
+- **Authority bias** — "Built for BS 7671 compliance" — regulatory language signals authority
+
+## 5. Sales Objection Handling (5S Formula)
+Four objections and how to handle each:
+1. **Indifference** ("I'm fine with paper certs") → Sympathize, then show time/cost comparison
+2. **Disbelief** ("Software can't handle all cert types") → Show comprehensive cert library, demo
+3. **Confusion** ("Too complicated to switch") → 2-minute onboarding video, "import existing certs" feature
+4. **Obstacles** ("Can't afford it right now") → Free tier, ROI calculator, "pays for itself in 2 jobs"
+
+**5S Formula**: Sympathize → Socialize (others felt same) → Select (pick their specific concern) → Show (evidence/demo) → Secure (close)
+
+## 6. Scarcity & Urgency
+- Before any CTA, deliver the feeling of missing out
+- "Early adopter pricing" with visible countdown/limit
+- "Free tier limited to first 1,000 sign-ups" (even if soft limit)
+- Show what competitors charge for less functionality
+
+## 7. Grief Process Method
+For getting electricians to let go of manual cert processes:
+- Acknowledge the old way worked ("Paper certs got you this far")
+- Show the world has changed (digital requirements, client expectations)
+- Make the transition feel natural, not forced
+- Position CertMate as evolution, not replacement
+
+## 8. PCP Model (Perception, Context, Permission)
+Hierarchy of compliance:
+- **Perception** — How they see CertMate (professional tool vs generic software)
+- **Context** — Where they encounter it (trade publications, WhatsApp groups, supplier partnerships)
+- **Permission** — Remove barriers to action (free tier, no card, 2-min setup)
+
+## 9. Needs Map — Electrician Motivations
+- **Significance** — "Stand out as a professional" — branded cert PDFs with their logo
+- **Approval** — "Clients love digital certs" — client portal, instant sharing
+- **Intelligence** — "Smart electricians use smart tools" — don't talk down to them
+- Secondary: **Strength/Power** — "Take control of your compliance" — autonomy messaging
+
+## Source
+Chase Hughes, "The Behavior Ops Manual" — PDF at /tmp/behavior-ops.pdf
+Key sections: FATE (pp30-49), Six-Axis (pp71-80), Sales Objections (pp548-560), Scarcity (pp596-612), Cognitive Biases (pp628-646)
 
 ### ccu-extraction-plan
 
@@ -9703,6 +10419,1160 @@ Run in background:
 cd /Users/derekbeckley/Developer/EICR_Automation/CertMateUnified && ./deploy-testflight.sh 2>&1 | tee /tmp/deploy.log
 ```
 Monitor with: `tail -20 /tmp/deploy.log`
+
+### marketing-copy
+
+# CertMate Production-Ready Marketing Copy
+
+**Date:** 25 March 2026
+**Purpose:** Complete, production-ready marketing copy for all channels — App Store, pricing page, Google Ads, trade forum, and email conversion sequence. All copy uses the finalised 4-tier pricing (Free/Starter £15/Pro £30/Company £60) with psychological anchoring, decoy positioning, and ROI framing baked in.
+
+**Based on:** anchoring-strategy.md, roi-calculator-messaging.md, price-validation.md, pricing-strategy.md
+
+
+## Table of Contents
+
+1. [App Store Copy](#1-app-store-copy)
+2. [Pricing Page Copy](#2-pricing-page-copy)
+3. [Google Ads Variants](#3-google-ads-variants)
+4. [Trade Forum Post Template](#4-trade-forum-post-template)
+5. [Email Sequence: Free-to-Paid Conversion](#5-email-sequence-free-to-paid-conversion)
+
+
+## 1. App Store Copy
+
+### 1.1 App Name & Subtitle
+
+**App Name:** CertMate — AI Electrical Certs
+**Subtitle (30 chars):** EICR & BS 7671 in Minutes
+
+### 1.2 Short Description (Promotional Text — 170 chars)
+
+> Speak your observations. Get a BS 7671-compliant certificate. CertMate turns 45-minute EICR write-ups into 5-minute voice-powered certificates. Try your first one free.
+
+### 1.3 Long Description (App Store Description — 4000 chars max)
+
+```
+STOP SPENDING HOURS ON EICR PAPERWORK
+
+CertMate is the AI certification assistant that turns your voice into compliant electrical certificates. Describe your observations on-site — CertMate writes the certificate. No forms. No typing. No paperwork in the van.
+
+WHAT CERTMATE DOES
+
+Speak your inspection observations as you work. CertMate's AI listens, understands electrical terminology, and generates a fully formatted, BS 7671-compliant certificate — complete with test results, observation codes, regulation references, and schedules.
+
+A full EICR write-up that takes 45-60 minutes by hand takes 10-15 minutes with CertMate.
+
+HOW IT WORKS
+
+1. Start a new certificate — say the address and CertMate sets up the job
+2. Walk through the inspection speaking your observations: "Kitchen ring, polarity confirmed, Zs 0.31 ohms, RCD trips at 28ms"
+3. CertMate fills in the schedule of test results, maps observation codes, and references the correct BS 7671 regulations
+4. Review the AI-generated certificate, sign, and export as a branded PDF
+
+That's it. No tapping through form fields. No cross-referencing the regs book. No writing up notes in the van after the job.
+
+CERTIFICATE TYPES
+- EICR (Electrical Installation Condition Report)
+- EIC (Electrical Installation Certificate)
+- Minor Works Certificate
+- PAT Testing Records
+
+All certificates fully compliant with BS 7671:2018 + Amendment 2 (effective April 2026).
+
+KEY FEATURES
+
+AI Voice-to-Certificate — Speak your observations, get a compliant certificate
+Smart Compliance Checking — Auto-reviews against current BS 7671 regulations
+Board Schedule Recognition — Describe or photograph consumer units
+Observation Code Mapping — AI assigns C1/C2/C3/FI codes with regulation references
+Branded PDF Export — Your company logo, no CertMate branding (Pro+)
+Customer Database — Store client details for re-inspections
+Re-Inspection Reminders — Automated alerts when EICRs expire (Pro+)
+Offline Mode — Works without signal, syncs when connected (Pro+)
+Amendment 4 Ready — Templates updated automatically when regulations change
+
+BUILT FOR UK ELECTRICIANS
+
+CertMate understands UK electrical terminology, BS 7671 regulation numbering, NICEIC and NAPIT standards, and the specific requirements of EICRs, EICs, and Minor Works certificates. It was built by electricians, for electricians.
+
+PRICING
+
+Free — 1 AI certificate per month. No card required.
+Starter £15/mo — 8 certificates, EICR + Minor Works
+Pro £30/mo — 20 certificates, all types, full features, offline mode
+Company £60/mo — 50 certificates, team access, white-label reports
+
+Pro pays for itself after your first certificate. At £50/hr, the 30 minutes you save per cert is worth more than the monthly subscription.
+
+TRY IT FREE
+
+Generate your first AI certificate completely free — no credit card, no commitment. See CertMate turn a 45-minute job into 5 minutes. Then decide.
+
+Questions? support@certmate.app
+```
+
+### 1.4 App Store Keywords (100 chars, comma-separated)
+
+```
+EICR,electrical certificate,BS 7671,electrical inspection,condition report,AI,voice,Amendment 4,PAT
+```
+
+**Keyword rationale:**
+- `EICR` — Primary search term for electricians looking for cert software
+- `electrical certificate` — Broad category term
+- `BS 7671` — The standard all UK electricians search when looking for compliant tools
+- `electrical inspection` — High-volume search for inspection-related apps
+- `condition report` — Alternate EICR terminology
+- `AI` — Differentiator from form-filling apps
+- `voice` — Core feature differentiator
+- `Amendment 4` — Topical — regulation change effective April 2026
+- `PAT` — Secondary cert type, broadens discovery
+
+**Keywords NOT included (covered by app name/subtitle):**
+- "electrician" (in app name context)
+- "certificate" (in app name)
+- "certs" (in app name)
+
+### 1.5 What's New Text (for updates)
+
+```
+Amendment 4 Ready — All templates updated for BS 7671:2018 Amendment 2, effective 15 April 2026. Your certificates are compliant from day one.
+```
+
+### 1.6 App Store Screenshots — Text Overlays
+
+| Screenshot | Headline | Subtext |
+|-----------|----------|---------|
+| 1. Hero/Splash | "EICR in 13 Minutes, Not 45" | "Voice-powered AI certificates" |
+| 2. Voice Recording | "Speak. Don't Type." | "Describe your observations — CertMate writes the certificate" |
+| 3. Generated Certificate | "BS 7671 Compliant. Every Time." | "AI auto-checks against current regulations" |
+| 4. Board Schedule | "Say It or Snap It" | "Describe your board or photograph it — AI maps every circuit" |
+| 5. PDF Export | "Your Brand. Your Certificate." | "Branded PDF export with your company logo" |
+| 6. ROI Callout | "Pays for Itself After Cert #1" | "Save 30+ minutes per EICR. That's £25+ at your hourly rate." |
+| 7. Pricing | "From Free. Seriously." | "1 free AI certificate every month. No card required." |
+
+
+## 2. Pricing Page Copy
+
+### 2.1 Above the Fold
+
+**Headline:**
+> Stop Spending Hours on EICR Paperwork
+
+**Subheadline:**
+> Speak your observations. Get a BS 7671-compliant certificate in minutes, not hours.
+
+**Trust line:**
+> Join UK electricians saving 20+ hours a month on admin
+
+### 2.2 Annual/Monthly Toggle
+
+```
+  Monthly        ◉━━━━━━━━        Annual
+
+              Save up to 17%
+           "Get 2 months free"
+```
+
+Default: **Annual selected.** When user switches to Monthly, show a subtle reminder: *"Switch to annual and save up to £120/year."*
+
+**Annual pricing:**
+- Starter: £150/yr (save £30)
+- Pro: £290/yr (save £70 — "2 months free")
+- Company: £600/yr (save £120)
+
+### 2.3 Tier Cards
+
+
+#### FREE (Muted card — grey background, ghost CTA)
+
+```
+FREE
+£0/month — forever
+
+1 AI certificate per month
+EICR only
+Basic compliance check (pass/fail)
+PDF export (with CertMate watermark)
+
+No credit card required
+
+[Try Free →]
+```
+
+**Design notes:** Smallest card. Grey/muted background. Ghost-style CTA button. Serves to demonstrate the product exists at no risk — not to satisfy ongoing use.
+
+
+#### STARTER (Standard card — white background, outlined CTA)
+
+```
+STARTER
+£15/month
+  or £150/year (save £30)
+
+8 AI certificates per month
+EICR + Minor Works
+Standard AI compliance checking
+3 photos per certificate
+Customer database (up to 50 clients)
+12-month certificate history
+Unbranded PDF export
+Email support (48hr response)
+
+"Less than the cost of one manual EICR's admin time"
+
+[Get Started]
+```
+
+**Upgrade nudge (always visible at bottom of Starter card):**
+> Need more than 8 certs/month? **See Pro →**
+
+**Design notes:** Standard white card. Outlined primary-colour CTA button. The per-cert cost of £1.88 is deliberately NOT shown here — it looks worse than Pro's £1.50. The "less than one manual EICR's admin time" line anchors £15 against the £25-50 time cost of doing a cert by hand.
+
+
+#### PRO — MOST POPULAR (Elevated card — primary border, badge, taller, filled CTA)
+
+```
+★ MOST POPULAR
+
+PRO
+£30/month
+  or £290/year (save £70 — 2 months free)
+
+20 AI certificates per month
+All certificate types (EICR, EIC, Minor Works, PAT)
+Advanced AI with fix suggestions & reg references
+Unlimited photos per certificate
+Your logo — no CertMate branding
+Unlimited customer database
+Unlimited certificate history
+Re-inspection reminders (automated)
+Template customisation
+Offline mode — works without signal
+Basic analytics dashboard
+Email (24hr) + chat support
+
+"Pays for itself after your first certificate"
+
+Just £1.50 per cert — each one saves you £25 in admin time.
+That's a 17× return on every certificate.
+
+[Start Free Trial]
+```
+
+**ROI callout box (below CTA, inside card):**
+```
+┌──────────────────────────────────────┐
+│  At 12 EICRs/month:                  │
+│  Time saved: 6 hours/month           │
+│  Value at £50/hr: £300/month         │
+│  Annual saving: £3,240               │
+│  Your investment: £30/month          │
+│                                      │
+│  That's a 10× return. Every month.   │
+└──────────────────────────────────────┘
+```
+
+**Design notes:** This card is the visual hero.
+- 2px primary colour border (others: 1px neutral)
+- `transform: scale(1.03)` on desktop
+- `box-shadow: 0 8px 24px rgba(primary, 0.15)`
+- Card extends 10-15px taller above and below adjacent cards
+- "MOST POPULAR" badge at top in primary colour pill
+- CTA is a filled primary-colour button (others are outlined/ghost)
+- All ROI numbers visible without scrolling on the card
+
+
+#### COMPANY (Standard card — white background, outlined CTA)
+
+```
+COMPANY
+£60/month
+  or £600/year (save £120)
+
+50 AI certificates per month
+Everything in Pro, plus:
+Up to 5 team members (+£10/user)
+Full analytics dashboard (revenue, compliance, efficiency)
+Job scheduling
+White-label reports
+CSV + API export
+Audit trail
+Auto-updated BS 7671 templates + change log
+Priority phone support (4hr response)
+Dedicated onboarding
+
+"For firms doing 30+ jobs a month"
+
+Best per-cert value at just £1.20 each.
+Cheaper than 4 separate iCertifi licenses.
+
+[Contact Sales]
+```
+
+**Design notes:** Standard white card. Outlined CTA. The "for firms" language self-selects the audience — sole traders read this and think "Pro is my tier." The comparison to "4 separate iCertifi licenses" reframes £60 as a cost saving for firms currently buying multiple individual subscriptions.
+
+
+### 2.4 Mobile Layout (< 768px)
+
+Cards stack vertically in this order:
+1. **Pro** (MOST POPULAR) — shown first, fully expanded
+2. **Starter** — collapsed, shows "From £15/mo"
+3. **Company** — collapsed, shows "For teams from £60/mo"
+4. **Free** — at bottom, "Try 1 certificate free"
+
+Pro shown first exploits the **primacy effect** — the first item on a vertical scroll gets disproportionate attention.
+
+### 2.5 Below the Tier Cards — ROI Calculator
+
+**Section headline:**
+> How Much Are You Losing to Paperwork?
+
+**Subheadline:**
+> Drag the slider. See the maths. The numbers don't lie.
+
+```
+┌──────────────────────────────────────────────────────────┐
+│                                                          │
+│  How many EICRs do you do per month?                     │
+│  ────────────○──────────────── 12 certs/month            │
+│                                                          │
+│  What's your hourly rate?                                │
+│  ──────○────────────────────── £50/hr                    │
+│                                                          │
+│  ─────────────────────────────────────────────────────── │
+│                                                          │
+│  WITHOUT CertMate:                                       │
+│    12 EICRs × 45 min write-up = 9 hours/month            │
+│    9 hours × £50/hr = £450/month on paperwork            │
+│                                                          │
+│  WITH CertMate Pro (£30/mo):                             │
+│    12 EICRs × 13 min = 2.6 hours/month                   │
+│    Time saved: 6.4 hours/month                           │
+│    Value saved: £320/month                               │
+│                                                          │
+│  ┌──────────────────────────────────────────────────┐    │
+│  │                                                  │    │
+│  │   Your return: 10.7× every month                 │    │
+│  │   Annual saving: £3,480                          │    │
+│  │   Pro pays for itself after certificate #2       │    │
+│  │                                                  │    │
+│  │   Recommended plan: PRO (£30/mo)                 │    │
+│  │                                                  │    │
+│  └──────────────────────────────────────────────────┘    │
+│                                                          │
+│  [Start Free Trial — Save 6 Hours This Month →]          │
+│                                                          │
+└──────────────────────────────────────────────────────────┘
+```
+
+### 2.6 Below Calculator — Competitor Comparison
+
+**Section headline:**
+> Why Pay £15/Month for a Form-Filler When CertMate Does the Work for You?
+
+```
+                        iCertifi      Tradecert     CertMate Pro
+──────────────────────────────────────────────────────────────────
+How it works            Camera scans   AI tokens     Voice → Certificate
+                        + form-filling + form-filling  No forms at all
+
+You still fill in       Yes            Yes            No
+forms manually?
+
+AI type                 Camera-based   Token-based    Voice-to-certificate
+                        (added Jan     (pay per       (built AI-first)
+                        2026 to old    token on
+                        form app)      top of sub)
+
+Monthly price           £5-15          £18 + tokens   £30
+
+Time per EICR           25-35 min      20-30 min      10-15 min
+
+Trustpilot              1.8 / 5 ⭐     —              —
+──────────────────────────────────────────────────────────────────
+
+iCertifi added camera-based AI to a 12-year-old form app.
+Tradecert charges you per AI token on top of the subscription.
+CertMate was built AI-first. Speak your observations — get your
+certificate. No typing. No forms. No token charges.
+```
+
+### 2.7 Below Comparison — FAQ Section
+
+**Q: "Why is CertMate £30 when iCertifi is £8/month?"**
+> iCertifi is a digital form — even with their new Board Vision, you're still filling in fields one by one. CertMate generates the entire certificate from your voice. At £50/hr, the 30 minutes you save per cert is worth more than the monthly price difference. Pro pays for itself after your first 2 certificates.
+
+**Q: "What if I don't use all 20 certificates?"**
+> Most Pro users do 10-15 per month. At £1.50-3.00 per cert, you're still saving more in admin time than any single certificate costs you. You're not paying for 20 certificates — you're paying for the freedom to never worry about running out.
+
+**Q: "Can I try before I pay?"**
+> Generate your first certificate completely free — no card required. See the AI in action on a real job, then decide. If you like it, Pro comes with a free trial.
+
+**Q: "I only do 5-6 certs a month. Is it worth it?"**
+> The Starter plan handles that at £15/month. Each cert saves you 30 minutes of write-up time. At £50/hour, that's £125-150 in time saved for a £15 investment. That's an 8-10× return.
+
+**Q: "Is it BS 7671 compliant? What about Amendment 4?"**
+> Every CertMate template is fully compliant with BS 7671:2018. Amendment 2 (Amendment 4) templates will be live before the 15 April 2026 effective date. Updates happen automatically — you never need to check if you're using the right form.
+
+**Q: "Can I trust AI for electrical certification?"**
+> CertMate doesn't make compliance decisions — you do. The AI handles admin: filling in test results you dictate, mapping observations to regulation references, and flagging if you've missed a field. Think of it as a fast, thorough admin assistant who knows BS 7671 inside out. You review everything and sign off.
+
+### 2.8 Social Proof Bar (below FAQ)
+
+```
+🔒  30-day money-back guarantee
+✓   BS 7671 Amendment 4 compliant
+✓   Works offline — sync when connected
+✓   Your data, always exportable
+✓   Cancel anytime, no contract
+```
+
+### 2.9 Final CTA (bottom of page)
+
+**Headline:**
+> Every EICR You Write by Hand Costs You £25 in Lost Time
+
+**Subheadline:**
+> Your first AI certificate is free. No card required. See the difference in 5 minutes.
+
+**CTA Button:**
+> [Generate Your Free Certificate →]
+
+
+## 3. Google Ads Variants
+
+### 3.1 Variant A — Time-Saving Focus
+
+**Headline 1 (30 chars):** EICR in 13 Minutes, Not 45
+**Headline 2 (30 chars):** AI-Powered Cert Software
+**Headline 3 (30 chars):** Try Your First One Free
+
+**Description 1 (90 chars):**
+> Stop writing up EICRs by hand. Speak your observations — get a BS 7671-compliant certificate.
+
+**Description 2 (90 chars):**
+> UK electricians save 30+ min per EICR. Voice-to-certificate AI. Free trial, no card required.
+
+**Sitelinks:**
+- Free Trial → /free-trial
+- Pricing from £15/mo → /pricing
+- How It Works → /how-it-works
+- BS 7671 Amendment 4 Ready → /amendment-4
+
+**Callout Extensions:**
+- BS 7671 Compliant
+- Works Offline
+- No Card Required
+- Amendment 4 Ready
+- Branded PDF Export
+
+**Target Keywords:**
+`EICR software`, `electrical certificate app`, `EICR app`, `BS 7671 software`, `electrical certification software`, `EICR report software`, `electrical testing software`, `amendment 4 EICR`
+
+**Negative Keywords:**
+`jobs`, `training`, `course`, `DIY`, `free download`, `NVQ`, `apprentice`, `salary`, `electrician near me`
+
+
+### 3.2 Variant B — ROI / Cost Focus
+
+**Headline 1 (30 chars):** Save £5,600/Year on EICR Admin
+**Headline 2 (30 chars):** AI Certs From £1.50 Each
+**Headline 3 (30 chars):** 1st Certificate Free
+
+**Description 1 (90 chars):**
+> Pro pays for itself after cert #1. 20 AI certificates/month for £30. That's 17× your money back.
+
+**Description 2 (90 chars):**
+> Every manual EICR costs you £25 in admin time. CertMate gives that time back — for £1 a day.
+
+**Sitelinks:**
+- ROI Calculator → /pricing#calculator
+- Compare vs iCertifi → /compare/icertifi
+- See Pricing → /pricing
+- Free Trial → /free-trial
+
+
+### 3.3 Variant C — Amendment 4 / Seasonal Push
+
+**Headline 1 (30 chars):** Amendment 4 Ready — EICR App
+**Headline 2 (30 chars):** 2026 EICR Renewal Wave Ready?
+**Headline 3 (30 chars):** AI-Powered BS 7671 Certs
+
+**Description 1 (90 chars):**
+> April 2026: millions of EICRs expire. CertMate handles the surge — AI certificates in minutes.
+
+**Description 2 (90 chars):**
+> BS 7671 Amendment 2 compliant from day one. Voice-powered EICR, EIC & Minor Works. Try free.
+
+**Sitelinks:**
+- Amendment 4 Changes Explained → /blog/amendment-4
+- EICR Renewal Guide 2026 → /blog/eicr-renewal-wave
+- See Pricing → /pricing
+- Start Free → /free-trial
+
+
+### 3.4 Google Ads — Budget & Targeting Notes
+
+| Setting | Recommendation |
+|---------|---------------|
+| **Daily budget** | £15-30/day (£450-900/mo) |
+| **Bidding** | Maximise conversions (once 30+ conversions/month established) |
+| **Location** | United Kingdom only |
+| **Language** | English |
+| **Device** | Mobile priority (70%+ of tradespeople search on mobile) |
+| **Schedule** | 6am-9pm weekdays, all day weekends (electricians search in evenings and downtime) |
+| **Audience signals** | In-market: Business Software, Construction, Home Services |
+
+
+## 4. Trade Forum Post Template
+
+### 4.1 Context
+
+For use on ElectriciansForums.net, Talk Electrician, Facebook groups (UK Electricians Network, Electricians Community UK), and Screwfix Community Forum. Written in authentic sparky voice — NOT marketing speak. This should read like a genuine user recommendation, not an ad.
+
+### 4.2 Forum Post — "What cert software are you using?"
+
+Use this when someone asks about certification software, or as a standalone post in a relevant thread. Adapt the specifics to the conversation.
+
+
+**Post Title (if starting a new thread):** Switched to AI for my EICRs — genuinely changed my workflow
+
+**Post Body:**
+
+> Been using CertMate for about [X] months now and thought I'd share since I see this question come up a lot.
+>
+> I was on iCertifi for years before this. It's fine for what it is, but you're still sat in the van for 30-45 minutes after every EICR tapping through form fields. I tried their Board Vision thing when it came out — it's decent for the board schedule but you're still filling in everything else manually.
+>
+> CertMate is different. You literally speak your observations as you go round the property. "Kitchen ring, polarity confirmed, Zs 0.31, RCD trips at 28ms" — and the AI fills in the schedule, assigns the observation codes, even puts in the reg references. When you're done, you review the cert and sign it.
+>
+> Full EICR write-up went from 40-odd minutes to about 13. I'm doing around 12-15 EICRs a month, so that's roughly 6-7 hours I've got back. Fitted in 2 extra jobs last month just from the time I saved — that more than covers the subscription.
+>
+> It's £30/month for the Pro plan (20 certs). Works out to about £1.50 per cert. When you think about what your time's worth — even at £50/hour, 30 minutes saved per cert is £25 of your time — it's a no-brainer.
+>
+> There's a free tier (1 cert/month) if you want to try the AI without paying anything. No card needed. Worth having a go on your next EICR just to see how it works.
+>
+> Only thing I'd flag — it's a newer app so it doesn't have the decade of templates that iCertifi has. But the ones it does have (EICR, EIC, Minor Works, PAT) cover 95% of what I need, and they're all BS 7671 compliant and ready for Amendment 4 in April.
+>
+> Not affiliated, just a user who got fed up writing certs in the van. Happy to answer questions if anyone's on the fence.
+
+
+### 4.3 Forum Post Variants
+
+**Short version (for replies in existing threads):**
+
+> Been using CertMate for my EICRs — the AI voice thing is legit. You speak your observations as you inspect and it fills in the cert, observation codes, reg references, the lot. Went from 45 mins write-up to about 13. Pro plan's £30/mo for 20 certs. There's a free trial (1 cert, no card) if you want to see if the AI actually works. It does.
+
+**Amendment 4 angle (for threads about regulation changes):**
+
+> If you're looking at cert software ahead of Amendment 4 — CertMate already has the updated templates ready for April. The AI voice feature is worth a look too. You speak your observations on-site and it generates the cert with the right reg references. Saves me about 30 mins per EICR. Free to try (1 cert/month, no card).
+
+**Response to "iCertifi vs X" threads:**
+
+> I was on iCertifi for 3+ years. Switched to CertMate about [X] months ago. Main difference: iCertifi (even with Board Vision) is still form-filling — you're tapping fields and selecting from dropdowns. CertMate eliminates the form entirely. You speak your observations, it writes the cert. My EICR write-up went from 40 mins to 13. At 15 EICRs a month that's nearly 7 hours back. Worth trying the free cert to compare.
+
+### 4.4 Forum Posting Guidelines
+
+- **Never** use marketing language ("revolutionary", "game-changing", "best-in-class")
+- **Always** mention a genuine limitation (newer app, smaller template library, etc.) — honesty builds credibility
+- **Always** include specific numbers (time saved, certs per month, cost per cert)
+- **Always** mention the free tier — removes the "are you selling something?" objection
+- **Never** trash competitors directly — respect the tools people are already using
+- Wait for relevant threads rather than creating obvious promotional posts
+- Engage with follow-up questions genuinely — this is a long-term trust play
+- Vary the wording and specifics between forums to avoid looking copy-pasted
+
+
+## 5. Email Sequence: Free-to-Paid Conversion
+
+### 5.1 Sequence Overview
+
+**Trigger:** User generates their first free certificate
+**Goal:** Convert free users to Pro (primary) or Starter (secondary)
+**Timing:** 3 emails over 10 days
+**Psychological strategy:** Endowment → social proof + ROI → loss aversion
+
+
+### 5.2 Email 1: "The Endowment Email" — Sent 24 Hours After First Free Certificate
+
+**Subject line (A/B test):**
+- A: "You just saved 30 minutes on that EICR"
+- B: "Your first AI certificate — how was it?"
+
+**Preview text:** "Here's what that time is actually worth..."
+
+**Body:**
+
+
+Hi [First Name],
+
+You generated your first AI certificate yesterday. Here's what just happened in numbers:
+
+**Time to write up that EICR: ~13 minutes**
+**Time it would have taken by hand: 45-60 minutes**
+**Time you saved: 30+ minutes**
+
+At £50/hour, that's **£25 of your time** saved on a single certificate.
+
+You've now seen what CertMate does — voice in your observations, get a compliant certificate back. No forms, no typing, no writing up in the van.
+
+Your free plan includes **1 certificate per month.** If you're doing more than one EICR this month, here's how the maths works:
+
+| Plan | Certs/month | Monthly cost | Cost per cert | Time saved |
+|------|-------------|-------------|---------------|-----------|
+| **Starter** | 8 | £15 | £1.88 | 4 hours |
+| **Pro** | 20 | £30 | £1.50 | 10 hours |
+
+**Pro pays for itself after your first 2 certificates.** Everything after that is time — and money — back in your pocket.
+
+[See Plans & Pricing →]
+
+Or just keep your free certificate each month. Either way, that 30 minutes is yours now.
+
+Cheers,
+The CertMate Team
+
+P.S. Got questions about how the AI works? Just reply to this email.
+
+
+### 5.3 Email 2: "The Social Proof + ROI Email" — Sent 5 Days After First Free Certificate
+
+**Subject line (A/B test):**
+- A: "£1 a day. 10 hours a month back."
+- B: "What would you do with 10 extra hours?"
+
+**Preview text:** "The sparky maths on CertMate Pro..."
+
+**Body:**
+
+
+Hi [First Name],
+
+Quick question: how many EICRs did you write up by hand this month?
+
+If the answer is more than zero, here's what that's costing you:
+
+**Each manual EICR = 45 minutes of unpaid admin**
+**5 EICRs/month = 3.75 hours = £187 of your time (at £50/hr)**
+**10 EICRs/month = 7.5 hours = £375 of your time**
+**15 EICRs/month = 11.25 hours = £562 of your time**
+
+That's time you could be on-site, earning. Or home, not working.
+
+CertMate Pro costs **£30/month** — that's **£1 a day.** Less than a coffee from the van.
+
+For that, you get:
+- **20 AI certificates per month** (all types — EICR, EIC, Minor Works, PAT)
+- **Advanced compliance checking** with fix suggestions and reg references
+- **Unlimited photos** per certificate
+- **Your company logo** on every report — no CertMate branding
+- **Offline mode** — works in basements, meter cupboards, anywhere without signal
+- **Re-inspection reminders** — automated alerts when customers' EICRs expire (free repeat business)
+
+At 12 EICRs/month, Pro saves you **6 hours and £300/month in admin time.** That's over **£3,200 a year** — from a £30/month investment.
+
+**Or put it another way:** the time you save is enough for **2-3 extra EICR jobs per month.** At £175 per job, that's **£5,250/year in extra revenue.**
+
+[Start Your Free Pro Trial →]
+
+The free tier isn't going anywhere. But every EICR you do by hand between now and then? That's 30 minutes you won't get back.
+
+Cheers,
+The CertMate Team
+
+
+### 5.4 Email 3: "The Loss Aversion Email" — Sent 10 Days After First Free Certificate
+
+**Subject line (A/B test):**
+- A: "You've already done the hard part"
+- B: "Your next EICR doesn't have to take 45 minutes"
+
+**Preview text:** "Here's what you're losing every month without Pro..."
+
+**Body:**
+
+
+Hi [First Name],
+
+Ten days ago, you used CertMate to generate an AI certificate. You saw a 45-minute write-up happen in under 15.
+
+Since then — if you've been doing EICRs the manual way — here's what that decision has cost you:
+
+**If you've done 3 EICRs since then:**
+- Time lost to manual write-up: **1.5 hours**
+- Value of that time at £50/hr: **£75**
+- What CertMate Pro would have cost: **£15** (half a month)
+
+**If you've done 5 EICRs:**
+- Time lost: **2.5 hours**
+- Value: **£125**
+- Cost of Pro: still £30/month
+
+**If you've done 10:**
+- Time lost: **5 hours**
+- Value: **£250**
+- Pro would have paid for itself **8 times over**
+
+Every week you wait, you're choosing to spend hours on admin that an AI can do in minutes. You've already seen it work.
+
+Here's what you're giving up without Pro:
+
+- ❌ **20 AI certificates/month** — you're limited to 1
+- ❌ **All cert types** — you can only do EICRs on Free
+- ❌ **Unlimited photos** — none on Free
+- ❌ **Your company branding** — Free certs carry a CertMate watermark
+- ❌ **Customer database** — not available on Free
+- ❌ **Re-inspection reminders** — no automated alerts for expiring EICRs
+- ❌ **Offline mode** — no signal, no cert
+- ❌ **Fix suggestions** — Free only tells you pass/fail, not what to fix
+
+You've already done the hard part — you tried it and it worked.
+
+**Start your Pro trial.** If you don't save at least £30 of time in the first month, you shouldn't keep it. But you will.
+
+[Start Free Pro Trial →]
+
+Or if you're doing fewer than 8 certs/month, **Starter at £15/month** covers you — and still saves you hours every month.
+
+[See All Plans →]
+
+Cheers,
+The CertMate Team
+
+P.S. With the EICR renewal wave hitting in April and Amendment 4 taking effect, this is going to be your busiest period in years. Pro handles the paperwork so you can handle the demand.
+
+
+### 5.5 Email Sequence — Technical Notes
+
+| Setting | Value |
+|---------|-------|
+| **Trigger** | First certificate generated (not signup — only users who've had the aha moment) |
+| **Suppression** | Stop sequence immediately if user upgrades to any paid plan |
+| **Timing** | Email 1: +24hrs / Email 2: +5 days / Email 3: +10 days |
+| **Send time** | 6-7pm weekday evenings (electricians finish on-site ~5pm, check phones in evening) |
+| **Never send** | During 7am-5pm weekdays (on-site hours) |
+| **From name** | CertMate (not a personal name — brand is new, no founder recognition yet) |
+| **Reply-to** | Real inbox — support@certmate.app |
+| **Unsubscribe** | One-click, prominent, required by law |
+| **Personalisation** | [First Name], first cert date, cert type generated |
+| **Mobile optimisation** | Essential — 70%+ of tradespeople read email on mobile |
+
+### 5.6 Post-Sequence Follow-Up
+
+If the user hasn't converted after the 3-email sequence:
+
+- **Day 21:** Monthly usage summary email — "You've used 1 of 1 free certificates this month. [X] electricians upgraded to Pro this month."
+- **Day 30 (next free cert available):** "Your free certificate has refreshed. Last month, Pro users saved an average of 8 hours on admin."
+- **Then monthly:** Light-touch monthly summary only. No hard sell. Let the product limitation do the selling.
+
+
+## Appendix: Copy Style Guide
+
+### Voice & Tone
+
+| Do | Don't |
+|-----|-------|
+| Write like a tradesperson, not a marketer | Use buzzwords: "revolutionary", "game-changing", "cutting-edge" |
+| Use specific numbers (13 minutes, £1.50/cert, 17× ROI) | Use vague claims ("save time", "work smarter") |
+| Acknowledge trade realities (van life, poor signal, Amendment 4) | Sound like you've never been on site |
+| Respect competitors — they're tools people use daily | Trash talk ("iCertifi is rubbish") |
+| Use "you" not "users" or "customers" | Use corporate language ("stakeholders", "leverage", "synergise") |
+| British English always (licence, colour, organisation) | American English |
+| £ not $ | |
+| "cert" and "sparky" in informal channels (forums, social) | Slang in formal channels (App Store, pricing page) |
+
+### Key Phrases to Use Consistently
+
+| Phrase | Where |
+|--------|-------|
+| "Speak your observations. Get a certificate." | Everywhere — this is the core positioning |
+| "No forms. No typing. No paperwork in the van." | App Store, pricing page, ads |
+| "Pays for itself after your first certificate" | Pro tier, emails, ads |
+| "Voice-powered AI certificates" | Tagline, App Store subtitle context |
+| "BS 7671-compliant" | Every channel — mandatory trust signal |
+| "Amendment 4 ready" | Seasonal push through April-June 2026 |
+| "£1 a day" | Cost reframing for Pro |
+| "17× return" | ROI stat for Pro at £1.50/cert vs £25 value |
+
+### Key Phrases to NEVER Use
+
+| Avoid | Why | Use Instead |
+|-------|-----|-------------|
+| "AI does it all for you" | Triggers compliance trust concerns | "AI handles the admin — you verify and sign off" |
+| "Automated certification" | Implies no human oversight | "AI-assisted certification" |
+| "Replaces the electrician" | Insulting to the trade | "Frees up the electrician" |
+| "Unlimited" (for capped tiers) | Misleading | State the exact cap (8, 20, 50) |
+| "Cheap" | Devalues the product | "Affordable" or state the ROI |
+| "Basic" (for Starter tier) | Makes users feel they're getting less | "Starter" with positive framing |
+
+
+*All copy production-ready as of 25 March 2026. Based on finalised 4-tier pricing (Free £0 / Starter £15 / Pro £30 / Company £60) with psychological anchoring from anchoring-strategy.md, ROI calculations from roi-calculator-messaging.md, competitor positioning from price-validation.md, and strategic framework from pricing-strategy.md.*
+
+### price-validation
+
+# CertMate Price Validation Report
+
+**Date:** 25 March 2026
+**Purpose:** Validate Derek's updated 4-tier pricing against current competitor prices, margin economics at £1/cert API cost, and UK electrician willingness-to-pay.
+
+
+## Derek's Proposed Tiers (Under Evaluation)
+
+| Tier | Price | Certs/mo | Per-Cert Price | AI Included |
+|------|-------|----------|---------------|-------------|
+| Free | £0 | 1 | £0 | Yes (limited) |
+| Starter | £15/mo | 8 | £1.88 | Yes |
+| Pro | £30/mo | 20 | £1.50 | Yes |
+| Company | £60/mo | 50 | £1.20 | Yes |
+
+
+## 1. Competitor Pricing — Verified March 2026
+
+### iCertifi (Market Leader, 12+ years, 1.8/5 Trustpilot)
+
+**⚠️ CRITICAL UPDATE: iCertifi has added AI features (January 2026)**
+
+iCertifi launched four AI features in v12.12.30 (Jan 2026):
+- **Board Vision 2.0**: Scan consumer units/distribution boards in 30 seconds (vs 20-45 min manual). 95%+ accuracy across all major brands.
+- **Test Vision**: Photograph any meter display (Megger, Fluke, Kewtech, Metrel) → auto-populates certificate readings. Saves 10+ min per cert.
+- **Spark AI**: BS 7671 & BS 5839-1 trained Q&A chatbot.
+- **Certificate Guardian**: Auto-reviews completed certs for BS 7671 errors and missing data.
+
+**Pricing (multiple product lines, confusing structure):**
+
+| Product | 3-Month | 6-Month | 12-Month | Notes |
+|---------|---------|---------|----------|-------|
+| iCertifi (original) | £45.99 (~£15.33/mo) | £69.99 (~£11.67/mo) | £99.99 (~£8.33/mo) | Unlimited certs |
+| iCertifi Cloud Pro | Varies | Varies | ~£64.99-£149.99 | New cloud product, pricing unclear |
+| Enterprise | — | — | £399.99/yr | Unlimited engineers |
+
+**Effective monthly range: £5.42–£15.33/mo** (depending on plan length and product)
+
+**Key weaknesses:** 1.8/5 on Trustpilot (terrible). Complaints about: data loss in recent updates, non-responsive customer service, cloud sync failures, AI chatbot support only. Users report being blocked on social media for criticism.
+
+**Competitive threat level: MEDIUM-HIGH.** They now have AI (Board Vision, Test Vision), but it's camera-based AI added onto their existing form-filling workflow. CertMate's voice-to-certificate is still a fundamentally different (and faster) approach. However, the "iCertifi has no AI" positioning from previous strategy docs is now **outdated and must be updated**.
+
+
+### Tradecert (Direct AI Competitor)
+
+| Item | Price |
+|------|-------|
+| Monthly subscription | £18/mo |
+| Certificates | Unlimited |
+| AI tokens included | 250/month (rollover unused) |
+| Extra AI tokens | 2p/token |
+| Additional users | +£7/user/mo |
+| Office users | Free |
+| Contract | None (cancel anytime) |
+| Trial | Free, no card required |
+
+**Effective cost at 20 certs/mo:** £18/mo base + potential AI token costs on top.
+
+**Key insight:** Tradecert's hybrid model (subscription + token consumption) means heavy AI users pay more than £18/mo. At 250 tokens/mo, if each cert uses ~15-20 tokens, users get ~12-17 AI-assisted certs before buying more. Additional tokens at 2p each add up. A 20-cert/mo user might pay £18 + £2-4 in tokens = ~£20-22/mo.
+
+
+### Certly (New Entrant — Not in Previous Research)
+
+| Plan | Price |
+|------|-------|
+| Monthly | £14 + VAT (~£16.80/mo inc. VAT) |
+| Annual | £140 + VAT (~£168/yr, 2 months free) |
+| Trial | 7-day free, no card required |
+| Features | BS 7671 compliant, NICEIC/ELECSA standards, all devices |
+
+**No AI features.** Pure form-filling with modern UI. Positioned as simpler alternative to iCertifi.
+
+
+### EasyCert (Tysoft — Desktop/Traditional)
+
+| Edition | Price |
+|---------|-------|
+| Lite | £75 + VAT/year (~£7.50/mo) |
+| Premium | £199 + VAT/year (~£16.58/mo) |
+| One-time purchase | From £194 |
+| Mobile add-on | Extra charge |
+
+**No AI features.** Desktop-first, BS 7671 + BS 5839 + BS 5266 certificates. Simple, established, affordable. Primarily used by older/less tech-savvy electricians who prefer desktop workflow.
+
+
+### Electrical Certificate App
+
+| Plan | Price |
+|------|-------|
+| Monthly | £15 + VAT/user/mo (~£18/mo inc. VAT) |
+| Annual | £162 + VAT/user/yr (10% discount) |
+| Trial | 14-day free, no card required |
+| Users | 5,000+ UK electricians |
+
+**No AI features.** Includes job management, invoicing, scheduling alongside certificates. More of a mini-FSM tool.
+
+
+### SpeedCert Pro (New AI Entrant — Not in Previous Research)
+
+- Claims "3x faster with AI-powered automation"
+- BS 7671-compliant EICR, EIC & Minor Works
+- 14-day free trial
+- **Pricing: Not publicly available** (likely subscription model)
+
+**Competitive threat level: LOW-MEDIUM.** New entrant, small presence, but validates that AI certification is becoming a category.
+
+
+### Other Competitors (Reference)
+
+| App | Effective Monthly | Annual | AI? | Notes |
+|-----|-------------------|--------|-----|-------|
+| U-Certify | £8.33/mo | £99.99/yr | No | Mid-range, desktop/cloud hybrid |
+| NICEIC CertSure | £1.55+VAT/cert | Per-cert | No | Requires NICEIC membership (~£1,100+/yr) |
+| Clik Cert | ~£23/mo amortised | ~£280 upfront | No | Legacy desktop, NICEIC partner |
+| Pro Certs | Unknown | Unknown | No | EICR focused, tablet/desktop |
+
+
+### Updated Competitor Price Map (March 2026)
+
+```
+                     HIGH PRICE
+                         |
+               Fergus    |
+               ($68/u)   |    CertMate Company (£60/mo)
+                         |
+     Tradify ($47/u)     |    CertMate Pro (£30/mo)
+                         |    "AI Voice-to-Certificate"
+    ─────────────────────┼─────────────────────────
+     BROAD FSM           |    CERT-SPECIFIC
+                         |
+     ServiceM8 ($29)     |    Tradecert (£18/mo) ← AI competitor
+                         |    Elec Cert App (£15+VAT)
+                         |    CertMate Starter (£15/mo)
+                         |    Certly (£14+VAT)
+                         |
+                         |    iCertifi (£5.42-15.33/mo) ← NOW HAS AI
+                         |    EasyCert (£7.50-16.58/mo)
+                         |    U-Certify (£8.33/mo)
+                         |
+                     LOW PRICE
+```
+
+
+## 2. Margin Analysis at £1/cert API Cost
+
+### Worst Case: 100% Utilisation (Every User Maxes Out)
+
+| Tier | Revenue | API Cost (max) | Stripe Fee (2%) | Gross Profit | Margin % |
+|------|---------|---------------|-----------------|-------------|----------|
+| **Free** | £0 | £1.00 | £0 | **-£1.00** | -∞% |
+| **Starter** | £15 | £8.00 | £0.50 | **£6.50** | **43%** |
+| **Pro** | £30 | £20.00 | £0.80 | **£9.20** | **31%** |
+| **Company** | £60 | £50.00 | £1.40 | **£8.60** | **14%** |
+
+**⚠️ VERDICT: At max utilisation, Pro and Company tiers are dangerously below the 55-70% gross margin benchmark for AI-first SaaS.**
+
+
+### Realistic Case: 50% Average Utilisation
+
+| Tier | Revenue | API Cost (avg) | Stripe Fee | Gross Profit | Margin % |
+|------|---------|---------------|------------|-------------|----------|
+| **Free** | £0 | £0.50 | £0 | **-£0.50** | -∞% |
+| **Starter** | £15 | £4.00 | £0.50 | **£10.50** | **70%** |
+| **Pro** | £30 | £10.00 | £0.80 | **£19.20** | **64%** |
+| **Company** | £60 | £25.00 | £1.40 | **£33.60** | **56%** |
+
+**✅ VERDICT: At 50% utilisation, all paid tiers are within the 55-70% AI SaaS benchmark. But this assumes average users do only half their allocation.**
+
+
+### Moderate-Heavy Case: 75% Average Utilisation
+
+| Tier | Revenue | API Cost (avg) | Stripe Fee | Gross Profit | Margin % |
+|------|---------|---------------|------------|-------------|----------|
+| **Free** | £0 | £0.75 | £0 | **-£0.75** | -∞% |
+| **Starter** | £15 | £6.00 | £0.50 | **£8.50** | **57%** |
+| **Pro** | £30 | £15.00 | £0.80 | **£14.20** | **47%** |
+| **Company** | £60 | £37.50 | £1.40 | **£21.10** | **35%** |
+
+**⚠️ VERDICT: Pro drops below 55% benchmark. Company is deeply unprofitable at 35%.**
+
+
+### Comparison: Previous Strategy vs New Tiers (Per-Cert Economics)
+
+| Tier | Price/Cert | API Cost/Cert | Margin/Cert | Margin % |
+|------|-----------|--------------|------------|----------|
+| **Old Pro (£29/8 certs)** | £3.63 | £1.00 | **£2.63** | **72%** |
+| **New Starter (£15/8 certs)** | £1.88 | £1.00 | **£0.88** | **47%** |
+| **New Pro (£30/20 certs)** | £1.50 | £1.00 | **£0.50** | **33%** |
+| **New Company (£60/50 certs)** | £1.20 | £1.00 | **£0.20** | **17%** |
+
+**The new tiers have significantly compressed per-cert margins compared to the previous £29/8-cert structure.** The old Pro tier had 4.3x more margin per cert than the new Starter, and 13x more than the new Company tier.
+
+
+### Break-Even Utilisation (Where Margin Hits 0%)
+
+| Tier | Revenue | Break-even certs | Break-even utilisation |
+|------|---------|-----------------|----------------------|
+| **Starter (£15)** | £15 - £0.50 Stripe = £14.50 | 14.5 certs | **181%** (safe — can't exceed 8) |
+| **Pro (£30)** | £30 - £0.80 Stripe = £29.20 | 29.2 certs | **146%** (safe — can't exceed 20) |
+| **Company (£60)** | £60 - £1.40 Stripe = £58.60 | 58.6 certs | **117%** (safe — can't exceed 50) |
+
+**No tier loses money outright** — the caps prevent that. But the Company tier at 100% utilisation leaves only £8.60/user/month for hosting, support, development, and profit. That's extremely thin.
+
+
+### Annual Revenue Projections (1,000 Subscribers)
+
+**Scenario A: Tier mix of 40% Starter / 40% Pro / 20% Company, 60% utilisation**
+
+| Metric | Value |
+|--------|-------|
+| MRR | (400 × £15) + (400 × £30) + (200 × £60) = **£30,000** |
+| Monthly API cost | (400 × £4.80) + (400 × £12) + (200 × £30) = **£12,720** |
+| Monthly Stripe fees | ~**£690** |
+| Monthly gross profit | **£16,590** |
+| Gross margin | **55%** |
+| ARR | **£360,000** |
+| Annual gross profit | **£199,080** |
+
+**Scenario B: Same mix, 80% utilisation**
+
+| Metric | Value |
+|--------|-------|
+| Monthly API cost | (400 × £6.40) + (400 × £16) + (200 × £40) = **£16,960** |
+| Monthly gross profit | **£12,350** |
+| Gross margin | **41%** |
+
+**41% gross margin is below the 55% minimum for sustainable AI SaaS.**
+
+
+## 3. Willingness-to-Pay Assessment
+
+### What UK Electricians Currently Pay for Cert Software
+
+| Price Band | Products | Market Segment |
+|-----------|----------|---------------|
+| **£5-10/mo** | iCertifi (annual), U-Certify, EasyCert Lite | Price-sensitive sole traders, high volume |
+| **£10-15/mo** | iCertifi (3-month), Certly | Value-conscious sole traders |
+| **£15-18/mo** | Elec Cert App, Tradecert, EasyCert Premium | Willing to pay more for features/AI |
+| **£20-30/mo** | *No current cert-specific product* | Gap in market — CertMate Pro target zone |
+| **£30-50/mo** | ServiceM8, Tradify (broader FSM) | Larger businesses, multi-tool |
+| **£50+/mo** | Fergus (full FSM) | Small firms wanting all-in-one |
+
+### Key Willingness-to-Pay Signals
+
+1. **Current market ceiling for "cert apps" is £18/mo** (Tradecert). No cert-specific app charges above this.
+
+2. **AI premium is emerging but unproven.** Tradecert charges £18/mo + token costs for AI. iCertifi has added AI at existing prices (£5-15/mo). Neither has tested whether electricians will pay a significant premium for AI.
+
+3. **Time-value justification is strong.** At £50/hr, saving 30 min per cert = £25 value. Electricians intellectually understand this ROI but are emotionally anchored to £10-15/mo for "a cert app."
+
+4. **Tool subscription fatigue is real.** Research shows electricians are "ruthless about cutting subscriptions" — the product must prove value fast or get cancelled.
+
+5. **Peer recommendation drives adoption.** 70% of tradespeople use recommended companies. Price sensitivity drops significantly when a mate says "it's worth it."
+
+6. **The £15/mo Starter tier is market-safe.** It sits exactly at the competitive price point for cert software. This will feel "normal" to electricians evaluating tools.
+
+7. **The £30/mo Pro tier requires strong AI differentiation.** It's 2x the most expensive cert app (Tradecert at £18). The jump from £15→£30 must deliver a step-change in value (20 certs + AI voice-to-cert).
+
+8. **The £60/mo Company tier targets a real segment** (small firms doing 30-50 EICRs/month). These firms currently pay £8-15 each for iCertifi licenses. CertMate Company needs to beat the economics of multiple individual licenses.
+
+### Estimated Willingness-to-Pay Distribution
+
+| Monthly Price | % of Target Market Willing to Pay | Notes |
+|---------------|-----------------------------------|-------|
+| £0 (Free) | 100% | Everyone will try |
+| £10-15/mo | 60-70% | Established price comfort zone |
+| £15-20/mo | 40-50% | Acceptable with clear value |
+| £20-30/mo | 20-30% | Requires strong AI/time-saving proof |
+| £30-45/mo | 10-15% | Only with demonstrated ROI |
+| £45-60/mo | 5-8% | Firms, not sole traders |
+
+
+## 4. Key Findings & Risk Assessment
+
+### ✅ What Works in Derek's Proposed Tiers
+
+1. **4-tier structure with cert caps is smart for API cost control.** Eliminates the "unlimited at £1/cert" disaster.
+2. **Starter at £15 is market-competitive** and will attract price-conscious electricians currently using iCertifi/Certly.
+3. **Free tier at 1 cert/mo is appropriately limited.** Enough for aha moment, not enough to satisfy ongoing use.
+4. **Company tier addresses multi-user firms** — a segment that current competitors serve poorly (iCertifi Enterprise at £400/yr is the only option).
+
+### ⚠️ Concerns & Risks
+
+1. **Per-cert margins are thin, especially at higher tiers.**
+   - Starter: £0.88 margin/cert (at max)
+   - Pro: £0.50 margin/cert (at max)
+   - Company: £0.20 margin/cert (at max)
+   - Compare: Previous £29/8-cert plan had £2.63 margin/cert
+
+2. **4-tier structure may hurt conversion.** Research shows 3 tiers = 30% higher ARPU and 27% higher conversion than 4+ tiers. The Starter tier could cannibalize Pro uptake.
+
+3. **iCertifi now has AI.** Board Vision and Test Vision are meaningful features that partially close the gap. CertMate's voice-to-certificate is still differentiated, but the "no AI" attack on iCertifi is dead.
+
+4. **Starter at £15 for 8 certs competes directly with unlimited-cert products at similar prices** (Certly £14+VAT, Elec Cert App £15+VAT, Tradecert £18). The cert cap is a weakness in direct comparison.
+
+5. **Company tier margin at 100% utilisation (14%) is dangerously thin.** Multi-person firms are most likely to hit their allocation consistently.
+
+
+## 5. Recommendations
+
+### Pricing Adjustments to Consider
+
+| Tier | Current Proposal | Suggested Alternative | Rationale |
+|------|-----------------|----------------------|-----------|
+| **Free** | 1 cert/mo | 1 cert/mo ✅ | Good as-is |
+| **Starter** | £15/mo, 8 certs | £15/mo, 5 certs | Improves margin from £0.88 to £1.00/cert; 5 certs still covers part-time electricians (2-3 EICRs/week) |
+| **Pro** | £30/mo, 20 certs | £29/mo, 15 certs | Charm-priced below £30; improves margin from £0.50 to £0.93/cert; 15 certs covers full-time sole traders |
+| **Company** | £60/mo, 50 certs | £75/mo, 40 certs | Improves margin from £0.20 to £0.88/cert; per-user economics still beat multiple individual iCertifi licenses |
+
+### 3-Tier vs 4-Tier Decision
+
+**Option A (Keep 4 tiers):** Free / Starter / Pro / Company — broader market coverage but diluted decoy effect and potential Starter→Pro cannibalization.
+
+**Option B (3 tiers — recommended by research):** Free / Pro (£29, 15 certs) / Company (£75, 40 certs) — stronger decoy effect, higher ARPU, cleaner pricing page. Part-time electricians use Free, full-time use Pro, firms use Company.
+
+**Option C (3 tiers, starter-focused):** Free / Starter (£15, 8 certs) / Pro (£35, 25 certs) — if Derek wants the accessible £15 entry point, skip Company tier and let volume users pay proportionally more.
+
+### Critical Action: Update Competitive Positioning
+
+The previous strategy positioned CertMate against iCertifi as "no AI vs AI." This is now incorrect. Updated positioning should be:
+
+- **Old**: "iCertifi is a digital form. CertMate is an AI assistant."
+- **New**: "iCertifi added camera-based AI to a 12-year-old form app. CertMate was built AI-first — speak your observations and get a compliant certificate. No typing, no forms, no manual entry."
+
+The differentiation is now **voice-to-certificate** (CertMate) vs **camera-to-fields** (iCertifi). CertMate eliminates the form entirely; iCertifi speeds up form-filling.
+
+
+## 6. Competitive Pricing Summary Table
+
+| App | Monthly Price | Certs | AI? | Per-Cert (at 20/mo) | Trustpilot |
+|-----|-------------|-------|-----|---------------------|------------|
+| iCertifi (annual) | £5.42-8.33 | Unlimited | Yes (camera) | £0.27-0.42 | 1.8/5 ⭐ |
+| iCertifi (3-month) | £10-15.33 | Unlimited | Yes (camera) | £0.50-0.77 | 1.8/5 ⭐ |
+| EasyCert Lite | ~£7.50 | Unlimited | No | £0.38 | N/A |
+| U-Certify | £8.33 | Unlimited | No | £0.42 | N/A |
+| Certly | £14+VAT | Unlimited | No | £0.84 | N/A |
+| **CertMate Starter** | **£15** | **8** | **Yes (voice)** | **N/A (capped)** | — |
+| Elec Cert App | £15+VAT | Unlimited | No | £0.90 | N/A |
+| Tradecert | £18+tokens | Unlimited | Yes (tokens) | ~£1.00-1.10 | N/A |
+| EasyCert Premium | ~£16.58 | Unlimited | No | £0.83 | N/A |
+| **CertMate Pro** | **£30** | **20** | **Yes (voice)** | **£1.50** | — |
+| **CertMate Company** | **£60** | **50** | **Yes (voice)** | **£1.20** | — |
+| iCertifi Enterprise | £33.33 | Unlimited | Yes (camera) | £1.67 | 1.8/5 ⭐ |
+
+
+## Sources
+
+- [iCertifi Pricing](https://icertifi.co.uk/icertifi-price/)
+- [iCertifi AI Features (Board Vision & Test Vision)](https://icertifi.co.uk/icertifi-12-12-30-release-ai-features-that-save-2-hours-per-certificate-board-vision-test-vision/)
+- [iCertifi Board Vision 2.0](https://icertifi.co.uk/boardvision-2-0/)
+- [iCertifi Test Vision](https://icertifi.co.uk/testvisionturn-test-instrument-display-into-instant-certificate-data/)
+- [iCertifi Trustpilot (1.8/5)](https://www.trustpilot.com/review/icertifi.co.uk)
+- [Tradecert Pricing](https://www.tradecert.app/ai-electrical-certification-software-pricing)
+- [Tradecert General Pricing](https://www.tradecert.app/pricing)
+- [Certly Pricing](https://www.certly.co.uk/)
+- [EasyCert (Tysoft)](https://www.tysoft.co.uk/easycert.htm)
+- [Electrical Certificate App Pricing](https://electricalcertificateapp.co.uk/pricing/)
+- [SpeedCert Pro](https://www.speed-cert.com/pricing)
+- [U-Certify Pricing](https://www.u-certify.co.uk/pricing/)
+- [Economics of AI-First B2B SaaS 2026](https://www.getmonetizely.com/blogs/the-economics-of-ai-first-b2b-saas-in-2026)
+- [Hidden Economics of AI SaaS 2026](https://the-marketinghub.com/blog/hidden-economics-ai-saas-2026/)
+- [ElectriciansForums.net - Best Certification Software](https://www.electriciansforums.net/threads/best-certification-software.212696/)
 
 ### pricing-strategy
 
@@ -11962,6 +13832,378 @@ None of these competitors offer AI-powered certificate completion. CertMate's op
 
 
 *Research compiled March 2026. Sources: ElectriciansForums.net, IBISWorld, ONS, Electrical Times, Professional Electrician & Installer, Voltimum, NICEIC, NAPIT, ECN, InstallerSHOW, TradeSkills4U, Electrical Safety First, GOV.UK, eFIXX, Feedspot, Elec Training, various trade discussion threads.*
+
+### roi-calculator-messaging
+
+# CertMate ROI Calculator Messaging & Value Frames
+
+**Date:** 25 March 2026
+**Purpose:** ROI calculator specification, value framing, and comparison messaging for CertMate pricing tiers. Designed to overcome the emotional price anchor of £10-15/mo for cert software by reframing value in terms of time saved, money saved, and extra jobs gained.
+
+
+## 1. Core ROI Thesis: Per-Cert Cost vs Admin Time Saved
+
+### The Time-Value Gap
+
+UK electricians charge **£50-60/hr** for their work, yet spend 45-60 minutes per EICR on unpaid admin — writing up certificates, cross-referencing BS 7671, checking observations, filling in schedules of test results.
+
+CertMate's voice-to-certificate AI reduces EICR write-up from **45 minutes to 10-15 minutes** — saving ~30 minutes per certificate.
+
+| Metric | Manual | With CertMate | Saving |
+|--------|--------|--------------|--------|
+| EICR write-up time | 45-60 min | 10-15 min | **30-45 min** |
+| Admin cost at £50/hr | £37.50-50.00 | £8.33-12.50 | **£25-37.50 per cert** |
+| Admin cost at £60/hr | £45.00-60.00 | £10.00-15.00 | **£30-45.00 per cert** |
+
+### The ROI Per Tier (Conservative: 30 min saved, £50/hr rate)
+
+| Tier | Monthly Cost | Certs/mo | Time Saved | Value of Time | ROI Multiple | Net Monthly Gain |
+|------|-------------|----------|-----------|---------------|-------------|-----------------|
+| **Starter** | £15 | 8 | 4 hours | £200 | **13.3×** | **£185** |
+| **Pro** | £30 | 20 | 10 hours | £500 | **16.7×** | **£470** |
+| **Company** | £60 | 50 | 25 hours | £1,250 | **20.8×** | **£1,190** |
+
+### The ROI Per Tier (At £60/hr rate)
+
+| Tier | Monthly Cost | Time Saved | Value of Time | ROI Multiple | Net Monthly Gain |
+|------|-------------|-----------|---------------|-------------|-----------------|
+| **Starter** | £15 | 4 hours | £240 | **16.0×** | **£225** |
+| **Pro** | £30 | 10 hours | £600 | **20.0×** | **£570** |
+| **Company** | £60 | 25 hours | £1,500 | **25.0×** | **£1,440** |
+
+**Key messaging insight:** Even the most expensive tier delivers 20×+ return at standard electrician rates. The ROI *increases* with higher tiers — Company users get the best deal per cert.
+
+### Per-Cert Value Breakdown
+
+| Tier | Cost Per Cert | Admin Time Saved Per Cert | Value of Time Saved (£50/hr) | Net Value Per Cert |
+|------|--------------|--------------------------|-----------------------------|--------------------|
+| **Starter** | £1.88 | 30 min | £25.00 | **+£23.12** |
+| **Pro** | £1.50 | 30 min | £25.00 | **+£23.50** |
+| **Company** | £1.20 | 30 min | £25.00 | **+£23.80** |
+
+**Headline stat:** *"You pay £1.50 per cert. You save £25 worth of time. That's 17× your money back on every single certificate."*
+
+
+## 2. Interactive ROI Calculator Specification
+
+### Purpose
+A web-based calculator embedded on the CertMate pricing page that lets electricians input their own numbers and see personalised ROI. Overcomes the "cert app should cost £10/mo" anchoring by showing the true cost of *not* using CertMate.
+
+### Calculator UI Spec
+
+#### Inputs (User Adjustable)
+
+| Input | Type | Default | Range | Label |
+|-------|------|---------|-------|-------|
+| EICRs per month | Slider + number input | 12 | 1–80 | "How many EICRs do you do per month?" |
+| Hourly rate | Slider + number input | £50 | £30–£100 | "What's your hourly rate?" |
+| Current write-up time | Slider + number input | 45 min | 20–90 min | "How long does an EICR take to write up?" |
+
+**Optional advanced toggle:**
+| Input | Type | Default | Range | Label |
+|-------|------|---------|-------|-------|
+| Average EICR job price | Number input | £175 | £80–£400 | "What do you charge per EICR?" |
+| Working days per week | Dropdown | 5 | 4–6 | "Days you work per week" |
+
+#### Outputs (Auto-Calculated, Animated on Change)
+
+**Primary outputs (always visible):**
+
+| Output | Calculation | Display Format | Colour |
+|--------|------------|----------------|--------|
+| Recommended tier | Based on EICRs/mo: ≤8 → Starter, ≤20 → Pro, ≤50 → Company | Tier badge with price | Brand primary |
+| Monthly time saved | EICRs × (current_time - 15min) / 60 | "X hours saved per month" | Green |
+| Monthly money saved | time_saved_hours × hourly_rate | "£X saved per month" | Green, large font |
+| ROI multiple | money_saved / tier_price | "X× return on investment" | Green, animated counter |
+| Annual net gain | (money_saved - tier_price) × 12 | "£X,XXX extra per year" | Green, bold |
+
+**Secondary outputs (visible below fold or on expand):**
+
+| Output | Calculation | Display Format |
+|--------|------------|----------------|
+| Cost per day | tier_price / 30 | "CertMate costs you just Xp per day" |
+| Time saved per cert | current_time - 15 min | "X minutes back per certificate" |
+| Extra jobs possible | monthly_time_saved / avg_job_duration_hrs | "That's X extra jobs you could do" |
+| Extra job revenue | extra_jobs × avg_eicr_price | "Worth £X in extra revenue" |
+| Break-even certs | tier_price / (time_saved_per_cert_hrs × hourly_rate) | "Pays for itself after just X certs" |
+
+#### Tier Auto-Recommendation Logic
+
+```
+if (eicrs_per_month <= 1) → suggest Free tier
+if (eicrs_per_month <= 8) → suggest Starter (£15/mo)
+if (eicrs_per_month <= 20) → suggest Pro (£30/mo)
+if (eicrs_per_month <= 50) → suggest Company (£60/mo)
+if (eicrs_per_month > 50) → suggest Company + "Contact us for Enterprise"
+```
+
+#### Break-Even Calculation
+
+The calculator should prominently show how few certificates it takes to pay for the subscription:
+
+| Tier | Price | Value per cert (at £50/hr, 30 min saved) | Break-even certs |
+|------|-------|------------------------------------------|-----------------|
+| **Starter** | £15 | £25 | **0.6 certs** (1 cert covers it) |
+| **Pro** | £30 | £25 | **1.2 certs** (2 certs covers it) |
+| **Company** | £60 | £25 | **2.4 certs** (3 certs covers it) |
+
+**Headline:** *"CertMate pays for itself after your first 1-2 certificates each month. Everything after that is pure profit."*
+
+#### Visual Design Notes
+
+- **Layout:** Single horizontal or stacked card with sliders on left, results on right (desktop) or stacked (mobile)
+- **Animation:** Numbers should count up/down smoothly when sliders move (use requestAnimationFrame, not setInterval)
+- **Colour:** Green for savings/positive values. Use the savings number as the visual hero — make it large (36-48px)
+- **CTA below calculator:** "Start Your Free Trial" button that pre-selects the recommended tier
+- **Social proof below CTA:** "Join 500+ electricians saving 4+ hours per month" (update number as user base grows)
+- **Mobile:** Full-width sliders, stacked layout. Calculator must work perfectly on iPhone/Android — electricians will see this on their phones
+- **Accessibility:** All slider values readable by screen readers. Contrast-compliant green on white. ARIA live regions for dynamic output updates
+
+#### Technical Implementation Notes
+
+- Pure client-side JavaScript (no API calls needed)
+- Pre-calculate tier boundaries to avoid layout shift on tier change
+- Store last-used values in localStorage so returning visitors see their numbers
+- URL parameter support: `?eicrs=15&rate=55` for use in targeted campaigns
+- Event tracking: Log slider interactions and final values to analytics (which tier was recommended, what inputs were used) to understand user profile distribution
+
+
+## 3. Five Value Frames
+
+Each frame recontextualises the subscription cost to overcome price resistance. Use these across pricing page, email campaigns, social media, and sales conversations.
+
+### Frame 1: The Daily Cost Frame
+*"Less than your morning coffee"*
+
+| Tier | Monthly | Daily Cost | Comparison |
+|------|---------|-----------|------------|
+| **Starter** | £15 | **50p/day** | Less than a Freddo (55p) |
+| **Pro** | £30 | **£1/day** | A third of your morning coffee |
+| **Company** | £60 | **£2/day** | One coffee from the van |
+
+**Copy:** *"CertMate Pro costs £1 a day. That's less than the coffee you grab on the way to site. Except this saves you 10 hours of paperwork every month."*
+
+**Where to use:** Social media ads, email subject lines, pricing page subheading
+
+### Frame 2: The Weekly Cost Frame
+*"Less than a takeaway"*
+
+| Tier | Monthly | Weekly Cost | Comparison |
+|------|---------|------------|------------|
+| **Starter** | £15 | **£3.46/week** | A pint at the pub |
+| **Pro** | £30 | **£6.92/week** | A meal deal |
+| **Company** | £60 | **£13.85/week** | Less than a Friday takeaway |
+
+**Copy:** *"For less than a Friday night kebab, CertMate Company handles the paperwork for 50 certificates a month. Your weekend starts sooner."*
+
+**Where to use:** Facebook/forum ads targeting tradespeople, WhatsApp/email drip campaigns
+
+### Frame 3: The Per-Cert Cost Frame
+*"Pennies per certificate, pounds in your pocket"*
+
+| Tier | Per-Cert Cost | Time Saved Per Cert | Value Created Per Cert | Net Value |
+|------|--------------|--------------------|-----------------------|-----------|
+| **Starter** | £1.88 | 30 min (worth £25) | £25.00 | **+£23.12** |
+| **Pro** | £1.50 | 30 min (worth £25) | £25.00 | **+£23.50** |
+| **Company** | £1.20 | 30 min (worth £25) | £25.00 | **+£23.80** |
+
+**Copy:** *"Each certificate costs you £1.50 but saves you £25 in admin time. That's not an expense — it's a 17× investment."*
+
+**Where to use:** Pricing page (next to each tier), ROI calculator output, comparison landing pages
+
+### Frame 4: The Annual Savings Frame
+*"What would you do with an extra £5,000?"*
+
+| Tier | Annual Cost | Annual Time Saved | Annual Value Saved (£50/hr) | Annual Net Gain |
+|------|------------|-------------------|----------------------------|----------------|
+| **Starter** | £180/yr | 48 hours | £2,400 | **£2,220/yr** |
+| **Pro** | £360/yr | 120 hours | £6,000 | **£5,640/yr** |
+| **Company** | £720/yr | 300 hours | £15,000 | **£14,280/yr** |
+
+**Copy:** *"CertMate Pro users save over £5,600 a year in admin time. That's a family holiday. A new van payment. Or 120 hours you'll never waste on paperwork again."*
+
+**Variant copy for Company:** *"£14,000+ back in your business every year. That's a new apprentice's salary funded entirely by cutting paperwork."*
+
+**Where to use:** Annual plan upsell, email campaigns, case study headlines, trade press ads
+
+### Frame 5: The Extra Jobs Frame
+*"The admin time you save becomes billable time"*
+
+This is the most powerful frame for electricians because it converts abstract "time saved" into concrete revenue.
+
+| Tier | Monthly Time Saved | Extra Jobs Possible* | Extra Monthly Revenue | Extra Annual Revenue |
+|------|-------------------|---------------------|----------------------|---------------------|
+| **Starter** | 4 hours | 1 job | £175 | **£2,100** |
+| **Pro** | 10 hours | 2-3 jobs | £437 | **£5,250** |
+| **Company** | 25 hours | 6-7 jobs | £1,225 | **£14,700** |
+
+*\*Based on average EICR job price of £175 and ~3.5 hour average on-site time including travel*
+
+**Copy:** *"Every hour you spend on paperwork is an hour you're not earning. CertMate Pro gives you back 10 hours a month — that's 2-3 extra EICRs you could bill for. At £175 each, that's over £5,000 a year in extra revenue. The subscription costs £360."*
+
+**Where to use:** This is the **#1 frame for forums, YouTube, and trade shows**. Electricians think in jobs and earnings, not hours and efficiency. Lead with "extra jobs" in all trade-facing messaging.
+
+
+## 4. Comparison Table: CertMate vs Manual Paperwork
+
+### Full Comparison
+
+| Task | Manual / Paper | Basic Cert App | CertMate (AI Voice) |
+|------|---------------|---------------|---------------------|
+| **Start a new EICR** | Find blank form, fill in property details by hand | Open app, type property details into form fields | Say "new EICR for 42 Oak Lane" — address, client, property details auto-populated |
+| **Record observations** | Walk around writing notes, then transcribe to form later | Type each observation into app fields on-site | Speak observations as you go: "Kitchen ring — polarity confirmed, Zs 0.31 ohms, RCD trips at 28ms" — AI fills the schedule |
+| **Board schedule** | Count ways, identify MCBs, write each circuit manually | Select from dropdowns, type descriptions for each circuit | Photograph the consumer unit OR describe it: "10-way Hager board, 63A main switch, 32A ring final circuit 1..." — AI maps the full schedule |
+| **Test results** | Record on paper, transcribe numbers into form fields | Type each reading into table cells | Speak readings: "Ring 1, R1 0.24, R2 0.25, R1+R2 0.49, Zs 0.31, insulation resistance greater than 200" — table auto-filled |
+| **Observations & recommendations** | Write coded observations (C1/C2/C3/FI) by hand, reference BS 7671 manually | Select observation codes from lists | Describe the issue: "Double socket in bathroom Zone 2, not RCD protected" — AI assigns C2, references Reg 701.411.3.3, writes recommendation |
+| **BS 7671 compliance check** | Cross-reference regs book manually | Some apps flag obvious errors | AI auto-reviews entire certificate against current regs, flags missing data, incorrect codes, reg references |
+| **Completing the certificate** | Gather all papers, check for completeness, sign, file | Review digital form, submit | AI summary: "Certificate complete. 14 circuits tested, 2 C2 observations, 1 C3. Overall condition: Unsatisfactory. Ready to sign?" |
+| **Time per EICR** | **45-60 minutes** write-up | **25-35 minutes** | **10-15 minutes** |
+| **Error rate** | High — handwriting errors, missed fields, wrong reg refs | Medium — manual entry, but validation helps | Low — AI cross-checks readings, flags anomalies, verifies reg references |
+| **Amendment 4 compliance** | Must manually learn & apply changes | Depends on app updates | Automatically updated — AI knows current regs |
+| **Offline capability** | Paper always works | Varies by app | Full offline mode — syncs when connected |
+| **Annual admin time (at 15 EICRs/mo)** | **135-180 hours** | **75-105 hours** | **30-45 hours** |
+
+### Side-by-Side Time Comparison (Single EICR)
+
+```
+MANUAL PAPERWORK                          CERTMATE AI
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Property details ........... 5 min        "New EICR, 42 Oak Lane" .. 30 sec
+Board schedule ............ 10 min        Describe/photo board ..... 2 min
+Circuit details ............ 8 min        Voice-describe circuits .. 3 min
+Test results .............. 10 min        Speak readings ........... 3 min
+Observations ............... 8 min        Describe issues .......... 2 min
+Compliance check ........... 5 min        Auto-review .............. 30 sec
+Review & sign .............. 5 min        Review AI summary ........ 2 min
+                           ─────                                   ──────
+TOTAL .................. ~51 min          TOTAL ................ ~13 min
+                                          TIME SAVED ........... 38 min ✓
+                                          VALUE SAVED (£50/hr) ... £31.67
+```
+
+### Cost Comparison Table (Monthly, at 15 EICRs/month)
+
+| Method | Monthly Cost | Monthly Admin Time | Monthly Admin Cost (£50/hr) | Total Monthly Cost | Annual Total |
+|--------|------------|-------------------|---------------------------|-------------------|-------------|
+| **Paper forms** | £5 (printing) | 12.75 hours | £637.50 | **£642.50** | **£7,710** |
+| **Basic cert app (£15/mo)** | £15 | 7.5 hours | £375.00 | **£390.00** | **£4,680** |
+| **CertMate Pro (£30/mo)** | £30 | 3.25 hours | £162.50 | **£192.50** | **£2,310** |
+
+**Net saving vs paper:** £450/month, £5,400/year
+**Net saving vs basic app:** £197.50/month, £2,370/year
+
+### The "Hidden Cost of Free" Table
+
+For electricians who think paper/manual is "free":
+
+| Hidden Cost | Paper/Manual | CertMate |
+|------------|-------------|----------|
+| Printing & stationery | £50-100/year | £0 |
+| Filing & storage | Physical space, lost forms | Cloud backup, instant retrieval |
+| Admin time (15 EICRs/mo at £50/hr) | **£7,650/year** | **£1,950/year** |
+| Rework from errors | ~5% error rate = £400-800/year* | AI review catches errors before submission |
+| Regulatory risk | Manual reg-checking, outdated forms | Auto-updated to current BS 7671 |
+| **Total hidden annual cost** | **£8,100-8,550** | **£2,310** (Pro plan + admin time) |
+
+*\*Based on industry estimates that 5-8% of manually completed certificates contain errors requiring rework, at an average cost of £50-100 per rework incident (return visit, re-issue cert, lost time)*
+
+
+## 5. Messaging Templates by Channel
+
+### Pricing Page Hero Copy
+
+**Headline:** "Every EICR you write up by hand costs you £25 in lost time."
+**Subhead:** "CertMate gives you that time back — for less than £1 a day."
+**CTA:** "Calculate Your Savings →" (scrolls to calculator)
+
+### Forum / Peer Messaging (Authentic Voice)
+
+> Been using CertMate for 3 months now. Honestly didn't think AI would work for certs, but the voice thing is a game changer. I just talk through my observations as I do the inspection and it fills everything in. What used to take me 45 minutes of writing up in the van now takes 10-15. At 15 EICRs a month, that's nearly 8 hours I've got back. Works out to about 2 extra jobs a month I can fit in. The Pro plan's £30 but I'm making an extra £350 from the time saved, so it's a no-brainer.
+
+### Email Subject Lines (A/B Test Variants)
+
+1. "You're losing £5,600/year to EICR paperwork"
+2. "What would you do with 120 extra hours?"
+3. "£1/day for 10 hours back every month"
+4. "Your next EICR could take 13 minutes"
+5. "2-3 extra jobs per month. £30 investment."
+
+### Trade Show Banner / Stand Copy
+
+**Primary:** "Complete an EICR in 13 minutes. Not 45."
+**Secondary:** "Voice-powered. BS 7671 compliant. Amendment 4 ready."
+**CTA:** "Try it free — scan here"
+
+### YouTube Pre-Roll (15-second)
+
+*[Shot of electrician in van, writing on paper forms]*
+"Still writing up EICRs by hand? That's 8 hours a month you could be earning."
+*[Cut to phone screen, electrician speaking observations]*
+"CertMate. Speak your observations. Get your certificate. 13 minutes."
+*[End card: "Free trial — certmate.app"]*
+
+
+## 6. Objection Handling with ROI Data
+
+### "£30/month is too expensive for a cert app"
+
+> "I get it — most cert apps are £10-15. But those apps just digitise the form. You're still typing everything in. CertMate is different — you speak your observations and it writes the certificate. Pro users save 10 hours a month in admin. At your hourly rate, that's £500+ saved. The £30 pays for itself after 2 certificates."
+
+### "I can use iCertifi for £8/month"
+
+> "iCertifi is solid for the price. But even with their new Board Vision, you're still filling in forms field by field. CertMate eliminates the form entirely — speak your observations as you inspect, and the certificate writes itself. Most users save 30+ minutes per EICR. If you do 10 EICRs a month, that's 5 hours back. Worth more than the price difference."
+
+### "I don't trust AI for compliance"
+
+> "Fair concern. CertMate doesn't make compliance decisions — you do. The AI handles the admin: filling in test results you dictate, mapping your observations to the right reg references, and flagging if you've missed a field. Think of it as a really fast admin assistant who knows BS 7671. You review and sign off everything."
+
+### "I only do 5-6 certs a month, not worth it"
+
+> "The Starter plan is £15 for 8 certs — that's £1.88 each. Each one saves you 30 minutes of writing up. At £50/hour, that's £25 of your time saved per cert. So you invest £15 and save £125-150. Even at 5 certs a month, you're getting 8-10× your money back."
+
+
+## 7. Key Statistics for Marketing Copy
+
+Quick-reference stats to embed across all marketing materials:
+
+| Stat | Value | Source/Basis |
+|------|-------|-------------|
+| Time to complete EICR (manual) | 45-60 min | Industry average from forum research |
+| Time to complete EICR (CertMate) | 10-15 min | Product capability target |
+| Time saved per certificate | ~30 min | Conservative estimate |
+| Monthly time saved (Pro, 20 certs) | 10 hours | 20 × 30 min |
+| Annual time saved (Pro) | 120 hours | 10 hrs × 12 months |
+| Monthly value saved (Pro, £50/hr) | £500 | 10 hrs × £50 |
+| Annual net gain (Pro) | £5,640 | (£500 - £30) × 12 |
+| ROI multiple (Pro) | 16.7× | £500 / £30 |
+| Break-even certificates (Pro) | 2 | £30 / £25 per-cert value |
+| Daily cost (Pro) | £1/day | £30 / 30 days |
+| Per-cert cost (Pro) | £1.50 | £30 / 20 certs |
+| Per-cert value created | £25 | 30 min × £50/hr |
+| Extra jobs possible (Pro) | 2-3/month | 10 hrs / ~3.5 hrs per job |
+| Extra annual revenue (Pro) | £5,250 | 2.5 jobs × £175 × 12 |
+| EICR renewal wave | April 2026 | 2021 mandatory certs expiring |
+| Average EICR job price | £150-200 | Market average |
+| UK registered electricians | ~230,000 | Industry data |
+| Private rented sector homes needing EICRs | 4.7 million | ONS / GOV.UK |
+
+
+## 8. Calculator A/B Testing Recommendations
+
+### Version A: Simple (Default)
+Two inputs only: EICRs/month + hourly rate. Outputs: time saved, money saved, recommended tier.
+
+### Version B: Detailed
+Three inputs: EICRs/month + hourly rate + current write-up time. Outputs: full breakdown including extra jobs, annual projection, break-even.
+
+### Version C: Competitive
+Two inputs + dropdown: "What do you currently use?" (Paper, iCertifi, EasyCert, Tradecert, Other). Outputs tailored to show savings vs their current tool specifically.
+
+### Test Hypothesis
+Version A will have highest completion rate (simpler). Version C will have highest conversion rate (more personalised, competitive framing). Run A vs C first; if C wins, test C vs B.
+
+
+*Document prepared for use across CertMate pricing page, marketing campaigns, trade show materials, and sales enablement. All calculations based on conservative 30-minute time saving per certificate and £50/hr electrician rate. Actual savings may be higher — the market research documents £50-60/hr as the standard rate range, and some EICRs take 60+ minutes to write up manually.*
 
 ### vad-investigation
 
