@@ -11,8 +11,10 @@ const mockGetUserByEmail = jest.fn();
 const mockGetUserById = jest.fn();
 const mockUpdateLastLogin = jest.fn();
 const mockUpdateLoginAttempts = jest.fn();
+const mockAtomicIncrementFailedAttempts = jest.fn();
 const mockLogAction = jest.fn();
 const mockIncrementTokenVersion = jest.fn();
+const mockAtomicIncrementTokenVersion = jest.fn();
 const mockSetTokenVersion = jest.fn();
 
 jest.unstable_mockModule('../db.js', () => ({
@@ -20,8 +22,10 @@ jest.unstable_mockModule('../db.js', () => ({
   getUserById: mockGetUserById,
   updateLastLogin: mockUpdateLastLogin,
   updateLoginAttempts: mockUpdateLoginAttempts,
+  atomicIncrementFailedAttempts: mockAtomicIncrementFailedAttempts,
   logAction: mockLogAction,
   incrementTokenVersion: mockIncrementTokenVersion,
+  atomicIncrementTokenVersion: mockAtomicIncrementTokenVersion,
   setTokenVersion: mockSetTokenVersion,
 }));
 
@@ -169,29 +173,28 @@ describe('auth', () => {
       expect(result.error).toContain('locked');
     });
 
-    test('should fail for wrong password and increment attempts', async () => {
+    test('should fail for wrong password and atomically increment attempts (CX-2)', async () => {
       mockGetUserByEmail.mockResolvedValue(testUser);
-      mockUpdateLoginAttempts.mockResolvedValue();
+      mockAtomicIncrementFailedAttempts.mockResolvedValue(1);
       mockLogAction.mockResolvedValue();
 
       const result = await auth.authenticate('test@example.com', 'wrong-password');
 
       expect(result.success).toBe(false);
-      expect(mockUpdateLoginAttempts).toHaveBeenCalledWith('user-1', 1, null);
+      expect(mockAtomicIncrementFailedAttempts).toHaveBeenCalledWith('user-1', 5, 15);
     });
 
-    test('should lock account after 5 failed attempts', async () => {
-      const userWith4Failures = { ...testUser, failed_login_attempts: 4 };
-      mockGetUserByEmail.mockResolvedValue(userWith4Failures);
-      mockUpdateLoginAttempts.mockResolvedValue();
+    test('should lock account after 5 failed attempts (CX-2 atomic)', async () => {
+      mockGetUserByEmail.mockResolvedValue(testUser);
+      mockAtomicIncrementFailedAttempts.mockResolvedValue(5);
       mockLogAction.mockResolvedValue();
 
       const result = await auth.authenticate('test@example.com', 'wrong-password');
 
       expect(result.success).toBe(false);
       expect(result.error).toContain('locked');
-      // Should have been called with attempts=5 and a locked_until timestamp
-      expect(mockUpdateLoginAttempts).toHaveBeenCalledWith('user-1', 5, expect.any(String));
+      // Atomic function handles both increment and lockout in one query
+      expect(mockAtomicIncrementFailedAttempts).toHaveBeenCalledWith('user-1', 5, 15);
     });
 
     test('should generate valid JWT on success', async () => {
@@ -263,6 +266,44 @@ describe('auth', () => {
 
       expect(user).toBeNull();
     });
+
+    test('should return null for revoked token with stale token_version (CX-1)', async () => {
+      // Token was issued with tv=0, but user's token_version has been bumped to 1
+      const token = jwt.sign({ userId: 'user-1', email: 'test@example.com', tv: 0 }, JWT_SECRET, {
+        expiresIn: '24h',
+      });
+      mockGetUserById.mockResolvedValue({
+        id: 'user-1',
+        email: 'test@example.com',
+        name: 'Test',
+        company_name: 'Co',
+        is_active: true,
+        token_version: 1,
+      });
+
+      const user = await auth.verifyToken(token);
+
+      expect(user).toBeNull();
+    });
+
+    test('should accept token with current token_version (CX-1)', async () => {
+      const token = jwt.sign({ userId: 'user-1', email: 'test@example.com', tv: 2 }, JWT_SECRET, {
+        expiresIn: '24h',
+      });
+      mockGetUserById.mockResolvedValue({
+        id: 'user-1',
+        email: 'test@example.com',
+        name: 'Test',
+        company_name: 'Co',
+        is_active: true,
+        token_version: 2,
+      });
+
+      const user = await auth.verifyToken(token);
+
+      expect(user).not.toBeNull();
+      expect(user.id).toBe('user-1');
+    });
   });
 
   describe('refreshToken', () => {
@@ -279,6 +320,7 @@ describe('auth', () => {
         expiresIn: '24h',
       });
       mockGetUserById.mockResolvedValue(activeUser);
+      mockAtomicIncrementTokenVersion.mockResolvedValue(true);
 
       const result = await auth.refreshToken(oldToken);
 
@@ -288,11 +330,15 @@ describe('auth', () => {
     });
 
     test('should refresh a recently-expired token within grace period', async () => {
-      // Create a token that expired 1 hour ago (within 7-day grace)
-      const oldToken = jwt.sign({ userId: 'user-1', email: 'test@example.com' }, JWT_SECRET, {
-        expiresIn: '-1h',
-      });
+      // Create a token that expired 30 min ago (within 1-hour grace)
+      const payload = { userId: 'user-1', email: 'test@example.com' };
+      const thirtyMinAgo = Math.floor(Date.now() / 1000) - 30 * 60;
+      const oldToken = jwt.sign(
+        { ...payload, exp: thirtyMinAgo, iat: thirtyMinAgo - 3600 },
+        JWT_SECRET
+      );
       mockGetUserById.mockResolvedValue(activeUser);
+      mockAtomicIncrementTokenVersion.mockResolvedValue(true);
 
       const result = await auth.refreshToken(oldToken);
 
@@ -378,24 +424,17 @@ describe('auth', () => {
       expect(req.user.id).toBe('user-1');
     });
 
-    test('should extract token from query parameter', async () => {
+    test('should reject token from query parameter (CSRF risk)', async () => {
       const token = jwt.sign({ userId: 'user-1', email: 'test@example.com' }, JWT_SECRET, {
         expiresIn: '24h',
       });
       req.query.token = token;
-      mockGetUserById.mockResolvedValue({
-        id: 'user-1',
-        email: 'test@example.com',
-        name: 'Test',
-        company_name: 'Co',
-        is_active: true,
-      });
 
       auth.requireAuth(req, res, next);
 
-      await new Promise((r) => setTimeout(r, 50));
-
-      expect(next).toHaveBeenCalled();
+      // Query parameter tokens are no longer accepted (CSRF risk)
+      expect(res.status).toHaveBeenCalledWith(401);
+      expect(next).not.toHaveBeenCalled();
     });
 
     test('should return 401 for invalid token', async () => {

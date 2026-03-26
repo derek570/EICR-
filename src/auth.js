@@ -24,6 +24,11 @@ const REFRESH_GRACE_SECONDS = 60 * 60; // 1 hour — allow refresh up to 1 hour 
 const MAX_FAILED_ATTEMPTS = 5;
 const LOCKOUT_DURATION_MINUTES = 15;
 
+// CX-3: Pre-computed bcrypt hash for timing-safe user-not-found path.
+// Prevents email enumeration via timing side-channel by ensuring
+// bcrypt.compare runs even when the user doesn't exist.
+const DUMMY_HASH = '$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy';
+
 /**
  * Verify password against hash
  */
@@ -72,6 +77,10 @@ export async function authenticate(email, password, ipAddress = null) {
   const user = await db.getUserByEmail(email);
 
   if (!user) {
+    // CX-3: Perform dummy bcrypt compare to prevent timing side-channel.
+    // Without this, "user not found" returns ~instantly while "wrong password"
+    // takes ~100ms for bcrypt, allowing email enumeration via response timing.
+    await bcrypt.compare(password, DUMMY_HASH);
     return { success: false, error: 'Invalid email or password' };
   }
 
@@ -90,17 +99,17 @@ export async function authenticate(email, password, ipAddress = null) {
 
   // Verify password
   if (!(await verifyPassword(password, user.password_hash))) {
-    const attempts = (user.failed_login_attempts || 0) + 1;
-    let lockedUntil = null;
+    // CX-2: Use atomic SQL increment to prevent race condition where concurrent
+    // failed logins undercount attempts and bypass the lockout threshold.
+    const attempts = await db.atomicIncrementFailedAttempts(
+      user.id,
+      MAX_FAILED_ATTEMPTS,
+      LOCKOUT_DURATION_MINUTES
+    );
 
     if (attempts >= MAX_FAILED_ATTEMPTS) {
-      const lockTime = new Date();
-      lockTime.setMinutes(lockTime.getMinutes() + LOCKOUT_DURATION_MINUTES);
-      lockedUntil = lockTime.toISOString();
       await db.logAction(user.id, 'account_locked', { attempts }, ipAddress);
     }
-
-    await db.updateLoginAttempts(user.id, attempts, lockedUntil);
     await db.logAction(user.id, 'login_failed', { attempts }, ipAddress);
 
     const remaining = MAX_FAILED_ATTEMPTS - attempts;
@@ -152,6 +161,13 @@ export async function verifyToken(token) {
     const user = await db.getUserById(decoded.userId);
 
     if (!user || !user.is_active) {
+      return null;
+    }
+
+    // CX-1: Reject tokens with stale token_version — ensures revoked tokens
+    // (from password change, account deletion, theft detection) are rejected
+    // on every authenticated request, not just during refresh.
+    if ((decoded.tv || 0) < (user.token_version || 0)) {
       return null;
     }
 

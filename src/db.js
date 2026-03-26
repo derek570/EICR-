@@ -169,6 +169,36 @@ export async function updateLoginAttempts(userId, attempts, lockedUntil) {
 }
 
 /**
+ * CX-2: Atomically increment failed login attempts and optionally set lockout.
+ * Uses a single UPDATE ... RETURNING to prevent race conditions where concurrent
+ * failed logins could undercount attempts and bypass the lockout threshold.
+ * Returns the new failed_login_attempts count.
+ */
+export async function atomicIncrementFailedAttempts(userId, maxAttempts, lockoutMinutes) {
+  if (!usePostgres()) return 1;
+
+  const pool = getPool();
+  try {
+    const result = await pool.query(
+      `UPDATE users
+       SET failed_login_attempts = failed_login_attempts + 1,
+           locked_until = CASE
+             WHEN failed_login_attempts + 1 >= $2
+             THEN NOW() + ($3 || ' minutes')::interval
+             ELSE locked_until
+           END
+       WHERE id = $1
+       RETURNING failed_login_attempts`,
+      [userId, maxAttempts, String(lockoutMinutes)]
+    );
+    return result.rows[0]?.failed_login_attempts ?? 1;
+  } catch (error) {
+    logger.error('atomicIncrementFailedAttempts failed', { error: error.message });
+    throw error;
+  }
+}
+
+/**
  * Log an action to audit log
  */
 export async function logAction(userId, action, details = {}, ipAddress = null) {
