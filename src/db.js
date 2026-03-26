@@ -24,6 +24,11 @@ const { Pool } = pg;
 
 let pool = null;
 
+// D3: Explicit safe columns for user queries — prevents accidental exposure of sensitive fields.
+// password_hash, failed_login_attempts, locked_until are only included where needed (auth functions).
+const SAFE_USER_COLUMNS =
+  'id, email, name, company_name, role, is_active, last_login, created_at, updated_at, company_id, company_role, token_version';
+
 // Read DATABASE_URL dynamically (secrets are loaded after module import)
 function getDatabaseUrl() {
   return process.env.DATABASE_URL;
@@ -65,12 +70,18 @@ function getSslConfig() {
 
 function getPool() {
   if (!pool && usePostgres()) {
+    // D15: Pool size configurable via env var, default 20
+    const poolMax = parseInt(process.env.DB_POOL_MAX, 10) || 20;
     pool = new Pool({
       connectionString: getDatabaseUrl(),
-      max: 10,
+      max: poolMax,
       idleTimeoutMillis: 30000,
       connectionTimeoutMillis: 2000,
       ssl: getSslConfig(),
+    });
+    // D16: Handle unexpected pool errors to prevent unhandled crashes
+    pool.on('error', (err) => {
+      logger.error('Unexpected PostgreSQL pool error', { error: err.message });
     });
   }
   return pool;
@@ -87,7 +98,10 @@ export async function getUserByEmail(email) {
 
   const pool = getPool();
   try {
-    const result = await pool.query('SELECT * FROM users WHERE email = $1', [email.toLowerCase()]);
+    const result = await pool.query(
+      `SELECT ${SAFE_USER_COLUMNS}, password_hash, failed_login_attempts, locked_until FROM users WHERE email = $1`,
+      [email.toLowerCase()]
+    );
     return result.rows[0] || null;
   } catch (error) {
     logger.error('getUserByEmail failed', { error: error.message });
@@ -105,7 +119,11 @@ export async function getUserById(userId) {
 
   const pool = getPool();
   try {
-    const result = await pool.query('SELECT * FROM users WHERE id = $1', [userId]);
+    // password_hash included for password-change route compatibility
+    const result = await pool.query(
+      `SELECT ${SAFE_USER_COLUMNS}, password_hash FROM users WHERE id = $1`,
+      [userId]
+    );
     return result.rows[0] || null;
   } catch (error) {
     logger.error('getUserById failed', { error: error.message });

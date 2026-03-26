@@ -10,6 +10,7 @@ jest.unstable_mockModule('pg', () => ({
   default: {
     Pool: jest.fn(() => ({
       query: mockQuery,
+      on: jest.fn(),
     })),
   },
 }));
@@ -46,7 +47,7 @@ describe('db', () => {
       const user = await db.getUserByEmail('TEST@Example.com');
 
       expect(mockQuery).toHaveBeenCalledWith(
-        'SELECT * FROM users WHERE email = $1',
+        expect.stringContaining('FROM users WHERE email = $1'),
         ['test@example.com']
       );
       expect(user.id).toBe('user-1');
@@ -73,10 +74,9 @@ describe('db', () => {
 
       const user = await db.getUserById('user-1');
 
-      expect(mockQuery).toHaveBeenCalledWith(
-        'SELECT * FROM users WHERE id = $1',
-        ['user-1']
-      );
+      expect(mockQuery).toHaveBeenCalledWith(expect.stringContaining('FROM users WHERE id = $1'), [
+        'user-1',
+      ]);
       expect(user.name).toBe('Test');
     });
 
@@ -92,10 +92,9 @@ describe('db', () => {
 
       const jobs = await db.getJobsByUser('user-1');
 
-      expect(mockQuery).toHaveBeenCalledWith(
-        expect.stringContaining('created_at::TIMESTAMP'),
-        ['user-1']
-      );
+      expect(mockQuery).toHaveBeenCalledWith(expect.stringContaining('created_at::TIMESTAMP'), [
+        'user-1',
+      ]);
       expect(jobs).toEqual([{ id: 'job-1' }]);
     });
 
@@ -120,7 +119,7 @@ describe('db', () => {
         status: 'pending',
         address: '123 Test St',
         client_name: 'Test Client',
-        s3_prefix: 'jobs/user-1/123-test-st'
+        s3_prefix: 'jobs/user-1/123-test-st',
       };
 
       const result = await db.createJob(job);
@@ -135,7 +134,9 @@ describe('db', () => {
     test('should throw on insert error', async () => {
       mockQuery.mockRejectedValue(new Error('duplicate key'));
 
-      await expect(db.createJob({ id: 'job-1', user_id: 'user-1' })).rejects.toThrow('duplicate key');
+      await expect(db.createJob({ id: 'job-1', user_id: 'user-1' })).rejects.toThrow(
+        'duplicate key'
+      );
     });
   });
 
@@ -145,10 +146,7 @@ describe('db', () => {
 
       const job = await db.getJob('job-1');
 
-      expect(mockQuery).toHaveBeenCalledWith(
-        'SELECT * FROM jobs WHERE id = $1',
-        ['job-1']
-      );
+      expect(mockQuery).toHaveBeenCalledWith('SELECT * FROM jobs WHERE id = $1', ['job-1']);
       expect(job.status).toBe('pending');
     });
 
@@ -230,10 +228,10 @@ describe('db', () => {
 
       await db.deleteJob('job-1', 'user-1');
 
-      expect(mockQuery).toHaveBeenCalledWith(
-        'DELETE FROM jobs WHERE id = $1 AND user_id = $2',
-        ['job-1', 'user-1']
-      );
+      expect(mockQuery).toHaveBeenCalledWith('DELETE FROM jobs WHERE id = $1 AND user_id = $2', [
+        'job-1',
+        'user-1',
+      ]);
     });
 
     test('should throw on error', async () => {
@@ -246,10 +244,16 @@ describe('db', () => {
   describe('getJobStats', () => {
     test('should return parsed statistics', async () => {
       mockQuery.mockResolvedValue({
-        rows: [{
-          total: '10', completed: '5', processing: '3', failed: '2',
-          eicr_count: '7', eic_count: '3'
-        }]
+        rows: [
+          {
+            total: '10',
+            completed: '5',
+            processing: '3',
+            failed: '2',
+            eicr_count: '7',
+            eic_count: '3',
+          },
+        ],
       });
 
       const stats = await db.getJobStats('user-1');
@@ -290,7 +294,9 @@ describe('db', () => {
 
       await db.ensureJobsUpdatedAt();
 
-      expect(mockQuery.mock.calls[1][0]).toContain('ALTER TABLE jobs ALTER COLUMN updated_at TYPE TIMESTAMP');
+      expect(mockQuery.mock.calls[1][0]).toContain(
+        'ALTER TABLE jobs ALTER COLUMN updated_at TYPE TIMESTAMP'
+      );
     });
 
     test('should backfill NULLs using created_at::TIMESTAMP cast', async () => {
@@ -311,10 +317,9 @@ describe('db', () => {
 
       const clients = await db.getClients('user-1');
 
-      expect(mockQuery).toHaveBeenCalledWith(
-        expect.stringContaining('ORDER BY name ASC'),
-        ['user-1']
-      );
+      expect(mockQuery).toHaveBeenCalledWith(expect.stringContaining('ORDER BY name ASC'), [
+        'user-1',
+      ]);
       expect(clients).toEqual([{ id: 'c1', name: 'Alice' }]);
     });
 
@@ -324,7 +329,7 @@ describe('db', () => {
       const client = await db.createClient({
         user_id: 'user-1',
         name: 'New Client',
-        email: 'new@example.com'
+        email: 'new@example.com',
       });
 
       expect(mockQuery).toHaveBeenCalledWith(
@@ -353,13 +358,15 @@ describe('db', () => {
 
       await db.savePushSubscription('user-1', {
         endpoint: 'https://push.example.com',
-        keys: { p256dh: 'key1', auth: 'key2' }
+        keys: { p256dh: 'key1', auth: 'key2' },
       });
 
-      expect(mockQuery).toHaveBeenCalledWith(
-        expect.stringContaining('ON CONFLICT'),
-        ['user-1', 'https://push.example.com', 'key1', 'key2']
-      );
+      expect(mockQuery).toHaveBeenCalledWith(expect.stringContaining('ON CONFLICT'), [
+        'user-1',
+        'https://push.example.com',
+        'key1',
+        'key2',
+      ]);
     });
   });
 
@@ -367,7 +374,9 @@ describe('db', () => {
     test('should pass through raw SQL', async () => {
       mockQuery.mockResolvedValue({ rows: [{ count: 5 }] });
 
-      const result = await db.query('SELECT COUNT(*) as count FROM jobs WHERE user_id = $1', ['user-1']);
+      const result = await db.query('SELECT COUNT(*) as count FROM jobs WHERE user_id = $1', [
+        'user-1',
+      ]);
 
       expect(result.rows[0].count).toBe(5);
     });

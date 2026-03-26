@@ -69,7 +69,7 @@ app.post('/api/billing/webhook', express.raw({ type: 'application/json' }), asyn
     event = billing.constructWebhookEvent(req.body, signature);
   } catch (err) {
     logger.error('Stripe webhook signature verification failed', { error: err.message });
-    return res.status(400).json({ error: `Webhook signature failed: ${err.message}` });
+    return res.status(400).json({ error: 'Webhook signature verification failed' });
   }
 
   logger.info('Stripe webhook received', { type: event.type, id: event.id });
@@ -81,12 +81,15 @@ app.post('/api/billing/webhook', express.raw({ type: 'application/json' }), asyn
         const customerId = session.customer;
         const subscriptionId = session.subscription;
 
+        // P13: Derive plan from session metadata instead of hardcoding 'pro'
+        const plan = session.metadata?.plan || 'pro';
+
         const sub = await getSubscriptionByCustomerId(customerId);
         if (sub) {
           await upsertSubscription(sub.user_id, {
             stripe_subscription_id: subscriptionId,
             status: 'active',
-            plan: 'pro',
+            plan,
           });
           logger.info('Checkout completed — subscription activated', {
             userId: sub.user_id,
