@@ -3,6 +3,7 @@
  * Connects to PostgreSQL in production or uses mock data for local development.
  */
 
+import crypto from 'node:crypto';
 import fssync from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -173,7 +174,7 @@ export async function logAction(userId, action, details = {}, ipAddress = null) 
 
   const pool = getPool();
   try {
-    const id = `audit_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    const id = `audit_${crypto.randomUUID()}`;
     await pool.query(
       `INSERT INTO audit_log (id, user_id, action, details, ip_address, created_at)
        VALUES ($1, $2, $3, $4, $5, $6)`,
@@ -255,7 +256,7 @@ export async function createUser({
 
   const pool = getPool();
   try {
-    const id = `user_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const id = `user_${crypto.randomUUID()}`;
     const result = await pool.query(
       `INSERT INTO users (id, email, name, company_name, password_hash, role, company_id, company_role, is_active, created_at)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, true, NOW())
@@ -807,7 +808,7 @@ export async function saveJobVersion(jobId, userId, dataSnapshot, changesSummary
   const pool = getPool();
   const client = await pool.connect();
   try {
-    const id = `ver_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const id = `ver_${crypto.randomUUID()}`;
 
     await client.query('BEGIN');
     // Advisory lock keyed on job_id hash -- serializes version inserts per job.
@@ -997,7 +998,7 @@ export async function createClient(client) {
 
   const pool = getPool();
   try {
-    const id = client.id || `client_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const id = client.id || `client_${crypto.randomUUID()}`;
     await pool.query(
       `INSERT INTO clients (id, user_id, name, email, phone, company, notes)
        VALUES ($1, $2, $3, $4, $5, $6, $7)`,
@@ -1135,7 +1136,7 @@ export async function createProperty(property) {
 
   const pool = getPool();
   try {
-    const id = property.id || `prop_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const id = property.id || `prop_${crypto.randomUUID()}`;
     await pool.query(
       `INSERT INTO properties (id, client_id, user_id, address, postcode, property_type, notes)
        VALUES ($1, $2, $3, $4, $5, $6, $7)`,
@@ -1224,7 +1225,7 @@ export async function createCompany({ name, settings }) {
 
   const pool = getPool();
   try {
-    const id = `company_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const id = `company_${crypto.randomUUID()}`;
     const result = await pool.query(
       `INSERT INTO companies (id, name, is_active, settings, created_at, updated_at)
        VALUES ($1, $2, true, $3, NOW(), NOW())
@@ -1431,21 +1432,29 @@ export async function assignUserToCompany(userId, companyId, companyRole = 'empl
   if (!usePostgres()) return;
 
   const pool = getPool();
+  const client = await pool.connect();
   try {
-    await pool.query(`UPDATE users SET company_id = $1, company_role = $2 WHERE id = $3`, [
+    await client.query('BEGIN');
+
+    await client.query(`UPDATE users SET company_id = $1, company_role = $2 WHERE id = $3`, [
       companyId,
       companyRole,
       userId,
     ]);
 
     // Also update any existing jobs for this user to be tagged with the company
-    await pool.query(`UPDATE jobs SET company_id = $1 WHERE user_id = $2 AND company_id IS NULL`, [
-      companyId,
-      userId,
-    ]);
+    await client.query(
+      `UPDATE jobs SET company_id = $1 WHERE user_id = $2 AND company_id IS NULL`,
+      [companyId, userId]
+    );
+
+    await client.query('COMMIT');
   } catch (error) {
+    await client.query('ROLLBACK');
     logger.error('assignUserToCompany failed', { error: error.message });
     throw error;
+  } finally {
+    client.release();
   }
 }
 
