@@ -1571,8 +1571,8 @@ export async function upsertSubscription(userId, data) {
   const pool = getPool();
   try {
     await pool.query(
-      `INSERT INTO subscriptions (user_id, stripe_customer_id, stripe_subscription_id, stripe_price_id, plan, status, current_period_start, current_period_end, cancel_at_period_end, updated_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())
+      `INSERT INTO subscriptions (user_id, stripe_customer_id, stripe_subscription_id, stripe_price_id, plan, status, current_period_start, current_period_end, cancel_at_period_end, last_event_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW())
        ON CONFLICT (user_id)
        DO UPDATE SET
          stripe_customer_id = COALESCE($2, subscriptions.stripe_customer_id),
@@ -1583,6 +1583,7 @@ export async function upsertSubscription(userId, data) {
          current_period_start = COALESCE($7, subscriptions.current_period_start),
          current_period_end = COALESCE($8, subscriptions.current_period_end),
          cancel_at_period_end = COALESCE($9, subscriptions.cancel_at_period_end),
+         last_event_at = COALESCE($10, subscriptions.last_event_at),
          updated_at = NOW()`,
       [
         userId,
@@ -1594,6 +1595,7 @@ export async function upsertSubscription(userId, data) {
         data.current_period_start || null,
         data.current_period_end || null,
         data.cancel_at_period_end ?? null,
+        data.last_event_at || null,
       ]
     );
     logger.info('Subscription upserted', { userId, plan: data.plan, status: data.status });

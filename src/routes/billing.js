@@ -68,7 +68,12 @@ router.post('/create-checkout', auth.requireAuth, async (req, res) => {
       return res.status(400).json({ error: 'priceId is required' });
     }
 
-    if (ALLOWED_PRICE_IDS.length > 0 && !ALLOWED_PRICE_IDS.includes(priceId)) {
+    // CX-17: Fail closed — reject ALL price IDs when allowlist is unconfigured
+    if (ALLOWED_PRICE_IDS.length === 0) {
+      logger.error('STRIPE_ALLOWED_PRICE_IDS not configured — rejecting checkout');
+      return res.status(503).json({ error: 'Billing configuration incomplete' });
+    }
+    if (!ALLOWED_PRICE_IDS.includes(priceId)) {
       logger.warn('Rejected checkout with invalid priceId', { userId, priceId });
       return res.status(400).json({ error: 'Invalid price selected' });
     }
