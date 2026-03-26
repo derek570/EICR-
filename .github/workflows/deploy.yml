@@ -148,6 +148,8 @@ jobs:
           push: false
           load: true
           tags: eicr-frontend:${{ github.sha }}
+          build-args: |
+            APP_DIR=frontend
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -185,6 +187,8 @@ jobs:
           push: false
           load: true
           tags: eicr-frontend:${{ github.sha }}
+          build-args: |
+            APP_DIR=frontend
           cache-from: type=gha
 
       - name: Build Backend Image for Scan
@@ -251,6 +255,7 @@ jobs:
             ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY_FRONTEND }}:staging-${{ github.sha }}
             ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY_FRONTEND }}:staging-latest
           build-args: |
+            APP_DIR=frontend
             NODE_ENV=staging
           cache-from: type=gha
           cache-to: type=gha,mode=max
@@ -338,6 +343,8 @@ jobs:
           tags: |
             ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY_FRONTEND }}:${{ github.sha }}
             ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY_FRONTEND }}:latest
+          build-args: |
+            APP_DIR=frontend
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
