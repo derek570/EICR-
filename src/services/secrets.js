@@ -23,6 +23,15 @@
 import { SecretsManagerClient, GetSecretValueCommand } from '@aws-sdk/client-secrets-manager';
 import logger from '../logger.js';
 
+// CX-8: Safe merge that prevents prototype pollution by skipping
+// dangerous keys (__proto__, constructor, prototype) from parsed JSON.
+function safeMerge(target, source) {
+  for (const key of Object.keys(source)) {
+    if (key === '__proto__' || key === 'constructor' || key === 'prototype') continue;
+    target[key] = source[key];
+  }
+}
+
 // Cached secrets — loaded once per process from AWS, then reused.
 let secretsCache = null;
 
@@ -47,7 +56,7 @@ async function loadSecretsFromAWS() {
   try {
     const response = await client.send(new GetSecretValueCommand({ SecretId: apiKeysSecretName }));
     if (response.SecretString) {
-      Object.assign(secrets, JSON.parse(response.SecretString));
+      safeMerge(secrets, JSON.parse(response.SecretString));
       logger.info(`[secrets] Loaded API keys from ${apiKeysSecretName}`);
     }
   } catch (error) {
@@ -134,7 +143,7 @@ export async function getAllSecrets() {
 
   // Override with AWS secrets (includes any keys not in knownKeys)
   if (process.env.USE_AWS_SECRETS?.toLowerCase() === 'true') {
-    Object.assign(secrets, await loadSecretsFromAWS());
+    safeMerge(secrets, await loadSecretsFromAWS());
   }
 
   return secrets;

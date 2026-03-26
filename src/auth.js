@@ -3,7 +3,6 @@
  * Handles JWT token creation/verification and password validation.
  */
 
-import crypto from 'node:crypto';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import * as db from './db.js';
@@ -132,10 +131,9 @@ export async function authenticate(email, password, ipAddress = null) {
       userId: user.id,
       email: user.email,
       tv: user.token_version || 0,
-      jti: crypto.randomUUID(),
     },
     getJwtSecret(),
-    { expiresIn: JWT_EXPIRY }
+    { expiresIn: JWT_EXPIRY, issuer: 'certmate', audience: 'certmate-api' }
   );
 
   // Return user without password hash
@@ -157,7 +155,11 @@ export async function authenticate(email, password, ipAddress = null) {
  */
 export async function verifyToken(token) {
   try {
-    const decoded = jwt.verify(token, getJwtSecret(), { algorithms: ['HS256'] });
+    const decoded = jwt.verify(token, getJwtSecret(), {
+      algorithms: ['HS256'],
+      issuer: 'certmate',
+      audience: 'certmate-api',
+    });
     const user = await db.getUserById(decoded.userId);
 
     if (!user || !user.is_active) {
@@ -195,7 +197,11 @@ export async function refreshToken(oldToken) {
     // First try normal verify (token might not actually be expired)
     let decoded;
     try {
-      decoded = jwt.verify(oldToken, getJwtSecret(), { algorithms: ['HS256'] });
+      decoded = jwt.verify(oldToken, getJwtSecret(), {
+        algorithms: ['HS256'],
+        issuer: 'certmate',
+        audience: 'certmate-api',
+      });
     } catch (err) {
       if (err.name !== 'TokenExpiredError') {
         return { success: false, error: 'Invalid token' };
@@ -203,6 +209,8 @@ export async function refreshToken(oldToken) {
       // Token is expired — verify signature but ignore expiration to check grace period
       decoded = jwt.verify(oldToken, getJwtSecret(), {
         algorithms: ['HS256'],
+        issuer: 'certmate',
+        audience: 'certmate-api',
         ignoreExpiration: true,
       });
       if (!decoded || !decoded.exp) {
@@ -254,10 +262,9 @@ export async function refreshToken(oldToken) {
         userId: user.id,
         email: user.email,
         tv: newVersion,
-        jti: crypto.randomUUID(),
       },
       getJwtSecret(),
-      { expiresIn: JWT_EXPIRY }
+      { expiresIn: JWT_EXPIRY, issuer: 'certmate', audience: 'certmate-api' }
     );
 
     const safeUser = {
@@ -334,8 +341,9 @@ export function requireCompanyAdmin(req, res, next) {
     return next();
   }
 
-  // Company-level admins/owners
-  if (['owner', 'admin'].includes(req.user.company_role)) {
+  // CX-4: Company-level admins/owners — require company_id to be present
+  // alongside the role check to prevent access from data-inconsistent states.
+  if (req.user.company_id && ['owner', 'admin'].includes(req.user.company_role)) {
     return next();
   }
 

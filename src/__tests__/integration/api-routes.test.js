@@ -13,12 +13,18 @@ import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
 
 const JWT_SECRET = 'dev-secret-change-in-production';
+process.env.JWT_SECRET = JWT_SECRET;
+
+// CX-5: All test tokens must include issuer/audience to pass verification
+const JWT_OPTS = { issuer: 'certmate', audience: 'certmate-api' };
 
 // ---- Mock DB layer for auth tests ----
 const mockGetUserByEmail = jest.fn();
 const mockGetUserById = jest.fn();
 const mockUpdateLastLogin = jest.fn();
 const mockUpdateLoginAttempts = jest.fn();
+const mockAtomicIncrementFailedAttempts = jest.fn();
+const mockAtomicIncrementTokenVersion = jest.fn();
 const mockLogAction = jest.fn();
 
 jest.unstable_mockModule('../../db.js', () => ({
@@ -26,6 +32,8 @@ jest.unstable_mockModule('../../db.js', () => ({
   getUserById: mockGetUserById,
   updateLastLogin: mockUpdateLastLogin,
   updateLoginAttempts: mockUpdateLoginAttempts,
+  atomicIncrementFailedAttempts: mockAtomicIncrementFailedAttempts,
+  atomicIncrementTokenVersion: mockAtomicIncrementTokenVersion,
   logAction: mockLogAction,
 }));
 
@@ -53,7 +61,7 @@ describe('API Route Handler Tests', () => {
         service: 'eicr-backend',
         version: '1.0.0',
         storage: 'local',
-        timestamp: new Date().toISOString()
+        timestamp: new Date().toISOString(),
       };
 
       expect(response.status).toBe('ok');
@@ -98,15 +106,15 @@ describe('API Route Handler Tests', () => {
       expect(result.success).toBe(true);
       expect(result.token).toBeDefined();
 
-      // Verify the token is valid JWT
-      const decoded = jwt.verify(result.token, JWT_SECRET);
+      // Verify the token is valid JWT with issuer/audience (CX-5)
+      const decoded = jwt.verify(result.token, JWT_SECRET, JWT_OPTS);
       expect(decoded.userId).toBe('user-1');
       expect(decoded.email).toBe('test@example.com');
     });
 
     test('should return 401-style error for wrong password', async () => {
       mockGetUserByEmail.mockResolvedValue(testUser);
-      mockUpdateLoginAttempts.mockResolvedValue();
+      mockAtomicIncrementFailedAttempts.mockResolvedValue(1);
       mockLogAction.mockResolvedValue();
 
       const result = await auth.authenticate('test@example.com', 'wrong', '127.0.0.1');
@@ -126,15 +134,19 @@ describe('API Route Handler Tests', () => {
     };
 
     test('should refresh a valid token', async () => {
-      const oldToken = jwt.sign({ userId: 'user-1', email: 'test@example.com' }, JWT_SECRET, { expiresIn: '24h' });
+      const oldToken = jwt.sign({ userId: 'user-1', email: 'test@example.com' }, JWT_SECRET, {
+        expiresIn: '24h',
+        ...JWT_OPTS,
+      });
       mockGetUserById.mockResolvedValue(activeUser);
+      mockAtomicIncrementTokenVersion.mockResolvedValue(true);
 
       const result = await auth.refreshToken(oldToken);
 
       expect(result.success).toBe(true);
       expect(result.token).toBeDefined();
       // Verify the new token decodes to the same user
-      const decoded = jwt.verify(result.token, JWT_SECRET);
+      const decoded = jwt.verify(result.token, JWT_SECRET, JWT_OPTS);
       expect(decoded.userId).toBe('user-1');
       expect(decoded.email).toBe('test@example.com');
     });
@@ -148,7 +160,10 @@ describe('API Route Handler Tests', () => {
 
   describe('GET /api/auth/me handler logic', () => {
     test('should return user from verified token', async () => {
-      const token = jwt.sign({ userId: 'user-1', email: 'test@example.com' }, JWT_SECRET, { expiresIn: '24h' });
+      const token = jwt.sign({ userId: 'user-1', email: 'test@example.com' }, JWT_SECRET, {
+        expiresIn: '24h',
+        ...JWT_OPTS,
+      });
       mockGetUserById.mockResolvedValue({
         id: 'user-1',
         email: 'test@example.com',
@@ -187,7 +202,10 @@ describe('API Route Handler Tests', () => {
     });
 
     test('should allow requests with valid Bearer token', async () => {
-      const token = jwt.sign({ userId: 'user-1', email: 'test@example.com' }, JWT_SECRET, { expiresIn: '24h' });
+      const token = jwt.sign({ userId: 'user-1', email: 'test@example.com' }, JWT_SECRET, {
+        expiresIn: '24h',
+        ...JWT_OPTS,
+      });
       req.headers.authorization = `Bearer ${token}`;
       mockGetUserById.mockResolvedValue({
         id: 'user-1',
@@ -198,26 +216,35 @@ describe('API Route Handler Tests', () => {
       });
 
       auth.requireAuth(req, res, next);
-      await new Promise(r => setTimeout(r, 50));
+      await new Promise((r) => setTimeout(r, 50));
 
       expect(next).toHaveBeenCalled();
       expect(req.user.id).toBe('user-1');
     });
 
     test('should block requests with expired token', async () => {
-      const token = jwt.sign({ userId: 'user-1', email: 'test@example.com' }, JWT_SECRET, { expiresIn: '-1s' });
+      const token = jwt.sign({ userId: 'user-1', email: 'test@example.com' }, JWT_SECRET, {
+        expiresIn: '-1s',
+        ...JWT_OPTS,
+      });
       req.headers.authorization = `Bearer ${token}`;
 
       auth.requireAuth(req, res, next);
-      await new Promise(r => setTimeout(r, 50));
+      await new Promise((r) => setTimeout(r, 50));
 
       expect(res.status).toHaveBeenCalledWith(401);
       expect(next).not.toHaveBeenCalled();
     });
 
     test('should prefer Authorization header over query param', async () => {
-      const headerToken = jwt.sign({ userId: 'user-header', email: 'a@b.com' }, JWT_SECRET, { expiresIn: '24h' });
-      const queryToken = jwt.sign({ userId: 'user-query', email: 'c@d.com' }, JWT_SECRET, { expiresIn: '24h' });
+      const headerToken = jwt.sign({ userId: 'user-header', email: 'a@b.com' }, JWT_SECRET, {
+        expiresIn: '24h',
+        ...JWT_OPTS,
+      });
+      const queryToken = jwt.sign({ userId: 'user-query', email: 'c@d.com' }, JWT_SECRET, {
+        expiresIn: '24h',
+        ...JWT_OPTS,
+      });
       req.headers.authorization = `Bearer ${headerToken}`;
       req.query.token = queryToken;
 
@@ -230,7 +257,7 @@ describe('API Route Handler Tests', () => {
       });
 
       auth.requireAuth(req, res, next);
-      await new Promise(r => setTimeout(r, 50));
+      await new Promise((r) => setTimeout(r, 50));
 
       expect(req.user.id).toBe('user-header');
     });

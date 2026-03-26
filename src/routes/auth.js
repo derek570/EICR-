@@ -118,8 +118,8 @@ router.delete('/account', auth.requireAuth, async (req, res) => {
       return res.status(401).json({ error: 'Incorrect password' });
     }
 
-    // Prevent admin from deleting their own account if they're the only admin
-    if (req.user.role === 'admin') {
+    // CX-7: Use fresh role from DB (not stale JWT claim) for destructive action checks
+    if (user.role === 'admin') {
       return res
         .status(400)
         .json({ error: 'Admin accounts cannot be self-deleted. Contact another admin.' });
