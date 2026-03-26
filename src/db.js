@@ -146,6 +146,7 @@ export async function updateLastLogin(userId) {
     );
   } catch (error) {
     logger.error('updateLastLogin failed', { error: error.message });
+    throw error; // D17: write functions must throw on failure
   }
 }
 
@@ -163,6 +164,7 @@ export async function updateLoginAttempts(userId, attempts, lockedUntil) {
     );
   } catch (error) {
     logger.error('updateLoginAttempts failed', { error: error.message });
+    throw error; // D17: write functions must throw on failure
   }
 }
 
@@ -588,6 +590,7 @@ export async function updateJobStatus(jobId, userId, status, address = null) {
     );
   } catch (error) {
     logger.error('updateJobStatus failed', { error: error.message });
+    throw error; // D17: write functions must throw on failure
   }
 }
 
@@ -654,6 +657,7 @@ export async function incrementTokenVersion(userId) {
     await pool.query(`UPDATE users SET token_version = token_version + 1 WHERE id = $1`, [userId]);
   } catch (error) {
     logger.error('incrementTokenVersion failed', { error: error.message });
+    throw error; // D17: write functions must throw on failure — token invalidation is security-critical
   }
 }
 
@@ -1787,7 +1791,12 @@ export async function getProcessingTimes(userId) {
 }
 
 /**
- * Run a raw SQL query (used by admin endpoints for health checks and stats)
+ * Run a raw SQL query (used by admin endpoints for health checks and stats).
+ *
+ * ⚠️  SECURITY WARNING — D1: NEVER concatenate user input into `text`.
+ * Always use parameterized queries: query('SELECT * FROM t WHERE id = $1', [id])
+ * String concatenation creates SQL injection vulnerabilities.
+ * Prefer purpose-built functions (getJob, updateUser, etc.) over this export.
  */
 export async function query(text, params) {
   if (!usePostgres()) {

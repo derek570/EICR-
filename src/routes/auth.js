@@ -10,6 +10,9 @@ import logger from '../logger.js';
 
 const router = Router();
 
+// A24: Basic email format validation — prevents junk entries in audit logs
+const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
 /**
  * Login
  * POST /api/auth/login
@@ -23,6 +26,10 @@ router.post('/login', async (req, res) => {
 
     if (!email || !password) {
       return res.status(400).json({ error: 'Email and password are required' });
+    }
+
+    if (!EMAIL_REGEX.test(email)) {
+      return res.status(400).json({ error: 'Invalid email format' });
     }
 
     const ipAddress = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
@@ -53,19 +60,16 @@ router.post('/logout', auth.requireAuth, async (req, res) => {
 /**
  * Refresh an expired token
  * POST /api/auth/refresh
- * Token: Authorization header (preferred) or body { token: string } (legacy)
+ * Token: Authorization header only (Bearer token)
  */
 router.post('/refresh', async (req, res) => {
   try {
-    // Prefer Authorization header (iOS client sends token here)
+    // A12: Only accept refresh token from Authorization header — body fallback removed
+    // to avoid tokens being logged/cached in request bodies.
     let token = null;
     const authHeader = req.headers.authorization;
     if (authHeader && authHeader.startsWith('Bearer ')) {
       token = authHeader.slice(7);
-    }
-    // Fall back to body for backward compatibility (web clients, legacy)
-    if (!token && req.body.token) {
-      token = req.body.token;
     }
     if (!token) {
       return res.status(400).json({ error: 'Token is required' });
@@ -97,6 +101,22 @@ router.get('/me', auth.requireAuth, (req, res) => {
 router.delete('/account', auth.requireAuth, async (req, res) => {
   try {
     const userId = req.user.id;
+
+    // A14: Require password confirmation for account deletion
+    const { password } = req.body;
+    if (!password) {
+      return res.status(400).json({ error: 'Password is required to delete your account' });
+    }
+
+    const user = await db.getUserById(userId);
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const passwordValid = await bcrypt.compare(password, user.password_hash);
+    if (!passwordValid) {
+      return res.status(401).json({ error: 'Incorrect password' });
+    }
 
     // Prevent admin from deleting their own account if they're the only admin
     if (req.user.role === 'admin') {

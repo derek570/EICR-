@@ -29,6 +29,9 @@ import logger from '../logger.js';
 
 const router = Router();
 
+// A24: Basic email format validation
+const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
 /**
  * GET /api/admin/users
  * List all users. Supports optional pagination (?limit=50&offset=0).
@@ -61,6 +64,9 @@ router.post('/', async (req, res) => {
 
     if (!email || !email.trim()) {
       return res.status(400).json({ error: 'Email is required' });
+    }
+    if (!EMAIL_REGEX.test(email.trim())) {
+      return res.status(400).json({ error: 'Invalid email format' });
     }
     if (!name || !name.trim()) {
       return res.status(400).json({ error: 'Name is required' });
