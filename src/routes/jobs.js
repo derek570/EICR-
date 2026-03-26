@@ -861,10 +861,10 @@ router.get('/job/:userId/:jobId/history', auth.requireAuth, async (req, res) => 
 
     if (isPaginated) {
       const { limit, offset } = parsePagination(req.query);
-      const { rows, total } = await db.getJobVersionsPaginated(jobId, limit, offset);
+      const { rows, total } = await db.getJobVersionsPaginated(jobId, userId, limit, offset);
       res.json(paginatedResponse(rows, total, { limit, offset }));
     } else {
-      const versions = await getJobVersions(jobId);
+      const versions = await getJobVersions(jobId, userId);
       res.json(versions);
     }
   } catch (error) {

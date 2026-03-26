@@ -80,6 +80,12 @@ function getPool() {
       connectionTimeoutMillis: 2000,
       ssl: getSslConfig(),
     });
+    // CX-22: Set statement_timeout and idle_in_transaction_session_timeout on each new connection
+    // to prevent slow queries from exhausting the pool
+    pool.on('connect', (client) => {
+      client.query('SET statement_timeout = 30000'); // 30s
+      client.query('SET idle_in_transaction_session_timeout = 60000'); // 60s
+    });
     // D16: Handle unexpected pool errors to prevent unhandled crashes
     pool.on('error', (err) => {
       logger.error('Unexpected PostgreSQL pool error', { error: err.message });
@@ -659,6 +665,8 @@ export async function ensureTokenVersionColumn() {
 /**
  * Atomically increment token_version with compare-and-swap (A7).
  * Returns true if the update succeeded (version matched), false on conflict.
+ * CX-23: Throws on DB errors instead of silently returning false — a DB failure
+ * must not be confused with a legitimate CAS conflict.
  */
 export async function atomicIncrementTokenVersion(userId, expectedVersion) {
   if (!usePostgres()) return true;
@@ -672,7 +680,7 @@ export async function atomicIncrementTokenVersion(userId, expectedVersion) {
     return result.rowCount === 1;
   } catch (error) {
     logger.error('atomicIncrementTokenVersion failed', { error: error.message });
-    return false;
+    throw error; // CX-23: propagate — DB failures must not silently disable token revocation
   }
 }
 
@@ -834,7 +842,9 @@ export async function ensureJobVersionsTable() {
 }
 
 /**
- * Save a version snapshot of job data
+ * Save a version snapshot of job data.
+ * CX-21: Verifies job ownership via JOIN to jobs table before inserting.
+ * CX-23: Propagates errors instead of silently swallowing — callers must handle.
  */
 export async function saveJobVersion(jobId, userId, dataSnapshot, changesSummary) {
   if (!usePostgres()) return null;
@@ -845,6 +855,17 @@ export async function saveJobVersion(jobId, userId, dataSnapshot, changesSummary
     const id = `ver_${crypto.randomUUID()}`;
 
     await client.query('BEGIN');
+
+    // CX-21: Verify job belongs to the user before saving a version
+    const ownerCheck = await client.query('SELECT id FROM jobs WHERE id = $1 AND user_id = $2', [
+      jobId,
+      userId,
+    ]);
+    if (ownerCheck.rows.length === 0) {
+      await client.query('ROLLBACK');
+      throw new Error('Job not found or access denied');
+    }
+
     // Advisory lock keyed on job_id hash -- serializes version inserts per job.
     // Auto-released on COMMIT/ROLLBACK. Different job_ids are not blocked.
     await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [jobId]);
@@ -864,23 +885,28 @@ export async function saveJobVersion(jobId, userId, dataSnapshot, changesSummary
   } catch (error) {
     await client.query('ROLLBACK').catch(() => {});
     logger.error('saveJobVersion failed', { error: error.message });
-    return null;
+    throw error; // CX-23: propagate — version save failures are security-relevant
   } finally {
     client.release();
   }
 }
 
 /**
- * Get all versions for a job (metadata only, no snapshots)
+ * Get all versions for a job (metadata only, no snapshots).
+ * CX-21: Requires userId and verifies job ownership via JOIN to jobs table.
  */
-export async function getJobVersions(jobId) {
+export async function getJobVersions(jobId, userId) {
   if (!usePostgres()) return [];
 
   const pool = getPool();
   try {
     const result = await pool.query(
-      'SELECT id, version_number, user_id, changes_summary, created_at FROM job_versions WHERE job_id = $1 ORDER BY version_number DESC',
-      [jobId]
+      `SELECT jv.id, jv.version_number, jv.user_id, jv.changes_summary, jv.created_at
+       FROM job_versions jv
+       INNER JOIN jobs j ON jv.job_id = j.id AND j.user_id = $2
+       WHERE jv.job_id = $1
+       ORDER BY jv.version_number DESC`,
+      [jobId, userId]
     );
     return result.rows;
   } catch (error) {
@@ -892,8 +918,9 @@ export async function getJobVersions(jobId) {
 /**
  * Get versions for a job with pagination (LIMIT/OFFSET).
  * Returns { rows, total } for paginated responses.
+ * CX-21: Requires userId and verifies job ownership via JOIN to jobs table.
  */
-export async function getJobVersionsPaginated(jobId, limit, offset) {
+export async function getJobVersionsPaginated(jobId, userId, limit, offset) {
   if (!usePostgres()) {
     return { rows: [], total: 0 };
   }
@@ -901,10 +928,19 @@ export async function getJobVersionsPaginated(jobId, limit, offset) {
   const pool = getPool();
   try {
     const [countResult, dataResult] = await Promise.all([
-      pool.query('SELECT COUNT(*) FROM job_versions WHERE job_id = $1', [jobId]),
       pool.query(
-        'SELECT id, version_number, user_id, changes_summary, created_at FROM job_versions WHERE job_id = $1 ORDER BY version_number DESC LIMIT $2 OFFSET $3',
-        [jobId, limit, offset]
+        `SELECT COUNT(*) FROM job_versions jv
+         INNER JOIN jobs j ON jv.job_id = j.id AND j.user_id = $2
+         WHERE jv.job_id = $1`,
+        [jobId, userId]
+      ),
+      pool.query(
+        `SELECT jv.id, jv.version_number, jv.user_id, jv.changes_summary, jv.created_at
+         FROM job_versions jv
+         INNER JOIN jobs j ON jv.job_id = j.id AND j.user_id = $2
+         WHERE jv.job_id = $1
+         ORDER BY jv.version_number DESC LIMIT $3 OFFSET $4`,
+        [jobId, userId, limit, offset]
       ),
     ]);
     return { rows: dataResult.rows, total: Number(countResult.rows[0].count) };
@@ -1163,13 +1199,26 @@ export async function getPropertiesPaginated(userId, limit, offset) {
 }
 
 /**
- * Create a property
+ * Create a property.
+ * CX-20: If client_id is provided, validates it belongs to the same user_id
+ * to prevent cross-tenant IDOR (attaching properties to another tenant's client).
  */
 export async function createProperty(property) {
   if (!usePostgres()) return property;
 
   const pool = getPool();
   try {
+    // CX-20: Verify client_id ownership before insert
+    if (property.client_id) {
+      const ownerCheck = await pool.query('SELECT id FROM clients WHERE id = $1 AND user_id = $2', [
+        property.client_id,
+        property.user_id,
+      ]);
+      if (ownerCheck.rows.length === 0) {
+        throw new Error('client_id does not belong to the authenticated user');
+      }
+    }
+
     const id = property.id || `prop_${crypto.randomUUID()}`;
     await pool.query(
       `INSERT INTO properties (id, client_id, user_id, address, postcode, property_type, notes)
