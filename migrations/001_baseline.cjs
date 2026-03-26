@@ -19,16 +19,21 @@ exports.up = (pgm) => {
   pgm.addColumn(
     'users',
     {
-      token_version: { type: 'integer', default: 0 },
+      token_version: { type: 'integer', default: 0, notNull: true },
     },
     { ifNotExists: true }
   );
+
+  // CX-27: CHECK constraint — token_version must be non-negative
+  pgm.addConstraint('users', 'users_token_version_check', {
+    check: 'token_version >= 0',
+  });
 
   // Jobs updated_at column (from ensureJobsUpdatedAt)
   pgm.addColumn(
     'jobs',
     {
-      updated_at: { type: 'timestamp' },
+      updated_at: { type: 'timestamp', notNull: true, default: pgm.func('NOW()') },
     },
     { ifNotExists: true }
   );
@@ -77,6 +82,11 @@ exports.up = (pgm) => {
     ifNotExists: true,
   });
 
+  // CX-27: CHECK constraint — version_number must be positive
+  pgm.addConstraint('job_versions', 'job_versions_version_number_check', {
+    check: 'version_number > 0',
+  });
+
   pgm.createIndex('job_versions', 'job_id', {
     name: 'idx_job_versions_job',
     ifNotExists: true,
@@ -104,11 +114,17 @@ exports.up = (pgm) => {
     ifNotExists: true,
   });
 
+  // CX-29: UNIQUE on (id, user_id) to support composite FK from properties
+  pgm.createConstraint('clients', 'clients_id_user_unique', {
+    unique: ['id', 'user_id'],
+    ifNotExists: true,
+  });
+
   pgm.createTable(
     'properties',
     {
       id: { type: 'text', primaryKey: true },
-      client_id: { type: 'text', references: 'clients', onDelete: 'SET NULL' },
+      client_id: { type: 'text' },
       user_id: { type: 'text', notNull: true },
       address: { type: 'text', notNull: true },
       postcode: { type: 'text' },
@@ -130,6 +146,21 @@ exports.up = (pgm) => {
     ifNotExists: true,
   });
 
+  // CX-28: UNIQUE on (user_id, address) to prevent duplicate properties per user
+  pgm.createConstraint('properties', 'properties_user_address_unique', {
+    unique: ['user_id', 'address'],
+    ifNotExists: true,
+  });
+
+  // CX-29: Composite FK — ensures properties can only link to clients owned by same user
+  pgm.addConstraint('properties', 'properties_client_user_fk', {
+    foreignKeys: {
+      columns: ['client_id', 'user_id'],
+      references: 'clients(id, user_id)',
+      match: 'SIMPLE',
+    },
+  });
+
   // Subscriptions table (from ensureSubscriptionsTable)
   // Note: matches actual db.js schema -- user_id is TEXT NOT NULL UNIQUE (no FK to users),
   // status defaults to 'inactive', includes stripe_price_id column
@@ -141,8 +172,8 @@ exports.up = (pgm) => {
       stripe_customer_id: { type: 'text' },
       stripe_subscription_id: { type: 'text' },
       stripe_price_id: { type: 'text' },
-      plan: { type: 'text', default: "'free'" },
-      status: { type: 'text', default: "'inactive'" },
+      plan: { type: 'text', default: 'free' },
+      status: { type: 'text', default: 'inactive' },
       current_period_start: { type: 'timestamp' },
       current_period_end: { type: 'timestamp' },
       cancel_at_period_end: { type: 'boolean', default: false },
