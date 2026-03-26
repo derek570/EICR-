@@ -18,7 +18,13 @@ import swaggerUi from 'swagger-ui-express';
 import yaml from 'js-yaml';
 
 // Rate limiting middleware
-import { aiLimiter, uploadLimiter, emailLimiter, authLimiter } from './middleware/rate-limit.js';
+import {
+  aiLimiter,
+  uploadLimiter,
+  emailLimiter,
+  authLimiter,
+  billingLimiter,
+} from './middleware/rate-limit.js';
 
 // Error handling middleware
 import { notFoundHandler, errorHandler } from './middleware/error-handler.js';
@@ -73,6 +79,18 @@ app.post('/api/billing/webhook', express.raw({ type: 'application/json' }), asyn
   }
 
   logger.info('Stripe webhook received', { type: event.type, id: event.id });
+
+  // P1: Webhook deduplication — skip already-processed events (Stripe retries)
+  try {
+    const dup = await query('SELECT 1 FROM processed_events WHERE event_id = $1', [event.id]);
+    if (dup.rows.length > 0) {
+      logger.info('Stripe webhook duplicate skipped', { id: event.id });
+      return res.json({ received: true });
+    }
+  } catch (dupErr) {
+    // If dedup check fails (e.g. table doesn't exist yet), log and continue processing
+    logger.warn('Webhook dedup check failed, processing anyway', { error: dupErr.message });
+  }
 
   try {
     switch (event.type) {
@@ -150,8 +168,35 @@ app.post('/api/billing/webhook', express.raw({ type: 'application/json' }), asyn
         break;
       }
 
+      // P5: Handle payment failure — set subscription to past_due
+      case 'invoice.payment_failed': {
+        const invoice = event.data.object;
+        const customerId = invoice.customer;
+        const sub = await getSubscriptionByCustomerId(customerId);
+        if (sub) {
+          await upsertSubscription(sub.user_id, {
+            status: 'past_due',
+          });
+          logger.warn('Invoice payment failed — subscription past_due', {
+            userId: sub.user_id,
+            invoiceId: invoice.id,
+          });
+        }
+        break;
+      }
+
       default:
         logger.info('Unhandled Stripe event type', { type: event.type });
+    }
+
+    // P1: Record event as processed for deduplication
+    try {
+      await query(
+        'INSERT INTO processed_events (event_id) VALUES ($1) ON CONFLICT (event_id) DO NOTHING',
+        [event.id]
+      );
+    } catch (insertErr) {
+      logger.warn('Failed to record processed event', { id: event.id, error: insertErr.message });
     }
 
     res.json({ received: true });
@@ -246,7 +291,7 @@ app.use('/api', keysRouter); // /api/proxy/*, /api/config/*
 app.use('/api', settingsRouter); // /api/settings/*, /api/inspector-profiles/*, /api/schema/*, /api/regulations
 app.use('/api/push', pushRouter); // /api/push/*
 app.use('/api', feedbackRouter); // /api/feedback/*, /api/optimizer-report/*
-app.use('/api/billing', billingRouter); // /api/billing/* (except webhook which stays here)
+app.use('/api/billing', billingLimiter, billingRouter); // /api/billing/* (except webhook which stays here)
 app.use('/api/calendar', calendarRouter); // /api/calendar/*
 app.use('/api', clientsRouter); // /api/clients/*, /api/properties/*
 app.use('/api/analytics', analyticsRouter); // /api/analytics/*
