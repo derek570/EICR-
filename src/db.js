@@ -28,7 +28,7 @@ let pool = null;
 // D3: Explicit safe columns for user queries — prevents accidental exposure of sensitive fields.
 // password_hash, failed_login_attempts, locked_until are only included where needed (auth functions).
 const SAFE_USER_COLUMNS =
-  'id, email, name, company_name, role, is_active, last_login, created_at, updated_at, company_id, company_role, token_version';
+  'id, email, name, company_name, role, is_active, last_login, created_at, company_id, company_role, token_version';
 
 // Read DATABASE_URL dynamically (secrets are loaded after module import)
 function getDatabaseUrl() {
