@@ -141,18 +141,21 @@ describe('db', () => {
   });
 
   describe('getJob', () => {
-    test('should return job by ID', async () => {
+    test('should return job by ID and user_id', async () => {
       mockQuery.mockResolvedValue({ rows: [{ id: 'job-1', status: 'pending' }] });
 
-      const job = await db.getJob('job-1');
+      const job = await db.getJob('job-1', 'user-1');
 
-      expect(mockQuery).toHaveBeenCalledWith('SELECT * FROM jobs WHERE id = $1', ['job-1']);
+      expect(mockQuery).toHaveBeenCalledWith(
+        expect.stringContaining('WHERE id = $1 AND user_id = $2'),
+        ['job-1', 'user-1']
+      );
       expect(job.status).toBe('pending');
     });
 
     test('should return null when not found', async () => {
       mockQuery.mockResolvedValue({ rows: [] });
-      expect(await db.getJob('nonexistent')).toBeNull();
+      expect(await db.getJob('nonexistent', 'user-1')).toBeNull();
     });
   });
 
@@ -171,32 +174,29 @@ describe('db', () => {
   });
 
   describe('updateJob', () => {
-    test('should build dynamic UPDATE query', async () => {
+    test('should build dynamic UPDATE query with user_id filter', async () => {
       mockQuery.mockResolvedValue({});
 
-      await db.updateJob('job-1', { status: 'done', address: '456 New St' });
+      await db.updateJob('job-1', 'user-1', { status: 'done', address: '456 New St' });
 
       expect(mockQuery).toHaveBeenCalledWith(
         expect.stringContaining('UPDATE jobs SET'),
-        expect.arrayContaining(['done', '456 New St', 'job-1'])
+        expect.arrayContaining(['done', '456 New St', 'job-1', 'user-1'])
       );
     });
 
     test('should auto-set updated_at', async () => {
       mockQuery.mockResolvedValue({});
 
-      await db.updateJob('job-1', { status: 'done' });
+      await db.updateJob('job-1', 'user-1', { status: 'done' });
 
-      // Should have 3+ params: status, updated_at, and jobId
       const callArgs = mockQuery.mock.calls[0];
       expect(callArgs[0]).toContain('updated_at');
+      expect(callArgs[0]).toContain('user_id');
     });
 
     test('should be no-op for empty data', async () => {
-      await db.updateJob('job-1', {});
-      // updateJob adds updated_at automatically, so query should still be called
-      // But if updates array is empty after adding updated_at, it shouldn't be empty
-      // Actually the code adds updated_at to data, so updates will have 1 entry
+      await db.updateJob('job-1', 'user-1', {});
       expect(mockQuery).toHaveBeenCalled();
     });
   });

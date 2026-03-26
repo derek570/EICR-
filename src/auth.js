@@ -220,9 +220,17 @@ export async function refreshToken(oldToken) {
       return { success: false, error: 'Token has been revoked' };
     }
 
-    // Rotate: increment version
+    // A7: Atomic compare-and-swap to prevent race conditions on concurrent refresh
+    const swapped = await db.atomicIncrementTokenVersion(user.id, currentVersion);
+    if (!swapped) {
+      // Another concurrent refresh already incremented — treat as reuse
+      logger.warn('Token rotation conflict — concurrent refresh detected', {
+        userId: user.id,
+        currentVersion,
+      });
+      return { success: false, error: 'Token has been revoked' };
+    }
     const newVersion = currentVersion + 1;
-    await db.setTokenVersion(user.id, newVersion);
 
     // Issue a fresh token with rotation claims
     const token = jwt.sign(
@@ -325,6 +333,26 @@ export function requireCompanyAdmin(req, res, next) {
  * - req.user is a system admin
  * - req.user is a company admin/owner AND targetUserId belongs to the same company
  */
+/**
+ * A9: Express middleware factory that enforces IDOR protection on a route parameter.
+ * Extracts userId from req.params[paramName] and verifies the authenticated user
+ * can access that user's resources via canAccessUser().
+ * Must be used AFTER requireAuth.
+ */
+export function requireAccessToUser(paramName = 'userId') {
+  return async (req, res, next) => {
+    const targetUserId = req.params[paramName];
+    if (!targetUserId) {
+      return res.status(400).json({ error: `Missing parameter: ${paramName}` });
+    }
+    const allowed = await canAccessUser(req, targetUserId);
+    if (!allowed) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+    next();
+  };
+}
+
 export async function canAccessUser(req, targetUserId) {
   // Own data
   if (req.user.id === targetUserId) return true;

@@ -44,6 +44,8 @@ router.post('/login', async (req, res) => {
  * POST /api/auth/logout
  */
 router.post('/logout', auth.requireAuth, async (req, res) => {
+  // A8: Invalidate all existing tokens on logout by incrementing token_version
+  await db.incrementTokenVersion(req.user.id);
   await db.logAction(req.user.id, 'logout');
   res.json({ success: true });
 });
@@ -138,12 +140,10 @@ router.put('/change-password', auth.requireAuth, async (req, res) => {
     }
 
     if (!/[a-z]/.test(newPassword) || !/[A-Z]/.test(newPassword) || !/[0-9]/.test(newPassword)) {
-      return res
-        .status(400)
-        .json({
-          error:
-            'Password must contain at least one uppercase letter, one lowercase letter, and one digit',
-        });
+      return res.status(400).json({
+        error:
+          'Password must contain at least one uppercase letter, one lowercase letter, and one digit',
+      });
     }
 
     if (Buffer.byteLength(newPassword, 'utf8') > 72) {

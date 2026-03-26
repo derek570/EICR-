@@ -780,7 +780,7 @@ router.put('/job/:userId/:jobId', auth.requireAuth, async (req, res) => {
         }
       }
     }
-    await db.updateJob(jobId, dbUpdate);
+    await db.updateJob(jobId, userId, dbUpdate);
 
     res.json({ success: true });
   } catch (error) {
@@ -926,16 +926,12 @@ router.post('/job/:userId/:jobId/clone', auth.requireAuth, async (req, res) => {
   }
 
   try {
-    let sourceJob = await db.getJob(jobId);
+    let sourceJob = await db.getJob(jobId, userId);
     if (!sourceJob) {
       sourceJob = await db.getJobByAddress(userId, jobId);
     }
     if (!sourceJob) {
       return res.status(404).json({ error: 'Source job not found' });
-    }
-
-    if (sourceJob.user_id !== userId) {
-      return res.status(403).json({ error: 'Access denied' });
     }
 
     const sourceFolderName = sanitizeS3Path(sourceJob.address) || jobId;

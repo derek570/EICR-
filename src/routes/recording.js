@@ -197,10 +197,10 @@ async function saveSession(
 
     // 6. Update or create job in database
     if (isExistingJob) {
-      const existingJob = await db.getJob(jobId);
+      const existingJob = await db.getJob(jobId, userId);
       const oldFolderName = existingJob?.folder_name || existingJob?.address || jobId;
 
-      await db.updateJob(jobId, {
+      await db.updateJob(jobId, userId, {
         folder_name: jobAddress,
         address: jobAddress,
         status: 'done',
@@ -1267,7 +1267,7 @@ router.post(
       const extractedAddress = formData.installation_details?.address;
       if (session.jobId && extractedAddress && !session.addressUpdated) {
         try {
-          await db.updateJob(session.jobId, { address: extractedAddress });
+          await db.updateJob(session.jobId, session.userId, { address: extractedAddress });
           session.addressUpdated = true;
           session.address = extractedAddress;
           logger.info('── JOB ADDRESS UPDATED ──', {

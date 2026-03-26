@@ -451,14 +451,18 @@ export async function createJob(job) {
 /**
  * Get a single job by ID
  */
-export async function getJob(jobId) {
+export async function getJob(jobId, userId) {
   if (!usePostgres()) {
     return null;
   }
 
   const pool = getPool();
   try {
-    const result = await pool.query(`SELECT * FROM jobs WHERE id = $1`, [jobId]);
+    // D2: user_id filter prevents IDOR — callers must pass the authenticated user's ID
+    const result = await pool.query(`SELECT * FROM jobs WHERE id = $1 AND user_id = $2`, [
+      jobId,
+      userId,
+    ]);
     return result.rows[0] || null;
   } catch (error) {
     logger.error('getJob failed', { error: error.message });
@@ -510,7 +514,7 @@ const ALLOWED_JOB_COLUMNS = new Set([
 /**
  * Update job fields
  */
-export async function updateJob(jobId, data) {
+export async function updateJob(jobId, userId, data) {
   if (!usePostgres()) return;
 
   const pool = getPool();
@@ -534,8 +538,13 @@ export async function updateJob(jobId, data) {
 
     if (updates.length === 0) return;
 
+    // D2: user_id filter prevents IDOR — only the owning user can update
     params.push(jobId);
-    await pool.query(`UPDATE jobs SET ${updates.join(', ')} WHERE id = $${paramIndex}`, params);
+    params.push(userId);
+    await pool.query(
+      `UPDATE jobs SET ${updates.join(', ')} WHERE id = $${paramIndex} AND user_id = $${paramIndex + 1}`,
+      params
+    );
   } catch (error) {
     logger.error('updateJob failed', { error: error.message });
     throw error;
@@ -614,16 +623,22 @@ export async function ensureTokenVersionColumn() {
 }
 
 /**
- * Set token_version to a specific value for a user
+ * Atomically increment token_version with compare-and-swap (A7).
+ * Returns true if the update succeeded (version matched), false on conflict.
  */
-export async function setTokenVersion(userId, version) {
-  if (!usePostgres()) return;
+export async function atomicIncrementTokenVersion(userId, expectedVersion) {
+  if (!usePostgres()) return true;
 
   const pool = getPool();
   try {
-    await pool.query(`UPDATE users SET token_version = $1 WHERE id = $2`, [version, userId]);
+    const result = await pool.query(
+      `UPDATE users SET token_version = token_version + 1 WHERE id = $1 AND token_version = $2`,
+      [userId, expectedVersion]
+    );
+    return result.rowCount === 1;
   } catch (error) {
-    logger.error('setTokenVersion failed', { error: error.message });
+    logger.error('atomicIncrementTokenVersion failed', { error: error.message });
+    return false;
   }
 }
 
@@ -1006,7 +1021,7 @@ export async function createClient(client) {
 /**
  * Update a client
  */
-export async function updateClient(clientId, data) {
+export async function updateClient(clientId, userId, data) {
   if (!usePostgres()) return;
 
   const pool = getPool();
@@ -1030,8 +1045,13 @@ export async function updateClient(clientId, data) {
     params.push(new Date().toISOString());
     paramIndex++;
 
+    // D2: user_id filter prevents IDOR — only the owning user can update
     params.push(clientId);
-    await pool.query(`UPDATE clients SET ${updates.join(', ')} WHERE id = $${paramIndex}`, params);
+    params.push(userId);
+    await pool.query(
+      `UPDATE clients SET ${updates.join(', ')} WHERE id = $${paramIndex} AND user_id = $${paramIndex + 1}`,
+      params
+    );
   } catch (error) {
     logger.error('updateClient failed', { error: error.message });
     throw error;
@@ -1177,12 +1197,16 @@ export async function getPropertyByAddress(userId, address) {
 /**
  * Get a single client by ID
  */
-export async function getClient(clientId) {
+export async function getClient(clientId, userId) {
   if (!usePostgres()) return null;
 
   const pool = getPool();
   try {
-    const result = await pool.query('SELECT * FROM clients WHERE id = $1', [clientId]);
+    // D2: user_id filter prevents IDOR — callers must pass the authenticated user's ID
+    const result = await pool.query('SELECT * FROM clients WHERE id = $1 AND user_id = $2', [
+      clientId,
+      userId,
+    ]);
     return result.rows[0] || null;
   } catch (error) {
     logger.error('getClient failed', { error: error.message });

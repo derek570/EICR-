@@ -3,10 +3,10 @@
  * Streams multiple job PDFs into a ZIP archive.
  */
 
-import archiver from "archiver";
-import * as storage from "./storage.js";
-import * as db from "./db.js";
-import logger from "./logger.js";
+import archiver from 'archiver';
+import * as storage from './storage.js';
+import * as db from './db.js';
+import logger from './logger.js';
 
 /**
  * Create a ZIP archive containing PDFs for the given job IDs.
@@ -16,20 +16,20 @@ import logger from "./logger.js";
  * @returns {Promise<number>} Number of PDFs successfully added to the ZIP
  */
 export async function createJobsZip(userId, jobIds, outputStream) {
-  const archive = archiver("zip", { zlib: { level: 6 } });
+  const archive = archiver('zip', { zlib: { level: 6 } });
   archive.pipe(outputStream);
 
   // Forward archive warnings/errors to the logger
-  archive.on("warning", (err) => {
-    if (err.code === "ENOENT") {
-      logger.warn("Archiver warning: file not found", { error: err.message });
+  archive.on('warning', (err) => {
+    if (err.code === 'ENOENT') {
+      logger.warn('Archiver warning: file not found', { error: err.message });
     } else {
-      logger.error("Archiver warning", { error: err.message });
+      logger.error('Archiver warning', { error: err.message });
     }
   });
 
-  archive.on("error", (err) => {
-    logger.error("Archiver error", { error: err.message });
+  archive.on('error', (err) => {
+    logger.error('Archiver error', { error: err.message });
     throw err;
   });
 
@@ -38,16 +38,15 @@ export async function createJobsZip(userId, jobIds, outputStream) {
 
   for (const jobId of jobIds) {
     try {
-      // Look up the job from the database
-      let job = await db.getJob(jobId);
+      // Look up the job from the database (D2: user_id filter prevents IDOR)
+      let job = await db.getJob(jobId, userId);
       if (!job) {
         // Try looking up by address (for legacy S3-only jobs)
         job = await db.getJobByAddress(userId, jobId);
       }
 
-      // Ownership check: skip jobs that don't belong to this user
-      if (!job || job.user_id !== userId) {
-        logger.warn("Bulk download: skipping job (not found or wrong owner)", { jobId, userId });
+      if (!job) {
+        logger.warn('Bulk download: skipping job (not found or wrong owner)', { jobId, userId });
         continue;
       }
 
@@ -57,12 +56,12 @@ export async function createJobsZip(userId, jobIds, outputStream) {
 
       const pdfBuffer = await storage.downloadBytes(pdfKey);
       if (!pdfBuffer) {
-        logger.warn("Bulk download: no PDF found for job", { jobId, pdfKey });
+        logger.warn('Bulk download: no PDF found for job', { jobId, pdfKey });
         continue;
       }
 
       // Build a safe filename from the address, deduplicating if needed
-      let baseFilename = (job.address || jobId).replace(/[/\\:*?"<>|]/g, "_");
+      let baseFilename = (job.address || jobId).replace(/[/\\:*?"<>|]/g, '_');
       let filename = `${baseFilename}.pdf`;
 
       // Handle duplicate filenames
@@ -78,14 +77,18 @@ export async function createJobsZip(userId, jobIds, outputStream) {
       archive.append(pdfBuffer, { name: filename });
       count++;
 
-      logger.info("Bulk download: added PDF to ZIP", { jobId, filename, size: pdfBuffer.length });
+      logger.info('Bulk download: added PDF to ZIP', { jobId, filename, size: pdfBuffer.length });
     } catch (error) {
-      logger.error("Bulk download: error processing job", { jobId, error: error.message });
+      logger.error('Bulk download: error processing job', { jobId, error: error.message });
       // Continue with remaining jobs
     }
   }
 
   await archive.finalize();
-  logger.info("Bulk download: ZIP finalized", { userId, totalPdfs: count, requestedJobs: jobIds.length });
+  logger.info('Bulk download: ZIP finalized', {
+    userId,
+    totalPdfs: count,
+    requestedJobs: jobIds.length,
+  });
   return count;
 }
