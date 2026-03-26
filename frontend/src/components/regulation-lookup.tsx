@@ -1,10 +1,10 @@
-"use client";
+'use client';
 
-import { useState, useEffect, useRef, useCallback } from "react";
-import { api, Regulation } from "@/lib/api";
-import { Input } from "@/components/ui/input";
-import { Search, BookOpen, X, ChevronRight } from "lucide-react";
-import { cn } from "@/lib/utils";
+import { useState, useEffect, useRef, useCallback } from 'react';
+import { api, Regulation } from '@/lib/api';
+import { Input } from '@/components/ui/input';
+import { Search, BookOpen, X, ChevronRight } from 'lucide-react';
+import { cn } from '@/lib/utils';
 
 interface RegulationLookupProps {
   onSelect: (regulation: Regulation) => void;
@@ -13,7 +13,7 @@ interface RegulationLookupProps {
 }
 
 export function RegulationLookup({ onSelect, onClose, className }: RegulationLookupProps) {
-  const [query, setQuery] = useState("");
+  const [query, setQuery] = useState('');
   const [results, setResults] = useState<Regulation[]>([]);
   const [loading, setLoading] = useState(false);
   const [expandedRef, setExpandedRef] = useState<string | null>(null);
@@ -30,10 +30,10 @@ export function RegulationLookup({ onSelect, onClose, className }: RegulationLoo
     const loadInitial = async () => {
       setLoading(true);
       try {
-        const data = await api.searchRegulations("");
+        const data = await api.searchRegulations('');
         setResults(data);
       } catch (error) {
-        console.error("Failed to load regulations:", error);
+        console.error('Failed to load regulations:', error);
       } finally {
         setLoading(false);
       }
@@ -47,7 +47,7 @@ export function RegulationLookup({ onSelect, onClose, className }: RegulationLoo
       const data = await api.searchRegulations(searchQuery);
       setResults(data);
     } catch (error) {
-      console.error("Failed to search regulations:", error);
+      console.error('Failed to search regulations:', error);
     } finally {
       setLoading(false);
     }
@@ -84,13 +84,17 @@ export function RegulationLookup({ onSelect, onClose, className }: RegulationLoo
   };
 
   return (
-    <div className={cn("bg-white border rounded-lg shadow-lg overflow-hidden", className)}>
+    <div className={cn('bg-white border rounded-lg shadow-lg overflow-hidden', className)}>
       {/* Header */}
       <div className="flex items-center gap-2 p-3 border-b bg-slate-50">
         <BookOpen className="h-4 w-4 text-blue-600 shrink-0" />
         <span className="text-sm font-medium text-slate-700">BS 7671 Regulation Lookup</span>
         {onClose && (
-          <button onClick={onClose} className="ml-auto text-slate-400 hover:text-slate-600">
+          <button
+            onClick={onClose}
+            className="ml-auto text-slate-400 hover:text-slate-600 min-h-[44px] min-w-[44px] flex items-center justify-center"
+            aria-label="Close regulation lookup"
+          >
             <X className="h-4 w-4" />
           </button>
         )}
@@ -113,9 +117,7 @@ export function RegulationLookup({ onSelect, onClose, className }: RegulationLoo
       {/* Results list */}
       <div className="max-h-[400px] overflow-y-auto">
         {loading && results.length === 0 ? (
-          <div className="p-6 text-center text-sm text-muted-foreground">
-            Searching...
-          </div>
+          <div className="p-6 text-center text-sm text-muted-foreground">Searching...</div>
         ) : results.length === 0 ? (
           <div className="p-6 text-center text-sm text-muted-foreground">
             No regulations found for &ldquo;{query}&rdquo;
@@ -128,17 +130,34 @@ export function RegulationLookup({ onSelect, onClose, className }: RegulationLoo
                 <div key={reg.ref} className="hover:bg-slate-50 transition-colors">
                   {/* Main row */}
                   <div
-                    className="flex items-start gap-3 p-3 cursor-pointer"
+                    className="flex items-start gap-3 p-3 cursor-pointer min-h-[44px]"
+                    role="button"
+                    tabIndex={0}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        toggleExpand(reg.ref);
+                      }
+                    }}
                     onClick={() => toggleExpand(reg.ref)}
                   >
                     <span className="inline-flex items-center justify-center h-7 min-w-[60px] px-2 rounded bg-blue-100 text-blue-800 text-xs font-mono font-semibold shrink-0">
                       {reg.ref}
                     </span>
                     <div className="flex-1 min-w-0">
-                      <p className="text-sm font-medium text-slate-800 leading-tight">{reg.title}</p>
-                      <p className="text-xs text-muted-foreground mt-0.5 line-clamp-2">{reg.description}</p>
+                      <p className="text-sm font-medium text-slate-800 leading-tight">
+                        {reg.title}
+                      </p>
+                      <p className="text-xs text-muted-foreground mt-0.5 line-clamp-2">
+                        {reg.description}
+                      </p>
                     </div>
-                    <ChevronRight className={cn("h-4 w-4 text-slate-400 shrink-0 transition-transform mt-1", isExpanded && "rotate-90")} />
+                    <ChevronRight
+                      className={cn(
+                        'h-4 w-4 text-slate-400 shrink-0 transition-transform mt-1',
+                        isExpanded && 'rotate-90'
+                      )}
+                    />
                   </div>
 
                   {/* Expanded details */}
@@ -151,7 +170,9 @@ export function RegulationLookup({ onSelect, onClose, className }: RegulationLoo
                         {/* Common observations */}
                         {reg.common_observations.length > 0 && (
                           <div>
-                            <p className="text-xs font-medium text-slate-600 mb-1">Common observations:</p>
+                            <p className="text-xs font-medium text-slate-600 mb-1">
+                              Common observations:
+                            </p>
                             <ul className="text-xs text-slate-600 space-y-0.5">
                               {reg.common_observations.map((obs, i) => (
                                 <li key={i} className="flex gap-1.5">
@@ -165,7 +186,9 @@ export function RegulationLookup({ onSelect, onClose, className }: RegulationLoo
 
                         {/* Recommended action */}
                         <div className="bg-green-50 border border-green-200 rounded p-2">
-                          <p className="text-xs font-medium text-green-800 mb-0.5">Recommended action:</p>
+                          <p className="text-xs font-medium text-green-800 mb-0.5">
+                            Recommended action:
+                          </p>
                           <p className="text-xs text-green-700">{reg.recommended_action}</p>
                         </div>
 

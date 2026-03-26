@@ -1,9 +1,15 @@
 import type { Metadata, Viewport } from 'next';
-import { Geist, Geist_Mono } from 'next/font/google';
+import { Inter, Geist, Geist_Mono } from 'next/font/google';
 import { Toaster } from '@/components/ui/sonner';
 import { SyncProvider } from '@/components/sync-provider';
 import { ErrorBoundary } from '@/components/error-boundary';
 import './globals.css';
+
+const inter = Inter({
+  variable: '--font-inter',
+  subsets: ['latin'],
+  display: 'swap',
+});
 
 const geistSans = Geist({
   variable: '--font-geist-sans',
@@ -30,7 +36,7 @@ export const viewport: Viewport = {
   width: 'device-width',
   initialScale: 1,
   viewportFit: 'cover',
-  themeColor: '#1a1a2e',
+  themeColor: '#0A0A0F',
 };
 
 export default function RootLayout({
@@ -39,8 +45,10 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" className="dark">
-      <body className={`${geistSans.variable} ${geistMono.variable} antialiased min-h-screen`}>
+    <html lang="en" className="dark" style={{ colorScheme: 'dark' }}>
+      <body
+        className={`${inter.variable} ${geistSans.variable} ${geistMono.variable} antialiased min-h-screen bg-L0 text-foreground`}
+      >
         <SyncProvider>
           <ErrorBoundary>{children}</ErrorBoundary>
           <Toaster position="top-center" richColors />

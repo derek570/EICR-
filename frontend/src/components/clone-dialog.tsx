@@ -1,11 +1,11 @@
-"use client";
+'use client';
 
-import { useState } from "react";
-import * as Dialog from "@radix-ui/react-dialog";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Copy, X, Loader2 } from "lucide-react";
+import { useState } from 'react';
+import * as Dialog from '@radix-ui/react-dialog';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Copy, X, Loader2 } from 'lucide-react';
 
 interface CloneDialogProps {
   isOpen: boolean;
@@ -15,7 +15,7 @@ interface CloneDialogProps {
 }
 
 export function CloneDialog({ isOpen, onClose, onConfirm, sourceAddress }: CloneDialogProps) {
-  const [newAddress, setNewAddress] = useState("");
+  const [newAddress, setNewAddress] = useState('');
   const [clearTestResults, setClearTestResults] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
@@ -25,7 +25,7 @@ export function CloneDialog({ isOpen, onClose, onConfirm, sourceAddress }: Clone
     try {
       await onConfirm(newAddress.trim(), clearTestResults);
       // Reset form on success
-      setNewAddress("");
+      setNewAddress('');
       setClearTestResults(false);
     } finally {
       setSubmitting(false);
@@ -34,7 +34,7 @@ export function CloneDialog({ isOpen, onClose, onConfirm, sourceAddress }: Clone
 
   const handleOpenChange = (open: boolean) => {
     if (!open && !submitting) {
-      setNewAddress("");
+      setNewAddress('');
       setClearTestResults(false);
       onClose();
     }
@@ -52,8 +52,9 @@ export function CloneDialog({ isOpen, onClose, onConfirm, sourceAddress }: Clone
             </Dialog.Title>
             <Dialog.Close asChild>
               <button
-                className="rounded-full p-1 hover:bg-gray-100"
+                className="rounded-full p-2 hover:bg-gray-100 min-h-[44px] min-w-[44px] flex items-center justify-center"
                 disabled={submitting}
+                aria-label="Close clone dialog"
               >
                 <X className="h-4 w-4" />
               </button>
@@ -61,8 +62,8 @@ export function CloneDialog({ isOpen, onClose, onConfirm, sourceAddress }: Clone
           </div>
 
           <Dialog.Description className="text-sm text-muted-foreground mb-4">
-            Create a copy of <span className="font-medium text-foreground">{sourceAddress}</span> with
-            board setup, supply characteristics, and circuit configuration carried over.
+            Create a copy of <span className="font-medium text-foreground">{sourceAddress}</span>{' '}
+            with board setup, supply characteristics, and circuit configuration carried over.
             Observations and inspection schedule will be cleared.
           </Dialog.Description>
 
@@ -77,7 +78,7 @@ export function CloneDialog({ isOpen, onClose, onConfirm, sourceAddress }: Clone
                 disabled={submitting}
                 autoFocus
                 onKeyDown={(e) => {
-                  if (e.key === "Enter" && newAddress.trim()) {
+                  if (e.key === 'Enter' && newAddress.trim()) {
                     handleConfirm();
                   }
                 }}
@@ -99,17 +100,10 @@ export function CloneDialog({ isOpen, onClose, onConfirm, sourceAddress }: Clone
             </div>
 
             <div className="flex justify-end gap-2 pt-2">
-              <Button
-                variant="outline"
-                onClick={onClose}
-                disabled={submitting}
-              >
+              <Button variant="outline" onClick={onClose} disabled={submitting}>
                 Cancel
               </Button>
-              <Button
-                onClick={handleConfirm}
-                disabled={submitting || !newAddress.trim()}
-              >
+              <Button onClick={handleConfirm} disabled={submitting || !newAddress.trim()}>
                 {submitting ? (
                   <>
                     <Loader2 className="h-4 w-4 mr-2 animate-spin" />

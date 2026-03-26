@@ -1,21 +1,21 @@
-"use client";
+'use client';
 
-import { useState, useRef, useCallback } from "react";
-import { Upload, FileText, Image, Loader2, X, CheckCircle, AlertCircle } from "lucide-react";
-import { Button } from "@/components/ui/button";
-import { api, OcrExtractedData } from "@/lib/api";
+import { useState, useRef, useCallback } from 'react';
+import { Upload, FileText, Image, Loader2, X, CheckCircle, AlertCircle } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { api, OcrExtractedData } from '@/lib/api';
 
 interface OcrUploadProps {
   onExtracted: (data: OcrExtractedData) => void;
 }
 
-type UploadStatus = "idle" | "uploading" | "extracting" | "success" | "error";
+type UploadStatus = 'idle' | 'uploading' | 'extracting' | 'success' | 'error';
 
 export default function OcrUpload({ onExtracted }: OcrUploadProps) {
   const [file, setFile] = useState<File | null>(null);
-  const [status, setStatus] = useState<UploadStatus>("idle");
+  const [status, setStatus] = useState<UploadStatus>('idle');
   const [progress, setProgress] = useState(0);
-  const [errorMessage, setErrorMessage] = useState("");
+  const [errorMessage, setErrorMessage] = useState('');
   const [extractedSummary, setExtractedSummary] = useState<{
     circuits: number;
     observations: number;
@@ -24,16 +24,16 @@ export default function OcrUpload({ onExtracted }: OcrUploadProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleFileSelect = useCallback((selectedFile: File) => {
-    const ext = selectedFile.name.split(".").pop()?.toLowerCase();
-    const allowed = ["pdf", "jpg", "jpeg", "png"];
+    const ext = selectedFile.name.split('.').pop()?.toLowerCase();
+    const allowed = ['pdf', 'jpg', 'jpeg', 'png'];
     if (!ext || !allowed.includes(ext)) {
       setErrorMessage(`Unsupported file type .${ext}. Please use PDF, JPG, or PNG.`);
       return;
     }
 
     setFile(selectedFile);
-    setStatus("idle");
-    setErrorMessage("");
+    setStatus('idle');
+    setErrorMessage('');
     setExtractedSummary(null);
   }, []);
 
@@ -60,45 +60,45 @@ export default function OcrUpload({ onExtracted }: OcrUploadProps) {
 
   const removeFile = useCallback(() => {
     setFile(null);
-    setStatus("idle");
-    setErrorMessage("");
+    setStatus('idle');
+    setErrorMessage('');
     setExtractedSummary(null);
     if (fileInputRef.current) {
-      fileInputRef.current.value = "";
+      fileInputRef.current.value = '';
     }
   }, []);
 
   const handleExtract = async () => {
     if (!file) return;
 
-    setStatus("uploading");
+    setStatus('uploading');
     setProgress(20);
-    setErrorMessage("");
+    setErrorMessage('');
 
     try {
       // Simulate upload progress
       setProgress(40);
-      setStatus("extracting");
+      setStatus('extracting');
 
       const result = await api.ocrCertificate(file);
 
       setProgress(100);
-      setStatus("success");
+      setStatus('success');
 
       const summary = {
         circuits: result.data.circuits?.length || 0,
         observations: result.data.observations?.length || 0,
-        address: result.data.installation_details?.address || "Unknown address",
+        address: result.data.installation_details?.address || 'Unknown address',
       };
       setExtractedSummary(summary);
 
       // Pass extracted data to parent
       onExtracted(result.data);
     } catch (error) {
-      setStatus("error");
+      setStatus('error');
       setProgress(0);
       setErrorMessage(
-        error instanceof Error ? error.message : "Extraction failed. Please try again."
+        error instanceof Error ? error.message : 'Extraction failed. Please try again.'
       );
     }
   };
@@ -110,12 +110,12 @@ export default function OcrUpload({ onExtracted }: OcrUploadProps) {
   };
 
   const getFileIcon = (filename: string) => {
-    const ext = filename.split(".").pop()?.toLowerCase();
-    if (ext === "pdf") return <FileText className="h-8 w-8 text-red-500" />;
+    const ext = filename.split('.').pop()?.toLowerCase();
+    if (ext === 'pdf') return <FileText className="h-8 w-8 text-red-500" />;
     return <Image className="h-8 w-8 text-blue-500" />;
   };
 
-  const isProcessing = status === "uploading" || status === "extracting";
+  const isProcessing = status === 'uploading' || status === 'extracting';
 
   return (
     <div className="space-y-4">
@@ -138,9 +138,7 @@ export default function OcrUpload({ onExtracted }: OcrUploadProps) {
           <p className="font-medium text-slate-700 mb-1">
             Drop a certificate here or click to browse
           </p>
-          <p className="text-sm text-muted-foreground">
-            PDF, JPG, or PNG (max 100MB)
-          </p>
+          <p className="text-sm text-muted-foreground">PDF, JPG, or PNG (max 100MB)</p>
         </div>
       )}
 
@@ -152,8 +150,8 @@ export default function OcrUpload({ onExtracted }: OcrUploadProps) {
             <p className="font-medium truncate">{file.name}</p>
             <p className="text-sm text-muted-foreground">{formatFileSize(file.size)}</p>
           </div>
-          {!isProcessing && status !== "success" && (
-            <Button variant="ghost" size="sm" onClick={removeFile}>
+          {!isProcessing && status !== 'success' && (
+            <Button variant="ghost" size="sm" onClick={removeFile} aria-label="Remove file">
               <X className="h-4 w-4" />
             </Button>
           )}
@@ -166,7 +164,7 @@ export default function OcrUpload({ onExtracted }: OcrUploadProps) {
           <div className="flex items-center gap-3">
             <Loader2 className="h-5 w-5 animate-spin text-primary" />
             <span className="text-sm font-medium">
-              {status === "uploading" ? "Uploading certificate..." : "Extracting data with AI..."}
+              {status === 'uploading' ? 'Uploading certificate...' : 'Extracting data with AI...'}
             </span>
           </div>
           <div className="h-2 bg-slate-200 rounded-full overflow-hidden">
@@ -175,7 +173,7 @@ export default function OcrUpload({ onExtracted }: OcrUploadProps) {
               style={{ width: `${progress}%` }}
             />
           </div>
-          {status === "extracting" && (
+          {status === 'extracting' && (
             <p className="text-xs text-muted-foreground">
               This may take 15-30 seconds depending on the document size.
             </p>
@@ -184,23 +182,22 @@ export default function OcrUpload({ onExtracted }: OcrUploadProps) {
       )}
 
       {/* Success state */}
-      {status === "success" && extractedSummary && (
+      {status === 'success' && extractedSummary && (
         <div className="flex items-start gap-3 p-3 bg-green-50 border border-green-200 rounded-lg">
           <CheckCircle className="h-5 w-5 text-green-600 mt-0.5 flex-shrink-0" />
           <div>
             <p className="font-medium text-green-800">Data extracted successfully</p>
-            <p className="text-sm text-green-700 mt-1">
-              {extractedSummary.address}
-            </p>
+            <p className="text-sm text-green-700 mt-1">{extractedSummary.address}</p>
             <p className="text-sm text-green-600">
-              {extractedSummary.circuits} circuits, {extractedSummary.observations} observations found
+              {extractedSummary.circuits} circuits, {extractedSummary.observations} observations
+              found
             </p>
           </div>
         </div>
       )}
 
       {/* Error state */}
-      {status === "error" && errorMessage && (
+      {status === 'error' && errorMessage && (
         <div className="flex items-start gap-3 p-3 bg-red-50 border border-red-200 rounded-lg">
           <AlertCircle className="h-5 w-5 text-red-600 mt-0.5 flex-shrink-0" />
           <div>
@@ -211,24 +208,18 @@ export default function OcrUpload({ onExtracted }: OcrUploadProps) {
       )}
 
       {/* Inline error for file validation */}
-      {!file && errorMessage && (
-        <p className="text-sm text-red-600">{errorMessage}</p>
-      )}
+      {!file && errorMessage && <p className="text-sm text-red-600">{errorMessage}</p>}
 
       {/* Extract button */}
-      {file && status !== "success" && (
-        <Button
-          className="w-full"
-          onClick={handleExtract}
-          disabled={isProcessing}
-        >
+      {file && status !== 'success' && (
+        <Button className="w-full" onClick={handleExtract} disabled={isProcessing}>
           {isProcessing ? (
             <>
               <Loader2 className="h-4 w-4 mr-2 animate-spin" />
               Extracting...
             </>
-          ) : status === "error" ? (
-            "Retry Extraction"
+          ) : status === 'error' ? (
+            'Retry Extraction'
           ) : (
             <>
               <FileText className="h-4 w-4 mr-2" />

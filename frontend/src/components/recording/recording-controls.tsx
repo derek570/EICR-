@@ -121,7 +121,7 @@ export function RecordingControls({
   const sleepLabel = sleepLabelMap[sleepState];
 
   return (
-    <div className="bg-zinc-900/95 border-t border-zinc-800 p-3">
+    <div className="glass-bg border-t border-white/5 p-3">
       <div className="flex items-center justify-between max-w-lg mx-auto">
         {/* Left: Status indicators */}
         <div className="flex flex-col gap-1 min-w-[60px]">
@@ -149,18 +149,20 @@ export function RecordingControls({
           {isRecording ? (
             <button
               onClick={onStop}
-              className="relative flex items-center justify-center w-[72px] h-[72px] rounded-full bg-red-600 hover:bg-red-700 transition-colors"
+              className="relative flex items-center justify-center w-[72px] h-[72px] rounded-full bg-status-red hover:bg-red-700 transition-colors"
               aria-label="Stop recording"
             >
-              <span className="absolute inset-0 rounded-full border-2 border-red-400 animate-pulse" />
+              <span className="absolute inset-[-4px] rounded-full border-2 border-status-red/60 animate-[breathe-glow_2s_ease-in-out_infinite]" />
+              <span className="absolute inset-[-8px] rounded-full border border-status-red/30 animate-[breathe-glow_2s_ease-in-out_infinite_0.5s]" />
               <Square className="h-7 w-7 text-white" fill="white" />
             </button>
           ) : (
             <button
               onClick={onStart}
-              className="flex items-center justify-center w-[72px] h-[72px] rounded-full bg-red-600 hover:bg-red-700 transition-colors"
+              className="relative flex items-center justify-center w-[72px] h-[72px] rounded-full bg-gradient-to-br from-brand-blue to-brand-green hover:brightness-110 transition-all active:scale-95"
               aria-label="Start recording"
             >
+              <span className="absolute inset-0 rounded-full shadow-[0_0_20px_rgba(0,102,255,0.3)]" />
               <Mic className="h-7 w-7 text-white" />
             </button>
           )}
@@ -168,9 +170,11 @@ export function RecordingControls({
 
         {/* Right: Duration + Cost */}
         <div className="flex flex-col items-end gap-0.5 min-w-[48px]">
-          <span className="font-mono text-sm text-zinc-200">{formatDuration(duration)}</span>
+          <span className="font-mono text-sm text-foreground">{formatDuration(duration)}</span>
           {cost != null && (
-            <span className="font-mono text-xs text-zinc-500">{formatCost(cost.totalJobCost)}</span>
+            <span className="font-mono text-xs text-muted-foreground">
+              {formatCost(cost.totalJobCost)}
+            </span>
           )}
         </div>
       </div>

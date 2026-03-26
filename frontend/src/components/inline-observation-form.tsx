@@ -1,13 +1,13 @@
-"use client";
+'use client';
 
-import { useState, useEffect } from "react";
-import { Input } from "@/components/ui/input";
-import { Button } from "@/components/ui/button";
-import { Observation, JobPhoto, api } from "@/lib/api";
-import { PhotoPicker } from "@/components/photo-picker";
-import { PhotoUpload } from "@/components/photo-upload";
-import { Image as ImageIcon, X, Plus } from "lucide-react";
-import { cn } from "@/lib/utils";
+import { useState, useEffect } from 'react';
+import { Input } from '@/components/ui/input';
+import { Button } from '@/components/ui/button';
+import { Observation, JobPhoto, api } from '@/lib/api';
+import { PhotoPicker } from '@/components/photo-picker';
+import { PhotoUpload } from '@/components/photo-upload';
+import { Image as ImageIcon, X, Plus } from 'lucide-react';
+import { cn } from '@/lib/utils';
 
 interface InlineObservationFormProps {
   observation: Observation;
@@ -64,28 +64,31 @@ export function InlineObservationForm({
   };
 
   const handlePhotoSelect = (selectedPhotos: string[]) => {
-    updateField("photos", selectedPhotos);
+    updateField('photos', selectedPhotos);
   };
 
   const handlePhotoUpload = (photo: JobPhoto) => {
     const currentPhotos = observation.photos || [];
-    updateField("photos", [...currentPhotos, photo.filename]);
+    updateField('photos', [...currentPhotos, photo.filename]);
   };
 
   const removePhoto = (filename: string) => {
     const currentPhotos = observation.photos || [];
-    updateField("photos", currentPhotos.filter(p => p !== filename));
+    updateField(
+      'photos',
+      currentPhotos.filter((p) => p !== filename)
+    );
   };
 
   return (
-    <div className="bg-slate-50 border-t p-4 space-y-3">
-      <div className="flex items-center gap-2 text-sm font-medium text-slate-700">
+    <div className="bg-L2 border-t border-white/5 p-4 space-y-3">
+      <div className="flex items-center gap-2 text-sm font-medium text-foreground">
         <span
           className={cn(
-            "px-2 py-0.5 rounded text-white text-xs font-bold",
-            observation.code === "C1" && "bg-red-500",
-            observation.code === "C2" && "bg-orange-500",
-            observation.code === "C3" && "bg-blue-500"
+            'px-2 py-0.5 rounded text-white text-xs font-bold',
+            observation.code === 'C1' && 'bg-status-c1',
+            observation.code === 'C2' && 'bg-status-c2',
+            observation.code === 'C3' && 'bg-status-c3'
           )}
         >
           {observation.code}
@@ -95,8 +98,10 @@ export function InlineObservationForm({
 
       {/* Regulation line (read-only) */}
       <div className="text-sm">
-        <label className="text-xs text-muted-foreground">Regulation</label>
-        <div className="mt-1 px-3 py-2 bg-white border rounded-md text-sm text-slate-700">
+        <label className="text-[11px] uppercase tracking-wider text-muted-foreground">
+          Regulation
+        </label>
+        <div className="mt-1 px-3 py-2 bg-L1 border border-white/8 rounded-[12px] text-sm text-foreground">
           {scheduleItem} - {scheduleDescription}
         </div>
       </div>
@@ -106,7 +111,7 @@ export function InlineObservationForm({
         <label className="text-xs text-muted-foreground">Location</label>
         <Input
           value={observation.item_location}
-          onChange={(e) => updateField("item_location", e.target.value)}
+          onChange={(e) => updateField('item_location', e.target.value)}
           placeholder="e.g., Kitchen, Consumer unit, First floor"
           className="mt-1"
         />
@@ -117,9 +122,9 @@ export function InlineObservationForm({
         <label className="text-xs text-muted-foreground">Observation</label>
         <textarea
           value={observation.observation_text}
-          onChange={(e) => updateField("observation_text", e.target.value)}
+          onChange={(e) => updateField('observation_text', e.target.value)}
           placeholder="Describe the issue observed..."
-          className="mt-1 w-full min-h-[80px] rounded-md border border-input px-3 py-2 text-sm resize-y"
+          className="mt-1 w-full min-h-[80px] rounded-[12px] border border-neutral-700 bg-L1 px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground resize-y focus:outline-none focus:ring-2 focus:ring-brand-blue/50"
         />
       </div>
 
@@ -128,31 +133,32 @@ export function InlineObservationForm({
         <label className="text-xs text-muted-foreground">Photos</label>
         <div className="mt-1 flex flex-wrap gap-2 items-center">
           {/* Display selected photos */}
-          {observation.photos && observation.photos.map((filename) => (
-            <div
-              key={filename}
-              className="relative w-16 h-16 rounded-md overflow-hidden border bg-gray-100 group"
-            >
-              {photoUrls[filename] ? (
-                // eslint-disable-next-line @next/next/no-img-element
-                <img
-                  src={photoUrls[filename]}
-                  alt="Observation evidence photo"
-                  className="w-full h-full object-cover"
-                />
-              ) : (
-                <div className="w-full h-full flex items-center justify-center">
-                  <ImageIcon className="h-6 w-6 text-gray-400" />
-                </div>
-              )}
-              <button
-                onClick={() => removePhoto(filename)}
-                className="absolute top-0.5 right-0.5 bg-red-500 text-white rounded-full p-0.5 opacity-0 group-hover:opacity-100 transition-opacity"
+          {observation.photos &&
+            observation.photos.map((filename) => (
+              <div
+                key={filename}
+                className="relative w-16 h-16 rounded-lg overflow-hidden border border-white/10 bg-L1 group"
               >
-                <X className="h-3 w-3" />
-              </button>
-            </div>
-          ))}
+                {photoUrls[filename] ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img
+                    src={photoUrls[filename]}
+                    alt="Observation evidence photo"
+                    className="w-full h-full object-cover"
+                  />
+                ) : (
+                  <div className="w-full h-full flex items-center justify-center">
+                    <ImageIcon className="h-6 w-6 text-muted-foreground" />
+                  </div>
+                )}
+                <button
+                  onClick={() => removePhoto(filename)}
+                  className="absolute top-0.5 right-0.5 bg-status-red text-white rounded-full p-0.5 opacity-0 group-hover:opacity-100 transition-opacity"
+                >
+                  <X className="h-3 w-3" />
+                </button>
+              </div>
+            ))}
 
           {/* Photo action buttons */}
           <div className="flex gap-2">

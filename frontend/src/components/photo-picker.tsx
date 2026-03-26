@@ -1,11 +1,11 @@
-"use client";
+'use client';
 
-import { useState, useEffect, useRef, useCallback } from "react";
-import { Button } from "@/components/ui/button";
-import { api, JobPhoto } from "@/lib/api";
-import { toast } from "sonner";
-import { Loader2, X, Check, Image as ImageIcon } from "lucide-react";
-import { cn } from "@/lib/utils";
+import { useState, useEffect, useRef, useCallback } from 'react';
+import { Button } from '@/components/ui/button';
+import { api, JobPhoto } from '@/lib/api';
+import { toast } from 'sonner';
+import { Loader2, X, Check, Image as ImageIcon } from 'lucide-react';
+import { cn } from '@/lib/utils';
 
 interface PhotoPickerProps {
   userId: string;
@@ -62,8 +62,8 @@ export function PhotoPicker({
         if (!cancelled) setPhotoUrls(urls);
       } catch (error) {
         if (!cancelled) {
-          console.error("Failed to load photos:", error);
-          toast.error("Failed to load job photos");
+          console.error('Failed to load photos:', error);
+          toast.error('Failed to load job photos');
         }
       } finally {
         if (!cancelled) setLoading(false);
@@ -88,15 +88,15 @@ export function PhotoPicker({
   // Escape key handler
   const handleKeyDown = useCallback(
     (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (e.key === 'Escape') onClose();
     },
     [onClose]
   );
 
   useEffect(() => {
     if (!isOpen) return;
-    document.addEventListener("keydown", handleKeyDown);
-    return () => document.removeEventListener("keydown", handleKeyDown);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
   }, [isOpen, handleKeyDown]);
 
   const togglePhoto = (filename: string) => {
@@ -134,7 +134,7 @@ export function PhotoPicker({
               </span>
             )}
           </h2>
-          <Button variant="ghost" size="sm" onClick={onClose}>
+          <Button variant="ghost" size="sm" onClick={onClose} aria-label="Close photo picker">
             <X className="h-4 w-4" />
           </Button>
         </div>
@@ -161,14 +161,14 @@ export function PhotoPicker({
                     key={photo.filename}
                     onClick={() => togglePhoto(photo.filename)}
                     className={cn(
-                      "relative aspect-square rounded-lg overflow-hidden border-2 transition-all",
-                      "hover:border-primary/50 focus:outline-none focus:ring-2 focus:ring-primary",
-                      isSelected ? "border-primary ring-2 ring-primary/30" : "border-gray-200"
+                      'relative aspect-square rounded-lg overflow-hidden border-2 transition-all',
+                      'hover:border-primary/50 focus:outline-none focus:ring-2 focus:ring-primary',
+                      isSelected ? 'border-primary ring-2 ring-primary/30' : 'border-gray-200'
                     )}
                   >
                     {/* eslint-disable-next-line @next/next/no-img-element */}
                     <img
-                      src={photoUrls[photo.filename] || ""}
+                      src={photoUrls[photo.filename] || ''}
                       alt="Observation evidence photo"
                       className="w-full h-full object-cover"
                     />
@@ -188,15 +188,13 @@ export function PhotoPicker({
 
         <div className="flex justify-between items-center p-4 border-t bg-gray-50">
           <span className="text-sm text-muted-foreground">
-            {selection.size} photo{selection.size !== 1 ? "s" : ""} selected
+            {selection.size} photo{selection.size !== 1 ? 's' : ''} selected
           </span>
           <div className="flex gap-2">
             <Button variant="outline" onClick={onClose}>
               Cancel
             </Button>
-            <Button onClick={handleConfirm}>
-              Done
-            </Button>
+            <Button onClick={handleConfirm}>Done</Button>
           </div>
         </div>
       </div>

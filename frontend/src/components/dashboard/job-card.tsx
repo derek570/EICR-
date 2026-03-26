@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { Loader2, Trash2, Copy, CloudOff, CheckSquare, Square, ChevronRight } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
+import { StatusBadge } from '@/components/ui/status-badge';
 
 export interface DashboardJob {
   id: string;
@@ -23,47 +24,31 @@ interface JobCardProps {
   onDelete: (e: React.MouseEvent, jobId: string, address: string) => void;
 }
 
-function certTypePill(type?: string) {
-  if (!type) return null;
-  const isEIC = type === 'EIC';
-  return (
-    <span
-      className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold uppercase tracking-wide ${
-        isEIC ? 'bg-emerald-900/50 text-emerald-400' : 'bg-blue-900/50 text-blue-400'
-      }`}
-    >
-      {type}
-    </span>
-  );
-}
-
-function statusPill(status?: string) {
+function statusToVariant(status?: string) {
   switch (status) {
     case 'done':
-      return (
-        <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium bg-green-900/50 text-green-400">
-          Complete
-        </span>
-      );
+      return 'green' as const;
     case 'processing':
-      return (
-        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-blue-900/50 text-blue-400">
-          <Loader2 className="h-2.5 w-2.5 animate-spin" />
-          Processing
-        </span>
-      );
+      return 'blue' as const;
+    case 'pending':
+      return 'amber' as const;
     case 'failed':
-      return (
-        <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium bg-red-900/50 text-red-400">
-          Failed
-        </span>
-      );
+      return 'red' as const;
     default:
-      return (
-        <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium bg-muted text-muted-foreground">
-          {status || 'Draft'}
-        </span>
-      );
+      return 'pending' as const;
+  }
+}
+
+function statusLabel(status?: string) {
+  switch (status) {
+    case 'done':
+      return 'Complete';
+    case 'processing':
+      return 'Processing';
+    case 'failed':
+      return 'Failed';
+    default:
+      return status || 'Draft';
   }
 }
 
@@ -91,19 +76,23 @@ export function JobCard({
   return (
     <Link href={`/job/${job.id}`}>
       <div
-        className={`flex items-center gap-3 px-4 py-3 rounded-lg bg-card border border-border hover:bg-accent/50 transition-colors cursor-pointer ${
-          isSelected ? 'ring-2 ring-primary' : ''
+        className={`group flex items-center gap-3 rounded-[14px] bg-[rgba(255,255,255,0.04)] border border-[rgba(255,255,255,0.06)] overflow-hidden transition-all duration-200 hover:-translate-y-0.5 hover:shadow-[0_6px_20px_rgba(0,0,0,0.14)] hover:bg-[rgba(255,255,255,0.07)] cursor-pointer ${
+          isSelected ? 'ring-2 ring-brand-blue shadow-[0_0_12px_rgba(0,102,255,0.2)]' : ''
         }`}
       >
+        {/* Leading gradient accent bar */}
+        <div className="w-1 self-stretch bg-gradient-to-b from-brand-blue to-brand-green flex-shrink-0 rounded-l-[14px]" />
+
         {/* Selection checkbox (only for done jobs) */}
         {job.status === 'done' && (
           <button
             onClick={(e) => onToggleSelection(e, job.id)}
-            className="flex-shrink-0 text-muted-foreground hover:text-foreground"
+            className="flex-shrink-0 text-muted-foreground hover:text-foreground ml-2 min-h-[44px] min-w-[44px] flex items-center justify-center"
             title={isSelected ? 'Deselect' : 'Select for bulk download'}
+            aria-label={isSelected ? 'Deselect job' : 'Select job for bulk download'}
           >
             {isSelected ? (
-              <CheckSquare className="h-4 w-4 text-primary" />
+              <CheckSquare className="h-4 w-4 text-brand-blue" />
             ) : (
               <Square className="h-4 w-4" />
             )}
@@ -111,41 +100,45 @@ export function JobCard({
         )}
 
         {/* Main content */}
-        <div className="min-w-0 flex-1">
+        <div className="min-w-0 flex-1 py-3.5 pr-0 pl-1">
           <p className="font-medium text-sm truncate text-foreground">{address}</p>
-          <div className="flex items-center gap-1.5 mt-1">
-            {certTypePill(job.certificate_type)}
-            {statusPill(job.status)}
+          <div className="flex items-center gap-2 mt-1 text-xs text-muted-foreground">
+            <span className="font-medium text-brand-blue">{job.certificate_type || 'EICR'}</span>
+            <span className="text-white/20">&middot;</span>
+            {job.created_at && <span>{formatDate(job.created_at)}</span>}
             {job.isLocalDirty && (
-              <span className="inline-flex items-center gap-1 text-[10px] text-amber-400">
-                <CloudOff className="h-2.5 w-2.5" />
-                Unsaved
-              </span>
+              <>
+                <span className="text-white/20">&middot;</span>
+                <span className="inline-flex items-center gap-1 text-amber-400">
+                  <CloudOff className="h-2.5 w-2.5" />
+                  Unsaved
+                </span>
+              </>
             )}
           </div>
         </div>
 
-        {/* Right side: date + actions */}
-        <div className="flex items-center gap-1 flex-shrink-0">
-          {job.created_at && (
-            <span className="text-xs text-muted-foreground mr-1 hidden sm:inline">
-              {formatDate(job.created_at)}
-            </span>
-          )}
+        {/* Right side: status + actions */}
+        <div className="flex items-center gap-1.5 flex-shrink-0 pr-3">
+          <StatusBadge status={statusToVariant(job.status)} className="flex-shrink-0">
+            {statusLabel(job.status)}
+          </StatusBadge>
           <Button
-            variant="ghost"
+            variant="glass-ghost"
             size="icon-sm"
             onClick={(e) => onClone(e, job.id, address)}
             title="Clone job"
+            aria-label="Clone job"
           >
             <Copy className="h-3.5 w-3.5" />
           </Button>
           <Button
-            variant="ghost"
+            variant="glass-ghost"
             size="icon-sm"
             onClick={(e) => onDelete(e, job.id, address)}
             disabled={isDeleting}
             title="Delete job"
+            aria-label="Delete job"
           >
             {isDeleting ? (
               <Loader2 className="h-3.5 w-3.5 animate-spin" />

@@ -201,8 +201,8 @@ export default function JobLayout({ children }: JobLayoutProps) {
 
   if (loading) {
     return (
-      <div className="min-h-screen flex items-center justify-center">
-        <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+      <div className="min-h-screen bg-L0 flex items-center justify-center">
+        <Loader2 className="h-8 w-8 animate-spin text-brand-blue" />
       </div>
     );
   }
@@ -212,15 +212,24 @@ export default function JobLayout({ children }: JobLayoutProps) {
   }
 
   return (
-    <div className="min-h-screen bg-background">
-      <header className="bg-card border-b border-border sticky top-0 z-20">
+    <div className="min-h-screen bg-L0">
+      <header
+        className="bg-L1/80 backdrop-blur-xl border-b border-transparent sticky top-0 z-20"
+        style={{ borderImage: 'linear-gradient(90deg, var(--brand-blue), var(--brand-green)) 1' }}
+      >
         <div className="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <Button variant="ghost" size="sm" onClick={handleBack}>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={handleBack}
+              className="text-white/70 hover:text-white hover:bg-white/10"
+              aria-label="Go back"
+            >
               <ArrowLeft className="h-4 w-4" />
             </Button>
             <div>
-              <h1 className="font-semibold truncate max-w-[200px] sm:max-w-none">
+              <h1 className="font-semibold truncate max-w-[200px] sm:max-w-none text-foreground">
                 {currentJob.address}
               </h1>
               <p className="text-xs text-muted-foreground">
@@ -234,7 +243,12 @@ export default function JobLayout({ children }: JobLayoutProps) {
           </div>
           <div className="flex items-center gap-3">
             <OfflineIndicator />
-            <Button onClick={handleSave} disabled={isSyncing || !isDirty} size="sm">
+            <Button
+              onClick={handleSave}
+              disabled={isSyncing || !isDirty}
+              size="sm"
+              variant="gradient"
+            >
               {isSyncing ? (
                 <>
                   <Loader2 className="h-4 w-4 mr-2 animate-spin" />

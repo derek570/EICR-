@@ -1,14 +1,15 @@
-"use client";
+'use client';
 
-import { useState, useEffect, useCallback } from "react";
-import { Observation, Regulation, api, JobPhoto } from "@/lib/api";
-import { Input } from "@/components/ui/input";
-import { Button } from "@/components/ui/button";
-import { PhotoPicker } from "@/components/photo-picker";
-import { PhotoUpload } from "@/components/photo-upload";
-import { RegulationLookup } from "@/components/regulation-lookup";
-import { Trash2, Image as ImageIcon, Plus, X, Link as LinkIcon, BookOpen } from "lucide-react";
-import { cn } from "@/lib/utils";
+import { useState, useEffect, useCallback } from 'react';
+import { Observation, Regulation, api, JobPhoto } from '@/lib/api';
+import { Input } from '@/components/ui/input';
+import { Button } from '@/components/ui/button';
+import { PhotoPicker } from '@/components/photo-picker';
+import { PhotoUpload } from '@/components/photo-upload';
+import { RegulationLookup } from '@/components/regulation-lookup';
+import { StatusBadge } from '@/components/ui/status-badge';
+import { Trash2, Image as ImageIcon, Plus, X, Link as LinkIcon, BookOpen } from 'lucide-react';
+import { cn } from '@/lib/utils';
 
 interface ObservationCardProps {
   observation: Observation;
@@ -19,21 +20,35 @@ interface ObservationCardProps {
   onDelete: (index: number) => void;
 }
 
-const codeColors: Record<string, string> = {
-  C1: "bg-red-500",
-  C2: "bg-orange-500",
-  C3: "bg-blue-500",
-  FI: "bg-purple-500",
+const severityBorderColors: Record<string, string> = {
+  C1: 'border-l-status-c1',
+  C2: 'border-l-status-c2',
+  C3: 'border-l-status-c3',
+  FI: 'border-l-status-fi',
+};
+
+const severityBadgeStatus: Record<string, 'c1' | 'c2' | 'c3' | 'fi'> = {
+  C1: 'c1',
+  C2: 'c2',
+  C3: 'c3',
+  FI: 'fi',
 };
 
 const codeLabels: Record<string, string> = {
-  C1: "Danger Present",
-  C2: "Potentially Dangerous",
-  C3: "Improvement Recommended",
-  FI: "Further Investigation",
+  C1: 'Danger Present',
+  C2: 'Potentially Dangerous',
+  C3: 'Improvement Recommended',
+  FI: 'Further Investigation',
 };
 
-export function ObservationCard({ observation, index, userId, jobId, onChange, onDelete }: ObservationCardProps) {
+export function ObservationCard({
+  observation,
+  index,
+  userId,
+  jobId,
+  onChange,
+  onDelete,
+}: ObservationCardProps) {
   const [showPhotoPicker, setShowPhotoPicker] = useState(false);
   const [showRegulationLookup, setShowRegulationLookup] = useState(false);
   const [photoUrls, setPhotoUrls] = useState<Record<string, string>>({});
@@ -74,17 +89,20 @@ export function ObservationCard({ observation, index, userId, jobId, onChange, o
   };
 
   const handlePhotoSelect = (selectedPhotos: string[]) => {
-    updateField("photos", selectedPhotos);
+    updateField('photos', selectedPhotos);
   };
 
   const handlePhotoUpload = (photo: JobPhoto) => {
     const currentPhotos = observation.photos || [];
-    updateField("photos", [...currentPhotos, photo.filename]);
+    updateField('photos', [...currentPhotos, photo.filename]);
   };
 
   const removePhoto = (filename: string) => {
     const currentPhotos = observation.photos || [];
-    updateField("photos", currentPhotos.filter(p => p !== filename));
+    updateField(
+      'photos',
+      currentPhotos.filter((p) => p !== filename)
+    );
   };
 
   const handleRegulationSelect = (regulation: Regulation) => {
@@ -103,25 +121,27 @@ export function ObservationCard({ observation, index, userId, jobId, onChange, o
 
   // Close lightbox on Escape
   const handleKeyDown = useCallback((e: KeyboardEvent) => {
-    if (e.key === "Escape") setViewingPhoto(null);
+    if (e.key === 'Escape') setViewingPhoto(null);
   }, []);
 
   useEffect(() => {
     if (viewingPhoto) {
-      document.addEventListener("keydown", handleKeyDown);
-      return () => document.removeEventListener("keydown", handleKeyDown);
+      document.addEventListener('keydown', handleKeyDown);
+      return () => document.removeEventListener('keydown', handleKeyDown);
     }
   }, [viewingPhoto, handleKeyDown]);
 
   return (
-    <div className="bg-white border rounded-lg p-4 space-y-3">
+    <div
+      className={`glass-card border-l-[3px] ${severityBorderColors[observation.code] || 'border-l-brand-blue'} p-4 space-y-3`}
+    >
       <div className="flex items-start justify-between gap-3">
         <div className="flex items-center gap-3">
           <select
             value={observation.code}
-            onChange={(e) => updateField("code", e.target.value as Observation["code"])}
+            onChange={(e) => updateField('code', e.target.value as Observation['code'])}
             aria-label="Observation severity code"
-            className={cn("h-10 w-16 rounded-full text-white font-bold text-center appearance-none cursor-pointer", codeColors[observation.code])}
+            className="h-10 w-16 rounded-full font-bold text-center appearance-none cursor-pointer bg-L2 border border-white/10 text-foreground text-sm"
           >
             <option value="C1">C1</option>
             <option value="C2">C2</option>
@@ -129,16 +149,24 @@ export function ObservationCard({ observation, index, userId, jobId, onChange, o
             <option value="FI">FI</option>
           </select>
           <div>
-            <span className="text-sm text-muted-foreground">{codeLabels[observation.code]}</span>
+            <StatusBadge status={severityBadgeStatus[observation.code] || 'blue'}>
+              {codeLabels[observation.code]}
+            </StatusBadge>
             {isLinkedToSchedule && (
-              <div className="flex items-center gap-1 text-xs text-blue-600 mt-0.5">
+              <div className="flex items-center gap-1 text-xs text-brand-blue mt-1">
                 <LinkIcon className="h-3 w-3" />
                 <span>Linked to {observation.schedule_item}</span>
               </div>
             )}
           </div>
         </div>
-        <Button variant="ghost" size="sm" onClick={() => onDelete(index)} className="text-red-500 hover:text-red-700 hover:bg-red-50">
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => onDelete(index)}
+          className="text-status-red hover:text-status-red hover:bg-status-red/10"
+          aria-label="Delete observation"
+        >
           <Trash2 className="h-4 w-4" />
         </Button>
       </div>
@@ -146,21 +174,32 @@ export function ObservationCard({ observation, index, userId, jobId, onChange, o
       {/* Schedule description (if linked) */}
       {observation.schedule_description && (
         <div className="text-sm">
-          <label className="text-xs text-muted-foreground">Regulation</label>
-          <div className="mt-1 px-3 py-2 bg-slate-50 border rounded-md text-sm text-slate-700">
+          <label className="text-[11px] uppercase tracking-wider text-muted-foreground">
+            Regulation
+          </label>
+          <div className="mt-1 px-3 py-2 bg-L2 border border-white/8 rounded-[12px] text-sm text-foreground">
             {observation.schedule_item} - {observation.schedule_description}
           </div>
         </div>
       )}
 
       <div>
-        <label className="text-xs text-muted-foreground">Location</label>
-        <Input value={observation.item_location} onChange={(e) => updateField("item_location", e.target.value)} placeholder="e.g., Kitchen socket, Consumer unit" className="mt-1" />
+        <label className="text-[11px] uppercase tracking-wider text-muted-foreground">
+          Location
+        </label>
+        <Input
+          value={observation.item_location}
+          onChange={(e) => updateField('item_location', e.target.value)}
+          placeholder="e.g., Kitchen socket, Consumer unit"
+          className="mt-1"
+        />
       </div>
 
       <div>
         <div className="flex items-center justify-between">
-          <label className="text-xs text-muted-foreground">Observation</label>
+          <label className="text-[11px] uppercase tracking-wider text-muted-foreground">
+            Observation
+          </label>
           <Button
             variant="outline"
             size="sm"
@@ -171,7 +210,12 @@ export function ObservationCard({ observation, index, userId, jobId, onChange, o
             Add Regulation
           </Button>
         </div>
-        <textarea value={observation.observation_text} onChange={(e) => updateField("observation_text", e.target.value)} placeholder="Description of the issue..." className="mt-1 w-full min-h-[80px] rounded-md border border-input px-3 py-2 text-sm resize-y" />
+        <textarea
+          value={observation.observation_text}
+          onChange={(e) => updateField('observation_text', e.target.value)}
+          placeholder="Description of the issue..."
+          className="mt-1 w-full min-h-[80px] rounded-[12px] border border-neutral-700 bg-L2 px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground resize-y focus:outline-none focus:ring-2 focus:ring-brand-blue/50"
+        />
 
         {/* Regulation Lookup Panel */}
         {showRegulationLookup && (
@@ -185,31 +229,34 @@ export function ObservationCard({ observation, index, userId, jobId, onChange, o
       </div>
 
       <div>
-        <label className="text-xs text-muted-foreground">Schedule Item</label>
+        <label className="text-[11px] uppercase tracking-wider text-muted-foreground">
+          Schedule Item
+        </label>
         <Input
-          value={observation.schedule_item || ""}
-          onChange={(e) => updateField("schedule_item", e.target.value)}
+          value={observation.schedule_item || ''}
+          onChange={(e) => updateField('schedule_item', e.target.value)}
           placeholder="e.g., 4.5, 5.3"
           className="mt-1"
           disabled={isLinkedToSchedule}
         />
         {isLinkedToSchedule && (
           <p className="text-xs text-muted-foreground mt-1">
-            This observation is linked from the Inspection Schedule. Deleting it will set the schedule item to tick.
+            This observation is linked from the Inspection Schedule. Deleting it will set the
+            schedule item to tick.
           </p>
         )}
       </div>
 
       {/* Photo section */}
       <div>
-        <label className="text-xs text-muted-foreground">Photos</label>
+        <label className="text-[11px] uppercase tracking-wider text-muted-foreground">Photos</label>
         {/* Photo preview grid - 128x128 thumbnails */}
         {observation.photos && observation.photos.length > 0 && (
           <div className="mt-2 grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2">
             {observation.photos.map((filename) => (
               <div
                 key={filename}
-                className="relative aspect-square rounded-lg overflow-hidden border-2 border-gray-200 bg-gray-100 group cursor-pointer hover:border-blue-400 transition-colors"
+                className="relative aspect-square rounded-lg overflow-hidden border-2 border-white/10 bg-L2 group cursor-pointer hover:border-brand-blue/40 transition-colors"
                 onClick={() => setViewingPhoto(filename)}
               >
                 {photoUrls[filename] ? (
@@ -221,12 +268,16 @@ export function ObservationCard({ observation, index, userId, jobId, onChange, o
                   />
                 ) : (
                   <div className="w-full h-full flex items-center justify-center">
-                    <ImageIcon className="h-8 w-8 text-gray-400" />
+                    <ImageIcon className="h-8 w-8 text-muted-foreground" />
                   </div>
                 )}
                 <button
-                  onClick={(e) => { e.stopPropagation(); removePhoto(filename); }}
-                  className="absolute top-1 right-1 bg-red-500 text-white rounded-full p-1 opacity-0 group-hover:opacity-100 transition-opacity shadow-md"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    removePhoto(filename);
+                  }}
+                  className="absolute top-1 right-1 bg-status-red text-white rounded-full p-2 opacity-0 group-hover:opacity-100 transition-opacity shadow-md min-h-[44px] min-w-[44px] flex items-center justify-center"
+                  aria-label="Remove photo"
                 >
                   <X className="h-4 w-4" />
                 </button>

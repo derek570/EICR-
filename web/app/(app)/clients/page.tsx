@@ -1,45 +1,86 @@
-"use client";
+'use client';
 
-import { useEffect, useState, useMemo } from "react";
-import Link from "next/link";
-import { toast } from "sonner";
+import { useEffect, useState, useMemo } from 'react';
+import Link from 'next/link';
+import { useRouter } from 'next/navigation';
+import { toast } from 'sonner';
 import {
-  Plus, Search, UserPlus, Trash2, Loader2,
-  Phone, Mail, Building2, Users,
-} from "lucide-react";
+  Plus,
+  Search,
+  UserPlus,
+  Trash2,
+  Loader2,
+  Phone,
+  Mail,
+  Building2,
+  Users,
+} from 'lucide-react';
 
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Textarea } from "@/components/ui/textarea";
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Textarea } from '@/components/ui/textarea';
 import {
-  Card, CardContent, CardDescription, CardHeader, CardTitle,
-} from "@/components/ui/card";
-import { api } from "@/lib/api-client";
-import type { User, Client, CreateClientData } from "@/lib/types";
+  GlassCard,
+  GlassCardContent,
+  GlassCardHeader,
+  GlassCardTitle,
+} from '@/components/ui/glass-card';
+import { api } from '@/lib/api-client';
+import type { User, Client, CreateClientData } from '@/lib/types';
+
+function ClientAvatar({ name }: { name: string }) {
+  const initials = name
+    .split(' ')
+    .map((n) => n[0])
+    .slice(0, 2)
+    .join('')
+    .toUpperCase();
+
+  return (
+    <div
+      className="flex items-center justify-center h-10 w-10 rounded-full shrink-0"
+      style={{ background: 'linear-gradient(135deg, var(--brand-blue), var(--brand-green))' }}
+    >
+      <span className="text-sm font-bold text-white">{initials}</span>
+    </div>
+  );
+}
 
 export default function ClientsPage() {
+  const router = useRouter();
   const [user, setUser] = useState<User | null>(null);
   const [clients, setClients] = useState<Client[]>([]);
   const [loading, setLoading] = useState(true);
-  const [search, setSearch] = useState("");
+  const [search, setSearch] = useState('');
   const [showAddForm, setShowAddForm] = useState(false);
   const [saving, setSaving] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
 
   const [newClient, setNewClient] = useState<CreateClientData>({
-    name: "",
-    email: "",
-    phone: "",
-    company: "",
-    notes: "",
+    name: '',
+    email: '',
+    phone: '',
+    company: '',
+    notes: '',
   });
 
   useEffect(() => {
-    const storedUser = localStorage.getItem("user");
-    if (!storedUser) return;
+    const storedUser = localStorage.getItem('user');
+    if (!storedUser) {
+      setLoading(false);
+      router.push('/login');
+      return;
+    }
 
-    const userData = JSON.parse(storedUser) as User;
+    let userData: User;
+    try {
+      userData = JSON.parse(storedUser) as User;
+    } catch {
+      setLoading(false);
+      router.push('/login');
+      return;
+    }
     setUser(userData);
 
     async function loadClients() {
@@ -47,8 +88,8 @@ export default function ClientsPage() {
         const clientsList = await api.getClients(userData.id);
         setClients(clientsList);
       } catch (error) {
-        console.error("Failed to load clients:", error);
-        toast.error("Failed to load clients");
+        console.error('Failed to load clients:', error);
+        toast.error('Failed to load clients');
       } finally {
         setLoading(false);
       }
@@ -64,13 +105,13 @@ export default function ClientsPage() {
         c.name.toLowerCase().includes(q) ||
         (c.email && c.email.toLowerCase().includes(q)) ||
         (c.phone && c.phone.includes(q)) ||
-        (c.company && c.company.toLowerCase().includes(q)),
+        (c.company && c.company.toLowerCase().includes(q))
     );
   }, [clients, search]);
 
   const handleAddClient = async () => {
     if (!user || !newClient.name.trim()) {
-      toast.error("Client name is required");
+      toast.error('Client name is required');
       return;
     }
 
@@ -78,28 +119,24 @@ export default function ClientsPage() {
     try {
       const created = await api.createClient(user.id, newClient);
       setClients((prev) => [...prev, created].sort((a, b) => a.name.localeCompare(b.name)));
-      setNewClient({ name: "", email: "", phone: "", company: "", notes: "" });
+      setNewClient({ name: '', email: '', phone: '', company: '', notes: '' });
       setShowAddForm(false);
       toast.success(`Client "${created.name}" created`);
     } catch (error) {
-      console.error("Failed to create client:", error);
-      toast.error("Failed to create client");
+      console.error('Failed to create client:', error);
+      toast.error('Failed to create client');
     } finally {
       setSaving(false);
     }
   };
 
-  const handleDeleteClient = async (
-    e: React.MouseEvent,
-    clientId: string,
-    clientName: string,
-  ) => {
+  const handleDeleteClient = async (e: React.MouseEvent, clientId: string, clientName: string) => {
     e.preventDefault();
     e.stopPropagation();
     if (!user) return;
 
     const confirmed = window.confirm(
-      `Delete client "${clientName}"?\n\nThis will unlink their properties but not delete them.`,
+      `Delete client "${clientName}"?\n\nThis will unlink their properties but not delete them.`
     );
     if (!confirmed) return;
 
@@ -109,8 +146,8 @@ export default function ClientsPage() {
       setClients((prev) => prev.filter((c) => c.id !== clientId));
       toast.success(`Client "${clientName}" deleted`);
     } catch (error) {
-      console.error("Failed to delete client:", error);
-      toast.error("Failed to delete client");
+      console.error('Failed to delete client:', error);
+      toast.error('Failed to delete client');
     } finally {
       setDeletingId(null);
     }
@@ -119,7 +156,7 @@ export default function ClientsPage() {
   if (loading) {
     return (
       <div className="flex items-center justify-center min-h-[400px]">
-        <Loader2 className="h-6 w-6 animate-spin text-gray-400" />
+        <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
       </div>
     );
   }
@@ -128,9 +165,9 @@ export default function ClientsPage() {
     <div className="p-6 space-y-6">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <Users className="h-5 w-5 text-[var(--brand-blue)]" />
-          <h1 className="text-lg font-semibold">Clients</h1>
-          <span className="text-sm text-gray-500">({clients.length})</span>
+          <Users className="h-5 w-5 text-brand-blue" />
+          <h1 className="text-lg font-semibold text-foreground">Clients</h1>
+          <span className="text-sm text-muted-foreground">({clients.length})</span>
         </div>
         <Button onClick={() => setShowAddForm(true)} size="sm">
           <UserPlus className="h-4 w-4 mr-2" />
@@ -140,7 +177,7 @@ export default function ClientsPage() {
 
       {/* Search */}
       <div className="relative max-w-md">
-        <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
+        <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
         <Input
           placeholder="Search by name, email, phone, company..."
           value={search}
@@ -151,11 +188,11 @@ export default function ClientsPage() {
 
       {/* Add Client Form */}
       {showAddForm && (
-        <Card className="border-[var(--brand-blue)]/30">
-          <CardHeader>
-            <CardTitle className="text-base">Add New Client</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-4">
+        <GlassCard gradientBorder>
+          <GlassCardHeader>
+            <GlassCardTitle className="text-base">Add New Client</GlassCardTitle>
+          </GlassCardHeader>
+          <GlassCardContent className="space-y-4">
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div className="space-y-1.5">
                 <Label htmlFor="new-name">Name *</Label>
@@ -171,7 +208,7 @@ export default function ClientsPage() {
                 <Label htmlFor="new-company">Company</Label>
                 <Input
                   id="new-company"
-                  value={newClient.company || ""}
+                  value={newClient.company || ''}
                   onChange={(e) => setNewClient((prev) => ({ ...prev, company: e.target.value }))}
                   placeholder="Company name"
                 />
@@ -183,7 +220,7 @@ export default function ClientsPage() {
                 <Input
                   id="new-email"
                   type="email"
-                  value={newClient.email || ""}
+                  value={newClient.email || ''}
                   onChange={(e) => setNewClient((prev) => ({ ...prev, email: e.target.value }))}
                   placeholder="client@example.com"
                 />
@@ -193,7 +230,7 @@ export default function ClientsPage() {
                 <Input
                   id="new-phone"
                   type="tel"
-                  value={newClient.phone || ""}
+                  value={newClient.phone || ''}
                   onChange={(e) => setNewClient((prev) => ({ ...prev, phone: e.target.value }))}
                   placeholder="07700 900000"
                 />
@@ -203,7 +240,7 @@ export default function ClientsPage() {
               <Label htmlFor="new-notes">Notes</Label>
               <Textarea
                 id="new-notes"
-                value={newClient.notes || ""}
+                value={newClient.notes || ''}
                 onChange={(e) => setNewClient((prev) => ({ ...prev, notes: e.target.value }))}
                 placeholder="Any notes about this client..."
                 rows={2}
@@ -214,93 +251,100 @@ export default function ClientsPage() {
                 variant="outline"
                 onClick={() => {
                   setShowAddForm(false);
-                  setNewClient({ name: "", email: "", phone: "", company: "", notes: "" });
+                  setNewClient({ name: '', email: '', phone: '', company: '', notes: '' });
                 }}
               >
                 Cancel
               </Button>
               <Button onClick={handleAddClient} disabled={saving || !newClient.name.trim()}>
                 {saving ? (
-                  <><Loader2 className="h-4 w-4 mr-2 animate-spin" />Saving...</>
+                  <>
+                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                    Saving...
+                  </>
                 ) : (
-                  <><Plus className="h-4 w-4 mr-2" />Add Client</>
+                  <>
+                    <Plus className="h-4 w-4 mr-2" />
+                    Add Client
+                  </>
                 )}
               </Button>
             </div>
-          </CardContent>
-        </Card>
+          </GlassCardContent>
+        </GlassCard>
       )}
 
       {/* Client List */}
       {filteredClients.length === 0 ? (
-        <Card>
-          <CardContent className="flex flex-col items-center justify-center py-12">
-            <Users className="h-12 w-12 text-gray-300 mb-4" />
-            <CardTitle className="mb-2">
-              {search ? "No matching clients" : "No clients yet"}
-            </CardTitle>
-            <CardDescription className="text-center mb-4">
+        <GlassCard>
+          <GlassCardContent className="flex flex-col items-center justify-center py-12">
+            <Users className="h-12 w-12 text-muted-foreground/30 mb-4" />
+            <p className="text-lg font-semibold text-foreground mb-2">
+              {search ? 'No matching clients' : 'No clients yet'}
+            </p>
+            <p className="text-sm text-muted-foreground text-center mb-4">
               {search
-                ? "Try a different search term."
-                : "Add your first client to start building your CRM."}
-            </CardDescription>
+                ? 'Try a different search term.'
+                : 'Add your first client to start building your CRM.'}
+            </p>
             {!search && (
               <Button onClick={() => setShowAddForm(true)}>
                 <UserPlus className="h-4 w-4 mr-2" />
                 Add Client
               </Button>
             )}
-          </CardContent>
-        </Card>
+          </GlassCardContent>
+        </GlassCard>
       ) : (
-        <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-3">
+        <div className="space-y-3 stagger-in">
           {filteredClients.map((client) => (
             <Link key={client.id} href={`/clients/${client.id}`}>
-              <Card className="hover:shadow-md transition-shadow cursor-pointer h-full">
-                <CardHeader className="pb-2">
-                  <div className="flex items-start justify-between">
-                    <div className="min-w-0 flex-1">
-                      <CardTitle className="text-base truncate">{client.name}</CardTitle>
-                      {client.company && (
-                        <CardDescription className="flex items-center gap-1 mt-1">
-                          <Building2 className="h-3 w-3" />
-                          {client.company}
-                        </CardDescription>
+              <div className="animate-stagger-in glass-card p-4 transition-all duration-200 hover:-translate-y-0.5 hover:bg-white/8 hover:shadow-medium cursor-pointer mb-3">
+                <div className="flex items-center gap-4">
+                  <ClientAvatar name={client.name} />
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="font-semibold text-foreground truncate">{client.name}</p>
+                        {client.company && (
+                          <p className="flex items-center gap-1 text-sm text-muted-foreground mt-0.5">
+                            <Building2 className="h-3 w-3 shrink-0" />
+                            <span className="truncate">{client.company}</span>
+                          </p>
+                        )}
+                      </div>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-11 w-11 p-0 text-muted-foreground hover:text-status-red hover:bg-status-red/10 shrink-0"
+                        onClick={(e) => handleDeleteClient(e, client.id, client.name)}
+                        disabled={deletingId === client.id}
+                        aria-label={`Delete client ${client.name}`}
+                      >
+                        {deletingId === client.id ? (
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                        ) : (
+                          <Trash2 className="h-4 w-4" />
+                        )}
+                      </Button>
+                    </div>
+                    <div className="flex items-center gap-4 mt-2">
+                      {client.email && (
+                        <span className="flex items-center gap-1.5 text-sm text-muted-foreground">
+                          <Mail className="h-3 w-3 shrink-0" />
+                          <span className="truncate">{client.email}</span>
+                        </span>
+                      )}
+                      {client.phone && (
+                        <span className="flex items-center gap-1.5 text-sm text-muted-foreground">
+                          <Phone className="h-3 w-3 shrink-0" />
+                          <span>{client.phone}</span>
+                        </span>
                       )}
                     </div>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="h-8 w-8 p-0 text-gray-400 hover:text-red-600 hover:bg-red-50 flex-shrink-0"
-                      onClick={(e) => handleDeleteClient(e, client.id, client.name)}
-                      disabled={deletingId === client.id}
-                    >
-                      {deletingId === client.id ? (
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                      ) : (
-                        <Trash2 className="h-4 w-4" />
-                      )}
-                    </Button>
                   </div>
-                </CardHeader>
-                <CardContent className="pt-0 space-y-1">
-                  {client.email && (
-                    <div className="flex items-center gap-2 text-sm text-gray-500">
-                      <Mail className="h-3 w-3 flex-shrink-0" />
-                      <span className="truncate">{client.email}</span>
-                    </div>
-                  )}
-                  {client.phone && (
-                    <div className="flex items-center gap-2 text-sm text-gray-500">
-                      <Phone className="h-3 w-3 flex-shrink-0" />
-                      <span>{client.phone}</span>
-                    </div>
-                  )}
-                  <p className="text-xs text-gray-400 pt-1">
-                    Added {new Date(client.created_at).toLocaleDateString()}
-                  </p>
-                </CardContent>
-              </Card>
+                </div>
+              </div>
             </Link>
           ))}
         </div>

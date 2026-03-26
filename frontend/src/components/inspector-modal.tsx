@@ -1,13 +1,13 @@
-"use client";
+'use client';
 
-import { useState, useEffect, useRef } from "react";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { api, InspectorProfile } from "@/lib/api";
-import { toast } from "sonner";
-import { Loader2, X, Plus, Trash2, Upload, User } from "lucide-react";
+import { useState, useEffect, useRef } from 'react';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { api, InspectorProfile } from '@/lib/api';
+import { toast } from 'sonner';
+import { Loader2, X, Plus, Trash2, Upload, User } from 'lucide-react';
 
 interface InspectorModalProps {
   userId: string;
@@ -25,10 +25,10 @@ export function InspectorModal({ userId, isOpen, onClose }: InspectorModalProps)
 
   // New profile form state
   const [formData, setFormData] = useState({
-    name: "",
-    position: "",
-    organisation: "",
-    enrolment_number: "",
+    name: '',
+    position: '',
+    organisation: '',
+    enrolment_number: '',
   });
 
   useEffect(() => {
@@ -43,8 +43,8 @@ export function InspectorModal({ userId, isOpen, onClose }: InspectorModalProps)
       const data = await api.getInspectorProfiles(userId);
       setProfiles(data);
     } catch (error) {
-      console.error("Failed to load profiles:", error);
-      toast.error("Failed to load inspector profiles");
+      console.error('Failed to load profiles:', error);
+      toast.error('Failed to load inspector profiles');
     } finally {
       setLoading(false);
     }
@@ -55,10 +55,10 @@ export function InspectorModal({ userId, isOpen, onClose }: InspectorModalProps)
     try {
       await api.saveInspectorProfiles(userId, updatedProfiles);
       setProfiles(updatedProfiles);
-      toast.success("Inspector profiles saved");
+      toast.success('Inspector profiles saved');
     } catch (error) {
-      console.error("Failed to save profiles:", error);
-      toast.error("Failed to save profiles");
+      console.error('Failed to save profiles:', error);
+      toast.error('Failed to save profiles');
     } finally {
       setSaving(false);
     }
@@ -66,7 +66,7 @@ export function InspectorModal({ userId, isOpen, onClose }: InspectorModalProps)
 
   const handleAddProfile = () => {
     if (!formData.name.trim()) {
-      toast.error("Name is required");
+      toast.error('Name is required');
       return;
     }
 
@@ -82,17 +82,17 @@ export function InspectorModal({ userId, isOpen, onClose }: InspectorModalProps)
     handleSaveProfiles(updatedProfiles);
 
     // Reset form
-    setFormData({ name: "", position: "", organisation: "", enrolment_number: "" });
+    setFormData({ name: '', position: '', organisation: '', enrolment_number: '' });
     setIsAddingNew(false);
   };
 
   const handleUpdateProfile = () => {
     if (!editingProfile || !formData.name.trim()) {
-      toast.error("Name is required");
+      toast.error('Name is required');
       return;
     }
 
-    const updatedProfiles = profiles.map(p =>
+    const updatedProfiles = profiles.map((p) =>
       p.id === editingProfile.id
         ? {
             ...p,
@@ -106,11 +106,11 @@ export function InspectorModal({ userId, isOpen, onClose }: InspectorModalProps)
 
     handleSaveProfiles(updatedProfiles);
     setEditingProfile(null);
-    setFormData({ name: "", position: "", organisation: "", enrolment_number: "" });
+    setFormData({ name: '', position: '', organisation: '', enrolment_number: '' });
   };
 
   const handleDeleteProfile = (profileId: string) => {
-    const updatedProfiles = profiles.filter(p => p.id !== profileId);
+    const updatedProfiles = profiles.filter((p) => p.id !== profileId);
     handleSaveProfiles(updatedProfiles);
   };
 
@@ -118,9 +118,9 @@ export function InspectorModal({ userId, isOpen, onClose }: InspectorModalProps)
     setEditingProfile(profile);
     setFormData({
       name: profile.name,
-      position: profile.position || "",
-      organisation: profile.organisation || "",
-      enrolment_number: profile.enrolment_number || "",
+      position: profile.position || '',
+      organisation: profile.organisation || '',
+      enrolment_number: profile.enrolment_number || '',
     });
     setIsAddingNew(false);
   };
@@ -128,22 +128,22 @@ export function InspectorModal({ userId, isOpen, onClose }: InspectorModalProps)
   const startAddingNew = () => {
     setIsAddingNew(true);
     setEditingProfile(null);
-    setFormData({ name: "", position: "", organisation: "", enrolment_number: "" });
+    setFormData({ name: '', position: '', organisation: '', enrolment_number: '' });
   };
 
   const handleSignatureUpload = async (profileId: string, file: File) => {
     try {
       const result = await api.uploadSignature(userId, file);
       if (result.success) {
-        const updatedProfiles = profiles.map(p =>
+        const updatedProfiles = profiles.map((p) =>
           p.id === profileId ? { ...p, signature_file: result.signature_file } : p
         );
         handleSaveProfiles(updatedProfiles);
-        toast.success("Signature uploaded");
+        toast.success('Signature uploaded');
       }
     } catch (error) {
-      console.error("Failed to upload signature:", error);
-      toast.error("Failed to upload signature");
+      console.error('Failed to upload signature:', error);
+      toast.error('Failed to upload signature');
     }
   };
 
@@ -160,7 +160,7 @@ export function InspectorModal({ userId, isOpen, onClose }: InspectorModalProps)
     if (file && profileId) {
       handleSignatureUpload(profileId, file);
     }
-    e.target.value = "";
+    e.target.value = '';
   };
 
   if (!isOpen) return null;
@@ -173,7 +173,7 @@ export function InspectorModal({ userId, isOpen, onClose }: InspectorModalProps)
             <User className="h-5 w-5" />
             Inspector Profiles
           </h2>
-          <Button variant="ghost" size="sm" onClick={onClose}>
+          <Button variant="ghost" size="sm" onClick={onClose} aria-label="Close inspector profiles">
             <X className="h-4 w-4" />
           </Button>
         </div>
@@ -187,7 +187,10 @@ export function InspectorModal({ userId, isOpen, onClose }: InspectorModalProps)
             <div className="space-y-4">
               {/* Existing Profiles */}
               {profiles.map((profile) => (
-                <Card key={profile.id} className={editingProfile?.id === profile.id ? "ring-2 ring-primary" : ""}>
+                <Card
+                  key={profile.id}
+                  className={editingProfile?.id === profile.id ? 'ring-2 ring-primary' : ''}
+                >
                   <CardHeader className="py-3">
                     <div className="flex items-center justify-between">
                       <CardTitle className="text-base">{profile.name}</CardTitle>
@@ -208,6 +211,7 @@ export function InspectorModal({ userId, isOpen, onClose }: InspectorModalProps)
                           size="sm"
                           onClick={() => handleDeleteProfile(profile.id)}
                           className="text-red-600 hover:text-red-700"
+                          aria-label="Delete inspector profile"
                         >
                           <Trash2 className="h-4 w-4" />
                         </Button>
@@ -236,7 +240,7 @@ export function InspectorModal({ userId, isOpen, onClose }: InspectorModalProps)
                       )}
                       <div>
                         <dt className="text-muted-foreground">Signature</dt>
-                        <dd>{profile.signature_file ? "Uploaded" : "Not uploaded"}</dd>
+                        <dd>{profile.signature_file ? 'Uploaded' : 'Not uploaded'}</dd>
                       </div>
                     </dl>
                   </CardContent>
@@ -248,7 +252,7 @@ export function InspectorModal({ userId, isOpen, onClose }: InspectorModalProps)
                 <Card className="border-dashed">
                   <CardHeader className="py-3">
                     <CardTitle className="text-base">
-                      {editingProfile ? "Edit Inspector" : "Add New Inspector"}
+                      {editingProfile ? 'Edit Inspector' : 'Add New Inspector'}
                     </CardTitle>
                   </CardHeader>
                   <CardContent className="space-y-4">
@@ -276,7 +280,9 @@ export function InspectorModal({ userId, isOpen, onClose }: InspectorModalProps)
                         <Input
                           id="organisation"
                           value={formData.organisation}
-                          onChange={(e) => setFormData({ ...formData, organisation: e.target.value })}
+                          onChange={(e) =>
+                            setFormData({ ...formData, organisation: e.target.value })
+                          }
                           placeholder="Company name"
                         />
                       </div>
@@ -285,7 +291,9 @@ export function InspectorModal({ userId, isOpen, onClose }: InspectorModalProps)
                         <Input
                           id="enrolment_number"
                           value={formData.enrolment_number}
-                          onChange={(e) => setFormData({ ...formData, enrolment_number: e.target.value })}
+                          onChange={(e) =>
+                            setFormData({ ...formData, enrolment_number: e.target.value })
+                          }
                           placeholder="e.g., NICEIC/123456"
                         />
                       </div>
@@ -296,11 +304,14 @@ export function InspectorModal({ userId, isOpen, onClose }: InspectorModalProps)
                         disabled={saving}
                       >
                         {saving ? (
-                          <><Loader2 className="h-4 w-4 mr-2 animate-spin" />Saving...</>
+                          <>
+                            <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                            Saving...
+                          </>
                         ) : editingProfile ? (
-                          "Update"
+                          'Update'
                         ) : (
-                          "Add Inspector"
+                          'Add Inspector'
                         )}
                       </Button>
                       <Button
@@ -308,7 +319,12 @@ export function InspectorModal({ userId, isOpen, onClose }: InspectorModalProps)
                         onClick={() => {
                           setEditingProfile(null);
                           setIsAddingNew(false);
-                          setFormData({ name: "", position: "", organisation: "", enrolment_number: "" });
+                          setFormData({
+                            name: '',
+                            position: '',
+                            organisation: '',
+                            enrolment_number: '',
+                          });
                         }}
                       >
                         Cancel

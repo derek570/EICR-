@@ -1,6 +1,6 @@
-"use client";
+'use client';
 
-import { useMemo, type ReactNode } from "react";
+import { useMemo, type ReactNode } from 'react';
 
 interface GeminiHighlight {
   keyword: string;
@@ -14,39 +14,36 @@ interface TranscriptBarProps {
   interimTranscript: string;
   highlight: GeminiHighlight | null;
   isRecording: boolean;
-  sleepState: "active" | "dozing" | "sleeping";
+  sleepState: 'active' | 'dozing' | 'sleeping';
 }
 
-function buildHighlightedText(
-  text: string,
-  highlight: GeminiHighlight | null,
-): ReactNode[] {
+function buildHighlightedText(text: string, highlight: GeminiHighlight | null): ReactNode[] {
   if (!highlight || !text) return [text];
 
   const { keywordCandidates, value } = highlight;
 
   // Build match entries: [{start, end, type}]
-  type Match = { start: number; end: number; type: "keyword" | "value" };
+  type Match = { start: number; end: number; type: 'keyword' | 'value' };
   const matches: Match[] = [];
 
   // Find keyword candidate matches
   for (const candidate of keywordCandidates) {
     if (!candidate) continue;
-    const escaped = candidate.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const re = new RegExp(`\\b${escaped}\\b`, "gi");
+    const escaped = candidate.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const re = new RegExp(`\\b${escaped}\\b`, 'gi');
     let m: RegExpExecArray | null;
     while ((m = re.exec(text)) !== null) {
-      matches.push({ start: m.index, end: m.index + m[0].length, type: "keyword" });
+      matches.push({ start: m.index, end: m.index + m[0].length, type: 'keyword' });
     }
   }
 
   // Find value matches
   if (value) {
-    const escaped = value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const re = new RegExp(`\\b${escaped}\\b`, "gi");
+    const escaped = value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const re = new RegExp(`\\b${escaped}\\b`, 'gi');
     let m: RegExpExecArray | null;
     while ((m = re.exec(text)) !== null) {
-      matches.push({ start: m.index, end: m.index + m[0].length, type: "value" });
+      matches.push({ start: m.index, end: m.index + m[0].length, type: 'value' });
     }
   }
 
@@ -73,13 +70,11 @@ function buildHighlightedText(
     }
     const span = text.slice(m.start, m.end);
     const cls =
-      m.type === "keyword"
-        ? "text-blue-400 font-semibold"
-        : "text-green-400 font-semibold";
+      m.type === 'keyword' ? 'text-blue-400 font-semibold' : 'text-green-400 font-semibold';
     nodes.push(
       <span key={`hl-${i}`} className={cls}>
         {span}
-      </span>,
+      </span>
     );
     cursor = m.end;
   }
@@ -98,49 +93,40 @@ export function TranscriptBar({
   isRecording,
   sleepState,
 }: TranscriptBarProps) {
-  const visibleText = useMemo(
-    () => transcript.slice(-200),
-    [transcript],
-  );
+  const visibleText = useMemo(() => transcript.slice(-200), [transcript]);
 
   const highlighted = useMemo(
     () => buildHighlightedText(visibleText, highlight),
-    [visibleText, highlight],
+    [visibleText, highlight]
   );
 
   // Dozing / sleeping states
-  if (sleepState === "dozing") {
+  if (sleepState === 'dozing') {
     return (
-      <div className="h-11 bg-zinc-900/90 border-t border-zinc-800 flex items-center px-4 gap-2 overflow-hidden">
+      <div className="h-11 glass-bg border-t border-white/5 flex items-center px-4 gap-2 overflow-hidden">
         <span className="w-2 h-2 rounded-full bg-zinc-500 shrink-0" />
         <span className="text-sm text-zinc-500">Saving power...</span>
       </div>
     );
   }
 
-  if (sleepState === "sleeping") {
+  if (sleepState === 'sleeping') {
     return (
-      <div className="h-11 bg-zinc-900/90 border-t border-zinc-800 flex items-center px-4 gap-2 overflow-hidden">
+      <div className="h-11 glass-bg border-t border-white/5 flex items-center px-4 gap-2 overflow-hidden">
         <span className="w-2 h-2 rounded-full bg-zinc-600 shrink-0" />
-        <span className="text-sm text-zinc-500">
-          Paused &mdash; speak to resume
-        </span>
+        <span className="text-sm text-zinc-500">Paused &mdash; speak to resume</span>
       </div>
     );
   }
 
   // Active state
   return (
-    <div className="h-11 bg-zinc-900/90 border-t border-zinc-800 flex items-center px-4 gap-2 overflow-hidden">
-      {isRecording && (
-        <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse shrink-0" />
-      )}
+    <div className="h-11 glass-bg border-t border-white/5 flex items-center px-4 gap-2 overflow-hidden">
+      {isRecording && <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse shrink-0" />}
 
-      <span className="text-sm text-zinc-300 truncate flex-1 min-w-0">
+      <span className="text-sm text-foreground/90 truncate flex-1 min-w-0">
         {highlighted}
-        {interimTranscript && (
-          <span className="text-zinc-500 italic"> {interimTranscript}</span>
-        )}
+        {interimTranscript && <span className="text-zinc-500 italic"> {interimTranscript}</span>}
       </span>
 
       {highlight && highlight.fieldKey && highlight.value && (

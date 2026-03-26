@@ -1,12 +1,11 @@
-"use client";
+'use client';
 
-import { useCallback, useRef, useState } from "react";
-import { Button } from "@/components/ui/button";
-import { toast } from "sonner";
-import { Camera, Loader2, Upload } from "lucide-react";
+import { useCallback, useRef, useState } from 'react';
+import { Button } from '@/components/ui/button';
+import { toast } from 'sonner';
+import { Camera, Loader2, Upload } from 'lucide-react';
 
-const API_BASE_URL =
-  process.env.NEXT_PUBLIC_API_URL || "http://localhost:3000";
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000';
 const MAX_DIMENSION = 2048;
 const JPEG_QUALITY = 0.85;
 
@@ -31,13 +30,13 @@ function scaleImage(file: File): Promise<Blob> {
         height = Math.round(height * scale);
       }
 
-      const canvas = document.createElement("canvas");
+      const canvas = document.createElement('canvas');
       canvas.width = width;
       canvas.height = height;
 
-      const ctx = canvas.getContext("2d");
+      const ctx = canvas.getContext('2d');
       if (!ctx) {
-        reject(new Error("Failed to get canvas context"));
+        reject(new Error('Failed to get canvas context'));
         return;
       }
 
@@ -45,16 +44,16 @@ function scaleImage(file: File): Promise<Blob> {
       canvas.toBlob(
         (blob) => {
           if (blob) resolve(blob);
-          else reject(new Error("Failed to create image blob"));
+          else reject(new Error('Failed to create image blob'));
         },
-        "image/jpeg",
-        JPEG_QUALITY,
+        'image/jpeg',
+        JPEG_QUALITY
       );
     };
 
     img.onerror = () => {
       URL.revokeObjectURL(url);
-      reject(new Error("Failed to load image"));
+      reject(new Error('Failed to load image'));
     };
 
     img.src = url;
@@ -68,8 +67,8 @@ export function CCUUpload({ onAnalysisComplete }: CCUUploadProps) {
 
   const analysePhoto = useCallback(
     async (file: File) => {
-      if (!file.type.startsWith("image/")) {
-        toast.error("Please select an image file");
+      if (!file.type.startsWith('image/')) {
+        toast.error('Please select an image file');
         return;
       }
 
@@ -78,11 +77,11 @@ export function CCUUpload({ onAnalysisComplete }: CCUUploadProps) {
         const scaled = await scaleImage(file);
 
         const formData = new FormData();
-        formData.append("image", scaled, "ccu.jpg");
+        formData.append('image', scaled, 'ccu.jpg');
 
-        const token = localStorage.getItem("token");
+        const token = localStorage.getItem('token');
         const res = await fetch(`${API_BASE_URL}/api/analyze-ccu`, {
-          method: "POST",
+          method: 'POST',
           headers: token ? { Authorization: `Bearer ${token}` } : {},
           body: formData,
         });
@@ -95,18 +94,16 @@ export function CCUUpload({ onAnalysisComplete }: CCUUploadProps) {
         const analysis = await res.json();
         onAnalysisComplete(analysis);
       } catch (error) {
-        console.error("CCU analysis failed:", error);
-        toast.error(
-          error instanceof Error ? error.message : "Failed to analyse photo",
-        );
+        console.error('CCU analysis failed:', error);
+        toast.error(error instanceof Error ? error.message : 'Failed to analyse photo');
       } finally {
         setAnalysing(false);
         if (fileInputRef.current) {
-          fileInputRef.current.value = "";
+          fileInputRef.current.value = '';
         }
       }
     },
-    [onAnalysisComplete],
+    [onAnalysisComplete]
   );
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -136,11 +133,9 @@ export function CCUUpload({ onAnalysisComplete }: CCUUploadProps) {
       onDrop={handleDrop}
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
-      className={`flex flex-col items-center justify-center gap-4 rounded-lg border-2 border-dashed p-8 transition-colors ${
-        dragOver
-          ? "border-blue-500 bg-blue-500/10"
-          : "border-zinc-700 bg-zinc-900/50"
-      } ${analysing ? "pointer-events-none opacity-60" : ""}`}
+      className={`flex flex-col items-center justify-center gap-4 rounded-[18px] border-2 border-dashed p-8 transition-colors ${
+        dragOver ? 'border-brand-blue bg-brand-blue/10' : 'border-white/10 bg-L2'
+      } ${analysing ? 'pointer-events-none opacity-60' : ''}`}
     >
       <input
         ref={fileInputRef}
@@ -153,21 +148,16 @@ export function CCUUpload({ onAnalysisComplete }: CCUUploadProps) {
 
       {analysing ? (
         <>
-          <Loader2 className="h-10 w-10 animate-spin text-blue-400" />
-          <p className="text-sm text-zinc-400">
-            Analysing consumer unit photo...
-          </p>
+          <Loader2 className="h-10 w-10 animate-spin text-brand-blue" />
+          <p className="text-sm text-muted-foreground">Analysing consumer unit photo...</p>
         </>
       ) : (
         <>
-          <Camera className="h-10 w-10 text-zinc-500" />
-          <p className="text-center text-sm text-zinc-400">
+          <Camera className="h-10 w-10 text-muted-foreground" />
+          <p className="text-center text-sm text-muted-foreground">
             Drop a consumer unit photo here, or click to select
           </p>
-          <Button
-            variant="outline"
-            onClick={() => fileInputRef.current?.click()}
-          >
+          <Button variant="outline" onClick={() => fileInputRef.current?.click()}>
             <Upload className="h-4 w-4 mr-2" />
             Select Photo
           </Button>

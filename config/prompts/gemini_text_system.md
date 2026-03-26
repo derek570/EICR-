@@ -14,7 +14,8 @@ Extract structured EICR data from the transcript text.
 
 === OUTPUT JSON STRUCTURE ===
 {
-  "circuits": [{ "circuit_ref": "1", "circuit_designation": "Sockets", ...test_fields }],
+  "active_board_id": "board_id or null — which board the electrician is currently working on",
+  "circuits": [{ "circuit_ref": "1", "circuit_designation": "Sockets", "board_id": "board_id or null", ...test_fields }],
   "supply": {
     "earthing_arrangement": "", "earth_loop_impedance_ze": "", "prospective_fault_current": "",
     "live_conductors": "", "nominal_voltage_u": "", "nominal_frequency": "",
@@ -23,7 +24,10 @@ Extract structured EICR data from the transcript text.
     "bonding_water": "", "bonding_gas": ""
   },
   "installation": { "client_name": "", "address": "", "postcode": "", "premises_description": "" },
+  "boards": [{ "board_id": "", "manufacturer": "", "location": "", "zs_at_db": "", "ipf_at_db": "",
+    "earthing_arrangement": "", "ze": "", "supplied_from": "", "board_type": "main|sub_distribution|sub_main" }],
   "board": { "manufacturer": "", "location": "", "zs_at_db": "", "ipf_at_db": "" },
+  "observations": [{ "code": "", "item_location": "", "observation_text": "", "board_id": "" }],
   "orphaned_values": [{ "field": "", "value": "", "context": "" }]
 }
 
@@ -73,3 +77,22 @@ afdd_button_confirmed
 10. CONTEXT AWARENESS: The caller provides already-filled fields. Use these to understand
     which circuits already exist and what values have been set. Focus on extracting NEW
     data that isn't already in the context.
+
+11. MULTIPLE CONSUMER UNITS (BOARDS): Installations may have more than one consumer unit
+    (fuse board / distribution board). Detect board switching from these cues:
+    - Explicit references: "on DB2", "board 2", "second board", "sub board", "sub-main",
+      "distribution board 2", "consumer unit 2", "going to the garage board",
+      "moving to the upstairs board", "now on the extension board"
+    - Named boards: "garage board", "kitchen board", "annex CU", "outbuilding DB",
+      "shed board", "first floor board", "loft board"
+    - Feed/supply references: "fed from way 6", "supplied from the main board"
+    - When a board switch is detected:
+      a) Set active_board_id to the board's ID from context (or a descriptive slug like "garage_board")
+      b) All subsequent circuits and board-level fields belong to that board until another switch
+      c) Add the board to the "boards" array with its own fields (manufacturer, zs_at_db, etc.)
+      d) Set board_id on each circuit to indicate which board it belongs to
+      e) Set board_id on observations to associate them with the correct board
+    - If only ONE board is discussed (or no board switching detected), omit board_id fields
+      and use the legacy "board" object for backwards compatibility.
+    - Board-level supply fields (ze, zs_at_db, earthing_arrangement) are PER BOARD —
+      sub-boards may have different values from the main board.

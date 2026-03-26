@@ -161,7 +161,7 @@ export default function ClientDetailPage() {
         <div className="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <Link href="/clients">
-              <Button variant="ghost" size="sm">
+              <Button variant="ghost" size="sm" aria-label="Back to clients">
                 <ArrowLeft className="h-4 w-4" />
               </Button>
             </Link>

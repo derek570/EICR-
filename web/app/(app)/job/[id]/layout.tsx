@@ -67,10 +67,8 @@ export default function JobLayout({ children }: { children: React.ReactNode }) {
           isSyncing={isSyncing}
           onSave={save}
         />
-        <div className="flex flex-1 min-h-0">
-          <JobTabNav jobId={jobId} certificateType={certificateType} />
-          <div className="flex-1 overflow-auto">{children}</div>
-        </div>
+        <JobTabNav jobId={jobId} certificateType={certificateType} />
+        <div className="flex-1 min-h-0 overflow-auto">{children}</div>
       </div>
     </JobContext.Provider>
   );
