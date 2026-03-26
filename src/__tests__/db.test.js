@@ -94,6 +94,7 @@ describe('db', () => {
 
       expect(mockQuery).toHaveBeenCalledWith(expect.stringContaining('created_at::TIMESTAMP'), [
         'user-1',
+        100,
       ]);
       expect(jobs).toEqual([{ id: 'job-1' }]);
     });
@@ -109,7 +110,10 @@ describe('db', () => {
 
   describe('createJob', () => {
     test('should insert job with all fields', async () => {
-      mockQuery.mockResolvedValue({});
+      // First call: getUserById (to resolve company_id), second call: INSERT
+      mockQuery
+        .mockResolvedValueOnce({ rows: [{ id: 'user-1', company_id: 'comp-1' }] })
+        .mockResolvedValueOnce({});
 
       const job = {
         id: 'job-1',
@@ -128,11 +132,13 @@ describe('db', () => {
         expect.stringContaining('INSERT INTO jobs'),
         expect.arrayContaining(['job-1', 'user-1', 'test-folder'])
       );
-      expect(result).toBe(job);
+      expect(result).toMatchObject(job);
     });
 
     test('should throw on insert error', async () => {
-      mockQuery.mockRejectedValue(new Error('duplicate key'));
+      mockQuery
+        .mockResolvedValueOnce({ rows: [{ id: 'user-1', company_id: null }] })
+        .mockRejectedValueOnce(new Error('duplicate key'));
 
       await expect(db.createJob({ id: 'job-1', user_id: 'user-1' })).rejects.toThrow(
         'duplicate key'

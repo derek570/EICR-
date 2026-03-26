@@ -114,7 +114,11 @@ const activeUser = {
 };
 
 function makeToken(userId = 'user-1') {
-  return jwt.sign({ userId, email: 'test@example.com' }, JWT_SECRET, { expiresIn: '24h' });
+  return jwt.sign({ userId, email: 'test@example.com' }, JWT_SECRET, {
+    expiresIn: '24h',
+    issuer: 'certmate',
+    audience: 'certmate-api',
+  });
 }
 
 describe('Job routes (supertest)', () => {
@@ -201,9 +205,7 @@ describe('Job routes (supertest)', () => {
 
   describe('PUT /api/job/:userId/:jobId', () => {
     test('should return 401 without auth', async () => {
-      const res = await supertest(app)
-        .put('/api/job/user-1/job-1')
-        .send({ status: 'done' });
+      const res = await supertest(app).put('/api/job/user-1/job-1').send({ status: 'done' });
       expect(res.status).toBe(401);
     });
 
