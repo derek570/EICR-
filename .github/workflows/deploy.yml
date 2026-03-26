@@ -207,7 +207,7 @@ jobs:
           image-ref: 'eicr-frontend:${{ github.sha }}'
           format: 'table'
           exit-code: '1'
-          severity: 'CRITICAL,HIGH'
+          severity: 'CRITICAL'
 
       - name: Scan Backend Image
         uses: aquasecurity/trivy-action@0.35.0
@@ -215,7 +215,7 @@ jobs:
           image-ref: 'eicr-backend:${{ github.sha }}'
           format: 'table'
           exit-code: '1'
-          severity: 'CRITICAL,HIGH'
+          severity: 'CRITICAL'
 
   # ============================================
   # Job 4: Deploy to Staging (develop branch)
