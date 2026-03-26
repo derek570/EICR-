@@ -27,9 +27,9 @@ const LOCKOUT_DURATION_MINUTES = 15;
 /**
  * Verify password against hash
  */
-export function verifyPassword(password, hash) {
+export async function verifyPassword(password, hash) {
   try {
-    return bcrypt.compareSync(password, hash);
+    return await bcrypt.compare(password, hash);
   } catch {
     return false;
   }
@@ -89,7 +89,7 @@ export async function authenticate(email, password, ipAddress = null) {
   }
 
   // Verify password
-  if (!verifyPassword(password, user.password_hash)) {
+  if (!(await verifyPassword(password, user.password_hash))) {
     const attempts = (user.failed_login_attempts || 0) + 1;
     let lockedUntil = null;
 
@@ -148,7 +148,7 @@ export async function authenticate(email, password, ipAddress = null) {
  */
 export async function verifyToken(token) {
   try {
-    const decoded = jwt.verify(token, getJwtSecret());
+    const decoded = jwt.verify(token, getJwtSecret(), { algorithms: ['HS256'] });
     const user = await db.getUserById(decoded.userId);
 
     if (!user || !user.is_active) {
@@ -179,13 +179,16 @@ export async function refreshToken(oldToken) {
     // First try normal verify (token might not actually be expired)
     let decoded;
     try {
-      decoded = jwt.verify(oldToken, getJwtSecret());
+      decoded = jwt.verify(oldToken, getJwtSecret(), { algorithms: ['HS256'] });
     } catch (err) {
       if (err.name !== 'TokenExpiredError') {
         return { success: false, error: 'Invalid token' };
       }
       // Token is expired — verify signature but ignore expiration to check grace period
-      decoded = jwt.verify(oldToken, getJwtSecret(), { ignoreExpiration: true });
+      decoded = jwt.verify(oldToken, getJwtSecret(), {
+        algorithms: ['HS256'],
+        ignoreExpiration: true,
+      });
       if (!decoded || !decoded.exp) {
         return { success: false, error: 'Invalid token' };
       }

@@ -12,6 +12,8 @@ const mockGetUserById = jest.fn();
 const mockUpdateLastLogin = jest.fn();
 const mockUpdateLoginAttempts = jest.fn();
 const mockLogAction = jest.fn();
+const mockIncrementTokenVersion = jest.fn();
+const mockSetTokenVersion = jest.fn();
 
 jest.unstable_mockModule('../db.js', () => ({
   getUserByEmail: mockGetUserByEmail,
@@ -19,6 +21,8 @@ jest.unstable_mockModule('../db.js', () => ({
   updateLastLogin: mockUpdateLastLogin,
   updateLoginAttempts: mockUpdateLoginAttempts,
   logAction: mockLogAction,
+  incrementTokenVersion: mockIncrementTokenVersion,
+  setTokenVersion: mockSetTokenVersion,
 }));
 
 jest.unstable_mockModule('../logger.js', () => ({
@@ -41,19 +45,19 @@ describe('auth', () => {
   });
 
   describe('verifyPassword', () => {
-    test('should return true for matching password and hash', () => {
+    test('should return true for matching password and hash', async () => {
       const password = 'test-password-123';
       const hash = bcrypt.hashSync(password, 10);
-      expect(auth.verifyPassword(password, hash)).toBe(true);
+      expect(await auth.verifyPassword(password, hash)).toBe(true);
     });
 
-    test('should return false for non-matching password', () => {
+    test('should return false for non-matching password', async () => {
       const hash = bcrypt.hashSync('correct-password', 10);
-      expect(auth.verifyPassword('wrong-password', hash)).toBe(false);
+      expect(await auth.verifyPassword('wrong-password', hash)).toBe(false);
     });
 
-    test('should return false for invalid hash', () => {
-      expect(auth.verifyPassword('password', 'not-a-valid-hash')).toBe(false);
+    test('should return false for invalid hash', async () => {
+      expect(await auth.verifyPassword('password', 'not-a-valid-hash')).toBe(false);
     });
   });
 
@@ -187,11 +191,7 @@ describe('auth', () => {
       expect(result.success).toBe(false);
       expect(result.error).toContain('locked');
       // Should have been called with attempts=5 and a locked_until timestamp
-      expect(mockUpdateLoginAttempts).toHaveBeenCalledWith(
-        'user-1',
-        5,
-        expect.any(String)
-      );
+      expect(mockUpdateLoginAttempts).toHaveBeenCalledWith('user-1', 5, expect.any(String));
     });
 
     test('should generate valid JWT on success', async () => {
@@ -209,7 +209,9 @@ describe('auth', () => {
 
   describe('verifyToken', () => {
     test('should return user for valid token', async () => {
-      const token = jwt.sign({ userId: 'user-1', email: 'test@example.com' }, JWT_SECRET, { expiresIn: '24h' });
+      const token = jwt.sign({ userId: 'user-1', email: 'test@example.com' }, JWT_SECRET, {
+        expiresIn: '24h',
+      });
       mockGetUserById.mockResolvedValue({
         id: 'user-1',
         email: 'test@example.com',
@@ -241,7 +243,9 @@ describe('auth', () => {
     });
 
     test('should return null for inactive user', async () => {
-      const token = jwt.sign({ userId: 'user-1', email: 'test@example.com' }, JWT_SECRET, { expiresIn: '24h' });
+      const token = jwt.sign({ userId: 'user-1', email: 'test@example.com' }, JWT_SECRET, {
+        expiresIn: '24h',
+      });
       mockGetUserById.mockResolvedValue({ id: 'user-1', is_active: false });
 
       const user = await auth.verifyToken(token);
@@ -250,7 +254,9 @@ describe('auth', () => {
     });
 
     test('should return null if user not found in DB', async () => {
-      const token = jwt.sign({ userId: 'nonexistent', email: 'test@example.com' }, JWT_SECRET, { expiresIn: '24h' });
+      const token = jwt.sign({ userId: 'nonexistent', email: 'test@example.com' }, JWT_SECRET, {
+        expiresIn: '24h',
+      });
       mockGetUserById.mockResolvedValue(null);
 
       const user = await auth.verifyToken(token);
@@ -269,7 +275,9 @@ describe('auth', () => {
     };
 
     test('should refresh a still-valid token', async () => {
-      const oldToken = jwt.sign({ userId: 'user-1', email: 'test@example.com' }, JWT_SECRET, { expiresIn: '24h' });
+      const oldToken = jwt.sign({ userId: 'user-1', email: 'test@example.com' }, JWT_SECRET, {
+        expiresIn: '24h',
+      });
       mockGetUserById.mockResolvedValue(activeUser);
 
       const result = await auth.refreshToken(oldToken);
@@ -281,11 +289,9 @@ describe('auth', () => {
 
     test('should refresh a recently-expired token within grace period', async () => {
       // Create a token that expired 1 hour ago (within 7-day grace)
-      const oldToken = jwt.sign(
-        { userId: 'user-1', email: 'test@example.com' },
-        JWT_SECRET,
-        { expiresIn: '-1h' }
-      );
+      const oldToken = jwt.sign({ userId: 'user-1', email: 'test@example.com' }, JWT_SECRET, {
+        expiresIn: '-1h',
+      });
       mockGetUserById.mockResolvedValue(activeUser);
 
       const result = await auth.refreshToken(oldToken);
@@ -297,8 +303,11 @@ describe('auth', () => {
     test('should reject token expired beyond grace period', async () => {
       // Create a token that expired 8 days ago (beyond 7-day grace)
       const payload = { userId: 'user-1', email: 'test@example.com' };
-      const eightDaysAgo = Math.floor(Date.now() / 1000) - (8 * 24 * 60 * 60);
-      const oldToken = jwt.sign({ ...payload, exp: eightDaysAgo, iat: eightDaysAgo - 3600 }, JWT_SECRET);
+      const eightDaysAgo = Math.floor(Date.now() / 1000) - 8 * 24 * 60 * 60;
+      const oldToken = jwt.sign(
+        { ...payload, exp: eightDaysAgo, iat: eightDaysAgo - 3600 },
+        JWT_SECRET
+      );
 
       const result = await auth.refreshToken(oldToken);
 
@@ -316,7 +325,9 @@ describe('auth', () => {
     });
 
     test('should reject if user is inactive', async () => {
-      const oldToken = jwt.sign({ userId: 'user-1', email: 'test@example.com' }, JWT_SECRET, { expiresIn: '24h' });
+      const oldToken = jwt.sign({ userId: 'user-1', email: 'test@example.com' }, JWT_SECRET, {
+        expiresIn: '24h',
+      });
       mockGetUserById.mockResolvedValue({ ...activeUser, is_active: false });
 
       const result = await auth.refreshToken(oldToken);
@@ -345,7 +356,9 @@ describe('auth', () => {
     });
 
     test('should extract token from Authorization header', async () => {
-      const token = jwt.sign({ userId: 'user-1', email: 'test@example.com' }, JWT_SECRET, { expiresIn: '24h' });
+      const token = jwt.sign({ userId: 'user-1', email: 'test@example.com' }, JWT_SECRET, {
+        expiresIn: '24h',
+      });
       req.headers.authorization = `Bearer ${token}`;
       mockGetUserById.mockResolvedValue({
         id: 'user-1',
@@ -358,7 +371,7 @@ describe('auth', () => {
       auth.requireAuth(req, res, next);
 
       // Wait for async verifyToken to resolve
-      await new Promise(r => setTimeout(r, 50));
+      await new Promise((r) => setTimeout(r, 50));
 
       expect(next).toHaveBeenCalled();
       expect(req.user).toBeDefined();
@@ -366,7 +379,9 @@ describe('auth', () => {
     });
 
     test('should extract token from query parameter', async () => {
-      const token = jwt.sign({ userId: 'user-1', email: 'test@example.com' }, JWT_SECRET, { expiresIn: '24h' });
+      const token = jwt.sign({ userId: 'user-1', email: 'test@example.com' }, JWT_SECRET, {
+        expiresIn: '24h',
+      });
       req.query.token = token;
       mockGetUserById.mockResolvedValue({
         id: 'user-1',
@@ -378,7 +393,7 @@ describe('auth', () => {
 
       auth.requireAuth(req, res, next);
 
-      await new Promise(r => setTimeout(r, 50));
+      await new Promise((r) => setTimeout(r, 50));
 
       expect(next).toHaveBeenCalled();
     });
@@ -388,7 +403,7 @@ describe('auth', () => {
 
       auth.requireAuth(req, res, next);
 
-      await new Promise(r => setTimeout(r, 50));
+      await new Promise((r) => setTimeout(r, 50));
 
       expect(res.status).toHaveBeenCalledWith(401);
     });

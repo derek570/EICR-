@@ -106,6 +106,9 @@ router.delete('/account', auth.requireAuth, async (req, res) => {
     // Soft-delete: deactivate the account
     await db.updateUser(userId, { is_active: false });
 
+    // Invalidate all existing tokens (A5)
+    await db.incrementTokenVersion(userId);
+
     await db.logAction(userId, 'account_deleted');
 
     logger.info('User deleted their account', { userId });
@@ -130,8 +133,21 @@ router.put('/change-password', auth.requireAuth, async (req, res) => {
       return res.status(400).json({ error: 'Current password and new password are required' });
     }
 
-    if (newPassword.length < 6) {
-      return res.status(400).json({ error: 'New password must be at least 6 characters' });
+    if (newPassword.length < 8) {
+      return res.status(400).json({ error: 'New password must be at least 8 characters' });
+    }
+
+    if (!/[a-z]/.test(newPassword) || !/[A-Z]/.test(newPassword) || !/[0-9]/.test(newPassword)) {
+      return res
+        .status(400)
+        .json({
+          error:
+            'Password must contain at least one uppercase letter, one lowercase letter, and one digit',
+        });
+    }
+
+    if (Buffer.byteLength(newPassword, 'utf8') > 72) {
+      return res.status(400).json({ error: 'Password must not exceed 72 bytes' });
     }
 
     // Get full user record (with password_hash)
@@ -141,13 +157,16 @@ router.put('/change-password', auth.requireAuth, async (req, res) => {
     }
 
     // Verify current password
-    if (!auth.verifyPassword(currentPassword, user.password_hash)) {
+    if (!(await auth.verifyPassword(currentPassword, user.password_hash))) {
       return res.status(401).json({ error: 'Current password is incorrect' });
     }
 
     // Hash new password and update
-    const newHash = bcrypt.hashSync(newPassword, 10);
+    const newHash = await bcrypt.hash(newPassword, 10);
     await db.resetUserPassword(req.user.id, newHash);
+
+    // Invalidate all existing tokens (A4)
+    await db.incrementTokenVersion(req.user.id);
 
     await db.logAction(req.user.id, 'password_changed');
     logger.info('User changed their password', { userId: req.user.id });
