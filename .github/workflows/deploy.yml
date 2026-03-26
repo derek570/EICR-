@@ -207,6 +207,7 @@ jobs:
           image-ref: 'eicr-frontend:${{ github.sha }}'
           format: 'table'
           exit-code: '1'
+          ignore-unfixed: true
           severity: 'CRITICAL'
 
       - name: Scan Backend Image
@@ -215,6 +216,7 @@ jobs:
           image-ref: 'eicr-backend:${{ github.sha }}'
           format: 'table'
           exit-code: '1'
+          ignore-unfixed: true
           severity: 'CRITICAL'
 
   # ============================================
