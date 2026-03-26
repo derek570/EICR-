@@ -11,5 +11,6 @@ export default {
   coverageDirectory: 'coverage',
   coverageReporters: ['text', 'lcov', 'html'],
   verbose: true,
-  testTimeout: 30000
+  testTimeout: 30000,
+  workerIdleMemoryLimit: '512MB'
 };
