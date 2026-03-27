@@ -103,30 +103,44 @@ export function TranscriptBar({
   // Dozing / sleeping states
   if (sleepState === 'dozing') {
     return (
-      <div className="h-11 glass-bg border-t border-white/5 flex items-center px-4 gap-2 overflow-hidden">
-        <span className="w-2 h-2 rounded-full bg-zinc-500 shrink-0" />
-        <span className="text-sm text-zinc-500">Saving power...</span>
+      <div
+        className="h-11 glass-bg border-t border-white/5 flex items-center px-4 gap-2 overflow-hidden"
+        role="status"
+        aria-live="polite"
+      >
+        <span className="w-2 h-2 rounded-full bg-muted-foreground shrink-0" />
+        <span className="text-sm text-muted-foreground">Saving power...</span>
       </div>
     );
   }
 
   if (sleepState === 'sleeping') {
     return (
-      <div className="h-11 glass-bg border-t border-white/5 flex items-center px-4 gap-2 overflow-hidden">
-        <span className="w-2 h-2 rounded-full bg-zinc-600 shrink-0" />
-        <span className="text-sm text-zinc-500">Paused &mdash; speak to resume</span>
+      <div
+        className="h-11 glass-bg border-t border-white/5 flex items-center px-4 gap-2 overflow-hidden"
+        role="status"
+        aria-live="polite"
+      >
+        <span className="w-2 h-2 rounded-full bg-muted-foreground shrink-0" />
+        <span className="text-sm text-muted-foreground">Paused &mdash; speak to resume</span>
       </div>
     );
   }
 
   // Active state
   return (
-    <div className="h-11 glass-bg border-t border-white/5 flex items-center px-4 gap-2 overflow-hidden">
+    <div
+      className="h-11 glass-bg border-t border-white/5 flex items-center px-4 gap-2 overflow-hidden"
+      role="status"
+      aria-live="polite"
+    >
       {isRecording && <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse shrink-0" />}
 
       <span className="text-sm text-foreground/90 truncate flex-1 min-w-0">
         {highlighted}
-        {interimTranscript && <span className="text-zinc-500 italic"> {interimTranscript}</span>}
+        {interimTranscript && (
+          <span className="text-muted-foreground italic"> {interimTranscript}</span>
+        )}
       </span>
 
       {highlight && highlight.fieldKey && highlight.value && (

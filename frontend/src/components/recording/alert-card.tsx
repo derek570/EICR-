@@ -50,6 +50,8 @@ export function AlertCard({ question, onDismiss }: AlertCardProps) {
 
   return (
     <div
+      role="alert"
+      aria-live="polite"
       className={cn(
         'mx-4 mb-2 glass-card p-3 transition-all animate-in slide-in-from-bottom-2 duration-300',
         styles.border,
@@ -86,7 +88,7 @@ export function AlertCard({ question, onDismiss }: AlertCardProps) {
 
         <button
           onClick={onDismiss}
-          className="text-muted-foreground hover:text-foreground text-sm transition-colors shrink-0"
+          className="text-muted-foreground hover:text-foreground text-sm transition-colors shrink-0 min-w-[44px] min-h-[44px] flex items-center justify-center -mr-2"
           title="Dismiss"
           aria-label="Dismiss alert"
         >

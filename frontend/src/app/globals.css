@@ -137,10 +137,10 @@
   --sidebar-ring: oklch(0.704 0.04 256.788);
 
   /* ── Glassmorphic tokens (light mode defaults, overridden in .dark) ── */
-  --L0: #0A0A0F;
-  --L1: #141419;
-  --L2: #1C1C24;
-  --L3: #24242E;
+  --L0: #000000;
+  --L1: #141414;
+  --L2: #1e1e1e;
+  --L3: #2a2a2a;
   --brand-blue: rgb(0, 102, 255);
   --brand-green: rgb(0, 204, 102);
   --status-green: #00E676;
@@ -186,10 +186,10 @@
   --sidebar-ring: oklch(0.551 0.027 264.364);
 
   /* ── Glassmorphic dark overrides ── */
-  --L0: #0A0A0F;
-  --L1: #141419;
-  --L2: #1C1C24;
-  --L3: #24242E;
+  --L0: #000000;
+  --L1: #141414;
+  --L2: #1e1e1e;
+  --L3: #2a2a2a;
   --brand-blue: rgb(0, 102, 255);
   --brand-green: rgb(0, 204, 102);
   --status-green: #00E676;
@@ -208,6 +208,17 @@
   }
   50% {
     box-shadow: 0 0 20px rgba(0, 102, 255, 0.35);
+  }
+}
+
+@keyframes mic-pulse {
+  0%, 100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.6;
+    transform: scale(1.08);
   }
 }
 

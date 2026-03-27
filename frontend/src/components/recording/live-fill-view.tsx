@@ -137,7 +137,7 @@ const codeBadgeColors: Record<string, string> = {
 };
 
 function ObservationBadge({ code }: { code: string }) {
-  const cls = codeBadgeColors[code] || 'bg-zinc-700/20 text-muted-foreground border-zinc-600/40';
+  const cls = codeBadgeColors[code] || 'bg-L3/20 text-muted-foreground border-white/10';
   return (
     <span
       className={`inline-flex items-center justify-center rounded px-1.5 py-0.5 text-xs font-bold border ${cls}`}

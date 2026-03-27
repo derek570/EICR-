@@ -46,7 +46,8 @@ export function RecentJobRow({ job, index }: RecentJobRowProps) {
     <button
       type="button"
       onClick={() => router.push(`/job/${job.id}`)}
-      className="group flex items-center w-full text-left rounded-[14px] bg-[rgba(255,255,255,0.04)] border border-[rgba(255,255,255,0.06)] overflow-hidden transition-all duration-200 hover:-translate-y-0.5 hover:shadow-[0_6px_20px_rgba(0,0,0,0.14)] hover:bg-[rgba(255,255,255,0.07)] active:animate-spring-press animate-[stagger-in_0.4s_ease-out_both]"
+      aria-label={`Open job: ${job.address || 'Untitled'}`}
+      className="group flex items-center w-full min-h-[48px] text-left rounded-[14px] bg-[rgba(255,255,255,0.04)] border border-[rgba(255,255,255,0.06)] overflow-hidden transition-all duration-200 hover:-translate-y-0.5 hover:shadow-[0_6px_20px_rgba(0,0,0,0.14)] hover:bg-[rgba(255,255,255,0.07)] active:animate-spring-press focus-visible:ring-2 focus-visible:ring-brand-blue/50 focus-visible:ring-offset-2 focus-visible:ring-offset-L0 outline-none animate-[stagger-in_0.4s_ease-out_both]"
       style={{ animationDelay: `${index * 60}ms` }}
     >
       {/* Leading gradient accent bar */}

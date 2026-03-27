@@ -60,7 +60,10 @@ export function DashboardHeader({ userEmail, userRole, onLogout }: DashboardHead
               variant="glass-ghost"
               size="sm"
               onClick={() => setMenuOpen(!menuOpen)}
-              className="gap-1"
+              className="gap-1 min-h-[44px]"
+              aria-label="User menu"
+              aria-expanded={menuOpen}
+              aria-haspopup="true"
             >
               <span className="text-sm text-muted-foreground max-w-[120px] truncate hidden sm:inline">
                 {userEmail}
@@ -75,7 +78,8 @@ export function DashboardHeader({ userEmail, userRole, onLogout }: DashboardHead
                     setMenuOpen(false);
                     onLogout();
                   }}
-                  className="flex items-center gap-2 w-full px-3 py-2 text-sm text-red-400 hover:bg-white/8 rounded-lg mx-0 transition-colors"
+                  className="flex items-center gap-2 w-full px-3 py-2.5 min-h-[44px] text-sm text-red-400 hover:bg-white/8 rounded-lg mx-0 transition-colors"
+                  aria-label="Log out"
                 >
                   <LogOut className="h-4 w-4" />
                   Log out

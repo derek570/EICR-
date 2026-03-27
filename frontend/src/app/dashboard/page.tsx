@@ -4,7 +4,6 @@ import { useEffect, useState, useCallback, useRef, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { toast } from 'sonner';
 import {
-  Plus,
   RefreshCw,
   CloudOff,
   Bell,
@@ -17,19 +16,11 @@ import {
   FileCheck,
   ClipboardList,
   Zap,
-  AlertTriangle,
   CheckCircle2,
 } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
-import {
-  GlassCard,
-  GlassCardHeader,
-  GlassCardTitle,
-  GlassCardContent,
-} from '@/components/ui/glass-card';
 import { MetricCard } from '@/components/dashboard/metric-card';
-import { QuickActionButton } from '@/components/dashboard/quick-action-button';
 import { SetupToolCard } from '@/components/dashboard/setup-tool-card';
 import { RecentJobRow } from '@/components/dashboard/recent-job-row';
 import { api } from '@/lib/api';
@@ -61,7 +52,6 @@ export default function DashboardPage() {
   const [downloading, setDownloading] = useState(false);
   const [creatingJob, setCreatingJob] = useState<'EICR' | 'EIC' | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
-  const nowRef = useRef(Date.now());
 
   // Get online status from the store
   const { isOnline, setOnline, setUser: setStoreUser, refreshPendingCount } = useJobStore();
@@ -307,7 +297,6 @@ export default function DashboardPage() {
     const userData = JSON.parse(storedUser) as User;
     setUser(userData);
     setStoreUser(userData.id);
-    nowRef.current = Date.now();
 
     async function loadJobs() {
       try {
@@ -478,15 +467,10 @@ export default function DashboardPage() {
 
   // Compute metrics from jobs
   const metrics = useMemo(() => {
-    const active = jobs.filter((j) => j.status === 'pending' || j.status === 'processing').length;
+    const total = jobs.length;
+    const pending = jobs.filter((j) => j.status === 'pending' || j.status === 'processing').length;
     const completed = jobs.filter((j) => j.status === 'done').length;
-    const fiveYearsMs = 5 * 365.25 * 24 * 60 * 60 * 1000;
-    const expiring = jobs.filter((j) => {
-      if (!j.created_at) return false;
-      const age = nowRef.current - new Date(j.created_at).getTime();
-      return age > fiveYearsMs && j.status === 'done';
-    }).length;
-    return { active, completed, expiring };
+    return { total, pending, completed };
   }, [jobs]);
 
   // Recent 5 jobs sorted by date descending
@@ -556,71 +540,94 @@ export default function DashboardPage() {
           </div>
         )}
 
-        {/* ─── Search Bar ─── */}
-        <div className="relative animate-[stagger-in_0.4s_ease-out_both]">
-          <Search className="absolute left-4 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none" />
-          <input
-            type="text"
-            placeholder="Search jobs by address, type, or status..."
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            className="w-full h-11 pl-11 pr-4 rounded-[12px] bg-L2 border border-neutral-700 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-brand-blue/50 focus:border-brand-blue/50 transition-all"
-          />
-          {searchQuery && (
-            <button
-              type="button"
-              onClick={() => setSearchQuery('')}
-              className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors p-2"
-              aria-label="Clear search"
-            >
-              <XSquare className="h-4 w-4" />
-            </button>
-          )}
+        {/* ═══ Hero Header Card — glassmorphic ═══ */}
+        <div
+          className="relative overflow-hidden rounded-[18px] p-5 animate-[stagger-in_0.4s_ease-out_both]"
+          style={{
+            background: '#141414',
+            backdropFilter: 'blur(20px)',
+            WebkitBackdropFilter: 'blur(20px)',
+            border: '1px solid rgba(255,255,255,0.1)',
+          }}
+        >
+          <div className="flex items-center gap-2 mb-3">
+            <div className="flex h-8 w-8 items-center justify-center rounded-full bg-gradient-to-br from-brand-blue to-brand-green shadow-[0_2px_8px_rgba(0,102,255,0.3)]">
+              <Zap className="h-4 w-4 text-white" />
+            </div>
+            <span className="text-sm font-semibold gradient-text tracking-wide">CertMate</span>
+          </div>
+          <h1 className="text-2xl font-bold text-foreground mb-1">
+            Welcome back
+            {user?.name ? (
+              <>
+                , <span className="gradient-text">{user.name.split(' ')[0]}</span>
+              </>
+            ) : null}
+          </h1>
+          <p className="text-sm text-muted-foreground mb-3">
+            {jobs.length === 0
+              ? 'Create your first job to get started'
+              : `You have ${metrics.pending} active job${metrics.pending !== 1 ? 's' : ''} in progress`}
+          </p>
+          <Button
+            variant="glass-ghost"
+            size="sm"
+            onClick={refreshJobs}
+            disabled={refreshing}
+            aria-label="Refresh jobs list"
+          >
+            <RefreshCw className={`h-4 w-4 ${refreshing ? 'animate-spin' : ''}`} />
+            Refresh
+          </Button>
         </div>
 
-        {/* ─── Hero Card with CertMate branding + breathe-glow ─── */}
-        <GlassCard
-          gradientBorder
-          glow
-          className="relative overflow-hidden animate-[stagger-in_0.4s_ease-out_both]"
-        >
-          <GlassCardHeader className="pb-2">
-            <div className="flex items-center gap-2 mb-1">
-              <div className="flex h-8 w-8 items-center justify-center rounded-full bg-gradient-to-br from-brand-blue to-brand-green shadow-[0_2px_8px_rgba(0,102,255,0.3)]">
-                <Zap className="h-4 w-4 text-white" />
-              </div>
-              <span className="text-sm font-semibold gradient-text tracking-wide">CertMate</span>
-            </div>
-            <GlassCardTitle className="text-2xl">
-              Welcome back
-              {user?.name ? (
-                <>
-                  , <span className="gradient-text">{user.name.split(' ')[0]}</span>
-                </>
-              ) : null}
-            </GlassCardTitle>
-            <p className="text-sm text-muted-foreground">
-              {jobs.length === 0
-                ? 'Create your first job to get started'
-                : `You have ${metrics.active} active job${metrics.active !== 1 ? 's' : ''} in progress`}
-            </p>
-          </GlassCardHeader>
-          <GlassCardContent className="flex items-center gap-2">
-            <Button variant="glass-ghost" size="sm" onClick={refreshJobs} disabled={refreshing}>
-              <RefreshCw className={`h-4 w-4 ${refreshing ? 'animate-spin' : ''}`} />
-              Refresh
-            </Button>
-          </GlassCardContent>
-        </GlassCard>
+        {/* ═══ START BUTTONS — Primary CTA, impossible to miss ═══ */}
+        <div className="grid grid-cols-2 gap-4 animate-[stagger-in_0.4s_ease-out_0.1s_both]">
+          <button
+            type="button"
+            onClick={() => handleNewJob('EICR')}
+            disabled={creatingJob === 'EICR'}
+            aria-label="Start new EICR certificate"
+            className="group relative min-h-[60px] rounded-2xl font-bold text-lg text-white bg-gradient-to-br from-[#0066FF] to-[#0099FF] shadow-[0_4px_20px_rgba(0,102,255,0.4)] transition-all duration-200 hover:shadow-[0_8px_32px_rgba(0,102,255,0.5)] hover:brightness-110 hover:-translate-y-0.5 active:scale-[0.97] focus-visible:ring-2 focus-visible:ring-brand-blue/50 focus-visible:ring-offset-2 focus-visible:ring-offset-L0 outline-none disabled:opacity-50 disabled:pointer-events-none flex items-center justify-center gap-2"
+          >
+            {creatingJob === 'EICR' ? (
+              <RefreshCw className="w-5 h-5 animate-spin" />
+            ) : (
+              <FileCheck className="w-6 h-6" />
+            )}
+            Start EICR
+          </button>
+          <button
+            type="button"
+            onClick={() => handleNewJob('EIC')}
+            disabled={creatingJob === 'EIC'}
+            aria-label="Start new EIC certificate"
+            className="group relative min-h-[60px] rounded-2xl font-bold text-lg text-white bg-gradient-to-br from-[#00C853] to-[#00E676] shadow-[0_4px_20px_rgba(0,200,83,0.4)] transition-all duration-200 hover:shadow-[0_8px_32px_rgba(0,200,83,0.5)] hover:brightness-110 hover:-translate-y-0.5 active:scale-[0.97] focus-visible:ring-2 focus-visible:ring-brand-green/50 focus-visible:ring-offset-2 focus-visible:ring-offset-L0 outline-none disabled:opacity-50 disabled:pointer-events-none flex items-center justify-center gap-2"
+          >
+            {creatingJob === 'EIC' ? (
+              <RefreshCw className="w-5 h-5 animate-spin" />
+            ) : (
+              <ClipboardList className="w-6 h-6" />
+            )}
+            Start EIC
+          </button>
+        </div>
 
         {/* ─── Metric Cards ─── */}
         <div className="grid grid-cols-3 gap-3 stagger-in">
           <MetricCard
-            label="Active"
-            value={metrics.active}
-            icon={Zap}
+            label="Total"
+            value={metrics.total}
+            icon={FileCheck}
             iconColor="rgb(0, 102, 255)"
             iconBgColor="rgba(0, 102, 255, 0.15)"
+          />
+          <MetricCard
+            label="Pending"
+            value={metrics.pending}
+            icon={Zap}
+            iconColor="#FFB300"
+            iconBgColor="rgba(255, 179, 0, 0.15)"
           />
           <MetricCard
             label="Completed"
@@ -629,86 +636,33 @@ export default function DashboardPage() {
             iconColor="#00E676"
             iconBgColor="rgba(0, 230, 118, 0.15)"
           />
-          <MetricCard
-            label="Expiring"
-            value={metrics.expiring}
-            icon={AlertTriangle}
-            iconColor="#FFB300"
-            iconBgColor="rgba(255, 179, 0, 0.15)"
-          />
         </div>
 
-        {/* ─── Quick Actions (PROMINENT full-width gradient pills) ─── */}
-        <section
-          className="space-y-3 animate-[stagger-in_0.4s_ease-out_both]"
-          style={{ animationDelay: '180ms' }}
-        >
-          <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider">
-            Quick Actions
-          </h2>
-          <div className="flex flex-col gap-3">
-            <QuickActionButton
-              label="Start EICR"
-              icon={FileCheck}
-              onClick={() => handleNewJob('EICR')}
-              className="w-full"
-              disabled={creatingJob === 'EICR'}
-            />
-            <QuickActionButton
-              label="Start EIC"
-              icon={ClipboardList}
-              onClick={() => handleNewJob('EIC')}
-              className="w-full"
-              disabled={creatingJob === 'EIC'}
-            />
-          </div>
-        </section>
+        {/* ─── Search Bar ─── */}
+        <div className="relative">
+          <Search className="absolute left-4 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none" />
+          <input
+            type="text"
+            placeholder="Search jobs by address, type, or status..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            aria-label="Search jobs"
+            className="w-full h-11 pl-11 pr-4 rounded-[12px] bg-L2 border border-neutral-700 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-brand-blue/50 focus:border-brand-blue/50 transition-all"
+          />
+          {searchQuery && (
+            <button
+              type="button"
+              onClick={() => setSearchQuery('')}
+              className="absolute right-1 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors p-2.5 min-w-[44px] min-h-[44px] flex items-center justify-center"
+              aria-label="Clear search"
+            >
+              <XSquare className="h-4 w-4" />
+            </button>
+          )}
+        </div>
 
-        {/* ─── Setup Tools Grid ─── */}
-        <section
-          className="space-y-3 animate-[stagger-in_0.4s_ease-out_both]"
-          style={{ animationDelay: '240ms' }}
-        >
-          <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider">
-            Tools
-          </h2>
-          <div className="grid grid-cols-2 gap-3">
-            <SetupToolCard
-              label="Set Defaults"
-              description="Inspector & company defaults"
-              icon={Settings}
-              onClick={() => setShowDefaultsModal(true)}
-              index={0}
-            />
-            <SetupToolCard
-              label="Company Details"
-              description="Business info & branding"
-              icon={Settings}
-              onClick={() => router.push('/settings/company')}
-              index={1}
-            />
-            <SetupToolCard
-              label="Staff"
-              description="Inspectors & team members"
-              icon={Users}
-              onClick={() => setShowInspectorModal(true)}
-              index={2}
-            />
-            <SetupToolCard
-              label="Settings"
-              description="App preferences & config"
-              icon={Settings}
-              onClick={() => router.push('/settings')}
-              index={3}
-            />
-          </div>
-        </section>
-
-        {/* ─── Recent Jobs (glass rows) ─── */}
-        <section
-          className="space-y-3 animate-[stagger-in_0.4s_ease-out_both]"
-          style={{ animationDelay: '300ms' }}
-        >
+        {/* ─── Recent Jobs ─── */}
+        <section className="space-y-3">
           <div className="flex items-center justify-between">
             <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider">
               {filteredJobs
@@ -717,7 +671,13 @@ export default function DashboardPage() {
                   ? 'Recent Jobs'
                   : 'Jobs'}
             </h2>
-            <Button variant="glass-ghost" size="sm" onClick={refreshJobs} disabled={refreshing}>
+            <Button
+              variant="glass-ghost"
+              size="sm"
+              onClick={refreshJobs}
+              disabled={refreshing}
+              aria-label="Refresh jobs"
+            >
               <RefreshCw className={`h-4 w-4 ${refreshing ? 'animate-spin' : ''}`} />
             </Button>
           </div>
@@ -759,22 +719,16 @@ export default function DashboardPage() {
                 <FileCheck className="h-7 w-7 text-brand-blue" />
               </div>
               <h2 className="text-lg font-semibold text-foreground mb-1">Ready to certify</h2>
-              <p className="text-sm text-muted-foreground mb-6 max-w-sm">
-                Create your first job, then just talk — CertMate fills out the form so it&apos;s
-                ready to send before you leave site.
+              <p className="text-sm text-muted-foreground max-w-sm">
+                Create your first job using the buttons above — just talk and CertMate fills out the
+                form so it&apos;s ready to send before you leave site.
               </p>
-              <QuickActionButton
-                label="Start EICR"
-                icon={Plus}
-                onClick={() => handleNewJob('EICR')}
-              />
             </div>
           ) : filteredJobs && filteredJobs.length === 0 ? (
             <p className="text-sm text-muted-foreground text-center py-8">
               No jobs match &ldquo;{searchQuery}&rdquo;
             </p>
           ) : selectedJobIds.size > 0 ? (
-            /* When selecting for bulk download, show full JobCard with checkboxes */
             <div className="flex flex-col gap-2">
               {displayJobs.map((job) => (
                 <JobCard
@@ -789,7 +743,6 @@ export default function DashboardPage() {
               ))}
             </div>
           ) : (
-            /* Default: glass rows matching iOS design */
             <div className="flex flex-col gap-2">
               {displayJobs.map((job, i) => (
                 <RecentJobRow key={job.id} job={job} index={i} />
@@ -797,7 +750,7 @@ export default function DashboardPage() {
             </div>
           )}
 
-          {/* View All link when showing recent subset */}
+          {/* View All link */}
           {!filteredJobs && jobs.length > 5 && selectedJobIds.size === 0 && (
             <div className="flex justify-center pt-1">
               <Button
@@ -811,6 +764,43 @@ export default function DashboardPage() {
             </div>
           )}
         </section>
+
+        {/* ─── Setup Tools Grid ─── */}
+        <section className="space-y-3">
+          <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider">
+            Tools
+          </h2>
+          <div className="grid grid-cols-2 gap-3">
+            <SetupToolCard
+              label="Set Defaults"
+              description="Inspector & company defaults"
+              icon={Settings}
+              onClick={() => setShowDefaultsModal(true)}
+              index={0}
+            />
+            <SetupToolCard
+              label="Company Details"
+              description="Business info & branding"
+              icon={Settings}
+              onClick={() => router.push('/settings/company')}
+              index={1}
+            />
+            <SetupToolCard
+              label="Staff"
+              description="Inspectors & team members"
+              icon={Users}
+              onClick={() => setShowInspectorModal(true)}
+              index={2}
+            />
+            <SetupToolCard
+              label="Settings"
+              description="App preferences & config"
+              icon={Settings}
+              onClick={() => router.push('/settings')}
+              index={3}
+            />
+          </div>
+        </section>
       </main>
 
       {/* Floating bulk download button */}
@@ -818,9 +808,12 @@ export default function DashboardPage() {
         <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50">
           <button
             type="button"
-            className="inline-flex items-center justify-center gap-2 h-[52px] px-6 rounded-full font-semibold text-white bg-gradient-to-r from-brand-green to-brand-blue shadow-[0_4px_16px_rgba(0,102,255,0.30)] transition-all duration-200 hover:shadow-[0_6px_24px_rgba(0,102,255,0.40)] hover:brightness-110 active:animate-spring-press"
+            className="inline-flex items-center justify-center gap-2 h-[52px] px-6 rounded-full font-semibold text-white bg-gradient-to-r from-brand-green to-brand-blue shadow-[0_4px_16px_rgba(0,102,255,0.30)] transition-all duration-200 hover:shadow-[0_6px_24px_rgba(0,102,255,0.40)] hover:brightness-110 active:animate-spring-press focus-visible:ring-2 focus-visible:ring-brand-blue/50 focus-visible:ring-offset-2 focus-visible:ring-offset-L0 outline-none"
             onClick={handleBulkDownload}
             disabled={downloading}
+            aria-label={
+              downloading ? 'Preparing download' : `Download ${selectedJobIds.size} certificates`
+            }
           >
             {downloading ? (
               <RefreshCw className="h-5 w-5 animate-spin" />

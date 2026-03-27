@@ -20,11 +20,12 @@ export function SetupToolCard({
 }: SetupToolCardProps) {
   return (
     <GlassCard
-      className="group cursor-pointer p-4 transition-all duration-200 hover:-translate-y-0.5 hover:shadow-[0_6px_20px_rgba(0,0,0,0.14)] hover:bg-[rgba(255,255,255,0.08)] active:animate-spring-press animate-[stagger-in_0.4s_ease-out_both]"
+      className="group cursor-pointer p-4 min-h-[48px] transition-all duration-200 hover:-translate-y-0.5 hover:shadow-[0_6px_20px_rgba(0,0,0,0.14)] hover:bg-[rgba(255,255,255,0.08)] active:animate-spring-press focus-visible:ring-2 focus-visible:ring-brand-blue/50 focus-visible:ring-offset-2 focus-visible:ring-offset-L0 outline-none animate-[stagger-in_0.4s_ease-out_both]"
       style={{ animationDelay: `${index * 60}ms` }}
       onClick={onClick}
       role="button"
       tabIndex={0}
+      aria-label={`${label}: ${description}`}
       onKeyDown={(e) => {
         if (e.key === 'Enter' || e.key === ' ') {
           e.preventDefault();

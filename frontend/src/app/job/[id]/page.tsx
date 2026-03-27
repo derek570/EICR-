@@ -8,12 +8,12 @@ import {
   GlassCardTitle,
 } from '@/components/ui/glass-card';
 import { StatusBadge } from '@/components/ui/status-badge';
-import { CircuitBoard, AlertTriangle, Zap, Building2 } from 'lucide-react';
+import { CircuitBoard, AlertTriangle, Zap, Building2, Mic } from 'lucide-react';
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
 
 export default function JobOverviewPage() {
-  const { job } = useJob();
+  const { job, certificateType } = useJob();
   const params = useParams();
   const jobId = params.id as string;
 
@@ -26,6 +26,16 @@ export default function JobOverviewPage() {
 
   return (
     <div className="p-6 space-y-6 max-w-4xl stagger-in bg-L0 min-h-screen">
+      {/* Record Button */}
+      <Link
+        href={`/record?type=${certificateType}&jobId=${jobId}`}
+        className="flex items-center justify-center gap-3 w-full min-h-[48px] rounded-2xl bg-gradient-to-r from-brand-blue to-brand-green p-4 text-white font-semibold transition-all hover:brightness-110 active:scale-[0.98] animate-stagger-in focus-visible:ring-2 focus-visible:ring-brand-blue/50 focus-visible:ring-offset-2 focus-visible:ring-offset-L0 outline-none"
+        aria-label={`Start recording for this ${certificateType} job`}
+      >
+        <Mic className="h-5 w-5" />
+        <span>Start Recording</span>
+      </Link>
+
       {/* Status Banner */}
       <GlassCard className="animate-stagger-in" gradientBorder={!hasDangerousObservations}>
         <GlassCardContent className="py-4 px-5">

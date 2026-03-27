@@ -5,10 +5,10 @@
 
 // ── Surface Layers ──
 export const surface = {
-  L0: '#0A0A0F',
-  L1: '#141419',
-  L2: '#1C1C24',
-  L3: '#24242E',
+  L0: '#000000',
+  L1: '#141414',
+  L2: '#1e1e1e',
+  L3: '#2a2a2a',
 } as const;
 
 // ── Brand Colors ──
