@@ -23,6 +23,8 @@ export interface DeepgramServiceCallbacks {
   onUtteranceEnd: () => void;
   onError: (error: Error) => void;
   onConnectionStateChange: (state: DeepgramConnectionState) => void;
+  /** Optional: fetch a fresh Deepgram streaming key (called on auth-related reconnects) */
+  onRefreshKey?: () => Promise<string>;
 }
 
 // ---------------------------------------------------------------------------
@@ -37,6 +39,7 @@ export class DeepgramService {
   private _connectionState: DeepgramConnectionState = 'disconnected';
   private isStreamingPaused = false;
   private keepAliveIntervalId: ReturnType<typeof setInterval> | null = null;
+  private activeKeepAliveIntervalId: ReturnType<typeof setInterval> | null = null;
 
   // Reconnection
   private shouldReconnect = false;
@@ -45,9 +48,13 @@ export class DeepgramService {
   private reconnectTimerId: ReturnType<typeof setTimeout> | null = null;
   private currentApiKey: string | null = null;
   private currentKeywords: Array<{ keyword: string; boost: number }> = [];
+  private lastCloseCode: number | null = null;
 
   // Latency tracking
   private lastAudioSendTime: number | null = null;
+
+  // Diagnostic: log first audio samples once per connection
+  private _hasLoggedFirstSamples = false;
 
   // Disconnect delay
   private disconnectTimerId: ReturnType<typeof setTimeout> | null = null;
@@ -112,9 +119,16 @@ export class DeepgramService {
     ws.binaryType = 'arraybuffer';
 
     ws.onopen = () => {
+      // DIAG: visible in production — confirm WS opened and to which URL
+      const redactedUrl = url.replace(/token=[^&]+/, 'token=REDACTED');
+      console.warn(
+        `[DeepgramService DIAG] WS_OPEN url=${redactedUrl}, readyState=${ws.readyState}`
+      );
       this.log('WS_OPEN', `readyState=${ws.readyState}`);
       this.setConnectionState('connected');
       this.reconnectAttempt = 0;
+      this._hasLoggedFirstSamples = false;
+      this.startActiveKeepAlive();
     };
 
     ws.onmessage = (event: MessageEvent) => {
@@ -124,9 +138,21 @@ export class DeepgramService {
     ws.onclose = (event: CloseEvent) => {
       const isAbnormal = event.code !== 1000 && event.code !== 1001;
       const msg = `code=${event.code}, reason=${event.reason || 'none'}, wasClean=${event.wasClean}`;
+      this.lastCloseCode = event.code;
+      this.stopActiveKeepAlive();
+
+      // DIAG: always log close code+reason at warn level for production visibility
+      console.warn(
+        `[DeepgramService DIAG] WS_CLOSE: ${msg}, shouldReconnect=${this.shouldReconnect}`
+      );
+
       if (isAbnormal) {
         console.error(`[DeepgramService] WS_CLOSE (abnormal): ${msg}`);
-        toast.error('Transcription disconnected — reconnecting…');
+        if (event.code === 1008) {
+          toast.error('Transcription auth failed — fetching new key…');
+        } else {
+          toast.error('Transcription disconnected — reconnecting…');
+        }
       }
       this.log('WS_CLOSE', msg);
       this.ws = null;
@@ -139,6 +165,10 @@ export class DeepgramService {
     };
 
     ws.onerror = () => {
+      // DIAG: detailed error info for production debugging
+      console.warn(
+        `[DeepgramService DIAG] WS_ERROR: readyState=${ws.readyState}, url=${url.replace(/token=[^&]+/, 'token=REDACTED')}`
+      );
       console.error('[DeepgramService] WS_ERROR: WebSocket error event fired', {
         readyState: ws.readyState,
       });
@@ -201,6 +231,7 @@ export class DeepgramService {
       }
       this.isStreamingPaused = false;
       this.stopKeepAliveWhilePaused();
+      this.stopActiveKeepAlive();
       this.setConnectionState('disconnected');
     }, 500);
   }
@@ -214,6 +245,7 @@ export class DeepgramService {
 
     this.isStreamingPaused = false;
     this.stopKeepAliveWhilePaused();
+    this.stopActiveKeepAlive();
 
     if (this.ws) {
       // Null out handlers before closing
@@ -251,6 +283,16 @@ export class DeepgramService {
     for (let i = 0; i < pcmFloat.length; i++) {
       const clamped = Math.max(-1, Math.min(1, pcmFloat[i]));
       int16[i] = Math.round(clamped * 32767);
+    }
+
+    // DIAG: log first audio chunk details at warn level for production visibility
+    if (!this._hasLoggedFirstSamples) {
+      this._hasLoggedFirstSamples = true;
+      const preview = Array.from(int16.slice(0, 5));
+      const nonZero = int16.some((v) => v !== 0);
+      console.warn(
+        `[DeepgramService DIAG] FIRST_AUDIO: chunkSize=${int16.length}, sampleRate=${this._actualSampleRate}, nonZero=${nonZero}, first5=${JSON.stringify(preview)}`
+      );
     }
 
     this.lastAudioSendTime = performance.now();
@@ -321,6 +363,29 @@ export class DeepgramService {
     if (this.keepAliveIntervalId !== null) {
       clearInterval(this.keepAliveIntervalId);
       this.keepAliveIntervalId = null;
+    }
+  }
+
+  /**
+   * Safety-net keepAlive every 10s while connected (active or paused).
+   * Deepgram ignores KeepAlive frames while audio is flowing, so this is harmless
+   * during active streaming but prevents idle timeout if audio gaps occur.
+   */
+  private startActiveKeepAlive(): void {
+    this.stopActiveKeepAlive();
+    this.activeKeepAliveIntervalId = setInterval(() => {
+      if (this._connectionState !== 'connected') {
+        this.stopActiveKeepAlive();
+        return;
+      }
+      this.sendKeepAlive();
+    }, 10_000);
+  }
+
+  private stopActiveKeepAlive(): void {
+    if (this.activeKeepAliveIntervalId !== null) {
+      clearInterval(this.activeKeepAliveIntervalId);
+      this.activeKeepAliveIntervalId = null;
     }
   }
 
@@ -431,13 +496,34 @@ export class DeepgramService {
     this.setConnectionState('reconnecting');
     this.reconnectAttempt += 1;
 
+    // Auth-related close (1008): fetch fresh key before reconnecting
+    const needsFreshKey = this.lastCloseCode === 1008 && !!this.callbacks.onRefreshKey;
+
     // Exponential backoff: 1s, 2s, 4s, 8s, 16s, capped at 30s
     const delay = Math.min(Math.pow(2, this.reconnectAttempt - 1), this.maxReconnectDelay);
-    this.log('RECONNECT_SCHEDULED', `attempt=${this.reconnectAttempt}, delay=${delay}s`);
+    this.log(
+      'RECONNECT_SCHEDULED',
+      `attempt=${this.reconnectAttempt}, delay=${delay}s, freshKey=${needsFreshKey}`
+    );
 
-    this.reconnectTimerId = setTimeout(() => {
+    this.reconnectTimerId = setTimeout(async () => {
       this.reconnectTimerId = null;
-      if (!this.shouldReconnect || !this.currentApiKey) return;
+      if (!this.shouldReconnect) return;
+
+      // If auth failed, try to get a fresh key
+      if (needsFreshKey) {
+        try {
+          this.log('REFRESHING_KEY', 'fetching new Deepgram streaming key');
+          const newKey = await this.callbacks.onRefreshKey!();
+          this.currentApiKey = newKey;
+          this.log('KEY_REFRESHED', 'new key obtained');
+        } catch (err) {
+          this.log('KEY_REFRESH_FAILED', String(err));
+          // Fall through — try with existing key
+        }
+      }
+
+      if (!this.currentApiKey) return;
       this.log('RECONNECTING', `attempt=${this.reconnectAttempt}`);
       this.connect(this.currentApiKey, this.currentKeywords);
     }, delay * 1000);
@@ -532,6 +618,7 @@ export class DeepgramService {
     this.shouldReconnect = false;
     this.clearReconnectTimer();
     this.stopKeepAliveWhilePaused();
+    this.stopActiveKeepAlive();
 
     if (this.disconnectTimerId !== null) {
       clearTimeout(this.disconnectTimerId);

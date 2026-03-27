@@ -137,6 +137,10 @@ export class ServerWebSocketService {
     const ws = new WebSocket(url.toString());
 
     ws.onopen = () => {
+      // DIAG: state change visible in production
+      console.warn(
+        `[ServerWS DIAG] STATE: disconnected -> connected (url=${url.origin}${url.pathname})`
+      );
       this.log('WS_OPEN', `readyState=${ws.readyState}, url=${url.origin}${url.pathname}`);
       this._isConnected = true;
       this.reconnectAttempt = 0;
@@ -157,6 +161,8 @@ export class ServerWebSocketService {
       const isAbnormal = event.code !== 1000 && event.code !== 1001;
       const logMethod = isAbnormal ? 'error' : 'log';
       const msg = `code=${event.code}, reason=${event.reason || 'none'}, wasClean=${event.wasClean}`;
+      // DIAG: state change visible in production
+      console.warn(`[ServerWS DIAG] STATE: connected -> disconnected (${msg})`);
       console[logMethod](`[ServerWS] WS_CLOSE: ${msg}`);
       if (isAbnormal) {
         toast.error('Server disconnected — reconnecting…');
@@ -169,6 +175,9 @@ export class ServerWebSocketService {
       this._isConnected = false;
 
       if (this.shouldReconnect && event.code !== 1000) {
+        console.warn(
+          `[ServerWS DIAG] STATE: disconnected -> reconnecting (attempt=${this.reconnectAttempt + 1})`
+        );
         this.scheduleReconnect();
       }
 

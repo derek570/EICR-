@@ -198,6 +198,7 @@ export function useRecording(jobId: string, userId: string, initialJob: JobDetai
   const keywordsRef = useRef<Array<[string, number]>>([]);
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isRecordingRef = useRef(false);
+  const chunkCountRef = useRef(0);
 
   // Keep jobRef in sync with prop changes
   useEffect(() => {
@@ -390,6 +391,10 @@ export function useRecording(jobId: string, userId: string, initialJob: JobDetai
 
       // Detect actual sample rate (mobile often ignores the 16kHz request)
       const actualSampleRate = audioContext.sampleRate;
+      // DIAG: always log detected sample rate for production debugging
+      console.warn(
+        `[useRecording DIAG] AudioContext sampleRate=${actualSampleRate}Hz (requested 16000Hz)`
+      );
       if (actualSampleRate !== 16000) {
         console.warn(
           `[useRecording] Requested 16kHz AudioContext but got ${actualSampleRate}Hz — DeepgramService will resample`
@@ -408,6 +413,8 @@ export function useRecording(jobId: string, userId: string, initialJob: JobDetai
           workletNodeRef.current = workletNode;
           source.connect(workletNode);
           workletSetup = true;
+          // DIAG: confirm AudioWorklet started
+          console.warn('[useRecording DIAG] AudioWorklet started successfully');
         } catch (workletErr) {
           console.error(
             '[useRecording] AudioWorklet failed, falling back to ScriptProcessor:',
@@ -427,6 +434,8 @@ export function useRecording(jobId: string, userId: string, initialJob: JobDetai
         // ScriptProcessorNode requires connection to destination to fire events
         scriptNode.connect(audioContext.destination);
         scriptNodeRef.current = scriptNode;
+        // DIAG: confirm ScriptProcessor fallback started
+        console.warn('[useRecording DIAG] ScriptProcessorNode fallback started (bufferSize=4096)');
       }
 
       // 10. Generate session ID
@@ -485,6 +494,11 @@ export function useRecording(jobId: string, userId: string, initialJob: JobDetai
         },
         onConnectionStateChange: (state) => {
           store.setDeepgramState(state);
+        },
+        onRefreshKey: async () => {
+          const newKey = await api.fetchDeepgramStreamingKey();
+          deepgramKeyRef.current = newKey;
+          return newKey;
         },
       });
       deepgramRef.current = deepgram;
@@ -602,6 +616,7 @@ export function useRecording(jobId: string, userId: string, initialJob: JobDetai
       // 18. session_start is now sent from onConnect callback (above)
 
       // 19. Wire audio capture output → Deepgram + SleepManager
+      chunkCountRef.current = 0;
       if (workletNodeRef.current) {
         workletNodeRef.current.port.onmessage = (event: MessageEvent) => {
           // Handle error messages from worklet
@@ -615,6 +630,14 @@ export function useRecording(jobId: string, userId: string, initialJob: JobDetai
           const samples = (event.data?.samples ?? event.data) as Float32Array;
           if (!samples || samples.length === 0) return;
 
+          // DIAG: log chunk count every 10 chunks
+          chunkCountRef.current += 1;
+          if (chunkCountRef.current % 10 === 0) {
+            console.warn(
+              `[useRecording DIAG] audioChunks=${chunkCountRef.current}, lastLen=${samples.length}`
+            );
+          }
+
           deepgramRef.current?.sendSamples(samples);
           sleepManagerRef.current?.processChunk(samples);
         };
@@ -623,6 +646,14 @@ export function useRecording(jobId: string, userId: string, initialJob: JobDetai
           const inputData = event.inputBuffer.getChannelData(0);
           const samples = new Float32Array(inputData);
           if (samples.length === 0) return;
+
+          // DIAG: log chunk count every 10 chunks
+          chunkCountRef.current += 1;
+          if (chunkCountRef.current % 10 === 0) {
+            console.warn(
+              `[useRecording DIAG] audioChunks=${chunkCountRef.current}, lastLen=${samples.length}`
+            );
+          }
 
           deepgramRef.current?.sendSamples(samples);
           sleepManagerRef.current?.processChunk(samples);
