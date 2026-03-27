@@ -377,8 +377,11 @@ export function useRecording(jobId: string, userId: string, initialJob: JobDetai
       });
       streamRef.current = stream;
 
-      // 4. Create AudioContext
+      // 4. Create AudioContext (must resume — mobile browsers start suspended)
       const audioContext = new AudioContext({ sampleRate: 16000 });
+      if (audioContext.state === 'suspended') {
+        await audioContext.resume();
+      }
       audioContextRef.current = audioContext;
 
       // 5. Create media stream source
