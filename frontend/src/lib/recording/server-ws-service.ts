@@ -2,6 +2,8 @@
 // Port of iOS ServerWebSocketService.swift — WebSocket client for server-side
 // Sonnet extraction sessions via wss://backend/api/sonnet-stream.
 
+import { toast } from 'sonner';
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -31,7 +33,7 @@ export interface UserQuestion {
   field: string;
   circuit?: number;
   question: string;
-  type: "orphaned" | "out_of_range" | "unclear";
+  type: 'orphaned' | 'out_of_range' | 'unclear';
   value?: string;
 }
 
@@ -117,22 +119,25 @@ export class ServerWebSocketService {
     this.shouldReconnect = true;
     this.reconnectAttempt = 0;
 
-    this.log("CONNECTING", serverURL);
+    this.log('CONNECTING', serverURL);
 
     // Build URL with token query param
     let url: URL;
     try {
       url = new URL(serverURL);
-    } catch {
-      this.log("CONNECT_ERROR", "Invalid URL");
+    } catch (e) {
+      console.error('[ServerWS] CONNECT_ERROR: Invalid URL', serverURL, e);
+      toast.error('Server connection failed: invalid URL');
+      this.callbacks.onError(`Invalid server URL: ${serverURL}`, false);
       return;
     }
-    url.searchParams.set("token", token);
+    url.searchParams.set('token', token);
+    this.log('CONNECT_URL', `${url.origin}${url.pathname}?token=<redacted>`);
 
     const ws = new WebSocket(url.toString());
 
     ws.onopen = () => {
-      this.log("WS_OPEN", "");
+      this.log('WS_OPEN', `readyState=${ws.readyState}, url=${url.origin}${url.pathname}`);
       this._isConnected = true;
       this.reconnectAttempt = 0;
       this.startPingTimer();
@@ -149,10 +154,15 @@ export class ServerWebSocketService {
     };
 
     ws.onclose = (event: CloseEvent) => {
-      this.log(
-        "WS_CLOSE",
-        `code=${event.code}, reason=${event.reason || "none"}`,
-      );
+      const isAbnormal = event.code !== 1000 && event.code !== 1001;
+      const logMethod = isAbnormal ? 'error' : 'log';
+      const msg = `code=${event.code}, reason=${event.reason || 'none'}, wasClean=${event.wasClean}`;
+      console[logMethod](`[ServerWS] WS_CLOSE: ${msg}`);
+      if (isAbnormal) {
+        toast.error('Server disconnected — reconnecting…');
+      }
+      this.log('WS_CLOSE', msg);
+
       this.ws = null;
       this.stopPingTimer();
       const wasConnected = this._isConnected;
@@ -167,8 +177,12 @@ export class ServerWebSocketService {
       }
     };
 
-    ws.onerror = () => {
-      this.log("WS_ERROR", "WebSocket error");
+    ws.onerror = (event: Event) => {
+      console.error('[ServerWS] WS_ERROR: WebSocket error event fired', {
+        url: url.toString(),
+        readyState: ws.readyState,
+      });
+      this.log('WS_ERROR', `readyState=${ws.readyState}`);
       // onclose fires after onerror; reconnection handled there.
     };
 
@@ -216,15 +230,12 @@ export class ServerWebSocketService {
   private send(message: Record<string, unknown>): void {
     // If disconnected, buffer transcript and correction messages
     if (!this._isConnected || !this.ws) {
-      const type = (message.type as string) ?? "unknown";
-      if (type === "transcript" || type === "correction") {
+      const type = (message.type as string) ?? 'unknown';
+      if (type === 'transcript' || type === 'correction') {
         this.pendingMessages.push(message);
-        this.log(
-          "SEND_BUFFERED",
-          `type=${type}, buffered=${this.pendingMessages.length}`,
-        );
+        this.log('SEND_BUFFERED', `type=${type}, buffered=${this.pendingMessages.length}`);
       } else {
-        this.log("SEND_DROPPED", `type=${type}, not connected`);
+        this.log('SEND_DROPPED', `type=${type}, not connected`);
       }
       return;
     }
@@ -232,7 +243,7 @@ export class ServerWebSocketService {
     try {
       this.ws.send(JSON.stringify(message));
     } catch {
-      this.log("SEND_ERROR", "Failed to send message");
+      this.log('SEND_ERROR', 'Failed to send message');
     }
   }
 
@@ -240,25 +251,18 @@ export class ServerWebSocketService {
   // Convenience Senders
   // ---------------------------------------------------------------------------
 
-  sendSessionStart(
-    sessionId: string,
-    jobId: string,
-    jobState: Record<string, unknown>,
-  ): void {
+  sendSessionStart(sessionId: string, jobId: string, jobState: Record<string, unknown>): void {
     this.send({
-      type: "session_start",
+      type: 'session_start',
       sessionId,
       jobId,
       jobState,
     });
   }
 
-  sendTranscript(
-    text: string,
-    regexResults?: Array<Record<string, unknown>>,
-  ): void {
+  sendTranscript(text: string, regexResults?: Array<Record<string, unknown>>): void {
     const msg: Record<string, unknown> = {
-      type: "transcript",
+      type: 'transcript',
       text,
       timestamp: new Date().toISOString(),
     };
@@ -269,23 +273,23 @@ export class ServerWebSocketService {
   }
 
   sendCorrection(field: string, circuit: number, value: string): void {
-    this.send({ type: "correction", field, circuit, value });
+    this.send({ type: 'correction', field, circuit, value });
   }
 
   sendPause(): void {
-    this.send({ type: "session_pause" });
+    this.send({ type: 'session_pause' });
   }
 
   sendResume(): void {
-    this.send({ type: "session_resume" });
+    this.send({ type: 'session_resume' });
   }
 
   sendStop(): void {
-    this.send({ type: "session_stop" });
+    this.send({ type: 'session_stop' });
   }
 
   sendCompactRequest(): void {
-    this.send({ type: "session_compact" });
+    this.send({ type: 'session_compact' });
   }
 
   /**
@@ -296,10 +300,7 @@ export class ServerWebSocketService {
   flushPendingMessages(): void {
     if (!this._isConnected || this.pendingMessages.length === 0) return;
 
-    this.log(
-      "FLUSH_BUFFER",
-      `sending ${this.pendingMessages.length} buffered messages`,
-    );
+    this.log('FLUSH_BUFFER', `sending ${this.pendingMessages.length} buffered messages`);
     const buffered = this.pendingMessages;
     this.pendingMessages = [];
 
@@ -307,7 +308,7 @@ export class ServerWebSocketService {
       try {
         this.ws?.send(JSON.stringify(msg));
       } catch {
-        this.log("FLUSH_SEND_ERROR", "Failed to send buffered message");
+        this.log('FLUSH_SEND_ERROR', 'Failed to send buffered message');
       }
     }
   }
@@ -319,10 +320,7 @@ export class ServerWebSocketService {
   private handleMessage(data: unknown): void {
     let json: Record<string, unknown>;
     try {
-      const text =
-        typeof data === "string"
-          ? data
-          : new TextDecoder().decode(data as ArrayBuffer);
+      const text = typeof data === 'string' ? data : new TextDecoder().decode(data as ArrayBuffer);
       json = JSON.parse(text) as Record<string, unknown>;
     } catch {
       return;
@@ -332,64 +330,66 @@ export class ServerWebSocketService {
     if (!type) return;
 
     switch (type) {
-      case "extraction": {
+      case 'extraction': {
         const result = json.result as RollingExtractionResult | undefined;
         if (result) {
           this.callbacks.onExtraction(result);
         } else {
-          this.log("DECODE_ERROR", "Failed to decode extraction result");
+          this.log('DECODE_ERROR', 'Failed to decode extraction result');
         }
         break;
       }
 
-      case "question": {
+      case 'question': {
         const question: UserQuestion = {
           field: json.field as string,
           circuit: json.circuit as number | undefined,
           question: json.question as string,
-          type: json.questionType as UserQuestion["type"] ?? json.type_detail as UserQuestion["type"] ?? "unclear",
+          type:
+            (json.questionType as UserQuestion['type']) ??
+            (json.type_detail as UserQuestion['type']) ??
+            'unclear',
           value: json.value as string | undefined,
         };
         if (question.field && question.question) {
           this.callbacks.onQuestion(question);
         } else {
-          this.log("DECODE_ERROR", "Failed to decode question");
+          this.log('DECODE_ERROR', 'Failed to decode question');
         }
         break;
       }
 
-      case "cost_update": {
+      case 'cost_update': {
         const cost: ServerCostUpdate = {
-          sonnet: json.sonnet as ServerCostUpdate["sonnet"],
-          deepgram: json.deepgram as ServerCostUpdate["deepgram"],
-          elevenlabs: json.elevenlabs as ServerCostUpdate["elevenlabs"],
+          sonnet: json.sonnet as ServerCostUpdate['sonnet'],
+          deepgram: json.deepgram as ServerCostUpdate['deepgram'],
+          elevenlabs: json.elevenlabs as ServerCostUpdate['elevenlabs'],
           totalJobCost: json.totalJobCost as number,
         };
         if (cost.sonnet && cost.deepgram) {
           this.callbacks.onCostUpdate(cost);
         } else {
-          this.log("DECODE_ERROR", "Failed to decode cost update");
+          this.log('DECODE_ERROR', 'Failed to decode cost update');
         }
         break;
       }
 
-      case "error": {
-        const message =
-          (json.message as string) ?? "Unknown server error";
+      case 'error': {
+        const message = (json.message as string) ?? 'Unknown server error';
         const recoverable = (json.recoverable as boolean) ?? false;
         this.callbacks.onError(message, recoverable);
         break;
       }
 
-      case "session_ack": {
-        const status = (json.status as string) ?? "unknown";
-        this.log("SESSION_ACK", status);
+      case 'session_ack': {
+        const status = (json.status as string) ?? 'unknown';
+        this.log('SESSION_ACK', status);
         this.callbacks.onSessionAck(status);
         break;
       }
 
       default:
-        this.log("UNKNOWN_TYPE", type);
+        this.log('UNKNOWN_TYPE', type);
     }
   }
 
@@ -403,19 +403,13 @@ export class ServerWebSocketService {
     this.reconnectAttempt += 1;
 
     // Exponential backoff: 1s, 2s, 4s, 8s, ... capped at 30s
-    const delay = Math.min(
-      Math.pow(2, this.reconnectAttempt - 1),
-      this.maxReconnectDelay,
-    );
-    this.log(
-      "RECONNECT_SCHEDULED",
-      `attempt=${this.reconnectAttempt}, delay=${delay}s`,
-    );
+    const delay = Math.min(Math.pow(2, this.reconnectAttempt - 1), this.maxReconnectDelay);
+    this.log('RECONNECT_SCHEDULED', `attempt=${this.reconnectAttempt}, delay=${delay}s`);
 
     this.reconnectTimerId = setTimeout(() => {
       this.reconnectTimerId = null;
       if (!this.shouldReconnect || !this.serverURL || !this.authToken) return;
-      this.log("RECONNECTING", `attempt=${this.reconnectAttempt}`);
+      this.log('RECONNECTING', `attempt=${this.reconnectAttempt}`);
       this.connect(this.serverURL, this.authToken);
     }, delay * 1000);
   }
@@ -439,9 +433,9 @@ export class ServerWebSocketService {
         return;
       }
       try {
-        this.ws.send(JSON.stringify({ type: "ping" }));
+        this.ws.send(JSON.stringify({ type: 'ping' }));
       } catch {
-        this.log("PING_ERROR", "Failed to send ping");
+        this.log('PING_ERROR', 'Failed to send ping');
       }
     }, ServerWebSocketService.PING_INTERVAL_MS);
   }
