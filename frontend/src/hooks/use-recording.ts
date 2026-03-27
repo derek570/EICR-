@@ -564,7 +564,7 @@ export function useRecording(jobId: string, userId: string, initialJob: JobDetai
 
       // 19. Wire AudioWorklet output → Deepgram + SleepManager
       workletNode.port.onmessage = (event: MessageEvent) => {
-        const samples = event.data as Float32Array;
+        const samples = (event.data?.samples ?? event.data) as Float32Array;
         if (!samples || samples.length === 0) return;
 
         deepgramRef.current?.sendSamples(samples);
