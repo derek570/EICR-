@@ -13,11 +13,14 @@ export interface SleepManagerCallbacks {
 // --- Configuration: aligned with iOS SleepManager.swift ---
 
 /** Seconds of no FINAL_TRANSCRIPT before entering doze.
- *  10s gives inspectors time for brief pauses between readings while
- *  still catching idle sessions quickly. With reliable VAD wake,
- *  aggressive doze is safe because waking is fast and accurate.
- *  (iOS: noTranscriptTimeout = 10.0) */
-const NO_TRANSCRIPT_TIMEOUT = 10_000;
+ *  30s gives inspectors time for setup, brief pauses between readings,
+ *  and accounts for Deepgram WS connection time (~2-3s) plus natural
+ *  startup delay before speaking. Previous 10s was too aggressive —
+ *  it triggered doze during connection, before first speech, or when
+ *  Deepgram auth fails (cascading into permanent doze).
+ *  With reliable VAD wake, 30s is safe because waking is fast and accurate.
+ *  (iOS: noTranscriptTimeout = 10.0 — web needs more headroom for WS latency) */
+const NO_TRANSCRIPT_TIMEOUT = 30_000;
 
 /** Dozing → Sleeping timeout. 30 minutes matches iOS dozingTimeout.
  *  Sleeping disconnects Deepgram entirely; dozing just pauses the stream.
@@ -172,6 +175,11 @@ export class SleepManager {
       console.error('[SleepManager] VAD internal init failed:', err);
       // Don't rethrow — let the caller handle gracefully
     }
+  }
+
+  /** Set the actual AudioContext sample rate so the ring buffer can resample on drain. */
+  setActualSampleRate(rate: number): void {
+    this.ringBuffer.setInputSampleRate(rate);
   }
 
   start(): void {

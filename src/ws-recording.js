@@ -69,6 +69,12 @@ wss.on('connection', (ws, request) => {
           if (sessionState) await handleStreamStop(ws, sessionState);
           sessionState = null;
           break;
+        case 'keepalive':
+          // Forward KeepAlive to Deepgram to prevent its ~10s no-data timeout
+          if (sessionState?.deepgramWs?.readyState === 1) {
+            sessionState.deepgramWs.send(JSON.stringify({ type: 'KeepAlive' }));
+          }
+          break;
         default:
           ws.send(JSON.stringify({ type: 'error', message: `Unknown message type: ${msg.type}` }));
       }
@@ -165,11 +171,37 @@ async function handleStreamStart(ws, msg, request) {
   });
 
   deepgramWs.on('close', (code, reason) => {
+    const reasonStr = reason?.toString() || 'none';
     logger.info('Deepgram WebSocket closed', {
       sessionId,
       closeCode: code,
-      reason: reason?.toString() || 'none',
+      reason: reasonStr,
     });
+
+    // Clean up extraction timer — no point running extractions without Deepgram
+    if (state.extractionTimer) {
+      clearInterval(state.extractionTimer);
+      state.extractionTimer = null;
+    }
+
+    // Notify frontend so it can show error state and/or trigger reconnection
+    if (ws.readyState === 1) {
+      ws.send(
+        JSON.stringify({
+          type: 'deepgram_closed',
+          code,
+          reason: reasonStr,
+        })
+      );
+    }
+
+    // Auto-reconnect to Deepgram if it was an abnormal close (not user-initiated)
+    if (code !== 1000 && ws.readyState === 1) {
+      logger.info('Attempting Deepgram reconnection', { sessionId, closeCode: code });
+      reconnectDeepgram(state, sessionId).catch((err) => {
+        logger.error('Deepgram reconnection failed', { sessionId, error: err.message });
+      });
+    }
   });
 
   deepgramWs.on('error', (err) => {
@@ -184,6 +216,85 @@ async function handleStreamStart(ws, msg, request) {
   wsRecordingSessions.set(sessionId, state);
   logger.info('Stream recording started', { sessionId, userId, jobId });
   return state;
+}
+
+async function reconnectDeepgram(state, sessionId) {
+  const deepgramApiKey = await getDeepgramKey();
+  if (!deepgramApiKey) {
+    logger.error('Cannot reconnect — Deepgram API key not available', { sessionId });
+    return;
+  }
+
+  const dgParams = new URLSearchParams();
+  for (const [k, v] of Object.entries(DEEPGRAM_CONFIG)) {
+    if (k === 'keywords') {
+      for (const kw of v) dgParams.append('keywords', kw);
+    } else {
+      dgParams.set(k, String(v));
+    }
+  }
+  const dgUrl = `wss://api.deepgram.com/v1/listen?${dgParams.toString()}`;
+
+  const { default: WebSocket } = await import('ws');
+  const newDgWs = new WebSocket(dgUrl, {
+    headers: { Authorization: `Token ${deepgramApiKey}` },
+  });
+
+  newDgWs.on('open', () => {
+    logger.info('Deepgram reconnected', { sessionId });
+    state.deepgramWs = newDgWs;
+
+    // Restart extraction timer
+    if (!state.extractionTimer) {
+      state.extractionTimer = setInterval(() => {
+        maybeRunExtraction(state);
+      }, 5000);
+    }
+
+    // Notify frontend that Deepgram is back
+    if (state.ws.readyState === 1) {
+      state.ws.send(JSON.stringify({ type: 'deepgram_reconnected' }));
+    }
+  });
+
+  newDgWs.on('message', (dgData) => {
+    try {
+      const dgMsg = JSON.parse(dgData.toString());
+      handleDeepgramMessage(state, dgMsg);
+    } catch (err) {
+      logger.error('Deepgram message parse error', { error: err.message });
+    }
+  });
+
+  newDgWs.on('close', (code, reason) => {
+    const reasonStr = reason?.toString() || 'none';
+    logger.info('Reconnected Deepgram WebSocket closed', {
+      sessionId,
+      closeCode: code,
+      reason: reasonStr,
+    });
+
+    if (state.extractionTimer) {
+      clearInterval(state.extractionTimer);
+      state.extractionTimer = null;
+    }
+
+    if (state.ws.readyState === 1) {
+      state.ws.send(
+        JSON.stringify({
+          type: 'deepgram_closed',
+          code,
+          reason: reasonStr,
+        })
+      );
+    }
+
+    // Don't infinitely retry — only reconnect once automatically
+  });
+
+  newDgWs.on('error', (err) => {
+    logger.error('Reconnected Deepgram WebSocket error', { sessionId, error: err.message });
+  });
 }
 
 function handleDeepgramMessage(state, dgMsg) {
@@ -257,7 +368,7 @@ function handleStreamAudio(state, msg) {
       });
     }
   } else {
-    // Log when audio is being dropped (Deepgram not connected)
+    // Log and notify frontend when audio is being dropped (Deepgram not connected)
     if (!state._lastDropLog || Date.now() - state._lastDropLog > 5000) {
       logger.warn('Audio dropped — Deepgram not connected', {
         sessionId: state.sessionId,
@@ -265,6 +376,15 @@ function handleStreamAudio(state, msg) {
         chunkCount: state.chunkCount,
       });
       state._lastDropLog = Date.now();
+      // Notify frontend so it can show degraded state
+      if (state.ws?.readyState === 1) {
+        state.ws.send(
+          JSON.stringify({
+            type: 'warning',
+            message: 'Audio dropped — Deepgram not connected',
+          })
+        );
+      }
     }
   }
 }

@@ -16,7 +16,6 @@ import { SleepManager } from '../lib/recording/sleep-manager';
 import type { SleepState, VadState } from '../lib/recording/sleep-manager';
 import { AlertManager } from '../lib/recording/alert-manager';
 import { normalise } from '../lib/recording/number-normaliser';
-import { generateKeywordBoosts } from '../lib/recording/keyword-boost-generator';
 import { useRecordingStore } from '../lib/recording-store';
 import type { ServerCostUpdate as StoreCostUpdate } from '../lib/recording-store';
 
@@ -144,6 +143,11 @@ function buildServerWSURL(): string {
   return `${base}/api/sonnet-stream`;
 }
 
+function buildRecordingProxyURL(): string {
+  const base = API_BASE_URL.replace(/^http/, 'ws');
+  return `${base}/api/recording/stream`;
+}
+
 function mapCostUpdate(ws: WsCostUpdate): StoreCostUpdate {
   return {
     deepgramCost: ws.deepgram?.cost ?? 0,
@@ -194,8 +198,6 @@ export function useRecording(jobId: string, userId: string, initialJob: JobDetai
 
   // --- Mutable state refs ---
   const jobRef = useRef<JobDetail | null>(initialJob);
-  const deepgramKeyRef = useRef<string>('');
-  const keywordsRef = useRef<Array<[string, number]>>([]);
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isRecordingRef = useRef(false);
   const chunkCountRef = useRef(0);
@@ -254,7 +256,13 @@ export function useRecording(jobId: string, userId: string, initialJob: JobDetai
       let lastHighlightField = '';
       let lastHighlightValue = '';
 
-      for (const reading of result.readings) {
+      console.log('[useRecording] applySonnetReadings:', {
+        readingsCount: result.extracted_readings?.length ?? 0,
+        observationsCount: result.observations?.length ?? 0,
+        fields: result.extracted_readings?.map((r) => `${r.field}=${r.value}`).slice(0, 5),
+      });
+
+      for (const reading of result.extracted_readings ?? []) {
         const { field, value, circuit } = reading;
 
         // Determine which section this field belongs to
@@ -362,12 +370,15 @@ export function useRecording(jobId: string, userId: string, initialJob: JobDetai
     if (isRecordingRef.current) return;
 
     try {
-      // 1. Fetch short-lived Deepgram streaming key (secure temp key, 600s TTL)
-      const deepgramKey = await api.fetchDeepgramStreamingKey();
-      deepgramKeyRef.current = deepgramKey;
+      // 1. Get auth token for backend proxy (no Deepgram key needed — proxy uses master key)
+      const authToken = typeof window !== 'undefined' ? (localStorage.getItem('token') ?? '') : '';
+      if (!authToken) {
+        throw new Error('No auth token — please log in');
+      }
 
-      // 2. Build server WS URL
+      // 2. Build WS URLs
       const serverWSURL = buildServerWSURL();
+      const recordingProxyURL = buildRecordingProxyURL();
 
       // 3. Get mic access — use ideal (not exact) sampleRate so mobile browsers don't reject
       const stream = await navigator.mediaDevices.getUserMedia({
@@ -495,11 +506,6 @@ export function useRecording(jobId: string, userId: string, initialJob: JobDetai
         onConnectionStateChange: (state) => {
           store.setDeepgramState(state);
         },
-        onRefreshKey: async () => {
-          const newKey = await api.fetchDeepgramStreamingKey();
-          deepgramKeyRef.current = newKey;
-          return newKey;
-        },
       });
       deepgramRef.current = deepgram;
 
@@ -564,19 +570,29 @@ export function useRecording(jobId: string, userId: string, initialJob: JobDetai
           store.setSleepState('active');
 
           if (fromState === 'sleeping') {
-            // Reconnect Deepgram and replay ring buffer
-            if (deepgramKeyRef.current) {
+            // Reconnect to recording proxy and replay ring buffer
+            const token =
+              typeof window !== 'undefined' ? (localStorage.getItem('token') ?? '') : '';
+            if (token && sessionIdRef.current) {
               deepgramRef.current?.connect(
-                deepgramKeyRef.current,
-                keywordsRef.current.map(([kw, boost]: [string, number]) => ({ keyword: kw, boost }))
+                buildRecordingProxyURL(),
+                token,
+                sessionIdRef.current,
+                jobId
               );
             }
             const bufferedData = sleepManagerRef.current?.ringBuffer.drain();
             if (bufferedData && bufferedData.byteLength > 0) {
-              // Wait briefly for Deepgram to connect before replaying
-              setTimeout(() => {
-                deepgramRef.current?.replayBuffer(bufferedData);
-              }, 500);
+              // Wait for Deepgram WS to actually connect before replaying buffer.
+              // Previous setTimeout(500) silently dropped audio if WS took longer.
+              deepgramRef.current
+                ?.waitForConnection(5000)
+                .then(() => {
+                  deepgramRef.current?.replayBuffer(bufferedData);
+                })
+                .catch((err) => {
+                  console.warn('[useRecording] Could not replay buffer after wake:', err);
+                });
             }
           } else if (fromState === 'dozing') {
             deepgramRef.current?.resumeAudioStream();
@@ -594,24 +610,18 @@ export function useRecording(jobId: string, userId: string, initialJob: JobDetai
       });
       sleepManagerRef.current = sleepManager;
 
-      // 14b. Initialize Silero VAD (async — runs its own mic stream)
+      // 14b. Tell sleep manager the actual sample rate so ring buffer can resample on drain
+      sleepManager.setActualSampleRate(actualSampleRate);
+
+      // 14c. Initialize Silero VAD (async — runs its own mic stream)
       await sleepManager.initVAD();
 
-      // 15. Generate keyword boosts from job data
-      const job = jobRef.current;
-      const boostTuples = generateKeywordBoosts(job?.board_info, job?.circuits);
-      const keywords = boostTuples.map(([keyword, boost]) => ({
-        keyword,
-        boost,
-      }));
-      keywordsRef.current = boostTuples;
+      // 15. Connect to backend recording proxy (which connects to Deepgram with master key)
+      // Keywords are configured server-side in ws-recording.js (DEEPGRAM_CONFIG.keywords)
+      deepgram.connect(recordingProxyURL, authToken, sessionId, jobId);
 
-      // 16. Connect Deepgram
-      deepgram.connect(deepgramKey, keywords);
-
-      // 17. Connect Server WS
-      const token = typeof window !== 'undefined' ? (localStorage.getItem('token') ?? '') : '';
-      serverWS.connect(serverWSURL, token);
+      // 17. Connect Server WS (reuse the same auth token)
+      serverWS.connect(serverWSURL, authToken);
 
       // 18. session_start is now sent from onConnect callback (above)
 

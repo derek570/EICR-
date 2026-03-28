@@ -16,7 +16,7 @@ export interface DeepgramWord {
   punctuated_word?: string;
 }
 
-export type DeepgramConnectionState = "disconnected" | "connecting" | "connected" | "reconnecting";
+export type DeepgramConnectionState = 'disconnected' | 'connecting' | 'connected' | 'reconnecting';
 
 export interface DeepgramDelegate {
   onInterimTranscript(text: string, confidence: number): void;
@@ -31,7 +31,7 @@ export interface DeepgramDelegate {
 export class DeepgramService {
   private ws: WebSocket | null = null;
   private delegate: DeepgramDelegate;
-  private _connectionState: DeepgramConnectionState = "disconnected";
+  private _connectionState: DeepgramConnectionState = 'disconnected';
   private shouldReconnect = false;
   private reconnectAttempt = 0;
   private maxReconnectDelay = 30;
@@ -71,18 +71,19 @@ export class DeepgramService {
     this.shouldReconnect = true;
     this.reconnectAttempt = 0;
 
-    this.setConnectionState("connecting");
+    this.setConnectionState('connecting');
 
     const url = this.buildURL(keywords);
 
     try {
-      // Deepgram WebSocket uses Authorization header via protocol trick
-      // Browser WebSocket API doesn't support custom headers, so we use the token in URL
-      this.ws = new WebSocket(url);
-      this.ws.binaryType = "arraybuffer";
+      // Authenticate via WebSocket subprotocol — Deepgram no longer accepts
+      // the `token=` query parameter. The subprotocol approach sends the key
+      // in the Sec-WebSocket-Protocol header during the HTTP Upgrade handshake.
+      this.ws = new WebSocket(url, ['token', apiKey]);
+      this.ws.binaryType = 'arraybuffer';
 
       this.ws.onopen = () => {
-        this.setConnectionState("connected");
+        this.setConnectionState('connected');
         this.reconnectAttempt = 0;
       };
 
@@ -91,7 +92,7 @@ export class DeepgramService {
       };
 
       this.ws.onerror = () => {
-        this.delegate.onError(new Error("WebSocket connection error"));
+        this.delegate.onError(new Error('WebSocket connection error'));
       };
 
       this.ws.onclose = (event: CloseEvent) => {
@@ -99,11 +100,11 @@ export class DeepgramService {
         if (this.shouldReconnect && event.code !== 1000) {
           this.scheduleReconnect();
         } else {
-          this.setConnectionState("disconnected");
+          this.setConnectionState('disconnected');
         }
       };
     } catch (error) {
-      this.setConnectionState("disconnected");
+      this.setConnectionState('disconnected');
       this.delegate.onError(error instanceof Error ? error : new Error(String(error)));
     }
   }
@@ -121,15 +122,17 @@ export class DeepgramService {
 
   private disconnectClean(): void {
     if (!this.ws) {
-      this.setConnectionState("disconnected");
+      this.setConnectionState('disconnected');
       return;
     }
 
     // Send Deepgram CloseStream message
     if (this.ws.readyState === WebSocket.OPEN) {
       try {
-        this.ws.send(JSON.stringify({ type: "CloseStream" }));
-      } catch { /* ignore */ }
+        this.ws.send(JSON.stringify({ type: 'CloseStream' }));
+      } catch {
+        /* ignore */
+      }
     }
 
     // Close after brief delay
@@ -142,16 +145,18 @@ export class DeepgramService {
     if (this.ws) {
       try {
         this.ws.close(1000);
-      } catch { /* ignore */ }
+      } catch {
+        /* ignore */
+      }
       this.ws = null;
     }
-    this.setConnectionState("disconnected");
+    this.setConnectionState('disconnected');
   }
 
   // ---- Send Audio ----
 
   sendAudio(pcmInt16: Int16Array): void {
-    if (!this.ws || this._connectionState !== "connected") return;
+    if (!this.ws || this._connectionState !== 'connected') return;
     if (this.ws.readyState !== WebSocket.OPEN) return;
 
     this.lastAudioSendTime = Date.now();
@@ -161,10 +166,10 @@ export class DeepgramService {
   // ---- Keep-Alive ----
 
   sendKeepAlive(): void {
-    if (!this.ws || this._connectionState !== "connected") return;
+    if (!this.ws || this._connectionState !== 'connected') return;
     if (this.ws.readyState !== WebSocket.OPEN) return;
 
-    this.ws.send(JSON.stringify({ type: "KeepAlive" }));
+    this.ws.send(JSON.stringify({ type: 'KeepAlive' }));
   }
 
   // ---- Update Keywords ----
@@ -178,28 +183,26 @@ export class DeepgramService {
 
   private buildURL(keywords: Array<[string, number]>): string {
     const params = new URLSearchParams({
-      model: "nova-3",
-      smart_format: "true",
-      punctuate: "true",
-      numerals: "true",
-      encoding: "linear16",
-      sample_rate: "16000",
-      channels: "1",
-      language: "en-GB",
-      interim_results: "true",
-      endpointing: "300",
-      utterance_end_ms: "1300",
+      model: 'nova-3',
+      smart_format: 'true',
+      punctuate: 'true',
+      numerals: 'true',
+      encoding: 'linear16',
+      sample_rate: '16000',
+      channels: '1',
+      language: 'en-GB',
+      interim_results: 'true',
+      endpointing: '300',
+      utterance_end_ms: '1300',
     });
 
     // Add keyterm params for Nova-3
     for (const [keyword] of keywords) {
-      params.append("keyterm", keyword);
+      params.append('keyterm', keyword);
     }
 
-    // Browser WebSocket doesn't support custom headers, so pass token in URL
-    if (this.currentApiKey) {
-      params.set("token", this.currentApiKey);
-    }
+    // Auth is via WebSocket subprotocol (Sec-WebSocket-Protocol header),
+    // NOT the token= query param which Deepgram no longer accepts.
 
     return `wss://api.deepgram.com/v1/listen?${params.toString()}`;
   }
@@ -208,7 +211,7 @@ export class DeepgramService {
 
   private handleMessage(data: string | ArrayBuffer): void {
     let jsonStr: string;
-    if (typeof data === "string") {
+    if (typeof data === 'string') {
       jsonStr = data;
     } else {
       jsonStr = new TextDecoder().decode(data);
@@ -225,14 +228,14 @@ export class DeepgramService {
     if (!type) return;
 
     switch (type) {
-      case "Results":
+      case 'Results':
         this.handleResults(json);
         break;
-      case "UtteranceEnd":
+      case 'UtteranceEnd':
         this.delegate.onUtteranceEnd();
         break;
-      case "Error": {
-        const errorMsg = (json.message as string) ?? "Unknown Deepgram error";
+      case 'Error': {
+        const errorMsg = (json.message as string) ?? 'Unknown Deepgram error';
         this.delegate.onError(new Error(errorMsg));
         break;
       }
@@ -246,7 +249,7 @@ export class DeepgramService {
     if (!alternatives || alternatives.length === 0) return;
 
     const first = alternatives[0];
-    const transcript = (first.transcript as string) ?? "";
+    const transcript = (first.transcript as string) ?? '';
     const confidence = (first.confidence as number) ?? 0;
     const isFinal = (json.is_final as boolean) ?? false;
 
@@ -256,7 +259,7 @@ export class DeepgramService {
       // Parse words
       const rawWords = (first.words as Array<Record<string, unknown>>) ?? [];
       const words: DeepgramWord[] = rawWords.map((w) => ({
-        word: (w.word as string) ?? "",
+        word: (w.word as string) ?? '',
         start: (w.start as number) ?? 0,
         end: (w.end as number) ?? 0,
         confidence: (w.confidence as number) ?? 0,
@@ -274,7 +277,7 @@ export class DeepgramService {
   private scheduleReconnect(): void {
     if (!this.shouldReconnect) return;
 
-    this.setConnectionState("reconnecting");
+    this.setConnectionState('reconnecting');
     this.reconnectAttempt++;
 
     // Exponential backoff: 1s, 2s, 4s, 8s, 16s, capped at 30s

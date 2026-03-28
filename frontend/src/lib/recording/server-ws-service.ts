@@ -45,7 +45,7 @@ export interface ExtractedReading {
 }
 
 export interface RollingExtractionResult {
-  readings: ExtractedReading[];
+  extracted_readings: ExtractedReading[];
   observations?: Array<{
     code: string;
     text: string;
@@ -341,6 +341,11 @@ export class ServerWebSocketService {
     switch (type) {
       case 'extraction': {
         const result = json.result as RollingExtractionResult | undefined;
+        console.log('[ServerWS] extraction received:', {
+          hasResult: !!result,
+          readingsCount: result?.extracted_readings?.length ?? 0,
+          observationsCount: result?.observations?.length ?? 0,
+        });
         if (result) {
           this.callbacks.onExtraction(result);
         } else {
@@ -355,8 +360,8 @@ export class ServerWebSocketService {
           circuit: json.circuit as number | undefined,
           question: json.question as string,
           type:
+            (json.question_type as UserQuestion['type']) ??
             (json.questionType as UserQuestion['type']) ??
-            (json.type_detail as UserQuestion['type']) ??
             'unclear',
           value: json.value as string | undefined,
         };
