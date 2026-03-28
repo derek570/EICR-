@@ -310,7 +310,7 @@ async function createDeepgramTempKey(userId) {
     },
     body: JSON.stringify({
       comment: `certmate-temp-${userId}-${Date.now()}`,
-      scopes: ['usage:write', 'listen'],
+      scopes: ['member'],
       time_to_live_in_seconds: 600,
     }),
   });
@@ -329,7 +329,7 @@ router.post('/proxy/deepgram-streaming-key', auth.requireAuth, async (req, res) 
 
   try {
     // HISTORY (a3e0759, 2026-02-26): Two-tier key strategy. First try to create a
-    // short-lived temp key (600s TTL, usage:write + listen scopes) which is the secure path.
+    // short-lived temp key (600s TTL, member scope) which is the secure path.
     // If that fails (keys:write scope missing, Deepgram API down, etc.), fall back to
     // the master key so the iOS recording session doesn't break. The fallback was added
     // after production failures where Deepgram's key creation endpoint returned 403

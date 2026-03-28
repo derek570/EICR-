@@ -107,7 +107,7 @@ export class DeepgramService {
     this.setConnectionState('connecting');
     this.log('CONNECTING', `keywords=${keywords.length}`);
 
-    const url = this.buildURL(apiKey, keywords);
+    const url = this.buildURL(keywords);
     if (!url) {
       this.setConnectionState('disconnected');
       toast.error('Transcription connection failed: invalid URL');
@@ -115,12 +115,16 @@ export class DeepgramService {
       return;
     }
 
-    const ws = new WebSocket(url);
+    // Authenticate via WebSocket subprotocol — Deepgram no longer accepts
+    // the `token=` query parameter. The subprotocol approach sends the key
+    // in the Sec-WebSocket-Protocol header during the HTTP Upgrade handshake,
+    // which works in all browsers (unlike custom headers on WebSocket).
+    const ws = new WebSocket(url, ['token', apiKey]);
     ws.binaryType = 'arraybuffer';
 
     ws.onopen = () => {
       // DIAG: visible in production — confirm WS opened and to which URL
-      const redactedUrl = url.replace(/token=[^&]+/, 'token=REDACTED');
+      const redactedUrl = url;
       console.warn(
         `[DeepgramService DIAG] WS_OPEN url=${redactedUrl}, readyState=${ws.readyState}`
       );
@@ -540,10 +544,7 @@ export class DeepgramService {
   // URL Builder
   // ---------------------------------------------------------------------------
 
-  private buildURL(
-    apiKey: string,
-    keywords: Array<{ keyword: string; boost: number }>
-  ): string | null {
+  private buildURL(keywords: Array<{ keyword: string; boost: number }>): string | null {
     const params = new URLSearchParams();
     params.set('model', 'nova-3');
     params.set('smart_format', 'true');
@@ -557,8 +558,8 @@ export class DeepgramService {
     params.set('endpointing', '300');
     params.set('utterance_end_ms', '1300');
 
-    // Browser WebSocket cannot set Authorization header — pass key as token param
-    params.set('token', apiKey);
+    // Auth is via WebSocket subprotocol (Sec-WebSocket-Protocol header),
+    // NOT the token= query param which Deepgram no longer accepts.
 
     // Add keyterm params (Nova-3 uses "keyterm")
     for (const { keyword, boost } of keywords) {
