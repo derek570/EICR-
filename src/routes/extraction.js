@@ -17,6 +17,16 @@ import { createFileFilter, IMAGE_MIMES, handleUploadError } from '../utils/uploa
 
 const router = Router();
 
+// --- CCU extraction timeout & size config ---
+const CCU_EXTRACTION_TIMEOUT_MS = parseInt(process.env.CCU_EXTRACTION_TIMEOUT_MS, 10) || 60_000;
+const CCU_MAX_UPLOAD_BYTES = parseInt(process.env.CCU_MAX_UPLOAD_BYTES, 10) || 20 * 1024 * 1024;
+
+logger.info('CCU extraction config', {
+  timeoutMs: CCU_EXTRACTION_TIMEOUT_MS,
+  maxUploadBytes: CCU_MAX_UPLOAD_BYTES,
+  maxUploadMB: CCU_MAX_UPLOAD_BYTES / (1024 * 1024),
+});
+
 const upload = multer({
   storage: multer.diskStorage({
     destination: os.tmpdir(),
@@ -56,12 +66,117 @@ const BS_EN_LOOKUP = {
 };
 
 /**
+ * Normalise circuit labels to standard EICR certificate terms.
+ * Acts as a safety net after Claude Vision — catches common UK abbreviations
+ * and shorthand that the model may return verbatim instead of normalising.
+ */
+function normaliseCircuitLabels(analysis) {
+  if (!analysis?.circuits) return analysis;
+
+  // Map of patterns (lowercase) to normalised label.
+  // Order matters — more specific patterns first.
+  const LABEL_MAP = [
+    // Immersion / Water Heater variants
+    { pattern: /^immersion\s*heater$/i, label: 'Water Heater' },
+    { pattern: /^immersion$/i, label: 'Water Heater' },
+    { pattern: /^imm$/i, label: 'Water Heater' },
+    { pattern: /^hot\s*water$/i, label: 'Water Heater' },
+    { pattern: /^hw$/i, label: 'Water Heater' },
+    { pattern: /^heater$/i, label: 'Water Heater' },
+
+    // Smoke alarm variants
+    { pattern: /^smokes?$/i, label: 'Smoke Alarm' },
+    { pattern: /^smoke\s*det(ector)?s?$/i, label: 'Smoke Alarm' },
+    { pattern: /^s\/?d$/i, label: 'Smoke Alarm' },
+    { pattern: /^smoke\s*alarms?$/i, label: 'Smoke Alarm' },
+    { pattern: /^fire\s*alarm$/i, label: 'Smoke Alarm' },
+
+    // Lighting variants
+    { pattern: /^lts$/i, label: 'Lights' },
+    { pattern: /^ltg$/i, label: 'Lighting' },
+
+    // Cooker
+    { pattern: /^ckr$/i, label: 'Cooker' },
+
+    // Shower
+    { pattern: /^shwr$/i, label: 'Shower' },
+
+    // Boiler
+    { pattern: /^blr$/i, label: 'Boiler' },
+
+    // Fridge Freezer
+    { pattern: /^f\/?f$/i, label: 'Fridge Freezer' },
+    { pattern: /^fridge\s*freezer$/i, label: 'Fridge Freezer' },
+
+    // Central Heating
+    { pattern: /^ch$/i, label: 'Central Heating' },
+    { pattern: /^central\s*heating$/i, label: 'Central Heating' },
+
+    // Underfloor Heating
+    { pattern: /^ufh$/i, label: 'Underfloor Heating' },
+    { pattern: /^under\s*floor\s*heat(ing)?$/i, label: 'Underfloor Heating' },
+
+    // EV Charging
+    { pattern: /^ev(cp)?$/i, label: 'Electric Vehicle' },
+    { pattern: /^ev\s*charg(er|ing)$/i, label: 'Electric Vehicle' },
+
+    // Washing Machine
+    { pattern: /^w\/?m$/i, label: 'Washing Machine' },
+    { pattern: /^washer$/i, label: 'Washing Machine' },
+
+    // Tumble Dryer
+    { pattern: /^t\/?d$/i, label: 'Tumble Dryer' },
+
+    // Socket expansions (keep prefix)
+    {
+      pattern: /^skt\s+(.+)$/i,
+      label: null,
+      transform: (m) => {
+        const prefix = m[1].trim();
+        return prefix.charAt(0).toUpperCase() + prefix.slice(1).toLowerCase() + ' Sockets';
+      },
+    },
+    { pattern: /^skts?\s*$/i, label: 'Sockets' },
+  ];
+
+  for (const circuit of analysis.circuits) {
+    if (!circuit.label || circuit.label === 'null') continue;
+
+    const raw = circuit.label.trim();
+    let matched = false;
+
+    for (const entry of LABEL_MAP) {
+      const m = raw.match(entry.pattern);
+      if (m) {
+        if (entry.transform) {
+          circuit.label = entry.transform(m);
+        } else {
+          circuit.label = entry.label;
+        }
+        matched = true;
+        break;
+      }
+    }
+
+    // Title-case cleanup if not matched but all lowercase/uppercase
+    if (!matched && (raw === raw.toLowerCase() || raw === raw.toUpperCase()) && raw.length > 1) {
+      circuit.label = raw.toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase());
+    }
+  }
+
+  return analysis;
+}
+
+/**
  * Apply fallback BS/EN numbers to circuits based on device type
  */
 function applyBsEnFallback(analysis) {
   if (!analysis?.circuits) return analysis;
 
   for (const circuit of analysis.circuits) {
+    // Skip blank/spare positions — do not enrich phantom devices with BS/EN data
+    if (!circuit.ocpd_type || circuit.ocpd_type === 'null') continue;
+
     const ocpdType = (circuit.ocpd_type || '').toUpperCase();
     const isRcbo =
       circuit.is_rcbo === true ||
@@ -497,6 +612,14 @@ router.post('/analyze-ccu', auth.requireAuth, upload.single('photo'), async (req
       return res.status(400).json({ error: 'No photo uploaded' });
     }
 
+    if (req.file.size > CCU_MAX_UPLOAD_BYTES) {
+      return res.status(413).json({
+        error: 'payload_too_large',
+        message: `Image exceeds ${Math.round(CCU_MAX_UPLOAD_BYTES / (1024 * 1024))}MB limit`,
+        retryable: false,
+      });
+    }
+
     const anthropicKey = process.env.ANTHROPIC_API_KEY;
     if (!anthropicKey) {
       return res.status(500).json({ error: 'Anthropic API key not configured' });
@@ -543,8 +666,28 @@ Before identifying devices, carefully scan the ENTIRE photo for ALL visible text
 - **Adhesive stickers** next to or below each device
 - **Printed label strips** or engraved markings from the manufacturer
 - **Text on cover plates** between devices
+- **CIRCUIT DETAILS CARDS** — Most UK consumer units have one or two pre-printed cardboard cards clipped or stuck to the BOTTOM or INSIDE of the board cover. They have columns for: Circuit Number, Circuit Designation, Conductor CSA (Live/CPC in mm²), Overcurrent Protective Device (BS(EN), Type No., Rating). These cards can be a USEFUL ADDITIONAL source for circuit names, but be aware they are often NOT updated after changes to the board and may contain outdated or incorrect information. Use them as a cross-reference alongside strip labels, not as the primary source.
 
 Handwritten text on consumer units is often faint, at an angle, or in poor lighting — look carefully. Note down every piece of text you can read before proceeding.
+
+### COMMON HANDWRITTEN UK ABBREVIATIONS
+UK electricians commonly use these shorthand labels. When you see these, expand them to the full term:
+- "Imm" / "Immersion" = Immersion Heater (circuit for hot water tank heating element)
+- "Smks" / "Smokes" / "Smoke" / "S/D" / "S/Det" = Smoke Alarm / Smoke Detector
+- "Lts" / "Ltg" = Lights / Lighting
+- "Skt" / "Skts" = Sockets
+- "D/S" = Downstairs, "U/S" = Upstairs
+- "CKR" / "Ckr" = Cooker
+- "SH" / "Shwr" = Shower
+- "Blr" = Boiler
+- "FF" / "F/F" = Fridge Freezer
+- "W/M" = Washing Machine
+- "T/D" = Tumble Dryer
+- "UFH" = Underfloor Heating
+- "CH" = Central Heating
+- "EV" / "EVCP" = Electric Vehicle Charging Point
+- "Ext" = External / Outside
+- "Gar" = Garage
 
 ## STEP 2: PHYSICAL DEVICE SCAN
 
@@ -553,31 +696,68 @@ Start by finding the MAIN SWITCH — it has a red toggle and is usually the larg
 - The other side has "CIRCUITS NOT RCD PROTECTED"
 You MUST scan BOTH sides of the main switch — left AND right — and include ALL devices from both sides. Do NOT stop after scanning one side.
 
-Identify EVERY physical module, including blank/spare positions. You MUST account for every single device on the board — do NOT stop partway through. If the board has 8 ways, you must find 8 devices (plus the main switch, RCD, etc.). Use these width rules:
+Identify EVERY physical module, including blank/spare positions. You MUST account for every single position on the board — do NOT stop partway through. If the board has 8 ways, you must account for all 8 positions — some may be blank cover plates (no device, no toggle lever) which MUST have ocpd_type: null and ocpd_rating_a: null. A blank slot with no MCB installed is NOT a circuit — it is a Spare with null ocpd_type and null ocpd_rating_a. Do NOT fabricate device data (type curve, amp rating) for positions where there is no physical device with a toggle lever. Use these width rules:
 - MCB = 1 module (narrow, single toggle lever, NO test button)
 - RCBO = 2 modules — ALWAYS has BOTH a toggle lever AND a small test button on the same device, plus an RCD waveform symbol. If a device has a test button, it is an RCBO, not an MCB.
 - RCD = 2-4 modules (test button, protects multiple downstream circuits, is NOT itself a circuit breaker)
 - Main switch / isolator = 2 modules (usually red toggle)
 - SPD = 2-3 modules (has status indicator window, no toggle lever)
-- Blank / spare = 1 module (flat cover plate, no toggle) — MUST be included in the circuits array
+- Blank / spare = 1 module (flat cover plate, no toggle)
 
-Every module position must be accounted for. If a position has a blank cover plate with no device behind it, include it as a circuit entry with ocpd_type: null and label: null. Do NOT skip blank positions.
+CRITICAL DISTINCTION between blank positions and spare MCBs:
+- A **BLANK POSITION** has a flat cover plate with NO toggle lever, NO device behind it — it is an empty slot. Include it in the circuits array with label: "Spare", ocpd_type: null, and ocpd_rating_a: null. Do NOT invent MCB data (type, rating) for empty slots — a blank position has no physical device so it CANNOT have a type or rating.
+- A **SPARE MCB** is a real physical MCB (with a toggle lever and visible rating) that has no circuit label — include it with label: "Spare" and its real ocpd_type/rating read from the device face.
+- KEY: If a position has NO toggle lever and NO physical device, it MUST have ocpd_type: null and ocpd_rating_a: null. Never fabricate device data for empty positions.
 
 Count the total modules to verify against the board's stated ways.
 
-## STEP 3: MAP LABELS TO DEVICES
+### MANDATORY DEVICE COUNT (you MUST complete this before proceeding)
+
+After scanning both sides of the board, state your device count in this exact format BEFORE moving to Step 3:
+
+DEVICE COUNT:
+- Non-RCD side: [N] physical toggle levers + [M] blank cover plates = [N+M] total positions
+- RCD side: [N] physical toggle levers + [M] blank cover plates = [N+M] total positions
+
+This count is your ANCHOR for the rest of the extraction. When you generate the circuits JSON in Step 4:
+- The number of entries with non-null ocpd_type MUST EXACTLY equal your toggle lever count for each side.
+- The number of entries with ocpd_type: null MUST EXACTLY equal your blank cover plate count for each side.
+- If these numbers do not match, you have either MISSED a device or FABRICATED a phantom device. Stop and re-examine the photo.
+
+A toggle lever is the flip-switch on an MCB or RCBO. A blank cover plate is a flat plastic plate with NO toggle lever, NO test button, and NO device behind it — it is just filling an empty slot.
+
+## STEP 3: MAP LABELS TO DEVICES (with CROSS-REFERENCING)
 
 Match the text/labels you found in Step 1 to the physical devices from Step 2 based on PHYSICAL PROXIMITY — each label belongs to the device it is physically closest to. RCDs and the main switch are NOT numbered circuits — circuit labels skip over them.
 
 CRITICAL: If the board has printed or handwritten circuit NUMBERS (e.g. "1", "2", "3" next to devices), IGNORE THESE NUMBERS COMPLETELY. These numbers are frequently wrong, out of date, or do not match the actual device positions. Only use the descriptive TEXT labels (e.g. "Cooker", "Lights", "Smoke Detector") and match them to devices by physical proximity. If a number and a text label appear together (e.g. "3 - Kitchen"), use the text "Kitchen" but ignore the number "3".
 
+### CROSS-REFERENCE: STRIP LABELS vs CIRCUIT DETAILS CARD (CRITICAL)
+
+If the photo contains BOTH strip labels above/below the devices AND a Circuit Details Card:
+1. Read BOTH sources independently
+2. The strip labels physically attached to the board near each device are the PRIMARY source — they reflect the current state of the board
+3. Circuit Details Cards are a SECONDARY cross-reference — they are often outdated, incomplete, or wrong. Use them to help decipher unclear strip labels, but do NOT trust them over clear physical evidence
+4. When the strip label and Circuit Details Card DISAGREE — prefer the strip label unless it is completely unreadable
+5. When a strip label is UNCLEAR or FADED — the Circuit Details Card can help you interpret what it says, but verify against the physical device
+
+IMPORTANT: Do NOT default to "Spare" or null for a circuit label if there is readable text on the strip labels or handwritten notes that identifies what the circuit supplies. A circuit with a visible MCB/RCBO and a readable label is NOT a spare.
+
 ## STEP 4: EXTRACT DATA
+
+### PRE-EXTRACTION GATE (CRITICAL — do this BEFORE generating any circuit JSON)
+
+For each position on the board, confirm:
+- Can you see a toggle lever (MCB) or toggle + test button (RCBO)? → This is a REAL device. Extract its type, rating, and label.
+- Is it a flat cover plate with NO toggle lever? → This is a BLANK position. It MUST have ocpd_type: null, ocpd_rating_a: null, label: "Spare". Do NOT copy data from adjacent devices.
+
+Cross-check: Does your planned number of non-null circuit entries match the toggle lever count from your DEVICE COUNT in Step 2? If not, STOP — you are about to fabricate a phantom device or miss a real one. Re-examine the photo at the position that doesn't match.
 
 ### NUMBERING — CRITICAL
 
 ALWAYS start from the RED MAIN SWITCH and number outward away from it. This is the ONLY method you must use — physical position from the main switch determines circuit order.
 
-Circuit 1 is the device IMMEDIATELY next to the main switch (the red toggle). Circuit 2 is the next device after that, and so on, moving outward away from the main switch. Every 18mm-wide module position counts as one circuit way — MCBs and RCBOs are each 18mm (one way). Blank/spare cover plates are also 18mm and MUST be counted and included with label: null and ocpd_type: null.
+Circuit 1 is the device IMMEDIATELY next to the main switch (the red toggle). Circuit 2 is the next device after that, and so on, moving outward away from the main switch. Every 18mm-wide module position counts as one circuit way. Blank positions (flat cover plate, no device) are included with label: "Spare", ocpd_type: null, ocpd_rating_a: null — but do NOT fabricate device data for them.
 
 IMPORTANT: Do NOT count standalone RCDs as circuit ways — they are double-width (36mm) protection devices that sit between the main switch and the circuits they protect. Skip over them when numbering.
 
@@ -662,26 +842,45 @@ For each circuit device:
 - If it is an RCBO (combined MCB+RCD): set is_rcbo=true, rcd_protected=true, and set rcd_type from the device's own waveform symbol
 - If it is behind a standalone RCD: set is_rcbo=false, rcd_protected=true, and set rcd_type from the upstream RCD's waveform symbol
 - If it is a plain MCB with no RCD protection: set is_rcbo=false, rcd_protected=false, rcd_type=null
-- Blank/spare positions: set ocpd_type to null, label to null
+- Blank/empty positions (flat cover plate, no device): set ocpd_type to null, ocpd_rating_a to null, label to "Spare"
+- Spare MCBs (real device, no label): set label to "Spare", read ocpd_type and rating from the device face
 
 ### CIRCUIT LABELS — CRITICAL
 
 You MUST use the text you identified in Step 1. Circuit labels are essential for the certificate — missing labels means the certificate is incomplete.
 
-Common UK circuit names: "Lighting", "Ring Main", "Kitchen Sockets", "Cooker", "Shower", "Immersion", "Smoke Alarms", "Garage", "Garden", "Upstairs Sockets", "Downstairs Sockets", "Boiler", "Fridge Freezer", "Washer".
+Common UK circuit names: "Lighting", "Ring Main", "Kitchen Sockets", "Cooker", "Shower", "Immersion Heater", "Water Heater", "Smoke Alarm", "Garage", "Garden", "Upstairs Sockets", "Downstairs Sockets", "Boiler", "Fridge Freezer", "Washer", "Central Heating", "Electric Vehicle".
 
-If you can see ANY text that identifies what a circuit supplies — whether handwritten, printed, on a sticker, or on a label chart — return it EXACTLY as written. Do not substitute similar words (e.g. do not return "Sockets" if it says "Boiler"). Only return null if there is genuinely no label visible for that circuit.
+If you can see ANY text that identifies what a circuit supplies — whether handwritten, printed, on a sticker, on a label chart, or on a Circuit Details Card — return it. Only return null if there is genuinely no label visible for that circuit from ANY source.
+
+**NORMALISATION**: When returning the label, use the standard EICR certificate form. Apply these mappings:
+- "Immersion" / "Imm" / "Immersion Heater" → "Water Heater"
+- "Smokes" / "Smoke" / "Smoke Det" / "Smoke Detector" / "S/D" → "Smoke Alarm"
+- "Lts" / "Ltg" → "Lights"
+- "Skt" / "Skts" → "Sockets" (keep any prefix, e.g. "Skt kitchen" → "Kitchen Sockets")
+- "Ring" / "Ring Main" → "Ring Main"
+- "Rad" / "Radial" → "Radial"
+- "CKR" → "Cooker"
+- "Shwr" → "Shower"
+- "Blr" → "Boiler"
+- "FF" / "F/F" → "Fridge Freezer"
+- "CH" → "Central Heating"
+- "UFH" → "Underfloor Heating"
+
+Use proper capitalisation (title case). If the handwritten label says "immersion", return "Water Heater". If it says "smokes", return "Smoke Alarm".
 
 ## STEP 5: CROSS-CHECK
 
 Before outputting JSON, verify:
-- You have extracted EVERY device on the board. Go back to the photo and count the physical devices again — if your circuits array has fewer entries than the number of physical devices visible, you have MISSED some. Scan the entire board again and add any missing devices.
-- Every circuit has a label if ANY text was visible for it — re-check the text from Step 1.
-- The count of MCBs + RCBOs + blanks matches the number of physical positions on the board.
+- You have extracted EVERY module position on the board — both physical devices (MCBs/RCBOs) and blank positions. If your circuits array has fewer entries than the number of module positions visible, you have MISSED some.
+- CRITICAL PHANTOM DEVICE CHECK: Compare your circuits array against the DEVICE COUNT from Step 2. Count how many entries have non-null ocpd_type on each side. This number MUST EXACTLY match the toggle lever count you stated. If you have MORE non-null entries than toggle levers, you have fabricated a phantom device — find it by re-examining each position in the photo and checking: is there a toggle lever here, or just a flat blank plate? Fix any phantom: set ocpd_type: null, ocpd_rating_a: null, ocpd_bs_en: null, ocpd_breaking_capacity_ka: null, label: "Spare". Common phantom pattern: the last position on a side is a blank cover plate but gets filled with data copied from the adjacent B6 MCB.
+- Every circuit with a physical device has a label if ANY text was visible for it — re-check the text from Step 1.
+- The count of MCBs + RCBOs + blank positions matches the total module positions on the board (excluding main switch and standalone RCDs).
 - The total module count is consistent with the board's stated ways.
 - Every amp rating was read from the device face (not assumed from the circuit label).
 - An RCD type (AC, A, B, F, or S) was identified for every RCD and every RCBO individually.
 - SPD presence was explicitly checked (present or absent).
+- All labels are normalised to standard EICR certificate terms (e.g. "Immersion" → "Water Heater", "Smokes" → "Smoke Alarm").
 - If any check fails, note it in confidence.message and add relevant fields to uncertain_fields.
 
 ## OUTPUT FORMAT
@@ -713,7 +912,7 @@ Return ONLY valid JSON matching this exact schema:
     {
       "circuit_number": 1,
       "label": "Kitchen Sockets or null",
-      "ocpd_type": "B|C|D or null for blanks",
+      "ocpd_type": "B|C|D or null (null ONLY for blank positions with no physical device)",
       "ocpd_rating_a": "32 or null",
       "ocpd_bs_en": "60898-1 or null",
       "ocpd_breaking_capacity_ka": "6 or null",
@@ -759,22 +958,34 @@ IMPORTANT: If you cannot read the BS/EN number from the device, use your knowled
     const Anthropic = (await import('@anthropic-ai/sdk')).default;
     const anthropic = new Anthropic({ apiKey: anthropicKey });
 
-    const response = await anthropic.messages.create({
-      model,
-      max_tokens: 8192,
-      messages: [
+    // Use AbortController to enforce extraction timeout (default 60s)
+    const abortController = new AbortController();
+    const timeoutId = setTimeout(() => abortController.abort(), CCU_EXTRACTION_TIMEOUT_MS);
+
+    let response;
+    try {
+      response = await anthropic.messages.create(
         {
-          role: 'user',
-          content: [
+          model,
+          max_tokens: 8192,
+          messages: [
             {
-              type: 'image',
-              source: { type: 'base64', media_type: 'image/jpeg', data: base64 },
+              role: 'user',
+              content: [
+                {
+                  type: 'image',
+                  source: { type: 'base64', media_type: 'image/jpeg', data: base64 },
+                },
+                { type: 'text', text: prompt },
+              ],
             },
-            { type: 'text', text: prompt },
           ],
         },
-      ],
-    });
+        { signal: abortController.signal }
+      );
+    } finally {
+      clearTimeout(timeoutId);
+    }
 
     // Extract text content (skip thinking blocks)
     const textBlocks = (response.content || []).filter((b) => b.type === 'text');
@@ -824,6 +1035,7 @@ IMPORTANT: If you cannot read the BS/EN number from the device, use your knowled
     let analysis = JSON.parse(jsonStr);
 
     analysis = applyBsEnFallback(analysis);
+    analysis = normaliseCircuitLabels(analysis);
 
     // Pass 2: Web search for missing RCD types — Opus may still miss some.
     // Use gpt-5-search-api to look up the actual RCD type from datasheets.
@@ -899,11 +1111,61 @@ IMPORTANT: If you cannot read the BS/EN number from the device, use your knowled
 
     res.json(analysis);
   } catch (error) {
+    // Timeout — AbortController fired or SDK timeout
+    if (
+      error.name === 'AbortError' ||
+      error.name === 'APIConnectionTimeoutError' ||
+      error.message?.includes('aborted') ||
+      error.message?.includes('timed out')
+    ) {
+      logger.error('CCU analysis timed out', {
+        userId: req.user.id,
+        timeoutMs: CCU_EXTRACTION_TIMEOUT_MS,
+        error: error.message,
+      });
+      return res.status(504).json({
+        error: 'extraction_timeout',
+        message: 'Processing took too long',
+        retryable: true,
+      });
+    }
+
+    // JSON parse failure — bad model output
+    if (error instanceof SyntaxError) {
+      logger.error('CCU analysis response parse failed', {
+        userId: req.user.id,
+        error: error.message,
+      });
+      return res.status(502).json({
+        error: 'extraction_parse_error',
+        message: 'Failed to parse analysis response',
+        retryable: true,
+      });
+    }
+
+    // API rate limiting
+    const statusCode = error.status || error.statusCode;
+    if (statusCode === 429) {
+      logger.warn('CCU analysis rate limited', {
+        userId: req.user.id,
+      });
+      return res.status(429).json({
+        error: 'rate_limited',
+        message: 'API rate limit exceeded, please retry shortly',
+        retryable: true,
+      });
+    }
+
+    // All other errors
     logger.error('CCU analysis failed', {
       userId: req.user.id,
       error: error.message,
+      statusCode,
     });
-    res.status(500).json({ error: error.message });
+    res.status(statusCode >= 400 && statusCode < 600 ? statusCode : 500).json({
+      error: error.message,
+      retryable: statusCode >= 500 || !statusCode,
+    });
   } finally {
     if (tempPath) {
       try {
