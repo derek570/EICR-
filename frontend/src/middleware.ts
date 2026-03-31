@@ -5,7 +5,7 @@ import type { NextRequest } from 'next/server';
 // Auth is handled client-side in those cases.
 
 // Routes that require authentication
-const protectedRoutes = ['/dashboard', '/upload', '/job'];
+const protectedRoutes = ['/dashboard', '/upload', '/job', '/clients'];
 
 // Routes that should redirect to dashboard if already authenticated
 const authRoutes = ['/login'];
@@ -60,5 +60,5 @@ export function middleware(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ['/dashboard/:path*', '/upload/:path*', '/job/:path*', '/login'],
+  matcher: ['/dashboard/:path*', '/upload/:path*', '/job/:path*', '/clients/:path*', '/login'],
 };

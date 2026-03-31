@@ -20,7 +20,10 @@ import type {
   BillingStatus,
   OcrResult,
   OcrExtractedData,
+  CalendarStatus,
+  CalendarEvent,
   WhatsAppStatus,
+  AnalyticsData,
   AdminUser,
   CreateUserData,
   UpdateUserData,
@@ -542,6 +545,52 @@ export const api = {
     return handleResponse(response);
   },
 
+  // ============= Calendar / Scheduling =============
+
+  async getCalendarAuthUrl(): Promise<{ url: string }> {
+    const response = await fetchWithAuth(`${API_BASE_URL}/api/calendar/auth-url`);
+    return handleResponse(response);
+  },
+
+  async calendarCallback(code: string): Promise<{ success: boolean }> {
+    const response = await fetchJsonWithAuth(`${API_BASE_URL}/api/calendar/callback`, {
+      method: 'POST',
+      body: JSON.stringify({ code }),
+    });
+    return handleResponse(response);
+  },
+
+  async getCalendarStatus(): Promise<CalendarStatus> {
+    const response = await fetchWithAuth(`${API_BASE_URL}/api/calendar/status`);
+    return handleResponse(response);
+  },
+
+  async getCalendarEvents(): Promise<{ events: CalendarEvent[] }> {
+    const response = await fetchWithAuth(`${API_BASE_URL}/api/calendar/events`);
+    return handleResponse(response);
+  },
+
+  async createJobFromCalendarEvent(event: {
+    summary: string;
+    location: string;
+    start: string;
+    description: string;
+  }): Promise<{ success: boolean; jobId: string; address: string }> {
+    const response = await fetchJsonWithAuth(`${API_BASE_URL}/api/calendar/create-job-from-event`, {
+      method: 'POST',
+      body: JSON.stringify(event),
+    });
+    return handleResponse(response);
+  },
+
+  async disconnectCalendar(): Promise<{ success: boolean }> {
+    const response = await fetchWithAuth(`${API_BASE_URL}/api/calendar/disconnect`, {
+      method: 'DELETE',
+      retry: false,
+    });
+    return handleResponse(response);
+  },
+
   // ============= WhatsApp =============
 
   async sendWhatsApp(userId: string, jobId: string, phoneNumber: string): Promise<{ ok: boolean }> {
@@ -557,6 +606,13 @@ export const api = {
 
   async getWhatsAppStatus(): Promise<WhatsAppStatus> {
     const response = await fetchWithAuth(`${API_BASE_URL}/api/whatsapp/status`);
+    return handleResponse(response);
+  },
+
+  // ============= Analytics =============
+
+  async getAnalytics(userId: string): Promise<AnalyticsData> {
+    const response = await fetchWithAuth(`${API_BASE_URL}/api/analytics/${userId}`);
     return handleResponse(response);
   },
 
@@ -660,7 +716,13 @@ export type {
   BillingStatus,
   OcrResult,
   OcrExtractedData,
+  CalendarStatus,
+  CalendarEvent,
   WhatsAppStatus,
+  AnalyticsStats,
+  AnalyticsWeekly,
+  AnalyticsTiming,
+  AnalyticsData,
   AdminUser,
   CreateUserData,
   UpdateUserData,
