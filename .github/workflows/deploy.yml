@@ -34,14 +34,12 @@ jobs:
         with:
           node-version: '20'
           cache: 'npm'
-          cache-dependency-path: EICR_App/package-lock.json
+          cache-dependency-path: package-lock.json
 
       - name: Install dependencies
-        working-directory: EICR_App
         run: npm ci
 
       - name: Check syntax (ES modules)
-        working-directory: EICR_App
         run: |
           # Validate all JS files can be parsed
           for file in src/*.js run_job.js run_all.js; do
@@ -51,7 +49,6 @@ jobs:
           done
 
       - name: Run Jest tests
-        working-directory: EICR_App
         run: npm test -- --coverage --ci
         env:
           CI: true
@@ -60,7 +57,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: backend-coverage
-          path: EICR_App/coverage/
+          path: coverage/
 
   # ============================================
   # Job 2: Test & Build Next.js Frontend
@@ -78,28 +75,27 @@ jobs:
         with:
           node-version: '20'
           cache: 'npm'
-          cache-dependency-path: EICR_App/package-lock.json
+          cache-dependency-path: package-lock.json
 
       - name: Install dependencies
-        working-directory: EICR_App
         run: npm ci
 
       - name: Lint frontend
-        working-directory: EICR_App/frontend
+        working-directory: frontend
         run: npx eslint . --max-warnings=0 || true
 
       - name: Type check frontend
-        working-directory: EICR_App/frontend
+        working-directory: frontend
         run: npx tsc --noEmit || true
 
       - name: Build frontend
-        working-directory: EICR_App/frontend
+        working-directory: frontend
         run: npx next build
         env:
           CI: true
 
       - name: Run frontend tests
-        working-directory: EICR_App/frontend
+        working-directory: frontend
         run: npx jest --ci --passWithNoTests
         env:
           CI: true
@@ -120,18 +116,16 @@ jobs:
         with:
           node-version: '20'
           cache: 'npm'
-          cache-dependency-path: EICR_App/package-lock.json
+          cache-dependency-path: package-lock.json
 
       - name: Install dependencies
-        working-directory: EICR_App
         run: npm ci
 
       - name: Run npm audit (high and critical)
-        working-directory: EICR_App
         run: npm audit --audit-level=high || true
 
       - name: Run frontend npm audit
-        working-directory: EICR_App/frontend
+        working-directory: frontend
         run: npm audit --audit-level=high || true
 
   # ============================================
@@ -152,8 +146,8 @@ jobs:
       - name: Build Frontend Image
         uses: docker/build-push-action@v5
         with:
-          context: EICR_App
-          file: EICR_App/docker/nextjs.Dockerfile
+          context: .
+          file: docker/nextjs.Dockerfile
           push: false
           load: true
           tags: eicr-frontend:${{ github.sha }}
@@ -163,8 +157,8 @@ jobs:
       - name: Build Backend Image
         uses: docker/build-push-action@v5
         with:
-          context: EICR_App
-          file: EICR_App/docker/backend.Dockerfile
+          context: .
+          file: docker/backend.Dockerfile
           push: false
           load: true
           tags: eicr-backend:${{ github.sha }}
@@ -189,8 +183,8 @@ jobs:
       - name: Build Frontend Image for Scan
         uses: docker/build-push-action@v5
         with:
-          context: EICR_App
-          file: EICR_App/docker/nextjs.Dockerfile
+          context: .
+          file: docker/nextjs.Dockerfile
           push: false
           load: true
           tags: eicr-frontend:${{ github.sha }}
@@ -199,8 +193,8 @@ jobs:
       - name: Build Backend Image for Scan
         uses: docker/build-push-action@v5
         with:
-          context: EICR_App
-          file: EICR_App/docker/backend.Dockerfile
+          context: .
+          file: docker/backend.Dockerfile
           push: false
           load: true
           tags: eicr-backend:${{ github.sha }}
@@ -253,8 +247,8 @@ jobs:
       - name: Build and push Frontend to ECR (staging)
         uses: docker/build-push-action@v5
         with:
-          context: EICR_App
-          file: EICR_App/docker/nextjs.Dockerfile
+          context: .
+          file: docker/nextjs.Dockerfile
           push: true
           tags: |
             ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY_FRONTEND }}:staging-${{ github.sha }}
@@ -267,8 +261,8 @@ jobs:
       - name: Build and push Backend to ECR (staging)
         uses: docker/build-push-action@v5
         with:
-          context: EICR_App
-          file: EICR_App/docker/backend.Dockerfile
+          context: .
+          file: docker/backend.Dockerfile
           push: true
           tags: |
             ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY_BACKEND }}:staging-${{ github.sha }}
@@ -341,8 +335,8 @@ jobs:
       - name: Build and push Frontend to ECR
         uses: docker/build-push-action@v5
         with:
-          context: EICR_App
-          file: EICR_App/docker/nextjs.Dockerfile
+          context: .
+          file: docker/nextjs.Dockerfile
           push: true
           tags: |
             ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY_FRONTEND }}:${{ github.sha }}
@@ -353,8 +347,8 @@ jobs:
       - name: Build and push Backend to ECR
         uses: docker/build-push-action@v5
         with:
-          context: EICR_App
-          file: EICR_App/docker/backend.Dockerfile
+          context: .
+          file: docker/backend.Dockerfile
           push: true
           tags: |
             ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY_BACKEND }}:${{ github.sha }}
