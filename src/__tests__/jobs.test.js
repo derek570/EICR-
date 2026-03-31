@@ -114,11 +114,7 @@ const activeUser = {
 };
 
 function makeToken(userId = 'user-1') {
-  return jwt.sign({ userId, email: 'test@example.com' }, JWT_SECRET, {
-    expiresIn: '24h',
-    issuer: 'certmate',
-    audience: 'certmate-api',
-  });
+  return jwt.sign({ userId, email: 'test@example.com' }, JWT_SECRET, { expiresIn: '24h' });
 }
 
 describe('Job routes (supertest)', () => {

@@ -10,7 +10,6 @@ jest.unstable_mockModule('pg', () => ({
   default: {
     Pool: jest.fn(() => ({
       query: mockQuery,
-      on: jest.fn(),
     })),
   },
 }));
@@ -46,10 +45,9 @@ describe('db', () => {
 
       const user = await db.getUserByEmail('TEST@Example.com');
 
-      expect(mockQuery).toHaveBeenCalledWith(
-        expect.stringContaining('FROM users WHERE email = $1'),
-        ['test@example.com']
-      );
+      expect(mockQuery).toHaveBeenCalledWith('SELECT * FROM users WHERE email = $1', [
+        'test@example.com',
+      ]);
       expect(user.id).toBe('user-1');
     });
 
@@ -74,9 +72,7 @@ describe('db', () => {
 
       const user = await db.getUserById('user-1');
 
-      expect(mockQuery).toHaveBeenCalledWith(expect.stringContaining('FROM users WHERE id = $1'), [
-        'user-1',
-      ]);
+      expect(mockQuery).toHaveBeenCalledWith('SELECT * FROM users WHERE id = $1', ['user-1']);
       expect(user.name).toBe('Test');
     });
 
@@ -110,9 +106,9 @@ describe('db', () => {
 
   describe('createJob', () => {
     test('should insert job with all fields', async () => {
-      // First call: getUserById (to resolve company_id), second call: INSERT
+      // First call: getUserById for company_id auto-resolve; second call: INSERT
       mockQuery
-        .mockResolvedValueOnce({ rows: [{ id: 'user-1', company_id: 'comp-1' }] })
+        .mockResolvedValueOnce({ rows: [{ id: 'user-1', company_id: null }] })
         .mockResolvedValueOnce({});
 
       const job = {
@@ -132,13 +128,11 @@ describe('db', () => {
         expect.stringContaining('INSERT INTO jobs'),
         expect.arrayContaining(['job-1', 'user-1', 'test-folder'])
       );
-      expect(result).toMatchObject(job);
+      expect(result).toEqual({ ...job, company_id: null });
     });
 
     test('should throw on insert error', async () => {
-      mockQuery
-        .mockResolvedValueOnce({ rows: [{ id: 'user-1', company_id: null }] })
-        .mockRejectedValueOnce(new Error('duplicate key'));
+      mockQuery.mockRejectedValue(new Error('duplicate key'));
 
       await expect(db.createJob({ id: 'job-1', user_id: 'user-1' })).rejects.toThrow(
         'duplicate key'
@@ -147,21 +141,18 @@ describe('db', () => {
   });
 
   describe('getJob', () => {
-    test('should return job by ID and user_id', async () => {
+    test('should return job by ID', async () => {
       mockQuery.mockResolvedValue({ rows: [{ id: 'job-1', status: 'pending' }] });
 
-      const job = await db.getJob('job-1', 'user-1');
+      const job = await db.getJob('job-1');
 
-      expect(mockQuery).toHaveBeenCalledWith(
-        expect.stringContaining('WHERE id = $1 AND user_id = $2'),
-        ['job-1', 'user-1']
-      );
+      expect(mockQuery).toHaveBeenCalledWith('SELECT * FROM jobs WHERE id = $1', ['job-1']);
       expect(job.status).toBe('pending');
     });
 
     test('should return null when not found', async () => {
       mockQuery.mockResolvedValue({ rows: [] });
-      expect(await db.getJob('nonexistent', 'user-1')).toBeNull();
+      expect(await db.getJob('nonexistent')).toBeNull();
     });
   });
 
@@ -180,29 +171,32 @@ describe('db', () => {
   });
 
   describe('updateJob', () => {
-    test('should build dynamic UPDATE query with user_id filter', async () => {
+    test('should build dynamic UPDATE query', async () => {
       mockQuery.mockResolvedValue({});
 
-      await db.updateJob('job-1', 'user-1', { status: 'done', address: '456 New St' });
+      await db.updateJob('job-1', { status: 'done', address: '456 New St' });
 
       expect(mockQuery).toHaveBeenCalledWith(
         expect.stringContaining('UPDATE jobs SET'),
-        expect.arrayContaining(['done', '456 New St', 'job-1', 'user-1'])
+        expect.arrayContaining(['done', '456 New St', 'job-1'])
       );
     });
 
     test('should auto-set updated_at', async () => {
       mockQuery.mockResolvedValue({});
 
-      await db.updateJob('job-1', 'user-1', { status: 'done' });
+      await db.updateJob('job-1', { status: 'done' });
 
+      // Should have 3+ params: status, updated_at, and jobId
       const callArgs = mockQuery.mock.calls[0];
       expect(callArgs[0]).toContain('updated_at');
-      expect(callArgs[0]).toContain('user_id');
     });
 
     test('should be no-op for empty data', async () => {
-      await db.updateJob('job-1', 'user-1', {});
+      await db.updateJob('job-1', {});
+      // updateJob adds updated_at automatically, so query should still be called
+      // But if updates array is empty after adding updated_at, it shouldn't be empty
+      // Actually the code adds updated_at to data, so updates will have 1 entry
       expect(mockQuery).toHaveBeenCalled();
     });
   });

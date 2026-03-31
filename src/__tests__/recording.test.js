@@ -51,6 +51,11 @@ jest.unstable_mockModule('../logger.js', () => ({
   }),
 }));
 
+// Mock queue (imports process_job which needs createJobLogger)
+jest.unstable_mockModule('../queue.js', () => ({
+  enqueueJob: jest.fn().mockResolvedValue(undefined),
+}));
+
 // Mock storage
 jest.unstable_mockModule('../storage.js', () => ({
   downloadText: jest.fn().mockResolvedValue(null),
@@ -70,17 +75,6 @@ jest.unstable_mockModule('../transcribe.js', () => ({
   transcribeChunk: jest
     .fn()
     .mockResolvedValue({ transcript: 'circuit one', modelUsed: 'test', usage: null }),
-  transcribeAudio: jest
-    .fn()
-    .mockResolvedValue({ transcript: 'test', modelUsed: 'test', usage: null }),
-}));
-
-jest.unstable_mockModule('../queue.js', () => ({
-  enqueueJob: jest.fn(),
-}));
-
-jest.unstable_mockModule('../process_job.js', () => ({
-  processJob: jest.fn().mockResolvedValue(undefined),
 }));
 
 jest.unstable_mockModule('../extract_chunk.js', () => ({
@@ -177,11 +171,7 @@ const activeUser = {
 };
 
 function makeToken(userId = 'user-1') {
-  return jwt.sign({ userId, email: 'test@example.com', tv: 0 }, JWT_SECRET, {
-    expiresIn: '24h',
-    issuer: 'certmate',
-    audience: 'certmate-api',
-  });
+  return jwt.sign({ userId, email: 'test@example.com' }, JWT_SECRET, { expiresIn: '24h' });
 }
 
 describe('Recording routes (supertest)', () => {
@@ -269,10 +259,8 @@ describe('Recording routes (supertest)', () => {
       const user2 = { ...activeUser, id: 'user-2' };
       mockGetUserById.mockResolvedValue(user2);
 
-      const token2 = jwt.sign({ userId: 'user-2', email: 'user2@example.com', tv: 0 }, JWT_SECRET, {
+      const token2 = jwt.sign({ userId: 'user-2', email: 'user2@example.com' }, JWT_SECRET, {
         expiresIn: '24h',
-        issuer: 'certmate',
-        audience: 'certmate-api',
       });
 
       const res = await supertest(app)

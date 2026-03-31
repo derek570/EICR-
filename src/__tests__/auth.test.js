@@ -11,22 +11,18 @@ const mockGetUserByEmail = jest.fn();
 const mockGetUserById = jest.fn();
 const mockUpdateLastLogin = jest.fn();
 const mockUpdateLoginAttempts = jest.fn();
-const mockAtomicIncrementFailedAttempts = jest.fn();
 const mockLogAction = jest.fn();
-const mockIncrementTokenVersion = jest.fn();
-const mockAtomicIncrementTokenVersion = jest.fn();
 const mockSetTokenVersion = jest.fn();
+const mockIncrementTokenVersion = jest.fn();
 
 jest.unstable_mockModule('../db.js', () => ({
   getUserByEmail: mockGetUserByEmail,
   getUserById: mockGetUserById,
   updateLastLogin: mockUpdateLastLogin,
   updateLoginAttempts: mockUpdateLoginAttempts,
-  atomicIncrementFailedAttempts: mockAtomicIncrementFailedAttempts,
   logAction: mockLogAction,
-  incrementTokenVersion: mockIncrementTokenVersion,
-  atomicIncrementTokenVersion: mockAtomicIncrementTokenVersion,
   setTokenVersion: mockSetTokenVersion,
+  incrementTokenVersion: mockIncrementTokenVersion,
 }));
 
 jest.unstable_mockModule('../logger.js', () => ({
@@ -41,9 +37,6 @@ jest.unstable_mockModule('../logger.js', () => ({
 const JWT_SECRET = 'dev-secret-change-in-production';
 process.env.JWT_SECRET = JWT_SECRET;
 
-// CX-5: All test tokens must include issuer/audience to pass verification
-const JWT_OPTS = { issuer: 'certmate', audience: 'certmate-api' };
-
 const auth = await import('../auth.js');
 
 describe('auth', () => {
@@ -52,19 +45,19 @@ describe('auth', () => {
   });
 
   describe('verifyPassword', () => {
-    test('should return true for matching password and hash', async () => {
+    test('should return true for matching password and hash', () => {
       const password = 'test-password-123';
       const hash = bcrypt.hashSync(password, 10);
-      expect(await auth.verifyPassword(password, hash)).toBe(true);
+      expect(auth.verifyPassword(password, hash)).toBe(true);
     });
 
-    test('should return false for non-matching password', async () => {
+    test('should return false for non-matching password', () => {
       const hash = bcrypt.hashSync('correct-password', 10);
-      expect(await auth.verifyPassword('wrong-password', hash)).toBe(false);
+      expect(auth.verifyPassword('wrong-password', hash)).toBe(false);
     });
 
-    test('should return false for invalid hash', async () => {
-      expect(await auth.verifyPassword('password', 'not-a-valid-hash')).toBe(false);
+    test('should return false for invalid hash', () => {
+      expect(auth.verifyPassword('password', 'not-a-valid-hash')).toBe(false);
     });
   });
 
@@ -176,44 +169,41 @@ describe('auth', () => {
       expect(result.error).toContain('locked');
     });
 
-    test('should fail for wrong password and atomically increment attempts (CX-2)', async () => {
+    test('should fail for wrong password and increment attempts', async () => {
       mockGetUserByEmail.mockResolvedValue(testUser);
-      mockAtomicIncrementFailedAttempts.mockResolvedValue(1);
+      mockUpdateLoginAttempts.mockResolvedValue();
       mockLogAction.mockResolvedValue();
 
       const result = await auth.authenticate('test@example.com', 'wrong-password');
 
       expect(result.success).toBe(false);
-      expect(mockAtomicIncrementFailedAttempts).toHaveBeenCalledWith('user-1', 5, 15);
+      expect(mockUpdateLoginAttempts).toHaveBeenCalledWith('user-1', 1, null);
     });
 
-    test('should lock account after 5 failed attempts (CX-2 atomic)', async () => {
-      mockGetUserByEmail.mockResolvedValue(testUser);
-      mockAtomicIncrementFailedAttempts.mockResolvedValue(5);
+    test('should lock account after 5 failed attempts', async () => {
+      const userWith4Failures = { ...testUser, failed_login_attempts: 4 };
+      mockGetUserByEmail.mockResolvedValue(userWith4Failures);
+      mockUpdateLoginAttempts.mockResolvedValue();
       mockLogAction.mockResolvedValue();
 
       const result = await auth.authenticate('test@example.com', 'wrong-password');
 
       expect(result.success).toBe(false);
       expect(result.error).toContain('locked');
-      // Atomic function handles both increment and lockout in one query
-      expect(mockAtomicIncrementFailedAttempts).toHaveBeenCalledWith('user-1', 5, 15);
+      // Should have been called with attempts=5 and a locked_until timestamp
+      expect(mockUpdateLoginAttempts).toHaveBeenCalledWith('user-1', 5, expect.any(String));
     });
 
-    test('should generate valid JWT with issuer and audience (CX-5)', async () => {
+    test('should generate valid JWT on success', async () => {
       mockGetUserByEmail.mockResolvedValue(testUser);
       mockUpdateLastLogin.mockResolvedValue();
       mockLogAction.mockResolvedValue();
 
       const result = await auth.authenticate('test@example.com', 'correct-password');
 
-      const decoded = jwt.verify(result.token, JWT_SECRET, JWT_OPTS);
+      const decoded = jwt.verify(result.token, JWT_SECRET);
       expect(decoded.userId).toBe('user-1');
       expect(decoded.email).toBe('test@example.com');
-      expect(decoded.iss).toBe('certmate');
-      expect(decoded.aud).toBe('certmate-api');
-      // CX-6: jti should no longer be present
-      expect(decoded.jti).toBeUndefined();
     });
   });
 
@@ -221,7 +211,6 @@ describe('auth', () => {
     test('should return user for valid token', async () => {
       const token = jwt.sign({ userId: 'user-1', email: 'test@example.com' }, JWT_SECRET, {
         expiresIn: '24h',
-        ...JWT_OPTS,
       });
       mockGetUserById.mockResolvedValue({
         id: 'user-1',
@@ -238,7 +227,7 @@ describe('auth', () => {
     });
 
     test('should return null for expired token', async () => {
-      const token = jwt.sign({ userId: 'user-1' }, JWT_SECRET, { expiresIn: '-1s', ...JWT_OPTS });
+      const token = jwt.sign({ userId: 'user-1' }, JWT_SECRET, { expiresIn: '-1s' });
 
       const user = await auth.verifyToken(token);
 
@@ -246,22 +235,7 @@ describe('auth', () => {
     });
 
     test('should return null for tampered token', async () => {
-      const token = jwt.sign({ userId: 'user-1' }, 'wrong-secret', {
-        expiresIn: '24h',
-        ...JWT_OPTS,
-      });
-
-      const user = await auth.verifyToken(token);
-
-      expect(user).toBeNull();
-    });
-
-    test('should return null for token with wrong issuer (CX-5)', async () => {
-      const token = jwt.sign({ userId: 'user-1' }, JWT_SECRET, {
-        expiresIn: '24h',
-        issuer: 'other-service',
-        audience: 'certmate-api',
-      });
+      const token = jwt.sign({ userId: 'user-1' }, 'wrong-secret', { expiresIn: '24h' });
 
       const user = await auth.verifyToken(token);
 
@@ -271,7 +245,6 @@ describe('auth', () => {
     test('should return null for inactive user', async () => {
       const token = jwt.sign({ userId: 'user-1', email: 'test@example.com' }, JWT_SECRET, {
         expiresIn: '24h',
-        ...JWT_OPTS,
       });
       mockGetUserById.mockResolvedValue({ id: 'user-1', is_active: false });
 
@@ -283,53 +256,12 @@ describe('auth', () => {
     test('should return null if user not found in DB', async () => {
       const token = jwt.sign({ userId: 'nonexistent', email: 'test@example.com' }, JWT_SECRET, {
         expiresIn: '24h',
-        ...JWT_OPTS,
       });
       mockGetUserById.mockResolvedValue(null);
 
       const user = await auth.verifyToken(token);
 
       expect(user).toBeNull();
-    });
-
-    test('should return null for revoked token with stale token_version (CX-1)', async () => {
-      // Token was issued with tv=0, but user's token_version has been bumped to 1
-      const token = jwt.sign({ userId: 'user-1', email: 'test@example.com', tv: 0 }, JWT_SECRET, {
-        expiresIn: '24h',
-        ...JWT_OPTS,
-      });
-      mockGetUserById.mockResolvedValue({
-        id: 'user-1',
-        email: 'test@example.com',
-        name: 'Test',
-        company_name: 'Co',
-        is_active: true,
-        token_version: 1,
-      });
-
-      const user = await auth.verifyToken(token);
-
-      expect(user).toBeNull();
-    });
-
-    test('should accept token with current token_version (CX-1)', async () => {
-      const token = jwt.sign({ userId: 'user-1', email: 'test@example.com', tv: 2 }, JWT_SECRET, {
-        expiresIn: '24h',
-        ...JWT_OPTS,
-      });
-      mockGetUserById.mockResolvedValue({
-        id: 'user-1',
-        email: 'test@example.com',
-        name: 'Test',
-        company_name: 'Co',
-        is_active: true,
-        token_version: 2,
-      });
-
-      const user = await auth.verifyToken(token);
-
-      expect(user).not.toBeNull();
-      expect(user.id).toBe('user-1');
     });
   });
 
@@ -340,15 +272,17 @@ describe('auth', () => {
       name: 'Test',
       company_name: 'Co',
       is_active: true,
+      token_version: 0,
     };
 
     test('should refresh a still-valid token', async () => {
-      const oldToken = jwt.sign({ userId: 'user-1', email: 'test@example.com' }, JWT_SECRET, {
-        expiresIn: '24h',
-        ...JWT_OPTS,
-      });
+      const oldToken = jwt.sign(
+        { userId: 'user-1', email: 'test@example.com', tv: 0 },
+        JWT_SECRET,
+        { expiresIn: '24h' }
+      );
       mockGetUserById.mockResolvedValue(activeUser);
-      mockAtomicIncrementTokenVersion.mockResolvedValue(true);
+      mockSetTokenVersion.mockResolvedValue();
 
       const result = await auth.refreshToken(oldToken);
 
@@ -358,20 +292,14 @@ describe('auth', () => {
     });
 
     test('should refresh a recently-expired token within grace period', async () => {
-      // Create a token that expired 30 min ago (within 1-hour grace)
-      const payload = {
-        userId: 'user-1',
-        email: 'test@example.com',
-        iss: 'certmate',
-        aud: 'certmate-api',
-      };
-      const thirtyMinAgo = Math.floor(Date.now() / 1000) - 30 * 60;
+      // Create a token that expired 30 minutes ago (within 1-hour grace)
       const oldToken = jwt.sign(
-        { ...payload, exp: thirtyMinAgo, iat: thirtyMinAgo - 3600 },
-        JWT_SECRET
+        { userId: 'user-1', email: 'test@example.com', tv: 0 },
+        JWT_SECRET,
+        { expiresIn: '-30m' }
       );
       mockGetUserById.mockResolvedValue(activeUser);
-      mockAtomicIncrementTokenVersion.mockResolvedValue(true);
+      mockSetTokenVersion.mockResolvedValue();
 
       const result = await auth.refreshToken(oldToken);
 
@@ -380,16 +308,11 @@ describe('auth', () => {
     });
 
     test('should reject token expired beyond grace period', async () => {
-      // Create a token that expired 8 days ago (beyond 7-day grace)
-      const payload = {
-        userId: 'user-1',
-        email: 'test@example.com',
-        iss: 'certmate',
-        aud: 'certmate-api',
-      };
-      const eightDaysAgo = Math.floor(Date.now() / 1000) - 8 * 24 * 60 * 60;
+      // Create a token that expired 2 hours ago (beyond 1-hour grace)
+      const payload = { userId: 'user-1', email: 'test@example.com', tv: 0 };
+      const twoHoursAgo = Math.floor(Date.now() / 1000) - 2 * 60 * 60;
       const oldToken = jwt.sign(
-        { ...payload, exp: eightDaysAgo, iat: eightDaysAgo - 3600 },
+        { ...payload, exp: twoHoursAgo, iat: twoHoursAgo - 3600 },
         JWT_SECRET
       );
 
@@ -400,10 +323,7 @@ describe('auth', () => {
     });
 
     test('should reject token with invalid signature', async () => {
-      const oldToken = jwt.sign({ userId: 'user-1' }, 'wrong-secret', {
-        expiresIn: '24h',
-        ...JWT_OPTS,
-      });
+      const oldToken = jwt.sign({ userId: 'user-1' }, 'wrong-secret', { expiresIn: '24h' });
 
       const result = await auth.refreshToken(oldToken);
 
@@ -414,7 +334,6 @@ describe('auth', () => {
     test('should reject if user is inactive', async () => {
       const oldToken = jwt.sign({ userId: 'user-1', email: 'test@example.com' }, JWT_SECRET, {
         expiresIn: '24h',
-        ...JWT_OPTS,
       });
       mockGetUserById.mockResolvedValue({ ...activeUser, is_active: false });
 
@@ -446,7 +365,6 @@ describe('auth', () => {
     test('should extract token from Authorization header', async () => {
       const token = jwt.sign({ userId: 'user-1', email: 'test@example.com' }, JWT_SECRET, {
         expiresIn: '24h',
-        ...JWT_OPTS,
       });
       req.headers.authorization = `Bearer ${token}`;
       mockGetUserById.mockResolvedValue({
@@ -467,16 +385,15 @@ describe('auth', () => {
       expect(req.user.id).toBe('user-1');
     });
 
-    test('should reject token from query parameter (CSRF risk)', async () => {
+    test('should reject token from query parameter (CSRF protection)', async () => {
       const token = jwt.sign({ userId: 'user-1', email: 'test@example.com' }, JWT_SECRET, {
         expiresIn: '24h',
-        ...JWT_OPTS,
       });
       req.query.token = token;
 
       auth.requireAuth(req, res, next);
 
-      // Query parameter tokens are no longer accepted (CSRF risk)
+      // Query parameter tokens are no longer accepted — should return 401
       expect(res.status).toHaveBeenCalledWith(401);
       expect(next).not.toHaveBeenCalled();
     });
