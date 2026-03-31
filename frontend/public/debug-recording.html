@@ -1,0 +1,720 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CertMate Deepgram Recording Debug</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+    background: #0a0a0a; color: #e0e0e0;
+    padding: 12px; font-size: 14px;
+    max-width: 800px; margin: 0 auto;
+  }
+  h1 { font-size: 18px; margin-bottom: 8px; }
+  h2 { font-size: 15px; margin: 12px 0 6px; color: #aaa; }
+
+  #status-banner {
+    padding: 12px; text-align: center; font-size: 20px; font-weight: 700;
+    border-radius: 8px; margin-bottom: 12px;
+    background: #333; color: #888;
+  }
+  #status-banner.working { background: #0d3320; color: #4ade80; }
+  #status-banner.broken  { background: #3b1111; color: #f87171; }
+  #status-banner.testing { background: #362a07; color: #fbbf24; }
+
+  .section {
+    background: #141414; border: 1px solid #2a2a2a; border-radius: 8px;
+    padding: 10px; margin-bottom: 10px;
+  }
+
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+  .stat-label { color: #888; font-size: 12px; }
+  .stat-value { font-family: 'SF Mono', 'Fira Code', monospace; font-size: 13px; color: #fff; }
+
+  button {
+    padding: 10px 20px; border: none; border-radius: 6px; cursor: pointer;
+    font-size: 15px; font-weight: 600; width: 100%; margin: 4px 0;
+  }
+  button:disabled { opacity: 0.4; cursor: not-allowed; }
+  #btn-start { background: #22c55e; color: #000; }
+  #btn-stop  { background: #ef4444; color: #fff; }
+  #btn-clear { background: #333; color: #ccc; font-size: 12px; padding: 6px; }
+
+  input[type="text"] {
+    width: 100%; padding: 8px 10px; border: 1px solid #444; border-radius: 6px;
+    background: #1a1a1a; color: #fff; font-family: monospace; font-size: 13px;
+  }
+  label { font-size: 12px; color: #888; display: block; margin-bottom: 3px; }
+
+  canvas#meter { width: 100%; height: 40px; border-radius: 4px; background: #1a1a1a; }
+
+  #transcript-box {
+    background: #1a1a1a; border: 1px solid #333; border-radius: 6px;
+    padding: 8px; min-height: 80px; max-height: 200px; overflow-y: auto;
+    font-size: 14px; line-height: 1.5; white-space: pre-wrap;
+  }
+  #transcript-box .final { color: #fff; }
+  #transcript-box .interim { color: #888; font-style: italic; }
+
+  #log-box {
+    background: #0d0d0d; border: 1px solid #222; border-radius: 6px;
+    padding: 6px; max-height: 300px; overflow-y: auto;
+    font-family: 'SF Mono', 'Fira Code', monospace; font-size: 11px;
+    line-height: 1.4;
+  }
+  .log-info  { color: #60a5fa; }
+  .log-ok    { color: #4ade80; }
+  .log-warn  { color: #fbbf24; }
+  .log-error { color: #f87171; }
+  .log-data  { color: #c084fc; }
+  .log-ws    { color: #22d3ee; }
+
+  .row { display: flex; gap: 8px; }
+  .row > * { flex: 1; }
+
+  @media (max-width: 500px) {
+    .grid { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+
+<h1>CertMate Deepgram Debug Harness</h1>
+
+<div id="status-banner">IDLE</div>
+
+<!-- Controls -->
+<div class="section">
+  <div class="row" style="margin-bottom:8px;">
+    <button id="btn-start" onclick="startTest()">Start Recording</button>
+    <button id="btn-stop" onclick="stopTest()" disabled>Stop</button>
+  </div>
+  <label for="master-key">Master API Key (optional — bypasses proxy):</label>
+  <input type="text" id="master-key" placeholder="paste Deepgram API key to test directly...">
+</div>
+
+<!-- Audio Stats -->
+<div class="section">
+  <h2>Audio Pipeline</h2>
+  <div class="grid">
+    <div><span class="stat-label">AudioContext state</span><br><span class="stat-value" id="s-ctx-state">—</span></div>
+    <div><span class="stat-label">AudioContext sampleRate</span><br><span class="stat-value" id="s-ctx-rate">—</span></div>
+    <div><span class="stat-label">getUserMedia sampleRate</span><br><span class="stat-value" id="s-gum-rate">—</span></div>
+    <div><span class="stat-label">Capture method</span><br><span class="stat-value" id="s-capture">—</span></div>
+    <div><span class="stat-label">Chunks sent</span><br><span class="stat-value" id="s-chunks">0</span></div>
+    <div><span class="stat-label">Bytes sent</span><br><span class="stat-value" id="s-bytes">0</span></div>
+    <div><span class="stat-label">Non-silent chunks</span><br><span class="stat-value" id="s-nonsilent">0</span></div>
+    <div><span class="stat-label">Resampling</span><br><span class="stat-value" id="s-resample">—</span></div>
+  </div>
+  <h2>Audio Level</h2>
+  <canvas id="meter"></canvas>
+</div>
+
+<!-- WebSocket Stats -->
+<div class="section">
+  <h2>WebSocket</h2>
+  <div class="grid">
+    <div><span class="stat-label">WS state</span><br><span class="stat-value" id="s-ws-state">—</span></div>
+    <div><span class="stat-label">Auth method</span><br><span class="stat-value" id="s-auth">—</span></div>
+    <div><span class="stat-label">Messages received</span><br><span class="stat-value" id="s-ws-msgs">0</span></div>
+    <div><span class="stat-label">Transcripts received</span><br><span class="stat-value" id="s-transcripts">0</span></div>
+    <div><span class="stat-label">Close code</span><br><span class="stat-value" id="s-ws-close">—</span></div>
+    <div><span class="stat-label">Keep-alives sent</span><br><span class="stat-value" id="s-keepalives">0</span></div>
+  </div>
+</div>
+
+<!-- Transcript -->
+<div class="section">
+  <h2>Transcript</h2>
+  <div id="transcript-box"><span class="interim">Waiting for speech...</span></div>
+</div>
+
+<!-- Log -->
+<div class="section">
+  <div style="display:flex;justify-content:space-between;align-items:center;">
+    <h2 style="margin:0;">Event Log</h2>
+    <button id="btn-clear" onclick="clearLog()">Clear</button>
+  </div>
+  <div id="log-box"></div>
+</div>
+
+<script>
+// ═══════════════════════════════════════════════════════════════
+// State
+// ═══════════════════════════════════════════════════════════════
+let audioCtx = null;
+let mediaStream = null;
+let sourceNode = null;
+let workletNode = null;
+let scriptNode = null;
+let analyserNode = null;
+let ws = null;
+let keepAliveTimer = null;
+let meterRAF = null;
+
+let stats = {
+  chunks: 0, bytes: 0, nonSilent: 0,
+  wsMsgs: 0, transcripts: 0, keepAlives: 0,
+};
+
+const TARGET_RATE = 16000;
+
+// ═══════════════════════════════════════════════════════════════
+// Logging
+// ═══════════════════════════════════════════════════════════════
+const logBox = document.getElementById('log-box');
+
+function log(msg, cls = 'log-info') {
+  const ts = new Date().toISOString().slice(11, 23);
+  const div = document.createElement('div');
+  div.className = cls;
+  div.textContent = `[${ts}] ${msg}`;
+  logBox.appendChild(div);
+  logBox.scrollTop = logBox.scrollHeight;
+  console.log(`[${cls}] ${msg}`);
+}
+
+function clearLog() { logBox.innerHTML = ''; }
+
+// ═══════════════════════════════════════════════════════════════
+// UI helpers
+// ═══════════════════════════════════════════════════════════════
+function setBanner(text, cls) {
+  const b = document.getElementById('status-banner');
+  b.textContent = text;
+  b.className = cls;
+}
+
+function setStat(id, val) {
+  document.getElementById(id).textContent = val;
+}
+
+function formatBytes(n) {
+  if (n < 1024) return n + ' B';
+  if (n < 1048576) return (n / 1024).toFixed(1) + ' KB';
+  return (n / 1048576).toFixed(2) + ' MB';
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Audio level meter (canvas)
+// ═══════════════════════════════════════════════════════════════
+const meterCanvas = document.getElementById('meter');
+const meterCtxDraw = meterCanvas.getContext('2d');
+
+function startMeter() {
+  if (!analyserNode) return;
+  const buf = new Uint8Array(analyserNode.fftSize);
+  function draw() {
+    meterRAF = requestAnimationFrame(draw);
+    analyserNode.getByteTimeDomainData(buf);
+    // RMS level
+    let sum = 0;
+    for (let i = 0; i < buf.length; i++) {
+      const v = (buf[i] - 128) / 128;
+      sum += v * v;
+    }
+    const rms = Math.sqrt(sum / buf.length);
+    const level = Math.min(1, rms * 4); // amplify for visibility
+
+    const w = meterCanvas.width = meterCanvas.clientWidth * devicePixelRatio;
+    const h = meterCanvas.height = meterCanvas.clientHeight * devicePixelRatio;
+    meterCtxDraw.clearRect(0, 0, w, h);
+
+    // Bar
+    const barW = level * w;
+    const grad = meterCtxDraw.createLinearGradient(0, 0, w, 0);
+    grad.addColorStop(0, '#22c55e');
+    grad.addColorStop(0.6, '#fbbf24');
+    grad.addColorStop(1, '#ef4444');
+    meterCtxDraw.fillStyle = grad;
+    meterCtxDraw.fillRect(0, 0, barW, h);
+
+    // dB text
+    const db = rms > 0 ? (20 * Math.log10(rms)).toFixed(1) : '-∞';
+    meterCtxDraw.fillStyle = '#fff';
+    meterCtxDraw.font = `${12 * devicePixelRatio}px monospace`;
+    meterCtxDraw.fillText(`${db} dB  RMS: ${rms.toFixed(4)}`, 6 * devicePixelRatio, h * 0.65);
+  }
+  draw();
+}
+
+function stopMeter() {
+  if (meterRAF) cancelAnimationFrame(meterRAF);
+  meterRAF = null;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Resampling (match deepgram-service.ts logic)
+// ═══════════════════════════════════════════════════════════════
+function resampleFloat32(input, fromRate, toRate) {
+  if (fromRate === toRate) return input;
+  const ratio = fromRate / toRate;
+  const outLen = Math.round(input.length / ratio);
+  const output = new Float32Array(outLen);
+  for (let i = 0; i < outLen; i++) {
+    const srcIdx = i * ratio;
+    const lo = Math.floor(srcIdx);
+    const hi = Math.min(lo + 1, input.length - 1);
+    const frac = srcIdx - lo;
+    output[i] = input[lo] * (1 - frac) + input[hi] * frac;
+  }
+  return output;
+}
+
+function float32ToInt16(float32) {
+  const int16 = new Int16Array(float32.length);
+  for (let i = 0; i < float32.length; i++) {
+    const clamped = Math.max(-1, Math.min(1, float32[i]));
+    int16[i] = Math.round(clamped * 32767);
+  }
+  return int16;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Fetch Deepgram temp key (proxy endpoint)
+// ═══════════════════════════════════════════════════════════════
+async function fetchTempKey() {
+  log('Fetching temp key from /api/proxy/deepgram-streaming-key...', 'log-info');
+  try {
+    const resp = await fetch('/api/proxy/deepgram-streaming-key', { method: 'POST' });
+    if (!resp.ok) {
+      const text = await resp.text();
+      throw new Error(`HTTP ${resp.status}: ${text}`);
+    }
+    const data = await resp.json();
+    if (!data.key) throw new Error('Response missing "key" field');
+    log(`Temp key obtained (${data.key.length} chars, starts: ${data.key.slice(0, 12)}...)`, 'log-ok');
+    return data.key;
+  } catch (err) {
+    log(`Proxy key fetch FAILED: ${err.message}`, 'log-error');
+    throw err;
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// WebSocket to Deepgram
+// ═══════════════════════════════════════════════════════════════
+function buildDgUrl() {
+  const params = new URLSearchParams({
+    model: 'nova-3',
+    encoding: 'linear16',
+    sample_rate: String(TARGET_RATE),
+    channels: '1',
+    language: 'en-GB',
+    interim_results: 'true',
+    endpointing: '300',
+    utterance_end_ms: '1300',
+    smart_format: 'true',
+    punctuate: 'true',
+    numerals: 'true',
+  });
+  return `wss://api.deepgram.com/v1/listen?${params}`;
+}
+
+function connectWS(apiKey, authMethod) {
+  const url = buildDgUrl();
+  log(`Connecting WS to Deepgram...`, 'log-ws');
+  log(`URL: ${url}`, 'log-ws');
+  log(`Auth: ${authMethod} (key len=${apiKey.length})`, 'log-ws');
+
+  setStat('s-auth', authMethod);
+  setStat('s-ws-state', 'CONNECTING');
+
+  ws = new WebSocket(url, ['token', apiKey]);
+  ws.binaryType = 'arraybuffer';
+
+  ws.onopen = () => {
+    log(`WS OPEN — readyState=${ws.readyState}, protocol="${ws.protocol}"`, 'log-ok');
+    setStat('s-ws-state', 'OPEN');
+    startKeepAlive();
+  };
+
+  ws.onmessage = (evt) => {
+    stats.wsMsgs++;
+    setStat('s-ws-msgs', stats.wsMsgs);
+
+    if (typeof evt.data === 'string') {
+      try {
+        const msg = JSON.parse(evt.data);
+        handleDgMessage(msg);
+      } catch (e) {
+        log(`WS message (non-JSON string): ${evt.data.slice(0, 200)}`, 'log-data');
+      }
+    } else {
+      log(`WS binary message: ${evt.data.byteLength} bytes`, 'log-data');
+    }
+  };
+
+  ws.onclose = (evt) => {
+    log(`WS CLOSE — code=${evt.code}, reason="${evt.reason}", wasClean=${evt.wasClean}`, 'log-warn');
+    setStat('s-ws-state', `CLOSED (${evt.code})`);
+    setStat('s-ws-close', `${evt.code} ${evt.reason || describeCloseCode(evt.code)}`);
+    stopKeepAlive();
+
+    if (stats.transcripts > 0) {
+      setBanner('WORKING', 'working');
+    } else if (evt.code === 1000) {
+      // Normal close after stop
+    } else {
+      setBanner(`BROKEN (WS ${evt.code})`, 'broken');
+    }
+  };
+
+  ws.onerror = (evt) => {
+    log(`WS ERROR event fired`, 'log-error');
+    setStat('s-ws-state', 'ERROR');
+  };
+}
+
+function describeCloseCode(code) {
+  const codes = {
+    1000: 'Normal',
+    1001: 'Going Away',
+    1002: 'Protocol Error',
+    1003: 'Unsupported Data',
+    1006: 'Abnormal (no close frame)',
+    1008: 'Policy Violation (auth?)',
+    1009: 'Message Too Big',
+    1011: 'Server Error',
+    1012: 'Service Restart',
+    1013: 'Try Again Later',
+    1014: 'Bad Gateway',
+    1015: 'TLS Handshake Fail',
+  };
+  return codes[code] || 'Unknown';
+}
+
+function handleDgMessage(msg) {
+  const type = msg.type;
+
+  if (type === 'Results') {
+    const alt = msg.channel?.alternatives?.[0];
+    const text = alt?.transcript || '';
+    const isFinal = msg.is_final;
+    const speechFinal = msg.speech_final;
+
+    if (text) {
+      stats.transcripts++;
+      setStat('s-transcripts', stats.transcripts);
+      updateTranscript(text, isFinal, speechFinal);
+      log(`Transcript [${isFinal ? 'FINAL' : 'interim'}${speechFinal ? ',speech_final' : ''}]: "${text}"`, 'log-ok');
+
+      if (stats.transcripts === 1) {
+        setBanner('WORKING', 'working');
+      }
+    }
+  } else if (type === 'Metadata') {
+    log(`Metadata: request_id=${msg.request_id}, model=${msg.model_info?.name || '?'}`, 'log-data');
+  } else if (type === 'UtteranceEnd') {
+    log('UtteranceEnd received', 'log-data');
+  } else if (type === 'SpeechStarted') {
+    log('SpeechStarted received', 'log-data');
+  } else {
+    log(`DG message type="${type}": ${JSON.stringify(msg).slice(0, 200)}`, 'log-data');
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Transcript display
+// ═══════════════════════════════════════════════════════════════
+const transcriptBox = document.getElementById('transcript-box');
+let finalTranscript = '';
+
+function updateTranscript(text, isFinal, speechFinal) {
+  if (isFinal && text.trim()) {
+    finalTranscript += (finalTranscript ? ' ' : '') + text.trim();
+  }
+  transcriptBox.innerHTML = '';
+  if (finalTranscript) {
+    const span = document.createElement('span');
+    span.className = 'final';
+    span.textContent = finalTranscript;
+    transcriptBox.appendChild(span);
+  }
+  if (!isFinal && text.trim()) {
+    const span = document.createElement('span');
+    span.className = 'interim';
+    span.textContent = (finalTranscript ? ' ' : '') + text.trim();
+    transcriptBox.appendChild(span);
+  }
+  transcriptBox.scrollTop = transcriptBox.scrollHeight;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Keep-alive (match production: every 5s)
+// ═══════════════════════════════════════════════════════════════
+function startKeepAlive() {
+  stopKeepAlive();
+  keepAliveTimer = setInterval(() => {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'KeepAlive' }));
+      stats.keepAlives++;
+      setStat('s-keepalives', stats.keepAlives);
+    }
+  }, 5000);
+}
+
+function stopKeepAlive() {
+  if (keepAliveTimer) clearInterval(keepAliveTimer);
+  keepAliveTimer = null;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Audio capture
+// ═══════════════════════════════════════════════════════════════
+async function setupAudio() {
+  log('Requesting microphone (getUserMedia)...', 'log-info');
+
+  mediaStream = await navigator.mediaDevices.getUserMedia({
+    audio: {
+      sampleRate: { ideal: 16000 },
+      channelCount: 1,
+      echoCancellation: true,
+      noiseSuppression: true,
+      autoGainControl: true,
+    },
+  });
+
+  const track = mediaStream.getAudioTracks()[0];
+  const settings = track.getSettings();
+  const gumRate = settings.sampleRate || 'unknown';
+  log(`getUserMedia OK — sampleRate=${gumRate}, channelCount=${settings.channelCount}, label="${track.label}"`, 'log-ok');
+  setStat('s-gum-rate', gumRate);
+
+  // Create AudioContext at target rate
+  audioCtx = new AudioContext({ sampleRate: TARGET_RATE });
+  if (audioCtx.state === 'suspended') {
+    await audioCtx.resume();
+    log('AudioContext was suspended, resumed', 'log-warn');
+  }
+  log(`AudioContext created — state=${audioCtx.state}, sampleRate=${audioCtx.sampleRate}`, 'log-ok');
+  setStat('s-ctx-state', audioCtx.state);
+  setStat('s-ctx-rate', audioCtx.sampleRate);
+
+  const actualRate = audioCtx.sampleRate;
+  const needsResample = actualRate !== TARGET_RATE;
+  setStat('s-resample', needsResample ? `${actualRate}→${TARGET_RATE}` : 'No (native 16kHz)');
+  if (needsResample) {
+    log(`Sample rate mismatch: AudioContext=${actualRate}, target=${TARGET_RATE}. Will resample.`, 'log-warn');
+  }
+
+  // Source node
+  sourceNode = audioCtx.createMediaStreamSource(mediaStream);
+
+  // Analyser for level meter
+  analyserNode = audioCtx.createAnalyser();
+  analyserNode.fftSize = 2048;
+  sourceNode.connect(analyserNode);
+
+  // Try AudioWorklet, fallback to ScriptProcessor
+  try {
+    await audioCtx.audioWorklet.addModule('/audio-worklet-processor.js');
+    workletNode = new AudioWorkletNode(audioCtx, 'pcm-capture-processor');
+    sourceNode.connect(workletNode);
+    workletNode.port.onmessage = (evt) => {
+      if (evt.data.error) {
+        log(`Worklet error: ${evt.data.message} (count=${evt.data.count})`, 'log-error');
+        return;
+      }
+      onAudioChunk(evt.data.samples, actualRate);
+    };
+    log('AudioWorklet capture active', 'log-ok');
+    setStat('s-capture', 'AudioWorklet');
+  } catch (err) {
+    log(`AudioWorklet failed (${err.message}), falling back to ScriptProcessor`, 'log-warn');
+    scriptNode = audioCtx.createScriptProcessor(4096, 1, 1);
+    sourceNode.connect(scriptNode);
+    scriptNode.connect(audioCtx.destination); // Must connect for events
+    scriptNode.onaudioprocess = (evt) => {
+      const samples = new Float32Array(evt.inputBuffer.getChannelData(0));
+      onAudioChunk(samples, actualRate);
+    };
+    log('ScriptProcessor capture active (fallback)', 'log-ok');
+    setStat('s-capture', 'ScriptProcessor');
+  }
+
+  startMeter();
+}
+
+function onAudioChunk(float32Samples, actualRate) {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+
+  // Resample if needed
+  let samples = (actualRate !== TARGET_RATE)
+    ? resampleFloat32(float32Samples, actualRate, TARGET_RATE)
+    : float32Samples;
+
+  // Check for non-silence
+  let maxAbs = 0;
+  for (let i = 0; i < samples.length; i++) {
+    const a = Math.abs(samples[i]);
+    if (a > maxAbs) maxAbs = a;
+  }
+  if (maxAbs > 0.01) {
+    stats.nonSilent++;
+    setStat('s-nonsilent', stats.nonSilent);
+  }
+
+  // Convert to int16 PCM
+  const int16 = float32ToInt16(samples);
+  const buf = int16.buffer;
+  ws.send(buf);
+
+  stats.chunks++;
+  stats.bytes += buf.byteLength;
+  setStat('s-chunks', stats.chunks);
+  setStat('s-bytes', formatBytes(stats.bytes));
+
+  // Log first chunk detail
+  if (stats.chunks === 1) {
+    log(`First audio chunk: ${float32Samples.length} samples → ${int16.length} int16 (${buf.byteLength} bytes), maxAbs=${maxAbs.toFixed(4)}`, 'log-data');
+  }
+  // Periodic logging
+  if (stats.chunks % 100 === 0) {
+    log(`Chunk #${stats.chunks}: ${formatBytes(stats.bytes)} total, ${stats.nonSilent} non-silent`, 'log-info');
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Start / Stop
+// ═══════════════════════════════════════════════════════════════
+async function startTest() {
+  // Reset
+  stats = { chunks: 0, bytes: 0, nonSilent: 0, wsMsgs: 0, transcripts: 0, keepAlives: 0 };
+  finalTranscript = '';
+  transcriptBox.innerHTML = '<span class="interim">Waiting for speech...</span>';
+  setStat('s-chunks', '0'); setStat('s-bytes', '0'); setStat('s-nonsilent', '0');
+  setStat('s-ws-msgs', '0'); setStat('s-transcripts', '0'); setStat('s-keepalives', '0');
+  setStat('s-ws-close', '—');
+
+  setBanner('TESTING...', 'testing');
+  document.getElementById('btn-start').disabled = true;
+  document.getElementById('btn-stop').disabled = false;
+
+  try {
+    // 1. Setup audio
+    await setupAudio();
+
+    // 2. Get API key
+    const masterKey = document.getElementById('master-key').value.trim();
+    let apiKey, authMethod;
+
+    if (masterKey) {
+      apiKey = masterKey;
+      authMethod = 'Master key (direct)';
+      log('Using master API key from input field', 'log-warn');
+    } else {
+      try {
+        apiKey = await fetchTempKey();
+        authMethod = 'Proxy temp key';
+      } catch (err) {
+        log('Proxy failed — enter a master key in the input field to test directly', 'log-error');
+        setBanner('BROKEN (no key)', 'broken');
+        cleanup();
+        return;
+      }
+    }
+
+    // 3. Connect WebSocket
+    connectWS(apiKey, authMethod);
+
+  } catch (err) {
+    log(`Start failed: ${err.message}`, 'log-error');
+    setBanner('BROKEN', 'broken');
+    cleanup();
+  }
+}
+
+function stopTest() {
+  log('Stopping...', 'log-info');
+
+  // Send CloseStream to Deepgram for clean shutdown
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    try {
+      ws.send(JSON.stringify({ type: 'CloseStream' }));
+      log('Sent CloseStream to Deepgram', 'log-ws');
+    } catch (e) { /* ignore */ }
+    // Give Deepgram a moment to send final results, then close
+    setTimeout(() => {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.close(1000, 'User stopped');
+      }
+    }, 500);
+  }
+
+  cleanup();
+
+  if (stats.transcripts > 0) {
+    setBanner('WORKING', 'working');
+    log(`Test complete — ${stats.transcripts} transcripts, ${formatBytes(stats.bytes)} audio sent`, 'log-ok');
+  } else if (stats.chunks > 0) {
+    setBanner('BROKEN (no transcripts)', 'broken');
+    log(`Test complete — audio was sent (${formatBytes(stats.bytes)}) but NO transcripts received`, 'log-error');
+  } else {
+    setBanner('BROKEN (no audio)', 'broken');
+    log('Test complete — no audio chunks were sent', 'log-error');
+  }
+
+  document.getElementById('btn-start').disabled = false;
+  document.getElementById('btn-stop').disabled = true;
+}
+
+function cleanup() {
+  stopMeter();
+  stopKeepAlive();
+
+  if (workletNode) { workletNode.disconnect(); workletNode = null; }
+  if (scriptNode) { scriptNode.disconnect(); scriptNode = null; }
+  if (sourceNode) { sourceNode.disconnect(); sourceNode = null; }
+  if (analyserNode) { analyserNode.disconnect(); analyserNode = null; }
+  if (audioCtx) { audioCtx.close().catch(() => {}); audioCtx = null; }
+  if (mediaStream) {
+    mediaStream.getTracks().forEach(t => t.stop());
+    mediaStream = null;
+  }
+
+  document.getElementById('btn-start').disabled = false;
+  document.getElementById('btn-stop').disabled = true;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Monitor AudioContext state changes
+// ═══════════════════════════════════════════════════════════════
+function watchAudioContext() {
+  if (!audioCtx) return;
+  audioCtx.onstatechange = () => {
+    const state = audioCtx ? audioCtx.state : 'closed';
+    log(`AudioContext state changed: ${state}`, state === 'running' ? 'log-ok' : 'log-warn');
+    setStat('s-ctx-state', state);
+  };
+}
+
+// Override setupAudio to add watcher
+const _origSetupAudio = setupAudio;
+setupAudio = async function() {
+  await _origSetupAudio();
+  watchAudioContext();
+};
+
+// ═══════════════════════════════════════════════════════════════
+// Startup log
+// ═══════════════════════════════════════════════════════════════
+log('Debug harness loaded', 'log-ok');
+log(`UserAgent: ${navigator.userAgent}`, 'log-info');
+log(`Secure context: ${window.isSecureContext}`, window.isSecureContext ? 'log-ok' : 'log-error');
+if (!window.isSecureContext) {
+  log('WARNING: Not a secure context — getUserMedia will fail!', 'log-error');
+  setBanner('BROKEN (not HTTPS)', 'broken');
+}
+if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+  log('WARNING: getUserMedia not available', 'log-error');
+  setBanner('BROKEN (no getUserMedia)', 'broken');
+}
+if (typeof AudioContext === 'undefined' && typeof webkitAudioContext === 'undefined') {
+  log('WARNING: AudioContext not available', 'log-error');
+}
+</script>
+</body>
+</html>
