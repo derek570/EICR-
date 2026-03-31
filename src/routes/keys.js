@@ -335,23 +335,15 @@ router.post('/proxy/deepgram-streaming-key', auth.requireAuth, async (req, res) 
   const userId = req.user?.id || req.user?.userId || 'unknown';
 
   try {
-    // Two-tier strategy: use the modern /v1/auth/grant endpoint (no special
-    // scopes needed, just Member role on the API key). Falls back to master key
-    // if grant fails (shouldn't happen, but safety net for recording sessions).
-    let key;
-    try {
-      key = await createDeepgramTempKey(userId);
-    } catch (tempKeyError) {
-      logger.warn('Deepgram token grant failed, using master key', {
-        userId,
-        error: tempKeyError.message,
-      });
-      key = await getDeepgramKey();
-      if (!key) {
-        throw new Error('Deepgram API key not configured');
-      }
+    // HOTFIX (2026-03-31): Deepgram /v1/auth/grant tokens do not work for
+    // WebSocket streaming — the token is returned successfully but rejected
+    // at the WebSocket level, breaking recording sessions silently. Bypass
+    // temp token creation entirely and return the master key directly.
+    const key = await getDeepgramKey();
+    if (!key) {
+      throw new Error('Deepgram API key not configured');
     }
-
+    logger.info('Deepgram streaming key issued (master key)', { userId });
     res.json({ key });
   } catch (error) {
     logger.error('Deepgram streaming key failed', { userId, error: error.message });
