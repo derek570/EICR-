@@ -39,8 +39,8 @@ WORKDIR /app
 ARG APP_DIR
 ENV APP_DIR=${APP_DIR}
 
-# Upgrade Alpine packages to patch OS-level CVEs (e.g. zlib) and install wget for health checks
-RUN apk upgrade --no-cache && apk add --no-cache wget && npm install -g npm@latest
+# Install wget for health checks
+RUN apk add --no-cache wget
 
 # Don't run as root
 RUN addgroup --system --gid 1001 nodejs

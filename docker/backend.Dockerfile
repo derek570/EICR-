@@ -6,7 +6,7 @@ FROM node:20-slim
 WORKDIR /app
 
 # Install system dependencies for sharp image processing, health checks, and Playwright
-RUN apt-get update && apt-get upgrade -y && apt-get install -y \
+RUN apt-get update && apt-get install -y \
     libvips-dev \
     libheif-dev \
     imagemagick \
