@@ -3,7 +3,6 @@
  * Connects to PostgreSQL in production or uses mock data for local development.
  */
 
-import crypto from 'node:crypto';
 import fssync from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -24,11 +23,6 @@ if (fssync.existsSync(caPath)) {
 const { Pool } = pg;
 
 let pool = null;
-
-// D3: Explicit safe columns for user queries — prevents accidental exposure of sensitive fields.
-// password_hash, failed_login_attempts, locked_until are only included where needed (auth functions).
-const SAFE_USER_COLUMNS =
-  'id, email, name, company_name, role, is_active, last_login, created_at, company_id, company_role, token_version';
 
 // Read DATABASE_URL dynamically (secrets are loaded after module import)
 function getDatabaseUrl() {
@@ -71,24 +65,12 @@ function getSslConfig() {
 
 function getPool() {
   if (!pool && usePostgres()) {
-    // D15: Pool size configurable via env var, default 20
-    const poolMax = parseInt(process.env.DB_POOL_MAX, 10) || 20;
     pool = new Pool({
       connectionString: getDatabaseUrl(),
-      max: poolMax,
+      max: 10,
       idleTimeoutMillis: 30000,
       connectionTimeoutMillis: 2000,
       ssl: getSslConfig(),
-    });
-    // CX-22: Set statement_timeout and idle_in_transaction_session_timeout on each new connection
-    // to prevent slow queries from exhausting the pool
-    pool.on('connect', (client) => {
-      client.query('SET statement_timeout = 30000'); // 30s
-      client.query('SET idle_in_transaction_session_timeout = 60000'); // 60s
-    });
-    // D16: Handle unexpected pool errors to prevent unhandled crashes
-    pool.on('error', (err) => {
-      logger.error('Unexpected PostgreSQL pool error', { error: err.message });
     });
   }
   return pool;
@@ -105,10 +87,7 @@ export async function getUserByEmail(email) {
 
   const pool = getPool();
   try {
-    const result = await pool.query(
-      `SELECT ${SAFE_USER_COLUMNS}, password_hash, failed_login_attempts, locked_until FROM users WHERE email = $1`,
-      [email.toLowerCase()]
-    );
+    const result = await pool.query('SELECT * FROM users WHERE email = $1', [email.toLowerCase()]);
     return result.rows[0] || null;
   } catch (error) {
     logger.error('getUserByEmail failed', { error: error.message });
@@ -126,11 +105,7 @@ export async function getUserById(userId) {
 
   const pool = getPool();
   try {
-    // password_hash included for password-change route compatibility
-    const result = await pool.query(
-      `SELECT ${SAFE_USER_COLUMNS}, password_hash FROM users WHERE id = $1`,
-      [userId]
-    );
+    const result = await pool.query('SELECT * FROM users WHERE id = $1', [userId]);
     return result.rows[0] || null;
   } catch (error) {
     logger.error('getUserById failed', { error: error.message });
@@ -152,7 +127,6 @@ export async function updateLastLogin(userId) {
     );
   } catch (error) {
     logger.error('updateLastLogin failed', { error: error.message });
-    throw error; // D17: write functions must throw on failure
   }
 }
 
@@ -170,37 +144,6 @@ export async function updateLoginAttempts(userId, attempts, lockedUntil) {
     );
   } catch (error) {
     logger.error('updateLoginAttempts failed', { error: error.message });
-    throw error; // D17: write functions must throw on failure
-  }
-}
-
-/**
- * CX-2: Atomically increment failed login attempts and optionally set lockout.
- * Uses a single UPDATE ... RETURNING to prevent race conditions where concurrent
- * failed logins could undercount attempts and bypass the lockout threshold.
- * Returns the new failed_login_attempts count.
- */
-export async function atomicIncrementFailedAttempts(userId, maxAttempts, lockoutMinutes) {
-  if (!usePostgres()) return 1;
-
-  const pool = getPool();
-  try {
-    const result = await pool.query(
-      `UPDATE users
-       SET failed_login_attempts = failed_login_attempts + 1,
-           locked_until = CASE
-             WHEN failed_login_attempts + 1 >= $2
-             THEN NOW() + ($3 || ' minutes')::interval
-             ELSE locked_until
-           END
-       WHERE id = $1
-       RETURNING failed_login_attempts`,
-      [userId, maxAttempts, String(lockoutMinutes)]
-    );
-    return result.rows[0]?.failed_login_attempts ?? 1;
-  } catch (error) {
-    logger.error('atomicIncrementFailedAttempts failed', { error: error.message });
-    throw error;
   }
 }
 
@@ -212,7 +155,7 @@ export async function logAction(userId, action, details = {}, ipAddress = null) 
 
   const pool = getPool();
   try {
-    const id = `audit_${crypto.randomUUID()}`;
+    const id = `audit_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
     await pool.query(
       `INSERT INTO audit_log (id, user_id, action, details, ip_address, created_at)
        VALUES ($1, $2, $3, $4, $5, $6)`,
@@ -294,7 +237,7 @@ export async function createUser({
 
   const pool = getPool();
   try {
-    const id = `user_${crypto.randomUUID()}`;
+    const id = `user_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const result = await pool.query(
       `INSERT INTO users (id, email, name, company_name, password_hash, role, company_id, company_role, is_active, created_at)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, true, NOW())
@@ -490,18 +433,14 @@ export async function createJob(job) {
 /**
  * Get a single job by ID
  */
-export async function getJob(jobId, userId) {
+export async function getJob(jobId) {
   if (!usePostgres()) {
     return null;
   }
 
   const pool = getPool();
   try {
-    // D2: user_id filter prevents IDOR — callers must pass the authenticated user's ID
-    const result = await pool.query(`SELECT * FROM jobs WHERE id = $1 AND user_id = $2`, [
-      jobId,
-      userId,
-    ]);
+    const result = await pool.query(`SELECT * FROM jobs WHERE id = $1`, [jobId]);
     return result.rows[0] || null;
   } catch (error) {
     logger.error('getJob failed', { error: error.message });
@@ -553,7 +492,7 @@ const ALLOWED_JOB_COLUMNS = new Set([
 /**
  * Update job fields
  */
-export async function updateJob(jobId, userId, data) {
+export async function updateJob(jobId, data) {
   if (!usePostgres()) return;
 
   const pool = getPool();
@@ -577,13 +516,8 @@ export async function updateJob(jobId, userId, data) {
 
     if (updates.length === 0) return;
 
-    // D2: user_id filter prevents IDOR — only the owning user can update
     params.push(jobId);
-    params.push(userId);
-    await pool.query(
-      `UPDATE jobs SET ${updates.join(', ')} WHERE id = $${paramIndex} AND user_id = $${paramIndex + 1}`,
-      params
-    );
+    await pool.query(`UPDATE jobs SET ${updates.join(', ')} WHERE id = $${paramIndex}`, params);
   } catch (error) {
     logger.error('updateJob failed', { error: error.message });
     throw error;
@@ -626,7 +560,6 @@ export async function updateJobStatus(jobId, userId, status, address = null) {
     );
   } catch (error) {
     logger.error('updateJobStatus failed', { error: error.message });
-    throw error; // D17: write functions must throw on failure
   }
 }
 
@@ -663,24 +596,16 @@ export async function ensureTokenVersionColumn() {
 }
 
 /**
- * Atomically increment token_version with compare-and-swap (A7).
- * Returns true if the update succeeded (version matched), false on conflict.
- * CX-23: Throws on DB errors instead of silently returning false — a DB failure
- * must not be confused with a legitimate CAS conflict.
+ * Set token_version to a specific value for a user
  */
-export async function atomicIncrementTokenVersion(userId, expectedVersion) {
-  if (!usePostgres()) return true;
+export async function setTokenVersion(userId, version) {
+  if (!usePostgres()) return;
 
   const pool = getPool();
   try {
-    const result = await pool.query(
-      `UPDATE users SET token_version = token_version + 1 WHERE id = $1 AND token_version = $2`,
-      [userId, expectedVersion]
-    );
-    return result.rowCount === 1;
+    await pool.query(`UPDATE users SET token_version = $1 WHERE id = $2`, [version, userId]);
   } catch (error) {
-    logger.error('atomicIncrementTokenVersion failed', { error: error.message });
-    throw error; // CX-23: propagate — DB failures must not silently disable token revocation
+    logger.error('setTokenVersion failed', { error: error.message });
   }
 }
 
@@ -695,7 +620,6 @@ export async function incrementTokenVersion(userId) {
     await pool.query(`UPDATE users SET token_version = token_version + 1 WHERE id = $1`, [userId]);
   } catch (error) {
     logger.error('incrementTokenVersion failed', { error: error.message });
-    throw error; // D17: write functions must throw on failure — token invalidation is security-critical
   }
 }
 
@@ -842,9 +766,7 @@ export async function ensureJobVersionsTable() {
 }
 
 /**
- * Save a version snapshot of job data.
- * CX-21: Verifies job ownership via JOIN to jobs table before inserting.
- * CX-23: Propagates errors instead of silently swallowing — callers must handle.
+ * Save a version snapshot of job data
  */
 export async function saveJobVersion(jobId, userId, dataSnapshot, changesSummary) {
   if (!usePostgres()) return null;
@@ -852,20 +774,9 @@ export async function saveJobVersion(jobId, userId, dataSnapshot, changesSummary
   const pool = getPool();
   const client = await pool.connect();
   try {
-    const id = `ver_${crypto.randomUUID()}`;
+    const id = `ver_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
     await client.query('BEGIN');
-
-    // CX-21: Verify job belongs to the user before saving a version
-    const ownerCheck = await client.query('SELECT id FROM jobs WHERE id = $1 AND user_id = $2', [
-      jobId,
-      userId,
-    ]);
-    if (ownerCheck.rows.length === 0) {
-      await client.query('ROLLBACK');
-      throw new Error('Job not found or access denied');
-    }
-
     // Advisory lock keyed on job_id hash -- serializes version inserts per job.
     // Auto-released on COMMIT/ROLLBACK. Different job_ids are not blocked.
     await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [jobId]);
@@ -885,28 +796,23 @@ export async function saveJobVersion(jobId, userId, dataSnapshot, changesSummary
   } catch (error) {
     await client.query('ROLLBACK').catch(() => {});
     logger.error('saveJobVersion failed', { error: error.message });
-    throw error; // CX-23: propagate — version save failures are security-relevant
+    return null;
   } finally {
     client.release();
   }
 }
 
 /**
- * Get all versions for a job (metadata only, no snapshots).
- * CX-21: Requires userId and verifies job ownership via JOIN to jobs table.
+ * Get all versions for a job (metadata only, no snapshots)
  */
-export async function getJobVersions(jobId, userId) {
+export async function getJobVersions(jobId) {
   if (!usePostgres()) return [];
 
   const pool = getPool();
   try {
     const result = await pool.query(
-      `SELECT jv.id, jv.version_number, jv.user_id, jv.changes_summary, jv.created_at
-       FROM job_versions jv
-       INNER JOIN jobs j ON jv.job_id = j.id AND j.user_id = $2
-       WHERE jv.job_id = $1
-       ORDER BY jv.version_number DESC`,
-      [jobId, userId]
+      'SELECT id, version_number, user_id, changes_summary, created_at FROM job_versions WHERE job_id = $1 ORDER BY version_number DESC',
+      [jobId]
     );
     return result.rows;
   } catch (error) {
@@ -918,9 +824,8 @@ export async function getJobVersions(jobId, userId) {
 /**
  * Get versions for a job with pagination (LIMIT/OFFSET).
  * Returns { rows, total } for paginated responses.
- * CX-21: Requires userId and verifies job ownership via JOIN to jobs table.
  */
-export async function getJobVersionsPaginated(jobId, userId, limit, offset) {
+export async function getJobVersionsPaginated(jobId, limit, offset) {
   if (!usePostgres()) {
     return { rows: [], total: 0 };
   }
@@ -928,19 +833,10 @@ export async function getJobVersionsPaginated(jobId, userId, limit, offset) {
   const pool = getPool();
   try {
     const [countResult, dataResult] = await Promise.all([
+      pool.query('SELECT COUNT(*) FROM job_versions WHERE job_id = $1', [jobId]),
       pool.query(
-        `SELECT COUNT(*) FROM job_versions jv
-         INNER JOIN jobs j ON jv.job_id = j.id AND j.user_id = $2
-         WHERE jv.job_id = $1`,
-        [jobId, userId]
-      ),
-      pool.query(
-        `SELECT jv.id, jv.version_number, jv.user_id, jv.changes_summary, jv.created_at
-         FROM job_versions jv
-         INNER JOIN jobs j ON jv.job_id = j.id AND j.user_id = $2
-         WHERE jv.job_id = $1
-         ORDER BY jv.version_number DESC LIMIT $3 OFFSET $4`,
-        [jobId, userId, limit, offset]
+        'SELECT id, version_number, user_id, changes_summary, created_at FROM job_versions WHERE job_id = $1 ORDER BY version_number DESC LIMIT $2 OFFSET $3',
+        [jobId, limit, offset]
       ),
     ]);
     return { rows: dataResult.rows, total: Number(countResult.rows[0].count) };
@@ -1068,7 +964,7 @@ export async function createClient(client) {
 
   const pool = getPool();
   try {
-    const id = client.id || `client_${crypto.randomUUID()}`;
+    const id = client.id || `client_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     await pool.query(
       `INSERT INTO clients (id, user_id, name, email, phone, company, notes)
        VALUES ($1, $2, $3, $4, $5, $6, $7)`,
@@ -1092,7 +988,7 @@ export async function createClient(client) {
 /**
  * Update a client
  */
-export async function updateClient(clientId, userId, data) {
+export async function updateClient(clientId, data) {
   if (!usePostgres()) return;
 
   const pool = getPool();
@@ -1116,13 +1012,8 @@ export async function updateClient(clientId, userId, data) {
     params.push(new Date().toISOString());
     paramIndex++;
 
-    // D2: user_id filter prevents IDOR — only the owning user can update
     params.push(clientId);
-    params.push(userId);
-    await pool.query(
-      `UPDATE clients SET ${updates.join(', ')} WHERE id = $${paramIndex} AND user_id = $${paramIndex + 1}`,
-      params
-    );
+    await pool.query(`UPDATE clients SET ${updates.join(', ')} WHERE id = $${paramIndex}`, params);
   } catch (error) {
     logger.error('updateClient failed', { error: error.message });
     throw error;
@@ -1199,27 +1090,14 @@ export async function getPropertiesPaginated(userId, limit, offset) {
 }
 
 /**
- * Create a property.
- * CX-20: If client_id is provided, validates it belongs to the same user_id
- * to prevent cross-tenant IDOR (attaching properties to another tenant's client).
+ * Create a property
  */
 export async function createProperty(property) {
   if (!usePostgres()) return property;
 
   const pool = getPool();
   try {
-    // CX-20: Verify client_id ownership before insert
-    if (property.client_id) {
-      const ownerCheck = await pool.query('SELECT id FROM clients WHERE id = $1 AND user_id = $2', [
-        property.client_id,
-        property.user_id,
-      ]);
-      if (ownerCheck.rows.length === 0) {
-        throw new Error('client_id does not belong to the authenticated user');
-      }
-    }
-
-    const id = property.id || `prop_${crypto.randomUUID()}`;
+    const id = property.id || `prop_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     await pool.query(
       `INSERT INTO properties (id, client_id, user_id, address, postcode, property_type, notes)
        VALUES ($1, $2, $3, $4, $5, $6, $7)`,
@@ -1281,16 +1159,12 @@ export async function getPropertyByAddress(userId, address) {
 /**
  * Get a single client by ID
  */
-export async function getClient(clientId, userId) {
+export async function getClient(clientId) {
   if (!usePostgres()) return null;
 
   const pool = getPool();
   try {
-    // D2: user_id filter prevents IDOR — callers must pass the authenticated user's ID
-    const result = await pool.query('SELECT * FROM clients WHERE id = $1 AND user_id = $2', [
-      clientId,
-      userId,
-    ]);
+    const result = await pool.query('SELECT * FROM clients WHERE id = $1', [clientId]);
     return result.rows[0] || null;
   } catch (error) {
     logger.error('getClient failed', { error: error.message });
@@ -1308,7 +1182,7 @@ export async function createCompany({ name, settings }) {
 
   const pool = getPool();
   try {
-    const id = `company_${crypto.randomUUID()}`;
+    const id = `company_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const result = await pool.query(
       `INSERT INTO companies (id, name, is_active, settings, created_at, updated_at)
        VALUES ($1, $2, true, $3, NOW(), NOW())
@@ -1515,29 +1389,21 @@ export async function assignUserToCompany(userId, companyId, companyRole = 'empl
   if (!usePostgres()) return;
 
   const pool = getPool();
-  const client = await pool.connect();
   try {
-    await client.query('BEGIN');
-
-    await client.query(`UPDATE users SET company_id = $1, company_role = $2 WHERE id = $3`, [
+    await pool.query(`UPDATE users SET company_id = $1, company_role = $2 WHERE id = $3`, [
       companyId,
       companyRole,
       userId,
     ]);
 
     // Also update any existing jobs for this user to be tagged with the company
-    await client.query(
-      `UPDATE jobs SET company_id = $1 WHERE user_id = $2 AND company_id IS NULL`,
-      [companyId, userId]
-    );
-
-    await client.query('COMMIT');
+    await pool.query(`UPDATE jobs SET company_id = $1 WHERE user_id = $2 AND company_id IS NULL`, [
+      companyId,
+      userId,
+    ]);
   } catch (error) {
-    await client.query('ROLLBACK');
     logger.error('assignUserToCompany failed', { error: error.message });
     throw error;
-  } finally {
-    client.release();
   }
 }
 
@@ -1620,8 +1486,8 @@ export async function upsertSubscription(userId, data) {
   const pool = getPool();
   try {
     await pool.query(
-      `INSERT INTO subscriptions (user_id, stripe_customer_id, stripe_subscription_id, stripe_price_id, plan, status, current_period_start, current_period_end, cancel_at_period_end, last_event_at, updated_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW())
+      `INSERT INTO subscriptions (user_id, stripe_customer_id, stripe_subscription_id, stripe_price_id, plan, status, current_period_start, current_period_end, cancel_at_period_end, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())
        ON CONFLICT (user_id)
        DO UPDATE SET
          stripe_customer_id = COALESCE($2, subscriptions.stripe_customer_id),
@@ -1632,7 +1498,6 @@ export async function upsertSubscription(userId, data) {
          current_period_start = COALESCE($7, subscriptions.current_period_start),
          current_period_end = COALESCE($8, subscriptions.current_period_end),
          cancel_at_period_end = COALESCE($9, subscriptions.cancel_at_period_end),
-         last_event_at = COALESCE($10, subscriptions.last_event_at),
          updated_at = NOW()`,
       [
         userId,
@@ -1644,7 +1509,6 @@ export async function upsertSubscription(userId, data) {
         data.current_period_start || null,
         data.current_period_end || null,
         data.cancel_at_period_end ?? null,
-        data.last_event_at || null,
       ]
     );
     logger.info('Subscription upserted', { userId, plan: data.plan, status: data.status });
@@ -1872,12 +1736,7 @@ export async function getProcessingTimes(userId) {
 }
 
 /**
- * Run a raw SQL query (used by admin endpoints for health checks and stats).
- *
- * ⚠️  SECURITY WARNING — D1: NEVER concatenate user input into `text`.
- * Always use parameterized queries: query('SELECT * FROM t WHERE id = $1', [id])
- * String concatenation creates SQL injection vulnerabilities.
- * Prefer purpose-built functions (getJob, updateUser, etc.) over this export.
+ * Run a raw SQL query (used by admin endpoints for health checks and stats)
  */
 export async function query(text, params) {
   if (!usePostgres()) {
