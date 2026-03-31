@@ -12,4 +12,4 @@ const config: Config = {
   testMatch: ["<rootDir>/src/__tests__/**/*.test.ts?(x)"],
 };
 
-export default createJestConfig(config as Parameters<typeof createJestConfig>[0]);
+export default createJestConfig(config);
