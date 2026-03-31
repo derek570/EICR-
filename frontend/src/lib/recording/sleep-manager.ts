@@ -13,14 +13,11 @@ export interface SleepManagerCallbacks {
 // --- Configuration: aligned with iOS SleepManager.swift ---
 
 /** Seconds of no FINAL_TRANSCRIPT before entering doze.
- *  30s gives inspectors time for setup, brief pauses between readings,
- *  and accounts for Deepgram WS connection time (~2-3s) plus natural
- *  startup delay before speaking. Previous 10s was too aggressive —
- *  it triggered doze during connection, before first speech, or when
- *  Deepgram auth fails (cascading into permanent doze).
- *  With reliable VAD wake, 30s is safe because waking is fast and accurate.
- *  (iOS: noTranscriptTimeout = 10.0 — web needs more headroom for WS latency) */
-const NO_TRANSCRIPT_TIMEOUT = 30_000;
+ *  10s gives inspectors time for brief pauses between readings while
+ *  still catching idle sessions quickly. With reliable VAD wake,
+ *  aggressive doze is safe because waking is fast and accurate.
+ *  (iOS: noTranscriptTimeout = 10.0) */
+const NO_TRANSCRIPT_TIMEOUT = 10_000;
 
 /** Dozing → Sleeping timeout. 30 minutes matches iOS dozingTimeout.
  *  Sleeping disconnects Deepgram entirely; dozing just pauses the stream.
@@ -91,45 +88,15 @@ export class SleepManager {
     this.vadWindow = new Array(VAD_WINDOW_SIZE).fill(false);
   }
 
-  /** Max time (ms) to wait for VAD WASM/ONNX to load before giving up.
-   *  On low-memory mobile devices, WASM compilation can stall indefinitely. */
-  private static readonly VAD_INIT_TIMEOUT_MS = 10_000;
-
   /**
    * Initialize Silero VAD. Must be called once after construction.
    * Uses dynamic import to avoid SSR issues with WASM/ONNX.
    * Configured with 0.80 threshold matching iOS vadWakeThreshold.
-   *
-   * This method NEVER rejects — if VAD fails or times out, recording
-   * continues without VAD wake capability (doze/sleep still works via
-   * transcript-based timers, but cannot wake on speech).
    */
   async initVAD(): Promise<void> {
     if (this.micVAD || this.vadInitializing) return;
     this.vadInitializing = true;
 
-    try {
-      // Race the VAD init against a timeout to prevent blocking recording startup
-      const vadPromise = this.initVADInternal();
-      const timeoutPromise = new Promise<'timeout'>((resolve) =>
-        setTimeout(() => resolve('timeout'), SleepManager.VAD_INIT_TIMEOUT_MS)
-      );
-
-      const result = await Promise.race([vadPromise, timeoutPromise]);
-      if (result === 'timeout') {
-        console.error(
-          `[SleepManager] VAD init timed out after ${SleepManager.VAD_INIT_TIMEOUT_MS}ms — continuing without VAD`
-        );
-      }
-    } catch (err) {
-      console.error('[SleepManager] Failed to initialize Silero VAD:', err);
-      // Continue without VAD — recording still works, just no speech-wake from doze
-    } finally {
-      this.vadInitializing = false;
-    }
-  }
-
-  private async initVADInternal(): Promise<void> {
     try {
       // Dynamic import to avoid SSR — vad-web requires browser APIs
       const { MicVAD } = await import('@ricky0123/vad-web');
@@ -170,16 +137,11 @@ export class SleepManager {
           this.onSpeechFrame(false);
         },
       });
-      console.log('[SleepManager] VAD initialized successfully');
     } catch (err) {
-      console.error('[SleepManager] VAD internal init failed:', err);
-      // Don't rethrow — let the caller handle gracefully
+      console.error('[SleepManager] Failed to initialize Silero VAD:', err);
+    } finally {
+      this.vadInitializing = false;
     }
-  }
-
-  /** Set the actual AudioContext sample rate so the ring buffer can resample on drain. */
-  setActualSampleRate(rate: number): void {
-    this.ringBuffer.setInputSampleRate(rate);
   }
 
   start(): void {

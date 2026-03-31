@@ -76,10 +76,9 @@ export class DeepgramService {
     const url = this.buildURL(keywords);
 
     try {
-      // Authenticate via WebSocket subprotocol — Deepgram no longer accepts
-      // the `token=` query parameter. The subprotocol approach sends the key
-      // in the Sec-WebSocket-Protocol header during the HTTP Upgrade handshake.
-      this.ws = new WebSocket(url, ['token', apiKey]);
+      // Deepgram WebSocket uses Authorization header via protocol trick
+      // Browser WebSocket API doesn't support custom headers, so we use the token in URL
+      this.ws = new WebSocket(url);
       this.ws.binaryType = 'arraybuffer';
 
       this.ws.onopen = () => {
@@ -201,8 +200,10 @@ export class DeepgramService {
       params.append('keyterm', keyword);
     }
 
-    // Auth is via WebSocket subprotocol (Sec-WebSocket-Protocol header),
-    // NOT the token= query param which Deepgram no longer accepts.
+    // Browser WebSocket doesn't support custom headers, so pass token in URL
+    if (this.currentApiKey) {
+      params.set('token', this.currentApiKey);
+    }
 
     return `wss://api.deepgram.com/v1/listen?${params.toString()}`;
   }

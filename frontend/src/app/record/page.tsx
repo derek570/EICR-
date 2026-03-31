@@ -21,7 +21,7 @@ function RecordPageContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const jobId = searchParams.get('jobId') ?? '';
-  const certificateType = searchParams.get('type')?.toUpperCase() === 'EIC' ? 'EIC' : 'EICR';
+  const certificateType = searchParams.get('type') === 'EIC' ? 'EIC' : 'EICR';
 
   // Auth
   const [userId, setUserId] = useState<string | null>(null);
@@ -152,10 +152,10 @@ function RecordPageContent() {
   // --------------------------------------------------------------------------
   if (!authChecked || (jobLoading && !job)) {
     return (
-      <div className="flex min-h-dvh items-center justify-center bg-L0">
+      <div className="flex min-h-dvh items-center justify-center bg-zinc-950">
         <div className="flex flex-col items-center gap-3">
-          <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
-          <p className="text-sm text-muted-foreground">Loading job...</p>
+          <Loader2 className="h-8 w-8 animate-spin text-zinc-400" />
+          <p className="text-sm text-zinc-500">Loading job...</p>
         </div>
       </div>
     );
@@ -166,23 +166,21 @@ function RecordPageContent() {
   // --------------------------------------------------------------------------
   if (jobError && !job) {
     return (
-      <div className="flex min-h-dvh items-center justify-center bg-L0 p-6">
-        <div className="w-full max-w-sm rounded-2xl bg-L1 p-6 text-center">
-          <AlertTriangle className="mx-auto mb-4 h-12 w-12 text-status-amber" />
-          <h2 className="mb-2 text-xl font-bold text-foreground">Failed to Load Job</h2>
-          <p className="mb-6 text-sm text-muted-foreground">{jobError}</p>
+      <div className="flex min-h-dvh items-center justify-center bg-zinc-950 p-6">
+        <div className="w-full max-w-sm rounded-2xl bg-zinc-900 p-6 text-center">
+          <AlertTriangle className="mx-auto mb-4 h-12 w-12 text-amber-500" />
+          <h2 className="mb-2 text-xl font-bold text-zinc-100">Failed to Load Job</h2>
+          <p className="mb-6 text-sm text-zinc-400">{jobError}</p>
           <div className="flex gap-3">
             <button
               onClick={() => router.push(jobId ? `/job/${jobId}` : '/dashboard')}
-              className="flex-1 rounded-lg border border-white/10 px-4 py-2.5 min-h-[44px] text-sm text-foreground/70 transition-colors hover:bg-white/5"
-              aria-label="Go back"
+              className="flex-1 rounded-lg border border-zinc-700 px-4 py-2 text-sm text-zinc-300 transition-colors hover:bg-zinc-800"
             >
               Go Back
             </button>
             <button
               onClick={loadJob}
-              className="flex-1 rounded-lg bg-brand-blue px-4 py-2.5 min-h-[44px] text-sm font-medium text-white transition-colors hover:brightness-110"
-              aria-label="Retry loading job"
+              className="flex-1 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-700"
             >
               <RefreshCw className="mr-1.5 inline h-4 w-4" />
               Retry
@@ -218,16 +216,15 @@ function RecordPageContent() {
         }
       `}</style>
 
-      <div className="flex min-h-dvh flex-col bg-L0">
+      <div className="flex min-h-dvh flex-col bg-zinc-950">
         {/* ================================================================ */}
         {/* Top Bar                                                          */}
         {/* ================================================================ */}
-        <header className="flex h-14 shrink-0 items-center justify-between border-b border-white/8 bg-L1/95 px-4">
+        <header className="flex h-14 shrink-0 items-center justify-between border-b border-zinc-800 bg-zinc-900/95 px-4">
           {/* Left: back button */}
           <button
             onClick={handleBack}
-            className="flex items-center gap-1.5 min-w-[44px] min-h-[44px] text-sm text-muted-foreground transition-colors hover:text-foreground"
-            aria-label="Go back"
+            className="flex items-center gap-1.5 text-sm text-zinc-400 transition-colors hover:text-zinc-200"
           >
             <ArrowLeft className="h-4 w-4" />
             <span className="hidden sm:inline">Back</span>
@@ -316,8 +313,8 @@ export default function RecordPage() {
   return (
     <Suspense
       fallback={
-        <div className="flex min-h-dvh items-center justify-center bg-L0">
-          <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+        <div className="flex min-h-dvh items-center justify-center bg-zinc-950">
+          <Loader2 className="h-8 w-8 animate-spin text-zinc-400" />
         </div>
       }
     >

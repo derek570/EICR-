@@ -97,7 +97,7 @@ function buildHighlightedSpans(text: string, highlights: TranscriptHighlight[]):
     if (cursor < range.start)
       nodes.push(<span key={key++}>{visible.slice(cursor, range.start)}</span>);
     nodes.push(
-      <span key={key++} className="text-status-green font-semibold">
+      <span key={key++} className="text-green-400 font-semibold">
         {visible.slice(range.start, range.end)}
       </span>
     );
@@ -133,11 +133,7 @@ function WaveformBars({ isSpeaking, isRecording }: { isSpeaking: boolean; isReco
           key={i}
           className={cn(
             'w-[3px] rounded-full transition-all duration-150',
-            isRecording
-              ? isSpeaking
-                ? 'bg-status-green'
-                : 'bg-muted-foreground'
-              : 'bg-muted-foreground/50'
+            isRecording ? (isSpeaking ? 'bg-green-400' : 'bg-gray-400') : 'bg-gray-300'
           )}
           style={{ height: `${h * 24}px` }}
         />
@@ -155,15 +151,15 @@ function VADIndicator({ isSpeaking, isRecording }: { isSpeaking: boolean; isReco
     <div className="relative flex items-center justify-center">
       {/* Outer pulse ring */}
       {isRecording && isSpeaking && (
-        <div className="absolute h-5 w-5 rounded-full bg-status-green/30 animate-ping" />
+        <div className="absolute h-5 w-5 rounded-full bg-green-400/30 animate-ping" />
       )}
       {/* Inner dot */}
       <div
         className={cn(
           'h-3 w-3 rounded-full transition-colors duration-200',
-          !isRecording && 'bg-muted-foreground',
-          isRecording && !isSpeaking && 'bg-status-amber',
-          isRecording && isSpeaking && 'bg-status-green'
+          !isRecording && 'bg-gray-400',
+          isRecording && !isSpeaking && 'bg-yellow-400',
+          isRecording && isSpeaking && 'bg-green-400'
         )}
       />
     </div>
@@ -177,10 +173,10 @@ function VADIndicator({ isSpeaking, isRecording }: { isSpeaking: boolean; isReco
 function ConnectionBadge({ state }: { state: string }) {
   const color =
     state === 'connected'
-      ? 'bg-status-green/20 text-status-green border-status-green/30'
+      ? 'bg-green-500/20 text-green-400 border-green-500/30'
       : state === 'connecting' || state === 'reconnecting'
-        ? 'bg-status-amber/20 text-status-amber border-status-amber/30'
-        : 'bg-L3 text-muted-foreground border-white/10';
+        ? 'bg-yellow-500/20 text-yellow-400 border-yellow-500/30'
+        : 'bg-gray-500/20 text-gray-400 border-gray-500/30';
 
   const icon =
     state === 'connected' ? <Wifi className="h-3 w-3" /> : <WifiOff className="h-3 w-3" />;
@@ -188,7 +184,7 @@ function ConnectionBadge({ state }: { state: string }) {
   return (
     <div
       className={cn(
-        'flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-medium',
+        'flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-medium',
         color
       )}
     >
@@ -217,24 +213,24 @@ function StatsBar({
 }) {
   return (
     <div className="flex items-center gap-3 text-[11px]">
-      <div className="flex items-center gap-1 text-brand-blue">
+      <div className="flex items-center gap-1 text-blue-400">
         <Zap className="h-3 w-3" />
         <span>{regexCount} regex</span>
       </div>
-      <div className="flex items-center gap-1 text-status-fi">
+      <div className="flex items-center gap-1 text-purple-400">
         <Brain className="h-3 w-3" />
         <span>{sonnetCount} sonnet</span>
       </div>
       {discrepancies > 0 && (
-        <div className="flex items-center gap-1 text-status-amber">
+        <div className="flex items-center gap-1 text-amber-400">
           <AlertTriangle className="h-3 w-3" />
           <span>{discrepancies}</span>
         </div>
       )}
-      <div className="flex items-center gap-1 text-status-green">
+      <div className="flex items-center gap-1 text-green-400">
         <span>${cost.toFixed(3)}</span>
       </div>
-      <div className="flex items-center gap-1 text-muted-foreground">
+      <div className="flex items-center gap-1 text-gray-400">
         <Clock className="h-3 w-3" />
         <span>{formatDuration(duration)}</span>
       </div>
@@ -258,29 +254,25 @@ function LiveDataCard({
   recentlyUpdated: Record<string, number>;
 }) {
   const [expanded, setExpanded] = useState(true);
-  const [now, setNow] = useState(() => Date.now());
+  const now = Date.now();
   const filledCount = fields.filter((f) => data?.[f.key]).length;
 
-  useEffect(() => {
-    setNow(Date.now());
-  }, [data]);
-
   return (
-    <div className="glass-card overflow-hidden">
+    <div className="rounded-lg border border-gray-700/50 bg-gray-800/50 overflow-hidden">
       <button
         onClick={() => setExpanded(!expanded)}
-        className="flex w-full items-center justify-between px-4 py-2.5 text-xs font-medium text-foreground hover:bg-white/5 transition-colors"
+        className="flex w-full items-center justify-between px-3 py-2 text-xs font-medium text-gray-300 hover:bg-gray-700/30"
       >
         <span>
           {title}{' '}
-          <span className="text-muted-foreground">
+          <span className="text-gray-500">
             ({filledCount}/{fields.length})
           </span>
         </span>
         {expanded ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
       </button>
       {expanded && (
-        <div className="grid grid-cols-2 gap-x-4 gap-y-0.5 px-4 pb-3">
+        <div className="grid grid-cols-2 gap-x-4 gap-y-0.5 px-3 pb-2">
           {fields.map((f) => {
             const val = data?.[f.key] as string | undefined;
             const fieldKey = `${title.toLowerCase().replace(/\s/g, '')}.${f.key}`;
@@ -290,19 +282,19 @@ function LiveDataCard({
                 key={f.key}
                 className={cn(
                   'flex items-baseline gap-1 py-0.5 rounded px-1 transition-colors duration-300',
-                  isRecent && 'bg-brand-blue/15'
+                  isRecent && 'bg-blue-500/20'
                 )}
               >
-                <span className="text-[11px] text-muted-foreground w-24 shrink-0 text-right">
+                <span className="text-[10px] text-gray-500 w-24 shrink-0 text-right">
                   {f.label}
                 </span>
                 <span
                   className={cn(
                     'text-[11px] font-mono truncate',
-                    val ? 'text-foreground' : 'text-muted-foreground/40'
+                    val ? 'text-gray-200' : 'text-gray-600'
                   )}
                 >
-                  {val || '\u2014'}
+                  {val || '—'}
                 </span>
               </div>
             );
@@ -375,19 +367,19 @@ export default function RecordPage() {
   }, [actions]);
 
   return (
-    <div className="flex flex-col h-full bg-L0 circuit-grid-bg text-foreground">
+    <div className="flex flex-col h-full bg-gray-900 text-white">
       {/* ──────────── Top: Transcript Bar ──────────── */}
-      <div className="flex-shrink-0 border-b border-white/5 glass-bg">
+      <div className="flex-shrink-0 border-b border-gray-700/50 bg-gray-800/80 backdrop-blur-sm">
         <div className="flex items-center gap-3 px-4 py-2">
           {/* Connection dot */}
           <div
             className={cn(
               'h-2 w-2 rounded-full shrink-0',
-              state.connectionState === 'connected' && 'bg-status-green',
+              state.connectionState === 'connected' && 'bg-green-400',
               (state.connectionState === 'connecting' ||
                 state.connectionState === 'reconnecting') &&
-                'bg-status-amber animate-pulse',
-              state.connectionState === 'disconnected' && 'bg-muted-foreground'
+                'bg-yellow-400 animate-pulse',
+              state.connectionState === 'disconnected' && 'bg-gray-500'
             )}
           />
 
@@ -400,15 +392,13 @@ export default function RecordPage() {
               <>
                 {highlightedText}
                 {state.interimTranscript && (
-                  <span className="italic text-muted-foreground"> {state.interimTranscript}</span>
+                  <span className="italic text-gray-500"> {state.interimTranscript}</span>
                 )}
               </>
             ) : state.isRecording ? (
-              <span className="text-muted-foreground">Listening...</span>
+              <span className="text-gray-500">Listening...</span>
             ) : (
-              <span className="text-muted-foreground/50">
-                Press the mic button to start recording
-              </span>
+              <span className="text-gray-600">Press the mic button to start recording</span>
             )}
           </div>
 
@@ -442,44 +432,37 @@ export default function RecordPage() {
       <div className="flex-1 overflow-auto p-4 space-y-4">
         {/* Section data cards */}
         {showSections && (
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-3 stagger-in">
-            <div className="animate-stagger-in">
-              <LiveDataCard
-                title="Installation"
-                data={job.installation_details as unknown as Record<string, unknown>}
-                fields={installationFields}
-                recentlyUpdated={state.recentlyUpdatedFields}
-              />
-            </div>
-            <div className="animate-stagger-in">
-              <LiveDataCard
-                title="Supply"
-                data={job.supply_characteristics as unknown as Record<string, unknown>}
-                fields={supplyFields}
-                recentlyUpdated={state.recentlyUpdatedFields}
-              />
-            </div>
-            <div className="animate-stagger-in">
-              <LiveDataCard
-                title="Board"
-                data={job.board_info as unknown as Record<string, unknown>}
-                fields={boardFields}
-                recentlyUpdated={state.recentlyUpdatedFields}
-              />
-            </div>
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
+            <LiveDataCard
+              title="Installation"
+              data={job.installation_details as unknown as Record<string, unknown>}
+              fields={installationFields}
+              recentlyUpdated={state.recentlyUpdatedFields}
+            />
+            <LiveDataCard
+              title="Supply"
+              data={job.supply_characteristics as unknown as Record<string, unknown>}
+              fields={supplyFields}
+              recentlyUpdated={state.recentlyUpdatedFields}
+            />
+            <LiveDataCard
+              title="Board"
+              data={job.board_info as unknown as Record<string, unknown>}
+              fields={boardFields}
+              recentlyUpdated={state.recentlyUpdatedFields}
+            />
           </div>
         )}
 
         {/* Live circuit grid */}
         <div>
           <div className="flex items-center justify-between mb-2">
-            <h3 className="text-sm font-medium text-muted-foreground">
-              Circuits{' '}
-              <span className="text-muted-foreground/50">({job.circuits?.length || 0})</span>
+            <h3 className="text-sm font-medium text-gray-400">
+              Circuits <span className="text-gray-600">({job.circuits?.length || 0})</span>
             </h3>
             <button
               onClick={() => setShowSections(!showSections)}
-              className="text-[11px] text-muted-foreground hover:text-foreground transition-colors"
+              className="text-[10px] text-gray-500 hover:text-gray-300"
             >
               {showSections ? 'Hide' : 'Show'} sections
             </button>
@@ -495,7 +478,7 @@ export default function RecordPage() {
       </div>
 
       {/* ──────────── Bottom: Control Bar (Glass) ──────────── */}
-      <div className="flex-shrink-0 border-t border-white/5 glass-bg">
+      <div className="flex-shrink-0 border-t border-gray-700/50 bg-gray-800/90 backdrop-blur-xl">
         <div className="flex items-center gap-4 px-4 py-3">
           {/* Left: VAD + Waveform */}
           <div className="flex items-center gap-3">
@@ -507,12 +490,12 @@ export default function RecordPage() {
           <div className="flex-1 flex items-center justify-center gap-3">
             <ConnectionBadge state={state.connectionState} />
             {state.isRecording && (
-              <span className="text-sm font-mono text-muted-foreground">
+              <span className="text-sm font-mono text-gray-400">
                 {formatDuration(state.sessionDuration)}
               </span>
             )}
             {state.error && (
-              <span className="text-xs text-status-red truncate max-w-[200px]">{state.error}</span>
+              <span className="text-xs text-red-400 truncate max-w-[200px]">{state.error}</span>
             )}
           </div>
 
@@ -524,11 +507,10 @@ export default function RecordPage() {
               className={cn(
                 'rounded-full p-2 text-xs transition-colors',
                 showDebug
-                  ? 'bg-status-red/20 text-status-red border border-status-red/30'
-                  : 'text-muted-foreground hover:text-foreground hover:bg-L3'
+                  ? 'bg-red-500/20 text-red-400 border border-red-500/30'
+                  : 'text-gray-500 hover:text-gray-300 hover:bg-gray-700/50'
               )}
               title="Debug Dashboard"
-              aria-label={showDebug ? 'Hide debug dashboard' : 'Show debug dashboard'}
             >
               <Activity className="h-4 w-4" />
             </button>
@@ -537,9 +519,8 @@ export default function RecordPage() {
             <a
               href="/mic"
               target="_blank"
-              className="rounded-full p-2 text-muted-foreground hover:text-brand-blue hover:bg-brand-blue/10 transition-colors"
+              className="rounded-full p-2 text-gray-500 hover:text-cyan-400 hover:bg-cyan-500/10 transition-colors"
               title="Open phone companion mic"
-              aria-label="Open phone companion mic"
             >
               <Smartphone className="h-4 w-4" />
             </a>
@@ -548,8 +529,7 @@ export default function RecordPage() {
             {state.isRecording && (
               <button
                 onClick={handleStop}
-                className="flex items-center gap-1.5 rounded-full bg-status-red/20 border border-status-red/30 px-3 py-2 text-xs font-medium text-status-red hover:bg-status-red/30 transition-colors"
-                aria-label="End recording"
+                className="flex items-center gap-1.5 rounded-lg bg-red-500/20 border border-red-500/30 px-3 py-2 text-xs font-medium text-red-400 hover:bg-red-500/30 transition-colors"
               >
                 <Square className="h-3.5 w-3.5" />
                 End
@@ -559,12 +539,11 @@ export default function RecordPage() {
             {/* Main record button */}
             <button
               onClick={state.isRecording ? handleStop : handleStart}
-              aria-label={state.isRecording ? 'Stop recording' : 'Start recording'}
               className={cn(
                 'flex items-center justify-center rounded-full transition-all duration-200 shadow-lg',
                 state.isRecording
-                  ? 'h-14 w-14 bg-gradient-to-br from-status-amber to-status-red hover:opacity-90 shadow-status-red/25'
-                  : 'h-14 w-14 bg-gradient-to-br from-brand-green to-status-green hover:opacity-90 shadow-brand-green/25'
+                  ? 'h-14 w-14 bg-gradient-to-br from-orange-500 to-red-500 hover:from-orange-600 hover:to-red-600 shadow-red-500/25'
+                  : 'h-14 w-14 bg-gradient-to-br from-green-500 to-emerald-500 hover:from-green-600 hover:to-emerald-600 shadow-green-500/25'
               )}
             >
               {state.isRecording ? (

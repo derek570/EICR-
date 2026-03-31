@@ -1,7 +1,6 @@
 'use client';
 
 import { useCallback, useEffect, useRef } from 'react';
-import { toast } from 'sonner';
 import { api } from '../lib/api';
 import type { JobDetail, SaveJobData } from '../lib/api';
 import { DeepgramService } from '../lib/recording/deepgram-service';
@@ -16,6 +15,7 @@ import { SleepManager } from '../lib/recording/sleep-manager';
 import type { SleepState, VadState } from '../lib/recording/sleep-manager';
 import { AlertManager } from '../lib/recording/alert-manager';
 import { normalise } from '../lib/recording/number-normaliser';
+import { generateKeywordBoosts } from '../lib/recording/keyword-boost-generator';
 import { useRecordingStore } from '../lib/recording-store';
 import type { ServerCostUpdate as StoreCostUpdate } from '../lib/recording-store';
 
@@ -143,11 +143,6 @@ function buildServerWSURL(): string {
   return `${base}/api/sonnet-stream`;
 }
 
-function buildRecordingProxyURL(): string {
-  const base = API_BASE_URL.replace(/^http/, 'ws');
-  return `${base}/api/recording/stream`;
-}
-
 function mapCostUpdate(ws: WsCostUpdate): StoreCostUpdate {
   return {
     deepgramCost: ws.deepgram?.cost ?? 0,
@@ -187,7 +182,6 @@ export function useRecording(jobId: string, userId: string, initialJob: JobDetai
   // --- Refs for service instances ---
   const audioContextRef = useRef<AudioContext | null>(null);
   const workletNodeRef = useRef<AudioWorkletNode | null>(null);
-  const scriptNodeRef = useRef<ScriptProcessorNode | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const deepgramRef = useRef<DeepgramService | null>(null);
   const serverWSRef = useRef<ServerWebSocketService | null>(null);
@@ -198,9 +192,10 @@ export function useRecording(jobId: string, userId: string, initialJob: JobDetai
 
   // --- Mutable state refs ---
   const jobRef = useRef<JobDetail | null>(initialJob);
+  const deepgramKeyRef = useRef<string>('');
+  const keywordsRef = useRef<Array<[string, number]>>([]);
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isRecordingRef = useRef(false);
-  const chunkCountRef = useRef(0);
 
   // Keep jobRef in sync with prop changes
   useEffect(() => {
@@ -256,13 +251,7 @@ export function useRecording(jobId: string, userId: string, initialJob: JobDetai
       let lastHighlightField = '';
       let lastHighlightValue = '';
 
-      console.log('[useRecording] applySonnetReadings:', {
-        readingsCount: result.extracted_readings?.length ?? 0,
-        observationsCount: result.observations?.length ?? 0,
-        fields: result.extracted_readings?.map((r) => `${r.field}=${r.value}`).slice(0, 5),
-      });
-
-      for (const reading of result.extracted_readings ?? []) {
+      for (const reading of result.readings) {
         const { field, value, circuit } = reading;
 
         // Determine which section this field belongs to
@@ -370,84 +359,40 @@ export function useRecording(jobId: string, userId: string, initialJob: JobDetai
     if (isRecordingRef.current) return;
 
     try {
-      // 1. Get auth token for backend proxy (no Deepgram key needed — proxy uses master key)
-      const authToken = typeof window !== 'undefined' ? (localStorage.getItem('token') ?? '') : '';
-      if (!authToken) {
-        throw new Error('No auth token — please log in');
-      }
+      // 1. Fetch short-lived Deepgram streaming key (secure temp key, 600s TTL)
+      const deepgramKey = await api.fetchDeepgramStreamingKey();
+      deepgramKeyRef.current = deepgramKey;
 
-      // 2. Build WS URLs
+      // 2. Build server WS URL
       const serverWSURL = buildServerWSURL();
-      const recordingProxyURL = buildRecordingProxyURL();
 
-      // 3. Get mic access — use ideal (not exact) sampleRate so mobile browsers don't reject
+      // 3. Get mic access
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
-          sampleRate: { ideal: 16000 },
+          sampleRate: 16000,
           channelCount: 1,
           echoCancellation: true,
           noiseSuppression: true,
-          autoGainControl: true,
         },
       });
       streamRef.current = stream;
 
-      // 4. Create AudioContext (must resume — mobile browsers start suspended)
-      // Request 16kHz but mobile browsers may give 48kHz — we detect and resample
+      // 4. Create AudioContext
       const audioContext = new AudioContext({ sampleRate: 16000 });
-      if (audioContext.state === 'suspended') {
-        await audioContext.resume();
-      }
       audioContextRef.current = audioContext;
-
-      // Detect actual sample rate (mobile often ignores the 16kHz request)
-      const actualSampleRate = audioContext.sampleRate;
-      // DIAG: always log detected sample rate for production debugging
-      console.warn(
-        `[useRecording DIAG] AudioContext sampleRate=${actualSampleRate}Hz (requested 16000Hz)`
-      );
-      if (actualSampleRate !== 16000) {
-        console.warn(
-          `[useRecording] Requested 16kHz AudioContext but got ${actualSampleRate}Hz — DeepgramService will resample`
-        );
-      }
 
       // 5. Create media stream source
       const source = audioContext.createMediaStreamSource(stream);
 
-      // 6-8. Audio capture: try AudioWorklet, fall back to ScriptProcessorNode
-      let workletSetup = false;
-      if (typeof audioContext.audioWorklet !== 'undefined') {
-        try {
-          await audioContext.audioWorklet.addModule('/audio-worklet-processor.js');
-          const workletNode = new AudioWorkletNode(audioContext, 'pcm-capture-processor');
-          workletNodeRef.current = workletNode;
-          source.connect(workletNode);
-          workletSetup = true;
-          // DIAG: confirm AudioWorklet started
-          console.warn('[useRecording DIAG] AudioWorklet started successfully');
-        } catch (workletErr) {
-          console.error(
-            '[useRecording] AudioWorklet failed, falling back to ScriptProcessor:',
-            workletErr
-          );
-          toast.warning('Audio capture using fallback mode');
-        }
-      } else {
-        console.warn('[useRecording] AudioWorklet not supported — using ScriptProcessor fallback');
-      }
+      // 6. Load AudioWorklet processor
+      await audioContext.audioWorklet.addModule('/audio-worklet-processor.js');
 
-      if (!workletSetup) {
-        // ScriptProcessorNode fallback for older mobile browsers / in-app WebViews
-        // eslint-disable-next-line deprecation/deprecation
-        const scriptNode = audioContext.createScriptProcessor(4096, 1, 1);
-        source.connect(scriptNode);
-        // ScriptProcessorNode requires connection to destination to fire events
-        scriptNode.connect(audioContext.destination);
-        scriptNodeRef.current = scriptNode;
-        // DIAG: confirm ScriptProcessor fallback started
-        console.warn('[useRecording DIAG] ScriptProcessorNode fallback started (bufferSize=4096)');
-      }
+      // 7. Create AudioWorkletNode
+      const workletNode = new AudioWorkletNode(audioContext, 'pcm-capture-processor');
+      workletNodeRef.current = workletNode;
+
+      // 8. Connect audio graph (NO destination — we don't play back audio)
+      source.connect(workletNode);
 
       // 10. Generate session ID
       const sessionId = crypto.randomUUID();
@@ -501,16 +446,12 @@ export function useRecording(jobId: string, userId: string, initialJob: JobDetai
         },
         onError: (error: Error) => {
           console.error('[useRecording] Deepgram error:', error);
-          toast.error(`Transcription error: ${error.message}`);
         },
         onConnectionStateChange: (state) => {
           store.setDeepgramState(state);
         },
       });
       deepgramRef.current = deepgram;
-
-      // 12b. Tell Deepgram about actual sample rate so it can resample if needed
-      deepgram.setActualSampleRate(actualSampleRate);
 
       // 13. Create ServerWebSocketService
       const serverWS = new ServerWebSocketService({
@@ -525,9 +466,6 @@ export function useRecording(jobId: string, userId: string, initialJob: JobDetai
         },
         onError: (msg: string, recoverable: boolean) => {
           console.error(`[useRecording] Server WS error (recoverable=${recoverable}):`, msg);
-          if (!recoverable) {
-            toast.error(`Server error: ${msg}`);
-          }
         },
         onSessionAck: (status: string) => {
           console.log('[useRecording] session_ack:', status);
@@ -570,29 +508,19 @@ export function useRecording(jobId: string, userId: string, initialJob: JobDetai
           store.setSleepState('active');
 
           if (fromState === 'sleeping') {
-            // Reconnect to recording proxy and replay ring buffer
-            const token =
-              typeof window !== 'undefined' ? (localStorage.getItem('token') ?? '') : '';
-            if (token && sessionIdRef.current) {
+            // Reconnect Deepgram and replay ring buffer
+            if (deepgramKeyRef.current) {
               deepgramRef.current?.connect(
-                buildRecordingProxyURL(),
-                token,
-                sessionIdRef.current,
-                jobId
+                deepgramKeyRef.current,
+                keywordsRef.current.map(([kw, boost]: [string, number]) => ({ keyword: kw, boost }))
               );
             }
             const bufferedData = sleepManagerRef.current?.ringBuffer.drain();
             if (bufferedData && bufferedData.byteLength > 0) {
-              // Wait for Deepgram WS to actually connect before replaying buffer.
-              // Previous setTimeout(500) silently dropped audio if WS took longer.
-              deepgramRef.current
-                ?.waitForConnection(5000)
-                .then(() => {
-                  deepgramRef.current?.replayBuffer(bufferedData);
-                })
-                .catch((err) => {
-                  console.warn('[useRecording] Could not replay buffer after wake:', err);
-                });
+              // Wait briefly for Deepgram to connect before replaying
+              setTimeout(() => {
+                deepgramRef.current?.replayBuffer(bufferedData);
+              }, 500);
             }
           } else if (fromState === 'dozing') {
             deepgramRef.current?.resumeAudioStream();
@@ -610,65 +538,35 @@ export function useRecording(jobId: string, userId: string, initialJob: JobDetai
       });
       sleepManagerRef.current = sleepManager;
 
-      // 14b. Tell sleep manager the actual sample rate so ring buffer can resample on drain
-      sleepManager.setActualSampleRate(actualSampleRate);
-
-      // 14c. Initialize Silero VAD (async — runs its own mic stream)
+      // 14b. Initialize Silero VAD (async — runs its own mic stream)
       await sleepManager.initVAD();
 
-      // 15. Connect to backend recording proxy (which connects to Deepgram with master key)
-      // Keywords are configured server-side in ws-recording.js (DEEPGRAM_CONFIG.keywords)
-      deepgram.connect(recordingProxyURL, authToken, sessionId, jobId);
+      // 15. Generate keyword boosts from job data
+      const job = jobRef.current;
+      const boostTuples = generateKeywordBoosts(job?.board_info, job?.circuits);
+      const keywords = boostTuples.map(([keyword, boost]) => ({
+        keyword,
+        boost,
+      }));
+      keywordsRef.current = boostTuples;
 
-      // 17. Connect Server WS (reuse the same auth token)
-      serverWS.connect(serverWSURL, authToken);
+      // 16. Connect Deepgram
+      deepgram.connect(deepgramKey, keywords);
+
+      // 17. Connect Server WS
+      const token = typeof window !== 'undefined' ? (localStorage.getItem('token') ?? '') : '';
+      serverWS.connect(serverWSURL, token);
 
       // 18. session_start is now sent from onConnect callback (above)
 
-      // 19. Wire audio capture output → Deepgram + SleepManager
-      chunkCountRef.current = 0;
-      if (workletNodeRef.current) {
-        workletNodeRef.current.port.onmessage = (event: MessageEvent) => {
-          // Handle error messages from worklet
-          if (event.data?.error) {
-            console.error(
-              `[useRecording] AudioWorklet error (count=${event.data.count}):`,
-              event.data.message
-            );
-            return;
-          }
-          const samples = (event.data?.samples ?? event.data) as Float32Array;
-          if (!samples || samples.length === 0) return;
+      // 19. Wire AudioWorklet output → Deepgram + SleepManager
+      workletNode.port.onmessage = (event: MessageEvent) => {
+        const samples = event.data as Float32Array;
+        if (!samples || samples.length === 0) return;
 
-          // DIAG: log chunk count every 10 chunks
-          chunkCountRef.current += 1;
-          if (chunkCountRef.current % 10 === 0) {
-            console.warn(
-              `[useRecording DIAG] audioChunks=${chunkCountRef.current}, lastLen=${samples.length}`
-            );
-          }
-
-          deepgramRef.current?.sendSamples(samples);
-          sleepManagerRef.current?.processChunk(samples);
-        };
-      } else if (scriptNodeRef.current) {
-        scriptNodeRef.current.onaudioprocess = (event) => {
-          const inputData = event.inputBuffer.getChannelData(0);
-          const samples = new Float32Array(inputData);
-          if (samples.length === 0) return;
-
-          // DIAG: log chunk count every 10 chunks
-          chunkCountRef.current += 1;
-          if (chunkCountRef.current % 10 === 0) {
-            console.warn(
-              `[useRecording DIAG] audioChunks=${chunkCountRef.current}, lastLen=${samples.length}`
-            );
-          }
-
-          deepgramRef.current?.sendSamples(samples);
-          sleepManagerRef.current?.processChunk(samples);
-        };
-      }
+        deepgramRef.current?.sendSamples(samples);
+        sleepManagerRef.current?.processChunk(samples);
+      };
 
       // 20. Start sleep manager
       sleepManager.start();
@@ -688,16 +586,6 @@ export function useRecording(jobId: string, userId: string, initialJob: JobDetai
       store.setLiveJob(jobRef.current);
     } catch (err) {
       console.error('[useRecording] startRecording failed:', err);
-
-      // Show user-visible toast with specific error context
-      if (err instanceof DOMException && err.name === 'NotAllowedError') {
-        toast.error('Microphone access denied. Please allow microphone access and try again.');
-      } else if (err instanceof DOMException && err.name === 'NotFoundError') {
-        toast.error('No microphone found. Please connect a microphone and try again.');
-      } else {
-        toast.error(err instanceof Error ? err.message : 'Failed to start recording');
-      }
-
       // Clean up anything that was partially created
       streamRef.current?.getTracks().forEach((t) => t.stop());
       streamRef.current = null;
@@ -741,16 +629,11 @@ export function useRecording(jobId: string, userId: string, initialJob: JobDetai
     streamRef.current?.getTracks().forEach((t) => t.stop());
     streamRef.current = null;
 
-    // 8. Disconnect worklet / ScriptProcessor
+    // 8. Disconnect worklet
     if (workletNodeRef.current) {
       workletNodeRef.current.port.onmessage = null;
       workletNodeRef.current.disconnect();
       workletNodeRef.current = null;
-    }
-    if (scriptNodeRef.current) {
-      scriptNodeRef.current.onaudioprocess = null;
-      scriptNodeRef.current.disconnect();
-      scriptNodeRef.current = null;
     }
 
     // 9. Close AudioContext
@@ -801,13 +684,6 @@ export function useRecording(jobId: string, userId: string, initialJob: JobDetai
         serverWSRef.current?.destroy();
         alertManagerRef.current?.destroy();
         streamRef.current?.getTracks().forEach((t) => t.stop());
-        if (workletNodeRef.current) {
-          workletNodeRef.current.disconnect();
-        }
-        if (scriptNodeRef.current) {
-          scriptNodeRef.current.onaudioprocess = null;
-          scriptNodeRef.current.disconnect();
-        }
         if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
           audioContextRef.current.close().catch(() => {});
         }

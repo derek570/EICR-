@@ -1,7 +1,6 @@
 'use client';
 
 import { AlertTriangle, HelpCircle, X } from 'lucide-react';
-import { cn } from '@/lib/utils';
 
 interface AlertQuestion {
   field: string;
@@ -16,68 +15,32 @@ interface AlertCardProps {
   onDismiss: () => void;
 }
 
-function severityStyles(type: string) {
-  switch (type) {
-    case 'out_of_range':
-      return {
-        border: 'border-status-amber/30',
-        glow: 'shadow-[0_4px_20px_rgba(255,179,0,0.15)]',
-        iconBg: 'bg-status-amber/15',
-        iconColor: 'text-status-amber',
-      };
-    case 'orphaned':
-      return {
-        border: 'border-status-red/30',
-        glow: 'shadow-[0_4px_20px_rgba(255,82,82,0.15)]',
-        iconBg: 'bg-status-red/15',
-        iconColor: 'text-status-red',
-      };
-    default:
-      return {
-        border: 'border-status-blue/30',
-        glow: 'shadow-[0_4px_20px_rgba(41,121,255,0.15)]',
-        iconBg: 'bg-status-blue/15',
-        iconColor: 'text-status-blue',
-      };
-  }
-}
-
 export function AlertCard({ question, onDismiss }: AlertCardProps) {
   if (!question) return null;
 
-  const styles = severityStyles(question.type);
-  const Icon = question.type === 'out_of_range' ? AlertTriangle : HelpCircle;
+  const isOutOfRange = question.type === 'out_of_range';
+  const borderColor = isOutOfRange ? 'border-amber-500/50' : 'border-blue-500/50';
+
+  const Icon = isOutOfRange ? AlertTriangle : HelpCircle;
+  const iconColor = isOutOfRange ? 'text-amber-400' : 'text-blue-400';
 
   return (
     <div
-      role="alert"
-      aria-live="polite"
-      className={cn(
-        'mx-4 mb-2 glass-card p-3 transition-all animate-in slide-in-from-bottom-2 duration-300',
-        styles.border,
-        styles.glow
-      )}
+      className={`mx-4 mb-2 bg-zinc-900/95 backdrop-blur-md rounded-xl border ${borderColor} p-3 shadow-lg animate-in slide-in-from-bottom-2 duration-300`}
     >
       <div className="flex items-start gap-3">
-        <div
-          className={cn(
-            'flex items-center justify-center h-8 w-8 rounded-full shrink-0',
-            styles.iconBg
-          )}
-        >
-          <Icon className={cn('h-4 w-4', styles.iconColor)} />
-        </div>
+        <Icon className={`h-5 w-5 ${iconColor} shrink-0 mt-0.5`} />
 
         <div className="flex-1 min-w-0">
-          <p className="text-sm font-medium text-foreground">{question.question}</p>
+          <p className="text-sm text-zinc-200">{question.question}</p>
           {(question.value || question.field) && (
             <p className="text-xs mt-1">
-              {question.value && <span className="text-foreground/70">{question.value}</span>}
+              {question.value && <span className="text-zinc-300">{question.value}</span>}
               {question.value && question.field && (
-                <span className="text-muted-foreground"> &middot; </span>
+                <span className="text-zinc-500"> &middot; </span>
               )}
               {question.field && (
-                <span className="text-muted-foreground">
+                <span className="text-zinc-500">
                   {question.field}
                   {question.circuit != null && ` (circuit ${question.circuit})`}
                 </span>
@@ -88,9 +51,7 @@ export function AlertCard({ question, onDismiss }: AlertCardProps) {
 
         <button
           onClick={onDismiss}
-          className="text-muted-foreground hover:text-foreground text-sm transition-colors shrink-0 min-w-[44px] min-h-[44px] flex items-center justify-center -mr-2"
-          title="Dismiss"
-          aria-label="Dismiss alert"
+          className="text-zinc-500 hover:text-zinc-300 transition-colors shrink-0"
         >
           <X className="h-4 w-4" />
         </button>

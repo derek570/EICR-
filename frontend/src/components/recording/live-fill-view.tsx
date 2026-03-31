@@ -81,10 +81,10 @@ function TypingText({
   }, [text, isRecording]);
 
   if (!text) {
-    return <span className="text-muted-foreground/50">&mdash;</span>;
+    return <span className="text-zinc-600">&mdash;</span>;
   }
 
-  return <>{displayed || <span className="text-muted-foreground/50">&mdash;</span>}</>;
+  return <>{displayed || <span className="text-zinc-600">&mdash;</span>}</>;
 }
 
 // ---------------------------------------------------------------------------
@@ -102,8 +102,8 @@ function FieldRow({
 }) {
   return (
     <div className="flex gap-2 min-h-[20px]">
-      <span className="text-xs text-muted-foreground w-24 shrink-0 text-right">{label}:</span>
-      <span className="text-sm text-foreground min-w-0">
+      <span className="text-xs text-zinc-500 w-24 shrink-0 text-right">{label}:</span>
+      <span className="text-sm text-zinc-200 min-w-0">
         <TypingText text={value} isRecording={isRecording} />
       </span>
     </div>
@@ -116,10 +116,8 @@ function FieldRow({
 
 function SectionCard({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <div className="glass-card p-3">
-      <h3 className="text-[11px] uppercase text-muted-foreground tracking-wider font-semibold mb-2">
-        {title}
-      </h3>
+    <div className="rounded-lg border border-zinc-800 bg-zinc-900/50 p-3">
+      <h3 className="text-xs uppercase text-zinc-500 tracking-wider font-semibold mb-2">{title}</h3>
       <div className="flex flex-col gap-1">{children}</div>
     </div>
   );
@@ -130,14 +128,14 @@ function SectionCard({ title, children }: { title: string; children: React.React
 // ---------------------------------------------------------------------------
 
 const codeBadgeColors: Record<string, string> = {
-  C1: 'bg-status-c1/20 text-status-c1 border-status-c1/40',
-  C2: 'bg-status-c2/20 text-status-c2 border-status-c2/40',
-  C3: 'bg-status-c3/20 text-status-c3 border-status-c3/40',
-  FI: 'bg-status-fi/20 text-status-fi border-status-fi/40',
+  C1: 'bg-red-600/20 text-red-400 border-red-600/40',
+  C2: 'bg-amber-600/20 text-amber-400 border-amber-600/40',
+  C3: 'bg-blue-600/20 text-blue-400 border-blue-600/40',
+  FI: 'bg-green-600/20 text-green-400 border-green-600/40',
 };
 
 function ObservationBadge({ code }: { code: string }) {
-  const cls = codeBadgeColors[code] || 'bg-L3/20 text-muted-foreground border-white/10';
+  const cls = codeBadgeColors[code] || 'bg-zinc-700/20 text-zinc-400 border-zinc-600/40';
   return (
     <span
       className={`inline-flex items-center justify-center rounded px-1.5 py-0.5 text-xs font-bold border ${cls}`}
@@ -312,11 +310,11 @@ function CircuitsSummarySection({
   return (
     <SectionCard title={`Circuits (${circuits.length})`}>
       {circuits.length === 0 ? (
-        <span className="text-xs text-muted-foreground/50">No circuits</span>
+        <span className="text-xs text-zinc-600">No circuits</span>
       ) : (
         <>
           {/* Header */}
-          <div className="flex gap-1 text-[10px] uppercase text-muted-foreground font-semibold tracking-wider pb-1 border-b border-white/5">
+          <div className="flex gap-1 text-[10px] uppercase text-zinc-500 font-semibold tracking-wider pb-1 border-b border-zinc-800">
             <span className="w-8">Ref</span>
             <span className="flex-1 min-w-0">Designation</span>
             <span className="w-12 text-center">OCPD</span>
@@ -329,20 +327,20 @@ function CircuitsSummarySection({
               .join(' ');
             return (
               <div key={`circuit-${i}`} className="flex gap-1 text-xs py-0.5">
-                <span className="w-8 text-muted-foreground font-mono">
-                  {c.circuit_ref || <span className="text-muted-foreground/50">&mdash;</span>}
+                <span className="w-8 text-zinc-400 font-mono">
+                  {c.circuit_ref || <span className="text-zinc-600">&mdash;</span>}
                 </span>
-                <span className="flex-1 min-w-0 text-foreground truncate">
+                <span className="flex-1 min-w-0 text-zinc-200 truncate">
                   <TypingText text={c.circuit_designation} isRecording={isRecording} />
                 </span>
-                <span className="w-12 text-center text-muted-foreground truncate">
-                  {c.ocpd_type || <span className="text-muted-foreground/50">&mdash;</span>}
+                <span className="w-12 text-center text-zinc-400 truncate">
+                  {c.ocpd_type || <span className="text-zinc-600">&mdash;</span>}
                 </span>
-                <span className="w-10 text-right text-muted-foreground font-mono">
+                <span className="w-10 text-right text-zinc-400 font-mono">
                   {c.ocpd_rating_a ? (
                     `${c.ocpd_rating_a}A`
                   ) : (
-                    <span className="text-muted-foreground/50">&mdash;</span>
+                    <span className="text-zinc-600">&mdash;</span>
                   )}
                 </span>
               </div>
@@ -370,7 +368,7 @@ function ObservationsSummarySection({
   return (
     <SectionCard title={`Observations (${observations.length})`}>
       {observations.length === 0 ? (
-        <span className="text-xs text-muted-foreground/50">No observations</span>
+        <span className="text-xs text-zinc-600">No observations</span>
       ) : (
         <>
           {/* Code count summary */}
@@ -379,7 +377,7 @@ function ObservationsSummarySection({
               counts[code] ? (
                 <div key={code} className="flex items-center gap-1">
                   <ObservationBadge code={code} />
-                  <span className="text-xs text-muted-foreground">{counts[code]}</span>
+                  <span className="text-xs text-zinc-400">{counts[code]}</span>
                 </div>
               ) : null
             )}
@@ -388,7 +386,7 @@ function ObservationsSummarySection({
           {observations.map((obs, i) => (
             <div key={`obs-${i}`} className="flex gap-2 py-0.5 items-start">
               <ObservationBadge code={obs.code} />
-              <span className="text-xs text-foreground/80 min-w-0 line-clamp-2">
+              <span className="text-xs text-zinc-300 min-w-0 line-clamp-2">
                 <TypingText
                   text={
                     obs.observation_text.length > 120
@@ -421,12 +419,10 @@ export const LiveFillView = memo(function LiveFillView({ job, isRecording }: Liv
     <div className="flex flex-col gap-3 p-4 overflow-y-auto h-full">
       {/* Header */}
       <div className="text-center">
-        <p className="text-[10px] uppercase tracking-[2px] text-muted-foreground font-bold">
+        <p className="text-[10px] uppercase tracking-[2px] text-zinc-500 font-bold">
           Electrical Installation
         </p>
-        <p className="text-[10px] uppercase tracking-[1.5px] text-muted-foreground">
-          Condition Report
-        </p>
+        <p className="text-[10px] uppercase tracking-[1.5px] text-zinc-500">Condition Report</p>
         {isRecording && (
           <div className="flex items-center justify-center gap-1.5 mt-1">
             <span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse" />
@@ -448,7 +444,7 @@ export const LiveFillView = memo(function LiveFillView({ job, isRecording }: Liv
       {isRecording && (
         <div className="flex items-center justify-center gap-2 py-4">
           <span className="w-2 h-2 rounded-full bg-red-500/80 animate-pulse" />
-          <span className="text-xs text-muted-foreground">Waiting for more data...</span>
+          <span className="text-xs text-zinc-500">Waiting for more data...</span>
         </div>
       )}
     </div>

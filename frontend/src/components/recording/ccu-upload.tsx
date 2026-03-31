@@ -133,8 +133,8 @@ export function CCUUpload({ onAnalysisComplete }: CCUUploadProps) {
       onDrop={handleDrop}
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
-      className={`flex flex-col items-center justify-center gap-4 rounded-[18px] border-2 border-dashed p-8 transition-colors ${
-        dragOver ? 'border-brand-blue bg-brand-blue/10' : 'border-white/10 bg-L2'
+      className={`flex flex-col items-center justify-center gap-4 rounded-lg border-2 border-dashed p-8 transition-colors ${
+        dragOver ? 'border-blue-500 bg-blue-500/10' : 'border-zinc-700 bg-zinc-900/50'
       } ${analysing ? 'pointer-events-none opacity-60' : ''}`}
     >
       <input
@@ -148,13 +148,13 @@ export function CCUUpload({ onAnalysisComplete }: CCUUploadProps) {
 
       {analysing ? (
         <>
-          <Loader2 className="h-10 w-10 animate-spin text-brand-blue" />
-          <p className="text-sm text-muted-foreground">Analysing consumer unit photo...</p>
+          <Loader2 className="h-10 w-10 animate-spin text-blue-400" />
+          <p className="text-sm text-zinc-400">Analysing consumer unit photo...</p>
         </>
       ) : (
         <>
-          <Camera className="h-10 w-10 text-muted-foreground" />
-          <p className="text-center text-sm text-muted-foreground">
+          <Camera className="h-10 w-10 text-zinc-500" />
+          <p className="text-center text-sm text-zinc-400">
             Drop a consumer unit photo here, or click to select
           </p>
           <Button variant="outline" onClick={() => fileInputRef.current?.click()}>

@@ -2,8 +2,6 @@
 // Port of iOS ServerWebSocketService.swift — WebSocket client for server-side
 // Sonnet extraction sessions via wss://backend/api/sonnet-stream.
 
-import { toast } from 'sonner';
-
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -45,7 +43,7 @@ export interface ExtractedReading {
 }
 
 export interface RollingExtractionResult {
-  extracted_readings: ExtractedReading[];
+  readings: ExtractedReading[];
   observations?: Array<{
     code: string;
     text: string;
@@ -125,23 +123,16 @@ export class ServerWebSocketService {
     let url: URL;
     try {
       url = new URL(serverURL);
-    } catch (e) {
-      console.error('[ServerWS] CONNECT_ERROR: Invalid URL', serverURL, e);
-      toast.error('Server connection failed: invalid URL');
-      this.callbacks.onError(`Invalid server URL: ${serverURL}`, false);
+    } catch {
+      this.log('CONNECT_ERROR', 'Invalid URL');
       return;
     }
     url.searchParams.set('token', token);
-    this.log('CONNECT_URL', `${url.origin}${url.pathname}?token=<redacted>`);
 
     const ws = new WebSocket(url.toString());
 
     ws.onopen = () => {
-      // DIAG: state change visible in production
-      console.warn(
-        `[ServerWS DIAG] STATE: disconnected -> connected (url=${url.origin}${url.pathname})`
-      );
-      this.log('WS_OPEN', `readyState=${ws.readyState}, url=${url.origin}${url.pathname}`);
+      this.log('WS_OPEN', '');
       this._isConnected = true;
       this.reconnectAttempt = 0;
       this.startPingTimer();
@@ -158,26 +149,13 @@ export class ServerWebSocketService {
     };
 
     ws.onclose = (event: CloseEvent) => {
-      const isAbnormal = event.code !== 1000 && event.code !== 1001;
-      const logMethod = isAbnormal ? 'error' : 'log';
-      const msg = `code=${event.code}, reason=${event.reason || 'none'}, wasClean=${event.wasClean}`;
-      // DIAG: state change visible in production
-      console.warn(`[ServerWS DIAG] STATE: connected -> disconnected (${msg})`);
-      console[logMethod](`[ServerWS] WS_CLOSE: ${msg}`);
-      if (isAbnormal) {
-        toast.error('Server disconnected — reconnecting…');
-      }
-      this.log('WS_CLOSE', msg);
-
+      this.log('WS_CLOSE', `code=${event.code}, reason=${event.reason || 'none'}`);
       this.ws = null;
       this.stopPingTimer();
       const wasConnected = this._isConnected;
       this._isConnected = false;
 
       if (this.shouldReconnect && event.code !== 1000) {
-        console.warn(
-          `[ServerWS DIAG] STATE: disconnected -> reconnecting (attempt=${this.reconnectAttempt + 1})`
-        );
         this.scheduleReconnect();
       }
 
@@ -186,12 +164,8 @@ export class ServerWebSocketService {
       }
     };
 
-    ws.onerror = (event: Event) => {
-      console.error('[ServerWS] WS_ERROR: WebSocket error event fired', {
-        url: url.toString(),
-        readyState: ws.readyState,
-      });
-      this.log('WS_ERROR', `readyState=${ws.readyState}`);
+    ws.onerror = () => {
+      this.log('WS_ERROR', 'WebSocket error');
       // onclose fires after onerror; reconnection handled there.
     };
 
@@ -341,11 +315,6 @@ export class ServerWebSocketService {
     switch (type) {
       case 'extraction': {
         const result = json.result as RollingExtractionResult | undefined;
-        console.log('[ServerWS] extraction received:', {
-          hasResult: !!result,
-          readingsCount: result?.extracted_readings?.length ?? 0,
-          observationsCount: result?.observations?.length ?? 0,
-        });
         if (result) {
           this.callbacks.onExtraction(result);
         } else {
@@ -360,8 +329,8 @@ export class ServerWebSocketService {
           circuit: json.circuit as number | undefined,
           question: json.question as string,
           type:
-            (json.question_type as UserQuestion['type']) ??
             (json.questionType as UserQuestion['type']) ??
+            (json.type_detail as UserQuestion['type']) ??
             'unclear',
           value: json.value as string | undefined,
         };
