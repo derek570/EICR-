@@ -294,63 +294,56 @@ async function getDeepgramProjectId(masterKey) {
   return cachedProjectId;
 }
 
+/**
+ * Create a short-lived Deepgram access token via /v1/auth/grant.
+ * This is the modern token endpoint — simpler, doesn't require keys:write scope,
+ * and produces JWT-style access tokens that work with WebSocket subprotocol auth.
+ * The old /v1/projects/{id}/keys endpoint is deprecated and "too problematic"
+ * per Deepgram community feedback.
+ *
+ * Token only needs to be valid at WS connection time — the WebSocket stays open
+ * after token expiry. 60s TTL gives enough headroom for the client to connect.
+ */
 async function createDeepgramTempKey(userId) {
   const masterKey = await getDeepgramKey();
   if (!masterKey) {
     throw new Error('Deepgram API key not configured');
   }
 
-  const projectId = await getDeepgramProjectId(masterKey);
-
-  const response = await fetch(`https://api.deepgram.com/v1/projects/${projectId}/keys`, {
+  const response = await fetch('https://api.deepgram.com/v1/auth/grant', {
     method: 'POST',
     headers: {
       Authorization: `Token ${masterKey}`,
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
-      comment: `certmate-temp-${userId}-${Date.now()}`,
-      scopes: ['usage:write'],
-      time_to_live_in_seconds: 600,
+      ttl_seconds: 60,
     }),
   });
 
   if (!response.ok) {
     const errorText = await response.text();
-    throw new Error(`Deepgram temp key creation failed: ${response.status} ${errorText}`);
+    throw new Error(`Deepgram token grant failed: ${response.status} ${errorText}`);
   }
 
   const data = await response.json();
-  return data.key;
+  logger.info('Deepgram access token created via /v1/auth/grant', { userId, ttl: 60 });
+  return data.access_token;
 }
 
 router.post('/proxy/deepgram-streaming-key', auth.requireAuth, async (req, res) => {
   const userId = req.user?.id || req.user?.userId || 'unknown';
 
   try {
-    // HISTORY (a3e0759, 2026-02-26): Two-tier key strategy. First try to create a
-    // short-lived temp key (600s TTL, usage:write scope only) which is the secure path.
-    // If that fails (keys:write scope missing, Deepgram API down, etc.), fall back to
-    // the master key so the iOS recording session doesn't break. The fallback was added
-    // after production failures where Deepgram's key creation endpoint returned 403
-    // because our API key lacked the keys:write scope (requires Member role, not Admin).
-    let key;
-    try {
-      key = await createDeepgramTempKey(userId);
-      logger.info('Deepgram temp key created', { userId, ttl: 600 });
-    } catch (tempKeyError) {
-      // Temp key creation requires keys:write scope on the Deepgram API key.
-      // Fall back to the master key if that scope is not available.
-      logger.warn('Deepgram temp key creation failed, using master key', {
-        userId,
-        error: tempKeyError.message,
-      });
-      key = await getDeepgramKey();
-      if (!key) {
-        throw new Error('Deepgram API key not configured');
-      }
+    // HOTFIX (2026-03-31): Deepgram /v1/auth/grant tokens do not work for
+    // WebSocket streaming — the token is returned successfully but rejected
+    // at the WebSocket level, breaking recording sessions silently. Bypass
+    // temp token creation entirely and return the master key directly.
+    const key = await getDeepgramKey();
+    if (!key) {
+      throw new Error('Deepgram API key not configured');
     }
-
+    logger.info('Deepgram streaming key issued (master key)', { userId });
     res.json({ key });
   } catch (error) {
     logger.error('Deepgram streaming key failed', { userId, error: error.message });
