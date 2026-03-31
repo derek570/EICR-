@@ -10,8 +10,12 @@ import logger from '../logger.js';
  * Resolve a job by ID or address. Returns the job record or null.
  */
 export async function resolveJob(userId, jobId) {
-  let job = await db.getJob(jobId, userId);
+  let job = await db.getJob(jobId);
   if (job) {
+    // IDOR check: verify the job belongs to this user
+    if (job.user_id !== userId) {
+      return null; // Don't reveal that the job exists to unauthorized users
+    }
     return job;
   }
   // Fall back to address lookup (already scoped by userId in the query)

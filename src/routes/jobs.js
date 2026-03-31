@@ -780,7 +780,7 @@ router.put('/job/:userId/:jobId', auth.requireAuth, async (req, res) => {
         }
       }
     }
-    await db.updateJob(jobId, userId, dbUpdate);
+    await db.updateJob(jobId, dbUpdate);
 
     res.json({ success: true });
   } catch (error) {
@@ -861,10 +861,10 @@ router.get('/job/:userId/:jobId/history', auth.requireAuth, async (req, res) => 
 
     if (isPaginated) {
       const { limit, offset } = parsePagination(req.query);
-      const { rows, total } = await db.getJobVersionsPaginated(jobId, userId, limit, offset);
+      const { rows, total } = await db.getJobVersionsPaginated(jobId, limit, offset);
       res.json(paginatedResponse(rows, total, { limit, offset }));
     } else {
-      const versions = await getJobVersions(jobId, userId);
+      const versions = await getJobVersions(jobId);
       res.json(versions);
     }
   } catch (error) {
@@ -926,12 +926,16 @@ router.post('/job/:userId/:jobId/clone', auth.requireAuth, async (req, res) => {
   }
 
   try {
-    let sourceJob = await db.getJob(jobId, userId);
+    let sourceJob = await db.getJob(jobId);
     if (!sourceJob) {
       sourceJob = await db.getJobByAddress(userId, jobId);
     }
     if (!sourceJob) {
       return res.status(404).json({ error: 'Source job not found' });
+    }
+
+    if (sourceJob.user_id !== userId) {
+      return res.status(403).json({ error: 'Access denied' });
     }
 
     const sourceFolderName = sanitizeS3Path(sourceJob.address) || jobId;

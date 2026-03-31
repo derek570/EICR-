@@ -10,9 +10,6 @@ import logger from '../logger.js';
 
 const router = Router();
 
-// A24: Basic email format validation — prevents junk entries in audit logs
-const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-
 /**
  * Login
  * POST /api/auth/login
@@ -26,10 +23,6 @@ router.post('/login', async (req, res) => {
 
     if (!email || !password) {
       return res.status(400).json({ error: 'Email and password are required' });
-    }
-
-    if (!EMAIL_REGEX.test(email)) {
-      return res.status(400).json({ error: 'Invalid email format' });
     }
 
     const ipAddress = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
@@ -51,8 +44,6 @@ router.post('/login', async (req, res) => {
  * POST /api/auth/logout
  */
 router.post('/logout', auth.requireAuth, async (req, res) => {
-  // A8: Invalidate all existing tokens on logout by incrementing token_version
-  await db.incrementTokenVersion(req.user.id);
   await db.logAction(req.user.id, 'logout');
   res.json({ success: true });
 });
@@ -60,16 +51,19 @@ router.post('/logout', auth.requireAuth, async (req, res) => {
 /**
  * Refresh an expired token
  * POST /api/auth/refresh
- * Token: Authorization header only (Bearer token)
+ * Token: Authorization header (preferred) or body { token: string } (legacy)
  */
 router.post('/refresh', async (req, res) => {
   try {
-    // A12: Only accept refresh token from Authorization header — body fallback removed
-    // to avoid tokens being logged/cached in request bodies.
+    // Prefer Authorization header (iOS client sends token here)
     let token = null;
     const authHeader = req.headers.authorization;
     if (authHeader && authHeader.startsWith('Bearer ')) {
       token = authHeader.slice(7);
+    }
+    // Fall back to body for backward compatibility (web clients, legacy)
+    if (!token && req.body.token) {
+      token = req.body.token;
     }
     if (!token) {
       return res.status(400).json({ error: 'Token is required' });
@@ -102,24 +96,8 @@ router.delete('/account', auth.requireAuth, async (req, res) => {
   try {
     const userId = req.user.id;
 
-    // A14: Require password confirmation for account deletion
-    const { password } = req.body;
-    if (!password) {
-      return res.status(400).json({ error: 'Password is required to delete your account' });
-    }
-
-    const user = await db.getUserById(userId);
-    if (!user) {
-      return res.status(404).json({ error: 'User not found' });
-    }
-
-    const passwordValid = await bcrypt.compare(password, user.password_hash);
-    if (!passwordValid) {
-      return res.status(401).json({ error: 'Incorrect password' });
-    }
-
-    // CX-7: Use fresh role from DB (not stale JWT claim) for destructive action checks
-    if (user.role === 'admin') {
+    // Prevent admin from deleting their own account if they're the only admin
+    if (req.user.role === 'admin') {
       return res
         .status(400)
         .json({ error: 'Admin accounts cannot be self-deleted. Contact another admin.' });
@@ -127,9 +105,6 @@ router.delete('/account', auth.requireAuth, async (req, res) => {
 
     // Soft-delete: deactivate the account
     await db.updateUser(userId, { is_active: false });
-
-    // Invalidate all existing tokens (A5)
-    await db.incrementTokenVersion(userId);
 
     await db.logAction(userId, 'account_deleted');
 
@@ -155,19 +130,8 @@ router.put('/change-password', auth.requireAuth, async (req, res) => {
       return res.status(400).json({ error: 'Current password and new password are required' });
     }
 
-    if (newPassword.length < 8) {
-      return res.status(400).json({ error: 'New password must be at least 8 characters' });
-    }
-
-    if (!/[a-z]/.test(newPassword) || !/[A-Z]/.test(newPassword) || !/[0-9]/.test(newPassword)) {
-      return res.status(400).json({
-        error:
-          'Password must contain at least one uppercase letter, one lowercase letter, and one digit',
-      });
-    }
-
-    if (Buffer.byteLength(newPassword, 'utf8') > 72) {
-      return res.status(400).json({ error: 'Password must not exceed 72 bytes' });
+    if (newPassword.length < 6) {
+      return res.status(400).json({ error: 'New password must be at least 6 characters' });
     }
 
     // Get full user record (with password_hash)
@@ -177,16 +141,13 @@ router.put('/change-password', auth.requireAuth, async (req, res) => {
     }
 
     // Verify current password
-    if (!(await auth.verifyPassword(currentPassword, user.password_hash))) {
+    if (!auth.verifyPassword(currentPassword, user.password_hash)) {
       return res.status(401).json({ error: 'Current password is incorrect' });
     }
 
     // Hash new password and update
-    const newHash = await bcrypt.hash(newPassword, 10);
+    const newHash = bcrypt.hashSync(newPassword, 10);
     await db.resetUserPassword(req.user.id, newHash);
-
-    // Invalidate all existing tokens (A4)
-    await db.incrementTokenVersion(req.user.id);
 
     await db.logAction(req.user.id, 'password_changed');
     logger.info('User changed their password', { userId: req.user.id });

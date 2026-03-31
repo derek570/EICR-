@@ -69,14 +69,6 @@ export const emailLimiter = createLimiter({
   message: { error: 'Too many email requests. Please wait a moment before trying again.' },
 });
 
-// P4: Billing endpoints — 5 requests/min per user (prevents Stripe rate limit exhaustion)
-export const billingLimiter = createLimiter({
-  windowMs: 60 * 1000,
-  max: 5,
-  keyGenerator: (req) => req.user?.id || req.ip,
-  message: { error: 'Too many billing requests. Please wait a moment before trying again.' },
-});
-
 // Auth endpoints — 10 requests/min per IP (brute force protection)
 export const authLimiter = createLimiter({
   windowMs: 60 * 1000,

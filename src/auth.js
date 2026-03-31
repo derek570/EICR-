@@ -3,6 +3,7 @@
  * Handles JWT token creation/verification and password validation.
  */
 
+import crypto from 'node:crypto';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import * as db from './db.js';
@@ -23,17 +24,12 @@ const REFRESH_GRACE_SECONDS = 60 * 60; // 1 hour — allow refresh up to 1 hour 
 const MAX_FAILED_ATTEMPTS = 5;
 const LOCKOUT_DURATION_MINUTES = 15;
 
-// CX-3: Pre-computed bcrypt hash for timing-safe user-not-found path.
-// Prevents email enumeration via timing side-channel by ensuring
-// bcrypt.compare runs even when the user doesn't exist.
-const DUMMY_HASH = '$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy';
-
 /**
  * Verify password against hash
  */
-export async function verifyPassword(password, hash) {
+export function verifyPassword(password, hash) {
   try {
-    return await bcrypt.compare(password, hash);
+    return bcrypt.compareSync(password, hash);
   } catch {
     return false;
   }
@@ -76,10 +72,6 @@ export async function authenticate(email, password, ipAddress = null) {
   const user = await db.getUserByEmail(email);
 
   if (!user) {
-    // CX-3: Perform dummy bcrypt compare to prevent timing side-channel.
-    // Without this, "user not found" returns ~instantly while "wrong password"
-    // takes ~100ms for bcrypt, allowing email enumeration via response timing.
-    await bcrypt.compare(password, DUMMY_HASH);
     return { success: false, error: 'Invalid email or password' };
   }
 
@@ -97,18 +89,18 @@ export async function authenticate(email, password, ipAddress = null) {
   }
 
   // Verify password
-  if (!(await verifyPassword(password, user.password_hash))) {
-    // CX-2: Use atomic SQL increment to prevent race condition where concurrent
-    // failed logins undercount attempts and bypass the lockout threshold.
-    const attempts = await db.atomicIncrementFailedAttempts(
-      user.id,
-      MAX_FAILED_ATTEMPTS,
-      LOCKOUT_DURATION_MINUTES
-    );
+  if (!verifyPassword(password, user.password_hash)) {
+    const attempts = (user.failed_login_attempts || 0) + 1;
+    let lockedUntil = null;
 
     if (attempts >= MAX_FAILED_ATTEMPTS) {
+      const lockTime = new Date();
+      lockTime.setMinutes(lockTime.getMinutes() + LOCKOUT_DURATION_MINUTES);
+      lockedUntil = lockTime.toISOString();
       await db.logAction(user.id, 'account_locked', { attempts }, ipAddress);
     }
+
+    await db.updateLoginAttempts(user.id, attempts, lockedUntil);
     await db.logAction(user.id, 'login_failed', { attempts }, ipAddress);
 
     const remaining = MAX_FAILED_ATTEMPTS - attempts;
@@ -131,9 +123,10 @@ export async function authenticate(email, password, ipAddress = null) {
       userId: user.id,
       email: user.email,
       tv: user.token_version || 0,
+      jti: crypto.randomUUID(),
     },
     getJwtSecret(),
-    { expiresIn: JWT_EXPIRY, issuer: 'certmate', audience: 'certmate-api' }
+    { expiresIn: JWT_EXPIRY }
   );
 
   // Return user without password hash
@@ -155,21 +148,10 @@ export async function authenticate(email, password, ipAddress = null) {
  */
 export async function verifyToken(token) {
   try {
-    const decoded = jwt.verify(token, getJwtSecret(), {
-      algorithms: ['HS256'],
-      issuer: 'certmate',
-      audience: 'certmate-api',
-    });
+    const decoded = jwt.verify(token, getJwtSecret());
     const user = await db.getUserById(decoded.userId);
 
     if (!user || !user.is_active) {
-      return null;
-    }
-
-    // CX-1: Reject tokens with stale token_version — ensures revoked tokens
-    // (from password change, account deletion, theft detection) are rejected
-    // on every authenticated request, not just during refresh.
-    if ((decoded.tv || 0) < (user.token_version || 0)) {
       return null;
     }
 
@@ -197,22 +179,13 @@ export async function refreshToken(oldToken) {
     // First try normal verify (token might not actually be expired)
     let decoded;
     try {
-      decoded = jwt.verify(oldToken, getJwtSecret(), {
-        algorithms: ['HS256'],
-        issuer: 'certmate',
-        audience: 'certmate-api',
-      });
+      decoded = jwt.verify(oldToken, getJwtSecret());
     } catch (err) {
       if (err.name !== 'TokenExpiredError') {
         return { success: false, error: 'Invalid token' };
       }
       // Token is expired — verify signature but ignore expiration to check grace period
-      decoded = jwt.verify(oldToken, getJwtSecret(), {
-        algorithms: ['HS256'],
-        issuer: 'certmate',
-        audience: 'certmate-api',
-        ignoreExpiration: true,
-      });
+      decoded = jwt.verify(oldToken, getJwtSecret(), { ignoreExpiration: true });
       if (!decoded || !decoded.exp) {
         return { success: false, error: 'Invalid token' };
       }
@@ -244,17 +217,9 @@ export async function refreshToken(oldToken) {
       return { success: false, error: 'Token has been revoked' };
     }
 
-    // A7: Atomic compare-and-swap to prevent race conditions on concurrent refresh
-    const swapped = await db.atomicIncrementTokenVersion(user.id, currentVersion);
-    if (!swapped) {
-      // Another concurrent refresh already incremented — treat as reuse
-      logger.warn('Token rotation conflict — concurrent refresh detected', {
-        userId: user.id,
-        currentVersion,
-      });
-      return { success: false, error: 'Token has been revoked' };
-    }
+    // Rotate: increment version
     const newVersion = currentVersion + 1;
+    await db.setTokenVersion(user.id, newVersion);
 
     // Issue a fresh token with rotation claims
     const token = jwt.sign(
@@ -262,9 +227,10 @@ export async function refreshToken(oldToken) {
         userId: user.id,
         email: user.email,
         tv: newVersion,
+        jti: crypto.randomUUID(),
       },
       getJwtSecret(),
-      { expiresIn: JWT_EXPIRY, issuer: 'certmate', audience: 'certmate-api' }
+      { expiresIn: JWT_EXPIRY }
     );
 
     const safeUser = {
@@ -341,9 +307,8 @@ export function requireCompanyAdmin(req, res, next) {
     return next();
   }
 
-  // CX-4: Company-level admins/owners — require company_id to be present
-  // alongside the role check to prevent access from data-inconsistent states.
-  if (req.user.company_id && ['owner', 'admin'].includes(req.user.company_role)) {
+  // Company-level admins/owners
+  if (['owner', 'admin'].includes(req.user.company_role)) {
     return next();
   }
 
@@ -357,26 +322,6 @@ export function requireCompanyAdmin(req, res, next) {
  * - req.user is a system admin
  * - req.user is a company admin/owner AND targetUserId belongs to the same company
  */
-/**
- * A9: Express middleware factory that enforces IDOR protection on a route parameter.
- * Extracts userId from req.params[paramName] and verifies the authenticated user
- * can access that user's resources via canAccessUser().
- * Must be used AFTER requireAuth.
- */
-export function requireAccessToUser(paramName = 'userId') {
-  return async (req, res, next) => {
-    const targetUserId = req.params[paramName];
-    if (!targetUserId) {
-      return res.status(400).json({ error: `Missing parameter: ${paramName}` });
-    }
-    const allowed = await canAccessUser(req, targetUserId);
-    if (!allowed) {
-      return res.status(403).json({ error: 'Access denied' });
-    }
-    next();
-  };
-}
-
 export async function canAccessUser(req, targetUserId) {
   // Own data
   if (req.user.id === targetUserId) return true;

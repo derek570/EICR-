@@ -14,12 +14,6 @@ import logger from '../logger.js';
 
 const router = Router();
 
-// P2: Validate priceId against allowed list to prevent arbitrary subscription creation
-const ALLOWED_PRICE_IDS = (process.env.STRIPE_ALLOWED_PRICE_IDS || '')
-  .split(',')
-  .map((id) => id.trim())
-  .filter(Boolean);
-
 /**
  * Get current user's subscription status
  * GET /api/billing/status
@@ -66,16 +60,6 @@ router.post('/create-checkout', auth.requireAuth, async (req, res) => {
 
     if (!priceId) {
       return res.status(400).json({ error: 'priceId is required' });
-    }
-
-    // CX-17: Fail closed — reject ALL price IDs when allowlist is unconfigured
-    if (ALLOWED_PRICE_IDS.length === 0) {
-      logger.error('STRIPE_ALLOWED_PRICE_IDS not configured — rejecting checkout');
-      return res.status(503).json({ error: 'Billing configuration incomplete' });
-    }
-    if (!ALLOWED_PRICE_IDS.includes(priceId)) {
-      logger.warn('Rejected checkout with invalid priceId', { userId, priceId });
-      return res.status(400).json({ error: 'Invalid price selected' });
     }
 
     let sub = await getDbSubscription(userId);

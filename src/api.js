@@ -18,13 +18,7 @@ import swaggerUi from 'swagger-ui-express';
 import yaml from 'js-yaml';
 
 // Rate limiting middleware
-import {
-  aiLimiter,
-  uploadLimiter,
-  emailLimiter,
-  authLimiter,
-  billingLimiter,
-} from './middleware/rate-limit.js';
+import { aiLimiter, uploadLimiter, emailLimiter, authLimiter } from './middleware/rate-limit.js';
 
 // Error handling middleware
 import { notFoundHandler, errorHandler } from './middleware/error-handler.js';
@@ -75,77 +69,24 @@ app.post('/api/billing/webhook', express.raw({ type: 'application/json' }), asyn
     event = billing.constructWebhookEvent(req.body, signature);
   } catch (err) {
     logger.error('Stripe webhook signature verification failed', { error: err.message });
-    return res.status(400).json({ error: 'Webhook signature verification failed' });
+    return res.status(400).json({ error: `Webhook signature failed: ${err.message}` });
   }
 
   logger.info('Stripe webhook received', { type: event.type, id: event.id });
 
-  // CX-11: Atomic webhook deduplication — INSERT first, skip if already exists
   try {
-    const insertResult = await query(
-      'INSERT INTO processed_events (event_id) VALUES ($1) ON CONFLICT (event_id) DO NOTHING RETURNING event_id',
-      [event.id]
-    );
-    if (insertResult.rows.length === 0) {
-      logger.info('Stripe webhook duplicate skipped', { id: event.id });
-      return res.json({ received: true });
-    }
-  } catch (dupErr) {
-    // CX-12: Fail closed — if dedup storage is unavailable, reject so Stripe retries later
-    logger.error('Webhook dedup check failed, rejecting event', {
-      id: event.id,
-      error: dupErr.message,
-    });
-    return res.status(500).json({ error: 'Deduplication check failed' });
-  }
-
-  // CX-10: Valid plan values — unknown/missing metadata must not default to a paid tier
-  const VALID_PLANS = ['free', 'basic', 'pro'];
-
-  try {
-    // CX-9: Helper to reject out-of-order events by comparing event.created against
-    // the subscription's last_event_at timestamp. Returns the sub if event is fresh, null if stale.
-    const getFreshSub = async (customerId) => {
-      const sub = await getSubscriptionByCustomerId(customerId);
-      if (!sub) return null;
-      if (sub.last_event_at && event.created <= sub.last_event_at) {
-        logger.info('Stale webhook event skipped (out-of-order)', {
-          id: event.id,
-          type: event.type,
-          eventCreated: event.created,
-          lastEventAt: sub.last_event_at,
-        });
-        return null;
-      }
-      return sub;
-    };
-
     switch (event.type) {
       case 'checkout.session.completed': {
         const session = event.data.object;
         const customerId = session.customer;
         const subscriptionId = session.subscription;
 
-        // CX-10: Require valid plan from metadata — never default to a paid tier
-        const plan = session.metadata?.plan;
-        if (!plan || !VALID_PLANS.includes(plan)) {
-          logger.error(
-            'Missing or unknown plan in checkout session metadata — skipping subscription update',
-            {
-              sessionId: session.id,
-              plan: plan || '(missing)',
-            }
-          );
-          break;
-        }
-
-        const sub = await getFreshSub(customerId);
+        const sub = await getSubscriptionByCustomerId(customerId);
         if (sub) {
           await upsertSubscription(sub.user_id, {
             stripe_subscription_id: subscriptionId,
             status: 'active',
-            plan,
-            last_event_at: event.created,
+            plan: 'pro',
           });
           logger.info('Checkout completed — subscription activated', {
             userId: sub.user_id,
@@ -158,13 +99,12 @@ app.post('/api/billing/webhook', express.raw({ type: 'application/json' }), asyn
       case 'invoice.paid': {
         const invoice = event.data.object;
         const customerId = invoice.customer;
-        const sub = await getFreshSub(customerId);
+        const sub = await getSubscriptionByCustomerId(customerId);
         if (sub) {
           const periodEnd = invoice.lines?.data?.[0]?.period?.end;
           await upsertSubscription(sub.user_id, {
             status: 'active',
             current_period_end: periodEnd ? new Date(periodEnd * 1000).toISOString() : null,
-            last_event_at: event.created,
           });
           logger.info('Invoice paid — subscription renewed', { userId: sub.user_id });
         }
@@ -174,7 +114,7 @@ app.post('/api/billing/webhook', express.raw({ type: 'application/json' }), asyn
       case 'customer.subscription.updated': {
         const subscription = event.data.object;
         const customerId = subscription.customer;
-        const sub = await getFreshSub(customerId);
+        const sub = await getSubscriptionByCustomerId(customerId);
         if (sub) {
           await upsertSubscription(sub.user_id, {
             status: subscription.status,
@@ -186,7 +126,6 @@ app.post('/api/billing/webhook', express.raw({ type: 'application/json' }), asyn
               ? new Date(subscription.current_period_end * 1000).toISOString()
               : null,
             cancel_at_period_end: subscription.cancel_at_period_end,
-            last_event_at: event.created,
           });
           logger.info('Subscription updated', { userId: sub.user_id, status: subscription.status });
         }
@@ -196,33 +135,14 @@ app.post('/api/billing/webhook', express.raw({ type: 'application/json' }), asyn
       case 'customer.subscription.deleted': {
         const subscription = event.data.object;
         const customerId = subscription.customer;
-        const sub = await getFreshSub(customerId);
+        const sub = await getSubscriptionByCustomerId(customerId);
         if (sub) {
           await upsertSubscription(sub.user_id, {
             status: 'canceled',
             plan: 'free',
             cancel_at_period_end: false,
-            last_event_at: event.created,
           });
           logger.info('Subscription cancelled', { userId: sub.user_id });
-        }
-        break;
-      }
-
-      // P5: Handle payment failure — set subscription to past_due
-      case 'invoice.payment_failed': {
-        const invoice = event.data.object;
-        const customerId = invoice.customer;
-        const sub = await getFreshSub(customerId);
-        if (sub) {
-          await upsertSubscription(sub.user_id, {
-            status: 'past_due',
-            last_event_at: event.created,
-          });
-          logger.warn('Invoice payment failed — subscription past_due', {
-            userId: sub.user_id,
-            invoiceId: invoice.id,
-          });
         }
         break;
       }
@@ -323,7 +243,7 @@ app.use('/api', keysRouter); // /api/proxy/*, /api/config/*
 app.use('/api', settingsRouter); // /api/settings/*, /api/inspector-profiles/*, /api/schema/*, /api/regulations
 app.use('/api/push', pushRouter); // /api/push/*
 app.use('/api', feedbackRouter); // /api/feedback/*, /api/optimizer-report/*
-app.use('/api/billing', billingLimiter, billingRouter); // /api/billing/* (except webhook which stays here)
+app.use('/api/billing', billingRouter); // /api/billing/* (except webhook which stays here)
 app.use('/api/calendar', calendarRouter); // /api/calendar/*
 app.use('/api', clientsRouter); // /api/clients/*, /api/properties/*
 app.use('/api/analytics', analyticsRouter); // /api/analytics/*

@@ -38,14 +38,15 @@ export async function createJobsZip(userId, jobIds, outputStream) {
 
   for (const jobId of jobIds) {
     try {
-      // Look up the job from the database (D2: user_id filter prevents IDOR)
-      let job = await db.getJob(jobId, userId);
+      // Look up the job from the database
+      let job = await db.getJob(jobId);
       if (!job) {
         // Try looking up by address (for legacy S3-only jobs)
         job = await db.getJobByAddress(userId, jobId);
       }
 
-      if (!job) {
+      // Ownership check: skip jobs that don't belong to this user
+      if (!job || job.user_id !== userId) {
         logger.warn('Bulk download: skipping job (not found or wrong owner)', { jobId, userId });
         continue;
       }

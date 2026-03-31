@@ -137,8 +137,8 @@ SUPPLY FIELDS (circuit 0 — ALWAYS use circuit: 0, NEVER circuit: -1):
 - earthing_arrangement: "TN-S", "TN-C-S", "TT"
 - main_earth_conductor_csa: mm2
 - main_bonding_conductor_csa: mm2
-- bonding_water: "PASS" if water bonding present
-- bonding_gas: "PASS" if gas bonding present
+- bonding_water: "Yes" if water bonding present
+- bonding_gas: "Yes" if gas bonding present
 - earth_electrode_type: rod|plate|tape|mat|other
 - earth_electrode_resistance: RA in ohms
 - supply_voltage: nominal voltage in volts (typically "230" or "240")

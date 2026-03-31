@@ -81,11 +81,11 @@ router.put('/clients/:userId/:clientId', auth.requireAuth, async (req, res) => {
     return res.status(403).json({ error: 'Access denied' });
   }
   try {
-    const existing = await getClient(clientId, userId);
-    if (!existing) {
+    const existing = await getClient(clientId);
+    if (!existing || existing.user_id !== userId) {
       return res.status(404).json({ error: 'Client not found' });
     }
-    await updateClient(clientId, userId, req.body);
+    await updateClient(clientId, req.body);
     logger.info('Client updated', { userId, clientId });
     res.json({ success: true });
   } catch (error) {
@@ -116,8 +116,8 @@ router.get('/clients/:userId/:clientId', auth.requireAuth, async (req, res) => {
     return res.status(403).json({ error: 'Access denied' });
   }
   try {
-    const client = await getClient(clientId, userId);
-    if (!client) {
+    const client = await getClient(clientId);
+    if (!client || client.user_id !== userId) {
       return res.status(404).json({ error: 'Client not found' });
     }
     const properties = await getPropertiesByClient(clientId);
