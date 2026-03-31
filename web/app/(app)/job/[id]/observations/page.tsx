@@ -3,8 +3,7 @@
 import { useJobContext } from '../layout';
 import { ObservationCard } from '@/components/observations/observation-card';
 import { Button } from '@/components/ui/button';
-import { GlassCard, GlassCardContent } from '@/components/ui/glass-card';
-import { Plus, AlertTriangle } from 'lucide-react';
+import { Plus } from 'lucide-react';
 import type { Observation } from '@/lib/types';
 
 export default function ObservationsPage() {
@@ -54,11 +53,7 @@ export default function ObservationsPage() {
   return (
     <div className="p-6 space-y-4 max-w-4xl">
       <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <AlertTriangle className="h-5 w-5 text-status-amber" />
-          <h2 className="text-lg font-semibold text-foreground">Observations</h2>
-          <span className="text-sm text-muted-foreground">({job.observations.length})</span>
-        </div>
+        <h2 className="text-lg font-semibold">Observations ({job.observations.length})</h2>
         <Button size="sm" onClick={addObservation}>
           <Plus className="h-4 w-4 mr-1" />
           Add Observation
@@ -66,43 +61,34 @@ export default function ObservationsPage() {
       </div>
 
       {job.observations.some((obs) => obs.schedule_item) && (
-        <GlassCard className="border-l-[3px] border-l-brand-blue">
-          <GlassCardContent className="py-3 px-4">
-            <p className="text-sm text-muted-foreground">
-              <strong className="text-foreground">Note:</strong> Some observations are linked to
-              items in the Inspection Schedule. Deleting a linked observation will set its schedule
-              item back to tick.
-            </p>
-          </GlassCardContent>
-        </GlassCard>
+        <div className="bg-blue-50 border border-blue-200 rounded-md p-3 text-sm text-blue-800">
+          <strong>Note:</strong> Some observations are linked to items in the Inspection Schedule.
+          Deleting a linked observation will set its schedule item back to tick.
+        </div>
       )}
 
       {job.observations.length === 0 ? (
-        <GlassCard>
-          <GlassCardContent className="text-center py-12">
-            <AlertTriangle className="h-10 w-10 text-muted-foreground/30 mx-auto mb-4" />
-            <p className="text-muted-foreground mb-2">No observations recorded</p>
-            <p className="text-sm text-muted-foreground/70 mb-4">
-              Tip: You can add observations directly from the Inspection Schedule by selecting C1,
-              C2, or C3.
-            </p>
-            <Button onClick={addObservation}>
-              <Plus className="h-4 w-4 mr-2" />
-              Add First Observation
-            </Button>
-          </GlassCardContent>
-        </GlassCard>
+        <div className="text-center py-12 bg-[#1e293b] rounded-lg border border-white/8">
+          <p className="text-gray-500 mb-4">No observations recorded</p>
+          <p className="text-sm text-gray-500 mb-4">
+            Tip: You can add observations directly from the Inspection Schedule by selecting C1, C2,
+            or C3.
+          </p>
+          <Button onClick={addObservation}>
+            <Plus className="h-4 w-4 mr-2" />
+            Add First Observation
+          </Button>
+        </div>
       ) : (
-        <div className="space-y-4 stagger-in">
+        <div className="space-y-4">
           {job.observations.map((obs, index) => (
-            <div key={index} className="animate-stagger-in">
-              <ObservationCard
-                observation={obs}
-                index={index}
-                onChange={handleObservationChange}
-                onDelete={handleDelete}
-              />
-            </div>
+            <ObservationCard
+              key={index}
+              observation={obs}
+              index={index}
+              onChange={handleObservationChange}
+              onDelete={handleDelete}
+            />
           ))}
         </div>
       )}

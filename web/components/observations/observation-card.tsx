@@ -1,11 +1,10 @@
 'use client';
 
 import { Input } from '@/components/ui/input';
-import { Textarea } from '@/components/ui/textarea';
 import { Button } from '@/components/ui/button';
-import { StatusBadge } from '@/components/ui/status-badge';
 import { Trash2, Link as LinkIcon } from 'lucide-react';
 import type { Observation } from '@/lib/types';
+import { cn } from '@/lib/utils';
 
 interface ObservationCardProps {
   observation: Observation;
@@ -14,25 +13,18 @@ interface ObservationCardProps {
   onDelete: (index: number) => void;
 }
 
+const codeColors: Record<string, string> = {
+  C1: 'bg-red-500',
+  C2: 'bg-orange-500',
+  C3: 'bg-blue-500',
+  FI: 'bg-purple-500',
+};
+
 const codeLabels: Record<string, string> = {
   C1: 'Danger Present',
   C2: 'Potentially Dangerous',
   C3: 'Improvement Recommended',
   FI: 'Further Investigation',
-};
-
-const severityBorderColors: Record<string, string> = {
-  C1: 'border-l-status-c1',
-  C2: 'border-l-status-c2',
-  C3: 'border-l-status-c3',
-  FI: 'border-l-status-fi',
-};
-
-const severityBadgeStatus: Record<string, 'c1' | 'c2' | 'c3' | 'fi'> = {
-  C1: 'c1',
-  C2: 'c2',
-  C3: 'c3',
-  FI: 'fi',
 };
 
 export function ObservationCard({ observation, index, onChange, onDelete }: ObservationCardProps) {
@@ -43,17 +35,16 @@ export function ObservationCard({ observation, index, onChange, onDelete }: Obse
   const isLinkedToSchedule = !!observation.schedule_item;
 
   return (
-    <div
-      className={`glass-card border-l-[3px] ${severityBorderColors[observation.code] || 'border-l-brand-blue'} p-4 space-y-3`}
-    >
+    <div className="bg-[#1e293b] border border-white/8 rounded-lg p-4 space-y-3">
       <div className="flex items-start justify-between gap-3">
         <div className="flex items-center gap-3">
           <select
-            id={`obs-code-${index}`}
-            aria-label="Observation severity code"
             value={observation.code}
             onChange={(e) => updateField('code', e.target.value as Observation['code'])}
-            className="h-10 w-16 rounded-full font-bold text-center appearance-none cursor-pointer bg-L2 border border-white/10 text-foreground text-sm"
+            className={cn(
+              'h-10 w-16 rounded-full text-white font-bold text-center appearance-none cursor-pointer',
+              codeColors[observation.code]
+            )}
           >
             <option value="C1">C1</option>
             <option value="C2">C2</option>
@@ -61,11 +52,9 @@ export function ObservationCard({ observation, index, onChange, onDelete }: Obse
             <option value="FI">FI</option>
           </select>
           <div>
-            <StatusBadge status={severityBadgeStatus[observation.code] || 'blue'}>
-              {codeLabels[observation.code]}
-            </StatusBadge>
+            <span className="text-sm text-gray-400">{codeLabels[observation.code]}</span>
             {isLinkedToSchedule && (
-              <div className="flex items-center gap-1 text-xs text-brand-blue mt-1">
+              <div className="flex items-center gap-1 text-xs text-blue-400 mt-0.5">
                 <LinkIcon className="h-3 w-3" />
                 <span>Linked to {observation.schedule_item}</span>
               </div>
@@ -76,8 +65,7 @@ export function ObservationCard({ observation, index, onChange, onDelete }: Obse
           variant="ghost"
           size="sm"
           onClick={() => onDelete(index)}
-          className="text-status-red hover:text-status-red hover:bg-status-red/10"
-          aria-label="Delete observation"
+          className="text-red-400 hover:text-red-300 hover:bg-red-500/10"
         >
           <Trash2 className="h-4 w-4" />
         </Button>
@@ -86,65 +74,44 @@ export function ObservationCard({ observation, index, onChange, onDelete }: Obse
       {/* Schedule description (if linked) */}
       {observation.schedule_description && (
         <div className="text-sm">
-          <label className="text-[11px] uppercase tracking-wider text-muted-foreground">
-            Regulation
-          </label>
-          <div className="mt-1 px-3 py-2 bg-L2 border border-white/8 rounded-[12px] text-sm text-foreground">
+          <label className="text-xs text-gray-500">Regulation</label>
+          <div className="mt-1 px-3 py-2 bg-white/5 border border-white/10 rounded-md text-sm text-gray-300">
             {observation.schedule_item} - {observation.schedule_description}
           </div>
         </div>
       )}
 
       <div>
-        <label
-          htmlFor={`obs-location-${index}`}
-          className="text-[11px] uppercase tracking-wider text-muted-foreground"
-        >
-          Location
-        </label>
+        <label className="text-xs text-gray-500">Location</label>
         <Input
-          id={`obs-location-${index}`}
           value={observation.item_location}
           onChange={(e) => updateField('item_location', e.target.value)}
           placeholder="e.g., Kitchen socket, Consumer unit"
-          className="mt-1"
+          className="mt-1 bg-white/5 border-white/10 text-white placeholder:text-gray-500"
         />
       </div>
 
       <div>
-        <label
-          htmlFor={`obs-text-${index}`}
-          className="text-[11px] uppercase tracking-wider text-muted-foreground"
-        >
-          Observation
-        </label>
-        <Textarea
-          id={`obs-text-${index}`}
+        <label className="text-xs text-gray-500">Observation</label>
+        <textarea
           value={observation.observation_text}
           onChange={(e) => updateField('observation_text', e.target.value)}
           placeholder="Description of the issue..."
-          className="mt-1 min-h-[80px]"
-          autoResize={false}
+          className="mt-1 w-full min-h-[80px] rounded-md border border-white/10 bg-white/5 px-3 py-2 text-sm text-white placeholder:text-gray-500 resize-y"
         />
       </div>
 
       <div>
-        <label
-          htmlFor={`obs-schedule-${index}`}
-          className="text-[11px] uppercase tracking-wider text-muted-foreground"
-        >
-          Schedule Item
-        </label>
+        <label className="text-xs text-gray-500">Schedule Item</label>
         <Input
-          id={`obs-schedule-${index}`}
           value={observation.schedule_item || ''}
           onChange={(e) => updateField('schedule_item', e.target.value)}
           placeholder="e.g., 4.5, 5.3"
-          className="mt-1"
+          className="mt-1 bg-white/5 border-white/10 text-white placeholder:text-gray-500"
           disabled={isLinkedToSchedule}
         />
         {isLinkedToSchedule && (
-          <p className="text-xs text-muted-foreground mt-1">
+          <p className="text-xs text-gray-500 mt-1">
             This observation is linked from the Inspection Schedule. Deleting it will set the
             schedule item to tick.
           </p>
