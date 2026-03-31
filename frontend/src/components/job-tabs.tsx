@@ -1,6 +1,5 @@
 'use client';
 
-import { useRef, useState, useEffect, useCallback } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import {
@@ -19,6 +18,11 @@ import {
 import { cn } from '@/lib/utils';
 import type { CertificateType } from '@/lib/api';
 import type { LucideIcon } from 'lucide-react';
+
+interface JobTabsProps {
+  jobId: string;
+  certificateType?: CertificateType;
+}
 
 interface Tab {
   name: string;
@@ -58,84 +62,36 @@ function getTabsForType(type: CertificateType): Tab[] {
   return type === 'EIC' ? eicTabs : eicrTabs;
 }
 
-interface JobTabsProps {
-  jobId: string;
-  certificateType?: CertificateType;
-}
-
 export function JobTabs({ jobId, certificateType = 'EICR' }: JobTabsProps) {
   const pathname = usePathname();
   const basePath = `/job/${jobId}`;
   const tabs = getTabsForType(certificateType);
-  const containerRef = useRef<HTMLDivElement>(null);
-  const tabRefs = useRef<(HTMLAnchorElement | null)[]>([]);
-  const [indicator, setIndicator] = useState({ left: 0, width: 0 });
-
-  const activeIndex = tabs.findIndex((tab) => {
-    const href = `${basePath}${tab.href}`;
-    return pathname === href || (tab.href === '' && pathname === basePath);
-  });
-
-  const updateIndicator = useCallback(() => {
-    if (activeIndex < 0) return;
-    const el = tabRefs.current[activeIndex];
-    const container = containerRef.current;
-    if (!el || !container) return;
-    const containerRect = container.getBoundingClientRect();
-    const tabRect = el.getBoundingClientRect();
-    setIndicator({
-      left: tabRect.left - containerRect.left + container.scrollLeft,
-      width: tabRect.width,
-    });
-  }, [activeIndex]);
-
-  useEffect(() => {
-    updateIndicator();
-  }, [updateIndicator, pathname]);
-
-  // Scroll active tab into view
-  useEffect(() => {
-    if (activeIndex < 0) return;
-    const el = tabRefs.current[activeIndex];
-    el?.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
-  }, [activeIndex]);
 
   return (
-    <div className="relative flex-shrink-0 bg-L1/60 backdrop-blur-md">
-      <div ref={containerRef} className="flex overflow-x-auto scrollbar-none px-2">
-        {tabs.map((tab, idx) => {
+    <div className="border-b border-border">
+      <nav className="flex overflow-x-auto -mb-px" aria-label="Tabs">
+        {tabs.map((tab) => {
           const href = `${basePath}${tab.href}`;
-          const isActive = idx === activeIndex;
+          const isActive = pathname === href || (tab.href === '' && pathname === basePath);
           const Icon = tab.icon;
 
           return (
             <Link
               key={tab.name}
               href={href}
-              ref={(el) => {
-                tabRefs.current[idx] = el;
-              }}
               className={cn(
-                'relative flex items-center gap-1.5 px-3 py-3 min-h-[44px] text-sm whitespace-nowrap transition-colors',
-                isActive ? 'text-white font-medium' : 'text-muted-foreground hover:text-foreground'
+                'shrink-0 flex items-center gap-1.5 border-b-2 px-3 py-2.5 text-xs font-medium transition-colors whitespace-nowrap',
+                isActive
+                  ? 'border-primary text-primary'
+                  : 'border-transparent text-muted-foreground hover:border-muted-foreground/30 hover:text-foreground'
               )}
             >
-              <Icon className="h-4 w-4 flex-shrink-0" />
-              <span>{tab.name}</span>
+              <Icon className="h-3.5 w-3.5" />
+              {tab.name}
             </Link>
           );
         })}
-
-        {/* Sliding gradient indicator */}
-        <div
-          className="absolute bottom-0 h-[3px] rounded-full transition-all duration-300 ease-out"
-          style={{
-            left: indicator.left,
-            width: indicator.width,
-            background: 'linear-gradient(90deg, var(--brand-blue), var(--brand-green))',
-          }}
-        />
-      </div>
+      </nav>
     </div>
   );
 }

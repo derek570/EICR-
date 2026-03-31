@@ -9,7 +9,6 @@ const buttonVariants = cva(
   {
     variants: {
       variant: {
-        // Existing shadcn variants
         default: 'bg-primary text-primary-foreground hover:bg-primary/90',
         destructive:
           'bg-destructive text-white hover:bg-destructive/90 focus-visible:ring-destructive/20 dark:focus-visible:ring-destructive/40 dark:bg-destructive/60',
@@ -18,44 +17,8 @@ const buttonVariants = cva(
         secondary: 'bg-secondary text-secondary-foreground hover:bg-secondary/80',
         ghost: 'hover:bg-accent hover:text-accent-foreground dark:hover:bg-accent/50',
         link: 'text-primary underline-offset-4 hover:underline',
-        // Glassmorphic variants
-        glass: [
-          'bg-gradient-to-r from-brand-green to-brand-blue text-white font-semibold',
-          'shadow-[0_4px_16px_rgba(0,102,255,0.30)]',
-          'hover:shadow-[0_6px_24px_rgba(0,102,255,0.40)] hover:brightness-110',
-          'focus-visible:ring-2 focus-visible:ring-brand-blue/50 focus-visible:ring-offset-2 focus-visible:ring-offset-L0',
-          'active:animate-spring-press',
-        ].join(' '),
-        'glass-outline': [
-          'glass-bg border border-white/8 text-foreground font-semibold',
-          'hover:bg-white/10',
-          'focus-visible:ring-2 focus-visible:ring-brand-blue/50 focus-visible:ring-offset-2 focus-visible:ring-offset-L0',
-          'active:animate-spring-press',
-        ].join(' '),
-        'glass-ghost': [
-          'bg-transparent text-foreground font-semibold',
-          'hover:bg-L2',
-          'focus-visible:ring-2 focus-visible:ring-brand-blue/50 focus-visible:ring-offset-2 focus-visible:ring-offset-L0',
-          'active:animate-spring-press',
-        ].join(' '),
-        'glass-destructive': [
-          'bg-status-red text-white font-semibold',
-          'shadow-[0_4px_16px_rgba(255,82,82,0.30)]',
-          'hover:shadow-[0_6px_24px_rgba(255,82,82,0.40)] hover:brightness-110',
-          'focus-visible:ring-2 focus-visible:ring-brand-blue/50 focus-visible:ring-offset-2 focus-visible:ring-offset-L0',
-          'active:animate-spring-press',
-        ].join(' '),
-        'glass-link': 'text-brand-blue underline-offset-4 hover:underline !p-0 !h-auto',
-        gradient: [
-          'bg-gradient-to-r from-brand-blue to-brand-green text-white font-semibold',
-          'shadow-[0_4px_16px_rgba(0,102,255,0.25)]',
-          'hover:shadow-[0_6px_24px_rgba(0,204,102,0.35)] hover:brightness-110',
-          'focus-visible:ring-2 focus-visible:ring-brand-blue/50 focus-visible:ring-offset-2 focus-visible:ring-offset-L0',
-          'active:animate-spring-press',
-        ].join(' '),
       },
       size: {
-        // Existing shadcn sizes
         default: 'h-9 px-4 py-2 has-[>svg]:px-3',
         xs: "h-6 gap-1 rounded-md px-2 text-xs has-[>svg]:px-1.5 [&_svg:not([class*='size-'])]:size-3",
         sm: 'h-8 rounded-md gap-1.5 px-3 has-[>svg]:px-2.5',
@@ -64,11 +27,6 @@ const buttonVariants = cva(
         'icon-xs': "size-6 rounded-md [&_svg:not([class*='size-'])]:size-3",
         'icon-sm': 'size-8',
         'icon-lg': 'size-10',
-        // Glassmorphic sizes (rounded-full pill shape)
-        'glass-default': 'h-[52px] px-6 text-[16px] rounded-full',
-        'glass-sm': 'h-10 px-4 text-[14px] rounded-full',
-        'glass-lg': 'h-14 px-8 text-[18px] rounded-full',
-        'glass-icon': 'h-10 w-10 rounded-full',
       },
     },
     defaultVariants: {

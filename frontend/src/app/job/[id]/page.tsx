@@ -1,19 +1,13 @@
 'use client';
 
 import { useJob } from './layout';
-import {
-  GlassCard,
-  GlassCardContent,
-  GlassCardHeader,
-  GlassCardTitle,
-} from '@/components/ui/glass-card';
-import { StatusBadge } from '@/components/ui/status-badge';
-import { CircuitBoard, AlertTriangle, Zap, Building2, Mic } from 'lucide-react';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { CircuitBoard, AlertTriangle } from 'lucide-react';
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
 
 export default function JobOverviewPage() {
-  const { job, certificateType } = useJob();
+  const { job } = useJob();
   const params = useParams();
   const jobId = params.id as string;
 
@@ -25,29 +19,20 @@ export default function JobOverviewPage() {
   const hasDangerousObservations = c1Count > 0 || c2Count > 0;
 
   return (
-    <div className="p-6 space-y-6 max-w-4xl stagger-in bg-L0 min-h-screen">
-      {/* Record Button */}
-      <Link
-        href={`/record?type=${certificateType}&jobId=${jobId}`}
-        className="flex items-center justify-center gap-3 w-full min-h-[48px] rounded-2xl bg-gradient-to-r from-brand-blue to-brand-green p-4 text-white font-semibold transition-all hover:brightness-110 active:scale-[0.98] animate-stagger-in focus-visible:ring-2 focus-visible:ring-brand-blue/50 focus-visible:ring-offset-2 focus-visible:ring-offset-L0 outline-none"
-        aria-label={`Start recording for this ${certificateType} job`}
+    <div className="p-4 space-y-4">
+      <Card
+        className={
+          hasDangerousObservations ? 'border-red-300 bg-red-50' : 'border-green-300 bg-green-50'
+        }
       >
-        <Mic className="h-5 w-5" />
-        <span>Start Recording</span>
-      </Link>
-
-      {/* Status Banner */}
-      <GlassCard className="animate-stagger-in" gradientBorder={!hasDangerousObservations}>
-        <GlassCardContent className="py-4 px-5">
+        <CardContent className="py-4">
           <div className="flex items-center gap-3">
             {hasDangerousObservations ? (
               <>
-                <div className="flex items-center justify-center h-10 w-10 rounded-full bg-status-red/15">
-                  <AlertTriangle className="h-5 w-5 text-status-red" />
-                </div>
+                <AlertTriangle className="h-6 w-6 text-red-600" />
                 <div>
-                  <StatusBadge status="unsatisfactory">Unsatisfactory</StatusBadge>
-                  <p className="text-sm text-muted-foreground mt-1">
+                  <p className="font-semibold text-red-800">Unsatisfactory</p>
+                  <p className="text-sm text-red-700">
                     {c1Count > 0 && `${c1Count} danger present`}
                     {c1Count > 0 && c2Count > 0 && ', '}
                     {c2Count > 0 && `${c2Count} potentially dangerous`}
@@ -56,123 +41,81 @@ export default function JobOverviewPage() {
               </>
             ) : (
               <>
-                <div className="flex items-center justify-center h-10 w-10 rounded-full bg-status-green/15">
-                  <CircuitBoard className="h-5 w-5 text-status-green" />
-                </div>
+                <CircuitBoard className="h-6 w-6 text-green-600" />
                 <div>
-                  <StatusBadge status="satisfactory">Satisfactory</StatusBadge>
-                  <p className="text-sm text-muted-foreground mt-1">
-                    No dangerous observations found
-                  </p>
+                  <p className="font-semibold text-green-800">Satisfactory</p>
+                  <p className="text-sm text-green-700">No dangerous observations found</p>
                 </div>
               </>
             )}
           </div>
-        </GlassCardContent>
-      </GlassCard>
+        </CardContent>
+      </Card>
 
-      {/* Quick Stats */}
-      <div className="grid grid-cols-2 gap-4 animate-stagger-in">
+      <div className="grid grid-cols-2 gap-4">
         <Link href={`/job/${jobId}/circuits`}>
-          <GlassCard className="hover:bg-white/8 transition-all duration-200 hover:-translate-y-0.5 cursor-pointer">
-            <GlassCardContent className="py-4 px-5">
-              <div className="flex items-center gap-3">
-                <div className="flex items-center justify-center h-9 w-9 rounded-xl bg-brand-blue/15">
-                  <Zap className="h-4 w-4 text-brand-blue" />
-                </div>
-                <div>
-                  <p className="text-2xl font-bold text-foreground">{job.circuits.length}</p>
-                  <p className="text-xs text-muted-foreground">Circuits</p>
-                </div>
-              </div>
-            </GlassCardContent>
-          </GlassCard>
+          <Card className="hover:shadow-md transition-shadow cursor-pointer">
+            <CardHeader className="pb-2">
+              <CardDescription>Circuits</CardDescription>
+              <CardTitle className="text-3xl">{job.circuits.length}</CardTitle>
+            </CardHeader>
+          </Card>
         </Link>
         <Link href={`/job/${jobId}/observations`}>
-          <GlassCard className="hover:bg-white/8 transition-all duration-200 hover:-translate-y-0.5 cursor-pointer">
-            <GlassCardContent className="py-4 px-5">
-              <div className="flex items-center gap-3">
-                <div className="flex items-center justify-center h-9 w-9 rounded-xl bg-status-amber/15">
-                  <AlertTriangle className="h-4 w-4 text-status-amber" />
-                </div>
-                <div>
-                  <p className="text-2xl font-bold text-foreground">{job.observations.length}</p>
-                  <p className="text-xs text-muted-foreground">Observations</p>
-                </div>
-              </div>
-            </GlassCardContent>
-          </GlassCard>
+          <Card className="hover:shadow-md transition-shadow cursor-pointer">
+            <CardHeader className="pb-2">
+              <CardDescription>Observations</CardDescription>
+              <CardTitle className="text-3xl">{job.observations.length}</CardTitle>
+            </CardHeader>
+          </Card>
         </Link>
       </div>
 
-      {/* Observation Summary */}
       {job.observations.length > 0 && (
-        <GlassCard className="animate-stagger-in">
-          <GlassCardHeader>
-            <GlassCardTitle>Observation Summary</GlassCardTitle>
-          </GlassCardHeader>
-          <GlassCardContent>
-            <div className="grid grid-cols-4 gap-3 text-center">
-              <div className="rounded-xl bg-status-c1/10 border border-status-c1/15 p-3">
-                <p className="text-2xl font-bold text-status-c1">{c1Count}</p>
-                <p className="text-[10px] font-bold uppercase tracking-wider text-status-c1">C1</p>
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-lg">Observation Summary</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="grid grid-cols-4 gap-2 text-center">
+              <div className="p-2 rounded bg-red-100">
+                <p className="text-2xl font-bold text-red-700">{c1Count}</p>
+                <p className="text-xs text-red-600">C1</p>
               </div>
-              <div className="rounded-xl bg-status-c2/10 border border-status-c2/15 p-3">
-                <p className="text-2xl font-bold text-status-c2">{c2Count}</p>
-                <p className="text-[10px] font-bold uppercase tracking-wider text-status-c2">C2</p>
+              <div className="p-2 rounded bg-orange-100">
+                <p className="text-2xl font-bold text-orange-700">{c2Count}</p>
+                <p className="text-xs text-orange-600">C2</p>
               </div>
-              <div className="rounded-xl bg-status-c3/10 border border-status-c3/15 p-3">
-                <p className="text-2xl font-bold text-status-c3">{c3Count}</p>
-                <p className="text-[10px] font-bold uppercase tracking-wider text-status-c3">C3</p>
+              <div className="p-2 rounded bg-blue-100">
+                <p className="text-2xl font-bold text-blue-700">{c3Count}</p>
+                <p className="text-xs text-blue-600">C3</p>
               </div>
-              <div className="rounded-xl bg-status-fi/10 border border-status-fi/15 p-3">
-                <p className="text-2xl font-bold text-status-fi">{fiCount}</p>
-                <p className="text-[10px] font-bold uppercase tracking-wider text-status-fi">FI</p>
+              <div className="p-2 rounded bg-purple-100">
+                <p className="text-2xl font-bold text-purple-700">{fiCount}</p>
+                <p className="text-xs text-purple-600">FI</p>
               </div>
             </div>
-          </GlassCardContent>
-        </GlassCard>
+          </CardContent>
+        </Card>
       )}
 
-      {/* Board Information */}
-      <GlassCard className="animate-stagger-in">
-        <GlassCardHeader>
-          <div className="flex items-center gap-2">
-            <Building2 className="h-4 w-4 text-brand-blue" />
-            <GlassCardTitle>Board Information</GlassCardTitle>
-          </div>
-        </GlassCardHeader>
-        <GlassCardContent>
-          <dl className="grid grid-cols-2 gap-3 text-sm">
-            <div className="rounded-lg bg-L2/50 px-3 py-2">
-              <dt className="text-[10px] uppercase tracking-wider text-muted-foreground mb-0.5">
-                Location
-              </dt>
-              <dd className="text-foreground">{job.board_info.location || '\u2014'}</dd>
-            </div>
-            <div className="rounded-lg bg-L2/50 px-3 py-2">
-              <dt className="text-[10px] uppercase tracking-wider text-muted-foreground mb-0.5">
-                Manufacturer
-              </dt>
-              <dd className="text-foreground">{job.board_info.manufacturer || '\u2014'}</dd>
-            </div>
-            <div className="rounded-lg bg-L2/50 px-3 py-2">
-              <dt className="text-[10px] uppercase tracking-wider text-muted-foreground mb-0.5">
-                Earthing
-              </dt>
-              <dd className="text-foreground">{job.board_info.earthing_arrangement || '\u2014'}</dd>
-            </div>
-            <div className="rounded-lg bg-L2/50 px-3 py-2">
-              <dt className="text-[10px] uppercase tracking-wider text-muted-foreground mb-0.5">
-                Ze
-              </dt>
-              <dd className="text-foreground">
-                {job.board_info.ze ? `${job.board_info.ze} \u03A9` : '\u2014'}
-              </dd>
-            </div>
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-lg">Board Information</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <dl className="grid grid-cols-2 gap-2 text-sm">
+            <dt className="text-muted-foreground">Location</dt>
+            <dd>{job.board_info.location || '-'}</dd>
+            <dt className="text-muted-foreground">Manufacturer</dt>
+            <dd>{job.board_info.manufacturer || '-'}</dd>
+            <dt className="text-muted-foreground">Earthing</dt>
+            <dd>{job.board_info.earthing_arrangement || '-'}</dd>
+            <dt className="text-muted-foreground">Ze</dt>
+            <dd>{job.board_info.ze ? `${job.board_info.ze} Ω` : '-'}</dd>
           </dl>
-        </GlassCardContent>
-      </GlassCard>
+        </CardContent>
+      </Card>
     </div>
   );
 }

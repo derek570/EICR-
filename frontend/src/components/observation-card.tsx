@@ -7,7 +7,6 @@ import { Button } from '@/components/ui/button';
 import { PhotoPicker } from '@/components/photo-picker';
 import { PhotoUpload } from '@/components/photo-upload';
 import { RegulationLookup } from '@/components/regulation-lookup';
-import { StatusBadge } from '@/components/ui/status-badge';
 import { Trash2, Image as ImageIcon, Plus, X, Link as LinkIcon, BookOpen } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
@@ -20,18 +19,11 @@ interface ObservationCardProps {
   onDelete: (index: number) => void;
 }
 
-const severityBorderColors: Record<string, string> = {
-  C1: 'border-l-status-c1',
-  C2: 'border-l-status-c2',
-  C3: 'border-l-status-c3',
-  FI: 'border-l-status-fi',
-};
-
-const severityBadgeStatus: Record<string, 'c1' | 'c2' | 'c3' | 'fi'> = {
-  C1: 'c1',
-  C2: 'c2',
-  C3: 'c3',
-  FI: 'fi',
+const codeColors: Record<string, string> = {
+  C1: 'bg-red-500',
+  C2: 'bg-orange-500',
+  C3: 'bg-blue-500',
+  FI: 'bg-purple-500',
 };
 
 const codeLabels: Record<string, string> = {
@@ -132,16 +124,17 @@ export function ObservationCard({
   }, [viewingPhoto, handleKeyDown]);
 
   return (
-    <div
-      className={`glass-card border-l-[3px] ${severityBorderColors[observation.code] || 'border-l-brand-blue'} p-4 space-y-3`}
-    >
+    <div className="bg-white border rounded-lg p-4 space-y-3">
       <div className="flex items-start justify-between gap-3">
         <div className="flex items-center gap-3">
           <select
             value={observation.code}
             onChange={(e) => updateField('code', e.target.value as Observation['code'])}
             aria-label="Observation severity code"
-            className="h-10 w-16 rounded-full font-bold text-center appearance-none cursor-pointer bg-L2 border border-white/10 text-foreground text-sm"
+            className={cn(
+              'h-10 w-16 rounded-full text-white font-bold text-center appearance-none cursor-pointer',
+              codeColors[observation.code]
+            )}
           >
             <option value="C1">C1</option>
             <option value="C2">C2</option>
@@ -149,11 +142,9 @@ export function ObservationCard({
             <option value="FI">FI</option>
           </select>
           <div>
-            <StatusBadge status={severityBadgeStatus[observation.code] || 'blue'}>
-              {codeLabels[observation.code]}
-            </StatusBadge>
+            <span className="text-sm text-muted-foreground">{codeLabels[observation.code]}</span>
             {isLinkedToSchedule && (
-              <div className="flex items-center gap-1 text-xs text-brand-blue mt-1">
+              <div className="flex items-center gap-1 text-xs text-blue-600 mt-0.5">
                 <LinkIcon className="h-3 w-3" />
                 <span>Linked to {observation.schedule_item}</span>
               </div>
@@ -164,8 +155,7 @@ export function ObservationCard({
           variant="ghost"
           size="sm"
           onClick={() => onDelete(index)}
-          className="text-status-red hover:text-status-red hover:bg-status-red/10"
-          aria-label="Delete observation"
+          className="text-red-500 hover:text-red-700 hover:bg-red-50"
         >
           <Trash2 className="h-4 w-4" />
         </Button>
@@ -174,19 +164,15 @@ export function ObservationCard({
       {/* Schedule description (if linked) */}
       {observation.schedule_description && (
         <div className="text-sm">
-          <label className="text-[11px] uppercase tracking-wider text-muted-foreground">
-            Regulation
-          </label>
-          <div className="mt-1 px-3 py-2 bg-L2 border border-white/8 rounded-[12px] text-sm text-foreground">
+          <label className="text-xs text-muted-foreground">Regulation</label>
+          <div className="mt-1 px-3 py-2 bg-slate-50 border rounded-md text-sm text-slate-700">
             {observation.schedule_item} - {observation.schedule_description}
           </div>
         </div>
       )}
 
       <div>
-        <label className="text-[11px] uppercase tracking-wider text-muted-foreground">
-          Location
-        </label>
+        <label className="text-xs text-muted-foreground">Location</label>
         <Input
           value={observation.item_location}
           onChange={(e) => updateField('item_location', e.target.value)}
@@ -197,9 +183,7 @@ export function ObservationCard({
 
       <div>
         <div className="flex items-center justify-between">
-          <label className="text-[11px] uppercase tracking-wider text-muted-foreground">
-            Observation
-          </label>
+          <label className="text-xs text-muted-foreground">Observation</label>
           <Button
             variant="outline"
             size="sm"
@@ -214,7 +198,7 @@ export function ObservationCard({
           value={observation.observation_text}
           onChange={(e) => updateField('observation_text', e.target.value)}
           placeholder="Description of the issue..."
-          className="mt-1 w-full min-h-[80px] rounded-[12px] border border-neutral-700 bg-L2 px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground resize-y focus:outline-none focus:ring-2 focus:ring-brand-blue/50"
+          className="mt-1 w-full min-h-[80px] rounded-md border border-input px-3 py-2 text-sm resize-y"
         />
 
         {/* Regulation Lookup Panel */}
@@ -229,9 +213,7 @@ export function ObservationCard({
       </div>
 
       <div>
-        <label className="text-[11px] uppercase tracking-wider text-muted-foreground">
-          Schedule Item
-        </label>
+        <label className="text-xs text-muted-foreground">Schedule Item</label>
         <Input
           value={observation.schedule_item || ''}
           onChange={(e) => updateField('schedule_item', e.target.value)}
@@ -249,14 +231,14 @@ export function ObservationCard({
 
       {/* Photo section */}
       <div>
-        <label className="text-[11px] uppercase tracking-wider text-muted-foreground">Photos</label>
+        <label className="text-xs text-muted-foreground">Photos</label>
         {/* Photo preview grid - 128x128 thumbnails */}
         {observation.photos && observation.photos.length > 0 && (
           <div className="mt-2 grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2">
             {observation.photos.map((filename) => (
               <div
                 key={filename}
-                className="relative aspect-square rounded-lg overflow-hidden border-2 border-white/10 bg-L2 group cursor-pointer hover:border-brand-blue/40 transition-colors"
+                className="relative aspect-square rounded-lg overflow-hidden border-2 border-gray-200 bg-gray-100 group cursor-pointer hover:border-blue-400 transition-colors"
                 onClick={() => setViewingPhoto(filename)}
               >
                 {photoUrls[filename] ? (
@@ -268,7 +250,7 @@ export function ObservationCard({
                   />
                 ) : (
                   <div className="w-full h-full flex items-center justify-center">
-                    <ImageIcon className="h-8 w-8 text-muted-foreground" />
+                    <ImageIcon className="h-8 w-8 text-gray-400" />
                   </div>
                 )}
                 <button
@@ -276,8 +258,7 @@ export function ObservationCard({
                     e.stopPropagation();
                     removePhoto(filename);
                   }}
-                  className="absolute top-1 right-1 bg-status-red text-white rounded-full p-2 opacity-0 group-hover:opacity-100 transition-opacity shadow-md min-h-[44px] min-w-[44px] flex items-center justify-center"
-                  aria-label="Remove photo"
+                  className="absolute top-1 right-1 bg-red-500 text-white rounded-full p-1 opacity-0 group-hover:opacity-100 transition-opacity shadow-md"
                 >
                   <X className="h-4 w-4" />
                 </button>

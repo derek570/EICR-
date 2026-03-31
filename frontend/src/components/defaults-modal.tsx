@@ -199,12 +199,7 @@ export function DefaultsModal({ userId, isOpen, onClose }: DefaultsModalProps) {
             <FileText className="h-5 w-5" />
             Certificate Defaults
           </h2>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={onClose}
-            aria-label="Close certificate defaults"
-          >
+          <Button variant="ghost" size="sm" onClick={onClose}>
             <X className="h-4 w-4" />
           </Button>
         </div>

@@ -90,11 +90,7 @@ export function RegulationLookup({ onSelect, onClose, className }: RegulationLoo
         <BookOpen className="h-4 w-4 text-blue-600 shrink-0" />
         <span className="text-sm font-medium text-slate-700">BS 7671 Regulation Lookup</span>
         {onClose && (
-          <button
-            onClick={onClose}
-            className="ml-auto text-slate-400 hover:text-slate-600 min-h-[44px] min-w-[44px] flex items-center justify-center"
-            aria-label="Close regulation lookup"
-          >
+          <button onClick={onClose} className="ml-auto text-slate-400 hover:text-slate-600">
             <X className="h-4 w-4" />
           </button>
         )}
@@ -130,15 +126,7 @@ export function RegulationLookup({ onSelect, onClose, className }: RegulationLoo
                 <div key={reg.ref} className="hover:bg-slate-50 transition-colors">
                   {/* Main row */}
                   <div
-                    className="flex items-start gap-3 p-3 cursor-pointer min-h-[44px]"
-                    role="button"
-                    tabIndex={0}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' || e.key === ' ') {
-                        e.preventDefault();
-                        toggleExpand(reg.ref);
-                      }
-                    }}
+                    className="flex items-start gap-3 p-3 cursor-pointer"
                     onClick={() => toggleExpand(reg.ref)}
                   >
                     <span className="inline-flex items-center justify-center h-7 min-w-[60px] px-2 rounded bg-blue-100 text-blue-800 text-xs font-mono font-semibold shrink-0">

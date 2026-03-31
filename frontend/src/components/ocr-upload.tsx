@@ -151,7 +151,7 @@ export default function OcrUpload({ onExtracted }: OcrUploadProps) {
             <p className="text-sm text-muted-foreground">{formatFileSize(file.size)}</p>
           </div>
           {!isProcessing && status !== 'success' && (
-            <Button variant="ghost" size="sm" onClick={removeFile} aria-label="Remove file">
+            <Button variant="ghost" size="sm" onClick={removeFile}>
               <X className="h-4 w-4" />
             </Button>
           )}

@@ -134,7 +134,7 @@ export function PhotoPicker({
               </span>
             )}
           </h2>
-          <Button variant="ghost" size="sm" onClick={onClose} aria-label="Close photo picker">
+          <Button variant="ghost" size="sm" onClick={onClose}>
             <X className="h-4 w-4" />
           </Button>
         </div>

@@ -51,11 +51,7 @@ export function CloneDialog({ isOpen, onClose, onConfirm, sourceAddress }: Clone
               Clone Job
             </Dialog.Title>
             <Dialog.Close asChild>
-              <button
-                className="rounded-full p-2 hover:bg-gray-100 min-h-[44px] min-w-[44px] flex items-center justify-center"
-                disabled={submitting}
-                aria-label="Close clone dialog"
-              >
+              <button className="rounded-full p-1 hover:bg-gray-100" disabled={submitting}>
                 <X className="h-4 w-4" />
               </button>
             </Dialog.Close>

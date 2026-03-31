@@ -72,13 +72,7 @@ function AudioPlayer({ url, label }: { url: string; label: string }) {
         onLoadedMetadata={() => setDuration(audioRef.current?.duration || 0)}
         onEnded={() => setIsPlaying(false)}
       />
-      <Button
-        size="sm"
-        variant="outline"
-        onClick={togglePlay}
-        className="h-8 w-8 p-0"
-        aria-label={isPlaying ? 'Pause audio' : 'Play audio'}
-      >
+      <Button size="sm" variant="outline" onClick={togglePlay} className="h-8 w-8 p-0">
         {isPlaying ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}
       </Button>
       <span className="text-xs text-muted-foreground">
