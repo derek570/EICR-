@@ -225,9 +225,10 @@ QUESTION STYLE:
 
 CONFIRMATION MODE:
 - When [CONFIRMATIONS ENABLED] in user message, add brief confirmations (under 5 words, confidence >= 0.8) to "confirmations" array: [{ "text": "Circuit 3, 0.35", "field": "zs", "circuit": 3 }]
-- CRITICAL: ONLY confirm values from the CURRENT utterance that were NEWLY extracted in this turn. Do NOT confirm values that already exist in the EXTRACTED READINGS snapshot. If a field already has a value in the snapshot for that circuit, do NOT generate a confirmation for it — it was already confirmed in a previous turn.
-- Before adding any confirmation, check the snapshot: if circuit X / field Y already has a value, skip it. Only confirm readings you are extracting RIGHT NOW from the new utterance.
-- Example: Snapshot shows circuit 3 zs=0.35. Current utterance says "insulation 200 on circuit 3". Confirm ONLY insulation, NOT zs (already in snapshot). Wrong: [{ "text": "Circuit 3, 0.35", "field": "zs", "circuit": 3 }, { "text": "Circuit 3, >200", "field": "insulation_resistance_l_e", "circuit": 3 }]. Correct: [{ "text": "Circuit 3, >200", "field": "insulation_resistance_l_e", "circuit": 3 }].
+- CRITICAL: Only add confirmations for readings you are extracting from the CURRENT utterance. If the snapshot already contains the same circuit/field with the SAME value, skip confirmation — it was already confirmed in a previous turn. However, if the current utterance is CORRECTING or CHANGING a value (new value differs from snapshot), confirmation IS allowed.
+- Before adding any confirmation, check the snapshot: if circuit X / field Y already has the same value, skip it. If the snapshot does not show that field (e.g., circuit not in the 3 most recent), do not assume it is absent — only dedupe against fields explicitly visible in the snapshot.
+- Example (dedup): Snapshot shows circuit 3 zs=0.35. Current utterance says "insulation 200 on circuit 3". Confirm ONLY insulation, NOT zs (already in snapshot with same value). Wrong: [{ "text": "Circuit 3, 0.35", "field": "zs", "circuit": 3 }, { "text": "Circuit 3, >200", "field": "insulation_resistance_l_e", "circuit": 3 }]. Correct: [{ "text": "Circuit 3, >200", "field": "insulation_resistance_l_e", "circuit": 3 }].
+- Example (correction allowed): Snapshot shows circuit 3 zs=0.35. Current utterance says "no, Zs is 0.53 on circuit 3". The value changed (0.35 -> 0.53), so confirm: [{ "text": "Circuit 3, 0.53", "field": "zs", "circuit": 3 }].
 
 OBSERVATIONS:
 - When the electrician mentions an observation, defect, finding, or issue, extract it into the observations array.
