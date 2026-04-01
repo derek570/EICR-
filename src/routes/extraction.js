@@ -741,6 +741,9 @@ If the photo contains BOTH strip labels above/below the devices AND a Circuit De
 4. When the strip label and Circuit Details Card DISAGREE — prefer the strip label unless it is completely unreadable
 5. When a strip label is UNCLEAR or FADED — the Circuit Details Card can help you interpret what it says, but verify against the physical device
 6. **NO DUPLICATE DESIGNATIONS**: Do NOT assign the same designation (e.g. "Sockets", "Lighting") to multiple circuits unless you have strong physical evidence from BOTH the strip label AND the circuit details card confirming each occurrence independently. When strip labels are hard to read or ambiguous, cross-reference against the Circuit Details Card before assigning a name. If you cannot confirm a designation from at least one clear source, leave the label as null rather than guessing — a missing label is better than a duplicate that creates phantom circuits downstream.
+7. **RCD IS NOT A CIRCUIT**: A standalone RCD (the double-width device with a TEST button and toggle lever) is a protection device, NOT a circuit breaker. Its toggle lever and test button must NEVER be counted as a device position or circuit way. Skip over it entirely when counting devices and numbering circuits.
+8. **FADED / UNCLEAR STRIP LABELS → null**: If a strip label is faded, smudged, partially obscured, or otherwise not CLEARLY readable with high confidence, set the circuit label to null. NEVER guess a label from a faded strip, and NEVER copy or infer a label from an adjacent strip position. Each label must be independently and clearly readable to be used.
+9. **CROSS-REFERENCE EVERY LABEL AGAINST THE CIRCUIT DETAILS CARD**: Before finalising any circuit label, check whether the Circuit Details Card at the bottom of the board lists a matching circuit. If a strip label appears to say something (e.g. "Sockets") but the Circuit Details Card does NOT list a corresponding entry for that position, treat the strip label as suspect and set the label to null. The card and strip must broadly agree for a label to be trusted.
 
 IMPORTANT: Do NOT default to "Spare" or null for a circuit label if there is readable text on the strip labels or handwritten notes that identifies what the circuit supplies. A circuit with a visible MCB/RCBO and a readable label is NOT a spare.
 
@@ -775,6 +778,12 @@ Read the amp rating from the DEVICE FACE, not assumed from the circuit label.
 - "Shower" does NOT mean 40A — read the actual breaker face.
 - "Cooker" does NOT mean 32A — read the actual breaker face.
 - If the rating is not legible, set to null and add to uncertain_fields. Do NOT guess from circuit name.
+
+**CRITICAL — B6 vs B16 CONFUSION**: On many UK MCBs (especially Legrand), the type letter "B" and the rating number are printed with a wide gap between them. This makes "B 6" (6 amp) look deceptively like "B 16" (16 amp) — the whitespace can be misread as a "1" digit. ALWAYS verify the digit count:
+- **B6** = letter B followed by a SINGLE digit "6". Common on lighting and smoke alarm circuits.
+- **B16** = letter B followed by TWO digits "1" then "6". Common on radial socket circuits.
+- If you read "B16" on a circuit labelled Lighting, Smoke Alarm, or Smoke Detector, DOUBLE-CHECK — UK lighting circuits are almost always 6A (B6), not 16A. A B16 on a lighting circuit is a strong signal you have misread a B6.
+- When in doubt, look at the physical size of the printed number: a single "6" takes up less horizontal space than "16".
 
 ### FOR EACH DEVICE, EXTRACT:
 
