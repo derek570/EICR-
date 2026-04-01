@@ -208,9 +208,13 @@ function applyBsEnFallback(analysis) {
     }
 
     // Validate rcd_type — GPT sometimes returns "RCD" or "RCBO" instead of the actual type
-    const validRcdTypes = ['AC', 'A', 'B', 'F', 'S'];
+    const validRcdTypes = ['AC', 'A', 'B', 'F', 'S', 'A-S', 'B-S', 'B+'];
     if (circuit.rcd_type) {
-      const normalised = circuit.rcd_type.toUpperCase().trim();
+      let normalised = circuit.rcd_type
+        .toUpperCase()
+        .trim()
+        .replace(/\s*PLUS$/i, '+') // "B PLUS" → "B+"
+        .replace(/\s*\+$/, '+'); // "B +" → "B+"
       if (validRcdTypes.includes(normalised)) {
         circuit.rcd_type = normalised;
       } else {

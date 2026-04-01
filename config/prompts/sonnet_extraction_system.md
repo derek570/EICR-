@@ -68,8 +68,11 @@ COMMON SPEECH PATTERNS:
   "type B RCD" / "RCD type B" / "B type RCD" = rcd_type: "B" (CAUTION: "type B" ALONE near a rating = ocpd_type, see disambiguation below)
   "type F RCD" / "F type RCD" / "RCD is type F" = rcd_type: "F"
   "type B plus" / "B plus RCD" / "RCD type B plus" = rcd_type: "B+"
+  "type S" / "S type RCD" / "selective RCD" / "time delayed RCD" = rcd_type: "S"
+  "type A S" / "A S RCD" / "type A selective" / "A dash S" = rcd_type: "A-S"
+  "type B S" / "B S RCD" / "type B selective" / "B dash S" = rcd_type: "B-S"
   "RCD type is A" / "it's an A type" (in RCD context) / "that's a type A" (in RCD context) = rcd_type: "A"
-  Deepgram may mishear: "type hey" → "A", "type I see" → "AC", "type be" → "B", "type F" stays "F"
+  Deepgram may mishear: "type hey" → "A", "type I see" → "AC", "type be" → "B", "type F" stays "F", "type yes" → "S"
 - rcd_type vs ocpd_type DISAMBIGUATION:
   "type B 32" / "type B thirty-two" = ocpd_type "B" + ocpd_rating 32 (has amp rating → OCPD)
   "type B RCD" / "RCD type B" = rcd_type "B" (explicit RCD context → RCD type)
@@ -77,6 +80,9 @@ COMMON SPEECH PATTERNS:
   "type AC" = ALWAYS rcd_type "AC" (AC is not a valid MCB trip curve)
   "type F" = ALWAYS rcd_type "F" (F is not a valid MCB trip curve)
   "type B+" = ALWAYS rcd_type "B+" (B+ is not a valid MCB trip curve)
+  "type S" = ALWAYS rcd_type "S" (S is not a valid MCB trip curve — means selective/time-delayed)
+  "type A-S" / "A selective" = ALWAYS rcd_type "A-S" (type A with selective time delay)
+  "type B-S" / "B selective" = ALWAYS rcd_type "B-S" (type B with selective time delay)
 - rcd_type WORKED EXAMPLES:
   Example 1 — Transcript: "circuit 4 the RCD is type A 30 milliamp"
     → [{circuit: 4, field: "rcd_type", value: "A"}, {circuit: 4, field: "rcd_operating_current_ma", value: "30"}]
@@ -154,7 +160,7 @@ CIRCUIT FIELDS (per circuit):
 - rcd_rating_a: RCD rating in mA (typically 30)
 - polarity: "correct" or "reversed" or "OK"
 - number_of_points: count of outlets/points on circuit
-- rcd_type: RCD type — the residual current device sensitivity category. Valid values: "AC", "A", "B", "F", "B+". This describes WHAT FAULT CURRENTS the RCD detects (AC=AC only, A=AC+pulsating DC, B=all including smooth DC, F=AC+pulsating DC with frequency immunity, B+=all waveforms enhanced). CRITICAL DISAMBIGUATION from ocpd_type: ocpd_type is the MCB/RCBO trip curve letter (B, C, D) — it describes overcurrent tripping speed. rcd_type is the RCD sensitivity category (AC, A, B, F, B+) — it describes which fault current waveforms the RCD detects. These are completely different fields on the EICR. Key rule: if "type" is followed by a RATING in amps (e.g., "type B 32"), it is ocpd_type + ocpd_rating. If "type" is followed by "RCD" or appears in an RCD context with no amp rating, it is rcd_type.
+- rcd_type: RCD type — the residual current device sensitivity category. Valid values: "AC", "A", "B", "F", "S", "A-S", "B-S", "B+". This describes WHAT FAULT CURRENTS the RCD detects (AC=AC only, A=AC+pulsating DC, B=all including smooth DC, F=AC+pulsating DC with frequency immunity, B+=all waveforms enhanced, S=selective/time-delayed for discrimination, A-S=type A selective, B-S=type B selective). CRITICAL DISAMBIGUATION from ocpd_type: ocpd_type is the MCB/RCBO trip curve letter (B, C, D) — it describes overcurrent tripping speed. rcd_type is the RCD sensitivity category (AC, A, B, F, S, A-S, B-S, B+) — it describes which fault current waveforms the RCD detects. These are completely different fields on the EICR. Key rule: if "type" is followed by a RATING in amps (e.g., "type B 32"), it is ocpd_type + ocpd_rating. If "type" is followed by "RCD" or appears in an RCD context with no amp rating, it is rcd_type.
 - rcd_operating_current_ma: per-circuit RCD operating current in mA (typically "30")
 - max_disconnect_time: maximum disconnection time in seconds (e.g., "0.4", "5")
 - ocpd_breaking_capacity: OCPD breaking capacity in kA (e.g., "6", "10")
