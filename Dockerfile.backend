@@ -49,6 +49,7 @@ RUN mkdir -p ./certs && \
 COPY src/ ./src/
 COPY config/ ./config/
 COPY assets/ ./assets/
+COPY python/ ./python/
 
 # Create data directories
 RUN mkdir -p ./data/INCOMING ./data/OUTPUT ./data/DONE ./data/FAILED

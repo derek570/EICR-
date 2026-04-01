@@ -6,6 +6,7 @@ USER root
 COPY src/ ./src/
 COPY config/ ./config/
 COPY scripts/ ./scripts/
+COPY python/ ./python/
 
 RUN chown -R certmate:nodejs /app
 

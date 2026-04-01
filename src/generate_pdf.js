@@ -1,6 +1,6 @@
-import fs from "node:fs/promises";
-import path from "node:path";
-import { chromium } from "playwright";
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import { chromium } from 'playwright';
 
 function generateHTML(data) {
   const { board, circuits, testedBy, testDate, inspector } = data;
@@ -11,10 +11,12 @@ function generateHTML(data) {
   const inspectorEnrolment = inspector?.enrolment_number || '';
   const inspectorMFT = inspector?.mft_serial_number || '';
 
-  const circuitRows = circuits.map(c => `
+  const circuitRows = circuits
+    .map(
+      (c) => `
     <tr>
       <td class="center">${c.circuit_ref || ''}</td>
-      <td>${c.circuit_designation || ''}</td>
+      <td class="designation">${c.circuit_designation || ''}</td>
       <td class="center">${c.number_of_points || c.num_points || ''}</td>
       <td class="center">${c.wiring_type || 'A'}</td>
       <td class="center">${c.ref_method || 'C'}</td>
@@ -44,7 +46,9 @@ function generateHTML(data) {
       <td class="center">${c.rcd_button_confirmed === true || c.rcd_button_confirmed === 'true' || c.rcd_button_confirmed === '✓' || c.rcd_button_confirmed === 'OK' ? '✓' : ''}</td>
       <td class="center">${c.afdd_button_confirmed || 'N/A'}</td>
     </tr>
-  `).join('');
+  `
+    )
+    .join('');
 
   return `<!DOCTYPE html>
 <html>
@@ -114,7 +118,7 @@ function generateHTML(data) {
     }
     th, td {
       border: 1px solid #999;
-      padding: 3px 2px;
+      padding: 2px 1px;
       text-align: left;
     }
     th {
@@ -122,6 +126,10 @@ function generateHTML(data) {
       font-weight: bold;
       text-align: center;
       font-size: 7px;
+    }
+    td.designation {
+      font-size: 7px;
+      word-break: break-word;
     }
     .center {
       text-align: center;
@@ -201,46 +209,46 @@ function generateHTML(data) {
   <table>
     <thead>
       <tr>
-        <th rowspan="2" style="width: 30px">Circuit<br>reference</th>
-        <th rowspan="2" style="width: 100px">Circuit designation</th>
-        <th rowspan="2" style="width: 35px">Number of<br>points served</th>
+        <th rowspan="2" style="width: 25px">Cct<br>ref</th>
+        <th rowspan="2" style="width: 140px">Circuit designation</th>
+        <th rowspan="2" style="width: 25px">No. of<br>points</th>
         <th colspan="5" class="header-group">CONDUCTORS</th>
         <th colspan="5" class="header-group">OVERCURRENT DEVICES</th>
         <th colspan="4" class="header-group">RCD</th>
         <th colspan="3" class="header-group">RING FINAL CIRCUITS</th>
         <th colspan="2" class="header-group">R1+R2 OR R2</th>
         <th colspan="3" class="header-group">INSULATION RESISTANCE</th>
-        <th rowspan="2" style="width: 30px">Polarity<br>confirmed</th>
-        <th rowspan="2" style="width: 35px">Measured<br>Zs (ohm)</th>
+        <th rowspan="2" style="width: 25px">Pol<br>✓</th>
+        <th rowspan="2" style="width: 30px">Meas.<br>Zs (Ω)</th>
         <th colspan="2" class="header-group">RCD</th>
         <th colspan="1" class="header-group">AFDD</th>
       </tr>
       <tr class="sub-header">
-        <th>Type of<br>wiring</th>
-        <th>Reference<br>method</th>
-        <th>Live<br>(mm²)</th>
-        <th>CPC<br>(mm²)</th>
-        <th>Max disconnect<br>time (s)</th>
+        <th>Wiring<br>type</th>
+        <th>Ref<br>method</th>
+        <th>Live<br>mm²</th>
+        <th>CPC<br>mm²</th>
+        <th>Max<br>t(s)</th>
         <th>BS(EN)</th>
         <th>Type</th>
-        <th>Rating<br>(A)</th>
-        <th>Breaking<br>capacity (kA)</th>
-        <th>Maximum<br>Zs (ohm)</th>
+        <th>In<br>(A)</th>
+        <th>kA</th>
+        <th>Max<br>Zs(Ω)</th>
         <th>BS(EN)</th>
         <th>Type</th>
-        <th>Operating<br>current (mA)</th>
-        <th>Rating<br>(A)</th>
-        <th>r1<br>(ohm)</th>
-        <th>rn<br>(ohm)</th>
-        <th>r2<br>(ohm)</th>
-        <th>R1+R2<br>(ohm)</th>
-        <th>R2<br>(ohm)</th>
-        <th>Test<br>Voltage (V)</th>
-        <th>Live-Live<br>(Mohm)</th>
-        <th>Live-Earth<br>(Mohm)</th>
-        <th>RCD time<br>(ms)</th>
-        <th>RCD button<br>confirmed</th>
-        <th>AFDD button<br>confirmed</th>
+        <th>IΔn<br>(mA)</th>
+        <th>In<br>(A)</th>
+        <th>r1<br>(Ω)</th>
+        <th>rn<br>(Ω)</th>
+        <th>r2<br>(Ω)</th>
+        <th>R1+R2<br>(Ω)</th>
+        <th>R2<br>(Ω)</th>
+        <th>Test<br>V</th>
+        <th>L-L<br>(MΩ)</th>
+        <th>L-E<br>(MΩ)</th>
+        <th>RCD<br>ms</th>
+        <th>RCD<br>btn ✓</th>
+        <th>AFDD<br>btn ✓</th>
       </tr>
     </thead>
     <tbody>
@@ -274,41 +282,48 @@ function generateHTML(data) {
 /**
  * Generate a PDF test results sheet matching the Tradecert format
  */
-export async function generateTestResultsPDF({ outDir, circuits, board, testedBy, testDate, inspector }) {
+export async function generateTestResultsPDF({
+  outDir,
+  circuits,
+  board,
+  testedBy,
+  testDate,
+  inspector,
+}) {
   const html = generateHTML({
     board: board || {},
     circuits: circuits || [],
     testedBy,
     testDate,
-    inspector: inspector || {}
+    inspector: inspector || {},
   });
 
   // Save HTML for debugging
-  await fs.writeFile(path.join(outDir, "test_results.html"), html, "utf8");
+  await fs.writeFile(path.join(outDir, 'test_results.html'), html, 'utf8');
 
   // Launch browser and generate PDF
   const browser = await chromium.launch();
   const page = await browser.newPage();
 
-  await page.setContent(html, { waitUntil: "networkidle" });
+  await page.setContent(html, { waitUntil: 'networkidle' });
 
   await page.pdf({
-    path: path.join(outDir, "test_results.pdf"),
-    format: "A4",
+    path: path.join(outDir, 'test_results.pdf'),
+    format: 'A4',
     landscape: true,
     margin: {
-      top: "10mm",
-      bottom: "10mm",
-      left: "10mm",
-      right: "10mm"
+      top: '10mm',
+      bottom: '10mm',
+      left: '10mm',
+      right: '10mm',
     },
-    printBackground: true
+    printBackground: true,
   });
 
   await browser.close();
 
   return {
-    pdf: "test_results.pdf",
-    html: "test_results.html"
+    pdf: 'test_results.pdf',
+    html: 'test_results.html',
   };
 }
