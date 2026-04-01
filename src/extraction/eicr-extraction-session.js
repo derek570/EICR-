@@ -436,6 +436,34 @@ export class EICRExtractionSession {
       }
     }
 
+    // Dedup extracted readings: suppress true duplicates (same field + circuit + value)
+    // but allow corrections (same field + circuit, DIFFERENT value) to pass through.
+    if (result.extracted_readings.length > 0) {
+      result.extracted_readings = result.extracted_readings.filter((reading) => {
+        const circuit = reading.circuit;
+        const field = reading.field;
+        const value = reading.value;
+        // Pending (circuit -1) readings are never deduped
+        if (circuit === -1) return true;
+        const circuitData = this.stateSnapshot.circuits[circuit];
+        if (!circuitData || !(field in circuitData)) return true; // new field, pass through
+        const existingValue = circuitData[field];
+        // Same value = true duplicate, suppress
+
+        if (existingValue == value || String(existingValue) === String(value)) {
+          logger.info(
+            `Session ${this.sessionId} Reading deduped (same value): circuit ${circuit}, ${field}=${value}`
+          );
+          return false;
+        }
+        // Different value = correction, pass through
+        logger.info(
+          `Session ${this.sessionId} Reading correction allowed: circuit ${circuit}, ${field}: ${existingValue} → ${value}`
+        );
+        return true;
+      });
+    }
+
     // Dedup observations: filter out any that match already-sent observations
     if (result.observations.length > 0) {
       result.observations = result.observations.filter((obs) => {
@@ -764,7 +792,7 @@ export class EICRExtractionSession {
       }
 
       parts.push(
-        `EXTRACTED (do NOT re-extract — field IDs per system prompt):\n${lines.join('\n')}`
+        `EXTRACTED (field IDs per system prompt — do NOT re-emit identical values, but DO output corrections with DIFFERENT values):\n${lines.join('\n')}`
       );
     }
 

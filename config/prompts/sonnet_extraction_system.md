@@ -62,6 +62,33 @@ COMMON SPEECH PATTERNS:
 - "that's good" / "that's fine" / "pass" after a test = IGNORE, not a value
 - "all good on polarity" = polarity: "correct"
 - "type B 32" = TWO readings: ocpd_type: "B" AND ocpd_rating: 32
+- rcd_type SPEECH PATTERNS (RCD sensitivity category — NOT ocpd_type):
+  "type A RCD" / "RCD type A" / "A type RCD" / "the RCD is type A" = rcd_type: "A"
+  "type AC" / "AC RCD" / "RCD type AC" / "type AC RCD" = rcd_type: "AC"
+  "type B RCD" / "RCD type B" / "B type RCD" = rcd_type: "B" (CAUTION: "type B" ALONE near a rating = ocpd_type, see disambiguation below)
+  "type F RCD" / "F type RCD" / "RCD is type F" = rcd_type: "F"
+  "type B plus" / "B plus RCD" / "RCD type B plus" = rcd_type: "B+"
+  "RCD type is A" / "it's an A type" (in RCD context) / "that's a type A" (in RCD context) = rcd_type: "A"
+  Deepgram may mishear: "type hey" → "A", "type I see" → "AC", "type be" → "B", "type F" stays "F"
+- rcd_type vs ocpd_type DISAMBIGUATION:
+  "type B 32" / "type B thirty-two" = ocpd_type "B" + ocpd_rating 32 (has amp rating → OCPD)
+  "type B RCD" / "RCD type B" = rcd_type "B" (explicit RCD context → RCD type)
+  "type A" alone — check context: near "RCD"/"residual"/"30mA" → rcd_type "A"; near "MCB"/"breaker"/rating → unlikely (A is not a valid ocpd_type)
+  "type AC" = ALWAYS rcd_type "AC" (AC is not a valid MCB trip curve)
+  "type F" = ALWAYS rcd_type "F" (F is not a valid MCB trip curve)
+  "type B+" = ALWAYS rcd_type "B+" (B+ is not a valid MCB trip curve)
+- rcd_type WORKED EXAMPLES:
+  Example 1 — Transcript: "circuit 4 the RCD is type A 30 milliamp"
+    → [{circuit: 4, field: "rcd_type", value: "A"}, {circuit: 4, field: "rcd_operating_current_ma", value: "30"}]
+  Example 2 — Transcript: "type B 32 amp MCB with a type A RCD on circuit 2"
+    → [{circuit: 2, field: "ocpd_type", value: "B"}, {circuit: 2, field: "ocpd_rating", value: 32}, {circuit: 2, field: "rcd_type", value: "A"}]
+    (Note: "type B 32" = ocpd_type B, but "type A RCD" = rcd_type A — both in same utterance)
+  Example 3 — Transcript: "that's a type AC RCD"
+    → [{circuit: -1, field: "rcd_type", value: "AC"}] + ask which circuit
+    (No circuit stated → circuit -1 and ask)
+  Example 4 — Transcript: "RCD type B plus on the shower circuit"
+    → [{circuit: <matched circuit>, field: "rcd_type", value: "B+"}]
+    (Match "shower circuit" against schedule; if ambiguous, circuit -1 + ask)
 - BS EN standards: "60898"/"608 98" = MCB, "61009"/"610 09"/"60909" = RCBO. Reconstruct split digits.
 - BS EN NUMBERS: Deepgram often splits these into separate digits. Reconstruct:
   "6 0 8 9 8" / "608 98" / "60898" = ocpd_bs_en: "60898-1" (MCB standard)
@@ -127,7 +154,7 @@ CIRCUIT FIELDS (per circuit):
 - rcd_rating_a: RCD rating in mA (typically 30)
 - polarity: "correct" or "reversed" or "OK"
 - number_of_points: count of outlets/points on circuit
-- rcd_type: RCD type ("AC", "A", "B", "F", "B+")
+- rcd_type: RCD type — the residual current device sensitivity category. Valid values: "AC", "A", "B", "F", "B+". This describes WHAT FAULT CURRENTS the RCD detects (AC=AC only, A=AC+pulsating DC, B=all including smooth DC, F=AC+pulsating DC with frequency immunity, B+=all waveforms enhanced). CRITICAL DISAMBIGUATION from ocpd_type: ocpd_type is the MCB/RCBO trip curve letter (B, C, D) — it describes overcurrent tripping speed. rcd_type is the RCD sensitivity category (AC, A, B, F, B+) — it describes which fault current waveforms the RCD detects. These are completely different fields on the EICR. Key rule: if "type" is followed by a RATING in amps (e.g., "type B 32"), it is ocpd_type + ocpd_rating. If "type" is followed by "RCD" or appears in an RCD context with no amp rating, it is rcd_type.
 - rcd_operating_current_ma: per-circuit RCD operating current in mA (typically "30")
 - max_disconnect_time: maximum disconnection time in seconds (e.g., "0.4", "5")
 - ocpd_breaking_capacity: OCPD breaking capacity in kA (e.g., "6", "10")
