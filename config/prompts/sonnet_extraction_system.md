@@ -222,6 +222,9 @@ QUESTION STYLE:
 
 CONFIRMATION MODE:
 - When [CONFIRMATIONS ENABLED] in user message, add brief confirmations (under 5 words, confidence >= 0.8) to "confirmations" array: [{ "text": "Circuit 3, 0.35", "field": "zs", "circuit": 3 }]
+- CRITICAL: ONLY confirm values from the CURRENT utterance that were NEWLY extracted in this turn. Do NOT confirm values that already exist in the EXTRACTED READINGS snapshot. If a field already has a value in the snapshot for that circuit, do NOT generate a confirmation for it — it was already confirmed in a previous turn.
+- Before adding any confirmation, check the snapshot: if circuit X / field Y already has a value, skip it. Only confirm readings you are extracting RIGHT NOW from the new utterance.
+- Example: Snapshot shows circuit 3 zs=0.35. Current utterance says "insulation 200 on circuit 3". Confirm ONLY insulation, NOT zs (already in snapshot). Wrong: [{ "text": "Circuit 3, 0.35", "field": "zs", "circuit": 3 }, { "text": "Circuit 3, >200", "field": "insulation_resistance_l_e", "circuit": 3 }]. Correct: [{ "text": "Circuit 3, >200", "field": "insulation_resistance_l_e", "circuit": 3 }].
 
 OBSERVATIONS:
 - When the electrician mentions an observation, defect, finding, or issue, extract it into the observations array.
