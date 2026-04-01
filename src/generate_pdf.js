@@ -113,23 +113,26 @@ function generateHTML(data) {
     table {
       width: 100%;
       border-collapse: collapse;
-      font-size: 8px;
+      table-layout: fixed;
+      font-size: 6px;
       margin-top: 10px;
     }
     th, td {
       border: 1px solid #999;
-      padding: 2px 1px;
+      padding: 1px;
       text-align: left;
+      overflow: hidden;
     }
     th {
       background: #f0f0f0;
       font-weight: bold;
       text-align: center;
-      font-size: 7px;
+      font-size: 5.5px;
     }
     td.designation {
-      font-size: 7px;
-      word-break: break-word;
+      font-size: 6px;
+      white-space: normal;
+      overflow: visible;
     }
     .center {
       text-align: center;
@@ -142,7 +145,7 @@ function generateHTML(data) {
     }
     .sub-header {
       background: #ffcccc;
-      font-size: 6px;
+      font-size: 5px;
     }
     .notes-section {
       margin: 10px 0;
@@ -207,19 +210,51 @@ function generateHTML(data) {
   <div class="notes-section">${board.notes || ''}</div>
 
   <table>
+    <colgroup>
+      <col style="width:22px"><!-- Cct ref -->
+      <col style="width:340px"><!-- Circuit designation -->
+      <col style="width:22px"><!-- No. of points -->
+      <col style="width:18px"><!-- Wiring type -->
+      <col style="width:18px"><!-- Ref method -->
+      <col style="width:24px"><!-- Live mm² -->
+      <col style="width:24px"><!-- CPC mm² -->
+      <col style="width:24px"><!-- Max t(s) -->
+      <col style="width:30px"><!-- OCPD BS(EN) -->
+      <col style="width:18px"><!-- OCPD Type -->
+      <col style="width:22px"><!-- OCPD In(A) -->
+      <col style="width:18px"><!-- OCPD kA -->
+      <col style="width:26px"><!-- OCPD Max Zs -->
+      <col style="width:30px"><!-- RCD BS(EN) -->
+      <col style="width:18px"><!-- RCD Type -->
+      <col style="width:24px"><!-- RCD IΔn(mA) -->
+      <col style="width:22px"><!-- RCD In(A) -->
+      <col style="width:22px"><!-- Ring r1 -->
+      <col style="width:22px"><!-- Ring rn -->
+      <col style="width:22px"><!-- Ring r2 -->
+      <col style="width:26px"><!-- R1+R2 -->
+      <col style="width:22px"><!-- R2 -->
+      <col style="width:22px"><!-- Test V -->
+      <col style="width:24px"><!-- L-L MΩ -->
+      <col style="width:24px"><!-- L-E MΩ -->
+      <col style="width:18px"><!-- Pol ✓ -->
+      <col style="width:26px"><!-- Meas Zs -->
+      <col style="width:22px"><!-- RCD ms -->
+      <col style="width:22px"><!-- RCD btn ✓ -->
+      <col style="width:22px"><!-- AFDD btn ✓ -->
+    </colgroup>
     <thead>
       <tr>
-        <th rowspan="2" style="width: 25px">Cct<br>ref</th>
-        <th rowspan="2" style="width: 140px">Circuit designation</th>
-        <th rowspan="2" style="width: 25px">No. of<br>points</th>
+        <th rowspan="2">Cct<br>ref</th>
+        <th rowspan="2">Circuit designation</th>
+        <th rowspan="2">No.<br>pts</th>
         <th colspan="5" class="header-group">CONDUCTORS</th>
         <th colspan="5" class="header-group">OVERCURRENT DEVICES</th>
         <th colspan="4" class="header-group">RCD</th>
-        <th colspan="3" class="header-group">RING FINAL CIRCUITS</th>
-        <th colspan="2" class="header-group">R1+R2 OR R2</th>
-        <th colspan="3" class="header-group">INSULATION RESISTANCE</th>
-        <th rowspan="2" style="width: 25px">Pol<br>✓</th>
-        <th rowspan="2" style="width: 30px">Meas.<br>Zs (Ω)</th>
+        <th colspan="3" class="header-group">RING FINAL</th>
+        <th colspan="2" class="header-group">R1+R2/R2</th>
+        <th colspan="3" class="header-group">INSULATION RES.</th>
+        <th rowspan="2">Pol<br>✓</th>
+        <th rowspan="2">Zs<br>(Ω)</th>
         <th colspan="2" class="header-group">RCD</th>
         <th colspan="1" class="header-group">AFDD</th>
       </tr>
@@ -312,10 +347,10 @@ export async function generateTestResultsPDF({
     format: 'A4',
     landscape: true,
     margin: {
-      top: '10mm',
-      bottom: '10mm',
-      left: '10mm',
-      right: '10mm',
+      top: '5mm',
+      bottom: '5mm',
+      left: '5mm',
+      right: '5mm',
     },
     printBackground: true,
   });

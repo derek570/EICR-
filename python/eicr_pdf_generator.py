@@ -1232,21 +1232,21 @@ class EICRPDFGenerator:
 
         # Row 1: Circuit reference and cable details
         circuit_header_row1 = [
-            Paragraph('<font color="white" size="4">Cct<br/>ref</font>', self.styles['TinyText']),
+            Paragraph('<font color="white" size="4">Cct</font>', self.styles['TinyText']),
             Paragraph('<font color="white" size="4">Circuit designation</font>', self.styles['TinyText']),
-            Paragraph('<font color="white" size="4">Wiring<br/>type</font>', self.styles['TinyText']),
-            Paragraph('<font color="white" size="4">Ref<br/>method</font>', self.styles['TinyText']),
-            Paragraph('<font color="white" size="4">No. of<br/>points</font>', self.styles['TinyText']),
-            Paragraph('<font color="white" size="4">Live<br/>CSA<br/>mm²</font>', self.styles['TinyText']),
-            Paragraph('<font color="white" size="4">CPC<br/>CSA<br/>mm²</font>', self.styles['TinyText']),
-            Paragraph('<font color="white" size="4">Max<br/>disc<br/>time</font>', self.styles['TinyText']),
-            Paragraph('<font color="white" size="4">OCPD<br/>BS(EN)</font>', self.styles['TinyText']),
-            Paragraph('<font color="white" size="4">OCPD<br/>Type</font>', self.styles['TinyText']),
-            Paragraph('<font color="white" size="4">OCPD<br/>Rating<br/>(A)</font>', self.styles['TinyText']),
-            Paragraph('<font color="white" size="4">Max<br/>Zs<br/>(Ω)</font>', self.styles['TinyText']),
-            Paragraph('<font color="white" size="4">RCD<br/>BS(EN)</font>', self.styles['TinyText']),
-            Paragraph('<font color="white" size="4">RCD<br/>Type</font>', self.styles['TinyText']),
-            Paragraph('<font color="white" size="4">RCD<br/>IΔn<br/>(mA)</font>', self.styles['TinyText']),
+            Paragraph('<font color="white" size="4">Wire<br/>type</font>', self.styles['TinyText']),
+            Paragraph('<font color="white" size="4">Ref</font>', self.styles['TinyText']),
+            Paragraph('<font color="white" size="4">Pts</font>', self.styles['TinyText']),
+            Paragraph('<font color="white" size="4">Live<br/>mm²</font>', self.styles['TinyText']),
+            Paragraph('<font color="white" size="4">CPC<br/>mm²</font>', self.styles['TinyText']),
+            Paragraph('<font color="white" size="4">Max<br/>t(s)</font>', self.styles['TinyText']),
+            Paragraph('<font color="white" size="4">OCPD<br/>BS</font>', self.styles['TinyText']),
+            Paragraph('<font color="white" size="4">OCPD<br/>Ty</font>', self.styles['TinyText']),
+            Paragraph('<font color="white" size="4">OCPD<br/>In(A)</font>', self.styles['TinyText']),
+            Paragraph('<font color="white" size="4">Max<br/>Zs</font>', self.styles['TinyText']),
+            Paragraph('<font color="white" size="4">RCD<br/>BS</font>', self.styles['TinyText']),
+            Paragraph('<font color="white" size="4">RCD<br/>Ty</font>', self.styles['TinyText']),
+            Paragraph('<font color="white" size="4">RCD<br/>mA</font>', self.styles['TinyText']),
         ]
 
         circuit_data_row1 = [circuit_header_row1]
@@ -1274,8 +1274,9 @@ class EICRPDFGenerator:
             for _ in range(10):
                 circuit_data_row1.append([''] * 15)
 
-        # Widened designation (col 1) from 70→85pt; reclaimed from: col 2 (25→22), col 8 (28→24), col 11 (24→20), col 12 (28→24)
-        circuit_table1 = Table(circuit_data_row1, colWidths=[18, 85, 22, 22, 20, 20, 20, 22, 24, 22, 24, 20, 24, 22, 22])
+        # Description (col 1) widened to 220pt; other cols compressed to fit portrait A4 (~510pt content width)
+        # Total = 494pt
+        circuit_table1 = Table(circuit_data_row1, colWidths=[16, 220, 20, 20, 18, 18, 18, 20, 22, 20, 22, 18, 22, 20, 20])
         circuit_table1.setStyle(TableStyle([
             ('BACKGROUND', (0, 0), (-1, 0), RED_HEADER),
             ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
@@ -1504,29 +1505,29 @@ class EICRPDFGenerator:
             Paragraph('<font color="white" size="4"><b>AFDD</b></font>', self.styles['TinyText']),
         ]
 
-        # Column header row (row 1) - individual column names, all horizontal
+        # Column header row (row 1) - abbreviated headers for compressed columns
         col_header = [
-            Paragraph('<font color="white" size="4">Cct No.</font>', self.styles['TinyText']),
+            Paragraph('<font color="white" size="4">Cct</font>', self.styles['TinyText']),
             Paragraph('<font color="white" size="4">Circuit Description</font>', self.styles['TinyText']),
-            Paragraph('<font color="white" size="4">Points</font>', self.styles['TinyText']),
-            Paragraph('<font color="white" size="4">Wiring</font>', self.styles['TinyText']),
+            Paragraph('<font color="white" size="4">Pts</font>', self.styles['TinyText']),
+            Paragraph('<font color="white" size="4">Wire</font>', self.styles['TinyText']),
             Paragraph('<font color="white" size="4">Ref</font>', self.styles['TinyText']),
-            Paragraph('<font color="white" size="4">Live mm²</font>', self.styles['TinyText']),
-            Paragraph('<font color="white" size="4">CPC mm²</font>', self.styles['TinyText']),
-            Paragraph('<font color="white" size="4">Max t(s)</font>', self.styles['TinyText']),
-            Paragraph('<font color="white" size="4">BS(EN)</font>', self.styles['TinyText']),
-            Paragraph('<font color="white" size="4">Type</font>', self.styles['TinyText']),
-            Paragraph('<font color="white" size="4">In (A)</font>', self.styles['TinyText']),
+            Paragraph('<font color="white" size="4">Live</font>', self.styles['TinyText']),
+            Paragraph('<font color="white" size="4">CPC</font>', self.styles['TinyText']),
+            Paragraph('<font color="white" size="4">t(s)</font>', self.styles['TinyText']),
+            Paragraph('<font color="white" size="4">BS</font>', self.styles['TinyText']),
+            Paragraph('<font color="white" size="4">Ty</font>', self.styles['TinyText']),
+            Paragraph('<font color="white" size="4">In</font>', self.styles['TinyText']),
             Paragraph('<font color="white" size="4">kA</font>', self.styles['TinyText']),
-            Paragraph('<font color="white" size="4">Max Zs</font>', self.styles['TinyText']),
-            Paragraph('<font color="white" size="4">BS(EN)</font>', self.styles['TinyText']),
-            Paragraph('<font color="white" size="4">Type</font>', self.styles['TinyText']),
+            Paragraph('<font color="white" size="4">Zs</font>', self.styles['TinyText']),
+            Paragraph('<font color="white" size="4">BS</font>', self.styles['TinyText']),
+            Paragraph('<font color="white" size="4">Ty</font>', self.styles['TinyText']),
             Paragraph('<font color="white" size="4">mA</font>', self.styles['TinyText']),
             Paragraph('<font color="white" size="4">A</font>', self.styles['TinyText']),
             Paragraph('<font color="white" size="4">r1</font>', self.styles['TinyText']),
             Paragraph('<font color="white" size="4">rn</font>', self.styles['TinyText']),
             Paragraph('<font color="white" size="4">r2</font>', self.styles['TinyText']),
-            Paragraph('<font color="white" size="4">R1+R2</font>', self.styles['TinyText']),
+            Paragraph('<font color="white" size="4">R1R2</font>', self.styles['TinyText']),
             Paragraph('<font color="white" size="4">R2</font>', self.styles['TinyText']),
             Paragraph('<font color="white" size="4">V</font>', self.styles['TinyText']),
             Paragraph('<font color="white" size="4">L-L</font>', self.styles['TinyText']),
@@ -1589,11 +1590,11 @@ class EICRPDFGenerator:
         for _ in range(rows_needed):
             circuit_data.append([''] * 30)
 
-        # Column widths for landscape A4 with 2mm margin each side of table (283mm = 802 points)
+        # Column widths for landscape A4 — description 3x wider (260pt), other cols aggressively compressed
         # Cols: 0=Cct, 1=Desc, 2=Pts, 3=Wire, 4=Ref, 5=Live, 6=CPC, 7=MaxT, 8=BS(EN), 9=Type, 10=In, 11=kA, 12=MaxZs
         #       13=BS(EN), 14=Type, 15=mA, 16=A, 17=r1, 18=rn, 19=r2, 20=R1R2, 21=R2, 22=V, 23=LL, 24=LE, 25=Pol, 26=Zs, 27=ms, 28=Btn, 29=Btn
-        # Widened designation (col 1) from 85→110pt; reclaimed from: col 3 (28→24), col 7 (26→22), col 8 (46→38), col 13 (46→38)
-        col_widths = [22, 110, 22, 24, 20, 26, 26, 22, 38, 22, 24, 22, 28, 38, 22, 24, 22, 26, 26, 26, 28, 20, 24, 28, 28, 20, 28, 21, 22, 22]
+        # Total = 802pt (fits within ~814pt landscape frame with 5mm margins)
+        col_widths = [17, 260, 17, 18, 16, 19, 19, 18, 26, 16, 18, 16, 21, 26, 16, 18, 16, 20, 20, 20, 22, 18, 16, 20, 20, 16, 21, 18, 17, 17]
 
         circuit_table = Table(circuit_data, colWidths=col_widths)
         circuit_table.setStyle(TableStyle([
