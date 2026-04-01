@@ -12,6 +12,7 @@ import {
 import type { Circuit } from '@/lib/types';
 import { Input } from '@/components/ui/input';
 import { cn } from '@/lib/utils';
+import { lookupMaxZs } from '@/lib/max-zs-lookup';
 
 /** Time window (ms) for the blue flash on recently-updated cells. */
 const RECENT_FIELD_WINDOW_MS = 3000;
@@ -232,9 +233,24 @@ export function CircuitTable({ circuits, onChange, recentlyUpdatedFields }: Circ
 
   const updateData = useCallback(
     (rowIndex: number, columnId: string, value: string) => {
-      const updated = circuits.map((row, index) =>
-        index === rowIndex ? { ...row, [columnId]: value } : row
-      );
+      const updated = circuits.map((row, index) => {
+        if (index !== rowIndex) return row;
+        const newRow = { ...row, [columnId]: value };
+        // Auto-populate Max Zs when OCPD type, rating, or disconnect time changes
+        if (
+          columnId === 'ocpd_type' ||
+          columnId === 'ocpd_rating_a' ||
+          columnId === 'max_disconnect_time_s'
+        ) {
+          const deviceType = newRow.ocpd_type || '';
+          const rating = newRow.ocpd_rating_a || '';
+          if (deviceType && rating) {
+            const maxZs = lookupMaxZs(deviceType, rating, newRow.max_disconnect_time_s);
+            if (maxZs) newRow.ocpd_max_zs_ohm = maxZs;
+          }
+        }
+        return newRow;
+      });
       onChange(updated);
     },
     [circuits, onChange]

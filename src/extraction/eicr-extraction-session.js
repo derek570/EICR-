@@ -64,6 +64,7 @@ const FIELD_ID_MAP = {
   afdd_button_confirmed: 25,
   polarity: 26,
   max_disconnect_time: 27,
+  ocpd_max_zs_ohm: 28,
 };
 
 // Load externalized system prompts at module init
