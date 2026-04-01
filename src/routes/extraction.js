@@ -740,6 +740,7 @@ If the photo contains BOTH strip labels above/below the devices AND a Circuit De
 3. Circuit Details Cards are a SECONDARY cross-reference — they are often outdated, incomplete, or wrong. Use them to help decipher unclear strip labels, but do NOT trust them over clear physical evidence
 4. When the strip label and Circuit Details Card DISAGREE — prefer the strip label unless it is completely unreadable
 5. When a strip label is UNCLEAR or FADED — the Circuit Details Card can help you interpret what it says, but verify against the physical device
+6. **NO DUPLICATE DESIGNATIONS**: Do NOT assign the same designation (e.g. "Sockets", "Lighting") to multiple circuits unless you have strong physical evidence from BOTH the strip label AND the circuit details card confirming each occurrence independently. When strip labels are hard to read or ambiguous, cross-reference against the Circuit Details Card before assigning a name. If you cannot confirm a designation from at least one clear source, leave the label as null rather than guessing — a missing label is better than a duplicate that creates phantom circuits downstream.
 
 IMPORTANT: Do NOT default to "Spare" or null for a circuit label if there is readable text on the strip labels or handwritten notes that identifies what the circuit supplies. A circuit with a visible MCB/RCBO and a readable label is NOT a spare.
 
