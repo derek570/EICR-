@@ -30,8 +30,8 @@ Automated EICR/EIC certificate creation for electrical inspectors using an iOS-f
 | CCU Photo AI | GPT Vision (consumer unit analysis) |
 | Document Extraction AI | GPT Vision (certificate/notes data extraction) |
 | Backend | Node.js (ES modules) — API, WebSocket, S3 |
-| PDF (iOS) | WKWebView HTML->PDF (EICRHTMLTemplate.swift) |
-| PDF (server) | Python ReportLab + Playwright |
+| PDF (iOS) | WKWebView HTML->PDF (EICRHTMLTemplate.swift) — **iOS app uses this, NOT the server generators** |
+| PDF (server) | Python ReportLab + Playwright — **only used by web frontends (frontend/ and web/)** |
 | PWA Frontend | Next.js (App Router, Zustand, TanStack) |
 | Web Frontend | Next.js (App Router) |
 | Cloud | AWS ECS Fargate, S3, RDS PostgreSQL, Secrets Manager |
