@@ -242,7 +242,14 @@ async function lookupMissingRcdTypes(analysis, openai, logger, userId) {
   // and be RCD-protected (RCBO or behind an RCD) but missing the type
   const needsLookup = circuits.filter((c) => c.rcd_protected && !c.rcd_type && manufacturer);
 
-  if (needsLookup.length === 0) return analysis;
+  if (needsLookup.length === 0) {
+    logger.info('RCD type lookup skipped — all RCD-protected circuits already have types', {
+      userId,
+      totalCircuits: circuits.length,
+      rcdProtectedCount: circuits.filter((c) => c.rcd_protected).length,
+    });
+    return analysis;
+  }
 
   // Gather any device info GPT extracted — RCBO model markings, ratings, etc.
   const boardModel = analysis.board_model || '';
@@ -610,6 +617,7 @@ router.post('/recording/gemini-extract', auth.requireAuth, async (req, res) => {
  */
 router.post('/analyze-ccu', auth.requireAuth, upload.single('photo'), async (req, res) => {
   const tempPath = req.file?.path;
+  const endpointStartMs = Date.now();
 
   try {
     if (!req.file) {
@@ -656,252 +664,52 @@ router.post('/analyze-ccu', auth.requireAuth, upload.single('photo'), async (req
 
     const base64 = Buffer.from(imageBytes).toString('base64');
 
-    const prompt = `You are an expert UK electrician analysing a photo of a consumer unit for an EICR certificate.
+    const prompt = `You are an expert UK electrician extracting devices from a consumer unit photo for an EICR certificate. Follow these 4 steps IN ORDER. Return ONLY valid JSON.
 
-## TASK
+## STEP 1: FIND MAIN SWITCH
 
-Extract every protective device from this consumer unit photo and return structured JSON. Before producing the JSON output, you MUST work through the following 5-step methodology internally to ensure accuracy.
+Look for the device labelled "MAIN SWITCH" on the board (printed text on the board cover, or on the device itself). It is typically the largest device, often 2 modules wide.
+CRITICAL — Confirm it is NOT an RCD/RCCB: the main switch has NO test button, NO "30mA" or sensitivity marking, and NO "RCD"/"RCCB" text on it. Do NOT identify the main switch by toggle colour — RCDs also have red/orange toggles and WILL be misidentified if you rely on colour alone.
+Record: rating (amps), type (Isolator/Switch Disconnector/RCD/RCCB), poles (DP/TP/TPN/4P), BS/EN number, voltage if visible. Note its position on the board (left/right).
+Identify board manufacturer and model if visible (e.g. "Hager", "MK", "Wylex").
 
-## STEP 1: READ ALL VISIBLE TEXT FIRST (CRITICAL)
+Also check for an SPD module (status indicator window, no toggle, 2-3 modules wide). If present: set spd_present=true and extract type/rating/BS EN/short circuit kA. If absent: spd_present=false. Do NOT copy main switch data into SPD fields — they are completely different components.
 
-Before identifying devices, carefully scan the ENTIRE photo for ALL visible text, including:
-- **Handwritten text** in pen, marker, or pencil on the board, cover, blanking plates, or surrounding area
-- **Label charts/legends** — printed or handwritten lists mapping circuit numbers to names (often stuck inside the door, above, or below the board)
-- **Adhesive stickers** next to or below each device
-- **Printed label strips** or engraved markings from the manufacturer
-- **Text on cover plates** between devices
-- **CIRCUIT DETAILS CARDS** — Most UK consumer units have one or two pre-printed cardboard cards clipped or stuck to the BOTTOM or INSIDE of the board cover. They have columns for: Circuit Number, Circuit Designation, Conductor CSA (Live/CPC in mm²), Overcurrent Protective Device (BS(EN), Type No., Rating). These cards can be a USEFUL ADDITIONAL source for circuit names, but be aware they are often NOT updated after changes to the board and may contain outdated or incorrect information. Use them as a cross-reference alongside strip labels, not as the primary source.
+## STEP 2: SEQUENTIAL DEVICE SCAN
 
-Handwritten text on consumer units is often faint, at an angle, or in poor lighting — look carefully. Note down every piece of text you can read before proceeding.
+Starting from the device immediately next to the main switch, scan outward one device at a time. For split boards (main switch in middle), scan non-RCD side first, then RCD side. Number circuits sequentially — circuit 1 is nearest the main switch, incrementing outward. Skip standalone RCDs when numbering — they are NOT circuits. Ignore printed circuit numbers on the board (often wrong).
 
-### COMMON HANDWRITTEN UK ABBREVIATIONS
-UK electricians commonly use these shorthand labels. When you see these, expand them to the full term:
-- "Imm" / "Immersion" = Immersion Heater (circuit for hot water tank heating element)
-- "Smks" / "Smokes" / "Smoke" / "S/D" / "S/Det" = Smoke Alarm / Smoke Detector
-- "Lts" / "Ltg" = Lights / Lighting
-- "Skt" / "Skts" = Sockets
-- "D/S" = Downstairs, "U/S" = Upstairs
-- "CKR" / "Ckr" = Cooker
-- "SH" / "Shwr" = Shower
-- "Blr" = Boiler
-- "FF" / "F/F" = Fridge Freezer
-- "W/M" = Washing Machine
-- "T/D" = Tumble Dryer
-- "UFH" = Underfloor Heating
-- "CH" = Central Heating
-- "EV" / "EVCP" = Electric Vehicle Charging Point
-- "Ext" = External / Outside
-- "Gar" = Garage
+For each position, classify as exactly ONE of:
+- **MCB**: Single-width (18mm), has toggle lever, NO test button. Record type curve (B/C/D) and amp rating from device face.
+- **RCBO**: Double-width (36mm), has BOTH toggle lever AND test button, plus RCD waveform symbol. Record curve, rating, RCD type (count waveform lines: 1=AC, 2=A, 3=B; S or F if letter-marked), and sensitivity (mA). Set is_rcbo=true, rcd_protected=true.
+- **RCD/RCCB**: Double-width, has test button, has sensitivity marking (e.g. 30mA), but NO type curve letter (B/C/D). This is NOT a circuit — do NOT number it. Store its RCD type + sensitivity; apply them to ALL subsequent circuits until the next RCD is encountered.
+- **Blank/Spare**: Flat cover plate, no toggle lever, no device behind it. Record as label:"Spare", ocpd_type:null, ocpd_rating_a:null. NEVER fabricate device data for empty slots.
+- **Spare MCB**: Real MCB with toggle + rating but no label. Record with label:"Spare" and real ocpd_type/rating from the device face.
 
-## STEP 2: PHYSICAL DEVICE SCAN
+### B6 vs B16 WARNING
+On many MCBs (especially Legrand) the gap between "B" and "6" mimics "B16". Count digits: single "6"=B6 (6A, typical for lighting/smoke), two digits "16"=B16 (16A, typical for sockets). If you read B16 on a lighting or smoke alarm circuit, it is almost certainly B6 — re-examine.
 
-Start by finding the MAIN SWITCH — it has a red toggle and is usually the largest device on the board. IMPORTANT: Many UK consumer units are SPLIT BOARDS where the main switch is in the MIDDLE, with circuits going BOTH directions:
-- One side has "CIRCUITS PROTECTED BY RCD" (behind a standalone RCD)
-- The other side has "CIRCUITS NOT RCD PROTECTED"
-You MUST scan BOTH sides of the main switch — left AND right — and include ALL devices from both sides. Do NOT stop after scanning one side.
+### Amp ratings
+ALWAYS read from the device face. Never assume from circuit name ("Shower" ≠ 40A, "Cooker" ≠ 32A). If not legible, set to null.
 
-Identify EVERY physical module, including blank/spare positions. You MUST account for every single position on the board — do NOT stop partway through. If the board has 8 ways, you must account for all 8 positions — some may be blank cover plates (no device, no toggle lever) which MUST have ocpd_type: null and ocpd_rating_a: null. A blank slot with no MCB installed is NOT a circuit — it is a Spare with null ocpd_type and null ocpd_rating_a. Do NOT fabricate device data (type curve, amp rating) for positions where there is no physical device with a toggle lever. Use these width rules:
-- MCB = 1 module (narrow, single toggle lever, NO test button)
-- RCBO = 2 modules — ALWAYS has BOTH a toggle lever AND a small test button on the same device, plus an RCD waveform symbol. If a device has a test button, it is an RCBO, not an MCB.
-- RCD = 2-4 modules (test button, protects multiple downstream circuits, is NOT itself a circuit breaker)
-- Main switch / isolator = 2 modules (usually red toggle)
-- SPD = 2-3 modules (has status indicator window, no toggle lever)
-- Blank / spare = 1 module (flat cover plate, no toggle)
+### RCD type determination
+1. Read waveform symbol on device: 1 line=AC, 2 lines=A, 3 lines=B, letter S=S, letter F=F. If any hint of a second line below the sine wave, it is Type A not AC.
+2. If symbol not visible, look up by manufacturer+model prefix (Hager ADA=A, ADN=AC; MK H79xx=AC, H68xx=A; BG CURB=AC, CUCRB=A; Wylex WRS=AC, WRSA=A).
+3. If both fail, set rcd_type=null. Never return "RCD" or "RCBO" as rcd_type — only AC, A, B, F, S, or null.
 
-CRITICAL DISTINCTION between blank positions and spare MCBs:
-- A **BLANK POSITION** has a flat cover plate with NO toggle lever, NO device behind it — it is an empty slot. Include it in the circuits array with label: "Spare", ocpd_type: null, and ocpd_rating_a: null. Do NOT invent MCB data (type, rating) for empty slots — a blank position has no physical device so it CANNOT have a type or rating.
-- A **SPARE MCB** is a real physical MCB (with a toggle lever and visible rating) that has no circuit label — include it with label: "Spare" and its real ocpd_type/rating read from the device face.
-- KEY: If a position has NO toggle lever and NO physical device, it MUST have ocpd_type: null and ocpd_rating_a: null. Never fabricate device data for empty positions.
+### BS/EN numbers
+Read from device. If not visible, look up: MCB=60898-1, RCBO=61009-1, RCD=61008. Only null if device is unidentifiable.
 
-Count the total modules to verify against the board's stated ways.
+## STEP 3: LABEL PASS
 
-### MANDATORY DEVICE COUNT (you MUST complete this before proceeding)
+After all hardware is locked in, scan for labels above/below each device: strip labels, handwritten text, stickers, and circuit details cards (secondary source only — often outdated).
+Match labels to devices by physical proximity. Ignore printed circuit numbers (often wrong). If a label is faded or unclear, set to null — never guess or copy from adjacent positions.
 
-After scanning both sides of the board, state your device count in this exact format BEFORE moving to Step 3:
+Normalise labels to EICR standard terms (title case):
+Imm/Immersion→Water Heater, Smokes/Smoke/S/D/S/Det→Smoke Alarm, Lts/Ltg→Lights, Skt/Skts→Sockets (keep prefix e.g. "Kitchen Sockets"), CKR→Cooker, Shwr→Shower, Blr→Boiler, FF/F/F→Fridge Freezer, CH→Central Heating, UFH→Underfloor Heating, W/M→Washing Machine, T/D→Tumble Dryer, EV/EVCP→Electric Vehicle.
+A circuit with a visible MCB/RCBO and a readable label is NOT "Spare".
 
-DEVICE COUNT:
-- Non-RCD side: [N] physical toggle levers + [M] blank cover plates = [N+M] total positions
-- RCD side: [N] physical toggle levers + [M] blank cover plates = [N+M] total positions
-
-This count is your ANCHOR for the rest of the extraction. When you generate the circuits JSON in Step 4:
-- The number of entries with non-null ocpd_type MUST EXACTLY equal your toggle lever count for each side.
-- The number of entries with ocpd_type: null MUST EXACTLY equal your blank cover plate count for each side.
-- If these numbers do not match, you have either MISSED a device or FABRICATED a phantom device. Stop and re-examine the photo.
-
-A toggle lever is the flip-switch on an MCB or RCBO. A blank cover plate is a flat plastic plate with NO toggle lever, NO test button, and NO device behind it — it is just filling an empty slot.
-
-## STEP 3: MAP LABELS TO DEVICES (with CROSS-REFERENCING)
-
-Match the text/labels you found in Step 1 to the physical devices from Step 2 based on PHYSICAL PROXIMITY — each label belongs to the device it is physically closest to. RCDs and the main switch are NOT numbered circuits — circuit labels skip over them.
-
-CRITICAL: If the board has printed or handwritten circuit NUMBERS (e.g. "1", "2", "3" next to devices), IGNORE THESE NUMBERS COMPLETELY. These numbers are frequently wrong, out of date, or do not match the actual device positions. Only use the descriptive TEXT labels (e.g. "Cooker", "Lights", "Smoke Detector") and match them to devices by physical proximity. If a number and a text label appear together (e.g. "3 - Kitchen"), use the text "Kitchen" but ignore the number "3".
-
-### CROSS-REFERENCE: STRIP LABELS vs CIRCUIT DETAILS CARD (CRITICAL)
-
-If the photo contains BOTH strip labels above/below the devices AND a Circuit Details Card:
-1. Read BOTH sources independently
-2. The strip labels physically attached to the board near each device are the PRIMARY source — they reflect the current state of the board
-3. Circuit Details Cards are a SECONDARY cross-reference — they are often outdated, incomplete, or wrong. Use them to help decipher unclear strip labels, but do NOT trust them over clear physical evidence
-4. When the strip label and Circuit Details Card DISAGREE — prefer the strip label unless it is completely unreadable
-5. When a strip label is UNCLEAR or FADED — the Circuit Details Card can help you interpret what it says, but verify against the physical device
-6. **NO DUPLICATE DESIGNATIONS**: Do NOT assign the same designation (e.g. "Sockets", "Lighting") to multiple circuits unless you have strong physical evidence from BOTH the strip label AND the circuit details card confirming each occurrence independently. When strip labels are hard to read or ambiguous, cross-reference against the Circuit Details Card before assigning a name. If you cannot confirm a designation from at least one clear source, leave the label as null rather than guessing — a missing label is better than a duplicate that creates phantom circuits downstream.
-7. **RCD IS NOT A CIRCUIT**: A standalone RCD (the double-width device with a TEST button and toggle lever) is a protection device, NOT a circuit breaker. Its toggle lever and test button must NEVER be counted as a device position or circuit way. Skip over it entirely when counting devices and numbering circuits.
-8. **FADED / UNCLEAR STRIP LABELS → null**: If a strip label is faded, smudged, partially obscured, or otherwise not CLEARLY readable with high confidence, set the circuit label to null. NEVER guess a label from a faded strip, and NEVER copy or infer a label from an adjacent strip position. Each label must be independently and clearly readable to be used.
-9. **CROSS-REFERENCE EVERY LABEL AGAINST THE CIRCUIT DETAILS CARD**: Before finalising any circuit label, check whether the Circuit Details Card at the bottom of the board lists a matching circuit. If a strip label appears to say something (e.g. "Sockets") but the Circuit Details Card does NOT list a corresponding entry for that position, treat the strip label as suspect and set the label to null. The card and strip must broadly agree for a label to be trusted.
-10. **GENERIC LABEL DEDUPLICATION CHECK**: After your initial extraction pass, count how many times each generic designation appears (e.g. "Sockets", "Lighting", "Ring Main"). If any generic designation appears MORE than twice, you MUST re-examine each instance individually:
-    - For each occurrence, can you point to a DISTINCT, clearly readable strip label AND a matching entry on the Circuit Details Card?
-    - If not, set that circuit's label to null. Consumer units rarely have 3+ identically-named circuits — multiple occurrences almost always indicate misread faded labels.
-    - Common misreads: "Heat" / "Hob" / "Cooker" misread as "Sockets" due to faded text. Check the Circuit Details Card for non-socket circuits (cooker, hob, heater) that may correspond to positions you've labeled as generic sockets.
-
-IMPORTANT: Do NOT default to "Spare" or null for a circuit label if there is readable text on the strip labels or handwritten notes that identifies what the circuit supplies. A circuit with a visible MCB/RCBO and a readable label is NOT a spare.
-
-## STEP 4: EXTRACT DATA
-
-### PRE-EXTRACTION GATE (CRITICAL — do this BEFORE generating any circuit JSON)
-
-For each position on the board, confirm:
-- Can you see a toggle lever (MCB) or toggle + test button (RCBO)? → This is a REAL device. Extract its type, rating, and label.
-- Is it a flat cover plate with NO toggle lever? → This is a BLANK position. It MUST have ocpd_type: null, ocpd_rating_a: null, label: "Spare". Do NOT copy data from adjacent devices.
-
-Cross-check: Does your planned number of non-null circuit entries match the toggle lever count from your DEVICE COUNT in Step 2? If not, STOP — you are about to fabricate a phantom device or miss a real one. Re-examine the photo at the position that doesn't match.
-
-### NUMBERING — CRITICAL
-
-ALWAYS start from the RED MAIN SWITCH and number outward away from it. This is the ONLY method you must use — physical position from the main switch determines circuit order.
-
-Circuit 1 is the device IMMEDIATELY next to the main switch (the red toggle). Circuit 2 is the next device after that, and so on, moving outward away from the main switch. Every 18mm-wide module position counts as one circuit way. Blank positions (flat cover plate, no device) are included with label: "Spare", ocpd_type: null, ocpd_rating_a: null — but do NOT fabricate device data for them.
-
-IMPORTANT: Do NOT count standalone RCDs as circuit ways — they are double-width (36mm) protection devices that sit between the main switch and the circuits they protect. Skip over them when numbering.
-
-**IGNORE PRINTED/HANDWRITTEN CIRCUIT NUMBERS ON THE BOARD.** Any numbers printed on the board cover, label strips, or handwritten next to devices are often WRONG or out of date. Do NOT use them for ordering. ALWAYS determine circuit order by physical position starting from the red main switch and moving outward. Map the handwritten/printed LABELS (e.g. "Cooker", "Lights") to devices based on their physical proximity to that device, but NEVER use the printed NUMBERS.
-
-On split boards where the main switch is in the middle or at one end:
-- Number the non-RCD side FIRST: Circuit 1 starts from the device nearest the main switch on that side, numbering outward
-- Then number the RCD-protected side: Circuit numbering continues from where the non-RCD side left off, starting from the device nearest the main switch (or nearest the RCD which is closest to the main switch), numbering outward
-- In the output JSON, list the non-RCD side circuits FIRST, then the RCD-protected side circuits
-
-### AMP RATING — CRITICAL
-
-Read the amp rating from the DEVICE FACE, not assumed from the circuit label.
-- "Shower" does NOT mean 40A — read the actual breaker face.
-- "Cooker" does NOT mean 32A — read the actual breaker face.
-- If the rating is not legible, set to null and add to uncertain_fields. Do NOT guess from circuit name.
-
-**CRITICAL — B6 vs B16 CONFUSION**: On many UK MCBs (especially Legrand), the type letter "B" and the rating number are printed with a wide gap between them. This makes "B 6" (6 amp) look deceptively like "B 16" (16 amp) — the whitespace can be misread as a "1" digit. ALWAYS verify the digit count:
-- **B6** = letter B followed by a SINGLE digit "6". Common on lighting and smoke alarm circuits.
-- **B16** = letter B followed by TWO digits "1" then "6". Common on radial socket circuits.
-- If you read "B16" on a circuit labelled Lighting, Smoke Alarm, or Smoke Detector, DOUBLE-CHECK — UK lighting circuits are almost always 6A (B6), not 16A. A B16 on a lighting circuit is a strong signal you have misread a B6.
-- When in doubt, look at the physical size of the printed number: a single "6" takes up less horizontal space than "16".
-
-### FOR EACH DEVICE, EXTRACT:
-
-Read directly from the photo where possible:
-- Manufacturer, model number, current rating, type curve (B/C/D)
-- RCD type symbol (A, AC, F, or B), RCD sensitivity (mA)
-- Circuit label/name (see CIRCUIT LABELS section below)
-- BS/EN standard number printed on device
-- Breaking capacity in kA
-
-If any of the following are NOT clearly readable on the device, use your knowledge to look them up based on the manufacturer and model number you CAN see:
-- **BS EN number**: Look up the correct standard for that device type (e.g., MCB = BS EN 60898-1, RCBO = BS EN 61009-1)
-- **RCD type**: Look up whether this specific model range is Type A or Type AC. Different ranges from the same manufacturer have different RCD types — e.g., Hager ADA = Type A, Hager ADN = Type AC; MK H79xx = Type AC, MK H68xx = Type A; BG CURB = Type AC, BG CUCRB = Type A. Match by model prefix, not just manufacturer.
-- **Type curve**: If not visible, B is standard for domestic but flag as assumed.
-
-### RCD TYPE — TWO-STEP DETERMINATION (CRITICAL)
-
-STEP A: Read the waveform symbol on the device face. ALWAYS TRUST THE VISIBLE SYMBOL OVER ANY LOOKUP.
-- Type AC = ONE waveform line only (a simple sine wave with nothing below it)
-- Type A = TWO waveform lines stacked (sine wave on top + pulsating DC half-wave below it)
-- Type B = THREE waveform lines stacked
-- Type S = marked with letter "S" (time-delayed / selective)
-- Type F = marked with letter "F"
-- COUNT THE LINES in the waveform symbol carefully: 1 line = AC, 2 lines = A, 3 lines = B.
-- CRITICAL: Look very carefully at the waveform. If there is ANY indication of a second line below the sine wave — even if faint or partially obscured — it is Type A, NOT Type AC. Type AC has ONLY a single clean sine wave with empty space below it.
-- RCDs and RCBOs within the same board can be DIFFERENT types — check each device individually.
-- If you CANNOT clearly count the waveform lines (e.g. due to photo angle, glare, resolution), set rcd_type to NULL. Do NOT guess — a wrong RCD type is worse than a missing one.
-
-STEP B: ONLY if the symbol is not visible or legible, use your knowledge to LOOK UP
-the RCD type from the manufacturer and model number you identified.
-Different model ranges from the same manufacturer have different RCD types, so
-match by the specific model prefix, not just manufacturer name. Examples:
-- Hager: ADA/ADN series — ADA = Type A, ADN = Type AC
-- MK: H79xx = Type AC, H68xx = Type A
-- BG: CURB = Type AC, CUCRB = Type A
-- Wylex: WRS = Type AC, WRSA = Type A; NSEM = Type A RCBO, NSB = MCB (no RCD type)
-- Contactum: CRBO = Type A RCBO series
-IMPORTANT: If you CAN see the waveform symbol, use it — do NOT override what you see with a lookup.
-
-If BOTH steps fail, or if you are uncertain between AC and A, set rcd_type to null.
-The system will perform a web search lookup to determine the correct type.
-NEVER return "RCD" or "RCBO" as an rcd_type value. Always return one of: AC, A, B, F, S, or null.
-
-### BOARD INFO
-
-- Identify manufacturer and model if visible (e.g. "Hager", "MK", "Wylex").
-- Note main switch position ("left" or "right").
-
-### MAIN SWITCH DETAILS
-
-- Read the current rating in amps (e.g., "63", "80", "100").
-- Identify the type: "Isolator", "Switch Disconnector", "RCD", "RCCB", or other.
-- Look for BS/EN standard number (e.g., "60947-3", "61008").
-- Identify poles: "DP" (double pole), "TP" (triple pole), "TPN", "4P".
-- Read voltage rating if printed (e.g., "230", "400").
-
-### SPD (SURGE PROTECTION DEVICE)
-
-- If an SPD module is visible, set spd_present to true and extract: BS/EN standard, SPD type ("Type 1", "Type 2", "Type 1+2", "Type 3"), rated current in amps, short circuit rating in kA.
-- If NO SPD is visible, set spd_present to false.
-- CRITICAL: SPD fields are for a dedicated surge protection device ONLY. Do NOT copy the main switch rating into spd_rated_current_a. The main switch (e.g. 100A isolator) goes ONLY in main_switch_current/main_switch_rating. These are completely different components.
-
-### DEVICE TYPE MAPPING
-
-For each circuit device:
-- If it is an RCBO (combined MCB+RCD): set is_rcbo=true, rcd_protected=true, and set rcd_type from the device's own waveform symbol
-- If it is behind a standalone RCD: set is_rcbo=false, rcd_protected=true, and set rcd_type from the upstream RCD's waveform symbol
-- If it is a plain MCB with no RCD protection: set is_rcbo=false, rcd_protected=false, rcd_type=null
-- Blank/empty positions (flat cover plate, no device): set ocpd_type to null, ocpd_rating_a to null, label to "Spare"
-- Spare MCBs (real device, no label): set label to "Spare", read ocpd_type and rating from the device face
-
-### CIRCUIT LABELS — CRITICAL
-
-You MUST use the text you identified in Step 1. Circuit labels are essential for the certificate — missing labels means the certificate is incomplete.
-
-Common UK circuit names: "Lighting", "Ring Main", "Kitchen Sockets", "Cooker", "Shower", "Immersion Heater", "Water Heater", "Smoke Alarm", "Garage", "Garden", "Upstairs Sockets", "Downstairs Sockets", "Boiler", "Fridge Freezer", "Washer", "Central Heating", "Electric Vehicle".
-
-If you can see ANY text that identifies what a circuit supplies — whether handwritten, printed, on a sticker, on a label chart, or on a Circuit Details Card — return it. Only return null if there is genuinely no label visible for that circuit from ANY source.
-
-**NORMALISATION**: When returning the label, use the standard EICR certificate form. Apply these mappings:
-- "Immersion" / "Imm" / "Immersion Heater" → "Water Heater"
-- "Smokes" / "Smoke" / "Smoke Det" / "Smoke Detector" / "S/D" → "Smoke Alarm"
-- "Lts" / "Ltg" → "Lights"
-- "Skt" / "Skts" → "Sockets" (keep any prefix, e.g. "Skt kitchen" → "Kitchen Sockets")
-- "Ring" / "Ring Main" → "Ring Main"
-- "Rad" / "Radial" → "Radial"
-- "CKR" → "Cooker"
-- "Shwr" → "Shower"
-- "Blr" → "Boiler"
-- "FF" / "F/F" → "Fridge Freezer"
-- "CH" → "Central Heating"
-- "UFH" → "Underfloor Heating"
-
-Use proper capitalisation (title case). If the handwritten label says "immersion", return "Water Heater". If it says "smokes", return "Smoke Alarm".
-
-## STEP 5: CROSS-CHECK
-
-Before outputting JSON, verify:
-- You have extracted EVERY module position on the board — both physical devices (MCBs/RCBOs) and blank positions. If your circuits array has fewer entries than the number of module positions visible, you have MISSED some.
-- CRITICAL PHANTOM DEVICE CHECK: Compare your circuits array against the DEVICE COUNT from Step 2. Count how many entries have non-null ocpd_type on each side. This number MUST EXACTLY match the toggle lever count you stated. If you have MORE non-null entries than toggle levers, you have fabricated a phantom device — find it by re-examining each position in the photo and checking: is there a toggle lever here, or just a flat blank plate? Fix any phantom: set ocpd_type: null, ocpd_rating_a: null, ocpd_bs_en: null, ocpd_breaking_capacity_ka: null, label: "Spare". Common phantom pattern: the last position on a side is a blank cover plate but gets filled with data copied from the adjacent B6 MCB.
-- Every circuit with a physical device has a label if ANY text was visible for it — re-check the text from Step 1.
-- The count of MCBs + RCBOs + blank positions matches the total module positions on the board (excluding main switch and standalone RCDs).
-- The total module count is consistent with the board's stated ways.
-- Every amp rating was read from the device face (not assumed from the circuit label).
-- An RCD type (AC, A, B, F, or S) was identified for every RCD and every RCBO individually.
-- SPD presence was explicitly checked (present or absent).
-- All labels are normalised to standard EICR certificate terms (e.g. "Immersion" → "Water Heater", "Smokes" → "Smoke Alarm").
-- If any check fails, note it in confidence.message and add relevant fields to uncertain_fields.
-
-## OUTPUT FORMAT
+## STEP 4: OUTPUT
 
 Return ONLY valid JSON matching this exact schema:
 {
@@ -943,35 +751,11 @@ Return ONLY valid JSON matching this exact schema:
   ]
 }
 
-## CONFIDENCE SCORING
+Device type mapping: RCBO→is_rcbo:true, rcd_protected:true, rcd_type from device waveform; MCB behind standalone RCD→is_rcbo:false, rcd_protected:true, rcd_type/sensitivity from upstream RCD; plain MCB (no RCD upstream)→is_rcbo:false, rcd_protected:false, rcd_type:null; blank→all ocpd fields null.
 
-- "overall": 0.0-1.0 reflecting readability. 1.0 = every marking perfectly clear.
-- "image_quality": "clear", "partially_readable", or "poor".
-- "uncertain_fields": list field paths you had to guess or look up.
-- "message": include which values were looked up vs read, and any reading difficulties.
+Confidence: overall 0.0-1.0, image_quality clear/partially_readable/poor, uncertain_fields lists guessed/looked-up field paths, message notes reading difficulties and lookups.
 
-## QUESTIONS FOR INSPECTOR
-
-CRITICAL: These questions are READ ALOUD via text-to-speech to an inspector on site. Keep them EXTREMELY short and conversational — no technical numbers, no BS/EN references, no amp ratings.
-
-Return an EMPTY array [] unless you absolutely could not determine the RCD type for a circuit.
-
-The ONLY valid reason to add a question is:
-- RCD type is null because you could not read the waveform symbol AND could not look it up — ask simply: "What is the RCD type for circuit N? Type A or AC?"
-
-NEVER include in questions:
-- BS/EN numbers, breaking capacity, or any technical specifications
-- Board manufacturer, model, or any board details
-- Main switch rating, type, or poles
-- Confirmation of ANY value you already set
-- Image quality concerns (put those in confidence.message)
-- SPD details
-- Circuit labels you DID extract
-- Long sentences with multiple data points
-
-If everything was readable, return an EMPTY array []. Most photos should result in zero questions.
-
-IMPORTANT: If you cannot read the BS/EN number from the device, use your knowledge to look it up based on manufacturer and model. Only leave as null if you cannot identify the device at all.`;
+questionsForInspector: return EMPTY array [] unless RCD type could not be determined for a circuit. Questions are read aloud via TTS — keep extremely short and conversational. Never ask about BS/EN, ratings, board info, SPD, or labels you already extracted.`;
 
     const Anthropic = (await import('@anthropic-ai/sdk')).default;
     const anthropic = new Anthropic({ apiKey: anthropicKey });
@@ -981,11 +765,12 @@ IMPORTANT: If you cannot read the BS/EN number from the device, use your knowled
     const timeoutId = setTimeout(() => abortController.abort(), CCU_EXTRACTION_TIMEOUT_MS);
 
     let response;
+    const anthropicStartMs = Date.now();
     try {
       response = await anthropic.messages.create(
         {
           model,
-          max_tokens: 8192,
+          max_tokens: 4096,
           messages: [
             {
               role: 'user',
@@ -1004,6 +789,13 @@ IMPORTANT: If you cannot read the BS/EN number from the device, use your knowled
     } finally {
       clearTimeout(timeoutId);
     }
+    const anthropicElapsedMs = Date.now() - anthropicStartMs;
+    logger.info('CCU Anthropic API call timing', {
+      userId: req.user.id,
+      model,
+      elapsedMs: anthropicElapsedMs,
+      elapsedSec: (anthropicElapsedMs / 1000).toFixed(1),
+    });
 
     // Extract text content (skip thinking blocks)
     const textBlocks = (response.content || []).filter((b) => b.type === 'text');
@@ -1060,9 +852,16 @@ IMPORTANT: If you cannot read the BS/EN number from the device, use your knowled
     // We still need an OpenAI client for this web search step.
     const openaiKey = process.env.OPENAI_API_KEY;
     if (openaiKey) {
+      const rcdStartMs = Date.now();
       const OpenAI = (await import('openai')).default;
       const openai = new OpenAI({ apiKey: openaiKey });
       analysis = await lookupMissingRcdTypes(analysis, openai, logger, req.user.id);
+      const rcdElapsedMs = Date.now() - rcdStartMs;
+      logger.info('CCU RCD type lookup timing', {
+        userId: req.user.id,
+        elapsedMs: rcdElapsedMs,
+        elapsedSec: (rcdElapsedMs / 1000).toFixed(1),
+      });
     }
 
     if (!analysis.main_switch_current && analysis.main_switch_rating) {
@@ -1125,6 +924,13 @@ IMPORTANT: If you cannot read the BS/EN number from the device, use your knowled
       uncertainFieldCount: analysis.confidence?.uncertain_fields?.length || 0,
       confidenceMessage: analysis.confidence?.message,
       costUsd: analysis.gptVisionCost.cost_usd,
+    });
+
+    const totalElapsedMs = Date.now() - endpointStartMs;
+    logger.info('CCU extraction total timing', {
+      userId: req.user.id,
+      totalElapsedMs,
+      totalElapsedSec: (totalElapsedMs / 1000).toFixed(1),
     });
 
     res.json(analysis);
