@@ -489,6 +489,27 @@ export class EICRExtractionSession {
       });
     }
 
+    // [TTS-DEDUP] Bug D fix: dedup confirmations against stateSnapshot
+    // Suppress confirmations where the field+circuit already has the same value in snapshot.
+    if (result.confirmations.length > 0) {
+      result.confirmations = result.confirmations.filter((conf) => {
+        const circuit = conf.circuit;
+        const field = conf.field;
+        const value = conf.value;
+        if (!field || circuit == null) return true; // missing metadata, pass through
+        const circuitData = this.stateSnapshot.circuits[circuit];
+        if (!circuitData || !(field in circuitData)) return true; // new field, pass through
+        const existingValue = circuitData[field];
+        if (existingValue == value || String(existingValue) === String(value)) {
+          logger.info(
+            `Session ${this.sessionId} Confirmation deduped (same value in snapshot): circuit ${circuit}, ${field}=${value}`
+          );
+          return false;
+        }
+        return true; // different value or new, pass through
+      });
+    }
+
     // Update rolling state snapshot with this response
     this.updateStateSnapshot(result);
 
