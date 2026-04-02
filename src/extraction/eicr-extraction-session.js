@@ -31,7 +31,7 @@ const CACHE_KEEPALIVE_MS = 4 * 60 * 1000; // 4 minutes
 
 // Number of most-recently-updated circuits to include in full detail in the state snapshot.
 // Older circuits are listed by number only (values stored server-side, not sent to API).
-const SNAPSHOT_RECENT_CIRCUITS = 3;
+const SNAPSHOT_RECENT_CIRCUITS = 5;
 
 // Compact field ID mapping for state snapshot — reduces per-circuit token cost ~55%.
 // Only circuit-level fields that repeat across circuits are mapped.
@@ -789,7 +789,13 @@ export class EICRExtractionSession {
       const olderNums = allNonSupply.filter((n) => !recentNums.includes(n)).sort((a, b) => a - b);
 
       if (olderNums.length > 0) {
-        lines.push(`${olderNums.length} earlier circuits (${olderNums.join(',')}) extracted`);
+        const olderSummaries = olderNums.map((n) => {
+          const fields = this.stateSnapshot.circuits[n];
+          const desig =
+            fields?.circuit_designation || fields?.[FIELD_ID_MAP.circuit_designation] || '';
+          return desig ? `${n}:${desig}` : `${n}`;
+        });
+        lines.push(`older(${olderNums.length}): ${olderSummaries.join(', ')}`);
       }
 
       // Recent circuits — compact field IDs
@@ -825,7 +831,20 @@ export class EICRExtractionSession {
       );
     }
 
-    return parts.join('\n\n');
+    const snapshot = parts.join('\n\n');
+
+    // Log token estimate for monitoring snapshot growth in long sessions
+    const allNonSupply = Object.keys(this.stateSnapshot.circuits)
+      .map(Number)
+      .filter((n) => n !== 0);
+    const recentCount = Math.min(this.recentCircuitOrder.length, SNAPSHOT_RECENT_CIRCUITS);
+    const compactedCount = allNonSupply.length - recentCount;
+    const estimate = Math.ceil(snapshot.length / 4);
+    logger.info(
+      `[StateSnapshot] Estimated tokens: ${estimate}, circuits: ${allNonSupply.length}, compacted: ${compactedCount}`
+    );
+
+    return snapshot;
   }
 
   buildCircuitSchedule(jobState) {
