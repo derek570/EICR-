@@ -399,22 +399,54 @@ export class EICRExtractionSession {
       const resultJSON = this.extractJSON(rawText);
       const parsed = JSON.parse(resultJSON);
       // Validate expected array fields
-      result = {
-        extracted_readings: Array.isArray(parsed.extracted_readings)
-          ? parsed.extracted_readings
-          : [],
-        field_clears: Array.isArray(parsed.field_clears) ? parsed.field_clears : [],
-        circuit_updates: Array.isArray(parsed.circuit_updates) ? parsed.circuit_updates : [],
-        observations: Array.isArray(parsed.observations) ? parsed.observations : [],
-        validation_alerts: Array.isArray(parsed.validation_alerts) ? parsed.validation_alerts : [],
-        questions_for_user: Array.isArray(parsed.questions_for_user)
-          ? parsed.questions_for_user
-          : [],
-        confirmations: Array.isArray(parsed.confirmations) ? parsed.confirmations : [],
-      };
+      result = this._validateParsedResult(parsed);
     } catch (parseError) {
-      logger.warn(`Session ${this.sessionId} Failed to parse Sonnet JSON: ${parseError.message}`);
-      result = EMPTY_RESULT;
+      console.error(
+        `[ExtractionRetry] First attempt failed:`,
+        parseError,
+        rawText.substring(0, 200)
+      );
+      logger.warn(
+        `Session ${this.sessionId} Failed to parse Sonnet JSON (attempt 1): ${parseError.message}`
+      );
+
+      // Retry ONCE with reinforced instruction prepended
+      try {
+        const retryMessages = [
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'text',
+                text: 'CRITICAL: You MUST respond with ONLY valid JSON matching the extraction schema. No explanations, no English text, no markdown code fences. Output raw JSON only.',
+              },
+            ],
+          },
+          ...messages,
+        ];
+        const retryResponse = await this.callWithRetry(retryMessages);
+        const retryTextBlock = retryResponse.content.find((b) => b.type === 'text');
+        const retryRawText = retryTextBlock?.text || '';
+        const retryJSON = this.extractJSON(retryRawText);
+        const retryParsed = JSON.parse(retryJSON);
+        result = this._validateParsedResult(retryParsed);
+        this.costTracker.addSonnetUsage(retryResponse.usage);
+        logger.info(`Session ${this.sessionId} JSON parse retry succeeded`);
+      } catch (retryError) {
+        console.error(
+          `[ExtractionRetry] Retry also failed:`,
+          retryError,
+          rawText.substring(0, 200)
+        );
+        logger.error(
+          `Session ${this.sessionId} JSON parse retry also failed: ${retryError.message}`
+        );
+        result = {
+          ...EMPTY_RESULT,
+          extraction_failed: true,
+          error_message: `JSON parse failed after retry: ${parseError.message}`,
+        };
+      }
     }
 
     // ALWAYS push to conversation history (even on parse failure) to keep context in sync
@@ -1002,6 +1034,18 @@ export class EICRExtractionSession {
     this.costTracker.addSonnetUsage(response.usage);
 
     return result;
+  }
+
+  _validateParsedResult(parsed) {
+    return {
+      extracted_readings: Array.isArray(parsed.extracted_readings) ? parsed.extracted_readings : [],
+      field_clears: Array.isArray(parsed.field_clears) ? parsed.field_clears : [],
+      circuit_updates: Array.isArray(parsed.circuit_updates) ? parsed.circuit_updates : [],
+      observations: Array.isArray(parsed.observations) ? parsed.observations : [],
+      validation_alerts: Array.isArray(parsed.validation_alerts) ? parsed.validation_alerts : [],
+      questions_for_user: Array.isArray(parsed.questions_for_user) ? parsed.questions_for_user : [],
+      confirmations: Array.isArray(parsed.confirmations) ? parsed.confirmations : [],
+    };
   }
 
   extractJSON(text) {
