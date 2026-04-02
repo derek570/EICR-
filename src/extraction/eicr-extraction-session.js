@@ -565,12 +565,15 @@ export class EICRExtractionSession {
     let lastError;
     for (let attempt = 0; attempt < maxRetries; attempt++) {
       try {
-        return await this.client.messages.create({
-          model: 'claude-sonnet-4-6',
-          max_tokens: maxTokens,
-          system,
-          messages,
-        });
+        return await this.client.messages.create(
+          {
+            model: 'claude-sonnet-4-6',
+            max_tokens: maxTokens,
+            system,
+            messages,
+          },
+          { timeout: 30000 }
+        );
       } catch (error) {
         lastError = error;
         if (error.status === 429 || error.status >= 500) {

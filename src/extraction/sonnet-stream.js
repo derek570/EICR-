@@ -561,6 +561,12 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
     }
 
     entry.isExtracting = true;
+    const extractionWatchdog = setTimeout(() => {
+      if (entry.isExtracting) {
+        console.warn('[Watchdog] isExtracting stuck for 60s, force-resetting');
+        entry.isExtracting = false;
+      }
+    }, 60000);
 
     try {
       logger.info('Extracting from transcript', {
@@ -632,6 +638,7 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         );
       }
     } finally {
+      clearTimeout(extractionWatchdog);
       entry.isExtracting = false;
     }
 
