@@ -18,7 +18,8 @@ import { createFileFilter, IMAGE_MIMES, handleUploadError } from '../utils/uploa
 const router = Router();
 
 // --- CCU extraction timeout & size config ---
-const CCU_EXTRACTION_TIMEOUT_MS = parseInt(process.env.CCU_EXTRACTION_TIMEOUT_MS, 10) || 120_000;
+// Increased from 120s — CCU analysis regularly takes 100-110s
+const CCU_EXTRACTION_TIMEOUT_MS = parseInt(process.env.CCU_EXTRACTION_TIMEOUT_MS, 10) || 180_000;
 const CCU_MAX_UPLOAD_BYTES = parseInt(process.env.CCU_MAX_UPLOAD_BYTES, 10) || 20 * 1024 * 1024;
 
 logger.info('CCU extraction config', {
