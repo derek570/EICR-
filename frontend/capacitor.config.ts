@@ -2,7 +2,7 @@ import type { CapacitorConfig } from '@capacitor/cli';
 
 const config: CapacitorConfig = {
   appId: 'com.certomatic3000.app',
-  appName: 'EICR-oMatic 3000',
+  appName: 'CertMate',
   webDir: 'public',
   server: {
     url: 'https://certomatic3000.co.uk',
@@ -11,17 +11,17 @@ const config: CapacitorConfig = {
   ios: {
     contentInset: 'automatic',
     preferredContentMode: 'mobile',
-    scheme: 'EICR-oMatic 3000',
+    scheme: 'CertMate',
   },
   plugins: {
     SplashScreen: {
       launchAutoHide: true,
       showSpinner: false,
-      backgroundColor: '#ffffff',
+      backgroundColor: '#1a1a2e',
     },
     StatusBar: {
-      style: 'dark',
-      backgroundColor: '#ffffff',
+      style: 'light',
+      backgroundColor: '#1a1a2e',
     },
   },
 };

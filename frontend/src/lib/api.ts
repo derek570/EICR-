@@ -1,5 +1,5 @@
 /**
- * API client for EICR-oMatic 3000
+ * API client for CertMate
  */
 
 import type { Job, JobDetail, SaveJobData, JobPhoto, InspectorProfile } from '../types/job';

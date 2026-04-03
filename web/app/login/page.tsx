@@ -233,7 +233,7 @@ function LoginForm() {
           </form>
 
           <div className="mt-8 text-center text-xs text-gray-500 space-y-1">
-            <p>EICR-oMatic 3000 &middot; certomatic3000.co.uk</p>
+            <p>CertMate &middot; certmate.co.uk</p>
             <p>
               <a href="/legal/terms" className="hover:text-gray-300 transition-colors">
                 Terms

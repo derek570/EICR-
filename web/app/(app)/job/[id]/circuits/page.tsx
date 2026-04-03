@@ -8,6 +8,7 @@ import { Plus, Trash2, Wand2, Loader2 } from 'lucide-react';
 import type { Circuit, Board, JobDetail, UserDefaults } from '@/lib/types';
 import { api } from '@/lib/api-client';
 import { applyDefaultsToCircuit, applyDefaultsToCircuits } from '@/lib/apply-defaults';
+import { sortCircuitsByRef } from '@/lib/sort-circuits';
 import { toast } from 'sonner';
 import { cn } from '@/lib/utils';
 
@@ -73,7 +74,7 @@ export default function CircuitsPage() {
       circuit_designation: '',
     };
     const newCircuit = applyDefaultsToCircuit(scaffold, defaultsRef.current);
-    updateBoardCircuits([...activeCircuits, newCircuit]);
+    updateBoardCircuits(sortCircuitsByRef([...activeCircuits, newCircuit]));
   };
 
   const deleteLastCircuit = () => {
@@ -115,7 +116,7 @@ export default function CircuitsPage() {
     <div className="p-6 space-y-4">
       {/* Board selector for multi-board jobs */}
       {hasMultipleBoards && (
-        <div className="flex overflow-x-auto border rounded-lg bg-white">
+        <div className="flex overflow-x-auto border border-white/[0.08] rounded-lg bg-card">
           {boards.map((b, index) => (
             <button
               key={b.id}
@@ -123,8 +124,8 @@ export default function CircuitsPage() {
               className={cn(
                 'shrink-0 px-4 py-2 text-sm font-medium border-b-2 transition-colors whitespace-nowrap',
                 index === activeBoardIndex
-                  ? 'border-brand-blue text-brand-blue bg-blue-50'
-                  : 'border-transparent text-gray-500 hover:text-gray-900 hover:bg-gray-50'
+                  ? 'border-brand-blue text-brand-blue bg-brand-blue/10'
+                  : 'border-transparent text-muted-foreground hover:text-foreground hover:bg-white/[0.04]'
               )}
             >
               {b.designation} ({b.circuits.length})
@@ -164,7 +165,7 @@ export default function CircuitsPage() {
         </div>
       </div>
 
-      <p className="text-sm text-gray-500">
+      <p className="text-sm text-muted-foreground">
         Click any cell to edit. Use Tab to move between cells, Enter to move down.
         {hasMultipleBoards && ' Use the board tabs above to switch between boards.'}
       </p>

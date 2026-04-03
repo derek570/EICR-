@@ -182,8 +182,8 @@ export default function TermsPage() {
       <h2>21. Contact</h2>
       <p>
         Email:{' '}
-        <a href="mailto:support@certomatic3000.co.uk" className="text-blue-500 hover:text-blue-600">
-          support@certomatic3000.co.uk
+        <a href="mailto:support@certmate.co.uk" className="text-blue-500 hover:text-blue-600">
+          support@certmate.co.uk
         </a>
       </p>
       <p className="mt-8 font-semibold">

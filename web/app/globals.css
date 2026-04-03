@@ -97,6 +97,56 @@ select {
   border: 1px solid rgba(255, 255, 255, 0.08);
 }
 
+/* Glass background utility — used by app shell, header, sidebar, tab bar */
+.glass-bg {
+  background: rgba(255, 255, 255, 0.04);
+  -webkit-backdrop-filter: blur(16px);
+  backdrop-filter: blur(16px);
+}
+
+/* App-level background surface */
+.bg-L0 {
+  background: var(--background);
+}
+
+/* Soft shadow for active nav items */
+.shadow-soft {
+  box-shadow: 0 1px 4px rgba(59, 130, 246, 0.15), 0 0 12px rgba(59, 130, 246, 0.08);
+}
+
+/* Brand gradient text — alias used by sidebar/mobile-menu */
+.gradient-text {
+  background: linear-gradient(135deg, #3B82F6, #06B6D4, #22C55E);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+/* Gradient border for glass cards */
+.gradient-border {
+  border: 1px solid transparent;
+  background-clip: padding-box;
+  position: relative;
+}
+.gradient-border::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 1px;
+  background: linear-gradient(135deg, #3B82F6, #06B6D4, #22C55E);
+  -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  pointer-events: none;
+}
+
+/* Breathe-glow animation for glass cards */
+@keyframes breathe-glow {
+  0%, 100% { box-shadow: 0 0 8px rgba(59, 130, 246, 0.15); }
+  50% { box-shadow: 0 0 20px rgba(59, 130, 246, 0.3), 0 0 40px rgba(6, 182, 212, 0.1); }
+}
+
 /* Subtle scrollbar styling */
 ::-webkit-scrollbar {
   width: 6px;

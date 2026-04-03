@@ -51,6 +51,13 @@ export interface InstallationDetails {
   postcode?: string;
   town?: string;
   county?: string;
+  // Client address fields (mirrors iOS InstallationDetails.swift)
+  client_address?: string;
+  client_town?: string;
+  client_county?: string;
+  client_postcode?: string;
+  client_phone?: string;
+  client_email?: string;
   premises_description: string;
   installation_records_available: boolean;
   evidence_of_additions_alterations: boolean;

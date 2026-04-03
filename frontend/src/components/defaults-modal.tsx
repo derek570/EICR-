@@ -99,7 +99,7 @@ export function DefaultsModal({ userId, isOpen, onClose }: DefaultsModalProps) {
       let fullDefaults: CertificateDefaults = { circuits: circuitDefaults };
       try {
         const response = await fetch(
-          `${process.env.NEXT_PUBLIC_API_URL || 'https://certomatic3000.co.uk'}/api/settings/${userId}/certificate-defaults`,
+          `${process.env.NEXT_PUBLIC_API_URL || ''}/api/settings/${userId}/certificate-defaults`,
           {
             headers: { Authorization: `Bearer ${localStorage.getItem('token')}` },
           }
@@ -131,7 +131,7 @@ export function DefaultsModal({ userId, isOpen, onClose }: DefaultsModalProps) {
       // Try to save full certificate defaults (may fail if endpoint doesn't exist)
       try {
         await fetch(
-          `${process.env.NEXT_PUBLIC_API_URL || 'https://certomatic3000.co.uk'}/api/settings/${userId}/certificate-defaults`,
+          `${process.env.NEXT_PUBLIC_API_URL || ''}/api/settings/${userId}/certificate-defaults`,
           {
             method: 'PUT',
             headers: {

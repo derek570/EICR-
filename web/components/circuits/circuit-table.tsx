@@ -169,7 +169,7 @@ function EditableCell({ getValue, row, column, table }: CellContext<Circuit, unk
         onChange={(e) => setValue(e.target.value)}
         onBlur={commit}
         onKeyDown={handleKeyDown}
-        className="h-8 text-sm p-1 rounded-none border-0 border-b-2 border-brand-blue focus-visible:ring-0 bg-blue-50"
+        className="h-8 text-sm p-1 rounded-none border-0 border-b-2 border-brand-blue focus-visible:ring-0 bg-brand-blue/10"
       />
     );
   }
@@ -179,10 +179,10 @@ function EditableCell({ getValue, row, column, table }: CellContext<Circuit, unk
       onClick={() => meta.setEditingCell({ row: row.index, col: colIndex })}
       className={cn(
         'cursor-pointer min-h-[36px] flex items-center px-1.5 text-sm transition-colors duration-[2000ms]',
-        isFlashing ? 'bg-blue-100' : 'hover:bg-blue-50/50'
+        isFlashing ? 'bg-brand-blue/15' : 'hover:bg-white/[0.04]'
       )}
     >
-      {value || <span className="text-gray-300">-</span>}
+      {value || <span className="text-white/20">-</span>}
     </div>
   );
 }
@@ -192,6 +192,13 @@ export function CircuitTable({ circuits, onChange, recentlyUpdatedFields }: Circ
   const [scrollProgress, setScrollProgress] = useState(0);
   const [canScrollRight, setCanScrollRight] = useState(false);
   const [editingCell, setEditingCell] = useState<{ row: number; col: number } | null>(null);
+
+  // P0 fix: Clear stale editing state when circuits change (prevents edits to wrong row after deletion)
+  useEffect(() => {
+    if (editingCell && editingCell.row >= circuits.length) {
+      setEditingCell(null);
+    }
+  }, [circuits.length, editingCell]);
 
   // Track scroll position
   useEffect(() => {
@@ -282,16 +289,16 @@ export function CircuitTable({ circuits, onChange, recentlyUpdatedFields }: Circ
 
   if (circuits.length === 0) {
     return (
-      <div className="border rounded-lg bg-white dark:bg-gray-900 dark:border-gray-700 p-8 text-center text-gray-500 dark:text-gray-400">
+      <div className="border border-white/[0.08] rounded-lg bg-card p-8 text-center text-muted-foreground">
         No circuits yet. Click &quot;Add Circuit&quot; to get started.
       </div>
     );
   }
 
   return (
-    <div className="border rounded-lg bg-white dark:bg-gray-900 dark:border-gray-700 relative">
+    <div className="border border-white/[0.08] rounded-lg bg-card relative">
       {/* Scroll progress bar */}
-      <div className="h-1 bg-gray-200 rounded-t-lg overflow-hidden">
+      <div className="h-1 bg-white/[0.06] rounded-t-lg overflow-hidden">
         <div
           className="h-full bg-brand-blue transition-all duration-150 ease-out"
           style={{ width: '20%', marginLeft: `${scrollProgress * 80}%` }}
@@ -302,7 +309,7 @@ export function CircuitTable({ circuits, onChange, recentlyUpdatedFields }: Circ
         {/* Right scroll shadow */}
         <div
           className={cn(
-            'pointer-events-none absolute right-0 top-0 bottom-0 w-8 bg-gradient-to-l from-gray-200/80 to-transparent z-30 transition-opacity duration-200',
+            'pointer-events-none absolute right-0 top-0 bottom-0 w-8 bg-gradient-to-l from-card to-transparent z-30 transition-opacity duration-200',
             canScrollRight ? 'opacity-100' : 'opacity-0'
           )}
         />
@@ -310,7 +317,7 @@ export function CircuitTable({ circuits, onChange, recentlyUpdatedFields }: Circ
         <table className="w-full text-sm border-collapse">
           <thead>
             {/* Group header row */}
-            <tr className="bg-gray-100 border-b">
+            <tr className="bg-white/[0.06] border-b border-white/[0.08]">
               {groupHeaders.map((group, gIdx) => {
                 const startIdx = CIRCUIT_COLUMNS.findIndex(
                   (_, i) =>
@@ -323,8 +330,8 @@ export function CircuitTable({ circuits, onChange, recentlyUpdatedFields }: Circ
                     key={`${group.name}-${gIdx}`}
                     colSpan={group.span}
                     className={cn(
-                      'px-2 py-1 text-center text-xs font-medium text-gray-500 border-r last:border-r-0',
-                      isFirstTwoSticky && 'sticky left-0 z-20 bg-gray-100'
+                      'px-2 py-1 text-center text-xs font-medium text-muted-foreground border-r border-white/[0.06] last:border-r-0',
+                      isFirstTwoSticky && 'sticky left-0 z-20 bg-[#1a2640]'
                     )}
                   >
                     {group.name}
@@ -334,14 +341,14 @@ export function CircuitTable({ circuits, onChange, recentlyUpdatedFields }: Circ
             </tr>
             {/* Column header row */}
             {table.getHeaderGroups().map((headerGroup) => (
-              <tr key={headerGroup.id} className="bg-gray-50 border-b">
+              <tr key={headerGroup.id} className="bg-white/[0.04] border-b border-white/[0.08]">
                 {headerGroup.headers.map((header, idx) => (
                   <th
                     key={header.id}
                     className={cn(
-                      'px-1.5 py-2 text-left font-medium text-gray-700 whitespace-nowrap border-r last:border-r-0',
-                      idx < 2 && 'sticky bg-gray-50 z-20',
-                      idx === 1 && 'border-r-2 border-gray-300'
+                      'px-1.5 py-2 text-left font-medium text-foreground/80 whitespace-nowrap border-r border-white/[0.06] last:border-r-0',
+                      idx < 2 && 'sticky bg-[#172035] z-20',
+                      idx === 1 && 'border-r-2 border-white/[0.12]'
                     )}
                     style={{
                       width: header.getSize(),
@@ -361,19 +368,19 @@ export function CircuitTable({ circuits, onChange, recentlyUpdatedFields }: Circ
               <tr
                 key={row.id}
                 className={cn(
-                  'border-b hover:bg-blue-50/30',
-                  rowIdx % 2 === 0 ? 'bg-white' : 'bg-gray-50/30'
+                  'border-b border-white/[0.06] hover:bg-white/[0.04]',
+                  rowIdx % 2 === 0 ? 'bg-card' : 'bg-white/[0.02]'
                 )}
               >
                 {row.getVisibleCells().map((cell, idx) => (
                   <td
                     key={cell.id}
                     className={cn(
-                      'px-0 py-0 border-r last:border-r-0',
+                      'px-0 py-0 border-r border-white/[0.06] last:border-r-0',
                       idx < 2 && 'sticky z-10',
                       idx === 0 && 'font-medium',
-                      idx === 1 && 'border-r-2 border-gray-300',
-                      idx < 2 && (rowIdx % 2 === 0 ? 'bg-white' : 'bg-gray-50/30')
+                      idx === 1 && 'border-r-2 border-white/[0.12]',
+                      idx < 2 && (rowIdx % 2 === 0 ? 'bg-card' : 'bg-[#1b2a45]')
                     )}
                     style={{
                       width: cell.column.getSize(),

@@ -64,7 +64,7 @@ export default function LoginPage() {
           <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-primary">
             <Zap className="h-6 w-6 text-primary-foreground" />
           </div>
-          <CardTitle className="text-2xl font-bold">EICR-oMatic 3000</CardTitle>
+          <CardTitle className="text-2xl font-bold">CertMate</CardTitle>
           <CardDescription>Sign in to manage your electrical certificates</CardDescription>
         </CardHeader>
         <CardContent>

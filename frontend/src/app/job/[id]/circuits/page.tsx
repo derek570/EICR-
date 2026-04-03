@@ -64,6 +64,7 @@ export default function CircuitsPage() {
       wiring_type: 'A',
       ocpd_type: 'B',
       ir_test_voltage_v: '500',
+      max_disconnect_time_s: '0.4',
     };
     updateBoardCircuits([...activeCircuits, newCircuit]);
   };

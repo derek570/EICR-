@@ -16,13 +16,13 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: 'EICR-oMatic 3000',
+  title: 'CertMate',
   description: 'Electrical Installation Condition Report automation',
   manifest: '/manifest.json',
   appleWebApp: {
     capable: true,
     statusBarStyle: 'default',
-    title: 'EICR-oMatic',
+    title: 'CertMate',
   },
 };
 

@@ -1,5 +1,5 @@
 /**
- * Service Worker for push notifications — EICR-oMatic 3000
+ * Service Worker for push notifications — CertMate
  */
 
 self.addEventListener("push", (event) => {
@@ -13,8 +13,8 @@ self.addEventListener("push", (event) => {
   const title = data.title || "CertMate";
   const options = {
     body: data.body || "",
-    icon: data.icon || "/icons/icon-192x192.png",
-    badge: data.badge || "/icons/icon-72x72.png",
+    icon: data.icon || "/icon-192.png",
+    badge: data.badge || "/icon-192.png",
     tag: data.tag || "certmate-notification",
     data: {
       url: data.url || "/dashboard",

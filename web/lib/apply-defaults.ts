@@ -45,17 +45,24 @@ export const DEFAULTS_APPLICABLE_KEYS = new Set([
  * @returns A new circuit with defaults applied to empty fields
  */
 export function applyDefaultsToCircuit(circuit: Circuit, defaults: UserDefaults): Circuit {
-  if (!defaults || Object.keys(defaults).length === 0) return circuit;
-
   const updated = { ...circuit };
-  for (const [key, value] of Object.entries(defaults)) {
-    // Only apply keys that are in the approved set
-    if (!DEFAULTS_APPLICABLE_KEYS.has(key)) continue;
-    // Only fill empty fields — never overwrite existing values
-    if (value && (!updated[key] || updated[key] === '')) {
-      updated[key] = value;
+
+  if (defaults && Object.keys(defaults).length > 0) {
+    for (const [key, value] of Object.entries(defaults)) {
+      // Only apply keys that are in the approved set
+      if (!DEFAULTS_APPLICABLE_KEYS.has(key)) continue;
+      // Only fill empty fields — never overwrite existing values
+      if (value && (!updated[key] || updated[key] === '')) {
+        updated[key] = value;
+      }
     }
   }
+
+  // BS 7671 fallback: pre-fill 0.4s max disconnect time if still empty after user defaults
+  if (!updated.max_disconnect_time_s || updated.max_disconnect_time_s === '') {
+    updated.max_disconnect_time_s = '0.4';
+  }
+
   return updated;
 }
 

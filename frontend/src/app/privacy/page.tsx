@@ -12,10 +12,9 @@ export default function PrivacyPage() {
         <p className="text-sm text-muted-foreground mb-8">Last updated: 3 March 2026</p>
 
         <p className="mb-6">
-          CertMate (&quot;EICR-oMatic 3000&quot;) is operated by Beckley Electrical Ltd
-          (&quot;we&quot;, &quot;us&quot;, &quot;our&quot;). This policy explains what personal data
-          we collect through the CertMate iOS app and web application at certomatic3000.co.uk, why
-          we collect it, and how we protect it.
+          CertMate is operated by Beckley Electrical Ltd (&quot;we&quot;, &quot;us&quot;,
+          &quot;our&quot;). This policy explains what personal data we collect through the CertMate
+          iOS app and web application at certmate.co.uk, why we collect it, and how we protect it.
         </p>
 
         <Section title="1. Data We Collect">

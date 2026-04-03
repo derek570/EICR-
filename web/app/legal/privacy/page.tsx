@@ -90,8 +90,8 @@ export default function PrivacyPage() {
         Under the UK GDPR and Data (Use and Access) Act 2025, you have rights to: access,
         rectification, erasure, restrict processing, object to processing, data portability,
         withdraw consent, and not be subject to automated decisions. Contact us at{' '}
-        <a href="mailto:support@certomatic3000.co.uk" className="text-blue-500">
-          support@certomatic3000.co.uk
+        <a href="mailto:support@certmate.co.uk" className="text-blue-500">
+          support@certmate.co.uk
         </a>{' '}
         to exercise your rights. We will respond within one month.
       </p>
@@ -122,8 +122,8 @@ export default function PrivacyPage() {
       <h2>14. Contact</h2>
       <p>
         Email:{' '}
-        <a href="mailto:support@certomatic3000.co.uk" className="text-blue-500">
-          support@certomatic3000.co.uk
+        <a href="mailto:support@certmate.co.uk" className="text-blue-500">
+          support@certmate.co.uk
         </a>
       </p>
       <p>For ICO complaints: Information Commissioner&apos;s Office, ico.org.uk, 0303 123 1113</p>

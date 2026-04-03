@@ -31,7 +31,7 @@ export default function LegalLayout({ children }: { children: React.ReactNode })
       {/* Footer */}
       <footer className="border-t border-white/5 py-8">
         <div className="max-w-4xl mx-auto px-6 text-center text-sm text-gray-500">
-          CertMate &middot; EICR-oMatic 3000 &middot; certomatic3000.co.uk
+          CertMate &middot; certmate.co.uk
         </div>
       </footer>
     </div>

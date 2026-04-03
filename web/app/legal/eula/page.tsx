@@ -113,8 +113,8 @@ export default function EulaPage() {
       <h2>18. Contact</h2>
       <p>
         Support:{' '}
-        <a href="mailto:support@certomatic3000.co.uk" className="text-blue-500">
-          support@certomatic3000.co.uk
+        <a href="mailto:support@certmate.co.uk" className="text-blue-500">
+          support@certmate.co.uk
         </a>
       </p>
 

@@ -22,7 +22,7 @@ test.describe("Authentication", () => {
 
     // Check page title
     await expect(
-      page.getByText("EICR-oMatic 3000")
+      page.getByText("CertMate")
     ).toBeVisible();
 
     // Check form fields exist

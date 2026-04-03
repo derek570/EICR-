@@ -1,6 +1,6 @@
 {
-  "name": "EICR-oMatic 3000",
-  "short_name": "EICR",
+  "name": "CertMate",
+  "short_name": "CertMate",
   "description": "Electrical Installation Condition Report automation",
   "start_url": "/dashboard",
   "display": "standalone",
