@@ -684,7 +684,7 @@ AVAILABLE ACTIONS:
    Response: { "action": { "type": "add_circuit", "params": { "description": "Cooker" } } }
 
 3. delete_circuit — Delete a circuit by its number
-   Example: "delete circuit 5", "remove the last circuit"
+   Example: "delete circuit 5", "remove circuit 3", "delete circuit number 7", "remove the last circuit"
    Response: { "action": { "type": "delete_circuit", "params": { "circuit_ref": "5" } } }
 
 4. update_field — Update a specific field value
