@@ -31,7 +31,7 @@ const CACHE_KEEPALIVE_MS = 4 * 60 * 1000; // 4 minutes
 
 // Number of most-recently-updated circuits to include in full detail in the state snapshot.
 // Older circuits are listed by number only (values stored server-side, not sent to API).
-const SNAPSHOT_RECENT_CIRCUITS = 5;
+const SNAPSHOT_RECENT_CIRCUITS = 3;
 
 // Compact field ID mapping for state snapshot — reduces per-circuit token cost ~55%.
 // Only circuit-level fields that repeat across circuits are mapped.
@@ -115,6 +115,9 @@ export class EICRExtractionSession {
     // Tracks order in which circuits were last updated, for snapshot windowing.
     // Most recently updated circuits appear at the end.
     this.recentCircuitOrder = [];
+
+    // Track previous snapshot text to avoid costly cache writes when snapshot changes
+    this._lastSnapshotText = null;
   }
 
   // Extract text from a message content (handles both string and content block array formats)
@@ -165,12 +168,28 @@ export class EICRExtractionSession {
 
   /**
    * Send a minimal API call to keep the prompt cache warm during silence.
-   * Only sends the system prompt + a tiny keepalive message — no conversation
-   * history, no state snapshot. Costs ~$0.003 (cache reads only).
+   * Includes the state snapshot with cache_control so it's pre-cached for
+   * the next extraction call — snapshot reads at $0.30/M instead of $3/M input.
    */
   async _sendCacheKeepalive() {
     if (!this.isActive) return;
     try {
+      // Include snapshot in keepalive so it gets cached during pauses
+      const snapshot = this.buildStateSnapshotMessage();
+      const messages = [];
+      if (snapshot) {
+        messages.push(
+          {
+            role: 'user',
+            content: [
+              { type: 'text', text: snapshot, cache_control: { type: 'ephemeral', ttl: '5m' } },
+            ],
+          },
+          { role: 'assistant', content: [{ type: 'text', text: '{"acknowledged": true}' }] }
+        );
+      }
+      messages.push({ role: 'user', content: [{ type: 'text', text: '[keepalive]' }] });
+
       const response = await this.client.messages.create({
         model: 'claude-sonnet-4-6',
         max_tokens: 1,
@@ -181,10 +200,10 @@ export class EICRExtractionSession {
             cache_control: { type: 'ephemeral', ttl: '5m' },
           },
         ],
-        messages: [{ role: 'user', content: [{ type: 'text', text: '[keepalive]' }] }],
+        messages,
       });
       this.costTracker.addSonnetUsage(response.usage);
-      logger.info(`Session ${this.sessionId} Cache keepalive sent`);
+      logger.info(`Session ${this.sessionId} Cache keepalive sent (snapshot=${!!snapshot})`);
     } catch (error) {
       logger.warn(`Session ${this.sessionId} Cache keepalive failed: ${error.message}`);
     }
@@ -548,6 +567,18 @@ export class EICRExtractionSession {
     // Track token costs
     this.costTracker.addSonnetUsage(response.usage);
 
+    // Log per-turn cost for debugging
+    const usage = response.usage;
+    logger.info(`Session ${this.sessionId} Turn ${this.turnCount} cost`, {
+      cacheRead: usage.cache_read_input_tokens || 0,
+      cacheWrite: usage.cache_creation_input_tokens || 0,
+      input: usage.input_tokens || 0,
+      output: usage.output_tokens || 0,
+      turnCostUsd: parseFloat(this.costTracker.sonnetCost.toFixed(6)),
+      totalCostUsd: parseFloat(this.costTracker.totalCost.toFixed(6)),
+      readings: result.extracted_readings?.length || 0,
+    });
+
     return result;
   }
 
@@ -683,8 +714,16 @@ export class EICRExtractionSession {
     // so Sonnet retains full context even when older messages drop from the window.
     const snapshot = this.buildStateSnapshotMessage();
     if (snapshot) {
+      // Only add cache_control when snapshot is unchanged (e.g. after pause/resume).
+      // Changed snapshots would be cache WRITEs at 1.25x cost — worse than uncached input.
+      const snapshotBlock = { type: 'text', text: snapshot };
+      if (snapshot === this._lastSnapshotText) {
+        snapshotBlock.cache_control = { type: 'ephemeral', ttl: '5m' };
+      }
+      this._lastSnapshotText = snapshot;
+
       window.push(
-        { role: 'user', content: [{ type: 'text', text: snapshot }] },
+        { role: 'user', content: [snapshotBlock] },
         { role: 'assistant', content: [{ type: 'text', text: '{"acknowledged": true}' }] }
       );
       // Mark circuit schedule as included so buildUserMessage doesn't duplicate it
@@ -824,13 +863,9 @@ export class EICRExtractionSession {
       const olderNums = allNonSupply.filter((n) => !recentNums.includes(n)).sort((a, b) => a - b);
 
       if (olderNums.length > 0) {
-        const olderSummaries = olderNums.map((n) => {
-          const fields = this.stateSnapshot.circuits[n];
-          const desig =
-            fields?.circuit_designation || fields?.[FIELD_ID_MAP.circuit_designation] || '';
-          return desig ? `${n}:${desig}` : `${n}`;
-        });
-        lines.push(`older(${olderNums.length}): ${olderSummaries.join(', ')}`);
+        lines.push(
+          `${olderNums.length} earlier circuits (${olderNums.join(',')}) stored server-side`
+        );
       }
 
       // Recent circuits — compact field IDs
@@ -859,10 +894,15 @@ export class EICRExtractionSession {
       );
     }
 
-    // Observations as a separate, clear section
+    // Observations as a separate, condensed section — truncate to 50 chars each
+    // so Sonnet can still match deletion requests ("delete the one about loose neutral")
     if (hasObs) {
+      const condensed = this.stateSnapshot.observations.map((o, i) => {
+        const short = o.length > 50 ? o.substring(0, 50) + '...' : o;
+        return `${i + 1}. ${short}`;
+      });
       parts.push(
-        `OBSERVATIONS ALREADY RECORDED (do NOT re-extract):\n${this.stateSnapshot.observations.map((o, i) => `${i + 1}. ${o}`).join('\n')}`
+        `OBSERVATIONS ALREADY RECORDED (${this.stateSnapshot.observations.length} total, do NOT re-extract):\n${condensed.join('\n')}`
       );
     }
 

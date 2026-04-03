@@ -523,19 +523,28 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
 
     session.start(jobState);
 
+    // Extract job address from jobState for cost tracking
+    const jobAddress =
+      jobState?.address ||
+      jobState?.installationDetails?.address ||
+      jobState?.installation_details?.address ||
+      null;
+
     activeSessions.set(sessionId, {
       session,
       questionGate,
       ws,
       userId,
       jobId,
+      jobAddress,
+      certType,
       lastRegexResults: [],
       isExtracting: false,
       pendingTranscripts: [],
     });
 
     ws.send(JSON.stringify({ type: 'session_ack', status: 'started' }));
-    logger.info('Session started', { sessionId, jobId });
+    logger.info('Session started', { sessionId, jobId, jobAddress, certType });
   }
 
   async function handleTranscript(ws, sessionId, msg) {
@@ -893,11 +902,21 @@ GUIDELINES:
     const summary = entry.session.stop();
     entry.questionGate.destroy();
 
+    // Attach job identity so cost can be traced back to the job
+    summary.jobId = entry.jobId || null;
+    summary.jobAddress = entry.jobAddress || null;
+    summary.certType = entry.certType || null;
+    summary.sessionId = sessionId;
+
     // Save cost summary to S3
     try {
       const s3Key = `session-analytics/${entry.userId}/${sessionId}/cost_summary.json`;
       await storage.uploadJson(summary, s3Key);
-      logger.info('Cost summary saved', { s3Key });
+      logger.info('Cost summary saved', {
+        s3Key,
+        jobId: entry.jobId,
+        jobAddress: entry.jobAddress,
+      });
     } catch (error) {
       logger.error('Failed to save cost summary to S3', { error: error.message });
     }
