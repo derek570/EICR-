@@ -38,6 +38,7 @@ aws ecr get-login-password --region "$REGION" | \
 echo "[2/4] Building frontend image (linux/amd64)..."
 docker build \
   --platform linux/amd64 \
+  --no-cache \
   -f "$SCRIPT_DIR/docker/nextjs.Dockerfile" \
   --build-arg APP_DIR=frontend \
   --build-arg NEXT_PUBLIC_API_URL=https://certomatic3000.co.uk \

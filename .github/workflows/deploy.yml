@@ -14,7 +14,7 @@ env:
   ECR_REPOSITORY_FRONTEND: eicr-frontend
   ECR_REPOSITORY_BACKEND: eicr-backend
   ECS_CLUSTER: eicr-cluster-production
-  ECS_SERVICE_FRONTEND: eicr-frontend
+  ECS_SERVICE_FRONTEND: eicr-pwa
   ECS_SERVICE_BACKEND: eicr-backend
 
 jobs:
@@ -151,6 +151,9 @@ jobs:
           push: false
           load: true
           tags: eicr-frontend:${{ github.sha }}
+          build-args: |
+            APP_DIR=frontend
+            NEXT_PUBLIC_API_URL=https://certomatic3000.co.uk
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -188,6 +191,9 @@ jobs:
           push: false
           load: true
           tags: eicr-frontend:${{ github.sha }}
+          build-args: |
+            APP_DIR=frontend
+            NEXT_PUBLIC_API_URL=https://certomatic3000.co.uk
           cache-from: type=gha
 
       - name: Build Backend Image for Scan
@@ -254,6 +260,8 @@ jobs:
             ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY_FRONTEND }}:staging-${{ github.sha }}
             ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY_FRONTEND }}:staging-latest
           build-args: |
+            APP_DIR=frontend
+            NEXT_PUBLIC_API_URL=https://staging.certomatic3000.co.uk
             NODE_ENV=staging
           cache-from: type=gha
           cache-to: type=gha,mode=max
@@ -341,6 +349,9 @@ jobs:
           tags: |
             ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY_FRONTEND }}:${{ github.sha }}
             ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY_FRONTEND }}:latest
+          build-args: |
+            APP_DIR=frontend
+            NEXT_PUBLIC_API_URL=https://certomatic3000.co.uk
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
