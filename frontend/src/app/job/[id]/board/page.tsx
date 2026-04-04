@@ -36,7 +36,19 @@ function ensureBoards(job: {
   circuits: import('@/lib/api').Circuit[];
 }): Board[] {
   if (job.boards && job.boards.length > 0) {
-    return job.boards;
+    return job.boards.map((b) => ({
+      ...b,
+      board_info: b.board_info ?? {
+        name: '',
+        location: '',
+        manufacturer: '',
+        phases: '1',
+        earthing_arrangement: '',
+        ze: '',
+        zs_at_db: '',
+        ipf_at_db: '',
+      },
+    }));
   }
   // Backward compat: wrap single board_info + circuits into boards[0]
   return [
@@ -150,7 +162,16 @@ export default function BoardPage() {
     setShowRemoveConfirm(false);
   };
 
-  const board = activeBoard.board_info;
+  const board = activeBoard.board_info ?? {
+    name: '',
+    location: '',
+    manufacturer: '',
+    phases: '1',
+    earthing_arrangement: '',
+    ze: '',
+    zs_at_db: '',
+    ipf_at_db: '',
+  };
 
   return (
     <div className="p-4 space-y-4">
