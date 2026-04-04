@@ -55,8 +55,19 @@ function ensureBoards(job: {
     {
       id: 'board_1',
       designation: 'Main Board',
-      location: job.board_info.location || '',
-      board_info: { ...job.board_info },
+      location: job.board_info?.location || '',
+      board_info: {
+        ...(job.board_info ?? {
+          name: '',
+          location: '',
+          manufacturer: '',
+          phases: '1',
+          earthing_arrangement: '',
+          ze: '',
+          zs_at_db: '',
+          ipf_at_db: '',
+        }),
+      },
       circuits: job.circuits || [],
     },
   ];

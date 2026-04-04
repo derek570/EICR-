@@ -106,13 +106,13 @@ export default function JobOverviewPage() {
         <CardContent>
           <dl className="grid grid-cols-2 gap-2 text-sm">
             <dt className="text-muted-foreground">Location</dt>
-            <dd>{job.board_info.location || '-'}</dd>
+            <dd>{job.board_info?.location || '-'}</dd>
             <dt className="text-muted-foreground">Manufacturer</dt>
-            <dd>{job.board_info.manufacturer || '-'}</dd>
+            <dd>{job.board_info?.manufacturer || '-'}</dd>
             <dt className="text-muted-foreground">Earthing</dt>
-            <dd>{job.board_info.earthing_arrangement || '-'}</dd>
+            <dd>{job.board_info?.earthing_arrangement || '-'}</dd>
             <dt className="text-muted-foreground">Ze</dt>
-            <dd>{job.board_info.ze ? `${job.board_info.ze} Ω` : '-'}</dd>
+            <dd>{job.board_info?.ze ? `${job.board_info.ze} Ω` : '-'}</dd>
           </dl>
         </CardContent>
       </Card>
