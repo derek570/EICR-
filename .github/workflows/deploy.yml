@@ -206,7 +206,7 @@ jobs:
           tags: eicr-backend:${{ github.sha }}
           cache-from: type=gha
 
-      - name: Scan Frontend Image
+      - name: Scan Frontend Image (blocking on CRITICAL)
         uses: aquasecurity/trivy-action@0.35.0
         with:
           image-ref: 'eicr-frontend:${{ github.sha }}'
@@ -215,7 +215,16 @@ jobs:
           severity: 'CRITICAL'
           ignore-unfixed: true
 
-      - name: Scan Backend Image
+      - name: Scan Frontend Image (HIGH - advisory only)
+        if: always()
+        uses: aquasecurity/trivy-action@0.35.0
+        with:
+          image-ref: 'eicr-frontend:${{ github.sha }}'
+          format: 'table'
+          exit-code: '0'
+          severity: 'HIGH'
+
+      - name: Scan Backend Image (blocking on CRITICAL)
         uses: aquasecurity/trivy-action@0.35.0
         with:
           image-ref: 'eicr-backend:${{ github.sha }}'
@@ -223,6 +232,15 @@ jobs:
           exit-code: '1'
           severity: 'CRITICAL'
           ignore-unfixed: true
+
+      - name: Scan Backend Image (HIGH - advisory only)
+        if: always()
+        uses: aquasecurity/trivy-action@0.35.0
+        with:
+          image-ref: 'eicr-backend:${{ github.sha }}'
+          format: 'table'
+          exit-code: '0'
+          severity: 'HIGH'
 
   # ============================================
   # Job 4: Deploy to Staging (develop branch)
