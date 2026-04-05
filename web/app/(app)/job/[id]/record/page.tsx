@@ -359,7 +359,11 @@ export default function RecordPage() {
     [state.transcript, state.highlights]
   );
 
-  const handleStart = useCallback(() => actions.startRecording(), [actions]);
+  const handleStart = useCallback(() => {
+    actions.startRecording().catch((err: unknown) => {
+      console.error('[RecordPage] startRecording failed:', err);
+    });
+  }, [actions]);
   const handleStop = useCallback(() => {
     if (window.confirm('End this recording session?')) {
       actions.stopRecording();

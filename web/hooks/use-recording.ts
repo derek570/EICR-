@@ -661,12 +661,12 @@ export function useRecording(
       setAudioSource(effectiveSource);
 
       try {
-        // Fetch API keys
-        const keys = await api.getAPIKeys();
+        // Fetch short-lived Deepgram streaming key via backend proxy
+        const deepgramKey = await api.fetchDeepgramStreamingKey();
 
-        // Configure Claude
+        // Configure Claude — uses /api/proxy/claude, no raw key needed
         const claudeService = new ClaudeService();
-        claudeService.configure(keys.anthropicKey);
+        claudeService.configure('proxy');
         claudeService.resetSessionTracking();
         claude.current = claudeService;
 
@@ -760,7 +760,7 @@ export function useRecording(
         // Create and connect Deepgram
         const dgService = new DeepgramService(dgDelegate);
         deepgram.current = dgService;
-        dgService.connect(keys.deepgramKey, keywords);
+        dgService.connect(deepgramKey, keywords);
 
         // Set up audio source
         if (effectiveSource === 'companion') {
