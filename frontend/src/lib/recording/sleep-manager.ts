@@ -13,11 +13,11 @@ export interface SleepManagerCallbacks {
 // --- Configuration: aligned with iOS SleepManager.swift ---
 
 /** Seconds of no FINAL_TRANSCRIPT before entering doze.
- *  10s gives inspectors time for brief pauses between readings while
- *  still catching idle sessions quickly. With reliable VAD wake,
- *  aggressive doze is safe because waking is fast and accurate.
- *  (iOS: noTranscriptTimeout = 10.0) */
-const NO_TRANSCRIPT_TIMEOUT = 10_000;
+ *  30s gives inspectors time to get settled after pressing Record.
+ *  The original 10s was too aggressive: after VAD init (2-8s) and
+ *  Deepgram connect (~1-2s), the effective window was very short.
+ *  (iOS: noTranscriptTimeout = 10.0 — mobile has faster init) */
+const NO_TRANSCRIPT_TIMEOUT = 30_000;
 
 /** Dozing → Sleeping timeout. 30 minutes matches iOS dozingTimeout.
  *  Sleeping disconnects Deepgram entirely; dozing just pauses the stream.
@@ -243,6 +243,19 @@ export class SleepManager {
   // --- State transitions ---
 
   private enterDozing(): void {
+    // Guard: if VAD failed to initialise, we cannot wake from dozing.
+    // Rather than entering a permanently stuck state, restart the silence timer
+    // and let the inspector keep recording without doze. Log a warning so we
+    // can diagnose VAD asset loading issues in production.
+    if (!this.micVAD) {
+      console.warn(
+        '[SleepManager] VAD not available — skipping doze to prevent permanent lock. ' +
+          'Check that /vad/ assets are deployed and loadable.'
+      );
+      this.startSilenceTimer();
+      return;
+    }
+
     this._state = 'dozing';
     this.resetVADWindow();
     // Start cooldown — skip VAD callbacks for the first ~2s after doze entry.

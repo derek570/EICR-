@@ -358,6 +358,11 @@ export function useRecording(jobId: string, userId: string, initialJob: JobDetai
   const startRecording = useCallback(async () => {
     if (isRecordingRef.current) return;
 
+    // Reset sleep state immediately on press — before any async work.
+    // This ensures the UI shows 'active' even during the 3-10s setup phase,
+    // not a stale 'dozing'/'sleeping' state from a previous session.
+    store.setSleepState('active');
+
     try {
       // 1. Fetch short-lived Deepgram streaming key (secure temp key, 600s TTL)
       const deepgramKey = await api.fetchDeepgramStreamingKey();
@@ -380,6 +385,15 @@ export function useRecording(jobId: string, userId: string, initialJob: JobDetai
       // 4. Create AudioContext
       const audioContext = new AudioContext({ sampleRate: 16000 });
       audioContextRef.current = audioContext;
+
+      // Resume AudioContext if suspended (iOS Safari autoplay policy).
+      // On mobile, AudioContext starts in 'suspended' state even from a user
+      // gesture if the gesture flows through an async chain. When suspended,
+      // the AudioWorklet never fires — no PCM reaches Deepgram, the 10s
+      // silence timer fires, and recording enters dozing immediately.
+      if (audioContext.state === 'suspended') {
+        await audioContext.resume();
+      }
 
       // 5. Create media stream source
       const source = audioContext.createMediaStreamSource(stream);
@@ -644,6 +658,9 @@ export function useRecording(jobId: string, userId: string, initialJob: JobDetai
 
     // 10. Update store
     store.setRecording(false);
+    // Reset sleep/vad state so next session starts clean, not in stale dozing/sleeping.
+    store.setSleepState('active');
+    store.setVadState('idle');
 
     // 11. Reset alert dedup
     alertManagerRef.current?.resetDedup();
