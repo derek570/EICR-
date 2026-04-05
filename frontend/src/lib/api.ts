@@ -294,12 +294,14 @@ export const api = {
   async createBlankJob(
     userId: string,
     certificateType: string
-  ): Promise<{ success: boolean; jobId: string }> {
+  ): Promise<{ jobId: string; id: string }> {
     const response = await fetchJsonWithAuth(`${API_BASE_URL}/api/jobs/${userId}`, {
       method: 'POST',
       body: JSON.stringify({ certificate_type: certificateType }),
     });
-    return handleResponse(response);
+    const data = await handleResponse(response);
+    // Backend returns { id: ... } — normalise to jobId for frontend consumers
+    return { ...data, jobId: data.jobId || data.id };
   },
 
   async deleteJob(userId: string, jobId: string): Promise<{ success: boolean }> {

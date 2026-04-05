@@ -1,6 +1,8 @@
 'use client';
 
+import { useCallback } from 'react';
 import { useParams } from 'next/navigation';
+import { toast } from 'sonner';
 import { useJob } from '../layout';
 import { useRecording } from '@/hooks/use-recording';
 import { useRecordingStore } from '@/lib/recording-store';
@@ -20,6 +22,14 @@ export default function RecordPage() {
 
   // Prefer the live job updated by Sonnet extraction; fall back to context job
   const displayJob = recording.job ?? job;
+
+  const handleStart = useCallback(async () => {
+    try {
+      await recording.startRecording();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to start recording');
+    }
+  }, [recording]);
 
   // Convert UserQuestion to AlertCard's expected shape
   const question = recording.currentQuestion
@@ -60,7 +70,7 @@ export default function RecordPage() {
         sleepState={recording.sleepState}
         vadState={recording.vadState}
         cost={recording.cost}
-        onStart={recording.startRecording}
+        onStart={handleStart}
         onStop={recording.stopRecording}
       />
     </div>

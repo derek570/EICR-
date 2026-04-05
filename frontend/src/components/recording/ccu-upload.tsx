@@ -77,7 +77,7 @@ export function CCUUpload({ onAnalysisComplete }: CCUUploadProps) {
         const scaled = await scaleImage(file);
 
         const formData = new FormData();
-        formData.append('image', scaled, 'ccu.jpg');
+        formData.append('photo', scaled, 'ccu.jpg');
 
         const token = localStorage.getItem('token');
         const res = await fetch(`${API_BASE_URL}/api/analyze-ccu`, {
