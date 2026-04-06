@@ -328,10 +328,7 @@ export class ServerWebSocketService {
           field: json.field as string,
           circuit: json.circuit as number | undefined,
           question: json.question as string,
-          type:
-            (json.questionType as UserQuestion['type']) ??
-            (json.type_detail as UserQuestion['type']) ??
-            'unclear',
+          type: (json.question_type as UserQuestion['type']) ?? 'unclear',
           value: json.value as string | undefined,
         };
         if (question.field && question.question) {

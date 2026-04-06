@@ -503,7 +503,8 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
       try {
         validateAndCorrectFields(result, sessionId);
         if (ws.readyState === ws.OPEN) {
-          const { questions_for_user, ...resultWithoutQuestions } = result;
+          const { questions_for_user, extracted_readings, ...rest } = result;
+          const resultWithoutQuestions = { readings: extracted_readings, ...rest };
           ws.send(JSON.stringify({ type: 'extraction', result: resultWithoutQuestions }));
           ws.send(JSON.stringify(session.costTracker.toCostUpdate()));
         }
@@ -599,8 +600,10 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
       });
 
       // Send extraction result (strip questions_for_user — they go through QuestionGate)
+      // Rename extracted_readings → readings to match the web client interface
       if (ws.readyState === ws.OPEN) {
-        const { questions_for_user, ...resultWithoutQuestions } = result;
+        const { questions_for_user, extracted_readings, ...rest } = result;
+        const resultWithoutQuestions = { readings: extracted_readings, ...rest };
         ws.send(JSON.stringify({ type: 'extraction', result: resultWithoutQuestions }));
 
         // Send cost update

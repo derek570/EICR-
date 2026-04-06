@@ -46,6 +46,11 @@ export class AudioCapture {
       });
 
       this.audioContext = new AudioContext({ sampleRate: 16000 });
+      // On iOS Safari and mobile Chrome, AudioContext starts suspended even from a user gesture
+      // when it flows through an async chain. Resume it explicitly so the AudioWorklet fires.
+      if (this.audioContext.state === 'suspended') {
+        await this.audioContext.resume();
+      }
       this.sourceNode = this.audioContext.createMediaStreamSource(this.stream);
 
       // If the browser gave us a different sample rate, we need to resample
@@ -121,13 +126,13 @@ export class AudioCapture {
       registerProcessor('pcm-processor', PCMProcessor);
     `;
 
-    const blob = new Blob([processorCode], { type: "application/javascript" });
+    const blob = new Blob([processorCode], { type: 'application/javascript' });
     const url = URL.createObjectURL(blob);
 
     await this.audioContext.audioWorklet.addModule(url);
     URL.revokeObjectURL(url);
 
-    this.workletNode = new AudioWorkletNode(this.audioContext, "pcm-processor");
+    this.workletNode = new AudioWorkletNode(this.audioContext, 'pcm-processor');
     this.workletNode.port.onmessage = (event: MessageEvent) => {
       if (!this._isCapturing) return;
       const int16 = new Int16Array(event.data);

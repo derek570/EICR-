@@ -76,9 +76,9 @@ export class DeepgramService {
     const url = this.buildURL(keywords);
 
     try {
-      // Deepgram WebSocket uses Authorization header via protocol trick
-      // Browser WebSocket API doesn't support custom headers, so we use the token in URL
-      this.ws = new WebSocket(url);
+      // Use subprotocol auth — Deepgram no longer accepts the token= query parameter.
+      // The subprotocol approach sends the key in the Sec-WebSocket-Protocol header.
+      this.ws = new WebSocket(url, ['token', apiKey]);
       this.ws.binaryType = 'arraybuffer';
 
       this.ws.onopen = () => {
@@ -198,11 +198,6 @@ export class DeepgramService {
     // Add keyterm params for Nova-3
     for (const [keyword] of keywords) {
       params.append('keyterm', keyword);
-    }
-
-    // Browser WebSocket doesn't support custom headers, so pass token in URL
-    if (this.currentApiKey) {
-      params.set('token', this.currentApiKey);
     }
 
     return `wss://api.deepgram.com/v1/listen?${params.toString()}`;

@@ -50,9 +50,12 @@ httpServer.on('upgrade', (request, socket, head) => {
       recordingWss.emit('connection', ws, request);
     });
   } else if (url.pathname === '/api/sonnet-stream') {
-    // Authenticate via Authorization header only (no query param tokens)
+    // Authenticate via Authorization header (iOS) or query param (browser — cannot set WS headers)
     const authHeader = request.headers.authorization || '';
-    const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
+    let token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
+    if (!token) {
+      token = url.searchParams.get('token') || '';
+    }
     if (!token) {
       socket.destroy();
       return;
