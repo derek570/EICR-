@@ -140,6 +140,11 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Set up QEMU (for ARM64 cross-build on x86 runner)
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -148,6 +153,7 @@ jobs:
         with:
           context: .
           file: docker/nextjs.Dockerfile
+          platforms: linux/arm64
           push: false
           load: true
           tags: eicr-frontend:${{ github.sha }}
@@ -162,6 +168,7 @@ jobs:
         with:
           context: .
           file: docker/backend.Dockerfile
+          platforms: linux/arm64
           push: false
           load: true
           tags: eicr-backend:${{ github.sha }}
@@ -180,6 +187,11 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Set up QEMU (for ARM64 cross-build on x86 runner)
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -188,6 +200,7 @@ jobs:
         with:
           context: .
           file: docker/nextjs.Dockerfile
+          platforms: linux/arm64
           push: false
           load: true
           tags: eicr-frontend:${{ github.sha }}
@@ -201,6 +214,7 @@ jobs:
         with:
           context: .
           file: docker/backend.Dockerfile
+          platforms: linux/arm64
           push: false
           load: true
           tags: eicr-backend:${{ github.sha }}
@@ -267,6 +281,11 @@ jobs:
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
+      - name: Set up QEMU (for ARM64 cross-build on x86 runner)
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -275,6 +294,7 @@ jobs:
         with:
           context: .
           file: docker/nextjs.Dockerfile
+          platforms: linux/arm64
           push: true
           tags: |
             ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY_FRONTEND }}:staging-${{ github.sha }}
@@ -291,6 +311,7 @@ jobs:
         with:
           context: .
           file: docker/backend.Dockerfile
+          platforms: linux/arm64
           push: true
           tags: |
             ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY_BACKEND }}:staging-${{ github.sha }}
@@ -357,6 +378,11 @@ jobs:
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
+      - name: Set up QEMU (for ARM64 cross-build on x86 runner)
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -365,6 +391,7 @@ jobs:
         with:
           context: .
           file: docker/nextjs.Dockerfile
+          platforms: linux/arm64
           push: true
           tags: |
             ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY_FRONTEND }}:${{ github.sha }}
@@ -380,6 +407,7 @@ jobs:
         with:
           context: .
           file: docker/backend.Dockerfile
+          platforms: linux/arm64
           push: true
           tags: |
             ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY_BACKEND }}:${{ github.sha }}
@@ -387,11 +415,32 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      - name: Register ARM64 Frontend Task Definition
+        id: register-frontend-taskdef
+        run: |
+          TASK_ARN=$(aws ecs register-task-definition \
+            --region ${{ env.AWS_REGION }} \
+            --cli-input-json file://ecs/task-def-frontend.json \
+            --query 'taskDefinition.taskDefinitionArn' \
+            --output text)
+          echo "task_arn=$TASK_ARN" >> "$GITHUB_OUTPUT"
+
+      - name: Register ARM64 Backend Task Definition
+        id: register-backend-taskdef
+        run: |
+          TASK_ARN=$(aws ecs register-task-definition \
+            --region ${{ env.AWS_REGION }} \
+            --cli-input-json file://ecs/task-def-backend.json \
+            --query 'taskDefinition.taskDefinitionArn' \
+            --output text)
+          echo "task_arn=$TASK_ARN" >> "$GITHUB_OUTPUT"
+
       - name: Update ECS Frontend Service
         run: |
           aws ecs update-service \
             --cluster ${{ env.ECS_CLUSTER }} \
             --service ${{ env.ECS_SERVICE_FRONTEND }} \
+            --task-definition ${{ steps.register-frontend-taskdef.outputs.task_arn }} \
             --force-new-deployment
 
       - name: Update ECS Backend Service
@@ -399,6 +448,7 @@ jobs:
           aws ecs update-service \
             --cluster ${{ env.ECS_CLUSTER }} \
             --service ${{ env.ECS_SERVICE_BACKEND }} \
+            --task-definition ${{ steps.register-backend-taskdef.outputs.task_arn }} \
             --force-new-deployment
 
       - name: Wait for Frontend deployment
