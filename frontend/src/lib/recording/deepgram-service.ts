@@ -81,14 +81,16 @@ export class DeepgramService {
     this.setConnectionState('connecting');
     this.log('CONNECTING', `keywords=${keywords.length}`);
 
-    const url = this.buildURL(apiKey, keywords);
+    const url = this.buildURL(keywords);
     if (!url) {
       this.setConnectionState('disconnected');
       this.callbacks.onError(new Error('Invalid Deepgram WebSocket URL'));
       return;
     }
 
-    const ws = new WebSocket(url);
+    // Use subprotocol auth — Deepgram no longer accepts the token= query parameter.
+    // The subprotocol approach sends the key in the Sec-WebSocket-Protocol header.
+    const ws = new WebSocket(url, ['token', apiKey]);
     ws.binaryType = 'arraybuffer';
 
     ws.onopen = () => {
@@ -419,10 +421,7 @@ export class DeepgramService {
   // URL Builder
   // ---------------------------------------------------------------------------
 
-  private buildURL(
-    apiKey: string,
-    keywords: Array<{ keyword: string; boost: number }>
-  ): string | null {
+  private buildURL(keywords: Array<{ keyword: string; boost: number }>): string | null {
     const params = new URLSearchParams();
     params.set('model', 'nova-3');
     params.set('smart_format', 'true');
@@ -435,9 +434,6 @@ export class DeepgramService {
     params.set('interim_results', 'true');
     params.set('endpointing', '300');
     params.set('utterance_end_ms', '1300');
-
-    // Browser WebSocket cannot set Authorization header — pass key as token param
-    params.set('token', apiKey);
 
     // Add keyterm params (Nova-3 uses "keyterm")
     for (const { keyword, boost } of keywords) {
