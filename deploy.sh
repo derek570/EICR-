@@ -34,10 +34,10 @@ echo "[1/4] Logging in to ECR..."
 aws ecr get-login-password --region "$REGION" | \
   docker login --username AWS --password-stdin "$ECR_REGISTRY"
 
-# 2. Build frontend (cross-platform for ECS x86)
-echo "[2/4] Building frontend image (linux/amd64)..."
+# 2. Build frontend (native ARM64 for Graviton ECS)
+echo "[2/4] Building frontend image (linux/arm64)..."
 docker build \
-  --platform linux/amd64 \
+  --platform linux/arm64 \
   --no-cache \
   -f "$SCRIPT_DIR/docker/nextjs.Dockerfile" \
   --build-arg APP_DIR=frontend \
@@ -53,9 +53,9 @@ docker push "$ECR_REGISTRY/$FRONTEND_REPO:local-$(git rev-parse --short HEAD)"
 
 # 4. Backend (optional)
 if $DEPLOY_BACKEND; then
-  echo "[3b/4] Building backend image (linux/amd64)..."
+  echo "[3b/4] Building backend image (linux/arm64)..."
   docker build \
-    --platform linux/amd64 \
+    --platform linux/arm64 \
     -f "$SCRIPT_DIR/docker/backend.Dockerfile" \
     -t "$ECR_REGISTRY/$BACKEND_REPO:latest" \
     -t "$ECR_REGISTRY/$BACKEND_REPO:local-$(git rev-parse --short HEAD)" \
@@ -66,21 +66,39 @@ if $DEPLOY_BACKEND; then
   docker push "$ECR_REGISTRY/$BACKEND_REPO:local-$(git rev-parse --short HEAD)"
 fi
 
-# 5. Force redeploy eicr-pwa (the actual live service)
-echo "[4/4] Force-redeploying $PWA_SERVICE..."
+# 5. Register ARM64 task definitions and redeploy services
+echo "[4/4] Registering ARM64 task definition for $PWA_SERVICE..."
+FRONTEND_TASK_ARN=$(aws ecs register-task-definition \
+  --region "$REGION" \
+  --cli-input-json "file://$SCRIPT_DIR/ecs/task-def-frontend.json" \
+  --query 'taskDefinition.taskDefinitionArn' \
+  --output text)
+echo "       Registered: $FRONTEND_TASK_ARN"
+
+echo "       Deploying $PWA_SERVICE with new ARM64 task def..."
 aws ecs update-service \
   --cluster "$CLUSTER" \
   --service "$PWA_SERVICE" \
+  --task-definition "$FRONTEND_TASK_ARN" \
   --force-new-deployment \
   --region "$REGION" \
   --query 'service.serviceName' \
   --output text
 
 if $DEPLOY_BACKEND; then
-  echo "       Force-redeploying $BACKEND_SERVICE..."
+  echo "       Registering ARM64 task definition for $BACKEND_SERVICE..."
+  BACKEND_TASK_ARN=$(aws ecs register-task-definition \
+    --region "$REGION" \
+    --cli-input-json "file://$SCRIPT_DIR/ecs/task-def-backend.json" \
+    --query 'taskDefinition.taskDefinitionArn' \
+    --output text)
+  echo "       Registered: $BACKEND_TASK_ARN"
+
+  echo "       Deploying $BACKEND_SERVICE with new ARM64 task def..."
   aws ecs update-service \
     --cluster "$CLUSTER" \
     --service "$BACKEND_SERVICE" \
+    --task-definition "$BACKEND_TASK_ARN" \
     --force-new-deployment \
     --region "$REGION" \
     --query 'service.serviceName' \

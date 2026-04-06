@@ -1,0 +1,50 @@
+{
+  "family": "eicr-backend",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "512",
+  "memory": "2048",
+  "taskRoleArn": "arn:aws:iam::196390795898:role/eicr-ecs-task-role",
+  "executionRoleArn": "arn:aws:iam::196390795898:role/eicr-ecs-execution-role",
+  "runtimePlatform": {
+    "cpuArchitecture": "ARM64",
+    "operatingSystemFamily": "LINUX"
+  },
+  "volumes": [],
+  "containerDefinitions": [
+    {
+      "name": "eicr-backend",
+      "image": "196390795898.dkr.ecr.eu-west-2.amazonaws.com/eicr-backend:latest",
+      "cpu": 0,
+      "essential": true,
+      "portMappings": [
+        {
+          "containerPort": 3000,
+          "hostPort": 3000,
+          "protocol": "tcp"
+        }
+      ],
+      "environment": [
+        { "name": "S3_BUCKET",       "value": "eicr-files-production" },
+        { "name": "DATABASE_TYPE",   "value": "postgresql" },
+        { "name": "AWS_REGION",      "value": "eu-west-2" },
+        { "name": "PORT",            "value": "3000" },
+        { "name": "USE_AWS_SECRETS", "value": "true" },
+        { "name": "NODE_ENV",        "value": "production" },
+        { "name": "STORAGE_TYPE",    "value": "s3" },
+        { "name": "REDIS_URL",       "value": "redis://eicr-redis-prod.k7wlgi.0001.euw2.cache.amazonaws.com:6379" }
+      ],
+      "mountPoints": [],
+      "volumesFrom": [],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/eicr/eicr-backend",
+          "awslogs-region": "eu-west-2",
+          "awslogs-stream-prefix": "ecs"
+        }
+      },
+      "systemControls": []
+    }
+  ]
+}
