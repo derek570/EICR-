@@ -66,7 +66,10 @@ export class AudioCapture {
 
       this._isCapturing = true;
     } catch (error) {
-      this.delegate.onError(error instanceof Error ? error : new Error(String(error)));
+      const err = error instanceof Error ? error : new Error(String(error));
+      this.delegate.onError(err);
+      // Re-throw so that `await ac.start()` rejects and callers don't enter recording state
+      throw err;
     }
   }
 

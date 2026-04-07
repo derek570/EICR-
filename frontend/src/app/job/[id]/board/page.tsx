@@ -77,7 +77,6 @@ export default function BoardPage() {
   const { job, updateJob } = useJob();
   const [activeBoardIndex, setActiveBoardIndex] = useState(0);
   const [showRemoveConfirm, setShowRemoveConfirm] = useState(false);
-  const [showCCUUpload, setShowCCUUpload] = useState(false);
 
   const handleCCUAnalysis = useCallback(
     (analysis: Record<string, unknown>) => {
@@ -378,26 +377,21 @@ export default function BoardPage() {
         </p>
       )}
 
-      {/* CCU Photo Analysis */}
+      {/* CCU Photo Analysis — always visible */}
       <Card>
         <CardHeader>
           <div className="flex items-center justify-between">
             <CardTitle className="text-base">Consumer Unit Photo Analysis</CardTitle>
-            <Button variant="outline" size="sm" onClick={() => setShowCCUUpload(!showCCUUpload)}>
-              <Camera className="h-4 w-4 mr-1" />
-              {showCCUUpload ? 'Hide' : 'Analyse Photo'}
-            </Button>
+            <Camera className="h-5 w-5 text-muted-foreground" />
           </div>
         </CardHeader>
-        {showCCUUpload && (
-          <CardContent>
-            <p className="text-sm text-muted-foreground mb-3">
-              Upload a photo of the consumer unit label to automatically extract circuit data, board
-              info, and supply details.
-            </p>
-            <CCUUpload onAnalysisComplete={handleCCUAnalysis} />
-          </CardContent>
-        )}
+        <CardContent>
+          <p className="text-sm text-muted-foreground mb-3">
+            Upload a photo of the consumer unit label to automatically extract circuit data, board
+            info, and supply details.
+          </p>
+          <CCUUpload onAnalysisComplete={handleCCUAnalysis} />
+        </CardContent>
       </Card>
     </div>
   );

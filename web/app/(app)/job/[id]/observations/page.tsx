@@ -7,7 +7,7 @@ import { Plus } from 'lucide-react';
 import type { Observation } from '@/lib/types';
 
 export default function ObservationsPage() {
-  const { job, updateJob } = useJobContext();
+  const { job, updateJob, user } = useJobContext();
 
   const handleObservationChange = (index: number, observation: Observation) => {
     const updated = [...job.observations];
@@ -88,6 +88,8 @@ export default function ObservationsPage() {
               index={index}
               onChange={handleObservationChange}
               onDelete={handleDelete}
+              userId={user?.id ?? ''}
+              jobId={job.id}
             />
           ))}
         </div>

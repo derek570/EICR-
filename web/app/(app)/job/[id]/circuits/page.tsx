@@ -4,7 +4,8 @@ import { useState, useCallback, useEffect, useRef } from 'react';
 import { useJobContext } from '../layout';
 import { CircuitTable } from '@/components/circuits/circuit-table';
 import { Button } from '@/components/ui/button';
-import { Plus, Trash2, Wand2, Loader2 } from 'lucide-react';
+import Link from 'next/link';
+import { Plus, Trash2, Wand2, Loader2, Camera } from 'lucide-react';
 import type { Circuit, Board, JobDetail, UserDefaults } from '@/lib/types';
 import { api } from '@/lib/api-client';
 import { applyDefaultsToCircuit, applyDefaultsToCircuits } from '@/lib/apply-defaults';
@@ -141,6 +142,12 @@ export default function CircuitsPage() {
             : `Circuit Schedule (${activeCircuits.length} circuits)`}
         </h2>
         <div className="flex gap-2 flex-wrap">
+          <Button variant="outline" size="sm" asChild>
+            <Link href={`/job/${job.id}/board`}>
+              <Camera className="h-4 w-4 mr-1" />
+              CCU Photo
+            </Link>
+          </Button>
           <Button variant="outline" size="sm" onClick={applyDefaults} disabled={applying}>
             {applying ? (
               <Loader2 className="h-4 w-4 mr-1 animate-spin" />

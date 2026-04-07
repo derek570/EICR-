@@ -574,8 +574,9 @@ export function useRecording(jobId: string, userId: string, initialJob: JobDetai
       // 18. session_start is now sent from onConnect callback (above)
 
       // 19. Wire AudioWorklet output → Deepgram + SleepManager
+      // The AudioWorklet posts { samples: Float32Array } — destructure correctly.
       workletNode.port.onmessage = (event: MessageEvent) => {
-        const samples = event.data as Float32Array;
+        const samples = (event.data as { samples: Float32Array }).samples;
         if (!samples || samples.length === 0) return;
 
         deepgramRef.current?.sendSamples(samples);

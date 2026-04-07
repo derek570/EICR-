@@ -664,9 +664,10 @@ export function useRecording(
         // Fetch short-lived Deepgram streaming key via backend proxy
         const deepgramKey = await api.fetchDeepgramStreamingKey();
 
-        // Configure Claude — uses /api/proxy/claude, no raw key needed
+        // Configure Claude — routes through /api/proxy/claude on the Express backend.
+        // No client-side Anthropic key needed; configureForProxy() sets the ready flag.
         const claudeService = new ClaudeService();
-        claudeService.configure('proxy');
+        claudeService.configureForProxy();
         claudeService.resetSessionTracking();
         claude.current = claudeService;
 
@@ -818,14 +819,18 @@ export function useRecording(
   // ---- Stop Recording ----
 
   const stopRecording = useCallback(() => {
-    isRecordingRef.current = false;
-    setIsRecording(false);
-
-    // Clear timers
+    // Flush any pending Sonnet debounce before stopping — fire immediately so the
+    // last few seconds of speech get Sonnet extraction instead of being dropped.
     if (sonnetDebounceTimer.current) {
       clearTimeout(sonnetDebounceTimer.current);
       sonnetDebounceTimer.current = null;
+      void triggerSonnetExtraction();
     }
+
+    isRecordingRef.current = false;
+    setIsRecording(false);
+
+    // Clear remaining timers
     if (keepAliveTimer.current) {
       clearInterval(keepAliveTimer.current);
       keepAliveTimer.current = null;
@@ -885,7 +890,7 @@ export function useRecording(
     setConnectionState('disconnected');
     setIsSpeaking(false);
     setInterimTranscript('');
-  }, [disconnectCompanionSocket]);
+  }, [disconnectCompanionSocket, triggerSonnetExtraction]);
 
   // ---- Cleanup on unmount ----
 

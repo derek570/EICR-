@@ -75,8 +75,9 @@ export class ClaudeServiceError extends Error {
 
 export class ClaudeService {
   // Configuration
-  // Route through backend proxy to avoid CORS and protect API key
-  private static readonly ENDPOINT = '/api/proxy/claude';
+  // Route through backend proxy to avoid CORS and protect API key.
+  // Must be absolute so it resolves to the Express backend, not the Next.js server.
+  private static readonly ENDPOINT = `${process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3000'}/api/proxy/claude`;
   private static readonly MODEL = 'claude-sonnet-4-6';
   private static readonly ANTHROPIC_VERSION = '2023-06-01';
   private static readonly MAX_RETRIES = 3;
@@ -105,6 +106,14 @@ export class ClaudeService {
 
   configure(apiKey: string): void {
     this.apiKey = apiKey;
+  }
+
+  /**
+   * Mark this service as ready to use the backend proxy at ENDPOINT.
+   * No client-side API key is needed — the Express proxy holds the Anthropic key.
+   */
+  configureForProxy(): void {
+    this.apiKey = '__proxy__';
   }
 
   resetSessionTracking(): void {

@@ -16,6 +16,7 @@ import {
   Settings2,
   Ruler,
   PenTool,
+  Image,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { CertificateType } from '@/lib/types';
@@ -34,6 +35,7 @@ const eicrTabs: TabItem[] = [
   { name: 'Board', href: '/board', icon: CircuitBoard },
   { name: 'Circuits', href: '/circuits', icon: List },
   { name: 'Observations', href: '/observations', icon: AlertTriangle },
+  { name: 'Photos', href: '/photos', icon: Image },
   { name: 'Inspection', href: '/inspection', icon: ClipboardCheck },
   { name: 'Defaults', href: '/defaults', icon: Settings2 },
   { name: 'Inspector', href: '/inspector', icon: UserCheck },
@@ -48,6 +50,7 @@ const eicTabs: TabItem[] = [
   { name: 'Supply', href: '/supply', icon: Zap },
   { name: 'Board', href: '/board', icon: CircuitBoard },
   { name: 'Circuits', href: '/circuits', icon: List },
+  { name: 'Photos', href: '/photos', icon: Image },
   { name: 'Inspection', href: '/eic-inspection', icon: ClipboardCheck },
   { name: 'Design', href: '/design', icon: PenTool },
   { name: 'Defaults', href: '/defaults', icon: Settings2 },
