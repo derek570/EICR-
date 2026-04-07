@@ -9618,6 +9618,7 @@ Silero VAD v3's LSTM state can get stuck at probability ~1.0 during silence. Wor
 
 
 
+
 ## WhatsApp Context
 > Auto-synced from WhatsApp assistant memories on 2026-04-07. Do not edit manually.
 
