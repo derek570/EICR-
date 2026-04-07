@@ -93,7 +93,7 @@ export class SleepManager {
    * Uses dynamic import to avoid SSR issues with WASM/ONNX.
    * Configured with 0.80 threshold matching iOS vadWakeThreshold.
    */
-  async initVAD(): Promise<void> {
+  async initVAD(stream?: MediaStream): Promise<void> {
     if (this.micVAD || this.vadInitializing) return;
     this.vadInitializing = true;
 
@@ -108,6 +108,10 @@ export class SleepManager {
         startOnLoad: false,
         // Match iOS vadWakeThreshold = 0.80 (default was 0.50)
         positiveSpeechThreshold: VAD_WAKE_THRESHOLD,
+        // Reuse the existing mic stream to avoid a second concurrent getUserMedia.
+        // Mobile browsers (Safari, Chrome Android) can fail silently on a second
+        // concurrent stream, permanently preventing VAD callbacks from firing.
+        ...(stream ? { stream } : {}),
 
         onSpeechStart: () => {
           this.setVadState('speaking');

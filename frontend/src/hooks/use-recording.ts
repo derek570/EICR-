@@ -182,6 +182,7 @@ export function useRecording(jobId: string, userId: string, initialJob: JobDetai
   // --- Refs for service instances ---
   const audioContextRef = useRef<AudioContext | null>(null);
   const workletNodeRef = useRef<AudioWorkletNode | null>(null);
+  const scriptNodeRef = useRef<ScriptProcessorNode | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const deepgramRef = useRef<DeepgramService | null>(null);
   const serverWSRef = useRef<ServerWebSocketService | null>(null);
@@ -374,8 +375,8 @@ export function useRecording(jobId: string, userId: string, initialJob: JobDetai
       // 3. Get mic access
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
-          sampleRate: 16000,
-          channelCount: 1,
+          sampleRate: { ideal: 16000 },
+          channelCount: { ideal: 1 },
           echoCancellation: true,
           noiseSuppression: true,
         },
@@ -385,6 +386,14 @@ export function useRecording(jobId: string, userId: string, initialJob: JobDetai
       // 4. Create AudioContext
       const audioContext = new AudioContext({ sampleRate: 16000 });
       audioContextRef.current = audioContext;
+      const actualSampleRate = audioContext.sampleRate;
+      if (actualSampleRate !== 16000) {
+        console.warn(
+          `[useRecording] AudioContext sample rate is ${actualSampleRate}Hz (not 16kHz) — will resample`
+        );
+      } else {
+        console.log(`[useRecording] AudioContext sample rate: ${actualSampleRate}Hz`);
+      }
 
       // Resume AudioContext if suspended (iOS Safari autoplay policy).
       // On mobile, AudioContext starts in 'suspended' state even from a user
@@ -415,6 +424,7 @@ export function useRecording(jobId: string, userId: string, initialJob: JobDetai
         // ScriptProcessorNode fallback — onaudioprocess only fires when connected to destination.
         // eslint-disable-next-line deprecation/deprecation
         scriptNode = audioContext.createScriptProcessor(4096, 1, 1);
+        scriptNodeRef.current = scriptNode;
         source.connect(scriptNode);
         scriptNode.connect(audioContext.destination);
       }
@@ -563,8 +573,10 @@ export function useRecording(jobId: string, userId: string, initialJob: JobDetai
       });
       sleepManagerRef.current = sleepManager;
 
-      // 14b. Initialize Silero VAD (async — runs its own mic stream)
-      await sleepManager.initVAD();
+      // 14b. Initialize Silero VAD — pass existing stream to avoid dual concurrent getUserMedia.
+      // MicVAD.new() opens its own stream if none is provided, which can fail silently on
+      // mobile browsers (Safari/Chrome Android), permanently preventing wake-from-doze.
+      await sleepManager.initVAD(stream);
 
       // 15. Generate keyword boosts from job data
       const job = jobRef.current;
@@ -575,8 +587,8 @@ export function useRecording(jobId: string, userId: string, initialJob: JobDetai
       }));
       keywordsRef.current = boostTuples;
 
-      // 16. Connect Deepgram
-      deepgram.connect(deepgramKey, keywords);
+      // 16. Connect Deepgram — pass actual AudioContext sample rate for resampling
+      deepgram.connect(deepgramKey, keywords, actualSampleRate);
 
       // 17. Connect Server WS
       const token = typeof window !== 'undefined' ? (localStorage.getItem('token') ?? '') : '';
@@ -671,6 +683,13 @@ export function useRecording(jobId: string, userId: string, initialJob: JobDetai
       workletNodeRef.current.port.onmessage = null;
       workletNodeRef.current.disconnect();
       workletNodeRef.current = null;
+    }
+
+    // 8b. Disconnect ScriptProcessor fallback
+    if (scriptNodeRef.current) {
+      scriptNodeRef.current.onaudioprocess = null;
+      scriptNodeRef.current.disconnect();
+      scriptNodeRef.current = null;
     }
 
     // 9. Close AudioContext

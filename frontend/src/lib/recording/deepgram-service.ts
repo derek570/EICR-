@@ -35,6 +35,10 @@ export class DeepgramService {
   private _connectionState: DeepgramConnectionState = 'disconnected';
   private isStreamingPaused = false;
   private keepAliveIntervalId: ReturnType<typeof setInterval> | null = null;
+  private activeKeepAliveId: ReturnType<typeof setInterval> | null = null;
+
+  // Sample rate for resampling (mobile browsers often ignore AudioContext({sampleRate:16000}))
+  private actualSampleRate = 16000;
 
   // Reconnection
   private shouldReconnect = false;
@@ -66,7 +70,13 @@ export class DeepgramService {
   // Connect
   // ---------------------------------------------------------------------------
 
-  connect(apiKey: string, keywords: Array<{ keyword: string; boost: number }> = []): void {
+  connect(
+    apiKey: string,
+    keywords: Array<{ keyword: string; boost: number }> = [],
+    sampleRate = 16000
+  ): void {
+    this.actualSampleRate = sampleRate;
+    this.log('SAMPLE_RATE', `AudioContext rate=${sampleRate}Hz`);
     // Cancel any pending reconnect
     this.clearReconnectTimer();
 
@@ -97,6 +107,7 @@ export class DeepgramService {
       this.log('WS_OPEN', '');
       this.setConnectionState('connected');
       this.reconnectAttempt = 0;
+      this.startActiveKeepAlive();
     };
 
     ws.onmessage = (event: MessageEvent) => {
@@ -174,6 +185,7 @@ export class DeepgramService {
       }
       this.isStreamingPaused = false;
       this.stopKeepAliveWhilePaused();
+      this.stopActiveKeepAlive();
       this.setConnectionState('disconnected');
     }, 500);
   }
@@ -187,6 +199,7 @@ export class DeepgramService {
 
     this.isStreamingPaused = false;
     this.stopKeepAliveWhilePaused();
+    this.stopActiveKeepAlive();
 
     if (this.ws) {
       // Null out handlers before closing
@@ -209,14 +222,36 @@ export class DeepgramService {
   // Send Audio
   // ---------------------------------------------------------------------------
 
+  // Resample Float32 audio from any sample rate to 16kHz using linear interpolation.
+  // Needed because mobile browsers often ignore AudioContext({sampleRate:16000}) and
+  // deliver audio at 44100Hz or 48000Hz. Sending wrong-rate audio to Deepgram (which
+  // has sample_rate=16000 in the URL) produces garbled/empty transcripts.
+  private resampleTo16k(samples: Float32Array): Float32Array {
+    if (this.actualSampleRate === 16000) return samples;
+    const ratio = this.actualSampleRate / 16000;
+    const outputLength = Math.floor(samples.length / ratio);
+    const output = new Float32Array(outputLength);
+    for (let i = 0; i < outputLength; i++) {
+      const srcIdx = i * ratio;
+      const lo = Math.floor(srcIdx);
+      const hi = Math.min(lo + 1, samples.length - 1);
+      const frac = srcIdx - lo;
+      output[i] = samples[lo] * (1 - frac) + samples[hi] * frac;
+    }
+    return output;
+  }
+
   sendSamples(samples: Float32Array): void {
     if (!this.ws || this._connectionState !== 'connected') return;
     if (this.isStreamingPaused) return;
 
+    // Resample to 16kHz if mobile AudioContext gave a different rate
+    const resampled = this.resampleTo16k(samples);
+
     // Convert Float32 -> Int16 PCM
-    const int16 = new Int16Array(samples.length);
-    for (let i = 0; i < samples.length; i++) {
-      const clamped = Math.max(-1, Math.min(1, samples[i]));
+    const int16 = new Int16Array(resampled.length);
+    for (let i = 0; i < resampled.length; i++) {
+      const clamped = Math.max(-1, Math.min(1, resampled[i]));
       int16[i] = Math.round(clamped * 32767);
     }
 
@@ -288,6 +323,53 @@ export class DeepgramService {
     if (this.keepAliveIntervalId !== null) {
       clearInterval(this.keepAliveIntervalId);
       this.keepAliveIntervalId = null;
+    }
+  }
+
+  // Active keepAlive — sends both KeepAlive JSON and 500ms of silent PCM every 10s
+  // when no audio has been sent recently. Mirrors iOS DeepgramService behaviour:
+  // "KeepAlive JSON alone is unreliable (~20s timeout observed). Binary audio data
+  // uses Deepgram's audio liveness path which is more reliable."
+  private startActiveKeepAlive(): void {
+    this.stopActiveKeepAlive();
+    this.activeKeepAliveId = setInterval(() => {
+      if (this._connectionState !== 'connected' || !this.ws) {
+        this.stopActiveKeepAlive();
+        return;
+      }
+      // Only fire if no audio sent in last 8s (avoids redundant sends during speech)
+      const timeSinceAudio = this.lastAudioSendTime
+        ? performance.now() - this.lastAudioSendTime
+        : Infinity;
+      if (timeSinceAudio < 8000) return;
+
+      // 1. Send JSON KeepAlive
+      try {
+        this.ws.send(JSON.stringify({ type: 'KeepAlive' }));
+      } catch {
+        /* ignore */
+      }
+
+      // 2. Send 500ms of silent PCM (8000 samples at 16kHz = 16000 bytes as Int16)
+      // Deepgram's audio liveness path is more reliable than JSON-only keepalive.
+      const silentPCM = new Int16Array(8000); // 500ms at 16kHz
+      try {
+        this.ws.send(silentPCM.buffer);
+      } catch {
+        /* ignore */
+      }
+
+      this.log(
+        'ACTIVE_KEEPALIVE',
+        `sent KeepAlive+silence (${Math.round(timeSinceAudio / 1000)}s idle)`
+      );
+    }, 10000);
+  }
+
+  private stopActiveKeepAlive(): void {
+    if (this.activeKeepAliveId !== null) {
+      clearInterval(this.activeKeepAliveId);
+      this.activeKeepAliveId = null;
     }
   }
 
@@ -433,7 +515,8 @@ export class DeepgramService {
     params.set('language', 'en-GB');
     params.set('interim_results', 'true');
     params.set('endpointing', '300');
-    params.set('utterance_end_ms', '1300');
+    params.set('utterance_end_ms', '2000'); // Match iOS (was 1300 — caused premature endings)
+    params.set('vad_events', 'true'); // Receive SpeechStarted events (matches iOS)
 
     // Add keyterm params (Nova-3 uses "keyterm")
     for (const { keyword, boost } of keywords) {
@@ -473,6 +556,7 @@ export class DeepgramService {
     this.shouldReconnect = false;
     this.clearReconnectTimer();
     this.stopKeepAliveWhilePaused();
+    this.stopActiveKeepAlive();
 
     if (this.disconnectTimerId !== null) {
       clearTimeout(this.disconnectTimerId);
