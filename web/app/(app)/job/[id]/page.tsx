@@ -2,7 +2,8 @@
 
 import { useJobContext } from './layout';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { CircuitBoard, AlertTriangle } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { CircuitBoard, AlertTriangle, Mic, Camera, FileText } from 'lucide-react';
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
 
@@ -51,6 +52,28 @@ export default function JobOverviewPage() {
           </div>
         </CardContent>
       </Card>
+
+      {/* Quick Actions */}
+      <div className="flex flex-wrap gap-3">
+        <Link href={`/job/${jobId}/record`}>
+          <Button variant="default" size="sm" className="gap-2">
+            <Mic className="h-4 w-4" />
+            Record
+          </Button>
+        </Link>
+        <Link href={`/job/${jobId}/board`}>
+          <Button variant="outline" size="sm" className="gap-2">
+            <Camera className="h-4 w-4" />
+            CCU Photo
+          </Button>
+        </Link>
+        <Link href={`/job/${jobId}/board`}>
+          <Button variant="outline" size="sm" className="gap-2">
+            <FileText className="h-4 w-4" />
+            Document Extraction
+          </Button>
+        </Link>
+      </div>
 
       <div className="grid grid-cols-2 gap-4">
         <Link href={`/job/${jobId}/circuits`}>

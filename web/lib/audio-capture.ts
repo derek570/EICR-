@@ -181,7 +181,10 @@ export class AudioCapture {
     };
 
     this.sourceNode.connect(this.scriptNode);
-    // Do NOT connect to destination — that would play captured audio through speakers (echo)
+    // ScriptProcessorNode.onaudioprocess only fires when connected to the audio graph
+    // destination. Without this connection, the callback never fires and no audio is captured.
+    // The scriptNode produces silence output, so no echo is audible.
+    this.scriptNode.connect(this.audioContext!.destination);
   }
 
   private resample(samples: Int16Array, fromRate: number, toRate: number): Int16Array {

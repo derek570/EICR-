@@ -398,15 +398,26 @@ export function useRecording(jobId: string, userId: string, initialJob: JobDetai
       // 5. Create media stream source
       const source = audioContext.createMediaStreamSource(stream);
 
-      // 6. Load AudioWorklet processor
-      await audioContext.audioWorklet.addModule('/audio-worklet-processor.js');
+      // 6-8. Set up audio capture — try AudioWorklet first, fall back to ScriptProcessor
+      let workletNode: AudioWorkletNode | null = null;
+      let scriptNode: ScriptProcessorNode | null = null;
 
-      // 7. Create AudioWorkletNode
-      const workletNode = new AudioWorkletNode(audioContext, 'pcm-capture-processor');
-      workletNodeRef.current = workletNode;
-
-      // 8. Connect audio graph (NO destination — we don't play back audio)
-      source.connect(workletNode);
+      try {
+        await audioContext.audioWorklet.addModule('/audio-worklet-processor.js');
+        workletNode = new AudioWorkletNode(audioContext, 'pcm-capture-processor');
+        workletNodeRef.current = workletNode;
+        source.connect(workletNode);
+      } catch (workletErr) {
+        console.warn(
+          '[useRecording] AudioWorklet failed, using ScriptProcessor fallback:',
+          workletErr
+        );
+        // ScriptProcessorNode fallback — onaudioprocess only fires when connected to destination.
+        // eslint-disable-next-line deprecation/deprecation
+        scriptNode = audioContext.createScriptProcessor(4096, 1, 1);
+        source.connect(scriptNode);
+        scriptNode.connect(audioContext.destination);
+      }
 
       // 10. Generate session ID
       const sessionId = crypto.randomUUID();
@@ -573,15 +584,26 @@ export function useRecording(jobId: string, userId: string, initialJob: JobDetai
 
       // 18. session_start is now sent from onConnect callback (above)
 
-      // 19. Wire AudioWorklet output → Deepgram + SleepManager
-      // The AudioWorklet posts { samples: Float32Array } — destructure correctly.
-      workletNode.port.onmessage = (event: MessageEvent) => {
-        const samples = (event.data as { samples: Float32Array }).samples;
-        if (!samples || samples.length === 0) return;
+      // 19. Wire audio output → Deepgram + SleepManager
+      if (workletNode) {
+        // AudioWorklet posts { samples: Float32Array } — destructure correctly.
+        workletNode.port.onmessage = (event: MessageEvent) => {
+          const samples = (event.data as { samples: Float32Array }).samples;
+          if (!samples || samples.length === 0) return;
 
-        deepgramRef.current?.sendSamples(samples);
-        sleepManagerRef.current?.processChunk(samples);
-      };
+          deepgramRef.current?.sendSamples(samples);
+          sleepManagerRef.current?.processChunk(samples);
+        };
+      } else if (scriptNode) {
+        // ScriptProcessor fallback — convert Float32 to the same format
+        scriptNode.onaudioprocess = (event: AudioProcessingEvent) => {
+          const samples = new Float32Array(event.inputBuffer.getChannelData(0));
+          if (!samples || samples.length === 0) return;
+
+          deepgramRef.current?.sendSamples(samples);
+          sleepManagerRef.current?.processChunk(samples);
+        };
+      }
 
       // 20. Start sleep manager
       sleepManager.start();
