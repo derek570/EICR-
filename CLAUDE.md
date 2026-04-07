@@ -9615,6 +9615,7 @@ Silero VAD v3's LSTM state can get stuck at probability ~1.0 during silence. Wor
 
 
 
+
 ## WhatsApp Context
 > Auto-synced from WhatsApp assistant memories on 2026-04-07. Do not edit manually.
 
@@ -11219,6 +11220,105 @@ If the user hasn't converted after the 3-email sequence:
 
 
 *All copy production-ready as of 25 March 2026. Based on finalised 4-tier pricing (Free £0 / Starter £15 / Pro £30 / Company £60) with psychological anchoring from anchoring-strategy.md, ROI calculations from roi-calculator-messaging.md, competitor positioning from price-validation.md, and strategic framework from pricing-strategy.md.*
+
+### marketing-video-plan
+
+# CertMate Marketing Video Plan
+
+## Concept
+Simple, cinematic screen recordings of CertMate in action. Not raw recordings — animated with smooth zooms in/out on key UI elements as they populate in real-time.
+
+## Script (Voiceover)
+
+> Do you hate filling out electrical certificates?
+> No matter what a new app promises, do you still spend ages filling them out?
+>
+> Imagine an app which listens to you testing and fills the certificate out as you go along.
+> As you say the values, they magically appear in the form.
+>
+> Imagine speaking an observation as you find it — and the app writing it out professionally, putting it into the schedule with the regulation it thinks suits best.
+>
+> Imagine as soon as you finish testing, the certificate is ready — and you can send it to your customer before you've even left site.
+>
+> Imagine how much that would save, and how few people would be chasing you for certificates.
+>
+> Imagine taking a photo before and after a fuse board change — and the app effortlessly keeps the results but updates the new hardware.
+>
+> Imagine no more. CertMate has your back. You test, he listens.
+>
+> CertMate.
+
+## Visual Storyboard
+
+| Timestamp | Visual | Camera Move |
+|-----------|--------|-------------|
+| 0-5s | App opens, empty certificate form | Wide shot of full UI |
+| 5-12s | User starts speaking test values | Smooth zoom INTO transcript area as words appear |
+| 12-18s | Values populate in the form fields | Pan from transcript → zoom into form fields filling in |
+| 18-25s | User speaks an observation | Zoom into observation text appearing, professionally formatted |
+| 25-30s | Observation lands in schedule with regulation code | Pan to schedule view, zoom into reg code auto-selected |
+| 30-35s | Photo taken of old fuse board | Zoom into camera view / photo capture |
+| 35-40s | New board photo → results kept, hardware updated | Split/pan showing before→after, form fields updating |
+| 40-45s | Certificate complete screen | Zoom out to show full completed certificate |
+| 45-50s | Send to customer button pressed | Zoom into send button → confirmation animation |
+| 50-55s | CertMate logo + tagline | Fade/zoom to logo: "You test, he listens." |
+
+## Style
+- Cinematic zoom/pan (Ken Burns style) — not jump cuts
+- Smooth easing on all camera moves
+- Dark UI of the app should look premium
+- Voiceover: cinematic British accent via ElevenLabs — authoritative, warm, professional tone
+- Voiceover timed to match UI actions
+- Subtle background music (optional)
+
+## Technical Approach
+
+### Tools Already Available
+- **FFmpeg 8.1** — installed, handles zoompan effects, text overlays, transitions, audio mixing
+- **ElevenLabs MCP** — AI voiceover generation (already in mcp.json)
+- **HeyGen MCP** — AI avatar video (already in mcp.json, optional for talking-head intro)
+- **Nano Banana 2** — image generation for visual assets
+
+### Recommended New MCP: mcp-video
+Best all-in-one option — 82 tools wrapping FFmpeg + Remotion:
+```bash
+pip install mcp-video
+```
+MCP config:
+```json
+"mcp-video": {
+  "command": "uvx",
+  "args": ["mcp-video"]
+}
+```
+
+Gives us:
+- Ken Burns zoom/pan effects on screen recordings
+- Text overlays and transitions (xfade)
+- Clip trimming and merging
+- Audio track layering (voiceover + music)
+- Remotion for any programmatic animation segments
+
+### Pipeline
+1. **Screen record** CertMate in action (macOS screen recording or Simulator)
+2. **ElevenLabs** → generate voiceover from script
+3. **mcp-video / FFmpeg** → apply Ken Burns zoom/pan effects timed to script
+4. **mcp-video / FFmpeg** → add transitions between segments
+5. **mcp-video / FFmpeg** → layer voiceover audio onto video
+6. **Optional**: HeyGen for talking-head intro/outro
+7. **Final render** → MP4 optimised for App Store / social media
+
+### Alternative Options
+- **Remotion MCP App** — full React-based programmatic video (most control but more work)
+- **Invideo MCP** — AI video from text prompt (less control but very fast)
+- **Pure FFmpeg** — no new installs, just scripted zoompan commands (simplest)
+
+## Next Steps
+1. Install mcp-video MCP
+2. Record raw screen captures of CertMate doing a full test session
+3. Generate voiceover with ElevenLabs
+4. Apply cinematic zoom effects timed to voiceover
+5. Render final video
 
 ### price-validation
 
