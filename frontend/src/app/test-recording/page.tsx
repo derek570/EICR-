@@ -6,8 +6,20 @@ const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000';
 
 interface LogEntry {
   time: string;
-  type: 'info' | 'error' | 'ws' | 'transcript';
+  type: 'info' | 'error' | 'ws' | 'transcript' | 'sonnet' | 'extraction' | 'question';
   message: string;
+}
+
+interface ExtractedReading {
+  field: string;
+  value: string;
+  circuit?: number;
+}
+
+interface Observation {
+  code: string;
+  text: string;
+  location?: string;
 }
 
 function timestamp(): string {
@@ -20,17 +32,25 @@ export default function TestRecordingPage() {
   const [sampleRate, setSampleRate] = useState<number | null>(null);
   const [apiKey, setApiKey] = useState<string | null>(null);
   const [wsStatus, setWsStatus] = useState<string>('Disconnected');
+  const [sonnetStatus, setSonnetStatus] = useState<string>('Disconnected');
   const [audioLevel, setAudioLevel] = useState<number>(0);
   const [transcript, setTranscript] = useState<string>('');
   const [isRunning, setIsRunning] = useState(false);
+  const [enableSonnet, setEnableSonnet] = useState(false);
+  const [readings, setReadings] = useState<ExtractedReading[]>([]);
+  const [observations, setObservations] = useState<Observation[]>([]);
+  const [sonnetCost, setSonnetCost] = useState<number | null>(null);
+  const [sonnetTurns, setSonnetTurns] = useState<number>(0);
 
   const wsRef = useRef<WebSocket | null>(null);
+  const sonnetWsRef = useRef<WebSocket | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const processorRef = useRef<ScriptProcessorNode | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
   const animFrameRef = useRef<number>(0);
   const logsEndRef = useRef<HTMLDivElement | null>(null);
+  const sessionIdRef = useRef<string>('');
 
   const addLog = useCallback((type: LogEntry['type'], message: string) => {
     setLogs((prev) => [...prev, { time: timestamp(), type, message }]);
@@ -57,6 +77,23 @@ export default function TestRecordingPage() {
     return int16;
   }
 
+  const disconnectSonnet = useCallback(() => {
+    if (sonnetWsRef.current) {
+      try {
+        sonnetWsRef.current.send(JSON.stringify({ type: 'session_stop' }));
+      } catch {
+        /* ignore */
+      }
+      sonnetWsRef.current.onopen = null;
+      sonnetWsRef.current.onmessage = null;
+      sonnetWsRef.current.onclose = null;
+      sonnetWsRef.current.onerror = null;
+      sonnetWsRef.current.close(1000);
+      sonnetWsRef.current = null;
+    }
+    setSonnetStatus('Disconnected');
+  }, []);
+
   const cleanup = useCallback(() => {
     cancelAnimationFrame(animFrameRef.current);
     if (wsRef.current) {
@@ -68,6 +105,7 @@ export default function TestRecordingPage() {
       wsRef.current.close(1000);
       wsRef.current = null;
     }
+    disconnectSonnet();
     processorRef.current?.disconnect();
     analyserRef.current?.disconnect();
     if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
@@ -81,10 +119,152 @@ export default function TestRecordingPage() {
     setWsStatus('Disconnected');
     setAudioLevel(0);
     setIsRunning(false);
-  }, []);
+  }, [disconnectSonnet]);
 
   // Cleanup on unmount
   useEffect(() => cleanup, [cleanup]);
+
+  // Connect to Sonnet extraction server WebSocket
+  const connectSonnet = useCallback(
+    (token: string) => {
+      const wsProto = API_BASE_URL.replace(/^http/, 'ws');
+      const sonnetUrl = `${wsProto}/api/sonnet-stream?token=${token}`;
+
+      addLog('sonnet', `Connecting to Sonnet: ${sonnetUrl.slice(0, 60)}...`);
+      setSonnetStatus('Connecting...');
+
+      const ws = new WebSocket(sonnetUrl);
+      sonnetWsRef.current = ws;
+
+      ws.onopen = () => {
+        addLog('sonnet', 'Sonnet WebSocket OPEN');
+        setSonnetStatus('Connected');
+
+        // Send session_start
+        sessionIdRef.current = `test-${Date.now()}`;
+        const sessionMsg = {
+          type: 'session_start',
+          sessionId: sessionIdRef.current,
+          jobId: 'test-harness',
+          jobState: {},
+        };
+        ws.send(JSON.stringify(sessionMsg));
+        addLog('sonnet', `Sent session_start (sessionId: ${sessionIdRef.current})`);
+      };
+
+      ws.onmessage = (event: MessageEvent) => {
+        let json: Record<string, unknown>;
+        try {
+          const text =
+            typeof event.data === 'string' ? event.data : new TextDecoder().decode(event.data);
+          json = JSON.parse(text);
+        } catch {
+          addLog('error', `Sonnet non-JSON: ${String(event.data).slice(0, 100)}`);
+          return;
+        }
+
+        const type = json.type as string;
+
+        switch (type) {
+          case 'session_ack': {
+            const status = json.status as string;
+            addLog('sonnet', `Session ACK: ${status}`);
+            setSonnetStatus(`Active (${status})`);
+            break;
+          }
+
+          case 'extraction': {
+            const result = json.result as
+              | {
+                  readings?: ExtractedReading[];
+                  observations?: Observation[];
+                }
+              | undefined;
+            if (result?.readings) {
+              setReadings((prev) => {
+                // Merge: update existing fields, add new ones
+                const map = new Map(prev.map((r) => [`${r.field}:${r.circuit ?? '-'}`, r]));
+                for (const r of result.readings!) {
+                  map.set(`${r.field}:${r.circuit ?? '-'}`, r);
+                }
+                return Array.from(map.values());
+              });
+              const fields = result.readings.map((r) => `${r.field}=${r.value}`).join(', ');
+              addLog('extraction', `Readings: ${fields}`);
+            }
+            if (result?.observations && result.observations.length > 0) {
+              setObservations((prev) => {
+                const existing = new Set(prev.map((o) => o.code));
+                const newObs = result.observations!.filter((o) => !existing.has(o.code));
+                return [...prev, ...newObs];
+              });
+              addLog(
+                'extraction',
+                `Observations: ${result.observations.map((o) => o.code).join(', ')}`
+              );
+            }
+            break;
+          }
+
+          case 'question': {
+            const field = json.field as string;
+            const question = json.question as string;
+            const qType = json.question_type as string;
+            addLog('question', `[${qType}] ${field}: ${question}`);
+            break;
+          }
+
+          case 'cost_update': {
+            const totalCost = json.totalJobCost as number;
+            const sonnet = json.sonnet as { turns?: number; cost?: number } | undefined;
+            setSonnetCost(totalCost);
+            setSonnetTurns(sonnet?.turns ?? 0);
+            addLog('sonnet', `Cost: $${totalCost?.toFixed(4)} (${sonnet?.turns ?? 0} turns)`);
+            break;
+          }
+
+          case 'error': {
+            const msg = json.message as string;
+            addLog('error', `Sonnet error: ${msg}`);
+            break;
+          }
+
+          default:
+            addLog('sonnet', `Event: ${type} — ${JSON.stringify(json).slice(0, 120)}`);
+        }
+      };
+
+      ws.onerror = () => {
+        addLog('error', 'Sonnet WebSocket ERROR');
+        setSonnetStatus('Error');
+      };
+
+      ws.onclose = (event: CloseEvent) => {
+        addLog('sonnet', `Sonnet WebSocket CLOSED: code=${event.code}, reason="${event.reason}"`);
+        setSonnetStatus(`Closed (${event.code})`);
+        sonnetWsRef.current = null;
+      };
+    },
+    [addLog]
+  );
+
+  // Forward final transcript to Sonnet
+  const forwardToSonnet = useCallback(
+    (text: string) => {
+      if (!sonnetWsRef.current || sonnetWsRef.current.readyState !== WebSocket.OPEN) return;
+      const msg = {
+        type: 'transcript',
+        text,
+        timestamp: new Date().toISOString(),
+      };
+      sonnetWsRef.current.send(JSON.stringify(msg));
+      addLog(
+        'sonnet',
+        `Forwarded transcript: "${text.slice(0, 80)}${text.length > 80 ? '...' : ''}"`
+      );
+    },
+    [addLog]
+  );
 
   const runDiagnostic = useCallback(async () => {
     cleanup();
@@ -92,6 +272,10 @@ export default function TestRecordingPage() {
     setTranscript('');
     setApiKey(null);
     setSampleRate(null);
+    setReadings([]);
+    setObservations([]);
+    setSonnetCost(null);
+    setSonnetTurns(0);
     setIsRunning(true);
 
     // Step 1: Mic permission
@@ -179,6 +363,11 @@ export default function TestRecordingPage() {
       return;
     }
 
+    // Step 4b: Connect Sonnet extraction if enabled
+    if (enableSonnet) {
+      connectSonnet(token);
+    }
+
     // Step 5: Open Deepgram WebSocket
     const params = new URLSearchParams({
       model: 'nova-3',
@@ -262,6 +451,8 @@ export default function TestRecordingPage() {
           addLog('transcript', `[${tag}] (${(confidence * 100).toFixed(1)}%) ${text}`);
           if (isFinal) {
             setTranscript((prev) => (prev ? prev + ' ' : '') + text);
+            // Forward final transcripts to Sonnet if connected
+            forwardToSonnet(text);
           }
         }
       } else if (type === 'UtteranceEnd') {
@@ -288,7 +479,7 @@ export default function TestRecordingPage() {
       setWsStatus(`Closed (${event.code})`);
       wsRef.current = null;
     };
-  }, [addLog, cleanup]);
+  }, [addLog, cleanup, enableSonnet, connectSonnet, forwardToSonnet]);
 
   const stopDiagnostic = useCallback(() => {
     addLog('info', 'Stopping diagnostic...');
@@ -301,6 +492,9 @@ export default function TestRecordingPage() {
     error: '#ff6b6b',
     ws: '#4ecdc4',
     transcript: '#ffe66d',
+    sonnet: '#c084fc',
+    extraction: '#34d399',
+    question: '#fb923c',
   };
 
   return (
@@ -308,20 +502,20 @@ export default function TestRecordingPage() {
       style={{
         padding: 20,
         fontFamily: 'monospace',
-        maxWidth: 800,
+        maxWidth: 1000,
         margin: '0 auto',
         color: '#e0e0e0',
         background: '#0a0a0a',
         minHeight: '100vh',
       }}
     >
-      <h1 style={{ fontSize: 20, marginBottom: 16 }}>Deepgram Recording Diagnostic</h1>
+      <h1 style={{ fontSize: 20, marginBottom: 16 }}>Recording Pipeline Diagnostic</h1>
 
       {/* Status Grid */}
       <div
         style={{
           display: 'grid',
-          gridTemplateColumns: '1fr 1fr',
+          gridTemplateColumns: '1fr 1fr 1fr',
           gap: 8,
           marginBottom: 16,
           fontSize: 13,
@@ -349,7 +543,7 @@ export default function TestRecordingPage() {
           <strong>API Key:</strong> {apiKey || '—'}
         </div>
         <div style={{ background: '#1a1a1a', padding: 10, borderRadius: 6 }}>
-          <strong>WebSocket:</strong>{' '}
+          <strong>Deepgram WS:</strong>{' '}
           <span
             style={{
               color:
@@ -362,6 +556,25 @@ export default function TestRecordingPage() {
           >
             {wsStatus}
           </span>
+        </div>
+        <div style={{ background: '#1a1a1a', padding: 10, borderRadius: 6 }}>
+          <strong>Sonnet WS:</strong>{' '}
+          <span
+            style={{
+              color:
+                sonnetStatus.startsWith('Active') || sonnetStatus === 'Connected'
+                  ? '#c084fc'
+                  : sonnetStatus.startsWith('Closed') || sonnetStatus === 'Error'
+                    ? '#ff6b6b'
+                    : '#8b8b8b',
+            }}
+          >
+            {sonnetStatus}
+          </span>
+        </div>
+        <div style={{ background: '#1a1a1a', padding: 10, borderRadius: 6 }}>
+          <strong>Sonnet:</strong>{' '}
+          {sonnetCost !== null ? `$${sonnetCost.toFixed(4)} (${sonnetTurns} turns)` : '—'}
         </div>
       </div>
 
@@ -389,7 +602,7 @@ export default function TestRecordingPage() {
       </div>
 
       {/* Controls */}
-      <div style={{ marginBottom: 16, display: 'flex', gap: 8 }}>
+      <div style={{ marginBottom: 16, display: 'flex', gap: 8, alignItems: 'center' }}>
         <button
           onClick={isRunning ? stopDiagnostic : runDiagnostic}
           style={{
@@ -406,24 +619,113 @@ export default function TestRecordingPage() {
         >
           {isRunning ? 'Stop' : 'Run Diagnostic'}
         </button>
-      </div>
-
-      {/* Final Transcript */}
-      {transcript && (
-        <div
+        <label
           style={{
-            background: '#1a2a1a',
-            padding: 12,
-            borderRadius: 6,
-            marginBottom: 16,
-            fontSize: 14,
-            lineHeight: 1.5,
+            display: 'flex',
+            alignItems: 'center',
+            gap: 6,
+            fontSize: 13,
+            cursor: 'pointer',
+            userSelect: 'none',
           }}
         >
-          <strong style={{ color: '#4ecdc4' }}>Transcript:</strong>
-          <div style={{ marginTop: 4 }}>{transcript}</div>
-        </div>
-      )}
+          <input
+            type="checkbox"
+            checked={enableSonnet}
+            onChange={(e) => setEnableSonnet(e.target.checked)}
+            disabled={isRunning}
+            style={{ accentColor: '#c084fc' }}
+          />
+          Enable Sonnet Extraction
+        </label>
+      </div>
+
+      {/* Two-column layout: Transcript + Extraction results */}
+      <div
+        style={{
+          display: 'grid',
+          gridTemplateColumns: enableSonnet ? '1fr 1fr' : '1fr',
+          gap: 12,
+          marginBottom: 16,
+        }}
+      >
+        {/* Final Transcript */}
+        {transcript && (
+          <div
+            style={{
+              background: '#1a2a1a',
+              padding: 12,
+              borderRadius: 6,
+              fontSize: 14,
+              lineHeight: 1.5,
+            }}
+          >
+            <strong style={{ color: '#4ecdc4' }}>Transcript:</strong>
+            <div style={{ marginTop: 4 }}>{transcript}</div>
+          </div>
+        )}
+
+        {/* Extraction Results (only when Sonnet enabled) */}
+        {enableSonnet && (readings.length > 0 || observations.length > 0) && (
+          <div
+            style={{
+              background: '#1a1a2a',
+              padding: 12,
+              borderRadius: 6,
+              fontSize: 13,
+              lineHeight: 1.5,
+            }}
+          >
+            <strong style={{ color: '#c084fc' }}>Extraction Results:</strong>
+
+            {readings.length > 0 && (
+              <div style={{ marginTop: 8 }}>
+                <div style={{ color: '#34d399', fontSize: 12, fontWeight: 600, marginBottom: 4 }}>
+                  Readings ({readings.length})
+                </div>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                  <thead>
+                    <tr style={{ borderBottom: '1px solid #333' }}>
+                      <th style={{ textAlign: 'left', padding: '2px 6px', color: '#888' }}>
+                        Field
+                      </th>
+                      <th style={{ textAlign: 'left', padding: '2px 6px', color: '#888' }}>
+                        Value
+                      </th>
+                      <th style={{ textAlign: 'left', padding: '2px 6px', color: '#888' }}>Cct</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {readings.map((r, i) => (
+                      <tr key={i} style={{ borderBottom: '1px solid #222' }}>
+                        <td style={{ padding: '2px 6px', color: '#ccc' }}>{r.field}</td>
+                        <td style={{ padding: '2px 6px', color: '#34d399' }}>{r.value}</td>
+                        <td style={{ padding: '2px 6px', color: '#888' }}>{r.circuit ?? '—'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            {observations.length > 0 && (
+              <div style={{ marginTop: 8 }}>
+                <div style={{ color: '#fb923c', fontSize: 12, fontWeight: 600, marginBottom: 4 }}>
+                  Observations ({observations.length})
+                </div>
+                {observations.map((o, i) => (
+                  <div key={i} style={{ marginBottom: 4, fontSize: 12 }}>
+                    <span style={{ color: '#fb923c' }}>{o.code}</span>
+                    {' — '}
+                    <span style={{ color: '#ccc' }}>{o.text}</span>
+                    {o.location && <span style={{ color: '#888' }}> @ {o.location}</span>}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
 
       {/* Event Log */}
       <div style={{ fontSize: 12 }}>
