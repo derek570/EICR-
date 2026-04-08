@@ -302,7 +302,7 @@ async function getDeepgramProjectId(masterKey) {
  * per Deepgram community feedback.
  *
  * Token only needs to be valid at WS connection time — the WebSocket stays open
- * after token expiry. 60s TTL gives enough headroom for the client to connect.
+ * after token expiry. 30s TTL gives enough headroom for the client to connect.
  */
 async function createDeepgramTempKey(userId) {
   const masterKey = await getDeepgramKey();
@@ -313,11 +313,12 @@ async function createDeepgramTempKey(userId) {
   const response = await fetch('https://api.deepgram.com/v1/auth/grant', {
     method: 'POST',
     headers: {
-      Authorization: `Token ${masterKey}`,
+      Authorization: `Bearer ${masterKey}`,
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
-      ttl_seconds: 60,
+      time_to_live_in_seconds: 30,
+      scopes: ['usage:write'],
     }),
   });
 
@@ -327,7 +328,7 @@ async function createDeepgramTempKey(userId) {
   }
 
   const data = await response.json();
-  logger.info('Deepgram access token created via /v1/auth/grant', { userId, ttl: 60 });
+  logger.info('Deepgram temp token created via /v1/auth/grant', { userId, ttl: 30 });
   return data.access_token;
 }
 
@@ -335,15 +336,8 @@ router.post('/proxy/deepgram-streaming-key', auth.requireAuth, async (req, res) 
   const userId = req.user?.id || req.user?.userId || 'unknown';
 
   try {
-    // HOTFIX (2026-03-31): Deepgram /v1/auth/grant tokens do not work for
-    // WebSocket streaming — the token is returned successfully but rejected
-    // at the WebSocket level, breaking recording sessions silently. Bypass
-    // temp token creation entirely and return the master key directly.
-    const key = await getDeepgramKey();
-    if (!key) {
-      throw new Error('Deepgram API key not configured');
-    }
-    logger.info('Deepgram streaming key issued (master key)', { userId });
+    const key = await createDeepgramTempKey(userId);
+    logger.info('Deepgram temp streaming key issued', { userId });
     res.json({ key });
   } catch (error) {
     logger.error('Deepgram streaming key failed', { userId, error: error.message });
