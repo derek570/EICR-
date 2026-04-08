@@ -55,6 +55,13 @@ export interface TranscriptHighlight {
   timestamp: number;
 }
 
+/** A timestamped sleep detector event for the debug panel SLP tab. */
+export interface SleepEvent {
+  event: string;
+  detail?: string;
+  timestamp: number;
+}
+
 export interface RecordingState {
   isRecording: boolean;
   connectionState: DeepgramConnectionState;
@@ -78,6 +85,8 @@ export interface RecordingState {
   sessionDuration: number;
   companionConnected: boolean;
   audioSource: AudioSource;
+  /** Sleep detector state transition log for debug panel SLP tab. */
+  sleepEvents: SleepEvent[];
   error: string | null;
 }
 
@@ -193,6 +202,7 @@ export function useRecording(
   const [sessionDuration, setSessionDuration] = useState(0);
   const [companionConnected, setCompanionConnected] = useState(false);
   const [audioSource, setAudioSource] = useState<AudioSource>('local');
+  const [sleepEvents, setSleepEvents] = useState<SleepEvent[]>([]);
   const [error, setError] = useState<string | null>(null);
 
   // Refs for services (persist across renders, not state-driven)
@@ -219,6 +229,7 @@ export function useRecording(
   const regexMatchCountRef = useRef(0);
   const discrepancyCountRef = useRef(0);
   const audioSourceRef = useRef<AudioSource>('local');
+  const sleepEventsRef = useRef<SleepEvent[]>([]);
   const userDefaultsRef = useRef<UserDefaults>({});
 
   // Eagerly load user defaults so they're ready when new circuits are created
@@ -740,6 +751,8 @@ export function useRecording(
         setDiscrepancyCount(0);
         setFieldSources({});
         setSessionDuration(0);
+        sleepEventsRef.current = [];
+        setSleepEvents([]);
         matcher.current = new TranscriptFieldMatcher();
         alertManager.current?.clearAll();
         alertManager.current?.resetQuestionTracking();
@@ -823,11 +836,18 @@ export function useRecording(
 
         // Create sleep detector — monitors RMS silence, pauses Deepgram stream,
         // sends keep-alive during idle, and replays buffered audio on wake.
+        const pushSleepEvent = (event: string, detail?: string) => {
+          const entry: SleepEvent = { event, detail, timestamp: Date.now() };
+          sleepEventsRef.current = [...sleepEventsRef.current, entry];
+          setSleepEvents(sleepEventsRef.current);
+        };
+
         const sd = new SleepDetector({
           onEnterDozing() {
             dgService.pauseAudioStream();
             debugLogger.current.info('sleep', 'enter_dozing', {});
             logSleepEvent('ENTER_DOZING', 'Pausing Deepgram stream', sessionId);
+            pushSleepEvent('ENTER_DOZING', 'Pausing Deepgram stream');
           },
           onWake(bufferedAudio: ArrayBuffer) {
             dgService.resumeAudioStream();
@@ -836,6 +856,7 @@ export function useRecording(
               bufferedBytes: bufferedAudio.byteLength,
             });
             logSleepEvent('WAKE', `Replaying ${bufferedAudio.byteLength} bytes`, sessionId);
+            pushSleepEvent('WAKE', `Replaying ${bufferedAudio.byteLength} bytes`);
           },
           onStateChange(state) {
             setSleepState(state);
@@ -843,6 +864,7 @@ export function useRecording(
         });
         sleepDetector.current = sd;
         logSleepEvent('STARTED', 'Sleep detector initialized', sessionId);
+        pushSleepEvent('STARTED', 'Sleep detector initialized');
 
         // Set up audio source
         if (effectiveSource === 'companion') {
@@ -933,6 +955,13 @@ export function useRecording(
 
     // Stop services
     logSleepEvent('STOPPED', 'Recording ended');
+    const stoppedEntry: SleepEvent = {
+      event: 'STOPPED',
+      detail: 'Recording ended',
+      timestamp: Date.now(),
+    };
+    sleepEventsRef.current = [...sleepEventsRef.current, stoppedEntry];
+    setSleepEvents(sleepEventsRef.current);
     sleepDetector.current?.reset();
     sleepDetector.current = null;
     audioCapture.current?.stop();
@@ -1044,6 +1073,7 @@ export function useRecording(
     sessionDuration,
     companionConnected,
     audioSource,
+    sleepEvents,
     error,
   };
 
