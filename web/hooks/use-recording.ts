@@ -190,6 +190,7 @@ export function useRecording(
   const alertManager = useRef<AlertManager | null>(null);
   const debugLogger = useRef<DebugLogger>(new DebugLogger());
   const companionSocket = useRef<Socket | null>(null);
+  const wakeLock = useRef<WakeLockSentinel | null>(null);
 
   // Mutable state refs (avoid stale closures)
   const transcriptRef = useRef('');
@@ -649,6 +650,46 @@ export function useRecording(
     setCompanionConnected(false);
   }, []);
 
+  // ---- Wake Lock (prevent screen sleep during recording) ----
+
+  const acquireWakeLock = useCallback(async () => {
+    if (!('wakeLock' in navigator)) return;
+    try {
+      wakeLock.current = await navigator.wakeLock.request('screen');
+      wakeLock.current.addEventListener('release', () => {
+        wakeLock.current = null;
+      });
+      debugLogger.current.info('session', 'wake_lock_acquired', {});
+    } catch (err) {
+      // Non-fatal — battery saver or permissions may block it
+      debugLogger.current.debug('session', 'wake_lock_failed', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }, []);
+
+  const releaseWakeLock = useCallback(async () => {
+    if (wakeLock.current) {
+      await wakeLock.current.release();
+      wakeLock.current = null;
+      debugLogger.current.info('session', 'wake_lock_released', {});
+    }
+  }, []);
+
+  // Re-acquire wake lock when tab becomes visible again (browser auto-releases on hide)
+  useEffect(() => {
+    const handleVisibilityChange = async () => {
+      if (document.visibilityState === 'visible' && isRecordingRef.current && !wakeLock.current) {
+        await acquireWakeLock();
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [acquireWakeLock]);
+
   // ---- Start Recording ----
 
   const startRecording = useCallback(
@@ -803,6 +844,9 @@ export function useRecording(
         isRecordingRef.current = true;
         setIsRecording(true);
 
+        // Prevent screen from sleeping during recording
+        await acquireWakeLock();
+
         debugLogger.current.info('session', 'recording_started', {
           keywords: keywords.length,
           audioSource: effectiveSource,
@@ -813,7 +857,7 @@ export function useRecording(
         debugLogger.current.error('session', 'start_failed', { error: msg });
       }
     },
-    [job, applyRegexResults, resetSonnetDebounce, connectCompanionSocket]
+    [job, applyRegexResults, resetSonnetDebounce, connectCompanionSocket, acquireWakeLock]
   );
 
   // ---- Stop Recording ----
@@ -829,6 +873,9 @@ export function useRecording(
 
     isRecordingRef.current = false;
     setIsRecording(false);
+
+    // Allow screen to sleep again
+    void releaseWakeLock();
 
     // Clear remaining timers
     if (keepAliveTimer.current) {
@@ -890,7 +937,7 @@ export function useRecording(
     setConnectionState('disconnected');
     setIsSpeaking(false);
     setInterimTranscript('');
-  }, [disconnectCompanionSocket, triggerSonnetExtraction]);
+  }, [disconnectCompanionSocket, triggerSonnetExtraction, releaseWakeLock]);
 
   // ---- Cleanup on unmount ----
 
@@ -903,6 +950,7 @@ export function useRecording(
         if (keepAliveTimer.current) clearInterval(keepAliveTimer.current);
         if (durationTimer.current) clearInterval(durationTimer.current);
         if (sonnetDebounceTimer.current) clearTimeout(sonnetDebounceTimer.current);
+        void wakeLock.current?.release();
         debugLogger.current.endSession();
       }
     };
