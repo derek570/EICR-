@@ -27,13 +27,11 @@ const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000';
 
 const SAVE_DEBOUNCE_MS = 2000;
 
-/** Fire-and-forget POST to /api/sleep-log for CloudWatch telemetry. */
+/** Fire-and-forget POST to /api/recording/:sessionId/sleep-log for telemetry. */
 function logSleepEvent(event: string, detail: string, sessionId?: string): void {
-  fetch(`${API_BASE_URL}/api/sleep-log`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ event, detail, sessionId }),
-  }).catch(() => {}); // fire-and-forget
+  if (sessionId) {
+    api.logSleepEvent(sessionId, event, detail);
+  }
 }
 
 // ---------------------------------------------------------------------------

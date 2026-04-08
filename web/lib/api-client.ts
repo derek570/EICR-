@@ -670,4 +670,18 @@ export const api = {
     if (!data.key) throw new Error('No Deepgram streaming key returned');
     return data.key;
   },
+
+  /**
+   * Log a sleep detector event (fire-and-forget).
+   * POST /api/recording/:sessionId/sleep-log
+   */
+  async logSleepEvent(sessionId: string, event: string, detail?: string): Promise<void> {
+    fetchWithAuth(`${API_BASE_URL}/api/recording/${sessionId}/sleep-log`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ event, detail }),
+    }).catch(() => {
+      /* fire-and-forget — don't break recording on log failure */
+    });
+  },
 };

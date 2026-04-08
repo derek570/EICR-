@@ -41,6 +41,17 @@ import type {
   UserDefaults,
 } from '@/lib/types';
 
+// ============= Helpers =============
+
+/** Convert Int16 PCM [-32768, 32767] to Float32 [-1.0, 1.0] for sleep detector VAD. */
+function int16ToFloat32(int16: Int16Array): Float32Array {
+  const float32 = new Float32Array(int16.length);
+  for (let i = 0; i < int16.length; i++) {
+    float32[i] = int16[i] / 32768;
+  }
+  return float32;
+}
+
 // ============= Types =============
 
 export type AudioSource = 'local' | 'companion';
@@ -69,7 +80,7 @@ export interface RecordingState {
   interimTranscript: string;
   isSpeaking: boolean;
   isTTSSpeaking: boolean;
-  /** Sleep detector state: 'active' = streaming audio, 'dozing' = silence detected, keep-alive only. */
+  /** Sleep detector state: 'active' = streaming, 'dozing' = paused with keep-alive, 'sleeping' = disconnected. */
   sleepState: SleepState;
   currentAlert: ValidationAlert | null;
   alertQueueCount: number;
@@ -105,13 +116,11 @@ const SONNET_COOLDOWN_MS = 5000;
 const KEEP_ALIVE_INTERVAL_MS = 8000;
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000';
 
-/** Fire-and-forget POST to /api/sleep-log for CloudWatch telemetry. */
+/** Fire-and-forget POST to /api/recording/:sessionId/sleep-log for telemetry. */
 function logSleepEvent(event: string, detail: string, sessionId?: string): void {
-  fetch(`${API_BASE_URL}/api/sleep-log`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ event, detail, sessionId }),
-  }).catch(() => {}); // fire-and-forget
+  if (sessionId) {
+    api.logSleepEvent(sessionId, event, detail);
+  }
 }
 
 // Key mappings: TranscriptFieldMatcher returns camelCase, but our types use snake_case
@@ -231,6 +240,8 @@ export function useRecording(
   const audioSourceRef = useRef<AudioSource>('local');
   const sleepEventsRef = useRef<SleepEvent[]>([]);
   const userDefaultsRef = useRef<UserDefaults>({});
+  const deepgramKeyRef = useRef<string>('');
+  const keywordsRef = useRef<Array<[string, number]>>([]);
 
   // Eagerly load user defaults so they're ready when new circuits are created
   useEffect(() => {
@@ -271,6 +282,11 @@ export function useRecording(
       },
       onTTSSpeakingChanged(speaking) {
         setIsTTSSpeaking(speaking);
+        if (speaking) {
+          sleepDetector.current?.onTTSStarted();
+        } else {
+          sleepDetector.current?.onTTSFinished();
+        }
       },
     };
 
@@ -729,6 +745,7 @@ export function useRecording(
       try {
         // Fetch short-lived Deepgram streaming key via backend proxy
         const deepgramKey = await api.fetchDeepgramStreamingKey();
+        deepgramKeyRef.current = deepgramKey;
 
         // Configure Claude — routes through /api/proxy/claude on the Express backend.
         // No client-side Anthropic key needed; configureForProxy() sets the ready flag.
@@ -763,6 +780,7 @@ export function useRecording(
 
         // Generate keyword boosts
         const keywords = generateKeywordBoosts(job?.board_info, job?.circuits);
+        keywordsRef.current = keywords;
 
         // Create Deepgram delegate
         const dgDelegate: DeepgramDelegate = {
@@ -772,7 +790,7 @@ export function useRecording(
           },
           onFinalTranscript(text: string, confidence: number, _words: DeepgramWord[]) {
             // Reset sleep detector silence timer — Deepgram is producing output
-            sleepDetector.current?.onTranscriptReceived();
+            sleepDetector.current?.onSpeechActivity();
 
             if (alertManager.current?.isTTSSpeaking) {
               debugLogger.current.debug('deepgram', 'tts_echo_suppressed', {
@@ -839,8 +857,10 @@ export function useRecording(
           authToken: wsAuthToken,
         });
 
-        // Create sleep detector — monitors RMS silence, pauses Deepgram stream,
-        // sends keep-alive during idle, and replays buffered audio on wake.
+        // Create sleep detector — 3-state machine (Active → Dozing → Sleeping).
+        // Dozing: pauses Deepgram stream, sends keep-alive, monitors VAD for wake.
+        // Sleeping: disconnects Deepgram entirely after 30min of doze.
+        // On wake: drains ring buffer and replays pre-wake audio to Deepgram.
         const pushSleepEvent = (event: string, detail?: string) => {
           const entry: SleepEvent = { event, detail, timestamp: Date.now() };
           sleepEventsRef.current = [...sleepEventsRef.current, entry];
@@ -850,26 +870,53 @@ export function useRecording(
         const sd = new SleepDetector({
           onEnterDozing() {
             dgService.pauseAudioStream();
+            setSleepState('dozing');
             debugLogger.current.info('sleep', 'enter_dozing', {});
-            logSleepEvent('ENTER_DOZING', 'Pausing Deepgram stream', sessionId);
-            pushSleepEvent('ENTER_DOZING', 'Pausing Deepgram stream');
           },
-          onWake(bufferedAudio: ArrayBuffer) {
-            dgService.resumeAudioStream();
-            dgService.replayBuffer(bufferedAudio);
+          onEnterSleeping() {
+            dgService.disconnect();
+            setSleepState('sleeping');
+            debugLogger.current.info('sleep', 'enter_sleeping', {});
+          },
+          onWake(fromState: SleepState) {
+            const bufferedData = sd.ringBuffer.drain();
+
+            if (fromState === 'sleeping') {
+              // Full reconnect from sleeping — Deepgram was disconnected
+              if (deepgramKeyRef.current) {
+                const reconnectProxyBase = API_BASE_URL.replace(/^http/, 'ws');
+                const reconnectToken = getToken() ?? '';
+                dgService.connect(deepgramKeyRef.current, keywordsRef.current, {
+                  proxyUrl: `${reconnectProxyBase}/api/recording/stream`,
+                  authToken: reconnectToken,
+                });
+                if (bufferedData.byteLength > 0) {
+                  setTimeout(() => {
+                    dgService.replayBuffer(bufferedData);
+                  }, 500);
+                }
+              }
+            } else {
+              // Resume from dozing — Deepgram was paused
+              dgService.resumeAudioStream();
+              if (bufferedData.byteLength > 0) {
+                dgService.replayBuffer(bufferedData);
+              }
+            }
+
+            setSleepState('active');
             debugLogger.current.info('sleep', 'wake', {
-              bufferedBytes: bufferedAudio.byteLength,
+              fromState,
+              bufferedBytes: bufferedData.byteLength,
             });
-            logSleepEvent('WAKE', `Replaying ${bufferedAudio.byteLength} bytes`, sessionId);
-            pushSleepEvent('WAKE', `Replaying ${bufferedAudio.byteLength} bytes`);
           },
-          onStateChange(state) {
-            setSleepState(state);
+          onLog(event: string, detail: string) {
+            logSleepEvent(event, detail, sessionId);
+            pushSleepEvent(event, detail);
           },
         });
         sleepDetector.current = sd;
-        logSleepEvent('STARTED', 'Sleep detector initialized', sessionId);
-        pushSleepEvent('STARTED', 'Sleep detector initialized');
+        sd.start();
 
         // Set up audio source
         if (effectiveSource === 'companion') {
@@ -882,11 +929,10 @@ export function useRecording(
           // Local mode: capture from browser microphone
           const acDelegate: AudioCaptureDelegate = {
             onAudioData(pcmInt16: Int16Array) {
-              // Feed through sleep detector — it decides whether to send or buffer
-              const shouldSend = sd.processAudio(pcmInt16);
-              if (shouldSend) {
-                dgService.sendAudio(pcmInt16);
-              }
+              // Send to Deepgram (blocked during pause in doze mode)
+              dgService.sendAudio(pcmInt16);
+              // Feed to sleep detector for VAD analysis (only active during doze/sleep)
+              sd.processAudioChunk(int16ToFloat32(pcmInt16));
             },
             onError(err: Error) {
               setError(`Microphone error: ${err.message}`);
@@ -958,16 +1004,8 @@ export function useRecording(
       durationTimer.current = null;
     }
 
-    // Stop services
-    logSleepEvent('STOPPED', 'Recording ended');
-    const stoppedEntry: SleepEvent = {
-      event: 'STOPPED',
-      detail: 'Recording ended',
-      timestamp: Date.now(),
-    };
-    sleepEventsRef.current = [...sleepEventsRef.current, stoppedEntry];
-    setSleepEvents(sleepEventsRef.current);
-    sleepDetector.current?.reset();
+    // Stop services — sleep detector stop() triggers STOPPED log via onLog callback
+    sleepDetector.current?.stop();
     sleepDetector.current = null;
     audioCapture.current?.stop();
     audioCapture.current = null;
@@ -1026,7 +1064,7 @@ export function useRecording(
   useEffect(() => {
     return () => {
       if (isRecordingRef.current) {
-        sleepDetector.current?.reset();
+        sleepDetector.current?.stop();
         audioCapture.current?.stop();
         deepgram.current?.disconnect();
         companionSocket.current?.disconnect();

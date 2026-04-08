@@ -1741,6 +1741,30 @@ router.get('/recording/:sessionId', auth.requireAuth, async (req, res) => {
   });
 });
 
+/**
+ * Log sleep detector events (doze/wake transitions).
+ * POST /api/recording/:sessionId/sleep-log
+ *
+ * Fire-and-forget from the frontend — logs to Winston for observability.
+ */
+router.post('/recording/:sessionId/sleep-log', auth.requireAuth, async (req, res) => {
+  const { sessionId } = req.params;
+  const { event, detail } = req.body;
+
+  if (!event) {
+    return res.status(400).json({ error: 'event required' });
+  }
+
+  logger.info('sleep-log', {
+    sessionId,
+    event,
+    detail: detail || undefined,
+    userId: req.user?.id || req.user?.userId || 'unknown',
+  });
+
+  res.json({ ok: true });
+});
+
 // Handle Multer file filter rejections with 400 status
 router.use(handleUploadError);
 

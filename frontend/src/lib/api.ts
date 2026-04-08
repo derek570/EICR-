@@ -628,6 +628,20 @@ export const api = {
     return data.key;
   },
 
+  /**
+   * Log a sleep detector event (fire-and-forget).
+   * POST /api/recording/:sessionId/sleep-log
+   */
+  async logSleepEvent(sessionId: string, event: string, detail?: string): Promise<void> {
+    fetchJsonWithAuth(`${API_BASE_URL}/api/recording/${sessionId}/sleep-log`, {
+      method: 'POST',
+      body: JSON.stringify({ event, detail }),
+      retry: false,
+    }).catch(() => {
+      /* fire-and-forget — don't break recording on log failure */
+    });
+  },
+
   // ============= Admin: User Management =============
 
   async getAdminUsers(): Promise<AdminUser[]> {
