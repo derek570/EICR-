@@ -96,6 +96,15 @@ const SONNET_COOLDOWN_MS = 5000;
 const KEEP_ALIVE_INTERVAL_MS = 8000;
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000';
 
+/** Fire-and-forget POST to /api/sleep-log for CloudWatch telemetry. */
+function logSleepEvent(event: string, detail: string, sessionId?: string): void {
+  fetch(`${API_BASE_URL}/api/sleep-log`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ event, detail, sessionId }),
+  }).catch(() => {}); // fire-and-forget
+}
+
 // Key mappings: TranscriptFieldMatcher returns camelCase, but our types use snake_case
 const CIRCUIT_KEY_MAP: Record<string, string> = {
   measuredZsOhm: 'measured_zs_ohm',
@@ -818,6 +827,7 @@ export function useRecording(
           onEnterDozing() {
             dgService.pauseAudioStream();
             debugLogger.current.info('sleep', 'enter_dozing', {});
+            logSleepEvent('ENTER_DOZING', 'Pausing Deepgram stream', sessionId);
           },
           onWake(bufferedAudio: ArrayBuffer) {
             dgService.resumeAudioStream();
@@ -825,12 +835,14 @@ export function useRecording(
             debugLogger.current.info('sleep', 'wake', {
               bufferedBytes: bufferedAudio.byteLength,
             });
+            logSleepEvent('WAKE', `Replaying ${bufferedAudio.byteLength} bytes`, sessionId);
           },
           onStateChange(state) {
             setSleepState(state);
           },
         });
         sleepDetector.current = sd;
+        logSleepEvent('STARTED', 'Sleep detector initialized', sessionId);
 
         // Set up audio source
         if (effectiveSource === 'companion') {
@@ -920,6 +932,7 @@ export function useRecording(
     }
 
     // Stop services
+    logSleepEvent('STOPPED', 'Recording ended');
     sleepDetector.current?.reset();
     sleepDetector.current = null;
     audioCapture.current?.stop();

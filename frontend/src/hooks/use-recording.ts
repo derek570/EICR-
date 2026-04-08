@@ -11,8 +11,8 @@ import {
   type ServerCostUpdate as WsCostUpdate,
   type UserQuestion,
 } from '../lib/recording/server-ws-service';
-import { SleepManager } from '../lib/recording/sleep-manager';
-import type { SleepState, VadState } from '../lib/recording/sleep-manager';
+import { SleepDetector } from '../lib/recording/sleep-detector';
+import type { SleepState } from '../lib/recording/sleep-detector';
 import { AlertManager } from '../lib/recording/alert-manager';
 import { normalise } from '../lib/recording/number-normaliser';
 import { generateKeywordBoosts } from '../lib/recording/keyword-boost-generator';
@@ -26,6 +26,15 @@ import type { ServerCostUpdate as StoreCostUpdate } from '../lib/recording-store
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000';
 
 const SAVE_DEBOUNCE_MS = 2000;
+
+/** Fire-and-forget POST to /api/sleep-log for CloudWatch telemetry. */
+function logSleepEvent(event: string, detail: string, sessionId?: string): void {
+  fetch(`${API_BASE_URL}/api/sleep-log`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ event, detail, sessionId }),
+  }).catch(() => {}); // fire-and-forget
+}
 
 // ---------------------------------------------------------------------------
 // Field category sets — based on eicr-extraction-session.js Sonnet prompt
@@ -186,7 +195,7 @@ export function useRecording(jobId: string, userId: string, initialJob: JobDetai
   const streamRef = useRef<MediaStream | null>(null);
   const deepgramRef = useRef<DeepgramService | null>(null);
   const serverWSRef = useRef<ServerWebSocketService | null>(null);
-  const sleepManagerRef = useRef<SleepManager | null>(null);
+  const sleepDetectorRef = useRef<SleepDetector | null>(null);
   const alertManagerRef = useRef<AlertManager | null>(null);
   const durationIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const sessionIdRef = useRef<string>('');
@@ -444,12 +453,18 @@ export function useRecording(jobId: string, userId: string, initialJob: JobDetai
             question: q.question,
             value: q.value,
           });
+          sleepDetectorRef.current?.onQuestionAsked();
         },
         onQuestionDismissed: () => {
           store.setCurrentQuestion(null);
         },
         onTTSSpeakingChange: (speaking) => {
           store.setTTSSpeaking(speaking);
+          if (speaking) {
+            sleepDetectorRef.current?.onTTSStarted();
+          } else {
+            sleepDetectorRef.current?.onTTSFinished();
+          }
         },
       });
       alertManagerRef.current = alertManager;
@@ -474,7 +489,7 @@ export function useRecording(jobId: string, userId: string, initialJob: JobDetai
           serverWSRef.current?.sendTranscript(normalised);
 
           // Reset sleep silence timer
-          sleepManagerRef.current?.onTranscriptReceived();
+          sleepDetectorRef.current?.onSpeechActivity();
         },
         onUtteranceEnd: () => {
           // No-op for now — could gate questions here later
@@ -494,6 +509,8 @@ export function useRecording(jobId: string, userId: string, initialJob: JobDetai
           applySonnetReadings(result);
         },
         onQuestion: (question: UserQuestion) => {
+          // Wake sleep detector if dozing/sleeping to deliver the question
+          sleepDetectorRef.current?.wakeForQuestion();
           alertManagerRef.current?.enqueueQuestion(question);
         },
         onCostUpdate: (cost: WsCostUpdate) => {
@@ -528,8 +545,8 @@ export function useRecording(jobId: string, userId: string, initialJob: JobDetai
       });
       serverWSRef.current = serverWS;
 
-      // 14. Create SleepManager with Silero VAD
-      const sleepManager = new SleepManager({
+      // 14. Create SleepDetector (RMS energy-based — no Silero VAD dependency)
+      const sleepDetector = new SleepDetector({
         onEnterDozing: () => {
           store.setSleepState('dozing');
           deepgramRef.current?.pauseAudioStream();
@@ -550,7 +567,7 @@ export function useRecording(jobId: string, userId: string, initialJob: JobDetai
                 keywordsRef.current.map(([kw, boost]: [string, number]) => ({ keyword: kw, boost }))
               );
             }
-            const bufferedData = sleepManagerRef.current?.ringBuffer.drain();
+            const bufferedData = sleepDetectorRef.current?.ringBuffer.drain();
             if (bufferedData && bufferedData.byteLength > 0) {
               // Wait briefly for Deepgram to connect before replaying
               setTimeout(() => {
@@ -559,7 +576,7 @@ export function useRecording(jobId: string, userId: string, initialJob: JobDetai
             }
           } else if (fromState === 'dozing') {
             deepgramRef.current?.resumeAudioStream();
-            const bufferedData = sleepManagerRef.current?.ringBuffer.drain();
+            const bufferedData = sleepDetectorRef.current?.ringBuffer.drain();
             if (bufferedData && bufferedData.byteLength > 0) {
               deepgramRef.current?.replayBuffer(bufferedData);
             }
@@ -567,16 +584,11 @@ export function useRecording(jobId: string, userId: string, initialJob: JobDetai
 
           serverWSRef.current?.sendResume();
         },
-        onVadStateChange: (vadState: VadState) => {
-          store.setVadState(vadState);
+        onLog: (event: string, detail: string) => {
+          logSleepEvent(event, detail, sessionId);
         },
       });
-      sleepManagerRef.current = sleepManager;
-
-      // 14b. Initialize Silero VAD — pass existing stream to avoid dual concurrent getUserMedia.
-      // MicVAD.new() opens its own stream if none is provided, which can fail silently on
-      // mobile browsers (Safari/Chrome Android), permanently preventing wake-from-doze.
-      await sleepManager.initVAD(stream);
+      sleepDetectorRef.current = sleepDetector;
 
       // 15. Generate keyword boosts from job data
       const job = jobRef.current;
@@ -596,7 +608,7 @@ export function useRecording(jobId: string, userId: string, initialJob: JobDetai
 
       // 18. session_start is now sent from onConnect callback (above)
 
-      // 19. Wire audio output → Deepgram + SleepManager
+      // 19. Wire audio output → Deepgram + SleepDetector
       if (workletNode) {
         // AudioWorklet posts { samples: Float32Array } — destructure correctly.
         workletNode.port.onmessage = (event: MessageEvent) => {
@@ -604,7 +616,7 @@ export function useRecording(jobId: string, userId: string, initialJob: JobDetai
           if (!samples || samples.length === 0) return;
 
           deepgramRef.current?.sendSamples(samples);
-          sleepManagerRef.current?.processChunk(samples);
+          sleepDetectorRef.current?.processAudioChunk(samples);
         };
       } else if (scriptNode) {
         // ScriptProcessor fallback — convert Float32 to the same format
@@ -613,12 +625,12 @@ export function useRecording(jobId: string, userId: string, initialJob: JobDetai
           if (!samples || samples.length === 0) return;
 
           deepgramRef.current?.sendSamples(samples);
-          sleepManagerRef.current?.processChunk(samples);
+          sleepDetectorRef.current?.processAudioChunk(samples);
         };
       }
 
-      // 20. Start sleep manager
-      sleepManager.start();
+      // 20. Start sleep detector
+      sleepDetector.start();
 
       // 21. Start duration counter
       const startTime = Date.now();
@@ -657,8 +669,8 @@ export function useRecording(jobId: string, userId: string, initialJob: JobDetai
       durationIntervalRef.current = null;
     }
 
-    // 2. Stop sleep manager
-    sleepManagerRef.current?.stop();
+    // 2. Stop sleep detector
+    sleepDetectorRef.current?.stop();
 
     // 3. Send session_stop
     serverWSRef.current?.sendStop();
@@ -738,7 +750,7 @@ export function useRecording(jobId: string, userId: string, initialJob: JobDetai
           clearInterval(durationIntervalRef.current);
           durationIntervalRef.current = null;
         }
-        sleepManagerRef.current?.destroy();
+        sleepDetectorRef.current?.stop();
         deepgramRef.current?.destroy();
         serverWSRef.current?.destroy();
         alertManagerRef.current?.destroy();

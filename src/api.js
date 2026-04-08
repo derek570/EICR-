@@ -46,6 +46,7 @@ import pdfRouter from './routes/pdf.js';
 import emailRouter from './routes/email.js';
 import exportRouter from './routes/export.js';
 import ocrRouter from './routes/ocr.js';
+import sleepLogRouter from './routes/sleep-log.js';
 
 // WebSocket recording server (re-exported for server.js)
 import { wss } from './ws-recording.js';
@@ -257,6 +258,7 @@ app.use('/api', pdfRouter); // /api/job/:userId/:jobId/generate-pdf
 app.use('/api', emailLimiter, emailRouter); // /api/job/:userId/:jobId/email, /api/email/status, /api/whatsapp/*
 app.use('/api', exportRouter); // /api/job/:userId/:jobId/export/*
 app.use('/api', ocrRouter); // /api/ocr/*
+app.use('/api', sleepLogRouter); // /api/sleep-log
 
 // ============= Error Handling (must be last) =============
 app.use(notFoundHandler);
