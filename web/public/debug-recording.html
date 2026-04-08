@@ -91,8 +91,7 @@
     <button id="btn-start" onclick="startTest()">Start Recording</button>
     <button id="btn-stop" onclick="stopTest()" disabled>Stop</button>
   </div>
-  <label for="master-key">Master API Key (optional — bypasses proxy):</label>
-  <input type="text" id="master-key" placeholder="paste Deepgram API key to test directly...">
+  <div style="font-size:12px;color:#888;">Uses temp token from backend proxy (master key never exposed)</div>
 </div>
 
 <!-- Audio Stats -->
@@ -285,7 +284,7 @@ async function fetchTempKey() {
     }
     const data = await resp.json();
     if (!data.key) throw new Error('Response missing "key" field');
-    log(`Temp key obtained (${data.key.length} chars, starts: ${data.key.slice(0, 12)}...)`, 'log-ok');
+    log(`Temp token obtained (${data.key.length} chars)`, 'log-ok');
     return data.key;
   } catch (err) {
     log(`Proxy key fetch FAILED: ${err.message}`, 'log-error');
@@ -597,24 +596,16 @@ async function startTest() {
     // 1. Setup audio
     await setupAudio();
 
-    // 2. Get API key
-    const masterKey = document.getElementById('master-key').value.trim();
+    // 2. Get temp token via backend proxy
     let apiKey, authMethod;
-
-    if (masterKey) {
-      apiKey = masterKey;
-      authMethod = 'Master key (direct)';
-      log('Using master API key from input field', 'log-warn');
-    } else {
-      try {
-        apiKey = await fetchTempKey();
-        authMethod = 'Proxy temp key';
-      } catch (err) {
-        log('Proxy failed — enter a master key in the input field to test directly', 'log-error');
-        setBanner('BROKEN (no key)', 'broken');
-        cleanup();
-        return;
-      }
+    try {
+      apiKey = await fetchTempKey();
+      authMethod = 'Proxy temp token';
+    } catch (err) {
+      log('Temp token fetch failed: ' + err.message, 'log-error');
+      setBanner('BROKEN (no key)', 'broken');
+      cleanup();
+      return;
     }
 
     // 3. Connect WebSocket

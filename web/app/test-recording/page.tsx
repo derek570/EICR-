@@ -217,8 +217,8 @@ export default function TestRecordingPage() {
       const data = await resp.json();
       key = data.key;
       if (!key) throw new Error('No key in response');
-      setApiKey(key.slice(0, 12) + '...');
-      addLog('info', `Key received (${key.length} chars)`);
+      setApiKey(`${key.length} chars`);
+      addLog('info', `Temp token received (${key.length} chars)`);
     } catch (err) {
       addLog('error', `Key fetch FAILED: ${err}`);
       setIsRunning(false);

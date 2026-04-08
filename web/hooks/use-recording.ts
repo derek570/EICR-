@@ -829,10 +829,15 @@ export function useRecording(
           },
         };
 
-        // Create and connect Deepgram
+        // Create and connect Deepgram — provide proxy fallback in case temp token is rejected
         const dgService = new DeepgramService(dgDelegate);
         deepgram.current = dgService;
-        dgService.connect(deepgramKey, keywords);
+        const proxyBase = API_BASE_URL.replace(/^http/, 'ws');
+        const wsAuthToken = getToken() ?? '';
+        dgService.connect(deepgramKey, keywords, {
+          proxyUrl: `${proxyBase}/api/recording/stream`,
+          authToken: wsAuthToken,
+        });
 
         // Create sleep detector — monitors RMS silence, pauses Deepgram stream,
         // sends keep-alive during idle, and replays buffered audio on wake.

@@ -600,7 +600,13 @@ export function useRecording(jobId: string, userId: string, initialJob: JobDetai
       keywordsRef.current = boostTuples;
 
       // 16. Connect Deepgram — pass actual AudioContext sample rate for resampling
-      deepgram.connect(deepgramKey, keywords, actualSampleRate);
+      //     Provide proxy fallback URL + auth token in case temp token is rejected
+      const proxyBase = API_BASE_URL.replace(/^http/, 'ws');
+      const authToken = typeof window !== 'undefined' ? (localStorage.getItem('token') ?? '') : '';
+      deepgram.connect(deepgramKey, keywords, actualSampleRate, {
+        proxyUrl: `${proxyBase}/api/recording/stream`,
+        authToken,
+      });
 
       // 17. Connect Server WS
       const token = typeof window !== 'undefined' ? (localStorage.getItem('token') ?? '') : '';

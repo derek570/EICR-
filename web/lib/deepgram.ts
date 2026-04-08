@@ -18,6 +18,11 @@ export interface DeepgramWord {
 
 export type DeepgramConnectionState = 'disconnected' | 'connecting' | 'connected' | 'reconnecting';
 
+export interface DeepgramConnectOptions {
+  proxyUrl?: string;
+  authToken?: string;
+}
+
 export interface DeepgramDelegate {
   onInterimTranscript(text: string, confidence: number): void;
   onFinalTranscript(text: string, confidence: number, words: DeepgramWord[]): void;
@@ -42,6 +47,13 @@ export class DeepgramService {
   private isStreamingPaused = false;
   private pausedKeepAliveTimer: ReturnType<typeof setInterval> | null = null;
 
+  // Proxy fallback
+  private _useProxy = false;
+  private _proxyUrl: string | null = null;
+  private _authToken: string | null = null;
+  private _proxyReady = false;
+  private _triedDirectFirst = false;
+
   constructor(delegate: DeepgramDelegate) {
     this.delegate = delegate;
   }
@@ -58,7 +70,11 @@ export class DeepgramService {
 
   // ---- Connect ----
 
-  connect(apiKey: string, keywords: Array<[string, number]> = []): void {
+  connect(
+    apiKey: string,
+    keywords: Array<[string, number]> = [],
+    options?: DeepgramConnectOptions
+  ): void {
     // Cancel pending reconnect
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
@@ -73,13 +89,23 @@ export class DeepgramService {
     this.shouldReconnect = true;
     this.reconnectAttempt = 0;
 
+    // Store proxy info for fallback
+    if (options?.proxyUrl) this._proxyUrl = options.proxyUrl;
+    if (options?.authToken) this._authToken = options.authToken;
+
+    // If already in proxy mode, connect via proxy
+    if (this._useProxy) {
+      this.connectProxy();
+      return;
+    }
+
+    this._triedDirectFirst = true;
     this.setConnectionState('connecting');
 
     const url = this.buildURL(keywords);
 
     try {
-      // Use subprotocol auth — Deepgram no longer accepts the token= query parameter.
-      // The subprotocol approach sends the key in the Sec-WebSocket-Protocol header.
+      // Use subprotocol auth — sends the token in the Sec-WebSocket-Protocol header.
       this.ws = new WebSocket(url, ['token', apiKey]);
       this.ws.binaryType = 'arraybuffer';
 
@@ -98,6 +124,26 @@ export class DeepgramService {
 
       this.ws.onclose = (event: CloseEvent) => {
         this.ws = null;
+
+        // Auth failure on first attempt — fall back to server-side proxy
+        if (
+          this._triedDirectFirst &&
+          !this._useProxy &&
+          this._proxyUrl &&
+          this._authToken &&
+          this.reconnectAttempt === 0 &&
+          (event.code === 1008 || event.code === 1006)
+        ) {
+          console.warn(
+            '[DeepgramService] Direct Deepgram connection failed (code=' +
+              event.code +
+              '), falling back to server-side proxy'
+          );
+          this._useProxy = true;
+          this.connectProxy();
+          return;
+        }
+
         if (this.shouldReconnect && event.code !== 1000) {
           this.scheduleReconnect();
         } else {
@@ -108,6 +154,95 @@ export class DeepgramService {
       this.setConnectionState('disconnected');
       this.delegate.onError(error instanceof Error ? error : new Error(String(error)));
     }
+  }
+
+  // ---- Proxy Fallback ----
+
+  private connectProxy(): void {
+    if (!this._proxyUrl || !this._authToken) {
+      this.setConnectionState('disconnected');
+      return;
+    }
+
+    this._proxyReady = false;
+    this.setConnectionState('connecting');
+
+    const wsUrl = `${this._proxyUrl}?token=${encodeURIComponent(this._authToken)}`;
+
+    try {
+      this.ws = new WebSocket(wsUrl);
+      this.ws.binaryType = 'arraybuffer';
+
+      this.ws.onopen = () => {
+        this.ws!.send(JSON.stringify({ type: 'start', sessionId: `proxy_${Date.now()}` }));
+      };
+
+      this.ws.onmessage = (event: MessageEvent) => {
+        this.handleProxyMessage(event.data);
+      };
+
+      this.ws.onerror = () => {
+        this.delegate.onError(new Error('Proxy WebSocket error'));
+      };
+
+      this.ws.onclose = (event: CloseEvent) => {
+        this.ws = null;
+        this._proxyReady = false;
+        if (this.shouldReconnect && event.code !== 1000) {
+          this.scheduleReconnect();
+        } else {
+          this.setConnectionState('disconnected');
+        }
+      };
+    } catch (error) {
+      this.setConnectionState('disconnected');
+      this.delegate.onError(error instanceof Error ? error : new Error(String(error)));
+    }
+  }
+
+  private handleProxyMessage(data: string | ArrayBuffer): void {
+    const text = typeof data === 'string' ? data : new TextDecoder().decode(data);
+    let json: Record<string, unknown>;
+    try {
+      json = JSON.parse(text);
+    } catch {
+      return;
+    }
+
+    const type = json.type as string;
+    if (!type) return;
+
+    switch (type) {
+      case 'ready':
+        this._proxyReady = true;
+        this.setConnectionState('connected');
+        this.reconnectAttempt = 0;
+        break;
+      case 'transcript': {
+        const t = (json.text as string) ?? '';
+        if (t) this.delegate.onFinalTranscript(t, 1.0, []);
+        break;
+      }
+      case 'transcript_partial': {
+        const t = (json.text as string) ?? '';
+        if (t) this.delegate.onInterimTranscript(t, 0.5);
+        break;
+      }
+      case 'error': {
+        const msg = (json.message as string) ?? 'Proxy error';
+        this.delegate.onError(new Error(msg));
+        break;
+      }
+    }
+  }
+
+  private static arrayBufferToBase64(buffer: ArrayBuffer): string {
+    const bytes = new Uint8Array(buffer);
+    let binary = '';
+    for (let i = 0; i < bytes.byteLength; i++) {
+      binary += String.fromCharCode(bytes[i]);
+    }
+    return btoa(binary);
   }
 
   // ---- Disconnect ----
@@ -127,10 +262,10 @@ export class DeepgramService {
       return;
     }
 
-    // Send Deepgram CloseStream message
+    // Send close message
     if (this.ws.readyState === WebSocket.OPEN) {
       try {
-        this.ws.send(JSON.stringify({ type: 'CloseStream' }));
+        this.ws.send(JSON.stringify({ type: this._useProxy ? 'stop' : 'CloseStream' }));
       } catch {
         /* ignore */
       }
@@ -162,9 +297,16 @@ export class DeepgramService {
     if (!this.ws || this._connectionState !== 'connected') return;
     if (this.ws.readyState !== WebSocket.OPEN) return;
     if (this.isStreamingPaused) return;
+    if (this._useProxy && !this._proxyReady) return;
 
     this.lastAudioSendTime = Date.now();
-    this.ws.send(pcmInt16.buffer);
+
+    if (this._useProxy) {
+      const base64 = DeepgramService.arrayBufferToBase64(pcmInt16.buffer as ArrayBuffer);
+      this.ws.send(JSON.stringify({ type: 'audio', data: base64 }));
+    } else {
+      this.ws.send(pcmInt16.buffer);
+    }
   }
 
   // ---- Pause / Resume / Replay (for sleep detector) ----
@@ -230,6 +372,7 @@ export class DeepgramService {
   sendKeepAlive(): void {
     if (!this.ws || this._connectionState !== 'connected') return;
     if (this.ws.readyState !== WebSocket.OPEN) return;
+    if (this._useProxy) return; // Server handles keep-alive in proxy mode
 
     this.ws.send(JSON.stringify({ type: 'KeepAlive' }));
   }
@@ -344,7 +487,11 @@ export class DeepgramService {
 
     this.reconnectTimer = setTimeout(() => {
       if (!this.shouldReconnect || !this.currentApiKey) return;
-      this.connect(this.currentApiKey, this.currentKeywords);
+      if (this._useProxy) {
+        this.connectProxy();
+      } else {
+        this.connect(this.currentApiKey, this.currentKeywords);
+      }
     }, delay * 1000);
   }
 }

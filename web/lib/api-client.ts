@@ -658,8 +658,9 @@ export const api = {
   // ============= Recording Pipeline =============
 
   /**
-   * Fetch a short-lived Deepgram streaming key (600s TTL) via backend proxy.
-   * The raw Deepgram key never leaves the server.
+   * Fetch a short-lived Deepgram temp token (30s TTL) via backend proxy.
+   * The master Deepgram key never leaves the server — only a scoped,
+   * time-limited token is returned to the client.
    */
   async fetchDeepgramStreamingKey(): Promise<string> {
     const response = await fetchWithAuth(`${API_BASE_URL}/api/proxy/deepgram-streaming-key`, {

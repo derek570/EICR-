@@ -46,6 +46,13 @@ const sonnetWss = initSonnetStream(
 httpServer.on('upgrade', (request, socket, head) => {
   const url = new URL(request.url, `http://${request.headers.host}`);
   if (url.pathname === '/api/recording/stream') {
+    // Support query param auth for browsers that can't set WS headers
+    if (!request.headers.authorization) {
+      const token = url.searchParams.get('token');
+      if (token) {
+        request.headers.authorization = `Bearer ${token}`;
+      }
+    }
     recordingWss.handleUpgrade(request, socket, head, (ws) => {
       recordingWss.emit('connection', ws, request);
     });
