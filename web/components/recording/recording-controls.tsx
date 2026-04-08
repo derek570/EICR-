@@ -1,12 +1,14 @@
-"use client";
+'use client';
 
-import { cn } from "@/lib/utils";
-import type { DeepgramConnectionState } from "@/lib/deepgram";
+import { cn } from '@/lib/utils';
+import type { DeepgramConnectionState } from '@/lib/deepgram';
+import type { SleepState } from '@/lib/sleep-detector';
 
 interface RecordingControlsProps {
   isRecording: boolean;
   connectionState: DeepgramConnectionState;
   isSpeaking: boolean;
+  sleepState: SleepState;
   sessionDuration: number;
   error: string | null;
   onStart: () => void;
@@ -16,31 +18,31 @@ interface RecordingControlsProps {
 function formatDuration(seconds: number): string {
   const m = Math.floor(seconds / 60);
   const s = seconds % 60;
-  return `${m}:${s.toString().padStart(2, "0")}`;
+  return `${m}:${s.toString().padStart(2, '0')}`;
 }
 
 function connectionLabel(state: DeepgramConnectionState): string {
   switch (state) {
-    case "connected":
-      return "Connected";
-    case "connecting":
-      return "Connecting...";
-    case "reconnecting":
-      return "Reconnecting...";
-    case "disconnected":
-      return "Disconnected";
+    case 'connected':
+      return 'Connected';
+    case 'connecting':
+      return 'Connecting...';
+    case 'reconnecting':
+      return 'Reconnecting...';
+    case 'disconnected':
+      return 'Disconnected';
   }
 }
 
 function connectionColor(state: DeepgramConnectionState): string {
   switch (state) {
-    case "connected":
-      return "bg-green-500";
-    case "connecting":
-    case "reconnecting":
-      return "bg-yellow-500";
-    case "disconnected":
-      return "bg-gray-400";
+    case 'connected':
+      return 'bg-green-500';
+    case 'connecting':
+    case 'reconnecting':
+      return 'bg-yellow-500';
+    case 'disconnected':
+      return 'bg-gray-400';
   }
 }
 
@@ -48,6 +50,7 @@ export function RecordingControls({
   isRecording,
   connectionState,
   isSpeaking,
+  sleepState,
   sessionDuration,
   error,
   onStart,
@@ -59,10 +62,8 @@ export function RecordingControls({
       <button
         onClick={isRecording ? onStop : onStart}
         className={cn(
-          "flex items-center gap-2 rounded-lg px-5 py-2.5 text-sm font-medium text-white transition-colors",
-          isRecording
-            ? "bg-red-600 hover:bg-red-700"
-            : "bg-blue-600 hover:bg-blue-700",
+          'flex items-center gap-2 rounded-lg px-5 py-2.5 text-sm font-medium text-white transition-colors',
+          isRecording ? 'bg-red-600 hover:bg-red-700' : 'bg-blue-600 hover:bg-blue-700'
         )}
       >
         {isRecording ? (
@@ -83,21 +84,28 @@ export function RecordingControls({
         <div className="flex items-center gap-2 text-sm text-gray-600">
           <span
             className={cn(
-              "h-2 w-2 rounded-full",
+              'h-2 w-2 rounded-full',
               connectionColor(connectionState),
-              connectionState === "connected" && isSpeaking && "animate-pulse",
+              connectionState === 'connected' && isSpeaking && 'animate-pulse'
             )}
           />
           <span>{connectionLabel(connectionState)}</span>
+          {sleepState === 'dozing' && (
+            <>
+              <span className="text-gray-400">|</span>
+              <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-700">
+                <span className="h-1.5 w-1.5 rounded-full bg-amber-500" />
+                Idle
+              </span>
+            </>
+          )}
           <span className="text-gray-400">|</span>
           <span className="font-mono">{formatDuration(sessionDuration)}</span>
         </div>
       )}
 
       {/* Error */}
-      {error && (
-        <span className="text-sm text-red-600">{error}</span>
-      )}
+      {error && <span className="text-sm text-red-600">{error}</span>}
     </div>
   );
 }

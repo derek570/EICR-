@@ -8,15 +8,16 @@
 
 // ============= Types =============
 
-export type LogLevel = "DEBUG" | "INFO" | "WARN" | "ERROR";
+export type LogLevel = 'DEBUG' | 'INFO' | 'WARN' | 'ERROR';
 
 export type LogCategory =
-  | "deepgram"
-  | "regex"
-  | "sonnet"
-  | "user"
-  | "session"
-  | "companion";
+  | 'deepgram'
+  | 'regex'
+  | 'sonnet'
+  | 'user'
+  | 'session'
+  | 'companion'
+  | 'sleep';
 
 export type LogValue = string | number | boolean | null;
 
@@ -41,7 +42,7 @@ export interface SessionSummary {
 export class DebugLogger {
   // Session state
   private _isSessionActive = false;
-  private _currentSessionId = "";
+  private _currentSessionId = '';
   private _entries: DebugLogEntry[] = [];
   private sessionStartTime: number | null = null;
   private categoryCounts: Record<string, number> = {};
@@ -74,15 +75,13 @@ export class DebugLogger {
     this.categoryCounts = {};
     this.errorCount = 0;
 
-    this.info("session", "session_start", { sessionId });
+    this.info('session', 'session_start', { sessionId });
   }
 
   endSession(): SessionSummary | null {
     if (!this._isSessionActive) return null;
 
-    const durationSeconds = this.sessionStartTime
-      ? (Date.now() - this.sessionStartTime) / 1000
-      : 0;
+    const durationSeconds = this.sessionStartTime ? (Date.now() - this.sessionStartTime) / 1000 : 0;
     const totalEntries = this._entries.length;
 
     const summaryData: Record<string, LogValue> = {
@@ -94,7 +93,7 @@ export class DebugLogger {
       summaryData[`count_${category}`] = count;
     }
 
-    this.writeEntry("INFO", "session", "session_end", summaryData);
+    this.writeEntry('INFO', 'session', 'session_end', summaryData);
 
     const summary: SessionSummary = {
       sessionId: this._currentSessionId,
@@ -105,7 +104,7 @@ export class DebugLogger {
     };
 
     this._isSessionActive = false;
-    this._currentSessionId = "";
+    this._currentSessionId = '';
     this.sessionStartTime = null;
 
     return summary;
@@ -117,41 +116,25 @@ export class DebugLogger {
     level: LogLevel,
     category: LogCategory,
     event: string,
-    data?: Record<string, LogValue>,
+    data?: Record<string, LogValue>
   ): void {
     this.writeEntry(level, category, event, data);
   }
 
-  debug(
-    category: LogCategory,
-    event: string,
-    data?: Record<string, LogValue>,
-  ): void {
-    this.writeEntry("DEBUG", category, event, data);
+  debug(category: LogCategory, event: string, data?: Record<string, LogValue>): void {
+    this.writeEntry('DEBUG', category, event, data);
   }
 
-  info(
-    category: LogCategory,
-    event: string,
-    data?: Record<string, LogValue>,
-  ): void {
-    this.writeEntry("INFO", category, event, data);
+  info(category: LogCategory, event: string, data?: Record<string, LogValue>): void {
+    this.writeEntry('INFO', category, event, data);
   }
 
-  warn(
-    category: LogCategory,
-    event: string,
-    data?: Record<string, LogValue>,
-  ): void {
-    this.writeEntry("WARN", category, event, data);
+  warn(category: LogCategory, event: string, data?: Record<string, LogValue>): void {
+    this.writeEntry('WARN', category, event, data);
   }
 
-  error(
-    category: LogCategory,
-    event: string,
-    data?: Record<string, LogValue>,
-  ): void {
-    this.writeEntry("ERROR", category, event, data);
+  error(category: LogCategory, event: string, data?: Record<string, LogValue>): void {
+    this.writeEntry('ERROR', category, event, data);
   }
 
   // ---- Data Access ----
@@ -160,14 +143,14 @@ export class DebugLogger {
    * Get all entries as a JSONL string (one JSON object per line).
    */
   toJSONL(): string {
-    return this._entries.map((entry) => JSON.stringify(entry)).join("\n");
+    return this._entries.map((entry) => JSON.stringify(entry)).join('\n');
   }
 
   /**
    * Get all entries as a Blob for upload.
    */
   toBlob(): Blob {
-    return new Blob([this.toJSONL()], { type: "application/x-ndjson" });
+    return new Blob([this.toJSONL()], { type: 'application/x-ndjson' });
   }
 
   /**
@@ -202,60 +185,53 @@ export class DebugLogger {
     token: string,
     fieldSources?: Record<string, string>,
     manifest?: Record<string, LogValue>,
-    jobSnapshot?: Record<string, unknown>,
+    jobSnapshot?: Record<string, unknown>
   ): Promise<boolean> {
     if (this._entries.length === 0) return false;
 
-    const sessionId = this._currentSessionId || "unknown";
+    const sessionId = this._currentSessionId || 'unknown';
     const formData = new FormData();
 
     // Debug log JSONL
-    formData.append(
-      "debug_log",
-      this.toBlob(),
-      `debug_log_${sessionId}.jsonl`,
-    );
+    formData.append('debug_log', this.toBlob(), `debug_log_${sessionId}.jsonl`);
 
     // Field sources
     if (fieldSources) {
       formData.append(
-        "field_sources",
+        'field_sources',
         new Blob([JSON.stringify(fieldSources)], {
-          type: "application/json",
+          type: 'application/json',
         }),
-        "field_sources.json",
+        'field_sources.json'
       );
     }
 
     // Manifest
     if (manifest) {
       formData.append(
-        "manifest",
-        new Blob([JSON.stringify(manifest)], { type: "application/json" }),
-        "manifest.json",
+        'manifest',
+        new Blob([JSON.stringify(manifest)], { type: 'application/json' }),
+        'manifest.json'
       );
     }
 
     // Job snapshot
     if (jobSnapshot) {
       formData.append(
-        "job_snapshot",
+        'job_snapshot',
         new Blob([JSON.stringify(jobSnapshot)], {
-          type: "application/json",
+          type: 'application/json',
         }),
-        "job_snapshot.json",
+        'job_snapshot.json'
       );
     }
 
     try {
-      const res = await fetch(
-        `${baseUrl}/api/session/${sessionId}/analytics`,
-        {
-          method: "POST",
-          headers: { Authorization: `Bearer ${token}` },
-          body: formData,
-        },
-      );
+      const res = await fetch(`${baseUrl}/api/session/${sessionId}/analytics`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+        body: formData,
+      });
       return res.ok;
     } catch {
       return false;
@@ -268,11 +244,11 @@ export class DebugLogger {
     level: LogLevel,
     category: string,
     event: string,
-    data?: Record<string, LogValue>,
+    data?: Record<string, LogValue>
   ): void {
     // Update counters
     this.categoryCounts[category] = (this.categoryCounts[category] ?? 0) + 1;
-    if (level === "ERROR") {
+    if (level === 'ERROR') {
       this.errorCount++;
     }
 

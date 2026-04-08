@@ -22,6 +22,7 @@ import {
   type DeepgramConnectionState,
   type DeepgramWord,
 } from '@/lib/deepgram';
+import { SleepDetector, type SleepState } from '@/lib/sleep-detector';
 import { ClaudeService } from '@/lib/claude';
 import { TranscriptFieldMatcher } from '@/lib/transcript-field-matcher';
 import { normalise } from '@/lib/number-normaliser';
@@ -61,6 +62,8 @@ export interface RecordingState {
   interimTranscript: string;
   isSpeaking: boolean;
   isTTSSpeaking: boolean;
+  /** Sleep detector state: 'active' = streaming audio, 'dozing' = silence detected, keep-alive only. */
+  sleepState: SleepState;
   currentAlert: ValidationAlert | null;
   alertQueueCount: number;
   regexMatchCount: number;
@@ -164,6 +167,7 @@ export function useRecording(
   const [interimTranscript, setInterimTranscript] = useState('');
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [isTTSSpeaking, setIsTTSSpeaking] = useState(false);
+  const [sleepState, setSleepState] = useState<SleepState>('active');
   const [currentAlert, setCurrentAlert] = useState<ValidationAlert | null>(null);
   const [alertQueueCount, setAlertQueueCount] = useState(0);
   const [regexMatchCount, setRegexMatchCount] = useState(0);
@@ -185,6 +189,7 @@ export function useRecording(
   // Refs for services (persist across renders, not state-driven)
   const audioCapture = useRef<AudioCapture | null>(null);
   const deepgram = useRef<DeepgramService | null>(null);
+  const sleepDetector = useRef<SleepDetector | null>(null);
   const claude = useRef<ClaudeService | null>(null);
   const matcher = useRef<TranscriptFieldMatcher>(new TranscriptFieldMatcher());
   const alertManager = useRef<AlertManager | null>(null);
@@ -744,6 +749,9 @@ export function useRecording(
             setIsSpeaking(true);
           },
           onFinalTranscript(text: string, confidence: number, _words: DeepgramWord[]) {
+            // Reset sleep detector silence timer — Deepgram is producing output
+            sleepDetector.current?.onTranscriptReceived();
+
             if (alertManager.current?.isTTSSpeaking) {
               debugLogger.current.debug('deepgram', 'tts_echo_suppressed', {
                 text: text.slice(0, 100),
@@ -804,6 +812,26 @@ export function useRecording(
         deepgram.current = dgService;
         dgService.connect(deepgramKey, keywords);
 
+        // Create sleep detector — monitors RMS silence, pauses Deepgram stream,
+        // sends keep-alive during idle, and replays buffered audio on wake.
+        const sd = new SleepDetector({
+          onEnterDozing() {
+            dgService.pauseAudioStream();
+            debugLogger.current.info('sleep', 'enter_dozing', {});
+          },
+          onWake(bufferedAudio: ArrayBuffer) {
+            dgService.resumeAudioStream();
+            dgService.replayBuffer(bufferedAudio);
+            debugLogger.current.info('sleep', 'wake', {
+              bufferedBytes: bufferedAudio.byteLength,
+            });
+          },
+          onStateChange(state) {
+            setSleepState(state);
+          },
+        });
+        sleepDetector.current = sd;
+
         // Set up audio source
         if (effectiveSource === 'companion') {
           // Companion mode: connect Socket.IO and join recording room
@@ -815,7 +843,11 @@ export function useRecording(
           // Local mode: capture from browser microphone
           const acDelegate: AudioCaptureDelegate = {
             onAudioData(pcmInt16: Int16Array) {
-              dgService.sendAudio(pcmInt16);
+              // Feed through sleep detector — it decides whether to send or buffer
+              const shouldSend = sd.processAudio(pcmInt16);
+              if (shouldSend) {
+                dgService.sendAudio(pcmInt16);
+              }
             },
             onError(err: Error) {
               setError(`Microphone error: ${err.message}`);
@@ -830,7 +862,7 @@ export function useRecording(
           await ac.start();
         }
 
-        // Keep-alive timer
+        // Keep-alive timer (active-state fallback — sleep detector handles doze keep-alive)
         keepAliveTimer.current = setInterval(() => {
           dgService.sendKeepAlive();
         }, KEEP_ALIVE_INTERVAL_MS);
@@ -888,6 +920,8 @@ export function useRecording(
     }
 
     // Stop services
+    sleepDetector.current?.reset();
+    sleepDetector.current = null;
     audioCapture.current?.stop();
     audioCapture.current = null;
     deepgram.current?.disconnect();
@@ -935,6 +969,7 @@ export function useRecording(
     debugLogger.current.endSession();
 
     setConnectionState('disconnected');
+    setSleepState('active');
     setIsSpeaking(false);
     setInterimTranscript('');
   }, [disconnectCompanionSocket, triggerSonnetExtraction, releaseWakeLock]);
@@ -944,6 +979,7 @@ export function useRecording(
   useEffect(() => {
     return () => {
       if (isRecordingRef.current) {
+        sleepDetector.current?.reset();
         audioCapture.current?.stop();
         deepgram.current?.disconnect();
         companionSocket.current?.disconnect();
@@ -982,6 +1018,7 @@ export function useRecording(
     interimTranscript,
     isSpeaking,
     isTTSSpeaking,
+    sleepState,
     currentAlert,
     alertQueueCount,
     regexMatchCount,

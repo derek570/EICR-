@@ -39,6 +39,8 @@ export class DeepgramService {
   private currentApiKey: string | null = null;
   private currentKeywords: Array<[string, number]> = [];
   private lastAudioSendTime: number | null = null;
+  private isStreamingPaused = false;
+  private pausedKeepAliveTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(delegate: DeepgramDelegate) {
     this.delegate = delegate;
@@ -141,6 +143,8 @@ export class DeepgramService {
   }
 
   private disconnectImmediate(): void {
+    this.isStreamingPaused = false;
+    this.stopPausedKeepAlive();
     if (this.ws) {
       try {
         this.ws.close(1000);
@@ -157,9 +161,68 @@ export class DeepgramService {
   sendAudio(pcmInt16: Int16Array): void {
     if (!this.ws || this._connectionState !== 'connected') return;
     if (this.ws.readyState !== WebSocket.OPEN) return;
+    if (this.isStreamingPaused) return;
 
     this.lastAudioSendTime = Date.now();
     this.ws.send(pcmInt16.buffer);
+  }
+
+  // ---- Pause / Resume / Replay (for sleep detector) ----
+
+  pauseAudioStream(): void {
+    if (this._connectionState !== 'connected') return;
+    this.isStreamingPaused = true;
+    this.startPausedKeepAlive();
+  }
+
+  resumeAudioStream(): void {
+    this.isStreamingPaused = false;
+    this.stopPausedKeepAlive();
+  }
+
+  /** Replay buffered audio (e.g. ring buffer from sleep detector on wake). */
+  replayBuffer(data: ArrayBuffer): void {
+    if (!this.ws || this._connectionState !== 'connected') return;
+    if (this.ws.readyState !== WebSocket.OPEN) return;
+    if (data.byteLength === 0) return;
+
+    try {
+      this.ws.send(data);
+    } catch {
+      /* ignore */
+    }
+  }
+
+  /** Keep-alive during pause: JSON + 500ms silent PCM every 5s.
+   *  Silent PCM uses Deepgram's audio liveness path which is more reliable
+   *  than JSON KeepAlive alone (~20s timeout observed with JSON only). */
+  private startPausedKeepAlive(): void {
+    this.stopPausedKeepAlive();
+    this.pausedKeepAliveTimer = setInterval(() => {
+      if (!this.isStreamingPaused || !this.ws || this.ws.readyState !== WebSocket.OPEN) {
+        this.stopPausedKeepAlive();
+        return;
+      }
+      // JSON KeepAlive
+      try {
+        this.ws.send(JSON.stringify({ type: 'KeepAlive' }));
+      } catch {
+        /* ignore */
+      }
+      // 500ms of silent Int16 PCM (8000 samples at 16kHz = 16,000 bytes)
+      try {
+        this.ws.send(new Int16Array(8000).buffer);
+      } catch {
+        /* ignore */
+      }
+    }, 5000);
+  }
+
+  private stopPausedKeepAlive(): void {
+    if (this.pausedKeepAliveTimer) {
+      clearInterval(this.pausedKeepAliveTimer);
+      this.pausedKeepAliveTimer = null;
+    }
   }
 
   // ---- Keep-Alive ----

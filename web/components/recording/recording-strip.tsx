@@ -29,6 +29,7 @@ export function RecordingStrip({ state, actions }: RecordingStripProps) {
         isRecording={state.isRecording}
         connectionState={state.connectionState}
         isSpeaking={state.isSpeaking}
+        sleepState={state.sleepState}
         sessionDuration={state.sessionDuration}
         error={state.error}
         onStart={actions.startRecording}
