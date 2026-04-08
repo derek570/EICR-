@@ -160,7 +160,15 @@ function TranscriptPanel({ state }: { state: RecordingState }) {
 const SLEEP_EVENT_STYLES: Record<string, { bg: string; text: string }> = {
   STARTED: { bg: 'bg-blue-100', text: 'text-blue-700' },
   ENTER_DOZING: { bg: 'bg-amber-100', text: 'text-amber-700' },
+  ENTER_SLEEPING: { bg: 'bg-red-100', text: 'text-red-700' },
   WAKE: { bg: 'bg-green-100', text: 'text-green-700' },
+  VAD_WAKE: { bg: 'bg-green-100', text: 'text-green-700' },
+  TTS_WAKE: { bg: 'bg-green-100', text: 'text-green-700' },
+  WAKE_FOR_QUESTION: { bg: 'bg-green-100', text: 'text-green-700' },
+  TTS_STARTED: { bg: 'bg-purple-100', text: 'text-purple-700' },
+  QUESTION_ASKED: { bg: 'bg-indigo-100', text: 'text-indigo-700' },
+  DOZE_BLOCKED: { bg: 'bg-amber-100', text: 'text-amber-700' },
+  DG_DISCONNECTED: { bg: 'bg-red-100', text: 'text-red-600' },
   STOPPED: { bg: 'bg-gray-100', text: 'text-gray-600' },
 };
 
@@ -202,7 +210,9 @@ function SleepPanel({ state }: { state: RecordingState }) {
         <span
           className={cn(
             'h-2 w-2 rounded-full',
-            state.sleepState === 'active' ? 'bg-green-500' : 'bg-amber-500 animate-pulse'
+            state.sleepState === 'active' && 'bg-green-500',
+            state.sleepState === 'dozing' && 'bg-amber-500 animate-pulse',
+            state.sleepState === 'sleeping' && 'bg-red-400 animate-pulse'
           )}
         />
         Current: {state.sleepState}
