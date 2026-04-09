@@ -9634,6 +9634,7 @@ Silero VAD v3's LSTM state can get stuck at probability ~1.0 during silence. Wor
 
 
 
+
 ## WhatsApp Context
 > Auto-synced from WhatsApp assistant memories on 2026-04-09. Do not edit manually.
 
@@ -14466,7 +14467,7 @@ Silero VAD v3's LSTM state can get stuck at probability ~1.0 during silence. Wor
 
 ### Deployment Notes
 - All EICR_App changes deployed to AWS ECS
-- Docker must use `--platform linux/arm64` for ECS Fargate Graviton (ARM64 since Apr 2026)
+- Docker must use `--platform linux/amd64` for ECS Fargate (Mac builds ARM by default)
 - iOS changes committed, require Xcode rebuild + deploy to device
 - Manually accepted 3 outstanding optimizer reports via curl
 
