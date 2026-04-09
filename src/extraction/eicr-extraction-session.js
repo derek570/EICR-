@@ -132,9 +132,66 @@ export class EICRExtractionSession {
     this.costTracker.startRecording();
     if (jobState) {
       this.circuitSchedule = this.buildCircuitSchedule(jobState);
+      // Seed stateSnapshot with pre-existing test readings so server-side
+      // confirmation dedup (Bug D) can catch duplicates for pre-existing values.
+      this._seedStateFromJobState(jobState);
     }
     this._resetCacheKeepalive();
     logger.info(`Session ${this.sessionId} Started`);
+  }
+
+  /**
+   * Populate stateSnapshot.circuits with pre-existing test readings from jobState
+   * so that server-side confirmation dedup works for fields already filled on iOS.
+   */
+  _seedStateFromJobState(jobState) {
+    if (!jobState?.circuits) return;
+    let seeded = 0;
+    for (const circuit of jobState.circuits) {
+      const num = parseInt(circuit.ref || circuit.circuitNumber || circuit.number);
+      if (isNaN(num)) continue;
+      const fields = {};
+      if (circuit.measuredZsOhm || circuit.zs) fields.zs = circuit.measuredZsOhm || circuit.zs;
+      if (circuit.r1R2Ohm || circuit.r1_plus_r2)
+        fields.r1_r2 = circuit.r1R2Ohm || circuit.r1_plus_r2;
+      if (circuit.r2Ohm || circuit.r2) fields.r2 = circuit.r2Ohm || circuit.r2;
+      if (circuit.irLiveEarthMohm || circuit.insulation_resistance_l_e)
+        fields.insulation_resistance_l_e =
+          circuit.irLiveEarthMohm || circuit.insulation_resistance_l_e;
+      if (circuit.irLiveLiveMohm || circuit.insulation_resistance_l_l)
+        fields.insulation_resistance_l_l =
+          circuit.irLiveLiveMohm || circuit.insulation_resistance_l_l;
+      if (circuit.ringR1Ohm) fields.ring_continuity_r1 = circuit.ringR1Ohm;
+      if (circuit.ringRnOhm) fields.ring_continuity_rn = circuit.ringRnOhm;
+      if (circuit.ringR2Ohm) fields.ring_continuity_r2 = circuit.ringR2Ohm;
+      if (circuit.rcdTimeMs) fields.rcd_trip_time = circuit.rcdTimeMs;
+      if (circuit.polarityConfirmed || circuit.polarity)
+        fields.polarity = circuit.polarityConfirmed || circuit.polarity;
+      if (Object.keys(fields).length > 0) {
+        this.stateSnapshot.circuits[num] = { ...fields };
+        if (!this.recentCircuitOrder.includes(num)) this.recentCircuitOrder.push(num);
+        seeded++;
+      }
+    }
+    // Supply-level fields (circuit 0)
+    const supply =
+      jobState.supplyCharacteristics || jobState.supply_characteristics || jobState.supply;
+    if (supply) {
+      const fields = {};
+      if (supply.earthLoopImpedanceZe || supply.ze)
+        fields.ze = supply.earthLoopImpedanceZe || supply.ze;
+      if (supply.prospectiveFaultCurrent || supply.pfc)
+        fields.pfc = supply.prospectiveFaultCurrent || supply.pfc;
+      if (Object.keys(fields).length > 0) {
+        this.stateSnapshot.circuits[0] = { ...fields };
+        seeded++;
+      }
+    }
+    if (seeded > 0) {
+      logger.info(
+        `Session ${this.sessionId} Seeded stateSnapshot with ${seeded} circuits from jobState`
+      );
+    }
   }
 
   pause() {
