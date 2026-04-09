@@ -1185,7 +1185,22 @@ New regex patterns MUST NOT false-match existing patterns for different fields. 
 4. **Validate ranges defensively**: Always validate captured numbers against realistic ranges for the field.
    Include BOTH lower and upper bounds. E.g., voltage 100-500V, frequency 45-65Hz, Ze 0.01-200 ohms.
 
-### 6. Categorise every recommendation
+### 6. FORBIDDEN RECOMMENDATIONS — NEVER SUGGEST THESE
+The following changes have been explicitly rejected by the developer and must NEVER be recommended:
+
+**A. Extending active circuit ref expiry / timeout**
+DO NOT recommend increasing the circuit reference expiry window (currently ~30s in TranscriptFieldMatcher).
+DO NOT recommend keeping an "active circuit" for longer, extending circuit context, or any variation of this.
+**Why**: In real-world use, electricians jump rapidly between circuits when performing the same test across
+all circuits (e.g., "circuit 1 Ze 0.35, circuit 2 Ze 0.41, circuit 3 Ze 0.28"). A long active-circuit
+window causes MASS confusion: when Deepgram misses a circuit reference (or the user says the reading
+BEFORE naming the circuit), the system incorrectly assigns the value to the previously-active circuit.
+A short expiry (5-10s) is a SAFETY FEATURE — it forces each reading to be matched with an explicit
+circuit reference rather than assuming it belongs to whatever circuit was last mentioned. If a value
+is missed because the circuit ref expired, that is the CORRECT behaviour — Sonnet will handle it with
+the full context window. The alternative (wrong value on wrong circuit) is far worse than a missed value.
+
+### 7. Categorise every recommendation
 Every recommendation MUST have a "category" from this list:
 - **regex_improvement**: New or improved regex pattern in TranscriptFieldMatcher.swift
 - **number_normaliser**: Fix in NumberNormaliser.swift for spoken number conversion
@@ -1196,7 +1211,7 @@ Every recommendation MUST have a "category" from this list:
 - **config_change**: Remote config or default_config.json change
 - **bug_fix**: Code bug in iOS/backend logic (field routing, model decode, etc.)
 
-### 7. Output format
+### 8. Output format
 Output ONLY a JSON object (no markdown fences, no explanation before or after) with this format:
 {
   "recommendations": [
