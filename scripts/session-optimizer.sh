@@ -1634,8 +1634,68 @@ apply_accepted_recommendations() {
             }
           }
         } else {
-          console.error('old_code not found in ' + rec.file + ': ' + rec.title);
-          failed++;
+          // Fuzzy fallback: normalize whitespace and strip comments, then match
+          const normalizeLine = (line) => {
+            let s = line.replace(/#.*$/, '');       // strip inline comments
+            s = s.replace(/\/\/.*$/, '');            // strip // comments
+            return s.replace(/\s+/g, ' ').trim();   // collapse whitespace, trim
+          };
+          const fileLines = content.split('\n');
+          const oldLines = oldCode.split('\n')
+            .filter(l => !/^\s*(#|\/\/)/.test(l))   // drop pure comment lines
+            .map(normalizeLine)
+            .filter(l => l.length > 0);              // drop blank normalized lines
+          let fuzzyMatch = false;
+          if (oldLines.length > 0) {
+            // Single-pass search: for each file line, try matching oldLines
+            // while skipping comment/blank lines in the file
+            for (let i = 0; i <= fileLines.length - oldLines.length; i++) {
+              // Quick check: first normalized line must match
+              if (normalizeLine(fileLines[i]) !== oldLines[0]) continue;
+              // Try to match all oldLines, skipping comment/blank lines in file
+              let actualEnd = i;
+              let matched = 0;
+              while (actualEnd < fileLines.length && matched < oldLines.length) {
+                const norm = normalizeLine(fileLines[actualEnd]);
+                if (norm.length === 0 || /^\s*(#|\/\/)/.test(fileLines[actualEnd])) {
+                  actualEnd++; // skip comment/blank lines in file
+                  continue;
+                }
+                if (norm === oldLines[matched]) {
+                  matched++;
+                  actualEnd++;
+                } else {
+                  break;
+                }
+              }
+              if (matched === oldLines.length) {
+                const before = fileLines.slice(0, i).join('\n');
+                const after = fileLines.slice(actualEnd).join('\n');
+                const updated = before + (before.length ? '\n' : '') + newCode + (after.length ? '\n' : '') + after;
+                fs.writeFileSync(rec.file, updated, 'utf8');
+                applied++;
+                fuzzyMatch = true;
+                console.log('Applied (fuzzy match): ' + rec.title);
+                // Auto-duplicate config changes to the Resources/ copy (fuzzy)
+                if (rec.file.includes('Sources/Resources/default_config.json')) {
+                  const mirrorPath = rec.file.replace('Sources/Resources/default_config.json', 'Resources/default_config.json');
+                  try {
+                    const mc = fs.readFileSync(mirrorPath, 'utf8');
+                    if (mc.includes(oldCode)) {
+                      fs.writeFileSync(mirrorPath, mc.replace(oldCode, newCode), 'utf8');
+                      console.log('Auto-mirrored to Resources/ copy: ' + rec.title);
+                    }
+                  } catch (e) {}
+                }
+                break;
+              }
+            }
+          }
+          if (!fuzzyMatch) {
+            console.error('old_code not found in ' + rec.file + ' (' + fileLines.length + ' lines): ' + rec.title);
+            console.error('  Searched for (first 100 chars): ' + oldCode.substring(0, 100));
+            failed++;
+          }
         }
       } catch (e) {
         console.error('Failed to apply ' + rec.title + ': ' + e.message);
