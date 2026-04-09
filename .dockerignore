@@ -21,3 +21,14 @@ coverage/
 *.pem
 *.key
 docker-compose*.yml
+
+# Reduce build context size (~141MB saved)
+# Remove web/ if you need to build with APP_DIR=web
+web/
+docs/
+scripts/
+migrations/
+ecs/
+certs/
+.claude/
+.github/

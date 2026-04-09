@@ -8,6 +8,27 @@
 
 set -euo pipefail
 
+# Retry wrapper for docker build — retries once on OOM (signal 9) or RPC EOF
+docker_build_with_retry() {
+  local attempt=1
+  local max_attempts=2
+  while [ $attempt -le $max_attempts ]; do
+    echo "       Build attempt $attempt/$max_attempts..."
+    if "$@"; then
+      return 0
+    fi
+    local exit_code=$?
+    if [ $attempt -lt $max_attempts ]; then
+      echo "       Build failed (exit $exit_code). Retrying in 10s..."
+      sleep 10
+    else
+      echo "       Build failed after $max_attempts attempts."
+      return $exit_code
+    fi
+    attempt=$((attempt + 1))
+  done
+}
+
 REGION="eu-west-2"
 ACCOUNT="196390795898"
 ECR_REGISTRY="${ACCOUNT}.dkr.ecr.${REGION}.amazonaws.com"
@@ -36,9 +57,8 @@ aws ecr get-login-password --region "$REGION" | \
 
 # 2. Build frontend (native ARM64 for Graviton ECS)
 echo "[2/4] Building frontend image (linux/arm64)..."
-docker build \
+docker_build_with_retry docker build \
   --platform linux/arm64 \
-  --no-cache \
   -f "$SCRIPT_DIR/docker/nextjs.Dockerfile" \
   --build-arg APP_DIR=frontend \
   --build-arg NEXT_PUBLIC_API_URL=https://certomatic3000.co.uk \
@@ -54,7 +74,7 @@ docker push "$ECR_REGISTRY/$FRONTEND_REPO:local-$(git rev-parse --short HEAD)"
 # 4. Backend (optional)
 if $DEPLOY_BACKEND; then
   echo "[3b/4] Building backend image (linux/arm64)..."
-  docker build \
+  docker_build_with_retry docker build \
     --platform linux/arm64 \
     -f "$SCRIPT_DIR/docker/backend.Dockerfile" \
     -t "$ECR_REGISTRY/$BACKEND_REPO:latest" \

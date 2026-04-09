@@ -340,7 +340,25 @@ router.post('/proxy/deepgram-streaming-key', auth.requireAuth, async (req, res) 
     logger.info('Deepgram temp streaming key issued', { userId });
     res.json({ key });
   } catch (error) {
-    logger.error('Deepgram streaming key failed', { userId, error: error.message });
+    // Fallback: if temp token creation fails, use master key directly
+    // This ensures recording sessions aren't silently broken by API changes
+    logger.warn('Deepgram temp token failed, falling back to master key', {
+      userId,
+      error: error.message,
+    });
+    try {
+      const masterKey = await getDeepgramKey();
+      if (masterKey) {
+        logger.info('Deepgram master key fallback issued', { userId });
+        res.json({ key: masterKey });
+        return;
+      }
+    } catch (fallbackErr) {
+      logger.error('Deepgram master key fallback also failed', {
+        userId,
+        error: fallbackErr.message,
+      });
+    }
     res.status(500).json({ error: 'Failed to create Deepgram streaming key' });
   }
 });
