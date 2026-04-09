@@ -1,5 +1,15 @@
-# CI/CD Pipeline for EICR-oMatic 3000
+# CI/CD Pipeline for EICR-oMatic 3000 (CertMate)
 # Builds, tests, and deploys to AWS ECS
+#
+# Triggers:
+#   - Push to main    → test + build + deploy to production
+#   - Push to develop → test + build + deploy to staging (if staging services exist)
+#   - workflow_dispatch → manual deploy (backend-only, frontend-only, or both)
+#
+# Manual deploy from CLI:
+#   gh workflow run deploy.yml -f deploy_target=backend -f environment=production
+#   gh workflow run deploy.yml -f deploy_target=frontend -f environment=production
+#   gh workflow run deploy.yml -f deploy_target=both -f environment=production
 
 name: CI/CD Pipeline
 
@@ -8,6 +18,25 @@ on:
     branches: [main, master, develop]
   pull_request:
     branches: [main, master]
+  workflow_dispatch:
+    inputs:
+      deploy_target:
+        description: 'What to deploy'
+        required: true
+        type: choice
+        options:
+          - both
+          - backend
+          - frontend
+        default: both
+      environment:
+        description: 'Target environment'
+        required: true
+        type: choice
+        options:
+          - production
+          - staging
+        default: production
 
 env:
   AWS_REGION: eu-west-2
@@ -24,6 +53,7 @@ jobs:
   test-backend:
     name: Test Backend (Node.js)
     runs-on: ubuntu-latest
+    if: github.event_name != 'workflow_dispatch'
 
     steps:
       - name: Checkout code
@@ -65,6 +95,7 @@ jobs:
   test-frontend:
     name: Test Frontend (Next.js)
     runs-on: ubuntu-latest
+    if: github.event_name != 'workflow_dispatch'
 
     steps:
       - name: Checkout code
@@ -106,6 +137,7 @@ jobs:
   security-audit:
     name: npm Audit Security Scan
     runs-on: ubuntu-latest
+    if: github.event_name != 'workflow_dispatch'
 
     steps:
       - name: Checkout code
@@ -135,6 +167,7 @@ jobs:
     name: Build Docker Images
     runs-on: ubuntu-latest
     needs: [test-backend, test-frontend, security-audit]
+    if: always() && (github.event_name == 'workflow_dispatch' || (needs.test-backend.result == 'success' && needs.test-frontend.result == 'success'))
 
     steps:
       - name: Checkout code
@@ -149,6 +182,7 @@ jobs:
         uses: docker/setup-buildx-action@v3
 
       - name: Build Frontend Image
+        if: github.event_name != 'workflow_dispatch' || inputs.deploy_target != 'backend'
         uses: docker/build-push-action@v5
         with:
           context: .
@@ -164,6 +198,7 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: Build Backend Image
+        if: github.event_name != 'workflow_dispatch' || inputs.deploy_target != 'frontend'
         uses: docker/build-push-action@v5
         with:
           context: .
@@ -196,6 +231,7 @@ jobs:
         uses: docker/setup-buildx-action@v3
 
       - name: Build Frontend Image for Scan
+        if: github.event_name != 'workflow_dispatch' || inputs.deploy_target != 'backend'
         uses: docker/build-push-action@v5
         with:
           context: .
@@ -210,6 +246,7 @@ jobs:
           cache-from: type=gha
 
       - name: Build Backend Image for Scan
+        if: github.event_name != 'workflow_dispatch' || inputs.deploy_target != 'frontend'
         uses: docker/build-push-action@v5
         with:
           context: .
@@ -221,6 +258,7 @@ jobs:
           cache-from: type=gha
 
       - name: Scan Frontend Image (blocking on CRITICAL)
+        if: github.event_name != 'workflow_dispatch' || inputs.deploy_target != 'backend'
         uses: aquasecurity/trivy-action@0.35.0
         with:
           image-ref: 'eicr-frontend:${{ github.sha }}'
@@ -230,7 +268,7 @@ jobs:
           ignore-unfixed: true
 
       - name: Scan Frontend Image (HIGH - advisory only)
-        if: always()
+        if: always() && (github.event_name != 'workflow_dispatch' || inputs.deploy_target != 'backend')
         uses: aquasecurity/trivy-action@0.35.0
         with:
           image-ref: 'eicr-frontend:${{ github.sha }}'
@@ -239,6 +277,7 @@ jobs:
           severity: 'HIGH'
 
       - name: Scan Backend Image (blocking on CRITICAL)
+        if: github.event_name != 'workflow_dispatch' || inputs.deploy_target != 'frontend'
         uses: aquasecurity/trivy-action@0.35.0
         with:
           image-ref: 'eicr-backend:${{ github.sha }}'
@@ -248,7 +287,7 @@ jobs:
           ignore-unfixed: true
 
       - name: Scan Backend Image (HIGH - advisory only)
-        if: always()
+        if: always() && (github.event_name != 'workflow_dispatch' || inputs.deploy_target != 'frontend')
         uses: aquasecurity/trivy-action@0.35.0
         with:
           image-ref: 'eicr-backend:${{ github.sha }}'
@@ -263,7 +302,9 @@ jobs:
     name: Deploy to Staging
     runs-on: ubuntu-latest
     needs: [scan-images]
-    if: github.ref == 'refs/heads/develop' && github.event_name == 'push'
+    if: |
+      (github.ref == 'refs/heads/develop' && github.event_name == 'push') ||
+      (github.event_name == 'workflow_dispatch' && inputs.environment == 'staging')
     environment: staging
 
     steps:
@@ -289,7 +330,17 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      - name: Determine deploy scope
+        id: scope
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "target=${{ inputs.deploy_target }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "target=both" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Build and push Frontend to ECR (staging)
+        if: steps.scope.outputs.target != 'backend'
         uses: docker/build-push-action@v5
         with:
           context: .
@@ -307,6 +358,7 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: Build and push Backend to ECR (staging)
+        if: steps.scope.outputs.target != 'frontend'
         uses: docker/build-push-action@v5
         with:
           context: .
@@ -321,46 +373,63 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      - name: Check if staging ECS services exist
+        id: staging-check
+        run: |
+          # Check if staging services exist before trying to deploy
+          FRONTEND_EXISTS=$(aws ecs describe-services --cluster ${{ env.ECS_CLUSTER }} --services eicr-staging-frontend --query 'services[0].status' --output text 2>/dev/null || echo "MISSING")
+          BACKEND_EXISTS=$(aws ecs describe-services --cluster ${{ env.ECS_CLUSTER }} --services eicr-staging-backend --query 'services[0].status' --output text 2>/dev/null || echo "MISSING")
+          echo "frontend_exists=$FRONTEND_EXISTS" >> "$GITHUB_OUTPUT"
+          echo "backend_exists=$BACKEND_EXISTS" >> "$GITHUB_OUTPUT"
+          echo "Staging frontend service: $FRONTEND_EXISTS"
+          echo "Staging backend service: $BACKEND_EXISTS"
+          if [ "$FRONTEND_EXISTS" = "MISSING" ] && [ "$BACKEND_EXISTS" = "MISSING" ]; then
+            echo "WARNING: No staging ECS services found. Images pushed to ECR but no ECS deploy."
+            echo "To create staging services, run: aws ecs create-service ..."
+          fi
+
       - name: Update ECS Staging Frontend Service
+        if: steps.scope.outputs.target != 'backend' && steps.staging-check.outputs.frontend_exists == 'ACTIVE'
         run: |
           aws ecs update-service \
             --cluster ${{ env.ECS_CLUSTER }} \
-            --service certmate-staging-frontend \
+            --service eicr-staging-frontend \
             --force-new-deployment
 
       - name: Update ECS Staging Backend Service
+        if: steps.scope.outputs.target != 'frontend' && steps.staging-check.outputs.backend_exists == 'ACTIVE'
         run: |
           aws ecs update-service \
             --cluster ${{ env.ECS_CLUSTER }} \
-            --service certmate-staging-backend \
+            --service eicr-staging-backend \
             --force-new-deployment
 
-      - name: Wait for Staging Frontend deployment
+      - name: Wait for Staging deployment
+        if: steps.staging-check.outputs.frontend_exists == 'ACTIVE' || steps.staging-check.outputs.backend_exists == 'ACTIVE'
         run: |
-          aws ecs wait services-stable \
-            --cluster ${{ env.ECS_CLUSTER }} \
-            --services certmate-staging-frontend
-
-      - name: Wait for Staging Backend deployment
-        run: |
-          aws ecs wait services-stable \
-            --cluster ${{ env.ECS_CLUSTER }} \
-            --services certmate-staging-backend
+          if [ "${{ steps.staging-check.outputs.frontend_exists }}" = "ACTIVE" ] && [ "${{ steps.scope.outputs.target }}" != "backend" ]; then
+            aws ecs wait services-stable --cluster ${{ env.ECS_CLUSTER }} --services eicr-staging-frontend
+          fi
+          if [ "${{ steps.staging-check.outputs.backend_exists }}" = "ACTIVE" ] && [ "${{ steps.scope.outputs.target }}" != "frontend" ]; then
+            aws ecs wait services-stable --cluster ${{ env.ECS_CLUSTER }} --services eicr-staging-backend
+          fi
 
       - name: Staging deployment complete
         run: |
-          echo "Staging deployment successful!"
-          echo "Staging Frontend: https://staging.certomatic3000.co.uk"
+          echo "Staging deployment complete!"
+          echo "Images pushed to ECR with staging tags."
           echo "Commit: ${{ github.sha }}"
 
   # ============================================
-  # Job 5: Deploy to Production (main branch, manual approval)
+  # Job 5: Deploy to Production (main branch or manual)
   # ============================================
   deploy:
     name: Deploy to AWS ECS (Production)
     runs-on: ubuntu-latest
     needs: [scan-images]
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    if: |
+      (github.ref == 'refs/heads/main' && github.event_name == 'push') ||
+      (github.event_name == 'workflow_dispatch' && inputs.environment == 'production')
     environment: production
 
     steps:
@@ -386,7 +455,17 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      - name: Determine deploy scope
+        id: scope
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "target=${{ inputs.deploy_target }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "target=both" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Build and push Frontend to ECR
+        if: steps.scope.outputs.target != 'backend'
         uses: docker/build-push-action@v5
         with:
           context: .
@@ -403,6 +482,7 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: Build and push Backend to ECR
+        if: steps.scope.outputs.target != 'frontend'
         uses: docker/build-push-action@v5
         with:
           context: .
@@ -416,6 +496,7 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: Register ARM64 Frontend Task Definition
+        if: steps.scope.outputs.target != 'backend'
         id: register-frontend-taskdef
         run: |
           TASK_ARN=$(aws ecs register-task-definition \
@@ -426,6 +507,7 @@ jobs:
           echo "task_arn=$TASK_ARN" >> "$GITHUB_OUTPUT"
 
       - name: Register ARM64 Backend Task Definition
+        if: steps.scope.outputs.target != 'frontend'
         id: register-backend-taskdef
         run: |
           TASK_ARN=$(aws ecs register-task-definition \
@@ -436,6 +518,7 @@ jobs:
           echo "task_arn=$TASK_ARN" >> "$GITHUB_OUTPUT"
 
       - name: Update ECS Frontend Service
+        if: steps.scope.outputs.target != 'backend'
         run: |
           aws ecs update-service \
             --cluster ${{ env.ECS_CLUSTER }} \
@@ -444,6 +527,7 @@ jobs:
             --force-new-deployment
 
       - name: Update ECS Backend Service
+        if: steps.scope.outputs.target != 'frontend'
         run: |
           aws ecs update-service \
             --cluster ${{ env.ECS_CLUSTER }} \
@@ -451,17 +535,20 @@ jobs:
             --task-definition ${{ steps.register-backend-taskdef.outputs.task_arn }} \
             --force-new-deployment
 
-      - name: Wait for Frontend deployment
+      - name: Wait for deployment
         run: |
-          aws ecs wait services-stable \
-            --cluster ${{ env.ECS_CLUSTER }} \
-            --services ${{ env.ECS_SERVICE_FRONTEND }}
-
-      - name: Wait for Backend deployment
-        run: |
-          aws ecs wait services-stable \
-            --cluster ${{ env.ECS_CLUSTER }} \
-            --services ${{ env.ECS_SERVICE_BACKEND }}
+          if [ "${{ steps.scope.outputs.target }}" != "backend" ]; then
+            echo "Waiting for frontend deployment..."
+            aws ecs wait services-stable \
+              --cluster ${{ env.ECS_CLUSTER }} \
+              --services ${{ env.ECS_SERVICE_FRONTEND }}
+          fi
+          if [ "${{ steps.scope.outputs.target }}" != "frontend" ]; then
+            echo "Waiting for backend deployment..."
+            aws ecs wait services-stable \
+              --cluster ${{ env.ECS_CLUSTER }} \
+              --services ${{ env.ECS_SERVICE_BACKEND }}
+          fi
 
       - name: Deployment complete
         run: |
