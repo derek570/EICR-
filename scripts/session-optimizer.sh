@@ -1597,15 +1597,24 @@ apply_accepted_recommendations() {
     for (const idx of accepted) {
       const rec = recs[idx];
       if (!rec) { console.error('Invalid index: ' + idx); failed++; continue; }
+      // Normalize field names: Claude sometimes outputs code_before/code_after
+      // instead of old_code/new_code — accept both variants
+      const oldCode = rec.old_code || rec.code_before;
+      const newCode = rec.new_code || rec.code_after;
+      if (!oldCode || !newCode) {
+        console.error('Missing old_code/new_code for: ' + rec.title);
+        failed++;
+        continue;
+      }
       try {
         const content = fs.readFileSync(rec.file, 'utf8');
         // Idempotency: skip if new_code is already present (prevents re-applying
         // when old_code is a substring of new_code)
-        if (content.includes(rec.new_code)) {
+        if (content.includes(newCode)) {
           console.log('Already applied (idempotent skip): ' + rec.title);
           applied++;
-        } else if (content.includes(rec.old_code)) {
-          const updated = content.replace(rec.old_code, rec.new_code);
+        } else if (content.includes(oldCode)) {
+          const updated = content.replace(oldCode, newCode);
           fs.writeFileSync(rec.file, updated, 'utf8');
           applied++;
           console.log('Applied: ' + rec.title);
@@ -1614,8 +1623,8 @@ apply_accepted_recommendations() {
             const mirrorPath = rec.file.replace('Sources/Resources/default_config.json', 'Resources/default_config.json');
             try {
               const mirrorContent = fs.readFileSync(mirrorPath, 'utf8');
-              if (mirrorContent.includes(rec.old_code)) {
-                fs.writeFileSync(mirrorPath, mirrorContent.replace(rec.old_code, rec.new_code), 'utf8');
+              if (mirrorContent.includes(oldCode)) {
+                fs.writeFileSync(mirrorPath, mirrorContent.replace(oldCode, newCode), 'utf8');
                 console.log('Auto-mirrored to Resources/ copy: ' + rec.title);
               } else {
                 console.error('Mirror old_code not found in ' + mirrorPath);
