@@ -934,7 +934,7 @@ process_session() {
   local SONNET_PROMPT=""
 
   if [ -f "$IOS_DIR/Sources/Recording/TranscriptFieldMatcher.swift" ]; then
-    REGEX_PATTERNS=$(head -300 "$IOS_DIR/Sources/Recording/TranscriptFieldMatcher.swift" 2>/dev/null || echo "Could not read")
+    REGEX_PATTERNS=$(cat "$IOS_DIR/Sources/Recording/TranscriptFieldMatcher.swift" 2>/dev/null || echo "Could not read")
   fi
   if [ -f "$IOS_DIR/Resources/default_config.json" ]; then
     KEYWORD_BOOSTS=$(cat "$IOS_DIR/Resources/default_config.json" 2>/dev/null || echo "{}")
@@ -964,7 +964,7 @@ print(count,tokens)
   local TOKEN_HEADROOM=$((TOKEN_BUDGET - KEYWORD_TOKENS))
   # Server-side Sonnet extraction session (primary prompt for optimization)
   if [ -f "$BACKEND_DIR/src/extraction/eicr-extraction-session.js" ]; then
-    SONNET_PROMPT=$(head -200 "$BACKEND_DIR/src/extraction/eicr-extraction-session.js" 2>/dev/null || echo "Could not read")
+    SONNET_PROMPT=$(cat "$BACKEND_DIR/src/extraction/eicr-extraction-session.js" 2>/dev/null || echo "Could not read")
   fi
 
   # Collect debug reports context
@@ -1073,7 +1073,7 @@ Values spoken 2+ times without being captured. The user is likely repeating them
 the system didn't acknowledge the value. High priority for regex improvements.
 PROMPT_REPEATED
     printf '%s\n\n' "$REPEATED_VALUES_DATA"
-    printf '%s\n' "## Current Regex Patterns (TranscriptFieldMatcher.swift — first 300 lines)"
+    printf '%s\n' "## Current Regex Patterns (TranscriptFieldMatcher.swift — full file)"
     printf '%s\n\n' "$REGEX_PATTERNS"
     printf '%s\n' "## Current Remote Config (default_config.json — keyword boosts + regex overrides)"
     printf '%s\n\n' "$KEYWORD_BOOSTS"
@@ -1090,7 +1090,7 @@ iOS KeywordBoostGenerator uses a two-tier token-budget strategy:
 - keyword_removal is now LESS necessary since all keywords fit, but still useful for removing genuinely unhelpful terms.
 
 PROMPT_KEYWORDS
-    printf '%s\n' "## Current Sonnet Extraction (server-side eicr-extraction-session.js — first 200 lines)"
+    printf '%s\n' "## Current Sonnet Extraction (server-side eicr-extraction-session.js — full file)"
     printf '%s\n\n' "$SONNET_PROMPT"
     printf '%s\n' "## User Feedback (corrections from previous optimizer run)"
     printf '%s\n\n' "${FEEDBACK_CONTEXT:-No user feedback for this session.}"
