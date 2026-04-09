@@ -433,24 +433,42 @@ record_git_state() {
 commit_changes() {
   local SESSION_ID="$1"
   local SUMMARY="$2"
+  local DETAILED_BODY="${3:-}"  # Optional: detailed commit body from recommendations
 
   IOS_COMMIT=""
   BACKEND_COMMIT=""
   IOS_CHANGED=false
   BACKEND_CHANGED=false
 
-  # Check and commit iOS changes
-  cd "$IOS_DIR"
-  if ! git diff --quiet 2>/dev/null || ! git diff --cached --quiet 2>/dev/null; then
-    git add -A
-    git commit -m "$(cat <<EOF
+  # Build the full commit message with detailed body if available
+  local COMMIT_MSG
+  if [ -n "$DETAILED_BODY" ]; then
+    COMMIT_MSG="$(cat <<EOF
+optimizer: $SUMMARY
+
+$DETAILED_BODY
+
+Revert: git revert <hash>
+
+Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
+EOF
+    )"
+  else
+    COMMIT_MSG="$(cat <<EOF
 optimizer: $SESSION_ID — $SUMMARY
 
 Applied by session-optimizer. Revert: git revert <hash>
 
 Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
 EOF
-    )" 2>&1 | tee -a "$LOG_FILE"
+    )"
+  fi
+
+  # Check and commit iOS changes
+  cd "$IOS_DIR"
+  if ! git diff --quiet 2>/dev/null || ! git diff --cached --quiet 2>/dev/null; then
+    git add -A
+    git commit -m "$COMMIT_MSG" 2>&1 | tee -a "$LOG_FILE"
     IOS_COMMIT=$(git rev-parse HEAD)
     IOS_CHANGED=true
     log "  iOS commit: $IOS_COMMIT"
@@ -460,14 +478,7 @@ EOF
   cd "$BACKEND_DIR"
   if ! git diff --quiet 2>/dev/null || ! git diff --cached --quiet 2>/dev/null; then
     git add -A
-    git commit -m "$(cat <<EOF
-optimizer: $SESSION_ID — $SUMMARY
-
-Applied by session-optimizer. Revert: git revert <hash>
-
-Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
-EOF
-    )" 2>&1 | tee -a "$LOG_FILE"
+    git commit -m "$COMMIT_MSG" 2>&1 | tee -a "$LOG_FILE"
     BACKEND_COMMIT=$(git rev-parse HEAD)
     BACKEND_CHANGED=true
     log "  Backend commit: $BACKEND_COMMIT"
@@ -1722,8 +1733,74 @@ apply_accepted_recommendations() {
 
   log "  $APPLY_OUTPUT"
 
+  # Build detailed commit body from recommendation data
+  # Each recommendation has: title, description, explanation (plain-English for non-coders), category, file
+  local DETAILED_BODY
+  DETAILED_BODY=$(node -e "
+    const recs = JSON.parse(require('fs').readFileSync('$WORK_DIR/recommendations.json','utf8'));
+    const accepted = JSON.parse(require('fs').readFileSync('$WORK_DIR/accepted_indices.json','utf8'));
+    const lines = [];
+    const titles = [];
+
+    for (const idx of accepted) {
+      const rec = recs[idx];
+      if (!rec) continue;
+      titles.push(rec.title || 'Untitled fix');
+
+      lines.push('---');
+      lines.push('');
+      lines.push('CHANGE ' + (titles.length) + ': ' + (rec.title || 'Untitled fix'));
+      lines.push('Category: ' + (rec.category || 'unknown').replace(/_/g, ' '));
+      lines.push('File: ' + (rec.file || 'unknown').split('/').slice(-2).join('/'));
+      lines.push('');
+
+      // Plain-English explanation (written for non-technical users)
+      if (rec.explanation) {
+        lines.push('WHAT THIS DOES (in plain English):');
+        lines.push(rec.explanation);
+        lines.push('');
+      }
+
+      // Technical description for developers
+      if (rec.description) {
+        lines.push('WHY THIS CHANGE IS NEEDED:');
+        lines.push(rec.description);
+        lines.push('');
+      }
+    }
+
+    // Build a human-readable summary line
+    const summary = titles.length === 1
+      ? titles[0]
+      : titles.length + ' fixes: ' + titles.join(', ');
+
+    // Output: first line is the summary (used as commit title suffix), rest is the body
+    console.log('SUMMARY_LINE:' + summary);
+    console.log('');
+    console.log('This commit was automatically applied by the CertMate session optimizer.');
+    console.log('It analysed a real user session, identified improvements, and applied');
+    console.log('the fixes that were approved in the optimizer report.');
+    console.log('');
+    console.log('Report ID: $REPORT_ID');
+    console.log(titles.length + ' recommendation(s) applied:');
+    console.log('');
+    lines.forEach(l => console.log(l));
+  " 2>/dev/null) || true
+
+  # Extract summary line and body
+  local COMMIT_SUMMARY
+  COMMIT_SUMMARY=$(echo "$DETAILED_BODY" | head -1 | sed 's/^SUMMARY_LINE://')
+  local COMMIT_BODY
+  COMMIT_BODY=$(echo "$DETAILED_BODY" | tail -n +2)
+
+  # Use detailed summary if available, fallback to generic
+  if [ -z "$COMMIT_SUMMARY" ] || [ "$COMMIT_SUMMARY" = "SUMMARY_LINE:" ]; then
+    COMMIT_SUMMARY="Applied accepted recommendations from report ${REPORT_ID:0:8}"
+    COMMIT_BODY=""
+  fi
+
   # Commit and deploy
-  commit_changes "optimizer-report/${REPORT_ID}" "Applied accepted recommendations from report ${REPORT_ID:0:8}"
+  commit_changes "optimizer-report/${REPORT_ID}" "$COMMIT_SUMMARY" "$COMMIT_BODY"
 
   if [ "$BACKEND_CHANGED" = "true" ]; then
     deploy_backend
