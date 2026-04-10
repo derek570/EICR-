@@ -475,6 +475,8 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         existing.session.updateJobState(jobState);
       }
       ws.send(JSON.stringify({ type: 'session_ack', status: 'reconnected' }));
+      // Flush any extraction results that were buffered while the socket was disconnected
+      flushPendingExtractions(ws, existing, sessionId);
       logger.info('Session reconnected', { sessionId, turns: existing.session.turnCount });
       return;
     }
@@ -502,11 +504,21 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
     session.onBatchResult = (result) => {
       try {
         validateAndCorrectFields(result, sessionId);
-        if (ws.readyState === ws.OPEN) {
+        const entryRef = activeSessions.get(sessionId);
+        const currentWs = entryRef?.ws || ws;
+        if (currentWs.readyState === currentWs.OPEN) {
           const { questions_for_user, extracted_readings, ...rest } = result;
           const resultWithoutQuestions = { readings: extracted_readings, ...rest };
-          ws.send(JSON.stringify({ type: 'extraction', result: resultWithoutQuestions }));
-          ws.send(JSON.stringify(session.costTracker.toCostUpdate()));
+          currentWs.send(JSON.stringify({ type: 'extraction', result: resultWithoutQuestions }));
+          currentWs.send(JSON.stringify(session.costTracker.toCostUpdate()));
+        } else if (entryRef) {
+          // Buffer extraction results when WebSocket not OPEN — flushed on reconnect
+          entryRef.pendingExtractions.push(result);
+          logger.info('Extraction buffered (socket not open)', {
+            sessionId,
+            readings: (result.extracted_readings || []).length,
+            buffered: entryRef.pendingExtractions.length,
+          });
         }
         if (result.questions_for_user && result.questions_for_user.length > 0) {
           questionGate.enqueue(result.questions_for_user);
@@ -542,10 +554,36 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
       lastRegexResults: [],
       isExtracting: false,
       pendingTranscripts: [],
+      pendingExtractions: [],
     });
 
     ws.send(JSON.stringify({ type: 'session_ack', status: 'started' }));
     logger.info('Session started', { sessionId, jobId, jobAddress, certType });
+  }
+
+  function flushPendingExtractions(ws, entry, sessionId) {
+    if (!entry.pendingExtractions.length) return;
+    const buffered = [...entry.pendingExtractions];
+    entry.pendingExtractions.length = 0;
+    logger.info('Flushing pending extractions on reconnect', {
+      sessionId,
+      count: buffered.length,
+    });
+    for (const result of buffered) {
+      try {
+        const { questions_for_user, extracted_readings, ...rest } = result;
+        const resultWithoutQuestions = { readings: extracted_readings, ...rest };
+        ws.send(JSON.stringify({ type: 'extraction', result: resultWithoutQuestions }));
+      } catch (err) {
+        logger.error('Failed to flush buffered extraction', { sessionId, error: err.message });
+      }
+    }
+    // Send current cost update after flushing all buffered extractions
+    try {
+      ws.send(JSON.stringify(entry.session.costTracker.toCostUpdate()));
+    } catch (err) {
+      logger.error('Failed to send cost update after flush', { sessionId, error: err.message });
+    }
   }
 
   async function handleTranscript(ws, sessionId, msg) {
@@ -608,6 +646,14 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
 
         // Send cost update
         ws.send(JSON.stringify(entry.session.costTracker.toCostUpdate()));
+      } else {
+        // Buffer extraction results when WebSocket not OPEN — flushed on reconnect
+        entry.pendingExtractions.push(result);
+        logger.info('Extraction buffered (socket not open)', {
+          sessionId,
+          readings: result.extracted_readings.length,
+          buffered: entry.pendingExtractions.length,
+        });
       }
 
       // Handle questions (gated)
