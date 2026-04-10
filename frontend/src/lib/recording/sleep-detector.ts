@@ -44,9 +44,9 @@ export interface SleepDetectorConfig {
 }
 
 const DEFAULT_CONFIG: SleepDetectorConfig = {
-  noTranscriptTimeout: 15,
-  questionAnswerTimeout: 20,
-  postWakeGraceTimeout: 25,
+  noTranscriptTimeout: 30,
+  questionAnswerTimeout: 35,
+  postWakeGraceTimeout: 40,
   dozingTimeout: 1800,
   energyWakeThreshold: 0.01,
   energyFloor: 0.005,

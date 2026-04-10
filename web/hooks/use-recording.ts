@@ -112,7 +112,7 @@ export interface RecordingActions {
 // ============= Constants =============
 
 const SONNET_DEBOUNCE_MS = 3000;
-const SONNET_COOLDOWN_MS = 5000;
+const SONNET_COOLDOWN_MS = 3000;
 const KEEP_ALIVE_INTERVAL_MS = 8000;
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000';
 
@@ -621,9 +621,11 @@ export function useRecording(
       setSonnetCallCount(claude.current.sessionCallCount);
       setSonnetCostUSD(claude.current.sessionCostUSD);
     } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
       debugLogger.current.error('sonnet', 'sonnet_error', {
-        error: err instanceof Error ? err.message : String(err),
+        error: message,
       });
+      setError(`Extraction failed: ${message}`);
     }
   }, [applySonnetResults]);
 

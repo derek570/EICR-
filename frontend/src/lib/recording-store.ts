@@ -60,6 +60,7 @@ interface RecordingState {
   isTTSSpeaking: boolean;
   highlight: TranscriptHighlight | null;
   liveJob: JobDetail | null;
+  extractionError: string | null;
 
   // Actions
   setRecording: (isRecording: boolean) => void;
@@ -74,6 +75,7 @@ interface RecordingState {
   setTTSSpeaking: (speaking: boolean) => void;
   setHighlight: (highlight: TranscriptHighlight | null) => void;
   setLiveJob: (job: JobDetail | null) => void;
+  setExtractionError: (error: string | null) => void;
   appendTranscript: (text: string) => void;
   reset: () => void;
 }
@@ -92,6 +94,7 @@ const initialState = {
   isTTSSpeaking: false,
   highlight: null as TranscriptHighlight | null,
   liveJob: null as JobDetail | null,
+  extractionError: null as string | null,
 };
 
 export const useRecordingStore = create<RecordingState>((set) => ({
@@ -109,6 +112,7 @@ export const useRecordingStore = create<RecordingState>((set) => ({
   setTTSSpeaking: (isTTSSpeaking) => set({ isTTSSpeaking }),
   setHighlight: (highlight) => set({ highlight }),
   setLiveJob: (liveJob) => set({ liveJob }),
+  setExtractionError: (extractionError) => set({ extractionError }),
 
   appendTranscript: (text) =>
     set((state) => ({

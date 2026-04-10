@@ -240,7 +240,12 @@ export function useRecording(jobId: string, userId: string, initialJob: JobDetai
   const applySonnetReadings = useCallback(
     (result: RollingExtractionResult) => {
       const job = jobRef.current;
-      if (!job) return;
+      if (!job) {
+        console.warn(
+          '[useRecording] applySonnetReadings: jobRef is null — extraction results discarded'
+        );
+        return;
+      }
 
       // Clone the top-level sections we may mutate
       const updatedJob: JobDetail = {
@@ -504,6 +509,7 @@ export function useRecording(jobId: string, userId: string, initialJob: JobDetai
       // 13. Create ServerWebSocketService
       const serverWS = new ServerWebSocketService({
         onExtraction: (result: RollingExtractionResult) => {
+          store.setExtractionError(null);
           applySonnetReadings(result);
         },
         onQuestion: (question: UserQuestion) => {
@@ -516,6 +522,7 @@ export function useRecording(jobId: string, userId: string, initialJob: JobDetai
         },
         onError: (msg: string, recoverable: boolean) => {
           console.error(`[useRecording] Server WS error (recoverable=${recoverable}):`, msg);
+          store.setExtractionError(msg);
         },
         onSessionAck: (status: string) => {
           console.log('[useRecording] session_ack:', status);

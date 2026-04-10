@@ -2,14 +2,13 @@
 // Port of iOS AlertManager.swift — manages question queue, ElevenLabs TTS
 // via backend proxy, and echo suppression for the web recording UI.
 
-import type { UserQuestion } from "./server-ws-service";
+import type { UserQuestion } from './server-ws-service';
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
-const API_BASE_URL =
-  process.env.NEXT_PUBLIC_API_URL || "http://localhost:3000";
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000';
 
 const AUTO_DISMISS_MS = 15_000;
 const INTER_ALERT_MS = 1_500;
@@ -21,28 +20,28 @@ const MAX_ASKS_PER_FIELD = 2;
 // ---------------------------------------------------------------------------
 
 const TTS_EXPANSIONS: Array<[RegExp, string]> = [
-  [/\bEICR\b/g, "E I C R"],
-  [/\bEIC\b/g, "E I C"],
-  [/\bBS\s*EN\b/g, "B S E N"],
-  [/\bBS\b/g, "B S"],
-  [/\bR1\+R2\b/g, "R1 plus R2"],
-  [/\bRCBO\b/g, "R C B O"],
-  [/\bRCD\b/g, "R C D"],
-  [/\bMCB\b/g, "M C B"],
-  [/\bSPD\b/g, "S P D"],
-  [/\bAFDD\b/g, "A F D D"],
-  [/\bCPC\b/g, "C P C"],
-  [/\bPFC\b/g, "P F C"],
-  [/\bPME\b/g, "P M E"],
-  [/\bTN-C-S\b/g, "T N C S"],
-  [/\bTN-S\b/g, "T N S"],
-  [/\bTT\b/g, "T T"],
-  [/\bZe\b/g, "zed E"],
-  [/\bZs\b/g, "zed S"],
-  [/mm²/g, "millimetres squared"],
-  [/MΩ/g, "megohms"],
-  [/\bkA\b/g, "kiloamps"],
-  [/\bmA\b/g, "milliamps"],
+  [/\bEICR\b/g, 'E I C R'],
+  [/\bEIC\b/g, 'E I C'],
+  [/\bBS\s*EN\b/g, 'B S E N'],
+  [/\bBS\b/g, 'B S'],
+  [/\bR1\+R2\b/g, 'R1 plus R2'],
+  [/\bRCBO\b/g, 'R C B O'],
+  [/\bRCD\b/g, 'R C D'],
+  [/\bMCB\b/g, 'M C B'],
+  [/\bSPD\b/g, 'S P D'],
+  [/\bAFDD\b/g, 'A F D D'],
+  [/\bCPC\b/g, 'C P C'],
+  [/\bPFC\b/g, 'P F C'],
+  [/\bPME\b/g, 'P M E'],
+  [/\bTN-C-S\b/g, 'T N C S'],
+  [/\bTN-S\b/g, 'T N S'],
+  [/\bTT\b/g, 'T T'],
+  [/\bZe\b/g, 'zed E'],
+  [/\bZs\b/g, 'zed S'],
+  [/mm²/g, 'millimetres squared'],
+  [/MΩ/g, 'megohms'],
+  [/\bkA\b/g, 'kiloamps'],
+  [/\bmA\b/g, 'milliamps'],
 ];
 
 function expandForTTS(text: string): string {
@@ -79,6 +78,7 @@ export class AlertManager {
   private _isTTSSpeaking = false;
   private audioElement: HTMLAudioElement | null = null;
   private ttsCooldownTimerId: ReturnType<typeof setTimeout> | null = null;
+  private ttsSafetyTimerId: ReturnType<typeof setTimeout> | null = null;
 
   // Auto-dismiss timer
   private autoDismissTimerId: ReturnType<typeof setTimeout> | null = null;
@@ -104,7 +104,7 @@ export class AlertManager {
   // ---------------------------------------------------------------------------
 
   enqueueQuestion(question: UserQuestion): void {
-    const dedupKey = `${question.field}:${question.circuit ?? "supply"}`;
+    const dedupKey = `${question.field}:${question.circuit ?? 'supply'}`;
 
     // Skip if already at max asks for this field/circuit
     const count = this.questionAskCounts.get(dedupKey) ?? 0;
@@ -166,22 +166,16 @@ export class AlertManager {
     this.setTTSSpeaking(true);
 
     try {
-      const token =
-        typeof window !== "undefined"
-          ? localStorage.getItem("token")
-          : null;
+      const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null;
 
-      const response = await fetch(
-        `${API_BASE_URL}/api/proxy/elevenlabs-tts`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            ...(token ? { Authorization: `Bearer ${token}` } : {}),
-          },
-          body: JSON.stringify({ text: expanded }),
+      const response = await fetch(`${API_BASE_URL}/api/proxy/elevenlabs-tts`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
-      );
+        body: JSON.stringify({ text: expanded }),
+      });
 
       if (!response.ok) {
         throw new Error(`TTS proxy returned ${response.status}`);
@@ -213,13 +207,13 @@ export class AlertManager {
   }
 
   private speakFallback(text: string): void {
-    if (typeof window === "undefined" || !window.speechSynthesis) {
+    if (typeof window === 'undefined' || !window.speechSynthesis) {
       this.setTTSSpeaking(false);
       return;
     }
 
     const utterance = new SpeechSynthesisUtterance(text);
-    utterance.lang = "en-GB";
+    utterance.lang = 'en-GB';
 
     utterance.onend = () => {
       this.startTTSCooldown();
@@ -243,6 +237,22 @@ export class AlertManager {
     if (this._isTTSSpeaking === speaking) return;
     this._isTTSSpeaking = speaking;
     this.callbacks.onTTSSpeakingChange(speaking);
+
+    // Safety watchdog: force-clear TTS state after 30s to prevent stuck echo suppression
+    if (this.ttsSafetyTimerId !== null) {
+      clearTimeout(this.ttsSafetyTimerId);
+      this.ttsSafetyTimerId = null;
+    }
+    if (speaking) {
+      this.ttsSafetyTimerId = setTimeout(() => {
+        this.ttsSafetyTimerId = null;
+        if (this._isTTSSpeaking) {
+          console.warn('[AlertManager] TTS stuck for 30s — force-clearing isTTSSpeaking');
+          this._isTTSSpeaking = false;
+          this.callbacks.onTTSSpeakingChange(false);
+        }
+      }, 30_000);
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -265,6 +275,12 @@ export class AlertManager {
       this.ttsCooldownTimerId = null;
     }
 
+    // Clear TTS safety watchdog
+    if (this.ttsSafetyTimerId !== null) {
+      clearTimeout(this.ttsSafetyTimerId);
+      this.ttsSafetyTimerId = null;
+    }
+
     // Stop audio playback
     if (this.audioElement) {
       this.audioElement.pause();
@@ -274,7 +290,7 @@ export class AlertManager {
     }
 
     // Stop browser speech synthesis
-    if (typeof window !== "undefined" && window.speechSynthesis) {
+    if (typeof window !== 'undefined' && window.speechSynthesis) {
       window.speechSynthesis.cancel();
     }
 
