@@ -36,7 +36,7 @@ export default function CircuitsPage() {
   const boards = ensureBoards(job);
   const hasMultipleBoards = boards.length > 1;
   const activeBoard = boards[activeBoardIndex] || boards[0];
-  const activeCircuits = activeBoard.circuits;
+  const activeCircuits = activeBoard.circuits ?? [];
 
   const updateBoardCircuits = useCallback(
     (circuits: Circuit[]) => {
@@ -129,7 +129,7 @@ export default function CircuitsPage() {
                   : 'border-transparent text-muted-foreground hover:text-foreground hover:bg-white/[0.04]'
               )}
             >
-              {b.designation} ({b.circuits.length})
+              {b.designation} ({b.circuits?.length ?? 0})
             </button>
           ))}
         </div>

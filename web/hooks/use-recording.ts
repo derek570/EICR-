@@ -589,7 +589,10 @@ export function useRecording(
     if (!buffer.trim()) return;
 
     const currentJob = jobRef.current;
-    const circuitSchedule = JSON.stringify(currentJob.circuits ?? []);
+    const allCircuits = (currentJob.boards && currentJob.boards.length > 0)
+      ? currentJob.boards.flatMap((b) => b.circuits ?? [])
+      : (currentJob.circuits ?? []);
+    const circuitSchedule = JSON.stringify(allCircuits);
     const recentReadings = JSON.stringify(fieldSourcesRef.current);
     const askedDescs = alertManager.current?.getAskedQuestionDescriptions() ?? [];
 
