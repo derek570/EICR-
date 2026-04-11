@@ -39,7 +39,7 @@ function buildHighlightedText(text: string, highlight: GeminiHighlight | null): 
 
   // Find value matches
   if (value) {
-    const escaped = value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const escaped = String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const re = new RegExp(`\\b${escaped}\\b`, 'gi');
     let m: RegExpExecArray | null;
     while ((m = re.exec(text)) !== null) {

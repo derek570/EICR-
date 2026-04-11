@@ -28,6 +28,7 @@ export interface DeepgramServiceCallbacks {
   onUtteranceEnd: () => void;
   onError: (error: Error) => void;
   onConnectionStateChange: (state: DeepgramConnectionState) => void;
+  onProxyExtraction?: (data: Record<string, unknown>) => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -66,6 +67,7 @@ export class DeepgramService {
   private _proxyUrl: string | null = null;
   private _authToken: string | null = null;
   private _proxyReady = false;
+  private _proxyReadyTimeoutId: ReturnType<typeof setTimeout> | null = null;
   private _triedDirectFirst = false;
 
   constructor(callbacks: DeepgramServiceCallbacks) {
@@ -194,8 +196,23 @@ export class DeepgramService {
     }
 
     this._proxyReady = false;
+    this.clearProxyReadyTimeout();
     this.setConnectionState('connecting');
     this.log('CONNECTING', 'mode=proxy (server-side)');
+
+    // Safety timeout: if the backend never sends {type:'ready'} (e.g. its Deepgram
+    // connection fails or is slow) _proxyReady would stay false forever, silently
+    // dropping all audio. After 8s, mark ready anyway so audio can flow.
+    this._proxyReadyTimeoutId = setTimeout(() => {
+      this._proxyReadyTimeoutId = null;
+      if (!this._proxyReady && this._connectionState === 'connecting') {
+        console.warn(
+          '[DeepgramService] Proxy ready timeout — no {type:ready} in 8s; unblocking audio'
+        );
+        this._proxyReady = true;
+        this.setConnectionState('connected');
+      }
+    }, 8000);
 
     // Browser WebSockets can't set headers; pass JWT as query param
     const wsUrl = `${this._proxyUrl}?token=${encodeURIComponent(this._authToken)}`;
@@ -221,6 +238,7 @@ export class DeepgramService {
       this.log('PROXY_WS_CLOSE', `code=${event.code}, reason=${event.reason || 'none'}`);
       this.ws = null;
       this._proxyReady = false;
+      this.clearProxyReadyTimeout();
 
       if (this.shouldReconnect && event.code !== 1000) {
         this.scheduleReconnect();
@@ -254,6 +272,7 @@ export class DeepgramService {
     switch (type) {
       case 'ready':
         this.log('PROXY_READY', 'Server-side Deepgram connected');
+        this.clearProxyReadyTimeout();
         this._proxyReady = true;
         this.setConnectionState('connected');
         this.reconnectAttempt = 0;
@@ -271,6 +290,12 @@ export class DeepgramService {
         const text = (json.text as string) ?? '';
         if (!text) return;
         this.callbacks.onInterimTranscript(text, 0.5);
+        break;
+      }
+
+      case 'extraction': {
+        this.log('PROXY_EXTRACTION', `circuits=${(json.data as Record<string, unknown>)?.circuits ? ((json.data as Record<string, unknown>).circuits as unknown[]).length : 0}`);
+        this.callbacks.onProxyExtraction?.(json.data as Record<string, unknown>);
         break;
       }
 
@@ -359,6 +384,7 @@ export class DeepgramService {
       this.disconnectTimerId = null;
     }
 
+    this.clearProxyReadyTimeout();
     this.isStreamingPaused = false;
     this.stopKeepAliveWhilePaused();
     this.stopActiveKeepAlive();
@@ -542,6 +568,13 @@ export class DeepgramService {
     if (this.activeKeepAliveId !== null) {
       clearInterval(this.activeKeepAliveId);
       this.activeKeepAliveId = null;
+    }
+  }
+
+  private clearProxyReadyTimeout(): void {
+    if (this._proxyReadyTimeoutId !== null) {
+      clearTimeout(this._proxyReadyTimeoutId);
+      this._proxyReadyTimeoutId = null;
     }
   }
 
@@ -733,6 +766,7 @@ export class DeepgramService {
     this._useProxy = false;
     this._proxyReady = false;
     this.clearReconnectTimer();
+    this.clearProxyReadyTimeout();
     this.stopKeepAliveWhilePaused();
     this.stopActiveKeepAlive();
 

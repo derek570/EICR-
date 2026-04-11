@@ -171,8 +171,12 @@ function buildJobState(job: JobDetail): Record<string, unknown> {
     supply_characteristics: job.supply_characteristics ?? {},
     board_info: job.board_info ?? {},
     circuits: (job.circuits ?? []).map((c) => ({
+      // Include both frontend field names and the aliases the backend parses
+      // (buildCircuitSchedule / _seedStateFromJobState look for ref/designation)
       circuit_ref: c.circuit_ref,
+      ref: c.circuit_ref,
       circuit_designation: c.circuit_designation,
+      designation: c.circuit_designation,
     })),
     observations: job.observations ?? [],
   };
@@ -258,6 +262,9 @@ export function useRecording(jobId: string, userId: string, initialJob: JobDetai
           : undefined,
         board_info: { ...job.board_info },
         circuits: job.circuits.map((c) => ({ ...c })),
+        boards: job.boards
+          ? job.boards.map((b) => ({ ...b, circuits: (b.circuits ?? []).map((c) => ({ ...c })) }))
+          : undefined,
         observations: [...(job.observations ?? [])],
       };
 
@@ -265,7 +272,10 @@ export function useRecording(jobId: string, userId: string, initialJob: JobDetai
       let lastHighlightValue = '';
 
       for (const reading of result.readings) {
-        const { field, value, circuit } = reading;
+        const { field, value: rawValue, circuit } = reading;
+        // Sonnet may return numeric values (e.g. 200, 0.27); coerce to string
+        // so downstream .replace() calls and string comparisons never crash.
+        const value = String(rawValue ?? '');
 
         // Determine which section this field belongs to
         if (circuit !== undefined && circuit !== null && circuit > 0) {
@@ -276,6 +286,18 @@ export function useRecording(jobId: string, userId: string, initialJob: JobDetai
           );
           if (idx >= 0) {
             (updatedJob.circuits[idx] as Record<string, string | undefined>)[mappedField] = value;
+          } else if (updatedJob.boards) {
+            // Multi-board job: circuits live in boards[].circuits, not the flat array
+            for (const board of updatedJob.boards) {
+              const boardIdx = (board.circuits ?? []).findIndex(
+                (c) => String(c.circuit_ref) === String(circuit)
+              );
+              if (boardIdx >= 0) {
+                (board.circuits![boardIdx] as Record<string, string | undefined>)[mappedField] =
+                  value;
+                break;
+              }
+            }
           }
           lastHighlightField = `circuit_${circuit}_${mappedField}`;
           lastHighlightValue = value;
@@ -502,6 +524,96 @@ export function useRecording(jobId: string, userId: string, initialJob: JobDetai
         },
         onConnectionStateChange: (state) => {
           store.setDeepgramState(state);
+        },
+        onProxyExtraction: (data: Record<string, unknown>) => {
+          const job = jobRef.current;
+          if (!job) {
+            console.warn('[useRecording] onProxyExtraction: jobRef is null — extraction discarded');
+            return;
+          }
+
+          const updatedJob: JobDetail = {
+            ...job,
+            circuits: job.circuits.map((c) => ({ ...c })),
+            supply_characteristics: job.supply_characteristics
+              ? { ...job.supply_characteristics }
+              : undefined,
+            installation_details: job.installation_details
+              ? { ...job.installation_details }
+              : undefined,
+            board_info: { ...job.board_info },
+          };
+
+          // Apply circuits from proxy extraction
+          const extractedCircuits = data.circuits as Array<Record<string, string>> | undefined;
+          if (extractedCircuits && extractedCircuits.length > 0) {
+            for (const ec of extractedCircuits) {
+              const ref = ec.circuit_ref;
+              if (!ref) continue;
+              const idx = updatedJob.circuits.findIndex(
+                (c) => String(c.circuit_ref) === String(ref)
+              );
+              if (idx >= 0) {
+                for (const [field, value] of Object.entries(ec)) {
+                  if (field === 'circuit_ref') continue;
+                  const mappedField = CIRCUIT_FIELD_MAP[field] ?? field;
+                  (updatedJob.circuits[idx] as Record<string, string | undefined>)[mappedField] = value;
+                }
+              }
+            }
+          }
+
+          // Apply supply fields
+          const extractedSupply = data.supply as Record<string, string> | undefined;
+          if (extractedSupply && Object.keys(extractedSupply).length > 0) {
+            if (!updatedJob.supply_characteristics) {
+              updatedJob.supply_characteristics = {
+                earthing_arrangement: '',
+                live_conductors: '',
+                number_of_supplies: '',
+                nominal_voltage_u: '',
+                nominal_voltage_uo: '',
+                nominal_frequency: '',
+              };
+            }
+            for (const [field, value] of Object.entries(extractedSupply)) {
+              const mappedField = SUPPLY_FIELD_MAP[field] ?? field;
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              (updatedJob.supply_characteristics as any)[mappedField] = value;
+            }
+          }
+
+          // Apply installation fields
+          const extractedInstallation = data.installation as Record<string, string> | undefined;
+          if (extractedInstallation && Object.keys(extractedInstallation).length > 0) {
+            if (!updatedJob.installation_details) {
+              updatedJob.installation_details = {
+                client_name: '',
+                address: '',
+                premises_description: '',
+                installation_records_available: false,
+                evidence_of_additions_alterations: false,
+                next_inspection_years: 5,
+              };
+            }
+            for (const [field, value] of Object.entries(extractedInstallation)) {
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              (updatedJob.installation_details as any)[field] = value;
+            }
+          }
+
+          // Apply board fields
+          const extractedBoard = data.board as Record<string, string> | undefined;
+          if (extractedBoard && Object.keys(extractedBoard).length > 0) {
+            for (const [field, value] of Object.entries(extractedBoard)) {
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              (updatedJob.board_info as any)[field] = value;
+            }
+          }
+
+          jobRef.current = updatedJob;
+          store.setLiveJob(updatedJob);
+          debouncedSave();
         },
       });
       deepgramRef.current = deepgram;

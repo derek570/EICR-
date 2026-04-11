@@ -45,7 +45,7 @@ const TTS_EXPANSIONS: Array<[RegExp, string]> = [
 ];
 
 function expandForTTS(text: string): string {
-  let expanded = text;
+  let expanded = String(text ?? '');
   for (const [pattern, replacement] of TTS_EXPANSIONS) {
     expanded = expanded.replace(pattern, replacement);
   }
