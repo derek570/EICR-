@@ -393,9 +393,10 @@ export function useRecording(jobId: string, userId: string, initialJob: JobDetai
   const startRecording = useCallback(async () => {
     if (isRecordingRef.current) return;
 
-    // Reset sleep state immediately on press — before any async work.
-    // This ensures the UI shows 'active' even during the 3-10s setup phase,
-    // not a stale 'dozing'/'sleeping' state from a previous session.
+    // Reset transcript and sleep state immediately on press — before any async work.
+    // Transcript reset prevents compounding string length across session restarts.
+    // Sleep state reset ensures the UI shows 'active' during the 3-10s setup phase.
+    store.reset();
     store.setSleepState('active');
 
     try {

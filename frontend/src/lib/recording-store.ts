@@ -115,9 +115,13 @@ export const useRecordingStore = create<RecordingState>((set) => ({
   setExtractionError: (extractionError) => set({ extractionError }),
 
   appendTranscript: (text) =>
-    set((state) => ({
-      transcript: state.transcript ? `${state.transcript} ${text}` : text,
-    })),
+    set((state) => {
+      const combined = state.transcript ? `${state.transcript} ${text}` : text;
+      // Cap at 2000 chars — server WS already has the full transcript.
+      // Prevents unbounded string growth causing GC pressure in long sessions.
+      const capped = combined.length > 2000 ? combined.slice(-2000) : combined;
+      return { transcript: capped };
+    }),
 
   reset: () => set(initialState),
 }));
