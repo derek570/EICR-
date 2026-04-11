@@ -188,7 +188,7 @@ jobs:
           tags: eicr-frontend:${{ github.sha }}
           build-args: |
             APP_DIR=frontend
-            NEXT_PUBLIC_API_URL=https://certomatic3000.co.uk
+            NEXT_PUBLIC_API_URL=https://certmate.uk
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -295,7 +295,7 @@ jobs:
             ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY_FRONTEND }}:staging-latest
           build-args: |
             APP_DIR=frontend
-            NEXT_PUBLIC_API_URL=https://staging.certomatic3000.co.uk
+            NEXT_PUBLIC_API_URL=https://staging.certmate.uk
             NODE_ENV=staging
           cache-from: type=gha
           cache-to: type=gha,mode=max
@@ -415,7 +415,7 @@ jobs:
             ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY_FRONTEND }}:latest
           build-args: |
             APP_DIR=frontend
-            NEXT_PUBLIC_API_URL=https://certomatic3000.co.uk
+            NEXT_PUBLIC_API_URL=https://certmate.uk
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -491,5 +491,5 @@ jobs:
       - name: Deployment complete
         run: |
           echo "Production deployment successful!"
-          echo "Frontend: https://certomatic3000.co.uk"
+          echo "Frontend: https://certmate.uk"
           echo "Commit: ${{ github.sha }}"
