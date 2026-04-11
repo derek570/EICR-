@@ -103,8 +103,8 @@ export const useJobStore = create<JobState>((set, get) => {
             status: localJob.status,
             created_at: localJob.created_at,
             certificate_type: localJob.certificate_type || "EICR",
-            circuits: localJob.circuits,
-            observations: localJob.observations,
+            circuits: localJob.circuits ?? [],
+            observations: localJob.observations ?? [],
             board_info: localJob.board_info,
             boards: localJob.boards,
             installation_details: localJob.installation_details,
@@ -119,8 +119,9 @@ export const useJobStore = create<JobState>((set, get) => {
         });
       } else {
         // Use server version and cache it locally
-        await saveLocalJob(jobToLocal(jobData, userId, false, Date.now()));
-        set({ currentJob: jobData, userId, isDirty: false });
+        const safeJobData = { ...jobData, circuits: jobData.circuits ?? [], observations: jobData.observations ?? [] };
+        await saveLocalJob(jobToLocal(safeJobData, userId, false, Date.now()));
+        set({ currentJob: safeJobData, userId, isDirty: false });
       }
 
       await get().refreshPendingCount();
@@ -137,9 +138,10 @@ export const useJobStore = create<JobState>((set, get) => {
       // When updating boards, also sync flat board_info and circuits for backward compat
       const primaryBoard = boards[0];
       const board_info = primaryBoard ? primaryBoard.board_info : currentJob.board_info;
-      const circuits = boards.flatMap(b => b.circuits ?? []);
+      const safeBoards = boards.map(b => ({ ...b, circuits: b.circuits ?? [] }));
+      const circuits = safeBoards.flatMap(b => b.circuits);
 
-      updateJobFields({ boards, board_info, circuits });
+      updateJobFields({ boards: safeBoards, board_info, circuits });
     },
 
     updateInstallationDetails: (details) => updateJobFields({ installation_details: details }),

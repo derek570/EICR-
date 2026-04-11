@@ -15,7 +15,10 @@ function ensureBoards(job: {
   circuits: Circuit[];
 }): Board[] {
   if (job.boards && job.boards.length > 0) {
-    return job.boards;
+    return job.boards.map(b => ({
+      ...b,
+      circuits: b.circuits ?? [],
+    }));
   }
   return [
     {
@@ -34,7 +37,7 @@ function ensureBoards(job: {
           ipf_at_db: '',
         }),
       },
-      circuits: job.circuits || [],
+      circuits: job.circuits ?? [],
     },
   ];
 }

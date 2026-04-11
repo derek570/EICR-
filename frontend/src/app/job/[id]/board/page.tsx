@@ -38,6 +38,7 @@ function ensureBoards(job: {
   if (job.boards && job.boards.length > 0) {
     return job.boards.map((b) => ({
       ...b,
+      circuits: b.circuits ?? [],
       board_info: b.board_info ?? {
         name: '',
         location: '',

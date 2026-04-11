@@ -174,7 +174,9 @@ async function handleStreamStart(ws, msg, request) {
 
   deepgramWs.on('error', (err) => {
     logger.error('Deepgram WebSocket error', { sessionId, error: err.message });
-    ws.send(JSON.stringify({ type: 'error', message: `Deepgram error: ${err.message}` }));
+    if (ws.readyState === 1) {
+      ws.send(JSON.stringify({ type: 'error', message: `Deepgram error: ${err.message}` }));
+    }
   });
 
   state.extractionTimer = setInterval(() => {
@@ -304,19 +306,26 @@ async function maybeRunExtraction(state, force = false) {
     state.lastExtractionOffset = state.transcriptBuffer.length;
     state.lastExtractionTime = Date.now();
 
-    state.ws.send(
-      JSON.stringify({
-        type: 'extraction',
-        data: {
-          circuits: result.circuits,
-          supply: result.supply,
-          installation: result.installation,
-          board: result.board,
-          orphaned_values: result.orphaned_values,
-          usage: result.usage,
-        },
-      })
-    );
+    if (state.ws.readyState === 1) {
+      state.ws.send(
+        JSON.stringify({
+          type: 'extraction',
+          data: {
+            circuits: result.circuits,
+            supply: result.supply,
+            installation: result.installation,
+            board: result.board,
+            orphaned_values: result.orphaned_values,
+            usage: result.usage,
+          },
+        })
+      );
+    } else {
+      logger.warn('Extraction complete but WebSocket closed, result lost', {
+        sessionId: state.sessionId,
+        wsState: state.ws.readyState,
+      });
+    }
 
     logger.info('Gemini text extraction complete', {
       sessionId: state.sessionId,
@@ -328,12 +337,14 @@ async function maybeRunExtraction(state, force = false) {
       sessionId: state.sessionId,
       error: err.message,
     });
-    state.ws.send(
-      JSON.stringify({
-        type: 'error',
-        message: `Extraction error: ${err.message}`,
-      })
-    );
+    if (state.ws.readyState === 1) {
+      state.ws.send(
+        JSON.stringify({
+          type: 'error',
+          message: `Extraction error: ${err.message}`,
+        })
+      );
+    }
   } finally {
     state.pendingGeminiExtraction = false;
   }
@@ -358,7 +369,9 @@ async function handleStreamStop(ws, state) {
   }
 
   cleanupStreamSession(state);
-  ws.send(JSON.stringify({ type: 'stopped' }));
+  if (ws.readyState === 1) {
+    ws.send(JSON.stringify({ type: 'stopped' }));
+  }
 }
 
 function cleanupStreamSession(state) {
