@@ -1,14 +1,18 @@
 /**
- * WebSocket Recording Server — Deepgram Nova 3 + Gemini 2.5 Pro hybrid
+ * WebSocket Recording Server — Deepgram Nova 3 + Sonnet hybrid
  * Path: wss://.../api/recording/stream
  * Exported for server.js to mount on the HTTP upgrade handler.
+ *
+ * HISTORY: Migrated from Gemini 2.5 Pro to Claude Sonnet extraction (matching iOS pipeline).
+ * Time-threshold polling replaced with realtime per-utterance extraction (matching iOS
+ * sonnet-stream.js behaviour — extract on every UtteranceEnd with new content).
  */
 
 import { WebSocketServer } from 'ws';
 import logger from './logger.js';
 import * as auth from './auth.js';
 import { getDeepgramKey } from './services/secrets.js';
-import { geminiExtractFromText } from './gemini_extract.js';
+import { sonnetExtractFromText } from './sonnet_extract.js';
 import * as storage from './storage.js';
 
 const wss = new WebSocketServer({ noServer: true });
@@ -192,7 +196,9 @@ async function loadKeyterms() {
       if (Object.keys(boosts).length > 0) {
         _cachedKeyterms = buildKeytermsFromBoosts(boosts);
         _keytermLoadTime = Date.now();
-        logger.info('Loaded Deepgram keyterms from remote config', { count: _cachedKeyterms.length });
+        logger.info('Loaded Deepgram keyterms from remote config', {
+          count: _cachedKeyterms.length,
+        });
         return _cachedKeyterms;
       }
     }
@@ -325,9 +331,7 @@ async function handleStreamStart(ws, msg, request) {
     context,
     transcriptBuffer: '',
     lastExtractionOffset: 0,
-    lastExtractionTime: Date.now(),
-    pendingGeminiExtraction: false,
-    extractionTimer: null,
+    pendingSonnetExtraction: false,
     startTime: Date.now(),
     chunkCount: 0,
     // Startup audio buffer: hold audio chunks while Deepgram WS is connecting.
@@ -380,10 +384,6 @@ async function handleStreamStart(ws, msg, request) {
     }
   });
 
-  state.extractionTimer = setInterval(() => {
-    maybeRunExtraction(state);
-  }, 5000);
-
   wsRecordingSessions.set(sessionId, state);
   logger.info('Stream recording started', { sessionId, userId, jobId });
   return state;
@@ -432,13 +432,15 @@ function handleDeepgramMessage(state, dgMsg) {
   }
 
   if (dgMsg.type === 'UtteranceEnd') {
+    const newChars = state.transcriptBuffer.length - state.lastExtractionOffset;
     logger.info('Deepgram utterance end', {
       sessionId: state.sessionId,
       bufferLen: state.transcriptBuffer.length,
-      newChars: state.transcriptBuffer.length - state.lastExtractionOffset,
+      newChars,
     });
-    const newChars = state.transcriptBuffer.length - state.lastExtractionOffset;
-    if (newChars > 100) {
+    // Realtime extraction: trigger on every utterance end with any new content.
+    // Matches iOS sonnet-stream.js which extracts per-utterance, no time thresholds.
+    if (newChars > 0) {
       maybeRunExtraction(state, true);
     }
   }
@@ -467,7 +469,10 @@ function handleStreamAudio(state, msg) {
     // If buffer is full, drop oldest chunks to make room for newest.
     state.audioStartupBuffer.push(pcmBuffer);
     state.audioStartupBufferBytes += pcmBuffer.length;
-    while (state.audioStartupBufferBytes > MAX_STARTUP_BUFFER_BYTES && state.audioStartupBuffer.length > 1) {
+    while (
+      state.audioStartupBufferBytes > MAX_STARTUP_BUFFER_BYTES &&
+      state.audioStartupBuffer.length > 1
+    ) {
       const dropped = state.audioStartupBuffer.shift();
       state.audioStartupBufferBytes -= dropped.length;
     }
@@ -493,19 +498,15 @@ function handleStreamAudio(state, msg) {
 }
 
 async function maybeRunExtraction(state, force = false) {
-  if (state.pendingGeminiExtraction) return;
+  if (state.pendingSonnetExtraction) return;
 
   const newChars = state.transcriptBuffer.length - state.lastExtractionOffset;
-  const timeSinceLastMs = Date.now() - state.lastExtractionTime;
 
-  const shouldExtract =
-    force ||
-    (timeSinceLastMs >= 15000 && newChars >= 200) ||
-    (timeSinceLastMs >= 10000 && newChars >= 400);
+  // Skip if there's nothing new to extract (minimum 30 chars to avoid noise)
+  if (newChars < 30 && !force) return;
+  if (newChars === 0) return;
 
-  if (!shouldExtract || newChars < 50) return;
-
-  state.pendingGeminiExtraction = true;
+  state.pendingSonnetExtraction = true;
   const extractionStart = Date.now();
 
   try {
@@ -515,17 +516,16 @@ async function maybeRunExtraction(state, force = false) {
         ? state.transcriptBuffer.slice(-windowSize)
         : state.transcriptBuffer;
 
-    logger.info('Running Gemini text extraction', {
+    logger.info('Running Sonnet text extraction', {
       sessionId: state.sessionId,
       transcriptLen: state.transcriptBuffer.length,
       windowLen: transcriptWindow.length,
       newChars,
     });
 
-    const result = await geminiExtractFromText(transcriptWindow, state.context);
+    const result = await sonnetExtractFromText(transcriptWindow, state.context);
 
     state.lastExtractionOffset = state.transcriptBuffer.length;
-    state.lastExtractionTime = Date.now();
 
     if (state.ws.readyState === 1) {
       state.ws.send(
@@ -548,13 +548,13 @@ async function maybeRunExtraction(state, force = false) {
       });
     }
 
-    logger.info('Gemini text extraction complete', {
+    logger.info('Sonnet text extraction complete', {
       sessionId: state.sessionId,
       latencyMs: Date.now() - extractionStart,
       circuits: result.circuits?.length ?? 0,
     });
   } catch (err) {
-    logger.error('Gemini text extraction error', {
+    logger.error('Sonnet text extraction error', {
       sessionId: state.sessionId,
       error: err.message,
     });
@@ -567,7 +567,7 @@ async function maybeRunExtraction(state, force = false) {
       );
     }
   } finally {
-    state.pendingGeminiExtraction = false;
+    state.pendingSonnetExtraction = false;
   }
 }
 
@@ -580,7 +580,7 @@ async function handleStreamStop(ws, state) {
 
   const remainingChars = state.transcriptBuffer.length - state.lastExtractionOffset;
   if (remainingChars > 30) {
-    state.pendingGeminiExtraction = false;
+    state.pendingSonnetExtraction = false;
     await maybeRunExtraction(state, true);
   }
 
@@ -596,10 +596,6 @@ async function handleStreamStop(ws, state) {
 }
 
 function cleanupStreamSession(state) {
-  if (state.extractionTimer) {
-    clearInterval(state.extractionTimer);
-    state.extractionTimer = null;
-  }
   if (state.deepgramWs?.readyState === 1) {
     state.deepgramWs.close();
   }

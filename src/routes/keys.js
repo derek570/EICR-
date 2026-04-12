@@ -313,7 +313,7 @@ async function createDeepgramTempKey(userId) {
   const response = await fetch('https://api.deepgram.com/v1/auth/grant', {
     method: 'POST',
     headers: {
-      Authorization: `Bearer ${masterKey}`,
+      Authorization: `Token ${masterKey}`,
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({

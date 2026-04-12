@@ -1,5 +1,5 @@
 /**
- * Extraction routes — Gemini chunked audio extraction, CCU photo analysis, observation enhancement
+ * Extraction routes — Sonnet chunked audio extraction, CCU photo analysis, observation enhancement
  */
 
 import { Router } from 'express';
@@ -9,7 +9,7 @@ import path from 'node:path';
 import os from 'node:os';
 import * as auth from '../auth.js';
 import * as storage from '../storage.js';
-import { geminiExtract } from '../gemini_extract.js';
+import { sonnetExtractFromAudio } from '../sonnet_extract.js';
 import { getActiveSession } from '../state/recording-sessions.js';
 import logger from '../logger.js';
 import sharp from 'sharp';
@@ -44,7 +44,7 @@ const upload = multer({
 const DEBUG_START = /\b(?:d[\s-]?bug|debug|dee\s*bug)\b/i;
 const DEBUG_END = /\b(?:end|stop|finish|done)\s+(?:d[\s-]?bug|debug)\b/i;
 
-const geminiChunkLimits = new Map();
+const sonnetChunkLimits = new Map();
 
 /**
  * BS/EN standard number lookup by device type
@@ -368,8 +368,9 @@ If you cannot determine the type, reply: {"rcd_type": null, "source": "not found
 }
 
 /**
- * Gemini chunked audio extraction
+ * Sonnet chunked audio extraction (Deepgram transcription + Claude Sonnet extraction)
  * POST /api/recording/gemini-extract
+ * NOTE: Path kept for backwards compatibility with existing iOS/web clients.
  */
 router.post('/recording/gemini-extract', auth.requireAuth, async (req, res) => {
   const userId = req.user.id;
@@ -390,21 +391,21 @@ router.post('/recording/gemini-extract', auth.requireAuth, async (req, res) => {
 
   // Rate limiting: 20 chunks/minute per user, 200 chunks per session
   const now = Date.now();
-  let limits = geminiChunkLimits.get(userId);
+  let limits = sonnetChunkLimits.get(userId);
   if (!limits || now - limits.windowStart > 60_000) {
     limits = { count: 0, windowStart: now, sessionChunks: limits?.sessionChunks || new Map() };
-    geminiChunkLimits.set(userId, limits);
+    sonnetChunkLimits.set(userId, limits);
   }
   limits.count++;
   if (limits.count > 20) {
-    logger.warn('Gemini extract rate limited', { userId, sessionId, count: limits.count });
+    logger.warn('Sonnet extract rate limited', { userId, sessionId, count: limits.count });
     return res.status(429).json({ error: 'Rate limited: max 20 chunks/minute' });
   }
 
   const sessionCount = (limits.sessionChunks.get(sessionId) || 0) + 1;
   limits.sessionChunks.set(sessionId, sessionCount);
   if (sessionCount > 200) {
-    logger.warn('Gemini extract session limit', { userId, sessionId, sessionCount });
+    logger.warn('Sonnet extract session limit', { userId, sessionId, sessionCount });
     return res.status(429).json({ error: 'Session limit: max 200 chunks per session' });
   }
 
@@ -434,7 +435,7 @@ router.post('/recording/gemini-extract', auth.requireAuth, async (req, res) => {
   }
 
   try {
-    const result = await geminiExtract(
+    const result = await sonnetExtractFromAudio(
       audio,
       audioMimeType || 'audio/flac',
       context || '',
@@ -460,7 +461,7 @@ router.post('/recording/gemini-extract', auth.requireAuth, async (req, res) => {
         session.debugMode = false;
         session.debugBuffer = '';
 
-        logger.info('── DEBUG MODE ENDED (Gemini) ──', {
+        logger.info('── DEBUG MODE ENDED (Sonnet) ──', {
           sessionId,
           chunkIndex,
           segmentCount: session.debugSegments.length,
@@ -472,7 +473,7 @@ router.post('/recording/gemini-extract', auth.requireAuth, async (req, res) => {
           timestamp: new Date().toISOString(),
           transcript: '(debug exit)',
           isDebugChunk: true,
-          modelUsed: 'gemini-extract',
+          modelUsed: 'sonnet-extract',
           inputTokens: result.usage?.inputTokens ?? 0,
           outputTokens: result.usage?.outputTokens ?? 0,
         });
@@ -492,7 +493,7 @@ router.post('/recording/gemini-extract', auth.requireAuth, async (req, res) => {
 
       if (session.debugMode) {
         session.debugBuffer += ' ' + transcript;
-        logger.info('── DEBUG MODE — buffering (Gemini) ──', {
+        logger.info('── DEBUG MODE — buffering (Sonnet) ──', {
           sessionId,
           chunkIndex,
           debugBufferLength: session.debugBuffer.length,
@@ -504,7 +505,7 @@ router.post('/recording/gemini-extract', auth.requireAuth, async (req, res) => {
           timestamp: new Date().toISOString(),
           transcript: transcript || '(empty)',
           isDebugChunk: true,
-          modelUsed: 'gemini-extract',
+          modelUsed: 'sonnet-extract',
           inputTokens: result.usage?.inputTokens ?? 0,
           outputTokens: result.usage?.outputTokens ?? 0,
         });
@@ -532,7 +533,7 @@ router.post('/recording/gemini-extract', auth.requireAuth, async (req, res) => {
         const afterDebug = parts.slice(1).join(' ').trim() || '';
         if (afterDebug) session.debugBuffer = afterDebug;
 
-        logger.info('── DEBUG MODE STARTED (Gemini) ──', {
+        logger.info('── DEBUG MODE STARTED (Sonnet) ──', {
           sessionId,
           chunkIndex,
           beforeDebug: beforeDebug.substring(0, 100),
@@ -544,7 +545,7 @@ router.post('/recording/gemini-extract', auth.requireAuth, async (req, res) => {
           timestamp: new Date().toISOString(),
           transcript: transcript || '(empty)',
           isDebugChunk: true,
-          modelUsed: 'gemini-extract',
+          modelUsed: 'sonnet-extract',
           inputTokens: result.usage?.inputTokens ?? 0,
           outputTokens: result.usage?.outputTokens ?? 0,
         });
@@ -575,14 +576,14 @@ router.post('/recording/gemini-extract', auth.requireAuth, async (req, res) => {
           timestamp: new Date().toISOString(),
           transcript: transcript || '(empty)',
           isDebugChunk: false,
-          modelUsed: 'gemini-extract',
+          modelUsed: 'sonnet-extract',
           inputTokens: result.usage?.inputTokens ?? 0,
           outputTokens: result.usage?.outputTokens ?? 0,
         });
       }
     }
 
-    logger.info('Gemini extract chunk', {
+    logger.info('Sonnet extract chunk', {
       userId,
       sessionId,
       chunkIndex,
@@ -602,7 +603,7 @@ router.post('/recording/gemini-extract', auth.requireAuth, async (req, res) => {
       debug_mode: session?.debugMode ?? false,
     });
   } catch (error) {
-    logger.error('Gemini extract failed', {
+    logger.error('Sonnet extract failed', {
       userId,
       sessionId,
       chunkIndex,
