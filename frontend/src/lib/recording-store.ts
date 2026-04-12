@@ -24,8 +24,8 @@ export interface ServerCostUpdate {
 
 export interface UserQuestion {
   id: string;
-  type: 'orphaned' | 'out_of_range' | 'unclear';
-  fieldKey: string;
+  type: 'orphaned' | 'out_of_range' | 'unclear' | 'tt_confirmation' | 'circuit_disambiguation' | 'observation_confirmation';
+  fieldKey: string | null;
   circuitNumber?: number;
   question: string;
   value?: string;
@@ -61,6 +61,7 @@ interface RecordingState {
   highlight: TranscriptHighlight | null;
   liveJob: JobDetail | null;
   extractionError: string | null;
+  processingCount: number;
 
   // Actions
   setRecording: (isRecording: boolean) => void;
@@ -76,6 +77,8 @@ interface RecordingState {
   setHighlight: (highlight: TranscriptHighlight | null) => void;
   setLiveJob: (job: JobDetail | null) => void;
   setExtractionError: (error: string | null) => void;
+  incrementProcessingCount: () => void;
+  decrementProcessingCount: () => void;
   appendTranscript: (text: string) => void;
   reset: () => void;
 }
@@ -95,6 +98,7 @@ const initialState = {
   highlight: null as TranscriptHighlight | null,
   liveJob: null as JobDetail | null,
   extractionError: null as string | null,
+  processingCount: 0,
 };
 
 export const useRecordingStore = create<RecordingState>((set) => ({
@@ -113,6 +117,9 @@ export const useRecordingStore = create<RecordingState>((set) => ({
   setHighlight: (highlight) => set({ highlight }),
   setLiveJob: (liveJob) => set({ liveJob }),
   setExtractionError: (extractionError) => set({ extractionError }),
+  incrementProcessingCount: () => set((s) => ({ processingCount: s.processingCount + 1 })),
+  decrementProcessingCount: () =>
+    set((s) => ({ processingCount: Math.max(0, s.processingCount - 1) })),
 
   appendTranscript: (text) =>
     set((state) => {

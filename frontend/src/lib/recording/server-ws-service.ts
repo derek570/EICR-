@@ -28,10 +28,12 @@ export interface ServerCostUpdate {
 }
 
 export interface UserQuestion {
-  field: string;
+  field: string | null;
   circuit?: number;
   question: string;
-  type: 'orphaned' | 'out_of_range' | 'unclear';
+  // All types from the Sonnet extraction prompt schema
+  type: 'orphaned' | 'out_of_range' | 'unclear' | 'tt_confirmation' | 'circuit_disambiguation' | 'observation_confirmation';
+  // heard_value from Sonnet (mapped from heard_value field for legacy compat)
   value?: string;
 }
 
@@ -325,13 +327,14 @@ export class ServerWebSocketService {
 
       case 'question': {
         const question: UserQuestion = {
-          field: json.field as string,
+          field: (json.field as string | null) ?? null,
           circuit: json.circuit as number | undefined,
           question: json.question as string,
           type: (json.question_type as UserQuestion['type']) ?? 'unclear',
-          value: json.value as string | undefined,
+          // Sonnet outputs 'heard_value'; fall back to 'value' for legacy messages
+          value: (json.heard_value ?? json.value) as string | undefined,
         };
-        if (question.field && question.question) {
+        if (question.question) {
           this.callbacks.onQuestion(question);
         } else {
           this.log('DECODE_ERROR', 'Failed to decode question');

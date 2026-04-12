@@ -1,12 +1,12 @@
 'use client';
 
-import { AlertTriangle, HelpCircle, X } from 'lucide-react';
+import { AlertTriangle, HelpCircle, Info, X } from 'lucide-react';
 
 interface AlertQuestion {
-  field: string;
+  field: string | null;
   circuit?: number;
   question: string;
-  type: 'orphaned' | 'out_of_range' | 'unclear';
+  type: 'orphaned' | 'out_of_range' | 'unclear' | 'tt_confirmation' | 'circuit_disambiguation' | 'observation_confirmation';
   value?: string;
 }
 
@@ -19,10 +19,15 @@ export function AlertCard({ question, onDismiss }: AlertCardProps) {
   if (!question) return null;
 
   const isOutOfRange = question.type === 'out_of_range';
-  const borderColor = isOutOfRange ? 'border-amber-500/50' : 'border-blue-500/50';
+  const isInfo = question.type === 'tt_confirmation' || question.type === 'observation_confirmation';
+  const borderColor = isOutOfRange
+    ? 'border-amber-500/50'
+    : isInfo
+      ? 'border-emerald-500/50'
+      : 'border-blue-500/50';
 
-  const Icon = isOutOfRange ? AlertTriangle : HelpCircle;
-  const iconColor = isOutOfRange ? 'text-amber-400' : 'text-blue-400';
+  const Icon = isOutOfRange ? AlertTriangle : isInfo ? Info : HelpCircle;
+  const iconColor = isOutOfRange ? 'text-amber-400' : isInfo ? 'text-emerald-400' : 'text-blue-400';
 
   return (
     <div

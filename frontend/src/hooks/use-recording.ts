@@ -472,7 +472,7 @@ export function useRecording(jobId: string, userId: string, initialJob: JobDetai
       const alertManager = new AlertManager({
         onQuestionDisplayed: (q) => {
           store.setCurrentQuestion({
-            id: `${q.field}:${q.circuit ?? 'supply'}`,
+            id: `${q.field ?? 'unknown'}:${q.circuit ?? 'supply'}`,
             type: q.type,
             fieldKey: q.field,
             circuitNumber: q.circuit,
@@ -511,7 +511,8 @@ export function useRecording(jobId: string, userId: string, initialJob: JobDetai
           const normalised = normalise(text);
           store.appendTranscript(normalised);
 
-          // Send to server WS
+          // Send to server WS — increment processing count to mirror iOS processingCount badge
+          store.incrementProcessingCount();
           serverWSRef.current?.sendTranscript(normalised);
 
           // Reset sleep silence timer
@@ -623,6 +624,7 @@ export function useRecording(jobId: string, userId: string, initialJob: JobDetai
       const serverWS = new ServerWebSocketService({
         onExtraction: (result: RollingExtractionResult) => {
           store.setExtractionError(null);
+          store.decrementProcessingCount();
           applySonnetReadings(result);
         },
         onQuestion: (question: UserQuestion) => {
@@ -636,6 +638,7 @@ export function useRecording(jobId: string, userId: string, initialJob: JobDetai
         onError: (msg: string, recoverable: boolean) => {
           console.error(`[useRecording] Server WS error (recoverable=${recoverable}):`, msg);
           store.setExtractionError(msg);
+          store.decrementProcessingCount();
         },
         onSessionAck: (status: string) => {
           console.log('[useRecording] session_ack:', status);
@@ -686,7 +689,7 @@ export function useRecording(jobId: string, userId: string, initialJob: JobDetai
               );
             }
             const bufferedData = sleepDetectorRef.current?.ringBuffer.drain();
-            if (bufferedData && bufferedData.byteLength > 0) {
+            if (bufferedData && bufferedData.length > 0) {
               // Wait briefly for Deepgram to connect before replaying
               setTimeout(() => {
                 deepgramRef.current?.replayBuffer(bufferedData);
@@ -695,7 +698,7 @@ export function useRecording(jobId: string, userId: string, initialJob: JobDetai
           } else if (fromState === 'dozing') {
             deepgramRef.current?.resumeAudioStream();
             const bufferedData = sleepDetectorRef.current?.ringBuffer.drain();
-            if (bufferedData && bufferedData.byteLength > 0) {
+            if (bufferedData && bufferedData.length > 0) {
               deepgramRef.current?.replayBuffer(bufferedData);
             }
           }
@@ -904,6 +907,8 @@ export function useRecording(jobId: string, userId: string, initialJob: JobDetai
     currentQuestion: store.currentQuestion,
     isTTSSpeaking: store.isTTSSpeaking,
     highlight: store.highlight,
+    extractionError: store.extractionError,
+    processingCount: store.processingCount,
 
     // Actions
     startRecording,

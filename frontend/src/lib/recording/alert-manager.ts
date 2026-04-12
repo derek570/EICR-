@@ -104,7 +104,7 @@ export class AlertManager {
   // ---------------------------------------------------------------------------
 
   enqueueQuestion(question: UserQuestion): void {
-    const dedupKey = `${question.field}:${question.circuit ?? 'supply'}`;
+    const dedupKey = `${question.field ?? 'unknown'}:${question.circuit ?? 'supply'}`;
 
     // Skip if already at max asks for this field/circuit
     const count = this.questionAskCounts.get(dedupKey) ?? 0;
