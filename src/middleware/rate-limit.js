@@ -34,6 +34,15 @@ function getStore() {
 }
 
 /**
+ * Normalize client IP by stripping the ::ffff: prefix from IPv4-mapped IPv6 addresses.
+ * e.g. "::ffff:192.168.1.1" -> "192.168.1.1"
+ */
+function normalizeIp(req) {
+  const ip = req.ip || req.connection?.remoteAddress || '';
+  return ip.replace(/^::ffff:/, '');
+}
+
+/**
  * Create a rate limiter with Redis store (or MemoryStore fallback).
  */
 function createLimiter(options) {
@@ -49,7 +58,7 @@ function createLimiter(options) {
 export const aiLimiter = createLimiter({
   windowMs: 60 * 1000,
   max: 10,
-  keyGenerator: (req) => req.user?.id || req.ip,
+  keyGenerator: (req) => req.user?.id || normalizeIp(req),
   message: { error: 'Too many AI requests. Please wait a moment before trying again.' },
 });
 
@@ -57,7 +66,7 @@ export const aiLimiter = createLimiter({
 export const uploadLimiter = createLimiter({
   windowMs: 60 * 1000,
   max: 20,
-  keyGenerator: (req) => req.user?.id || req.ip,
+  keyGenerator: (req) => req.user?.id || normalizeIp(req),
   message: { error: 'Too many uploads. Please wait a moment before trying again.' },
 });
 
@@ -65,7 +74,7 @@ export const uploadLimiter = createLimiter({
 export const emailLimiter = createLimiter({
   windowMs: 60 * 1000,
   max: 5,
-  keyGenerator: (req) => req.user?.id || req.ip,
+  keyGenerator: (req) => req.user?.id || normalizeIp(req),
   message: { error: 'Too many email requests. Please wait a moment before trying again.' },
 });
 
@@ -73,5 +82,6 @@ export const emailLimiter = createLimiter({
 export const authLimiter = createLimiter({
   windowMs: 60 * 1000,
   max: 10,
+  keyGenerator: (req) => normalizeIp(req),
   message: { error: 'Too many authentication attempts. Please try again later.' },
 });
