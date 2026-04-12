@@ -13,6 +13,18 @@ export default function AppError({
 }) {
   useEffect(() => {
     console.error('App error:', error);
+
+    // After a redeploy the browser may have a cached page whose embedded
+    // server action IDs no longer exist on the new server.  Auto-reload so the
+    // user transparently gets the fresh build instead of a broken error screen.
+    if (
+      error.message?.includes('Failed to find Server Action') ||
+      error.message?.includes('Server Actions must be defined') ||
+      error.digest?.includes('DYNAMIC_SERVER_USAGE') ||
+      error.message?.includes('An unexpected response was received')
+    ) {
+      window.location.reload();
+    }
   }, [error]);
 
   return (

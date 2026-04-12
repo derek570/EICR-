@@ -4,9 +4,13 @@ import withPWAInit from "@ducanh2912/next-pwa";
 const withPWA = withPWAInit({
   dest: "public",
   disable: process.env.NODE_ENV === "development",
-  cacheOnFrontEndNav: true,
-  aggressiveFrontEndNavCaching: true,
-  reloadOnOnline: false,
+  // Disabled: caching HTML navigation responses caused "Failed to find Server
+  // Action" errors after redeploys.  Next.js embeds build-time action IDs into
+  // pages; serving a stale cached page means the client sends an ID the new
+  // server no longer knows about.  Always fetch fresh HTML from the network.
+  cacheOnFrontEndNav: false,
+  aggressiveFrontEndNavCaching: false,
+  reloadOnOnline: true,
   fallbacks: {
     document: "/offline",
   },
@@ -14,6 +18,17 @@ const withPWA = withPWAInit({
     skipWaiting: true,
     clientsClaim: true,
     runtimeCaching: [
+      {
+        // Navigation requests (HTML pages): always go to network so clients
+        // always receive the current build's server action IDs.  Short offline
+        // fallback TTL keeps the fallback reasonably fresh.
+        urlPattern: ({ request }: { request: Request }) =>
+          request.mode === "navigate",
+        handler: "NetworkOnly",
+        options: {
+          // No cache for navigation — we never want a stale page served.
+        },
+      },
       {
         urlPattern: /^https:\/\/.*\.(?:png|jpg|jpeg|svg|gif|webp)$/,
         handler: "CacheFirst",

@@ -1,9 +1,9 @@
-"use client";
+'use client';
 
-import { useEffect } from "react";
-import { useRouter } from "next/navigation";
-import { AlertTriangle, RefreshCw, ArrowLeft } from "lucide-react";
-import { Button } from "@/components/ui/button";
+import { useEffect } from 'react';
+import { useRouter } from 'next/navigation';
+import { AlertTriangle, RefreshCw, ArrowLeft } from 'lucide-react';
+import { Button } from '@/components/ui/button';
 
 export default function JobError({
   error,
@@ -15,7 +15,16 @@ export default function JobError({
   const router = useRouter();
 
   useEffect(() => {
-    console.error("Job error:", error);
+    console.error('Job error:', error);
+
+    // Stale server action ID after redeploy — reload to get the fresh build.
+    if (
+      error.message?.includes('Failed to find Server Action') ||
+      error.message?.includes('Server Actions must be defined') ||
+      error.message?.includes('An unexpected response was received')
+    ) {
+      window.location.reload();
+    }
   }, [error]);
 
   return (
@@ -25,10 +34,11 @@ export default function JobError({
         Failed to load job
       </h2>
       <p className="text-sm text-gray-500 dark:text-gray-400 max-w-md mb-6">
-        {error.message || "Could not load the certificate data. The job may not exist or there was a network error."}
+        {error.message ||
+          'Could not load the certificate data. The job may not exist or there was a network error.'}
       </p>
       <div className="flex gap-3">
-        <Button onClick={() => router.push("/dashboard")} variant="outline">
+        <Button onClick={() => router.push('/dashboard')} variant="outline">
           <ArrowLeft className="h-4 w-4 mr-2" />
           Back to Dashboard
         </Button>
