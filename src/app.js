@@ -57,6 +57,8 @@ app.set('trust proxy', 1);
 const ALLOWED_ORIGINS = [
   'https://certomatic3000.co.uk',
   'https://www.certomatic3000.co.uk',
+  'https://certmate.uk',
+  'https://www.certmate.uk',
   // Add dev origins in non-production environments
   ...(process.env.NODE_ENV !== 'production'
     ? ['http://localhost:3000', 'http://localhost:3001', 'http://localhost:3002']
