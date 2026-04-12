@@ -3,7 +3,9 @@
 // Unlike extract_chunk.js which handles fragments, this sees the full context.
 // This is the HEAVY LIFTER — regex on-device does quick snipes, GPT here unpicks messy audio.
 
-import OpenAI from "openai";
+import { getAnthropicKey } from './services/secrets.js';
+
+const SONNET_MODEL = (process.env.EXTRACTION_MODEL || 'claude-sonnet-4-6').trim();
 
 const SESSION_PROMPT = `You are an expert EICR (Electrical Installation Condition Report) data extractor.
 You will receive a transcript from an electrician's recording session. The transcript comes from
@@ -96,34 +98,65 @@ afdd_button_confirmed
 `;
 
 export async function extractSession(fullTranscript, existingData = null) {
-  const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-  const model = process.env.EXTRACTION_MODEL || "gpt-5.2";
+  const apiKey = await getAnthropicKey();
+  if (!apiKey) throw new Error('Missing ANTHROPIC_API_KEY');
 
   let userContent = `TRANSCRIPT (may be a rolling window or full session):\n\n${fullTranscript}`;
 
   if (existingData) {
-    // Feed existing job data as context — GPT can fill gaps the regex missed
+    // Feed existing job data as context — Claude can fill gaps the regex missed
     const contextSummary = buildContextSummary(existingData);
     if (contextSummary) {
       userContent += `\n\n=== EXISTING_DATA (use for circuit routing context — extract ALL values from transcript) ===\n${contextSummary}`;
     }
   }
 
+  const body = {
+    model: SONNET_MODEL,
+    max_tokens: 4096,
+    temperature: 0,
+    system: SESSION_PROMPT,
+    messages: [{ role: 'user', content: userContent }],
+  };
+
   const MAX_RETRIES = 3;
+  let lastError;
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     try {
-      const response = await openai.chat.completions.create({
-        model,
-        temperature: 0,
-        messages: [
-          { role: "system", content: SESSION_PROMPT },
-          { role: "user", content: userContent },
-        ],
-        response_format: { type: "json_object" },
+      const res = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': apiKey,
+          'anthropic-version': '2023-06-01',
+        },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(60_000),
       });
 
-      const raw = response.choices[0]?.message?.content || "{}";
-      const parsed = JSON.parse(raw);
+      if (!res.ok) {
+        const errBody = await res.text();
+        if ((res.status === 529 || res.status === 429) && attempt < MAX_RETRIES) {
+          await new Promise((r) => setTimeout(r, 1000 * attempt));
+          continue;
+        }
+        throw new Error(`Anthropic HTTP ${res.status}: ${errBody.slice(0, 500)}`);
+      }
+
+      const json = await res.json();
+      const text = (json.content || [])
+        .filter((b) => b.type === 'text')
+        .map((b) => b.text)
+        .join('\n')
+        .trim();
+
+      if (!text) throw new Error('Anthropic returned empty response');
+
+      // Strip markdown code blocks if present
+      const jsonMatch = text.match(/```json\s*([\s\S]*?)```/) || text.match(/```\s*([\s\S]*?)```/);
+      const jsonStr = jsonMatch ? jsonMatch[1].trim() : text.trim();
+      const parsed = JSON.parse(jsonStr);
+
       return {
         ...parsed,
         circuits: parsed.circuits || [],
@@ -131,16 +164,21 @@ export async function extractSession(fullTranscript, existingData = null) {
         board: parsed.board || {},
         installation: parsed.installation || {},
         supply_characteristics: parsed.supply_characteristics || {},
-        usage: response.usage,
+        usage: {
+          input_tokens: json.usage?.input_tokens,
+          output_tokens: json.usage?.output_tokens,
+        },
       };
     } catch (err) {
+      lastError = err;
       if (attempt < MAX_RETRIES) {
-        await new Promise(r => setTimeout(r, 1000 * attempt));
+        await new Promise((r) => setTimeout(r, 1000 * attempt));
         continue;
       }
-      throw err;
     }
   }
+
+  throw lastError;
 }
 
 /**
@@ -153,34 +191,49 @@ function buildContextSummary(data) {
   // Circuits: show ref, designation, and which test fields are empty
   const circuits = data.circuits || [];
   if (circuits.length > 0) {
-    const circuitLines = circuits.map(c => {
+    const circuitLines = circuits.map((c) => {
       const testFields = [
-        "measured_zs_ohm", "r1_r2_ohm", "ring_r1_ohm", "ring_rn_ohm", "ring_r2_ohm",
-        "ir_live_live_mohm", "ir_live_earth_mohm", "rcd_time_ms", "polarity_confirmed"
+        'measured_zs_ohm',
+        'r1_r2_ohm',
+        'ring_r1_ohm',
+        'ring_rn_ohm',
+        'ring_r2_ohm',
+        'ir_live_live_mohm',
+        'ir_live_earth_mohm',
+        'rcd_time_ms',
+        'polarity_confirmed',
       ];
-      const empty = testFields.filter(f => !c[f]);
-      const filled = testFields.filter(f => c[f]).map(f => `${f}=${c[f]}`);
-      const isRing = /\b(socket|ring|continuity)\b/i.test(c.circuit_designation || "");
-      return `  Circuit ${c.circuit_ref || "?"} "${c.circuit_designation || ""}"${isRing ? " [RING]" : ""}: filled=[${filled.join(", ")}] empty=[${empty.join(", ")}]`;
+      const empty = testFields.filter((f) => !c[f]);
+      const filled = testFields.filter((f) => c[f]).map((f) => `${f}=${c[f]}`);
+      const isRing = /\b(socket|ring|continuity)\b/i.test(c.circuit_designation || '');
+      return `  Circuit ${c.circuit_ref || '?'} "${c.circuit_designation || ''}"${isRing ? ' [RING]' : ''}: filled=[${filled.join(', ')}] empty=[${empty.join(', ')}]`;
     });
-    parts.push(`CIRCUITS (${circuits.length} total):\n${circuitLines.join("\n")}`);
+    parts.push(`CIRCUITS (${circuits.length} total):\n${circuitLines.join('\n')}`);
   }
 
   // Supply: show what's filled
   const supply = data.supply_characteristics || data.supply || {};
   if (Object.keys(supply).length > 0) {
-    const filled = Object.entries(supply).filter(([, v]) => v && v !== "N/A").map(([k, v]) => `${k}=${v}`);
-    const empty = ["earthing_conductor_csa", "main_bonding_csa", "bonding_water", "bonding_gas"]
-      .filter(k => !supply[k]);
-    parts.push(`SUPPLY: filled=[${filled.join(", ")}] empty=[${empty.join(", ")}]`);
+    const filled = Object.entries(supply)
+      .filter(([, v]) => v && v !== 'N/A')
+      .map(([k, v]) => `${k}=${v}`);
+    const empty = [
+      'earthing_conductor_csa',
+      'main_bonding_csa',
+      'bonding_water',
+      'bonding_gas',
+    ].filter((k) => !supply[k]);
+    parts.push(`SUPPLY: filled=[${filled.join(', ')}] empty=[${empty.join(', ')}]`);
   }
 
   // Installation
   const install = data.installation_details || data.installation || {};
   if (Object.keys(install).length > 0) {
-    const filled = Object.entries(install).filter(([, v]) => v).map(([k, v]) => `${k}=${v}`);
-    parts.push(`INSTALLATION: [${filled.join(", ")}]`);
+    const filled = Object.entries(install)
+      .filter(([, v]) => v)
+      .map(([k, v]) => `${k}=${v}`);
+    parts.push(`INSTALLATION: [${filled.join(', ')}]`);
   }
 
-  return parts.length > 0 ? parts.join("\n\n") : null;
+  return parts.length > 0 ? parts.join('\n\n') : null;
 }
