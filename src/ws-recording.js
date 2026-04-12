@@ -1,5 +1,5 @@
 /**
- * WebSocket Recording Server — Deepgram Nova 2 + Gemini 2.5 Pro hybrid
+ * WebSocket Recording Server — Deepgram Nova 3 + Gemini 2.5 Pro hybrid
  * Path: wss://.../api/recording/stream
  * Exported for server.js to mount on the HTTP upgrade handler.
  */
@@ -9,38 +9,204 @@ import logger from './logger.js';
 import * as auth from './auth.js';
 import { getDeepgramKey } from './services/secrets.js';
 import { geminiExtractFromText } from './gemini_extract.js';
+import * as storage from './storage.js';
 
 const wss = new WebSocketServer({ noServer: true });
 
 const wsRecordingSessions = new Map();
 
+// Base Deepgram streaming params (no keyterms — built dynamically below)
 const DEEPGRAM_CONFIG = {
-  model: 'nova-2',
+  model: 'nova-3',
   language: 'en-GB',
   smart_format: true,
   punctuate: true,
+  numerals: true,
   diarize: false,
   encoding: 'linear16',
   sample_rate: 16000,
   channels: 1,
   interim_results: true,
-  utterance_end_ms: 1500,
+  endpointing: 300,
+  utterance_end_ms: 2000,
   vad_events: true,
-  keywords: [
-    'Ze:2',
-    'Zs:2',
-    'R1:2',
-    'R2:2',
-    'Rn:2',
-    'PFC:2',
-    'MCB:2',
-    'RCBO:2',
-    'RCD:2',
-    'AFDD:2',
-    'TN-C-S:2',
-    'TN-S:2',
-  ],
 };
+
+// Default keyword boosts — mirrors iOS default_config.json (base_electrical + board_types).
+// Used as fallback when remote config is unavailable. Kept in sync with the bundled iOS config.
+const DEFAULT_KEYWORD_BOOSTS = {
+  // base_electrical
+  CertMate: 3.0,
+  'cert mate': 3.0,
+  megohms: 3.0,
+  Zs: 2.0,
+  Ze: 2.0,
+  Zeddy: 2.0,
+  'Zed e': 2.0,
+  RCD: 1.5,
+  RCBO: 1.5,
+  MCB: 1.5,
+  AFDD: 1.5,
+  R1: 2.0,
+  R2: 2.0,
+  Rn: 1.5,
+  CPC: 1.5,
+  'R1 plus R2': 3.0,
+  'loop impedance': 1.5,
+  'insulation resistance': 2.5,
+  insulation: 1.5,
+  'ring continuity': 2.0,
+  lives: 1.5,
+  neutrals: 1.5,
+  earths: 2.0,
+  'live to live': 2.0,
+  'live to earth': 2.0,
+  'live to neutral': 1.5,
+  'greater than': 2.0,
+  'test voltage': 1.5,
+  radial: 1.0,
+  spur: 1.0,
+  polarity: 1.0,
+  'push button': 1.5,
+  'push button works': 2.0,
+  'trip time': 1.5,
+  megger: 1.5,
+  'earth fault': 1.5,
+  continuity: 1.5,
+  milliamps: 1.0,
+  milliseconds: 1.0,
+  circuit: 3.0,
+  'nought point': 1.5,
+  nought: 2.0,
+  'main earth': 1.5,
+  tails: 2.0,
+  'meter tails': 1.5,
+  bonding: 1.5,
+  earthing: 2.0,
+  'TN-C-S': 3.0,
+  'TN-C': 2.0,
+  'TN-S': 3.0,
+  TT: 1.5,
+  PME: 1.5,
+  'prospective fault current': 1.5,
+  PFC: 1.5,
+  'supply voltage': 1.5,
+  volts: 1.0,
+  frequency: 1.5,
+  hertz: 1.5,
+  'type B': 1.5,
+  'type C': 1.5,
+  'number of points': 1.5,
+  smokes: 1.5,
+  'smoke detectors': 1.5,
+  'cable size': 1.5,
+  'circuit number': 1.5,
+  upstairs: 1.0,
+  downstairs: 1.0,
+  wiring: 2.0,
+  'reference method': 2.0,
+  correction: 1.5,
+  'N/A': 2.5,
+  LIM: 3.0,
+  limitation: 2.5,
+  debug: 2.0,
+  observation: 2.5,
+  C1: 2.0,
+  C2: 2.0,
+  C3: 2.0,
+  FI: 1.5,
+  'code 1': 1.5,
+  'code 2': 1.5,
+  'code 3': 1.5,
+  'danger present': 1.5,
+  'potentially dangerous': 1.5,
+  'improvement recommended': 1.5,
+  'further investigation': 1.5,
+  defect: 1.5,
+  postcode: 1.5,
+  customer: 1.5,
+  client: 1.5,
+  address: 1.5,
+  'in tails': 2.0,
+  DB: 1.5,
+  'distribution board': 1.5,
+  'Zs for': 2.0,
+  'R1 plus R2 for': 2.0,
+  'live to earth for': 2.0,
+  'live to live for': 2.0,
+  'number of points for': 1.5,
+  'trip time for': 1.5,
+  // board_types
+  Hager: 1.5,
+  Elucian: 1.5,
+  BG: 1.5,
+  Wylex: 1.5,
+  MK: 1.5,
+  Schneider: 1.5,
+  Fusebox: 1.5,
+  Crabtree: 1.5,
+};
+
+// Keyterm cache — refreshed from remote config every hour
+let _cachedKeyterms = null;
+let _keytermLoadTime = 0;
+const KEYTERM_CACHE_TTL_MS = 3_600_000; // 1 hour
+
+/**
+ * Convert a keyword-boost map into sorted Deepgram keyterm strings.
+ * Mirrors iOS DeepgramService.buildURL() + KeywordBoostGenerator.dedupAndCap():
+ * - Sort by boost descending (alphabetically for ties)
+ * - Append ":X.X" suffix only for boost >= 3.0 (saves URL chars for lower-tier terms)
+ * - Cap at 100 before URL-length check (matching iOS maxKeyterms)
+ */
+function buildKeytermsFromBoosts(boosts) {
+  const BOOST_THRESHOLD = 3.0;
+  const MAX_KEYTERMS = 100;
+
+  return Object.entries(boosts)
+    .filter(([, boost]) => boost > 0)
+    .sort(([ka, ba], [kb, bb]) => (bb !== ba ? bb - ba : ka.localeCompare(kb)))
+    .slice(0, MAX_KEYTERMS)
+    .map(([keyword, boost]) =>
+      boost >= BOOST_THRESHOLD ? `${keyword}:${boost.toFixed(1)}` : keyword
+    );
+}
+
+/**
+ * Load Deepgram keyterms from remote config (GCS), falling back to DEFAULT_KEYWORD_BOOSTS.
+ * Caches result for 1 hour. Matches iOS KeywordBoostGenerator.generateFromConfig().
+ */
+async function loadKeyterms() {
+  if (_cachedKeyterms && Date.now() - _keytermLoadTime < KEYTERM_CACHE_TTL_MS) {
+    return _cachedKeyterms;
+  }
+
+  try {
+    const configText = await storage.downloadText('config/certmate_config.json');
+    if (configText) {
+      const config = JSON.parse(configText);
+      const boosts = {
+        ...config.keyword_boosts?.base_electrical,
+        ...config.keyword_boosts?.board_types,
+      };
+      if (Object.keys(boosts).length > 0) {
+        _cachedKeyterms = buildKeytermsFromBoosts(boosts);
+        _keytermLoadTime = Date.now();
+        logger.info('Loaded Deepgram keyterms from remote config', { count: _cachedKeyterms.length });
+        return _cachedKeyterms;
+      }
+    }
+  } catch (err) {
+    logger.warn('Failed to load Deepgram keyterms from remote config, using defaults', {
+      error: err.message,
+    });
+  }
+
+  _cachedKeyterms = buildKeytermsFromBoosts(DEFAULT_KEYWORD_BOOSTS);
+  _keytermLoadTime = Date.now();
+  logger.info('Using default Deepgram keyterms', { count: _cachedKeyterms.length });
+  return _cachedKeyterms;
+}
 
 wss.on('connection', (ws, request) => {
   let sessionState = null;
@@ -121,12 +287,28 @@ async function handleStreamStart(ws, msg, request) {
 
   const dgParams = new URLSearchParams();
   for (const [k, v] of Object.entries(DEEPGRAM_CONFIG)) {
-    if (k === 'keywords') {
-      for (const kw of v) dgParams.append('keywords', kw);
-    } else {
-      dgParams.set(k, String(v));
-    }
+    dgParams.set(k, String(v));
   }
+
+  // Add keyterms dynamically from config, respecting iOS URL-length safety net (1800 chars)
+  const keyterms = await loadKeyterms();
+  const MAX_URL_LENGTH = 1800;
+  let addedKeyterms = 0;
+  for (const kt of keyterms) {
+    const candidateUrl = `wss://api.deepgram.com/v1/listen?${dgParams.toString()}&keyterm=${encodeURIComponent(kt)}`;
+    if (candidateUrl.length > MAX_URL_LENGTH) {
+      logger.info('Deepgram keyterm URL limit reached', {
+        sessionId,
+        addedKeyterms,
+        totalKeyterms: keyterms.length,
+        urlLen: `wss://api.deepgram.com/v1/listen?${dgParams.toString()}`.length,
+      });
+      break;
+    }
+    dgParams.append('keyterm', kt);
+    addedKeyterms++;
+  }
+
   const dgUrl = `wss://api.deepgram.com/v1/listen?${dgParams.toString()}`;
 
   const { default: WebSocket } = await import('ws');
@@ -148,10 +330,29 @@ async function handleStreamStart(ws, msg, request) {
     extractionTimer: null,
     startTime: Date.now(),
     chunkCount: 0,
+    // Startup audio buffer: hold audio chunks while Deepgram WS is connecting.
+    // Cap at ~10 seconds of Int16 PCM @ 16kHz = 320,000 bytes.
+    audioStartupBuffer: [],
+    audioStartupBufferBytes: 0,
+    audioStartupBufferFlushed: false,
   };
 
   deepgramWs.on('open', () => {
     logger.info('Deepgram WebSocket connected', { sessionId });
+    // Flush any audio buffered while Deepgram was connecting
+    if (state.audioStartupBuffer.length > 0) {
+      logger.info('Flushing startup audio buffer', {
+        sessionId,
+        chunks: state.audioStartupBuffer.length,
+        bytes: state.audioStartupBufferBytes,
+      });
+      for (const chunk of state.audioStartupBuffer) {
+        deepgramWs.send(chunk);
+      }
+    }
+    state.audioStartupBuffer = [];
+    state.audioStartupBufferBytes = 0;
+    state.audioStartupBufferFlushed = true;
     ws.send(JSON.stringify({ type: 'ready' }));
   });
 
@@ -243,6 +444,9 @@ function handleDeepgramMessage(state, dgMsg) {
   }
 }
 
+// Max startup buffer: ~10 seconds of Int16 PCM at 16kHz = 320,000 bytes
+const MAX_STARTUP_BUFFER_BYTES = 320000;
+
 function handleStreamAudio(state, msg) {
   if (!msg.data) return;
   const pcmBuffer = Buffer.from(msg.data, 'base64');
@@ -258,10 +462,27 @@ function handleStreamAudio(state, msg) {
         elapsedSec: Math.round((Date.now() - state.startTime) / 1000),
       });
     }
+  } else if (!state.audioStartupBufferFlushed) {
+    // Deepgram WS is still connecting — buffer audio instead of dropping it.
+    // If buffer is full, drop oldest chunks to make room for newest.
+    state.audioStartupBuffer.push(pcmBuffer);
+    state.audioStartupBufferBytes += pcmBuffer.length;
+    while (state.audioStartupBufferBytes > MAX_STARTUP_BUFFER_BYTES && state.audioStartupBuffer.length > 1) {
+      const dropped = state.audioStartupBuffer.shift();
+      state.audioStartupBufferBytes -= dropped.length;
+    }
+    if (state.chunkCount === 0) {
+      logger.info('Buffering audio while Deepgram connects', {
+        sessionId: state.sessionId,
+        bufferedChunks: state.audioStartupBuffer.length,
+        bufferedBytes: state.audioStartupBufferBytes,
+      });
+    }
+    state.chunkCount++;
   } else {
-    // Log when audio is being dropped (Deepgram not connected)
+    // Deepgram WS disconnected after initial connection — audio is lost
     if (!state._lastDropLog || Date.now() - state._lastDropLog > 5000) {
-      logger.warn('Audio dropped — Deepgram not connected', {
+      logger.warn('Audio dropped — Deepgram disconnected', {
         sessionId: state.sessionId,
         dgState: state.deepgramWs?.readyState ?? 'null',
         chunkCount: state.chunkCount,
