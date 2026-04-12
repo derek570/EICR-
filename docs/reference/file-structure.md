@@ -79,7 +79,7 @@ EICR_App/
 | File | Purpose |
 |------|---------|
 | `src/api.js` | Backend HTTP + WebSocket server (job requests + Sonnet extraction stream) |
-| `src/gemini_extract.js` | Gemini extraction: `geminiExtract()` (audio) + `geminiExtractFromText()` (text) |
+| `src/sonnet_extract.js` | Sonnet extraction: `sonnetExtract()` (audio) + `sonnetExtractFromText()` (text) |
 | `src/process_job.js` | Main pipeline orchestrator |
 | `src/extract.js` | GPT prompt engineering for data extraction |
 | `src/transcribe.js` | Gemini transcription with retry logic |
