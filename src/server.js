@@ -19,7 +19,7 @@ import { closePool } from './db.js';
 import app, { wss as recordingWss } from './api.js';
 import { stopSessionCleanup } from './routes/recording.js';
 
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.APP_PORT || 3000;
 
 // Create HTTP server
 const httpServer = http.createServer(app);
