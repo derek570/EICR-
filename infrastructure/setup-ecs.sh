@@ -549,7 +549,7 @@ create_task_definitions() {
                 {"name": "STORAGE_TYPE", "value": "s3"},
                 {"name": "S3_BUCKET", "value": "${PROJECT_NAME}-files-${ENVIRONMENT}"},
                 {"name": "DATABASE_TYPE", "value": "postgresql"},
-                {"name": "BACKEND_URL", "value": "https://certomatic3000.co.uk"}
+                {"name": "BACKEND_URL", "value": "https://certmate.uk"}
             ],
             "logConfiguration": {
                 "logDriver": "awslogs",

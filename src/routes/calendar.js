@@ -21,7 +21,7 @@ router.get("/auth-url", auth.requireAuth, (req, res) => {
   }
 
   try {
-    const frontendUrl = process.env.FRONTEND_URL || "https://certomatic3000.co.uk";
+    const frontendUrl = process.env.FRONTEND_URL || "https://certmate.uk";
     const redirectUri = `${frontendUrl}/calendar`;
     const url = calendar.getAuthUrl(redirectUri);
     res.json({ url });
@@ -45,7 +45,7 @@ router.post("/callback", auth.requireAuth, async (req, res) => {
   }
 
   try {
-    const frontendUrl = process.env.FRONTEND_URL || "https://certomatic3000.co.uk";
+    const frontendUrl = process.env.FRONTEND_URL || "https://certmate.uk";
     const redirectUri = `${frontendUrl}/calendar`;
     const tokens = await calendar.getTokens(code, redirectUri);
 

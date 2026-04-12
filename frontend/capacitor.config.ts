@@ -5,7 +5,7 @@ const config: CapacitorConfig = {
   appName: 'CertMate',
   webDir: 'public',
   server: {
-    url: 'https://certomatic3000.co.uk',
+    url: 'https://certmate.uk',
     cleartext: false,
   },
   ios: {

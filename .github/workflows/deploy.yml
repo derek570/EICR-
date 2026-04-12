@@ -188,7 +188,7 @@ jobs:
           tags: eicr-frontend:${{ github.sha }}
           build-args: |
             APP_DIR=frontend
-            NEXT_PUBLIC_API_URL=https://certmate.uk
+            NEXT_PUBLIC_API_URL=https://api.certmate.uk
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -415,7 +415,7 @@ jobs:
             ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY_FRONTEND }}:latest
           build-args: |
             APP_DIR=frontend
-            NEXT_PUBLIC_API_URL=https://certmate.uk
+            NEXT_PUBLIC_API_URL=https://api.certmate.uk
           cache-from: type=gha
           cache-to: type=gha,mode=max
 

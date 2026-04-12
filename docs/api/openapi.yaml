@@ -19,7 +19,7 @@ info:
     name: Proprietary
 
 servers:
-  - url: https://certomatic3000.co.uk
+  - url: https://certmate.uk
     description: Production
   - url: http://localhost:3000
     description: Local development

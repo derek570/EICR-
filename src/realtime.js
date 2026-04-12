@@ -18,7 +18,7 @@ let io = null;
 export function initSocketIO(httpServer) {
   const allowedOrigins = process.env.FRONTEND_URL
     ? process.env.FRONTEND_URL
-    : ["http://localhost:3001", "https://certomatic3000.co.uk"];
+    : ["http://localhost:3001", "https://certomatic3000.co.uk", "https://certmate.uk", "https://www.certmate.uk"];
 
   io = new Server(httpServer, {
     cors: {

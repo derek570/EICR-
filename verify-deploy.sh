@@ -4,7 +4,7 @@
 #
 # Usage: ./verify-deploy.sh [--local | --production]
 #   --local       Check local Docker containers (default)
-#   --production  Check certomatic3000.co.uk
+#   --production  Check certmate.uk
 #   --both        Check both local and production
 
 set -euo pipefail
@@ -120,9 +120,9 @@ fi
 # ── 4. Production checks ────────────────────────────────────────────
 if [[ "$MODE" == "--production" || "$MODE" == "--both" ]]; then
   echo ""
-  echo "=== Production (certomatic3000.co.uk) ==="
+  echo "=== Production (certmate.uk) ==="
 
-  PROD_URL="https://certomatic3000.co.uk"
+  PROD_URL="https://certmate.uk"
 
   # Site reachable
   PROD_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$PROD_URL" 2>/dev/null || echo "000")

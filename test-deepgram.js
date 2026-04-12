@@ -27,7 +27,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 
 const RESULTS_FILE = '/tmp/deepgram-test-results.txt';
 const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:3000';
-const PROD_URL = 'https://api.certomatic3000.co.uk';
+const PROD_URL = 'https://api.certmate.uk';
 
 // Deepgram params matching the frontend deepgram-service.ts
 const DG_PARAMS_FRONTEND = {

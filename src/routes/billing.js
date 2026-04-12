@@ -75,7 +75,7 @@ router.post('/create-checkout', auth.requireAuth, async (req, res) => {
       });
     }
 
-    const frontendUrl = process.env.FRONTEND_URL || 'https://certomatic3000.co.uk';
+    const frontendUrl = process.env.FRONTEND_URL || 'https://certmate.uk';
     const session = await billing.createCheckoutSession(
       customerId,
       priceId,
@@ -110,7 +110,7 @@ router.post('/portal', auth.requireAuth, async (req, res) => {
       return res.status(400).json({ error: 'No billing account found. Please subscribe first.' });
     }
 
-    const frontendUrl = process.env.FRONTEND_URL || 'https://certomatic3000.co.uk';
+    const frontendUrl = process.env.FRONTEND_URL || 'https://certmate.uk';
     const session = await billing.createPortalSession(
       sub.stripe_customer_id,
       `${frontendUrl}/settings/billing`

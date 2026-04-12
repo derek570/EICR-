@@ -186,7 +186,7 @@ notify_full_report() {
   # Build feedback URL
   local FEEDBACK_URL=""
   if [ -n "$FEEDBACK_SESSION_ID" ]; then
-    FEEDBACK_URL="https://certomatic3000.co.uk/api/feedback/$FEEDBACK_SESSION_ID"
+    FEEDBACK_URL="https://api.certmate.uk/api/feedback/$FEEDBACK_SESSION_ID"
   fi
 
   # ── Extract session metadata ──
@@ -892,7 +892,7 @@ process_session_fallback() {
   log "  Fallback report uploaded: s3://${BUCKET}/${S3_REPORT_PREFIX}/"
 
   # Send Pushover notification — clearly marked as fallback
-  local REPORT_URL="https://certomatic3000.co.uk/api/optimizer-report/${REPORT_ID}"
+  local REPORT_URL="https://api.certmate.uk/api/optimizer-report/${REPORT_ID}"
   local TOTAL_COST
   TOTAL_COST=$(jq -r '.totalCost // 0' "$REPORT_WORK_DIR/session-summary.json" 2>/dev/null || echo 0)
   local TOTAL_GBP
@@ -1358,7 +1358,7 @@ PROMPT_INSTRUCTIONS
   log "  Report uploaded: s3://${BUCKET}/${S3_REPORT_PREFIX}/"
 
   # Build enhanced Pushover message with key stats
-  local REPORT_URL="https://certomatic3000.co.uk/api/optimizer-report/${REPORT_ID}"
+  local REPORT_URL="https://api.certmate.uk/api/optimizer-report/${REPORT_ID}"
   local PUSHOVER_MSG=""
 
   # Extract stats from session-summary.json for notification
@@ -1578,7 +1578,7 @@ EOF
   log "  Debug report uploaded: s3://${BUCKET}/${S3_REPORT_PREFIX}/"
 
   # Send Pushover with clickable report URL
-  local REPORT_URL="https://certomatic3000.co.uk/api/optimizer-report/${REPORT_UUID}"
+  local REPORT_URL="https://api.certmate.uk/api/optimizer-report/${REPORT_UUID}"
   send_pushover_message \
     "Debug: ${TITLE:0:50}" \
     "$REC_COUNT recommendations — $SUMMARY" \

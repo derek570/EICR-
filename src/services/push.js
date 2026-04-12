@@ -14,7 +14,7 @@ let configured = false;
 
 if (VAPID_PUBLIC_KEY && VAPID_PRIVATE_KEY) {
   webPush.setVapidDetails(
-    "mailto:derek@certomatic3000.co.uk",
+    "mailto:derek@certmate.uk",
     VAPID_PUBLIC_KEY,
     VAPID_PRIVATE_KEY
   );
