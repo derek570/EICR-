@@ -95,6 +95,10 @@ router.post('/proxy/claude', auth.requireAuth, async (req, res) => {
     if (typeof req.body.system === 'string') {
       forwardBody.system = req.body.system;
     }
+    // Allow system as content block array (required for prompt caching with cache_control)
+    if (Array.isArray(req.body.system)) {
+      forwardBody.system = req.body.system;
+    }
     if (
       typeof req.body.temperature === 'number' &&
       req.body.temperature >= 0 &&
@@ -118,19 +122,36 @@ router.post('/proxy/claude', auth.requireAuth, async (req, res) => {
       'temperature',
       'top_p',
       'stop_sequences',
+      'betas',
     ]);
     const extraFields = Object.keys(req.body).filter((k) => !allowedFields.has(k));
     if (extraFields.length > 0) {
       logger.warn('Claude proxy: stripped non-whitelisted fields', { userId, extraFields });
     }
 
+    // Build Anthropic request headers — forward beta features if client requests them.
+    // 'prompt-caching-2024-07-31' enables cache_control on system/messages blocks.
+    const anthropicHeaders = {
+      'Content-Type': 'application/json',
+      'x-api-key': anthropicKey,
+      'anthropic-version': '2023-06-01',
+    };
+    const clientBeta = req.headers['anthropic-beta'];
+    const ALLOWED_BETAS = new Set(['prompt-caching-2024-07-31', 'extended-cache-ttl-2025-04-11']);
+    if (typeof clientBeta === 'string') {
+      const filteredBetas = clientBeta
+        .split(',')
+        .map((b) => b.trim())
+        .filter((b) => ALLOWED_BETAS.has(b))
+        .join(',');
+      if (filteredBetas) {
+        anthropicHeaders['anthropic-beta'] = filteredBetas;
+      }
+    }
+
     const response = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': anthropicKey,
-        'anthropic-version': '2023-06-01',
-      },
+      headers: anthropicHeaders,
       body: JSON.stringify(forwardBody),
     });
 

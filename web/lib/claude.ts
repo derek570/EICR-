@@ -42,10 +42,14 @@ export interface ClaudeCostEstimate {
 
 // ============= Internal API Types =============
 
+type SystemContent =
+  | string
+  | Array<{ type: 'text'; text: string; cache_control?: { type: 'ephemeral' } }>;
+
 interface ClaudeAPIRequest {
   model: string;
   max_tokens: number;
-  system: string;
+  system: SystemContent;
   messages: Array<{ role: string; content: string }>;
 }
 
@@ -78,13 +82,18 @@ export class ClaudeService {
   // Route through backend proxy to avoid CORS and protect API key.
   // Must be absolute so it resolves to the Express backend, not the Next.js server.
   private static readonly ENDPOINT = `${process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3000'}/api/proxy/claude`;
-  private static readonly MODEL = 'claude-sonnet-4-6';
+  // Rolling extraction uses Haiku for lower latency (~1-2s vs 6-7s with Sonnet).
+  // Haiku handles structured JSON extraction well; Sonnet reserved for review/full-transcript.
+  private static readonly ROLLING_MODEL = 'claude-haiku-4-5-20241022';
+  private static readonly REVIEW_MODEL = 'claude-sonnet-4-6';
   private static readonly ANTHROPIC_VERSION = '2023-06-01';
   private static readonly MAX_RETRIES = 3;
 
-  // Cost per million tokens (Sonnet 4.5)
-  private static readonly INPUT_COST_PER_MILLION = 3.0;
-  private static readonly OUTPUT_COST_PER_MILLION = 15.0;
+  // Cost per million tokens — Haiku (rolling) and Sonnet (review/full-transcript)
+  private static readonly HAIKU_INPUT_COST_PER_MILLION = 0.25;
+  private static readonly HAIKU_OUTPUT_COST_PER_MILLION = 1.25;
+  private static readonly SONNET_INPUT_COST_PER_MILLION = 3.0;
+  private static readonly SONNET_OUTPUT_COST_PER_MILLION = 15.0;
 
   private apiKey: string | null = null;
 
@@ -135,11 +144,13 @@ export class ClaudeService {
   }): Promise<RollingExtractionResult> {
     const userContent = this.buildRollingExtractionUserMessage(opts);
 
-    const maxTokens = opts.debugIssues && opts.debugIssues.length > 0 ? 1792 : 1280;
+    // Haiku is ~5x faster than Sonnet for extraction; 800 tokens is ample for typical output.
+    const maxTokens = opts.debugIssues && opts.debugIssues.length > 0 ? 1024 : 800;
     const response = await this.callClaudeAPI(
       ClaudeService.ROLLING_EXTRACTION_SYSTEM_PROMPT,
       userContent,
-      maxTokens
+      maxTokens,
+      ClaudeService.ROLLING_MODEL
     );
 
     const textBlock = response.content.find((b) => b.type === 'text');
@@ -150,7 +161,7 @@ export class ClaudeService {
     const raw = this.parseJSONFromText<RawRollingExtractionResult>(textBlock.text);
     const result = mapRollingExtractionResult(raw);
 
-    const cost = this.calculateCost(response.usage);
+    const cost = this.calculateCost(response.usage, ClaudeService.ROLLING_MODEL);
     this._sessionCostUSD += cost.totalCostUSD;
     this._sessionCallCount++;
 
@@ -161,7 +172,8 @@ export class ClaudeService {
     const response = await this.callClaudeAPI(
       ClaudeService.FULL_REVIEW_SYSTEM_PROMPT,
       certificateData,
-      2048
+      2048,
+      ClaudeService.REVIEW_MODEL
     );
 
     const textBlock = response.content.find((b) => b.type === 'text');
@@ -172,7 +184,7 @@ export class ClaudeService {
     const raw = this.parseJSONFromText<RawCertificateReviewResult>(textBlock.text);
     const result = mapCertificateReviewResult(raw);
 
-    const cost = this.calculateCost(response.usage);
+    const cost = this.calculateCost(response.usage, ClaudeService.REVIEW_MODEL);
     this._sessionCostUSD += cost.totalCostUSD;
     this._sessionCallCount++;
 
@@ -188,7 +200,8 @@ export class ClaudeService {
     const response = await this.callClaudeAPI(
       ClaudeService.FULL_TRANSCRIPT_EXTRACTION_SYSTEM_PROMPT,
       userContent,
-      4096
+      4096,
+      ClaudeService.REVIEW_MODEL
     );
 
     const textBlock = response.content.find((b) => b.type === 'text');
@@ -199,7 +212,7 @@ export class ClaudeService {
     const raw = this.parseJSONFromText<RawRollingExtractionResult>(textBlock.text);
     const result = mapRollingExtractionResult(raw);
 
-    const cost = this.calculateCost(response.usage);
+    const cost = this.calculateCost(response.usage, ClaudeService.REVIEW_MODEL);
     this._sessionCostUSD += cost.totalCostUSD;
     this._sessionCallCount++;
 
@@ -211,16 +224,26 @@ export class ClaudeService {
   private async callClaudeAPI(
     systemPrompt: string,
     userContent: string,
-    maxTokens: number
+    maxTokens: number,
+    model: string = ClaudeService.ROLLING_MODEL
   ): Promise<ClaudeAPIResponse> {
     if (!this.apiKey || this.apiKey.length === 0) {
       throw new ClaudeServiceError('Claude API key not configured', 'not_configured');
     }
 
+    // Use prompt caching for rolling extraction — cache the system prompt to avoid
+    // re-processing it on every call. The prompt must be >=1024 tokens for Sonnet
+    // or >=2048 for Haiku; the rolling extraction prompt may be borderline so we
+    // always try caching (Anthropic silently ignores it if below minimum).
+    const isRolling = model === ClaudeService.ROLLING_MODEL;
+    const systemContent: SystemContent = isRolling
+      ? [{ type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } }]
+      : systemPrompt;
+
     const requestBody: ClaudeAPIRequest = {
-      model: ClaudeService.MODEL,
+      model,
       max_tokens: maxTokens,
-      system: systemPrompt,
+      system: systemContent,
       messages: [{ role: 'user', content: userContent }],
     };
 
@@ -233,6 +256,8 @@ export class ClaudeService {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
+            // Enable prompt caching beta for rolling extraction calls
+            ...(isRolling ? { 'anthropic-beta': 'prompt-caching-2024-07-31' } : {}),
             ...(token ? { Authorization: `Bearer ${token}` } : {}),
           },
           body: JSON.stringify(requestBody),
@@ -370,7 +395,8 @@ export class ClaudeService {
   }
 
   private calculateCost(
-    usage?: { input_tokens: number; output_tokens: number } | null
+    usage?: { input_tokens: number; output_tokens: number } | null,
+    model: string = ClaudeService.ROLLING_MODEL
   ): ClaudeCostEstimate {
     if (!usage) {
       return {
@@ -381,8 +407,15 @@ export class ClaudeService {
         totalCostUSD: 0,
       };
     }
-    const inputCost = (usage.input_tokens * ClaudeService.INPUT_COST_PER_MILLION) / 1_000_000;
-    const outputCost = (usage.output_tokens * ClaudeService.OUTPUT_COST_PER_MILLION) / 1_000_000;
+    const isHaiku = model.includes('haiku');
+    const inputRate = isHaiku
+      ? ClaudeService.HAIKU_INPUT_COST_PER_MILLION
+      : ClaudeService.SONNET_INPUT_COST_PER_MILLION;
+    const outputRate = isHaiku
+      ? ClaudeService.HAIKU_OUTPUT_COST_PER_MILLION
+      : ClaudeService.SONNET_OUTPUT_COST_PER_MILLION;
+    const inputCost = (usage.input_tokens * inputRate) / 1_000_000;
+    const outputCost = (usage.output_tokens * outputRate) / 1_000_000;
     return {
       inputTokens: usage.input_tokens,
       outputTokens: usage.output_tokens,
@@ -419,10 +452,15 @@ export class ClaudeService {
     if (opts.currentCircuit) {
       parts.push(`Current circuit: ${opts.currentCircuit}`);
     }
+    // Send compact circuit schedule (refs + designations only) to reduce token count.
+    // Full test values are not needed — the model only needs circuit refs to route readings.
+    const compactSchedule = ClaudeService.compactCircuitSchedule(opts.circuitSchedule);
     parts.push(
-      `Circuit schedule (CONFIRMED values \u2014 do NOT question these): ${opts.circuitSchedule}`
+      `Circuit schedule (CONFIRMED values \u2014 do NOT question these): ${compactSchedule}`
     );
-    parts.push(`Recent readings: ${opts.recentReadings}`);
+    // Trim recent readings to just field keys (not values) to reduce token count
+    const compactReadings = ClaudeService.compactRecentReadings(opts.recentReadings);
+    parts.push(`Recent readings: ${compactReadings}`);
 
     if (opts.debugIssues && opts.debugIssues.length > 0) {
       const issueList = opts.debugIssues.map((i) => `- ${i}`).join('\n');
@@ -441,6 +479,46 @@ export class ClaudeService {
     }
 
     return parts.join('\n');
+  }
+
+  // ---- Payload Compaction Helpers ----
+
+  /**
+   * Reduce circuit schedule to "ref: designation" pairs only.
+   * The full circuit JSON with test values can be 3-10K tokens for a 20-circuit job.
+   * The model only needs refs + designations to correctly route readings.
+   */
+  private static compactCircuitSchedule(scheduleJson: string): string {
+    try {
+      const circuits = JSON.parse(scheduleJson);
+      if (!Array.isArray(circuits)) return scheduleJson;
+      return circuits
+        .map((c: Record<string, unknown>) => {
+          const ref = c.circuit_ref ?? c.circuitRef ?? c.ref ?? '?';
+          const desc = c.circuit_designation ?? c.circuitDesignation ?? c.designation ?? '';
+          return desc ? `${ref}: ${desc}` : String(ref);
+        })
+        .join(', ');
+    } catch {
+      // Fall back to original if not parseable JSON
+      return scheduleJson;
+    }
+  }
+
+  /**
+   * Reduce fieldSources object to just the set of already-filled field keys.
+   * The source values ('regex'/'sonnet'/'preExisting') are not needed by the model —
+   * only which fields are already filled matters.
+   */
+  private static compactRecentReadings(readingsJson: string): string {
+    try {
+      const sources = JSON.parse(readingsJson) as Record<string, string>;
+      const filledKeys = Object.keys(sources);
+      if (filledKeys.length === 0) return 'none';
+      return filledKeys.join(', ');
+    } catch {
+      return readingsJson;
+    }
   }
 
   // ---- System Prompts ----
