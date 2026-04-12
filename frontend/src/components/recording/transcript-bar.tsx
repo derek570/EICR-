@@ -2,7 +2,7 @@
 
 import { useMemo, type ReactNode } from 'react';
 
-interface GeminiHighlight {
+interface Highlight {
   keyword: string;
   value: string;
   fieldKey: string;
@@ -12,12 +12,12 @@ interface GeminiHighlight {
 interface TranscriptBarProps {
   transcript: string;
   interimTranscript: string;
-  highlight: GeminiHighlight | null;
+  highlight: Highlight | null;
   isRecording: boolean;
   sleepState: 'active' | 'dozing' | 'sleeping';
 }
 
-function buildHighlightedText(text: string, highlight: GeminiHighlight | null): ReactNode[] {
+function buildHighlightedText(text: string, highlight: Highlight | null): ReactNode[] {
   if (!highlight || !text) return [text];
 
   const { keywordCandidates, value } = highlight;

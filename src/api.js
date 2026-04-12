@@ -253,7 +253,7 @@ app.use('/api/analytics', analyticsRouter); // /api/analytics/*
 app.use('/api', jobsRouter); // /api/jobs/*, /api/job/*, /api/upload, /api/process-job, /api/queue/*
 app.use('/api', recordingRouter); // /api/recording/*, /api/session/*, /api/debug-report
 app.use('/api', uploadLimiter, photosRouter); // /api/job/:userId/:jobId/photos/*
-app.use('/api', aiLimiter, extractionRouter); // /api/recording/gemini-extract, /api/analyze-ccu, /api/enhance-observation
+app.use('/api', aiLimiter, extractionRouter); // /api/recording/sonnet-extract, /api/analyze-ccu, /api/enhance-observation
 app.use('/api', pdfRouter); // /api/job/:userId/:jobId/generate-pdf
 app.use('/api', emailLimiter, emailRouter); // /api/job/:userId/:jobId/email, /api/email/status, /api/whatsapp/*
 app.use('/api', exportRouter); // /api/job/:userId/:jobId/export/*

@@ -1,12 +1,12 @@
 /**
  * Sonnet text extraction for the Deepgram + Sonnet hybrid pipeline.
  *
- * Replaces gemini_extract.js — uses Anthropic Claude instead of Gemini.
- * Uses raw fetch() (no SDK) to match the existing pattern in gemini_extract.js.
+ * Uses Anthropic Claude Sonnet for structured extraction from transcript text.
+ * Uses raw fetch() (no SDK) for minimal dependencies.
  *
  * Exports:
- *   sonnetExtractFromText  — transcript text → structured extraction (replaces geminiExtractFromText)
- *   sonnetExtractFromAudio — audio → Deepgram transcription → Sonnet extraction (replaces geminiExtract)
+ *   sonnetExtractFromText  — transcript text → structured extraction
+ *   sonnetExtractFromAudio — audio → Deepgram transcription → Sonnet extraction
  */
 
 import fssync from 'node:fs';
@@ -28,7 +28,7 @@ const SONNET_OUTPUT_RATE = 15.0;
 
 // Load text extraction system prompt (designed for single-turn stateless extraction)
 const TEXT_SYSTEM_PROMPT = fssync.readFileSync(
-  path.join(__dirname, '..', 'config', 'prompts', 'gemini_text_system.md'),
+  path.join(__dirname, '..', 'config', 'prompts', 'sonnet_text_system.md'),
   'utf8'
 );
 
@@ -36,8 +36,6 @@ const TEXT_SYSTEM_PROMPT = fssync.readFileSync(
  * Call Sonnet with transcript TEXT (no audio) + context and return structured extraction.
  * Used by the Deepgram+Sonnet hybrid pipeline where Deepgram handles transcription
  * and Sonnet handles structured extraction from the transcript text.
- *
- * Replaces geminiExtractFromText — identical interface.
  *
  * @param {string} transcriptText - Rolling window of transcript text (~5000 chars)
  * @param {string} contextText - Filled fields + orphans context
@@ -158,9 +156,6 @@ Extract structured EICR data from the transcript above. Only extract NEW values 
 
 /**
  * Transcribe audio with Deepgram, then extract structured data with Sonnet.
- * Replaces geminiExtract for the chunked audio pipeline.
- *
- * Identical interface to geminiExtract — callers need only update the import.
  *
  * @param {string} audioBase64 - Base64-encoded audio data
  * @param {string} audioMimeType - MIME type (audio/flac, audio/wav, etc.)

@@ -369,10 +369,9 @@ If you cannot determine the type, reply: {"rcd_type": null, "source": "not found
 
 /**
  * Sonnet chunked audio extraction (Deepgram transcription + Claude Sonnet extraction)
- * POST /api/recording/gemini-extract
- * NOTE: Path kept for backwards compatibility with existing iOS/web clients.
+ * POST /api/recording/sonnet-extract
  */
-router.post('/recording/gemini-extract', auth.requireAuth, async (req, res) => {
+router.post('/recording/sonnet-extract', auth.requireAuth, async (req, res) => {
   const userId = req.user.id;
   const {
     sessionId,
@@ -457,7 +456,7 @@ router.post('/recording/gemini-extract', auth.requireAuth, async (req, res) => {
           endedAt: new Date().toISOString(),
         });
 
-        session.geminiFullTranscript = session.preDebugContext;
+        session.fullTranscript = session.preDebugContext;
         session.debugMode = false;
         session.debugBuffer = '';
 
@@ -523,7 +522,7 @@ router.post('/recording/gemini-extract', auth.requireAuth, async (req, res) => {
       }
 
       if (DEBUG_START.test(transcript)) {
-        session.preDebugContext = session.geminiFullTranscript;
+        session.preDebugContext = session.fullTranscript;
         session.debugMode = true;
         session.debugStartTime = new Date().toISOString();
         session.debugBuffer = '';
@@ -563,11 +562,11 @@ router.post('/recording/gemini-extract', auth.requireAuth, async (req, res) => {
           });
         }
 
-        session.geminiFullTranscript += (session.geminiFullTranscript ? ' ' : '') + beforeDebug;
+        session.fullTranscript += (session.fullTranscript ? ' ' : '') + beforeDebug;
       }
 
       if (!session.debugMode && transcript) {
-        session.geminiFullTranscript += (session.geminiFullTranscript ? ' ' : '') + transcript;
+        session.fullTranscript += (session.fullTranscript ? ' ' : '') + transcript;
       }
 
       if (!session.debugMode || !DEBUG_START.test(transcript)) {

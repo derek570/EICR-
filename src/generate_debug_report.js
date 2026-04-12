@@ -6,11 +6,11 @@
  * then saves both to S3 under debug-reports/{userId}/{timestamp}/.
  */
 
-import { getGeminiKey } from "./services/secrets.js";
-import * as storage from "./storage.js";
-import logger from "./logger.js";
+import { getGeminiKey } from './services/secrets.js';
+import * as storage from './storage.js';
+import logger from './logger.js';
 
-const GEMINI_MODEL = (process.env.GEMINI_MODEL || "gemini-3-pro-preview").trim();
+const GEMINI_MODEL = (process.env.GEMINI_MODEL || 'gemini-3-pro-preview').trim();
 const MAX_RETRIES = 3;
 const RETRY_BASE_MS = 1000;
 
@@ -22,24 +22,36 @@ export async function generateAndSaveDebugReports(session) {
   for (const segment of session.debugSegments) {
     try {
       const report = await generateReport(segment, session);
-      const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
       const prefix = `debug-reports/${session.userId}/${timestamp}`;
 
       await Promise.all([
         storage.uploadJson(report.json, `${prefix}/debug_report.json`),
         storage.uploadText(report.markdown, `${prefix}/debug_report.md`),
-        storage.uploadJson({
-          userId: session.userId,
-          jobId: session.jobId,
-          address: session.address,
-          sessionId: session.sessionId,
-          accumulatedTranscript: (session.preDebugContext || session.eicrBuffer?.fullText || session.geminiFullTranscript || "").slice(-2000),
-        }, `${prefix}/context.json`),
+        storage.uploadJson(
+          {
+            userId: session.userId,
+            jobId: session.jobId,
+            address: session.address,
+            sessionId: session.sessionId,
+            accumulatedTranscript: (
+              session.preDebugContext ||
+              session.eicrBuffer?.fullText ||
+              session.fullTranscript ||
+              ''
+            ).slice(-2000),
+          },
+          `${prefix}/context.json`
+        ),
       ]);
 
-      logger.info("Debug report saved", { prefix, severity: report.json.severity, title: report.json.title });
+      logger.info('Debug report saved', {
+        prefix,
+        severity: report.json.severity,
+        title: report.json.title,
+      });
     } catch (err) {
-      logger.error("Failed to generate/save debug report", {
+      logger.error('Failed to generate/save debug report', {
         userId: session.userId,
         segment: segment.transcript?.substring(0, 100),
         error: err.message,
@@ -50,7 +62,7 @@ export async function generateAndSaveDebugReports(session) {
 
 async function generateReport(segment, session) {
   const apiKey = await getGeminiKey();
-  if (!apiKey) throw new Error("Missing GEMINI_API_KEY for debug report generation");
+  if (!apiKey) throw new Error('Missing GEMINI_API_KEY for debug report generation');
 
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(GEMINI_MODEL)}:generateContent?key=${encodeURIComponent(apiKey)}`;
 
@@ -62,13 +74,13 @@ An electrician verbally described a problem mid-recording. Produce a structured 
 "${segment.transcript}"
 
 ## Job Context
-- Address: ${session.address || "Unknown"}
-- Certificate type: ${session.certificateType || "EICR"}
-- Session ID: ${session.sessionId || "unknown"}
-${segment.autoClosedOnSessionEnd ? "- Note: Debug auto-closed (user forgot \"end debug\")" : ""}
+- Address: ${session.address || 'Unknown'}
+- Certificate type: ${session.certificateType || 'EICR'}
+- Session ID: ${session.sessionId || 'unknown'}
+${segment.autoClosedOnSessionEnd ? '- Note: Debug auto-closed (user forgot "end debug")' : ''}
 
 ## Certificate Transcript (for context)
-"${(session.preDebugContext || session.eicrBuffer?.fullText || session.geminiFullTranscript || "").slice(-500)}"
+"${(session.preDebugContext || session.eicrBuffer?.fullText || session.fullTranscript || '').slice(-500)}"
 
 ## CRITICAL: Two-Tier Extraction Architecture
 
@@ -136,7 +148,7 @@ Set "auto_fixable": false ONLY for:
   const body = {
     contents: [{ parts: [{ text: prompt }] }],
     generationConfig: {
-      responseMimeType: "application/json",
+      responseMimeType: 'application/json',
       temperature: 0.2,
     },
   };
@@ -145,8 +157,8 @@ Set "auto_fixable": false ONLY for:
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     try {
       const res = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
         signal: AbortSignal.timeout(60_000),
       });
@@ -155,8 +167,12 @@ Set "auto_fixable": false ONLY for:
         const errBody = await res.text();
         if ((res.status === 429 || res.status === 503) && attempt < MAX_RETRIES) {
           const delay = RETRY_BASE_MS * Math.pow(2, attempt - 1);
-          logger.warn("Debug report Gemini retryable error", { status: res.status, attempt, delay });
-          await new Promise(r => setTimeout(r, delay));
+          logger.warn('Debug report Gemini retryable error', {
+            status: res.status,
+            attempt,
+            delay,
+          });
+          await new Promise((r) => setTimeout(r, delay));
           continue;
         }
         throw new Error(`Gemini HTTP ${res.status}: ${errBody.slice(0, 500)}`);
@@ -164,12 +180,12 @@ Set "auto_fixable": false ONLY for:
 
       const json = await res.json();
       const text = json?.candidates?.[0]?.content?.parts
-        ?.map(p => p?.text)
+        ?.map((p) => p?.text)
         ?.filter(Boolean)
-        ?.join("\n")
+        ?.join('\n')
         ?.trim();
 
-      if (!text) throw new Error("Gemini returned empty response for debug report");
+      if (!text) throw new Error('Gemini returned empty response for debug report');
 
       const parsed = JSON.parse(text);
       const markdown = formatMarkdown(parsed, session.address);
@@ -178,7 +194,7 @@ Set "auto_fixable": false ONLY for:
       lastError = err;
       if (attempt < MAX_RETRIES) {
         const delay = RETRY_BASE_MS * Math.pow(2, attempt - 1);
-        await new Promise(r => setTimeout(r, delay));
+        await new Promise((r) => setTimeout(r, delay));
       }
     }
   }
@@ -189,38 +205,38 @@ Set "auto_fixable": false ONLY for:
 function formatMarkdown(report, address) {
   return `# Bug Report: ${report.title}
 
-**Severity:** ${(report.severity || "unknown").toUpperCase()}
-**Category:** ${report.category || "unknown"}
-**Tier:** ${report.tier || "unknown"}
-**Auto-fixable:** ${report.auto_fixable ? "Yes" : "No — needs review"}
-**Job:** ${address || "Unknown"}
+**Severity:** ${(report.severity || 'unknown').toUpperCase()}
+**Category:** ${report.category || 'unknown'}
+**Tier:** ${report.tier || 'unknown'}
+**Auto-fixable:** ${report.auto_fixable ? 'Yes' : 'No — needs review'}
+**Job:** ${address || 'Unknown'}
 **Generated:** ${new Date().toISOString()}
 
 ## Problem
-${report.problem_description || "No description provided."}
+${report.problem_description || 'No description provided.'}
 
 ## Steps to Reproduce
-${(report.steps_to_reproduce || []).map((s, i) => `${i + 1}. ${s}`).join("\n") || "Not specified."}
+${(report.steps_to_reproduce || []).map((s, i) => `${i + 1}. ${s}`).join('\n') || 'Not specified.'}
 
 ## Expected Behaviour
-${report.expected_behaviour || "Not specified."}
+${report.expected_behaviour || 'Not specified.'}
 
 ## Actual Behaviour
-${report.actual_behaviour || "Not specified."}
+${report.actual_behaviour || 'Not specified.'}
 
 ## Affected Fields
-${(report.affected_fields || []).map(f => `- \`${f}\``).join("\n") || "None specified."}
+${(report.affected_fields || []).map((f) => `- \`${f}\``).join('\n') || 'None specified.'}
 
-${report.affected_circuits?.length ? `## Affected Circuits\n${report.affected_circuits.map(c => `- Circuit ${c}`).join("\n")}` : ""}
+${report.affected_circuits?.length ? `## Affected Circuits\n${report.affected_circuits.map((c) => `- Circuit ${c}`).join('\n')}` : ''}
 
 ## Likely Files to Investigate
-${(report.affected_files || []).map(f => `- \`${f}\``).join("\n") || "None specified."}
+${(report.affected_files || []).map((f) => `- \`${f}\``).join('\n') || 'None specified.'}
 
 ## Suggested Fix
-${report.suggested_fix || "Needs investigation."}
+${report.suggested_fix || 'Needs investigation.'}
 
 ## Raw Debug Transcript
-> ${report.raw_transcript || "Not available."}
+> ${report.raw_transcript || 'Not available.'}
 
 ---
 *Auto-generated by CertMate Debug Audio feature*

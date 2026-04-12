@@ -293,7 +293,7 @@ async function saveSession(
       durationMs: Date.now() - session.startedAt,
       chunksReceived: session.chunksReceived,
       chunks: session.debugLog,
-      fullTranscript: session.eicrBuffer?.fullText || session.geminiFullTranscript || '',
+      fullTranscript: session.eicrBuffer?.fullText || session.fullTranscript || '',
       extractedCircuits: formData.circuits.length,
       extractedObservations: formData.observations.length,
       savedBy: isStale ? 'stale-cleanup' : 'finish-endpoint',
@@ -683,7 +683,7 @@ router.post('/recording/start', auth.requireAuth, async (req, res) => {
     debugSegments: [],
     preDebugContext: '',
     debugStartTime: null,
-    geminiFullTranscript: '',
+    fullTranscript: '',
   };
 
   activeSessions.set(sessionId, session);

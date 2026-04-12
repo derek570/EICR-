@@ -312,7 +312,7 @@ export default function DebugPage() {
             </li>
             <li>
               <strong>Missing values:</strong> If you hear yourself saying values that don&apos;t
-              appear in the transcript, try speaking more clearly or louder. Gemini may miss quiet
+              appear in the transcript, try speaking more clearly or louder. Claude may miss quiet
               or mumbled speech.
             </li>
             <li>
