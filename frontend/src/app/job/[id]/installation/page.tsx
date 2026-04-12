@@ -12,8 +12,25 @@ import { PREMISES_DESCRIPTIONS, INSPECTION_INTERVALS } from '@/lib/constants';
 import { toast } from 'sonner';
 import { UserPlus, Search, Users } from 'lucide-react';
 
+// Calculate next inspection due date from inspection date + years
+function calcNextInspectionDue(
+  dateOfInspection: string | undefined,
+  years: number | undefined
+): string {
+  if (!dateOfInspection || !years) return '';
+  try {
+    const d = new Date(dateOfInspection);
+    if (isNaN(d.getTime())) return '';
+    d.setFullYear(d.getFullYear() + years);
+    return d.toISOString().slice(0, 10);
+  } catch {
+    return '';
+  }
+}
+
 export default function InstallationPage() {
-  const { job, updateJob, user } = useJob();
+  const { job, updateJob, user, certificateType } = useJob();
+  const isEIC = certificateType === 'EIC';
   const details = job.installation_details || {
     client_name: '',
     address: job.address || '',
@@ -170,9 +187,10 @@ export default function InstallationPage() {
         </Card>
       )}
 
+      {/* Client Details — mirrors iOS "Client Details" section */}
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">Client Information</CardTitle>
+          <CardTitle className="text-base">Client Details</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -186,17 +204,76 @@ export default function InstallationPage() {
               />
             </div>
             <div>
-              <Label htmlFor="postcode">Postcode</Label>
+              <Label htmlFor="client_phone">Phone</Label>
               <Input
-                id="postcode"
-                value={details.postcode || ''}
-                onChange={(e) => updateField('postcode', e.target.value)}
-                placeholder="e.g., SW1A 1AA"
+                id="client_phone"
+                type="tel"
+                value={details.client_phone || ''}
+                onChange={(e) => updateField('client_phone', e.target.value)}
+                placeholder="Client phone number"
               />
             </div>
           </div>
           <div>
-            <Label htmlFor="address">Installation Address</Label>
+            <Label htmlFor="client_email">Email</Label>
+            <Input
+              id="client_email"
+              type="email"
+              value={details.client_email || ''}
+              onChange={(e) => updateField('client_email', e.target.value)}
+              placeholder="Client email address"
+            />
+          </div>
+          {/* Client address — mirrors iOS ClientDetails address fields */}
+          <div>
+            <Label htmlFor="client_address">Client Address</Label>
+            <Input
+              id="client_address"
+              value={details.client_address || ''}
+              onChange={(e) => updateField('client_address', e.target.value)}
+              placeholder="Client billing / correspondence address"
+            />
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <Label htmlFor="client_town">Client Town/City</Label>
+              <Input
+                id="client_town"
+                value={details.client_town || ''}
+                onChange={(e) => updateField('client_town', e.target.value)}
+                placeholder="Town or city"
+              />
+            </div>
+            <div>
+              <Label htmlFor="client_county">Client County</Label>
+              <Input
+                id="client_county"
+                value={details.client_county || ''}
+                onChange={(e) => updateField('client_county', e.target.value)}
+                placeholder="County"
+              />
+            </div>
+          </div>
+          <div>
+            <Label htmlFor="client_postcode">Client Postcode</Label>
+            <Input
+              id="client_postcode"
+              value={details.client_postcode || ''}
+              onChange={(e) => updateField('client_postcode', e.target.value)}
+              placeholder="e.g., SW1A 1AA"
+            />
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Installation Address — mirrors iOS "Installation Address" section */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Installation Address</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div>
+            <Label htmlFor="address">Address</Label>
             <Textarea
               id="address"
               value={details.address || ''}
@@ -227,26 +304,83 @@ export default function InstallationPage() {
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
-              <Label htmlFor="premises_description">Description of Premises</Label>
-              <select
-                id="premises_description"
-                value={details.premises_description || 'Residential'}
-                onChange={(e) => updateField('premises_description', e.target.value)}
-                className="w-full h-10 rounded-md border border-input px-3"
-              >
-                {PREMISES_DESCRIPTIONS.map((opt) => (
-                  <option key={opt} value={opt}>
-                    {opt}
-                  </option>
-                ))}
-              </select>
+              <Label htmlFor="postcode">Postcode</Label>
+              <Input
+                id="postcode"
+                value={details.postcode || ''}
+                onChange={(e) => updateField('postcode', e.target.value)}
+                placeholder="e.g., SW1A 1AA"
+              />
             </div>
             <div>
-              <Label htmlFor="next_inspection">Recommended Interval (Years)</Label>
+              <Label htmlFor="occupier_name">Occupier Name</Label>
+              <Input
+                id="occupier_name"
+                value={details.occupier_name || ''}
+                onChange={(e) => updateField('occupier_name', e.target.value)}
+                placeholder="Name of occupier (if different)"
+              />
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Inspection Dates — mirrors iOS "Inspection Dates" section */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Inspection Dates</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <Label htmlFor="date_of_inspection">Date of Inspection</Label>
+              <Input
+                id="date_of_inspection"
+                type="date"
+                value={details.date_of_inspection || ''}
+                onChange={(e) => {
+                  const newDate = e.target.value;
+                  const nextDue = calcNextInspectionDue(newDate, details.next_inspection_years);
+                  updateJob({
+                    installation_details: {
+                      ...details,
+                      date_of_inspection: newDate,
+                      next_inspection_due: nextDue,
+                    },
+                  });
+                }}
+              />
+            </div>
+            {!isEIC && (
+              <div>
+                <Label htmlFor="date_of_previous_inspection">Date of Previous Inspection</Label>
+                <Input
+                  id="date_of_previous_inspection"
+                  type="date"
+                  value={details.date_of_previous_inspection || ''}
+                  onChange={(e) => updateField('date_of_previous_inspection', e.target.value)}
+                  placeholder="N/A if none"
+                />
+              </div>
+            )}
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <Label htmlFor="next_inspection">Next Inspection (Years)</Label>
               <select
                 id="next_inspection"
                 value={details.next_inspection_years || 5}
-                onChange={(e) => updateField('next_inspection_years', parseInt(e.target.value))}
+                onChange={(e) => {
+                  const years = parseInt(e.target.value);
+                  const nextDue = calcNextInspectionDue(details.date_of_inspection, years);
+                  updateJob({
+                    installation_details: {
+                      ...details,
+                      next_inspection_years: years,
+                      next_inspection_due: nextDue,
+                    },
+                  });
+                }}
                 className="w-full h-10 rounded-md border border-input px-3"
               >
                 {INSPECTION_INTERVALS.map((years) => (
@@ -256,88 +390,191 @@ export default function InstallationPage() {
                 ))}
               </select>
             </div>
-          </div>
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">Installation Records</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="flex items-center gap-4">
-            <label className="flex items-center gap-2 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={details.installation_records_available || false}
-                onChange={(e) => updateField('installation_records_available', e.target.checked)}
-                className="h-4 w-4 rounded border-border"
-              />
-              <span className="text-sm">Installation records available</span>
-            </label>
-          </div>
-          <div className="flex items-center gap-4">
-            <label className="flex items-center gap-2 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={details.evidence_of_additions_alterations || false}
-                onChange={(e) => updateField('evidence_of_additions_alterations', e.target.checked)}
-                className="h-4 w-4 rounded border-border"
-              />
-              <span className="text-sm">Evidence of additions or alterations not recorded</span>
-            </label>
-          </div>
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">Extent & Limitations</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div>
-            <Label htmlFor="extent">Extent of Installation Covered</Label>
-            <Textarea
-              id="extent"
-              value={details.extent || ''}
-              onChange={(e) => updateField('extent', e.target.value)}
-              placeholder="Describe the extent of the installation covered by this report"
-              rows={3}
-            />
-          </div>
-          <div>
-            <Label htmlFor="agreed_limitations">Agreed Limitations</Label>
-            <Textarea
-              id="agreed_limitations"
-              value={details.agreed_limitations || ''}
-              onChange={(e) => updateField('agreed_limitations', e.target.value)}
-              placeholder="Any agreed limitations to the inspection"
-              rows={2}
-            />
-          </div>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
-              <Label htmlFor="agreed_with">Limitations Agreed With</Label>
+              <Label htmlFor="next_inspection_due">Next Inspection Due</Label>
               <Input
-                id="agreed_with"
-                value={details.agreed_with || ''}
-                onChange={(e) => updateField('agreed_with', e.target.value)}
-                placeholder="Name of person"
+                id="next_inspection_due"
+                type="date"
+                value={details.next_inspection_due || ''}
+                onChange={(e) => updateField('next_inspection_due', e.target.value)}
+                placeholder="Calculated automatically"
               />
             </div>
           </div>
-          <div>
-            <Label htmlFor="operational_limitations">Operational Limitations</Label>
-            <Textarea
-              id="operational_limitations"
-              value={details.operational_limitations || ''}
-              onChange={(e) => updateField('operational_limitations', e.target.value)}
-              placeholder="Any operational limitations encountered during inspection"
-              rows={2}
-            />
-          </div>
         </CardContent>
       </Card>
+
+      {/* Premises — mirrors iOS "Premises" section */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Premises</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div>
+            <Label htmlFor="premises_description">Description of Premises</Label>
+            <select
+              id="premises_description"
+              value={details.premises_description || 'Residential'}
+              onChange={(e) => updateField('premises_description', e.target.value)}
+              className="w-full h-10 rounded-md border border-input px-3"
+            >
+              {PREMISES_DESCRIPTIONS.map((opt) => (
+                <option key={opt} value={opt}>
+                  {opt}
+                </option>
+              ))}
+            </select>
+          </div>
+          {/* Installation records — EICR only, mirrors iOS toggle visibility */}
+          {!isEIC && (
+            <>
+              <div className="flex items-center gap-4">
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={details.installation_records_available || false}
+                    onChange={(e) =>
+                      updateField('installation_records_available', e.target.checked)
+                    }
+                    className="h-4 w-4 rounded border-border"
+                  />
+                  <span className="text-sm">Installation records available</span>
+                </label>
+              </div>
+              <div className="flex items-center gap-4">
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={details.evidence_of_additions_alterations || false}
+                    onChange={(e) =>
+                      updateField('evidence_of_additions_alterations', e.target.checked)
+                    }
+                    className="h-4 w-4 rounded border-border"
+                  />
+                  <span className="text-sm">Evidence of additions/alterations</span>
+                </label>
+              </div>
+            </>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Report Details — EICR only, mirrors iOS Previous Inspection + Report Details + General Condition sections */}
+      {!isEIC && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">Report Details</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <Label htmlFor="reason_for_report">Reason for Report</Label>
+                <select
+                  id="reason_for_report"
+                  value={details.reason_for_report || ''}
+                  onChange={(e) => updateField('reason_for_report', e.target.value)}
+                  className="w-full h-10 rounded-md border border-input px-3"
+                >
+                  <option value="">Select reason...</option>
+                  <option>Periodic Inspection</option>
+                  <option>Change of Occupancy</option>
+                  <option>Installation Alteration</option>
+                  <option>Remedial Work</option>
+                  <option>Sale of Property</option>
+                  <option>Insurance</option>
+                  <option>New Installation</option>
+                </select>
+              </div>
+              <div>
+                <Label htmlFor="general_condition">General Condition</Label>
+                <select
+                  id="general_condition"
+                  value={details.general_condition || ''}
+                  onChange={(e) => updateField('general_condition', e.target.value)}
+                  className="w-full h-10 rounded-md border border-input px-3"
+                >
+                  <option value="">Select condition...</option>
+                  <option>Satisfactory</option>
+                  <option>Unsatisfactory</option>
+                  <option>N/A</option>
+                </select>
+              </div>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <Label htmlFor="previous_certificate_number">Previous Certificate Number</Label>
+                <Input
+                  id="previous_certificate_number"
+                  value={details.previous_certificate_number || ''}
+                  onChange={(e) => updateField('previous_certificate_number', e.target.value)}
+                  placeholder="Previous cert. reference"
+                />
+              </div>
+              <div>
+                <Label htmlFor="estimated_age_of_installation">Estimated Age (years)</Label>
+                <Input
+                  id="estimated_age_of_installation"
+                  value={details.estimated_age_of_installation || ''}
+                  onChange={(e) => updateField('estimated_age_of_installation', e.target.value)}
+                  placeholder="e.g., 20"
+                />
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Extent & Limitations — EICR only, mirrors iOS "Extent & Limitations" section */}
+      {!isEIC && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">Extent &amp; Limitations</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div>
+              <Label htmlFor="extent">Extent of Installation Covered</Label>
+              <Textarea
+                id="extent"
+                value={details.extent || ''}
+                onChange={(e) => updateField('extent', e.target.value)}
+                placeholder="Describe the extent of the installation covered by this report"
+                rows={3}
+              />
+            </div>
+            <div>
+              <Label htmlFor="agreed_limitations">Agreed Limitations</Label>
+              <Textarea
+                id="agreed_limitations"
+                value={details.agreed_limitations || ''}
+                onChange={(e) => updateField('agreed_limitations', e.target.value)}
+                placeholder="Any agreed limitations to the inspection"
+                rows={2}
+              />
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <Label htmlFor="agreed_with">Limitations Agreed With</Label>
+                <Input
+                  id="agreed_with"
+                  value={details.agreed_with || ''}
+                  onChange={(e) => updateField('agreed_with', e.target.value)}
+                  placeholder="Name of person"
+                />
+              </div>
+            </div>
+            <div>
+              <Label htmlFor="operational_limitations">Operational Limitations</Label>
+              <Textarea
+                id="operational_limitations"
+                value={details.operational_limitations || ''}
+                onChange={(e) => updateField('operational_limitations', e.target.value)}
+                placeholder="Any operational limitations encountered during inspection"
+                rows={2}
+              />
+            </div>
+          </CardContent>
+        </Card>
+      )}
     </div>
   );
 }

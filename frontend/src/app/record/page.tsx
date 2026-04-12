@@ -44,6 +44,8 @@ function RecordPageContent() {
   const cost = useRecordingStore((s) => s.cost);
   const currentQuestion = useRecordingStore((s) => s.currentQuestion);
   const highlight = useRecordingStore((s) => s.highlight);
+  const extractionError = useRecordingStore((s) => s.extractionError);
+  const processingCount = useRecordingStore((s) => s.processingCount);
 
   // Recording hook (pass loaded job as initial data)
   const recording = useRecording(jobId, userId ?? '', job);
@@ -297,6 +299,8 @@ function RecordPageContent() {
           sleepState={sleepState}
           vadState={vadState}
           cost={cost}
+          extractionError={extractionError}
+          processingCount={processingCount}
           onStart={handleStart}
           onStop={handleStop}
         />

@@ -4,7 +4,7 @@ import { useCallback, useState } from 'react';
 import { useParams } from 'next/navigation';
 import Link from 'next/link';
 import { toast } from 'sonner';
-import { Camera, Cpu, ListOrdered, AlertTriangle } from 'lucide-react';
+import { Camera, Cpu, ListOrdered, AlertTriangle, CameraOff } from 'lucide-react';
 import { useJob } from '../layout';
 import { useRecording } from '@/hooks/use-recording';
 import { useRecordingStore } from '@/lib/recording-store';
@@ -18,23 +18,34 @@ import type { Circuit, BoardInfo } from '@/lib/api';
 export default function RecordPage() {
   const params = useParams();
   const jobId = params.id as string;
-  const { job, user, updateJob } = useJob();
+  const { job, user, updateJob, certificateType } = useJob();
   const userId = user?.id ?? '';
   const [showCCU, setShowCCU] = useState(false);
 
   const recording = useRecording(jobId, userId, job);
   const setCurrentQuestion = useRecordingStore((s) => s.setCurrentQuestion);
+  const [showNoBoardPhotoWarning, setShowNoBoardPhotoWarning] = useState(false);
 
   // Prefer the live job updated by Sonnet extraction; fall back to context job
   const displayJob = recording.job ?? job;
 
-  const handleStart = useCallback(async () => {
+  const doStartRecording = useCallback(async () => {
     try {
       await recording.startRecording();
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Failed to start recording');
     }
   }, [recording]);
+
+  const handleStart = useCallback(async () => {
+    // Mirror iOS: warn if no circuits exist (no board photo taken yet)
+    const hasCircuits = (job?.circuits ?? []).length > 0;
+    if (!hasCircuits) {
+      setShowNoBoardPhotoWarning(true);
+      return;
+    }
+    await doStartRecording();
+  }, [job, doStartRecording]);
 
   const handleCCUAnalysis = useCallback(
     (analysis: Record<string, unknown>) => {
@@ -77,7 +88,48 @@ export default function RecordPage() {
     : null;
 
   return (
-    <div className="flex flex-col h-[calc(100vh-8rem)] bg-zinc-950 text-white overflow-hidden">
+    // Pulsing border mirrors iOS RecordingOverlay border animation:
+    // green when recording, no border when idle
+    <div
+      className={`flex flex-col h-[calc(100vh-8rem)] bg-zinc-950 text-white overflow-hidden relative transition-all duration-300 ${
+        recording.isRecording ? 'ring-2 ring-inset ring-green-500/60' : ''
+      }`}
+    >
+      {/* No Board Photo warning dialog (mirrors iOS alert) */}
+      {showNoBoardPhotoWarning && (
+        <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+          <div className="mx-4 w-full max-w-sm rounded-2xl bg-zinc-900 border border-zinc-700 shadow-2xl p-5">
+            <div className="flex items-center gap-3 mb-3">
+              <div className="flex items-center justify-center w-10 h-10 rounded-full bg-amber-500/20">
+                <CameraOff className="h-5 w-5 text-amber-400" />
+              </div>
+              <h2 className="text-base font-semibold text-white">No Board Photo</h2>
+            </div>
+            <p className="text-sm text-zinc-400 mb-5">
+              No circuits found. Take a board photo first for best results, or tap Record Anyway to
+              continue without one.
+            </p>
+            <div className="flex gap-2">
+              <button
+                onClick={() => setShowNoBoardPhotoWarning(false)}
+                className="flex-1 py-2.5 rounded-xl bg-zinc-800 text-zinc-300 text-sm font-medium hover:bg-zinc-700 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => {
+                  setShowNoBoardPhotoWarning(false);
+                  doStartRecording();
+                }}
+                className="flex-1 py-2.5 rounded-xl bg-red-600 text-white text-sm font-semibold hover:bg-red-700 transition-colors"
+              >
+                Record Anyway
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Alert card overlay */}
       {question && <AlertCard question={question} onDismiss={() => setCurrentQuestion(null)} />}
 
@@ -135,7 +187,11 @@ export default function RecordPage() {
 
       {/* Scrollable live data fill view */}
       <div className="flex-1 overflow-hidden">
-        <LiveFillView job={displayJob} isRecording={recording.isRecording} />
+        <LiveFillView
+          job={displayJob}
+          isRecording={recording.isRecording}
+          certificateType={certificateType}
+        />
       </div>
 
       {/* Recording controls bar */}
@@ -147,6 +203,8 @@ export default function RecordPage() {
         sleepState={recording.sleepState}
         vadState={recording.vadState}
         cost={recording.cost}
+        extractionError={recording.extractionError}
+        processingCount={recording.processingCount}
         onStart={handleStart}
         onStop={recording.stopRecording}
       />

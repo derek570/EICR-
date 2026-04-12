@@ -17,6 +17,7 @@ import type {
 interface LiveFillViewProps {
   job: JobDetail | null;
   isRecording: boolean;
+  certificateType?: 'EICR' | 'EIC';
 }
 
 // ---------------------------------------------------------------------------
@@ -405,24 +406,69 @@ function ObservationsSummarySection({
 }
 
 // ---------------------------------------------------------------------------
+// ReportDetailCards — General Condition + Purpose of Report (mirrors iOS)
+// ---------------------------------------------------------------------------
+
+function ReportDetailCards({
+  install,
+  isRecording,
+}: {
+  install: InstallationDetails | undefined;
+  isRecording: boolean;
+}) {
+  const generalCondition = install?.general_condition as string | undefined;
+  const purposeOfReport = install?.reason_for_report as string | undefined;
+
+  return (
+    <div className="grid grid-cols-2 gap-2">
+      <div className="rounded-lg border border-zinc-800 bg-zinc-900/50 p-2.5">
+        <div className="flex items-center gap-1.5 mb-1">
+          <span className="text-[10px] text-zinc-500">General Condition</span>
+        </div>
+        <span className="text-xs font-medium text-zinc-200">
+          <TypingText text={generalCondition} isRecording={isRecording} />
+        </span>
+      </div>
+      <div className="rounded-lg border border-zinc-800 bg-zinc-900/50 p-2.5">
+        <div className="flex items-center gap-1.5 mb-1">
+          <span className="text-[10px] text-zinc-500">Purpose of Report</span>
+        </div>
+        <span className="text-xs font-medium text-zinc-200">
+          <TypingText text={purposeOfReport} isRecording={isRecording} />
+        </span>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Main component
 // ---------------------------------------------------------------------------
 
-export const LiveFillView = memo(function LiveFillView({ job, isRecording }: LiveFillViewProps) {
+export const LiveFillView = memo(function LiveFillView({
+  job,
+  isRecording,
+  certificateType = 'EICR',
+}: LiveFillViewProps) {
   const install = job?.installation_details;
   const supply = job?.supply_characteristics;
   const board = job?.board_info;
   const circuits = job?.circuits ?? [];
   const observations = job?.observations ?? [];
+  const isEIC = certificateType === 'EIC';
+
+  // Header labels match iOS: EICR = "Electrical Installation Condition Report", EIC = "Electrical Installation Certificate"
+  const headerLine1 = isEIC ? 'Electrical Installation' : 'Electrical Installation';
+  const headerLine2 = isEIC ? 'Certificate' : 'Condition Report';
 
   return (
     <div className="flex flex-col gap-3 p-4 overflow-y-auto h-full">
-      {/* Header */}
+      {/* Header — mirrors iOS LiveFillView headerSection */}
       <div className="text-center">
         <p className="text-[10px] uppercase tracking-[2px] text-zinc-500 font-bold">
-          Electrical Installation
+          {headerLine1}
         </p>
-        <p className="text-[10px] uppercase tracking-[1.5px] text-zinc-500">Condition Report</p>
+        <p className="text-[10px] uppercase tracking-[1.5px] text-zinc-500">{headerLine2}</p>
         {isRecording && (
           <div className="flex items-center justify-center gap-1.5 mt-1">
             <span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse" />
@@ -431,6 +477,9 @@ export const LiveFillView = memo(function LiveFillView({ job, isRecording }: Liv
         )}
       </div>
 
+      {/* Report detail cards — mirrors iOS reportDetailCards (General Condition + Purpose); EICR only */}
+      {!isEIC && <ReportDetailCards install={install} isRecording={isRecording} />}
+
       <InstallationSection install={install} isRecording={isRecording} />
       <SupplySection supply={supply} isRecording={isRecording} />
       <MainSwitchSection supply={supply} isRecording={isRecording} />
@@ -438,7 +487,10 @@ export const LiveFillView = memo(function LiveFillView({ job, isRecording }: Liv
       <SPDSection supply={supply} isRecording={isRecording} />
       <EarthingSection supply={supply} isRecording={isRecording} />
       <CircuitsSummarySection circuits={circuits} isRecording={isRecording} />
-      <ObservationsSummarySection observations={observations} isRecording={isRecording} />
+      {/* Observations summary — EICR only, mirrors iOS observationsSection */}
+      {!isEIC && (
+        <ObservationsSummarySection observations={observations} isRecording={isRecording} />
+      )}
 
       {/* Bottom listening indicator */}
       {isRecording && (

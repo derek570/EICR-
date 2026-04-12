@@ -45,7 +45,7 @@ const eicrTabs: Tab[] = [
   { name: 'PDF', href: '/pdf', icon: FileText },
 ];
 
-// EIC tabs (12 tabs — matching iOS DashboardView)
+// EIC tabs (11 tabs — matching iOS DashboardView; no Observations for EIC)
 const eicTabs: Tab[] = [
   { name: 'Overview', href: '', icon: BarChart3 },
   { name: 'Record', href: '/record', icon: Mic },
@@ -53,7 +53,6 @@ const eicTabs: Tab[] = [
   { name: 'Supply', href: '/supply', icon: Zap },
   { name: 'Board', href: '/board', icon: Cpu },
   { name: 'Circuits', href: '/circuits', icon: ListOrdered },
-  { name: 'Observations', href: '/observations', icon: AlertTriangle },
   { name: 'Inspection', href: '/eic-inspection', icon: ClipboardCheck },
   { name: 'Extent', href: '/extent', icon: Ruler },
   { name: 'Design', href: '/design', icon: PenTool },

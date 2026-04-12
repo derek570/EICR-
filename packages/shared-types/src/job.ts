@@ -66,6 +66,16 @@ export interface InstallationDetails {
   agreed_limitations?: string;
   agreed_with?: string;
   operational_limitations?: string;
+  // Report overview fields (mirrors iOS generalConditionOfInstallation / reasonForReport)
+  general_condition?: string;
+  reason_for_report?: string;
+  occupier_name?: string;
+  // Inspection date fields (mirrors iOS InstallationTab Inspection Dates section)
+  date_of_inspection?: string;
+  date_of_previous_inspection?: string;
+  next_inspection_due?: string;
+  previous_certificate_number?: string;
+  estimated_age_of_installation?: string;
 }
 
 export interface InspectionItem {

@@ -16,6 +16,8 @@ interface RecordingControlsProps {
   sleepState: SleepState;
   vadState: VadState;
   cost: { totalJobCost: number } | null;
+  extractionError: string | null;
+  processingCount: number;
   onStart: () => void;
   onStop: () => void;
 }
@@ -107,6 +109,8 @@ export function RecordingControls({
   sleepState,
   vadState,
   cost,
+  extractionError,
+  processingCount,
   onStart,
   onStop,
 }: RecordingControlsProps) {
@@ -139,7 +143,8 @@ export function RecordingControls({
                   {sleepLabel.text}
                 </span>
               </div>
-              {sleepState !== 'active' && <VadIndicator state={vadState} />}
+              {/* VAD always visible when recording — mirrors iOS VADIndicatorView */}
+              <VadIndicator state={vadState} />
             </>
           )}
         </div>
@@ -166,11 +171,24 @@ export function RecordingControls({
           )}
         </div>
 
-        {/* Right: Duration + Cost */}
-        <div className="flex flex-col items-end gap-0.5 min-w-[48px]">
+        {/* Right: Duration + Cost + Extraction status */}
+        <div className="flex flex-col items-end gap-0.5 min-w-[64px]">
           <span className="font-mono text-sm text-zinc-200">{formatDuration(duration)}</span>
           {cost != null && (
             <span className="font-mono text-xs text-zinc-500">{formatCost(cost.totalJobCost)}</span>
+          )}
+          {/* Processing badge — mirrors iOS ProcessingBadgeView */}
+          {isRecording && processingCount > 0 && (
+            <div className="flex items-center gap-1 mt-0.5">
+              <span className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse" />
+              <span className="text-[10px] text-blue-400 font-medium">{processingCount}</span>
+            </div>
+          )}
+          {/* Extraction error — mirrors iOS lastExtractionStatus */}
+          {isRecording && extractionError && (
+            <span className="text-[10px] text-red-400 font-semibold text-right leading-tight max-w-[72px] line-clamp-2">
+              {extractionError}
+            </span>
           )}
         </div>
       </div>
