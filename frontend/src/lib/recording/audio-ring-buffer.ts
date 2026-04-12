@@ -26,35 +26,30 @@ export class AudioRingBuffer {
   }
 
   /**
-   * Drain the buffer as Int16 PCM ArrayBuffer, oldest samples first.
-   * Converts Float32 [-1, 1] to Int16 [-32767, 32767].
+   * Drain the buffer as Float32Array, oldest samples first.
+   * Returns raw Float32 samples so the caller can apply resampling
+   * before converting to Int16 and sending to Deepgram.
    * Resets the buffer after draining.
    */
-  drain(): ArrayBuffer {
+  drain(): Float32Array {
     if (!this.filled && this.writePos === 0) {
-      return new ArrayBuffer(0);
+      return new Float32Array(0);
     }
 
-    let sampleCount: number;
-    let startIndex: number;
-
+    let result: Float32Array;
     if (this.filled) {
-      sampleCount = this.buffer.length;
-      startIndex = this.writePos; // oldest sample is at writePos when full
+      // Buffer has wrapped — read from writePos to end, then start to writePos
+      result = new Float32Array(this.buffer.length);
+      const tail = this.buffer.length - this.writePos;
+      result.set(this.buffer.subarray(this.writePos), 0);
+      result.set(this.buffer.subarray(0, this.writePos), tail);
     } else {
-      sampleCount = this.writePos;
-      startIndex = 0;
-    }
-
-    const int16 = new Int16Array(sampleCount);
-    for (let i = 0; i < sampleCount; i++) {
-      const idx = (startIndex + i) % this.buffer.length;
-      const clamped = Math.max(-1, Math.min(1, this.buffer[idx]));
-      int16[i] = Math.round(clamped * 32767);
+      // Buffer hasn't wrapped yet
+      result = this.buffer.slice(0, this.writePos);
     }
 
     this.reset();
-    return int16.buffer;
+    return result;
   }
 
   reset(): void {

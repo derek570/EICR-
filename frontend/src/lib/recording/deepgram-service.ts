@@ -294,7 +294,10 @@ export class DeepgramService {
       }
 
       case 'extraction': {
-        this.log('PROXY_EXTRACTION', `circuits=${(json.data as Record<string, unknown>)?.circuits ? ((json.data as Record<string, unknown>).circuits as unknown[]).length : 0}`);
+        this.log(
+          'PROXY_EXTRACTION',
+          `circuits=${(json.data as Record<string, unknown>)?.circuits ? ((json.data as Record<string, unknown>).circuits as unknown[]).length : 0}`
+        );
         this.callbacks.onProxyExtraction?.(json.data as Record<string, unknown>);
         break;
       }
@@ -494,16 +497,15 @@ export class DeepgramService {
     this.log('STREAM_RESUMED', 'audio streaming resumed');
   }
 
-  replayBuffer(data: ArrayBuffer): void {
+  replayBuffer(samples: Float32Array): void {
     if (!this.ws || this._connectionState !== 'connected') return;
-    if (data.byteLength === 0) return;
+    if (samples.length === 0) return;
 
-    this.log('BUFFER_REPLAY', `sending ${data.byteLength} bytes of buffered audio`);
-    try {
-      this.ws.send(data);
-    } catch {
-      this.log('BUFFER_REPLAY_ERROR', 'Failed to replay buffer');
-    }
+    this.log(
+      'BUFFER_REPLAY',
+      `replaying ${samples.length} samples through sendSamples (resampling applied)`
+    );
+    this.sendSamples(samples);
   }
 
   private startKeepAliveWhilePaused(): void {
