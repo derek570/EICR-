@@ -82,14 +82,14 @@ export class ClaudeService {
   // Route through backend proxy to avoid CORS and protect API key.
   // Must be absolute so it resolves to the Express backend, not the Next.js server.
   private static readonly ENDPOINT = `${process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3000'}/api/proxy/claude`;
-  // Rolling extraction uses Haiku for lower latency (~1-2s vs 6-7s with Sonnet).
-  // Haiku handles structured JSON extraction well; Sonnet reserved for review/full-transcript.
-  private static readonly ROLLING_MODEL = 'claude-haiku-4-5-20241022';
+  // Rolling extraction uses Sonnet for higher accuracy.
+  // Switched back from Haiku (which was ~1-2s vs 6-7s but trades quality for speed).
+  private static readonly ROLLING_MODEL = 'claude-sonnet-4-6';
   private static readonly REVIEW_MODEL = 'claude-sonnet-4-6';
   private static readonly ANTHROPIC_VERSION = '2023-06-01';
   private static readonly MAX_RETRIES = 3;
 
-  // Cost per million tokens — Haiku (rolling) and Sonnet (review/full-transcript)
+  // Cost per million tokens — both rolling and review now use Sonnet
   private static readonly HAIKU_INPUT_COST_PER_MILLION = 0.25;
   private static readonly HAIKU_OUTPUT_COST_PER_MILLION = 1.25;
   private static readonly SONNET_INPUT_COST_PER_MILLION = 3.0;
@@ -144,8 +144,7 @@ export class ClaudeService {
   }): Promise<RollingExtractionResult> {
     const userContent = this.buildRollingExtractionUserMessage(opts);
 
-    // Haiku is ~5x faster than Sonnet for extraction; 800 tokens is ample for typical output.
-    const maxTokens = opts.debugIssues && opts.debugIssues.length > 0 ? 1024 : 800;
+    const maxTokens = opts.debugIssues && opts.debugIssues.length > 0 ? 1280 : 1024;
     const response = await this.callClaudeAPI(
       ClaudeService.ROLLING_EXTRACTION_SYSTEM_PROMPT,
       userContent,
@@ -232,8 +231,7 @@ export class ClaudeService {
     }
 
     // Use prompt caching for rolling extraction — cache the system prompt to avoid
-    // re-processing it on every call. The prompt must be >=1024 tokens for Sonnet
-    // or >=2048 for Haiku; the rolling extraction prompt may be borderline so we
+    // re-processing it on every call. The prompt must be >=1024 tokens for Sonnet;
     // always try caching (Anthropic silently ignores it if below minimum).
     const isRolling = model === ClaudeService.ROLLING_MODEL;
     const systemContent: SystemContent = isRolling
