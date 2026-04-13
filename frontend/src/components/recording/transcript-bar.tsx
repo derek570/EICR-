@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, type ReactNode } from 'react';
+import { memo, useMemo, useEffect, useRef, type ReactNode } from 'react';
 
 interface Highlight {
   keyword: string;
@@ -86,7 +86,9 @@ function buildHighlightedText(text: string, highlight: Highlight | null): ReactN
   return nodes;
 }
 
-export function TranscriptBar({
+// Wrapped in memo so the bar only re-renders when its own props change,
+// not on every unrelated store update (e.g. processingCount, cost, etc.).
+export const TranscriptBar = memo(function TranscriptBar({
   transcript,
   interimTranscript,
   highlight,
@@ -94,6 +96,18 @@ export function TranscriptBar({
   sleepState,
 }: TranscriptBarProps) {
   const visibleText = useMemo(() => transcript.slice(-200), [transcript]);
+
+  // Ref for the scrollable text container — used to auto-scroll to newest text.
+  const scrollRef = useRef<HTMLSpanElement>(null);
+
+  // Auto-scroll to end whenever displayed content changes.
+  // Mirrors iOS `.truncationMode(.head)` — always shows the rightmost (newest) text.
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (el) {
+      el.scrollLeft = el.scrollWidth;
+    }
+  }, [visibleText, interimTranscript]);
 
   const highlighted = useMemo(
     () => buildHighlightedText(visibleText, highlight),
@@ -124,7 +138,13 @@ export function TranscriptBar({
     <div className="h-11 bg-zinc-900/90 border-t border-zinc-800 flex items-center px-4 gap-2 overflow-hidden">
       {isRecording && <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse shrink-0" />}
 
-      <span className="text-sm text-zinc-300 truncate flex-1 min-w-0">
+      {/* overflow-x-scroll + scrollbar hidden: allows programmatic scrollLeft while
+          showing no scrollbar UI. Auto-scroll to right mirrors iOS truncationMode(.head). */}
+      <span
+        ref={scrollRef}
+        className="text-sm text-zinc-300 flex-1 min-w-0 overflow-x-scroll whitespace-nowrap [&::-webkit-scrollbar]:hidden"
+        style={{ scrollbarWidth: 'none' }}
+      >
         {highlighted}
         {interimTranscript && <span className="text-zinc-500 italic"> {interimTranscript}</span>}
       </span>
@@ -136,4 +156,4 @@ export function TranscriptBar({
       )}
     </div>
   );
-}
+});

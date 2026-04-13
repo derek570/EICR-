@@ -2,8 +2,7 @@
 
 import { useState } from 'react';
 import Link from 'next/link';
-import { usePathname } from 'next/navigation';
-import * as NavigationMenu from '@radix-ui/react-navigation-menu';
+import { usePathname, useRouter } from 'next/navigation';
 import {
   LayoutDashboard,
   Briefcase,
@@ -11,10 +10,13 @@ import {
   Settings,
   ChevronLeft,
   ChevronRight,
+  LogOut,
   type LucideIcon,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { CertMateIcon } from '@/components/brand/certmate-logo';
+import { api } from '@/lib/api-client';
+import { clearAuth } from '@/lib/auth';
 
 export interface NavItem {
   href: string;
@@ -37,6 +39,17 @@ export function isActive(pathname: string, href: string) {
 export function AppSidebar() {
   const [collapsed, setCollapsed] = useState(false);
   const pathname = usePathname();
+  const router = useRouter();
+
+  const handleLogout = async () => {
+    try {
+      await api.logout();
+    } catch {
+      // ignore
+    }
+    clearAuth();
+    router.push('/login');
+  };
 
   return (
     <aside
@@ -46,7 +59,7 @@ export function AppSidebar() {
         collapsed ? 'w-[var(--spacing-sidebar-collapsed)]' : 'w-[var(--spacing-sidebar-expanded)]'
       )}
     >
-      {/* Gradient bottom border accent along right edge */}
+      {/* Gradient border accent along right edge */}
       <div className="absolute right-0 top-0 bottom-0 w-px bg-gradient-to-b from-brand-blue/30 via-brand-green/20 to-transparent" />
 
       {/* Logo area */}
@@ -66,51 +79,64 @@ export function AppSidebar() {
       </div>
 
       {/* Navigation */}
-      <NavigationMenu.Root orientation="vertical" className="flex-1 py-4 px-2">
-        <NavigationMenu.List className="flex flex-col gap-1">
+      <nav className="flex-1 py-4 px-2" aria-label="Main navigation">
+        <ul className="flex flex-col gap-1">
           {navItems.map((item) => {
             const active = isActive(pathname, item.href);
             return (
-              <NavigationMenu.Item key={item.href}>
-                <NavigationMenu.Link asChild active={active}>
-                  <Link
-                    href={item.href}
+              <li key={item.href}>
+                <Link
+                  href={item.href}
+                  aria-current={active ? 'page' : undefined}
+                  className={cn(
+                    'flex items-center gap-3 px-3 py-3 rounded-pill text-sm font-medium transition-all duration-150 min-h-[44px]',
+                    active
+                      ? 'bg-gradient-to-r from-brand-blue/15 to-brand-green/10 text-white shadow-soft'
+                      : 'text-white/60 hover:bg-white/[0.06] hover:text-white/80',
+                    collapsed && 'justify-center px-2'
+                  )}
+                  title={collapsed ? item.label : undefined}
+                >
+                  <item.icon
                     className={cn(
-                      'flex items-center gap-3 px-3 py-3 rounded-pill text-sm font-medium transition-all duration-150 min-h-[44px]',
-                      active
-                        ? 'bg-gradient-to-r from-brand-blue/15 to-brand-green/10 text-white shadow-soft'
-                        : 'text-white/60 hover:bg-white/[0.06] hover:text-white/80',
-                      collapsed && 'justify-center px-2'
+                      'h-5 w-5 flex-shrink-0 transition-colors',
+                      active ? 'text-brand-blue' : ''
                     )}
-                    title={collapsed ? item.label : undefined}
-                  >
-                    <item.icon
-                      className={cn(
-                        'h-5 w-5 flex-shrink-0 transition-colors',
-                        active ? 'text-brand-blue' : ''
-                      )}
-                    />
-                    {!collapsed && <span>{item.label}</span>}
-                    {/* Active gradient indicator bar */}
-                    {active && !collapsed && (
-                      <span className="ml-auto w-1 h-4 rounded-full bg-gradient-to-b from-brand-blue to-brand-green" />
-                    )}
-                  </Link>
-                </NavigationMenu.Link>
-              </NavigationMenu.Item>
+                  />
+                  {!collapsed && <span>{item.label}</span>}
+                  {active && !collapsed && (
+                    <span className="ml-auto w-1 h-4 rounded-full bg-gradient-to-b from-brand-blue to-brand-green" />
+                  )}
+                </Link>
+              </li>
             );
           })}
-        </NavigationMenu.List>
-      </NavigationMenu.Root>
+        </ul>
+      </nav>
 
-      {/* Collapse toggle */}
-      <button
-        onClick={() => setCollapsed(!collapsed)}
-        className="flex items-center justify-center h-12 border-t border-white/[0.06] text-white/30 hover:text-white/60 hover:bg-white/[0.04] transition-colors"
-        aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-      >
-        {collapsed ? <ChevronRight className="h-4 w-4" /> : <ChevronLeft className="h-4 w-4" />}
-      </button>
+      {/* Footer: logout + collapse toggle — mirrors iOS SidebarView footer */}
+      <div className="border-t border-white/[0.06]">
+        <button
+          onClick={handleLogout}
+          className={cn(
+            'flex items-center gap-3 w-full px-3 py-3 text-sm font-medium transition-all duration-150 min-h-[44px]',
+            'text-white/40 hover:text-red-400 hover:bg-red-500/[0.08]',
+            collapsed && 'justify-center px-2'
+          )}
+          title={collapsed ? 'Log Out' : undefined}
+        >
+          <LogOut className="h-4 w-4 flex-shrink-0" />
+          {!collapsed && <span>Log Out</span>}
+        </button>
+
+        <button
+          onClick={() => setCollapsed(!collapsed)}
+          className="flex items-center justify-center h-10 w-full border-t border-white/[0.04] text-white/20 hover:text-white/50 hover:bg-white/[0.04] transition-colors"
+          aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+        >
+          {collapsed ? <ChevronRight className="h-4 w-4" /> : <ChevronLeft className="h-4 w-4" />}
+        </button>
+      </div>
     </aside>
   );
 }

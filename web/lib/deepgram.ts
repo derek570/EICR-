@@ -398,7 +398,8 @@ export class DeepgramService {
       language: 'en-GB',
       interim_results: 'true',
       endpointing: '300',
-      utterance_end_ms: '1300',
+      utterance_end_ms: '2000', // Match iOS (was 1300 — caused premature utterance endings)
+      vad_events: 'true', // Receive SpeechStarted events — matches iOS config
     });
 
     // Add keyterm params for Nova-3

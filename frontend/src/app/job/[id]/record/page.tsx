@@ -37,6 +37,23 @@ export default function RecordPage() {
     }
   }, [recording]);
 
+  // Stops recording and syncs the live extraction data back into the job store so
+  // the Overview tab shows the latest extracted fields without requiring a page reload.
+  const handleStop = useCallback(() => {
+    recording.stopRecording();
+    const liveJob = recording.job;
+    if (liveJob) {
+      updateJob({
+        circuits: liveJob.circuits,
+        observations: liveJob.observations,
+        board_info: liveJob.board_info,
+        installation_details: liveJob.installation_details ?? undefined,
+        supply_characteristics: liveJob.supply_characteristics ?? undefined,
+        inspection_schedule: liveJob.inspection_schedule ?? undefined,
+      });
+    }
+  }, [recording, updateJob]);
+
   const handleStart = useCallback(async () => {
     // Mirror iOS: warn if no circuits exist (no board photo taken yet)
     const hasCircuits = (job?.circuits ?? []).length > 0;
@@ -206,7 +223,7 @@ export default function RecordPage() {
         extractionError={recording.extractionError}
         processingCount={recording.processingCount}
         onStart={handleStart}
-        onStop={recording.stopRecording}
+        onStop={handleStop}
       />
     </div>
   );

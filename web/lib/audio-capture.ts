@@ -34,11 +34,15 @@ export class AudioCapture {
     if (this._isCapturing) return;
 
     try {
-      // Request microphone with 16kHz preferred (browser may give different rate)
+      // Request microphone with 16kHz preferred.
+      // Use { ideal } not exact values — exact constraints cause OverconstrainedError on iOS Safari
+      // and some mobile browsers when the hardware doesn't support 16kHz natively.
+      // Even with ideal:16000, many browsers deliver at 44100/48000Hz. The resampling
+      // below handles that case — see actualSampleRate check.
       this.stream = await navigator.mediaDevices.getUserMedia({
         audio: {
-          sampleRate: 16000,
-          channelCount: 1,
+          sampleRate: { ideal: 16000 },
+          channelCount: { ideal: 1 },
           echoCancellation: true,
           noiseSuppression: true,
           autoGainControl: true,

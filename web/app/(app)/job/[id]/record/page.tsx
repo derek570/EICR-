@@ -17,8 +17,11 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { toast } from 'sonner';
 import { useJobContext } from '../layout';
 import { useRecording } from '@/hooks/use-recording';
+import { api } from '@/lib/api-client';
+import { applyDefaultsToCircuits } from '@/lib/apply-defaults';
 import { LiveCircuitGrid } from '@/components/recording/live-circuit-grid';
 import { AlertCard } from '@/components/recording/alert-card';
 import { DebugDashboard } from '@/components/recording/debug-dashboard';
@@ -40,6 +43,11 @@ import {
   ChevronDown,
   ChevronUp,
   Smartphone,
+  SlidersHorizontal,
+  FileDown,
+  Scan,
+  FileSearch,
+  Camera,
 } from 'lucide-react';
 
 /* ------------------------------------------------------------------ */
@@ -346,17 +354,20 @@ export default function RecordPage() {
   const [showDebug, setShowDebug] = useState(false);
   const [showSections, setShowSections] = useState(true);
   const transcriptScrollRef = useRef<HTMLDivElement>(null);
-  const transcriptEndRef = useRef<HTMLSpanElement>(null);
+  const ccuInputRef = useRef<HTMLInputElement>(null);
+  const docInputRef = useRef<HTMLInputElement>(null);
+  const obsInputRef = useRef<HTMLInputElement>(null);
   // Value badge: flash last confirmed extraction value for 1.5s (mirrors iOS transcript capsule)
   const [valueBadge, setValueBadge] = useState<string | null>(null);
   const prevHighlightsLen = useRef(0);
 
   // Auto-scroll transcript to show newest content
   useEffect(() => {
-    transcriptEndRef.current?.scrollIntoView({
-      behavior: 'instant',
-      block: 'nearest',
-      inline: 'end',
+    const el = transcriptScrollRef.current;
+    if (!el) return;
+    // Use requestAnimationFrame so the DOM has updated before we measure scrollWidth
+    requestAnimationFrame(() => {
+      el.scrollLeft = el.scrollWidth;
     });
   }, [state.transcript, state.interimTranscript]);
 
@@ -389,6 +400,96 @@ export default function RecordPage() {
       actions.stopRecording();
     }
   }, [actions]);
+
+  // iOS-parity: Open defaults page in new tab
+  const handleDefaults = useCallback(() => {
+    if (!job) return;
+    window.open(`/job/${job.id}/defaults`, '_blank');
+  }, [job]);
+
+  // iOS-parity: Apply user defaults to all circuits (only-fill-empty strategy)
+  const handleApplyDefaults = useCallback(async () => {
+    if (!user || !job) return;
+    try {
+      const defaults = await api.getUserDefaults(user.id);
+      if (!defaults || Object.keys(defaults).length === 0) {
+        toast.info('No defaults configured. Set them in the Defaults tab.');
+        return;
+      }
+      const updated = applyDefaultsToCircuits(job.circuits || [], defaults);
+      updateJob({ circuits: updated });
+      toast.success('Defaults applied to all circuits');
+    } catch {
+      toast.error('Failed to load defaults');
+    }
+  }, [user, job, updateJob]);
+
+  // iOS-parity: CCU board photo capture & analysis
+  const handleCcuFile = useCallback(
+    async (e: React.ChangeEvent<HTMLInputElement>) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      toast.info('Analyzing CCU photo...');
+      try {
+        const result = await api.analyzeCcu(file);
+        if (result.circuits?.length) {
+          const existing = job?.circuits || [];
+          const mapped = result.circuits.map((c, i) => ({
+            circuit_ref: String(c.circuit_number || existing.length + i + 1),
+            circuit_designation: c.label || `Circuit ${existing.length + i + 1}`,
+            ocpd_type: c.ocpd_type || undefined,
+            ocpd_rating_a: c.ocpd_rating_a || undefined,
+            ocpd_bs_en: c.ocpd_bs_en || undefined,
+            ocpd_breaking_capacity_ka: c.ocpd_breaking_capacity_ka || undefined,
+            rcd_bs_en: c.rcd_bs_en || undefined,
+            rcd_operating_current_ma: c.rcd_rating_ma || undefined,
+          }));
+          updateJob({ circuits: [...existing, ...mapped] });
+          toast.success(
+            `Found ${result.circuits.length} circuit${result.circuits.length !== 1 ? 's' : ''} from CCU`
+          );
+        } else {
+          toast.info('No circuits detected in photo');
+        }
+      } catch {
+        toast.error('CCU analysis failed');
+      }
+      e.target.value = '';
+    },
+    [job, updateJob]
+  );
+
+  // iOS-parity: Observation photo upload
+  const handleObsFile = useCallback(
+    async (e: React.ChangeEvent<HTMLInputElement>) => {
+      const file = e.target.files?.[0];
+      if (!file || !user || !job) return;
+      try {
+        await api.uploadJobPhoto(user.id, job.id, file);
+        toast.success('Observation photo uploaded');
+      } catch {
+        toast.error('Photo upload failed');
+      }
+      e.target.value = '';
+    },
+    [user, job]
+  );
+
+  // iOS-parity: Document photo extraction
+  const handleDocFile = useCallback(
+    async (e: React.ChangeEvent<HTMLInputElement>) => {
+      const file = e.target.files?.[0];
+      if (!file || !user || !job) return;
+      try {
+        await api.uploadJobPhoto(user.id, job.id, file);
+        toast.success('Document photo uploaded');
+      } catch {
+        toast.error('Document upload failed');
+      }
+      e.target.value = '';
+    },
+    [user, job]
+  );
 
   return (
     <div className="flex flex-col h-full bg-gray-900 text-white">
@@ -431,7 +532,6 @@ export default function RecordPage() {
             ) : (
               <span className="text-gray-600">Press the mic button to start recording</span>
             )}
-            <span ref={transcriptEndRef} />
           </div>
 
           {/* Value badge — flashes confirmed extraction value for 1.5s (mirrors iOS capsule badge) */}
@@ -524,12 +624,36 @@ export default function RecordPage() {
         {showDebug && <DebugDashboard state={state} />}
       </div>
 
-      {/* ──────────── Bottom: Control Bar (Glass) — iOS-style fixed bottom bar ──────────── */}
-      {/* Layout mirrors iOS RecordingOverlay: [status content left] [spacer] [buttons right] */}
-      {/* sticky bottom-0 ensures this bar stays visible even if the outer container overflows */}
+      {/* Hidden file inputs for CCU, Doc, Obs photo capture */}
+      <input
+        ref={ccuInputRef}
+        type="file"
+        accept="image/*"
+        capture="environment"
+        onChange={handleCcuFile}
+        className="hidden"
+      />
+      <input
+        ref={docInputRef}
+        type="file"
+        accept="image/*"
+        capture="environment"
+        onChange={handleDocFile}
+        className="hidden"
+      />
+      <input
+        ref={obsInputRef}
+        type="file"
+        accept="image/*"
+        capture="environment"
+        onChange={handleObsFile}
+        className="hidden"
+      />
+
+      {/* ──────────── Bottom: Control Bar — iOS-parity with all buttons ──────────── */}
       <div className="flex-shrink-0 sticky bottom-0 z-10 border-t border-gray-700/50 bg-gray-800/90 backdrop-blur-xl">
-        <div className="flex items-center gap-4 px-4 py-3">
-          {/* Left: Status content (mirrors iOS geminiStatusContent — VAD, waveform, connection) */}
+        <div className="flex items-center gap-3 px-4 py-2">
+          {/* Left: Status indicators */}
           <div className="flex items-center gap-3">
             <VADIndicator isSpeaking={state.isSpeaking} isRecording={state.isRecording} />
             <WaveformBars isSpeaking={state.isSpeaking} isRecording={state.isRecording} />
@@ -544,51 +668,106 @@ export default function RecordPage() {
             )}
           </div>
 
-          {/* Spacer (mirrors iOS Spacer() between status and buttons) */}
           <div className="flex-1" />
 
-          {/* Right: All action buttons (mirrors iOS HStack button order) */}
-          <div className="flex items-center gap-2">
-            {/* Debug toggle — h-11 w-11 (44px, close to iOS 48pt small button) */}
+          {/* Right: iOS-parity action buttons — Defaults, Apply, CCU, Doc, Obs, End, Record */}
+          <div className="flex items-center gap-1.5">
+            {/* Web-only: Debug toggle (small, secondary) */}
             <button
               onClick={() => setShowDebug(!showDebug)}
               className={cn(
-                'flex items-center justify-center rounded-full h-11 w-11 transition-colors',
+                'flex flex-col items-center justify-center gap-0.5 rounded-xl h-14 w-14 transition-colors',
                 showDebug
-                  ? 'bg-red-500/20 text-red-400 border border-red-500/30'
+                  ? 'bg-red-500/20 text-red-400'
                   : 'text-gray-500 hover:text-gray-300 hover:bg-gray-700/50'
               )}
               title="Debug Dashboard"
             >
-              <Activity className="h-4 w-4" />
+              <Activity className="h-5 w-5" />
+              <span className="text-[9px] font-medium leading-none">Debug</span>
             </button>
 
-            {/* Companion mic link — circular, matches iOS small button sizing */}
+            {/* Web-only: Companion mic link */}
             <a
               href="/mic"
               target="_blank"
-              className="flex items-center justify-center rounded-full h-11 w-11 text-gray-500 hover:text-cyan-400 hover:bg-cyan-500/10 transition-colors"
+              className="flex flex-col items-center justify-center gap-0.5 rounded-xl h-14 w-14 text-gray-500 hover:text-cyan-400 hover:bg-cyan-500/10 transition-colors"
               title="Open phone companion mic"
             >
-              <Smartphone className="h-4 w-4" />
+              <Smartphone className="h-5 w-5" />
+              <span className="text-[9px] font-medium leading-none">Phone</span>
             </a>
 
-            {/* End Session button — circular, mirrors iOS glassCircleEffect(tint: .red) */}
+            {/* Divider between web-only and iOS-parity buttons */}
+            <div className="w-px h-8 bg-gray-700/50 mx-1" />
+
+            {/* Defaults — purple, matches iOS slider.horizontal.3 */}
+            <button
+              onClick={handleDefaults}
+              className="flex flex-col items-center justify-center gap-0.5 rounded-full h-14 w-14 bg-purple-500/20 text-purple-400 border border-purple-500/30 hover:bg-purple-500/30 transition-colors"
+              title="Open defaults settings"
+            >
+              <SlidersHorizontal className="h-5 w-5" />
+              <span className="text-[9px] font-medium leading-none">Defa...</span>
+            </button>
+
+            {/* Apply — green, matches iOS arrow.down.doc */}
+            <button
+              onClick={handleApplyDefaults}
+              className="flex flex-col items-center justify-center gap-0.5 rounded-full h-14 w-14 bg-green-500/20 text-green-400 border border-green-500/30 hover:bg-green-500/30 transition-colors"
+              title="Apply defaults to all circuits"
+            >
+              <FileDown className="h-5 w-5" />
+              <span className="text-[9px] font-medium leading-none">Apply</span>
+            </button>
+
+            {/* CCU — orange, matches iOS camera.viewfinder */}
+            <button
+              onClick={() => ccuInputRef.current?.click()}
+              className="flex flex-col items-center justify-center gap-0.5 rounded-full h-14 w-14 bg-orange-500/20 text-orange-400 border border-orange-500/30 hover:bg-orange-500/30 transition-colors"
+              title="Capture CCU board photo"
+            >
+              <Scan className="h-5 w-5" />
+              <span className="text-[9px] font-medium leading-none">CCU</span>
+            </button>
+
+            {/* Doc — cyan, matches iOS doc.text.viewfinder */}
+            <button
+              onClick={() => docInputRef.current?.click()}
+              className="flex flex-col items-center justify-center gap-0.5 rounded-full h-14 w-14 bg-cyan-500/20 text-cyan-400 border border-cyan-500/30 hover:bg-cyan-500/30 transition-colors"
+              title="Extract data from document photo"
+            >
+              <FileSearch className="h-5 w-5" />
+              <span className="text-[9px] font-medium leading-none">Doc</span>
+            </button>
+
+            {/* Obs — blue, matches iOS camera.fill */}
+            <button
+              onClick={() => obsInputRef.current?.click()}
+              className="flex flex-col items-center justify-center gap-0.5 rounded-full h-14 w-14 bg-blue-500/20 text-blue-400 border border-blue-500/30 hover:bg-blue-500/30 transition-colors"
+              title="Capture observation photo"
+            >
+              <Camera className="h-5 w-5" />
+              <span className="text-[9px] font-medium leading-none">Obs</span>
+            </button>
+
+            {/* End Session — red, only visible when recording */}
             {state.isRecording && (
               <button
                 onClick={handleStop}
-                className="flex items-center justify-center rounded-full h-11 w-11 bg-red-500/20 border border-red-500/30 text-red-400 hover:bg-red-500/30 transition-colors"
+                className="flex flex-col items-center justify-center gap-0.5 rounded-full h-14 w-14 bg-red-500/20 text-red-400 border border-red-500/30 hover:bg-red-500/30 transition-colors"
                 title="End recording session"
               >
-                <Square className="h-4 w-4" />
+                <Square className="h-5 w-5" />
+                <span className="text-[9px] font-medium leading-none">End</span>
               </button>
             )}
 
-            {/* Main record button — h-14 w-14 (56px), mirrors iOS recordButtonSize: 56pt portrait */}
+            {/* Main Record/Pause button — large, green/orange gradient */}
             <button
               onClick={state.isRecording ? handleStop : handleStart}
               className={cn(
-                'flex items-center justify-center rounded-full h-14 w-14 transition-all duration-200 shadow-lg',
+                'flex flex-col items-center justify-center gap-0.5 rounded-full h-16 w-16 transition-all duration-200 shadow-lg ml-1',
                 state.isRecording
                   ? 'bg-gradient-to-br from-orange-500 to-red-500 hover:from-orange-600 hover:to-red-600 shadow-red-500/25'
                   : 'bg-gradient-to-br from-green-500 to-emerald-500 hover:from-green-600 hover:to-emerald-600 shadow-green-500/25'
@@ -599,6 +778,9 @@ export default function RecordPage() {
               ) : (
                 <Mic className="h-6 w-6 text-white" />
               )}
+              <span className="text-[9px] font-medium leading-none text-white/90">
+                {state.isRecording ? 'Pause' : 'Rec'}
+              </span>
             </button>
           </div>
         </div>

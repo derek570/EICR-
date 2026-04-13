@@ -3,7 +3,7 @@
  * Ported from frontend/src/lib/store.ts
  */
 
-import { create } from "zustand";
+import { create } from 'zustand';
 import type {
   JobDetail,
   Circuit,
@@ -15,8 +15,8 @@ import type {
   InspectionSchedule,
   ExtentAndType,
   DesignConstruction,
-} from "./types";
-import { db, type LocalJob, saveLocalJob, getLocalJob } from "./db";
+} from './types';
+import { db, type LocalJob, saveLocalJob, getLocalJob } from './db';
 
 export interface JobState {
   currentJob: JobDetail | null;
@@ -48,7 +48,7 @@ export interface JobState {
 function buildLocalJob(
   currentJob: JobDetail,
   userId: string,
-  overrides: Partial<LocalJob> = {},
+  overrides: Partial<LocalJob> = {}
 ): LocalJob {
   return {
     id: currentJob.id,
@@ -79,7 +79,7 @@ export const useJobStore = create<JobState>((set, get) => ({
   userId: null,
   isDirty: false,
   isSyncing: false,
-  isOnline: typeof navigator !== "undefined" ? navigator.onLine : true,
+  isOnline: typeof navigator !== 'undefined' ? navigator.onLine : true,
   pendingSyncCount: 0,
 
   setUser: (userId) => set({ userId }),
@@ -88,23 +88,27 @@ export const useJobStore = create<JobState>((set, get) => ({
     const localJob = await getLocalJob(jobId);
 
     if (localJob && localJob.isDirty) {
+      // Merge: prefer local dirty data, but fill in null/undefined sections
+      // from server data. This ensures extraction results that update the
+      // server (e.g. installation_details, supply_characteristics) are not
+      // lost when the local job only has dirty changes to other sections.
       set({
         currentJob: {
           id: localJob.id,
-          address: localJob.address,
+          address: localJob.address || jobData.address,
           status: localJob.status,
           created_at: localJob.created_at,
-          certificate_type: localJob.certificate_type || "EICR",
+          certificate_type: localJob.certificate_type || jobData.certificate_type || 'EICR',
           circuits: localJob.circuits,
           observations: localJob.observations,
           board_info: localJob.board_info,
           boards: localJob.boards,
-          installation_details: localJob.installation_details,
-          supply_characteristics: localJob.supply_characteristics,
-          inspection_schedule: localJob.inspection_schedule,
-          inspector_id: localJob.inspector_id,
-          extent_and_type: localJob.extent_and_type,
-          design_construction: localJob.design_construction,
+          installation_details: localJob.installation_details ?? jobData.installation_details,
+          supply_characteristics: localJob.supply_characteristics ?? jobData.supply_characteristics,
+          inspection_schedule: localJob.inspection_schedule ?? jobData.inspection_schedule,
+          inspector_id: localJob.inspector_id ?? jobData.inspector_id,
+          extent_and_type: localJob.extent_and_type ?? jobData.extent_and_type,
+          design_construction: localJob.design_construction ?? jobData.design_construction,
         },
         userId,
         isDirty: true,
@@ -116,7 +120,7 @@ export const useJobStore = create<JobState>((set, get) => ({
         address: jobData.address,
         status: jobData.status,
         created_at: jobData.created_at,
-        certificate_type: jobData.certificate_type || "EICR",
+        certificate_type: jobData.certificate_type || 'EICR',
         circuits: jobData.circuits,
         observations: jobData.observations,
         board_info: jobData.board_info,
@@ -271,7 +275,10 @@ export const useJobStore = create<JobState>((set, get) => ({
       set({ pendingSyncCount: 0 });
       return;
     }
-    const dirtyJobs = await db.jobs.where({ userId }).filter((j) => j.isDirty).count();
+    const dirtyJobs = await db.jobs
+      .where({ userId })
+      .filter((j) => j.isDirty)
+      .count();
     set({ pendingSyncCount: dirtyJobs });
   },
 }));

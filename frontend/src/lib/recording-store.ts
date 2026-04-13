@@ -24,7 +24,13 @@ export interface ServerCostUpdate {
 
 export interface UserQuestion {
   id: string;
-  type: 'orphaned' | 'out_of_range' | 'unclear' | 'tt_confirmation' | 'circuit_disambiguation' | 'observation_confirmation';
+  type:
+    | 'orphaned'
+    | 'out_of_range'
+    | 'unclear'
+    | 'tt_confirmation'
+    | 'circuit_disambiguation'
+    | 'observation_confirmation';
   fieldKey: string | null;
   circuitNumber?: number;
   question: string;
@@ -80,6 +86,7 @@ interface RecordingState {
   incrementProcessingCount: () => void;
   decrementProcessingCount: () => void;
   appendTranscript: (text: string) => void;
+  clearTranscript: () => void;
   reset: () => void;
 }
 
@@ -129,6 +136,8 @@ export const useRecordingStore = create<RecordingState>((set) => ({
       const capped = combined.length > 2000 ? combined.slice(-2000) : combined;
       return { transcript: capped };
     }),
+
+  clearTranscript: () => set({ transcript: '' }),
 
   reset: () => set(initialState),
 }));

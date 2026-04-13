@@ -110,13 +110,14 @@ function RecordPageContent() {
   // --------------------------------------------------------------------------
   // Handlers
   // --------------------------------------------------------------------------
-  const handleBack = useCallback(() => {
+  const handleBack = useCallback(async () => {
     if (isRecording) {
       const confirmed = window.confirm(
         'Recording is in progress. Are you sure you want to leave? Your session will be stopped.'
       );
       if (!confirmed) return;
-      recording.stopRecording();
+      // Await the save so the overview page sees the latest extracted data
+      await recording.stopRecording();
     }
 
     if (jobId) {
@@ -134,11 +135,12 @@ function RecordPageContent() {
     }
   }, [recording]);
 
-  const handleStop = useCallback(() => {
+  const handleStop = useCallback(async () => {
     const confirmed = window.confirm('Stop recording?');
     if (!confirmed) return;
 
-    recording.stopRecording();
+    // Await the save so the overview page sees the latest extracted data (no race condition)
+    await recording.stopRecording();
 
     if (jobId) {
       router.push(`/job/${jobId}`);

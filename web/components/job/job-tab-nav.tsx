@@ -4,7 +4,6 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import {
   Home,
-  Mic,
   Building2,
   Zap,
   CircuitBoard,
@@ -29,7 +28,6 @@ interface TabItem {
 
 const eicrTabs: TabItem[] = [
   { name: 'Overview', href: '', icon: Home },
-  { name: 'Record', href: '/record', icon: Mic },
   { name: 'Installation', href: '/installation', icon: Building2 },
   { name: 'Supply', href: '/supply', icon: Zap },
   { name: 'Board', href: '/board', icon: CircuitBoard },
@@ -44,7 +42,6 @@ const eicrTabs: TabItem[] = [
 
 const eicTabs: TabItem[] = [
   { name: 'Overview', href: '', icon: Home },
-  { name: 'Record', href: '/record', icon: Mic },
   { name: 'Installation', href: '/installation', icon: Building2 },
   { name: 'Extent & Type', href: '/extent', icon: Ruler },
   { name: 'Supply', href: '/supply', icon: Zap },

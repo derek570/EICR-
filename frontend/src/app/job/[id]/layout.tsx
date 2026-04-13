@@ -39,7 +39,12 @@ export default function JobLayout({ children }: JobLayoutProps) {
   const jobId = params.id as string;
 
   const [user, setUser] = useState<User | null>(null);
-  const [loading, setLoading] = useState(true);
+  // Skip the loading spinner if the job store already has this job's data pre-seeded
+  // (e.g. navigating here from the record page which syncs liveJob → currentJob).
+  const [loading, setLoading] = useState(() => {
+    const existing = useJobStore.getState().currentJob;
+    return !existing || existing.id !== jobId;
+  });
 
   // Use Zustand store
   const {
