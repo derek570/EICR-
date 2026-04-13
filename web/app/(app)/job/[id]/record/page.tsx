@@ -708,7 +708,7 @@ export default function RecordPage() {
               title="Open defaults settings"
             >
               <SlidersHorizontal className="h-5 w-5" />
-              <span className="text-[9px] font-medium leading-none">Defa...</span>
+              <span className="text-[9px] font-medium leading-none">Defaults</span>
             </button>
 
             {/* Apply — green, matches iOS arrow.down.doc */}
@@ -751,17 +751,21 @@ export default function RecordPage() {
               <span className="text-[9px] font-medium leading-none">Obs</span>
             </button>
 
-            {/* End Session — red, only visible when recording */}
-            {state.isRecording && (
-              <button
-                onClick={handleStop}
-                className="flex flex-col items-center justify-center gap-0.5 rounded-full h-14 w-14 bg-red-500/20 text-red-400 border border-red-500/30 hover:bg-red-500/30 transition-colors"
-                title="End recording session"
-              >
-                <Square className="h-5 w-5" />
-                <span className="text-[9px] font-medium leading-none">End</span>
-              </button>
-            )}
+            {/* End Session — red, always visible; disabled when not recording */}
+            <button
+              onClick={handleStop}
+              disabled={!state.isRecording}
+              className={cn(
+                'flex flex-col items-center justify-center gap-0.5 rounded-full h-14 w-14 border transition-colors',
+                state.isRecording
+                  ? 'bg-red-500/20 text-red-400 border-red-500/30 hover:bg-red-500/30'
+                  : 'bg-gray-700/20 text-gray-600 border-gray-700/30 opacity-40 cursor-not-allowed'
+              )}
+              title="End recording session"
+            >
+              <Square className="h-5 w-5" />
+              <span className="text-[9px] font-medium leading-none">End</span>
+            </button>
 
             {/* Main Record/Pause button — large, green/orange gradient */}
             <button
