@@ -10,6 +10,24 @@
  * always-current access — confirming the fix works as expected.
  */
 
+// Mock Dexie — IndexedDB is unavailable in jsdom. The store calls saveLocalJob
+// and refreshPendingCount fire-and-forget; without a mock they produce unhandled
+// promise rejections that crash the test runner on Node.js 25.
+jest.mock('../lib/db', () => ({
+  db: {
+    jobs: {
+      update: jest.fn().mockResolvedValue(undefined),
+      where: jest.fn().mockReturnValue({
+        filter: jest.fn().mockReturnValue({
+          count: jest.fn().mockResolvedValue(0),
+        }),
+      }),
+    },
+  },
+  saveLocalJob: jest.fn().mockResolvedValue(undefined),
+  getLocalJob: jest.fn().mockResolvedValue(null),
+}));
+
 import { useJobStore } from '../lib/store';
 import type { JobDetail } from '../lib/api';
 
