@@ -32,6 +32,7 @@ import { DebugLogger } from '@/lib/debug-logger';
 import { api } from '@/lib/api-client';
 import { getToken } from '@/lib/auth';
 import { applyDefaultsToCircuit } from '@/lib/apply-defaults';
+import { useJobStore } from '@/lib/store';
 import type {
   JobDetail,
   Circuit,
@@ -323,8 +324,8 @@ export function useRecording(
 
   const applyRegexResults = useCallback(
     (result: ReturnType<TranscriptFieldMatcher['match']>) => {
-      if (!jobRef.current) return;
-      const currentJob = jobRef.current;
+      const currentJob = useJobStore.getState().currentJob;
+      if (!currentJob) return;
       let matchCount = 0;
       const batchUpdate: Partial<JobDetail> = {};
 
@@ -429,8 +430,8 @@ export function useRecording(
 
   const applySonnetResults = useCallback(
     (result: RollingExtractionResult) => {
-      if (!jobRef.current) return;
-      const currentJob = jobRef.current;
+      const currentJob = useJobStore.getState().currentJob;
+      if (!currentJob) return;
       const now = Date.now();
       const newHighlights: TranscriptHighlight[] = [];
       const fieldUpdates: Record<string, number> = {};
