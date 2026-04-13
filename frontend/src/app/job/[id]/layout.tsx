@@ -132,6 +132,7 @@ export default function JobLayout({ children }: JobLayoutProps) {
               circuits: localJob.circuits,
               observations: localJob.observations,
               board_info: localJob.board_info,
+              boards: localJob.boards,
               installation_details: localJob.installation_details,
               supply_characteristics: localJob.supply_characteristics,
               inspection_schedule: localJob.inspection_schedule,
