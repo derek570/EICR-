@@ -435,33 +435,44 @@ export function useRecording(
       const newHighlights: TranscriptHighlight[] = [];
       const fieldUpdates: Record<string, number> = {};
 
+      // Batch all section updates to avoid stale-closure data loss.
+      // Previously, each reading spread from the same stale jobRef snapshot,
+      // so the second reading in the same section would overwrite the first.
+      const boardAccum = { ...currentJob.board_info } as Record<string, unknown>;
+      const installAccum = { ...currentJob.installation_details } as Record<string, unknown>;
+      const supplyAccum = { ...currentJob.supply_characteristics } as Record<string, unknown>;
+      const circuitsAccum = [...(currentJob.circuits ?? [])];
+      let boardChanged = false;
+      let installChanged = false;
+      let supplyChanged = false;
+      let circuitsChanged = false;
+
+      const BOARD_FIELDS = new Set(['manufacturer', 'zs_at_db', 'location', 'phases']);
+      const INSTALL_FIELDS = new Set([
+        'client_name',
+        'client_phone',
+        'client_email',
+        'address',
+        'premises_description',
+        'next_inspection_years',
+        'reason_for_report',
+        'occupier_name',
+        'date_of_previous_inspection',
+        'previous_certificate_number',
+        'estimated_age_of_installation',
+        'general_condition',
+        'agreed_limitations',
+        'agreed_with',
+        'operational_limitations',
+        'extent',
+      ]);
+
       for (const reading of result.extractedReadings) {
         const circuitRef = reading.circuit;
         const field = reading.field;
         const value = String(reading.value);
 
         if (circuitRef === '0' || circuitRef === undefined) {
-          // Route circuit-0 fields to the correct section
-          const BOARD_FIELDS = new Set(['manufacturer', 'zs_at_db', 'location', 'phases']);
-          const INSTALL_FIELDS = new Set([
-            'client_name',
-            'client_phone',
-            'client_email',
-            'address',
-            'premises_description',
-            'next_inspection_years',
-            'reason_for_report',
-            'occupier_name',
-            'date_of_previous_inspection',
-            'previous_certificate_number',
-            'estimated_age_of_installation',
-            'general_condition',
-            'agreed_limitations',
-            'agreed_with',
-            'operational_limitations',
-            'extent',
-          ]);
-
           let section: string;
           if (BOARD_FIELDS.has(field)) {
             section = 'board';
@@ -486,24 +497,16 @@ export function useRecording(
           fieldSourcesRef.current[fieldKey] = 'sonnet';
 
           if (section === 'board') {
-            const board = { ...currentJob.board_info } as Record<string, unknown>;
-            board[field] = value;
-            onJobUpdate({ board_info: board as BoardInfo });
+            boardAccum[field] = value;
+            boardChanged = true;
           } else if (section === 'installation') {
-            const install = { ...currentJob.installation_details } as Record<string, unknown>;
-            install[field] = value;
-            onJobUpdate({
-              installation_details: install as unknown as JobDetail['installation_details'],
-            });
+            installAccum[field] = value;
+            installChanged = true;
           } else {
-            const supply = { ...currentJob.supply_characteristics } as Record<string, unknown>;
-            supply[field] = value;
-            onJobUpdate({
-              supply_characteristics: supply as unknown as JobDetail['supply_characteristics'],
-            });
+            supplyAccum[field] = value;
+            supplyChanged = true;
           }
 
-          // Track highlight for transcript and blue flash for field
           newHighlights.push({ value, fieldKey, timestamp: now });
           fieldUpdates[fieldKey] = now;
         } else {
@@ -522,19 +525,31 @@ export function useRecording(
           }
           fieldSourcesRef.current[fieldKey] = 'sonnet';
 
-          const circuits = [...(currentJob.circuits ?? [])];
-          const idx = circuits.findIndex((c) => c.circuit_ref === circuitRef);
+          const idx = circuitsAccum.findIndex((c) => c.circuit_ref === circuitRef);
           if (idx >= 0) {
-            const circuit = { ...circuits[idx] } as Record<string, unknown>;
+            const circuit = { ...circuitsAccum[idx] } as Record<string, unknown>;
             circuit[field] = value;
-            circuits[idx] = circuit as Circuit;
-            onJobUpdate({ circuits });
+            circuitsAccum[idx] = circuit as Circuit;
+            circuitsChanged = true;
 
-            // Track highlight for transcript and blue flash for field
             newHighlights.push({ value, fieldKey, timestamp: now });
             fieldUpdates[fieldKey] = now;
           }
         }
+      }
+
+      // Single batched update — all section fields accumulated before dispatching
+      const batchUpdate: Partial<JobDetail> = {};
+      if (boardChanged) batchUpdate.board_info = boardAccum as BoardInfo;
+      if (installChanged)
+        batchUpdate.installation_details =
+          installAccum as unknown as JobDetail['installation_details'];
+      if (supplyChanged)
+        batchUpdate.supply_characteristics =
+          supplyAccum as unknown as JobDetail['supply_characteristics'];
+      if (circuitsChanged) batchUpdate.circuits = circuitsAccum;
+      if (Object.keys(batchUpdate).length > 0) {
+        onJobUpdate(batchUpdate);
       }
 
       setFieldSources({ ...fieldSourcesRef.current });
@@ -589,9 +604,10 @@ export function useRecording(
     if (!buffer.trim()) return;
 
     const currentJob = jobRef.current;
-    const allCircuits = (currentJob.boards && currentJob.boards.length > 0)
-      ? currentJob.boards.flatMap((b) => b.circuits ?? [])
-      : (currentJob.circuits ?? []);
+    const allCircuits =
+      currentJob.boards && currentJob.boards.length > 0
+        ? currentJob.boards.flatMap((b) => b.circuits ?? [])
+        : (currentJob.circuits ?? []);
     const circuitSchedule = JSON.stringify(allCircuits);
     const recentReadings = JSON.stringify(fieldSourcesRef.current);
     const askedDescs = alertManager.current?.getAskedQuestionDescriptions() ?? [];
@@ -775,6 +791,10 @@ export function useRecording(
         setSessionDuration(0);
         sleepEventsRef.current = [];
         setSleepEvents([]);
+        highlightsRef.current = [];
+        setHighlights([]);
+        recentlyUpdatedFieldsRef.current = {};
+        setRecentlyUpdatedFields({});
         matcher.current = new TranscriptFieldMatcher();
         alertManager.current?.clearAll();
         alertManager.current?.resetQuestionTracking();
@@ -1062,6 +1082,11 @@ export function useRecording(
     setSleepState('active');
     setIsSpeaking(false);
     setInterimTranscript('');
+    // Clear highlights so the green badge doesn't persist after recording ends.
+    highlightsRef.current = [];
+    setHighlights([]);
+    recentlyUpdatedFieldsRef.current = {};
+    setRecentlyUpdatedFields({});
   }, [disconnectCompanionSocket, triggerSonnetExtraction, releaseWakeLock]);
 
   // ---- Cleanup on unmount ----

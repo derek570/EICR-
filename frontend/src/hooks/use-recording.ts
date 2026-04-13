@@ -207,6 +207,7 @@ export function useRecording(jobId: string, userId: string, initialJob: JobDetai
   const deepgramKeyRef = useRef<string>('');
   const keywordsRef = useRef<Array<[string, number]>>([]);
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const highlightClearTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isRecordingRef = useRef(false);
 
   // Keep jobRef in sync with prop changes
@@ -385,6 +386,21 @@ export function useRecording(jobId: string, userId: string, initialJob: JobDetai
       jobRef.current = updatedJob;
       store.setLiveJob(updatedJob);
       debouncedSave();
+
+      // Clear transcript bar after extraction — signals to the user that their
+      // speech was processed; bar resets ready for the next utterance.
+      // Mirrors the rolling-window feel of iOS where old extracted text disappears.
+      store.clearTranscript();
+
+      // Auto-clear the highlight badge after 3s so it doesn't persist as stale state.
+      // Cancel any previous timer so rapid extractions don't stack.
+      if (highlightClearTimerRef.current) {
+        clearTimeout(highlightClearTimerRef.current);
+      }
+      highlightClearTimerRef.current = setTimeout(() => {
+        store.setHighlight(null);
+        highlightClearTimerRef.current = null;
+      }, 3000);
     },
     [debouncedSave, store]
   );
@@ -559,7 +575,8 @@ export function useRecording(jobId: string, userId: string, initialJob: JobDetai
                 for (const [field, value] of Object.entries(ec)) {
                   if (field === 'circuit_ref') continue;
                   const mappedField = CIRCUIT_FIELD_MAP[field] ?? field;
-                  (updatedJob.circuits[idx] as Record<string, string | undefined>)[mappedField] = value;
+                  (updatedJob.circuits[idx] as Record<string, string | undefined>)[mappedField] =
+                    value;
                 }
               }
             }
@@ -786,8 +803,11 @@ export function useRecording(jobId: string, userId: string, initialJob: JobDetai
   }, [jobId, userId, store, applySonnetReadings]);
 
   // --- Stop Recording ---
-  const stopRecording = useCallback(() => {
-    if (!isRecordingRef.current) return;
+  // Returns a Promise<void> that resolves once the final save completes (or immediately
+  // if there is no pending save). Callers that navigate after stop should await this
+  // to avoid a race where GET /job arrives before PUT /job has written to storage.
+  const stopRecording = useCallback((): Promise<void> => {
+    if (!isRecordingRef.current) return Promise.resolve();
     isRecordingRef.current = false;
 
     // 1. Stop duration counter
@@ -842,15 +862,20 @@ export function useRecording(jobId: string, userId: string, initialJob: JobDetai
     // Reset sleep/vad state so next session starts clean, not in stale dozing/sleeping.
     store.setSleepState('active');
     store.setVadState('idle');
+    // Clear highlight so the green badge doesn't persist after recording ends.
+    if (highlightClearTimerRef.current) {
+      clearTimeout(highlightClearTimerRef.current);
+      highlightClearTimerRef.current = null;
+    }
+    store.setHighlight(null);
 
     // 11. Reset alert dedup
     alertManagerRef.current?.resetDedup();
 
-    // 12. Flush any pending save
+    // 12. Flush any pending save — return the Promise so callers can await it
     if (saveTimerRef.current) {
       clearTimeout(saveTimerRef.current);
       saveTimerRef.current = null;
-      // Do a final save
       const job = jobRef.current;
       if (job) {
         const data: SaveJobData = {
@@ -861,11 +886,16 @@ export function useRecording(jobId: string, userId: string, initialJob: JobDetai
           supply_characteristics: job.supply_characteristics,
           inspection_schedule: job.inspection_schedule,
         };
-        api.saveJob(userId, jobId, data).catch((err) => {
-          console.error('[useRecording] final save failed:', err);
-        });
+        return api
+          .saveJob(userId, jobId, data)
+          .catch((err) => {
+            console.error('[useRecording] final save failed:', err);
+          })
+          .then(() => undefined);
       }
     }
+
+    return Promise.resolve();
   }, [userId, jobId, store]);
 
   // --- Cleanup on unmount ---
@@ -887,6 +917,9 @@ export function useRecording(jobId: string, userId: string, initialJob: JobDetai
         }
         if (saveTimerRef.current) {
           clearTimeout(saveTimerRef.current);
+        }
+        if (highlightClearTimerRef.current) {
+          clearTimeout(highlightClearTimerRef.current);
         }
         isRecordingRef.current = false;
       }
