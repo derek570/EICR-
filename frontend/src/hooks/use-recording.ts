@@ -183,6 +183,62 @@ function buildJobState(job: JobDetail): Record<string, unknown> {
   };
 }
 
+/**
+ * Build the set of field keys that already carry values in the loaded job.
+ * Fields in this set are marked preExisting and will be skipped by
+ * applySonnetReadings — preventing regex/Sonnet from overwriting values the
+ * user has already typed or that came from the database.
+ *
+ * Key format mirrors the web/ fieldSourcesRef convention:
+ *   supply.<field>  |  install.<field>  |  board.<field>  |  circuit.<ref>.<field>
+ */
+function buildPreExistingFields(job: JobDetail): Set<string> {
+  const keys = new Set<string>();
+
+  // Supply characteristics
+  if (job.supply_characteristics) {
+    for (const [k, v] of Object.entries(job.supply_characteristics)) {
+      if (v !== null && v !== undefined && v !== '') {
+        keys.add(`supply.${k}`);
+      }
+    }
+  }
+
+  // Installation details
+  if (job.installation_details) {
+    for (const [k, v] of Object.entries(job.installation_details)) {
+      if (v !== null && v !== undefined && v !== '') {
+        keys.add(`install.${k}`);
+      }
+    }
+  }
+
+  // Board info
+  if (job.board_info) {
+    for (const [k, v] of Object.entries(job.board_info)) {
+      if (v !== null && v !== undefined && v !== '') {
+        keys.add(`board.${k}`);
+      }
+    }
+  }
+
+  // Circuits (flat array and multi-board)
+  const allCircuits = job.boards
+    ? job.boards.flatMap((b) => b.circuits ?? [])
+    : (job.circuits ?? []);
+  for (const c of allCircuits) {
+    const ref = String(c.circuit_ref);
+    for (const [k, v] of Object.entries(c)) {
+      if (k === 'circuit_ref') continue;
+      if (v !== null && v !== undefined && v !== '') {
+        keys.add(`circuit.${ref}.${k}`);
+      }
+    }
+  }
+
+  return keys;
+}
+
 // ---------------------------------------------------------------------------
 // Hook
 // ---------------------------------------------------------------------------
@@ -210,6 +266,8 @@ export function useRecording(jobId: string, userId: string, initialJob: JobDetai
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const highlightClearTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isRecordingRef = useRef(false);
+  // Fields that had values when recording started — Sonnet/regex must not overwrite them.
+  const preExistingFieldsRef = useRef<Set<string>>(new Set());
 
   // Keep jobRef in sync with prop changes
   useEffect(() => {
@@ -287,6 +345,8 @@ export function useRecording(jobId: string, userId: string, initialJob: JobDetai
         if (circuit !== undefined && circuit !== null && circuit > 0) {
           // Circuit-level field
           const mappedField = CIRCUIT_FIELD_MAP[field] ?? field;
+          // preExisting guard: skip fields the user typed before this session started
+          if (preExistingFieldsRef.current.has(`circuit.${circuit}.${mappedField}`)) continue;
           const idx = updatedJob.circuits.findIndex(
             (c) => String(c.circuit_ref) === String(circuit)
           );
@@ -309,6 +369,9 @@ export function useRecording(jobId: string, userId: string, initialJob: JobDetai
           lastHighlightValue = value;
         } else if (SUPPLY_FIELDS.has(field)) {
           // Supply characteristic
+          const mappedField = SUPPLY_FIELD_MAP[field] ?? field;
+          // preExisting guard: skip fields the user typed before this session started
+          if (preExistingFieldsRef.current.has(`supply.${mappedField}`)) continue;
           if (!updatedJob.supply_characteristics) {
             updatedJob.supply_characteristics = {
               earthing_arrangement: '',
@@ -319,13 +382,14 @@ export function useRecording(jobId: string, userId: string, initialJob: JobDetai
               nominal_frequency: '',
             };
           }
-          const mappedField = SUPPLY_FIELD_MAP[field] ?? field;
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           (updatedJob.supply_characteristics as any)[mappedField] = value;
           lastHighlightField = mappedField;
           lastHighlightValue = value;
         } else if (INSTALLATION_FIELDS.has(field)) {
           // Installation detail
+          // preExisting guard: skip fields the user typed before this session started
+          if (preExistingFieldsRef.current.has(`install.${field}`)) continue;
           if (!updatedJob.installation_details) {
             updatedJob.installation_details = {
               client_name: '',
@@ -342,12 +406,17 @@ export function useRecording(jobId: string, userId: string, initialJob: JobDetai
           lastHighlightValue = value;
         } else if (BOARD_FIELDS.has(field)) {
           // Board info
+          // preExisting guard: skip fields the user typed before this session started
+          if (preExistingFieldsRef.current.has(`board.${field}`)) continue;
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           (updatedJob.board_info as any)[field] = value;
           lastHighlightField = field;
           lastHighlightValue = value;
         } else if (circuit === 0 || circuit === undefined || circuit === null) {
           // Sonnet circuit=0 means supply-level — also try supply mapping
+          const mappedField = SUPPLY_FIELD_MAP[field] ?? field;
+          // preExisting guard: skip fields the user typed before this session started
+          if (preExistingFieldsRef.current.has(`supply.${mappedField}`)) continue;
           if (!updatedJob.supply_characteristics) {
             updatedJob.supply_characteristics = {
               earthing_arrangement: '',
@@ -358,7 +427,6 @@ export function useRecording(jobId: string, userId: string, initialJob: JobDetai
               nominal_frequency: '',
             };
           }
-          const mappedField = SUPPLY_FIELD_MAP[field] ?? field;
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           (updatedJob.supply_characteristics as any)[mappedField] = value;
           lastHighlightField = mappedField;
@@ -419,6 +487,11 @@ export function useRecording(jobId: string, userId: string, initialJob: JobDetai
     // Sleep state reset ensures the UI shows 'active' during the 3-10s setup phase.
     store.reset();
     store.setSleepState('active');
+
+    // Snapshot fields that already have values so Sonnet cannot overwrite them.
+    // Uses getState() for the same reason as applySonnetReadings — synchronous read.
+    const currentJob = useJobStore.getState().currentJob ?? jobRef.current;
+    preExistingFieldsRef.current = currentJob ? buildPreExistingFields(currentJob) : new Set();
 
     try {
       // 1. Fetch short-lived Deepgram streaming key (secure temp key, 600s TTL)
