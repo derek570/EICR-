@@ -346,13 +346,33 @@ export default function RecordPage() {
   const [showDebug, setShowDebug] = useState(false);
   const [showSections, setShowSections] = useState(true);
   const transcriptScrollRef = useRef<HTMLDivElement>(null);
+  const transcriptEndRef = useRef<HTMLSpanElement>(null);
+  // Value badge: flash last confirmed extraction value for 1.5s (mirrors iOS transcript capsule)
+  const [valueBadge, setValueBadge] = useState<string | null>(null);
+  const prevHighlightsLen = useRef(0);
 
-  // Auto-scroll transcript
+  // Auto-scroll transcript to show newest content
   useEffect(() => {
-    if (transcriptScrollRef.current) {
-      transcriptScrollRef.current.scrollLeft = transcriptScrollRef.current.scrollWidth;
-    }
+    transcriptEndRef.current?.scrollIntoView({
+      behavior: 'instant',
+      block: 'nearest',
+      inline: 'end',
+    });
   }, [state.transcript, state.interimTranscript]);
+
+  // Flash value badge when new Sonnet highlights arrive
+  useEffect(() => {
+    if (state.highlights.length > prevHighlightsLen.current) {
+      const newest = state.highlights[state.highlights.length - 1];
+      if (newest) {
+        setValueBadge(newest.value);
+        const t = setTimeout(() => setValueBadge(null), 1500);
+        prevHighlightsLen.current = state.highlights.length;
+        return () => clearTimeout(t);
+      }
+    }
+    prevHighlightsLen.current = state.highlights.length;
+  }, [state.highlights]);
 
   const highlightedText = useMemo(
     () => buildHighlightedSpans(state.transcript, state.highlights),
@@ -375,22 +395,29 @@ export default function RecordPage() {
       {/* ──────────── Top: Transcript Bar ──────────── */}
       <div className="flex-shrink-0 border-b border-gray-700/50 bg-gray-800/80 backdrop-blur-sm">
         <div className="flex items-center gap-3 px-4 py-2">
-          {/* Connection dot */}
-          <div
-            className={cn(
-              'h-2 w-2 rounded-full shrink-0',
-              state.connectionState === 'connected' && 'bg-green-400',
-              (state.connectionState === 'connecting' ||
-                state.connectionState === 'reconnecting') &&
-                'bg-yellow-400 animate-pulse',
-              state.connectionState === 'disconnected' && 'bg-gray-500'
+          {/* VAD / connection dot — pulses green when speaking (mirrors iOS pulsing dot on TranscriptStripView) */}
+          <div className="relative flex items-center justify-center shrink-0">
+            {state.isRecording && state.isSpeaking && (
+              <div className="absolute h-4 w-4 rounded-full bg-green-400/30 animate-ping" />
             )}
-          />
+            <div
+              className={cn(
+                'h-2 w-2 rounded-full',
+                state.connectionState === 'connected' && state.isSpeaking && 'bg-green-400',
+                state.connectionState === 'connected' && !state.isSpeaking && 'bg-green-600',
+                (state.connectionState === 'connecting' ||
+                  state.connectionState === 'reconnecting') &&
+                  'bg-yellow-400 animate-pulse',
+                state.connectionState === 'disconnected' && 'bg-gray-500'
+              )}
+            />
+          </div>
 
           {/* Transcript text - horizontally scrolling single line */}
           <div
             ref={transcriptScrollRef}
-            className="flex-1 overflow-x-auto whitespace-nowrap text-sm scrollbar-none"
+            className="flex-1 overflow-x-auto whitespace-nowrap text-sm [&::-webkit-scrollbar]:hidden"
+            style={{ scrollbarWidth: 'none' }}
           >
             {state.transcript ? (
               <>
@@ -404,7 +431,23 @@ export default function RecordPage() {
             ) : (
               <span className="text-gray-600">Press the mic button to start recording</span>
             )}
+            <span ref={transcriptEndRef} />
           </div>
+
+          {/* Value badge — flashes confirmed extraction value for 1.5s (mirrors iOS capsule badge) */}
+          {valueBadge && (
+            <span className="shrink-0 inline-flex items-center rounded-full bg-green-500/20 border border-green-500/40 px-2 py-0.5 text-[10px] font-semibold text-green-400 animate-in fade-in duration-150">
+              ✓ {valueBadge}
+            </span>
+          )}
+
+          {/* Processing badge — pulsing orange when Sonnet is active (mirrors iOS ProcessingBadgeView) */}
+          {state.isRecording && state.sonnetCallCount > 0 && !valueBadge && (
+            <span className="shrink-0 inline-flex items-center gap-1 rounded-full bg-orange-500/20 border border-orange-500/30 px-2 py-0.5 text-[10px] font-medium text-orange-400">
+              <span className="h-1.5 w-1.5 rounded-full bg-orange-400 animate-pulse" />
+              {state.sonnetCallCount}
+            </span>
+          )}
 
           {/* Stats */}
           {state.isRecording && (
@@ -481,17 +524,15 @@ export default function RecordPage() {
         {showDebug && <DebugDashboard state={state} />}
       </div>
 
-      {/* ──────────── Bottom: Control Bar (Glass) ──────────── */}
-      <div className="flex-shrink-0 border-t border-gray-700/50 bg-gray-800/90 backdrop-blur-xl">
+      {/* ──────────── Bottom: Control Bar (Glass) — iOS-style fixed bottom bar ──────────── */}
+      {/* Layout mirrors iOS RecordingOverlay: [status content left] [spacer] [buttons right] */}
+      {/* sticky bottom-0 ensures this bar stays visible even if the outer container overflows */}
+      <div className="flex-shrink-0 sticky bottom-0 z-10 border-t border-gray-700/50 bg-gray-800/90 backdrop-blur-xl">
         <div className="flex items-center gap-4 px-4 py-3">
-          {/* Left: VAD + Waveform */}
+          {/* Left: Status content (mirrors iOS geminiStatusContent — VAD, waveform, connection) */}
           <div className="flex items-center gap-3">
             <VADIndicator isSpeaking={state.isSpeaking} isRecording={state.isRecording} />
             <WaveformBars isSpeaking={state.isSpeaking} isRecording={state.isRecording} />
-          </div>
-
-          {/* Center: Status + Connection */}
-          <div className="flex-1 flex items-center justify-center gap-3">
             <ConnectionBadge state={state.connectionState} />
             {state.isRecording && (
               <span className="text-sm font-mono text-gray-400">
@@ -499,17 +540,20 @@ export default function RecordPage() {
               </span>
             )}
             {state.error && (
-              <span className="text-xs text-red-400 truncate max-w-[200px]">{state.error}</span>
+              <span className="text-xs text-red-400 truncate max-w-[180px]">{state.error}</span>
             )}
           </div>
 
-          {/* Right: Action buttons */}
+          {/* Spacer (mirrors iOS Spacer() between status and buttons) */}
+          <div className="flex-1" />
+
+          {/* Right: All action buttons (mirrors iOS HStack button order) */}
           <div className="flex items-center gap-2">
-            {/* Debug toggle */}
+            {/* Debug toggle — h-11 w-11 (44px, close to iOS 48pt small button) */}
             <button
               onClick={() => setShowDebug(!showDebug)}
               className={cn(
-                'rounded-full p-2 text-xs transition-colors',
+                'flex items-center justify-center rounded-full h-11 w-11 transition-colors',
                 showDebug
                   ? 'bg-red-500/20 text-red-400 border border-red-500/30'
                   : 'text-gray-500 hover:text-gray-300 hover:bg-gray-700/50'
@@ -519,35 +563,35 @@ export default function RecordPage() {
               <Activity className="h-4 w-4" />
             </button>
 
-            {/* Companion mic link */}
+            {/* Companion mic link — circular, matches iOS small button sizing */}
             <a
               href="/mic"
               target="_blank"
-              className="rounded-full p-2 text-gray-500 hover:text-cyan-400 hover:bg-cyan-500/10 transition-colors"
+              className="flex items-center justify-center rounded-full h-11 w-11 text-gray-500 hover:text-cyan-400 hover:bg-cyan-500/10 transition-colors"
               title="Open phone companion mic"
             >
               <Smartphone className="h-4 w-4" />
             </a>
 
-            {/* Stop button (only when recording) */}
+            {/* End Session button — circular, mirrors iOS glassCircleEffect(tint: .red) */}
             {state.isRecording && (
               <button
                 onClick={handleStop}
-                className="flex items-center gap-1.5 rounded-lg bg-red-500/20 border border-red-500/30 px-3 py-2 text-xs font-medium text-red-400 hover:bg-red-500/30 transition-colors"
+                className="flex items-center justify-center rounded-full h-11 w-11 bg-red-500/20 border border-red-500/30 text-red-400 hover:bg-red-500/30 transition-colors"
+                title="End recording session"
               >
-                <Square className="h-3.5 w-3.5" />
-                End
+                <Square className="h-4 w-4" />
               </button>
             )}
 
-            {/* Main record button */}
+            {/* Main record button — h-14 w-14 (56px), mirrors iOS recordButtonSize: 56pt portrait */}
             <button
               onClick={state.isRecording ? handleStop : handleStart}
               className={cn(
-                'flex items-center justify-center rounded-full transition-all duration-200 shadow-lg',
+                'flex items-center justify-center rounded-full h-14 w-14 transition-all duration-200 shadow-lg',
                 state.isRecording
-                  ? 'h-14 w-14 bg-gradient-to-br from-orange-500 to-red-500 hover:from-orange-600 hover:to-red-600 shadow-red-500/25'
-                  : 'h-14 w-14 bg-gradient-to-br from-green-500 to-emerald-500 hover:from-green-600 hover:to-emerald-600 shadow-green-500/25'
+                  ? 'bg-gradient-to-br from-orange-500 to-red-500 hover:from-orange-600 hover:to-red-600 shadow-red-500/25'
+                  : 'bg-gradient-to-br from-green-500 to-emerald-500 hover:from-green-600 hover:to-emerald-600 shadow-green-500/25'
               )}
             >
               {state.isRecording ? (
