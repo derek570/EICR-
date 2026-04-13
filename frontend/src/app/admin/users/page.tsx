@@ -89,6 +89,7 @@ export default function AdminUsersPage() {
   const [resetting, setResetting] = useState(false);
 
   const form = useForm<CreateUserForm>({
+    // @ts-expect-error -- zod v4.3.x / @hookform/resolvers v5 version skew; works at runtime
     resolver: zodResolver(createUserSchema),
     defaultValues: { email: '', name: '', password: '', company_name: '' },
   });

@@ -198,7 +198,7 @@ export default function DashboardPage() {
       try {
         const jobsList = await api.getJobs(currentUser.id);
         const mergedJobs = await mergeJobsRef.current(jobsList, currentUser.id);
-        prevJobsRef.current = new Map(mergedJobs.map((j) => [j.id, j.status]));
+        prevJobsRef.current = new Map(mergedJobs.map((j) => [j.id, j.status ?? '']));
         setJobs(mergedJobs);
       } catch (err) {
         console.error('Failed to refresh after job:completed', err);
@@ -221,7 +221,7 @@ export default function DashboardPage() {
       try {
         const jobsList = await api.getJobs(currentUser.id);
         const mergedJobs = await mergeJobsRef.current(jobsList, currentUser.id);
-        prevJobsRef.current = new Map(mergedJobs.map((j) => [j.id, j.status]));
+        prevJobsRef.current = new Map(mergedJobs.map((j) => [j.id, j.status ?? '']));
         setJobs(mergedJobs);
       } catch (err) {
         console.error('Failed to refresh after job:failed', err);
@@ -273,7 +273,7 @@ export default function DashboardPage() {
           }
         });
 
-        prevJobsRef.current = new Map(mergedJobs.map((j) => [j.id, j.status]));
+        prevJobsRef.current = new Map(mergedJobs.map((j) => [j.id, j.status ?? '']));
         setJobs(mergedJobs);
       } catch (error) {
         console.error('Fallback poll failed:', error);
@@ -286,7 +286,7 @@ export default function DashboardPage() {
   // Initialize previous job statuses when jobs first load
   useEffect(() => {
     if (jobs.length > 0) {
-      prevJobsRef.current = new Map(jobs.map((j) => [j.id, j.status]));
+      prevJobsRef.current = new Map(jobs.map((j) => [j.id, j.status ?? '']));
     }
   }, []);
 

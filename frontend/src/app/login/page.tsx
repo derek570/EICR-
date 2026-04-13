@@ -33,6 +33,7 @@ export default function LoginPage() {
   const [isLoading, setIsLoading] = useState(false);
 
   const form = useForm<LoginForm>({
+    // @ts-expect-error -- zod v4.3.x / @hookform/resolvers v5 version skew; works at runtime
     resolver: zodResolver(loginSchema),
     defaultValues: {
       email: '',

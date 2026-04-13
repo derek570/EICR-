@@ -18,6 +18,7 @@ import { normalise } from '../lib/recording/number-normaliser';
 import { generateKeywordBoosts } from '../lib/recording/keyword-boost-generator';
 import { useRecordingStore } from '../lib/recording-store';
 import type { ServerCostUpdate as StoreCostUpdate } from '../lib/recording-store';
+import { useJobStore } from '../lib/store';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -244,10 +245,14 @@ export function useRecording(jobId: string, userId: string, initialJob: JobDetai
   // --- Apply Sonnet readings to job ---
   const applySonnetReadings = useCallback(
     (result: RollingExtractionResult) => {
-      const job = jobRef.current;
+      // Read from Zustand's synchronous getState() so we always have the latest job,
+      // even if the user typed in a form field since the last render cycle.
+      // jobRef.current is only updated via useEffect (async, after render) so it can
+      // lag behind Zustand — using getState() here is the same fix applied to web/.
+      const job = useJobStore.getState().currentJob ?? jobRef.current;
       if (!job) {
         console.warn(
-          '[useRecording] applySonnetReadings: jobRef is null — extraction results discarded'
+          '[useRecording] applySonnetReadings: job is null — extraction results discarded'
         );
         return;
       }
