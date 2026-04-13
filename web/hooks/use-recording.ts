@@ -33,6 +33,7 @@ import { api } from '@/lib/api-client';
 import { getToken } from '@/lib/auth';
 import { applyDefaultsToCircuit } from '@/lib/apply-defaults';
 import { useJobStore } from '@/lib/store';
+import { useRecordingSessionStore } from '@/lib/recording-session-store';
 import type {
   JobDetail,
   Circuit,
@@ -191,7 +192,9 @@ export function useRecording(
   // State
   const [isRecording, setIsRecording] = useState(false);
   const [connectionState, setConnectionState] = useState<DeepgramConnectionState>('disconnected');
-  const [transcript, setTranscript] = useState('');
+  const [transcript, setTranscript] = useState(
+    () => useRecordingSessionStore.getState().transcript
+  );
   const [interimTranscript, setInterimTranscript] = useState('');
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [isTTSSpeaking, setIsTTSSpeaking] = useState(false);
@@ -227,7 +230,7 @@ export function useRecording(
   const wakeLock = useRef<WakeLockSentinel | null>(null);
 
   // Mutable state refs (avoid stale closures)
-  const transcriptRef = useRef('');
+  const transcriptRef = useRef(useRecordingSessionStore.getState().transcript);
   const previousTranscriptRef = useRef('');
   const fieldSourcesRef = useRef<Record<string, 'regex' | 'sonnet' | 'preExisting'>>({});
   const jobRef = useRef<JobDetail | null>(null);
@@ -783,6 +786,7 @@ export function useRecording(
         regexMatchCountRef.current = 0;
         discrepancyCountRef.current = 0;
         setTranscript('');
+        useRecordingSessionStore.getState().clearTranscript();
         setInterimTranscript('');
         setRegexMatchCount(0);
         setSonnetCallCount(0);
@@ -831,6 +835,7 @@ export function useRecording(
             const normalised = normalise(text);
             transcriptRef.current += (transcriptRef.current ? ' ' : '') + normalised;
             setTranscript(transcriptRef.current);
+            useRecordingSessionStore.getState().setTranscript(transcriptRef.current);
 
             debugLogger.current.info('deepgram', 'transcript_utterance', {
               text: normalised,
