@@ -5,7 +5,6 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import {
   BarChart3,
-  Mic,
   Building2,
   Zap,
   Cpu,
@@ -27,10 +26,9 @@ interface Tab {
   icon: LucideIcon;
 }
 
-// EICR tabs (10 tabs — matching iOS DashboardView)
+// EICR tabs (9 tabs — Record accessed via Overview CTA, not sidebar)
 const eicrTabs: Tab[] = [
   { name: 'Overview', href: '', icon: BarChart3 },
-  { name: 'Record', href: '/record', icon: Mic },
   { name: 'Installation', href: '/installation', icon: Building2 },
   { name: 'Supply', href: '/supply', icon: Zap },
   { name: 'Board', href: '/board', icon: Cpu },
@@ -41,10 +39,9 @@ const eicrTabs: Tab[] = [
   { name: 'PDF', href: '/pdf', icon: FileText },
 ];
 
-// EIC tabs (12 tabs — matching iOS DashboardView)
+// EIC tabs (11 tabs — Record accessed via Overview CTA, not sidebar)
 const eicTabs: Tab[] = [
   { name: 'Overview', href: '', icon: BarChart3 },
-  { name: 'Record', href: '/record', icon: Mic },
   { name: 'Installation', href: '/installation', icon: Building2 },
   { name: 'Supply', href: '/supply', icon: Zap },
   { name: 'Board', href: '/board', icon: Cpu },
