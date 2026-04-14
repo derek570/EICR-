@@ -25,6 +25,7 @@ import { applyDefaultsToCircuits } from '@/lib/apply-defaults';
 import { LiveCircuitGrid } from '@/components/recording/live-circuit-grid';
 import { AlertCard } from '@/components/recording/alert-card';
 import { DebugDashboard } from '@/components/recording/debug-dashboard';
+import type { Circuit } from '@/lib/types';
 import { cn } from '@/lib/utils';
 import type { TranscriptHighlight } from '@/hooks/use-recording';
 import {
@@ -424,7 +425,7 @@ export default function RecordPage() {
     }
   }, [user, job, updateJob]);
 
-  // iOS-parity: CCU board photo capture & analysis
+  // iOS-parity: CCU board photo capture & analysis — applies circuits, board_info, and supply
   const handleCcuFile = useCallback(
     async (e: React.ChangeEvent<HTMLInputElement>) => {
       const file = e.target.files?.[0];
@@ -432,6 +433,10 @@ export default function RecordPage() {
       toast.info('Analyzing CCU photo...');
       try {
         const result = await api.analyzeCcu(file);
+        const updates: Partial<typeof job> = {};
+        const parts: string[] = [];
+
+        // Map and append circuits
         if (result.circuits?.length) {
           const existing = job?.circuits || [];
           const mapped = result.circuits.map((c, i) => ({
@@ -444,12 +449,35 @@ export default function RecordPage() {
             rcd_bs_en: c.rcd_bs_en || undefined,
             rcd_operating_current_ma: c.rcd_rating_ma || undefined,
           }));
-          updateJob({ circuits: [...existing, ...mapped] });
-          toast.success(
-            `Found ${result.circuits.length} circuit${result.circuits.length !== 1 ? 's' : ''} from CCU`
-          );
+          updates.circuits = [...existing, ...mapped];
+          parts.push(`${result.circuits.length} circuits`);
+        }
+
+        // Apply board info (manufacturer, model, main switch details)
+        const boardUpdates: Record<string, string> = {};
+        if (result.board_manufacturer) boardUpdates.manufacturer = result.board_manufacturer;
+        if (result.board_model) boardUpdates.name = result.board_model;
+        if (result.main_switch_rating) boardUpdates.rated_current = result.main_switch_rating;
+        if (result.main_switch_bs_en) boardUpdates.main_switch_bs_en = result.main_switch_bs_en;
+        if (result.spd_present !== undefined)
+          boardUpdates.spd_status = result.spd_present ? 'Fitted' : 'Not Fitted';
+        if (result.spd_type) boardUpdates.spd_type = result.spd_type;
+
+        if (Object.keys(boardUpdates).length > 0) {
+          const existing = job?.board_info || {};
+          const merged = { ...existing };
+          for (const [key, value] of Object.entries(boardUpdates)) {
+            if (value) (merged as Record<string, unknown>)[key] = value;
+          }
+          updates.board_info = merged as typeof job.board_info;
+          parts.push('board info');
+        }
+
+        if (Object.keys(updates).length > 0) {
+          updateJob(updates);
+          toast.success(`CCU: found ${parts.join(', ')}`);
         } else {
-          toast.info('No circuits detected in photo');
+          toast.info('No data detected in photo');
         }
       } catch {
         toast.error('CCU analysis failed');
@@ -459,36 +487,127 @@ export default function RecordPage() {
     [job, updateJob]
   );
 
-  // iOS-parity: Observation photo upload
+  // iOS-parity: Observation photo capture — uploads photo AND creates observation entry
   const handleObsFile = useCallback(
     async (e: React.ChangeEvent<HTMLInputElement>) => {
       const file = e.target.files?.[0];
       if (!file || !user || !job) return;
       try {
-        await api.uploadJobPhoto(user.id, job.id, file);
-        toast.success('Observation photo uploaded');
+        const result = await api.uploadJobPhoto(user.id, job.id, file);
+        const photoFilename = result.photo?.filename || '';
+
+        // Create a new observation entry with the photo attached (matches iOS behavior)
+        const newObs = {
+          code: 'C3' as const,
+          item_location: '',
+          observation_text: '',
+          schedule_item: '',
+          photos: photoFilename ? [photoFilename] : [],
+        };
+        const existing = job.observations || [];
+        updateJob({ observations: [...existing, newObs] });
+        toast.success('Observation added with photo');
       } catch {
-        toast.error('Photo upload failed');
+        toast.error('Observation photo failed');
       }
       e.target.value = '';
     },
-    [user, job]
+    [user, job, updateJob]
   );
 
-  // iOS-parity: Document photo extraction
+  // iOS-parity: Document photo extraction — calls /api/analyze-document and applies extracted data
   const handleDocFile = useCallback(
     async (e: React.ChangeEvent<HTMLInputElement>) => {
       const file = e.target.files?.[0];
       if (!file || !user || !job) return;
+      toast.info('Extracting data from document...');
       try {
-        await api.uploadJobPhoto(user.id, job.id, file);
-        toast.success('Document photo uploaded');
+        const result = await api.analyzeDocument(file);
+        if (!result.success || !result.formData) {
+          toast.error('Document extraction returned no data');
+          e.target.value = '';
+          return;
+        }
+        const { formData } = result;
+        const updates: Partial<typeof job> = {};
+
+        // Merge installation details (only fill non-empty values)
+        if (
+          formData.installation_details &&
+          Object.keys(formData.installation_details).length > 0
+        ) {
+          const existing = job.installation_details || {};
+          const merged = { ...existing };
+          for (const [key, value] of Object.entries(formData.installation_details)) {
+            if (value) (merged as Record<string, unknown>)[key] = value;
+          }
+          updates.installation_details = merged as typeof job.installation_details;
+        }
+
+        // Merge supply characteristics
+        if (
+          formData.supply_characteristics &&
+          Object.keys(formData.supply_characteristics).length > 0
+        ) {
+          const existing = job.supply_characteristics || {};
+          const merged = { ...existing };
+          for (const [key, value] of Object.entries(formData.supply_characteristics)) {
+            if (value) (merged as Record<string, unknown>)[key] = value;
+          }
+          updates.supply_characteristics = merged as typeof job.supply_characteristics;
+        }
+
+        // Merge board info
+        if (formData.board_info && Object.keys(formData.board_info).length > 0) {
+          const existing = job.board_info || {};
+          const merged = { ...existing };
+          for (const [key, value] of Object.entries(formData.board_info)) {
+            if (value) (merged as Record<string, unknown>)[key] = value;
+          }
+          updates.board_info = merged as typeof job.board_info;
+        }
+
+        // Append extracted circuits (cast from API response to Circuit type)
+        if (formData.circuits?.length) {
+          const existing = job.circuits || [];
+          const mapped = formData.circuits.map((c) => ({
+            circuit_ref: c.circuit_ref || '',
+            circuit_designation: c.circuit_designation || '',
+            ...c,
+          })) as Circuit[];
+          updates.circuits = [...existing, ...mapped];
+        }
+
+        // Append extracted observations
+        if (formData.observations?.length) {
+          const existing = job.observations || [];
+          const newObs = formData.observations.map((o) => ({
+            code: (o.code || 'C3') as 'C1' | 'C2' | 'C3' | 'FI' | 'NC',
+            observation_text: o.observation_text || '',
+            item_location: o.item_location || '',
+            schedule_item: o.schedule_item || '',
+            regulation: o.regulation || '',
+            photos: [],
+          }));
+          updates.observations = [...existing, ...newObs];
+        }
+
+        updateJob(updates);
+
+        const parts: string[] = [];
+        if (formData.circuits?.length) parts.push(`${formData.circuits.length} circuits`);
+        if (formData.observations?.length)
+          parts.push(`${formData.observations.length} observations`);
+        if (Object.keys(formData.installation_details || {}).length) parts.push('installation');
+        if (Object.keys(formData.supply_characteristics || {}).length) parts.push('supply');
+        if (Object.keys(formData.board_info || {}).length) parts.push('board');
+        toast.success(`Extracted: ${parts.join(', ') || 'no data found'}`);
       } catch {
-        toast.error('Document upload failed');
+        toast.error('Document extraction failed');
       }
       e.target.value = '';
     },
-    [user, job]
+    [user, job, updateJob]
   );
 
   return (

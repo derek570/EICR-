@@ -12,10 +12,9 @@ import {
   ClipboardCheck,
   FileText,
   UserCheck,
-  Settings2,
   Ruler,
   PenTool,
-  Image,
+  Mic,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { CertificateType } from '@/lib/types';
@@ -26,32 +25,38 @@ interface TabItem {
   icon: React.ComponentType<{ className?: string }>;
 }
 
+/**
+ * Tab order matches iOS app exactly:
+ * EICR: Overview, Installation, Supply, Board, Circuits, Observations, Inspection, Staff, PDF
+ * + Record at top for quick access (iOS has recording overlay accessible from any tab)
+ *
+ * Photos and Defaults removed as standalone tabs — Photos are accessible from Observations,
+ * Defaults from the recording overlay bar.
+ */
 const eicrTabs: TabItem[] = [
+  { name: 'Record', href: '/record', icon: Mic },
   { name: 'Overview', href: '', icon: Home },
   { name: 'Installation', href: '/installation', icon: Building2 },
   { name: 'Supply', href: '/supply', icon: Zap },
   { name: 'Board', href: '/board', icon: CircuitBoard },
   { name: 'Circuits', href: '/circuits', icon: List },
   { name: 'Observations', href: '/observations', icon: AlertTriangle },
-  { name: 'Photos', href: '/photos', icon: Image },
   { name: 'Inspection', href: '/inspection', icon: ClipboardCheck },
-  { name: 'Defaults', href: '/defaults', icon: Settings2 },
-  { name: 'Inspector', href: '/inspector', icon: UserCheck },
+  { name: 'Staff', href: '/inspector', icon: UserCheck },
   { name: 'PDF', href: '/pdf', icon: FileText },
 ];
 
 const eicTabs: TabItem[] = [
+  { name: 'Record', href: '/record', icon: Mic },
   { name: 'Overview', href: '', icon: Home },
   { name: 'Installation', href: '/installation', icon: Building2 },
   { name: 'Extent & Type', href: '/extent', icon: Ruler },
   { name: 'Supply', href: '/supply', icon: Zap },
   { name: 'Board', href: '/board', icon: CircuitBoard },
   { name: 'Circuits', href: '/circuits', icon: List },
-  { name: 'Photos', href: '/photos', icon: Image },
   { name: 'Inspection', href: '/eic-inspection', icon: ClipboardCheck },
   { name: 'Design', href: '/design', icon: PenTool },
-  { name: 'Defaults', href: '/defaults', icon: Settings2 },
-  { name: 'Inspector', href: '/inspector', icon: UserCheck },
+  { name: 'Staff', href: '/inspector', icon: UserCheck },
   { name: 'PDF', href: '/pdf', icon: FileText },
 ];
 
@@ -71,6 +76,7 @@ export function JobTabNav({ jobId, certificateType }: JobTabNavProps) {
         const href = `${basePath}${tab.href}`;
         const isActive = pathname === href || (tab.href === '' && pathname === basePath);
         const Icon = tab.icon;
+        const isRecord = tab.name === 'Record';
 
         return (
           <Link
@@ -78,9 +84,13 @@ export function JobTabNav({ jobId, certificateType }: JobTabNavProps) {
             href={href}
             className={cn(
               'flex items-center gap-2.5 px-4 py-2 text-sm transition-colors mx-1 rounded-md',
-              isActive
-                ? 'bg-brand-blue/10 text-brand-blue font-medium'
-                : 'text-gray-400 hover:bg-white/5 hover:text-white'
+              isRecord &&
+                !isActive &&
+                'text-green-400 hover:bg-green-500/10 hover:text-green-300 font-medium',
+              isRecord && isActive && 'bg-green-500/20 text-green-400 font-semibold',
+              !isRecord && isActive && 'bg-brand-blue/10 text-brand-blue font-medium',
+              !isRecord && !isActive && 'text-gray-400 hover:bg-white/5 hover:text-white',
+              isRecord && 'mb-1'
             )}
           >
             <Icon className="h-4 w-4 flex-shrink-0" />

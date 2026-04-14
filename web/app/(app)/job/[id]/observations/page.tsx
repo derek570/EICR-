@@ -1,13 +1,56 @@
 'use client';
 
+import { useMemo } from 'react';
 import { useJobContext } from '../layout';
 import { ObservationCard } from '@/components/observations/observation-card';
 import { Button } from '@/components/ui/button';
-import { Plus } from 'lucide-react';
+import { Plus, AlertTriangle } from 'lucide-react';
+import { cn } from '@/lib/utils';
 import type { Observation } from '@/lib/types';
+
+/** iOS-parity summary badge component — matches C1/C2/C3/FI color scheme */
+function ObsBadge({
+  label,
+  count,
+  variant,
+}: {
+  label: string;
+  count: number;
+  variant: 'total' | 'c1' | 'c2' | 'c3' | 'fi';
+}) {
+  const colors = {
+    total: 'bg-white/10 text-white border-white/20',
+    c1: 'bg-red-500/15 text-red-400 border-red-500/30',
+    c2: 'bg-yellow-500/15 text-yellow-400 border-yellow-500/30',
+    c3: 'bg-blue-500/15 text-blue-400 border-blue-500/30',
+    fi: 'bg-green-500/15 text-green-400 border-green-500/30',
+  };
+  return (
+    <span
+      className={cn(
+        'inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-semibold tabular-nums',
+        colors[variant]
+      )}
+    >
+      <span className="text-[10px] opacity-70">{label}</span>
+      {count}
+    </span>
+  );
+}
 
 export default function ObservationsPage() {
   const { job, updateJob, user } = useJobContext();
+
+  const counts = useMemo(() => {
+    const obs = job.observations || [];
+    return {
+      total: obs.length,
+      c1: obs.filter((o) => o.code === 'C1').length,
+      c2: obs.filter((o) => o.code === 'C2').length,
+      c3: obs.filter((o) => o.code === 'C3').length,
+      fi: obs.filter((o) => o.code === 'FI').length,
+    };
+  }, [job.observations]);
 
   const handleObservationChange = (index: number, observation: Observation) => {
     const updated = [...job.observations];
@@ -52,12 +95,30 @@ export default function ObservationsPage() {
 
   return (
     <div className="p-6 space-y-4 max-w-4xl">
+      {/* Hero header — matches iOS Observations tab */}
       <div className="flex items-center justify-between">
-        <h2 className="text-lg font-semibold">Observations ({job.observations.length})</h2>
+        <div className="flex items-center gap-3">
+          <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-yellow-500/15">
+            <AlertTriangle className="h-5 w-5 text-yellow-400" />
+          </div>
+          <div>
+            <h2 className="text-lg font-semibold">Observations</h2>
+            <p className="text-xs text-gray-500">Defects, recommendations &amp; notes</p>
+          </div>
+        </div>
         <Button size="sm" onClick={addObservation}>
           <Plus className="h-4 w-4 mr-1" />
           Add Observation
         </Button>
+      </div>
+
+      {/* Summary badges — mirrors iOS C1/C2/C3/FI count badges */}
+      <div className="flex flex-wrap gap-2">
+        <ObsBadge label="Total" count={counts.total} variant="total" />
+        <ObsBadge label="C1" count={counts.c1} variant="c1" />
+        <ObsBadge label="C2" count={counts.c2} variant="c2" />
+        <ObsBadge label="C3" count={counts.c3} variant="c3" />
+        <ObsBadge label="FI" count={counts.fi} variant="fi" />
       </div>
 
       {job.observations.some((obs) => obs.schedule_item) && (

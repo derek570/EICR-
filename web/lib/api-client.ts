@@ -640,6 +640,36 @@ export const api = {
     return handleResponse(response);
   },
 
+  // ============= Document Extraction =============
+
+  async analyzeDocument(file: File): Promise<{
+    success: boolean;
+    formData: {
+      circuits: Array<Record<string, string>>;
+      observations: Array<{
+        code: string;
+        observation_text: string;
+        item_location?: string;
+        schedule_item?: string;
+        regulation?: string;
+      }>;
+      installation_details: Record<string, string>;
+      supply_characteristics: Record<string, string>;
+      board_info: Record<string, string>;
+    };
+  }> {
+    const token = getToken();
+    const formData = new FormData();
+    formData.append('photo', file);
+
+    const response = await fetch(`${API_BASE_URL}/api/analyze-document`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+      body: formData,
+    });
+    return handleResponse(response);
+  },
+
   // ============= CCU Photo Analysis =============
 
   async analyzeCcu(file: File): Promise<CCUAnalysisResult> {
