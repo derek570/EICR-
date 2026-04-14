@@ -5,7 +5,7 @@ import { useJobContext } from '../layout';
 import { CircuitTable } from '@/components/circuits/circuit-table';
 import { Button } from '@/components/ui/button';
 import Link from 'next/link';
-import { Plus, Trash2, Wand2, Loader2, Camera } from 'lucide-react';
+import { Plus, Trash2, Wand2, Loader2, Camera, Calculator, ArrowDownUp } from 'lucide-react';
 import type { Circuit, Board, JobDetail, UserDefaults } from '@/lib/types';
 import { api } from '@/lib/api-client';
 import { applyDefaultsToCircuit, applyDefaultsToCircuits } from '@/lib/apply-defaults';
@@ -113,6 +113,57 @@ export default function CircuitsPage() {
     }
   };
 
+  // iOS-parity: Reverse circuit order
+  const reverseCircuits = () => {
+    if (activeCircuits.length < 2) return;
+    updateBoardCircuits([...activeCircuits].reverse());
+    toast.success('Circuit order reversed');
+  };
+
+  // iOS-parity: Calculate Zs = Ze + R1+R2 for all circuits
+  const calculateZs = () => {
+    const ze = parseFloat(
+      job.board_info?.ze || job.supply_characteristics?.earth_loop_impedance_ze || ''
+    );
+    if (isNaN(ze)) {
+      toast.error('Ze not set — fill in Supply or Board first');
+      return;
+    }
+    let updated = 0;
+    const newCircuits = activeCircuits.map((c) => {
+      const r1r2 = parseFloat(c.r1_r2_ohm || '');
+      if (isNaN(r1r2)) return c;
+      const zs = (ze + r1r2).toFixed(2);
+      updated++;
+      return { ...c, measured_zs_ohm: zs };
+    });
+    updateBoardCircuits(newCircuits);
+    toast.success(`Calculated Zs for ${updated} circuit${updated !== 1 ? 's' : ''}`);
+  };
+
+  // iOS-parity: Calculate R1+R2 = Zs - Ze for all circuits
+  const calculateR1R2 = () => {
+    const ze = parseFloat(
+      job.board_info?.ze || job.supply_characteristics?.earth_loop_impedance_ze || ''
+    );
+    if (isNaN(ze)) {
+      toast.error('Ze not set — fill in Supply or Board first');
+      return;
+    }
+    let updated = 0;
+    const newCircuits = activeCircuits.map((c) => {
+      const zs = parseFloat(c.measured_zs_ohm || '');
+      if (isNaN(zs)) return c;
+      const r1r2 = Math.max(0, zs - ze).toFixed(2);
+      updated++;
+      return { ...c, r1_r2_ohm: r1r2 };
+    });
+    updateBoardCircuits(newCircuits);
+    toast.success(`Calculated R1+R2 for ${updated} circuit${updated !== 1 ? 's' : ''}`);
+  };
+
+  const [showCalcMenu, setShowCalcMenu] = useState(false);
+
   return (
     <div className="p-6 space-y-4">
       {/* Board selector for multi-board jobs */}
@@ -155,6 +206,50 @@ export default function CircuitsPage() {
               <Wand2 className="h-4 w-4 mr-1" />
             )}
             Apply Defaults
+          </Button>
+          {/* iOS-parity: Calculate menu */}
+          <div className="relative">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setShowCalcMenu(!showCalcMenu)}
+              disabled={activeCircuits.length === 0}
+            >
+              <Calculator className="h-4 w-4 mr-1" />
+              Calculate
+            </Button>
+            {showCalcMenu && (
+              <div className="absolute right-0 top-full mt-1 z-20 bg-card border border-white/10 rounded-md shadow-lg py-1 min-w-[200px]">
+                <button
+                  className="w-full text-left px-3 py-2 text-sm hover:bg-white/5 transition-colors"
+                  onClick={() => {
+                    calculateZs();
+                    setShowCalcMenu(false);
+                  }}
+                >
+                  Calculate Zs (Ze + R1+R2)
+                </button>
+                <button
+                  className="w-full text-left px-3 py-2 text-sm hover:bg-white/5 transition-colors"
+                  onClick={() => {
+                    calculateR1R2();
+                    setShowCalcMenu(false);
+                  }}
+                >
+                  Calculate R1+R2 (Zs − Ze)
+                </button>
+              </div>
+            )}
+          </div>
+          {/* iOS-parity: Reverse circuits */}
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={reverseCircuits}
+            disabled={activeCircuits.length < 2}
+          >
+            <ArrowDownUp className="h-4 w-4 mr-1" />
+            Reverse
           </Button>
           <Button
             variant="outline"

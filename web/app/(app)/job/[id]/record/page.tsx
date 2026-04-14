@@ -720,6 +720,65 @@ export default function RecordPage() {
           </div>
         )}
 
+        {/* Observations summary — iOS-parity: LiveFillView shows observations during recording */}
+        {showSections && (job.observations?.length ?? 0) > 0 && (
+          <div className="rounded-lg border border-gray-700/50 bg-gray-800/50 overflow-hidden">
+            <div className="flex items-center justify-between px-3 py-2 text-xs font-medium text-gray-300">
+              <span>
+                Observations <span className="text-gray-500">({job.observations.length})</span>
+              </span>
+              <div className="flex gap-2 text-[10px]">
+                {job.observations.filter((o) => o.code === 'C1').length > 0 && (
+                  <span className="text-red-400">
+                    C1: {job.observations.filter((o) => o.code === 'C1').length}
+                  </span>
+                )}
+                {job.observations.filter((o) => o.code === 'C2').length > 0 && (
+                  <span className="text-yellow-400">
+                    C2: {job.observations.filter((o) => o.code === 'C2').length}
+                  </span>
+                )}
+                {job.observations.filter((o) => o.code === 'C3').length > 0 && (
+                  <span className="text-blue-400">
+                    C3: {job.observations.filter((o) => o.code === 'C3').length}
+                  </span>
+                )}
+                {job.observations.filter((o) => o.code === 'FI').length > 0 && (
+                  <span className="text-green-400">
+                    FI: {job.observations.filter((o) => o.code === 'FI').length}
+                  </span>
+                )}
+              </div>
+            </div>
+            <div className="px-3 pb-2 space-y-1">
+              {job.observations.slice(0, 5).map((obs, i) => (
+                <div key={i} className="flex items-center gap-2 text-[11px]">
+                  <span
+                    className={cn(
+                      'shrink-0 w-6 text-center font-bold rounded text-[10px] py-0.5',
+                      obs.code === 'C1' && 'bg-red-500/20 text-red-400',
+                      obs.code === 'C2' && 'bg-yellow-500/20 text-yellow-400',
+                      obs.code === 'C3' && 'bg-blue-500/20 text-blue-400',
+                      obs.code === 'FI' && 'bg-green-500/20 text-green-400'
+                    )}
+                  >
+                    {obs.code}
+                  </span>
+                  <span className="text-gray-400 truncate">
+                    {obs.item_location && (
+                      <span className="text-gray-500">{obs.item_location}: </span>
+                    )}
+                    {obs.observation_text || 'No description'}
+                  </span>
+                </div>
+              ))}
+              {job.observations.length > 5 && (
+                <p className="text-[10px] text-gray-600">+ {job.observations.length - 5} more</p>
+              )}
+            </div>
+          </div>
+        )}
+
         {/* Live circuit grid */}
         <div>
           <div className="flex items-center justify-between mb-2">

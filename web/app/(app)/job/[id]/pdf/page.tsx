@@ -1,9 +1,9 @@
-"use client";
+'use client';
 
-import { useState } from "react";
-import { useJobContext } from "../layout";
-import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { useState, useMemo } from 'react';
+import { useJobContext } from '../layout';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import {
   FileText,
   Download,
@@ -15,10 +15,11 @@ import {
   CheckCircle,
   FileSpreadsheet,
   Table,
-} from "lucide-react";
-import { Input } from "@/components/ui/input";
-import { toast } from "sonner";
-import { api } from "@/lib/api-client";
+  AlertTriangle,
+} from 'lucide-react';
+import { Input } from '@/components/ui/input';
+import { toast } from 'sonner';
+import { api } from '@/lib/api-client';
 
 function isValidEmail(email: string): boolean {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
@@ -32,24 +33,56 @@ export default function PDFPage() {
 
   // Email form
   const [showEmailForm, setShowEmailForm] = useState(false);
-  const [emailTo, setEmailTo] = useState("");
-  const [emailClientName, setEmailClientName] = useState("");
+  const [emailTo, setEmailTo] = useState('');
+  const [emailClientName, setEmailClientName] = useState('');
   const [sendingEmail, setSendingEmail] = useState(false);
   const [emailSent, setEmailSent] = useState(false);
 
-  const isOffline = typeof navigator !== "undefined" && !navigator.onLine;
+  const isOffline = typeof navigator !== 'undefined' && !navigator.onLine;
+
+  // iOS-parity: Missing data warnings (matches iOS PDFTab missingDataWarnings)
+  const warnings = useMemo(() => {
+    const w: string[] = [];
+    const inst = job.installation_details;
+    if (!inst?.client_name) w.push('Client name is missing');
+    if (!inst?.address && !job.address) w.push('Installation address is missing');
+    if (!inst?.postcode) w.push('Postcode is missing');
+
+    const supply = job.supply_characteristics;
+    if (!supply?.earthing_arrangement) w.push('Earthing arrangement not set');
+    if (!supply?.earth_loop_impedance_ze) w.push('Ze (external earth loop impedance) not recorded');
+    if (!supply?.prospective_fault_current) w.push('Prospective fault current not recorded');
+
+    if (!job.circuits || job.circuits.length === 0) w.push('No circuits added');
+    else {
+      const emptyDesig = job.circuits.filter((c) => !c.circuit_designation).length;
+      if (emptyDesig > 0)
+        w.push(`${emptyDesig} circuit${emptyDesig > 1 ? 's' : ''} missing designation`);
+    }
+
+    if (!job.board_info?.manufacturer && !job.board_info?.name)
+      w.push('Board manufacturer/name not set');
+
+    return w;
+  }, [job]);
 
   const handleGenerate = async () => {
-    if (!user) { toast.error("Not logged in"); return; }
-    if (isOffline) { toast.error("PDF generation requires an internet connection"); return; }
+    if (!user) {
+      toast.error('Not logged in');
+      return;
+    }
+    if (isOffline) {
+      toast.error('PDF generation requires an internet connection');
+      return;
+    }
 
     setGenerating(true);
     try {
       const blob = await api.generatePdf(user.id, job.id);
-      const suggestedName = `EICR_${job.address.replace(/[^a-zA-Z0-9]/g, "_")}.pdf`;
+      const suggestedName = `EICR_${job.address.replace(/[^a-zA-Z0-9]/g, '_')}.pdf`;
 
       const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
+      const a = document.createElement('a');
       a.href = url;
       a.download = suggestedName;
       document.body.appendChild(a);
@@ -57,18 +90,24 @@ export default function PDFPage() {
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
 
-      toast.success("PDF downloaded");
+      toast.success('PDF downloaded');
     } catch (error) {
-      console.error("PDF generation failed:", error);
-      toast.error("Failed to generate PDF");
+      console.error('PDF generation failed:', error);
+      toast.error('Failed to generate PDF');
     } finally {
       setGenerating(false);
     }
   };
 
   const handleSendEmail = async () => {
-    if (!user) { toast.error("Not logged in"); return; }
-    if (!emailTo || !isValidEmail(emailTo)) { toast.error("Please enter a valid email address"); return; }
+    if (!user) {
+      toast.error('Not logged in');
+      return;
+    }
+    if (!emailTo || !isValidEmail(emailTo)) {
+      toast.error('Please enter a valid email address');
+      return;
+    }
 
     setSendingEmail(true);
     try {
@@ -76,36 +115,42 @@ export default function PDFPage() {
       setEmailSent(true);
       toast.success(`Certificate sent to ${emailTo}`);
     } catch (error) {
-      console.error("Email sending failed:", error);
-      toast.error("Failed to send email");
+      console.error('Email sending failed:', error);
+      toast.error('Failed to send email');
     } finally {
       setSendingEmail(false);
     }
   };
 
   const handleExportCSV = async () => {
-    if (!user) { toast.error("Not logged in"); return; }
+    if (!user) {
+      toast.error('Not logged in');
+      return;
+    }
     setExportingCSV(true);
     try {
       await api.exportCSV(user.id, job.id);
-      toast.success("CSV downloaded");
+      toast.success('CSV downloaded');
     } catch (error) {
-      console.error("CSV export failed:", error);
-      toast.error("Failed to export CSV");
+      console.error('CSV export failed:', error);
+      toast.error('Failed to export CSV');
     } finally {
       setExportingCSV(false);
     }
   };
 
   const handleExportExcel = async () => {
-    if (!user) { toast.error("Not logged in"); return; }
+    if (!user) {
+      toast.error('Not logged in');
+      return;
+    }
     setExportingExcel(true);
     try {
       await api.exportExcel(user.id, job.id);
-      toast.success("Excel workbook downloaded");
+      toast.success('Excel workbook downloaded');
     } catch (error) {
-      console.error("Excel export failed:", error);
-      toast.error("Failed to export Excel");
+      console.error('Excel export failed:', error);
+      toast.error('Failed to export Excel');
     } finally {
       setExportingExcel(false);
     }
@@ -115,10 +160,35 @@ export default function PDFPage() {
     <div className="p-6 space-y-6 max-w-3xl">
       <h2 className="text-lg font-semibold">PDF Certificate</h2>
 
+      {/* iOS-parity: Missing data warnings */}
+      {warnings.length > 0 && (
+        <Card className="border-amber-500/30 bg-amber-500/5">
+          <CardHeader className="pb-2">
+            <CardTitle className="flex items-center gap-2 text-amber-400 text-base">
+              <AlertTriangle className="h-4 w-4" />
+              Missing Data ({warnings.length})
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <ul className="space-y-1">
+              {warnings.map((w, i) => (
+                <li key={i} className="text-sm text-amber-300/80 flex items-start gap-2">
+                  <span className="text-amber-500 mt-0.5">•</span>
+                  {w}
+                </li>
+              ))}
+            </ul>
+          </CardContent>
+        </Card>
+      )}
+
       {/* Generate PDF */}
       <Card>
         <CardHeader>
-          <CardTitle className="flex items-center gap-2"><FileText className="h-5 w-5" />Generate Certificate</CardTitle>
+          <CardTitle className="flex items-center gap-2">
+            <FileText className="h-5 w-5" />
+            Generate Certificate
+          </CardTitle>
           <CardDescription>Generate the EICR/EIC certificate PDF for {job.address}</CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
@@ -138,9 +208,15 @@ export default function PDFPage() {
           )}
           <Button onClick={handleGenerate} disabled={generating || isOffline} className="w-full">
             {generating ? (
-              <><Loader2 className="h-4 w-4 mr-2 animate-spin" />Generating...</>
+              <>
+                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                Generating...
+              </>
             ) : (
-              <><Download className="h-4 w-4 mr-2" />Generate PDF</>
+              <>
+                <Download className="h-4 w-4 mr-2" />
+                Generate PDF
+              </>
             )}
           </Button>
           {generating && (
@@ -152,13 +228,22 @@ export default function PDFPage() {
       {/* Email */}
       <Card>
         <CardHeader>
-          <CardTitle className="flex items-center gap-2"><Mail className="h-5 w-5" />Send by Email</CardTitle>
+          <CardTitle className="flex items-center gap-2">
+            <Mail className="h-5 w-5" />
+            Send by Email
+          </CardTitle>
           <CardDescription>Email the certificate PDF directly to your client</CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           {!showEmailForm ? (
-            <Button onClick={() => setShowEmailForm(true)} disabled={isOffline} variant="outline" className="w-full">
-              <Mail className="h-4 w-4 mr-2" />Send by Email
+            <Button
+              onClick={() => setShowEmailForm(true)}
+              disabled={isOffline}
+              variant="outline"
+              className="w-full"
+            >
+              <Mail className="h-4 w-4 mr-2" />
+              Send by Email
             </Button>
           ) : emailSent ? (
             <div className="space-y-3">
@@ -167,10 +252,25 @@ export default function PDFPage() {
                 <span>Certificate sent to {emailTo}</span>
               </div>
               <div className="flex gap-2">
-                <Button onClick={() => { setEmailSent(false); setEmailTo(""); setEmailClientName(""); }} variant="outline" className="flex-1">
+                <Button
+                  onClick={() => {
+                    setEmailSent(false);
+                    setEmailTo('');
+                    setEmailClientName('');
+                  }}
+                  variant="outline"
+                  className="flex-1"
+                >
                   Send to Another
                 </Button>
-                <Button onClick={() => { setShowEmailForm(false); setEmailSent(false); setEmailTo(""); }} variant="ghost">
+                <Button
+                  onClick={() => {
+                    setShowEmailForm(false);
+                    setEmailSent(false);
+                    setEmailTo('');
+                  }}
+                  variant="ghost"
+                >
                   Done
                 </Button>
               </div>
@@ -179,17 +279,53 @@ export default function PDFPage() {
             <div className="space-y-3">
               <div className="space-y-1.5">
                 <label className="text-sm font-medium">Recipient Email</label>
-                <Input type="email" placeholder="client@example.com" value={emailTo} onChange={(e) => setEmailTo(e.target.value)} disabled={sendingEmail} />
+                <Input
+                  type="email"
+                  placeholder="client@example.com"
+                  value={emailTo}
+                  onChange={(e) => setEmailTo(e.target.value)}
+                  disabled={sendingEmail}
+                />
               </div>
               <div className="space-y-1.5">
-                <label className="text-sm font-medium">Client Name <span className="text-xs text-gray-500">(optional)</span></label>
-                <Input placeholder="e.g. Mrs Smith" value={emailClientName} onChange={(e) => setEmailClientName(e.target.value)} disabled={sendingEmail} />
+                <label className="text-sm font-medium">
+                  Client Name <span className="text-xs text-gray-500">(optional)</span>
+                </label>
+                <Input
+                  placeholder="e.g. Mrs Smith"
+                  value={emailClientName}
+                  onChange={(e) => setEmailClientName(e.target.value)}
+                  disabled={sendingEmail}
+                />
               </div>
               <div className="flex gap-2">
-                <Button onClick={handleSendEmail} disabled={sendingEmail || !emailTo || !isValidEmail(emailTo)} className="flex-1">
-                  {sendingEmail ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" />Sending...</> : <><Send className="h-4 w-4 mr-2" />Send Certificate</>}
+                <Button
+                  onClick={handleSendEmail}
+                  disabled={sendingEmail || !emailTo || !isValidEmail(emailTo)}
+                  className="flex-1"
+                >
+                  {sendingEmail ? (
+                    <>
+                      <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                      Sending...
+                    </>
+                  ) : (
+                    <>
+                      <Send className="h-4 w-4 mr-2" />
+                      Send Certificate
+                    </>
+                  )}
                 </Button>
-                <Button onClick={() => { setShowEmailForm(false); setEmailTo(""); }} variant="ghost" disabled={sendingEmail}>Cancel</Button>
+                <Button
+                  onClick={() => {
+                    setShowEmailForm(false);
+                    setEmailTo('');
+                  }}
+                  variant="ghost"
+                  disabled={sendingEmail}
+                >
+                  Cancel
+                </Button>
               </div>
             </div>
           )}
@@ -199,16 +335,49 @@ export default function PDFPage() {
       {/* Export Data */}
       <Card>
         <CardHeader>
-          <CardTitle className="flex items-center gap-2"><FileSpreadsheet className="h-5 w-5" />Export Data</CardTitle>
+          <CardTitle className="flex items-center gap-2">
+            <FileSpreadsheet className="h-5 w-5" />
+            Export Data
+          </CardTitle>
           <CardDescription>Download job data as CSV or Excel</CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="flex gap-2">
-            <Button onClick={handleExportCSV} disabled={exportingCSV || isOffline} variant="outline" className="flex-1">
-              {exportingCSV ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" />Exporting...</> : <><Table className="h-4 w-4 mr-2" />Export CSV</>}
+            <Button
+              onClick={handleExportCSV}
+              disabled={exportingCSV || isOffline}
+              variant="outline"
+              className="flex-1"
+            >
+              {exportingCSV ? (
+                <>
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  Exporting...
+                </>
+              ) : (
+                <>
+                  <Table className="h-4 w-4 mr-2" />
+                  Export CSV
+                </>
+              )}
             </Button>
-            <Button onClick={handleExportExcel} disabled={exportingExcel || isOffline} variant="outline" className="flex-1">
-              {exportingExcel ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" />Exporting...</> : <><FileSpreadsheet className="h-4 w-4 mr-2" />Export Excel</>}
+            <Button
+              onClick={handleExportExcel}
+              disabled={exportingExcel || isOffline}
+              variant="outline"
+              className="flex-1"
+            >
+              {exportingExcel ? (
+                <>
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  Exporting...
+                </>
+              ) : (
+                <>
+                  <FileSpreadsheet className="h-4 w-4 mr-2" />
+                  Export Excel
+                </>
+              )}
             </Button>
           </div>
         </CardContent>

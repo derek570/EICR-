@@ -146,6 +146,7 @@ export interface InstallationDetails {
   client_postcode?: string;
   client_phone?: string;
   client_email?: string;
+  occupier_name?: string;
   premises_description: string;
   installation_records_available: boolean;
   evidence_of_additions_alterations: boolean;
@@ -201,6 +202,9 @@ export interface SupplyCharacteristics {
   bonding_lightning?: string;
   bonding_other?: string;
   bonding_other_na?: boolean;
+  electrode_type?: string;
+  electrode_resistance?: string;
+  electrode_location?: string;
 }
 
 // ============= Inspection Schedule =============
