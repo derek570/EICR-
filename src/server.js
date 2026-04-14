@@ -64,6 +64,7 @@ httpServer.on('upgrade', (request, socket, head) => {
       token = url.searchParams.get('token') || '';
     }
     if (!token) {
+      socket.write('HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n');
       socket.destroy();
       return;
     }
@@ -71,6 +72,9 @@ httpServer.on('upgrade', (request, socket, head) => {
       try {
         const decoded = await auth.verifyToken(token);
         if (!decoded) {
+          socket.write(
+            'HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n'
+          );
           socket.destroy();
           return;
         }
@@ -80,6 +84,7 @@ httpServer.on('upgrade', (request, socket, head) => {
         });
       } catch (e) {
         logger.error('SonnetStream auth failed', { error: e.message });
+        socket.write('HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n');
         socket.destroy();
       }
     })();

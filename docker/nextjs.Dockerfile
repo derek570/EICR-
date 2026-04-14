@@ -7,7 +7,7 @@ FROM node:20-alpine AS builder
 WORKDIR /app
 
 ARG APP_DIR
-ARG NEXT_PUBLIC_API_URL=https://certomatic3000.co.uk
+ARG NEXT_PUBLIC_API_URL=https://api.certmate.uk
 
 # Copy workspace root package files for workspace resolution
 COPY package.json package-lock.json ./
