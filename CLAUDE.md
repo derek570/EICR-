@@ -73,25 +73,47 @@ npm run lint                       # ESLint
 npm run format                     # Prettier
 ```
 
-### Deploy Backend
+### Deploy (CI/CD via GitHub Actions)
 
-> Replace `<ACCOUNT_ID>` with your AWS Account ID.
+**Primary method:** Push to `main` triggers automatic deployment via `.github/workflows/deploy.yml`.
 
-```bash
-docker build -f docker/backend.Dockerfile -t eicr-backend .
-aws ecr get-login-password --region eu-west-2 | docker login --username AWS --password-stdin <ACCOUNT_ID>.dkr.ecr.eu-west-2.amazonaws.com
-docker tag eicr-backend:latest <ACCOUNT_ID>.dkr.ecr.eu-west-2.amazonaws.com/eicr-backend:latest
-docker push <ACCOUNT_ID>.dkr.ecr.eu-west-2.amazonaws.com/eicr-backend:latest
-aws ecs update-service --cluster eicr-cluster-production --service eicr-backend --force-new-deployment --region eu-west-2
+```
+git push origin main
+→ GitHub Actions: test → build Docker images (ARM64) → push to ECR → deploy to ECS
+→ ~30 minutes end-to-end
+→ certmate.uk goes live automatically
 ```
 
-Or just say: **"deploy"** or **"push to cloud"**. Changes go live in ~2 minutes.
+**Pipeline steps:**
+1. **test-backend** — Jest tests (Node.js)
+2. **test-frontend** — ESLint, TypeScript check, Next.js build, Jest
+3. **security-audit** — npm audit (high/critical)
+4. **build-images** — Docker build (ARM64) + Trivy security scan
+5. **deploy** — Push to ECR, register ECS task definitions, update services, wait for stable
+
+**Manual trigger (selective deploy):**
+```bash
+gh workflow run deploy.yml -f deploy_target=backend -f environment=production
+gh workflow run deploy.yml -f deploy_target=frontend -f environment=production
+gh workflow run deploy.yml -f deploy_target=both -f environment=production
+```
+
+**Local quick-deploy (bypasses CI):**
+```bash
+./deploy.sh              # Frontend only
+./deploy.sh --backend    # Frontend + backend
+```
+
+**Monitor:** `https://github.com/derek570/EICR-/actions`
+
+**Common failure:** Missing npm dependencies in `frontend/package.json`. Locally-hoisted deps work on dev but fail in Docker (`npm ci` only installs declared deps). Before pushing, verify all imports have matching `package.json` entries.
 
 ### Check Status
 
 ```bash
 aws ecs describe-services --cluster eicr-cluster-production --services eicr-frontend eicr-backend --region eu-west-2 --query "services[*].{Service:serviceName,Running:runningCount,Status:deployments[0].rolloutState}" --output table
 aws logs tail /ecs/eicr/eicr-backend --region eu-west-2 --since 10m
+gh run list --limit 5     # Recent CI/CD runs
 ```
 
 ## iOS Recording Pipeline (v3)
