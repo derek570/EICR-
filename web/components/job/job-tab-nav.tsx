@@ -15,6 +15,7 @@ import {
   Ruler,
   PenTool,
   Mic,
+  History,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { CertificateType } from '@/lib/types';
@@ -43,6 +44,7 @@ const eicrTabs: TabItem[] = [
   { name: 'Observations', href: '/observations', icon: AlertTriangle },
   { name: 'Inspection', href: '/inspection', icon: ClipboardCheck },
   { name: 'Staff', href: '/inspector', icon: UserCheck },
+  { name: 'History', href: '/history', icon: History },
   { name: 'PDF', href: '/pdf', icon: FileText },
 ];
 
@@ -57,6 +59,7 @@ const eicTabs: TabItem[] = [
   { name: 'Inspection', href: '/eic-inspection', icon: ClipboardCheck },
   { name: 'Design', href: '/design', icon: PenTool },
   { name: 'Staff', href: '/inspector', icon: UserCheck },
+  { name: 'History', href: '/history', icon: History },
   { name: 'PDF', href: '/pdf', icon: FileText },
 ];
 

@@ -5,6 +5,9 @@
 
 import type {
   User,
+  AdminUser,
+  CreateUserData,
+  UpdateUserData,
   Job,
   JobDetail,
   SaveJobData,
@@ -713,5 +716,59 @@ export const api = {
     }).catch(() => {
       /* fire-and-forget — don't break recording on log failure */
     });
+  },
+
+  // ============= Admin: User Management =============
+
+  async getAdminUsers(): Promise<AdminUser[]> {
+    const response = await fetchWithAuth(`${API_BASE_URL}/api/admin/users`);
+    return handleResponse(response);
+  },
+
+  async createAdminUser(data: CreateUserData): Promise<AdminUser> {
+    const response = await fetchWithAuth(`${API_BASE_URL}/api/admin/users`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
+    return handleResponse(response);
+  },
+
+  async updateAdminUser(userId: string, data: UpdateUserData): Promise<{ success: boolean }> {
+    const response = await fetchWithAuth(`${API_BASE_URL}/api/admin/users/${userId}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
+    return handleResponse(response);
+  },
+
+  async resetAdminUserPassword(userId: string, password: string): Promise<{ success: boolean }> {
+    const response = await fetchWithAuth(
+      `${API_BASE_URL}/api/admin/users/${userId}/reset-password`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password }),
+      }
+    );
+    return handleResponse(response);
+  },
+
+  async unlockAdminUser(userId: string): Promise<{ success: boolean }> {
+    const response = await fetchWithAuth(`${API_BASE_URL}/api/admin/users/${userId}/unlock`, {
+      method: 'POST',
+    });
+    return handleResponse(response);
+  },
+
+  async getAdminHealth(): Promise<Record<string, unknown>> {
+    const response = await fetchWithAuth(`${API_BASE_URL}/api/admin/health`);
+    return handleResponse(response);
+  },
+
+  async getAdminStats(): Promise<Record<string, unknown>> {
+    const response = await fetchWithAuth(`${API_BASE_URL}/api/admin/stats`);
+    return handleResponse(response);
   },
 };

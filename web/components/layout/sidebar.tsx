@@ -12,12 +12,16 @@ import {
   ChevronRight,
   Users,
   SlidersHorizontal,
+  BarChart3,
+  ShieldCheck,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { CertMateLogo, CertMateIcon } from '@/components/brand/certmate-logo';
+import { getUser } from '@/lib/auth';
 
 const navItems = [
   { href: '/dashboard', icon: LayoutDashboard, label: 'Dashboard' },
+  { href: '/analytics', icon: BarChart3, label: 'Analytics' },
   { href: '/staff', icon: Users, label: 'Staff' },
   { href: '/defaults', icon: SlidersHorizontal, label: 'Defaults' },
   { href: '/settings', icon: Settings, label: 'Settings' },
@@ -25,9 +29,14 @@ const navItems = [
   { href: '/settings/company', icon: Building2, label: 'Company' },
 ];
 
+const adminItem = { href: '/admin', icon: ShieldCheck, label: 'Admin' };
+
 export function Sidebar() {
   const [collapsed, setCollapsed] = useState(false);
   const pathname = usePathname();
+  const user = getUser();
+  const isAdmin = user?.role === 'admin';
+  const allItems = isAdmin ? [...navItems, adminItem] : navItems;
 
   return (
     <aside
@@ -52,7 +61,7 @@ export function Sidebar() {
 
       {/* Navigation */}
       <nav className="flex-1 py-4 space-y-1 px-2">
-        {navItems.map((item) => {
+        {allItems.map((item) => {
           const isActive =
             item.href === '/settings'
               ? pathname === '/settings'

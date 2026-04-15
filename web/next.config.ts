@@ -1,4 +1,41 @@
 import type { NextConfig } from 'next';
+import withPWAInit from '@ducanh2912/next-pwa';
+
+const withPWA = withPWAInit({
+  dest: 'public',
+  disable: process.env.NODE_ENV === 'development',
+  cacheOnFrontEndNav: false,
+  aggressiveFrontEndNavCaching: false,
+  reloadOnOnline: true,
+  fallbacks: { document: '/offline' },
+  workboxOptions: {
+    skipWaiting: true,
+    clientsClaim: true,
+    runtimeCaching: [
+      {
+        urlPattern: ({ request }: { request: Request }) => request.mode === 'navigate',
+        handler: 'NetworkOnly' as const,
+      },
+      {
+        urlPattern: /^https:\/\/.*\.(?:png|jpg|jpeg|svg|gif|webp)$/,
+        handler: 'CacheFirst' as const,
+        options: {
+          cacheName: 'images',
+          expiration: { maxEntries: 100, maxAgeSeconds: 60 * 60 * 24 * 30 },
+        },
+      },
+      {
+        urlPattern: /\/api\/jobs\/.*/,
+        handler: 'NetworkFirst' as const,
+        options: {
+          cacheName: 'api-jobs',
+          expiration: { maxEntries: 50, maxAgeSeconds: 60 * 60 * 24 },
+          networkTimeoutSeconds: 10,
+        },
+      },
+    ],
+  },
+});
 
 const nextConfig: NextConfig = {
   output: 'standalone',
@@ -6,12 +43,6 @@ const nextConfig: NextConfig = {
   async headers() {
     return [
       {
-        // Prevent browser/CDN from caching HTML page responses.
-        // Next.js App Router embeds server action IDs into pages at build time.
-        // After a redeploy those IDs change, so stale cached pages cause
-        // "Failed to find Server Action" errors.  Static assets (_next/static)
-        // are content-hashed and safe to cache long-term; everything else must
-        // revalidate on every request.
         source: '/:path*',
         headers: [
           { key: 'Cache-Control', value: 'no-cache, must-revalidate' },
@@ -19,8 +50,6 @@ const nextConfig: NextConfig = {
         ],
       },
       {
-        // Re-allow long-term caching for immutable hashed static assets.
-        // These already have unique filenames per build so they are safe.
         source: '/_next/static/:path*',
         headers: [
           {
@@ -33,4 +62,4 @@ const nextConfig: NextConfig = {
   },
 };
 
-export default nextConfig;
+export default withPWA(nextConfig);

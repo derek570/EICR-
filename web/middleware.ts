@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
 
-const publicPaths = ['/login', '/mic', '/legal'];
+const publicPaths = ['/login', '/mic', '/legal', '/offline'];
 
 function isTokenExpired(token: string): boolean {
   try {
