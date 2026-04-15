@@ -8,7 +8,7 @@
 #
 # Manual deploy from CLI:
 #   gh workflow run deploy.yml -f deploy_target=backend -f environment=production
-#   gh workflow run deploy.yml -f deploy_target=frontend -f environment=production
+#   gh workflow run deploy.yml -f deploy_target=frontend -f environment=production   (builds web/ dir)
 #   gh workflow run deploy.yml -f deploy_target=both -f environment=production
 
 name: CI/CD Pipeline
@@ -112,21 +112,21 @@ jobs:
         run: npm ci
 
       - name: Lint frontend
-        working-directory: frontend
+        working-directory: web
         run: npx eslint . --max-warnings=0 || true
 
       - name: Type check frontend
-        working-directory: frontend
+        working-directory: web
         run: npx tsc --noEmit || true
 
       - name: Build frontend
-        working-directory: frontend
+        working-directory: web
         run: npx next build
         env:
           CI: true
 
       - name: Run frontend tests
-        working-directory: frontend
+        working-directory: web
         run: npx jest --ci --passWithNoTests
         env:
           CI: true
@@ -157,7 +157,7 @@ jobs:
         run: npm audit --audit-level=high || true
 
       - name: Run frontend npm audit
-        working-directory: frontend
+        working-directory: web
         run: npm audit --audit-level=high || true
 
   # ============================================
@@ -187,7 +187,7 @@ jobs:
           load: true
           tags: eicr-frontend:${{ github.sha }}
           build-args: |
-            APP_DIR=frontend
+            APP_DIR=web
             NEXT_PUBLIC_API_URL=https://api.certmate.uk
           cache-from: type=gha
           cache-to: type=gha,mode=max
@@ -294,7 +294,7 @@ jobs:
             ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY_FRONTEND }}:staging-${{ github.sha }}
             ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY_FRONTEND }}:staging-latest
           build-args: |
-            APP_DIR=frontend
+            APP_DIR=web
             NEXT_PUBLIC_API_URL=https://staging.certmate.uk
             NODE_ENV=staging
           cache-from: type=gha
@@ -414,7 +414,7 @@ jobs:
             ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY_FRONTEND }}:${{ github.sha }}
             ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY_FRONTEND }}:latest
           build-args: |
-            APP_DIR=frontend
+            APP_DIR=web
             NEXT_PUBLIC_API_URL=https://api.certmate.uk
           cache-from: type=gha
           cache-to: type=gha,mode=max

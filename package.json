@@ -6,7 +6,6 @@
   "main": "src/server.js",
   "workspaces": [
     "packages/*",
-    "frontend",
     "web"
   ],
   "scripts": {
@@ -65,10 +64,6 @@
       "prettier --write"
     ],
     "packages/**/*.{ts,tsx}": [
-      "eslint --fix",
-      "prettier --write"
-    ],
-    "frontend/src/**/*.{ts,tsx}": [
       "eslint --fix",
       "prettier --write"
     ],

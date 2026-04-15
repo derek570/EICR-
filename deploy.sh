@@ -60,7 +60,7 @@ echo "[2/4] Building frontend image (linux/arm64)..."
 docker_build_with_retry docker build \
   --platform linux/arm64 \
   -f "$SCRIPT_DIR/docker/nextjs.Dockerfile" \
-  --build-arg APP_DIR=frontend \
+  --build-arg APP_DIR=web \
   --build-arg NEXT_PUBLIC_API_URL=https://api.certmate.uk \
   -t "$ECR_REGISTRY/$FRONTEND_REPO:latest" \
   -t "$ECR_REGISTRY/$FRONTEND_REPO:local-$(git rev-parse --short HEAD)" \

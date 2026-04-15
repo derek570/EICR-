@@ -64,27 +64,6 @@ services:
       retries: 3
       start_period: 15s
 
-  # CertMate PWA (Next.js)
-  pwa:
-    build:
-      context: .
-      dockerfile: docker/nextjs.Dockerfile
-      args:
-        APP_DIR: frontend
-    ports:
-      - "3002:3000"
-    environment:
-      - NEXT_PUBLIC_API_URL=http://backend:3000
-    depends_on:
-      - backend
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:3000"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 15s
-
 volumes:
   data:
     driver: local

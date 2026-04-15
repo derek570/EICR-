@@ -31,20 +31,18 @@ Automated EICR/EIC certificate creation for electrical inspectors using an iOS-f
 | Document Extraction AI | GPT Vision (certificate/notes data extraction) |
 | Backend | Node.js (ES modules) — API, WebSocket, S3 |
 | PDF (iOS) | WKWebView HTML->PDF (EICRHTMLTemplate.swift) — **iOS app uses this, NOT the server generators** |
-| PDF (server) | Python ReportLab + Playwright — **only used by web frontends (frontend/ and web/)** |
-| PWA Frontend | Next.js (App Router, Zustand, TanStack) |
-| Web Frontend | Next.js (App Router) |
+| PDF (server) | Python ReportLab + Playwright — **only used by web frontend (web/)** |
+| Web Frontend | Next.js (App Router, PWA) |
 | Cloud | AWS ECS Fargate, S3, RDS PostgreSQL, Secrets Manager |
 
 ## Monorepo Structure
 
-npm workspaces with 4 packages:
+npm workspaces with 3 packages:
 
 | Workspace | Path | Purpose |
 |-----------|------|---------|
 | Backend | `src/` | Express API + WebSocket server |
-| PWA | `frontend/` | Mobile-first Next.js (recording, live fill) |
-| Web | `web/` | Desktop Next.js (dashboard, editing) |
+| Web | `web/` | Next.js frontend (PWA, dashboard, recording, editing) |
 | shared-types | `packages/shared-types/` | TypeScript types (`@certmate/shared-types`) |
 | shared-utils | `packages/shared-utils/` | Shared utilities (`@certmate/shared-utils`) |
 
@@ -54,7 +52,6 @@ npm workspaces with 4 packages:
 
 ```bash
 npm start                          # Backend (port 3000)
-npm run dev --workspace=frontend   # PWA (port 3002)
 npm run dev --workspace=web        # Web (port 3001)
 ```
 
@@ -62,7 +59,6 @@ npm run dev --workspace=web        # Web (port 3001)
 
 ```bash
 npm test                           # Backend tests
-npm test --workspace=frontend      # Frontend tests
 npm test --workspace=web           # Web tests
 ```
 
@@ -86,7 +82,7 @@ git push origin main
 
 **Pipeline steps:**
 1. **test-backend** — Jest tests (Node.js)
-2. **test-frontend** — ESLint, TypeScript check, Next.js build, Jest
+2. **test-frontend** — ESLint, TypeScript check, Next.js build, Jest (runs against `web/`)
 3. **security-audit** — npm audit (high/critical)
 4. **build-images** — Docker build (ARM64) + Trivy security scan
 5. **deploy** — Push to ECR, register ECS task definitions, update services, wait for stable
@@ -100,13 +96,13 @@ gh workflow run deploy.yml -f deploy_target=both -f environment=production
 
 **Local quick-deploy (bypasses CI):**
 ```bash
-./deploy.sh              # Frontend only
-./deploy.sh --backend    # Frontend + backend
+./deploy.sh              # Web frontend only
+./deploy.sh --backend    # Web frontend + backend
 ```
 
 **Monitor:** `https://github.com/derek570/EICR-/actions`
 
-**Common failure:** Missing npm dependencies in `frontend/package.json`. Locally-hoisted deps work on dev but fail in Docker (`npm ci` only installs declared deps). Before pushing, verify all imports have matching `package.json` entries.
+**Common failure:** Missing npm dependencies in `web/package.json`. Locally-hoisted deps work on dev but fail in Docker (`npm ci` only installs declared deps). Before pushing, verify all imports have matching `package.json` entries.
 
 ### Check Status
 
