@@ -16,7 +16,7 @@ const __dirname = path.dirname(__filename);
 // Number of user+assistant exchange pairs to include in the API sliding window.
 // Full conversation history is always stored internally; only the last N exchanges
 // are sent to the API, preceded by a state snapshot of all extracted values.
-const SLIDING_WINDOW_SIZE = 6;
+const SLIDING_WINDOW_SIZE = 20;
 
 // Utterance batching — buffer consecutive transcript chunks before making a Sonnet
 // API call. A 72-turn session with BATCH_SIZE=2 becomes ~36 API calls, cutting
