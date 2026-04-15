@@ -9,13 +9,14 @@ import {
   Download,
   Loader2,
   WifiOff,
-  FolderOpen,
   Mail,
   Send,
   CheckCircle,
   FileSpreadsheet,
   Table,
   AlertTriangle,
+  Eye,
+  X,
 } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { toast } from 'sonner';
@@ -28,6 +29,8 @@ function isValidEmail(email: string): boolean {
 export default function PDFPage() {
   const { job, user } = useJobContext();
   const [generating, setGenerating] = useState(false);
+  const [previewing, setPreviewing] = useState(false);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [exportingCSV, setExportingCSV] = useState(false);
   const [exportingExcel, setExportingExcel] = useState(false);
 
@@ -96,6 +99,37 @@ export default function PDFPage() {
       toast.error('Failed to generate PDF');
     } finally {
       setGenerating(false);
+    }
+  };
+
+  const handlePreview = async () => {
+    if (!user) {
+      toast.error('Not logged in');
+      return;
+    }
+    if (isOffline) {
+      toast.error('PDF preview requires an internet connection');
+      return;
+    }
+    setPreviewing(true);
+    try {
+      const blob = await api.generatePdf(user.id, job.id);
+      // Clean up old preview URL if any
+      if (previewUrl) URL.revokeObjectURL(previewUrl);
+      const url = URL.createObjectURL(blob);
+      setPreviewUrl(url);
+    } catch (error) {
+      console.error('PDF preview failed:', error);
+      toast.error('Failed to generate PDF preview');
+    } finally {
+      setPreviewing(false);
+    }
+  };
+
+  const closePreview = () => {
+    if (previewUrl) {
+      URL.revokeObjectURL(previewUrl);
+      setPreviewUrl(null);
     }
   };
 
@@ -206,21 +240,60 @@ export default function PDFPage() {
               <span>PDF generation requires an internet connection</span>
             </div>
           )}
-          <Button onClick={handleGenerate} disabled={generating || isOffline} className="w-full">
-            {generating ? (
-              <>
-                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                Generating...
-              </>
-            ) : (
-              <>
-                <Download className="h-4 w-4 mr-2" />
-                Generate PDF
-              </>
-            )}
-          </Button>
-          {generating && (
+          <div className="flex gap-2">
+            <Button
+              onClick={handlePreview}
+              disabled={previewing || generating || isOffline}
+              variant="outline"
+              className="flex-1"
+            >
+              {previewing ? (
+                <>
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  Loading...
+                </>
+              ) : (
+                <>
+                  <Eye className="h-4 w-4 mr-2" />
+                  Preview
+                </>
+              )}
+            </Button>
+            <Button
+              onClick={handleGenerate}
+              disabled={generating || previewing || isOffline}
+              className="flex-1"
+            >
+              {generating ? (
+                <>
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  Generating...
+                </>
+              ) : (
+                <>
+                  <Download className="h-4 w-4 mr-2" />
+                  Download PDF
+                </>
+              )}
+            </Button>
+          </div>
+          {(generating || previewing) && (
             <p className="text-sm text-gray-500 text-center">Usually takes 5-10 seconds</p>
+          )}
+
+          {/* PDF Preview iframe */}
+          {previewUrl && (
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-sm font-medium text-gray-400">Preview</span>
+                <Button variant="ghost" size="sm" className="h-7 w-7 p-0" onClick={closePreview}>
+                  <X className="h-4 w-4" />
+                </Button>
+              </div>
+              <div className="border border-white/[0.08] rounded-lg overflow-hidden bg-white">
+                <iframe src={previewUrl} className="w-full h-[600px]" title="PDF Preview" />
+              </div>
+            </div>
           )}
         </CardContent>
       </Card>

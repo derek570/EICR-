@@ -49,6 +49,10 @@ import {
   Scan,
   FileSearch,
   Camera,
+  Volume2,
+  VolumeX,
+  RotateCcw,
+  ImageIcon,
 } from 'lucide-react';
 
 /* ------------------------------------------------------------------ */
@@ -362,6 +366,15 @@ export default function RecordPage() {
   const [valueBadge, setValueBadge] = useState<string | null>(null);
   const prevHighlightsLen = useRef(0);
 
+  // iOS-parity: Pending CCU extractions with retry
+  const [pendingCcu, setPendingCcu] = useState<{ file: File; error: string; timestamp: number }[]>(
+    []
+  );
+
+  // iOS-parity: Voice feedback toggle (TTS)
+  const [voiceEnabled, setVoiceEnabled] = useState(false);
+  const prevHighlightsLenTts = useRef(0);
+
   // Auto-scroll transcript to show newest content
   useEffect(() => {
     const el = transcriptScrollRef.current;
@@ -385,6 +398,27 @@ export default function RecordPage() {
     }
     prevHighlightsLen.current = state.highlights.length;
   }, [state.highlights]);
+
+  // TTS: Speak confirmed extraction values when voice feedback is enabled
+  useEffect(() => {
+    if (!voiceEnabled) {
+      prevHighlightsLenTts.current = state.highlights.length;
+      return;
+    }
+    if (state.highlights.length > prevHighlightsLenTts.current) {
+      const newest = state.highlights[state.highlights.length - 1];
+      if (newest && 'speechSynthesis' in window) {
+        // Don't speak while user is actively talking
+        if (!state.isSpeaking) {
+          const utterance = new SpeechSynthesisUtterance(newest.value);
+          utterance.rate = 1.1;
+          utterance.volume = 0.7;
+          speechSynthesis.speak(utterance);
+        }
+      }
+    }
+    prevHighlightsLenTts.current = state.highlights.length;
+  }, [state.highlights, voiceEnabled, state.isSpeaking]);
 
   const highlightedText = useMemo(
     () => buildHighlightedSpans(state.transcript, state.highlights),
@@ -479,13 +513,86 @@ export default function RecordPage() {
         } else {
           toast.info('No data detected in photo');
         }
-      } catch {
-        toast.error('CCU analysis failed');
+      } catch (err) {
+        const errorMsg = err instanceof Error ? err.message : 'Analysis failed';
+        setPendingCcu((prev) => [...prev, { file, error: errorMsg, timestamp: Date.now() }]);
+        toast.error('CCU analysis failed — added to retry queue');
       }
       e.target.value = '';
     },
     [job, updateJob]
   );
+
+  // Retry a pending CCU extraction
+  const retryCcu = useCallback(
+    async (index: number) => {
+      const item = pendingCcu[index];
+      if (!item) return;
+      toast.info('Retrying CCU analysis...');
+      try {
+        const result = await api.analyzeCcu(item.file);
+        const updates: Partial<typeof job> = {};
+        const parts: string[] = [];
+
+        if (result.circuits?.length) {
+          const existing = job?.circuits || [];
+          const mapped = result.circuits.map((c, i) => ({
+            circuit_ref: String(c.circuit_number || existing.length + i + 1),
+            circuit_designation: c.label || `Circuit ${existing.length + i + 1}`,
+            ocpd_type: c.ocpd_type || undefined,
+            ocpd_rating_a: c.ocpd_rating_a || undefined,
+            ocpd_bs_en: c.ocpd_bs_en || undefined,
+            ocpd_breaking_capacity_ka: c.ocpd_breaking_capacity_ka || undefined,
+            rcd_bs_en: c.rcd_bs_en || undefined,
+            rcd_operating_current_ma: c.rcd_rating_ma || undefined,
+          }));
+          updates.circuits = [...existing, ...mapped];
+          parts.push(`${result.circuits.length} circuits`);
+        }
+
+        const boardUpdates: Record<string, string> = {};
+        if (result.board_manufacturer) boardUpdates.manufacturer = result.board_manufacturer;
+        if (result.board_model) boardUpdates.name = result.board_model;
+        if (result.main_switch_rating) boardUpdates.rated_current = result.main_switch_rating;
+        if (result.main_switch_bs_en) boardUpdates.main_switch_bs_en = result.main_switch_bs_en;
+        if (result.spd_present !== undefined)
+          boardUpdates.spd_status = result.spd_present ? 'Fitted' : 'Not Fitted';
+        if (result.spd_type) boardUpdates.spd_type = result.spd_type;
+
+        if (Object.keys(boardUpdates).length > 0) {
+          const existing = job?.board_info || {};
+          const merged = { ...existing };
+          for (const [key, value] of Object.entries(boardUpdates)) {
+            if (value) (merged as Record<string, unknown>)[key] = value;
+          }
+          updates.board_info = merged as typeof job.board_info;
+          parts.push('board info');
+        }
+
+        if (Object.keys(updates).length > 0) {
+          updateJob(updates);
+          toast.success(`CCU retry: found ${parts.join(', ')}`);
+        } else {
+          toast.info('No data detected in photo');
+        }
+        // Remove from pending
+        setPendingCcu((prev) => prev.filter((_, i) => i !== index));
+      } catch {
+        toast.error('CCU retry failed');
+      }
+    },
+    [pendingCcu, job, updateJob]
+  );
+
+  const retryAllCcu = useCallback(async () => {
+    for (let i = pendingCcu.length - 1; i >= 0; i--) {
+      await retryCcu(i);
+    }
+  }, [pendingCcu, retryCcu]);
+
+  const dismissCcu = useCallback((index: number) => {
+    setPendingCcu((prev) => prev.filter((_, i) => i !== index));
+  }, []);
 
   // iOS-parity: Observation photo capture — uploads photo AND creates observation entry
   const handleObsFile = useCallback(
@@ -696,6 +803,49 @@ export default function RecordPage() {
 
       {/* ──────────── Main Content Area ──────────── */}
       <div className="flex-1 overflow-auto p-4 space-y-4">
+        {/* iOS-parity: Pending CCU extractions banner */}
+        {pendingCcu.length > 0 && (
+          <div className="rounded-lg border border-orange-500/30 bg-orange-500/10 p-3 space-y-2">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2 text-sm font-medium text-orange-400">
+                <AlertTriangle className="h-4 w-4" />
+                {pendingCcu.length} pending CCU extraction{pendingCcu.length > 1 ? 's' : ''}
+              </div>
+              <div className="flex gap-2">
+                <button
+                  onClick={retryAllCcu}
+                  className="flex items-center gap-1 text-xs font-medium text-orange-400 hover:text-orange-300 transition-colors"
+                >
+                  <RotateCcw className="h-3 w-3" />
+                  Retry All
+                </button>
+              </div>
+            </div>
+            {pendingCcu.map((item, i) => (
+              <div
+                key={item.timestamp}
+                className="flex items-center gap-3 text-xs text-orange-300/80 bg-orange-500/5 rounded px-2 py-1.5"
+              >
+                <ImageIcon className="h-3.5 w-3.5 flex-shrink-0" />
+                <span className="flex-1 truncate">{item.file.name}</span>
+                <span className="text-orange-400/60 flex-shrink-0">{item.error}</span>
+                <button
+                  onClick={() => retryCcu(i)}
+                  className="text-orange-400 hover:text-orange-300 flex-shrink-0"
+                >
+                  <RotateCcw className="h-3 w-3" />
+                </button>
+                <button
+                  onClick={() => dismissCcu(i)}
+                  className="text-orange-400/50 hover:text-orange-300 flex-shrink-0"
+                >
+                  ×
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+
         {/* Section data cards */}
         {showSections && (
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
@@ -878,6 +1028,29 @@ export default function RecordPage() {
 
             {/* Divider between web-only and iOS-parity buttons */}
             <div className="w-px h-8 bg-gray-700/50 mx-1" />
+
+            {/* Voice — cyan, matches iOS speaker.wave.2 toggle */}
+            <button
+              onClick={() => {
+                setVoiceEnabled(!voiceEnabled);
+                if (!voiceEnabled) {
+                  toast.success('Voice feedback ON');
+                } else {
+                  speechSynthesis.cancel();
+                  toast.info('Voice feedback OFF');
+                }
+              }}
+              className={cn(
+                'flex flex-col items-center justify-center gap-0.5 rounded-full h-14 w-14 border transition-colors',
+                voiceEnabled
+                  ? 'bg-cyan-500/20 text-cyan-400 border-cyan-500/30'
+                  : 'bg-gray-700/20 text-gray-500 border-gray-700/30 hover:text-gray-300 hover:bg-gray-700/50'
+              )}
+              title={voiceEnabled ? 'Disable voice feedback' : 'Enable voice feedback'}
+            >
+              {voiceEnabled ? <Volume2 className="h-5 w-5" /> : <VolumeX className="h-5 w-5" />}
+              <span className="text-[9px] font-medium leading-none">Voice</span>
+            </button>
 
             {/* Defaults — purple, matches iOS slider.horizontal.3 */}
             <button

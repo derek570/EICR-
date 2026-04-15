@@ -9,10 +9,28 @@ import {
   type CellContext,
   type RowData,
 } from '@tanstack/react-table';
+import {
+  DndContext,
+  closestCenter,
+  KeyboardSensor,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+} from '@dnd-kit/core';
+import {
+  SortableContext,
+  verticalListSortingStrategy,
+  useSortable,
+  arrayMove,
+} from '@dnd-kit/sortable';
+import { CSS } from '@dnd-kit/utilities';
+import { restrictToVerticalAxis } from '@dnd-kit/modifiers';
 import type { Circuit } from '@/lib/types';
 import { Input } from '@/components/ui/input';
 import { cn } from '@/lib/utils';
 import { lookupMaxZs } from '@/lib/max-zs-lookup';
+import { GripVertical } from 'lucide-react';
 
 /** Time window (ms) for the blue flash on recently-updated cells. */
 const RECENT_FIELD_WINDOW_MS = 3000;
@@ -187,6 +205,53 @@ function EditableCell({ getValue, row, column, table }: CellContext<Circuit, unk
   );
 }
 
+/** Sortable table row — wraps a <tr> with @dnd-kit drag-drop support. */
+function SortableRow({
+  row,
+  rowIdx,
+  children,
+}: {
+  row: { id: string };
+  rowIdx: number;
+  children: React.ReactNode;
+}) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
+    id: row.id,
+  });
+
+  const style: React.CSSProperties = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    opacity: isDragging ? 0.5 : 1,
+    position: 'relative' as const,
+    zIndex: isDragging ? 50 : undefined,
+  };
+
+  return (
+    <tr
+      ref={setNodeRef}
+      style={style}
+      className={cn(
+        'border-b border-white/[0.06] hover:bg-white/[0.04]',
+        rowIdx % 2 === 0 ? 'bg-card' : 'bg-white/[0.02]',
+        isDragging && 'shadow-lg bg-card'
+      )}
+    >
+      {/* Drag handle cell */}
+      <td
+        className="px-0 py-0 border-r border-white/[0.06] w-8 text-center cursor-grab active:cursor-grabbing"
+        {...attributes}
+        {...listeners}
+      >
+        <div className="flex items-center justify-center min-h-[36px]">
+          <GripVertical className="h-3.5 w-3.5 text-white/20 hover:text-white/50 transition-colors" />
+        </div>
+      </td>
+      {children}
+    </tr>
+  );
+}
+
 export function CircuitTable({ circuits, onChange, recentlyUpdatedFields }: CircuitTableProps) {
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const [scrollProgress, setScrollProgress] = useState(0);
@@ -265,6 +330,27 @@ export function CircuitTable({ circuits, onChange, recentlyUpdatedFields }: Circ
 
   const circuitRefs = useMemo(() => circuits.map((c) => c.circuit_ref), [circuits]);
 
+  // Drag-drop sensors — require 8px movement before drag starts (prevents accidental drags)
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
+    useSensor(KeyboardSensor)
+  );
+
+  // Stable row IDs for @dnd-kit (circuit_ref can duplicate, so use index-prefixed)
+  const rowIds = useMemo(() => circuits.map((_, i) => `row-${i}`), [circuits]);
+
+  const handleDragEnd = useCallback(
+    (event: DragEndEvent) => {
+      const { active, over } = event;
+      if (!over || active.id === over.id) return;
+      const oldIndex = rowIds.indexOf(active.id as string);
+      const newIndex = rowIds.indexOf(over.id as string);
+      if (oldIndex === -1 || newIndex === -1) return;
+      onChange(arrayMove(circuits, oldIndex, newIndex));
+    },
+    [circuits, onChange, rowIds]
+  );
+
   const table = useReactTable({
     data: circuits,
     columns,
@@ -318,6 +404,8 @@ export function CircuitTable({ circuits, onChange, recentlyUpdatedFields }: Circ
           <thead>
             {/* Group header row */}
             <tr className="bg-white/[0.06] border-b border-white/[0.08]">
+              {/* Drag handle header */}
+              <th className="w-8 px-1 py-1 text-center text-xs font-medium text-muted-foreground border-r border-white/[0.06]" />
               {groupHeaders.map((group, gIdx) => {
                 const startIdx = CIRCUIT_COLUMNS.findIndex(
                   (_, i) =>
@@ -342,6 +430,8 @@ export function CircuitTable({ circuits, onChange, recentlyUpdatedFields }: Circ
             {/* Column header row */}
             {table.getHeaderGroups().map((headerGroup) => (
               <tr key={headerGroup.id} className="bg-white/[0.04] border-b border-white/[0.08]">
+                {/* Drag handle column header */}
+                <th className="w-8 px-1 py-2 border-r border-white/[0.06]" />
                 {headerGroup.headers.map((header, idx) => (
                   <th
                     key={header.id}
@@ -363,38 +453,45 @@ export function CircuitTable({ circuits, onChange, recentlyUpdatedFields }: Circ
               </tr>
             ))}
           </thead>
-          <tbody>
-            {table.getRowModel().rows.map((row, rowIdx) => (
-              <tr
-                key={row.id}
-                className={cn(
-                  'border-b border-white/[0.06] hover:bg-white/[0.04]',
-                  rowIdx % 2 === 0 ? 'bg-card' : 'bg-white/[0.02]'
-                )}
-              >
-                {row.getVisibleCells().map((cell, idx) => (
-                  <td
-                    key={cell.id}
-                    className={cn(
-                      'px-0 py-0 border-r border-white/[0.06] last:border-r-0',
-                      idx < 2 && 'sticky z-10',
-                      idx === 0 && 'font-medium',
-                      idx === 1 && 'border-r-2 border-white/[0.12]',
-                      idx < 2 && (rowIdx % 2 === 0 ? 'bg-card' : 'bg-[#1b2a45]')
-                    )}
-                    style={{
-                      width: cell.column.getSize(),
-                      minWidth: cell.column.getSize(),
-                      left:
-                        idx === 0 ? STICKY_COL_1_LEFT : idx === 1 ? STICKY_COL_2_LEFT : undefined,
-                    }}
-                  >
-                    {flexRender(cell.column.columnDef.cell, cell.getContext())}
-                  </td>
+          <DndContext
+            sensors={sensors}
+            collisionDetection={closestCenter}
+            modifiers={[restrictToVerticalAxis]}
+            onDragEnd={handleDragEnd}
+          >
+            <SortableContext items={rowIds} strategy={verticalListSortingStrategy}>
+              <tbody>
+                {table.getRowModel().rows.map((row, rowIdx) => (
+                  <SortableRow key={rowIds[rowIdx]} row={{ id: rowIds[rowIdx] }} rowIdx={rowIdx}>
+                    {row.getVisibleCells().map((cell, idx) => (
+                      <td
+                        key={cell.id}
+                        className={cn(
+                          'px-0 py-0 border-r border-white/[0.06] last:border-r-0',
+                          idx < 2 && 'sticky z-10',
+                          idx === 0 && 'font-medium',
+                          idx === 1 && 'border-r-2 border-white/[0.12]',
+                          idx < 2 && (rowIdx % 2 === 0 ? 'bg-card' : 'bg-[#1b2a45]')
+                        )}
+                        style={{
+                          width: cell.column.getSize(),
+                          minWidth: cell.column.getSize(),
+                          left:
+                            idx === 0
+                              ? STICKY_COL_1_LEFT
+                              : idx === 1
+                                ? STICKY_COL_2_LEFT
+                                : undefined,
+                        }}
+                      >
+                        {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                      </td>
+                    ))}
+                  </SortableRow>
                 ))}
-              </tr>
-            ))}
-          </tbody>
+              </tbody>
+            </SortableContext>
+          </DndContext>
         </table>
       </div>
     </div>
