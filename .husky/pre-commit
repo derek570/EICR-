@@ -1,3 +1,4 @@
+export PATH="/opt/homebrew/bin:$PATH"
 npx lint-staged
 
 # Check for common secret patterns in staged files
