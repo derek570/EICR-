@@ -1075,6 +1075,38 @@ questionsForInspector: return EMPTY array [] unless RCD type could not be determ
       const geoExtractionId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       const sessionSegment = req.body?.sessionId || 'no-session';
       const geoKey = `ccu-geometric/${req.user.id}/${sessionSegment}/${geoExtractionId}/stage-outputs.json`;
+
+      // Phase C: strip base64 crop data from Stage 3 before writing to S3.
+      // The bbox coordinates and classification are small and useful for offline
+      // analysis; the base64 crops would balloon the sidecar by ~100KB per slot
+      // and are already recoverable by re-cropping the original CCU photo.
+      const sanitizeSlotsForSidecar = (slots) => {
+        if (!Array.isArray(slots)) return slots;
+        return slots.map((s) => ({
+          slotIndex: s.slotIndex,
+          classification: s.classification,
+          manufacturer: s.manufacturer,
+          model: s.model,
+          ratingAmps: s.ratingAmps,
+          poles: s.poles,
+          confidence: s.confidence,
+          // bbox only — never base64 — in the sidecar.
+          bbox: s?.crop?.bbox ?? null,
+        }));
+      };
+
+      const sanitizedStageOutputs = geometricResult.stageOutputs
+        ? {
+            ...geometricResult.stageOutputs,
+            stage3: geometricResult.stageOutputs.stage3
+              ? {
+                  ...geometricResult.stageOutputs.stage3,
+                  slots: sanitizeSlotsForSidecar(geometricResult.stageOutputs.stage3.slots),
+                }
+              : undefined,
+          }
+        : geometricResult.stageOutputs;
+
       storage
         .uploadJson(
           {
@@ -1096,9 +1128,11 @@ questionsForInspector: return EMPTY array [] unless RCD type could not be determ
               mainSwitchCenterX: geometricResult.mainSwitchCenterX,
               imageWidth: geometricResult.imageWidth,
               imageHeight: geometricResult.imageHeight,
+              slots: sanitizeSlotsForSidecar(geometricResult.slots),
+              stage3Error: geometricResult.stage3Error || null,
               timings: geometricResult.timings,
               usage: geometricResult.usage,
-              stageOutputs: geometricResult.stageOutputs,
+              stageOutputs: sanitizedStageOutputs,
             },
           },
           geoKey
