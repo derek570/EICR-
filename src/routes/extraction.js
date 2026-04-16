@@ -47,6 +47,54 @@ const DEBUG_END = /\b(?:end|stop|finish|done)\s+(?:d[\s-]?bug|debug)\b/i;
 const sonnetChunkLimits = new Map();
 
 /**
+ * Compress a CCU photo to ≤500KB JPEG for training-data logging.
+ * Plan 2026-04-16 §7: keep stored samples small — they are only used to
+ * train an on-device YOLO detector, not for high-resolution recall. This
+ * keeps S3 cost negligible even as TestFlight volume scales.
+ */
+async function compressForTrainingLog(buffer, targetBytes = 500 * 1024) {
+  let out = await sharp(buffer)
+    .resize(1600, 1600, { fit: 'inside', withoutEnlargement: true })
+    .jpeg({ quality: 75 })
+    .toBuffer();
+  if (out.length <= targetBytes) return out;
+  out = await sharp(buffer)
+    .resize(1280, 1280, { fit: 'inside', withoutEnlargement: true })
+    .jpeg({ quality: 65 })
+    .toBuffer();
+  return out;
+}
+
+/**
+ * Fire-and-forget S3 logging of every CCU extraction — source of the
+ * auto-labelled training corpus for the Phase B→E geometric pipeline.
+ * Writes a small compressed JPEG + the VLM result JSON to:
+ *   s3://$S3_BUCKET/ccu-extractions/{userId}/{sessionId|no-session}/{extractionId}/
+ * Each upload is keyed by a unique extractionId so repeat shots within the
+ * same recording session never overwrite earlier samples.
+ */
+async function logCcuTrainingData({ userId, sessionId, imageBuffer, analysis, meta }) {
+  const extractionId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const sessionSegment = sessionId || 'no-session';
+  const prefix = `ccu-extractions/${userId}/${sessionSegment}/${extractionId}`;
+
+  const compressed = await compressForTrainingLog(imageBuffer);
+  await storage.uploadBytes(compressed, `${prefix}/original.jpg`, 'image/jpeg');
+  await storage.uploadJson(
+    { extractionId, userId, sessionId: sessionId || null, meta, analysis },
+    `${prefix}/result.json`
+  );
+
+  logger.info('CCU training sample logged', {
+    userId,
+    sessionId: sessionId || null,
+    extractionId,
+    compressedBytes: compressed.length,
+    circuitCount: analysis?.circuits?.length || 0,
+  });
+}
+
+/**
  * BS/EN standard number lookup by device type
  */
 const BS_EN_LOOKUP = {
@@ -935,6 +983,31 @@ questionsForInspector: return EMPTY array [] unless RCD type could not be determ
     });
 
     res.json(analysis);
+
+    // Phase A (plan 2026-04-16 §7): fire-and-forget training-data log.
+    // Orthogonal to extraction — every TestFlight session becomes an
+    // auto-labelled sample for the future on-device YOLO detector.
+    // MUST run after res.json so latency is unaffected; failure is
+    // non-fatal and is logged as a warning only.
+    logCcuTrainingData({
+      userId: req.user.id,
+      sessionId: req.body?.sessionId || null,
+      imageBuffer: imageBytes,
+      analysis,
+      meta: {
+        model,
+        totalElapsedMs,
+        anthropicElapsedMs,
+        promptTokens,
+        completionTokens,
+        timestamp: new Date().toISOString(),
+      },
+    }).catch((err) => {
+      logger.warn('CCU training log failed (non-fatal)', {
+        userId: req.user.id,
+        error: err.message,
+      });
+    });
   } catch (error) {
     // Timeout — AbortController fired or SDK timeout
     if (

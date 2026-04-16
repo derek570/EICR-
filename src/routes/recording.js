@@ -1477,6 +1477,50 @@ router.post(
 );
 
 /**
+ * Upload inspector-confirmed CCU layout as Phase A ground-truth training label.
+ *
+ * After the inspector reviews and edits the circuits tab, iOS fires this
+ * endpoint so we capture the canonical "final" answer for the session. Paired
+ * with the earlier per-extraction original.jpg/result.json samples written by
+ * /api/analyze-ccu, this gives us auto-labelled training data for the
+ * geometric pipeline (plan 2026-04-16 §7).
+ *
+ * POST /api/session/:sessionId/confirmed-layout
+ * Body: arbitrary JSON — typically { circuits: [...], boardManufacturer, ... }
+ */
+router.post('/session/:sessionId/confirmed-layout', auth.requireAuth, async (req, res) => {
+  const { sessionId } = req.params;
+  const userId = req.user.id;
+  const layout = req.body;
+
+  if (!layout || typeof layout !== 'object' || Array.isArray(layout)) {
+    return res.status(400).json({ error: 'Layout body must be a JSON object' });
+  }
+
+  try {
+    const key = `ccu-extractions/${userId}/${sessionId}/final.json`;
+    await storage.uploadJson(
+      {
+        userId,
+        sessionId,
+        confirmedAt: new Date().toISOString(),
+        layout,
+      },
+      key
+    );
+    logger.info('Confirmed CCU layout stored', { sessionId, userId, key });
+    res.json({ success: true, key });
+  } catch (error) {
+    logger.error('Confirmed layout upload failed', {
+      sessionId,
+      userId,
+      error: error.message,
+    });
+    res.status(500).json({ error: 'Upload failed: ' + error.message });
+  }
+});
+
+/**
  * Upload a debug report from iOS
  * POST /api/debug-report
  */
