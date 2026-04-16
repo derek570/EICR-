@@ -15,6 +15,7 @@
  */
 
 import sharp from 'sharp';
+import { applyDeviceLookup } from './device-lookup-table.js';
 
 const CCU_GEOMETRIC_MODEL = (process.env.CCU_GEOMETRIC_MODEL || 'claude-sonnet-4-6').trim();
 const CCU_GEOMETRIC_MAX_TOKENS = 1024;
@@ -633,7 +634,11 @@ export async function extractCcuGeometric(imageBuffer) {
     }
 
     const classified = await classifySlots(imageBuffer, slotCrops);
-    slots = classified.slots;
+    // Stage 4 — device-face lookup gap-fill. Applied to every classified slot so that
+    // the VLM's (manufacturer, model) identification can fill any bsEn / rcdWaveformType
+    // blanks it couldn't read directly off the device face. Pure gap-fill — VLM-confirmed
+    // values are never overwritten. See: docs/plans/2026-04-16-ccu-geometric-extraction-design.md §5 Phase D.
+    slots = classified.slots.map((slot) => applyDeviceLookup(slot));
     stage3Usage = classified.usage;
     stage3BatchCount = classified.batchCount;
   } catch (err) {
