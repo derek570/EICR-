@@ -23,7 +23,8 @@ const SLIDING_WINDOW_SIZE = 6;
 // Sonnet cost by ~50% while keeping latency under 4s for isolated readings.
 // The timeout ensures buffered utterances are processed even if the speaker pauses.
 const BATCH_SIZE = 2;
-const BATCH_TIMEOUT_MS = 2000; // ms to wait for more utterances before flushing
+const BATCH_TIMEOUT_MS = 3000; // ms to wait for more utterances before flushing
+const MIN_UTTERANCE_LENGTH = 20; // Ignore utterances shorter than this — "um", "yeah", etc.
 
 // Cache keepalive — send a minimal API call after 4 minutes of silence to refresh
 // the 5-minute prompt cache before it expires. Costs ~$0.003 per keepalive (cache reads only).
@@ -99,6 +100,11 @@ export class EICRExtractionSession {
     this.utteranceBuffer = []; // Buffered { transcriptText, regexResults, options }
     this.batchTimeoutHandle = null;
     this.onBatchResult = null; // Callback for async batch flush results: (result) => void
+
+    // Failed utterance recovery queue — utterances that failed JSON parse are queued
+    // here and prepended to the next successful API call. Prevents data loss when
+    // Sonnet breaks out of JSON mode. Entries older than 60s are discarded as stale.
+    this.failedUtteranceQueue = []; // Array of { text: string, timestamp: number }
 
     // Cache keepalive — refreshes 5-min prompt cache during silence
     this.cacheKeepaliveHandle = null;
@@ -294,6 +300,24 @@ export class EICRExtractionSession {
    * batch fires (buffer full) or when flushed via timeout/stop.
    */
   async extractFromUtterance(transcriptText, regexResults = [], options = {}) {
+    // Skip trivially short utterances that can't contain extractable data
+    // (e.g. "um", "yeah", "ok"). Exception: if regex already extracted fields,
+    // still process — the transcript text itself is short but has useful data.
+    if (transcriptText.trim().length < MIN_UTTERANCE_LENGTH && regexResults.length === 0) {
+      logger.debug(
+        `Session ${this.sessionId} Skipping short utterance (${transcriptText.trim().length} chars): "${transcriptText.trim()}"`
+      );
+      return {
+        extracted_readings: [],
+        field_clears: [],
+        circuit_updates: [],
+        observations: [],
+        validation_alerts: [],
+        questions_for_user: [],
+        confirmations: [],
+      };
+    }
+
     // Add to buffer
     this.utteranceBuffer.push({ transcriptText, regexResults, options });
 
@@ -425,7 +449,22 @@ export class EICRExtractionSession {
       userMessage += '\n\n[CONFIRMATIONS ENABLED]';
     }
 
+    // Prepend any recovered utterances from the failed queue (discard if >60s old)
+    const now = Date.now();
+    const recoverable = this.failedUtteranceQueue.filter((q) => now - q.timestamp < 60000);
+    this.failedUtteranceQueue = [];
+    if (recoverable.length > 0) {
+      const recoveredText = recoverable.map((q) => q.text).join(' ... ');
+      userMessage = `[Previously unprocessed]: ${recoveredText}\n\n[New]: ${userMessage}`;
+      logger.info(
+        `Session ${this.sessionId} Recovered ${recoverable.length} queued utterance(s) from failed extractions`
+      );
+    }
+
     // Build messages array: sliding window + new user message with cache_control
+    // Assistant prefill forces Sonnet to start its response with '{', preventing
+    // conversational commentary and ensuring valid JSON output.
+    const JSON_PREFILL = '{';
     const messages = [
       ...windowMessages,
       {
@@ -437,6 +476,10 @@ export class EICRExtractionSession {
             cache_control: { type: 'ephemeral', ttl: '5m' },
           },
         ],
+      },
+      {
+        role: 'assistant',
+        content: [{ type: 'text', text: JSON_PREFILL }],
       },
     ];
 
@@ -459,7 +502,9 @@ export class EICRExtractionSession {
       throw new Error('No text block in Sonnet response');
     }
 
-    const rawText = textBlock.text;
+    // Prepend the assistant prefill character so the response is complete JSON.
+    // The API returns only the continuation after the prefill.
+    const rawText = JSON_PREFILL + textBlock.text;
     const EMPTY_RESULT = {
       extracted_readings: [],
       field_clears: [],
@@ -477,32 +522,37 @@ export class EICRExtractionSession {
       // Validate expected array fields
       result = this._validateParsedResult(parsed);
     } catch (parseError) {
-      console.error(
-        `[ExtractionRetry] First attempt failed:`,
-        parseError,
-        rawText.substring(0, 200)
-      );
+      // Log the full raw response for diagnostics — critical for debugging
+      // why Sonnet broke out of JSON mode
       logger.warn(
-        `Session ${this.sessionId} Failed to parse Sonnet JSON (attempt 1): ${parseError.message}`
+        `Session ${this.sessionId} Failed to parse Sonnet JSON (attempt 1): ${parseError.message}`,
+        { rawResponse: rawText.substring(0, 500) }
       );
 
-      // Retry ONCE with reinforced instruction prepended
+      // Retry ONCE with a targeted extraction prompt that includes the original
+      // utterance AND the failed response, so Sonnet can extract readings from both.
       try {
+        // Strip the prefill assistant message (last element) — we'll add it back fresh.
+        const messagesWithoutPrefill = messages.slice(0, -1);
         const retryMessages = [
+          ...messagesWithoutPrefill,
           {
             role: 'user',
             content: [
               {
                 type: 'text',
-                text: 'CRITICAL: You MUST respond with ONLY valid JSON matching the extraction schema. No explanations, no English text, no markdown code fences. Output raw JSON only.',
+                text: `The previous response was not valid JSON. Here is the original transcript: "${transcriptText}"\n\nHere is what you responded (which failed to parse): "${rawText.substring(0, 300)}"\n\nExtract any readings, observations, or field values mentioned and return ONLY the JSON extraction schema. No explanations.`,
               },
             ],
           },
-          ...messages,
+          {
+            role: 'assistant',
+            content: [{ type: 'text', text: JSON_PREFILL }],
+          },
         ];
         const retryResponse = await this.callWithRetry(retryMessages);
         const retryTextBlock = retryResponse.content.find((b) => b.type === 'text');
-        const retryRawText = retryTextBlock?.text || '';
+        const retryRawText = JSON_PREFILL + (retryTextBlock?.text || '');
         const retryJSON = this.extractJSON(retryRawText);
         const retryParsed = JSON.parse(retryJSON);
         result = this._validateParsedResult(retryParsed);
@@ -516,6 +566,12 @@ export class EICRExtractionSession {
         );
         logger.error(
           `Session ${this.sessionId} JSON parse retry also failed: ${retryError.message}`
+        );
+        // Queue the original transcript for recovery on the next successful call
+        // instead of permanently losing the data.
+        this.failedUtteranceQueue.push({ text: transcriptText, timestamp: Date.now() });
+        logger.info(
+          `Session ${this.sessionId} Queued failed utterance for recovery (queue size: ${this.failedUtteranceQueue.length})`
         );
         result = {
           ...EMPTY_RESULT,
@@ -1111,6 +1167,10 @@ export class EICRExtractionSession {
           },
         ],
       },
+      {
+        role: 'assistant',
+        content: [{ type: 'text', text: '{' }],
+      },
     ];
 
     this.addMidConversationBreakpoints(messages);
@@ -1122,7 +1182,7 @@ export class EICRExtractionSession {
 
     let result;
     try {
-      const json = this.extractJSON(textBlock.text);
+      const json = this.extractJSON('{' + textBlock.text);
       result = JSON.parse(json);
     } catch {
       return null;

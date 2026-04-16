@@ -17,6 +17,13 @@ jest.unstable_mockModule('@anthropic-ai/sdk', () => ({
 const { EICRExtractionSession, EICR_SYSTEM_PROMPT } =
   await import('../extraction/eicr-extraction-session.js');
 
+// Simulates Anthropic API response when assistant prefill is '{'.
+// The API returns only the continuation after the prefill character.
+const withoutPrefill = (json) => {
+  const s = typeof json === 'string' ? json : JSON.stringify(json);
+  return s.startsWith('{') ? s.slice(1) : s;
+};
+
 describe('EICRExtractionSession', () => {
   let session;
 
@@ -240,7 +247,7 @@ describe('EICRExtractionSession', () => {
       session.start(null);
 
       // First call: buffers, returns empty
-      const r1 = await session.extractFromUtterance('Zs is 0.35');
+      const r1 = await session.extractFromUtterance('Zs is nought point three five');
       expect(r1.extracted_readings).toEqual([]);
       expect(session.utteranceBuffer).toHaveLength(1);
       expect(mockCreate).not.toHaveBeenCalled();
@@ -251,7 +258,7 @@ describe('EICRExtractionSession', () => {
         content: [
           {
             type: 'text',
-            text: JSON.stringify({
+            text: withoutPrefill({
               extracted_readings: [{ circuit: 1, field: 'zs', value: 0.35 }],
               field_clears: [],
               circuit_updates: [],
@@ -267,9 +274,9 @@ describe('EICRExtractionSession', () => {
       mockCreate.mockResolvedValue(mockResponse);
 
       session.start(null);
-      await session.extractFromUtterance('Zs is 0.35');
+      await session.extractFromUtterance('Zs is nought point three five');
       // Second call triggers the batch
-      const result = await session.extractFromUtterance('on circuit 1');
+      const result = await session.extractFromUtterance('that reading is on circuit 1');
 
       expect(mockCreate).toHaveBeenCalledTimes(1);
       expect(result.extracted_readings).toHaveLength(1);
@@ -278,33 +285,37 @@ describe('EICRExtractionSession', () => {
 
     test('should combine transcript texts with separator', async () => {
       mockCreate.mockResolvedValue({
-        content: [{ type: 'text', text: '{"extracted_readings":[]}' }],
+        content: [{ type: 'text', text: withoutPrefill('{"extracted_readings":[]}') }],
         usage: { input_tokens: 10, output_tokens: 5 },
       });
 
       session.start(null);
-      await session.extractFromUtterance('Zs is 0.35');
-      await session.extractFromUtterance('on circuit 1');
+      await session.extractFromUtterance('Zs is nought point three five');
+      await session.extractFromUtterance('that reading is on circuit 1');
 
-      // Check that the combined text was sent
+      // Check that the combined text was sent — last message is now assistant prefill,
+      // so find the last user message instead
       const callArgs = mockCreate.mock.calls[0][0];
-      const lastUserMsg = callArgs.messages[callArgs.messages.length - 1];
+      const userMsgs = callArgs.messages.filter((m) => m.role === 'user');
+      const lastUserMsg = userMsgs[userMsgs.length - 1];
       const msgText = lastUserMsg.content[0].text;
-      expect(msgText).toContain('Zs is 0.35 ... on circuit 1');
+      expect(msgText).toContain('Zs is nought point three five ... that reading is on circuit 1');
     });
 
     test('should merge regex results from all buffered utterances', async () => {
       mockCreate.mockResolvedValue({
-        content: [{ type: 'text', text: '{"extracted_readings":[]}' }],
+        content: [{ type: 'text', text: withoutPrefill('{"extracted_readings":[]}') }],
         usage: { input_tokens: 10, output_tokens: 5 },
       });
 
       session.start(null);
+      // Short texts OK — regex results bypass the MIN_UTTERANCE_LENGTH filter
       await session.extractFromUtterance('Zs 0.35', [{ field: 'zs', value: '0.35' }]);
       await session.extractFromUtterance('R2 0.12', [{ field: 'r2', value: '0.12' }]);
 
       const callArgs = mockCreate.mock.calls[0][0];
-      const lastUserMsg = callArgs.messages[callArgs.messages.length - 1];
+      const userMsgs = callArgs.messages.filter((m) => m.role === 'user');
+      const lastUserMsg = userMsgs[userMsgs.length - 1];
       const msgText = lastUserMsg.content[0].text;
       expect(msgText).toContain('zs');
       expect(msgText).toContain('r2');
@@ -315,7 +326,7 @@ describe('EICRExtractionSession', () => {
         content: [
           {
             type: 'text',
-            text: JSON.stringify({
+            text: withoutPrefill({
               extracted_readings: [{ circuit: 2, field: 'r2', value: 0.12 }],
             }),
           },
@@ -358,7 +369,7 @@ describe('EICRExtractionSession', () => {
         content: [
           {
             type: 'text',
-            text: JSON.stringify({
+            text: withoutPrefill({
               extracted_readings: [{ circuit: 1, field: 'zs', value: 0.35, confidence: 0.9 }],
               field_clears: [],
               circuit_updates: [],
@@ -391,7 +402,7 @@ describe('EICRExtractionSession', () => {
 
     test('should handle empty/null response text gracefully', async () => {
       mockCreate.mockResolvedValue({
-        content: [{ type: 'text', text: '{}' }],
+        content: [{ type: 'text', text: withoutPrefill('{}') }],
         usage: { input_tokens: 10, output_tokens: 5 },
       });
 
@@ -425,7 +436,7 @@ describe('EICRExtractionSession', () => {
       });
 
       session.start(null);
-      await session.extractFromUtterance('R2 on circuit 2');
+      await session.extractFromUtterance('R2 reading check on circuit 2');
       await expect(session.flushUtteranceBuffer()).rejects.toThrow('No text block');
     });
 
@@ -434,7 +445,7 @@ describe('EICRExtractionSession', () => {
         content: [
           {
             type: 'text',
-            text: JSON.stringify({
+            text: withoutPrefill({
               extracted_readings: [],
               questions_for_user: [{ field: 'zs', circuit: -1, question: 'Which circuit?' }],
             }),
@@ -444,7 +455,7 @@ describe('EICRExtractionSession', () => {
       });
 
       session.start(null);
-      await session.extractFromUtterance('Zs 0.35');
+      await session.extractFromUtterance('Zs is nought point three five');
       await session.flushUtteranceBuffer();
 
       expect(session.askedQuestions).toContain('zs:-1');
@@ -458,7 +469,7 @@ describe('EICRExtractionSession', () => {
         content: [
           {
             type: 'text',
-            text: JSON.stringify({
+            text: withoutPrefill({
               extracted_readings: [],
               questions_for_user: [
                 { field: 'a', circuit: 1 },
@@ -471,7 +482,7 @@ describe('EICRExtractionSession', () => {
       });
 
       session.start(null);
-      await session.extractFromUtterance('circuit 1 reading');
+      await session.extractFromUtterance('circuit 1 insulation resistance reading');
       await session.flushUtteranceBuffer();
 
       expect(session.askedQuestions.length).toBeLessThanOrEqual(30);
@@ -484,7 +495,7 @@ describe('EICRExtractionSession', () => {
         content: [
           {
             type: 'text',
-            text: JSON.stringify({
+            text: withoutPrefill({
               extracted_readings: [],
               observations: [
                 { code: 'C2', observation_text: 'Missing earth bond at consumer unit' }, // dupe
@@ -509,7 +520,7 @@ describe('EICRExtractionSession', () => {
         content: [
           {
             type: 'text',
-            text: JSON.stringify({
+            text: withoutPrefill({
               extracted_readings: [{ circuit: 1, field: 'zs', value: 0.35 }],
               confirmations: [{ text: 'Circuit 1, 0.35', field: 'zs', circuit: 1 }],
             }),
@@ -519,7 +530,9 @@ describe('EICRExtractionSession', () => {
       });
 
       session.start(null);
-      await session.extractFromUtterance('Zs 0.35 circuit 1', [], { confirmationsEnabled: true });
+      await session.extractFromUtterance('Zs is nought point three five on circuit 1', [], {
+        confirmationsEnabled: true,
+      });
       const result = await session.flushUtteranceBuffer();
 
       // Check that CONFIRMATIONS ENABLED was sent
