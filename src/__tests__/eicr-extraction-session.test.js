@@ -17,11 +17,12 @@ jest.unstable_mockModule('@anthropic-ai/sdk', () => ({
 const { EICRExtractionSession, EICR_SYSTEM_PROMPT } =
   await import('../extraction/eicr-extraction-session.js');
 
-// Simulates Anthropic API response when assistant prefill is '{'.
-// The API returns only the continuation after the prefill character.
-const withoutPrefill = (json) => {
-  const s = typeof json === 'string' ? json : JSON.stringify(json);
-  return s.startsWith('{') ? s.slice(1) : s;
+// Builds a tool_use content array matching what Anthropic returns when
+// tool_choice forces record_extraction. Accepts an object (preferred) or a
+// JSON string (legacy convenience).
+const toolUseContent = (objOrJson) => {
+  const input = typeof objOrJson === 'string' ? JSON.parse(objOrJson) : objOrJson;
+  return [{ type: 'tool_use', name: 'record_extraction', input }];
 };
 
 describe('EICRExtractionSession', () => {
@@ -255,21 +256,17 @@ describe('EICRExtractionSession', () => {
 
     test('should process batch when buffer reaches BATCH_SIZE (2)', async () => {
       const mockResponse = {
-        content: [
-          {
-            type: 'text',
-            text: withoutPrefill({
-              extracted_readings: [{ circuit: 1, field: 'zs', value: 0.35 }],
-              field_clears: [],
-              circuit_updates: [],
-              observations: [],
-              validation_alerts: [],
-              questions_for_user: [],
-              confirmations: [],
-            }),
-          },
-        ],
+        content: toolUseContent({
+          extracted_readings: [{ circuit: 1, field: 'zs', value: 0.35 }],
+          field_clears: [],
+          circuit_updates: [],
+          observations: [],
+          validation_alerts: [],
+          questions_for_user: [],
+          confirmations: [],
+        }),
         usage: { input_tokens: 200, output_tokens: 80 },
+        stop_reason: 'tool_use',
       };
       mockCreate.mockResolvedValue(mockResponse);
 
@@ -285,8 +282,9 @@ describe('EICRExtractionSession', () => {
 
     test('should combine transcript texts with separator', async () => {
       mockCreate.mockResolvedValue({
-        content: [{ type: 'text', text: withoutPrefill('{"extracted_readings":[]}') }],
+        content: toolUseContent({ extracted_readings: [] }),
         usage: { input_tokens: 10, output_tokens: 5 },
+        stop_reason: 'tool_use',
       });
 
       session.start(null);
@@ -304,8 +302,9 @@ describe('EICRExtractionSession', () => {
 
     test('should merge regex results from all buffered utterances', async () => {
       mockCreate.mockResolvedValue({
-        content: [{ type: 'text', text: withoutPrefill('{"extracted_readings":[]}') }],
+        content: toolUseContent({ extracted_readings: [] }),
         usage: { input_tokens: 10, output_tokens: 5 },
+        stop_reason: 'tool_use',
       });
 
       session.start(null);
@@ -323,15 +322,11 @@ describe('EICRExtractionSession', () => {
 
     test('flushUtteranceBuffer should process partial batch', async () => {
       mockCreate.mockResolvedValue({
-        content: [
-          {
-            type: 'text',
-            text: withoutPrefill({
-              extracted_readings: [{ circuit: 2, field: 'r2', value: 0.12 }],
-            }),
-          },
-        ],
+        content: toolUseContent({
+          extracted_readings: [{ circuit: 2, field: 'r2', value: 0.12 }],
+        }),
         usage: { input_tokens: 10, output_tokens: 5 },
+        stop_reason: 'tool_use',
       });
 
       session.start(null);
@@ -366,26 +361,22 @@ describe('EICRExtractionSession', () => {
     // These tests use flushUtteranceBuffer to trigger the API call after buffering
     test('should parse valid extraction response', async () => {
       const mockResponse = {
-        content: [
-          {
-            type: 'text',
-            text: withoutPrefill({
-              extracted_readings: [{ circuit: 1, field: 'zs', value: 0.35, confidence: 0.9 }],
-              field_clears: [],
-              circuit_updates: [],
-              observations: [],
-              validation_alerts: [],
-              questions_for_user: [],
-              confirmations: [],
-            }),
-          },
-        ],
+        content: toolUseContent({
+          extracted_readings: [{ circuit: 1, field: 'zs', value: 0.35, confidence: 0.9 }],
+          field_clears: [],
+          circuit_updates: [],
+          observations: [],
+          validation_alerts: [],
+          questions_for_user: [],
+          confirmations: [],
+        }),
         usage: {
           cache_read_input_tokens: 100,
           cache_creation_input_tokens: 50,
           input_tokens: 200,
           output_tokens: 80,
         },
+        stop_reason: 'tool_use',
       };
       mockCreate.mockResolvedValue(mockResponse);
 
@@ -400,10 +391,11 @@ describe('EICRExtractionSession', () => {
       expect(session.turnCount).toBe(1);
     });
 
-    test('should handle empty/null response text gracefully', async () => {
+    test('should handle empty tool_use input gracefully', async () => {
       mockCreate.mockResolvedValue({
-        content: [{ type: 'text', text: withoutPrefill('{}') }],
+        content: toolUseContent({}),
         usage: { input_tokens: 10, output_tokens: 5 },
+        stop_reason: 'tool_use',
       });
 
       session.start(null);
@@ -414,10 +406,36 @@ describe('EICRExtractionSession', () => {
       expect(result.questions_for_user).toEqual([]);
     });
 
-    test('should handle malformed JSON response', async () => {
+    test('should fall back to text-block JSON when model skips tool_use', async () => {
+      // Rare: model emits only a text block despite tool_choice. Source path
+      // extracts JSON from the text, validates, and continues without queueing.
+      mockCreate.mockResolvedValue({
+        content: [
+          {
+            type: 'text',
+            text: '{"extracted_readings":[{"circuit":1,"field":"zs","value":0.35}]}',
+          },
+        ],
+        usage: { input_tokens: 10, output_tokens: 5 },
+        stop_reason: 'end_turn',
+      });
+
+      session.start(null);
+      await session.extractFromUtterance('Zs is 0.35 on circuit 1');
+      const result = await session.flushUtteranceBuffer();
+
+      expect(result.extracted_readings).toHaveLength(1);
+      expect(session.conversationHistory).toHaveLength(2);
+      expect(session.failedUtteranceQueue).toHaveLength(0);
+    });
+
+    test('should queue utterance when response has no parseable JSON', async () => {
+      // No tool_use AND no JSON-shaped text → fallback parse fails → queue for
+      // later recovery, return empty result with extraction_failed flag.
       mockCreate.mockResolvedValue({
         content: [{ type: 'text', text: 'not valid json at all' }],
         usage: { input_tokens: 10, output_tokens: 5 },
+        stop_reason: 'end_turn',
       });
 
       session.start(null);
@@ -425,33 +443,38 @@ describe('EICRExtractionSession', () => {
       const result = await session.flushUtteranceBuffer();
 
       expect(result.extracted_readings).toEqual([]);
-      // Should still push to conversation history
+      expect(result.extraction_failed).toBe(true);
+      expect(session.failedUtteranceQueue).toHaveLength(1);
+      expect(session.failedUtteranceQueue[0].text).toContain('Zs reading on circuit 1');
+      // Still pushes to conversation history to keep context in sync
       expect(session.conversationHistory).toHaveLength(2);
     });
 
-    test('should throw if no text block in response', async () => {
+    test('should queue utterance when response has no tool_use and no text block', async () => {
+      // Image-only content: no tool_use, no text → fallback parse fails → queue.
       mockCreate.mockResolvedValue({
         content: [{ type: 'image' }],
         usage: { input_tokens: 10, output_tokens: 5 },
+        stop_reason: 'end_turn',
       });
 
       session.start(null);
       await session.extractFromUtterance('R2 reading check on circuit 2');
-      await expect(session.flushUtteranceBuffer()).rejects.toThrow('No text block');
+      const result = await session.flushUtteranceBuffer();
+
+      expect(result.extracted_readings).toEqual([]);
+      expect(result.extraction_failed).toBe(true);
+      expect(session.failedUtteranceQueue).toHaveLength(1);
     });
 
     test('should track questions asked', async () => {
       mockCreate.mockResolvedValue({
-        content: [
-          {
-            type: 'text',
-            text: withoutPrefill({
-              extracted_readings: [],
-              questions_for_user: [{ field: 'zs', circuit: -1, question: 'Which circuit?' }],
-            }),
-          },
-        ],
+        content: toolUseContent({
+          extracted_readings: [],
+          questions_for_user: [{ field: 'zs', circuit: -1, question: 'Which circuit?' }],
+        }),
         usage: { input_tokens: 10, output_tokens: 5 },
+        stop_reason: 'tool_use',
       });
 
       session.start(null);
@@ -466,19 +489,15 @@ describe('EICRExtractionSession', () => {
       session.askedQuestions = Array.from({ length: 29 }, (_, i) => `field${i}:${i}`);
 
       mockCreate.mockResolvedValue({
-        content: [
-          {
-            type: 'text',
-            text: withoutPrefill({
-              extracted_readings: [],
-              questions_for_user: [
-                { field: 'a', circuit: 1 },
-                { field: 'b', circuit: 2 },
-              ],
-            }),
-          },
-        ],
+        content: toolUseContent({
+          extracted_readings: [],
+          questions_for_user: [
+            { field: 'a', circuit: 1 },
+            { field: 'b', circuit: 2 },
+          ],
+        }),
         usage: { input_tokens: 10, output_tokens: 5 },
+        stop_reason: 'tool_use',
       });
 
       session.start(null);
@@ -492,19 +511,15 @@ describe('EICRExtractionSession', () => {
       session.extractedObservationTexts = ['missing earth bond at consumer unit'];
 
       mockCreate.mockResolvedValue({
-        content: [
-          {
-            type: 'text',
-            text: withoutPrefill({
-              extracted_readings: [],
-              observations: [
-                { code: 'C2', observation_text: 'Missing earth bond at consumer unit' }, // dupe
-                { code: 'C3', observation_text: 'Labelling not present on distribution board' }, // new
-              ],
-            }),
-          },
-        ],
+        content: toolUseContent({
+          extracted_readings: [],
+          observations: [
+            { code: 'C2', observation_text: 'Missing earth bond at consumer unit' }, // dupe
+            { code: 'C3', observation_text: 'Labelling not present on distribution board' }, // new
+          ],
+        }),
         usage: { input_tokens: 10, output_tokens: 5 },
+        stop_reason: 'tool_use',
       });
 
       session.start(null);
@@ -517,16 +532,12 @@ describe('EICRExtractionSession', () => {
 
     test('should include confirmations when enabled', async () => {
       mockCreate.mockResolvedValue({
-        content: [
-          {
-            type: 'text',
-            text: withoutPrefill({
-              extracted_readings: [{ circuit: 1, field: 'zs', value: 0.35 }],
-              confirmations: [{ text: 'Circuit 1, 0.35', field: 'zs', circuit: 1 }],
-            }),
-          },
-        ],
+        content: toolUseContent({
+          extracted_readings: [{ circuit: 1, field: 'zs', value: 0.35 }],
+          confirmations: [{ text: 'Circuit 1, 0.35', field: 'zs', circuit: 1 }],
+        }),
         usage: { input_tokens: 10, output_tokens: 5 },
+        stop_reason: 'tool_use',
       });
 
       session.start(null);

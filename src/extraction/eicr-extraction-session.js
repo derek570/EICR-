@@ -67,6 +67,73 @@ const FIELD_ID_MAP = {
   ocpd_max_zs_ohm: 28,
 };
 
+// Tool-use schema for forced structured output. claude-sonnet-4-6 does not
+// support assistant-message prefill, so we use tool_choice to guarantee the
+// model returns JSON that matches our extraction schema. The tool is never
+// actually executed — we parse the arguments the model sends to it.
+const EXTRACTION_TOOL = {
+  name: 'record_extraction',
+  description:
+    "Record the extracted EICR/EIC data from the electrician's utterance. You MUST call this tool exactly once per turn, even if nothing was extracted (return empty arrays). Do not include prose outside the tool call.",
+  input_schema: {
+    type: 'object',
+    properties: {
+      extracted_readings: {
+        type: 'array',
+        description: 'Test readings extracted from the utterance.',
+        items: { type: 'object' },
+      },
+      field_clears: {
+        type: 'array',
+        description: 'Fields the user asked to clear/remove.',
+        items: { type: 'object' },
+      },
+      circuit_updates: {
+        type: 'array',
+        description: 'Circuit metadata updates (designation, cable size, etc).',
+        items: { type: 'object' },
+      },
+      observations: {
+        type: 'array',
+        description: 'Defects / observations called out by the inspector.',
+        items: { type: 'object' },
+      },
+      validation_alerts: {
+        type: 'array',
+        description: 'Values that look out of range or inconsistent.',
+        items: { type: 'object' },
+      },
+      questions_for_user: {
+        type: 'array',
+        description: 'Questions Sonnet needs the inspector to answer.',
+        items: { type: 'object' },
+      },
+      confirmations: {
+        type: 'array',
+        description: 'Short confirmations to read back (e.g. "got it, 0.23 ohms").',
+        items: { type: 'object' },
+      },
+      spoken_response: {
+        type: ['string', 'null'],
+        description: 'Optional spoken response to play via TTS. Null if none.',
+      },
+      action: {
+        type: ['object', 'null'],
+        description: 'Optional app action (e.g. switch tab). Null if none.',
+      },
+    },
+    required: [
+      'extracted_readings',
+      'field_clears',
+      'circuit_updates',
+      'observations',
+      'validation_alerts',
+      'questions_for_user',
+      'confirmations',
+    ],
+  },
+};
+
 // Load externalized system prompts at module init
 // Must be >=1024 tokens for Sonnet 4.5 prompt caching
 export const EICR_SYSTEM_PROMPT = fssync.readFileSync(
@@ -442,10 +509,11 @@ export class EICRExtractionSession {
       );
     }
 
-    // Build messages array: sliding window + new user message with cache_control
-    // Assistant prefill forces Sonnet to start its response with '{', preventing
-    // conversational commentary and ensuring valid JSON output.
-    const JSON_PREFILL = '{';
+    // Build messages array: sliding window + new user message with cache_control.
+    // Structured output is enforced via Anthropic tool-use (tool_choice forces
+    // the model to call record_extraction). claude-sonnet-4-6 does NOT support
+    // assistant message prefill, so we cannot pre-seed '{' — tool-use is the
+    // sanctioned way to guarantee schema-valid JSON.
     const messages = [
       ...windowMessages,
       {
@@ -458,34 +526,19 @@ export class EICRExtractionSession {
           },
         ],
       },
-      {
-        role: 'assistant',
-        content: [{ type: 'text', text: JSON_PREFILL }],
-      },
     ];
 
     // Add mid-conversation breakpoints if >20 blocks
     this.addMidConversationBreakpoints(messages);
 
-    const response = await this.callWithRetry(messages);
+    const response = await this.callWithRetry(messages, 3, null, 1280, {
+      tools: [EXTRACTION_TOOL],
+      toolChoice: { type: 'tool', name: EXTRACTION_TOOL.name },
+    });
 
     // Reset cache keepalive timer — real API call just refreshed the cache
     this._resetCacheKeepalive();
 
-    // Extract text response
-    const textBlock = response.content.find((b) => b.type === 'text');
-    if (!textBlock || !textBlock.text) {
-      // Still push to conversation history to keep it in sync
-      this.conversationHistory.push(
-        { role: 'user', content: [{ type: 'text', text: userMessage }] },
-        { role: 'assistant', content: [{ type: 'text', text: '{}' }] }
-      );
-      throw new Error('No text block in Sonnet response');
-    }
-
-    // Prepend the assistant prefill character so the response is complete JSON.
-    // The API returns only the continuation after the prefill.
-    const rawText = JSON_PREFILL + textBlock.text;
     const EMPTY_RESULT = {
       extracted_readings: [],
       field_clears: [],
@@ -497,61 +550,30 @@ export class EICRExtractionSession {
       spoken_response: null,
       action: null,
     };
-    let result;
 
-    try {
-      const resultJSON = this.extractJSON(rawText);
-      const parsed = JSON.parse(resultJSON);
-      // Validate expected array fields
-      result = this._validateParsedResult(parsed);
-    } catch (parseError) {
-      // Log the full raw response for diagnostics — critical for debugging
-      // why Sonnet broke out of JSON mode
+    // Extract the forced tool_use block. With tool_choice set, Anthropic
+    // guarantees the model returns a tool_use content block matching our schema.
+    const toolUseBlock = response.content.find((b) => b.type === 'tool_use');
+    let result;
+    let assistantHistoryText;
+
+    if (!toolUseBlock || !toolUseBlock.input || typeof toolUseBlock.input !== 'object') {
+      // Very rare — model failed to call the tool despite tool_choice. Recover
+      // from any text block if present, otherwise return empty and queue utterance.
+      const textBlock = response.content.find((b) => b.type === 'text');
+      const rawText = textBlock?.text || '';
       logger.warn(
-        `Session ${this.sessionId} Failed to parse Sonnet JSON (attempt 1): ${parseError.message}`,
+        `Session ${this.sessionId} Sonnet did not emit tool_use despite tool_choice; attempting text fallback`,
         { rawResponse: rawText.substring(0, 500) }
       );
-
-      // Retry ONCE with a targeted extraction prompt that includes the original
-      // utterance AND the failed response, so Sonnet can extract readings from both.
       try {
-        // Strip the prefill assistant message (last element) — we'll add it back fresh.
-        const messagesWithoutPrefill = messages.slice(0, -1);
-        const retryMessages = [
-          ...messagesWithoutPrefill,
-          {
-            role: 'user',
-            content: [
-              {
-                type: 'text',
-                text: `The previous response was not valid JSON. Here is the original transcript: "${transcriptText}"\n\nHere is what you responded (which failed to parse): "${rawText.substring(0, 300)}"\n\nExtract any readings, observations, or field values mentioned and return ONLY the JSON extraction schema. No explanations.`,
-              },
-            ],
-          },
-          {
-            role: 'assistant',
-            content: [{ type: 'text', text: JSON_PREFILL }],
-          },
-        ];
-        const retryResponse = await this.callWithRetry(retryMessages);
-        const retryTextBlock = retryResponse.content.find((b) => b.type === 'text');
-        const retryRawText = JSON_PREFILL + (retryTextBlock?.text || '');
-        const retryJSON = this.extractJSON(retryRawText);
-        const retryParsed = JSON.parse(retryJSON);
-        result = this._validateParsedResult(retryParsed);
-        this.costTracker.addSonnetUsage(retryResponse.usage);
-        logger.info(`Session ${this.sessionId} JSON parse retry succeeded`);
-      } catch (retryError) {
-        console.error(
-          `[ExtractionRetry] Retry also failed:`,
-          retryError,
-          rawText.substring(0, 200)
-        );
+        const fallbackJSON = this.extractJSON(rawText);
+        result = this._validateParsedResult(JSON.parse(fallbackJSON));
+        assistantHistoryText = rawText;
+      } catch (parseError) {
         logger.error(
-          `Session ${this.sessionId} JSON parse retry also failed: ${retryError.message}`
+          `Session ${this.sessionId} Tool-use fallback parse failed: ${parseError.message}`
         );
-        // Queue the original transcript for recovery on the next successful call
-        // instead of permanently losing the data.
         this.failedUtteranceQueue.push({ text: transcriptText, timestamp: Date.now() });
         logger.info(
           `Session ${this.sessionId} Queued failed utterance for recovery (queue size: ${this.failedUtteranceQueue.length})`
@@ -559,15 +581,22 @@ export class EICRExtractionSession {
         result = {
           ...EMPTY_RESULT,
           extraction_failed: true,
-          error_message: `JSON parse failed after retry: ${parseError.message}`,
+          error_message: `No tool_use in response: ${parseError.message}`,
         };
+        assistantHistoryText = '{}';
       }
+    } else {
+      result = this._validateParsedResult(toolUseBlock.input);
+      // Store the tool input as JSON text in conversation history so the
+      // existing sliding-window code (which treats assistant turns as text) keeps
+      // working without needing to replay tool_use/tool_result pairs back to the API.
+      assistantHistoryText = JSON.stringify(toolUseBlock.input);
     }
 
-    // ALWAYS push to conversation history (even on parse failure) to keep context in sync
+    // ALWAYS push to conversation history (even on extraction failure) to keep context in sync
     this.conversationHistory.push(
       { role: 'user', content: [{ type: 'text', text: userMessage }] },
-      { role: 'assistant', content: [{ type: 'text', text: rawText }] }
+      { role: 'assistant', content: [{ type: 'text', text: assistantHistoryText }] }
     );
 
     // Track metrics
@@ -678,7 +707,13 @@ export class EICRExtractionSession {
     return result;
   }
 
-  async callWithRetry(messages, maxRetries = 3, systemPrompt = null, maxTokens = 1280) {
+  async callWithRetry(
+    messages,
+    maxRetries = 3,
+    systemPrompt = null,
+    maxTokens = 1280,
+    options = {}
+  ) {
     const system = systemPrompt
       ? systemPrompt
       : [
@@ -689,18 +724,21 @@ export class EICRExtractionSession {
           },
         ];
 
+    // Build request params. Tools + tool_choice are included only when the
+    // caller opts in, so keepalive / non-extraction calls stay cheap.
+    const requestParams = {
+      model: 'claude-sonnet-4-6',
+      max_tokens: maxTokens,
+      system,
+      messages,
+    };
+    if (options.tools) requestParams.tools = options.tools;
+    if (options.toolChoice) requestParams.tool_choice = options.toolChoice;
+
     let lastError;
     for (let attempt = 0; attempt < maxRetries; attempt++) {
       try {
-        return await this.client.messages.create(
-          {
-            model: 'claude-sonnet-4-6',
-            max_tokens: maxTokens,
-            system,
-            messages,
-          },
-          { timeout: 30000 }
-        );
+        return await this.client.messages.create(requestParams, { timeout: 30000 });
       } catch (error) {
         lastError = error;
         if (error.status === 429 || error.status >= 500) {
@@ -1150,26 +1188,20 @@ export class EICRExtractionSession {
           },
         ],
       },
-      {
-        role: 'assistant',
-        content: [{ type: 'text', text: '{' }],
-      },
     ];
 
     this.addMidConversationBreakpoints(messages);
 
-    const response = await this.callWithRetry(messages, 2, null, 512);
+    const response = await this.callWithRetry(messages, 2, null, 512, {
+      tools: [EXTRACTION_TOOL],
+      toolChoice: { type: 'tool', name: EXTRACTION_TOOL.name },
+    });
 
-    const textBlock = response.content.find((b) => b.type === 'text');
-    if (!textBlock || !textBlock.text) return null;
-
-    let result;
-    try {
-      const json = this.extractJSON('{' + textBlock.text);
-      result = JSON.parse(json);
-    } catch {
+    const toolUseBlock = response.content.find((b) => b.type === 'tool_use');
+    if (!toolUseBlock || !toolUseBlock.input || typeof toolUseBlock.input !== 'object') {
       return null;
     }
+    const result = toolUseBlock.input;
 
     // Do NOT push review exchange to conversationHistory — it's a meta-instruction,
     // not part of the extraction dialogue.
