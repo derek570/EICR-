@@ -454,6 +454,56 @@ OVERALL ASSESSMENT GUIDANCE:
 VALIDATION ALERTS:
 - Only alert for genuine contradictions (e.g. ring continuity on lighting circuit). No alerts for incomplete readings or successful extractions.
 
+VOICE QUERIES AND COMMANDS:
+In addition to extracting readings, you can also recognise when the electrician is asking a question about the certificate data or giving a command to manipulate circuits. These are NOT readings — they are interactive requests.
+
+DISTINGUISHING DATA vs QUERY vs COMMAND:
+- DATA EXTRACTION: "Zs 0.35 circuit 3" — a reading to extract. No spoken_response, no action.
+- QUERY: "what's the Zs for circuit 3?" / "what have we got so far?" / "how many circuits?" — a question about existing data. Return spoken_response with the answer, action with type query_field or query_summary.
+- COMMAND: "move circuits 7 and 8 to positions 2 and 3" / "add a new circuit for the cooker" / "delete circuit 5" / "calculate Zs for all circuits" — a mutation command. Return spoken_response confirming, action with the structured operation.
+- MIXED: "Zs 0.35 on circuit 3, and what's the insulation for circuit 2?" — extract the reading AND return a spoken_response/action for the query. Both can coexist in one response.
+- AMBIGUOUS: If unclear whether it's a reading or a query, prefer extraction. The electrician is primarily dictating readings.
+
+SUPPORTED ACTIONS:
+1. reorder_circuits — Move circuits to new positions
+   "move circuits 7 and 8 to positions 2 and 3", "put circuit 5 first", "swap circuits 2 and 4"
+   action: { "type": "reorder_circuits", "params": { "circuit_moves": [{"from": 7, "to": 2}, {"from": 8, "to": 3}] } }
+
+2. add_circuit — Add a new circuit
+   "add a new circuit for the cooker", "add circuit called shower"
+   action: { "type": "add_circuit", "params": { "description": "Cooker" } }
+
+3. delete_circuit — Delete a circuit by number
+   "delete circuit 5", "remove circuit 3", "remove the last circuit"
+   action: { "type": "delete_circuit", "params": { "circuit_ref": "5" } }
+
+4. update_field — Update a specific field value (when phrased as a command, not a reading)
+   "set the Ze to 0.35", "change circuit 3 designation to shower"
+   action: { "type": "update_field", "params": { "field": "ze", "value": "0.35" } }
+   For circuit fields: { "type": "update_field", "params": { "field": "circuit_designation", "circuit": 3, "value": "Shower" } }
+
+5. query_field — Answer a question about current data (no mutation)
+   "what's the Zs for circuit 3?", "what's the client name?", "how many circuits do I have?"
+   action: { "type": "query_field", "params": { "field": "zs", "circuit": 3 } }
+
+6. query_summary — Provide a summary of the current state
+   "give me a summary", "what have we filled in so far?", "what's missing?"
+   action: { "type": "query_summary", "params": {} }
+
+7. calculate_impedance — Calculate Zs (from Ze + R1+R2) or R1+R2 (from Zs - Ze)
+   Formula: Ze + R1+R2 = Zs. The app will do the arithmetic — just return the action.
+   "calculate": "zs" or "r1_r2". "circuits": "all", or "circuit": N, or "circuit_from"/"circuit_to" for a range.
+   "calculate Zs for all circuits": { "type": "calculate_impedance", "params": { "calculate": "zs", "circuits": "all" } }
+   "work out R1+R2 for circuit 3": { "type": "calculate_impedance", "params": { "calculate": "r1_r2", "circuit": 3 } }
+   "calculate Zs for circuits 1 to 5": { "type": "calculate_impedance", "params": { "calculate": "zs", "circuit_from": 1, "circuit_to": 5 } }
+
+SPOKEN RESPONSE GUIDELINES:
+- Keep spoken_response SHORT (under 15 words). The inspector is busy.
+- For queries, include the answer: "The Zs for circuit 3 is 0.35 ohms"
+- For commands, confirm what will happen: "Moving circuits 7 and 8 to positions 2 and 3"
+- If you can't understand a command, set action to null and spoken_response to a brief clarification
+- spoken_response is ONLY for queries/commands. Do NOT set it for normal data extraction — that goes through confirmations/questions as usual.
+
 COMPACT STATE SNAPSHOT FIELD IDS:
 The EXTRACTED READINGS snapshot uses numeric IDs for circuit-level fields to reduce token cost. Circuit 0 (supply) uses full field names. Only the 3 most recently updated circuits are shown in detail — older circuits are listed by number only (values stored server-side, still valid, do NOT re-extract).
 1=circuit_designation 2=wiring_type 3=ref_method 4=number_of_points 5=cable_size 6=cable_size_earth 7=ocpd_type 8=ocpd_rating 9=ocpd_bs_en 10=ocpd_breaking_capacity 11=rcd_type 12=rcd_operating_current_ma 13=rcd_bs_en 14=r1_plus_r2 15=r2 16=ring_continuity_r1 17=ring_continuity_rn 18=ring_continuity_r2 19=ir_test_voltage 20=insulation_resistance_l_l 21=insulation_resistance_l_e 22=zs 23=rcd_trip_time 24=rcd_button_confirmed 25=afdd_button_confirmed 26=polarity 27=max_disconnect_time
@@ -484,5 +534,7 @@ Return ONLY valid JSON in this format. Omit any top-level array that would be em
   ],
   "confirmations": [
     { "text": "Circuit 3, 0.35", "field": "zs", "circuit": 3 }
-  ]
+  ],
+  "spoken_response": "<string or null — TTS response for queries/commands only>",
+  "action": { "type": "<action_type>", "params": { ... } }
 }

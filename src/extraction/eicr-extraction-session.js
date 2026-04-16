@@ -494,6 +494,8 @@ export class EICRExtractionSession {
       validation_alerts: [],
       questions_for_user: [],
       confirmations: [],
+      spoken_response: null,
+      action: null,
     };
     let result;
 
@@ -1186,6 +1188,8 @@ export class EICRExtractionSession {
       validation_alerts: Array.isArray(parsed.validation_alerts) ? parsed.validation_alerts : [],
       questions_for_user: Array.isArray(parsed.questions_for_user) ? parsed.questions_for_user : [],
       confirmations: Array.isArray(parsed.confirmations) ? parsed.confirmations : [],
+      spoken_response: typeof parsed.spoken_response === 'string' ? parsed.spoken_response : null,
+      action: parsed.action && typeof parsed.action === 'object' ? parsed.action : null,
     };
   }
 
