@@ -23,8 +23,7 @@ const SLIDING_WINDOW_SIZE = 6;
 // Sonnet cost by ~50% while keeping latency under 4s for isolated readings.
 // The timeout ensures buffered utterances are processed even if the speaker pauses.
 const BATCH_SIZE = 2;
-const BATCH_TIMEOUT_MS = 3000; // ms to wait for more utterances before flushing
-const MIN_UTTERANCE_LENGTH = 20; // Ignore utterances shorter than this — "um", "yeah", etc.
+const BATCH_TIMEOUT_MS = 2000; // ms to wait for more utterances before flushing
 
 // Cache keepalive — send a minimal API call after 4 minutes of silence to refresh
 // the 5-minute prompt cache before it expires. Costs ~$0.003 per keepalive (cache reads only).
@@ -300,24 +299,6 @@ export class EICRExtractionSession {
    * batch fires (buffer full) or when flushed via timeout/stop.
    */
   async extractFromUtterance(transcriptText, regexResults = [], options = {}) {
-    // Skip trivially short utterances that can't contain extractable data
-    // (e.g. "um", "yeah", "ok"). Exception: if regex already extracted fields,
-    // still process — the transcript text itself is short but has useful data.
-    if (transcriptText.trim().length < MIN_UTTERANCE_LENGTH && regexResults.length === 0) {
-      logger.debug(
-        `Session ${this.sessionId} Skipping short utterance (${transcriptText.trim().length} chars): "${transcriptText.trim()}"`
-      );
-      return {
-        extracted_readings: [],
-        field_clears: [],
-        circuit_updates: [],
-        observations: [],
-        validation_alerts: [],
-        questions_for_user: [],
-        confirmations: [],
-      };
-    }
-
     // Add to buffer
     this.utteranceBuffer.push({ transcriptText, regexResults, options });
 

@@ -309,7 +309,7 @@ describe('EICRExtractionSession', () => {
       });
 
       session.start(null);
-      // Short texts OK — regex results bypass the MIN_UTTERANCE_LENGTH filter
+      // Short texts with regex results
       await session.extractFromUtterance('Zs 0.35', [{ field: 'zs', value: '0.35' }]);
       await session.extractFromUtterance('R2 0.12', [{ field: 'r2', value: '0.12' }]);
 
