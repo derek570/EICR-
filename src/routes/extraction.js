@@ -14,6 +14,7 @@ import { getActiveSession } from '../state/recording-sessions.js';
 import logger from '../logger.js';
 import sharp from 'sharp';
 import { createFileFilter, IMAGE_MIMES, handleUploadError } from '../utils/upload.js';
+import { extractCcuGeometric } from '../extraction/ccu-geometric.js';
 
 const router = Router();
 
@@ -713,6 +714,26 @@ router.post('/analyze-ccu', auth.requireAuth, upload.single('photo'), async (req
 
     const base64 = Buffer.from(imageBytes).toString('base64');
 
+    // Phase B (plan 2026-04-16 §8): CCU_GEOMETRIC_V1 feature flag.
+    // When enabled, kick off the two-stage geometric extractor in parallel
+    // with the existing single-call VLM extraction. The geometric pipeline
+    // gives us rail bounds + module width + slot centres, which we attach
+    // to the response under `geometric` so downstream consumers (iOS overlay,
+    // analyzer, Phase C mapper) can use it. Zero regression when unset:
+    // nothing runs, nothing is attached. On any throw we fall through
+    // silently to the existing extractor — the main response must never
+    // be blocked by the experimental path.
+    const geometricEnabled = process.env.CCU_GEOMETRIC_V1 === 'true';
+    const geometricPromise = geometricEnabled
+      ? extractCcuGeometric(imageBytes).catch((err) => {
+          logger.warn('CCU geometric extraction failed (non-fatal)', {
+            userId: req.user.id,
+            error: err.message,
+          });
+          return null;
+        })
+      : Promise.resolve(null);
+
     const prompt = `You are an expert UK electrician extracting devices from a consumer unit photo for an EICR certificate. Follow these 4 steps IN ORDER. Return ONLY valid JSON.
 
 ## STEP 1: FIND MAIN SWITCH
@@ -975,11 +996,47 @@ questionsForInspector: return EMPTY array [] unless RCD type could not be determ
       costUsd: analysis.gptVisionCost.cost_usd,
     });
 
+    // Phase B: await the geometric extractor (parallel) and attach its
+    // output to the response. We do this BEFORE res.json so iOS sees it
+    // on the same call, but AFTER the main extraction so geometric
+    // failure/slowness can't delay the user-visible circuit list.
+    // The Anthropic call above typically runs ~15-30s; Stage 1+2
+    // combined ~25-40s, so a short additional wait is expected when
+    // the flag is on. If geometric finishes first this is a no-op await.
+    const geometricResult = await geometricPromise;
+    if (geometricResult) {
+      analysis.geometric = {
+        schemaVersion: geometricResult.schemaVersion,
+        moduleCount: geometricResult.moduleCount,
+        vlmCount: geometricResult.vlmCount,
+        disagreement: geometricResult.disagreement,
+        lowConfidence: geometricResult.lowConfidence,
+        medianRails: geometricResult.medianRails,
+        slotCentersX: geometricResult.slotCentersX,
+        moduleWidth: geometricResult.moduleWidth,
+        mainSwitchWidth: geometricResult.mainSwitchWidth,
+        mainSwitchCenterX: geometricResult.mainSwitchCenterX,
+        imageWidth: geometricResult.imageWidth,
+        imageHeight: geometricResult.imageHeight,
+      };
+      logger.info('CCU geometric extraction attached', {
+        userId: req.user.id,
+        moduleCount: geometricResult.moduleCount,
+        vlmCount: geometricResult.vlmCount,
+        disagreement: geometricResult.disagreement,
+        lowConfidence: geometricResult.lowConfidence,
+        stage1Ms: geometricResult.timings?.stage1Ms,
+        stage2Ms: geometricResult.timings?.stage2Ms,
+      });
+    }
+
     const totalElapsedMs = Date.now() - endpointStartMs;
     logger.info('CCU extraction total timing', {
       userId: req.user.id,
       totalElapsedMs,
       totalElapsedSec: (totalElapsedMs / 1000).toFixed(1),
+      geometricEnabled,
+      geometricSuccess: Boolean(geometricResult),
     });
 
     res.json(analysis);
@@ -1008,6 +1065,51 @@ questionsForInspector: return EMPTY array [] unless RCD type could not be determ
         error: err.message,
       });
     });
+
+    // Phase B: log the geometric stage outputs to S3 as a separate JSON
+    // so we can compare geometricCount vs vlmCount vs the final extracted
+    // circuit count across real sessions. Fire-and-forget; never fails
+    // the request. Written to a sibling key under the same extraction
+    // prefix convention so Phase C analysis can join by sessionId.
+    if (geometricResult) {
+      const geoExtractionId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const sessionSegment = req.body?.sessionId || 'no-session';
+      const geoKey = `ccu-geometric/${req.user.id}/${sessionSegment}/${geoExtractionId}/stage-outputs.json`;
+      storage
+        .uploadJson(
+          {
+            extractionId: geoExtractionId,
+            userId: req.user.id,
+            sessionId: req.body?.sessionId || null,
+            timestamp: new Date().toISOString(),
+            vlmCircuitCount: (analysis.circuits || []).length,
+            geometric: {
+              schemaVersion: geometricResult.schemaVersion,
+              moduleCount: geometricResult.moduleCount,
+              vlmCount: geometricResult.vlmCount,
+              disagreement: geometricResult.disagreement,
+              lowConfidence: geometricResult.lowConfidence,
+              medianRails: geometricResult.medianRails,
+              slotCentersX: geometricResult.slotCentersX,
+              moduleWidth: geometricResult.moduleWidth,
+              mainSwitchWidth: geometricResult.mainSwitchWidth,
+              mainSwitchCenterX: geometricResult.mainSwitchCenterX,
+              imageWidth: geometricResult.imageWidth,
+              imageHeight: geometricResult.imageHeight,
+              timings: geometricResult.timings,
+              usage: geometricResult.usage,
+              stageOutputs: geometricResult.stageOutputs,
+            },
+          },
+          geoKey
+        )
+        .catch((err) => {
+          logger.warn('CCU geometric log failed (non-fatal)', {
+            userId: req.user.id,
+            error: err.message,
+          });
+        });
+    }
   } catch (error) {
     // Timeout — AbortController fired or SDK timeout
     if (
