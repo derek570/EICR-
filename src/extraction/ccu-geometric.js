@@ -1,21 +1,30 @@
 /**
- * CCU Geometric Extraction (Phase B)
+ * CCU Geometric Extraction (Phase B + C)
  *
- * Two-stage VLM pipeline for Consumer Control Unit photo analysis:
+ * Three-stage VLM pipeline for Consumer Control Unit photo analysis:
  *   Stage 1 (getRailGeometry): Rail bbox on 0-1000 grid, median of 3 samples with SD check.
  *   Stage 2 (getModuleCount): Main switch pixel width → module pitch → rail-width-based count,
  *                             plus a direct VLM count for disagreement detection.
+ *   Stage 3 (classifySlots):  Per-slot crop-and-zoom classification, batched 4 crops per VLM call.
+ *                             Each crop is centred on slotCentersX[i] with 20% H / 30% V padding.
  *
- * Throws on missing ANTHROPIC_API_KEY or VLM failure. No fallbacks here — the caller decides.
+ * Throws on missing ANTHROPIC_API_KEY or VLM failure in stages 1/2. Stage 3 failures are
+ * surfaced as { slots: null, stage3Error } so the caller still gets usable rail geometry.
  *
- * See: docs/plans/2026-04-16-ccu-geometric-extraction-design.md §2.1, §2.2, §5
+ * See: docs/plans/2026-04-16-ccu-geometric-extraction-design.md §2.1, §2.2, §2.3, §5
  */
 
 import sharp from 'sharp';
 
 const CCU_GEOMETRIC_MODEL = (process.env.CCU_GEOMETRIC_MODEL || 'claude-sonnet-4-6').trim();
 const CCU_GEOMETRIC_MAX_TOKENS = 1024;
+// Stage 3 needs a bigger response envelope — batched classifications each return a JSON object.
+const CCU_STAGE3_MAX_TOKENS = 2048;
 const CCU_GEOMETRIC_TIMEOUT_MS = Number(process.env.CCU_GEOMETRIC_TIMEOUT_MS || 60_000);
+// Batch size for Stage 3 classification. 4 crops/message gave the best accuracy/cost trade-off
+// on the 3 fixture photos: fewer round-trips vs. VLM attention dilution on tiny crops. Going
+// to 6 made the VLM skip or mis-number slots on photo-1 (the MEM Memera 2000 board). Keep at 4.
+const CCU_STAGE3_BATCH_SIZE = 4;
 
 // ---------------------------------------------------------------------------
 // Prompts
@@ -62,6 +71,40 @@ Report:
 
 Respond with JSON only:
 {"main_switch_center_x": <int>, "main_switch_width": <int>, "module_count_direct": <int>}`;
+
+// Stage 3 — classify the device in each crop. Each message contains N crops
+// (CCU_STAGE3_BATCH_SIZE); the VLM must return exactly N objects in the same order.
+// We send the slot_index explicitly so the VLM can echo it back and we can verify
+// alignment rather than trusting positional order alone.
+const SLOT_CLASSIFY_PROMPT = (
+  slotIndices
+) => `You are looking at ${slotIndices.length} cropped image${slotIndices.length === 1 ? '' : 's'} taken from a UK consumer unit (fuseboard). Each crop is centred on a single DIN rail module position (slot).
+
+The slot indices, in order of the images you are seeing, are: [${slotIndices.join(', ')}].
+
+For EACH crop, classify the device occupying that slot. Valid classifications:
+- "mcb"          — single Miniature Circuit Breaker (BS EN 60898-1), has a trip curve letter (B/C/D) before amp rating, e.g. "B32"
+- "rcbo"         — combined RCD + MCB (BS EN 61009-1), has both a trip curve + amp rating AND a test button with mA sensitivity (e.g. "30mA")
+- "rcd"          — Residual Current Device (BS EN 61008), has a test button and mA sensitivity but NO trip curve letter
+- "main_switch"  — 2-module-wide isolator with NO test button, NO trip curve, NO mA marking, typically labelled "Main Switch" or "100A"
+- "spd"          — Surge Protection Device, usually has plug-in cartridges or coloured status windows
+- "blank"        — unused/empty slot with a blanking plate
+- "unknown"      — cannot determine
+
+For MCBs and RCBOs, read:
+- manufacturer   — brand stamped on the face (e.g. "Hager", "MK", "Wylex", "MEM", "Crabtree", "Eaton", "Schneider", "BG", "Fusebox", "Contactum"). null if illegible.
+- model          — product family if printed (e.g. "Memera 2000", "Design 10"). null if not shown.
+- ratingAmps     — integer amp rating (6, 10, 16, 20, 25, 32, 40, 50, 63, 80, 100). null if unreadable.
+- poles          — 1, 2, 3 or 4. Default to 1 for a single-module MCB, 2 for RCBOs / RCDs / main switch unless the physical width is clearly different.
+- confidence     — your self-assessed 0.0–1.0 confidence in the classification.
+
+For blanks, SPDs and main switches: manufacturer / model / ratingAmps may be null; still return poles (1 for blank/SPD, 2 for main_switch) and confidence.
+
+Return ONLY a JSON array, one object per crop, in the SAME ORDER as the images you received. Echo back slot_index to prove alignment:
+[
+  {"slot_index": <int>, "classification": "<string>", "manufacturer": <string|null>, "model": <string|null>, "ratingAmps": <int|null>, "poles": <int>, "confidence": <float>},
+  ...
+]`;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -315,6 +358,238 @@ export async function getModuleCount(imageBuffer, medianRails) {
 }
 
 // ---------------------------------------------------------------------------
+// Stage 3 — Per-slot crop-and-zoom classification
+// ---------------------------------------------------------------------------
+
+/**
+ * Convert 0-1000 normalised coordinates to pixel coordinates, clamped to image bounds.
+ * @private
+ */
+function normToPx(value, dimension) {
+  const px = (value / 1000) * dimension;
+  return Math.max(0, Math.min(dimension, Math.round(px)));
+}
+
+/**
+ * Crop a single module slot from the full CCU image, centred on slotCentersX[slotIndex],
+ * with 20% horizontal / 30% vertical padding relative to module/rail size.
+ *
+ * Rationale:
+ *   - 20% horizontal padding lets the VLM see the edges of the device (important for
+ *     distinguishing 1-pole MCB from 2-pole RCBO when the center is slightly off).
+ *   - 30% vertical padding grabs the printed labels above/below the rail where
+ *     manufacturer and model are often printed.
+ *   - Bbox is clamped so edge slots don't generate zero-width / negative crops.
+ *
+ * @param {Buffer} imageBuffer  Full CCU JPEG.
+ * @param {number} slotIndex
+ * @param {object} geom
+ * @param {number[]} geom.slotCentersX   On 0-1000 scale.
+ * @param {number}   geom.moduleWidth    On 0-1000 scale (width of a single module).
+ * @param {number}   geom.railTop        0-1000.
+ * @param {number}   geom.railBottom     0-1000.
+ * @param {number}   geom.imageWidth     Full image pixel width.
+ * @param {number}   geom.imageHeight    Full image pixel height.
+ * @returns {Promise<{buffer: Buffer, bbox: {x:number,y:number,w:number,h:number}}>}
+ *          bbox is in PIXEL coordinates — Phase D iOS tap-to-correct overlays need this.
+ */
+export async function cropSlot(imageBuffer, slotIndex, geom) {
+  if (!Buffer.isBuffer(imageBuffer)) {
+    throw new Error('cropSlot: imageBuffer must be a Buffer');
+  }
+  const { slotCentersX, moduleWidth, railTop, railBottom, imageWidth, imageHeight } = geom || {};
+  if (!Array.isArray(slotCentersX) || slotCentersX.length === 0) {
+    throw new Error('cropSlot: geom.slotCentersX must be a non-empty array');
+  }
+  if (slotIndex < 0 || slotIndex >= slotCentersX.length) {
+    throw new Error(
+      `cropSlot: slotIndex ${slotIndex} out of range (0..${slotCentersX.length - 1})`
+    );
+  }
+  if (!Number.isFinite(moduleWidth) || moduleWidth <= 0) {
+    throw new Error('cropSlot: geom.moduleWidth must be a positive number');
+  }
+  if (!Number.isFinite(railTop) || !Number.isFinite(railBottom) || railBottom <= railTop) {
+    throw new Error('cropSlot: geom.railTop/railBottom invalid');
+  }
+  if (
+    !Number.isFinite(imageWidth) ||
+    imageWidth <= 0 ||
+    !Number.isFinite(imageHeight) ||
+    imageHeight <= 0
+  ) {
+    throw new Error('cropSlot: geom.imageWidth and imageHeight must be positive');
+  }
+
+  const centerXNorm = slotCentersX[slotIndex];
+  const railHeightNorm = railBottom - railTop;
+  const railCenterYNorm = (railTop + railBottom) / 2;
+
+  // 20% H padding: half-width = 0.5 * moduleWidth * (1 + 0.20)
+  const halfWidthNorm = moduleWidth * 0.5 * 1.2;
+  // 30% V padding applied relative to rail height (labels live just above/below the rail)
+  const halfHeightNorm = (railHeightNorm / 2) * 1.3;
+
+  const leftNorm = centerXNorm - halfWidthNorm;
+  const rightNorm = centerXNorm + halfWidthNorm;
+  const topNorm = railCenterYNorm - halfHeightNorm;
+  const bottomNorm = railCenterYNorm + halfHeightNorm;
+
+  // Convert to pixels and clamp to image bounds.
+  const xPx = normToPx(leftNorm, imageWidth);
+  const yPx = normToPx(topNorm, imageHeight);
+  const rightPx = normToPx(rightNorm, imageWidth);
+  const bottomPx = normToPx(bottomNorm, imageHeight);
+  const wPx = Math.max(1, rightPx - xPx);
+  const hPx = Math.max(1, bottomPx - yPx);
+
+  const buffer = await sharp(imageBuffer)
+    .extract({ left: xPx, top: yPx, width: wPx, height: hPx })
+    // Upscale to ~1024px wide for VLM legibility (matches v3 POC).
+    .resize({ width: 1024, withoutEnlargement: false })
+    .jpeg({ quality: 90 })
+    .toBuffer();
+
+  return {
+    buffer,
+    bbox: { x: xPx, y: yPx, w: wPx, h: hPx },
+  };
+}
+
+/**
+ * Send a batch of slot crops to the VLM for classification.
+ *
+ * Each Anthropic message contains CCU_STAGE3_BATCH_SIZE image blocks + one prompt;
+ * the VLM returns an array of classification objects. We then merge crop bbox
+ * metadata + base64 onto each result so iOS (Phase D) can render the crop back to
+ * the inspector on tap-to-correct without re-fetching the full photo.
+ *
+ * @param {Buffer}  _imageBuffer  Original CCU JPEG (unused at the moment — slotCrops
+ *                                already contain per-slot buffers — but kept on the
+ *                                signature for future re-use without API churn).
+ * @param {Array<{slotIndex:number, buffer:Buffer, bbox:object}>} slotCrops
+ * @param {{anthropicClient?: object, model?: string}} [opts]
+ * @returns {Promise<{slots: Array<object>, usage: {inputTokens:number, outputTokens:number}, batchCount:number}>}
+ */
+export async function classifySlots(_imageBuffer, slotCrops, opts = {}) {
+  if (!Array.isArray(slotCrops)) {
+    throw new Error('classifySlots: slotCrops must be an array');
+  }
+  if (slotCrops.length === 0) {
+    return { slots: [], usage: { inputTokens: 0, outputTokens: 0 }, batchCount: 0 };
+  }
+
+  const anthropic = opts.anthropicClient || (await getAnthropicClient());
+  const model = opts.model || CCU_GEOMETRIC_MODEL;
+
+  // Split into batches.
+  const batches = [];
+  for (let i = 0; i < slotCrops.length; i += CCU_STAGE3_BATCH_SIZE) {
+    batches.push(slotCrops.slice(i, i + CCU_STAGE3_BATCH_SIZE));
+  }
+
+  const resultsBySlotIndex = new Map();
+  const usage = { inputTokens: 0, outputTokens: 0 };
+
+  for (const batch of batches) {
+    const slotIndices = batch.map((b) => b.slotIndex);
+    const base64s = batch.map((b) => b.buffer.toString('base64'));
+
+    const abortController = new AbortController();
+    const timeoutId = setTimeout(() => abortController.abort(), CCU_GEOMETRIC_TIMEOUT_MS);
+    let response;
+    try {
+      response = await anthropic.messages.create(
+        {
+          model,
+          max_tokens: CCU_STAGE3_MAX_TOKENS,
+          messages: [
+            {
+              role: 'user',
+              content: [
+                ...base64s.map((data) => ({
+                  type: 'image',
+                  source: { type: 'base64', media_type: 'image/jpeg', data },
+                })),
+                { type: 'text', text: SLOT_CLASSIFY_PROMPT(slotIndices) },
+              ],
+            },
+          ],
+        },
+        { signal: abortController.signal }
+      );
+    } finally {
+      clearTimeout(timeoutId);
+    }
+
+    const text = (response.content || [])
+      .filter((b) => b.type === 'text')
+      .map((b) => b.text)
+      .join('');
+
+    // Parse array response. Strip fences and find the outer [...] block.
+    let arr;
+    try {
+      let jsonStr = text.trim();
+      const fence = jsonStr.match(/```json\s*([\s\S]*?)```/);
+      if (fence) jsonStr = fence[1].trim();
+      const firstBracket = jsonStr.indexOf('[');
+      const lastBracket = jsonStr.lastIndexOf(']');
+      if (firstBracket !== -1 && lastBracket > firstBracket) {
+        jsonStr = jsonStr.slice(firstBracket, lastBracket + 1);
+      }
+      arr = JSON.parse(jsonStr);
+      if (!Array.isArray(arr)) throw new Error('not an array');
+    } catch (err) {
+      throw new Error(`classifySlots: failed to parse VLM array response: ${err.message}`);
+    }
+
+    const u = response.usage || {};
+    usage.inputTokens += u.input_tokens || 0;
+    usage.outputTokens += u.output_tokens || 0;
+
+    // Match by echoed slot_index if present, else fall back to positional order.
+    for (let i = 0; i < batch.length; i++) {
+      const crop = batch[i];
+      const vlmItem = arr.find((x) => x && x.slot_index === crop.slotIndex) || arr[i] || {};
+      resultsBySlotIndex.set(crop.slotIndex, {
+        slotIndex: crop.slotIndex,
+        classification: vlmItem.classification || 'unknown',
+        manufacturer: vlmItem.manufacturer ?? null,
+        model: vlmItem.model ?? null,
+        ratingAmps:
+          typeof vlmItem.ratingAmps === 'number'
+            ? vlmItem.ratingAmps
+            : (vlmItem.ratingAmps ?? null),
+        poles: typeof vlmItem.poles === 'number' ? vlmItem.poles : 1,
+        confidence: typeof vlmItem.confidence === 'number' ? vlmItem.confidence : 0,
+        crop: {
+          bbox: crop.bbox,
+          base64: crop.buffer.toString('base64'),
+        },
+      });
+    }
+  }
+
+  // Preserve input order.
+  const slots = slotCrops.map(
+    (c) =>
+      resultsBySlotIndex.get(c.slotIndex) || {
+        slotIndex: c.slotIndex,
+        classification: 'unknown',
+        manufacturer: null,
+        model: null,
+        ratingAmps: null,
+        poles: 1,
+        confidence: 0,
+        crop: { bbox: c.bbox, base64: c.buffer.toString('base64') },
+      }
+  );
+
+  return { slots, usage, batchCount: batches.length };
+}
+
+// ---------------------------------------------------------------------------
 // Orchestrator
 // ---------------------------------------------------------------------------
 
@@ -334,9 +609,41 @@ export async function extractCcuGeometric(imageBuffer) {
   const stage2 = await getModuleCount(imageBuffer, stage1.medianRails);
   const stage2Ms = Date.now() - t1;
 
+  // Stage 3 — per-slot classification. SOFT-FAIL: any error is captured on
+  // stage3Error and slots is set to null. Stages 1/2 output is still returned
+  // so the caller can render rail + module-count UI without blocking on Stage 3.
+  let slots = null;
+  let stage3Error = null;
+  let stage3Usage = { inputTokens: 0, outputTokens: 0 };
+  let stage3Ms = 0;
+  let stage3BatchCount = 0;
+  const t2 = Date.now();
+  try {
+    const slotCrops = [];
+    for (let i = 0; i < stage2.slotCentersX.length; i++) {
+      const crop = await cropSlot(imageBuffer, i, {
+        slotCentersX: stage2.slotCentersX,
+        moduleWidth: stage2.moduleWidth,
+        railTop: stage1.medianRails.rail_top,
+        railBottom: stage1.medianRails.rail_bottom,
+        imageWidth: stage1.imageWidth,
+        imageHeight: stage1.imageHeight,
+      });
+      slotCrops.push({ slotIndex: i, buffer: crop.buffer, bbox: crop.bbox });
+    }
+
+    const classified = await classifySlots(imageBuffer, slotCrops);
+    slots = classified.slots;
+    stage3Usage = classified.usage;
+    stage3BatchCount = classified.batchCount;
+  } catch (err) {
+    stage3Error = err && err.message ? err.message : String(err);
+  }
+  stage3Ms = Date.now() - t2;
+
   const totalUsage = {
-    inputTokens: stage1.usage.inputTokens + stage2.usage.inputTokens,
-    outputTokens: stage1.usage.outputTokens + stage2.usage.outputTokens,
+    inputTokens: stage1.usage.inputTokens + stage2.usage.inputTokens + stage3Usage.inputTokens,
+    outputTokens: stage1.usage.outputTokens + stage2.usage.outputTokens + stage3Usage.outputTokens,
   };
 
   return {
@@ -352,7 +659,9 @@ export async function extractCcuGeometric(imageBuffer) {
     disagreement: stage2.disagreement,
     imageWidth: stage1.imageWidth,
     imageHeight: stage1.imageHeight,
-    timings: { stage1Ms, stage2Ms, totalMs: stage1Ms + stage2Ms },
+    slots,
+    stage3Error,
+    timings: { stage1Ms, stage2Ms, stage3Ms, totalMs: stage1Ms + stage2Ms + stage3Ms },
     usage: totalUsage,
     stageOutputs: {
       stage1: {
@@ -371,6 +680,13 @@ export async function extractCcuGeometric(imageBuffer) {
         moduleWidth: stage2.moduleWidth,
         disagreement: stage2.disagreement,
         usage: stage2.usage,
+      },
+      stage3: {
+        slots,
+        error: stage3Error,
+        batchCount: stage3BatchCount,
+        batchSize: CCU_STAGE3_BATCH_SIZE,
+        usage: stage3Usage,
       },
     },
   };
