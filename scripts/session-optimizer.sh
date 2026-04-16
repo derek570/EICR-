@@ -30,9 +30,9 @@ PUSHOVER_TOKEN="adcgd8wx7t6ct7fhz9dyeyt1ne3gcn"
 
 # Project paths
 CODEBASE="$HOME/Developer/EICR_Automation"
-SCRIPTS_DIR="$CODEBASE/EICR_App/scripts"
+SCRIPTS_DIR="$CODEBASE/scripts"
 IOS_DIR="$CODEBASE/CertMateUnified"
-BACKEND_DIR="$CODEBASE/EICR_App"
+BACKEND_DIR="$CODEBASE"
 CLAUDE="$(command -v claude)"
 
 # AWS deploy config
@@ -376,7 +376,7 @@ notify_full_report() {
     # Deployment status
     MSG3+="\n"
     local BACKEND_DEPLOY IOS_REBUILD
-    BACKEND_DEPLOY=$(echo "$OPTIMIZATION_JSON" | jq -r 'if .files_modified then [.files_modified[].file] | any(contains("EICR_App") or contains("src/")) else false end' 2>/dev/null || echo "false")
+    BACKEND_DEPLOY=$(echo "$OPTIMIZATION_JSON" | jq -r 'if .files_modified then [.files_modified[].file] | any(contains("src/") or contains("config/") or contains("scripts/")) else false end' 2>/dev/null || echo "false")
     IOS_REBUILD=$(echo "$OPTIMIZATION_JSON" | jq -r 'if .files_modified then [.files_modified[].file] | any(contains("CertMateUnified") or contains("Sources/")) else false end' 2>/dev/null || echo "false")
     if [ "$BACKEND_DEPLOY" = "true" ]; then
       MSG3+="Backend: auto-deployed\n"
@@ -542,7 +542,7 @@ generate_change_report() {
     REVERT_CMDS=$(echo "$REVERT_CMDS" | jq ". + [\"cd CertMateUnified && git revert $IOS_COMMIT\"]")
   fi
   if [ -n "$BACKEND_COMMIT" ]; then
-    REVERT_CMDS=$(echo "$REVERT_CMDS" | jq ". + [\"cd EICR_App && git revert $BACKEND_COMMIT\"]")
+    REVERT_CMDS=$(echo "$REVERT_CMDS" | jq ". + [\"git revert $BACKEND_COMMIT\"]")
   fi
 
   # Build files_modified from git diffs
@@ -608,7 +608,7 @@ generate_change_report() {
 "
   fi
   if [ -n "$BACKEND_COMMIT" ]; then
-    MD_REPORT+="- **Backend (EICR_App):** \`$BACKEND_COMMIT\` — revert: \`git revert $BACKEND_COMMIT\`
+    MD_REPORT+="- **Backend:** \`$BACKEND_COMMIT\` — revert: \`git revert $BACKEND_COMMIT\`
 "
   fi
   MD_REPORT+="
@@ -1159,8 +1159,8 @@ Use Read, Glob, and Grep to explore the codebase. Look at:
 - **Number normaliser**: CertMateUnified/Sources/Recording/NumberNormaliser.swift
 - **Keyword boosts**: CertMateUnified/Sources/Resources/default_config.json (primary — the optimizer auto-applies to the Resources/ copy too, so emit only ONE recommendation per change using this path)
 - **Keyword generator**: CertMateUnified/Sources/Recording/KeywordBoostGenerator.swift
-- **Sonnet extraction session**: EICR_App/src/extraction/eicr-extraction-session.js (EICR_SYSTEM_PROMPT — the main rolling extraction prompt)
-- **Server WS handler**: EICR_App/src/sonnet-stream.js (WebSocket message routing)
+- **Sonnet extraction session**: src/extraction/eicr-extraction-session.js (EICR_SYSTEM_PROMPT — the main rolling extraction prompt)
+- **Server WS handler**: src/extraction/sonnet-stream.js (WebSocket message routing)
 - **iOS model fields**: CertMateUnified model files (RollingExtractionResult, etc.)
 - **Alert/question logic**: CertMateUnified/Sources/Services/AlertManager.swift
 
@@ -1470,9 +1470,9 @@ Take this feedback into account when making your recommendations.
 1. Read the bug report carefully. The user told you exactly what's wrong.
 2. Investigate the root cause in the codebase:
    - Regex patterns: CertMateUnified/Sources/Recording/TranscriptFieldMatcher.swift
-   - Sonnet extraction session: EICR_App/src/extraction/eicr-extraction-session.js (system prompt + extraction)
-   - Server WS handler: EICR_App/src/sonnet-stream.js (message routing + question gate)
-   - Backend extraction (batch): EICR_App/src/extract.js, EICR_App/src/api.js
+   - Sonnet extraction session: src/extraction/eicr-extraction-session.js (system prompt + extraction)
+   - Server WS handler: src/extraction/sonnet-stream.js (message routing + question gate)
+   - Backend extraction (batch): src/extract.js, src/api.js
    - Number normalisation: CertMateUnified/Sources/Recording/NumberNormaliser.swift
    - Keyword boosts: CertMateUnified/Resources/default_config.json
    - Any other relevant file

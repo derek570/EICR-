@@ -7,7 +7,7 @@
     <key>ProgramArguments</key>
     <array>
         <string>/bin/bash</string>
-        <string>/Users/derekbeckley/Developer/EICR_Automation/EICR_App/scripts/session-optimizer.sh</string>
+        <string>/Users/derekbeckley/Developer/EICR_Automation/scripts/session-optimizer.sh</string>
     </array>
     <key>RunAtLoad</key>
     <true/>

@@ -58,16 +58,18 @@ data/OUTPUT_*/
 data/DONE_*/
 data/FAILED_*/
 
+# ===== Nested Git Repos (each has its own .git — never track in root) =====
+CertMateUnified/
+CertMateAndroid/
+EICR_App/
+
 # ===== Swift Package Manager =====
 CertMate/.build/
 .build/
 .swiftpm/
 
-# ===== Next.js Frontend =====
-frontend/.next/
-frontend/node_modules/
-frontend/out/
-frontend/ios/
+# ===== Dead Directories (consolidated into web/) =====
+frontend/
 
 # ===== Corrupted Git Backup =====
 .git_corrupted/
