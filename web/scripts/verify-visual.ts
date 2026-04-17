@@ -33,6 +33,71 @@ type Route = {
 
 const PHASE_0_ROUTES: Route[] = [{ path: '/', name: 'phase-0-showcase' }];
 
+/**
+ * A JWT that never expires (exp: 2099-01-01) so the middleware's atob() decode
+ * accepts it. Signature is ignored — middleware only checks shape + exp.
+ * Payload: { "sub": "demo", "email": "demo@certmate.uk", "exp": 4070908800 }
+ */
+const FAKE_JWT =
+  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.' +
+  'eyJzdWIiOiJkZW1vIiwiZW1haWwiOiJkZW1vQGNlcnRtYXRlLnVrIiwiZXhwIjo0MDcwOTA4ODAwfQ.' +
+  'sig';
+
+const FAKE_USER = JSON.stringify({
+  id: 'demo-user',
+  email: 'demo@certmate.uk',
+  name: 'Demo Inspector',
+});
+
+async function seedAuth(page: Page, baseUrl: string) {
+  // Land on a same-origin page first so we can poke localStorage.
+  await page.goto(baseUrl + '/login', { waitUntil: 'domcontentloaded' });
+  await page.evaluate(
+    ({ token, user }) => {
+      localStorage.setItem('cm_token', token);
+      localStorage.setItem('cm_user', user);
+      document.cookie = `token=${token}; path=/; max-age=86400; SameSite=Lax`;
+    },
+    { token: FAKE_JWT, user: FAKE_USER }
+  );
+}
+
+const PHASE_1_ROUTES: Route[] = [
+  { path: '/login', name: 'phase-1-login' },
+  {
+    path: '/dashboard',
+    name: 'phase-1-dashboard',
+    // Intercepts are set after seedAuth in captureRoute, so that fetches
+    // triggered by the dashboard's useEffect resolve against our mocks
+    // instead of the (non-running) localhost:3000 backend.
+    prepare: async (page) => {
+      await page.route('**/api/jobs/**', (route) =>
+        route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify([]),
+        })
+      );
+      await page.route('**/api/auth/me*', (route) =>
+        route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            id: 'demo-user',
+            email: 'demo@certmate.uk',
+            name: 'Demo Inspector',
+          }),
+        })
+      );
+    },
+  },
+];
+
+const PHASES: Record<string, Route[]> = {
+  '0': PHASE_0_ROUTES,
+  '1': PHASE_1_ROUTES,
+};
+
 async function freePort(): Promise<number> {
   return new Promise((resolve, reject) => {
     const s = createServer();
@@ -67,7 +132,8 @@ async function captureRoute(
   baseUrl: string,
   route: Route,
   outDir: string,
-  viewport: Viewport
+  viewport: Viewport,
+  requiresAuth: boolean
 ) {
   const ctx = await browser.newContext({
     viewport: { width: viewport.width, height: viewport.height },
@@ -78,13 +144,18 @@ async function captureRoute(
   });
   const page = await ctx.newPage();
   try {
+    // Register mocks BEFORE any navigation — page.route handlers persist
+    // across in-page navigations but must exist before the first request.
+    if (route.prepare) await route.prepare(page);
+    if (requiresAuth) await seedAuth(page, baseUrl);
     await page.goto(baseUrl + route.path, {
       waitUntil: 'networkidle',
       timeout: 30_000,
     });
-    // Give any CSS animations / fonts a beat to settle before the shot.
-    await page.waitForTimeout(400);
-    if (route.prepare) await route.prepare(page);
+    // Wait for any skeleton shimmer or counter animations to resolve before
+    // snapshotting. Use a generous settle so the animated counter lands on
+    // its final value.
+    await page.waitForTimeout(1200);
     const file = join(outDir, `${route.name}.${viewport.name}.png`);
     await page.screenshot({ path: file, fullPage: true });
     console.log(`  ✓ ${route.name} [${viewport.name}] -> ${file}`);
@@ -94,8 +165,11 @@ async function captureRoute(
 }
 
 async function main() {
-  const phase = process.env.PHASE ?? '0';
-  const routes = PHASE_0_ROUTES; // extend per-phase in a future patch
+  const phase = process.env.PHASE ?? '1';
+  const routes = PHASES[phase];
+  if (!routes) {
+    throw new Error(`Unknown PHASE=${phase}. Known: ${Object.keys(PHASES).join(', ')}`);
+  }
   const port = await freePort();
   const baseUrl = `http://localhost:${port}`;
 
@@ -119,8 +193,9 @@ async function main() {
 
     browser = await chromium.launch();
     for (const route of routes) {
+      const requiresAuth = route.path === '/dashboard' || route.path.startsWith('/job');
       for (const viewport of VIEWPORTS) {
-        await captureRoute(browser, baseUrl, route, outDir, viewport);
+        await captureRoute(browser, baseUrl, route, outDir, viewport, requiresAuth);
       }
     }
     console.log(`\nScreenshots written to ${outDir}`);
