@@ -93,9 +93,112 @@ const PHASE_1_ROUTES: Route[] = [
   },
 ];
 
+/**
+ * Phase 2 — all 10 job-detail tabs for both EICR and EIC certificate types.
+ * We mock a pair of job detail responses so we can capture tab content
+ * without needing the backend to be reachable.
+ */
+const MOCK_EICR_JOB = {
+  id: 'demo-eicr',
+  address: '42 Bonham Road, Bristol BS2 8HX',
+  status: 'pending',
+  created_at: '2026-03-12T09:00:00.000Z',
+  updated_at: '2026-03-14T12:00:00.000Z',
+  certificate_type: 'EICR',
+  installation: {},
+  supply: {},
+  board: {},
+  circuits: [],
+  observations: [],
+  inspection: {},
+  inspector: {},
+};
+
+const MOCK_EIC_JOB = {
+  id: 'demo-eic',
+  address: '7 Ashwood Close, Bath BA1 4QD',
+  status: 'processing',
+  created_at: '2026-04-02T10:30:00.000Z',
+  certificate_type: 'EIC',
+  installation: {},
+  extent: {},
+  supply: {},
+  board: {},
+  circuits: [],
+  inspection: {},
+  design: {},
+  inspector: {},
+};
+
+function jobRoutes(): Route[] {
+  const mockJobPrep: Route['prepare'] = async (page) => {
+    await page.route('**/api/job/**', (route) => {
+      const url = route.request().url();
+      // URL shape: .../api/job/<userId>/<jobId>. Match on the final segment
+      // so `demo-eic` doesn't also pick up `demo-eicr`.
+      const jobId =
+        url
+          .replace(/[?#].*$/, '')
+          .split('/')
+          .pop() ?? '';
+      const job = jobId === 'demo-eic' ? MOCK_EIC_JOB : MOCK_EICR_JOB;
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(job),
+      });
+    });
+    await page.route('**/api/auth/me*', (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          id: 'demo-user',
+          email: 'demo@certmate.uk',
+          name: 'Demo Inspector',
+        }),
+      })
+    );
+  };
+
+  const tabs = [
+    { slug: '', name: 'overview' },
+    { slug: '/installation', name: 'installation' },
+    { slug: '/extent', name: 'extent' }, // EIC only but renders either way
+    { slug: '/supply', name: 'supply' },
+    { slug: '/board', name: 'board' },
+    { slug: '/circuits', name: 'circuits' },
+    { slug: '/observations', name: 'observations' },
+    { slug: '/inspection', name: 'inspection' },
+    { slug: '/design', name: 'design' },
+    { slug: '/inspector', name: 'inspector' },
+    { slug: '/pdf', name: 'pdf' },
+  ];
+
+  const out: Route[] = [];
+  for (const cert of [
+    { id: 'demo-eicr', label: 'eicr' },
+    { id: 'demo-eic', label: 'eic' },
+  ]) {
+    for (const t of tabs) {
+      // Skip Observations for EIC, skip Design/Extent for EICR — iOS hides
+      // them in the tab bar so there's no useful screen to compare.
+      if (cert.label === 'eic' && t.name === 'observations') continue;
+      if (cert.label === 'eicr' && (t.name === 'design' || t.name === 'extent')) continue;
+      out.push({
+        path: `/job/${cert.id}${t.slug}`,
+        name: `phase-2-${cert.label}-${t.name}`,
+        prepare: mockJobPrep,
+      });
+    }
+  }
+  return out;
+}
+
 const PHASES: Record<string, Route[]> = {
   '0': PHASE_0_ROUTES,
   '1': PHASE_1_ROUTES,
+  '2': jobRoutes(),
 };
 
 async function freePort(): Promise<number> {

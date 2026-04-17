@@ -1,4 +1,4 @@
-import { ApiError, type Job, type LoginResponse, type User } from './types';
+import { ApiError, type Job, type JobDetail, type LoginResponse, type User } from './types';
 import { getToken } from './auth';
 
 /**
@@ -109,6 +109,28 @@ export const api = {
   deleteJob(userId: string, jobId: string): Promise<{ success: boolean }> {
     return request(`/api/job/${encodeURIComponent(userId)}/${encodeURIComponent(jobId)}`, {
       method: 'DELETE',
+    });
+  },
+
+  /** Full job detail payload — all tabs worth of data. */
+  job(userId: string, jobId: string): Promise<JobDetail> {
+    return request<JobDetail>(
+      `/api/job/${encodeURIComponent(userId)}/${encodeURIComponent(jobId)}`
+    );
+  },
+
+  /**
+   * Partial update. Backend merges with the persisted doc, so callers
+   * only need to send the fields that changed.
+   */
+  saveJob(
+    userId: string,
+    jobId: string,
+    updates: Partial<JobDetail>
+  ): Promise<{ success: boolean }> {
+    return request(`/api/job/${encodeURIComponent(userId)}/${encodeURIComponent(jobId)}`, {
+      method: 'PATCH',
+      body: JSON.stringify(updates),
     });
   },
 };

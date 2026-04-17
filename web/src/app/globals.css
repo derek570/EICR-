@@ -220,3 +220,12 @@ body {
   animation: orb-drift 9s ease-in-out infinite;
   pointer-events: none;
 }
+
+/* Hide scrollbars on the horizontal tab strip (mobile job nav). */
+.scrollbar-hide::-webkit-scrollbar {
+  display: none;
+}
+.scrollbar-hide {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
