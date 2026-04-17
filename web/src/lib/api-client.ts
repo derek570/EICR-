@@ -1,6 +1,7 @@
 import {
   ApiError,
   type CCUAnalysis,
+  type DocumentExtractionResponse,
   type Job,
   type JobDetail,
   type LoginResponse,
@@ -153,6 +154,28 @@ export const api = {
     const form = new FormData();
     form.append('photo', photo);
     return request<CCUAnalysis>('/api/analyze-ccu', {
+      method: 'POST',
+      body: form,
+    });
+  },
+
+  /**
+   * Extract EICR/EIC form data from a photo of a prior certificate,
+   * handwritten test sheet, or typed record. Backend uses GPT Vision
+   * and returns the full formData envelope (installation, supply,
+   * board, circuits, observations). Image only — PDFs not supported
+   * because the backend hard-codes the `image/jpeg` data URL
+   * (`src/routes/extraction.js:1425`).
+   *
+   * Same multipart shape as `analyzeCCU` — single file under the
+   * field name "photo". Merge helper
+   * (`apply-document-extraction.ts`) handles the 3-tier priority
+   * guard and section routing.
+   */
+  analyzeDocument(photo: Blob | File): Promise<DocumentExtractionResponse> {
+    const form = new FormData();
+    form.append('photo', photo);
+    return request<DocumentExtractionResponse>('/api/analyze-document', {
       method: 'POST',
       body: form,
     });

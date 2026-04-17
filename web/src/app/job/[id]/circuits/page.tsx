@@ -19,6 +19,7 @@ import { api } from '@/lib/api-client';
 import { useJobContext } from '@/lib/job-context';
 import { ApiError } from '@/lib/types';
 import { applyCcuAnalysisToJob } from '@/lib/recording/apply-ccu-analysis';
+import { applyDocumentExtractionToJob } from '@/lib/recording/apply-document-extraction';
 import { FloatingLabelInput } from '@/components/ui/floating-label-input';
 import { SectionCard } from '@/components/ui/section-card';
 import { SegmentedControl } from '@/components/ui/segmented-control';
@@ -83,6 +84,9 @@ export default function CircuitsPage() {
   const [ccuError, setCcuError] = React.useState<string | null>(null);
   const [ccuQuestions, setCcuQuestions] = React.useState<string[]>([]);
   const ccuInputRef = React.useRef<HTMLInputElement>(null);
+  const [docBusy, setDocBusy] = React.useState(false);
+  const [docError, setDocError] = React.useState<string | null>(null);
+  const docInputRef = React.useRef<HTMLInputElement>(null);
 
   const circuits = (job.circuits ?? []) as unknown as Circuit[];
   const boards = ((job.board as { boards?: { id: string; designation?: string }[] } | undefined)
@@ -170,6 +174,57 @@ export default function CircuitsPage() {
     setCcuQuestions((prev) => prev.filter((_, i) => i !== idx));
   };
 
+  const openDocPicker = () => {
+    setDocError(null);
+    docInputRef.current?.click();
+  };
+
+  const handleDocFile = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+
+    setDocBusy(true);
+    setDocError(null);
+    setActionHint('Reading document…');
+    try {
+      const response = await api.analyzeDocument(file);
+      const { patch, summary } = applyDocumentExtractionToJob(job, response, {
+        targetBoardId: selectedBoardId,
+      });
+      updateJob(patch);
+      // If the extractor just synthesised a board, surface it as the
+      // active one so the new circuits land under a visible selector.
+      const patchedBoards = (patch.board as { boards?: { id: string }[] } | undefined)?.boards;
+      if (!selectedBoardId && patchedBoards && patchedBoards.length > 0) {
+        setSelectedBoardId(patchedBoards[0].id);
+      }
+      const bits: string[] = [];
+      if (summary.circuits > 0) {
+        bits.push(`${summary.circuits} circuit${summary.circuits === 1 ? '' : 's'}`);
+      }
+      if (summary.observations > 0) {
+        bits.push(`${summary.observations} observation${summary.observations === 1 ? '' : 's'}`);
+      }
+      setActionHint(
+        bits.length > 0
+          ? `Document read — ${bits.join(', ')} merged.`
+          : 'Document read — no new data.'
+      );
+    } catch (err) {
+      const message =
+        err instanceof ApiError
+          ? `Extraction failed (${err.status}): ${err.message}`
+          : err instanceof Error
+            ? err.message
+            : 'Extraction failed.';
+      setDocError(message);
+      setActionHint(null);
+    } finally {
+      setDocBusy(false);
+    }
+  };
+
   return (
     <div
       className="mx-auto flex w-full flex-col gap-4 px-4 py-6 md:px-8 md:py-8"
@@ -223,6 +278,22 @@ export default function CircuitsPage() {
             aria-hidden
           />
 
+          {/* Doc extraction picker — no `capture` hint because
+              documents (prior certs, handwritten sheets) are usually
+              photographed ahead of time and a library picker is more
+              ergonomic. Image only: the backend (/api/analyze-document)
+              hard-codes the image/jpeg data URL so PDFs can't be
+              rendered server-side. PDF support is a separate follow-up
+              (requires a client-side pdfjs-dist render). */}
+          <input
+            ref={docInputRef}
+            type="file"
+            accept="image/*"
+            onChange={handleDocFile}
+            className="sr-only"
+            aria-hidden
+          />
+
           {actionHint ? (
             <p
               className="rounded-[var(--radius-md)] border border-[var(--color-border-subtle)] bg-[var(--color-surface-2)] px-3 py-2 text-[12px] text-[var(--color-text-secondary)]"
@@ -238,6 +309,15 @@ export default function CircuitsPage() {
               role="alert"
             >
               {ccuError}
+            </p>
+          ) : null}
+
+          {docError ? (
+            <p
+              className="rounded-[var(--radius-md)] border border-[var(--color-status-failed)]/40 bg-[var(--color-status-failed)]/10 px-3 py-2 text-[12px] text-[var(--color-status-failed)]"
+              role="alert"
+            >
+              {docError}
             </p>
           ) : null}
 
@@ -323,10 +403,12 @@ export default function CircuitsPage() {
             spin={ccuBusy}
           />
           <RailButton
-            Icon={FileDown}
-            label="Extract"
+            Icon={docBusy ? Loader2 : FileDown}
+            label={docBusy ? 'Reading' : 'Extract'}
             colour="var(--color-brand-blue)"
-            onClick={stub('Extract doc')}
+            onClick={openDocPicker}
+            disabled={docBusy}
+            spin={docBusy}
           />
         </aside>
       </div>

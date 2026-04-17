@@ -259,7 +259,9 @@ function applyObservations(job: JobDetail, observations: Observation[]): Observa
   return changed ? existing : null;
 }
 
-function parseObservationCode(raw: string | undefined): 'C1' | 'C2' | 'C3' | 'FI' | undefined {
+export function parseObservationCode(
+  raw: string | undefined
+): 'C1' | 'C2' | 'C3' | 'FI' | undefined {
   if (!raw) return undefined;
   const upper = raw.trim().toUpperCase();
   if (upper === 'C1' || upper === 'C2' || upper === 'C3' || upper === 'FI') {

@@ -134,6 +134,68 @@ export interface CCUAnalysis {
   [key: string]: unknown;
 }
 
+/**
+ * Response from POST /api/analyze-document. GPT Vision extracts EICR/EIC
+ * certificate data from an image (typed cert, handwritten test sheet,
+ * phone snap). Unlike CCU, doc extraction returns structured data only —
+ * no `questionsForInspector`.
+ *
+ * Field keys match the backend prompt schema in
+ * `src/routes/extraction.js:1349-1420` 1:1 so the merge helper can copy
+ * straight onto JobDetail section bags. Kept permissive (all optional +
+ * index signature) so prompt additions don't break the client.
+ */
+export interface DocumentExtractionCircuit {
+  circuit_ref?: string;
+  circuit_designation?: string;
+  live_csa_mm2?: string;
+  cpc_csa_mm2?: string;
+  wiring_type?: string;
+  ref_method?: string;
+  number_of_points?: string;
+  ocpd_type?: string;
+  ocpd_rating_a?: string;
+  ocpd_bs_en?: string;
+  ocpd_breaking_capacity_ka?: string;
+  rcd_type?: string;
+  rcd_operating_current_ma?: string;
+  rcd_bs_en?: string;
+  ring_r1_ohm?: string;
+  ring_rn_ohm?: string;
+  ring_r2_ohm?: string;
+  r1_r2_ohm?: string;
+  r2_ohm?: string;
+  ir_live_live_mohm?: string;
+  ir_live_earth_mohm?: string;
+  measured_zs_ohm?: string;
+  polarity_confirmed?: string;
+  rcd_time_ms?: string;
+  rcd_button_confirmed?: string;
+  [key: string]: unknown;
+}
+
+export interface DocumentExtractionObservation {
+  code?: string;
+  observation_text?: string;
+  item_location?: string;
+  schedule_item?: string;
+  regulation?: string;
+  [key: string]: unknown;
+}
+
+export interface DocumentExtractionFormData {
+  installation_details?: Record<string, unknown>;
+  supply_characteristics?: Record<string, unknown>;
+  board_info?: Record<string, unknown>;
+  circuits?: DocumentExtractionCircuit[];
+  observations?: DocumentExtractionObservation[];
+}
+
+export interface DocumentExtractionResponse {
+  success: boolean;
+  formData: DocumentExtractionFormData;
+}
+
 /** Envelope used by POST /api/auth/login. */
 export interface LoginResponse {
   token: string;
