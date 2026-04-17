@@ -107,6 +107,35 @@ log() {
   echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG_FILE"
 }
 
+# ── safe_hash ──
+# Produce a short hex hash from stdin. Tries md5 (BSD/macOS at /sbin/md5),
+# md5sum (GNU), then shasum as final fallback. Guarantees a non-empty line
+# of output even if everything fails — important because this is used inside
+# command substitutions under `set -euo pipefail`, where a failing pipeline
+# would otherwise abort the entire script (this was the 2026-04-17 crash-loop
+# cause: LaunchAgent PATH lacked /sbin, so md5 + md5sum both failed and the
+# optimizer died inside send_pushover → restarted by KeepAlive → looped).
+safe_hash() {
+  local out=""
+  if command -v md5 >/dev/null 2>&1; then
+    out=$(md5 2>/dev/null || true)
+  elif [ -x /sbin/md5 ]; then
+    out=$(/sbin/md5 2>/dev/null || true)
+  elif command -v md5sum >/dev/null 2>&1; then
+    out=$(md5sum 2>/dev/null | cut -d' ' -f1 || true)
+  elif command -v shasum >/dev/null 2>&1; then
+    out=$(shasum 2>/dev/null | cut -d' ' -f1 || true)
+  fi
+  # BSD md5 prints just the hash; shasum/md5sum handled above. Strip any trailing
+  # whitespace and guarantee non-empty output (fallback to epoch-seconds so dedup
+  # still works per-call, just without cross-call dedup).
+  out="${out//[[:space:]]/}"
+  if [ -z "$out" ]; then
+    out="nohash-$(date +%s)-$$"
+  fi
+  printf '%s\n' "$out"
+}
+
 # ── Poison session fingerprints ──
 # When a session fails twice we write a marker to S3 so it's skipped even after
 # a state-file reset. Without this, wiping optimizer_state.json would re-queue
@@ -256,7 +285,7 @@ notify() {
   local DEDUP_DIR="$HOME/.certmate/pushover_dedup"
   mkdir -p "$DEDUP_DIR"
   local MSG_HASH
-  MSG_HASH=$(echo -n "$DEDUP_KEY" | md5 2>/dev/null || echo -n "$DEDUP_KEY" | md5sum | cut -d' ' -f1)
+  MSG_HASH=$(printf '%s' "$DEDUP_KEY" | safe_hash)
   local DEDUP_FILE="$DEDUP_DIR/$MSG_HASH"
   local NOW
   NOW=$(date +%s)
@@ -300,7 +329,7 @@ send_pushover_message() {
   local DEDUP_DIR="$HOME/.certmate/pushover_dedup"
   mkdir -p "$DEDUP_DIR"
   local MSG_HASH
-  MSG_HASH=$(echo -n "$DEDUP_KEY" | md5 2>/dev/null || echo -n "$DEDUP_KEY" | md5sum | cut -d' ' -f1)
+  MSG_HASH=$(printf '%s' "$DEDUP_KEY" | safe_hash)
   local DEDUP_FILE="$DEDUP_DIR/$MSG_HASH"
   local NOW
   NOW=$(date +%s)

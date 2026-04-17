@@ -20,7 +20,7 @@
     <key>EnvironmentVariables</key>
     <dict>
         <key>PATH</key>
-        <string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin</string>
+        <string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/sbin:/usr/sbin</string>
         <key>HOME</key>
         <string>/Users/derekbeckley</string>
     </dict>
