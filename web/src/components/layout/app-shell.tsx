@@ -8,6 +8,7 @@ import { api } from '@/lib/api-client';
 import { clearAuth, getUser } from '@/lib/auth';
 import { Button } from '@/components/ui/button';
 import { InstallButton } from '@/components/pwa/install-button';
+import { OfflineIndicator } from '@/components/pwa/offline-indicator';
 
 /**
  * Top-nav + page frame for all authenticated screens.
@@ -69,6 +70,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           </Link>
         </div>
         <div className="flex items-center gap-3">
+          {/*
+           * Offline pill — Phase 7b. Renders only when the browser
+           * reports `navigator.onLine === false`. Placed FIRST in the
+           * right cluster so the user's eye lands on connection state
+           * before anything else (the SWR caches may be showing stale
+           * data and the pill is how they know).
+           */}
+          <OfflineIndicator />
           {userName ? (
             <span className="hidden text-sm text-[var(--color-text-secondary)] sm:inline">
               {userName}
