@@ -1081,11 +1081,25 @@ PROMPT_INSTRUCTIONS
     --allowedTools "Read,Glob,Grep" 2>&1) || true
   rm -f "$PROMPT_FILE"
 
-  # Parse JSON recommendations from Claude's output (last JSON object)
-  local JSON_OUTPUT
-  JSON_OUTPUT=$(echo "$CLAUDE_OUTPUT" | perl -0777 -ne 'print $1 if /.*(\{[\s\S]*\})/m' 2>/dev/null)
-  if [ -z "$JSON_OUTPUT" ]; then
-    JSON_OUTPUT='{"recommendations":[],"summary":"Could not parse Claude output"}'
+  # Preserve Claude's raw output early so the parse-error escalation path
+  # below (and Layer C Pushover upload) has a canonical file to upload even
+  # if the JSON block later turns out to be unrecoverable.
+  local PARSE_WORK
+  PARSE_WORK=$(mktemp -d)
+  printf '%s' "$CLAUDE_OUTPUT" > "$PARSE_WORK/claude_output.md"
+
+  # Parse the JSON block via parse-optimizer-output.cjs. The helper extracts
+  # the last ```json fenced block (or falls back to the old greedy regex),
+  # repairs literal \n / \r / \t bytes inside string values (the DAEF3165
+  # failure mode where multi-line old_code fields broke jq), and fails LOUDLY
+  # on irrecoverable output — no more silent `|| echo "[]"` that turns real
+  # recommendations into "no recommendations".
+  local JSON_OUTPUT PARSE_FAILED=0
+  if ! JSON_OUTPUT=$(node "$SCRIPTS_DIR/parse-optimizer-output.cjs" \
+         < "$PARSE_WORK/claude_output.md" 2>>"$LOG_FILE"); then
+    log "  PARSE ERROR: parse-optimizer-output.cjs failed — raw output at $PARSE_WORK/claude_output.md"
+    PARSE_FAILED=1
+    JSON_OUTPUT='{"recommendations":[],"summary":"PARSE ERROR: could not extract recommendations from Claude output"}'
   fi
 
   local RECOMMENDATIONS
@@ -1096,6 +1110,20 @@ PROMPT_INSTRUCTIONS
   SUMMARY=$(echo "$JSON_OUTPUT" | jq -r '.summary // "Analysis complete"' 2>/dev/null | head -c 200 || echo "Analysis complete")
 
   log "  Claude returned $REC_COUNT recommendations: $SUMMARY"
+
+  # Loud-failure escalation (Layer C): when the parser failed, upload the
+  # raw Claude output to S3 under optimizer-reports/parse-errors/ and fire
+  # a priority-1 Pushover. Dedup key prevents double-alerting the same
+  # session on retry.
+  if [ "$PARSE_FAILED" -eq 1 ]; then
+    aws s3 cp "$PARSE_WORK/claude_output.md" \
+      "s3://${BUCKET}/optimizer-reports/parse-errors/${SESSION_ID//\//_}/claude_output.md" \
+      --region "$AWS_REGION" 2>/dev/null || true
+    notify "Optimizer parse error" \
+      "Claude output for ${SESSION_ID##*/} failed to parse. Raw output at s3://${BUCKET}/optimizer-reports/parse-errors/${SESSION_ID//\//_}/" \
+      1 "parse-error|${SESSION_ID}"
+  fi
+  rm -rf "$PARSE_WORK"
 
   # Generate report ID
   local REPORT_ID
@@ -1309,11 +1337,21 @@ PROMPT_EOF
     --allowedTools "Read,Glob,Grep" 2>&1) || true
   rm -f "$PROMPT_FILE"
 
-  # Parse recommendations from Claude output
-  local JSON_OUTPUT
-  JSON_OUTPUT=$(echo "$CLAUDE_OUTPUT" | perl -0777 -ne 'print $1 if /.*(\{[\s\S]*\})/m' 2>/dev/null)
-  if [ -z "$JSON_OUTPUT" ]; then
-    JSON_OUTPUT='{"recommendations":[],"summary":"Could not parse output"}'
+  # Preserve raw Claude output before parsing so parse-error escalation
+  # can upload it to S3 for post-mortem. See B4/C1 in the fix plan.
+  local PARSE_WORK
+  PARSE_WORK=$(mktemp -d)
+  printf '%s' "$CLAUDE_OUTPUT" > "$PARSE_WORK/claude_output.md"
+
+  # Parse via parse-optimizer-output.cjs (same repair + loud-fail helper
+  # used by process_session). Truly-broken JSON now triggers a priority-1
+  # Pushover instead of being silently turned into "no recommendations".
+  local JSON_OUTPUT PARSE_FAILED=0
+  if ! JSON_OUTPUT=$(node "$SCRIPTS_DIR/parse-optimizer-output.cjs" \
+         < "$PARSE_WORK/claude_output.md" 2>>"$LOG_FILE"); then
+    log "  PARSE ERROR: parse-optimizer-output.cjs failed — raw output at $PARSE_WORK/claude_output.md"
+    PARSE_FAILED=1
+    JSON_OUTPUT='{"recommendations":[],"summary":"PARSE ERROR: could not extract recommendations from Claude output"}'
   fi
 
   local RECOMMENDATIONS
@@ -1322,6 +1360,19 @@ PROMPT_EOF
   REC_COUNT=$(echo "$RECOMMENDATIONS" | jq 'length' 2>/dev/null || echo 0)
   local SUMMARY
   SUMMARY=$(echo "$JSON_OUTPUT" | jq -r '.summary // "Analysis complete"' 2>/dev/null | head -c 200)
+
+  # Loud-failure escalation for standalone debug reports. Dedup key
+  # is the full S3 path so the same failing report never double-alerts.
+  if [ "$PARSE_FAILED" -eq 1 ]; then
+    local DR_KEY="${REPORT_S3_PATH//\//_}"
+    aws s3 cp "$PARSE_WORK/claude_output.md" \
+      "s3://${BUCKET}/optimizer-reports/parse-errors/${DR_KEY}/claude_output.md" \
+      --region "$AWS_REGION" 2>/dev/null || true
+    notify "Optimizer parse error" \
+      "Debug-report output for ${REPORT_S3_PATH##*/} failed to parse. Raw output at s3://${BUCKET}/optimizer-reports/parse-errors/${DR_KEY}/" \
+      1 "parse-error|${REPORT_S3_PATH}"
+  fi
+  rm -rf "$PARSE_WORK"
 
   log "  Debug report analyzed: $REC_COUNT recommendations"
 
