@@ -1,4 +1,5 @@
 import {
+  type AdminUser,
   ApiError,
   type CCUAnalysis,
   type CompanyJobRow,
@@ -487,5 +488,93 @@ export const api = {
       `/api/companies/${encodeURIComponent(companyId)}/invite`,
       { method: 'POST', body: JSON.stringify(body) }
     );
+  },
+
+  // ----------------------------------------------------------------
+  // Admin — system-admin user management (Phase 6c)
+  // ----------------------------------------------------------------
+
+  /**
+   * Paginated user list. We always pass `limit` + `offset` so the backend
+   * returns the `Paginated<AdminUser>` envelope (it falls back to a bare
+   * array if no pagination params are present). Same pattern as
+   * `companyJobs` in 6b — keeps the response shape consistent so callers
+   * don't need a union type.
+   */
+  adminListUsers(params: { limit?: number; offset?: number } = {}): Promise<Paginated<AdminUser>> {
+    const limit = params.limit ?? 50;
+    const offset = params.offset ?? 0;
+    const qs = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+    return request<Paginated<AdminUser>>(`/api/admin/users?${qs.toString()}`);
+  },
+
+  /**
+   * Create a user as a system admin. Unlike `inviteEmployee` (which
+   * generates a temporary password server-side), the admin chooses the
+   * initial password here — backend validates ≥ 8 chars. Returns the
+   * fully-hydrated `AdminUser` on success, 409 on duplicate email.
+   */
+  adminCreateUser(body: {
+    email: string;
+    name: string;
+    password: string;
+    company_name?: string;
+    role?: 'admin' | 'user';
+    company_id?: string;
+    company_role?: 'owner' | 'admin' | 'employee';
+  }): Promise<AdminUser> {
+    return request<AdminUser>('/api/admin/users', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+  },
+
+  /**
+   * Patch a user row. Backend accepts any subset of
+   * `{name, email, company_name, role, is_active}`; unknown fields are
+   * ignored. The backend enforces self-demotion / self-deactivation
+   * guards (400 on either) so the client-side disabling on the edit
+   * form is purely UX — the server is the source of truth.
+   */
+  adminUpdateUser(
+    userId: string,
+    patch: {
+      name?: string;
+      email?: string;
+      company_name?: string;
+      role?: 'admin' | 'user';
+      is_active?: boolean;
+    }
+  ): Promise<{ success: true }> {
+    return request(`/api/admin/users/${encodeURIComponent(userId)}`, {
+      method: 'PUT',
+      body: JSON.stringify(patch),
+    });
+  },
+
+  /**
+   * Reset another user's password. Backend hashes, persists, and
+   * increments the user's token version so every live JWT they hold
+   * is invalidated on the next API call. Caller should surface the
+   * "existing sessions signed out" note so the admin knows.
+   */
+  adminResetPassword(userId: string, password: string): Promise<{ success: true }> {
+    return request(`/api/admin/users/${encodeURIComponent(userId)}/reset-password`, {
+      method: 'POST',
+      body: JSON.stringify({ password }),
+    });
+  },
+
+  /**
+   * Clear a lockout. Backend resets `failed_login_attempts` +
+   * `locked_until` so the user can attempt login again immediately.
+   * No-op if the user isn't locked — callers should gate the button
+   * on `locked_until > now` so a naive double-click doesn't fire a
+   * pointless POST.
+   */
+  adminUnlockUser(userId: string): Promise<{ success: true }> {
+    return request(`/api/admin/users/${encodeURIComponent(userId)}/unlock`, {
+      method: 'POST',
+    });
   },
 };

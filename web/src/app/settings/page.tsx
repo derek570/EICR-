@@ -121,8 +121,6 @@ export default function SettingsHubPage() {
             title="Manage Users"
             subtitle="Create, edit, reset passwords, unlock accounts"
             accent="blue"
-            disabled
-            disabledLabel="Coming in Phase 6c"
           />
         </SectionGroup>
       ) : null}
