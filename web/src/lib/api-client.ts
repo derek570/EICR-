@@ -2,6 +2,7 @@ import {
   ApiError,
   type CCUAnalysis,
   type DocumentExtractionResponse,
+  type InspectorProfile,
   type Job,
   type JobDetail,
   type LoginResponse,
@@ -270,5 +271,86 @@ export const api = {
       method: 'PATCH',
       body: JSON.stringify(updates),
     });
+  },
+
+  // ----------------------------------------------------------------
+  // Settings — inspector profiles + signatures (Phase 6a)
+  // ----------------------------------------------------------------
+
+  /**
+   * Fetch inspector profiles. The backend stores a single JSON array per
+   * user; we return it as-is so the caller can own the ordering /
+   * default-flag logic. Missing file returns `[]`.
+   */
+  inspectorProfiles(userId: string): Promise<InspectorProfile[]> {
+    return request<InspectorProfile[]>(`/api/inspector-profiles/${encodeURIComponent(userId)}`);
+  },
+
+  /**
+   * Replace the full inspector profiles array. Not a PATCH — the backend
+   * has no per-profile endpoint and we always send the full list. Matches
+   * iOS `APIClient.updateInspectorProfiles`. Concurrency model is
+   * last-writer-wins, same as iOS.
+   */
+  updateInspectorProfiles(
+    userId: string,
+    profiles: InspectorProfile[]
+  ): Promise<{ success: true }> {
+    return request(`/api/inspector-profiles/${encodeURIComponent(userId)}`, {
+      method: 'PUT',
+      body: JSON.stringify(profiles),
+    });
+  },
+
+  /**
+   * Upload a signature PNG. Returns `{ signature_file }` where
+   * `signature_file` is the full S3 key the caller stores on the
+   * inspector profile. Two-step: the caller then PUTs the full
+   * profiles array with the key merged in. We never inline base64
+   * — keeps the profiles blob small and reads cacheable.
+   *
+   * Multipart field name is "signature" (backend multer config in
+   * `src/routes/settings.js`). PNG or JPEG; 10MB cap.
+   */
+  uploadSignature(
+    userId: string,
+    blob: Blob | File
+  ): Promise<{ success: true; signature_file: string }> {
+    const form = new FormData();
+    // Name the part so multer writes a sensible on-disk filename; the
+    // final S3 filename is regenerated server-side anyway.
+    const file =
+      blob instanceof File ? blob : new File([blob], 'signature.png', { type: 'image/png' });
+    form.append('signature', file);
+    return request(`/api/inspector-profiles/${encodeURIComponent(userId)}/upload-signature`, {
+      method: 'POST',
+      body: form,
+    });
+  },
+
+  /**
+   * Fetch a signature image as a Blob. The stored `signature_file` on
+   * a profile is the full S3 key
+   * (`settings/{userId}/signatures/{filename}`); we only care about the
+   * basename for the route. Browsers can't attach our bearer header to
+   * a raw S3 URL, so this streams through an auth'd backend endpoint
+   * (`GET /api/settings/:userId/signatures/:filename`). Wrap the
+   * returned Blob in `URL.createObjectURL` and revoke on unmount —
+   * identical pattern to `fetchPhotoBlob`.
+   */
+  async fetchSignatureBlob(userId: string, signatureFile: string): Promise<Blob> {
+    const filename = signatureFile.split('/').pop() ?? signatureFile;
+    const token = getToken();
+    const headers = new Headers();
+    if (token) headers.set('Authorization', `Bearer ${token}`);
+    const res = await fetch(
+      `${API_BASE_URL}/api/settings/${encodeURIComponent(userId)}/signatures/${encodeURIComponent(filename)}`,
+      { headers, credentials: 'include' }
+    );
+    if (!res.ok) {
+      const body = await res.text().catch(() => '');
+      throw new ApiError(res.status, body || res.statusText);
+    }
+    return res.blob();
   },
 };

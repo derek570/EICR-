@@ -9,6 +9,78 @@ export interface User {
   name: string;
   company_name?: string;
   role?: 'admin' | 'user';
+  /** System-wide tenant membership. Nullable for legacy users not yet bound to a company. */
+  company_id?: string;
+  /** Role within a company. `owner`/`admin` grant company-admin privileges; `employee` is rank-and-file. */
+  company_role?: 'owner' | 'admin' | 'employee';
+}
+
+/**
+ * Inspector profile — the API shape stored as one JSON array per user at
+ * `settings/{userId}/inspector_profiles.json`. The backend persists the
+ * blob verbatim so we can add forward-compat fields (equipment block) by
+ * just shipping them in the PUT body; unknown keys round-trip untouched.
+ *
+ * Signature storage: when an inspector draws a new signature, the client
+ * POSTs the PNG as multipart to `upload-signature` which returns the S3
+ * key. That key is saved on the profile as `signature_file`. Reading back
+ * goes via `GET /api/settings/:userId/signatures/:filename` as auth'd
+ * bytes — browsers cannot attach the bearer token to a bare S3 URL.
+ *
+ * The equipment fields mirror iOS `Inspector.swift` — 5 devices × serial
+ * + calibration date. They're rendered as a collapsible section; empty
+ * strings are persisted as-is because the schema is permissive.
+ */
+export interface InspectorProfile {
+  id: string;
+  name: string;
+  position?: string;
+  organisation?: string;
+  enrolment_number?: string;
+  signature_file?: string;
+  is_default?: boolean;
+  // Equipment (mirrors iOS Inspector.swift)
+  mft_serial_number?: string;
+  mft_calibration_date?: string;
+  continuity_serial_number?: string;
+  continuity_calibration_date?: string;
+  insulation_serial_number?: string;
+  insulation_calibration_date?: string;
+  earth_fault_serial_number?: string;
+  earth_fault_calibration_date?: string;
+  rcd_serial_number?: string;
+  rcd_calibration_date?: string;
+}
+
+/**
+ * Company branding settings — one JSON blob per user at
+ * `settings/{userId}/company_settings.json`. Used by the PDF generators
+ * to stamp the header on every certificate. Logo is an S3 key
+ * (uploaded separately — see Phase 6b).
+ */
+export interface CompanySettings {
+  company_name?: string;
+  company_address?: string;
+  company_phone?: string;
+  company_email?: string;
+  company_website?: string;
+  company_registration?: string;
+  logo_file?: string | null;
+}
+
+/**
+ * Admin-tier user view — includes operational flags (active,
+ * lockout, last-login) only system admins can see. Returned by
+ * `GET /api/admin/users`. Extends the public User with lifecycle
+ * metadata; treat as read-mostly + mutate via dedicated endpoints
+ * (update / reset-password / unlock).
+ */
+export interface AdminUser extends User {
+  is_active?: boolean;
+  last_login?: string | null;
+  locked_until?: string | null;
+  failed_login_attempts?: number;
+  created_at?: string;
 }
 
 export type CertificateType = 'EICR' | 'EIC';

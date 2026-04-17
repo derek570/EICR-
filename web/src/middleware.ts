@@ -10,18 +10,24 @@ import { NextResponse, type NextRequest } from 'next/server';
 
 const PUBLIC_PREFIXES = ['/login', '/legal', '/offline'];
 
-function isTokenExpired(token: string): boolean {
+interface JwtPayload {
+  exp?: number;
+  role?: 'admin' | 'user';
+}
+
+function decodeJwt(token: string): JwtPayload | null {
   try {
     const [, payload] = token.split('.');
-    if (!payload) return true;
-    const json = JSON.parse(atob(payload.replace(/-/g, '+').replace(/_/g, '/'))) as {
-      exp?: number;
-    };
-    if (!json.exp) return false;
-    return Date.now() >= json.exp * 1000;
+    if (!payload) return null;
+    return JSON.parse(atob(payload.replace(/-/g, '+').replace(/_/g, '/'))) as JwtPayload;
   } catch {
-    return true;
+    return null;
   }
+}
+
+function isTokenExpired(payload: JwtPayload): boolean {
+  if (!payload.exp) return false;
+  return Date.now() >= payload.exp * 1000;
 }
 
 export function middleware(req: NextRequest) {
@@ -38,10 +44,19 @@ export function middleware(req: NextRequest) {
   }
 
   const token = req.cookies.get('token')?.value;
-  if (!token || isTokenExpired(token)) {
+  const payload = token ? decodeJwt(token) : null;
+  if (!token || !payload || isTokenExpired(payload)) {
     const url = new URL('/login', req.url);
     if (pathname !== '/') url.searchParams.set('redirect', pathname);
     return NextResponse.redirect(url);
+  }
+
+  // Admin-only surfaces. Belt-and-braces — the settings pages also check
+  // role client-side via useCurrentUser, but a middleware check avoids
+  // any flash-of-admin-chrome for non-admins and catches tampered
+  // localStorage. The `role` claim is signed into the JWT by the backend.
+  if (pathname.startsWith('/settings/admin') && payload.role !== 'admin') {
+    return NextResponse.redirect(new URL('/settings', req.url));
   }
 
   return NextResponse.next();

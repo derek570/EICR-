@@ -186,6 +186,53 @@ router.put('/inspector-profiles/:userId', auth.requireAuth, async (req, res) => 
 });
 
 /**
+ * Download a signature PNG by filename.
+ *
+ * GET /api/settings/:userId/signatures/:filename
+ *
+ * Why this exists: the upload route returns the S3 key
+ * (`settings/{userId}/signatures/{filename}`) which is then persisted on the
+ * inspector profile as `signature_file`. iOS reads signatures back via the
+ * Swift S3 client using that key directly, but the web client cannot —
+ * browsers can't attach our Authorization header to a bare S3 URL. So we
+ * stream the bytes through an auth'd endpoint and wrap the Blob in
+ * URL.createObjectURL on the client. Mirrors the photo-download pattern in
+ * routes/photos.js.
+ *
+ * Access is tenant-scoped: the authenticated user must match `:userId`.
+ */
+router.get('/settings/:userId/signatures/:filename', auth.requireAuth, async (req, res) => {
+  const { userId, filename } = req.params;
+
+  if (req.user.id !== userId) {
+    return res.status(403).json({ error: 'Access denied' });
+  }
+
+  // Guard against path traversal — filename must be a simple basename.
+  if (filename.includes('/') || filename.includes('..')) {
+    return res.status(400).json({ error: 'Invalid filename' });
+  }
+
+  try {
+    const s3Key = `settings/${userId}/signatures/${filename}`;
+    const bytes = await storage.downloadBytes(s3Key);
+    if (!bytes) {
+      return res.status(404).json({ error: 'Signature not found' });
+    }
+
+    const ext = path.extname(filename).toLowerCase();
+    const contentType = ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg' : 'image/png';
+    res.setHeader('Content-Type', contentType);
+    // Private — signatures are PII. Don't let intermediaries cache.
+    res.setHeader('Cache-Control', 'private, max-age=300');
+    res.send(bytes);
+  } catch (error) {
+    logger.error('Failed to fetch signature', { userId, filename, error: error.message });
+    res.status(500).json({ error: 'Failed to fetch signature' });
+  }
+});
+
+/**
  * Upload inspector signature
  * POST /api/inspector-profiles/:userId/upload-signature
  */
