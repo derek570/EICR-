@@ -2,74 +2,89 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
+import {
+  Boxes,
+  ClipboardCheck,
+  DraftingCompass,
+  FileText,
+  LayoutDashboard,
+  List,
+  Ruler,
+  Settings2,
+  UserCheck,
+  Zap,
+} from 'lucide-react';
 import type { CertificateType } from '@/lib/types';
 import { cn } from '@/lib/utils';
 
 /**
- * Job tab navigation.
+ * Job tab navigation — horizontal strip (always), iOS-style.
  *
- * Desktop: vertical sidebar (~200px).
- * Mobile:  horizontal scroll strip under the job header.
+ * Each tab renders as an icon-over-label cell with an optional small status
+ * dot (green=complete, amber=warning) anchored to the top-right of the icon.
+ * Active tab shows a blue label + a thin underline beneath it; inactive tabs
+ * keep a muted gray label with the brand-coloured icon.
  *
- * Tab ordering mirrors the iOS JobDetailView enum — EICR and EIC diverge
- * because EIC adds Design + Extent & Type while dropping Observations.
- * Labels are short enough to fit without truncation on a 390px viewport.
+ * The tab set is *unified* for EICR + EIC per iOS: Observations is NOT a
+ * tab (it lives behind the Obs button in the floating action bar), and the
+ * final tab is "Staff" not "Inspector". Extent & Design are always shown
+ * — the backend permits them on EICR too and iOS keeps them visible.
+ *
+ * Reference: memory/ios_design_parity.md §"Tab set (unified)".
  */
 
-type Tab = { slug: string; label: string; icon: string };
+type TabStatus = 'complete' | 'warning' | undefined;
 
-const EICR_TABS: Tab[] = [
-  { slug: '', label: 'Overview', icon: '\u{1F3E0}' }, // house
-  { slug: '/installation', label: 'Installation', icon: '\u{1F3D7}' }, // building construction
-  { slug: '/supply', label: 'Supply', icon: '\u26A1' }, // lightning
-  { slug: '/board', label: 'Board', icon: '\u{1F9F1}' }, // brick (placeholder for CU)
-  { slug: '/circuits', label: 'Circuits', icon: '\u{1F500}' }, // shuffle (closest glyph)
-  { slug: '/observations', label: 'Observations', icon: '\u26A0' }, // warning
-  { slug: '/inspection', label: 'Inspection', icon: '\u2705' }, // check
-  { slug: '/inspector', label: 'Inspector', icon: '\u{1F464}' }, // bust
-  { slug: '/pdf', label: 'PDF', icon: '\u{1F4C4}' }, // page
-];
+type Tab = {
+  slug: string;
+  label: string;
+  Icon: React.ComponentType<{
+    className?: string;
+    strokeWidth?: number;
+    'aria-hidden'?: boolean;
+    style?: React.CSSProperties;
+  }>;
+  status?: TabStatus;
+};
 
-const EIC_TABS: Tab[] = [
-  { slug: '', label: 'Overview', icon: '\u{1F3E0}' },
-  { slug: '/installation', label: 'Installation', icon: '\u{1F3D7}' },
-  { slug: '/extent', label: 'Extent', icon: '\u{1F4CF}' }, // ruler
-  { slug: '/supply', label: 'Supply', icon: '\u26A1' },
-  { slug: '/board', label: 'Board', icon: '\u{1F9F1}' },
-  { slug: '/circuits', label: 'Circuits', icon: '\u{1F500}' },
-  { slug: '/inspection', label: 'Inspection', icon: '\u2705' },
-  { slug: '/design', label: 'Design', icon: '\u{1F4D0}' }, // triangular ruler
-  { slug: '/inspector', label: 'Inspector', icon: '\u{1F464}' },
-  { slug: '/pdf', label: 'PDF', icon: '\u{1F4C4}' },
+const UNIFIED_TABS: Tab[] = [
+  { slug: '', label: 'Overview', Icon: LayoutDashboard },
+  { slug: '/installation', label: 'Installation', Icon: Settings2, status: 'complete' },
+  { slug: '/supply', label: 'Supply', Icon: Zap, status: 'complete' },
+  { slug: '/board', label: 'Board', Icon: Boxes, status: 'complete' },
+  { slug: '/circuits', label: 'Circuits', Icon: List, status: 'warning' },
+  { slug: '/inspection', label: 'Inspection', Icon: ClipboardCheck },
+  { slug: '/extent', label: 'Extent', Icon: Ruler },
+  { slug: '/design', label: 'Design', Icon: DraftingCompass },
+  { slug: '/staff', label: 'Staff', Icon: UserCheck },
+  { slug: '/pdf', label: 'PDF', Icon: FileText },
 ];
 
 export function JobTabNav({
   jobId,
-  certificateType,
+  certificateType: _certificateType,
 }: {
   jobId: string;
+  /** Retained for API compatibility; unified tab set ignores cert type. */
   certificateType: CertificateType;
 }) {
   const pathname = usePathname();
   const base = `/job/${jobId}`;
-  const tabs = certificateType === 'EIC' ? EIC_TABS : EICR_TABS;
 
   return (
     <nav
       aria-label="Job sections"
-      className={cn(
-        // Mobile: horizontal scroll strip.
-        'flex w-full overflow-x-auto border-b border-[var(--color-border-subtle)] bg-[var(--color-surface-1)] px-2 scrollbar-hide',
-        // Desktop: transform into vertical sidebar.
-        'md:h-full md:w-[220px] md:flex-shrink-0 md:flex-col md:overflow-y-auto md:overflow-x-visible md:border-b-0 md:border-r md:px-3 md:py-4'
-      )}
+      className="flex w-full gap-0 overflow-x-auto border-b border-[var(--color-border-subtle)] bg-[var(--color-surface-0)] px-2 scrollbar-hide"
     >
-      {tabs.map((tab) => {
+      {UNIFIED_TABS.map((tab) => {
         const href = `${base}${tab.slug}`;
         const isActive =
           tab.slug === ''
             ? pathname === base
             : pathname === href || pathname.startsWith(`${href}/`);
+
+        const iconColor =
+          tab.slug === '/supply' ? 'var(--color-brand-green)' : 'var(--color-brand-blue)';
 
         return (
           <Link
@@ -77,17 +92,39 @@ export function JobTabNav({
             href={href}
             aria-current={isActive ? 'page' : undefined}
             className={cn(
-              'flex items-center gap-2 whitespace-nowrap rounded-[var(--radius-md)] px-3 py-2 text-[13px] font-medium transition',
-              'md:text-sm',
+              'relative flex flex-shrink-0 flex-col items-center gap-1 whitespace-nowrap px-3 pb-2 pt-2.5 text-[11px] font-medium transition',
               isActive
-                ? 'bg-[var(--color-brand-blue)]/12 text-[var(--color-brand-blue)]'
-                : 'text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-2)] hover:text-[var(--color-text-primary)]'
+                ? 'text-[var(--color-brand-blue)]'
+                : 'text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]'
             )}
           >
-            <span aria-hidden className="text-[15px] leading-none">
-              {tab.icon}
+            <span className="relative">
+              <tab.Icon
+                className="h-5 w-5"
+                strokeWidth={2}
+                aria-hidden
+                style={{ color: isActive ? 'var(--color-brand-blue)' : iconColor }}
+              />
+              {tab.status ? (
+                <span
+                  aria-hidden
+                  className="absolute -right-1 -top-1 block h-2 w-2 rounded-full ring-2 ring-[var(--color-surface-0)]"
+                  style={{
+                    background:
+                      tab.status === 'complete'
+                        ? 'var(--color-status-done)'
+                        : 'var(--color-status-processing)',
+                  }}
+                />
+              ) : null}
             </span>
-            {tab.label}
+            <span className="leading-none">{tab.label}</span>
+            {isActive ? (
+              <span
+                aria-hidden
+                className="absolute bottom-0 left-1/2 h-[2px] w-8 -translate-x-1/2 rounded-full bg-[var(--color-brand-blue)]"
+              />
+            ) : null}
           </Link>
         );
       })}

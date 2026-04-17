@@ -5,6 +5,7 @@ import { useParams, useRouter } from 'next/navigation';
 import { AppShell } from '@/components/layout/app-shell';
 import { JobHeader } from '@/components/job/job-header';
 import { JobTabNav } from '@/components/job/job-tab-nav';
+import { FloatingActionBar } from '@/components/job/floating-action-bar';
 import { JobProvider } from '@/lib/job-context';
 import { api } from '@/lib/api-client';
 import { clearAuth, getUser } from '@/lib/auth';
@@ -13,15 +14,19 @@ import type { JobDetail } from '@/lib/types';
 /**
  * Shell for every /job/[id]/... route.
  *
- * - Fetches the job once on mount (via api.job) and holds it in state.
- * - Wraps children in <JobProvider> so tab pages can read/write without
- *   prop drilling.
- * - Renders the header + tab nav + a scroll container for tab content.
+ * Layout matches iOS JobDetailView:
+ *   ┌─── JobHeader (Back • Title • ⋯) ───┐
+ *   │                                    │
+ *   ├─── JobTabNav (horizontal strip)────┤
+ *   │                                    │
+ *   │                                    │
+ *   │          children (tab)            │
+ *   │                                    │
+ *   └─── FloatingActionBar (fixed) ──────┘
  *
- * Deferred to later phases:
- *   - Debounced auto-save (Phase 4)
- *   - Recording overlay bar (Phase 4)
- *   - beforeunload guard (pulled forward to here since it's cheap)
+ * Fetches the job once on mount and holds it in JobProvider. Debounced
+ * auto-save + recording overlay arrive in Phase 4 (floating bar is the
+ * visual placeholder for those wires today).
  */
 export default function JobLayout({ children }: { children: React.ReactNode }) {
   const params = useParams<{ id: string }>();
@@ -63,12 +68,11 @@ export default function JobLayout({ children }: { children: React.ReactNode }) {
         <JobShellLoading error={error} />
       ) : (
         <JobProvider initial={job}>
-          <div className="flex min-h-[calc(100dvh-56px)] flex-col md:flex-row">
+          <div className="flex min-h-[calc(100dvh-56px)] flex-col">
+            <JobHeader />
             <JobTabNav jobId={jobId} certificateType={job.certificate_type ?? 'EICR'} />
-            <div className="flex min-w-0 flex-1 flex-col">
-              <JobHeader />
-              <div className="flex-1 overflow-y-auto">{children}</div>
-            </div>
+            <div className="flex-1 overflow-y-auto pb-28">{children}</div>
+            <FloatingActionBar />
           </div>
         </JobProvider>
       )}
@@ -91,20 +95,11 @@ function JobShellLoading({ error }: { error: string | null }) {
     );
   }
   return (
-    <div className="flex min-h-[calc(100dvh-56px)] flex-col md:flex-row">
-      <div className="hidden w-[220px] flex-shrink-0 border-r border-[var(--color-border-subtle)] bg-[var(--color-surface-1)] p-4 md:block">
-        {Array.from({ length: 8 }).map((_, i) => (
-          <div
-            key={i}
-            className="cm-shimmer mb-2 h-8 w-full rounded-[var(--radius-md)] bg-[var(--color-surface-2)]"
-          />
-        ))}
-      </div>
-      <div className="flex flex-1 flex-col gap-4 p-4 md:p-6">
-        <div className="cm-shimmer h-12 w-3/4 rounded-[var(--radius-md)] bg-[var(--color-surface-2)]" />
-        <div className="cm-shimmer h-32 w-full rounded-[var(--radius-lg)] bg-[var(--color-surface-2)]" />
-        <div className="cm-shimmer h-64 w-full rounded-[var(--radius-lg)] bg-[var(--color-surface-2)]" />
-      </div>
+    <div className="flex min-h-[calc(100dvh-56px)] flex-col gap-4 p-4 md:p-6">
+      <div className="cm-shimmer h-12 w-3/4 rounded-[var(--radius-md)] bg-[var(--color-surface-2)]" />
+      <div className="cm-shimmer h-14 w-full rounded-[var(--radius-md)] bg-[var(--color-surface-2)]" />
+      <div className="cm-shimmer h-32 w-full rounded-[var(--radius-lg)] bg-[var(--color-surface-2)]" />
+      <div className="cm-shimmer h-64 w-full rounded-[var(--radius-lg)] bg-[var(--color-surface-2)]" />
     </div>
   );
 }

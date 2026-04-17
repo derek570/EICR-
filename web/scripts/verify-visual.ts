@@ -161,17 +161,19 @@ function jobRoutes(): Route[] {
     );
   };
 
+  // Unified tab set per iOS parity — same 10 screens for EICR and EIC.
+  // Observations is NOT a tab (it opens from the Obs button in the
+  // floating action bar), and the last tab is "Staff" not "Inspector".
   const tabs = [
     { slug: '', name: 'overview' },
     { slug: '/installation', name: 'installation' },
-    { slug: '/extent', name: 'extent' }, // EIC only but renders either way
     { slug: '/supply', name: 'supply' },
     { slug: '/board', name: 'board' },
     { slug: '/circuits', name: 'circuits' },
-    { slug: '/observations', name: 'observations' },
     { slug: '/inspection', name: 'inspection' },
+    { slug: '/extent', name: 'extent' },
     { slug: '/design', name: 'design' },
-    { slug: '/inspector', name: 'inspector' },
+    { slug: '/staff', name: 'staff' },
     { slug: '/pdf', name: 'pdf' },
   ];
 
@@ -181,10 +183,6 @@ function jobRoutes(): Route[] {
     { id: 'demo-eic', label: 'eic' },
   ]) {
     for (const t of tabs) {
-      // Skip Observations for EIC, skip Design/Extent for EICR — iOS hides
-      // them in the tab bar so there's no useful screen to compare.
-      if (cert.label === 'eic' && t.name === 'observations') continue;
-      if (cert.label === 'eicr' && (t.name === 'design' || t.name === 'extent')) continue;
       out.push({
         path: `/job/${cert.id}${t.slug}`,
         name: `phase-2-${cert.label}-${t.name}`,
