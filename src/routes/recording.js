@@ -1498,17 +1498,23 @@ router.post('/session/:sessionId/confirmed-layout', auth.requireAuth, async (req
   }
 
   try {
-    const key = `ccu-extractions/${userId}/${sessionId}/final.json`;
-    await storage.uploadJson(
+    // Sanitize sessionId to a safe S3 path segment (path-traversal guard)
+    const sessionSegment = String(sessionId || '').replace(/[^a-zA-Z0-9_-]/g, '') || 'no-session';
+    const key = `ccu-extractions/${userId}/${sessionSegment}/final.json`;
+    const ok = await storage.uploadJson(
       {
         userId,
-        sessionId,
+        sessionId: sessionSegment,
         confirmedAt: new Date().toISOString(),
         layout,
       },
       key
     );
-    logger.info('Confirmed CCU layout stored', { sessionId, userId, key });
+    if (!ok) {
+      // storage.uploadJson swallows S3 errors and returns false — treat as upload failure
+      throw new Error('storage.uploadJson returned false (S3 upload failed)');
+    }
+    logger.info('Confirmed CCU layout stored', { sessionId: sessionSegment, userId, key });
     res.json({ success: true, key });
   } catch (error) {
     logger.error('Confirmed layout upload failed', {

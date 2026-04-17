@@ -83,11 +83,19 @@ async function logCcuTrainingData({ userId, sessionId, imageBuffer, analysis, me
   const prefix = `ccu-extractions/${userId}/${sessionSegment}/${extractionId}`;
 
   const compressed = await compressForTrainingLog(imageBuffer);
-  await storage.uploadBytes(compressed, `${prefix}/original.jpg`, 'image/jpeg');
-  await storage.uploadJson(
+  // storage.uploadBytes / uploadJson swallow S3 errors and return false. Check each
+  // return value so silent S3 outages don't quietly discard training samples.
+  const jpegOk = await storage.uploadBytes(compressed, `${prefix}/original.jpg`, 'image/jpeg');
+  if (!jpegOk) {
+    throw new Error(`storage.uploadBytes returned false for ${prefix}/original.jpg`);
+  }
+  const jsonOk = await storage.uploadJson(
     { extractionId, userId, sessionId: sessionId || null, meta, analysis },
     `${prefix}/result.json`
   );
+  if (!jsonOk) {
+    throw new Error(`storage.uploadJson returned false for ${prefix}/result.json`);
+  }
 
   logger.info('CCU training sample logged', {
     userId,
@@ -1093,6 +1101,12 @@ questionsForInspector: return EMPTY array [] unless RCD type could not be determ
           model: s.model,
           ratingAmps: s.ratingAmps,
           poles: s.poles,
+          // Stage 3 device-level attributes — required for training-data
+          // analysis, otherwise RCD/RCBO waveform + curve info is lost.
+          tripCurve: s.tripCurve ?? null,
+          sensitivity: s.sensitivity ?? null,
+          rcdWaveformType: s.rcdWaveformType ?? null,
+          bsEn: s.bsEn ?? null,
           confidence: s.confidence,
           // bbox only — never base64 — in the sidecar.
           bbox: s?.crop?.bbox ?? null,
@@ -1111,42 +1125,54 @@ questionsForInspector: return EMPTY array [] unless RCD type could not be determ
           }
         : geometricResult.stageOutputs;
 
-      storage
-        .uploadJson(
-          {
-            extractionId: geoExtractionId,
-            userId: req.user.id,
-            sessionId: req.body?.sessionId || null,
-            timestamp: new Date().toISOString(),
-            vlmCircuitCount: (analysis.circuits || []).length,
-            geometric: {
-              schemaVersion: geometricResult.schemaVersion,
-              moduleCount: geometricResult.moduleCount,
-              vlmCount: geometricResult.vlmCount,
-              disagreement: geometricResult.disagreement,
-              lowConfidence: geometricResult.lowConfidence,
-              medianRails: geometricResult.medianRails,
-              slotCentersX: geometricResult.slotCentersX,
-              moduleWidth: geometricResult.moduleWidth,
-              mainSwitchWidth: geometricResult.mainSwitchWidth,
-              mainSwitchCenterX: geometricResult.mainSwitchCenterX,
-              imageWidth: geometricResult.imageWidth,
-              imageHeight: geometricResult.imageHeight,
-              slots: sanitizeSlotsForSidecar(geometricResult.slots),
-              stage3Error: geometricResult.stage3Error || null,
-              timings: geometricResult.timings,
-              usage: geometricResult.usage,
-              stageOutputs: sanitizedStageOutputs,
+      // Fire-and-forget but surface real failures. storage.uploadJson swallows
+      // S3 errors and returns false — .catch() never fires — so we need an
+      // explicit boolean check inside an async IIFE to avoid silently dropping
+      // the geometric sidecar on S3 outage. Kept off the request path.
+      (async () => {
+        try {
+          const ok = await storage.uploadJson(
+            {
+              extractionId: geoExtractionId,
+              userId: req.user.id,
+              sessionId: req.body?.sessionId || null,
+              timestamp: new Date().toISOString(),
+              vlmCircuitCount: (analysis.circuits || []).length,
+              geometric: {
+                schemaVersion: geometricResult.schemaVersion,
+                moduleCount: geometricResult.moduleCount,
+                vlmCount: geometricResult.vlmCount,
+                disagreement: geometricResult.disagreement,
+                lowConfidence: geometricResult.lowConfidence,
+                medianRails: geometricResult.medianRails,
+                slotCentersX: geometricResult.slotCentersX,
+                moduleWidth: geometricResult.moduleWidth,
+                mainSwitchWidth: geometricResult.mainSwitchWidth,
+                mainSwitchCenterX: geometricResult.mainSwitchCenterX,
+                imageWidth: geometricResult.imageWidth,
+                imageHeight: geometricResult.imageHeight,
+                slots: sanitizeSlotsForSidecar(geometricResult.slots),
+                stage3Error: geometricResult.stage3Error || null,
+                timings: geometricResult.timings,
+                usage: geometricResult.usage,
+                stageOutputs: sanitizedStageOutputs,
+              },
             },
-          },
-          geoKey
-        )
-        .catch((err) => {
+            geoKey
+          );
+          if (!ok) {
+            logger.warn('CCU geometric log failed (non-fatal): uploadJson returned false', {
+              userId: req.user.id,
+              geoKey,
+            });
+          }
+        } catch (err) {
           logger.warn('CCU geometric log failed (non-fatal)', {
             userId: req.user.id,
             error: err.message,
           });
-        });
+        }
+      })();
     }
   } catch (error) {
     // Timeout — AbortController fired or SDK timeout
