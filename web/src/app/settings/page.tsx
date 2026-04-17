@@ -9,6 +9,7 @@ import { clearAuth } from '@/lib/auth';
 import { useCurrentUser } from '@/lib/use-current-user';
 import { isCompanyAdmin, isSystemAdmin } from '@/lib/roles';
 import { Button } from '@/components/ui/button';
+import { IOSInstallHint } from '@/components/pwa/ios-install-hint';
 
 /**
  * Settings hub. Ports iOS `SettingsView.swift` — hero profile header,
@@ -74,6 +75,14 @@ export default function SettingsHubPage() {
           </div>
         </div>
       </section>
+
+      {/*
+       * iOS Add-to-Home-Screen hint (Phase 7b). Self-suppresses on
+       * non-iOS, already-installed, and previously-dismissed. Rendered
+       * here rather than on the dashboard to avoid pushing the Recent
+       * Jobs list below the fold on phones during the primary workflow.
+       */}
+      <IOSInstallHint />
 
       {/* Team (Staff members) — Phase 6a lives here */}
       <SectionGroup title="TEAM">
