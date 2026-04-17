@@ -42,10 +42,23 @@ import type { Job, JobDetail } from '@/lib/types';
  *     reopen the connection; the handle stays alive for the tab.
  */
 
-const DB_NAME = 'certmate-cache';
-const DB_VERSION = 1;
+/*
+ * Schema versioning:
+ *   v1 (Phase 7b): `jobs-list` + `job-detail` stores.
+ *   v2 (Phase 7c): added `outbox` store (keyPath `id`, index `by-user` on
+ *                  `userId`) for the offline mutation queue. Defined here
+ *                  rather than in a separate DB so `clearJobCache()` +
+ *                  `openDB()` stay the single source of truth for the
+ *                  whole `certmate-cache` database — adding a second DB
+ *                  would double the SSR guards, the block handling, and
+ *                  the schema drift surface area for zero benefit.
+ */
+export const DB_NAME = 'certmate-cache';
+export const DB_VERSION = 2;
 const STORE_JOBS_LIST = 'jobs-list';
 const STORE_JOB_DETAIL = 'job-detail';
+export const STORE_OUTBOX = 'outbox';
+export const OUTBOX_INDEX_BY_USER = 'by-user';
 
 interface CachedJobsList {
   userId: string;
@@ -66,27 +79,50 @@ interface CachedJobDetail {
 // call gets a chance to retry instead of being permanently stuck.
 let dbPromise: Promise<IDBDatabase> | null = null;
 
-function isSupported(): boolean {
+export function isSupported(): boolean {
   return typeof indexedDB !== 'undefined';
 }
 
-function openDB(): Promise<IDBDatabase> {
+export function openDB(): Promise<IDBDatabase> {
   if (dbPromise) return dbPromise;
   dbPromise = new Promise<IDBDatabase>((resolve, reject) => {
     const request = indexedDB.open(DB_NAME, DB_VERSION);
-    request.onupgradeneeded = () => {
+    request.onupgradeneeded = (event) => {
       const db = request.result;
-      // Create object stores lazily — each branch runs only on first-ever
-      // open at that version. `jobs-list` is keyed by `userId` directly so
-      // we can overwrite in one `put()` per user; `job-detail` uses a
-      // composite string key so a single store handles all users/jobs
-      // without per-user object stores (which would explode as jobs grow).
+      const tx = request.transaction;
+      // Each branch is additive and idempotent — both v1 and v2 paths
+      // must no-op when the store already exists, so an upgrade from
+      // v1→v2 preserves the existing `jobs-list` / `job-detail` data
+      // and only creates the missing `outbox` store. We intentionally
+      // don't version-gate with `event.oldVersion` because IDB forces
+      // a fresh `onupgradeneeded` anyway if the version mismatches;
+      // checking `contains()` is the safe universal pattern.
       if (!db.objectStoreNames.contains(STORE_JOBS_LIST)) {
         db.createObjectStore(STORE_JOBS_LIST, { keyPath: 'userId' });
       }
       if (!db.objectStoreNames.contains(STORE_JOB_DETAIL)) {
         db.createObjectStore(STORE_JOB_DETAIL, { keyPath: 'key' });
       }
+      // v2 — outbox. `id` is a client-generated uuid so a single
+      // inspector can queue multiple mutations for the same jobId
+      // without collisions. `by-user` index supports future per-user
+      // purges; Phase 7c only needs the full-clear path but the index
+      // is cheap to add during initial schema creation (adding it
+      // later requires another version bump for no gain).
+      if (!db.objectStoreNames.contains(STORE_OUTBOX)) {
+        const store = db.createObjectStore(STORE_OUTBOX, { keyPath: 'id' });
+        store.createIndex(OUTBOX_INDEX_BY_USER, 'userId', { unique: false });
+      } else if (tx) {
+        // Existing store from a prior v2 open — make sure the index
+        // exists (belt-and-braces for partial upgrades during dev).
+        const store = tx.objectStore(STORE_OUTBOX);
+        if (!store.indexNames.contains(OUTBOX_INDEX_BY_USER)) {
+          store.createIndex(OUTBOX_INDEX_BY_USER, 'userId', { unique: false });
+        }
+      }
+      // Silence the unused-parameter lint without weakening the type:
+      // the event object is often useful for debugging upgrade paths.
+      void event;
     };
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => {
@@ -114,7 +150,7 @@ function openDB(): Promise<IDBDatabase> {
  * failed cache read must never break the page — the network fetch is
  * always also in-flight. Errors are logged to console for debugging.
  */
-function wrapRequest<T>(request: IDBRequest<T>): Promise<T | null> {
+export function wrapRequest<T>(request: IDBRequest<T>): Promise<T | null> {
   return new Promise((resolve) => {
     request.onsuccess = () => resolve(request.result ?? null);
     request.onerror = () => {
@@ -124,7 +160,7 @@ function wrapRequest<T>(request: IDBRequest<T>): Promise<T | null> {
   });
 }
 
-function wrapTransaction(tx: IDBTransaction): Promise<void> {
+export function wrapTransaction(tx: IDBTransaction): Promise<void> {
   return new Promise((resolve) => {
     tx.oncomplete = () => resolve();
     tx.onerror = () => {
@@ -221,6 +257,15 @@ export async function putCachedJob(
  * sign-out so a shared device doesn't keep one inspector's jobs in IDB
  * for the next inspector to render offline.
  *
+ * Phase 7c: this also nukes the `outbox` store. The handoff flagged two
+ * options — purge only the signing-out user's outbox rows, or wipe the
+ * whole outbox on every sign-out. We take the latter for symmetry with
+ * the read cache and because it's strictly safer: a pending offline
+ * mutation replayed under the wrong user's credentials (e.g. after a
+ * sign-out/sign-in swap on a shared tablet) would corrupt data far worse
+ * than losing a pending edit. Documented trade-off in
+ * PHASE_7C_HANDOFF.md §"Shared-device safety".
+ *
  * We don't `deleteDatabase` — that would force a full schema upgrade
  * dance on the next access and could block if another tab is open. A
  * `.clear()` per store is faster and safe under concurrent tabs.
@@ -229,9 +274,10 @@ export async function clearJobCache(): Promise<void> {
   if (!isSupported()) return;
   try {
     const db = await openDB();
-    const tx = db.transaction([STORE_JOBS_LIST, STORE_JOB_DETAIL], 'readwrite');
+    const tx = db.transaction([STORE_JOBS_LIST, STORE_JOB_DETAIL, STORE_OUTBOX], 'readwrite');
     tx.objectStore(STORE_JOBS_LIST).clear();
     tx.objectStore(STORE_JOB_DETAIL).clear();
+    tx.objectStore(STORE_OUTBOX).clear();
     await wrapTransaction(tx);
   } catch (err) {
     console.warn('[job-cache] clearJobCache failed', err);

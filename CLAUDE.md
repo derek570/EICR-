@@ -176,8 +176,8 @@ When modifying UI fields: update `config/field_schema.json` + [field-reference.m
 
 ## Current Focus / Active Work
 
-- Web rebuild on branch `web-rebuild` — Phase 7c (outbox / mutation queue for offline job edits)
-- Phases 0–7b shipped (scaffold → recording → capture → settings/admin → PWA foundation + update handoff + IDB read-through + offline indicator + iOS ATHS hint)
+- Web rebuild on branch `web-rebuild` — Phase 7d (offline job-edit UI polish: pending chips, poisoned-row admin)
+- Phases 0–7c shipped (scaffold → recording → capture → settings/admin → PWA foundation + update handoff + IDB read-through + offline indicator + iOS ATHS hint + offline mutation outbox)
 - Deepgram auto-sleep (3-tier Active/Dozing/Sleeping) + server-side Sonnet v3 multi-turn — live in production
 
 ## Changelog
@@ -186,6 +186,7 @@ Recent changes (one line each). Full commit-body-level detail in [docs/reference
 
 | Date | Summary |
 |------|---------|
+| 2026-04-17 | Web Phase 7c — offline mutation outbox + replay worker (IDB v2, exp backoff, FIFO). |
 | 2026-04-17 | Web Phase 7b — iOS Add-to-Home-Screen hint on `/settings`. **Closes Phase 7b.** |
 | 2026-04-17 | Web Phase 7b — AppShell offline indicator (amber pill via `navigator.onLine`). |
 | 2026-04-17 | Web Phase 7b — IDB read-through cache (offline dashboard + job detail via `certmate-cache`). |

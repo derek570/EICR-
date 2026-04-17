@@ -9,6 +9,7 @@ import { clearAuth, getUser } from '@/lib/auth';
 import { Button } from '@/components/ui/button';
 import { InstallButton } from '@/components/pwa/install-button';
 import { OfflineIndicator } from '@/components/pwa/offline-indicator';
+import { useOutboxReplay } from '@/lib/pwa/outbox-replay';
 
 /**
  * Top-nav + page frame for all authenticated screens.
@@ -24,6 +25,16 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     const u = getUser();
     if (u) setUserName(u.name || u.email);
   }, []);
+
+  /*
+   * Phase 7c — drain the offline mutation outbox on mount, on `online`,
+   * and on tab foregrounding. Mounted here rather than at the root
+   * layout so the replay worker only runs for authenticated sessions
+   * (AppShell is the auth-gated layout boundary). The hook is a no-op
+   * when the outbox is empty, so there's no cost to mounting it on
+   * every auth-gated navigation.
+   */
+  useOutboxReplay();
 
   async function handleSignOut() {
     try {
