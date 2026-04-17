@@ -157,7 +157,11 @@ Detailed docs split into focused reference files:
 | [architecture.md](docs/reference/architecture.md) | Tech stack, containers, AWS config, environment vars, AI models, costs |
 | [ios-pipeline.md](docs/reference/ios-pipeline.md) | Recording pipeline v3, debug runbook (7-step), S3 paths, common issues |
 | [field-reference.md](docs/reference/field-reference.md) | All UI fields (29 circuit columns), CSV mapping, field schema, sync rules |
-| [deployment.md](docs/reference/deployment.md) | Deploy commands, cloud status, troubleshooting |
+| [deployment.md](docs/reference/deployment.md) | AWS deploy commands, cloud status, troubleshooting |
+| [deploy-runbook.md](docs/reference/deploy-runbook.md) | Quick AWS ECS deploy reference (env, secrets, steps) |
+| [deploy-testflight.md](docs/reference/deploy-testflight.md) | iOS TestFlight deploy script, ASC credentials, onnxruntime patch |
+| [vad-investigation.md](docs/reference/vad-investigation.md) | Dated journal: VAD sleep/wake investigation + hybrid VAD decisions |
+| [changelog.md](docs/reference/changelog.md) | Verbatim commit-body-level changelog (full history beyond hub summary) |
 | [file-structure.md](docs/reference/file-structure.md) | Directory tree, key files |
 | [deployment-history.md](docs/reference/deployment-history.md) | Implementation phases 1-8, resolved items archive |
 | [DEVELOPER_SETUP.md](docs/DEVELOPER_SETUP.md) | Full developer setup guide (all platforms) |
