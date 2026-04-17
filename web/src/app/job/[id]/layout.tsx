@@ -6,7 +6,10 @@ import { AppShell } from '@/components/layout/app-shell';
 import { JobHeader } from '@/components/job/job-header';
 import { JobTabNav } from '@/components/job/job-tab-nav';
 import { FloatingActionBar } from '@/components/job/floating-action-bar';
+import { RecordingOverlay } from '@/components/recording/recording-overlay';
+import { TranscriptBar } from '@/components/recording/transcript-bar';
 import { JobProvider } from '@/lib/job-context';
+import { RecordingProvider } from '@/lib/recording-context';
 import { api } from '@/lib/api-client';
 import { clearAuth, getUser } from '@/lib/auth';
 import type { JobDetail } from '@/lib/types';
@@ -68,12 +71,16 @@ export default function JobLayout({ children }: { children: React.ReactNode }) {
         <JobShellLoading error={error} />
       ) : (
         <JobProvider initial={job}>
-          <div className="flex min-h-[calc(100dvh-56px)] flex-col">
-            <JobHeader />
-            <JobTabNav jobId={jobId} certificateType={job.certificate_type ?? 'EICR'} />
-            <div className="flex-1 overflow-y-auto pb-28">{children}</div>
-            <FloatingActionBar />
-          </div>
+          <RecordingProvider>
+            <div className="flex min-h-[calc(100dvh-56px)] flex-col">
+              <JobHeader />
+              <JobTabNav jobId={jobId} certificateType={job.certificate_type ?? 'EICR'} />
+              <TranscriptBar />
+              <div className="flex-1 overflow-y-auto pb-28">{children}</div>
+              <FloatingActionBar />
+              <RecordingOverlay />
+            </div>
+          </RecordingProvider>
         </JobProvider>
       )}
     </AppShell>

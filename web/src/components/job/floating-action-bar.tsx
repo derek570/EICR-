@@ -10,6 +10,8 @@ import {
   SlidersHorizontal,
   TriangleAlert,
 } from 'lucide-react';
+import { useRecording } from '@/lib/recording-context';
+import { cn } from '@/lib/utils';
 
 /**
  * Floating action bar — pinned to the bottom of every /job/[id]/… route.
@@ -30,6 +32,17 @@ import {
  * Phases 4 and 5.
  */
 export function FloatingActionBar() {
+  const { state, start, expand } = useRecording();
+  const recording = state !== 'idle';
+  const onMicClick = React.useCallback(() => {
+    if (recording) {
+      // Session already running — reopen the overlay (iOS parity: tap mic
+      // again to expand the minimised session).
+      expand();
+    } else {
+      void start();
+    }
+  }, [recording, start, expand]);
   return (
     <div
       role="toolbar"
@@ -71,7 +84,7 @@ export function FloatingActionBar() {
           Icon={TriangleAlert}
           onClick={() => console.log('[bar] obs')}
         />
-        <MicButton onClick={() => console.log('[bar] mic')} />
+        <MicButton onClick={onMicClick} recording={recording} />
       </div>
     </div>
   );
@@ -128,17 +141,26 @@ function ActionButton({
   );
 }
 
-function MicButton({ onClick }: { onClick: () => void }) {
+function MicButton({ onClick, recording }: { onClick: () => void; recording: boolean }) {
   return (
     <button
       type="button"
       onClick={onClick}
-      aria-label="Start recording"
-      className="ml-1 flex h-14 w-14 flex-col items-center justify-center rounded-full shadow-[0_6px_18px_rgba(0,204,102,0.55)] transition active:scale-95 focus-visible:outline-2 focus-visible:outline-white"
-      style={{ background: 'var(--color-brand-green)', color: '#ffffff' }}
+      aria-label={recording ? 'Open recording overlay' : 'Start recording'}
+      aria-pressed={recording}
+      className={cn(
+        'ml-1 flex h-14 w-14 flex-col items-center justify-center rounded-full transition active:scale-95 focus-visible:outline-2 focus-visible:outline-white',
+        recording
+          ? 'animate-pulse shadow-[0_6px_18px_rgba(255,69,58,0.6)]'
+          : 'shadow-[0_6px_18px_rgba(0,204,102,0.55)]'
+      )}
+      style={{
+        background: recording ? 'var(--color-status-failed)' : 'var(--color-brand-green)',
+        color: '#ffffff',
+      }}
     >
       <Mic className="h-6 w-6" strokeWidth={2.25} aria-hidden />
-      <span className="sr-only">Record</span>
+      <span className="sr-only">{recording ? 'Recording in progress' : 'Record'}</span>
       {/* Tiny file-plus affordance in corner to echo iOS "add" glyph. */}
       <FilePlus className="sr-only" aria-hidden />
     </button>
