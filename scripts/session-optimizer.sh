@@ -93,22 +93,170 @@ if ! jq -e '.first_seen' "$STATE_FILE" > /dev/null 2>&1; then
     && mv "${STATE_FILE}.tmp" "$STATE_FILE"
 fi
 
+# Migrate state file: add sweep timestamps if missing
+if ! jq -e '.last_plan_sweep' "$STATE_FILE" > /dev/null 2>&1; then
+  jq '. + {last_plan_sweep: 0}' "$STATE_FILE" > "${STATE_FILE}.tmp" \
+    && mv "${STATE_FILE}.tmp" "$STATE_FILE"
+fi
+if ! jq -e '.last_weekly_summary' "$STATE_FILE" > /dev/null 2>&1; then
+  jq '. + {last_weekly_summary: 0}' "$STATE_FILE" > "${STATE_FILE}.tmp" \
+    && mv "${STATE_FILE}.tmp" "$STATE_FILE"
+fi
+
 log() {
   echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG_FILE"
+}
+
+# ── Poison session fingerprints ──
+# When a session fails twice we write a marker to S3 so it's skipped even after
+# a state-file reset. Without this, wiping optimizer_state.json would re-queue
+# every known-bad session and re-exhaust their retries.
+
+is_poison_session() {
+  # Args: SESSION_PATH (e.g. session-analytics/USER/SESSION) or debug-reports/...
+  local SP="$1"
+  local BASENAME
+  BASENAME=$(echo "$SP" | tr '/' '_')
+  aws s3 ls "s3://${BUCKET}/optimizer-reports/poison/${BASENAME}.json" \
+    --region "$AWS_REGION" > /dev/null 2>&1
+}
+
+sweep_old_plans() {
+  # Archive plan files older than 30 days to $PLANS_DIR/archive/. Runs at most
+  # once per 24 hours (tracked via state.last_plan_sweep). Safe to call every
+  # poll — it'll no-op if not due.
+  local NOW LAST_SWEEP ELAPSED
+  NOW=$(date +%s)
+  LAST_SWEEP=$(jq -r '.last_plan_sweep // 0' "$STATE_FILE" 2>/dev/null || echo 0)
+  ELAPSED=$((NOW - LAST_SWEEP))
+  if [ "$ELAPSED" -lt 86400 ]; then
+    return 0
+  fi
+
+  local ARCHIVE_DIR="$PLANS_DIR/archive"
+  mkdir -p "$ARCHIVE_DIR"
+  local MOVED=0
+  # find -mtime +30 matches files older than 30 days
+  while IFS= read -r -d '' PLAN; do
+    mv "$PLAN" "$ARCHIVE_DIR/" 2>/dev/null && MOVED=$((MOVED + 1))
+  done < <(find "$PLANS_DIR" -maxdepth 1 -type f -name 'plan-*.md' -mtime +30 -print0 2>/dev/null)
+
+  if [ "$MOVED" -gt 0 ]; then
+    log "Plan sweep: archived $MOVED plan file(s) older than 30 days → $ARCHIVE_DIR"
+  fi
+  jq --arg ts "$NOW" '.last_plan_sweep = ($ts|tonumber)' "$STATE_FILE" > "${STATE_FILE}.tmp" \
+    && mv "${STATE_FILE}.tmp" "$STATE_FILE"
+}
+
+send_weekly_summary() {
+  # Once every 7 days, post a single Pushover summary of optimizer activity.
+  # Tracked via state.last_weekly_summary. Safe to call on every poll — no-ops
+  # if not due. Dedup key is the ISO week so a crash/restart doesn't double-post.
+  local NOW LAST_SUMMARY ELAPSED
+  NOW=$(date +%s)
+  LAST_SUMMARY=$(jq -r '.last_weekly_summary // 0' "$STATE_FILE" 2>/dev/null || echo 0)
+  ELAPSED=$((NOW - LAST_SUMMARY))
+  # 604800s = 7 days
+  if [ "$ELAPSED" -lt 604800 ]; then
+    return 0
+  fi
+
+  log "Weekly summary: due (${ELAPSED}s since last). Aggregating..."
+
+  # Totals from state file (lifetime counts — cheap).
+  local SESSIONS_TOTAL DRS_TOTAL RETRY_PENDING GRACE_PENDING
+  SESSIONS_TOTAL=$(jq -r '.processed_sessions | length' "$STATE_FILE" 2>/dev/null || echo 0)
+  DRS_TOTAL=$(jq -r '.processed_debug_reports | length' "$STATE_FILE" 2>/dev/null || echo 0)
+  RETRY_PENDING=$(jq -r '.retry_counts | length' "$STATE_FILE" 2>/dev/null || echo 0)
+  GRACE_PENDING=$(jq -r '.first_seen | length' "$STATE_FILE" 2>/dev/null || echo 0)
+
+  # Active report count — reports produced in last 7 days on S3. Uses last-modified
+  # timestamp from aws s3 ls. Catch failures gracefully; summary should never block.
+  local WEEK_AGO_EPOCH REPORTS_WEEK
+  WEEK_AGO_EPOCH=$((NOW - 604800))
+  REPORTS_WEEK=$(
+    { aws s3 ls "s3://${BUCKET}/optimizer-reports/" --region "$AWS_REGION" 2>/dev/null || true; } \
+    | awk -v cutoff="$WEEK_AGO_EPOCH" '
+        /PRE / {
+          cmd = "date -j -f \"%Y-%m-%d %H:%M:%S\" \"" $1 " " $2 "\" +%s 2>/dev/null"
+          cmd | getline ts
+          close(cmd)
+          if (ts+0 >= cutoff) count++
+        }
+        END { print count+0 }
+      '
+  )
+
+  local POISON_COUNT
+  POISON_COUNT=$({ aws s3 ls "s3://${BUCKET}/optimizer-reports/poison/" --region "$AWS_REGION" 2>/dev/null || true; } | wc -l | tr -d ' ')
+
+  # Plan files on disk (active + archived).
+  local PLANS_ACTIVE PLANS_ARCHIVED
+  PLANS_ACTIVE=$(find "$PLANS_DIR" -maxdepth 1 -type f -name 'plan-*.md' 2>/dev/null | wc -l | tr -d ' ')
+  PLANS_ARCHIVED=$(find "$PLANS_DIR/archive" -maxdepth 1 -type f -name 'plan-*.md' 2>/dev/null | wc -l | tr -d ' ')
+
+  local MSG=""
+  MSG+="<b>Optimizer weekly summary</b>\n"
+  MSG+="Reports this week: ${REPORTS_WEEK:-0}\n"
+  MSG+="Lifetime: ${SESSIONS_TOTAL} sessions, ${DRS_TOTAL} debug reports\n"
+  MSG+="Plans: ${PLANS_ACTIVE} active, ${PLANS_ARCHIVED} archived\n"
+  if [ "${RETRY_PENDING:-0}" -gt 0 ] || [ "${GRACE_PENDING:-0}" -gt 0 ]; then
+    MSG+="In flight: ${GRACE_PENDING} grace, ${RETRY_PENDING} retrying\n"
+  fi
+  if [ "${POISON_COUNT:-0}" -gt 0 ]; then
+    MSG+="Poisoned (skipped): ${POISON_COUNT}\n"
+  fi
+
+  # Dedup by ISO week number so retries on the same week don't re-notify.
+  local WEEK_KEY
+  WEEK_KEY=$(date -u +%Y-W%V)
+  send_pushover_message "Optimizer weekly summary" "$MSG" 0 "" "weekly|${WEEK_KEY}"
+
+  jq --arg ts "$NOW" '.last_weekly_summary = ($ts|tonumber)' "$STATE_FILE" > "${STATE_FILE}.tmp" \
+    && mv "${STATE_FILE}.tmp" "$STATE_FILE"
+
+  log "Weekly summary sent."
+}
+
+mark_poison_session() {
+  # Args: SESSION_PATH, REASON (short string), RETRY_COUNT
+  local SP="$1"
+  local REASON="${2:-unknown}"
+  local RETRY_COUNT="${3:-0}"
+  local BASENAME
+  BASENAME=$(echo "$SP" | tr '/' '_')
+  local TMP
+  TMP=$(mktemp)
+  jq -n \
+    --arg path "$SP" \
+    --arg reason "$REASON" \
+    --arg retries "$RETRY_COUNT" \
+    --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    --arg host "$(hostname -s 2>/dev/null || echo unknown)" \
+    '{path: $path, reason: $reason, retries: ($retries|tonumber), poisoned_at: $ts, host: $host}' > "$TMP"
+  aws s3 cp "$TMP" "s3://${BUCKET}/optimizer-reports/poison/${BASENAME}.json" \
+    --region "$AWS_REGION" --content-type "application/json" > /dev/null 2>&1 || true
+  rm -f "$TMP"
+  log "  Poison fingerprint written: s3://${BUCKET}/optimizer-reports/poison/${BASENAME}.json"
 }
 
 notify() {
   local TITLE="$1"
   local MESSAGE="$2"
   local PRIORITY="${3:-0}"  # 0=normal, 1=high (bypasses quiet hours)
+  # DEDUP_KEY: optional caller-provided dedup key. Pass e.g. "sessionId|kind" to
+  # dedup per-session rather than per-title. Defaults to "TITLE|MESSAGE" — risk
+  # is that two genuinely different sessions share the same title+message shape
+  # and the second notification is silently dropped.
+  local DEDUP_KEY="${4:-${TITLE}|${MESSAGE}}"
   local SAFE_TITLE="${TITLE//\"/\\\"}"
   local SAFE_MESSAGE="${MESSAGE//\"/\\\"}"
 
-  # ── Deduplication: skip if same title+message was sent within last 10 minutes ──
+  # ── Deduplication: skip if same dedup key was sent within last 10 minutes ──
   local DEDUP_DIR="$HOME/.certmate/pushover_dedup"
   mkdir -p "$DEDUP_DIR"
   local MSG_HASH
-  MSG_HASH=$(echo -n "${TITLE}|${MESSAGE}" | md5 2>/dev/null || echo -n "${TITLE}|${MESSAGE}" | md5sum | cut -d' ' -f1)
+  MSG_HASH=$(echo -n "$DEDUP_KEY" | md5 2>/dev/null || echo -n "$DEDUP_KEY" | md5sum | cut -d' ' -f1)
   local DEDUP_FILE="$DEDUP_DIR/$MSG_HASH"
   local NOW
   NOW=$(date +%s)
@@ -139,17 +287,20 @@ notify() {
 
 send_pushover_message() {
   # Send a single Pushover message with optional URL attachment.
-  # Args: TITLE, MESSAGE, PRIORITY, FEEDBACK_URL (optional)
+  # Args: TITLE, MESSAGE, PRIORITY, FEEDBACK_URL (optional), DEDUP_KEY (optional)
+  # DEDUP_KEY defaults to TITLE|MESSAGE. Pass "sessionId|kind" to dedup per
+  # session so two similarly-worded reports for different sessions don't collide.
   local TITLE="$1"
   local MESSAGE="$2"
   local PRIORITY="${3:-0}"
   local FEEDBACK_URL="${4:-}"
+  local DEDUP_KEY="${5:-${TITLE}|${MESSAGE}}"
 
-  # ── Deduplication: skip if same title+message was sent within last 10 minutes ──
+  # ── Deduplication: skip if same dedup key was sent within last 10 minutes ──
   local DEDUP_DIR="$HOME/.certmate/pushover_dedup"
   mkdir -p "$DEDUP_DIR"
   local MSG_HASH
-  MSG_HASH=$(echo -n "${TITLE}|${MESSAGE}" | md5 2>/dev/null || echo -n "${TITLE}|${MESSAGE}" | md5sum | cut -d' ' -f1)
+  MSG_HASH=$(echo -n "$DEDUP_KEY" | md5 2>/dev/null || echo -n "$DEDUP_KEY" | md5sum | cut -d' ' -f1)
   local DEDUP_FILE="$DEDUP_DIR/$MSG_HASH"
   local NOW
   NOW=$(date +%s)
@@ -498,6 +649,100 @@ build_session_summary() {
   " > "$OUTPUT_FILE"
 }
 
+# ── Shared Claude + S3 helpers (used by process_session + standalone debug) ──
+#
+# Both session analysis and standalone debug reports share the same shape:
+#   1. Build a rendered prompt from a template + vars file.
+#   2. Invoke Claude Code read-only with that prompt.
+#   3. Parse the last JSON object out of Claude's stdout.
+#   4. Upload the canonical artifacts (report.html, recommendations.json,
+#      session-summary.json, meta.json, claude_output.md) to S3 under
+#      optimizer-reports/<REPORT_ID>/.
+#
+# These helpers centralise that shared pipeline so the two callers only build
+# their own context (prompt vars + session-summary + meta + pushover message)
+# and don't re-implement the Claude/S3 plumbing.
+
+# run_claude_and_parse PROMPT_FILE OUTDIR
+#
+# Invokes Claude Code read-only, stores raw output at $OUTDIR/claude_output.md,
+# writes the parsed recommendations JSON array to $OUTDIR/recommendations.json,
+# and writes REC_COUNT + SUMMARY (separated by a newline) to $OUTDIR/parse_status
+# so the caller can read them back without relying on bash indirect assignment.
+run_claude_and_parse() {
+  local PROMPT_FILE="$1"
+  local OUTDIR="$2"
+
+  cd "$CODEBASE"
+  local CLAUDE_OUTPUT
+  CLAUDE_OUTPUT=$("$CLAUDE" -p "$(cat "$PROMPT_FILE")" \
+    --allowedTools "Read,Glob,Grep" 2>&1) || true
+
+  printf '%s' "$CLAUDE_OUTPUT" > "$OUTDIR/claude_output.md"
+
+  # Parse Claude's JSON block via the dedicated Node helper
+  # (parse-optimizer-output.cjs). The helper:
+  #   1. Extracts the LAST ```json fenced block, or falls back to the old
+  #      greedy {...} match.
+  #   2. Repairs literal \n / \r / \t bytes found INSIDE string literals
+  #      (the DAEF3165 failure mode where multi-line old_code snippets
+  #      contained raw newlines that jq rejected).
+  #   3. Fails LOUDLY on truly broken JSON — no more silent `|| echo "[]"`
+  #      fallback that turns real recommendations into "no recommendations".
+  #
+  # On parse failure we write a $OUTDIR/parse_error marker so the caller
+  # (process_session / process_standalone_debug_report) can escalate via
+  # Pushover and upload the raw Claude output to S3 for post-mortem.
+  local JSON_OUTPUT
+  local RECOMMENDATIONS REC_COUNT SUMMARY
+  if JSON_OUTPUT=$(node "$SCRIPTS_DIR/parse-optimizer-output.cjs" < "$OUTDIR/claude_output.md" 2>>"$LOG_FILE"); then
+    RECOMMENDATIONS=$(echo "$JSON_OUTPUT" | jq -c '.recommendations // []' 2>/dev/null || echo "[]")
+    REC_COUNT=$(echo "$RECOMMENDATIONS" | jq 'length' 2>/dev/null || echo 0)
+    SUMMARY=$(echo "$JSON_OUTPUT" | jq -r '.summary // "Analysis complete"' 2>/dev/null | head -c 200 || echo "Analysis complete")
+  else
+    log "  PARSE ERROR: parse-optimizer-output.cjs failed — see $OUTDIR/claude_output.md"
+    RECOMMENDATIONS="[]"
+    REC_COUNT=0
+    SUMMARY="PARSE ERROR: could not extract recommendations from Claude output"
+    echo "PARSE_FAILED" > "$OUTDIR/parse_error"
+  fi
+
+  echo "$RECOMMENDATIONS" > "$OUTDIR/recommendations.json"
+  printf '%s\n%s\n' "$REC_COUNT" "$SUMMARY" > "$OUTDIR/parse_status"
+}
+
+# upload_report_artifacts WORK_DIR REPORT_ID [EXTRA_FILE]
+#
+# Uploads the canonical set of report files to S3 under
+# optimizer-reports/<REPORT_ID>/ — report.html, recommendations.json,
+# session-summary.json, meta.json, and claude_output.md if present.
+# Optionally uploads an EXTRA_FILE (e.g. analysis.json for full session runs).
+upload_report_artifacts() {
+  local WORK_DIR="$1"
+  local REPORT_ID="$2"
+  local EXTRA_FILE="${3:-}"
+
+  local S3_REPORT_PREFIX="optimizer-reports/${REPORT_ID}"
+  aws s3 cp "$WORK_DIR/report.html" "s3://${BUCKET}/${S3_REPORT_PREFIX}/report.html" \
+    --region "$AWS_REGION" --content-type "text/html"
+  aws s3 cp "$WORK_DIR/recommendations.json" "s3://${BUCKET}/${S3_REPORT_PREFIX}/recommendations.json" \
+    --region "$AWS_REGION" --content-type "application/json"
+  aws s3 cp "$WORK_DIR/session-summary.json" "s3://${BUCKET}/${S3_REPORT_PREFIX}/session-summary.json" \
+    --region "$AWS_REGION" --content-type "application/json"
+  aws s3 cp "$WORK_DIR/meta.json" "s3://${BUCKET}/${S3_REPORT_PREFIX}/meta.json" \
+    --region "$AWS_REGION" --content-type "application/json"
+  if [ -n "$EXTRA_FILE" ] && [ -f "$EXTRA_FILE" ]; then
+    aws s3 cp "$EXTRA_FILE" "s3://${BUCKET}/${S3_REPORT_PREFIX}/$(basename "$EXTRA_FILE")" \
+      --region "$AWS_REGION" --content-type "application/json"
+  fi
+  if [ -f "$WORK_DIR/claude_output.md" ]; then
+    aws s3 cp "$WORK_DIR/claude_output.md" "s3://${BUCKET}/${S3_REPORT_PREFIX}/claude_output.md" \
+      --region "$AWS_REGION" --content-type "text/markdown"
+  fi
+
+  log "  Report uploaded: s3://${BUCKET}/${S3_REPORT_PREFIX}/"
+}
+
 # ── Fallback Session Processing (no debug_log.jsonl) ──
 # When debug_log.jsonl is missing but manifest.json and job_snapshot.json exist,
 # run a lighter analysis extracting field fill rates and cost data without
@@ -720,7 +965,8 @@ process_session_fallback() {
     "Fallback: ${ADDRESS:0:50}" \
     "$PUSHOVER_MSG" \
     0 \
-    "$REPORT_URL"
+    "$REPORT_URL" \
+    "fallback|${SESSION_ID}"
 
   log "  Fallback Pushover sent for report $REPORT_ID"
 
@@ -733,6 +979,34 @@ process_session() {
   local SESSION_DIR="$1"
   local SESSION_ID="$2"
   local DEBUG_REPORTS_DIR="$3"  # Directory with downloaded debug reports (may be empty)
+
+  # Short-session guard — skip trivial sessions without wasting a Claude call.
+  # Trigger: session was a re-open/check-in (user opens the job, no dictation).
+  # The 7 Maylands Way F1926EED case (6s, 0 utterances, 0 transcript) is the
+  # canonical example — processing it produced a useless "no recommendations"
+  # Pushover that cost ~$0.02 and added noise. If duration is very short AND
+  # transcript is empty AND no debug reports are attached, mark processed
+  # silently and return success.
+  local HAS_DEBUG_REPORTS=0
+  if [ -d "$DEBUG_REPORTS_DIR" ] && [ "$(ls -A "$DEBUG_REPORTS_DIR" 2>/dev/null)" ]; then
+    HAS_DEBUG_REPORTS=1
+  fi
+  if [ -f "$SESSION_DIR/manifest.json" ] && [ "$HAS_DEBUG_REPORTS" -eq 0 ]; then
+    local MF_DUR MF_TLEN MF_TURNS MF_REGEX MF_SONNET
+    MF_DUR=$(jq -r '.durationSeconds // 0' "$SESSION_DIR/manifest.json" 2>/dev/null || echo 0)
+    MF_TLEN=$(jq -r '.transcriptLength // 0' "$SESSION_DIR/manifest.json" 2>/dev/null || echo 0)
+    MF_TURNS=$(jq -r '.sonnetTurns // 0' "$SESSION_DIR/manifest.json" 2>/dev/null || echo 0)
+    MF_REGEX=$(jq -r '.regexFieldsSet // 0' "$SESSION_DIR/manifest.json" 2>/dev/null || echo 0)
+    MF_SONNET=$(jq -r '.sonnetFieldsSet // 0' "$SESSION_DIR/manifest.json" 2>/dev/null || echo 0)
+    MF_ADDR=$(jq -r '.address // "Unknown"' "$SESSION_DIR/manifest.json" 2>/dev/null || echo "Unknown")
+    # Skip if EVERYTHING is minimal — duration < 30s AND no transcript AND no extraction activity.
+    # If any of those signals is non-zero the user actually did something meaningful.
+    if [ "$MF_DUR" -lt 30 ] && [ "$MF_TLEN" -eq 0 ] && [ "$MF_TURNS" -eq 0 ] && \
+       [ "$MF_REGEX" -eq 0 ] && [ "$MF_SONNET" -eq 0 ]; then
+      log "  SKIP (trivial session): $SESSION_ID — address='$MF_ADDR' dur=${MF_DUR}s, no transcript, no extraction activity"
+      return 0
+    fi
+  fi
 
   log "  Pre-processing with analyze-session.js..."
 
@@ -751,22 +1025,18 @@ process_session() {
   local ANALYSIS
   ANALYSIS=$(cat "$SESSION_DIR/analysis.json")
 
-  # Read current code context for Claude
-  local REGEX_PATTERNS=""
-  local KEYWORD_BOOSTS=""
-  local SONNET_PROMPT=""
-
-  if [ -f "$IOS_DIR/Sources/Recording/TranscriptFieldMatcher.swift" ]; then
-    REGEX_PATTERNS=$(cat "$IOS_DIR/Sources/Recording/TranscriptFieldMatcher.swift" 2>/dev/null || echo "Could not read")
-  fi
-  if [ -f "$IOS_DIR/Resources/default_config.json" ]; then
-    KEYWORD_BOOSTS=$(cat "$IOS_DIR/Resources/default_config.json" 2>/dev/null || echo "{}")
-  fi
-  # Compute current keyword count and estimated token usage for budget constraint
+  # Compute current keyword count and estimated token usage for budget constraint.
+  # We no longer pre-load full source files into the prompt — Claude fetches them
+  # via Read/Glob/Grep. But the keyword budget numbers are dynamic and cheap, so
+  # we still compute them here and inject them as placeholders.
   local KEYWORD_COUNT=0
   local KEYWORD_TOKENS=0
-  if command -v python3 &>/dev/null && [ -n "$KEYWORD_BOOSTS" ]; then
-    read KEYWORD_COUNT KEYWORD_TOKENS < <(echo "$KEYWORD_BOOSTS" | python3 -c "
+  local KEYWORD_BOOSTS_JSON=""
+  if [ -f "$IOS_DIR/Resources/default_config.json" ]; then
+    KEYWORD_BOOSTS_JSON=$(cat "$IOS_DIR/Resources/default_config.json" 2>/dev/null || echo "{}")
+  fi
+  if command -v python3 &>/dev/null && [ -n "$KEYWORD_BOOSTS_JSON" ]; then
+    read KEYWORD_COUNT KEYWORD_TOKENS < <(echo "$KEYWORD_BOOSTS_JSON" | python3 -c "
 import json,sys
 d=json.load(sys.stdin)
 kb=d.get('keyword_boosts',{})
@@ -785,10 +1055,6 @@ print(count,tokens)
   fi
   local TOKEN_BUDGET=450
   local TOKEN_HEADROOM=$((TOKEN_BUDGET - KEYWORD_TOKENS))
-  # Server-side Sonnet extraction session (primary prompt for optimization)
-  if [ -f "$BACKEND_DIR/src/extraction/eicr-extraction-session.js" ]; then
-    SONNET_PROMPT=$(cat "$BACKEND_DIR/src/extraction/eicr-extraction-session.js" 2>/dev/null || echo "Could not read")
-  fi
 
   # Collect debug reports context
   local DEBUG_CONTEXT=""
@@ -854,285 +1120,83 @@ Do NOT repeat the same mistake."
     FIELD_SOURCES_DATA=$(cat "$SESSION_DIR/field_sources.json" 2>/dev/null || echo "{}")
   fi
 
-  # Write prompt to temp file using printf for data (safe from shell expansion)
-  # and quoted heredocs for static text (no command substitution)
-  local PROMPT_FILE
+  # Render the prompt from the template. All dynamic data goes into a JSON vars
+  # file and render-prompt.js performs {{PLACEHOLDER}} substitution. This keeps
+  # the massive instruction block out of this shell script and makes the prompt
+  # itself diff-reviewable.
+  local PROMPT_FILE VARS_FILE
   PROMPT_FILE=$(mktemp)
-  {
-    cat <<'PROMPT_INTRO'
-You are the CertMate Session Optimizer. You have READ-ONLY access to the codebase.
-Your job is to analyze a recording session, find why values were missed, and produce
-structured JSON recommendations for code changes. You do NOT apply changes yourself.
+  VARS_FILE=$(mktemp)
 
-## Session Analysis (from analyze-session.js)
-PROMPT_INTRO
-    printf '%s\n\n' "$ANALYSIS"
-    printf '%s\n' "=== FULL TRANSCRIPT ==="
-    printf '%s\n\n' "$TRANSCRIPT_DATA"
-    printf '%s\n' "=== SONNET INPUTS/OUTPUTS ==="
-    printf '%s\n\n' "$SONNET_IO"
-    printf '%s\n' "=== REGEX MATCHES ==="
-    printf '%s\n\n' "$REGEX_DATA"
-    printf '%s\n' "=== SONNET EXTRACTIONS ==="
-    printf '%s\n\n' "$SONNET_DATA"
-    printf '%s\n' "=== DEBUG ISSUES ==="
-    printf '%s\n\n' "$DEBUG_ISSUES"
-    printf '%s\n' "=== FIELD SOURCES ==="
-    printf '%s\n\n' "$FIELD_SOURCES_DATA"
-    cat <<'PROMPT_UNCAPTURED'
-=== UTTERANCES WITH UNCAPTURED VALUES ===
-These utterances contain number values that were NOT captured by regex or Sonnet.
-Each entry has: timestamp, text, uncaptured_values (numbers spoken but not assigned to any field),
-and any regex/sonnet captures that DID happen for that utterance.
-Focus your recommendations on catching these missed values.
-PROMPT_UNCAPTURED
-    printf '%s\n\n' "$UTTERANCE_DATA"
-    cat <<'PROMPT_REPEATED'
-=== REPEATED VALUES ===
-Values spoken 2+ times without being captured. The user is likely repeating themselves because
-the system didn't acknowledge the value. High priority for regex improvements.
-PROMPT_REPEATED
-    printf '%s\n\n' "$REPEATED_VALUES_DATA"
-    printf '%s\n' "## Current Regex Patterns (TranscriptFieldMatcher.swift — full file)"
-    printf '%s\n\n' "$REGEX_PATTERNS"
-    printf '%s\n' "## Current Remote Config (default_config.json — keyword boosts + regex overrides)"
-    printf '%s\n\n' "$KEYWORD_BOOSTS"
-    printf '%s\n' "### KEYWORD TOKEN BUDGET: ${KEYWORD_COUNT} entries using ~${KEYWORD_TOKENS}/${TOKEN_BUDGET} estimated tokens (${TOKEN_HEADROOM} tokens free)"
-    cat <<'PROMPT_KEYWORDS'
-Deepgram Nova-3 has a 500-TOKEN limit across all keyterms (BPE-style tokenization).
-iOS KeywordBoostGenerator uses a two-tier token-budget strategy:
-- **Tier 1 (boost >= 2.0)**: Sent WITH boost suffix (e.g. keyterm=circuit:3.0). Costs ~(words*2 + 4) tokens.
-- **Tier 2 (boost < 2.0)**: Sent as PLAIN keyterm (e.g. keyterm=MCB). Costs ~(words*2) tokens. Still activates keyterm prompting but without priority boosting.
-- Keywords with boost >= 2.0 are critical — they get Deepgram priority boosting.
-- Keywords with boost < 2.0 still improve recognition but without priority weighting.
-- New keywords at boost >= 2.0 cost ~6 tokens (text + boost suffix); at < 2.0 cost ~2 tokens (text only).
-- NEVER add case-insensitive duplicates of existing keywords.
-- keyword_removal is now LESS necessary since all keywords fit, but still useful for removing genuinely unhelpful terms.
+  local RERUN_BLOCK=""
+  if [ -n "$RERUN_CONTEXT" ]; then
+    RERUN_BLOCK=$(printf '=== USER FEEDBACK FOR RE-RUN (HIGH PRIORITY) ===\nThe user reviewed the previous recommendations and provided this additional context:\n%s\nTake this feedback into account when making your recommendations.\n' "$RERUN_CONTEXT")
+  fi
 
-PROMPT_KEYWORDS
-    printf '%s\n' "## Current Sonnet Extraction (server-side eicr-extraction-session.js — full file)"
-    printf '%s\n\n' "$SONNET_PROMPT"
-    printf '%s\n' "## User Feedback (corrections from previous optimizer run)"
-    printf '%s\n\n' "${FEEDBACK_CONTEXT:-No user feedback for this session.}"
-    printf '%s\n' "## Debug Reports (user-reported issues from voice debug commands)"
-    printf '%s\n' "${DEBUG_CONTEXT:-No debug reports for this session.}"
-    if [ -n "$RERUN_CONTEXT" ]; then
-      printf '\n%s\n' "=== USER FEEDBACK FOR RE-RUN (HIGH PRIORITY) ==="
-      printf '%s\n' "The user reviewed the previous recommendations and provided this additional context:"
-      printf '%s\n' "$RERUN_CONTEXT"
-      printf '%s\n' "Take this feedback into account when making your recommendations."
-    fi
-    cat <<'PROMPT_INSTRUCTIONS'
+  jq -n \
+    --arg ANALYSIS "$ANALYSIS" \
+    --arg TRANSCRIPT_DATA "$TRANSCRIPT_DATA" \
+    --arg SONNET_IO "$SONNET_IO" \
+    --arg REGEX_DATA "$REGEX_DATA" \
+    --arg SONNET_DATA "$SONNET_DATA" \
+    --arg DEBUG_ISSUES "$DEBUG_ISSUES" \
+    --arg FIELD_SOURCES_DATA "$FIELD_SOURCES_DATA" \
+    --arg UTTERANCE_DATA "$UTTERANCE_DATA" \
+    --arg REPEATED_VALUES_DATA "$REPEATED_VALUES_DATA" \
+    --arg KEYWORD_COUNT "$KEYWORD_COUNT" \
+    --arg KEYWORD_TOKENS "$KEYWORD_TOKENS" \
+    --arg TOKEN_BUDGET "$TOKEN_BUDGET" \
+    --arg TOKEN_HEADROOM "$TOKEN_HEADROOM" \
+    --arg FEEDBACK_CONTEXT "${FEEDBACK_CONTEXT:-No user feedback for this session.}" \
+    --arg DEBUG_CONTEXT "${DEBUG_CONTEXT:-No debug reports for this session.}" \
+    --arg RERUN_BLOCK "$RERUN_BLOCK" \
+    '{
+      ANALYSIS: $ANALYSIS,
+      TRANSCRIPT_DATA: $TRANSCRIPT_DATA,
+      SONNET_IO: $SONNET_IO,
+      REGEX_DATA: $REGEX_DATA,
+      SONNET_DATA: $SONNET_DATA,
+      DEBUG_ISSUES: $DEBUG_ISSUES,
+      FIELD_SOURCES_DATA: $FIELD_SOURCES_DATA,
+      UTTERANCE_DATA: $UTTERANCE_DATA,
+      REPEATED_VALUES_DATA: $REPEATED_VALUES_DATA,
+      KEYWORD_COUNT: $KEYWORD_COUNT,
+      KEYWORD_TOKENS: $KEYWORD_TOKENS,
+      TOKEN_BUDGET: $TOKEN_BUDGET,
+      TOKEN_HEADROOM: $TOKEN_HEADROOM,
+      FEEDBACK_CONTEXT: $FEEDBACK_CONTEXT,
+      DEBUG_CONTEXT: $DEBUG_CONTEXT,
+      RERUN_BLOCK: $RERUN_BLOCK
+    }' > "$VARS_FILE"
 
-## INSTRUCTIONS — READ CAREFULLY
+  if ! node "$SCRIPTS_DIR/render-prompt.cjs" \
+      "$SCRIPTS_DIR/optimizer-prompt-session.md" \
+      "$VARS_FILE" \
+      "$PROMPT_FILE" 2>>"$LOG_FILE"; then
+    log "  ERROR: render-prompt.js failed for session prompt"
+    rm -f "$VARS_FILE" "$PROMPT_FILE"
+    return 1
+  fi
+  rm -f "$VARS_FILE"
 
-### CORE PRINCIPLE: REGEX-FIRST
-For every missed value, your FIRST question must be: "Can a regex pattern in TranscriptFieldMatcher.swift catch this?"
-Regex is instant, free, and deterministic. Sonnet costs tokens, has latency, and can hallucinate.
-Only recommend Sonnet prompt changes when the value GENUINELY requires AI understanding (e.g., inferring
-context, resolving ambiguity, handling complex multi-field relationships). If the user said "Ze is 0.35"
-and it was missed, that is ALWAYS a regex fix — never a Sonnet prompt change.
-
-### 1. Scan utterance-level data for missed values
-The UTTERANCES WITH UNCAPTURED VALUES section above lists every utterance where a number was spoken
-but NOT captured by any field_set event. For EACH uncaptured value, determine:
-- What field was the user likely providing this value for? (Use surrounding electrical terms as context.)
-- Did regex have a pattern for this field? If not, write one.
-- Did Sonnet extract it? If not, why? (Was the transcript sent? Was the field in the prompt?)
-
-The REPEATED VALUES section lists values spoken 2+ times. These are HIGH PRIORITY — the user
-repeated themselves because the system didn't acknowledge the value. Every repeated value should
-result in a regex_improvement recommendation.
-
-For EVERY empty field in the analysis, also check the full transcript for spoken values.
-If a value was clearly spoken but not captured, classify the root cause using this priority order:
-1. **Regex miss** (MOST LIKELY): The pattern in TranscriptFieldMatcher.swift doesn't match the phrasing.
-   Check: Does a pattern exist for this field? Does it match the exact spoken form? Does NumberNormaliser
-   convert the spoken numbers correctly? Would a Deepgram keyword boost help recognition?
-2. **Number normalisation miss**: NumberNormaliser.swift doesn't handle the spoken form (e.g., "nought
-   point three five" not converting to "0.35"). Fix in NumberNormaliser.swift.
-3. **Keyword boost miss**: Deepgram misheard a technical term (e.g., "Zed S" → "said S"). Fix by adding
-   a keyword boost in default_config.json or KeywordBoostGenerator.swift. Two-tier system: boost >= 2.0
-   gets priority boosting, boost < 2.0 still activates keyterm prompting. All config keywords are sent.
-4. **Config/mapping issue**: Field routing, model decode, or remote config problem in iOS code.
-5. **Sonnet prompt issue** (LAST RESORT): Only if the value requires genuine AI reasoning that regex
-   cannot handle — e.g., inferring earthing type from context, resolving contradictory readings,
-   understanding that "the one in the kitchen" refers to circuit 3.
-
-### 2. Read each debug report carefully
-The user explicitly told you what's wrong. Investigate the root cause in the codebase.
-
-### 3. Investigate the root cause
-Use Read, Glob, and Grep to explore the codebase. Look at:
-- **Regex patterns**: CertMateUnified/Sources/Recording/TranscriptFieldMatcher.swift
-- **Number normaliser**: CertMateUnified/Sources/Recording/NumberNormaliser.swift
-- **Keyword boosts**: CertMateUnified/Sources/Resources/default_config.json (primary — the optimizer auto-applies to the Resources/ copy too, so emit only ONE recommendation per change using this path)
-- **Keyword generator**: CertMateUnified/Sources/Recording/KeywordBoostGenerator.swift
-- **Sonnet extraction session**: src/extraction/eicr-extraction-session.js (EICR_SYSTEM_PROMPT — the main rolling extraction prompt)
-- **Server WS handler**: src/extraction/sonnet-stream.js (WebSocket message routing)
-- **iOS model fields**: CertMateUnified model files (RollingExtractionResult, etc.)
-- **Alert/question logic**: CertMateUnified/Sources/Services/AlertManager.swift
-
-### 4. Sonnet prompt audit
-After analyzing missed values, audit the Sonnet system prompt in eicr-extraction-session.js (EICR_SYSTEM_PROMPT):
-- Identify instructions that are REDUNDANT because regex now handles those fields reliably.
-- Identify instructions that are overly verbose and could be trimmed without losing accuracy.
-- Identify fields that Sonnet is told to extract but regex already catches >90% of the time — suggest
-  removing those from the Sonnet prompt to reduce token cost.
-- Estimate the token count of the current prompt and any suggested changes.
-
-### 5. IMPORTANT CONSTRAINTS
-- You are READ-ONLY. Do NOT attempt to edit, write, or run bash commands.
-- For each recommended change, provide the EXACT old_code string to find and the EXACT new_code replacement.
-- The old_code must be an EXACT match of existing code (copy it from the file).
-- **Keep changes focused** — fix the specific issues found, don't refactor unrelated code.
-- **Prefer regex over Sonnet** — if in doubt, write a regex pattern. Only touch Sonnet as last resort.
-- **Sonnet prompt changes must REDUCE or maintain token count** — never bloat the prompt.
-
-### 5b. REGEX SAFETY — READ THIS BEFORE WRITING ANY PATTERN
-New regex patterns MUST NOT false-match existing patterns for different fields. Before writing a regex:
-1. **Check for keyword collisions**: Search TranscriptFieldMatcher.swift for every keyword in your pattern.
-   Example: "voltage" appears in IR test voltage context ("test voltage is 250"). A pattern matching
-   "voltage is (\d+)" would false-match "test voltage is 250" as supply voltage. ALWAYS check.
-2. **Require distinguishing context**: If a keyword is shared between fields, your pattern MUST require
-   the distinguishing word. E.g., require "supply voltage" not just "voltage"; require "supply frequency"
-   not just "frequency". Prefer precision over recall — a missed regex match falls back to Sonnet safely,
-   but a false match writes the wrong value to the wrong field with no recovery.
-3. **Handle Deepgram number splitting**: Deepgram often splits numbers into separate digits ("240" -> "2 40",
-   "299" -> "2 9 9"). Your regex capture group MUST handle this — use (\d[\d\s]*\d) not (\d+) for
-   multi-digit values, and strip spaces before validation. Check NumberNormaliser.swift for existing
-   handling patterns.
-4. **Validate ranges defensively**: Always validate captured numbers against realistic ranges for the field.
-   Include BOTH lower and upper bounds. E.g., voltage 100-500V, frequency 45-65Hz, Ze 0.01-200 ohms.
-
-### 6. FORBIDDEN RECOMMENDATIONS — NEVER SUGGEST THESE
-The following changes have been explicitly rejected by the developer and must NEVER be recommended:
-
-**A. Extending active circuit ref expiry / timeout**
-DO NOT recommend increasing the circuit reference expiry window (currently ~30s in TranscriptFieldMatcher).
-DO NOT recommend keeping an "active circuit" for longer, extending circuit context, or any variation of this.
-**Why**: In real-world use, electricians jump rapidly between circuits when performing the same test across
-all circuits (e.g., "circuit 1 Ze 0.35, circuit 2 Ze 0.41, circuit 3 Ze 0.28"). A long active-circuit
-window causes MASS confusion: when Deepgram misses a circuit reference (or the user says the reading
-BEFORE naming the circuit), the system incorrectly assigns the value to the previously-active circuit.
-A short expiry (5-10s) is a SAFETY FEATURE — it forces each reading to be matched with an explicit
-circuit reference rather than assuming it belongs to whatever circuit was last mentioned. If a value
-is missed because the circuit ref expired, that is the CORRECT behaviour — Sonnet will handle it with
-the full context window. The alternative (wrong value on wrong circuit) is far worse than a missed value.
-
-### 7. Categorise every recommendation
-Every recommendation MUST have a "category" from this list:
-- **regex_improvement**: New or improved regex pattern in TranscriptFieldMatcher.swift
-- **number_normaliser**: Fix in NumberNormaliser.swift for spoken number conversion
-- **keyword_boost**: New keyword boost in default_config.json or KeywordBoostGenerator.swift. Two-tier: boost >= 2.0 gets Deepgram priority boosting (~6 tokens); boost < 2.0 still activates prompting (~2 tokens). All keywords fit within 450-token budget. Use boost >= 2.0 for critical terms only.
-- **keyword_removal**: Remove a genuinely unhelpful or redundant keyword from default_config.json. Less critical now that all keywords fit, but still useful for decluttering. Use old_code with the line to remove and new_code as empty string.
-- **sonnet_prompt_trim**: Removing redundant/verbose instructions from Sonnet prompt (saves tokens)
-- **sonnet_prompt_addition**: Adding new Sonnet prompt instructions (costs tokens — justify why regex can't do it)
-- **config_change**: Remote config or default_config.json change
-- **bug_fix**: Code bug in iOS/backend logic (field routing, model decode, etc.)
-
-### 8. Output format
-Output ONLY a JSON object (no markdown fences, no explanation before or after) with this format:
-{
-  "recommendations": [
-    {
-      "title": "Short title of the change",
-      "description": "Why this change is needed and what it fixes",
-      "explanation": "Plain-English explanation of WHAT this change does and WHY, written for a non-technical user (e.g. 'Adds a pattern to recognise when you say Ze is followed by a number, so the app captures it instantly instead of waiting for AI'). 1-2 sentences max.",
-      "category": "regex_improvement|number_normaliser|keyword_boost|keyword_removal|sonnet_prompt_trim|sonnet_prompt_addition|config_change|bug_fix",
-      "token_impact": 0,
-      "file": "/absolute/path/to/file.swift",
-      "old_code": "exact string to find in the file",
-      "new_code": "replacement string"
-    }
-  ],
-  "sonnet_prompt_audit": {
-    "current_estimated_tokens": 0,
-    "suggested_trims": ["description of each trim opportunity"],
-    "redundant_fields": ["fields that regex handles reliably and Sonnet doesn't need to extract"],
-    "net_token_change": 0
-  },
-  "summary": "Brief human-readable summary of all recommendations"
-}
-
-Notes on fields:
-- "explanation": REQUIRED. A user-facing plain-English summary of what this change does and why. No code, no jargon. Written as if explaining to the electrician using the app.
-- "token_impact": Estimated token delta for Sonnet prompt changes. Positive = adds tokens, negative = saves tokens. 0 for non-prompt changes (regex, config, bug fixes).
-- "category": MUST be one of the 8 categories listed above.
-- "sonnet_prompt_audit": Always include this section, even if no trims are suggested.
-
-If no changes are needed, output:
-{
-  "recommendations": [],
-  "sonnet_prompt_audit": {
-    "current_estimated_tokens": 0,
-    "suggested_trims": [],
-    "redundant_fields": [],
-    "net_token_change": 0
-  },
-  "summary": "Session analyzed — no code changes needed. All fields captured correctly."
-}
-PROMPT_INSTRUCTIONS
-  } > "$PROMPT_FILE"
-
-  # Invoke Claude Code with read-only access
-  local CLAUDE_OUTPUT
-  CLAUDE_OUTPUT=$("$CLAUDE" -p "$(cat "$PROMPT_FILE")" \
-    --allowedTools "Read,Glob,Grep" 2>&1) || true
+  # Invoke Claude Code + parse output via shared helper. Writes
+  # recommendations.json, claude_output.md, parse_status into REPORT_WORK_DIR.
+  local REPORT_WORK_DIR
+  REPORT_WORK_DIR=$(mktemp -d)
+  run_claude_and_parse "$PROMPT_FILE" "$REPORT_WORK_DIR"
   rm -f "$PROMPT_FILE"
 
-  # Preserve Claude's raw output early so the parse-error escalation path
-  # below (and Layer C Pushover upload) has a canonical file to upload even
-  # if the JSON block later turns out to be unrecoverable.
-  local PARSE_WORK
-  PARSE_WORK=$(mktemp -d)
-  printf '%s' "$CLAUDE_OUTPUT" > "$PARSE_WORK/claude_output.md"
-
-  # Parse the JSON block via parse-optimizer-output.cjs. The helper extracts
-  # the last ```json fenced block (or falls back to the old greedy regex),
-  # repairs literal \n / \r / \t bytes inside string values (the DAEF3165
-  # failure mode where multi-line old_code fields broke jq), and fails LOUDLY
-  # on irrecoverable output — no more silent `|| echo "[]"` that turns real
-  # recommendations into "no recommendations".
-  local JSON_OUTPUT PARSE_FAILED=0
-  if ! JSON_OUTPUT=$(node "$SCRIPTS_DIR/parse-optimizer-output.cjs" \
-         < "$PARSE_WORK/claude_output.md" 2>>"$LOG_FILE"); then
-    log "  PARSE ERROR: parse-optimizer-output.cjs failed — raw output at $PARSE_WORK/claude_output.md"
-    PARSE_FAILED=1
-    JSON_OUTPUT='{"recommendations":[],"summary":"PARSE ERROR: could not extract recommendations from Claude output"}'
-  fi
-
+  local REC_COUNT SUMMARY
+  REC_COUNT=$(sed -n '1p' "$REPORT_WORK_DIR/parse_status" 2>/dev/null || echo 0)
+  SUMMARY=$(sed -n '2p' "$REPORT_WORK_DIR/parse_status" 2>/dev/null || echo "Analysis complete")
   local RECOMMENDATIONS
-  RECOMMENDATIONS=$(echo "$JSON_OUTPUT" | jq -c '.recommendations // []' 2>/dev/null || echo "[]")
-  local REC_COUNT
-  REC_COUNT=$(echo "$RECOMMENDATIONS" | jq 'length' 2>/dev/null || echo 0)
-  local SUMMARY
-  SUMMARY=$(echo "$JSON_OUTPUT" | jq -r '.summary // "Analysis complete"' 2>/dev/null | head -c 200 || echo "Analysis complete")
+  RECOMMENDATIONS=$(cat "$REPORT_WORK_DIR/recommendations.json")
 
   log "  Claude returned $REC_COUNT recommendations: $SUMMARY"
-
-  # Loud-failure escalation (Layer C): when the parser failed, upload the
-  # raw Claude output to S3 under optimizer-reports/parse-errors/ and fire
-  # a priority-1 Pushover. Dedup key prevents double-alerting the same
-  # session on retry.
-  if [ "$PARSE_FAILED" -eq 1 ]; then
-    aws s3 cp "$PARSE_WORK/claude_output.md" \
-      "s3://${BUCKET}/optimizer-reports/parse-errors/${SESSION_ID//\//_}/claude_output.md" \
-      --region "$AWS_REGION" 2>/dev/null || true
-    notify "Optimizer parse error" \
-      "Claude output for ${SESSION_ID##*/} failed to parse. Raw output at s3://${BUCKET}/optimizer-reports/parse-errors/${SESSION_ID//\//_}/" \
-      1 "parse-error|${SESSION_ID}"
-  fi
-  rm -rf "$PARSE_WORK"
 
   # Generate report ID
   local REPORT_ID
   REPORT_ID=$(uuidgen | tr '[:upper:]' '[:lower:]')
-
-  # Save recommendations to temp dir
-  local REPORT_WORK_DIR
-  REPORT_WORK_DIR=$(mktemp -d)
-  echo "$RECOMMENDATIONS" > "$REPORT_WORK_DIR/recommendations.json"
 
   # Build session summary
   build_session_summary "$SESSION_DIR/analysis.json" "$SESSION_DIR/manifest.json" "$REPORT_WORK_DIR/session-summary.json"
@@ -1175,24 +1239,8 @@ PROMPT_INSTRUCTIONS
     }')
   echo "$META_JSON" > "$REPORT_WORK_DIR/meta.json"
 
-  # Upload report artifacts to S3
-  local S3_REPORT_PREFIX="optimizer-reports/${REPORT_ID}"
-  aws s3 cp "$REPORT_WORK_DIR/report.html" "s3://${BUCKET}/${S3_REPORT_PREFIX}/report.html" \
-    --region "$AWS_REGION" --content-type "text/html"
-  aws s3 cp "$REPORT_WORK_DIR/recommendations.json" "s3://${BUCKET}/${S3_REPORT_PREFIX}/recommendations.json" \
-    --region "$AWS_REGION" --content-type "application/json"
-  aws s3 cp "$REPORT_WORK_DIR/session-summary.json" "s3://${BUCKET}/${S3_REPORT_PREFIX}/session-summary.json" \
-    --region "$AWS_REGION" --content-type "application/json"
-  aws s3 cp "$SESSION_DIR/analysis.json" "s3://${BUCKET}/${S3_REPORT_PREFIX}/analysis.json" \
-    --region "$AWS_REGION" --content-type "application/json"
-  aws s3 cp "$REPORT_WORK_DIR/meta.json" "s3://${BUCKET}/${S3_REPORT_PREFIX}/meta.json" \
-    --region "$AWS_REGION" --content-type "application/json"
-
-  # Also upload Claude's raw output for debugging
-  echo "$CLAUDE_OUTPUT" | aws s3 cp - "s3://${BUCKET}/${S3_REPORT_PREFIX}/claude_output.md" \
-    --region "$AWS_REGION" --content-type "text/markdown"
-
-  log "  Report uploaded: s3://${BUCKET}/${S3_REPORT_PREFIX}/"
+  # Upload all report artifacts + analysis.json via shared helper.
+  upload_report_artifacts "$REPORT_WORK_DIR" "$REPORT_ID" "$SESSION_DIR/analysis.json"
 
   # Build enhanced Pushover message with key stats
   local REPORT_URL="https://api.certmate.uk/api/optimizer-report/${REPORT_ID}"
@@ -1244,7 +1292,8 @@ PROMPT_INSTRUCTIONS
     "Session: ${ADDRESS:0:50}" \
     "$PUSHOVER_MSG" \
     0 \
-    "$REPORT_URL"
+    "$REPORT_URL" \
+    "session|${SESSION_ID}"
 
   log "  Pushover sent for report $REPORT_ID"
 
@@ -1282,109 +1331,47 @@ process_standalone_debug_report() {
     log "  Re-run context loaded: ${RERUN_CONTEXT:0:100}..."
   fi
 
-  local PROMPT_FILE
+  local PROMPT_FILE VARS_FILE
   PROMPT_FILE=$(mktemp)
-  cat > "$PROMPT_FILE" <<PROMPT_EOF
-You are the CertMate Session Optimizer (v3). You have READ-ONLY access to the codebase.
-A user reported a bug via voice debug during a recording session.
-Analyze the root cause and output structured JSON recommendations.
+  VARS_FILE=$(mktemp)
 
-## Bug Report
-$REPORT_JSON
+  local RERUN_BLOCK=""
+  if [ -n "$RERUN_CONTEXT" ]; then
+    RERUN_BLOCK=$(printf '## USER FEEDBACK FOR RE-RUN (HIGH PRIORITY)\nThe user reviewed the previous recommendations and provided this additional context:\n%s\nTake this feedback into account when making your recommendations.\n' "$RERUN_CONTEXT")
+  fi
 
-## Job Context
-$CONTEXT_JSON
+  jq -n \
+    --arg REPORT_JSON "$REPORT_JSON" \
+    --arg CONTEXT_JSON "$CONTEXT_JSON" \
+    --arg RERUN_BLOCK "$RERUN_BLOCK" \
+    '{REPORT_JSON: $REPORT_JSON, CONTEXT_JSON: $CONTEXT_JSON, RERUN_BLOCK: $RERUN_BLOCK}' > "$VARS_FILE"
 
-${RERUN_CONTEXT:+
-## USER FEEDBACK FOR RE-RUN (HIGH PRIORITY)
-The user reviewed the previous recommendations and provided this additional context:
-$RERUN_CONTEXT
-Take this feedback into account when making your recommendations.
-}
+  if ! node "$SCRIPTS_DIR/render-prompt.cjs" \
+      "$SCRIPTS_DIR/optimizer-prompt-debug.md" \
+      "$VARS_FILE" \
+      "$PROMPT_FILE" 2>>"$LOG_FILE"; then
+    log "  ERROR: render-prompt.js failed for debug prompt"
+    rm -f "$VARS_FILE" "$PROMPT_FILE"
+    return 1
+  fi
+  rm -f "$VARS_FILE"
 
-## INSTRUCTIONS
-
-1. Read the bug report carefully. The user told you exactly what's wrong.
-2. Investigate the root cause in the codebase:
-   - Regex patterns: CertMateUnified/Sources/Recording/TranscriptFieldMatcher.swift
-   - Sonnet extraction session: src/extraction/eicr-extraction-session.js (system prompt + extraction)
-   - Server WS handler: src/extraction/sonnet-stream.js (message routing + question gate)
-   - Backend extraction (batch): src/extract.js, src/api.js
-   - Number normalisation: CertMateUnified/Sources/Recording/NumberNormaliser.swift
-   - Keyword boosts: CertMateUnified/Resources/default_config.json
-   - Any other relevant file
-3. DO NOT edit files. Output recommendations as structured JSON.
-4. IMPORTANT: Keep eicr-extraction-session.js system prompt changes MINIMAL.
-5. Output ONLY a valid JSON object as the LAST thing in your response:
-{
-  "recommendations": [
-    {
-      "title": "Short description of the fix",
-      "description": "Why this change is needed",
-      "explanation": "Plain-English explanation of WHAT this change does and WHY, written for a non-technical user. 1-2 sentences max.",
-      "file": "/absolute/path/to/file",
-      "old_code": "exact string to find in file",
-      "new_code": "replacement string"
-    }
-  ],
-  "summary": "Brief overall summary"
-}
-PROMPT_EOF
-
-  # Invoke Claude Code with read-only access
-  local CLAUDE_OUTPUT
-  CLAUDE_OUTPUT=$("$CLAUDE" -p "$(cat "$PROMPT_FILE")" \
-    --allowedTools "Read,Glob,Grep" 2>&1) || true
+  # Invoke Claude Code + parse output via shared helper. Writes
+  # recommendations.json, claude_output.md, parse_status into REPORT_WORK_DIR.
+  local REPORT_WORK_DIR
+  REPORT_WORK_DIR=$(mktemp -d)
+  run_claude_and_parse "$PROMPT_FILE" "$REPORT_WORK_DIR"
   rm -f "$PROMPT_FILE"
 
-  # Preserve raw Claude output before parsing so parse-error escalation
-  # can upload it to S3 for post-mortem. See B4/C1 in the fix plan.
-  local PARSE_WORK
-  PARSE_WORK=$(mktemp -d)
-  printf '%s' "$CLAUDE_OUTPUT" > "$PARSE_WORK/claude_output.md"
-
-  # Parse via parse-optimizer-output.cjs (same repair + loud-fail helper
-  # used by process_session). Truly-broken JSON now triggers a priority-1
-  # Pushover instead of being silently turned into "no recommendations".
-  local JSON_OUTPUT PARSE_FAILED=0
-  if ! JSON_OUTPUT=$(node "$SCRIPTS_DIR/parse-optimizer-output.cjs" \
-         < "$PARSE_WORK/claude_output.md" 2>>"$LOG_FILE"); then
-    log "  PARSE ERROR: parse-optimizer-output.cjs failed — raw output at $PARSE_WORK/claude_output.md"
-    PARSE_FAILED=1
-    JSON_OUTPUT='{"recommendations":[],"summary":"PARSE ERROR: could not extract recommendations from Claude output"}'
-  fi
-
-  local RECOMMENDATIONS
-  RECOMMENDATIONS=$(echo "$JSON_OUTPUT" | jq -c '.recommendations // []' 2>/dev/null || echo '[]')
-  local REC_COUNT
-  REC_COUNT=$(echo "$RECOMMENDATIONS" | jq 'length' 2>/dev/null || echo 0)
-  local SUMMARY
-  SUMMARY=$(echo "$JSON_OUTPUT" | jq -r '.summary // "Analysis complete"' 2>/dev/null | head -c 200)
-
-  # Loud-failure escalation for standalone debug reports. Dedup key
-  # is the full S3 path so the same failing report never double-alerts.
-  if [ "$PARSE_FAILED" -eq 1 ]; then
-    local DR_KEY="${REPORT_S3_PATH//\//_}"
-    aws s3 cp "$PARSE_WORK/claude_output.md" \
-      "s3://${BUCKET}/optimizer-reports/parse-errors/${DR_KEY}/claude_output.md" \
-      --region "$AWS_REGION" 2>/dev/null || true
-    notify "Optimizer parse error" \
-      "Debug-report output for ${REPORT_S3_PATH##*/} failed to parse. Raw output at s3://${BUCKET}/optimizer-reports/parse-errors/${DR_KEY}/" \
-      1 "parse-error|${REPORT_S3_PATH}"
-  fi
-  rm -rf "$PARSE_WORK"
+  local REC_COUNT SUMMARY
+  REC_COUNT=$(sed -n '1p' "$REPORT_WORK_DIR/parse_status" 2>/dev/null || echo 0)
+  SUMMARY=$(sed -n '2p' "$REPORT_WORK_DIR/parse_status" 2>/dev/null || echo "Analysis complete")
 
   log "  Debug report analyzed: $REC_COUNT recommendations"
 
   # Generate report ID and build HTML report
   local REPORT_UUID
   REPORT_UUID=$(uuidgen | tr '[:upper:]' '[:lower:]')
-
-  local REPORT_WORK_DIR
-  REPORT_WORK_DIR=$(mktemp -d)
-
-  # Save recommendations
-  echo "$RECOMMENDATIONS" > "$REPORT_WORK_DIR/recommendations.json"
 
   # Build session summary (debug report context)
   cat > "$REPORT_WORK_DIR/session-summary.json" <<EOF
@@ -1422,20 +1409,8 @@ EOF
 }
 EOF
 
-  # Upload to S3
-  local S3_REPORT_PREFIX="optimizer-reports/${REPORT_UUID}"
-  aws s3 cp "$REPORT_WORK_DIR/report.html" "s3://${BUCKET}/${S3_REPORT_PREFIX}/report.html" \
-    --region "$AWS_REGION" --content-type "text/html"
-  aws s3 cp "$REPORT_WORK_DIR/recommendations.json" "s3://${BUCKET}/${S3_REPORT_PREFIX}/recommendations.json" \
-    --region "$AWS_REGION" --content-type "application/json"
-  aws s3 cp "$REPORT_WORK_DIR/session-summary.json" "s3://${BUCKET}/${S3_REPORT_PREFIX}/session-summary.json" \
-    --region "$AWS_REGION" --content-type "application/json"
-  aws s3 cp "$REPORT_WORK_DIR/meta.json" "s3://${BUCKET}/${S3_REPORT_PREFIX}/meta.json" \
-    --region "$AWS_REGION" --content-type "application/json"
-  echo "$CLAUDE_OUTPUT" | aws s3 cp - "s3://${BUCKET}/${S3_REPORT_PREFIX}/claude_output.md" \
-    --region "$AWS_REGION" --content-type "text/markdown"
-
-  log "  Debug report uploaded: s3://${BUCKET}/${S3_REPORT_PREFIX}/"
+  # Upload all report artifacts via shared helper (no analysis.json for debug).
+  upload_report_artifacts "$REPORT_WORK_DIR" "$REPORT_UUID"
 
   # Send Pushover with clickable report URL
   local REPORT_URL="https://api.certmate.uk/api/optimizer-report/${REPORT_UUID}"
@@ -1443,7 +1418,8 @@ EOF
     "Debug: ${TITLE:0:50}" \
     "$REC_COUNT recommendations — $SUMMARY" \
     0 \
-    "$REPORT_URL"
+    "$REPORT_URL" \
+    "debug|${REPORT_S3_PATH}"
 
   log "  Pushover sent for debug report $REPORT_UUID"
 
@@ -1731,12 +1707,90 @@ process_feedback() {
   notify "Feedback received" "Re-running optimizer with your corrections (no changes were applied previously)." 0
 }
 
+# ── Subcommand dispatch ──
+# `status` prints a one-shot status snapshot and exits without polling.
+if [ "${1:-}" = "status" ]; then
+  echo "CertMate Session Optimizer — status"
+  echo "==================================="
+
+  # LaunchAgent state
+  AGENT_LABEL="com.certmate.session-optimizer"
+  AGENT_LINE=$(launchctl list 2>/dev/null | grep "$AGENT_LABEL" || true)
+  if [ -n "$AGENT_LINE" ]; then
+    AGENT_PID=$(echo "$AGENT_LINE" | awk '{print $1}')
+    AGENT_EXIT=$(echo "$AGENT_LINE" | awk '{print $2}')
+    if [ "$AGENT_PID" != "-" ]; then
+      echo "LaunchAgent : loaded, running (PID $AGENT_PID)"
+    else
+      echo "LaunchAgent : loaded, NOT running (last exit $AGENT_EXIT)"
+    fi
+  else
+    echo "LaunchAgent : not loaded"
+  fi
+
+  # Log freshness
+  if [ -f "$LOG_FILE" ]; then
+    LOG_BYTES=$(stat -f%z "$LOG_FILE" 2>/dev/null || stat -c%s "$LOG_FILE" 2>/dev/null || echo 0)
+    LOG_MTIME=$(stat -f%m "$LOG_FILE" 2>/dev/null || stat -c%Y "$LOG_FILE" 2>/dev/null || echo 0)
+    LOG_AGE=$(( $(date +%s) - LOG_MTIME ))
+    echo "Log file    : $LOG_FILE (${LOG_BYTES} bytes, last write ${LOG_AGE}s ago)"
+    LAST_LINE=$(tail -n 1 "$LOG_FILE" 2>/dev/null || echo "(empty)")
+    echo "Last log    : $LAST_LINE"
+  else
+    echo "Log file    : MISSING ($LOG_FILE)"
+  fi
+
+  # State counts
+  if [ -f "$STATE_FILE" ]; then
+    SESSIONS_DONE=$(jq -r '.processed_sessions | length' "$STATE_FILE" 2>/dev/null || echo "?")
+    DRS_DONE=$(jq -r '.processed_debug_reports | length' "$STATE_FILE" 2>/dev/null || echo "?")
+    RETRY_PENDING=$(jq -r '.retry_counts | length' "$STATE_FILE" 2>/dev/null || echo "?")
+    GRACE_PENDING=$(jq -r '.first_seen | length' "$STATE_FILE" 2>/dev/null || echo "?")
+    LAST_SWEEP=$(jq -r '.last_plan_sweep // 0' "$STATE_FILE" 2>/dev/null || echo 0)
+    LAST_WEEKLY=$(jq -r '.last_weekly_summary // 0' "$STATE_FILE" 2>/dev/null || echo 0)
+    echo "State       : $SESSIONS_DONE sessions / $DRS_DONE debug reports processed"
+    echo "Pending     : $RETRY_PENDING in retry queue, $GRACE_PENDING in grace period"
+    if [ "$LAST_SWEEP" != "0" ]; then
+      SWEEP_AGE=$(( $(date +%s) - LAST_SWEEP ))
+      echo "Plan sweep  : last run ${SWEEP_AGE}s ago"
+    else
+      echo "Plan sweep  : never run"
+    fi
+    if [ "$LAST_WEEKLY" != "0" ]; then
+      WK_AGE=$(( $(date +%s) - LAST_WEEKLY ))
+      echo "Weekly sum  : last sent ${WK_AGE}s ago"
+    else
+      echo "Weekly sum  : never sent"
+    fi
+  else
+    echo "State       : $STATE_FILE missing"
+  fi
+
+  # Plans on disk
+  if [ -d "$PLANS_DIR" ]; then
+    PLAN_COUNT=$(find "$PLANS_DIR" -maxdepth 1 -type f -name 'plan-*.md' 2>/dev/null | wc -l | tr -d ' ')
+    echo "Plans       : $PLAN_COUNT pending in $PLANS_DIR"
+  else
+    echo "Plans       : (no plans dir yet)"
+  fi
+
+  # Poison count in S3 (aws ls exits 1 if prefix is empty — tolerate that)
+  POISON_COUNT=$( { aws s3 ls "s3://${BUCKET}/optimizer-reports/poison/" --region "$AWS_REGION" 2>/dev/null || true; } | wc -l | tr -d ' ')
+  echo "Poisoned    : $POISON_COUNT fingerprints in S3"
+
+  exit 0
+fi
+
 HEARTBEAT_COUNTER=0
 HEARTBEAT_INTERVAL=15  # Log heartbeat every 15 cycles (~30 min)
 
 log "Session optimizer (v4 plan-only) started. Polling every ${POLL_INTERVAL}s."
 
 while true; do
+
+  # ── Periodic maintenance (no-ops unless due) ──
+  sweep_old_plans
+  send_weekly_summary
 
   # ── Periodic heartbeat so the log shows the optimizer is alive ──
   HEARTBEAT_COUNTER=$((HEARTBEAT_COUNTER + 1))
@@ -1757,6 +1811,13 @@ while true; do
 
     # Skip if already processed
     if jq -e ".processed_sessions | index(\"$SESSION_PATH\")" "$STATE_FILE" > /dev/null 2>&1; then
+      continue
+    fi
+
+    # Skip if poisoned (failed twice previously, even across state wipes)
+    if is_poison_session "$SESSION_PATH"; then
+      jq ".processed_sessions += [\"$SESSION_PATH\"]" "$STATE_FILE" > "${STATE_FILE}.tmp" \
+        && mv "${STATE_FILE}.tmp" "$STATE_FILE"
       continue
     fi
 
@@ -1875,7 +1936,8 @@ while true; do
       RETRY_COUNT=$((RETRY_COUNT + 1))
       if [ "$RETRY_COUNT" -ge 2 ]; then
         log "  FAILED: $SESSION_PATH (marking poison after $RETRY_COUNT attempts - will NOT retry)"
-        notify "Optimizer poison session" "Session ${SESSION_PATH##*/} failed twice - skipped to avoid blocking queue. Check log." 0
+        mark_poison_session "$SESSION_PATH" "retry_exhausted" "$RETRY_COUNT"
+        notify "Optimizer poison session" "Session ${SESSION_PATH##*/} failed twice - skipped to avoid blocking queue. Check log." 0 "poison|${SESSION_PATH}"
         jq ".processed_sessions += [\"$SESSION_PATH\"] | del(.retry_counts.\"$SESSION_PATH\") | del(.first_seen.\"$SESSION_PATH\")" "$STATE_FILE" > "${STATE_FILE}.tmp" \
           && mv "${STATE_FILE}.tmp" "$STATE_FILE"
       else
@@ -1902,6 +1964,13 @@ while true; do
       continue
     fi
 
+    # Skip if poisoned
+    if is_poison_session "$DR_PATH"; then
+      jq ".processed_debug_reports += [\"$DR_PATH\"]" "$STATE_FILE" > "${STATE_FILE}.tmp" \
+        && mv "${STATE_FILE}.tmp" "$STATE_FILE"
+      continue
+    fi
+
     log "New standalone debug report: $DR_PATH"
 
     WORK_DIR=$(mktemp -d)
@@ -1921,7 +1990,8 @@ while true; do
       DR_RETRY_COUNT=$((DR_RETRY_COUNT + 1))
       if [ "$DR_RETRY_COUNT" -ge 2 ]; then
         log "  FAILED: $DR_PATH (marking poison after $DR_RETRY_COUNT attempts - will NOT retry)"
-        notify "Optimizer poison debug report" "Debug report ${DR_PATH##*/} failed twice - skipped." 0
+        mark_poison_session "$DR_PATH" "retry_exhausted" "$DR_RETRY_COUNT"
+        notify "Optimizer poison debug report" "Debug report ${DR_PATH##*/} failed twice - skipped." 0 "poison|${DR_PATH}"
         jq ".processed_debug_reports += [\"$DR_PATH\"] | del(.retry_counts.\"$DR_PATH\")" "$STATE_FILE" > "${STATE_FILE}.tmp" \
           && mv "${STATE_FILE}.tmp" "$STATE_FILE"
       else
