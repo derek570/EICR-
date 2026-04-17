@@ -93,17 +93,25 @@ For EACH crop, classify the device occupying that slot. Valid classifications:
 - "unknown"      — cannot determine
 
 For MCBs and RCBOs, read:
-- manufacturer   — brand stamped on the face (e.g. "Hager", "MK", "Wylex", "MEM", "Crabtree", "Eaton", "Schneider", "BG", "Fusebox", "Contactum"). null if illegible.
-- model          — product family if printed (e.g. "Memera 2000", "Design 10"). null if not shown.
-- ratingAmps     — integer amp rating (6, 10, 16, 20, 25, 32, 40, 50, 63, 80, 100). null if unreadable.
-- poles          — 1, 2, 3 or 4. Default to 1 for a single-module MCB, 2 for RCBOs / RCDs / main switch unless the physical width is clearly different.
-- confidence     — your self-assessed 0.0–1.0 confidence in the classification.
+- manufacturer      — brand stamped on the face (e.g. "Hager", "MK", "Wylex", "MEM", "Crabtree", "Eaton", "Schneider", "BG", "Fusebox", "Contactum"). null if illegible.
+- model             — product family if printed (e.g. "Memera 2000", "Design 10"). null if not shown.
+- ratingAmps        — integer amp rating (6, 10, 16, 20, 25, 32, 40, 50, 63, 80, 100). null if unreadable.
+- poles             — 1, 2, 3 or 4 if you can read/count them. Return null if unsure — DO NOT guess. Stage 4 fills defaults from the device-face lookup table.
+- tripCurve         — "B", "C" or "D" — the curve letter printed directly before the amp rating (e.g. the "B" in "B32"). null if not visible. MCB/RCBO only.
+- confidence        — your self-assessed 0.0-1.0 confidence in the classification.
 
-For blanks, SPDs and main switches: manufacturer / model / ratingAmps may be null; still return poles (1 for blank/SPD, 2 for main_switch) and confidence.
+For RCDs and RCBOs, additionally read:
+- sensitivity       — mA sensitivity printed on the device face ("30", "100", "300", "500"). Integer mA. null if unreadable.
+- rcdWaveformType   — "AC" (sine wave symbol), "A" (sine + pulse symbol), "F" (A + composite), or "B" (all waveforms incl. DC). null if the waveform symbol is not visible or unclear.
+
+For all devices, if you can read it:
+- bsEn              — the BS EN standard number printed on the face (e.g. "BS EN 60898-1", "BS EN 61009-1", "BS EN 61008-1"). null if not visible.
+
+For blanks, SPDs and main switches: manufacturer / model / ratingAmps / tripCurve / sensitivity / rcdWaveformType / bsEn may be null. Still return poles (1 for blank/SPD if single-module, 2 for main_switch — null if unsure) and confidence.
 
 Return ONLY a JSON array, one object per crop, in the SAME ORDER as the images you received. Echo back slot_index to prove alignment:
 [
-  {"slot_index": <int>, "classification": "<string>", "manufacturer": <string|null>, "model": <string|null>, "ratingAmps": <int|null>, "poles": <int>, "confidence": <float>},
+  {"slot_index": <int>, "classification": "<string>", "manufacturer": <string|null>, "model": <string|null>, "ratingAmps": <int|null>, "poles": <int|null>, "tripCurve": <string|null>, "sensitivity": <int|null>, "rcdWaveformType": <string|null>, "bsEn": <string|null>, "confidence": <float>},
   ...
 ]`;
 
@@ -562,7 +570,11 @@ export async function classifySlots(_imageBuffer, slotCrops, opts = {}) {
           typeof vlmItem.ratingAmps === 'number'
             ? vlmItem.ratingAmps
             : (vlmItem.ratingAmps ?? null),
-        poles: typeof vlmItem.poles === 'number' ? vlmItem.poles : 1,
+        poles: typeof vlmItem.poles === 'number' ? vlmItem.poles : null,
+        tripCurve: vlmItem.tripCurve ?? null,
+        sensitivity: typeof vlmItem.sensitivity === 'number' ? vlmItem.sensitivity : null,
+        rcdWaveformType: vlmItem.rcdWaveformType ?? null,
+        bsEn: vlmItem.bsEn ?? null,
         confidence: typeof vlmItem.confidence === 'number' ? vlmItem.confidence : 0,
         crop: {
           bbox: crop.bbox,
@@ -581,7 +593,11 @@ export async function classifySlots(_imageBuffer, slotCrops, opts = {}) {
         manufacturer: null,
         model: null,
         ratingAmps: null,
-        poles: 1,
+        poles: null,
+        tripCurve: null,
+        sensitivity: null,
+        rcdWaveformType: null,
+        bsEn: null,
         confidence: 0,
         crop: { bbox: c.bbox, base64: c.buffer.toString('base64') },
       }
@@ -634,11 +650,17 @@ export async function extractCcuGeometric(imageBuffer) {
     }
 
     const classified = await classifySlots(imageBuffer, slotCrops);
-    // Stage 4 — device-face lookup gap-fill. Applied to every classified slot so that
-    // the VLM's (manufacturer, model) identification can fill any bsEn / rcdWaveformType
-    // blanks it couldn't read directly off the device face. Pure gap-fill — VLM-confirmed
-    // values are never overwritten. See: docs/plans/2026-04-16-ccu-geometric-extraction-design.md §5 Phase D.
-    slots = classified.slots.map((slot) => applyDeviceLookup(slot));
+    // Stage 4 — device-face lookup gap-fill. Only applied when Stage 3 is confident
+    // and returned a real device (not 'blank' / 'unknown'); otherwise a low-confidence
+    // mis-read would pull in default poles / bsEn from the lookup table and mask the
+    // fact that the VLM couldn't read the slot. Pure gap-fill — VLM-confirmed values
+    // are never overwritten. See: docs/plans/2026-04-16-ccu-geometric-extraction-design.md §5 Phase D.
+    slots = classified.slots.map((slot) => {
+      const cls = slot.classification;
+      const conf = typeof slot.confidence === 'number' ? slot.confidence : 0;
+      if (cls === 'blank' || cls === 'unknown' || conf < 0.7) return slot;
+      return applyDeviceLookup(slot);
+    });
     stage3Usage = classified.usage;
     stage3BatchCount = classified.batchCount;
   } catch (err) {

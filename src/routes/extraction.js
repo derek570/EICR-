@@ -76,7 +76,10 @@ async function compressForTrainingLog(buffer, targetBytes = 500 * 1024) {
  */
 async function logCcuTrainingData({ userId, sessionId, imageBuffer, analysis, meta }) {
   const extractionId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-  const sessionSegment = sessionId || 'no-session';
+  // Sanitise sessionId for S3 key safety — strip anything that isn't alphanumeric,
+  // underscore or hyphen. Prevents path-traversal or spoofed bucket prefixes if a
+  // client ever supplies a hostile sessionId (e.g. '../other-user/').
+  const sessionSegment = String(sessionId || '').replace(/[^a-zA-Z0-9_-]/g, '') || 'no-session';
   const prefix = `ccu-extractions/${userId}/${sessionSegment}/${extractionId}`;
 
   const compressed = await compressForTrainingLog(imageBuffer);
@@ -1073,7 +1076,8 @@ questionsForInspector: return EMPTY array [] unless RCD type could not be determ
     // prefix convention so Phase C analysis can join by sessionId.
     if (geometricResult) {
       const geoExtractionId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-      const sessionSegment = req.body?.sessionId || 'no-session';
+      const sessionSegment =
+        String(req.body?.sessionId || '').replace(/[^a-zA-Z0-9_-]/g, '') || 'no-session';
       const geoKey = `ccu-geometric/${req.user.id}/${sessionSegment}/${geoExtractionId}/stage-outputs.json`;
 
       // Phase C: strip base64 crop data from Stage 3 before writing to S3.

@@ -650,7 +650,11 @@ describe('classifySlots', () => {
     expect(result.slots[0].manufacturer).toBeNull();
     expect(result.slots[0].model).toBeNull();
     expect(result.slots[0].ratingAmps).toBeNull();
-    expect(result.slots[0].poles).toBe(1);
+    expect(result.slots[0].poles).toBeNull();
+    expect(result.slots[0].tripCurve).toBeNull();
+    expect(result.slots[0].sensitivity).toBeNull();
+    expect(result.slots[0].rcdWaveformType).toBeNull();
+    expect(result.slots[0].bsEn).toBeNull();
     expect(result.slots[0].confidence).toBe(0);
   });
 });
