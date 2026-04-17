@@ -2,26 +2,40 @@
 
 import * as React from 'react';
 import { useRouter } from 'next/navigation';
-import { Button } from '@/components/ui/button';
-import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '@/components/ui/card';
+import {
+  Building2,
+  ChevronRight,
+  FilePlus,
+  LogOut,
+  PlayCircle,
+  Search,
+  Settings,
+  Shield,
+  SlidersHorizontal,
+  UserCheck,
+} from 'lucide-react';
 import { api } from '@/lib/api-client';
-import { getUser, clearAuth } from '@/lib/auth';
+import { clearAuth, getUser } from '@/lib/auth';
 import type { Job } from '@/lib/types';
 import { AnimatedCounter } from '@/components/dashboard/animated-counter';
 import { JobRow } from '@/components/dashboard/job-row';
 
 /**
- * Dashboard home — mirrors iOS DashboardView:
- *  - Hero stats (total jobs, in progress, completed) with animated counters
- *  - Quick actions (New EICR, New EIC)
- *  - Recent jobs list
- *  - Setup tools (placeholders filled in later phases)
+ * iOS-parity dashboard:
+ *  - Gradient hero card with inline ACTIVE / DONE / EXP stats
+ *  - Start EICR / Start EIC big buttons
+ *  - Search bar
+ *  - Recent Jobs <N> list (coloured stripe + status pill)
+ *  - Setup & Tools 2-column grid
+ *
+ * Reference: memory/ios_design_parity.md (Dashboard section)
  */
 export default function DashboardPage() {
   const router = useRouter();
   const [jobs, setJobs] = React.useState<Job[] | null>(null);
   const [error, setError] = React.useState<string | null>(null);
   const [creating, setCreating] = React.useState(false);
+  const [query, setQuery] = React.useState('');
 
   React.useEffect(() => {
     const user = getUser();
@@ -37,7 +51,6 @@ export default function DashboardPage() {
       })
       .catch((err: Error) => {
         if (cancelled) return;
-        // Auth probably expired — kick to login.
         if (/401/.test(err.message)) {
           clearAuth();
           router.replace('/login');
@@ -53,12 +66,23 @@ export default function DashboardPage() {
 
   const stats = React.useMemo(() => {
     const list = jobs ?? [];
-    return {
-      total: list.length,
-      inProgress: list.filter((j) => j.status === 'processing' || j.status === 'pending').length,
-      done: list.filter((j) => j.status === 'done').length,
-    };
+    // ACTIVE = anything not yet complete (includes failed so nothing is lost
+    // in UI accounting). DONE = completed. EXP = expired certificates — the
+    // backend doesn't yet expose `next_inspection_due`, so we keep this at 0
+    // until that field lands (matches iOS placeholder behaviour pre-Phase 7).
+    const active = list.filter((j) => j.status !== 'done').length;
+    const done = list.filter((j) => j.status === 'done').length;
+    const exp = 0;
+    return { active, done, exp };
   }, [jobs]);
+
+  const recent = React.useMemo(() => {
+    const list = jobs ?? [];
+    const filtered = query.trim()
+      ? list.filter((j) => (j.address ?? '').toLowerCase().includes(query.trim().toLowerCase()))
+      : list;
+    return filtered.slice(0, 8);
+  }, [jobs, query]);
 
   async function createJob(kind: 'EICR' | 'EIC') {
     const user = getUser();
@@ -74,72 +98,62 @@ export default function DashboardPage() {
     }
   }
 
-  const recent = jobs?.slice(0, 8) ?? [];
+  function signOut() {
+    clearAuth();
+    router.replace('/login');
+  }
 
   return (
     <main
-      className="relative mx-auto flex w-full flex-col gap-8 px-4 py-6 md:px-8 md:py-10"
-      style={{ maxWidth: '1200px' }}
+      className="mx-auto flex w-full flex-col gap-6 px-4 pb-24 pt-6 md:px-8 md:py-10"
+      style={{ maxWidth: '1100px' }}
     >
-      {/* Ambient background glow (subtler than login) */}
-      <div
-        className="cm-orb"
-        style={{
-          top: '-180px',
-          right: '-80px',
-          width: '420px',
-          height: '420px',
-          opacity: 0.35,
-          background: 'radial-gradient(circle, rgba(0,102,255,0.6), transparent 70%)',
-        }}
-        aria-hidden
-      />
+      {/* ---------- Hero ---------- */}
+      <HeroCard active={stats.active} done={stats.done} exp={stats.exp} />
 
-      {/* Hero stats */}
-      <section aria-labelledby="stats-heading" className="grid gap-3 md:grid-cols-3">
-        <h2 id="stats-heading" className="sr-only">
-          Certificate overview
-        </h2>
-        <StatCard label="Certificates" value={stats.total} color="var(--color-brand-blue)" />
-        <StatCard
-          label="In progress"
-          value={stats.inProgress}
-          color="var(--color-status-processing)"
+      {/* ---------- Start new certificate ---------- */}
+      <section className="grid gap-3 md:grid-cols-2">
+        <StartTile
+          kind="EICR"
+          label="Start EICR"
+          accent="var(--color-brand-blue)"
+          onClick={() => createJob('EICR')}
+          disabled={creating}
         />
-        <StatCard label="Complete" value={stats.done} color="var(--color-brand-green)" />
+        <StartTile
+          kind="EIC"
+          label="Start EIC"
+          accent="var(--color-brand-green)"
+          onClick={() => createJob('EIC')}
+          disabled={creating}
+        />
       </section>
 
-      {/* Quick actions */}
-      <section className="flex flex-col gap-3">
-        <h2 className="text-[13px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
-          New certificate
-        </h2>
-        <div className="flex flex-wrap gap-3">
-          <Button size="lg" onClick={() => createJob('EICR')} disabled={creating}>
-            New EICR
-          </Button>
-          <Button
-            size="lg"
-            variant="secondary"
-            onClick={() => createJob('EIC')}
-            disabled={creating}
-          >
-            New EIC
-          </Button>
-        </div>
-      </section>
+      {/* ---------- Search ---------- */}
+      <div className="relative">
+        <Search
+          className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 h-4 w-4 text-[var(--color-text-tertiary)]"
+          aria-hidden
+        />
+        <input
+          type="search"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Search jobs..."
+          aria-label="Search jobs"
+          className="w-full rounded-full border border-[var(--color-border-subtle)] bg-[var(--color-surface-2)] py-3 pl-11 pr-4 text-[15px] text-[var(--color-text-primary)] placeholder:text-[var(--color-text-tertiary)] focus:outline-none focus:ring-2 focus:ring-[var(--color-brand-blue)]"
+        />
+      </div>
 
-      {/* Recent jobs */}
+      {/* ---------- Recent jobs ---------- */}
       <section className="flex flex-col gap-3">
         <div className="flex items-center justify-between">
-          <h2 className="text-[13px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
-            Recent
-          </h2>
-          {jobs && jobs.length > recent.length ? (
-            <span className="text-xs text-[var(--color-text-tertiary)]">
-              Showing {recent.length} of {jobs.length}
+          <h2 className="flex items-center gap-2 text-[17px] font-semibold text-[var(--color-text-primary)]">
+            Recent Jobs
+            <span className="inline-flex min-w-6 items-center justify-center rounded-full bg-[var(--color-brand-blue)] px-2 py-0.5 text-xs font-semibold text-white">
+              {jobs?.length ?? 0}
             </span>
-          ) : null}
+          </h2>
         </div>
         {error ? (
           <p
@@ -159,14 +173,11 @@ export default function DashboardPage() {
             ))}
           </div>
         ) : recent.length === 0 ? (
-          <Card>
-            <CardHeader>
-              <CardTitle>No certificates yet</CardTitle>
-              <CardDescription>
-                Start a new EICR or EIC above to begin a voice-driven inspection.
-              </CardDescription>
-            </CardHeader>
-          </Card>
+          <div className="rounded-[var(--radius-lg)] border border-[var(--color-border-subtle)] bg-[var(--color-surface-2)] px-4 py-6 text-center text-sm text-[var(--color-text-secondary)]">
+            {query.trim()
+              ? `No jobs match “${query}”.`
+              : 'No certificates yet — start an EICR or EIC above.'}
+          </div>
         ) : (
           <div className="flex flex-col gap-2">
             {recent.map((j) => (
@@ -176,69 +187,184 @@ export default function DashboardPage() {
         )}
       </section>
 
-      {/* Setup tools — each tool becomes a full page in Phase 6 */}
-      <section className="flex flex-col gap-3">
-        <h2 className="text-[13px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
-          Setup
+      {/* ---------- Setup & Tools ---------- */}
+      <section className="flex flex-col gap-3 pt-2">
+        <h2 className="text-[17px] font-semibold text-[var(--color-text-primary)]">
+          Setup &amp; Tools
         </h2>
-        <div className="grid gap-3 md:grid-cols-3">
-          <SetupTile
-            title="Company details"
-            description="Logo, address, registration."
-            href="/settings/company"
-          />
-          <SetupTile
-            title="Inspectors"
-            description="Qualifications & signatures."
-            href="/settings/inspectors"
-          />
-          <SetupTile
-            title="Defaults"
-            description="Cable sizes, OCPD ratings."
-            href="/settings/defaults"
-          />
+        <div className="grid gap-2 sm:grid-cols-2">
+          <SetupTile icon={SlidersHorizontal} label="Defaults" href="/settings/defaults" />
+          <SetupTile icon={Building2} label="Company" href="/settings/company" />
+          <SetupTile icon={UserCheck} label="Staff" href="/settings/inspectors" />
+          <SetupTile icon={Settings} label="Settings" href="/settings" />
+          <SetupTile icon={PlayCircle} label="Tour" trailing="OFF" href="/tour" />
+          <SetupTile icon={LogOut} label="Log Out" variant="destructive" onClick={signOut} />
         </div>
       </section>
     </main>
   );
 }
 
-function StatCard({ label, value, color }: { label: string; value: number; color: string }) {
+/* ----------------------------------------------------------------------- */
+
+function HeroCard({ active, done, exp }: { active: number; done: number; exp: number }) {
   return (
-    <Card className="flex flex-col gap-1 py-5">
-      <span className="text-[12px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
-        {label}
-      </span>
-      <AnimatedCounter
-        value={value}
-        className="mt-1 text-[52px] font-black leading-none"
-        aria-label={`${value} ${label.toLowerCase()}`}
-      />
-      <span
-        className="mt-2 block h-1 w-10 rounded-full"
-        style={{ background: color }}
+    <section
+      aria-labelledby="hero-heading"
+      className="relative overflow-hidden rounded-[22px] px-6 py-6 md:px-8 md:py-8"
+      style={{
+        background:
+          'linear-gradient(135deg, var(--color-brand-blue) 0%, var(--color-brand-green) 100%)',
+      }}
+    >
+      {/* Subtle sheen on the top edge for iOS-like depth */}
+      <div
         aria-hidden
+        className="pointer-events-none absolute inset-x-0 top-0 h-16"
+        style={{
+          background: 'linear-gradient(180deg, rgba(255,255,255,0.18) 0%, transparent 100%)',
+        }}
       />
-    </Card>
+
+      <Shield
+        aria-hidden
+        className="absolute right-5 top-5 h-7 w-7 text-white/80"
+        strokeWidth={2}
+      />
+
+      <h1
+        id="hero-heading"
+        className="text-[34px] font-black leading-none text-white md:text-[40px]"
+      >
+        CertMate
+      </h1>
+      <p className="mt-1 text-[13px] font-medium text-white/85">Electrical Certification</p>
+
+      <dl className="mt-6 grid grid-cols-3 gap-4">
+        <HeroStat label="ACTIVE" value={active} />
+        <HeroStat label="DONE" value={done} />
+        <HeroStat label="EXP" value={exp} />
+      </dl>
+    </section>
   );
 }
 
-function SetupTile({
-  title,
-  description,
-  href,
+function HeroStat({ label, value }: { label: string; value: number }) {
+  return (
+    <div className="flex flex-col items-start">
+      <AnimatedCounter
+        value={value}
+        className="text-[34px] font-black leading-none text-white md:text-[40px]"
+        aria-label={`${value} ${label.toLowerCase()}`}
+      />
+      <span className="mt-1 text-[11px] font-semibold tracking-[0.18em] text-white/80">
+        {label}
+      </span>
+    </div>
+  );
+}
+
+function StartTile({
+  kind,
+  label,
+  accent,
+  onClick,
+  disabled,
 }: {
-  title: string;
-  description: string;
-  href: string;
+  kind: 'EICR' | 'EIC';
+  label: string;
+  accent: string;
+  onClick: () => void;
+  disabled?: boolean;
 }) {
   return (
-    <a
-      href={href}
-      className="group flex flex-col gap-1 rounded-[var(--radius-lg)] border border-[var(--color-border-subtle)] bg-[var(--color-surface-2)] px-4 py-4 transition hover:bg-[var(--color-surface-3)]"
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      aria-label={label}
+      className="group relative flex flex-col items-center justify-center gap-2 overflow-hidden rounded-[18px] border border-[var(--color-border-subtle)] bg-[var(--color-surface-2)] py-6 transition hover:bg-[var(--color-surface-3)] active:scale-[0.99] disabled:opacity-50"
+      style={{
+        // subtle accent tint, top-down
+        backgroundImage: `linear-gradient(180deg, color-mix(in srgb, ${accent} 16%, transparent) 0%, transparent 70%)`,
+      }}
     >
-      <span className="text-[15px] font-semibold text-[var(--color-text-primary)]">{title}</span>
-      <span className="text-xs text-[var(--color-text-secondary)]">{description}</span>
-    </a>
+      <span
+        className="inline-flex h-10 w-10 items-center justify-center rounded-full"
+        style={{ background: `color-mix(in srgb, ${accent} 22%, transparent)`, color: accent }}
+        aria-hidden
+      >
+        <FilePlus className="h-5 w-5" strokeWidth={2} />
+      </span>
+      <span className="text-[15px] font-semibold text-[var(--color-text-primary)]">{label}</span>
+      <span className="sr-only">Create new {kind} certificate</span>
+    </button>
+  );
+}
+
+type LucideIcon = React.ComponentType<{
+  className?: string;
+  strokeWidth?: number;
+  'aria-hidden'?: boolean;
+}>;
+
+function SetupTile({
+  icon: Icon,
+  label,
+  href,
+  onClick,
+  trailing,
+  variant = 'default',
+}: {
+  icon: LucideIcon;
+  label: string;
+  href?: string;
+  onClick?: () => void;
+  trailing?: string;
+  variant?: 'default' | 'destructive';
+}) {
+  const destructive = variant === 'destructive';
+  const color = destructive ? 'var(--color-status-failed)' : 'var(--color-text-primary)';
+  const iconColor = destructive ? 'var(--color-status-failed)' : 'var(--color-brand-blue)';
+
+  const content = (
+    <>
+      <span
+        className="inline-flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-full"
+        style={{ background: 'var(--color-surface-3)', color: iconColor }}
+        aria-hidden
+      >
+        <Icon className="h-4 w-4" strokeWidth={2} aria-hidden />
+      </span>
+      <span className="flex-1 truncate text-[15px] font-semibold" style={{ color }}>
+        {label}
+      </span>
+      {trailing ? (
+        <span className="text-[11px] font-semibold tracking-[0.14em] text-[var(--color-text-tertiary)]">
+          {trailing}
+        </span>
+      ) : null}
+      <ChevronRight
+        aria-hidden
+        className="h-4 w-4 flex-shrink-0 text-[var(--color-text-tertiary)]"
+        strokeWidth={2}
+      />
+    </>
+  );
+
+  const classes =
+    'flex items-center gap-3 rounded-[14px] border border-[var(--color-border-subtle)] bg-[var(--color-surface-2)] px-4 py-3 text-left transition hover:bg-[var(--color-surface-3)] focus-visible:outline-2 focus-visible:outline-[var(--color-brand-blue)]';
+
+  if (href) {
+    return (
+      <a href={href} className={classes}>
+        {content}
+      </a>
+    );
+  }
+  return (
+    <button type="button" onClick={onClick} className={classes}>
+      {content}
+    </button>
   );
 }
