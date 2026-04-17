@@ -8,8 +8,9 @@ import { JobTabNav } from '@/components/job/job-tab-nav';
 import { FloatingActionBar } from '@/components/job/floating-action-bar';
 import { RecordingOverlay } from '@/components/recording/recording-overlay';
 import { TranscriptBar } from '@/components/recording/transcript-bar';
+import { LiveFillView } from '@/components/live-fill/live-fill-view';
 import { JobProvider } from '@/lib/job-context';
-import { RecordingProvider } from '@/lib/recording-context';
+import { RecordingProvider, useRecording } from '@/lib/recording-context';
 import { api } from '@/lib/api-client';
 import { clearAuth, getUser } from '@/lib/auth';
 import type { JobDetail } from '@/lib/types';
@@ -76,7 +77,7 @@ export default function JobLayout({ children }: { children: React.ReactNode }) {
               <JobHeader />
               <JobTabNav jobId={jobId} certificateType={job.certificate_type ?? 'EICR'} />
               <TranscriptBar />
-              <div className="flex-1 overflow-y-auto pb-28">{children}</div>
+              <JobBody>{children}</JobBody>
               <FloatingActionBar />
               <RecordingOverlay />
             </div>
@@ -84,6 +85,25 @@ export default function JobLayout({ children }: { children: React.ReactNode }) {
         </JobProvider>
       )}
     </AppShell>
+  );
+}
+
+/**
+ * While recording (active/dozing/sleeping), swap the active tab content
+ * for <LiveFillView> so the inspector sees every extracted field update
+ * in real time. Option A in the Phase 5d handoff — matches iOS exactly,
+ * no z-index juggling, and the FloatingActionBar / TranscriptBar /
+ * RecordingOverlay stay mounted at their usual positions.
+ *
+ * Lives inside <RecordingProvider> so the hook call is safe; has to be
+ * its own component because useRecording can't be called from the
+ * server-rendered layout boundary.
+ */
+function JobBody({ children }: { children: React.ReactNode }) {
+  const { state } = useRecording();
+  const showLiveFill = state === 'active' || state === 'dozing' || state === 'sleeping';
+  return (
+    <div className="flex-1 overflow-y-auto pb-28">{showLiveFill ? <LiveFillView /> : children}</div>
   );
 }
 

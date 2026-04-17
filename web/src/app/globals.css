@@ -229,3 +229,67 @@ body {
   scrollbar-width: none;
   -ms-overflow-style: none;
 }
+
+/* =============================================================================
+ * LiveFillView flash — brand-blue highlight that fades back to transparent
+ * over 2s ease-out. Toggling `data-recent="true|false"` re-triggers the
+ * transition every time a field is marked fresh by the LiveFillStore.
+ * Respect prefers-reduced-motion — shorten to 200ms so the signal is still
+ * visible without the slow animation.
+ * ============================================================================= */
+.cm-live-field {
+  background-color: transparent;
+  transition: background-color 2s ease-out;
+}
+.cm-live-field[data-recent='true'] {
+  background-color: color-mix(in srgb, var(--color-brand-blue) 18%, transparent);
+  transition: background-color 0s;
+}
+@media (prefers-reduced-motion: reduce) {
+  .cm-live-field {
+    transition: background-color 200ms ease-out;
+  }
+  .cm-live-field[data-recent='true'] {
+    transition: background-color 0s;
+  }
+}
+
+/* LiveFillView — section entrance stagger. Each .cm-live-section fades
+ * and rises 6px into place, offset by DOM position, so the overlay
+ * renders calmly instead of flashing every card at once. */
+.cm-live-section {
+  opacity: 0;
+  transform: translateY(6px);
+  animation: cm-live-section-in 320ms ease-out forwards;
+}
+.cm-live-section:nth-child(1) {
+  animation-delay: 0ms;
+}
+.cm-live-section:nth-child(2) {
+  animation-delay: 40ms;
+}
+.cm-live-section:nth-child(3) {
+  animation-delay: 80ms;
+}
+.cm-live-section:nth-child(4) {
+  animation-delay: 120ms;
+}
+.cm-live-section:nth-child(5) {
+  animation-delay: 160ms;
+}
+.cm-live-section:nth-child(6) {
+  animation-delay: 200ms;
+}
+@keyframes cm-live-section-in {
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .cm-live-section {
+    animation: none;
+    opacity: 1;
+    transform: none;
+  }
+}

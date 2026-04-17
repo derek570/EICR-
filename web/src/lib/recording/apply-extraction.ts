@@ -270,13 +270,89 @@ export function parseObservationCode(
   return undefined;
 }
 
-/** Public entry point — returns the JobDetail patch or null if the
- *  extraction was effectively empty. Any field_clears on circuit 0 are
- *  honoured too (they delete the key from the matching section). */
+/** Sections whose flat records feed LiveFillState section keys. */
+const SCALAR_SECTIONS: Section[] = ['installation', 'supply', 'board', 'extent', 'design'];
+
+/** Diff two section records and emit dot-path keys for any value that
+ *  changed. Only reports keys whose new value passes `hasValue` — zero
+ *  / empty strings / nulls get suppressed so the flash doesn't fire on
+ *  a no-op re-assignment from Sonnet. */
+function diffSectionKeys(
+  section: Section,
+  before: Record<string, unknown> | undefined,
+  after: Record<string, unknown> | undefined
+): string[] {
+  if (!after) return [];
+  const prev = before ?? {};
+  const keys: string[] = [];
+  for (const field of Object.keys(after)) {
+    if (prev[field] !== after[field] && hasValue(after[field])) {
+      keys.push(`${section}.${field}`);
+    }
+  }
+  return keys;
+}
+
+/** Diff circuits arrays. Emits `circuit.{id}.{field}` for each cell that
+ *  changed, plus a whole-row key `circuit.{id}` when a new circuit row
+ *  was created so the UI can flash the whole row. */
+function diffCircuitKeys(
+  before: CircuitRow[] | undefined,
+  after: CircuitRow[] | undefined
+): string[] {
+  if (!after) return [];
+  const prevById = new Map<string, CircuitRow>();
+  (before ?? []).forEach((row) => prevById.set(row.id, row));
+  const keys: string[] = [];
+  for (const row of after) {
+    const prev = prevById.get(row.id);
+    if (!prev) {
+      // Newly-created row — flash the whole row plus every filled cell.
+      keys.push(`circuit.${row.id}`);
+      for (const field of Object.keys(row)) {
+        if (field === 'id') continue;
+        if (hasValue(row[field])) keys.push(`circuit.${row.id}.${field}`);
+      }
+      continue;
+    }
+    for (const field of Object.keys(row)) {
+      if (field === 'id') continue;
+      if (prev[field] !== row[field] && hasValue(row[field])) {
+        keys.push(`circuit.${row.id}.${field}`);
+      }
+    }
+  }
+  return keys;
+}
+
+/** Diff observations. Emits `observation.{id}` for each new row. We
+ *  don't bother diffing fields within an existing observation — Sonnet
+ *  never amends observations, it only appends them. */
+function diffObservationKeys(
+  before: ObservationRow[] | undefined,
+  after: ObservationRow[] | undefined
+): string[] {
+  if (!after) return [];
+  const prevIds = new Set((before ?? []).map((o) => o.id));
+  return after.filter((o) => !prevIds.has(o.id)).map((o) => `observation.${o.id}`);
+}
+
+export type AppliedExtraction = {
+  patch: Partial<JobDetail>;
+  /** Dot-path keys for every field that actually changed vs the job
+   *  state the patch was computed against. Feeds LiveFillState so the
+   *  LiveFillView can flash exactly the cells Sonnet filled. */
+  changedKeys: string[];
+};
+
+/** Public entry point — returns the JobDetail patch + a flat list of
+ *  dot-path keys describing which fields actually changed, or null if
+ *  the extraction was effectively empty. Any field_clears on circuit 0
+ *  are honoured too (they delete the key from the matching section). */
 export function applyExtractionToJob(
   job: JobDetail,
   result: ExtractionResult
-): Partial<JobDetail> | null {
+): AppliedExtraction | null {
   const readings = result.readings ?? [];
   const circuitUpdates = result.circuit_updates ?? [];
   const fieldClears = result.field_clears ?? [];
@@ -314,5 +390,28 @@ export function applyExtractionToJob(
   const newObservations = applyObservations(job, observations);
   if (newObservations) patch.observations = newObservations;
 
-  return Object.keys(patch).length > 0 ? patch : null;
+  if (Object.keys(patch).length === 0) return null;
+
+  // Compute changedKeys by diffing the patched sections against the
+  // pre-patch job. We diff instead of reading the readings array so the
+  // flash stays accurate even if the extractor grows new fields or the
+  // routing map drifts.
+  const changedKeys: string[] = [];
+  for (const section of SCALAR_SECTIONS) {
+    changedKeys.push(
+      ...diffSectionKeys(
+        section,
+        job[section] as Record<string, unknown> | undefined,
+        patch[section] as Record<string, unknown> | undefined
+      )
+    );
+  }
+  if (patch.circuits) {
+    changedKeys.push(...diffCircuitKeys(job.circuits, patch.circuits));
+  }
+  if (patch.observations) {
+    changedKeys.push(...diffObservationKeys(job.observations, patch.observations));
+  }
+
+  return { patch, changedKeys };
 }

@@ -12,6 +12,7 @@ import {
 import { applyExtractionToJob } from './recording/apply-extraction';
 import { AudioRingBuffer } from './recording/audio-ring-buffer';
 import { SleepManager, type SleepState } from './recording/sleep-manager';
+import { useLiveFillStore } from './recording/live-fill-state';
 import { api } from './api-client';
 import { useJobContext } from './job-context';
 
@@ -116,6 +117,7 @@ const DEEPGRAM_USD_PER_MIN = 0.0077;
 
 export function RecordingProvider({ children }: { children: React.ReactNode }) {
   const { job, updateJob } = useJobContext();
+  const liveFill = useLiveFillStore();
   const [state, setState] = React.useState<RecordingState>('idle');
   const [micLevel, setMicLevel] = React.useState(0);
   const [elapsedSec, setElapsedSec] = React.useState(0);
@@ -273,12 +275,21 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
    *  every render. Reads the current job from `jobRef` to decide whether
    *  to overwrite (3-tier priority: pre-existing manual data wins over
    *  Sonnet unless Sonnet is explicitly clearing / correcting). */
-  const applyExtraction = React.useCallback((result: ExtractionResult) => {
-    const patch = applyExtractionToJob(jobRef.current, result);
-    if (patch) {
-      updateJobRef.current(patch);
-    }
-  }, []);
+  const applyExtraction = React.useCallback(
+    (result: ExtractionResult) => {
+      const applied = applyExtractionToJob(jobRef.current, result);
+      if (applied) {
+        updateJobRef.current(applied.patch);
+        // Feed LiveFillState so <LiveFillView> can flash the fields
+        // Sonnet actually filled. No-op if the list is empty (the patch
+        // only had `field_clears`, which we deliberately don't flash).
+        if (applied.changedKeys.length > 0) {
+          liveFill.markUpdated(applied.changedKeys);
+        }
+      }
+    },
+    [liveFill]
+  );
 
   /** Open the Sonnet extraction WebSocket. Runs alongside Deepgram —
    *  Deepgram feeds transcripts, Sonnet turns them into structured
@@ -472,6 +483,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     setTranscript([]);
     setInterim('');
     setQuestions([]);
+    liveFill.reset();
     sessionIdRef.current = `sess_${Date.now().toString(36)}_${Math.random()
       .toString(36)
       .slice(2, 6)}`;
@@ -505,6 +517,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     teardownDeepgram,
     teardownSonnet,
     teardownSleep,
+    liveFill,
   ]);
 
   const stop = React.useCallback(() => {
@@ -517,7 +530,8 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     setMicLevel(0);
     setOverlayOpen(false);
     setQuestions([]);
-  }, [clearTick, teardownMic, teardownDeepgram, teardownSonnet, teardownSleep]);
+    liveFill.reset();
+  }, [clearTick, teardownMic, teardownDeepgram, teardownSonnet, teardownSleep, liveFill]);
 
   /** Manual pause — the inspector tapped the Pause button. Routes
    *  through the same doze handler the SleepManager would use when the
