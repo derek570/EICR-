@@ -434,8 +434,12 @@ export async function cropSlot(imageBuffer, slotIndex, geom) {
   const railHeightNorm = railBottom - railTop;
   const railCenterYNorm = (railTop + railBottom) / 2;
 
-  // 20% H padding: half-width = 0.5 * moduleWidth * (1 + 0.20)
-  const halfWidthNorm = moduleWidth * 0.5 * 1.2;
+  // Crop width = 2.2 × moduleWidth so 2-module devices (RCDs, 2P MCBs, isolators)
+  // are fully captured regardless of which of their two slot centres we anchor to.
+  // Previous 1.2× bisected 2-module devices straight down the middle. VLM prompt
+  // already says "identify the device centred in this crop" + echoes slot_index,
+  // so the small bleed into neighbours is acceptable.
+  const halfWidthNorm = moduleWidth * 0.5 * 2.2;
   // 30% V padding applied relative to rail height (labels live just above/below the rail)
   const halfHeightNorm = (railHeightNorm / 2) * 1.3;
 
