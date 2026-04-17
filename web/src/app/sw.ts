@@ -72,10 +72,17 @@ const serwist = new Serwist({
   // deliberately keep the list short (just the /offline shell + manifest
   // icons from `public/`), so a cold-cache install is fast on mobile data.
   precacheEntries: self.__SW_MANIFEST,
-  skipWaiting: true, // safe on the first deploy — no prior SW exists to
-  // hand off from. Phase 7b must switch to postMessage-driven skipWaiting
-  // with a "New version available" toast BEFORE the second deploy lands,
-  // otherwise active users get hot-swapped mid-edit.
+  // Phase 7b: `skipWaiting` is no longer automatic. A freshly installed SW
+  // sits in `waiting` until the client posts `{ type: 'SKIP_WAITING' }`
+  // (see the `message` listener below), which we trigger from a sonner
+  // toast the user taps. This prevents a deploy hot-swapping code under
+  // an active inspector mid-edit — the old tab keeps its original SW and
+  // bundle until the user opts in.
+  //
+  // `clientsClaim` stays on: once the user DOES opt in and the new SW
+  // activates, it immediately takes over open clients, which triggers
+  // `controllerchange` on the page and the provider reloads once to pick
+  // up the matching client bundle.
   clientsClaim: true,
   navigationPreload: true,
   disableDevLogs: true,
@@ -175,6 +182,25 @@ const serwist = new Serwist({
 });
 
 serwist.addEventListeners();
+
+// Phase 7b — user-initiated update handoff.
+//
+// The client (see `SwUpdateProvider`) shows a "New version available" toast
+// when a fresh SW is waiting. If the inspector taps "Reload", the client
+// posts `{ type: 'SKIP_WAITING' }` to `registration.waiting`, which lands
+// here. Calling `self.skipWaiting()` promotes the waiting SW to active;
+// `clientsClaim: true` then claims open clients, which fires
+// `controllerchange` on every open tab and the provider triggers a single
+// `window.location.reload()`.
+//
+// Listening directly (rather than relying on Serwist's own handling) keeps
+// the contract explicit — the worker only ever skips waiting because a
+// logged-in client asked for it, never on its own schedule.
+self.addEventListener('message', (event) => {
+  if (event.data?.type === 'SKIP_WAITING') {
+    void self.skipWaiting();
+  }
+});
 
 // Purge stale runtime caches on activate so old `static-<BUILD_ID>` and
 // `pages-<BUILD_ID>` caches don't leak across deploys. The current SW's

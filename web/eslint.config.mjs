@@ -12,6 +12,17 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Serwist-generated service-worker bundle. Source lives in
+    // `src/app/sw.ts` (own tsconfig, typechecked separately); the bundled
+    // output at `public/sw.js` is minified/rolled and not meaningful to
+    // lint. Already in `.gitignore`; adding here so a local build doesn't
+    // surface thousands of "errors" in third-party bundler output.
+    "public/sw.js",
+    "public/sw.js.map",
+    "public/swe-worker-*.js",
+    "public/swe-worker-*.js.map",
+    "public/workbox-*.js",
+    "public/workbox-*.js.map",
   ]),
 ]);
 

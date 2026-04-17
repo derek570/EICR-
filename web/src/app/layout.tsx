@@ -1,5 +1,7 @@
 import type { Metadata, Viewport } from 'next';
+import { Toaster } from 'sonner';
 import { InstallPromptProvider } from '@/components/pwa/install-prompt-provider';
+import { SwUpdateProvider } from '@/components/pwa/sw-update-provider';
 import './globals.css';
 
 export const metadata: Metadata = {
@@ -61,7 +63,23 @@ export default function RootLayout({
          * Serwist auto-registers the service worker itself (see next.config.ts).
          */}
         <InstallPromptProvider />
+        {/*
+         * Watches the active SW registration for a waiting new version.
+         * When one appears, renders a persistent sonner toast with a
+         * Reload action. Tap → postMessage `SKIP_WAITING` → `controllerchange`
+         * → reload once. See `sw-update-provider.tsx` for the full flow and
+         * why this replaces Phase 7a's `skipWaiting: true`. Renders nothing.
+         */}
+        <SwUpdateProvider />
         {children}
+        {/*
+         * `richColors` gives info/success/warning/error toasts their own
+         * accent without needing per-call styling; for the bare
+         * `toast('New version available', ...)` call we rely on the default
+         * dark theme. Bottom-right keeps the toast clear of the mobile
+         * AppShell bottom nav and the RecordingOverlay mini-pill.
+         */}
+        <Toaster position="bottom-right" theme="dark" richColors closeButton />
       </body>
     </html>
   );
