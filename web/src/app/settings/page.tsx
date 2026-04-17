@@ -3,7 +3,7 @@
 import * as React from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { Building2, ChevronRight, LogOut, ShieldCheck, Users } from 'lucide-react';
+import { Building2, ChevronRight, LayoutDashboard, LogOut, ShieldCheck, Users } from 'lucide-react';
 import { api } from '@/lib/api-client';
 import { clearAuth } from '@/lib/auth';
 import { useCurrentUser } from '@/lib/use-current-user';
@@ -86,20 +86,31 @@ export default function SettingsHubPage() {
         />
       </SectionGroup>
 
-      {/* Company — visible to any user (read-only for non-admins); landed in 6b */}
-      {isCompanyAdmin(user) ? (
-        <SectionGroup title="COMPANY">
+      {/* Company — details page is visible to any authenticated user
+          (read-only for non-admins so they can verify the branding that
+          will print on their certs). Dashboard is company-admin only. */}
+      <SectionGroup title="COMPANY">
+        <LinkCard
+          href="/settings/company"
+          icon={<Building2 className="h-5 w-5" aria-hidden />}
+          title="Company Details"
+          subtitle={
+            isCompanyAdmin(user)
+              ? 'Branding, address, contact info, and logo'
+              : 'Branding and contact info (view-only)'
+          }
+          accent="green"
+        />
+        {isCompanyAdmin(user) ? (
           <LinkCard
-            href="/settings/company"
-            icon={<Building2 className="h-5 w-5" aria-hidden />}
+            href="/settings/company/dashboard"
+            icon={<LayoutDashboard className="h-5 w-5" aria-hidden />}
             title="Company Dashboard"
-            subtitle="Branding, team, and jobs overview"
+            subtitle="Team, jobs, and stats at a glance"
             accent="green"
-            disabled
-            disabledLabel="Coming in Phase 6b"
           />
-        </SectionGroup>
-      ) : null}
+        ) : null}
+      </SectionGroup>
 
       {/* Administration — system admin only; landed in 6c */}
       {isSystemAdmin(user) ? (

@@ -83,6 +83,91 @@ export interface AdminUser extends User {
   created_at?: string;
 }
 
+/**
+ * Member of a company — the shape returned by
+ * `GET /api/companies/:companyId/users`. Thin read-only projection of
+ * the underlying user row: enough to render the team list in the
+ * company admin dashboard (role pill, last-login hint, active badge)
+ * without exposing system-admin-only fields.
+ */
+export interface CompanyMember {
+  id: string;
+  email: string;
+  name: string;
+  role?: 'admin' | 'user';
+  company_role?: 'owner' | 'admin' | 'employee';
+  is_active?: boolean;
+  last_login?: string | null;
+  created_at?: string;
+}
+
+/**
+ * Company-scoped job row from `GET /api/companies/:companyId/jobs`.
+ * Note `user_id` / `employee_*` fields — the admin dashboard needs to
+ * show who owns each job (the employee, not just the address). Not a
+ * subclass of `Job` because the company listing carries extra
+ * per-employee metadata and omits the full tab bags.
+ */
+export interface CompanyJobRow {
+  id: string;
+  address: string | null;
+  status: 'pending' | 'processing' | 'done' | 'failed';
+  created_at: string;
+  updated_at?: string;
+  certificate_type?: CertificateType;
+  user_id?: string;
+  employee_name?: string | null;
+  employee_email?: string | null;
+}
+
+/**
+ * Response envelope from `GET /api/companies/:companyId/stats`. Shape
+ * comes from `db.getCompanyStats` — status counts + two derived totals.
+ * We surface these as a tiny grid on the dashboard (no charts in 6b
+ * per the handoff's scope exclusions).
+ */
+export interface CompanyStats {
+  company?: {
+    id: string;
+    name: string;
+    is_active?: boolean;
+    created_at?: string;
+  };
+  jobs_by_status?: Record<string, number>;
+  total_jobs?: number;
+  active_employees?: number;
+  jobs_last_7_days?: number;
+}
+
+/**
+ * Invite response. The backend returns the *plaintext* temporary
+ * password exactly once — we show it to the admin in the invite sheet
+ * with a "copy once" notice and never retain it in state after the
+ * modal closes. Treat the field as secret-adjacent PII.
+ */
+export interface InviteEmployeeResponse {
+  userId: string;
+  email: string;
+  name: string;
+  temporaryPassword: string;
+}
+
+/**
+ * Paginated envelope used by the company jobs list. Matches
+ * `utils/pagination.js#paginatedResponse` on the backend. Generic on
+ * the row type so we can reuse it if admin surfaces need pagination
+ * later.
+ */
+export interface Paginated<T> {
+  data: T[];
+  pagination: {
+    limit: number;
+    offset: number;
+    total: number;
+    hasMore: boolean;
+  };
+}
+
 export type CertificateType = 'EICR' | 'EIC';
 
 export interface Job {

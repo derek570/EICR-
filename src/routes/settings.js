@@ -27,6 +27,21 @@ const upload = multer({
   fileFilter: createFileFilter(['image/png', 'image/jpeg']),
 });
 
+// Multer for logo uploads — same constraints as signatures. Company logos are
+// usually clean PNGs or JPEGs; we don't accept SVG to sidestep embedded-script
+// risk in user-uploaded content stamped onto PDF headers.
+const logoUpload = multer({
+  storage: multer.diskStorage({
+    destination: os.tmpdir(),
+    filename: (_req, file, cb) => {
+      const ext = path.extname(file.originalname) || '.png';
+      cb(null, `${file.fieldname}-${Date.now()}${ext}`);
+    },
+  }),
+  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB
+  fileFilter: createFileFilter(['image/png', 'image/jpeg']),
+});
+
 /**
  * Get user defaults (circuit field defaults)
  * GET /api/settings/:userId/defaults
@@ -270,6 +285,103 @@ router.post(
     }
   }
 );
+
+/**
+ * Upload a company logo.
+ *
+ * POST /api/settings/:userId/logo  (multipart, field `logo`)
+ *
+ * Why a dedicated route: company settings JSON lives at
+ * `settings/{userId}/company_settings.json` and is stamped onto every PDF
+ * header. Inlining logo bytes as base64 inside the JSON would bloat the
+ * blob (~200KB typical) and bust the read cache on every save. Mirrors
+ * the signature uploader: returns the S3 key which the client then
+ * merges into `company_settings.logo_file` via the existing PUT route.
+ *
+ * Two-step save (matches signature flow):
+ *  1. POST bytes → get `{ logo_file: s3Key }`
+ *  2. PUT company settings with `logo_file` set
+ *
+ * Access is tenant-scoped. 10MB cap. PNG / JPEG only — SVG rejected to
+ * avoid embedded-script risk when the PDF generator inlines the image.
+ */
+router.post(
+  '/settings/:userId/logo',
+  auth.requireAuth,
+  logoUpload.single('logo'),
+  async (req, res) => {
+    const { userId } = req.params;
+    const file = req.file;
+
+    if (req.user.id !== userId) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+
+    if (!file) {
+      return res.status(400).json({ error: 'No file uploaded' });
+    }
+
+    try {
+      const ext = path.extname(file.originalname).toLowerCase() || '.png';
+      const filename = `logo_${Date.now()}${ext}`;
+      const s3Key = `settings/${userId}/logos/${filename}`;
+
+      const content = await fs.readFile(file.path);
+      const contentType = ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg' : 'image/png';
+      await storage.uploadBytes(content, s3Key, contentType);
+
+      await fs.unlink(file.path).catch(() => {});
+
+      logger.info('Company logo uploaded', { userId, filename });
+      res.json({ success: true, logo_file: s3Key });
+    } catch (error) {
+      logger.error('Failed to upload logo', { userId, error: error.message });
+      res.status(500).json({ error: 'Failed to upload logo' });
+    }
+  }
+);
+
+/**
+ * Download a company logo by filename.
+ *
+ * GET /api/settings/:userId/logo/:filename
+ *
+ * Same rationale as the signature download route: browsers can't attach
+ * our bearer header to a bare S3 URL, so we stream the bytes through an
+ * auth'd endpoint. Logos aren't especially sensitive but we keep the
+ * route tenant-scoped for consistency with signatures — it also avoids
+ * leaking a "which companies exist" enumeration surface.
+ */
+router.get('/settings/:userId/logo/:filename', auth.requireAuth, async (req, res) => {
+  const { userId, filename } = req.params;
+
+  if (req.user.id !== userId) {
+    return res.status(403).json({ error: 'Access denied' });
+  }
+
+  if (filename.includes('/') || filename.includes('..')) {
+    return res.status(400).json({ error: 'Invalid filename' });
+  }
+
+  try {
+    const s3Key = `settings/${userId}/logos/${filename}`;
+    const bytes = await storage.downloadBytes(s3Key);
+    if (!bytes) {
+      return res.status(404).json({ error: 'Logo not found' });
+    }
+
+    const ext = path.extname(filename).toLowerCase();
+    const contentType = ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg' : 'image/png';
+    res.setHeader('Content-Type', contentType);
+    // Short-lived cache — logos rarely change but we want admins to see
+    // their edits within a few minutes without a hard reload.
+    res.setHeader('Cache-Control', 'private, max-age=300');
+    res.send(bytes);
+  } catch (error) {
+    logger.error('Failed to fetch logo', { userId, filename, error: error.message });
+    res.status(500).json({ error: 'Failed to fetch logo' });
+  }
+});
 
 /**
  * Get field schema (for building defaults editor UI)

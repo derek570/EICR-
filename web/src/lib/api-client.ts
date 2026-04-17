@@ -1,11 +1,17 @@
 import {
   ApiError,
   type CCUAnalysis,
+  type CompanyJobRow,
+  type CompanyMember,
+  type CompanySettings,
+  type CompanyStats,
   type DocumentExtractionResponse,
   type InspectorProfile,
+  type InviteEmployeeResponse,
   type Job,
   type JobDetail,
   type LoginResponse,
+  type Paginated,
   type User,
 } from './types';
 import { getToken } from './auth';
@@ -352,5 +358,134 @@ export const api = {
       throw new ApiError(res.status, body || res.statusText);
     }
     return res.blob();
+  },
+
+  // ----------------------------------------------------------------
+  // Settings — company branding + logo (Phase 6b)
+  // ----------------------------------------------------------------
+
+  /**
+   * Fetch the company branding JSON. The backend returns sensible empty
+   * defaults when no blob exists (so the form always has something to
+   * render), matching the shape we type as `CompanySettings`.
+   */
+  companySettings(userId: string): Promise<CompanySettings> {
+    return request<CompanySettings>(`/api/settings/${encodeURIComponent(userId)}/company`);
+  },
+
+  /**
+   * Persist company branding. Backend does a full-blob write (no merge
+   * on the server side), so pass the full object. The caller owns
+   * merging partial edits — we don't shadow that decision here.
+   */
+  updateCompanySettings(userId: string, settings: CompanySettings): Promise<{ success: true }> {
+    return request(`/api/settings/${encodeURIComponent(userId)}/company`, {
+      method: 'PUT',
+      body: JSON.stringify(settings),
+    });
+  },
+
+  /**
+   * Upload a company logo. Two-step flow mirrors `uploadSignature`:
+   * POST the bytes, get back an S3 key, merge onto `company_settings.logo_file`,
+   * then PUT the settings blob. If we PUT first and upload failed, the
+   * branding would point at a non-existent key — so order matters.
+   *
+   * Multipart field name is "logo" (backend multer config). PNG / JPEG
+   * only, 10MB cap. No SVG — the PDF generator inlines images raw and
+   * SVGs are a script-injection vector.
+   */
+  uploadCompanyLogo(
+    userId: string,
+    blob: Blob | File
+  ): Promise<{ success: true; logo_file: string }> {
+    const form = new FormData();
+    // Wrap raw Blob in a File so multer gets a usable on-disk filename;
+    // the server regenerates the final S3 filename anyway.
+    const file = blob instanceof File ? blob : new File([blob], 'logo.png', { type: 'image/png' });
+    form.append('logo', file);
+    return request(`/api/settings/${encodeURIComponent(userId)}/logo`, {
+      method: 'POST',
+      body: form,
+    });
+  },
+
+  /**
+   * Fetch a logo image as a Blob. Same pattern as `fetchSignatureBlob`
+   * — strip the S3 key down to its basename, hit the auth'd GET route,
+   * wrap in `URL.createObjectURL` on the caller side and revoke on
+   * unmount. We can't use a plain `<img src>` because the browser
+   * won't attach the bearer token.
+   */
+  async fetchLogoBlob(userId: string, logoFile: string): Promise<Blob> {
+    const filename = logoFile.split('/').pop() ?? logoFile;
+    const token = getToken();
+    const headers = new Headers();
+    if (token) headers.set('Authorization', `Bearer ${token}`);
+    const res = await fetch(
+      `${API_BASE_URL}/api/settings/${encodeURIComponent(userId)}/logo/${encodeURIComponent(filename)}`,
+      { headers, credentials: 'include' }
+    );
+    if (!res.ok) {
+      const body = await res.text().catch(() => '');
+      throw new ApiError(res.status, body || res.statusText);
+    }
+    return res.blob();
+  },
+
+  // ----------------------------------------------------------------
+  // Companies — company-admin dashboard (Phase 6b)
+  // ----------------------------------------------------------------
+
+  /**
+   * List all users in a company. Gated by `requireCompanyAdmin` on the
+   * backend; callers should role-check before rendering the link that
+   * hits this so non-admins never trigger the 403.
+   */
+  companyUsers(companyId: string): Promise<CompanyMember[]> {
+    return request<CompanyMember[]>(`/api/companies/${encodeURIComponent(companyId)}/users`);
+  },
+
+  /**
+   * List jobs across a company. Always paginated from the web client
+   * (we pass `limit` + `offset`) so the dashboard can page instead of
+   * slurping everything. The backend only enables pagination if *some*
+   * query param is present; we always send both to keep the response
+   * shape consistent (`Paginated<CompanyJobRow>`).
+   */
+  companyJobs(
+    companyId: string,
+    params: { limit?: number; offset?: number; employeeId?: string } = {}
+  ): Promise<Paginated<CompanyJobRow>> {
+    const limit = params.limit ?? 50;
+    const offset = params.offset ?? 0;
+    const qs = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+    if (params.employeeId) qs.set('employee_id', params.employeeId);
+    return request<Paginated<CompanyJobRow>>(
+      `/api/companies/${encodeURIComponent(companyId)}/jobs?${qs.toString()}`
+    );
+  },
+
+  /** Company-level counts envelope (see `CompanyStats`). */
+  companyStats(companyId: string): Promise<CompanyStats> {
+    return request<CompanyStats>(`/api/companies/${encodeURIComponent(companyId)}/stats`);
+  },
+
+  /**
+   * Invite a new employee. The backend creates a user with a random
+   * temporary password and returns the plaintext string in the
+   * response — the admin is expected to copy it and hand it off
+   * manually (no email sending). Callers MUST show the password once
+   * and never persist it past the modal close. See
+   * `InviteEmployeeResponse` for the exact shape.
+   */
+  inviteEmployee(
+    companyId: string,
+    body: { name: string; email: string }
+  ): Promise<InviteEmployeeResponse> {
+    return request<InviteEmployeeResponse>(
+      `/api/companies/${encodeURIComponent(companyId)}/invite`,
+      { method: 'POST', body: JSON.stringify(body) }
+    );
   },
 };
