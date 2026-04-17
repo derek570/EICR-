@@ -119,7 +119,7 @@ function routeSupplyField(field: string): Section {
 }
 
 /** Non-empty / non-null check used by the 3-tier priority guard. */
-function hasValue(v: unknown): boolean {
+export function hasValue(v: unknown): boolean {
   if (v == null) return false;
   if (typeof v === 'string') return v.trim().length > 0;
   if (typeof v === 'boolean' || typeof v === 'number') return true;

@@ -8,12 +8,17 @@ import {
   FileDown,
   FlipHorizontal2,
   List,
+  Loader2,
   Plus,
   SlidersHorizontal,
   Trash2,
+  X,
   Zap,
 } from 'lucide-react';
+import { api } from '@/lib/api-client';
 import { useJobContext } from '@/lib/job-context';
+import { ApiError } from '@/lib/types';
+import { applyCcuAnalysisToJob } from '@/lib/recording/apply-ccu-analysis';
 import { FloatingLabelInput } from '@/components/ui/floating-label-input';
 import { SectionCard } from '@/components/ui/section-card';
 import { SegmentedControl } from '@/components/ui/segmented-control';
@@ -74,6 +79,10 @@ export default function CircuitsPage() {
   const { job, updateJob } = useJobContext();
   const [expandedId, setExpandedId] = React.useState<string | null>(null);
   const [actionHint, setActionHint] = React.useState<string | null>(null);
+  const [ccuBusy, setCcuBusy] = React.useState(false);
+  const [ccuError, setCcuError] = React.useState<string | null>(null);
+  const [ccuQuestions, setCcuQuestions] = React.useState<string[]>([]);
+  const ccuInputRef = React.useRef<HTMLInputElement>(null);
 
   const circuits = (job.circuits ?? []) as unknown as Circuit[];
   const boards = ((job.board as { boards?: { id: string; designation?: string }[] } | undefined)
@@ -108,6 +117,58 @@ export default function CircuitsPage() {
   const reverse = () => persist([...circuits].reverse());
 
   const stub = (label: string) => () => setActionHint(`${label} — wires up in Phase 5.`);
+
+  const openCcuPicker = () => {
+    setCcuError(null);
+    ccuInputRef.current?.click();
+  };
+
+  const handleCcuFile = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    // Reset the input immediately so the same file can be chosen again
+    // after a failure (otherwise onChange won't fire a second time).
+    event.target.value = '';
+    if (!file) return;
+
+    setCcuBusy(true);
+    setCcuError(null);
+    setActionHint('Analysing consumer unit…');
+    try {
+      const analysis = await api.analyzeCCU(file);
+      const { patch, questions } = applyCcuAnalysisToJob(job, analysis, {
+        targetBoardId: selectedBoardId,
+      });
+      updateJob(patch);
+      // If we just synthesised a board, surface it as the active one
+      // so the new circuits are visible under the selector.
+      const patchedBoards = (patch.board as { boards?: { id: string }[] } | undefined)?.boards;
+      if (!selectedBoardId && patchedBoards && patchedBoards.length > 0) {
+        setSelectedBoardId(patchedBoards[0].id);
+      }
+      const added = analysis.circuits?.length ?? 0;
+      setActionHint(
+        added > 0
+          ? `CCU analysed — ${added} circuit${added === 1 ? '' : 's'} merged.`
+          : 'CCU analysed — no circuits detected.'
+      );
+      setCcuQuestions(questions);
+    } catch (err) {
+      const message =
+        err instanceof ApiError
+          ? `Analysis failed (${err.status}): ${err.message}`
+          : err instanceof Error
+            ? err.message
+            : 'Analysis failed.';
+      setCcuError(message);
+      setActionHint(null);
+    } finally {
+      setCcuBusy(false);
+    }
+  };
+
+  const dismissQuestion = (idx: number) => {
+    setCcuQuestions((prev) => prev.filter((_, i) => i !== idx));
+  };
 
   return (
     <div
@@ -148,6 +209,20 @@ export default function CircuitsPage() {
             </span>
           </div>
 
+          {/* Hidden file input for CCU capture. `capture="environment"`
+              is the iOS Safari hint to open the rear camera; the
+              browser falls back to the library picker if the user
+              denies camera permission. */}
+          <input
+            ref={ccuInputRef}
+            type="file"
+            accept="image/*"
+            capture="environment"
+            onChange={handleCcuFile}
+            className="sr-only"
+            aria-hidden
+          />
+
           {actionHint ? (
             <p
               className="rounded-[var(--radius-md)] border border-[var(--color-border-subtle)] bg-[var(--color-surface-2)] px-3 py-2 text-[12px] text-[var(--color-text-secondary)]"
@@ -155,6 +230,39 @@ export default function CircuitsPage() {
             >
               {actionHint}
             </p>
+          ) : null}
+
+          {ccuError ? (
+            <p
+              className="rounded-[var(--radius-md)] border border-[var(--color-status-failed)]/40 bg-[var(--color-status-failed)]/10 px-3 py-2 text-[12px] text-[var(--color-status-failed)]"
+              role="alert"
+            >
+              {ccuError}
+            </p>
+          ) : null}
+
+          {ccuQuestions.length > 0 ? (
+            <ul
+              className="flex flex-col gap-2 rounded-[var(--radius-md)] border border-[var(--color-border-subtle)] bg-[var(--color-surface-1)] p-3"
+              aria-label="CCU questions for inspector"
+            >
+              {ccuQuestions.map((q, i) => (
+                <li
+                  key={`${i}-${q.slice(0, 32)}`}
+                  className="flex items-start justify-between gap-2 text-[12px] text-[var(--color-text-primary)]"
+                >
+                  <span className="flex-1">{q}</span>
+                  <button
+                    type="button"
+                    onClick={() => dismissQuestion(i)}
+                    aria-label="Dismiss question"
+                    className="flex h-5 w-5 flex-shrink-0 items-center justify-center rounded-full text-[var(--color-text-tertiary)] transition hover:bg-[var(--color-surface-2)] hover:text-[var(--color-text-primary)]"
+                  >
+                    <X className="h-3 w-3" aria-hidden />
+                  </button>
+                </li>
+              ))}
+            </ul>
           ) : null}
 
           {visible.length === 0 ? (
@@ -206,7 +314,14 @@ export default function CircuitsPage() {
             colour="var(--color-brand-green)"
             onClick={stub('Calculate Zs / R1+R2')}
           />
-          <RailButton Icon={Camera} label="CCU" colour="#ff9f0a" onClick={stub('CCU photo')} />
+          <RailButton
+            Icon={ccuBusy ? Loader2 : Camera}
+            label={ccuBusy ? 'Analysing' : 'CCU'}
+            colour="#ff9f0a"
+            onClick={openCcuPicker}
+            disabled={ccuBusy}
+            spin={ccuBusy}
+          />
           <RailButton
             Icon={FileDown}
             label="Extract"
@@ -226,20 +341,27 @@ function RailButton({
   label,
   colour,
   onClick,
+  disabled,
+  spin,
 }: {
   Icon: React.ComponentType<{ className?: string; strokeWidth?: number; 'aria-hidden'?: boolean }>;
   label: string;
   colour: string;
   onClick: () => void;
+  disabled?: boolean;
+  spin?: boolean;
 }) {
   return (
     <button
       type="button"
       onClick={onClick}
-      className="flex flex-col items-center gap-1 rounded-[var(--radius-md)] px-2 py-2 text-white shadow-[0_4px_12px_rgba(0,0,0,0.35)] transition active:scale-95"
+      disabled={disabled}
+      className={`flex flex-col items-center gap-1 rounded-[var(--radius-md)] px-2 py-2 text-white shadow-[0_4px_12px_rgba(0,0,0,0.35)] transition active:scale-95 ${
+        disabled ? 'cursor-not-allowed opacity-60' : ''
+      }`}
       style={{ background: colour }}
     >
-      <Icon className="h-5 w-5" strokeWidth={2.25} aria-hidden />
+      <Icon className={`h-5 w-5 ${spin ? 'animate-spin' : ''}`} strokeWidth={2.25} aria-hidden />
       <span className="text-[10px] font-bold uppercase tracking-[0.04em]">{label}</span>
     </button>
   );

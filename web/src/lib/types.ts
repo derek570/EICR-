@@ -74,6 +74,66 @@ export interface InspectorInfo {
   organisation?: string;
 }
 
+/**
+ * Response from POST /api/analyze-ccu. Claude Sonnet 4.6 analyses a
+ * consumer-unit photo and returns board-level metadata, main-switch +
+ * SPD fields, a circuits array (one per device in order), a
+ * free-form `questionsForInspector` list, and a usage/cost breakdown.
+ *
+ * Kept permissive — the backend prompt evolves and occasionally adds
+ * new keys. `apply-ccu-analysis.ts` picks only the fields it knows
+ * about, so unknown additions are inert until wired up.
+ */
+export interface CCUAnalysisCircuit {
+  circuit_number: number;
+  label?: string | null;
+  ocpd_type?: 'B' | 'C' | 'D' | null;
+  ocpd_rating_a?: string | null;
+  ocpd_bs_en?: string | null;
+  ocpd_breaking_capacity_ka?: string | null;
+  is_rcbo?: boolean;
+  rcd_protected?: boolean;
+  rcd_type?: 'AC' | 'A' | 'B' | 'F' | 'S' | null;
+  rcd_rating_ma?: string | null;
+  rcd_bs_en?: string | null;
+}
+
+export interface CCUAnalysis {
+  board_manufacturer?: string | null;
+  board_model?: string | null;
+  main_switch_rating?: string | null;
+  main_switch_bs_en?: string | null;
+  main_switch_type?: string | null;
+  main_switch_poles?: string | null;
+  main_switch_current?: string | null;
+  main_switch_voltage?: string | null;
+  main_switch_position?: 'left' | 'right' | null;
+  spd_present?: boolean;
+  spd_bs_en?: string | null;
+  spd_type?: string | null;
+  spd_rated_current_a?: string | null;
+  spd_short_circuit_ka?: string | null;
+  /** Supply-section fallbacks derived from main switch. */
+  spd_rated_current?: string | null;
+  spd_type_supply?: string | null;
+  circuits?: CCUAnalysisCircuit[];
+  questionsForInspector?: string[];
+  confidence?: {
+    overall?: number;
+    image_quality?: 'clear' | 'partially_readable' | 'poor';
+    uncertain_fields?: string[];
+    message?: string;
+  };
+  gptVisionCost?: {
+    cost_usd: number;
+    input_tokens: number;
+    output_tokens: number;
+    image_count: number;
+  };
+  // geometric, etc. are passed through but unused by the merge helper.
+  [key: string]: unknown;
+}
+
 /** Envelope used by POST /api/auth/login. */
 export interface LoginResponse {
   token: string;

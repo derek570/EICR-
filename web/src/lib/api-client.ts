@@ -1,4 +1,11 @@
-import { ApiError, type Job, type JobDetail, type LoginResponse, type User } from './types';
+import {
+  ApiError,
+  type CCUAnalysis,
+  type Job,
+  type JobDetail,
+  type LoginResponse,
+  type User,
+} from './types';
 import { getToken } from './auth';
 
 /**
@@ -129,6 +136,26 @@ export const api = {
     return request<{ key: string }>(
       `/api/deepgram-proxy?sessionId=${encodeURIComponent(sessionId)}`
     );
+  },
+
+  /**
+   * Analyse a consumer-unit photo via GPT Vision + optional RCD-type
+   * web-search pass. Backend returns board metadata, main-switch +
+   * SPD fields, a circuits array, and `questionsForInspector`. Single
+   * multipart upload under the field name "photo"; max ~20MB.
+   *
+   * Response shape is permissive on purpose — Sonnet occasionally adds
+   * new fields and the merge helper (`apply-ccu-analysis.ts`) picks
+   * only the keys it knows about. Callers should treat unknown fields
+   * as informational.
+   */
+  analyzeCCU(photo: Blob | File): Promise<CCUAnalysis> {
+    const form = new FormData();
+    form.append('photo', photo);
+    return request<CCUAnalysis>('/api/analyze-ccu', {
+      method: 'POST',
+      body: form,
+    });
   },
 
   /**
