@@ -43,6 +43,10 @@ export class DeepgramService {
   // Tracked so the KeepAlive loop only fires during extended silence.
   private lastAudioSendMs = 0;
   private keepAliveTimer: ReturnType<typeof setInterval> | null = null;
+  // Phase 4e — when paused, `sendSamples` silently drops incoming audio
+  // but the WS stays open via the KeepAlive loop. Lets the SleepManager
+  // re-wake in <100ms without a full reconnect.
+  private paused = false;
 
   constructor(callbacks: DeepgramCallbacks) {
     this.callbacks = callbacks;
@@ -99,8 +103,10 @@ export class DeepgramService {
   }
 
   /** Send a Float32Array block (mic samples). Resamples to 16kHz if needed
-   *  and converts to Int16 PCM before framing. No-op if not connected. */
+   *  and converts to Int16 PCM before framing. No-op if not connected or
+   *  if the service has been paused by the SleepManager. */
   sendSamples(samples: Float32Array): void {
+    if (this.paused) return;
     if (!this.ws || this.state !== 'connected' || samples.length === 0) return;
 
     const resampled = this.sourceSampleRate === 16000 ? samples : this.resampleTo16k(samples);
@@ -120,9 +126,46 @@ export class DeepgramService {
     }
   }
 
+  /** Drop a pre-recorded Int16 PCM block straight into the WS. Used by
+   *  the SleepManager to replay the 3-second AudioRingBuffer on wake so
+   *  Deepgram can transcribe the words spoken _just before_ VAD fired. */
+  sendInt16PCM(samples: Int16Array): void {
+    if (!this.ws || this.state !== 'connected' || samples.length === 0) return;
+    this.lastAudioSendMs = performance.now();
+    try {
+      // Copy into a fresh ArrayBuffer so we send only the valid range
+      // (the caller may hand us a subarray view).
+      const copy = new Int16Array(samples.length);
+      copy.set(samples);
+      this.ws.send(copy.buffer);
+    } catch {
+      // Rare: WS backpressure. Drop the replay; live audio will follow.
+    }
+  }
+
+  /** Freeze live sample forwarding without closing the socket. The
+   *  KeepAlive loop continues so the Deepgram session stays alive;
+   *  calling `resume()` un-freezes with negligible latency. Pair with
+   *  `AudioRingBuffer.writeFloat32()` during pause so `sendInt16PCM()`
+   *  on resume can catch Deepgram up to the wake moment. */
+  pause(): void {
+    this.paused = true;
+  }
+
+  /** Inverse of `pause()`. Optionally drain a caller-supplied replay
+   *  buffer (typically the 3-second AudioRingBuffer) before live
+   *  samples resume flowing — matches the iOS wake path. */
+  resume(replay?: Int16Array): void {
+    this.paused = false;
+    if (replay && replay.length > 0) {
+      this.sendInt16PCM(replay);
+    }
+  }
+
   /** Request a graceful stream close + tear the socket down. */
   disconnect(): void {
     this.stopKeepAlive();
+    this.paused = false;
     const ws = this.ws;
     if (!ws) {
       this.setState('disconnected');
