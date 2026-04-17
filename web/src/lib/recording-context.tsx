@@ -1,16 +1,18 @@
 'use client';
 
 import * as React from 'react';
+import { startMicCapture, type MicCaptureHandle } from './recording/mic-capture';
 
 /**
- * Recording context (Phase 4a — scaffold only).
+ * Recording context.
  *
  * Holds the UI state that every surface needs while the inspector is
- * recording. Real audio/Deepgram/Sonnet integration arrives in Phases
- * 4b–4d; this scaffold uses deterministic stubs (fake transcripts, fake
- * mic level, fake cost ticks) so the overlay, transcript bar, and mic
- * button can be visually verified against iOS reference screenshots
- * without requiring a microphone permission prompt.
+ * recording. Phase 4b wires real microphone capture via an AudioWorklet
+ * → RMS pipeline so the VU meter reacts to actual audio. Deepgram
+ * Nova-3 transcription (Phase 4c), Sonnet multi-turn extraction (Phase
+ * 4d), and VAD sleep/wake (Phase 4e) are still to come — until then
+ * the transcript stays empty and the cost ticks only with Deepgram's
+ * notional rate while audio is streaming.
  *
  * State machine — mirrors iOS `RecordingSessionCoordinator`:
  *
@@ -24,10 +26,10 @@ import * as React from 'react';
  *
  *   error — surfaced when permission is denied or a WS drops.
  *
- * The stub `start()` synthesises a sequence of partial/final transcripts
- * every ~1.5s so the transcript bar has something to render during
- * visual verification. Calling `start()` on a real device in Phase 4b
- * will replace the synth loop with AudioWorklet → Deepgram.
+ * `start()` opens the mic via AudioWorklet and drives `micLevel` off
+ * the real RMS signal. Transcripts will be emitted by the Deepgram
+ * Nova-3 WebSocket wired in Phase 4c; until then the overlay renders
+ * the "Listening…" placeholder and the transcript log stays empty.
  */
 
 export type RecordingState = 'idle' | 'requesting-mic' | 'active' | 'dozing' | 'sleeping' | 'error';
@@ -74,19 +76,10 @@ type RecordingCtx = RecordingSnapshot & RecordingActions;
 
 const Ctx = React.createContext<RecordingCtx | null>(null);
 
-/** Synth transcript loop — a rolling rota of realistic inspector phrases so
- *  the Phase 4a overlay has motion to verify against iOS. Replaced by
- *  Deepgram Nova-3 finals in Phase 4c. */
-const SYNTH_PHRASES: readonly string[] = [
-  'Consumer unit is a Hager VML 16-way dual RCD',
-  'Main switch rating one hundred amps double pole',
-  'RCD one is thirty milliamp type AC',
-  'Ze reading zero point one four ohms TN-S',
-  'Circuit one ground floor sockets R1 plus R2 zero point eight',
-  'Insulation resistance greater than two hundred megohms',
-  'PFC six point two kiloamps',
-  'Observation: no RCD protection on ground floor lighting, code C3',
-];
+// Deepgram Nova-3 streaming — $0.0077/min at the inspector tier. We tick
+// cost in real time so the hero readout feels live; Phase 4d will splice
+// Sonnet token costs in on top.
+const DEEPGRAM_USD_PER_MIN = 0.0077;
 
 export function RecordingProvider({ children }: { children: React.ReactNode }) {
   const [state, setState] = React.useState<RecordingState>('idle');
@@ -97,88 +90,130 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
   const [errorMessage, setErrorMessage] = React.useState<string | null>(null);
   const [isOverlayOpen, setOverlayOpen] = React.useState(false);
 
-  // ── Synth loop (scaffold only) ─────────────────────────────────────────
-  const timersRef = React.useRef<{
-    tick: ReturnType<typeof setInterval> | null;
-    utter: ReturnType<typeof setInterval> | null;
-  }>({ tick: null, utter: null });
+  // ── Audio pipeline ──────────────────────────────────────────────────────
+  // Mic capture handle + elapsed/cost ticker. The mic handle owns the
+  // AudioContext and Worklet; we keep it in a ref so `stop()` can tear it
+  // down without tripping React's effect dependency machinery.
+  const micRef = React.useRef<MicCaptureHandle | null>(null);
+  const tickRef = React.useRef<ReturnType<typeof setInterval> | null>(null);
+  // Throttle setMicLevel to ~60Hz — audio callbacks fire every ~8ms at
+  // 16kHz/128 samples which is overkill for a VU meter and would flood
+  // React with renders.
+  const lastLevelPushRef = React.useRef(0);
 
-  const clearTimers = React.useCallback(() => {
-    if (timersRef.current.tick) clearInterval(timersRef.current.tick);
-    if (timersRef.current.utter) clearInterval(timersRef.current.utter);
-    timersRef.current = { tick: null, utter: null };
+  const clearTick = React.useCallback(() => {
+    if (tickRef.current) clearInterval(tickRef.current);
+    tickRef.current = null;
   }, []);
 
-  React.useEffect(() => clearTimers, [clearTimers]);
-
-  const beginSynthLoop = React.useCallback(() => {
-    // Drive timer + cost + mic level at 10 Hz so the VU meter feels live.
-    let t = 0;
-    timersRef.current.tick = setInterval(() => {
-      t += 0.1;
+  const beginTick = React.useCallback(() => {
+    // 10Hz is fine for the timer + cost — the mic VU meter runs
+    // independently off audio callbacks.
+    tickRef.current = setInterval(() => {
       setElapsedSec((s) => s + 0.1);
-      setCostUsd((c) => c + 0.0077 / 60 / 10); // $/min → $/100ms
-      // Oscillate between 0.15 and 0.9 using two sines so it doesn't look robotic.
-      const lvl = 0.52 + 0.35 * Math.sin(t * 4.1) * 0.5 + 0.2 * Math.sin(t * 1.7 + 1.2);
-      setMicLevel(Math.max(0.05, Math.min(1, lvl)));
+      setCostUsd((c) => c + DEEPGRAM_USD_PER_MIN / 60 / 10);
     }, 100);
-
-    // Emit a new final utterance every 2.2s, cycling through SYNTH_PHRASES.
-    let idx = 0;
-    timersRef.current.utter = setInterval(() => {
-      const phrase = SYNTH_PHRASES[idx % SYNTH_PHRASES.length];
-      idx += 1;
-      setTranscript((prev) => {
-        const next: TranscriptUtterance[] = [
-          ...prev,
-          {
-            id: `u_${Date.now()}_${idx}`,
-            text: phrase,
-            final: true,
-            timestamp: Date.now(),
-          },
-        ];
-        // Keep only the last 10 so memory doesn't unbound over long sessions.
-        return next.length > 10 ? next.slice(next.length - 10) : next;
-      });
-    }, 2200);
   }, []);
+
+  const teardownMic = React.useCallback(() => {
+    micRef.current?.stop();
+    micRef.current = null;
+  }, []);
+
+  // Belt-and-braces cleanup if the provider unmounts while a session is
+  // live (route change, hot reload).
+  React.useEffect(() => {
+    return () => {
+      clearTick();
+      teardownMic();
+    };
+  }, [clearTick, teardownMic]);
 
   const start = React.useCallback(async () => {
     if (state !== 'idle' && state !== 'error') return;
     setErrorMessage(null);
     setState('requesting-mic');
     setOverlayOpen(true);
-    // Phase 4a: skip the real getUserMedia call — simulate a 250ms permission
-    // latency so the UI has a visible "requesting-mic" state to verify.
-    await new Promise((r) => setTimeout(r, 250));
-    setState('active');
     setElapsedSec(0);
     setCostUsd(0);
     setTranscript([]);
-    beginSynthLoop();
-  }, [state, beginSynthLoop]);
+    try {
+      const handle = await startMicCapture({
+        onLevel: (level) => {
+          const now = performance.now();
+          if (now - lastLevelPushRef.current < 16) return; // ~60Hz cap
+          lastLevelPushRef.current = now;
+          setMicLevel(level);
+        },
+        onError: (err) => {
+          setErrorMessage(err.message);
+          setState('error');
+          teardownMic();
+          clearTick();
+        },
+      });
+      micRef.current = handle;
+      setState('active');
+      beginTick();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      // Most common: NotAllowedError (permission denied). Surface a
+      // friendlier message — the raw DOMException name is hidden behind
+      // "Permission denied" which inspectors can act on.
+      setErrorMessage(
+        /NotAllowed|denied|dismiss/i.test(msg)
+          ? 'Microphone permission was denied. Enable it in your browser settings to record.'
+          : msg
+      );
+      setState('error');
+    }
+  }, [state, beginTick, clearTick, teardownMic]);
 
   const stop = React.useCallback(() => {
-    clearTimers();
+    clearTick();
+    teardownMic();
     setState('idle');
     setMicLevel(0);
     setOverlayOpen(false);
-    // Keep elapsedSec + transcript visible for ~400ms so the overlay can
-    // animate out without the data vanishing mid-frame. Reset on next start.
-  }, [clearTimers]);
+  }, [clearTick, teardownMic]);
 
   const pause = React.useCallback(() => {
     if (state !== 'active') return;
-    clearTimers();
+    // Phase 4b: pause tears down the mic to guarantee no audio leaves the
+    // browser while "paused". Phase 4e will swap this for the SleepDetector
+    // `pause()` which keeps the graph open + sends KeepAlive frames.
+    clearTick();
+    teardownMic();
+    setMicLevel(0);
     setState('dozing');
-  }, [state, clearTimers]);
+  }, [state, clearTick, teardownMic]);
 
-  const resume = React.useCallback(() => {
+  const resume = React.useCallback(async () => {
     if (state !== 'dozing' && state !== 'sleeping') return;
-    setState('active');
-    beginSynthLoop();
-  }, [state, beginSynthLoop]);
+    try {
+      const handle = await startMicCapture({
+        onLevel: (level) => {
+          const now = performance.now();
+          if (now - lastLevelPushRef.current < 16) return;
+          lastLevelPushRef.current = now;
+          setMicLevel(level);
+        },
+        onError: (err) => {
+          setErrorMessage(err.message);
+          setState('error');
+          teardownMic();
+          clearTick();
+        },
+      });
+      micRef.current = handle;
+      setState('active');
+      beginTick();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setErrorMessage(msg);
+      setState('error');
+    }
+  }, [state, beginTick, clearTick, teardownMic]);
 
   const minimise = React.useCallback(() => setOverlayOpen(false), []);
   const expand = React.useCallback(() => setOverlayOpen(true), []);
