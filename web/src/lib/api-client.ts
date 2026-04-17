@@ -120,6 +120,18 @@ export const api = {
   },
 
   /**
+   * Fetch a short-lived Deepgram Nova-3 API key scoped to a single
+   * recording session. Backend mints the token via the Deepgram
+   * Management API and returns `{ key: string }`. Token is typically
+   * valid for ~10 minutes — callers should re-request on reconnect.
+   */
+  deepgramKey(sessionId: string): Promise<{ key: string }> {
+    return request<{ key: string }>(
+      `/api/deepgram-proxy?sessionId=${encodeURIComponent(sessionId)}`
+    );
+  },
+
+  /**
    * Partial update. Backend merges with the persisted doc, so callers
    * only need to send the fields that changed.
    */

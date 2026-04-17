@@ -15,13 +15,15 @@ import { cn } from '@/lib/utils';
  * back into the full overlay.
  */
 export function TranscriptBar() {
-  const { state, elapsedSec, transcript, isOverlayOpen, expand } = useRecording();
+  const { state, elapsedSec, transcript, interim, isOverlayOpen, expand } = useRecording();
 
   // Only render when there's a session running AND the overlay is not expanded.
   // When state is 'idle' the bar hides entirely — no empty strip on the page.
   if (state === 'idle' || isOverlayOpen) return null;
 
-  const last = transcript[transcript.length - 1]?.text;
+  // Prefer the live partial so the inspector sees words appearing as
+  // they're spoken; fall back to the last final when idle.
+  const latest = interim || transcript[transcript.length - 1]?.text;
   const pulse = state === 'active';
 
   return (
@@ -44,8 +46,13 @@ export function TranscriptBar() {
       <span className="font-mono text-[12px] tabular-nums text-[var(--color-text-secondary)]">
         {formatElapsed(elapsedSec)}
       </span>
-      <span className="min-w-0 flex-1 truncate text-[13px] text-[var(--color-text-primary)]">
-        {last ?? (state === 'requesting-mic' ? 'Requesting microphone…' : 'Listening…')}
+      <span
+        className={cn(
+          'min-w-0 flex-1 truncate text-[13px]',
+          interim ? 'italic text-[var(--color-text-secondary)]' : 'text-[var(--color-text-primary)]'
+        )}
+      >
+        {latest ?? (state === 'requesting-mic' ? 'Requesting microphone…' : 'Listening…')}
       </span>
       <ChevronUp
         className="h-4 w-4 shrink-0 text-[var(--color-text-tertiary)]"

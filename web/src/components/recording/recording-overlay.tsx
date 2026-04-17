@@ -26,6 +26,7 @@ export function RecordingOverlay() {
     elapsedSec,
     costUsd,
     transcript,
+    interim,
     errorMessage,
     isOverlayOpen,
     stop,
@@ -142,22 +143,33 @@ export function RecordingOverlay() {
         <div className="flex min-h-[180px] flex-1 flex-col gap-2 overflow-y-auto border-t border-[var(--color-border-default)] px-5 py-4">
           {errorMessage ? (
             <p className="text-[13px] text-[var(--color-status-failed)]">{errorMessage}</p>
-          ) : visibleTranscript.length === 0 ? (
-            <p className="text-[13px] italic text-[var(--color-text-tertiary)]">
-              {isRequesting
-                ? 'Requesting microphone permission…'
-                : 'Start speaking — transcripts will appear here in real time.'}
-            </p>
           ) : (
-            visibleTranscript.map((u, i) => (
-              <p
-                key={u.id}
-                className="text-[14px] leading-snug text-[var(--color-text-primary)] transition-opacity"
-                style={{ opacity: 1 - i * 0.15 }}
-              >
-                {u.text}
-              </p>
-            ))
+            <>
+              {/* Interim partial — greyed italic, always renders on top of
+                   the log until Deepgram emits a final. */}
+              {interim ? (
+                <p className="text-[14px] italic leading-snug text-[var(--color-text-tertiary)]">
+                  {interim}
+                </p>
+              ) : null}
+              {visibleTranscript.length === 0 && !interim ? (
+                <p className="text-[13px] italic text-[var(--color-text-tertiary)]">
+                  {isRequesting
+                    ? 'Requesting microphone permission…'
+                    : 'Start speaking — transcripts will appear here in real time.'}
+                </p>
+              ) : (
+                visibleTranscript.map((u, i) => (
+                  <p
+                    key={u.id}
+                    className="text-[14px] leading-snug text-[var(--color-text-primary)] transition-opacity"
+                    style={{ opacity: 1 - i * 0.15 }}
+                  >
+                    {u.text}
+                  </p>
+                ))
+              )}
+            </>
           )}
         </div>
 
