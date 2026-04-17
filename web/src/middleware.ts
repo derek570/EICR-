@@ -59,7 +59,17 @@ export function middleware(req: NextRequest) {
     return NextResponse.redirect(new URL('/settings', req.url));
   }
 
-  return NextResponse.next();
+  // PWA guardrail. Next's App Router bakes server-action hashes into the
+  // client bundle; a page served from the browser's HTTP cache after a
+  // deploy will call handlers that no longer exist server-side and throw
+  // "Failed to find Server Action". Forcing no-store on HTML responses
+  // means the browser always revalidates, so the client bundle can never
+  // outlive its matching server routes. Static assets (anything with a
+  // `.`) and `/_next/*` are early-returned above, so this header only
+  // reaches HTML. The SW decides its own caching independently.
+  const res = NextResponse.next();
+  res.headers.set('Cache-Control', 'no-cache, no-store, must-revalidate');
+  return res;
 }
 
 export const config = {

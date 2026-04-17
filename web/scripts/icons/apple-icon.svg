@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Apple touch icon — rendered at 180x180. No transparency, NO corner
+  rounding (iOS applies its own corner mask), but the CM glyph is
+  reused unchanged for visual consistency with the installable icon.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#1A78FF"/>
+      <stop offset="100%" stop-color="#0066FF"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" fill="url(#bg)"/>
+  <path
+    fill="#ffffff"
+    fill-rule="evenodd"
+    d="
+      M 256 112
+      A 144 144 0 1 0 256 400
+      L 256 346
+      A 90 90 0 1 1 256 166
+      Z
+    "
+    transform="translate(-48 0)"
+  />
+  <path
+    fill="#ffffff"
+    d="
+      M 256 112
+      L 304 112
+      L 360 240
+      L 416 112
+      L 464 112
+      L 464 400
+      L 410 400
+      L 410 230
+      L 380 300
+      L 340 300
+      L 310 230
+      L 310 400
+      L 256 400
+      Z
+    "
+    transform="translate(-32 0)"
+  />
+</svg>

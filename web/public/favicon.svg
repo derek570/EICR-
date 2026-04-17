@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Favicon — used directly as `public/favicon.svg` for modern browser
+  tab icons (Chrome/Firefox/Edge render SVG favicons crisply at any DPR).
+  Identical geometry to the installable icon, keeps colours so browsers
+  that support light/dark SVG favicons still look branded.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="32" height="32">
+  <defs>
+    <clipPath id="round">
+      <rect x="0" y="0" width="512" height="512" rx="112" ry="112"/>
+    </clipPath>
+  </defs>
+  <g clip-path="url(#round)">
+    <rect width="512" height="512" fill="#0066FF"/>
+    <path
+      fill="#ffffff"
+      fill-rule="evenodd"
+      d="
+        M 256 112
+        A 144 144 0 1 0 256 400
+        L 256 346
+        A 90 90 0 1 1 256 166
+        Z
+      "
+      transform="translate(-48 0)"
+    />
+    <path
+      fill="#ffffff"
+      d="
+        M 256 112
+        L 304 112
+        L 360 240
+        L 416 112
+        L 464 112
+        L 464 400
+        L 410 400
+        L 410 230
+        L 380 300
+        L 340 300
+        L 310 230
+        L 310 400
+        L 256 400
+        Z
+      "
+      transform="translate(-32 0)"
+    />
+  </g>
+</svg>

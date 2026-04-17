@@ -7,6 +7,7 @@ import { Logo } from '@/components/brand/logo';
 import { api } from '@/lib/api-client';
 import { clearAuth, getUser } from '@/lib/auth';
 import { Button } from '@/components/ui/button';
+import { InstallButton } from '@/components/pwa/install-button';
 
 /**
  * Top-nav + page frame for all authenticated screens.
@@ -73,6 +74,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               {userName}
             </span>
           ) : null}
+          {/*
+           * Renders only when Chrome/Edge/Android has fired
+           * `beforeinstallprompt` and the deferred event is live in the
+           * install store. On Safari (desktop + iOS) it stays hidden —
+           * Safari never fires the event, so users must install via
+           * Share → Add to Home Screen (a Phase 7b hint is planned).
+           */}
+          <InstallButton />
           <Button variant="ghost" size="sm" onClick={handleSignOut}>
             Sign out
           </Button>
