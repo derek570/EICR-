@@ -1,7 +1,16 @@
 'use client';
 
 import * as React from 'react';
-import { ChevronDown, Mic, MicOff, Pause, Play, Square, X as CloseIcon } from 'lucide-react';
+import {
+  ChevronDown,
+  HelpCircle,
+  Mic,
+  MicOff,
+  Pause,
+  Play,
+  Square,
+  X as CloseIcon,
+} from 'lucide-react';
 import { useRecording, formatCost, formatElapsed } from '@/lib/recording-context';
 import { cn } from '@/lib/utils';
 
@@ -27,12 +36,14 @@ export function RecordingOverlay() {
     costUsd,
     transcript,
     interim,
+    questions,
     errorMessage,
     isOverlayOpen,
     stop,
     pause,
     resume,
     minimise,
+    dismissQuestion,
   } = useRecording();
 
   // Only render when the overlay is explicitly open. When minimised the
@@ -138,6 +149,38 @@ export function RecordingOverlay() {
             </div>
           </div>
         </div>
+
+        {/* ── Sonnet questions ─────────────────────────────────────── */}
+        {questions.length > 0 ? (
+          <div
+            className="flex flex-col gap-2 border-t border-[var(--color-border-default)] bg-[var(--color-brand-blue)]/10 px-5 py-3"
+            aria-live="polite"
+          >
+            {questions.map((q, i) => (
+              <div
+                key={`${i}-${q.question}`}
+                className="flex items-start gap-2 rounded-[var(--radius-md)] bg-[var(--color-surface-1)] px-3 py-2 shadow-[0_1px_2px_rgba(0,0,0,0.25)]"
+              >
+                <HelpCircle
+                  className="mt-0.5 h-4 w-4 shrink-0 text-[var(--color-brand-blue)]"
+                  strokeWidth={2.25}
+                  aria-hidden
+                />
+                <p className="flex-1 text-[13px] leading-snug text-[var(--color-text-primary)]">
+                  {q.question}
+                </p>
+                <button
+                  type="button"
+                  onClick={() => dismissQuestion(i)}
+                  aria-label="Dismiss question"
+                  className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[var(--color-text-tertiary)] transition hover:bg-[var(--color-surface-2)]"
+                >
+                  <CloseIcon className="h-3.5 w-3.5" strokeWidth={2.25} aria-hidden />
+                </button>
+              </div>
+            ))}
+          </div>
+        ) : null}
 
         {/* ── Transcript log ───────────────────────────────────────── */}
         <div className="flex min-h-[180px] flex-1 flex-col gap-2 overflow-y-auto border-t border-[var(--color-border-default)] px-5 py-4">
