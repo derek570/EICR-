@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useTransition } from 'react';
+import { Suspense, useState, useTransition } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { Input, Label } from '@/components/ui/input';
@@ -15,8 +15,28 @@ import { ApiError } from '@/lib/types';
  *  - Shimmer line under the hero
  *  - Glass card over the ambient background
  *  - 44 px tap targets on both fields and the button
+ *
+ * Why the Suspense wrapper: `useSearchParams()` opts the page out of
+ * static rendering in Next.js App Router. Without a boundary above the
+ * hook, `next build` refuses to ship the route. Splitting the form into
+ * `LoginForm` (which reads the hook) and keeping the shell (orbs, card
+ * chrome) in `LoginPage` lets Next pre-render the visible frame at build
+ * time and stream the form in on the client. The fallback renders the
+ * same card with a disabled button so there's no layout shift while the
+ * search params resolve (near-instant in practice).
  */
 export default function LoginPage() {
+  return (
+    <main className="relative flex min-h-dvh items-center justify-center overflow-hidden px-6 py-16">
+      <AmbientOrbs />
+      <Suspense fallback={<LoginCard disabled />}>
+        <LoginForm />
+      </Suspense>
+    </main>
+  );
+}
+
+function LoginForm() {
   const router = useRouter();
   const params = useSearchParams();
   const redirect = params.get('redirect') ?? '/dashboard';
@@ -49,8 +69,66 @@ export default function LoginPage() {
   }
 
   return (
-    <main className="relative flex min-h-dvh items-center justify-center overflow-hidden px-6 py-16">
-      {/* Ambient orbs */}
+    <LoginCard>
+      <form onSubmit={onSubmit} className="flex flex-col gap-4" noValidate>
+        <div>
+          <Label htmlFor="email">Email</Label>
+          <Input
+            id="email"
+            type="email"
+            autoComplete="email"
+            inputMode="email"
+            autoCapitalize="none"
+            autoCorrect="off"
+            spellCheck={false}
+            required
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            placeholder="you@company.co.uk"
+          />
+        </div>
+        <div>
+          <Label htmlFor="password">Password</Label>
+          <Input
+            id="password"
+            type="password"
+            autoComplete="current-password"
+            required
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            placeholder="••••••••"
+          />
+        </div>
+
+        {error ? (
+          <p
+            role="alert"
+            className="rounded-[var(--radius-md)] border border-[var(--color-status-failed)]/40 bg-[var(--color-status-failed)]/10 px-3 py-2 text-sm text-[var(--color-status-failed)]"
+          >
+            {error}
+          </p>
+        ) : null}
+
+        <Button
+          type="submit"
+          size="lg"
+          disabled={pending || !email || !password}
+          className="mt-2 w-full"
+        >
+          {pending ? 'Signing in…' : 'Sign in'}
+        </Button>
+      </form>
+    </LoginCard>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Presentational shell — rendered by both the real form and the Suspense
+// fallback so the card chrome never flickers while search params resolve.
+
+function AmbientOrbs() {
+  return (
+    <>
       <div
         className="cm-orb"
         style={{
@@ -86,70 +164,48 @@ export default function LoginPage() {
         }}
         aria-hidden
       />
+    </>
+  );
+}
 
-      {/* Card */}
-      <div
-        className="cm-glass relative w-full rounded-[var(--radius-xl)] p-7 md:p-9 shadow-[0_24px_60px_rgba(0,0,0,0.55)]"
-        style={{ maxWidth: '420px' }}
-      >
-        <div className="mb-6 flex flex-col items-start gap-2">
-          <Logo size="lg" />
-          <h1 className="mt-3 text-[26px] font-bold tracking-tight">Sign in to CertMate</h1>
-          <p className="text-sm text-[var(--color-text-secondary)]">
-            Voice-driven EICR & EIC authoring.
-          </p>
-          <div className="cm-shimmer mt-2 h-px w-24 rounded-full" aria-hidden />
-        </div>
-
-        <form onSubmit={onSubmit} className="flex flex-col gap-4" noValidate>
-          <div>
-            <Label htmlFor="email">Email</Label>
-            <Input
-              id="email"
-              type="email"
-              autoComplete="email"
-              inputMode="email"
-              autoCapitalize="none"
-              autoCorrect="off"
-              spellCheck={false}
-              required
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              placeholder="you@company.co.uk"
-            />
-          </div>
-          <div>
-            <Label htmlFor="password">Password</Label>
-            <Input
-              id="password"
-              type="password"
-              autoComplete="current-password"
-              required
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              placeholder="••••••••"
-            />
-          </div>
-
-          {error ? (
-            <p
-              role="alert"
-              className="rounded-[var(--radius-md)] border border-[var(--color-status-failed)]/40 bg-[var(--color-status-failed)]/10 px-3 py-2 text-sm text-[var(--color-status-failed)]"
-            >
-              {error}
-            </p>
-          ) : null}
-
-          <Button
-            type="submit"
-            size="lg"
-            disabled={pending || !email || !password}
-            className="mt-2 w-full"
-          >
-            {pending ? 'Signing in…' : 'Sign in'}
-          </Button>
-        </form>
+function LoginCard({
+  children,
+  disabled = false,
+}: {
+  children?: React.ReactNode;
+  disabled?: boolean;
+}) {
+  return (
+    <div
+      className="cm-glass relative w-full rounded-[var(--radius-xl)] p-7 md:p-9 shadow-[0_24px_60px_rgba(0,0,0,0.55)]"
+      style={{ maxWidth: '420px' }}
+    >
+      <div className="mb-6 flex flex-col items-start gap-2">
+        <Logo size="lg" />
+        <h1 className="mt-3 text-[26px] font-bold tracking-tight">Sign in to CertMate</h1>
+        <p className="text-sm text-[var(--color-text-secondary)]">
+          Voice-driven EICR & EIC authoring.
+        </p>
+        <div className="cm-shimmer mt-2 h-px w-24 rounded-full" aria-hidden />
       </div>
-    </main>
+
+      {disabled ? (
+        <div className="flex flex-col gap-4" aria-hidden>
+          <div>
+            <Label htmlFor="email-placeholder">Email</Label>
+            <Input id="email-placeholder" type="email" disabled placeholder="you@company.co.uk" />
+          </div>
+          <div>
+            <Label htmlFor="password-placeholder">Password</Label>
+            <Input id="password-placeholder" type="password" disabled placeholder="••••••••" />
+          </div>
+          <Button type="button" size="lg" disabled className="mt-2 w-full">
+            Sign in
+          </Button>
+        </div>
+      ) : (
+        children
+      )}
+    </div>
   );
 }
