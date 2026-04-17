@@ -13,6 +13,7 @@ import { JobProvider } from '@/lib/job-context';
 import { RecordingProvider, useRecording } from '@/lib/recording-context';
 import { api } from '@/lib/api-client';
 import { clearAuth, getUser } from '@/lib/auth';
+import { getCachedJob, putCachedJob } from '@/lib/pwa/job-cache';
 import type { JobDetail } from '@/lib/types';
 
 /**
@@ -47,10 +48,34 @@ export default function JobLayout({ children }: { children: React.ReactNode }) {
       return;
     }
     let cancelled = false;
+
+    // Phase 7b — stale-while-revalidate via the IDB job cache.
+    //
+    // Paint from cache immediately if we have a snapshot, then fetch
+    // fresh. A cached paint also means `<JobProvider>` mounts with
+    // realistic data, so the inspector can start reviewing the
+    // observations tab etc. while the network catches up.
+    //
+    // The `setJob` below is idempotent: the fresh fetch will overwrite
+    // whatever cache painted. `JobProvider`'s `useEffect([initial])`
+    // handles the swap from cached → fresh without losing local edits,
+    // because `setIsDirty(false)` only runs when the prop identity
+    // changes, and callers above this layout don't re-provide.
+    let hadCache = false;
+    getCachedJob(user.id, jobId).then((cached) => {
+      if (cancelled) return;
+      if (cached && job === null) {
+        setJob(cached);
+        hadCache = true;
+      }
+    });
+
     api
       .job(user.id, jobId)
       .then((detail) => {
-        if (!cancelled) setJob(detail);
+        if (cancelled) return;
+        setJob(detail);
+        void putCachedJob(user.id, jobId, detail);
       })
       .catch((err: Error) => {
         if (cancelled) return;
@@ -59,11 +84,19 @@ export default function JobLayout({ children }: { children: React.ReactNode }) {
           router.replace('/login');
           return;
         }
+        // Cached-paint-and-carry-on — same rationale as the dashboard.
+        // If the tab was previously visited, the inspector keeps their
+        // full job record offline rather than being bounced to an error
+        // card for a network blip.
+        if (hadCache) return;
         setError(err.message);
       });
     return () => {
       cancelled = true;
     };
+    // `job` intentionally omitted — we only want this effect to run on
+    // mount / jobId change, not every time the fetch updates state.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [jobId, router]);
 
   return (

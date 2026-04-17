@@ -16,6 +16,7 @@ import {
 } from 'lucide-react';
 import { api } from '@/lib/api-client';
 import { clearAuth, getUser } from '@/lib/auth';
+import { getCachedJobs, putCachedJobs } from '@/lib/pwa/job-cache';
 import type { Job } from '@/lib/types';
 import { AnimatedCounter } from '@/components/dashboard/animated-counter';
 import { JobRow } from '@/components/dashboard/job-row';
@@ -44,10 +45,39 @@ export default function DashboardPage() {
       return;
     }
     let cancelled = false;
+
+    // Phase 7b — stale-while-revalidate via the IDB job cache.
+    //
+    // Read cache first so the list paints instantly (avoids the 4-row
+    // shimmer on a warm device, and makes the dashboard usable in
+    // airplane mode / site basement / dead-spot van where the fetch
+    // below will never land). The network call still fires in parallel
+    // and replaces the UI + cache on success.
+    //
+    // Error handling diverges from 7a: if the network fails but we
+    // already painted from cache, we DON'T surface an error banner —
+    // the inspector can still browse their jobs, and the forthcoming
+    // AppShell offline indicator (separate 7b commit) will tell them
+    // the data is stale. Only show an error when there's nothing to
+    // paint at all.
+    let hadCache = false;
+    getCachedJobs(user.id).then((cached) => {
+      if (cancelled) return;
+      if (cached && jobs === null) {
+        setJobs(cached);
+        hadCache = true;
+      }
+    });
+
     api
       .jobs(user.id)
       .then((list) => {
-        if (!cancelled) setJobs(list);
+        if (cancelled) return;
+        setJobs(list);
+        // Fire-and-forget cache write. Ignoring the promise is deliberate —
+        // the UI already has the fresh data; a cache write failure is
+        // logged inside `putCachedJobs` but doesn't affect this render.
+        void putCachedJobs(user.id, list);
       })
       .catch((err: Error) => {
         if (cancelled) return;
@@ -56,12 +86,22 @@ export default function DashboardPage() {
           router.replace('/login');
           return;
         }
+        // If we already painted from IDB, keep showing that and suppress
+        // the banner — "offline with stale data" is a better UX than
+        // "offline with an error message on top of stale data".
+        if (hadCache) return;
         setError(err.message);
         setJobs([]);
       });
     return () => {
       cancelled = true;
     };
+    // `jobs` is intentionally omitted from deps — this effect runs once
+    // per mount; re-running on every `setJobs` would cause a fetch loop.
+    // The `jobs === null` check inside the cache-hit branch is a guard
+    // against overwriting a fresh network result with stale cache in
+    // the rare case the cache resolves after the network.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [router]);
 
   const stats = React.useMemo(() => {

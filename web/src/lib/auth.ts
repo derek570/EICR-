@@ -1,4 +1,5 @@
 import type { User } from './types';
+import { clearJobCache } from './pwa/job-cache';
 
 /**
  * Auth-token helpers. Token is stored in localStorage (for API calls) and
@@ -40,4 +41,12 @@ export function clearAuth(): void {
   localStorage.removeItem(TOKEN_KEY);
   localStorage.removeItem(USER_KEY);
   document.cookie = 'token=; path=/; max-age=0; SameSite=Lax';
+  // Phase 7b — wipe the IDB job cache on sign-out so a shared device
+  // doesn't keep one inspector's jobs available for offline render
+  // under the next inspector's login. Fire-and-forget: the caller is
+  // about to redirect to /login and doesn't need to wait for IDB, but
+  // the browser keeps the tab alive long enough for the transaction to
+  // commit before navigation. If IDB is unsupported or the clear fails,
+  // the redirect still proceeds (clearJobCache swallows internally).
+  void clearJobCache();
 }
