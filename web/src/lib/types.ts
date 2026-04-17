@@ -62,7 +62,14 @@ export interface ObservationRow {
   description?: string;
   location?: string;
   remedial?: string;
-  photo_keys?: string[];
+  /**
+   * Filenames of photos attached to this observation. The backend stores
+   * bytes in S3 under `jobs/{userId}/{folderName}/photos/{filename}` and
+   * renders at `/api/job/:userId/:jobId/photos/:filename`. Matches the
+   * iOS `Observation.photos` field (serialised under the same JSON key)
+   * so a job round-trips losslessly between clients.
+   */
+  photos?: string[];
 }
 
 export interface InspectorInfo {

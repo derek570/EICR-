@@ -1,26 +1,24 @@
 'use client';
 
 import * as React from 'react';
-import { AlertTriangle, MapPin, Plus, Trash2 } from 'lucide-react';
+import { useParams } from 'next/navigation';
+import { AlertTriangle, ImageIcon, MapPin, Plus, Trash2 } from 'lucide-react';
 import { useJobContext } from '@/lib/job-context';
 import type { ObservationRow } from '@/lib/types';
+import { getUser } from '@/lib/auth';
 import { SectionCard } from '@/components/ui/section-card';
+import { ObservationPhoto } from '@/components/observations/observation-photo';
+import { ObservationSheet } from '@/components/observations/observation-sheet';
 import { cn } from '@/lib/utils';
 
 /**
  * Observations tab — mirrors iOS `ObservationsTab.swift`.
  *
- * Hero banner with C1/C2/C3/FI tally, an Add button (wires up to the
- * AddObservation sheet in Phase 5), and a list of observation cards.
- *
- * This Phase 3c landing delivers:
- *   • empty-state card
- *   • count badges in the hero
- *   • list of observation cards with code chip + location + description
- *   • remove button (inline — edit sheet arrives in Phase 5)
- *
- * Add/edit dialogs, photo attachment, and schedule-item linking wire up
- * in Phase 5 where capture/flows land.
+ * Layout: gradient hero with C1/C2/C3/FI tally + Add button, then a list
+ * of observation cards. Tap Add for a new blank sheet, tap any card to
+ * edit. The photo upload flow (Phase 5c) lives in <ObservationSheet>;
+ * this page just renders up to three thumbnails inline per card and
+ * opens the sheet on click.
  */
 
 const CODE_COLOUR: Record<NonNullable<ObservationRow['code']>, string> = {
@@ -37,15 +35,70 @@ const CODE_LABEL: Record<NonNullable<ObservationRow['code']>, string> = {
   FI: 'Further investigation required',
 };
 
+/** Small helper — crypto.randomUUID is available in every modern runtime
+ *  that ships Next.js 16, but we fall back to Date.now() just to stay
+ *  safe on older Safari TP builds that still wheeze on some `crypto`
+ *  methods in privacy mode. */
+function makeId(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  return `obs_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
 export default function ObservationsPage() {
   const { job, certificateType, updateJob } = useJobContext();
-  const observations = job.observations ?? [];
+  const params = useParams<{ id: string }>();
+  const jobId = params?.id ?? '';
+  const userId = React.useMemo(() => getUser()?.id ?? null, []);
+
+  const observations = React.useMemo(() => job.observations ?? [], [job.observations]);
+
+  // `null` = sheet closed. A string id = editing existing. The literal
+  // string 'new' = a blank row queued in `draftNew` below.
+  const [editingId, setEditingId] = React.useState<string | null>(null);
+  const [draftNew, setDraftNew] = React.useState<ObservationRow | null>(null);
 
   const counts = React.useMemo(() => countByCode(observations), [observations]);
+
+  const openAdd = () => {
+    const blank: ObservationRow = { id: makeId() };
+    setDraftNew(blank);
+    setEditingId(blank.id);
+  };
+
+  const openEdit = (id: string) => {
+    setDraftNew(null);
+    setEditingId(id);
+  };
+
+  const closeSheet = () => {
+    setEditingId(null);
+    setDraftNew(null);
+  };
+
+  const handleSave = (next: ObservationRow) => {
+    const existingIdx = observations.findIndex((o) => o.id === next.id);
+    if (existingIdx >= 0) {
+      const nextList = observations.slice();
+      nextList[existingIdx] = next;
+      updateJob({ observations: nextList });
+    } else {
+      updateJob({ observations: [...observations, next] });
+    }
+    closeSheet();
+  };
 
   const removeAt = (id: string) => {
     updateJob({ observations: observations.filter((o) => o.id !== id) });
   };
+
+  const editing =
+    editingId === null
+      ? null
+      : ((draftNew && draftNew.id === editingId
+          ? draftNew
+          : observations.find((o) => o.id === editingId)) ?? null);
 
   return (
     <div
@@ -85,9 +138,8 @@ export default function ObservationsPage() {
           <AlertTriangle className="h-10 w-10 text-white/30" strokeWidth={2} aria-hidden />
           <button
             type="button"
-            disabled
-            className="inline-flex cursor-not-allowed items-center gap-1.5 rounded-full bg-white/95 px-3.5 py-1.5 text-[12px] font-semibold text-[var(--color-brand-blue)] opacity-90"
-            title="Add observation wires up in Phase 5"
+            onClick={openAdd}
+            className="inline-flex items-center gap-1.5 rounded-full bg-white/95 px-3.5 py-1.5 text-[12px] font-semibold text-[var(--color-brand-blue)] shadow-sm transition hover:bg-white"
           >
             <Plus className="h-3.5 w-3.5" aria-hidden />
             Add
@@ -107,10 +159,26 @@ export default function ObservationsPage() {
       ) : (
         <div className="flex flex-col gap-3">
           {observations.map((obs) => (
-            <ObservationCard key={obs.id} obs={obs} onRemove={() => removeAt(obs.id)} />
+            <ObservationCard
+              key={obs.id}
+              obs={obs}
+              userId={userId}
+              jobId={jobId}
+              onOpen={() => openEdit(obs.id)}
+              onRemove={() => removeAt(obs.id)}
+            />
           ))}
         </div>
       )}
+
+      {editing && jobId ? (
+        <ObservationSheet
+          observation={editing}
+          jobId={jobId}
+          onSave={handleSave}
+          onCancel={closeSheet}
+        />
+      ) : null}
     </div>
   );
 }
@@ -141,13 +209,40 @@ function CountBadge({ label, count, colour }: { label: string; count: number; co
   );
 }
 
-function ObservationCard({ obs, onRemove }: { obs: ObservationRow; onRemove: () => void }) {
+function ObservationCard({
+  obs,
+  userId,
+  jobId,
+  onOpen,
+  onRemove,
+}: {
+  obs: ObservationRow;
+  userId: string | null;
+  jobId: string;
+  onOpen: () => void;
+  onRemove: () => void;
+}) {
   const code = obs.code;
   const colour = code ? CODE_COLOUR[code] : 'var(--color-text-tertiary)';
   const subtitle = code ? CODE_LABEL[code] : 'Observation';
+  const photos = obs.photos ?? [];
+  // Preview up to three thumbnails inline; the sheet shows the full grid.
+  const previewCount = 3;
+  const extra = Math.max(0, photos.length - previewCount);
 
   return (
-    <div className="flex flex-col gap-2 rounded-[var(--radius-md)] border border-[var(--color-border-default)] bg-[var(--color-surface-1)] px-3 py-3">
+    <div
+      role="button"
+      tabIndex={0}
+      onClick={onOpen}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          onOpen();
+        }
+      }}
+      className="group flex cursor-pointer flex-col gap-2 rounded-[var(--radius-md)] border border-[var(--color-border-default)] bg-[var(--color-surface-1)] px-3 py-3 transition hover:border-[var(--color-border-strong)]"
+    >
       <div className="flex items-start justify-between gap-2">
         <div className="flex items-center gap-2">
           <span
@@ -172,7 +267,11 @@ function ObservationCard({ obs, onRemove }: { obs: ObservationRow; onRemove: () 
         </div>
         <button
           type="button"
-          onClick={onRemove}
+          onClick={(e) => {
+            // Don't open the sheet when the user is just deleting.
+            e.stopPropagation();
+            onRemove();
+          }}
           className="inline-flex items-center gap-1 rounded-[var(--radius-sm)] px-2 py-1 text-[11px] font-semibold transition hover:bg-[var(--color-status-failed)]/10"
           style={{ color: 'var(--color-status-failed)' }}
         >
@@ -192,6 +291,29 @@ function ObservationCard({ obs, onRemove }: { obs: ObservationRow; onRemove: () 
           </span>{' '}
           {obs.remedial}
         </p>
+      ) : null}
+      {photos.length > 0 && userId ? (
+        <div className="flex items-center gap-1.5 pt-1">
+          {photos.slice(0, previewCount).map((filename) => (
+            <div
+              key={filename}
+              className="h-12 w-12 overflow-hidden rounded-[var(--radius-sm)] border border-[var(--color-border-subtle)] bg-[var(--color-surface-2)]"
+            >
+              <ObservationPhoto
+                userId={userId}
+                jobId={jobId}
+                filename={filename}
+                alt=""
+                thumbnail
+              />
+            </div>
+          ))}
+          {extra > 0 ? (
+            <span className="inline-flex h-12 items-center justify-center rounded-[var(--radius-sm)] border border-[var(--color-border-subtle)] bg-[var(--color-surface-2)] px-2 text-[11px] font-semibold text-[var(--color-text-secondary)]">
+              <ImageIcon className="mr-1 h-3 w-3" aria-hidden />+{extra}
+            </span>
+          ) : null}
+        </div>
       ) : null}
     </div>
   );

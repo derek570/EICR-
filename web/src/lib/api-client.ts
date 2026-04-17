@@ -182,6 +182,82 @@ export const api = {
   },
 
   /**
+   * Upload a single observation photo. Multipart POST to
+   * `/api/job/:userId/:jobId/photos` with the file under the field
+   * name "photo" (matches iOS `APIClient.uploadObservationPhoto`).
+   *
+   * The backend generates the final filename server-side
+   * (`photo_{timestamp}.{ext}`), writes to S3, and returns the canonical
+   * URLs. Callers should append the returned `filename` to the
+   * observation's `photos` array and persist via `saveJob`.
+   *
+   * Images only — the backend accepts image/jpeg, png, gif, webp, heic
+   * (see `src/routes/photos.js` `IMAGE_MIMES`). Don't pre-convert HEIC
+   * on iOS Safari; the server handles it.
+   */
+  uploadObservationPhoto(
+    userId: string,
+    jobId: string,
+    photo: Blob | File
+  ): Promise<{
+    success: true;
+    photo: { filename: string; url: string; thumbnail_url: string; uploaded_at: string };
+  }> {
+    const form = new FormData();
+    form.append('photo', photo);
+    return request(`/api/job/${encodeURIComponent(userId)}/${encodeURIComponent(jobId)}/photos`, {
+      method: 'POST',
+      body: form,
+    });
+  },
+
+  /**
+   * Delete a single photo from the backend. The handler (at
+   * `src/routes/photos.js:193`) walks a handful of S3 paths to find the
+   * file, so callers just pass the filename returned by
+   * `uploadObservationPhoto`. After the request resolves, remove the
+   * filename from the observation's `photos` array and persist.
+   */
+  deleteObservationPhoto(
+    userId: string,
+    jobId: string,
+    filename: string
+  ): Promise<{ success: true }> {
+    return request(
+      `/api/job/${encodeURIComponent(userId)}/${encodeURIComponent(jobId)}/photos/${encodeURIComponent(filename)}`,
+      { method: 'DELETE' }
+    );
+  },
+
+  /**
+   * Fetch a photo as a Blob with the bearer token attached. We can't
+   * use a plain `<img src>` for these URLs because the browser doesn't
+   * attach our Authorization header; instead, fetch the bytes here and
+   * the caller wraps the result in `URL.createObjectURL` (and revokes
+   * on unmount to avoid leaking blob URLs).
+   */
+  async fetchPhotoBlob(
+    userId: string,
+    jobId: string,
+    filename: string,
+    opts: { thumbnail?: boolean } = {}
+  ): Promise<Blob> {
+    const token = getToken();
+    const headers = new Headers();
+    if (token) headers.set('Authorization', `Bearer ${token}`);
+    const qs = opts.thumbnail ? '?thumbnail=true' : '';
+    const res = await fetch(
+      `${API_BASE_URL}/api/job/${encodeURIComponent(userId)}/${encodeURIComponent(jobId)}/photos/${encodeURIComponent(filename)}${qs}`,
+      { headers, credentials: 'include' }
+    );
+    if (!res.ok) {
+      const body = await res.text().catch(() => '');
+      throw new ApiError(res.status, body || res.statusText);
+    }
+    return res.blob();
+  },
+
+  /**
    * Partial update. Backend merges with the persisted doc, so callers
    * only need to send the fields that changed.
    */
