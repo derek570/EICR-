@@ -69,47 +69,22 @@ npm run lint                       # ESLint
 npm run format                     # Prettier
 ```
 
-### Deploy (CI/CD via GitHub Actions)
+### Deploy
 
-**Primary method:** Push to `main` triggers automatic deployment via `.github/workflows/deploy.yml`.
+Push to `main` → GitHub Actions runs tests, builds ARM64 Docker images, pushes to ECR, deploys to ECS (~30 min end-to-end). Monitor: https://github.com/derek570/EICR-/actions
 
-```
-git push origin main
-→ GitHub Actions: test → build Docker images (ARM64) → push to ECR → deploy to ECS
-→ ~30 minutes end-to-end
-→ certmate.uk goes live automatically
-```
+Local quick-deploy (bypasses CI): `./deploy.sh` (web) / `./deploy.sh --backend` (web + backend).
 
-**Pipeline steps:**
-1. **test-backend** — Jest tests (Node.js)
-2. **test-frontend** — ESLint, TypeScript check, Next.js build, Jest (runs against `web/`)
-3. **security-audit** — npm audit (high/critical)
-4. **build-images** — Docker build (ARM64) + Trivy security scan
-5. **deploy** — Push to ECR, register ECS task definitions, update services, wait for stable
+iOS TestFlight: `~/Developer/EICR_Automation/CertMateUnified/deploy-testflight.sh`.
 
-**Manual trigger (selective deploy):**
-```bash
-gh workflow run deploy.yml -f deploy_target=backend -f environment=production
-gh workflow run deploy.yml -f deploy_target=frontend -f environment=production
-gh workflow run deploy.yml -f deploy_target=both -f environment=production
-```
-
-**Local quick-deploy (bypasses CI):**
-```bash
-./deploy.sh              # Web frontend only
-./deploy.sh --backend    # Web frontend + backend
-```
-
-**Monitor:** `https://github.com/derek570/EICR-/actions`
-
-**Common failure:** Missing npm dependencies in `web/package.json`. Locally-hoisted deps work on dev but fail in Docker (`npm ci` only installs declared deps). Before pushing, verify all imports have matching `package.json` entries.
+> Full details: [docs/reference/deployment.md](docs/reference/deployment.md) (AWS), [docs/reference/deploy-testflight.md](docs/reference/deploy-testflight.md) (iOS)
 
 ### Check Status
 
 ```bash
 aws ecs describe-services --cluster eicr-cluster-production --services eicr-frontend eicr-backend --region eu-west-2 --query "services[*].{Service:serviceName,Running:runningCount,Status:deployments[0].rolloutState}" --output table
 aws logs tail /ecs/eicr/eicr-backend --region eu-west-2 --since 10m
-gh run list --limit 5     # Recent CI/CD runs
+gh run list --limit 5
 ```
 
 ## iOS Recording Pipeline (v3)
@@ -197,11 +172,9 @@ When modifying UI fields: update `config/field_schema.json` + [field-reference.m
 
 ## Current Focus / Active Work
 
-- Deepgram auto-sleep power saving (3-tier: Active/Dozing/Sleeping) -- live in production
-- Server-side Sonnet multi-turn extraction (v3 pipeline) -- live in production
-- Session optimizer v3 with URL-based review reports
-- iOS PDF generation (local, no server dependency)
-- 5-star transformation phases 6-8 (infrastructure, testing, documentation)
+- Web rebuild on branch `web-rebuild` — Phase 7c (outbox / mutation queue for offline job edits)
+- Phases 0–7b shipped (scaffold → recording → capture → settings/admin → PWA foundation + update handoff + IDB read-through + offline indicator + iOS ATHS hint)
+- Deepgram auto-sleep (3-tier Active/Dozing/Sleeping) + server-side Sonnet v3 multi-turn — live in production
 
 ## Changelog
 
