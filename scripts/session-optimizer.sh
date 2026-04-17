@@ -1,12 +1,16 @@
 #!/bin/bash
-# CertMate Session Optimizer (v3)
+# CertMate Session Optimizer (v4 - plan-only mode)
 # Polls S3 for session analytics AND debug reports. Pre-processes with
 # analyze-session.js, invokes Claude Code in READ-ONLY mode to generate
 # structured JSON recommendations. Builds HTML report, uploads to S3,
-# sends Pushover URL. User accepts/rejects via report page. Accept writes
-# a command to S3 which this script polls for, then applies changes and commits.
+# sends Pushover URL.
 #
-# Git-based rollback: every change is committed with revert instructions.
+# On accept, the optimizer writes a structured implementation plan
+# (markdown) to ~/Developer/EICR_Automation/.optimizer-plans/ and notifies
+# the user with a ready-to-paste `claude` command. It NEVER edits source
+# files, commits, pushes, deploys to ECS, or uploads to TestFlight. All
+# implementation happens in a fresh Claude Code session started by the
+# user, reviewed in plan mode before any changes hit disk.
 #
 # Install:
 #   cp scripts/com.certmate.session-optimizer.plist ~/Library/LaunchAgents/
@@ -33,13 +37,13 @@ CODEBASE="$HOME/Developer/EICR_Automation"
 SCRIPTS_DIR="$CODEBASE/scripts"
 IOS_DIR="$CODEBASE/CertMateUnified"
 BACKEND_DIR="$CODEBASE"
+PLANS_DIR="$CODEBASE/.optimizer-plans"
 CLAUDE="$(command -v claude)"
 
-# AWS deploy config
-ECR_REPO="196390795898.dkr.ecr.eu-west-2.amazonaws.com/eicr-backend"
-ECS_CLUSTER="eicr-cluster-production"
-ECS_SERVICE="eicr-backend"
+# AWS region (S3 only - optimizer no longer deploys)
 AWS_REGION="eu-west-2"
+
+mkdir -p "$PLANS_DIR"
 
 # Verify required tools are available
 for cmd in node aws jq git; do
@@ -50,6 +54,16 @@ for cmd in node aws jq git; do
 done
 
 mkdir -p "$(dirname "$STATE_FILE")"
+
+# Log rotation: rotate when > 10 MB
+LOG_MAX_BYTES=10485760
+if [ -f "$LOG_FILE" ]; then
+  LOG_SIZE=$(stat -f%z "$LOG_FILE" 2>/dev/null || stat -c%s "$LOG_FILE" 2>/dev/null || echo 0)
+  if [ "$LOG_SIZE" -gt "$LOG_MAX_BYTES" ]; then
+    mv "$LOG_FILE" "${LOG_FILE}.1"
+    : > "$LOG_FILE"
+  fi
+fi
 
 if [ ! -f "$STATE_FILE" ]; then
   echo '{"processed_sessions": [], "processed_debug_reports": [], "processed_feedback": {}, "retry_counts": {}}' > "$STATE_FILE"
@@ -419,212 +433,10 @@ notify_full_report() {
   fi
 }
 
-# ── Git Helpers ──
-
-record_git_state() {
-  # Record current HEAD in both repos
-  cd "$BACKEND_DIR"
-  BACKEND_HEAD_BEFORE=$(git rev-parse HEAD 2>/dev/null || echo "none")
-  cd "$IOS_DIR"
-  IOS_HEAD_BEFORE=$(git rev-parse HEAD 2>/dev/null || echo "none")
-  cd "$CODEBASE"
-}
-
-commit_changes() {
-  local SESSION_ID="$1"
-  local SUMMARY="$2"
-  local DETAILED_BODY="${3:-}"  # Optional: detailed commit body from recommendations
-
-  IOS_COMMIT=""
-  BACKEND_COMMIT=""
-  IOS_CHANGED=false
-  BACKEND_CHANGED=false
-
-  # Build the full commit message with detailed body if available
-  local COMMIT_MSG
-  if [ -n "$DETAILED_BODY" ]; then
-    COMMIT_MSG="$(cat <<EOF
-optimizer: $SUMMARY
-
-$DETAILED_BODY
-
-Revert: git revert <hash>
-
-Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
-EOF
-    )"
-  else
-    COMMIT_MSG="$(cat <<EOF
-optimizer: $SESSION_ID — $SUMMARY
-
-Applied by session-optimizer. Revert: git revert <hash>
-
-Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
-EOF
-    )"
-  fi
-
-  # Check and commit iOS changes
-  cd "$IOS_DIR"
-  if ! git diff --quiet 2>/dev/null || ! git diff --cached --quiet 2>/dev/null; then
-    git add -A
-    git commit -m "$COMMIT_MSG" 2>&1 | tee -a "$LOG_FILE"
-    IOS_COMMIT=$(git rev-parse HEAD)
-    IOS_CHANGED=true
-    log "  iOS commit: $IOS_COMMIT"
-  fi
-
-  # Check and commit backend changes
-  cd "$BACKEND_DIR"
-  if ! git diff --quiet 2>/dev/null || ! git diff --cached --quiet 2>/dev/null; then
-    git add -A
-    git commit -m "$COMMIT_MSG" 2>&1 | tee -a "$LOG_FILE"
-    BACKEND_COMMIT=$(git rev-parse HEAD)
-    BACKEND_CHANGED=true
-    log "  Backend commit: $BACKEND_COMMIT"
-  fi
-
-  cd "$CODEBASE"
-}
-
-deploy_backend() {
-  log "  Deploying backend to ECS..."
-
-  cd "$BACKEND_DIR"
-
-  docker build -f Dockerfile.backend -t eicr-backend . 2>&1 | tail -5 | tee -a "$LOG_FILE"
-  aws ecr get-login-password --region "$AWS_REGION" \
-    | docker login --username AWS --password-stdin "$ECR_REPO" 2>&1 | tee -a "$LOG_FILE"
-  docker tag eicr-backend:latest "${ECR_REPO}:latest"
-  docker push "${ECR_REPO}:latest" 2>&1 | tail -3 | tee -a "$LOG_FILE"
-  aws ecs update-service --cluster "$ECS_CLUSTER" --service "$ECS_SERVICE" \
-    --force-new-deployment --region "$AWS_REGION" > /dev/null 2>&1
-
-  log "  Backend deployed successfully"
-  cd "$CODEBASE"
-}
-
-deploy_testflight() {
-  log "  Deploying iOS to TestFlight..."
-
-  cd "$IOS_DIR"
-
-  if [ ! -f "./deploy-testflight.sh" ]; then
-    log "  ERROR: deploy-testflight.sh not found in $IOS_DIR"
-    return 1
-  fi
-
-  # Run deploy in a subshell to isolate failure from set -euo pipefail.
-  # Without this, a build failure kills the entire optimizer process.
-  local EXIT_CODE=0
-  (./deploy-testflight.sh 2>&1 | tee -a "$LOG_FILE") || EXIT_CODE=$?
-
-  if [ "$EXIT_CODE" -eq 0 ]; then
-    log "  TestFlight deploy succeeded"
-    send_pushover_message "TestFlight Build" "New build uploaded after optimizer changes" 0
-  else
-    log "  ERROR: TestFlight deploy failed (exit $EXIT_CODE)"
-    send_pushover_message "TestFlight FAILED" "Auto-deploy after optimizer changes failed — check log" 1
-  fi
-
-  cd "$CODEBASE"
-}
-
-generate_change_report() {
-  local SESSION_ID="$1"
-  local S3_PATH="$2"
-  local SUMMARY="$3"
-  local DEBUG_REPORTS_JSON="$4"  # JSON array of addressed debug report paths
-
-  # Build revert commands
-  local REVERT_CMDS="[]"
-  if [ -n "$IOS_COMMIT" ]; then
-    REVERT_CMDS=$(echo "$REVERT_CMDS" | jq ". + [\"cd CertMateUnified && git revert $IOS_COMMIT\"]")
-  fi
-  if [ -n "$BACKEND_COMMIT" ]; then
-    REVERT_CMDS=$(echo "$REVERT_CMDS" | jq ". + [\"git revert $BACKEND_COMMIT\"]")
-  fi
-
-  # Build files_modified from git diffs
-  local FILES_MODIFIED="[]"
-  if [ "$IOS_CHANGED" = true ]; then
-    cd "$IOS_DIR"
-    while IFS= read -r f; do
-      FILES_MODIFIED=$(echo "$FILES_MODIFIED" | jq --arg file "$f" --arg change "modified" \
-        '. + [{"file": $file, "change_type": $change}]')
-    done < <(git diff --name-only HEAD~1 HEAD 2>/dev/null || true)
-    cd "$CODEBASE"
-  fi
-  if [ "$BACKEND_CHANGED" = true ]; then
-    cd "$BACKEND_DIR"
-    while IFS= read -r f; do
-      FILES_MODIFIED=$(echo "$FILES_MODIFIED" | jq --arg file "$f" --arg change "modified" \
-        '. + [{"file": $file, "change_type": $change}]')
-    done < <(git diff --name-only HEAD~1 HEAD 2>/dev/null || true)
-    cd "$CODEBASE"
-  fi
-
-  local REPORT
-  REPORT=$(jq -n \
-    --arg session_id "$SESSION_ID" \
-    --arg timestamp "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-    --argjson changes_applied true \
-    --arg ios_commit "${IOS_COMMIT:-null}" \
-    --arg backend_commit "${BACKEND_COMMIT:-null}" \
-    --argjson revert_commands "$REVERT_CMDS" \
-    --argjson files_modified "$FILES_MODIFIED" \
-    --argjson backend_deployed "$BACKEND_CHANGED" \
-    --argjson ios_needs_rebuild "$IOS_CHANGED" \
-    --argjson debug_reports_addressed "$DEBUG_REPORTS_JSON" \
-    --arg summary "$SUMMARY" \
-    '{
-      session_id: $session_id,
-      timestamp: $timestamp,
-      changes_applied: $changes_applied,
-      ios_commit: (if $ios_commit == "null" then null else $ios_commit end),
-      backend_commit: (if $backend_commit == "null" then null else $backend_commit end),
-      revert_commands: $revert_commands,
-      files_modified: $files_modified,
-      backend_deployed: $backend_deployed,
-      ios_needs_rebuild: $ios_needs_rebuild,
-      debug_reports_addressed: $debug_reports_addressed,
-      summary: $summary
-    }')
-
-  echo "$REPORT" | aws s3 cp - "s3://${BUCKET}/${S3_PATH}/change_report.json" \
-    --region "$AWS_REGION" --content-type "application/json"
-
-  # Generate human-readable markdown report
-  local MD_REPORT="# Session Optimizer Change Report
-
-**Session:** $SESSION_ID
-**Timestamp:** $(date -u +%Y-%m-%dT%H:%M:%SZ)
-**Summary:** $SUMMARY
-
-## Commits
-"
-  if [ -n "$IOS_COMMIT" ]; then
-    MD_REPORT+="- **iOS (CertMateUnified):** \`$IOS_COMMIT\` — revert: \`git revert $IOS_COMMIT\`
-"
-  fi
-  if [ -n "$BACKEND_COMMIT" ]; then
-    MD_REPORT+="- **Backend:** \`$BACKEND_COMMIT\` — revert: \`git revert $BACKEND_COMMIT\`
-"
-  fi
-  MD_REPORT+="
-## Deployment
-- Backend deployed: $BACKEND_CHANGED
-- iOS needs Xcode rebuild: $IOS_CHANGED
-
-## Files Modified
-$(echo "$FILES_MODIFIED" | jq -r '.[] | "- \(.file) (\(.change_type))"')
-"
-
-  echo "$MD_REPORT" | aws s3 cp - "s3://${BUCKET}/${S3_PATH}/change_report.md" \
-    --region "$AWS_REGION" --content-type "text/markdown"
-
-  log "  Change report uploaded to s3://${BUCKET}/${S3_PATH}/change_report.json"
-}
+# Git/deploy helpers intentionally removed in v4.
+# The optimizer no longer commits, deploys to ECS, or uploads to TestFlight.
+# Accepted recommendations are written to a plan file and implemented by the
+# user starting a fresh Claude Code session. See generate_implementation_plan().
 
 # ── Session Summary Builder ──
 
@@ -997,9 +809,6 @@ $dr_content
   fi
 
   log "  Running Claude Code (read-only) for recommendations..."
-
-  # Record git state for potential later application
-  record_git_state
 
   cd "$CODEBASE"
 
@@ -1592,244 +1401,211 @@ EOF
 
 # ── Apply Accepted Recommendations (from report page) ──
 
-apply_accepted_recommendations() {
+generate_implementation_plan() {
+  # v4: Instead of editing/committing/deploying, write a markdown plan file that
+  # the user can feed into a fresh Claude Code session. Plan mode reviews it,
+  # the user approves, then Claude Code does the work under supervision.
   local REPORT_ID="$1"
   local ACCEPTED_INDICES="$2"  # JSON array string like "[0,2,3]"
 
-  log "  Applying accepted recommendations for report $REPORT_ID..."
+  log "  Generating implementation plan for report $REPORT_ID..."
 
-  # Download recommendations.json and meta.json
   local WORK_DIR
   WORK_DIR=$(mktemp -d)
   aws s3 cp "s3://${BUCKET}/optimizer-reports/${REPORT_ID}/recommendations.json" "$WORK_DIR/recommendations.json" --region "$AWS_REGION"
   aws s3 cp "s3://${BUCKET}/optimizer-reports/${REPORT_ID}/meta.json" "$WORK_DIR/meta.json" --region "$AWS_REGION"
+  # analysis.json is produced by analyze-session.js and uploaded alongside the report
+  aws s3 cp "s3://${BUCKET}/optimizer-reports/${REPORT_ID}/analysis.json" "$WORK_DIR/analysis.json" --region "$AWS_REGION" 2>/dev/null || true
 
   local SESSION_PATH
-  SESSION_PATH=$(jq -r '.sessionPath' "$WORK_DIR/meta.json")
+  SESSION_PATH=$(jq -r '.sessionPath // empty' "$WORK_DIR/meta.json")
+  local REPORT_URL
+  REPORT_URL=$(jq -r '.reportUrl // empty' "$WORK_DIR/meta.json")
 
-  # Record git state before applying
-  record_git_state
-
-  # Apply each accepted recommendation using node
-  # Write accepted indices to file to avoid shell injection
   echo "$ACCEPTED_INDICES" > "$WORK_DIR/accepted_indices.json"
-  local APPLY_OUTPUT
-  APPLY_OUTPUT=$(node -e "
-    const recs = JSON.parse(require('fs').readFileSync('$WORK_DIR/recommendations.json','utf8'));
-    const accepted = JSON.parse(require('fs').readFileSync('$WORK_DIR/accepted_indices.json','utf8'));
+
+  local PLAN_PATH="$PLANS_DIR/plan-${REPORT_ID}.md"
+
+  # Render the plan via node so we can use the structured recommendation fields.
+  node -e "
     const fs = require('fs');
-    let applied = 0;
-    let failed = 0;
-    for (const idx of accepted) {
-      const rec = recs[idx];
-      if (!rec) { console.error('Invalid index: ' + idx); failed++; continue; }
-      // Normalize field names: Claude sometimes outputs code_before/code_after
-      // instead of old_code/new_code — accept both variants
-      const oldCode = rec.old_code || rec.code_before;
-      const newCode = rec.new_code || rec.code_after;
-      if (!oldCode || !newCode) {
-        console.error('Missing old_code/new_code for: ' + rec.title);
-        failed++;
-        continue;
-      }
-      try {
-        const content = fs.readFileSync(rec.file, 'utf8');
-        // Idempotency: skip if new_code is already present (prevents re-applying
-        // when old_code is a substring of new_code)
-        if (content.includes(newCode)) {
-          console.log('Already applied (idempotent skip): ' + rec.title);
-          applied++;
-        } else if (content.includes(oldCode)) {
-          const updated = content.replace(oldCode, newCode);
-          fs.writeFileSync(rec.file, updated, 'utf8');
-          applied++;
-          console.log('Applied: ' + rec.title);
-          // Auto-duplicate config changes to the Resources/ copy
-          if (rec.file.includes('Sources/Resources/default_config.json')) {
-            const mirrorPath = rec.file.replace('Sources/Resources/default_config.json', 'Resources/default_config.json');
-            try {
-              const mirrorContent = fs.readFileSync(mirrorPath, 'utf8');
-              if (mirrorContent.includes(oldCode)) {
-                fs.writeFileSync(mirrorPath, mirrorContent.replace(oldCode, newCode), 'utf8');
-                console.log('Auto-mirrored to Resources/ copy: ' + rec.title);
-              } else {
-                console.error('Mirror old_code not found in ' + mirrorPath);
-              }
-            } catch (e) {
-              console.error('Mirror failed for ' + mirrorPath + ': ' + e.message);
-            }
-          }
-        } else {
-          // Fuzzy fallback: normalize whitespace and strip comments, then match
-          const normalizeLine = (line) => {
-            let s = line.replace(/#.*$/, '');       // strip inline comments
-            s = s.replace(/\/\/.*$/, '');            // strip // comments
-            return s.replace(/\s+/g, ' ').trim();   // collapse whitespace, trim
-          };
-          const fileLines = content.split('\n');
-          const oldLines = oldCode.split('\n')
-            .filter(l => !/^\s*(#|\/\/)/.test(l))   // drop pure comment lines
-            .map(normalizeLine)
-            .filter(l => l.length > 0);              // drop blank normalized lines
-          let fuzzyMatch = false;
-          if (oldLines.length > 0) {
-            // Single-pass search: for each file line, try matching oldLines
-            // while skipping comment/blank lines in the file
-            for (let i = 0; i <= fileLines.length - oldLines.length; i++) {
-              // Quick check: first normalized line must match
-              if (normalizeLine(fileLines[i]) !== oldLines[0]) continue;
-              // Try to match all oldLines, skipping comment/blank lines in file
-              let actualEnd = i;
-              let matched = 0;
-              while (actualEnd < fileLines.length && matched < oldLines.length) {
-                const norm = normalizeLine(fileLines[actualEnd]);
-                if (norm.length === 0 || /^\s*(#|\/\/)/.test(fileLines[actualEnd])) {
-                  actualEnd++; // skip comment/blank lines in file
-                  continue;
-                }
-                if (norm === oldLines[matched]) {
-                  matched++;
-                  actualEnd++;
-                } else {
-                  break;
-                }
-              }
-              if (matched === oldLines.length) {
-                const before = fileLines.slice(0, i).join('\n');
-                const after = fileLines.slice(actualEnd).join('\n');
-                const updated = before + (before.length ? '\n' : '') + newCode + (after.length ? '\n' : '') + after;
-                fs.writeFileSync(rec.file, updated, 'utf8');
-                applied++;
-                fuzzyMatch = true;
-                console.log('Applied (fuzzy match): ' + rec.title);
-                // Auto-duplicate config changes to the Resources/ copy (fuzzy)
-                if (rec.file.includes('Sources/Resources/default_config.json')) {
-                  const mirrorPath = rec.file.replace('Sources/Resources/default_config.json', 'Resources/default_config.json');
-                  try {
-                    const mc = fs.readFileSync(mirrorPath, 'utf8');
-                    if (mc.includes(oldCode)) {
-                      fs.writeFileSync(mirrorPath, mc.replace(oldCode, newCode), 'utf8');
-                      console.log('Auto-mirrored to Resources/ copy: ' + rec.title);
-                    }
-                  } catch (e) {}
-                }
-                break;
-              }
-            }
-          }
-          if (!fuzzyMatch) {
-            console.error('old_code not found in ' + rec.file + ' (' + fileLines.length + ' lines): ' + rec.title);
-            console.error('  Searched for (first 100 chars): ' + oldCode.substring(0, 100));
-            failed++;
-          }
-        }
-      } catch (e) {
-        console.error('Failed to apply ' + rec.title + ': ' + e.message);
-        failed++;
-      }
-    }
-    console.log('Applied ' + applied + '/' + accepted.length + ' recommendations (' + failed + ' failed)');
-  " 2>&1) || true
+    const path = require('path');
+    const recs = JSON.parse(fs.readFileSync('$WORK_DIR/recommendations.json','utf8'));
+    const accepted = JSON.parse(fs.readFileSync('$WORK_DIR/accepted_indices.json','utf8'));
+    let analysis = null;
+    try { analysis = JSON.parse(fs.readFileSync('$WORK_DIR/analysis.json','utf8')); } catch (e) {}
 
-  log "  $APPLY_OUTPUT"
+    const reportId = '$REPORT_ID';
+    const sessionPath = '$SESSION_PATH';
+    const reportUrl = '$REPORT_URL';
+    const timestamp = new Date().toISOString();
 
-  # Build detailed commit body from recommendation data
-  # Each recommendation has: title, description, explanation (plain-English for non-coders), category, file
-  local DETAILED_BODY
-  DETAILED_BODY=$(node -e "
-    const recs = JSON.parse(require('fs').readFileSync('$WORK_DIR/recommendations.json','utf8'));
-    const accepted = JSON.parse(require('fs').readFileSync('$WORK_DIR/accepted_indices.json','utf8'));
+    const selected = accepted
+      .map((i) => ({ idx: i, rec: recs[i] }))
+      .filter((x) => x.rec);
+
     const lines = [];
-    const titles = [];
+    lines.push('# Optimizer implementation plan');
+    lines.push('');
+    lines.push('- Report ID: ' + reportId);
+    lines.push('- Session: ' + (sessionPath || 'n/a'));
+    lines.push('- Generated: ' + timestamp);
+    if (reportUrl) lines.push('- Original report: ' + reportUrl);
+    lines.push('- Accepted recommendations: ' + selected.length + ' of ' + recs.length);
+    lines.push('');
+    lines.push('## How to use this plan');
+    lines.push('');
+    lines.push('1. Start a fresh Claude Code session in the repo root:');
+    lines.push('   \`\`\`');
+    lines.push('   cd ~/Developer/EICR_Automation && claude');
+    lines.push('   \`\`\`');
+    lines.push('2. Paste this plan and ask Claude to enter plan mode before editing anything.');
+    lines.push('3. Review each change. Reject anything that looks wrong.');
+    lines.push('4. Claude will run tests and commit. You deploy manually (./deploy.sh, ./deploy-testflight.sh).');
+    lines.push('');
+    lines.push('**The optimizer did NOT apply any of these changes. It only wrote this plan.**');
+    lines.push('');
 
-    for (const idx of accepted) {
-      const rec = recs[idx];
-      if (!rec) continue;
-      titles.push(rec.title || 'Untitled fix');
-
-      lines.push('---');
+    if (analysis) {
+      lines.push('## Session evidence (from analyze-session.js)');
       lines.push('');
-      lines.push('CHANGE ' + (titles.length) + ': ' + (rec.title || 'Untitled fix'));
-      lines.push('Category: ' + (rec.category || 'unknown').replace(/_/g, ' '));
-      lines.push('File: ' + (rec.file || 'unknown').split('/').slice(-2).join('/'));
+      const fr = analysis.field_report || [];
+      const overwritten = fr.filter((f) => f.was_overwritten).length;
+      const regexOnly = fr.filter((f) => f.source === 'regex').length;
+      const sonnetOnly = fr.filter((f) => f.source === 'sonnet').length;
+      lines.push('- Fields captured: ' + fr.length);
+      lines.push('- Sonnet overwrites of regex: ' + overwritten);
+      lines.push('- Regex-only captures: ' + regexOnly);
+      lines.push('- Sonnet-only captures: ' + sonnetOnly);
+      const cost = analysis.cost_breakdown || {};
+      if (cost.total_usd != null) lines.push('- Session cost: $' + Number(cost.total_usd).toFixed(4));
+      const uncap = (analysis.utterance_analysis && analysis.utterance_analysis.uncaptured_values) || [];
+      if (uncap.length) lines.push('- Uncaptured spoken values: ' + uncap.length);
+      const repeated = (analysis.repeated_values && analysis.repeated_values.length) || 0;
+      if (repeated) lines.push('- Values spoken 2+ times without capture: ' + repeated);
+      lines.push('');
+    }
+
+    lines.push('---');
+    lines.push('');
+    lines.push('## Accepted changes (' + selected.length + ')');
+    lines.push('');
+
+    selected.forEach(({ idx, rec }, i) => {
+      const n = i + 1;
+      lines.push('### ' + n + '. ' + (rec.title || 'Untitled recommendation'));
+      lines.push('');
+      lines.push('- **Category:** ' + (rec.category || 'unknown').replace(/_/g, ' '));
+      if (rec.file) lines.push('- **File:** \`' + rec.file + '\`');
+      if (rec.token_impact) lines.push('- **Est. token impact:** ' + rec.token_impact);
+      lines.push('- **Recommendation index in source:** ' + idx);
       lines.push('');
 
-      // Plain-English explanation (written for non-technical users)
       if (rec.explanation) {
-        lines.push('WHAT THIS DOES (in plain English):');
+        lines.push('**Why (plain English):**');
+        lines.push('');
         lines.push(rec.explanation);
         lines.push('');
       }
 
-      // Technical description for developers
       if (rec.description) {
-        lines.push('WHY THIS CHANGE IS NEEDED:');
+        lines.push('**Technical description:**');
+        lines.push('');
         lines.push(rec.description);
         lines.push('');
       }
-    }
 
-    // Build a human-readable summary line
-    const summary = titles.length === 1
-      ? titles[0]
-      : titles.length + ' fixes: ' + titles.join(', ');
+      const oldCode = rec.old_code || rec.code_before;
+      const newCode = rec.new_code || rec.code_after;
+      if (oldCode && newCode) {
+        lines.push('**Proposed change (suggested diff - verify against current file before applying):**');
+        lines.push('');
+        lines.push('\`\`\`');
+        lines.push('--- BEFORE ---');
+        lines.push(oldCode);
+        lines.push('--- AFTER ---');
+        lines.push(newCode);
+        lines.push('\`\`\`');
+        lines.push('');
+      }
 
-    // Output: first line is the summary (used as commit title suffix), rest is the body
-    console.log('SUMMARY_LINE:' + summary);
-    console.log('');
-    console.log('This commit was automatically applied by the CertMate session optimizer.');
-    console.log('It analysed a real user session, identified improvements, and applied');
-    console.log('the fixes that were approved in the optimizer report.');
-    console.log('');
-    console.log('Report ID: $REPORT_ID');
-    console.log(titles.length + ' recommendation(s) applied:');
-    console.log('');
-    lines.forEach(l => console.log(l));
-  " 2>/dev/null) || true
+      lines.push('**Implementation guidance for Claude Code:**');
+      lines.push('');
+      lines.push('- Read the current file before editing - the snippet above is from when the report was generated.');
+      lines.push('- If the file has changed, adapt the change to the new structure.');
+      lines.push('- Run the relevant tests after editing (see success criteria below).');
+      lines.push('- Make a focused commit following the repo CLAUDE.md commit rules.');
+      lines.push('- Do NOT deploy - the user will run ./deploy.sh / ./deploy-testflight.sh manually.');
+      lines.push('');
 
-  # Extract summary line and body
-  local COMMIT_SUMMARY
-  COMMIT_SUMMARY=$(echo "$DETAILED_BODY" | head -1 | sed 's/^SUMMARY_LINE://')
-  local COMMIT_BODY
-  COMMIT_BODY=$(echo "$DETAILED_BODY" | tail -n +2)
+      lines.push('**Success criteria:**');
+      lines.push('');
+      if (rec.category === 'regex_improvement' || rec.category === 'number_normaliser') {
+        lines.push('- \`npm test\` passes (TranscriptFieldMatcher / NumberNormaliser tests).');
+        lines.push('- Re-run \`node scripts/analyze-session.js <session-dir>\` - \`uncaptured_values\` drops.');
+      } else if (rec.category === 'keyword_boost' || rec.category === 'keyword_removal' || rec.category === 'config_change') {
+        lines.push('- JSON remains valid (both Sources/Resources and Resources copies if applicable).');
+        lines.push('- Deepgram keyword boost budget stays under 450 tokens.');
+      } else if (rec.category === 'sonnet_prompt_trim' || rec.category === 'sonnet_prompt_addition') {
+        lines.push('- Backend tests pass (\`npm test\` in repo root).');
+        lines.push('- Token count of EICR_SYSTEM_PROMPT does not increase (measure before/after).');
+      } else if (rec.category === 'bug_fix') {
+        lines.push('- The original bug described in the explanation can no longer be reproduced.');
+        lines.push('- Add a regression test if one does not exist.');
+      } else {
+        lines.push('- All existing tests still pass.');
+      }
+      lines.push('');
 
-  # Use detailed summary if available, fallback to generic
-  if [ -z "$COMMIT_SUMMARY" ] || [ "$COMMIT_SUMMARY" = "SUMMARY_LINE:" ]; then
-    COMMIT_SUMMARY="Applied accepted recommendations from report ${REPORT_ID:0:8}"
-    COMMIT_BODY=""
+      lines.push('**Rollback:**');
+      lines.push('');
+      lines.push('- Single-file change: \`git checkout HEAD -- <file>\` before committing.');
+      lines.push('- After commit: \`git revert <hash>\`.');
+      lines.push('');
+      lines.push('---');
+      lines.push('');
+    });
+
+    lines.push('## After all changes land');
+    lines.push('');
+    lines.push('- Verify combined diff: \`git log --oneline -n ' + selected.length + '\`');
+    lines.push('- Backend: \`./deploy.sh --backend\` (or push to main for CI).');
+    lines.push('- iOS: \`./deploy-testflight.sh\` from CertMateUnified/ when ready.');
+    lines.push('');
+
+    fs.writeFileSync('$PLAN_PATH', lines.join('\n'));
+    console.log('PLAN_BYTES:' + fs.statSync('$PLAN_PATH').size);
+  " 2>&1 | tee -a "$LOG_FILE"
+
+  if [ ! -s "$PLAN_PATH" ]; then
+    log "  ERROR: plan file is empty or missing: $PLAN_PATH"
+    notify "Optimizer plan FAILED" "Report ${REPORT_ID:0:8} - could not write plan file" 1
+    rm -rf "$WORK_DIR"
+    return 1
   fi
 
-  # Commit and deploy
-  commit_changes "optimizer-report/${REPORT_ID}" "$COMMIT_SUMMARY" "$COMMIT_BODY"
+  log "  Plan written: $PLAN_PATH ($(wc -c < "$PLAN_PATH") bytes)"
 
-  if [ "$BACKEND_CHANGED" = "true" ]; then
-    deploy_backend
-  fi
+  # Upload a copy to S3 for archival
+  aws s3 cp "$PLAN_PATH" "s3://${BUCKET}/optimizer-plans/plan-${REPORT_ID}.md" \
+    --region "$AWS_REGION" --content-type "text/markdown" 2>/dev/null || true
 
-  # Generate change report (needed for feedback revert flow)
-  generate_change_report "optimizer-report/${REPORT_ID}" "$SESSION_PATH" \
-    "Applied accepted recommendations from report ${REPORT_ID:0:8}" "[]"
-
-  # Update meta.json status to "applied"
-  jq '.status = "applied"' "$WORK_DIR/meta.json" | \
+  # Update meta.json status to "plan_ready"
+  jq --arg p "$PLAN_PATH" '.status = "plan_ready" | .planPath = $p' "$WORK_DIR/meta.json" | \
     aws s3 cp - "s3://${BUCKET}/optimizer-reports/${REPORT_ID}/meta.json" \
       --region "$AWS_REGION" --content-type "application/json"
 
-  # Build notification message
-  local NOTIFY_MSG="Report ${REPORT_ID:0:8}... — changes committed"
-  if [ "$BACKEND_CHANGED" = "true" ]; then
-    NOTIFY_MSG+=" and backend deployed"
-  fi
-  if [ "$IOS_CHANGED" = "true" ]; then
-    NOTIFY_MSG+=". Deploying to TestFlight..."
-    send_pushover_message "Changes Applied" "$NOTIFY_MSG" 0
-    deploy_testflight
-  else
-    send_pushover_message "Changes Applied" "$NOTIFY_MSG" 0
-  fi
+  # Build Pushover message with paste-ready command.
+  # Use ~/ form in the path so the command is short and readable.
+  local N_SELECTED
+  N_SELECTED=$(echo "$ACCEPTED_INDICES" | jq 'length')
+  local PLAN_DISPLAY="${PLAN_PATH/#$HOME/~}"
+  local CLAUDE_CMD="cd ~/Developer/EICR_Automation && claude \"Implement ${PLAN_DISPLAY}\""
 
-  log "  Recommendations applied and committed for report $REPORT_ID"
+  local MSG="Plan ready: ${N_SELECTED} change(s) from report ${REPORT_ID:0:8}. Run: ${CLAUDE_CMD}"
+  notify "Optimizer plan ready" "$MSG" 0
 
+  log "  Plan uploaded, meta updated, notification sent."
   rm -rf "$WORK_DIR"
 }
 
@@ -1881,68 +1657,33 @@ rerun_with_context() {
 # ── Feedback Processing (revert + re-run) ──
 
 process_feedback() {
+  # v4: no git revert, no re-deploy. Just clear artefacts and let the session
+  # re-run on next poll with the feedback context injected. Since the optimizer
+  # never applied anything autonomously, there is nothing to revert.
   local SESSION_PATH="$1"
   local FEEDBACK_JSON="$2"
 
-  log "  Processing user feedback for: $SESSION_PATH"
+  log "  Processing user feedback for: $SESSION_PATH (plan-only mode - no revert needed)"
 
-  # 1. Read the change_report.json for original commit hashes
-  local CHANGE_REPORT
-  CHANGE_REPORT=$(aws s3 cp "s3://${BUCKET}/${SESSION_PATH}/change_report.json" - --region "$AWS_REGION" 2>/dev/null || echo '{}')
-
-  local IOS_COMMIT_TO_REVERT
-  IOS_COMMIT_TO_REVERT=$(echo "$CHANGE_REPORT" | jq -r '.ios_commit // empty')
-  local BACKEND_COMMIT_TO_REVERT
-  BACKEND_COMMIT_TO_REVERT=$(echo "$CHANGE_REPORT" | jq -r '.backend_commit // empty')
-  local BACKEND_WAS_DEPLOYED
-  BACKEND_WAS_DEPLOYED=$(echo "$CHANGE_REPORT" | jq -r '.backend_deployed // false')
-
-  # 2. Revert original commits
-  if [ -n "$IOS_COMMIT_TO_REVERT" ]; then
-    log "  Reverting iOS commit: $IOS_COMMIT_TO_REVERT"
-    cd "$IOS_DIR"
-    git revert --no-edit "$IOS_COMMIT_TO_REVERT" 2>&1 | tee -a "$LOG_FILE" || {
-      log "  WARNING: iOS revert failed — may need manual intervention"
-    }
-    cd "$CODEBASE"
-  fi
-
-  if [ -n "$BACKEND_COMMIT_TO_REVERT" ]; then
-    log "  Reverting backend commit: $BACKEND_COMMIT_TO_REVERT"
-    cd "$BACKEND_DIR"
-    git revert --no-edit "$BACKEND_COMMIT_TO_REVERT" 2>&1 | tee -a "$LOG_FILE" || {
-      log "  WARNING: Backend revert failed — may need manual intervention"
-    }
-    cd "$CODEBASE"
-
-    # Re-deploy backend with the revert
-    if [ "$BACKEND_WAS_DEPLOYED" = "true" ]; then
-      log "  Re-deploying backend after revert..."
-      deploy_backend
-    fi
-  fi
-
-  # 3. Remove old optimization artifacts from S3
+  # Remove old optimization artifacts from S3 so the re-run produces fresh ones
   aws s3 rm "s3://${BUCKET}/${SESSION_PATH}/optimization_report.json" --region "$AWS_REGION" 2>/dev/null || true
   aws s3 rm "s3://${BUCKET}/${SESSION_PATH}/optimization_report.md" --region "$AWS_REGION" 2>/dev/null || true
-  aws s3 rm "s3://${BUCKET}/${SESSION_PATH}/change_report.json" --region "$AWS_REGION" 2>/dev/null || true
-  aws s3 rm "s3://${BUCKET}/${SESSION_PATH}/change_report.md" --region "$AWS_REGION" 2>/dev/null || true
 
-  # 4. Remove session from processed list so it gets re-processed
+  # Remove session from processed list so it gets re-processed
   jq --arg s "$SESSION_PATH" '.processed_sessions = [.processed_sessions[] | select(. != $s)]' \
     "$STATE_FILE" > "${STATE_FILE}.tmp" && mv "${STATE_FILE}.tmp" "$STATE_FILE"
 
-  # 5. Save feedback context for injection into the next process_session run
+  # Save feedback context for injection into the next process_session run
   echo "$FEEDBACK_JSON" > "/tmp/certmate_feedback_${SESSION_PATH//\//_}.json"
 
-  log "  Revert complete. Session will be re-processed on next poll cycle with feedback context."
-  notify "Feedback received — reverting" "Reverting previous changes and re-running optimizer with your corrections." 0
+  log "  Session will be re-processed on next poll cycle with feedback context."
+  notify "Feedback received" "Re-running optimizer with your corrections (no changes were applied previously)." 0
 }
 
 HEARTBEAT_COUNTER=0
 HEARTBEAT_INTERVAL=15  # Log heartbeat every 15 cycles (~30 min)
 
-log "Session optimizer (v3) started. Polling every ${POLL_INTERVAL}s."
+log "Session optimizer (v4 plan-only) started. Polling every ${POLL_INTERVAL}s."
 
 while true; do
 
@@ -2081,12 +1822,13 @@ while true; do
       # Track retry count — give up after 5 attempts
       RETRY_COUNT=$(jq -r ".retry_counts.\"$SESSION_PATH\" // 0" "$STATE_FILE" 2>/dev/null || echo 0)
       RETRY_COUNT=$((RETRY_COUNT + 1))
-      if [ "$RETRY_COUNT" -ge 5 ]; then
-        log "  FAILED: $SESSION_PATH (giving up after $RETRY_COUNT attempts)"
+      if [ "$RETRY_COUNT" -ge 2 ]; then
+        log "  FAILED: $SESSION_PATH (marking poison after $RETRY_COUNT attempts - will NOT retry)"
+        notify "Optimizer poison session" "Session ${SESSION_PATH##*/} failed twice - skipped to avoid blocking queue. Check log." 0
         jq ".processed_sessions += [\"$SESSION_PATH\"] | del(.retry_counts.\"$SESSION_PATH\") | del(.first_seen.\"$SESSION_PATH\")" "$STATE_FILE" > "${STATE_FILE}.tmp" \
           && mv "${STATE_FILE}.tmp" "$STATE_FILE"
       else
-        log "  FAILED: $SESSION_PATH (attempt $RETRY_COUNT/5, will retry next cycle)"
+        log "  FAILED: $SESSION_PATH (attempt $RETRY_COUNT/2, will retry next cycle)"
         jq ".retry_counts.\"$SESSION_PATH\" = $RETRY_COUNT" "$STATE_FILE" > "${STATE_FILE}.tmp" \
           && mv "${STATE_FILE}.tmp" "$STATE_FILE"
       fi
@@ -2126,12 +1868,13 @@ while true; do
       # Track retry count — give up after 5 attempts
       DR_RETRY_COUNT=$(jq -r ".retry_counts.\"$DR_PATH\" // 0" "$STATE_FILE" 2>/dev/null || echo 0)
       DR_RETRY_COUNT=$((DR_RETRY_COUNT + 1))
-      if [ "$DR_RETRY_COUNT" -ge 5 ]; then
-        log "  FAILED: $DR_PATH (giving up after $DR_RETRY_COUNT attempts)"
+      if [ "$DR_RETRY_COUNT" -ge 2 ]; then
+        log "  FAILED: $DR_PATH (marking poison after $DR_RETRY_COUNT attempts - will NOT retry)"
+        notify "Optimizer poison debug report" "Debug report ${DR_PATH##*/} failed twice - skipped." 0
         jq ".processed_debug_reports += [\"$DR_PATH\"] | del(.retry_counts.\"$DR_PATH\")" "$STATE_FILE" > "${STATE_FILE}.tmp" \
           && mv "${STATE_FILE}.tmp" "$STATE_FILE"
       else
-        log "  FAILED: $DR_PATH (attempt $DR_RETRY_COUNT/5, will retry next cycle)"
+        log "  FAILED: $DR_PATH (attempt $DR_RETRY_COUNT/2, will retry next cycle)"
         jq ".retry_counts.\"$DR_PATH\" = $DR_RETRY_COUNT" "$STATE_FILE" > "${STATE_FILE}.tmp" \
           && mv "${STATE_FILE}.tmp" "$STATE_FILE"
       fi
@@ -2196,8 +1939,8 @@ while true; do
 
     if [ "$CMD_TYPE" = "accept_command" ]; then
       ACCEPTED=$(jq -c '.accepted' "$CMD_WORK_DIR/command.json")
-      log "  Applying accepted recommendations for report $REPORT_ID: $ACCEPTED"
-      apply_accepted_recommendations "$REPORT_ID" "$ACCEPTED"
+      log "  Generating implementation plan for report $REPORT_ID: $ACCEPTED"
+      generate_implementation_plan "$REPORT_ID" "$ACCEPTED"
     elif [ "$CMD_TYPE" = "rerun_command" ]; then
       CONTEXT=$(jq -r '.context' "$CMD_WORK_DIR/command.json")
       log "  Re-running analysis for report $REPORT_ID with context"
