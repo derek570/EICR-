@@ -47,6 +47,7 @@ import emailRouter from './routes/email.js';
 import exportRouter from './routes/export.js';
 import ocrRouter from './routes/ocr.js';
 import sleepLogRouter from './routes/sleep-log.js';
+import postcodeRouter from './routes/postcode.js';
 
 // WebSocket recording server (re-exported for server.js)
 import { wss } from './ws-recording.js';
@@ -259,6 +260,7 @@ app.use('/api', emailLimiter, emailRouter); // /api/job/:userId/:jobId/email, /a
 app.use('/api', exportRouter); // /api/job/:userId/:jobId/export/*
 app.use('/api', ocrRouter); // /api/ocr/*
 app.use('/api', sleepLogRouter); // /api/sleep-log
+app.use('/api', postcodeRouter); // /api/postcode/:postcode
 
 // ============= Error Handling (must be last) =============
 app.use(notFoundHandler);
