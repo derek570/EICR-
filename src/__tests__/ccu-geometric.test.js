@@ -423,9 +423,9 @@ describe('cropSlot', () => {
 
     expect(Buffer.isBuffer(result.buffer)).toBe(true);
     expect(result.buffer.length).toBeGreaterThan(100);
-    // moduleWidth=40 on 0-1000; halfWidthNorm = 40*0.5*1.2 = 24
-    // centerX=200 → leftNorm=176 → xPx=round(176)=176
-    expect(result.bbox.x).toBe(176);
+    // moduleWidth=40 on 0-1000; halfWidthNorm = 40*0.5*2.2 = 44
+    // centerX=200 → leftNorm=156 → xPx=round(156)=156
+    expect(result.bbox.x).toBe(156);
     expect(result.bbox.w).toBeGreaterThan(0);
     expect(result.bbox.h).toBeGreaterThan(0);
     // Image metadata check — cropped JPEG should actually be readable.
@@ -439,7 +439,7 @@ describe('cropSlot', () => {
     // Slot 0 is at centre=10 (very left edge)
     const geom = { ...baseGeom, slotCentersX: [10, 50, 90], moduleWidth: 40 };
     const result = await cropSlot(buf, 0, geom);
-    // leftNorm = 10 - 24 = -14 → clamped to 0 → xPx=0
+    // leftNorm = 10 - 44 = -34 → clamped to 0 → xPx=0
     expect(result.bbox.x).toBe(0);
     expect(result.bbox.w).toBeGreaterThan(0);
   });
@@ -449,7 +449,7 @@ describe('cropSlot', () => {
     // Slot at centre=990 (very right edge)
     const geom = { ...baseGeom, slotCentersX: [950, 970, 990], moduleWidth: 40 };
     const result = await cropSlot(buf, 2, geom);
-    // rightNorm = 990+24 = 1014 → clamped to 1000 → rightPx=1000
+    // rightNorm = 990+44 = 1034 → clamped to 1000 → rightPx=1000
     expect(result.bbox.x + result.bbox.w).toBeLessThanOrEqual(1000);
   });
 
