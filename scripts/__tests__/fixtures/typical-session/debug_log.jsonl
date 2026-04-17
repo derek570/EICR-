@@ -1,0 +1,13 @@
+{"timestamp":"2026-04-17T10:00:00.000Z","event":"session_started","category":"session","data":{}}
+{"timestamp":"2026-04-17T10:00:10.000Z","event":"transcript_utterance","category":"transcript","data":{"text":"ze is nought point three five ohms","normalised_text":"ze is 0.35 ohms"}}
+{"timestamp":"2026-04-17T10:00:10.100Z","event":"regex_attempt","category":"regex","data":{"pattern":"ze","text":"ze is 0.35 ohms"}}
+{"timestamp":"2026-04-17T10:00:10.200Z","event":"field_set","category":"regex","data":{"key":"ze","value":"0.35"}}
+{"timestamp":"2026-04-17T10:00:12.000Z","event":"transcript_utterance","category":"transcript","data":{"text":"pfc one point eight two kiloamps","normalised_text":"pfc 1.82 kiloamps"}}
+{"timestamp":"2026-04-17T10:00:13.500Z","event":"server_extraction_received","category":"sonnet","data":{"latency_ms":1500,"readings_count":1}}
+{"timestamp":"2026-04-17T10:00:13.600Z","event":"field_set","category":"sonnet","data":{"key":"pfc","value":"1.82"}}
+{"timestamp":"2026-04-17T10:00:20.000Z","event":"transcript_utterance","category":"transcript","data":{"text":"earthing is TNCS","normalised_text":"earthing is tncs"}}
+{"timestamp":"2026-04-17T10:00:20.500Z","event":"field_set","category":"regex","data":{"key":"earthing","value":"TN-S"}}
+{"timestamp":"2026-04-17T10:00:22.000Z","event":"server_extraction_received","category":"sonnet","data":{"latency_ms":1200,"readings_count":1}}
+{"timestamp":"2026-04-17T10:00:22.100Z","event":"discrepancy_overwrite","category":"sonnet","data":{"key":"earthing","regex_value":"TN-S","sonnet_value":"TN-C-S"}}
+{"timestamp":"2026-04-17T10:00:22.200Z","event":"field_update","category":"sonnet","data":{"key":"earthing","value":"TN-C-S","old":"TN-S"}}
+{"timestamp":"2026-04-17T10:05:00.000Z","event":"session_ended","category":"session","data":{}}

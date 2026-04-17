@@ -1,0 +1,11 @@
+{
+  "sessionId": "fixture-typical",
+  "timestamp": "2026-04-17T10:00:00.000Z",
+  "durationSeconds": 300,
+  "transcriptLength": 120,
+  "sonnetTurns": 2,
+  "regexFieldsSet": 2,
+  "sonnetFieldsSet": 2,
+  "address": "12 Fixture Road, Testville",
+  "sonnetCostUSD": "0.0234"
+}

@@ -1,0 +1,11 @@
+{
+  "sessionId": "fixture-empty",
+  "timestamp": "2026-04-17T10:00:00.000Z",
+  "durationSeconds": 5,
+  "transcriptLength": 0,
+  "sonnetTurns": 0,
+  "regexFieldsSet": 0,
+  "sonnetFieldsSet": 0,
+  "address": "Empty Fixture",
+  "sonnetCostUSD": "0"
+}
