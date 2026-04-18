@@ -353,6 +353,21 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
             }
             break;
 
+          // Client-side diagnostic piggy-backed on the reliable WebSocket channel.
+          // Used by iOS to surface conditions that the multipart analytics upload
+          // can't report (because the upload itself is failing). Logged at info so
+          // CloudWatch Insights can query on category/payload.
+          case 'client_diagnostic':
+            logger.info('Client diagnostic', {
+              userId,
+              sessionId: currentSessionId,
+              category: msg.category || 'unspecified',
+              timestamp: msg.timestamp,
+              pendingAnalyticsUploads: msg.pendingAnalyticsUploads,
+              lastAnalyticsError: msg.lastAnalyticsError,
+            });
+            break;
+
           case 'correction':
             await handleCorrection(ws, currentSessionId, msg);
             break;
