@@ -1,7 +1,7 @@
 # Web Rebuild — Completion Handoff
 
-**Branch:** `web-rebuild` (updated post Wave 4 batch 1 merge)
-**Status:** shipping path through **Wave 4 batch 1** complete (D4 RBAC + D5 Radix Dialog + Wave 4c.5 cross-stack Sonnet reconnect). Wave 4 batch 2 (6c admin-user edit + 6b tail + D12 tail), Wave 5, cross-cutting deferrals, and Phase 8 remain before promotion to `main`.
+**Branch:** `web-rebuild` (updated post Wave 4 batch 2 merge)
+**Status:** shipping path through **Wave 4 complete** (batch 1: D4 RBAC + D5 Radix Dialog + Wave 4c.5 cross-stack Sonnet reconnect; batch 2: 6c admin editable company_id/company_role + 6b tail verified clean + D12 tail parseOrThrow on login + admin writes). Wave 5, cross-cutting deferrals, and Phase 8 remain before promotion to `main`.
 **Purpose:** single hand-off-to-finish. A subsequent agent (loop-scheduled subagent or human) can read this and run the remaining waves without re-deriving context from 12 prior handoffs.
 
 ---
@@ -43,23 +43,24 @@
 | **Wave 4c.5 backend** | `session_ack` server-minted `sessionId`; `session_resume` rehydrate handler (5-min TTL, LRU-capped in-memory store, user-boundary enforced) | +29 backend (19 unit + 10 integration) | `WAVE_4C5_BACKEND_HANDOFF.md` |
 | **Wave 4c.5 client** | Flag-gated (`NEXT_PUBLIC_RECORDING_RECONNECT_ENABLED`) reconnect state machine; AWS full-jitter backoff (`500 * 2^(n-1)`, cap 10 s, max 5 attempts); `session_resume` on reconnect; close-code logging matches Deepgram | +18 vitest | `WAVE_4C5_CLIENT_HANDOFF.md` |
 | **Wave 4 batch 1 closeout** | Unified integration of D4 + D5 + 4c.5 backend + 4c.5 client | — | `WAVE_4_HANDOFF.md` |
+| **Wave 4 batch 2** | 6c editable `company_id`/`company_role` + deactivate `<ConfirmDialog>`; new `GET /api/admin/users/companies/list` lite endpoint + self-reassign guard; 6b tail regression-test sweep (5 supertest cases on `src/routes/settings.js` — already clean post-#15-fix); D12 tail `parseOrThrow` on login + admin writes (reads stay on `parseOrWarn`) | +14 web vitest, +13 backend jest | `WAVE_4_BATCH_2_HANDOFF.md` |
 
 **Live in production (iOS side):** Deepgram auto-sleep 3-tier + server-side Sonnet v3 multi-turn.
 
 ### Test surface
 
-- **102 total vitest** (0 `it.todo`) + **4 Playwright specs** (4/4 chromium green in D5 agent worktree; focus-trap spec now live after Wave 4 D5; full post-merge Playwright rerun pending).
+- **116 total vitest** (0 `it.todo`) + **4 Playwright specs** (4/4 chromium green in D5 agent worktree; focus-trap spec now live after Wave 4 D5; full post-merge Playwright rerun pending).
 - Unit: `outbox`, `outbox-replay`, `apply-ccu-analysis`, `api-client`, `adapters`, `auth-redirect`, `middleware`, `deepgram-service`, `mic-capture`, `auth-role-getters`, `sonnet-session`.
 - Integration: outbox → replay → cache-warm via MSW.
 - Fake-WS (vitest): `DeepgramService` reconnect guard + resample correctness + `bufferedAmount` gating; `SonnetSession` reconnect state machine.
 - E2E (Playwright): record flow (start/pause/resume/stop, prefers-reduced-motion, focus-trap) on chromium; harness smoke on chromium + webkit.
 - **Still missing:** RTL component tests for `JobProvider.updateJob`, dashboard cache race, login redirect rules (FIX_PLAN §E E2). Other 5 Playwright E2E flows (login, job edit, admin, offline, PWA) — Wave 4 batch 2 / Wave 5.
 
-### Quality gates (post Wave 4 batch 1 merge)
+### Quality gates (post Wave 4 batch 2 merge)
 
 ```
-vitest run     → 102/102 (0 todo)
-jest (backend) → 305/305 (3 skipped pre-existing — OPENAI_API_KEY gated)
+vitest run     → 116/116 (0 todo)
+jest (backend) → 318/318 (3 skipped pre-existing — OPENAI_API_KEY gated)
 playwright     → not yet rerun post-merge; D5 agent reported 4/4 chromium green
 tsc --noEmit   → clean
 npm run lint   → 0 errors, 6 pre-existing warnings (queued for Wave 5)
@@ -92,21 +93,14 @@ D3 + 4b + 4e + Playwright landed via Waves 3f + 3h. See `WAVE_3_FUNCTIONAL_HANDO
 
 ---
 
-### 2.2 Wave 4 — RBAC + admin UX + modal a11y
+### 2.2 Wave 4 — RBAC + admin UX + modal a11y ✅ SHIPPED
 
-**Batch 1 (D4 + D5 + 4c.5 backend + 4c.5 client) ✅ SHIPPED** — see `WAVE_4_HANDOFF.md` for the unified integration handoff.
+**Batch 1 (D4 + D5 + 4c.5 backend + 4c.5 client)** — see `WAVE_4_HANDOFF.md`.
 
-**Batch 2 (queued):**
-
-| Item | Surface | Size | Blocker / decision |
-|---|---|---|---|
-| **6c** admin-user edit: `company_id` / `company_role` editable; confirm modal on deactivate (uses new `<ConfirmDialog confirmVariant="danger">` from D5); new backend `/api/admin/users/:id` | `settings/admin/users/[userId]/page.tsx` + `src/routes/admin.js` | M | Q8 — approved; D4 middleware now reliably gates this surface |
-| **6b** per-company settings key fix (kill-list #15 rider) | `src/routes/settings.js` + settings forms | S | — |
-| **D12 tail** — promote `parseOrThrow` on login + admin writes | `api-client.ts` + affected adapters | S | — |
-
-**Parallelisation:** single subagent can land all three (shared `src/routes/*.js` surface + shared admin UI page).
-
-**Gate:** WCAG 2.1 AA keyboard-only walk through all 6 modals (D5 already proved focus-trap E2E on recording overlay; repeat for deactivate confirm); RBAC E2E green (dotted-path middleware — shipped in D4; company-dashboard gating — shipped in D4; forged-JWT `company_role` rejection — shipped in D4).
+**Batch 2 (6c + 6b tail + D12 tail)** — see `WAVE_4_BATCH_2_HANDOFF.md`. Notes:
+- 6c: editable `company_id` (company-picker fed by new `GET /api/admin/users/companies/list` lite endpoint) + `company_role` dropdown + self-reassign guard mirroring the existing can't-deactivate-self rule; deactivate gated by `<ConfirmDialog confirmVariant="danger">` on the true→false transition only.
+- 6b tail: `src/routes/settings.js` verified already clean post kill-list #15 fix — every company-scoped write routes through `companySettingsPrefix(user)`. Added 5 supertest regression cases to prevent future regressions.
+- D12 tail: `parseOrThrow` promoted on `login`, `adminUpdateUser`, `adminResetPassword`, `adminUnlockUser`. Reads keep `parseOrWarn` for graceful degradation. Reuses existing `ApiError`.
 
 ---
 
