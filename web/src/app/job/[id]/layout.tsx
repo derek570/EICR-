@@ -14,7 +14,7 @@ import { RecordingProvider, useRecording } from '@/lib/recording-context';
 import { api } from '@/lib/api-client';
 import { clearAuth, getUser } from '@/lib/auth';
 import { getCachedJob, putCachedJob } from '@/lib/pwa/job-cache';
-import type { JobDetail } from '@/lib/types';
+import { ApiError, type JobDetail } from '@/lib/types';
 
 /**
  * Shell for every /job/[id]/... route.
@@ -79,7 +79,9 @@ export default function JobLayout({ children }: { children: React.ReactNode }) {
       })
       .catch((err: Error) => {
         if (cancelled) return;
-        if (/401/.test(err.message)) {
+        // Wave 2 D12: see matching comment in dashboard/page.tsx — classify
+        // by ApiError.status, not regex against err.message.
+        if (err instanceof ApiError && err.status === 401) {
           clearAuth();
           router.replace('/login');
           return;

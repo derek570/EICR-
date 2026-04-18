@@ -55,13 +55,20 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
       });
 
       if (res.status >= 500) {
-        // Retry 5xx on idempotent methods only.
-        throw new ApiError(res.status, `Server error ${res.status}`);
+        // Retry 5xx on idempotent methods only. Parse the body so
+        // callers still get `ApiError.body` once retries are exhausted;
+        // skip it here and let the shared non-ok branch (below) handle
+        // the final 5xx on non-idempotent / last-attempt paths.
+        if (IDEMPOTENT.has(method) && attempt < maxAttempts - 1) {
+          throw new ApiError(res.status, `Server error ${res.status}`);
+        }
+        // Fall through to the non-ok branch so we get structured body
+        // parsing on the final attempt / non-idempotent methods.
       }
 
       if (!res.ok) {
-        const body = await res.text().catch(() => '');
-        throw new ApiError(res.status, body || res.statusText);
+        const { message, body } = await parseErrorBody(res);
+        throw new ApiError(res.status, message, body);
       }
 
       // 204 No Content — return as-is.
@@ -91,6 +98,40 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 
 function wait(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+/**
+ * Pull a human-friendly message + the structured body out of a non-2xx
+ * response. The backend uses two shapes:
+ *   - JSON: `{error: "...", code?, details?}` for most error paths.
+ *   - plain text / HTML: upstream proxies + some legacy routes.
+ *
+ * Pre-Wave 2 this function inlined `await res.text()` and surfaced the
+ * raw JSON blob to users ("{\"error\":\"invalid\"}"). Now the JSON
+ * envelope's `error` field becomes the friendly message and the parsed
+ * payload is available on `ApiError.body` for callers that want
+ * structured access.
+ */
+async function parseErrorBody(res: Response): Promise<{ message: string; body: unknown }> {
+  const contentType = res.headers.get('content-type') ?? '';
+  if (contentType.includes('application/json')) {
+    try {
+      const parsed = (await res.json()) as unknown;
+      if (parsed && typeof parsed === 'object' && 'error' in parsed) {
+        const errValue = (parsed as { error: unknown }).error;
+        if (typeof errValue === 'string' && errValue.length > 0) {
+          return { message: errValue, body: parsed };
+        }
+      }
+      // Parsed but no recognised `error` field — fall back to statusText
+      // rather than stringifying the whole object back into the message.
+      return { message: res.statusText || `HTTP ${res.status}`, body: parsed };
+    } catch {
+      // JSON content-type but unparseable — fall through to text below.
+    }
+  }
+  const text = await res.text().catch(() => '');
+  return { message: text || res.statusText || `HTTP ${res.status}`, body: text };
 }
 
 export const api = {
@@ -259,8 +300,8 @@ export const api = {
       { headers, credentials: 'include' }
     );
     if (!res.ok) {
-      const body = await res.text().catch(() => '');
-      throw new ApiError(res.status, body || res.statusText);
+      const { message, body } = await parseErrorBody(res);
+      throw new ApiError(res.status, message, body);
     }
     return res.blob();
   },
@@ -360,8 +401,8 @@ export const api = {
       { headers, credentials: 'include' }
     );
     if (!res.ok) {
-      const body = await res.text().catch(() => '');
-      throw new ApiError(res.status, body || res.statusText);
+      const { message, body } = await parseErrorBody(res);
+      throw new ApiError(res.status, message, body);
     }
     return res.blob();
   },
@@ -433,8 +474,8 @@ export const api = {
       { headers, credentials: 'include' }
     );
     if (!res.ok) {
-      const body = await res.text().catch(() => '');
-      throw new ApiError(res.status, body || res.statusText);
+      const { message, body } = await parseErrorBody(res);
+      throw new ApiError(res.status, message, body);
     }
     return res.blob();
   },

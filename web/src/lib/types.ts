@@ -372,11 +372,28 @@ export interface LoginResponse {
   user: User;
 }
 
-/** Client-side API error surface. */
+/**
+ * Client-side API error surface.
+ *
+ * Fields:
+ *   - `status`: HTTP status code from the response (or 0 for network errors).
+ *   - `message`: human-friendly string — the backend's `error` field if it
+ *     sent a `{error: "..."}` JSON envelope, otherwise the raw body text,
+ *     falling back to `statusText`. Safe to show verbatim in a toast.
+ *   - `body`: the parsed JSON payload when the response was
+ *     `application/json`, or the raw string otherwise. Lets callers reach
+ *     past the friendly `message` for structured fields like
+ *     `{error, code, details}` without re-parsing.
+ *
+ * Pre-Wave 2, `message` was `await res.text()` verbatim which surfaced raw
+ * JSON blobs (`{"error":"..."}`) in user-facing banners. Callers should
+ * branch on `.status`, not on substring matches against `.message`.
+ */
 export class ApiError extends Error {
   constructor(
     public status: number,
-    message: string
+    message: string,
+    public body?: unknown
   ) {
     super(message);
     this.name = 'ApiError';

@@ -18,7 +18,7 @@ import { api } from '@/lib/api-client';
 import { clearAuth, getUser } from '@/lib/auth';
 import { getCachedJobs, putCachedJobs } from '@/lib/pwa/job-cache';
 import { useOutboxState } from '@/lib/pwa/use-outbox-state';
-import type { Job } from '@/lib/types';
+import { ApiError, type Job } from '@/lib/types';
 import { AnimatedCounter } from '@/components/dashboard/animated-counter';
 import { JobRow } from '@/components/dashboard/job-row';
 
@@ -87,7 +87,12 @@ export default function DashboardPage() {
       })
       .catch((err: Error) => {
         if (cancelled) return;
-        if (/401/.test(err.message)) {
+        // Wave 2 D12: classify by `ApiError.status` instead of the pre-
+        // D12 regex against `err.message`. The old check failed for any
+        // backend route that returned a JSON envelope whose body didn't
+        // literally contain "401" (e.g. `{error:"Unauthorised"}`), so a
+        // real expiry would surface as a banner instead of a redirect.
+        if (err instanceof ApiError && err.status === 401) {
           clearAuth();
           router.replace('/login');
           return;
