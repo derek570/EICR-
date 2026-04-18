@@ -293,3 +293,41 @@ body {
     transform: none;
   }
 }
+
+/* =============================================================================
+ * Radix Dialog transitions (Wave 4 D5)
+ *
+ * Radix flips `data-state` between "open" and "closed" on the Overlay
+ * and Content; we key simple fade/scale transitions off those values.
+ * `prefers-reduced-motion` collapses the duration to 0 so the open/close
+ * still fires (Radix needs the closed state to unmount) but without any
+ * visible motion.
+ * ========================================================================== */
+.cm-dialog-overlay {
+  transition: opacity 120ms ease-out;
+}
+.cm-dialog-overlay[data-state='closed'] {
+  opacity: 0;
+}
+.cm-dialog-overlay[data-state='open'] {
+  opacity: 1;
+}
+.cm-dialog-content {
+  transition:
+    opacity 150ms ease-out,
+    transform 150ms ease-out;
+}
+.cm-dialog-content[data-state='closed'] {
+  opacity: 0;
+  transform: translate(-50%, -50%) scale(0.96);
+}
+.cm-dialog-content[data-state='open'] {
+  opacity: 1;
+  transform: translate(-50%, -50%) scale(1);
+}
+@media (prefers-reduced-motion: reduce) {
+  .cm-dialog-overlay,
+  .cm-dialog-content {
+    transition: none;
+  }
+}
