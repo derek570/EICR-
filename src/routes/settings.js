@@ -47,13 +47,6 @@ const upload = multer({
  * back to the userId path so their existing S3 files remain readable
  * — we don't migrate them automatically because the fallback path is
  * indistinguishable from the correct behaviour for single-user firms.
- *
- * NOTE on access control: the GET/PUT routes currently allow any
- * authenticated user whose path param matches their own id. That
- * passes unchanged here — the only correctness issue P0-15 addresses
- * is the S3 key. A separate follow-up should gate PUT on
- * company_role ∈ {owner, admin} once the UI surfaces a "you can view
- * but not edit" affordance for employees.
  */
 function companySettingsPrefix(user) {
   if (user?.company_id) {
@@ -61,6 +54,79 @@ function companySettingsPrefix(user) {
   }
   // Legacy fallback — pre-companies single-user install.
   return `settings/${user.id}`;
+}
+
+/**
+ * Post-Wave-1 decision Q1 — lazy migration via read-fallback.
+ *
+ * The P0-15 cutover moved every multi-user company's settings from
+ * `settings/${userId}/company_settings.json` to the company-scoped
+ * key, but existing data in the per-user files would be orphaned on
+ * first post-deploy load: GET would miss the company key and return
+ * the empty-defaults shell, making the settings page look wiped out
+ * to every employee on every firm. That's a worse user experience
+ * than the bug P0-15 fixed.
+ *
+ * Option A (one-shot migration job) was rejected because it needs a
+ * tenant inventory + chooses a winner when multiple users in the
+ * same company had divergent legacy copies (the exact race P0-15
+ * exists to prevent). Option B (do nothing, wait for natural
+ * overwrite) was rejected because every user sees blanks until
+ * someone fills them in, and multi-user firms would keep racing
+ * because the UI doesn't distinguish "you're seeing empty defaults"
+ * from "your company hasn't set these yet".
+ *
+ * Option C — this function — is a read-fallback: if the company-
+ * scoped file doesn't exist yet, try the legacy per-user file for
+ * the caller and return that. The first PUT (gated to company admins
+ * by Q2) promotes the data into the company-scoped key, after which
+ * the fallback is never consulted again for that company. Legacy
+ * files are left in S3 for audit; they're harmless once no reader
+ * consults them.
+ *
+ * Trade-off: if two employees' legacy files differed, whichever
+ * admin opens the settings page first wins — their legacy data
+ * becomes the seed that the company-scoped file is promoted from.
+ * Post-P0-15 the subsequent PUT is gated to admins, so employees
+ * can't race their way past this, and admins are specifically the
+ * users we want to trust with the merge decision.
+ */
+async function downloadCompanySettings(user) {
+  const companyKey = `${companySettingsPrefix(user)}/company_settings.json`;
+  const content = await storage.downloadText(companyKey);
+  if (content) return content;
+  // No company-scoped file — try the legacy per-user path. Only
+  // meaningful when the caller has a company_id (otherwise
+  // `companySettingsPrefix` already returned the legacy path above
+  // and we'd be re-reading the same S3 key).
+  if (user?.company_id) {
+    const legacyKey = `settings/${user.id}/company_settings.json`;
+    const legacy = await storage.downloadText(legacyKey);
+    if (legacy) return legacy;
+  }
+  return null;
+}
+
+/**
+ * Post-Wave-1 decision Q2 — PUT gated to company admins.
+ *
+ * Before P0-15 the PUT guard `req.user.id !== userId` was sufficient
+ * because each user only overwrote their own per-user copy. Post-
+ * P0-15 the PUT writes to the company-scoped key, so an employee
+ * with a valid session could curl the endpoint and rewrite the
+ * entire company's branding / contact details — a data-integrity
+ * regression introduced by the P0-15 fix itself.
+ *
+ * The frontend already gates editability via `isCompanyAdmin(user)`
+ * (owners, admins, and system admins) so this backend gate has no
+ * UI impact — it closes the server-side hole. System admins are
+ * explicitly allowed so cross-tenant ops can still repair broken
+ * company records without impersonating an owner.
+ */
+function canEditCompanySettings(user) {
+  if (!user) return false;
+  if (user.role === 'admin') return true; // system admin
+  return user.company_role === 'owner' || user.company_role === 'admin';
 }
 
 // Multer for logo uploads — same constraints as signatures. Company logos are
@@ -140,8 +206,7 @@ router.get('/settings/:userId/company', auth.requireAuth, async (req, res) => {
   }
 
   try {
-    const s3Key = `${companySettingsPrefix(req.user)}/company_settings.json`;
-    const content = await storage.downloadText(s3Key);
+    const content = await downloadCompanySettings(req.user);
 
     if (content) {
       res.json(JSON.parse(content));
@@ -172,6 +237,17 @@ router.put('/settings/:userId/company', auth.requireAuth, async (req, res) => {
 
   if (req.user.id !== userId) {
     return res.status(403).json({ error: 'Access denied' });
+  }
+
+  // Post-P0-15 decision Q2 — only company owners/admins (or a system
+  // admin) can mutate the company's shared settings. See
+  // `canEditCompanySettings` rationale above. Frontend already gates
+  // the save button via `isCompanyAdmin(user)`, so this 403 only
+  // ever fires if someone bypasses the UI (curl / scripted client).
+  if (!canEditCompanySettings(req.user)) {
+    return res
+      .status(403)
+      .json({ error: 'Only company owners or admins can edit company settings.' });
   }
 
   try {
@@ -354,6 +430,17 @@ router.post(
 
     if (req.user.id !== userId) {
       return res.status(403).json({ error: 'Access denied' });
+    }
+
+    // Logo upload mutates shared company state (the uploaded file
+    // lands at the company-scoped prefix and the caller subsequently
+    // PUTs company_settings with `logo_file = <s3Key>`). Same gate
+    // as the PUT company-settings route — employees can view the
+    // logo but not replace it.
+    if (!canEditCompanySettings(req.user)) {
+      return res
+        .status(403)
+        .json({ error: 'Only company owners or admins can change the company logo.' });
     }
 
     if (!file) {
