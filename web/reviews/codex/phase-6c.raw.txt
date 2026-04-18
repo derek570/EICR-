@@ -1,0 +1,786 @@
+OpenAI Codex v0.116.0 (research preview)
+--------
+workdir: /Users/derekbeckley/Developer/EICR_Automation
+model: gpt-5.4
+provider: openai
+approval: never
+sandbox: read-only
+reasoning effort: none
+reasoning summaries: none
+session id: 019d9dc1-a06a-76a0-b05d-f0ff4752d5c9
+--------
+user
+You are performing a rigorous code review of a single phase of a Next.js 16 / React 19 PWA frontend rebuild for an electrical-certificate automation tool (EICR / EIC). The repo root is at /Users/derekbeckley/Developer/EICR_Automation and the web package is at web/. Branch: web-rebuild.
+
+TARGET: Phase 6c — system-admin user management
+COMMIT: bc11914
+
+Context for this phase (original intent, handoff doc, commit message, files changed) is in this repo at: reviews/context/phase-6c.md — READ THAT FILE FIRST.
+
+Use shell commands to:
+  git show --stat bc11914
+  git show bc11914
+to inspect the full diff. Then read any files you need from the working tree (they may have evolved since this commit — note any later changes).
+
+Your output must be a well-structured markdown review with these sections:
+  1. Summary of the phase (2-3 sentences — what it did).
+  2. Alignment with original plan (does the implementation match the handoff doc / commit intent? Any missing objectives?).
+  3. Correctness issues (bugs, race conditions, missing error handling, incorrect semantics). Prioritise P0/P1/P2.
+  4. Security issues (XSS, auth, CSRF, injection, leaked secrets, PII, CORS). Each item tagged with severity.
+  5. Performance issues (re-renders, N+1, large bundles, memory leaks, blocking work on main thread).
+  6. Accessibility issues (semantic HTML, keyboard nav, ARIA, colour contrast, focus management).
+  7. Code quality (duplication, dead code, type-safety holes, naming, convention drift vs. rest of repo).
+  8. Test coverage gaps.
+  9. Suggested fixes — each as a numbered item with: file:line, what to change, why. Be concrete.
+  10. Overall verdict (ship / ship with fixes / needs rework) and top 3 priority fixes.
+
+Be specific — cite file paths and line numbers. Avoid generic advice. If the code is good, say so with evidence. Do NOT modify files; this is review only.
+
+mcp startup: no servers
+codex
+I’m reviewing commit `bc11914` against the phase handoff first, then I’ll inspect the full diff and relevant files in `web/` to identify concrete issues with file and line references.
+exec
+/bin/zsh -lc "sed -n '1,220p' reviews/context/phase-6c.md" in /Users/derekbeckley/Developer/EICR_Automation exited 1 in 0ms:
+sed: reviews/context/phase-6c.md: No such file or directory
+exec
+/bin/zsh -lc 'git show --stat --format=fuller bc11914' in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc 'git show --format=fuller --no-ext-diff bc11914' in /Users/derekbeckley/Developer/EICR_Automation succeeded in 1.23s:
+2026-04-18 00:23:32.322 xcodebuild[37649:67228673]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:23:32.462 xcodebuild[37649:67228670] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-w3liLtj7' (errno=Operation not permitted)
+2026-04-18 00:23:32.815 xcodebuild[37652:67228695]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:23:32.918 xcodebuild[37652:67228693] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+commit bc11914dc2250693b85492c15121e25558312e99
+Author:     Derek Beckley <derekbeckley@Dereks-Mac-mini.broadband>
+AuthorDate: Fri Apr 17 19:58:12 2026 +0100
+Commit:     Derek Beckley <derekbeckley@Dereks-Mac-mini.broadband>
+CommitDate: Fri Apr 17 19:58:12 2026 +0100
+
+    feat(web): Phase 6c system-admin user management
+    
+    What:
+    Final sub-phase of Phase 6. Ports the iOS admin CRUD surfaces
+    (`AdminUsersListView` / `AdminEditUserView` / `AdminCreateUserView`)
+    to the web client: new sub-tree at `/settings/admin/users` with list,
+    create, edit, reset-password, and unlock flows. Five new API client
+    methods; zero backend changes.
+ succeeded in 1.23s:
+2026-04-18 00:23:32.322 xcodebuild[37648:67228672]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:23:32.462 xcodebuild[37648:67228671] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-FtXzfOT7' (errno=Operation not permitted)
+2026-04-18 00:23:32.815 xcodebuild[37653:67228694]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:23:32.918 xcodebuild[37653:67228692] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+commit bc11914dc2250693b85492c15121e25558312e99
+Author:     Derek Beckley <derekbeckley@Dereks-Mac-mini.broadband>
+AuthorDate: Fri Apr 17 19:58:12 2026 +0100
+Commit:     Derek Beckley <derekbeckley@Dereks-Mac-mini.broadband>
+CommitDate: Fri Apr 17 19:58:12 2026 +0100
+
+    feat(web): Phase 6c system-admin user management
+    
+    What:
+    Final sub-phase of Phase 6. Ports the iOS admin CRUD surfaces
+    (`AdminUsersListView` / `AdminEditUserView` / `AdminCreateUserView`)
+    to the web client: new sub-tree at `/settings/admin/users` with list,
+    create, edit, reset-password, and unlock flows. Five new API client
+    methods; zero backend changes.
+codex
+The handoff path in the prompt isn’t present at repo root, so I’m locating it and re-running `git show` without a pager to avoid the stalled session output.
+exec
+/bin/zsh -lc "rg --files -g 'phase-6c.md' -g 'reviews/**' ." in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+./web/reviews/claude/phase-6c.md
+./web/reviews/context/phase-6c.md
+exec
+/bin/zsh -lc 'git --no-pager show --format=fuller --no-ext-diff bc11914' in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc 'git --no-pager show --stat --format=fuller bc11914' in /Users/derekbeckley/Developer/EICR_Automation succeeded in 1.12s:
+2026-04-18 00:23:39.636 xcodebuild[37666:67228811]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:23:39.739 xcodebuild[37666:67228807] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-JuiOUJXH' (errno=Operation not permitted)
+2026-04-18 00:23:40.054 xcodebuild[37670:67228828]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:23:40.157 xcodebuild[37670:67228827] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+commit bc11914dc2250693b85492c15121e25558312e99
+Author:     Derek Beckley <derekbeckley@Dereks-Mac-mini.broadband>
+AuthorDate: Fri Apr 17 19:58:12 2026 +0100
+Commit:     Derek Beckley <derekbeckley@Dereks-Mac-mini.broadband>
+CommitDate: Fri Apr 17 19:58:12 2026 +0100
+
+    feat(web): Phase 6c system-admin user management
+    
+    What:
+    Final sub-phase of Phase 6. Ports the iOS admin CRUD surfaces
+    (`AdminUsersListView` / `AdminEditUserView` / `AdminCreateUserView`)
+    to the web client: new sub-tree at `/settings/admin/users` with list,
+    create, edit, reset-password, and unlock flows. Five new API client
+    methods; zero backend changes.
+ succeeded in 1.12s:
+2026-04-18 00:23:39.636 xcodebuild[37665:67228810]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:23:39.739 xcodebuild[37665:67228808] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-Oe6YMBVB' (errno=Operation not permitted)
+2026-04-18 00:23:40.054 xcodebuild[37669:67228829]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:23:40.157 xcodebuild[37669:67228826] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+commit bc11914dc2250693b85492c15121e25558312e99
+Author:     Derek Beckley <derekbeckley@Dereks-Mac-mini.broadband>
+AuthorDate: Fri Apr 17 19:58:12 2026 +0100
+Commit:     Derek Beckley <derekbeckley@Dereks-Mac-mini.broadband>
+CommitDate: Fri Apr 17 19:58:12 2026 +0100
+
+    feat(web): Phase 6c system-admin user management
+    
+    What:
+    Final sub-phase of Phase 6. Ports the iOS admin CRUD surfaces
+    (`AdminUsersListView` / `AdminEditUserView` / `AdminCreateUserView`)
+    to the web client: new sub-tree at `/settings/admin/users` with list,
+    create, edit, reset-password, and unlock flows. Five new API client
+    methods; zero backend changes.
+exec
+/bin/zsh -lc "sed -n '1,240p' web/reviews/context/phase-6c.md" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+# Phase 6c — Context
+
+**Commit:** `bc11914`
+
+## Commit message
+
+```
+commit bc11914dc2250693b85492c15121e25558312e99
+Author:     Derek Beckley <derekbeckley@Dereks-Mac-mini.broadband>
+AuthorDate: Fri Apr 17 19:58:12 2026 +0100
+Commit:     Derek Beckley <derekbeckley@Dereks-Mac-mini.broadband>
+CommitDate: Fri Apr 17 19:58:12 2026 +0100
+
+    feat(web): Phase 6c system-admin user management
+    
+    What:
+    Final sub-phase of Phase 6. Ports the iOS admin CRUD surfaces
+    (`AdminUsersListView` / `AdminEditUserView` / `AdminCreateUserView`)
+    to the web client: new sub-tree at `/settings/admin/users` with list,
+    create, edit, reset-password, and unlock flows. Five new API client
+codex
+I have the handoff and commit intent. Next I’m reading the three new page files and the API client with line numbers, plus checking whether those files changed after `bc11914` so I can separate commit issues from later edits.
+exec
+/bin/zsh -lc 'git diff --stat bc11914..HEAD -- web/src/app/settings/admin/users/[userId]/page.tsx web/src/app/settings/admin/users/new/page.tsx web/src/app/settings/admin/users/page.tsx web/src/app/settings/page.tsx web/src/lib/api-client.ts' in /Users/derekbeckley/Developer/EICR_Automation exited 1 in 0ms:
+zsh:1: no matches found: web/src/app/settings/admin/users/[userId]/page.tsx
+exec
+/bin/zsh -lc "nl -ba web/src/app/settings/admin/users/[userId]/page.tsx | sed -n '1,340p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+zsh:1: no matches found: web/src/app/settings/admin/users/[userId]/page.tsx
+exec
+/bin/zsh -lc "nl -ba web/src/app/settings/admin/users/page.tsx | sed -n '1,260p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "nl -ba web/src/app/settings/admin/users/new/page.tsx | sed -n '1,260p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	'use client';
+     2	
+     3	import * as React from 'react';
+     4	import Link from 'next/link';
+     5	import { useRouter } from 'next/navigation';
+     6	import {
+     7	  ChevronLeft,
+     8	  ChevronRight,
+     9	  Lock,
+    10	  Plus,
+    11	  ShieldAlert,
+    12	  ShieldCheck,
+    13	  Users,
+    14	} from 'lucide-react';
+    15	import { api } from '@/lib/api-client';
+    16	import { useCurrentUser } from '@/lib/use-current-user';
+    17	import { isSystemAdmin } from '@/lib/roles';
+    18	import type { AdminUser } from '@/lib/types';
+    19	import { Button } from '@/components/ui/button';
+    20	
+ succeeded in 0ms:
+     1	'use client';
+     2	
+     3	import * as React from 'react';
+     4	import Link from 'next/link';
+     5	import { useRouter } from 'next/navigation';
+     6	import {
+     7	  Building2,
+     8	  ChevronLeft,
+     9	  KeyRound,
+    10	  Mail,
+    11	  ShieldCheck,
+    12	  User as UserIcon,
+    13	} from 'lucide-react';
+    14	import { api } from '@/lib/api-client';
+    15	import { useCurrentUser } from '@/lib/use-current-user';
+    16	import { isSystemAdmin } from '@/lib/roles';
+    17	import { ApiError } from '@/lib/types';
+    18	import { Button } from '@/components/ui/button';
+    19	import { FloatingLabelInput } from '@/components/ui/floating-label-input';
+    20	import { SectionCard } from '@/components/ui/section-card';
+exec
+/bin/zsh -lc "nl -ba web/src/lib/api-client.ts | sed -n '480,620p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+   480	   * and never persist it past the modal close. See
+   481	   * `InviteEmployeeResponse` for the exact shape.
+   482	   */
+   483	  inviteEmployee(
+   484	    companyId: string,
+   485	    body: { name: string; email: string }
+   486	  ): Promise<InviteEmployeeResponse> {
+   487	    return request<InviteEmployeeResponse>(
+   488	      `/api/companies/${encodeURIComponent(companyId)}/invite`,
+   489	      { method: 'POST', body: JSON.stringify(body) }
+   490	    );
+   491	  },
+   492	
+   493	  // ----------------------------------------------------------------
+   494	  // Admin — system-admin user management (Phase 6c)
+   495	  // ----------------------------------------------------------------
+   496	
+   497	  /**
+   498	   * Paginated user list. We always pass `limit` + `offset` so the backend
+   499	   * returns the `Paginated<AdminUser>` envelope (it falls back to a bare
+exec
+/bin/zsh -lc 'git status --short' in /Users/derekbeckley/Developer/EICR_Automation succeeded in 1.03s:
+2026-04-18 00:23:55.997 xcodebuild[37695:67229018]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:23:56.096 xcodebuild[37695:67229017] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-iTndz4c1' (errno=Operation not permitted)
+2026-04-18 00:23:56.379 xcodebuild[37697:67229029]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:23:56.477 xcodebuild[37697:67229028] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+?? .claude/worktrees/
+?? .optimizer-plans/
+?? AUDIO_PIPELINE_AUDIT.md
+?? DEPLOY_NOTES.md
+?? FIX_CHECKLIST.md
+?? FIX_VERIFICATION.md
+?? PARITY_DIFF.md
+?? POST_MORTEM.md
+?? REBUILD_RECOMMENDATION.md
+?? RUNTIME_TEST_RESULTS.md
+?? VERIFICATION_REPORT.md
+?? _archive/CertMate_EICR_App/
+?? _archive/CertMate_old/
+?? _archive/media/
+codex
+I have enough context from the list/create pages to start checking semantics against the backend. I’m reading the edit page and the admin routes now, because that’s where most correctness and security risks are likely to sit.
+exec
+/bin/zsh -lc "nl -ba 'web/src/app/settings/admin/users/[userId]/page.tsx' | sed -n '1,380p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	'use client';
+     2	
+     3	import * as React from 'react';
+     4	import Link from 'next/link';
+     5	import { useParams, useRouter } from 'next/navigation';
+     6	import {
+     7	  Building2,
+     8	  ChevronLeft,
+     9	  KeyRound,
+    10	  Lock,
+    11	  Mail,
+    12	  ShieldAlert,
+    13	  ShieldCheck,
+    14	  Unlock,
+    15	  User as UserIcon,
+    16	} from 'lucide-react';
+    17	import { api } from '@/lib/api-client';
+    18	import { useCurrentUser } from '@/lib/use-current-user';
+    19	import { isSystemAdmin } from '@/lib/roles';
+    20	import type { AdminUser } from '@/lib/types';
+exec
+/bin/zsh -lc "nl -ba src/routes/admin-users.js | sed -n '1,280p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	/**
+     2	 * Admin user management routes.
+     3	 * All routes are protected by requireAuth + requireAdmin middleware
+     4	 * (applied at the mount point in api.js, not per-route here).
+     5	 *
+     6	 * Follows the same CRUD patterns as routes/clients.js:
+     7	 * - Pagination via parsePagination/paginatedResponse
+     8	 * - Validation before DB writes
+     9	 * - Audit logging via db.logAction()
+    10	 * - Logger for operational events
+    11	 */
+    12	
+    13	import { Router } from 'express';
+    14	import bcrypt from 'bcryptjs';
+    15	import {
+    16	  listUsers,
+    17	  listUsersPaginated,
+    18	  createUser,
+    19	  updateUser,
+    20	  getUserById,
+exec
+/bin/zsh -lc "nl -ba 'web/src/app/settings/admin/users/[userId]/page.tsx' | sed -n '381,760p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+   381	        </div>
+   382	      </div>
+   383	
+   384	      {showResetSheet ? (
+   385	        <ResetPasswordSheet
+   386	          userId={userId}
+   387	          userName={row.name || row.email}
+   388	          onClose={() => setShowResetSheet(false)}
+   389	        />
+   390	      ) : null}
+   391	    </main>
+   392	  );
+   393	}
+   394	
+   395	// ---------------------------------------------------------------------------
+   396	
+   397	function ResetPasswordSheet({
+   398	  userId,
+   399	  userName,
+   400	  onClose,
+exec
+/bin/zsh -lc "git diff --stat bc11914..HEAD -- 'web/src/app/settings/admin/users/[userId]/page.tsx' 'web/src/app/settings/admin/users/new/page.tsx' 'web/src/app/settings/admin/users/page.tsx' 'web/src/app/settings/page.tsx' 'web/src/lib/api-client.ts'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 1.01s:
+2026-04-18 00:24:08.037 xcodebuild[37713:67229166] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-6je6xPkZ' (errno=Operation not permitted)
+2026-04-18 00:24:08.325 xcodebuild[37716:67229190]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:24:08.423 xcodebuild[37716:67229189] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+ web/src/app/settings/page.tsx | 9 +++++++++
+ 1 file changed, 9 insertions(+)
+codex
+I’ve confirmed the changed files have not materially drifted since `bc11914` except for a later edit in `web/src/app/settings/page.tsx`. I’m checking that small follow-up now and then I’ll consolidate findings by severity.
+exec
+/bin/zsh -lc "nl -ba web/src/app/settings/page.tsx | sed -n '100,155p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+   100	          will print on their certs). Dashboard is company-admin only. */}
+   101	      <SectionGroup title="COMPANY">
+   102	        <LinkCard
+   103	          href="/settings/company"
+   104	          icon={<Building2 className="h-5 w-5" aria-hidden />}
+   105	          title="Company Details"
+   106	          subtitle={
+   107	            isCompanyAdmin(user)
+   108	              ? 'Branding, address, contact info, and logo'
+   109	              : 'Branding and contact info (view-only)'
+   110	          }
+   111	          accent="green"
+   112	        />
+   113	        {isCompanyAdmin(user) ? (
+   114	          <LinkCard
+   115	            href="/settings/company/dashboard"
+   116	            icon={<LayoutDashboard className="h-5 w-5" aria-hidden />}
+   117	            title="Company Dashboard"
+   118	            subtitle="Team, jobs, and stats at a glance"
+   119	            accent="green"
+exec
+/bin/zsh -lc "rg -n \"describe\\(|it\\(|test\\(\" web/src tests web --glob '*admin*users*' --glob '*settings*'" in /Users/derekbeckley/Developer/EICR_Automation exited 2 in 0ms:
+rg: tests: No such file or directory (os error 2)
+exec
+/bin/zsh -lc "rg -n \"admin(users|ResetPassword|Unlock|Manage Users|settings/admin/users)\" web/src --glob '"'!web/src/app/settings/admin/users/**'"'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+web/src/lib/api-client.ts:561:  adminResetPassword(userId: string, password: string): Promise<{ success: true }> {
+web/src/lib/api-client.ts:575:  adminUnlockUser(userId: string): Promise<{ success: true }> {
+exec
+/bin/zsh -lc 'git diff bc11914..HEAD -- web/src/app/settings/page.tsx' in /Users/derekbeckley/Developer/EICR_Automation succeeded in 1.03s:
+2026-04-18 00:24:22.428 xcodebuild[37729:67229388]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:24:22.527 xcodebuild[37729:67229387] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-RP5axQQm' (errno=Operation not permitted)
+2026-04-18 00:24:22.812 xcodebuild[37731:67229396]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:24:22.910 xcodebuild[37731:67229395] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+diff --git a/web/src/app/settings/page.tsx b/web/src/app/settings/page.tsx
+index fb76a3b..d49e2fb 100644
+--- a/web/src/app/settings/page.tsx
++++ b/web/src/app/settings/page.tsx
+@@ -9,6 +9,7 @@ import { clearAuth } from '@/lib/auth';
+ import { useCurrentUser } from '@/lib/use-current-user';
+ import { isCompanyAdmin, isSystemAdmin } from '@/lib/roles';
+ import { Button } from '@/components/ui/button';
++import { IOSInstallHint } from '@/components/pwa/ios-install-hint';
+ 
+ /**
+  * Settings hub. Ports iOS `SettingsView.swift` — hero profile header,
+@@ -75,6 +76,14 @@ export default function SettingsHubPage() {
+         </div>
+exec
+/bin/zsh -lc "nl -ba web/src/lib/use-current-user.ts | sed -n '1,240p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "nl -ba web/src/middleware.ts | sed -n '1,220p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "nl -ba web/src/lib/types.ts | sed -n '70,130p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	'use client';
+     2	
+     3	import * as React from 'react';
+     4	import { api } from './api-client';
+     5	import { getUser } from './auth';
+     6	import type { User } from './types';
+     7	
+     8	/**
+     9	 * `useCurrentUser` — reactive view of the signed-in user.
+    10	 *
+    11	 * Why: role-gated rendering (see `lib/roles.ts`) needs the *live* user,
+    12	 * not the snapshot stashed in localStorage at login time. A system admin
+    13	 * who gets demoted mid-session should lose access on the next page
+    14	 * render, not at next login. We hydrate instantly from `getUser()` (so
+    15	 * the first paint already knows the role) and then revalidate via
+    16	 * `api.me()` in the background.
+    17	 *
+    18	 * The `refresh` callback lets callers force a re-read after an action
+    19	 * they know will have changed role/state (e.g. the admin UI updating
+    20	 * its own account).
+ succeeded in 0ms:
+    70	
+    71	/**
+    72	 * Admin-tier user view — includes operational flags (active,
+    73	 * lockout, last-login) only system admins can see. Returned by
+    74	 * `GET /api/admin/users`. Extends the public User with lifecycle
+    75	 * metadata; treat as read-mostly + mutate via dedicated endpoints
+    76	 * (update / reset-password / unlock).
+    77	 */
+    78	export interface AdminUser extends User {
+    79	  is_active?: boolean;
+    80	  last_login?: string | null;
+    81	  locked_until?: string | null;
+    82	  failed_login_attempts?: number;
+    83	  created_at?: string;
+    84	}
+    85	
+    86	/**
+    87	 * Member of a company — the shape returned by
+    88	 * `GET /api/companies/:companyId/users`. Thin read-only projection of
+    89	 * the underlying user row: enough to render the team list in the
+ succeeded in 0ms:
+     1	import { NextResponse, type NextRequest } from 'next/server';
+     2	
+     3	/**
+     4	 * Route guard.
+     5	 *
+     6	 * Public paths (login, legal, offline, static assets, API proxy calls)
+     7	 * pass through. Everything else requires an unexpired JWT cookie; missing
+     8	 * or expired token → redirect to /login with ?redirect=<attempted path>.
+     9	 */
+    10	
+    11	const PUBLIC_PREFIXES = ['/login', '/legal', '/offline'];
+    12	
+    13	interface JwtPayload {
+    14	  exp?: number;
+    15	  role?: 'admin' | 'user';
+    16	}
+    17	
+    18	function decodeJwt(token: string): JwtPayload | null {
+    19	  try {
+    20	    const [, payload] = token.split('.');
+exec
+/bin/zsh -lc "rg -n \"describe\\(|it\\(|test\\(\" web --glob '*admin*users*' --glob '*settings*'" in /Users/derekbeckley/Developer/EICR_Automation exited 1 in 0ms:
+
+codex
+I’ve narrowed the main risk areas to edit-page loading, stale error state on the list, and modal accessibility. I’m checking the backend update semantics now to confirm whether any client payloads have unintended side effects before I write the review.
+exec
+/bin/zsh -lc 'rg -n "function request|const request|async function request" web/src/lib/api-client.ts' in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+34:async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+exec
+/bin/zsh -lc "rg -n \"function updateUser|const updateUser|export async function updateUser|updateUser\\(\" src/db.js src -g '*.js'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+src/db.js:266:export async function updateUser(userId, data) {
+src/db.js:266:export async function updateUser(userId, data) {
+src/routes/admin-users.js:138:    await updateUser(userId, req.body);
+src/routes/auth.js:107:    await db.updateUser(userId, { is_active: false });
+exec
+/bin/zsh -lc "nl -ba web/src/lib/api-client.ts | sed -n '1,140p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	import {
+     2	  type AdminUser,
+     3	  ApiError,
+     4	  type CCUAnalysis,
+     5	  type CompanyJobRow,
+     6	  type CompanyMember,
+     7	  type CompanySettings,
+     8	  type CompanyStats,
+     9	  type DocumentExtractionResponse,
+    10	  type InspectorProfile,
+    11	  type InviteEmployeeResponse,
+    12	  type Job,
+    13	  type JobDetail,
+    14	  type LoginResponse,
+    15	  type Paginated,
+    16	  type User,
+    17	} from './types';
+    18	import { getToken } from './auth';
+    19	
+    20	/**
+exec
+/bin/zsh -lc "rg -n \"FloatingLabelInput\" web/src/components/ui/floating-label-input.tsx && nl -ba web/src/components/ui/floating-label-input.tsx | sed -n '1,260p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+7: * FloatingLabelInput — iOS-style form field.
+21:export type FloatingLabelInputProps = Omit<React.InputHTMLAttributes<HTMLInputElement>, 'size'> & {
+29:export const FloatingLabelInput = React.forwardRef<HTMLInputElement, FloatingLabelInputProps>(
+30:  function FloatingLabelInput(
+     1	'use client';
+     2	
+     3	import * as React from 'react';
+     4	import { cn } from '@/lib/utils';
+     5	
+     6	/**
+     7	 * FloatingLabelInput — iOS-style form field.
+     8	 *
+     9	 * Visual: tall rounded box (h-14) on surface-2 with the LABEL sitting top-left
+    10	 * at 11 px and the VALUE beneath it at 15 px. Focus state lifts the border
+    11	 * to brand-blue. When the input is empty and unfocused, the label stays in
+    12	 * place (iOS does not float down into the value slot — the two lines are
+    13	 * always stacked).
+    14	 *
+    15	 * Supports:
+    16	 *   - `trailing` slot for per-field suffix icons (stepper arrows, chevrons,
+exec
+/bin/zsh -lc "nl -ba src/db.js | sed -n '250,330p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+   250	        password_hash,
+   251	        role || 'user',
+   252	        company_id || null,
+   253	        company_role || 'employee',
+   254	      ]
+   255	    );
+   256	    return result.rows[0];
+   257	  } catch (error) {
+   258	    logger.error('createUser failed', { error: error.message });
+   259	    throw error;
+   260	  }
+   261	}
+   262	
+   263	/**
+   264	 * Update a user (admin only). Whitelist approach — only allowed fields are updated.
+   265	 */
+   266	export async function updateUser(userId, data) {
+   267	  if (!usePostgres()) return;
+   268	
+   269	  const pool = getPool();
+exec
+/bin/zsh -lc 'rg -n "company_id|company_role|reassign|Company ID|picker|edit form|shared form|reset-password|unlock" web/reviews/context/phase-6c.md web/PHASE_6C_HANDOFF.md' in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+web/reviews/context/phase-6c.md:20:    create, edit, reset-password, and unlock flows. Five new API client
+web/reviews/context/phase-6c.md:28:    lifecycle management (create, deactivate, reset, unlock) without
+web/reviews/context/phase-6c.md:70:      — deferred to Phase 7+), no company-picker (raw UUID field only,
+web/reviews/context/phase-6c.md:71:      full picker deferred), no bulk actions, no email notifications, no
+web/reviews/context/phase-6c.md:106:admins (`role === 'admin'`) can create, edit, reset-password, and
+web/reviews/context/phase-6c.md:107:unlock users from the web client — matching iOS
+web/reviews/context/phase-6c.md:111:(`/settings/admin/users`), one shared form component, two modals, five
+web/reviews/context/phase-6c.md:159:   Clicking fires `POST /api/admin/users/:userId/unlock` with no
+web/reviews/context/phase-6c.md:175:| POST `/api/admin/users` | `{email, name, password, company_name?, role?, company_id?, company_role?}` | `201 AdminUser` | password ≥ 8 chars. Role defaults to `'user'`, company_role to `'employee'`. 409 on duplicate email. |
+web/reviews/context/phase-6c.md:177:| POST `/api/admin/users/:userId/reset-password` | `{password}` | `{success: true}` | password ≥ 8 chars. Invalidates existing sessions. |
+web/reviews/context/phase-6c.md:178:| POST `/api/admin/users/:userId/unlock` | — | `{success: true}` | Clears `failed_login_attempts` + `locked_until`. |
+web/reviews/context/phase-6c.md:181:`id, email, name, company_name, role, company_id, company_role,
+web/reviews/context/phase-6c.md:202:  company_id?: string; company_role?: 'owner' | 'admin' | 'employee';
+web/reviews/context/phase-6c.md:213:  return request(`/api/admin/users/${userId}/reset-password`, {
+web/reviews/context/phase-6c.md:219:  return request(`/api/admin/users/${userId}/unlock`, { method: 'POST' });
+web/reviews/context/phase-6c.md:230:- `web/src/app/settings/admin/users/[userId]/page.tsx` — edit form +
+web/reviews/context/phase-6c.md:231:  reset-password + unlock affordances.
+web/reviews/context/phase-6c.md:307:- Open reset-password sheet → set new password ≥ 8 chars → success
+web/reviews/context/phase-6c.md:327:  from a free list yet. Leave `company_id` editable as a raw UUID
+web/reviews/context/phase-6c.md:329:  affordance. Full picker deferred.
+exec
+/bin/zsh -lc "sed -n '220,240p' web/PHASE_6C_HANDOFF.md" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "sed -n '240,275p' web/PHASE_6C_HANDOFF.md" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+  signal. Don't render the counter.
+
+## Commit
+
+One commit at the end:
+
+```
+feat(web): Phase 6c system-admin user management
+```
+
+Full-body message per `CLAUDE.md` commit rules (what / why / why
+this approach / context), plus a Changelog row in `CLAUDE.md`
+matching the detail of 6a and 6b entries.
+
+Files you'll touch (all new except the two marked):
+
+- `web/src/lib/api-client.ts` **(modify)** — five new admin methods
+- `web/src/app/settings/admin/users/page.tsx` — list
+- `web/src/app/settings/admin/users/new/page.tsx` — create
+- `web/src/app/settings/admin/users/[userId]/page.tsx` — edit +
+ succeeded in 0ms:
+Handoff-level: these are intentionally NOT in 6c. Don't scope-creep.
+
+- **Delete user.** Backend has no delete endpoint. Deactivate via
+  `is_active: false` is the soft-delete.
+- **Audit-log surfacing.** Backend logs every admin action via
+  `logAction` (`admin-users.js:98,140,182,213`) but we don't have
+  a read endpoint for it. Phase 7+.
+- **Company assignment UI.** Backend supports
+  `POST /api/companies/:companyId/users/:userId/assign` but iOS
+  doesn't surface it and there's no clean UX for picking a company
+  from a free list yet. Leave `company_id` editable as a raw UUID
+  field behind a "Company" label only — advanced-users-only
+  affordance. Full picker deferred.
+- **Bulk actions** (bulk deactivate, bulk reset). Rare, messy UI,
+  no iOS precedent.
+- **Email notifications** on create / reset. Backend doesn't send.
+  The admin is expected to communicate credentials out-of-band
+  (same as the 6b invite flow).
+- **Failed-login-attempts display.** The field exists on
+  `AdminUser` but has no UX value — the "Locked" badge is enough
+exec
+/bin/zsh -lc "sed -n '320,336p' web/PHASE_6C_HANDOFF.md" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+
+exec
+/bin/zsh -lc "sed -n '150,220p' web/PHASE_6C_HANDOFF.md" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+  (Prev / Next, 50 per page), render a card list with: avatar
+  initial, name, email, role pill (`admin` gets brand-blue,
+  `user` neutral), company-role pill (if any), active/inactive
+  badge (red "Inactive" when `!is_active`), locked badge ("Locked"
+  when `locked_until && new Date(locked_until) > now`).
+  Row is a `<Link href="/settings/admin/users/{id}">`. Add a
+  floating "+ New user" button top-right.
+- **User form page (shared create+edit via a `UserForm` inner
+  component)** — FloatingLabelInputs for name, email, company_name
+  + a password input for create-mode only. Role `<select>` (`admin`
+  / `user`). Company role `<select>` (`owner` / `admin` / `employee`
+  / `''` for none — backend accepts null via omitted field).
+  `is_active` toggle (edit-mode only — new users are always active).
+  Self-edit guard: if `userId === currentUser.id`, disable role +
+  is_active with a hint banner "You can't demote or deactivate
+  yourself."
+- **Reset-password sheet** — copy `InviteEmployeeSheet` from
+  `/settings/company/dashboard/page.tsx`. Single password field,
+  ≥ 8 char client guard, POST, success state with an info line:
+  "All existing sessions for this user have been signed out." No
+exec
+/bin/zsh -lc "nl -ba web/PHASE_6C_HANDOFF.md | sed -n '150,170p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "nl -ba web/PHASE_6C_HANDOFF.md | sed -n '224,235p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+   224	- **Audit-log surfacing.** Backend logs every admin action via
+   225	  `logAction` (`admin-users.js:98,140,182,213`) but we don't have
+   226	  a read endpoint for it. Phase 7+.
+   227	- **Company assignment UI.** Backend supports
+   228	  `POST /api/companies/:companyId/users/:userId/assign` but iOS
+   229	  doesn't surface it and there's no clean UX for picking a company
+   230	  from a free list yet. Leave `company_id` editable as a raw UUID
+   231	  field behind a "Company" label only — advanced-users-only
+   232	  affordance. Full picker deferred.
+   233	- **Bulk actions** (bulk deactivate, bulk reset). Rare, messy UI,
+   234	  no iOS precedent.
+   235	- **Email notifications** on create / reset. Backend doesn't send.
+ succeeded in 0ms:
+   150	  (Prev / Next, 50 per page), render a card list with: avatar
+   151	  initial, name, email, role pill (`admin` gets brand-blue,
+   152	  `user` neutral), company-role pill (if any), active/inactive
+   153	  badge (red "Inactive" when `!is_active`), locked badge ("Locked"
+   154	  when `locked_until && new Date(locked_until) > now`).
+   155	  Row is a `<Link href="/settings/admin/users/{id}">`. Add a
+   156	  floating "+ New user" button top-right.
+   157	- **User form page (shared create+edit via a `UserForm` inner
+   158	  component)** — FloatingLabelInputs for name, email, company_name
+   159	  + a password input for create-mode only. Role `<select>` (`admin`
+   160	  / `user`). Company role `<select>` (`owner` / `admin` / `employee`
+   161	  / `''` for none — backend accepts null via omitted field).
+   162	  `is_active` toggle (edit-mode only — new users are always active).
+   163	  Self-edit guard: if `userId === currentUser.id`, disable role +
+   164	  is_active with a hint banner "You can't demote or deactivate
+   165	  yourself."
+   166	- **Reset-password sheet** — copy `InviteEmployeeSheet` from
+   167	  `/settings/company/dashboard/page.tsx`. Single password field,
+   168	  ≥ 8 char client guard, POST, success state with an info line:
+   169	  "All existing sessions for this user have been signed out." No
+codex
+## 1. Summary of the phase
+
+`bc11914` adds the system-admin user-management subtree under `/settings/admin/users`: a paginated list, a create page, an edit page, reset-password and unlock flows, and five new admin API client methods. It also enables the Settings hub link for system admins by removing the Phase 6c placeholder state in [page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/settings/page.tsx:124).
+
+## 2. Alignment with original plan
+
+The phase largely matches the handoff on route structure, list/create/edit/reset/unlock coverage, reuse of `useCurrentUser()`/`isSystemAdmin()`, and the hub-link activation. The current working tree has only one later change in the reviewed surface: [page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/settings/page.tsx:9) now also renders `IOSInstallHint`, which is unrelated to Phase 6c.
+
+There are two notable misses versus the handoff:
+- The handoff explicitly called for editable `company_role` and a raw UUID `company_id` affordance on the shared create/edit form ([web/PHASE_6C_HANDOFF.md](/Users/derekbeckley/Developer/EICR_Automation/web/PHASE_6C_HANDOFF.md:157), [web/PHASE_6C_HANDOFF.md](/Users/derekbeckley/Developer/EICR_Automation/web/PHASE_6C_HANDOFF.md:230)). The create page has both, but the edit page renders them read-only and the API client omits them from `adminUpdateUser`.
+- The handoff described a shared create/edit inner form. The implementation duplicates form primitives instead. That is not a ship blocker by itself, but it is a deviation.
+
+## 3. Correctness issues
+
+- `P1` Missing edit support for `company_id` and `company_role`. The edit page only displays those fields read-only in [page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/settings/admin/users/[userId]/page.tsx:297), and `adminUpdateUser` is typed to exclude them in [api-client.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/api-client.ts:533), even though the backend whitelist accepts both in [db.js](/Users/derekbeckley/Developer/EICR_Automation/src/db.js:271). Result: admins can create a company assignment/role but cannot correct it later from the web UI.
+- `P2` The edit page can falsely report “User not found” once the user is beyond the first 1,000 records. `load()` hard-stops at `MAX_PAGES = 20` in [page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/settings/admin/users/[userId]/page.tsx:84) and then sets `notFound`, even though `/api/admin/users` is system-wide, not tenant-scoped.
+- `P2` The list page leaves stale error banners on screen after a subsequent successful reload. Neither the initial fetch nor the focus refresh clears `error` on success in [page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/settings/admin/users/page.tsx:50) and [page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/settings/admin/users/page.tsx:73).
+- `P2` Server validation errors will often surface as raw JSON strings, not user-facing messages. `request()` throws `res.text()` directly in [api-client.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/api-client.ts:62), while these pages assume `err.message` is plain text in [new/page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/settings/admin/users/new/page.tsx:81), [userId/page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/settings/admin/users/[userId]/page.tsx:171), and [userId/page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/settings/admin/users/[userId]/page.tsx:423).
+
+## 4. Security issues
+
+- No material new security defect found in this commit. The routes remain protected in middleware at [middleware.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/middleware.ts:54), backend admin routes are still mounted behind `requireAuth + requireAdmin`, user-controlled strings are rendered through React escaping, and IDs are URL-encoded in the client at [api-client.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/api-client.ts:549) and [api-client.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/api-client.ts:562).
+
+## 5. Performance issues
+
+- `P2` The edit-page lookup is a sequential request waterfall of up to 20 list fetches in [page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/settings/admin/users/[userId]/page.tsx:87). Even when it succeeds, worst-case latency scales linearly with page count and needlessly re-downloads whole user pages just to locate one row.
+
+## 6. Accessibility issues
+
+- `P1` `ResetPasswordSheet` is only a styled overlay, not an accessible modal dialog. It sets `role="dialog"` but does not trap focus, move initial focus into the sheet, restore focus on close, or support `Escape` dismissal in [page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/settings/admin/users/[userId]/page.tsx:440). Keyboard and screen-reader users can still tab into background controls.
+
+## 7. Code quality
+
+- `P2` `adminUpdateUser`’s type/comment drift from backend reality in [api-client.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/api-client.ts:533). That mismatch is already causing a feature gap and will make future admin-user work error-prone.
+- `P3` `LabelledSelect` is duplicated almost verbatim in [new/page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/settings/admin/users/new/page.tsx:222) and [userId/page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/settings/admin/users/[userId]/page.tsx:504). Not severe, but it is exactly the kind of drift the handoff’s shared-form guidance was trying to avoid.
+
+## 8. Test coverage gaps
+
+No automated tests were added in this phase. `git show --stat bc11914` contains only app/API-client files, and a repo search did not find matching admin-user/settings tests.
+
+Missing coverage is most risky around:
+- Editing another user’s role/active state and the self-edit guard.
+- Reset-password success/error handling and unlock visibility.
+- Pagination/error-recovery behavior on the list page.
+- Admin-only route gating and non-admin redirect behavior.
+
+## 9. Suggested fixes
+
+1. [web/src/app/settings/admin/users/[userId]/page.tsx:297](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/settings/admin/users/[userId]/page.tsx:297), [web/src/lib/api-client.ts:533](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/api-client.ts:533): add editable `company_id` and `company_role` to the edit form and include them in `adminUpdateUser`. Why: this is required by the handoff and the backend already supports both fields.
+2. [web/src/app/settings/admin/users/[userId]/page.tsx:84](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/settings/admin/users/[userId]/page.tsx:84): remove the hard 20-page cap or replace this scan with a dedicated `GET /api/admin/users/:id` endpoint. Why: the current implementation can return a false “User not found” for valid users and scales poorly.
+3. [web/src/app/settings/admin/users/[userId]/page.tsx:440](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/settings/admin/users/[userId]/page.tsx:440): convert `ResetPasswordSheet` to a real dialog primitive with initial focus, focus trap, Escape handling, and focus restoration to the trigger. Why: current modal behavior is not keyboard-safe.
+4. [web/src/app/settings/admin/users/page.tsx:50](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/settings/admin/users/page.tsx:50): call `setError(null)` before each fetch and after successful responses. Why: recovered list loads should not continue to display stale failure banners.
+5. [web/src/lib/api-client.ts:62](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/api-client.ts:62): parse JSON error bodies and prefer `body.error` when constructing `ApiError`. Why: current admin flows can show raw JSON payloads instead of clean validation messages.
+
+## 10. Overall verdict
+
+**Needs rework.**
+
+Top 3 priority fixes:
+1. Restore missing edit functionality for `company_id` and `company_role`.
+2. Fix the edit-page lookup so valid users cannot become false 404s beyond the 1,000-user cap.
+3. Make the reset-password sheet an actually accessible modal.
+tokens used
+62,506
+## 1. Summary of the phase
+
+`bc11914` adds the system-admin user-management subtree under `/settings/admin/users`: a paginated list, a create page, an edit page, reset-password and unlock flows, and five new admin API client methods. It also enables the Settings hub link for system admins by removing the Phase 6c placeholder state in [page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/settings/page.tsx:124).
+
+## 2. Alignment with original plan
+
+The phase largely matches the handoff on route structure, list/create/edit/reset/unlock coverage, reuse of `useCurrentUser()`/`isSystemAdmin()`, and the hub-link activation. The current working tree has only one later change in the reviewed surface: [page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/settings/page.tsx:9) now also renders `IOSInstallHint`, which is unrelated to Phase 6c.
+
+There are two notable misses versus the handoff:
+- The handoff explicitly called for editable `company_role` and a raw UUID `company_id` affordance on the shared create/edit form ([web/PHASE_6C_HANDOFF.md](/Users/derekbeckley/Developer/EICR_Automation/web/PHASE_6C_HANDOFF.md:157), [web/PHASE_6C_HANDOFF.md](/Users/derekbeckley/Developer/EICR_Automation/web/PHASE_6C_HANDOFF.md:230)). The create page has both, but the edit page renders them read-only and the API client omits them from `adminUpdateUser`.
+- The handoff described a shared create/edit inner form. The implementation duplicates form primitives instead. That is not a ship blocker by itself, but it is a deviation.
+
+## 3. Correctness issues
+
+- `P1` Missing edit support for `company_id` and `company_role`. The edit page only displays those fields read-only in [page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/settings/admin/users/[userId]/page.tsx:297), and `adminUpdateUser` is typed to exclude them in [api-client.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/api-client.ts:533), even though the backend whitelist accepts both in [db.js](/Users/derekbeckley/Developer/EICR_Automation/src/db.js:271). Result: admins can create a company assignment/role but cannot correct it later from the web UI.
+- `P2` The edit page can falsely report “User not found” once the user is beyond the first 1,000 records. `load()` hard-stops at `MAX_PAGES = 20` in [page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/settings/admin/users/[userId]/page.tsx:84) and then sets `notFound`, even though `/api/admin/users` is system-wide, not tenant-scoped.
+- `P2` The list page leaves stale error banners on screen after a subsequent successful reload. Neither the initial fetch nor the focus refresh clears `error` on success in [page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/settings/admin/users/page.tsx:50) and [page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/settings/admin/users/page.tsx:73).
+- `P2` Server validation errors will often surface as raw JSON strings, not user-facing messages. `request()` throws `res.text()` directly in [api-client.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/api-client.ts:62), while these pages assume `err.message` is plain text in [new/page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/settings/admin/users/new/page.tsx:81), [userId/page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/settings/admin/users/[userId]/page.tsx:171), and [userId/page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/settings/admin/users/[userId]/page.tsx:423).
+
+## 4. Security issues
+
+- No material new security defect found in this commit. The routes remain protected in middleware at [middleware.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/middleware.ts:54), backend admin routes are still mounted behind `requireAuth + requireAdmin`, user-controlled strings are rendered through React escaping, and IDs are URL-encoded in the client at [api-client.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/api-client.ts:549) and [api-client.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/api-client.ts:562).
+
+## 5. Performance issues
+
+- `P2` The edit-page lookup is a sequential request waterfall of up to 20 list fetches in [page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/settings/admin/users/[userId]/page.tsx:87). Even when it succeeds, worst-case latency scales linearly with page count and needlessly re-downloads whole user pages just to locate one row.
+
+## 6. Accessibility issues
+
+- `P1` `ResetPasswordSheet` is only a styled overlay, not an accessible modal dialog. It sets `role="dialog"` but does not trap focus, move initial focus into the sheet, restore focus on close, or support `Escape` dismissal in [page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/settings/admin/users/[userId]/page.tsx:440). Keyboard and screen-reader users can still tab into background controls.
+
+## 7. Code quality
+
+- `P2` `adminUpdateUser`’s type/comment drift from backend reality in [api-client.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/api-client.ts:533). That mismatch is already causing a feature gap and will make future admin-user work error-prone.
+- `P3` `LabelledSelect` is duplicated almost verbatim in [new/page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/settings/admin/users/new/page.tsx:222) and [userId/page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/settings/admin/users/[userId]/page.tsx:504). Not severe, but it is exactly the kind of drift the handoff’s shared-form guidance was trying to avoid.
+
+## 8. Test coverage gaps
+
+No automated tests were added in this phase. `git show --stat bc11914` contains only app/API-client files, and a repo search did not find matching admin-user/settings tests.
+
+Missing coverage is most risky around:
+- Editing another user’s role/active state and the self-edit guard.
+- Reset-password success/error handling and unlock visibility.
+- Pagination/error-recovery behavior on the list page.
+- Admin-only route gating and non-admin redirect behavior.
+
+## 9. Suggested fixes
+
+1. [web/src/app/settings/admin/users/[userId]/page.tsx:297](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/settings/admin/users/[userId]/page.tsx:297), [web/src/lib/api-client.ts:533](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/api-client.ts:533): add editable `company_id` and `company_role` to the edit form and include them in `adminUpdateUser`. Why: this is required by the handoff and the backend already supports both fields.
+2. [web/src/app/settings/admin/users/[userId]/page.tsx:84](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/settings/admin/users/[userId]/page.tsx:84): remove the hard 20-page cap or replace this scan with a dedicated `GET /api/admin/users/:id` endpoint. Why: the current implementation can return a false “User not found” for valid users and scales poorly.
+3. [web/src/app/settings/admin/users/[userId]/page.tsx:440](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/settings/admin/users/[userId]/page.tsx:440): convert `ResetPasswordSheet` to a real dialog primitive with initial focus, focus trap, Escape handling, and focus restoration to the trigger. Why: current modal behavior is not keyboard-safe.
+4. [web/src/app/settings/admin/users/page.tsx:50](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/settings/admin/users/page.tsx:50): call `setError(null)` before each fetch and after successful responses. Why: recovered list loads should not continue to display stale failure banners.
+5. [web/src/lib/api-client.ts:62](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/api-client.ts:62): parse JSON error bodies and prefer `body.error` when constructing `ApiError`. Why: current admin flows can show raw JSON payloads instead of clean validation messages.
+
+## 10. Overall verdict
+
+**Needs rework.**
+
+Top 3 priority fixes:
+1. Restore missing edit functionality for `company_id` and `company_role`.
+2. Fix the edit-page lookup so valid users cannot become false 404s beyond the 1,000-user cap.
+3. Make the reset-password sheet an actually accessible modal.

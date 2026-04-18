@@ -1,0 +1,541 @@
+OpenAI Codex v0.116.0 (research preview)
+--------
+workdir: /Users/derekbeckley/Developer/EICR_Automation
+model: gpt-5.4
+provider: openai
+approval: never
+sandbox: read-only
+reasoning effort: none
+reasoning summaries: none
+session id: 019d9dc7-c316-7e32-b261-d2ddb67aca9d
+--------
+user
+You are performing a rigorous code review of a single phase of a Next.js 16 / React 19 PWA frontend rebuild for an electrical-certificate automation tool (EICR / EIC). The repo root is at /Users/derekbeckley/Developer/EICR_Automation and the web package is at web/. Branch: web-rebuild.
+
+TARGET: Phase 7b kickoff — user-initiated SW update handoff
+COMMIT: ce8323a
+
+Context for this phase (original intent, handoff doc, commit message, files changed) is in this repo at: reviews/context/phase-7b1.md — READ THAT FILE FIRST.
+
+Use shell commands to:
+  git show --stat ce8323a
+  git show ce8323a
+to inspect the full diff. Then read any files you need from the working tree (they may have evolved since this commit — note any later changes).
+
+Your output must be a well-structured markdown review with these sections:
+  1. Summary of the phase (2-3 sentences — what it did).
+  2. Alignment with original plan (does the implementation match the handoff doc / commit intent? Any missing objectives?).
+  3. Correctness issues (bugs, race conditions, missing error handling, incorrect semantics). Prioritise P0/P1/P2.
+  4. Security issues (XSS, auth, CSRF, injection, leaked secrets, PII, CORS). Each item tagged with severity.
+  5. Performance issues (re-renders, N+1, large bundles, memory leaks, blocking work on main thread).
+  6. Accessibility issues (semantic HTML, keyboard nav, ARIA, colour contrast, focus management).
+  7. Code quality (duplication, dead code, type-safety holes, naming, convention drift vs. rest of repo).
+  8. Test coverage gaps.
+  9. Suggested fixes — each as a numbered item with: file:line, what to change, why. Be concrete.
+  10. Overall verdict (ship / ship with fixes / needs rework) and top 3 priority fixes.
+
+Be specific — cite file paths and line numbers. Avoid generic advice. If the code is good, say so with evidence. Do NOT modify files; this is review only.
+
+mcp startup: no servers
+codex
+I’m reviewing commit `ce8323a` against the Phase 7b handoff doc first, then I’ll inspect the full diff and relevant working-tree files to identify correctness, security, performance, accessibility, quality, and test gaps with line-specific citations.
+exec
+/bin/zsh -lc "sed -n '1,220p' reviews/context/phase-7b1.md" in /Users/derekbeckley/Developer/EICR_Automation exited 1 in 0ms:
+sed: reviews/context/phase-7b1.md: No such file or directory
+exec
+/bin/zsh -lc 'git show ce8323a' in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc 'git show --stat ce8323a' in /Users/derekbeckley/Developer/EICR_Automation succeeded in 1.13s:
+2026-04-18 00:30:14.764 xcodebuild[38877:67235205]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:30:14.867 xcodebuild[38877:67235204] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-EyxbjqPn' (errno=Operation not permitted)
+2026-04-18 00:30:15.185 xcodebuild[38882:67235235]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:30:15.288 xcodebuild[38882:67235232] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+commit ce8323ac5be6be763c491153a2fb18da62a7cad6
+Author: Derek Beckley <derekbeckley@Dereks-Mac-mini.broadband>
+Date:   Fri Apr 17 22:09:39 2026 +0100
+
+    feat(web): Phase 7b kickoff — user-initiated SW update handoff
+    
+    Replace 7a's `skipWaiting: true` with a postMessage-driven prompt +
+    sonner toast before any other 7b feature lands. Mandated by
+    web/PHASE_7A_HANDOFF.md §"Kickoff checklist for 7b".
+    
+    Why now (before IDB / offline job list / any 7b feature):
+      7a's auto-skipWaiting was safe on the FIRST prod deploy (no prior
+      SW existed) but would hot-swap the bundle under an active inspector
+      mid-edit on every deploy after that — the old tab's JS chunks would
+ succeeded in 1.13s:
+2026-04-18 00:30:14.764 xcodebuild[38878:67235206]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:30:14.867 xcodebuild[38878:67235203] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-Zt5xMcbS' (errno=Operation not permitted)
+2026-04-18 00:30:15.185 xcodebuild[38883:67235236]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:30:15.288 xcodebuild[38883:67235233] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+commit ce8323ac5be6be763c491153a2fb18da62a7cad6
+Author: Derek Beckley <derekbeckley@Dereks-Mac-mini.broadband>
+Date:   Fri Apr 17 22:09:39 2026 +0100
+
+    feat(web): Phase 7b kickoff — user-initiated SW update handoff
+    
+    Replace 7a's `skipWaiting: true` with a postMessage-driven prompt +
+    sonner toast before any other 7b feature lands. Mandated by
+    web/PHASE_7A_HANDOFF.md §"Kickoff checklist for 7b".
+    
+    Why now (before IDB / offline job list / any 7b feature):
+      7a's auto-skipWaiting was safe on the FIRST prod deploy (no prior
+      SW existed) but would hot-swap the bundle under an active inspector
+      mid-edit on every deploy after that — the old tab's JS chunks would
+codex
+The handoff file path from the prompt doesn’t exist at repo root, so I’m locating it and then pulling the full `git show` output from the running sessions. After that I’ll inspect the touched files in the current working tree to note any divergence since `ce8323a`.
+exec
+/bin/zsh -lc "rg --files | rg 'phase-7b1\\.md"'$|phase-7b.*'"\\.md"'$'"'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+web/reviews/claude/phase-7b2.md
+web/reviews/claude/phase-7b3.md
+web/reviews/claude/phase-7b.md
+web/reviews/claude/phase-7b4.md
+web/reviews/claude/phase-7b1.md
+web/reviews/context/phase-7b2.md
+web/reviews/context/phase-7b3.md
+web/reviews/context/phase-7b4.md
+web/reviews/context/phase-7b1.md
+codex
+I have the commit diff. Next I’m reading the Phase 7b handoff doc and the current versions of the touched files with line numbers so I can compare intent versus implementation and note any post-commit drift.
+exec
+/bin/zsh -lc "sed -n '1,260p' web/reviews/context/phase-7b1.md" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+# Phase 7b1 — Context
+
+**Commit:** `ce8323a`
+
+## Commit message
+
+```
+commit ce8323ac5be6be763c491153a2fb18da62a7cad6
+Author:     Derek Beckley <derekbeckley@Dereks-Mac-mini.broadband>
+AuthorDate: Fri Apr 17 22:09:39 2026 +0100
+Commit:     Derek Beckley <derekbeckley@Dereks-Mac-mini.broadband>
+CommitDate: Fri Apr 17 22:09:39 2026 +0100
+
+    feat(web): Phase 7b kickoff — user-initiated SW update handoff
+    
+    Replace 7a's `skipWaiting: true` with a postMessage-driven prompt +
+    sonner toast before any other 7b feature lands. Mandated by
+    web/PHASE_7A_HANDOFF.md §"Kickoff checklist for 7b".
+    
+    Why now (before IDB / offline job list / any 7b feature):
+exec
+/bin/zsh -lc "nl -ba web/src/app/sw.ts | sed -n '60,260p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "nl -ba web/src/app/layout.tsx | sed -n '1,180p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	import type { Metadata, Viewport } from 'next';
+     2	import { Toaster } from 'sonner';
+     3	import { InstallPromptProvider } from '@/components/pwa/install-prompt-provider';
+     4	import { SwUpdateProvider } from '@/components/pwa/sw-update-provider';
+     5	import './globals.css';
+     6	
+     7	export const metadata: Metadata = {
+     8	  title: 'CertMate — EICR-oMatic',
+     9	  description: 'Voice-driven EICR / EIC certificate authoring',
+    10	  applicationName: 'CertMate',
+    11	  // `icons` makes Next emit <link rel="icon"> + <link rel="apple-touch-icon">
+    12	  // pointing at the files generated by `scripts/generate-pwa-icons.mjs`.
+    13	  // Keeping these explicit (rather than relying on `src/app/icon.tsx`
+    14	  // conventions) means the raster assets live in `public/` and are served
+    15	  // unhashed with the SW's CacheFirst "icons" rule applied.
+    16	  icons: {
+    17	    icon: [
+    18	      { url: '/favicon.svg', type: 'image/svg+xml' },
+    19	      { url: '/favicon-32.png', sizes: '32x32', type: 'image/png' },
+    20	      { url: '/icons/icon-192.png', sizes: '192x192', type: 'image/png' },
+ succeeded in 0ms:
+    60	  return request.headers.get('RSC') === '1' || url.searchParams.has('_rsc');
+    61	}
+    62	
+    63	function isServerActionRequest(request: Request): boolean {
+    64	  // Next sends the `Next-Action` request header on server-action POSTs.
+    65	  // Belt-and-braces with the `/_next/app/` URL match — the header catches
+    66	  // the dispatch even if Next changes the endpoint path.
+    67	  return request.headers.has('Next-Action');
+    68	}
+    69	
+    70	const serwist = new Serwist({
+    71	  // Serwist's build plugin injects the precache manifest here. In 7a we
+    72	  // deliberately keep the list short (just the /offline shell + manifest
+    73	  // icons from `public/`), so a cold-cache install is fast on mobile data.
+    74	  precacheEntries: self.__SW_MANIFEST,
+    75	  // Phase 7b: `skipWaiting` is no longer automatic. A freshly installed SW
+    76	  // sits in `waiting` until the client posts `{ type: 'SKIP_WAITING' }`
+    77	  // (see the `message` listener below), which we trigger from a sonner
+    78	  // toast the user taps. This prevents a deploy hot-swapping code under
+    79	  // an active inspector mid-edit — the old tab keeps its original SW and
+exec
+/bin/zsh -lc 'nl -ba web/src/components/pwa/sw-update-provider.tsx' in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	'use client';
+     2	
+     3	import { useEffect, useRef } from 'react';
+     4	import { toast } from 'sonner';
+     5	
+     6	/**
+     7	 * Renders nothing. Watches the active service-worker registration for a
+     8	 * waiting version and surfaces a sonner toast ("New version available —
+     9	 * Reload") so the user — not the browser — decides when to hot-swap code.
+    10	 *
+    11	 * Why this exists (Phase 7b):
+    12	 *   Phase 7a shipped with `skipWaiting: true`, which is safe on a *first*
+    13	 *   deploy (no prior SW in prod) but on every deploy after that would
+    14	 *   hot-swap the bundle under an inspector mid-edit. 7b removes that flag
+    15	 *   from `sw.ts` and moves the handoff to a user-initiated postMessage.
+    16	 *
+    17	 * Flow:
+    18	 *   1. New build is deployed → browser background-fetches `/sw.js`, new SW
+    19	 *      installs, sits in `waiting` (old SW still controls the page).
+    20	 *   2. This provider detects the waiting SW (either at page load via
+exec
+/bin/zsh -lc "nl -ba web/eslint.config.mjs | sed -n '1,120p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	import { defineConfig, globalIgnores } from "eslint/config";
+     2	import nextVitals from "eslint-config-next/core-web-vitals";
+     3	import nextTs from "eslint-config-next/typescript";
+     4	
+     5	const eslintConfig = defineConfig([
+     6	  ...nextVitals,
+     7	  ...nextTs,
+     8	  // Override default ignores of eslint-config-next.
+     9	  globalIgnores([
+    10	    // Default ignores of eslint-config-next:
+    11	    ".next/**",
+    12	    "out/**",
+    13	    "build/**",
+    14	    "next-env.d.ts",
+    15	    // Serwist-generated service-worker bundle. Source lives in
+    16	    // `src/app/sw.ts` (own tsconfig, typechecked separately); the bundled
+    17	    // output at `public/sw.js` is minified/rolled and not meaningful to
+    18	    // lint. Already in `.gitignore`; adding here so a local build doesn't
+    19	    // surface thousands of "errors" in third-party bundler output.
+    20	    "public/sw.js",
+codex
+I’ve got the committed implementation and the current working-tree versions. I’m checking whether these files changed after `ce8323a`, and I’m scanning adjacent PWA code to validate lifecycle assumptions rather than reviewing the new file in isolation.
+exec
+/bin/zsh -lc "rg -n \"withSerwist|reloadOnOnline|disable:\" web/next.config.ts web/package.json web/src -g '"'!web/src/components/pwa/sw-update-provider.tsx'"'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+web/next.config.ts:2:import withSerwistInit from '@serwist/next';
+web/next.config.ts:13: * - `reloadOnOnline: true` (default) means the SPA reloads when the browser
+web/next.config.ts:17: * - `disable: process.env.NODE_ENV === 'development'` keeps the dev server
+web/next.config.ts:21:const withSerwist = withSerwistInit({
+web/next.config.ts:25:  reloadOnOnline: true,
+web/next.config.ts:26:  disable: process.env.NODE_ENV === 'development',
+web/next.config.ts:33:export default withSerwist(nextConfig);
+web/src/components/pwa/offline-indicator.tsx:33: *   - Serwist's `reloadOnOnline: true` (set in `next.config.ts` since
+web/src/app/offline/page.tsx:17: * `reloadOnOnline` default; no per-field sync yet) and forward-compatible
+exec
+/bin/zsh -lc "rg -n \"toast\\(|Toaster|SwUpdateProvider|InstallPromptProvider|controllerchange|getRegistration\\(|updatefound|SKIP_WAITING\" web/src web -g '"'!web/src/components/pwa/sw-update-provider.tsx'"'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+web/src/components/pwa/install-prompt-provider.tsx:20:export function InstallPromptProvider() {
+web/PHASE_7C_HANDOFF.md:143:`src/app/layout.tsx` alongside `InstallPromptProvider` and
+web/PHASE_7C_HANDOFF.md:144:`SwUpdateProvider`. Rejected because:
+web/PHASE_7B_HANDOFF.md:38:  - **(B)** Live `updatefound` → `statechange: installed` while `navigator.serviceWorker.controller != null` (catches in-session upgrades).
+web/PHASE_7B_HANDOFF.md:39:  The `controller != null` guard is the first-install distinguisher — a fresh SW for a user who's never had one should NOT show a "new version" toast. `toastShownRef` dedupes, `reloadedRef` guards against spec-noncompliant double `controllerchange` firings. On user tap, posts `{type:'SKIP_WAITING'}` to `registration.waiting`, waits for `controllerchange`, reloads once.
+web/PHASE_7B_HANDOFF.md:43:- `web/src/app/sw.ts` — removed `skipWaiting: true` from `new Serwist({...})`. Kept `clientsClaim: true` + `navigationPreload: true`. Appended a `message` listener: `if (event.data?.type === 'SKIP_WAITING') void self.skipWaiting()`. Listening directly (rather than via Serwist's config) keeps the contract explicit — the worker skips waiting *because a client asked*, never on its own schedule.
+web/PHASE_7B_HANDOFF.md:44:- `web/src/app/layout.tsx` — mounted `<SwUpdateProvider />` and `<Toaster position="bottom-right" theme="dark" richColors closeButton />` from `sonner`. Bottom-right clears both the mobile AppShell bottom nav AND the floating `RecordingOverlay` mini-pill from Phase 4.
+web/PHASE_7B_HANDOFF.md:110:npm run build                      # succeeds; public/sw.js emitted with SKIP_WAITING handler
+web/PHASE_7B_HANDOFF.md:118:1. **Application → Service Workers** — `/sw.js` active, no `skipWaiting` in the Serwist config (grep `public/sw.js` for `SKIP_WAITING` — 2 occurrences).
+web/PHASE_7B_HANDOFF.md:134:3. Focus the tab → `SwUpdateProvider` detects the `waiting` SW (path A or B) → sonner toast "New version available — Reload".
+web/PHASE_7B_HANDOFF.md:135:4. Tap Reload → `registration.waiting.postMessage({type:'SKIP_WAITING'})` → SW activates → `controllerchange` → `window.location.reload()` (once, guarded by `reloadedRef`).
+web/src/components/pwa/install-prompt-provider.tsx:20:export function InstallPromptProvider() {
+web/src/app/layout.tsx:2:import { Toaster } from 'sonner';
+web/src/app/layout.tsx:3:import { InstallPromptProvider } from '@/components/pwa/install-prompt-provider';
+web/src/app/layout.tsx:4:import { SwUpdateProvider } from '@/components/pwa/sw-update-provider';
+web/src/app/layout.tsx:65:        <InstallPromptProvider />
+web/src/app/layout.tsx:69:         * Reload action. Tap → postMessage `SKIP_WAITING` → `controllerchange`
+web/src/app/layout.tsx:73:        <SwUpdateProvider />
+web/src/app/layout.tsx:78:         * `toast('New version available', ...)` call we rely on the default
+web/src/app/layout.tsx:82:        <Toaster position="bottom-right" theme="dark" richColors closeButton />
+exec
+/bin/zsh -lc 'git rev-parse --short HEAD' in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc 'git diff --stat ce8323a..HEAD -- web/src/components/pwa/sw-update-provider.tsx web/src/app/sw.ts web/src/app/layout.tsx web/eslint.config.mjs' in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc 'git log --oneline --decorate --max-count=8 -- web/src/components/pwa/sw-update-provider.tsx web/src/app/sw.ts web/src/app/layout.tsx web/eslint.config.mjs' in /Users/derekbeckley/Developer/EICR_Automation succeeded in 1.24s:
+2026-04-18 00:30:41.342 xcodebuild[38930:67235689]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:30:41.449 xcodebuild[38930:67235682] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-p9jjv93r' (errno=Operation not permitted)
+2026-04-18 00:30:41.817 xcodebuild[38937:67235726]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:30:41.925 xcodebuild[38937:67235723] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+e64f756
+ succeeded in 1.21s:
+2026-04-18 00:30:41.342 xcodebuild[38931:67235688]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:30:41.449 xcodebuild[38931:67235684] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-hRMOypvS' (errno=Operation not permitted)
+2026-04-18 00:30:41.817 xcodebuild[38936:67235725]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:30:41.925 xcodebuild[38936:67235721] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+ succeeded in 1.31s:
+2026-04-18 00:30:41.342 xcodebuild[38932:67235692]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:30:41.449 xcodebuild[38932:67235687] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-uZheNaFO' (errno=Operation not permitted)
+2026-04-18 00:30:41.817 xcodebuild[38938:67235724]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:30:41.925 xcodebuild[38938:67235722] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+ce8323a feat(web): Phase 7b kickoff — user-initiated SW update handoff
+eb72acc feat(web): Phase 7a PWA foundation
+881d437 feat(web): Phase 0 — ground-up rebuild foundation
+a421194 chore: fresh repo baseline — recover after hardware failure
+exec
+/bin/zsh -lc "nl -ba web/next.config.ts | sed -n '1,120p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "nl -ba web/src/components/pwa/install-prompt-provider.tsx | sed -n '1,200p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	'use client';
+     2	
+     3	import { useEffect } from 'react';
+     4	import { type BeforeInstallPromptEvent, useInstallStore } from '@/lib/pwa/install-store';
+     5	
+     6	/**
+     7	 * Renders nothing. Attaches window listeners for `beforeinstallprompt` and
+     8	 * `appinstalled` so the zustand install store reflects current install
+     9	 * eligibility as early as possible in the page lifecycle.
+    10	 *
+    11	 * Mounted in the root `layout.tsx` (not `AppShell`) because Chrome can fire
+    12	 * `beforeinstallprompt` on any page including `/login`; if we waited until
+    13	 * the AppShell mounted, users who land on `/login`, sign in, and cruise
+    14	 * straight to the dashboard might miss the event entirely and the install
+    15	 * button would never appear.
+    16	 *
+    17	 * `e.preventDefault()` suppresses Chrome's built-in install banner — we
+    18	 * prefer a low-key button in the header over an intrusive banner.
+    19	 */
+    20	export function InstallPromptProvider() {
+ succeeded in 0ms:
+     1	import type { NextConfig } from 'next';
+     2	import withSerwistInit from '@serwist/next';
+     3	
+     4	/**
+     5	 * Phase 7a: wrap the Next config with Serwist so every production build
+     6	 * emits `public/sw.js` from `src/app/sw.ts`. Serwist auto-registers the SW
+     7	 * on the client (no manual registration component needed).
+     8	 *
+     9	 * - `cacheOnNavigation: false` is the default, but set explicitly so a
+    10	 *   future reader doesn't flip it without noticing. We never want Serwist
+    11	 *   stashing authenticated HTML in a runtime cache — every auth-gated
+    12	 *   navigation falls through to the network-only default in `sw.ts`.
+    13	 * - `reloadOnOnline: true` (default) means the SPA reloads when the browser
+    14	 *   reports `online` after being offline. That's the right thing for 7a —
+    15	 *   we don't have an outbox yet, so a reload is the cleanest way to get
+    16	 *   fresh data once the network is back.
+    17	 * - `disable: process.env.NODE_ENV === 'development'` keeps the dev server
+    18	 *   clean; HMR and the SW don't mix, and we don't want a stale dev SW
+    19	 *   serving cached assets after `npm start`.
+    20	 */
+codex
+I’ve identified one clear lifecycle bug and one narrower registration race. I’m checking the repo’s existing test surface now so the review can call out concrete missing coverage instead of generic “add tests” advice.
+exec
+/bin/zsh -lc 'cat web/package.json' in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+{
+  "name": "web",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev --turbopack",
+    "build": "next build --webpack",
+    "start": "next start",
+    "lint": "eslint",
+    "verify": "tsx scripts/verify-visual.ts",
+    "typecheck": "tsc --noEmit",
+    "pwa:icons": "node scripts/generate-pwa-icons.mjs"
+  },
+  "dependencies": {
+    "@dnd-kit/core": "^6.3.1",
+    "@dnd-kit/modifiers": "^9.0.0",
+    "@dnd-kit/sortable": "^10.0.0",
+    "@dnd-kit/utilities": "^3.2.2",
+    "@hookform/resolvers": "^5.2.2",
+    "@radix-ui/react-checkbox": "^1.3.3",
+exec
+/bin/zsh -lc "rg -n \"SwUpdateProvider|SKIP_WAITING|controllerchange|service worker|service-worker|beforeinstallprompt|InstallPromptProvider|offline-indicator|use-online-status\" web/tests web/__tests__ web/src --glob '"'!web/src/components/pwa/sw-update-provider.tsx'"' --glob '"'!web/src/app/sw.ts'"'" in /Users/derekbeckley/Developer/EICR_Automation exited 2 in 0ms:
+rg: web/tests: No such file or directory (os error 2)
+rg: web/__tests__: No such file or directory (os error 2)
+web/src/lib/pwa/install-store.ts:4: * Chrome / Edge / Android WebView fire `beforeinstallprompt` when the app
+web/src/app/layout.tsx:3:import { InstallPromptProvider } from '@/components/pwa/install-prompt-provider';
+web/src/app/layout.tsx:4:import { SwUpdateProvider } from '@/components/pwa/sw-update-provider';
+web/src/app/layout.tsx:60:         * Mounted at the root so Chrome's `beforeinstallprompt` is captured
+web/src/app/layout.tsx:63:         * Serwist auto-registers the service worker itself (see next.config.ts).
+web/src/app/layout.tsx:65:        <InstallPromptProvider />
+web/src/app/layout.tsx:69:         * Reload action. Tap → postMessage `SKIP_WAITING` → `controllerchange`
+web/src/app/layout.tsx:73:        <SwUpdateProvider />
+web/src/app/offline/page.tsx:7: * Offline fallback rendered by the service worker whenever a navigation
+web/src/components/layout/app-shell.tsx:11:import { OfflineIndicator } from '@/components/pwa/offline-indicator';
+web/src/components/layout/app-shell.tsx:99:           * `beforeinstallprompt` and the deferred event is live in the
+web/src/components/pwa/install-prompt-provider.tsx:7: * Renders nothing. Attaches window listeners for `beforeinstallprompt` and
+web/src/components/pwa/install-prompt-provider.tsx:12: * `beforeinstallprompt` on any page including `/login`; if we waited until
+web/src/components/pwa/install-prompt-provider.tsx:20:export function InstallPromptProvider() {
+web/src/components/pwa/install-prompt-provider.tsx:33:    window.addEventListener('beforeinstallprompt', onBeforeInstallPrompt);
+web/src/components/pwa/install-prompt-provider.tsx:36:      window.removeEventListener('beforeinstallprompt', onBeforeInstallPrompt);
+web/src/components/pwa/ios-install-hint.tsx:10: *   Those browsers fire `beforeinstallprompt`, which we capture in
+web/src/components/pwa/offline-indicator.tsx:5:import { useOnlineStatus } from '@/lib/pwa/use-online-status';
+exec
+/bin/zsh -lc "rg --files web | rg 'test|spec|__tests__|vitest|playwright|cypress'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+web/src/lib/constants/inspection-schedule.ts
+web/src/app/job/[id]/inspection/page.tsx
+web/src/app/settings/staff/[inspectorId]/page.tsx
+codex
+## 1. Summary of the phase
+
+This commit correctly kicks off Phase 7b by replacing Phase 7a’s unconditional `skipWaiting: true` flow with a user-mediated service-worker handoff. It adds a root-mounted `SwUpdateProvider` that detects a waiting SW, shows a persistent Sonner toast with a `Reload` action, posts `SKIP_WAITING` to the waiting worker, and reloads on `controllerchange`; it also updates [`layout.tsx`](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/layout.tsx:1), [`sw.ts`](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/sw.ts:70), and [`eslint.config.mjs`](/Users/derekbeckley/Developer/EICR_Automation/web/eslint.config.mjs:1) to support that flow.
+
+The implementation is narrowly scoped and matches the intended “kickoff before any other 7b work” shape. The reviewed files are unchanged in current `HEAD` (`e64f756`) relative to `ce8323a`.
+
+## 2. Alignment with original plan
+
+The implementation is strongly aligned with the handoff doc and commit intent:
+
+- It removes automatic `skipWaiting` from [`sw.ts`](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/sw.ts:75).
+- It adds the explicit `message` listener for `{ type: 'SKIP_WAITING' }` in [`sw.ts`](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/sw.ts:199).
+- It mounts both `<SwUpdateProvider />` and `<Toaster ... />` in [`layout.tsx`](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/layout.tsx:65).
+- It applies the eslint ignore fix for generated Serwist output in [`eslint.config.mjs`](/Users/derekbeckley/Developer/EICR_Automation/web/eslint.config.mjs:15).
+
+No kickoff objective from the handoff doc appears to be omitted. The main gap is not scope coverage but lifecycle correctness: one of the new guards does not actually enforce “user-initiated reload only.”
+
+## 3. Correctness issues
+
+- **P1** Unconditional `controllerchange` reload still reloads the page on first install, even when the user never accepted an update. In [`sw-update-provider.tsx:108-113`](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/pwa/sw-update-provider.tsx:108), the listener is attached on every mount and always calls `window.location.reload()`. On a first-ever SW install, `clientsClaim: true` in [`sw.ts:86`](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/sw.ts:86) can legitimately trigger `controllerchange`, so the app still performs an unsolicited reload during initial activation. That violates the stated intent of a user-mediated handoff and can interrupt a first-session login/edit flow.
+- **P2** The in-session upgrade detector can miss an update that is already in `registration.installing` before the `updatefound` listener is attached. In [`sw-update-provider.tsx:80-106`](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/pwa/sw-update-provider.tsx:80), `watchRegistration()` checks `registration.waiting`, then only listens for future `updatefound`. It never inspects an already-present `registration.installing`. If `getRegistration()` resolves after `updatefound` fired but before the worker reaches `waiting`, this provider misses the `statechange` path and never prompts until the user does a full reload.
+- **P2** Missing error handling around SW registration lookup can surface unhandled rejections from the root layout. [`sw-update-provider.tsx:104-106`](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/pwa/sw-update-provider.tsx:104) calls `navigator.serviceWorker.getRegistration().then(...)` without a `.catch(...)`. In browsers with partial SW support, transient registration failures, or privacy-mode edge cases, this can emit an unhandled promise rejection from a root-mounted effect.
+
+## 4. Security issues
+
+No concrete security findings in this diff.
+
+- **None found**: I did not find new XSS, auth, CSRF, injection, secret leakage, or CORS regressions in `ce8323a`. The `SKIP_WAITING` message listener in [`sw.ts:199-203`](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/sw.ts:199) accepts a simple same-origin client message, but that is not a meaningful privilege expansion beyond an already-compromised same-origin page.
+
+## 5. Performance issues
+
+No material performance issues found.
+
+- The provider is small, mounts once at root, and only installs a handful of event listeners.
+- The added Toaster in [`layout.tsx:82`](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/layout.tsx:82) is appropriate for app-wide notifications.
+- I do not see bundle-shape or re-render concerns that are significant for this phase.
+
+## 6. Accessibility issues
+
+No clear accessibility regressions are evident in the code diff itself.
+
+- Sonner’s action and close button are likely acceptable, but there is no automated or documented verification that the persistent update toast is announced correctly and is fully keyboard-operable.
+- The first-install unsolicited reload described above is also an accessibility concern in practice because it can disrupt focus and assistive-technology flow, but the underlying issue is already covered as a correctness bug.
+
+## 7. Code quality
+
+The phase is generally clean and well-scoped, with good comments and a clear lifecycle narrative.
+
+Minor quality concerns:
+
+- [`sw-update-provider.tsx`](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/pwa/sw-update-provider.tsx:1) is comment-heavy relative to logic size; acceptable for lifecycle code, but the implementation would be safer if the state machine were encoded more explicitly.
+- `toastShownRef` is a single boolean in [`sw-update-provider.tsx:53`](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/pwa/sw-update-provider.tsx:53), not tied to a specific worker/version. That is fine for the simple one-update case, but it makes future multi-update/session behavior harder to reason about.
+
+## 8. Test coverage gaps
+
+Test coverage is the weakest part of this phase.
+
+- There is no visible automated test coverage for the new SW handoff flow.
+- The `web` package has Playwright installed in [`package.json`](/Users/derekbeckley/Developer/EICR_Automation/web/package.json:1), but I did not find phase-specific browser tests for update handoff.
+- Missing scenarios:
+  - first install does **not** reload and does **not** show a toast
+  - a waiting worker present at page load shows exactly one toast
+  - an in-session upgrade via `updatefound` shows exactly one toast
+  - clicking `Reload` posts `SKIP_WAITING` and reloads exactly once on `controllerchange`
+  - duplicate `controllerchange` does not double-reload
+  - registration lookup failure does not produce an unhandled rejection
+
+## 9. Suggested fixes
+
+1. [`web/src/components/pwa/sw-update-provider.tsx:52-53, 68-76, 108-113`](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/pwa/sw-update-provider.tsx:52) — add a separate `reloadRequestedRef`/`acceptedUpdateRef`, set it only inside the toast action, and make `onControllerChange()` return early unless that ref is true. This fixes the current first-install unsolicited reload and makes the flow truly user-initiated.
+2. [`web/src/components/pwa/sw-update-provider.tsx:80-98, 104-106`](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/pwa/sw-update-provider.tsx:80) — factor out a `watchInstalling(worker)` helper, call it both for `registration.installing` immediately and inside the `updatefound` handler, and re-check `registration.waiting` after listeners are attached. This closes the install-in-progress race and makes the “path B” detection actually robust.
+3. [`web/src/components/pwa/sw-update-provider.tsx:70-71, 104-106`](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/pwa/sw-update-provider.tsx:70) — wrap `waiting.postMessage(...)` and `getRegistration()` in defensive error handling. If the waiting worker is gone/redundant or registration lookup fails, either reset the toast state or show a fallback “Refresh to update” path instead of failing silently or leaving an unhandled rejection.
+4. [`web/package.json:5-11`](/Users/derekbeckley/Developer/EICR_Automation/web/package.json:5) and a new browser test file under `web/` — add Playwright coverage for the SW lifecycle cases above. This phase is fundamentally about browser timing/races; unit-only confidence is not enough.
+
+## 10. Overall verdict
+
+**Needs rework.**
+
+Top 3 priority fixes:
+
+1. Stop reloading on `controllerchange` unless the user explicitly accepted the update.
+2. Handle `registration.installing` immediately so in-session upgrades are not missed.
+3. Add browser-level tests for first install, waiting-at-load, and reload-on-accept lifecycle paths.
+tokens used
+41,579
+## 1. Summary of the phase
+
+This commit correctly kicks off Phase 7b by replacing Phase 7a’s unconditional `skipWaiting: true` flow with a user-mediated service-worker handoff. It adds a root-mounted `SwUpdateProvider` that detects a waiting SW, shows a persistent Sonner toast with a `Reload` action, posts `SKIP_WAITING` to the waiting worker, and reloads on `controllerchange`; it also updates [`layout.tsx`](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/layout.tsx:1), [`sw.ts`](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/sw.ts:70), and [`eslint.config.mjs`](/Users/derekbeckley/Developer/EICR_Automation/web/eslint.config.mjs:1) to support that flow.
+
+The implementation is narrowly scoped and matches the intended “kickoff before any other 7b work” shape. The reviewed files are unchanged in current `HEAD` (`e64f756`) relative to `ce8323a`.
+
+## 2. Alignment with original plan
+
+The implementation is strongly aligned with the handoff doc and commit intent:
+
+- It removes automatic `skipWaiting` from [`sw.ts`](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/sw.ts:75).
+- It adds the explicit `message` listener for `{ type: 'SKIP_WAITING' }` in [`sw.ts`](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/sw.ts:199).
+- It mounts both `<SwUpdateProvider />` and `<Toaster ... />` in [`layout.tsx`](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/layout.tsx:65).
+- It applies the eslint ignore fix for generated Serwist output in [`eslint.config.mjs`](/Users/derekbeckley/Developer/EICR_Automation/web/eslint.config.mjs:15).
+
+No kickoff objective from the handoff doc appears to be omitted. The main gap is not scope coverage but lifecycle correctness: one of the new guards does not actually enforce “user-initiated reload only.”
+
+## 3. Correctness issues
+
+- **P1** Unconditional `controllerchange` reload still reloads the page on first install, even when the user never accepted an update. In [`sw-update-provider.tsx:108-113`](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/pwa/sw-update-provider.tsx:108), the listener is attached on every mount and always calls `window.location.reload()`. On a first-ever SW install, `clientsClaim: true` in [`sw.ts:86`](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/sw.ts:86) can legitimately trigger `controllerchange`, so the app still performs an unsolicited reload during initial activation. That violates the stated intent of a user-mediated handoff and can interrupt a first-session login/edit flow.
+- **P2** The in-session upgrade detector can miss an update that is already in `registration.installing` before the `updatefound` listener is attached. In [`sw-update-provider.tsx:80-106`](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/pwa/sw-update-provider.tsx:80), `watchRegistration()` checks `registration.waiting`, then only listens for future `updatefound`. It never inspects an already-present `registration.installing`. If `getRegistration()` resolves after `updatefound` fired but before the worker reaches `waiting`, this provider misses the `statechange` path and never prompts until the user does a full reload.
+- **P2** Missing error handling around SW registration lookup can surface unhandled rejections from the root layout. [`sw-update-provider.tsx:104-106`](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/pwa/sw-update-provider.tsx:104) calls `navigator.serviceWorker.getRegistration().then(...)` without a `.catch(...)`. In browsers with partial SW support, transient registration failures, or privacy-mode edge cases, this can emit an unhandled promise rejection from a root-mounted effect.
+
+## 4. Security issues
+
+No concrete security findings in this diff.
+
+- **None found**: I did not find new XSS, auth, CSRF, injection, secret leakage, or CORS regressions in `ce8323a`. The `SKIP_WAITING` message listener in [`sw.ts:199-203`](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/sw.ts:199) accepts a simple same-origin client message, but that is not a meaningful privilege expansion beyond an already-compromised same-origin page.
+
+## 5. Performance issues
+
+No material performance issues found.
+
+- The provider is small, mounts once at root, and only installs a handful of event listeners.
+- The added Toaster in [`layout.tsx:82`](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/layout.tsx:82) is appropriate for app-wide notifications.
+- I do not see bundle-shape or re-render concerns that are significant for this phase.
+
+## 6. Accessibility issues
+
+No clear accessibility regressions are evident in the code diff itself.
+
+- Sonner’s action and close button are likely acceptable, but there is no automated or documented verification that the persistent update toast is announced correctly and is fully keyboard-operable.
+- The first-install unsolicited reload described above is also an accessibility concern in practice because it can disrupt focus and assistive-technology flow, but the underlying issue is already covered as a correctness bug.
+
+## 7. Code quality
+
+The phase is generally clean and well-scoped, with good comments and a clear lifecycle narrative.
+
+Minor quality concerns:
+
+- [`sw-update-provider.tsx`](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/pwa/sw-update-provider.tsx:1) is comment-heavy relative to logic size; acceptable for lifecycle code, but the implementation would be safer if the state machine were encoded more explicitly.
+- `toastShownRef` is a single boolean in [`sw-update-provider.tsx:53`](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/pwa/sw-update-provider.tsx:53), not tied to a specific worker/version. That is fine for the simple one-update case, but it makes future multi-update/session behavior harder to reason about.
+
+## 8. Test coverage gaps
+
+Test coverage is the weakest part of this phase.
+
+- There is no visible automated test coverage for the new SW handoff flow.
+- The `web` package has Playwright installed in [`package.json`](/Users/derekbeckley/Developer/EICR_Automation/web/package.json:1), but I did not find phase-specific browser tests for update handoff.
+- Missing scenarios:
+  - first install does **not** reload and does **not** show a toast
+  - a waiting worker present at page load shows exactly one toast
+  - an in-session upgrade via `updatefound` shows exactly one toast
+  - clicking `Reload` posts `SKIP_WAITING` and reloads exactly once on `controllerchange`
+  - duplicate `controllerchange` does not double-reload
+  - registration lookup failure does not produce an unhandled rejection
+
+## 9. Suggested fixes
+
+1. [`web/src/components/pwa/sw-update-provider.tsx:52-53, 68-76, 108-113`](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/pwa/sw-update-provider.tsx:52) — add a separate `reloadRequestedRef`/`acceptedUpdateRef`, set it only inside the toast action, and make `onControllerChange()` return early unless that ref is true. This fixes the current first-install unsolicited reload and makes the flow truly user-initiated.
+2. [`web/src/components/pwa/sw-update-provider.tsx:80-98, 104-106`](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/pwa/sw-update-provider.tsx:80) — factor out a `watchInstalling(worker)` helper, call it both for `registration.installing` immediately and inside the `updatefound` handler, and re-check `registration.waiting` after listeners are attached. This closes the install-in-progress race and makes the “path B” detection actually robust.
+3. [`web/src/components/pwa/sw-update-provider.tsx:70-71, 104-106`](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/pwa/sw-update-provider.tsx:70) — wrap `waiting.postMessage(...)` and `getRegistration()` in defensive error handling. If the waiting worker is gone/redundant or registration lookup fails, either reset the toast state or show a fallback “Refresh to update” path instead of failing silently or leaving an unhandled rejection.
+4. [`web/package.json:5-11`](/Users/derekbeckley/Developer/EICR_Automation/web/package.json:5) and a new browser test file under `web/` — add Playwright coverage for the SW lifecycle cases above. This phase is fundamentally about browser timing/races; unit-only confidence is not enough.
+
+## 10. Overall verdict
+
+**Needs rework.**
+
+Top 3 priority fixes:
+
+1. Stop reloading on `controllerchange` unless the user explicitly accepted the update.
+2. Handle `registration.installing` immediately so in-session upgrades are not missed.
+3. Add browser-level tests for first install, waiting-at-load, and reload-on-accept lifecycle paths.

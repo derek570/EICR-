@@ -1,0 +1,492 @@
+OpenAI Codex v0.116.0 (research preview)
+--------
+workdir: /Users/derekbeckley/Developer/EICR_Automation
+model: gpt-5.4
+provider: openai
+approval: never
+sandbox: read-only
+reasoning effort: none
+reasoning summaries: none
+session id: 019d9da0-1cff-71b0-82d2-1e11f625161b
+--------
+user
+You are performing a rigorous code review of a single phase of a Next.js 16 / React 19 PWA frontend rebuild for an electrical-certificate automation tool (EICR / EIC). The repo root is at /Users/derekbeckley/Developer/EICR_Automation and the web package is at web/. Branch: web-rebuild.
+
+TARGET: Phase 4a — recording overlay + transcript bar scaffold
+COMMIT: b0eb64c
+
+Context for this phase (original intent, handoff doc, commit message, files changed) is in this repo at: reviews/context/phase-4a.md — READ THAT FILE FIRST.
+
+Use shell commands to:
+  git show --stat b0eb64c
+  git show b0eb64c
+to inspect the full diff. Then read any files you need from the working tree (they may have evolved since this commit — note any later changes).
+
+Your output must be a well-structured markdown review with these sections:
+  1. Summary of the phase (2-3 sentences — what it did).
+  2. Alignment with original plan (does the implementation match the handoff doc / commit intent? Any missing objectives?).
+  3. Correctness issues (bugs, race conditions, missing error handling, incorrect semantics). Prioritise P0/P1/P2.
+  4. Security issues (XSS, auth, CSRF, injection, leaked secrets, PII, CORS). Each item tagged with severity.
+  5. Performance issues (re-renders, N+1, large bundles, memory leaks, blocking work on main thread).
+  6. Accessibility issues (semantic HTML, keyboard nav, ARIA, colour contrast, focus management).
+  7. Code quality (duplication, dead code, type-safety holes, naming, convention drift vs. rest of repo).
+  8. Test coverage gaps.
+  9. Suggested fixes — each as a numbered item with: file:line, what to change, why. Be concrete.
+  10. Overall verdict (ship / ship with fixes / needs rework) and top 3 priority fixes.
+
+Be specific — cite file paths and line numbers. Avoid generic advice. If the code is good, say so with evidence. Do NOT modify files; this is review only.
+
+mcp startup: no servers
+codex
+Reviewing commit `b0eb64c` against the phase handoff first, then I’ll inspect the full diff and the current versions of any touched files to separate commit-era issues from later changes.
+exec
+/bin/zsh -lc "sed -n '1,240p' reviews/context/phase-4a.md" in /Users/derekbeckley/Developer/EICR_Automation exited 1 in 0ms:
+sed: reviews/context/phase-4a.md: No such file or directory
+exec
+/bin/zsh -lc 'git show b0eb64c' in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc 'git show --stat b0eb64c' in /Users/derekbeckley/Developer/EICR_Automation succeeded in 1.37s:
+2026-04-17 23:46:57.384 xcodebuild[30755:67192040]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:46:57.585 xcodebuild[30755:67192039] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-6o67YIAf' (errno=Operation not permitted)
+2026-04-17 23:46:57.965 xcodebuild[30758:67192059]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:46:58.069 xcodebuild[30758:67192057] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+commit b0eb64c1f1af456695b875825ff74e8cbe6cc6ee
+Author: Derek Beckley <derekbeckley@Dereks-Mac-mini.broadband>
+Date:   Fri Apr 17 12:50:53 2026 +0100
+
+    feat(web): Phase 4a recording overlay + transcript bar scaffold
+    
+    What
+    - Add RecordingProvider at `web/src/lib/recording-context.tsx` exposing a
+      state machine (idle → requesting-mic → active → dozing → sleeping /
+      error), mic level (0-1), elapsed seconds, cost readout, rolling
+      transcript buffer (last 10 utterances), and start/stop/pause/resume/
+      minimise/expand actions.
+    - Add `web/src/components/recording/recording-overlay.tsx` — full-sheet
+      overlay with a brand-gradient hero (state pill + timer + cost),
+ succeeded in 1.37s:
+2026-04-17 23:46:57.384 xcodebuild[30754:67192041]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:46:57.585 xcodebuild[30754:67192038] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-PFnAeGC1' (errno=Operation not permitted)
+2026-04-17 23:46:57.965 xcodebuild[30759:67192060]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:46:58.069 xcodebuild[30759:67192058] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+commit b0eb64c1f1af456695b875825ff74e8cbe6cc6ee
+Author: Derek Beckley <derekbeckley@Dereks-Mac-mini.broadband>
+Date:   Fri Apr 17 12:50:53 2026 +0100
+
+    feat(web): Phase 4a recording overlay + transcript bar scaffold
+    
+    What
+    - Add RecordingProvider at `web/src/lib/recording-context.tsx` exposing a
+      state machine (idle → requesting-mic → active → dozing → sleeping /
+      error), mic level (0-1), elapsed seconds, cost readout, rolling
+      transcript buffer (last 10 utterances), and start/stop/pause/resume/
+      minimise/expand actions.
+    - Add `web/src/components/recording/recording-overlay.tsx` — full-sheet
+      overlay with a brand-gradient hero (state pill + timer + cost),
+codex
+The handoff file path isn’t where the prompt suggested, so I’m locating it and re-running the diff commands without a pager to get usable output from this sandboxed environment.
+exec
+/bin/zsh -lc "rg --files | rg 'phase-4a\\.md"'$'"'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+web/reviews/context/phase-4a.md
+web/reviews/claude/phase-4a.md
+codex
+I have the full commit. Next I’m reading the phase handoff and the touched files from the current tree so I can judge both plan alignment and whether any issues were fixed or introduced later.
+exec
+/bin/zsh -lc 'for f in web/src/app/job/[id]/layout.tsx web/src/components/job/floating-action-bar.tsx web/src/components/recording/recording-overlay.tsx web/src/components/recording/transcript-bar.tsx web/src/lib/recording-context.tsx; do echo "FILE:$f"; nl -ba "$f" | sed -n '"'1,260p'; done" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc 'git diff --stat b0eb64c -- web/src/app/job/[id]/layout.tsx web/src/components/job/floating-action-bar.tsx web/src/components/recording/recording-overlay.tsx web/src/components/recording/transcript-bar.tsx web/src/lib/recording-context.tsx' in /Users/derekbeckley/Developer/EICR_Automation exited 1 in 0ms:
+zsh:1: no matches found: web/src/app/job/[id]/layout.tsx
+ exited 1 in 0ms:
+zsh:1: no matches found: web/src/app/job/[id]/layout.tsx
+exec
+/bin/zsh -lc "sed -n '1,260p' web/reviews/context/phase-4a.md" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+# Phase 4a — Context
+
+**Commit:** `b0eb64c`
+
+## Commit message
+
+```
+commit b0eb64c1f1af456695b875825ff74e8cbe6cc6ee
+Author:     Derek Beckley <derekbeckley@Dereks-Mac-mini.broadband>
+AuthorDate: Fri Apr 17 12:50:53 2026 +0100
+Commit:     Derek Beckley <derekbeckley@Dereks-Mac-mini.broadband>
+CommitDate: Fri Apr 17 12:50:53 2026 +0100
+
+    feat(web): Phase 4a recording overlay + transcript bar scaffold
+    
+    What
+    - Add RecordingProvider at `web/src/lib/recording-context.tsx` exposing a
+      state machine (idle → requesting-mic → active → dozing → sleeping /
+      error), mic level (0-1), elapsed seconds, cost readout, rolling
+      transcript buffer (last 10 utterances), and start/stop/pause/resume/
+codex
+The current-tree read hit zsh globbing on `[id]`. I’m re-running with proper quoting and line-numbered output so the review can cite exact locations.
+exec
+/bin/zsh -lc "for f in 'web/src/app/job/[id]/layout.tsx' 'web/src/components/job/floating-action-bar.tsx' 'web/src/components/recording/recording-overlay.tsx' 'web/src/components/recording/transcript-bar.tsx' 'web/src/lib/recording-context.tsx'; do echo \"FILE:"'$f"; nl -ba "$f" | sed -n '"'1,260p'; done" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+FILE:web/src/app/job/[id]/layout.tsx
+     1	'use client';
+     2	
+     3	import * as React from 'react';
+     4	import { useParams, useRouter } from 'next/navigation';
+     5	import { AppShell } from '@/components/layout/app-shell';
+     6	import { JobHeader } from '@/components/job/job-header';
+     7	import { JobTabNav } from '@/components/job/job-tab-nav';
+     8	import { FloatingActionBar } from '@/components/job/floating-action-bar';
+     9	import { RecordingOverlay } from '@/components/recording/recording-overlay';
+    10	import { TranscriptBar } from '@/components/recording/transcript-bar';
+    11	import { LiveFillView } from '@/components/live-fill/live-fill-view';
+    12	import { JobProvider } from '@/lib/job-context';
+    13	import { RecordingProvider, useRecording } from '@/lib/recording-context';
+    14	import { api } from '@/lib/api-client';
+    15	import { clearAuth, getUser } from '@/lib/auth';
+    16	import { getCachedJob, putCachedJob } from '@/lib/pwa/job-cache';
+    17	import type { JobDetail } from '@/lib/types';
+    18	
+    19	/**
+exec
+/bin/zsh -lc "git diff --stat b0eb64c -- 'web/src/app/job/[id]/layout.tsx' 'web/src/components/job/floating-action-bar.tsx' 'web/src/components/recording/recording-overlay.tsx' 'web/src/components/recording/transcript-bar.tsx' 'web/src/lib/recording-context.tsx'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "for f in 'web/src/app/job/[id]/layout.tsx' 'web/src/components/job/floating-action-bar.tsx' 'web/src/components/recording/recording-overlay.tsx' 'web/src/components/recording/transcript-bar.tsx' 'web/src/lib/recording-context.tsx'; do echo \"COMMIT:"'$f"; git show b0eb64c:"$f" | nl -ba | sed -n '"'1,260p'; done" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 1.18s:
+2026-04-17 23:47:22.840 xcodebuild[30819:67192420]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:47:22.944 xcodebuild[30819:67192418] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-dXCLK3vB' (errno=Operation not permitted)
+2026-04-17 23:47:23.269 xcodebuild[30824:67192442]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:47:23.373 xcodebuild[30824:67192440] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+ web/src/app/job/[id]/layout.tsx                    |  59 +-
+ web/src/components/recording/recording-overlay.tsx |  87 ++-
+ web/src/components/recording/transcript-bar.tsx    |  15 +-
+ web/src/lib/recording-context.tsx                  | 605 ++++++++++++++++++---
+ 4 files changed, 657 insertions(+), 109 deletions(-)
+ succeeded in 5.74s:
+2026-04-17 23:47:22.840 xcodebuild[30820:67192419]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:47:22.944 xcodebuild[30820:67192417] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-1bJc63JO' (errno=Operation not permitted)
+2026-04-17 23:47:23.269 xcodebuild[30823:67192443]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:47:23.373 xcodebuild[30823:67192441] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+     1	'use client';
+     2	
+     3	import * as React from 'react';
+     4	import { useParams, useRouter } from 'next/navigation';
+     5	import { AppShell } from '@/components/layout/app-shell';
+     6	import { JobHeader } from '@/components/job/job-header';
+     7	import { JobTabNav } from '@/components/job/job-tab-nav';
+     8	import { FloatingActionBar } from '@/components/job/floating-action-bar';
+     9	import { RecordingOverlay } from '@/components/recording/recording-overlay';
+    10	import { TranscriptBar } from '@/components/recording/transcript-bar';
+    11	import { JobProvider } from '@/lib/job-context';
+    12	import { RecordingProvider } from '@/lib/recording-context';
+    13	import { api } from '@/lib/api-client';
+    14	import { clearAuth, getUser } from '@/lib/auth';
+codex
+I’ve confirmed the working tree has moved well beyond Phase 4a. I’m now pulling line-numbered snapshots of the commit versions themselves so the findings stay anchored to `b0eb64c`, with any later fixes called out separately.
+exec
+/bin/zsh -lc "GIT_PAGER=cat git show b0eb64c:'web/src/lib/recording-context.tsx' | nl -ba | sed -n '1,260p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 1.07s:
+2026-04-17 23:47:29.253 xcodebuild[30879:67192698]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:47:29.350 xcodebuild[30879:67192697] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-Te1Ouqox' (errno=Operation not permitted)
+2026-04-17 23:47:29.641 xcodebuild[30881:67192707]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:47:29.742 xcodebuild[30881:67192706] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+     1	'use client';
+     2	
+     3	import * as React from 'react';
+     4	
+     5	/**
+     6	 * Recording context (Phase 4a — scaffold only).
+     7	 *
+     8	 * Holds the UI state that every surface needs while the inspector is
+     9	 * recording. Real audio/Deepgram/Sonnet integration arrives in Phases
+    10	 * 4b–4d; this scaffold uses deterministic stubs (fake transcripts, fake
+    11	 * mic level, fake cost ticks) so the overlay, transcript bar, and mic
+    12	 * button can be visually verified against iOS reference screenshots
+    13	 * without requiring a microphone permission prompt.
+    14	 *
+codex
+I’ve got the main risks. I’m checking for existing recording-related tests and any later fixes on the specific race/perf concerns so the review can distinguish “issue in `b0eb64c`” from “already addressed later.”
+exec
+/bin/zsh -lc "rg -n \"RecordingProvider|useRecording|RecordingOverlay|TranscriptBar|floating-action-bar\" web/src web/tests web/__tests__ web/test --glob '"'!**/node_modules/**'"'" in /Users/derekbeckley/Developer/EICR_Automation exited 2 in 0ms:
+rg: web/tests: No such file or directory (os error 2)
+rg: web/__tests__: No such file or directory (os error 2)
+rg: web/test: No such file or directory (os error 2)
+web/src/lib/recording-context.tsx:118:export function RecordingProvider({ children }: { children: React.ReactNode }) {
+web/src/lib/recording-context.tsx:655:export function useRecording(): RecordingCtx {
+web/src/lib/recording-context.tsx:659:      'useRecording must be used inside a <RecordingProvider>. ' +
+web/src/components/recording/transcript-bar.tsx:5:import { useRecording, formatElapsed } from '@/lib/recording-context';
+web/src/components/recording/transcript-bar.tsx:17:export function TranscriptBar() {
+web/src/components/recording/transcript-bar.tsx:18:  const { state, elapsedSec, transcript, interim, isOverlayOpen, expand } = useRecording();
+web/src/lib/recording/live-fill-state.ts:19: *   The store is mutated from inside `useCallback`s in RecordingProvider
+web/src/lib/recording/live-fill-state.ts:181:/** Hook used by <LiveFillView> + RecordingProvider. Returns a stable
+web/src/components/recording/recording-overlay.tsx:14:import { useRecording, formatCost, formatElapsed } from '@/lib/recording-context';
+web/src/components/recording/recording-overlay.tsx:18: * Recording overlay — mirrors iOS `RecordingOverlay.swift`.
+web/src/components/recording/recording-overlay.tsx:31:export function RecordingOverlay() {
+web/src/components/recording/recording-overlay.tsx:47:  } = useRecording();
+web/src/components/recording/recording-overlay.tsx:235:function StatePill({ state }: { state: ReturnType<typeof useRecording>['state'] }) {
+web/src/lib/recording/mic-capture.ts:6: * Used by `RecordingProvider` to drive the VU meter (Phase 4b) and the
+web/src/components/job/floating-action-bar.tsx:13:import { useRecording } from '@/lib/recording-context';
+web/src/components/job/floating-action-bar.tsx:35:  const { state, start, expand } = useRecording();
+web/src/app/layout.tsx:80:         * AppShell bottom nav and the RecordingOverlay mini-pill.
+exec
+/bin/zsh -lc "git diff b0eb64c -- 'web/src/lib/recording-context.tsx' | sed -n '1,260p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "git log --oneline -- 'web/src/lib/recording-context.tsx' 'web/src/components/recording/recording-overlay.tsx' 'web/src/components/recording/transcript-bar.tsx' 'web/src/app/job/[id]/layout.tsx' | sed -n '1,40p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 1.20s:
+2026-04-17 23:47:56.539 xcodebuild[30924:67192997]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:47:56.683 xcodebuild[30924:67192994] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-TTTCKA79' (errno=Operation not permitted)
+2026-04-17 23:47:57.024 xcodebuild[30928:67193017]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:47:57.125 xcodebuild[30928:67193016] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+diff --git a/web/src/lib/recording-context.tsx b/web/src/lib/recording-context.tsx
+index 6f82abb..61cbc42 100644
+--- a/web/src/lib/recording-context.tsx
++++ b/web/src/lib/recording-context.tsx
+@@ -1,16 +1,33 @@
+ 'use client';
+ 
+ import * as React from 'react';
++import { startMicCapture, type MicCaptureHandle } from './recording/mic-capture';
++import { DeepgramService, type DeepgramConnectionState } from './recording/deepgram-service';
++import {
++  SonnetSession,
++  type ExtractionResult,
++  type SonnetConnectionState,
+ succeeded in 1.37s:
+2026-04-17 23:47:56.539 xcodebuild[30925:67192996]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:47:56.683 xcodebuild[30925:67192995] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-N97xNI6p' (errno=Operation not permitted)
+2026-04-17 23:47:57.024 xcodebuild[30929:67193018]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:47:57.125 xcodebuild[30929:67193015] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+2d3527f feat(web): Phase 7b — IDB read-through cache for jobs
+cccd548 feat(web): Phase 5d LiveFillView
+9f1dba6 feat(web): Phase 4e VAD sleep/wake with 3s ring buffer replay
+b6c4b65 feat(web): Phase 4d server-side Sonnet multi-turn extraction + field propagation
+9e93907 feat(web): Phase 4c direct Deepgram Nova-3 WebSocket + live transcripts
+72fb7da feat(web): Phase 4b real mic capture via AudioWorklet + RMS VU meter
+b0eb64c feat(web): Phase 4a recording overlay + transcript bar scaffold
+90bd238 feat(web): job shell iOS parity rework — horizontal tab nav, floating action bar, 5-dot menu handle
+83b0863 feat(web): Phase 2 — job detail shell with 10 tabs
+exec
+/bin/zsh -lc "find web -maxdepth 3 \\( -name '*test.*' -o -name '*spec.*' \\) | sed -n '1,200p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+
+codex
+## 1. Summary of the phase
+
+Phase 4a adds a job-scoped `RecordingProvider`, a full recording overlay, a minimised transcript bar, and wires the mic button in the floating action bar to start or reopen a recording session. The implementation is clearly intended as a visual scaffold: it simulates a short “requesting mic” state, drives a synthetic mic level, and emits fake transcript phrases for UI verification without real audio or websocket dependencies.
+
+The working tree has moved on substantially since `b0eb64c` (`72fb7da`/`9e93907`/`b6c4b65`/`9f1dba6` replace most of this scaffold), so the findings below are about the commit itself unless noted otherwise.
+
+## 2. Alignment with original plan
+
+Broadly, the commit matches the handoff doc and commit intent:
+
+- `RecordingProvider` was added and mounted in `web/src/app/job/[id]/layout.tsx:73-83` (commit `b0eb64c`).
+- The overlay scaffold matches the intended surface and controls in `web/src/components/recording/recording-overlay.tsx:22-175`.
+- The transcript bar exists and is shown only while a session is minimised in `web/src/components/recording/transcript-bar.tsx:17-56`.
+- The mic button was rewired in `web/src/components/job/floating-action-bar.tsx:35-45,144-166`.
+
+Missing / not fully aligned with the stated plan:
+
+- The advertised state machine is only partially implemented. `sleeping` and `error` exist in types/UI labels, but no code path in Phase 4a transitions into either state or surfaces a real error (`web/src/lib/recording-context.tsx:33-71,147-181`).
+- The context comment says `start()` synthesises “partial/final transcripts every ~1.5s”, but the implementation emits only final utterances every 2.2s (`web/src/lib/recording-context.tsx:27-30,126-145`).
+- The commit message mentions “rolling transcript buffer (last 10 utterances)” and that is implemented, but there is no distinct partial/interim scaffold despite the surrounding comments implying one.
+
+## 3. Correctness issues
+
+- **P1** `start()` is race-prone and can resurrect a session after the user has already stopped it. `start()` awaits 250ms, then unconditionally sets `active` and starts the synth timers, with no cancellation check (`web/src/lib/recording-context.tsx:147-160`). If the user taps stop during the delay, or the provider unmounts, the pending async continuation still runs.
+- **P1** `start()` can create duplicate synth loops under rapid repeated clicks. The guard uses captured React state (`if (state !== 'idle' && state !== 'error') return`), so two clicks before the next render can both pass the guard and both call `beginSynthLoop()` after the delay (`web/src/lib/recording-context.tsx:147-160`). That would double-count elapsed time/cost and duplicate transcript emission.
+- **P2** The phase claims `error` is surfaced for permission denial / websocket drop, but Phase 4a has no path that ever sets `state` to `error` or populates error handling beyond a string slot (`web/src/lib/recording-context.tsx:25,54-55,147-181`). As committed, error semantics are dead.
+- **P2** `sleeping` is exposed in the public state and UI, but is unreachable in the provider (`web/src/lib/recording-context.tsx:33-71,171-181`; `web/src/components/recording/recording-overlay.tsx:41-44,187-190`). That is harmless for a scaffold, but it means the exported contract is ahead of reality.
+- **P2** Pausing leaves the last mic level frozen instead of resetting to a paused/resting visual state. `pause()` clears timers and changes state but does not zero `micLevel` (`web/src/lib/recording-context.tsx:171-175`), so the ring scale can stay visibly “hot” while paused.
+
+## 4. Security issues
+
+No material security issues found in this commit.
+
+- **Severity: none identified** No XSS, auth, CSRF, secret leakage, or injection risks are introduced by the overlay scaffold itself. The phase is UI-only and does not yet connect to microphone APIs or remote services.
+
+## 5. Performance issues
+
+- **P2** The entire recording context value is rebuilt on every 100ms tick (`web/src/lib/recording-context.tsx:186-217`), and consumers subscribe to the whole object via `useRecording()`. This forces `FloatingActionBar`, `TranscriptBar`, and `RecordingOverlay` to rerender on every `micLevel`/timer/cost update even when they only need a small subset of fields.
+- **P2** `micLevel`, `elapsedSec`, and `costUsd` are all driven through React state at 10Hz (`web/src/lib/recording-context.tsx:114-145`). That is acceptable for the overlay itself, but there is no selector split or memo boundary to contain the rerender surface.
+
+## 6. Accessibility issues
+
+- **P1** The overlay is marked as a modal dialog but has no focus trap, no initial focus target, and no focus restoration (`web/src/components/recording/recording-overlay.tsx:53-61`). Keyboard users can tab behind the modal.
+- **P2** The dialog does not support keyboard dismissal patterns such as `Escape`, despite offering close/minimise controls (`web/src/components/recording/recording-overlay.tsx:87-90,164-171`).
+- **P2** The transcript area is not exposed as a live region, so newly arriving transcript entries are unlikely to be announced to assistive tech (`web/src/components/recording/recording-overlay.tsx:141-161`; `web/src/components/recording/transcript-bar.tsx:27-55`).
+- **P2** The transcript bar’s only accessible name is “Expand recording overlay”; it does not expose the elapsed time or latest utterance semantically to assistive technology (`web/src/components/recording/transcript-bar.tsx:28-55`).
+
+## 7. Code quality
+
+- Comments and implementation drift in `web/src/lib/recording-context.tsx:27-30,126-145`: the docs describe partial/final transcript scaffolding at ~1.5s, but the code emits only finals at 2.2s.
+- The public API exports states that Phase 4a does not actually implement (`sleeping`, `error`), which increases cognitive load for consumers (`web/src/lib/recording-context.tsx:33-71`).
+- The “keep elapsed/transcript visible for ~400ms” comment in `stop()` does not match behavior; the overlay closes immediately and there is no exit animation code in this commit (`web/src/lib/recording-context.tsx:162-169`).
+
+## 8. Test coverage gaps
+
+There are no recording-related tests in the `web/` package at this point; `find web -maxdepth 3 \( -name '*test.*' -o -name '*spec.*' \)` returned no matches.
+
+Missing coverage that would have caught the main risks:
+
+- `start()` called twice quickly should produce only one active session/timer set.
+- `stop()` during the 250ms “requesting mic” delay should not transition back to `active`.
+- `pause()` / `resume()` should preserve elapsed time without duplicating timers.
+- Overlay accessibility behavior: modal focus containment, close/minimise keyboard paths, and transcript announcement semantics.
+- Transcript bar visibility rules: hidden in `idle`, shown only when session is active and overlay is minimised.
+
+## 9. Suggested fixes
+
+1. **`web/src/lib/recording-context.tsx:147-160`**  
+   Add a session token / cancellation ref around `start()`. Increment it before awaiting, capture it locally, and bail after the `await` if the token is stale or the provider has unmounted.  
+   Why: prevents `stop()`/unmount races from reactivating the session after the user has already closed it.
+
+2. **`web/src/lib/recording-context.tsx:147-160`**  
+   Add an in-flight guard independent of render timing, e.g. `pendingStartRef`, and clear any existing timers before starting a new synth loop.  
+   Why: prevents double-clicks from launching overlapping `setInterval` loops and corrupting elapsed time/cost/transcript state.
+
+3. **`web/src/lib/recording-context.tsx:171-175`**  
+   Reset `micLevel` to `0` when pausing, and consider restoring a defined resting level on resume.  
+   Why: avoids a paused overlay visually implying that speech/audio activity is still present.
+
+4. **`web/src/lib/recording-context.tsx:33-71,147-181`**  
+   Either implement explicit Phase 4a stub transitions for `error`/`sleeping`, or remove them from the exported contract and UI until the later phases land.  
+   Why: the current public state machine overpromises behavior that does not exist.
+
+5. **`web/src/components/recording/recording-overlay.tsx:53-61`**  
+   Add proper modal behavior: focus the first control on open, trap focus within the overlay, restore focus to the mic button on close/minimise, and handle `Escape`.  
+   Why: `role="dialog"` + `aria-modal="true"` is incomplete without keyboard focus management.
+
+6. **`web/src/lib/recording-context.tsx:186-217` and consumers in `web/src/components/job/floating-action-bar.tsx:35-45`, `web/src/components/recording/transcript-bar.tsx:17-26`**  
+   Split the recording context into smaller contexts or selector-style hooks so controls that only need `state`/`expand` do not rerender on every `micLevel` tick.  
+   Why: reduces unnecessary rerenders as the real audio pipeline arrives in later phases.
+
+7. **`web/src/lib/recording-context.tsx:27-30,126-145`**  
+   Make the comments match the scaffold, or add a simple interim transcript stub if that was the original visual requirement.  
+   Why: the current documentation misdescribes what the code actually does.
+
+8. **`web/src/components/recording/recording-overlay.tsx:141-161` and `web/src/components/recording/transcript-bar.tsx:27-55`**  
+   Expose transcript updates through an `aria-live` region and ensure the minimised bar exposes meaningful text, not just an action label.  
+   Why: improves screen-reader usability for the primary output of the recording flow.
+
+## 10. Overall verdict
+
+**Needs rework**
+
+The phase is directionally solid and matches the intended UI scaffold, but the async session lifecycle is not robust enough to ship even as a scaffold. The highest-priority fixes are:
+
+1. Guard `start()` against stop/unmount/double-click races in `web/src/lib/recording-context.tsx:147-160`.
+2. Add real modal accessibility behavior to `web/src/components/recording/recording-overlay.tsx:53-61`.
+3. Either implement or remove the unimplemented `sleeping`/`error` state contract in `web/src/lib/recording-context.tsx:33-71,147-181`.
+tokens used
+52,379
+## 1. Summary of the phase
+
+Phase 4a adds a job-scoped `RecordingProvider`, a full recording overlay, a minimised transcript bar, and wires the mic button in the floating action bar to start or reopen a recording session. The implementation is clearly intended as a visual scaffold: it simulates a short “requesting mic” state, drives a synthetic mic level, and emits fake transcript phrases for UI verification without real audio or websocket dependencies.
+
+The working tree has moved on substantially since `b0eb64c` (`72fb7da`/`9e93907`/`b6c4b65`/`9f1dba6` replace most of this scaffold), so the findings below are about the commit itself unless noted otherwise.
+
+## 2. Alignment with original plan
+
+Broadly, the commit matches the handoff doc and commit intent:
+
+- `RecordingProvider` was added and mounted in `web/src/app/job/[id]/layout.tsx:73-83` (commit `b0eb64c`).
+- The overlay scaffold matches the intended surface and controls in `web/src/components/recording/recording-overlay.tsx:22-175`.
+- The transcript bar exists and is shown only while a session is minimised in `web/src/components/recording/transcript-bar.tsx:17-56`.
+- The mic button was rewired in `web/src/components/job/floating-action-bar.tsx:35-45,144-166`.
+
+Missing / not fully aligned with the stated plan:
+
+- The advertised state machine is only partially implemented. `sleeping` and `error` exist in types/UI labels, but no code path in Phase 4a transitions into either state or surfaces a real error (`web/src/lib/recording-context.tsx:33-71,147-181`).
+- The context comment says `start()` synthesises “partial/final transcripts every ~1.5s”, but the implementation emits only final utterances every 2.2s (`web/src/lib/recording-context.tsx:27-30,126-145`).
+- The commit message mentions “rolling transcript buffer (last 10 utterances)” and that is implemented, but there is no distinct partial/interim scaffold despite the surrounding comments implying one.
+
+## 3. Correctness issues
+
+- **P1** `start()` is race-prone and can resurrect a session after the user has already stopped it. `start()` awaits 250ms, then unconditionally sets `active` and starts the synth timers, with no cancellation check (`web/src/lib/recording-context.tsx:147-160`). If the user taps stop during the delay, or the provider unmounts, the pending async continuation still runs.
+- **P1** `start()` can create duplicate synth loops under rapid repeated clicks. The guard uses captured React state (`if (state !== 'idle' && state !== 'error') return`), so two clicks before the next render can both pass the guard and both call `beginSynthLoop()` after the delay (`web/src/lib/recording-context.tsx:147-160`). That would double-count elapsed time/cost and duplicate transcript emission.
+- **P2** The phase claims `error` is surfaced for permission denial / websocket drop, but Phase 4a has no path that ever sets `state` to `error` or populates error handling beyond a string slot (`web/src/lib/recording-context.tsx:25,54-55,147-181`). As committed, error semantics are dead.
+- **P2** `sleeping` is exposed in the public state and UI, but is unreachable in the provider (`web/src/lib/recording-context.tsx:33-71,171-181`; `web/src/components/recording/recording-overlay.tsx:41-44,187-190`). That is harmless for a scaffold, but it means the exported contract is ahead of reality.
+- **P2** Pausing leaves the last mic level frozen instead of resetting to a paused/resting visual state. `pause()` clears timers and changes state but does not zero `micLevel` (`web/src/lib/recording-context.tsx:171-175`), so the ring scale can stay visibly “hot” while paused.
+
+## 4. Security issues
+
+No material security issues found in this commit.
+
+- **Severity: none identified** No XSS, auth, CSRF, secret leakage, or injection risks are introduced by the overlay scaffold itself. The phase is UI-only and does not yet connect to microphone APIs or remote services.
+
+## 5. Performance issues
+
+- **P2** The entire recording context value is rebuilt on every 100ms tick (`web/src/lib/recording-context.tsx:186-217`), and consumers subscribe to the whole object via `useRecording()`. This forces `FloatingActionBar`, `TranscriptBar`, and `RecordingOverlay` to rerender on every `micLevel`/timer/cost update even when they only need a small subset of fields.
+- **P2** `micLevel`, `elapsedSec`, and `costUsd` are all driven through React state at 10Hz (`web/src/lib/recording-context.tsx:114-145`). That is acceptable for the overlay itself, but there is no selector split or memo boundary to contain the rerender surface.
+
+## 6. Accessibility issues
+
+- **P1** The overlay is marked as a modal dialog but has no focus trap, no initial focus target, and no focus restoration (`web/src/components/recording/recording-overlay.tsx:53-61`). Keyboard users can tab behind the modal.
+- **P2** The dialog does not support keyboard dismissal patterns such as `Escape`, despite offering close/minimise controls (`web/src/components/recording/recording-overlay.tsx:87-90,164-171`).
+- **P2** The transcript area is not exposed as a live region, so newly arriving transcript entries are unlikely to be announced to assistive tech (`web/src/components/recording/recording-overlay.tsx:141-161`; `web/src/components/recording/transcript-bar.tsx:27-55`).
+- **P2** The transcript bar’s only accessible name is “Expand recording overlay”; it does not expose the elapsed time or latest utterance semantically to assistive technology (`web/src/components/recording/transcript-bar.tsx:28-55`).
+
+## 7. Code quality
+
+- Comments and implementation drift in `web/src/lib/recording-context.tsx:27-30,126-145`: the docs describe partial/final transcript scaffolding at ~1.5s, but the code emits only finals at 2.2s.
+- The public API exports states that Phase 4a does not actually implement (`sleeping`, `error`), which increases cognitive load for consumers (`web/src/lib/recording-context.tsx:33-71`).
+- The “keep elapsed/transcript visible for ~400ms” comment in `stop()` does not match behavior; the overlay closes immediately and there is no exit animation code in this commit (`web/src/lib/recording-context.tsx:162-169`).
+
+## 8. Test coverage gaps
+
+There are no recording-related tests in the `web/` package at this point; `find web -maxdepth 3 \( -name '*test.*' -o -name '*spec.*' \)` returned no matches.
+
+Missing coverage that would have caught the main risks:
+
+- `start()` called twice quickly should produce only one active session/timer set.
+- `stop()` during the 250ms “requesting mic” delay should not transition back to `active`.
+- `pause()` / `resume()` should preserve elapsed time without duplicating timers.
+- Overlay accessibility behavior: modal focus containment, close/minimise keyboard paths, and transcript announcement semantics.
+- Transcript bar visibility rules: hidden in `idle`, shown only when session is active and overlay is minimised.
+
+## 9. Suggested fixes
+
+1. **`web/src/lib/recording-context.tsx:147-160`**  
+   Add a session token / cancellation ref around `start()`. Increment it before awaiting, capture it locally, and bail after the `await` if the token is stale or the provider has unmounted.  
+   Why: prevents `stop()`/unmount races from reactivating the session after the user has already closed it.
+
+2. **`web/src/lib/recording-context.tsx:147-160`**  
+   Add an in-flight guard independent of render timing, e.g. `pendingStartRef`, and clear any existing timers before starting a new synth loop.  
+   Why: prevents double-clicks from launching overlapping `setInterval` loops and corrupting elapsed time/cost/transcript state.
+
+3. **`web/src/lib/recording-context.tsx:171-175`**  
+   Reset `micLevel` to `0` when pausing, and consider restoring a defined resting level on resume.  
+   Why: avoids a paused overlay visually implying that speech/audio activity is still present.
+
+4. **`web/src/lib/recording-context.tsx:33-71,147-181`**  
+   Either implement explicit Phase 4a stub transitions for `error`/`sleeping`, or remove them from the exported contract and UI until the later phases land.  
+   Why: the current public state machine overpromises behavior that does not exist.
+
+5. **`web/src/components/recording/recording-overlay.tsx:53-61`**  
+   Add proper modal behavior: focus the first control on open, trap focus within the overlay, restore focus to the mic button on close/minimise, and handle `Escape`.  
+   Why: `role="dialog"` + `aria-modal="true"` is incomplete without keyboard focus management.
+
+6. **`web/src/lib/recording-context.tsx:186-217` and consumers in `web/src/components/job/floating-action-bar.tsx:35-45`, `web/src/components/recording/transcript-bar.tsx:17-26`**  
+   Split the recording context into smaller contexts or selector-style hooks so controls that only need `state`/`expand` do not rerender on every `micLevel` tick.  
+   Why: reduces unnecessary rerenders as the real audio pipeline arrives in later phases.
+
+7. **`web/src/lib/recording-context.tsx:27-30,126-145`**  
+   Make the comments match the scaffold, or add a simple interim transcript stub if that was the original visual requirement.  
+   Why: the current documentation misdescribes what the code actually does.
+
+8. **`web/src/components/recording/recording-overlay.tsx:141-161` and `web/src/components/recording/transcript-bar.tsx:27-55`**  
+   Expose transcript updates through an `aria-live` region and ensure the minimised bar exposes meaningful text, not just an action label.  
+   Why: improves screen-reader usability for the primary output of the recording flow.
+
+## 10. Overall verdict
+
+**Needs rework**
+
+The phase is directionally solid and matches the intended UI scaffold, but the async session lifecycle is not robust enough to ship even as a scaffold. The highest-priority fixes are:
+
+1. Guard `start()` against stop/unmount/double-click races in `web/src/lib/recording-context.tsx:147-160`.
+2. Add real modal accessibility behavior to `web/src/components/recording/recording-overlay.tsx:53-61`.
+3. Either implement or remove the unimplemented `sleeping`/`error` state contract in `web/src/lib/recording-context.tsx:33-71,147-181`.

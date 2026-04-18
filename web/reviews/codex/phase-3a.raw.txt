@@ -1,0 +1,924 @@
+OpenAI Codex v0.116.0 (research preview)
+--------
+workdir: /Users/derekbeckley/Developer/EICR_Automation
+model: gpt-5.4
+provider: openai
+approval: never
+sandbox: read-only
+reasoning effort: none
+reasoning summaries: none
+session id: 019d9d96-39c6-7bd3-b583-e59746c231b8
+--------
+user
+You are performing a rigorous code review of a single phase of a Next.js 16 / React 19 PWA frontend rebuild for an electrical-certificate automation tool (EICR / EIC). The repo root is at /Users/derekbeckley/Developer/EICR_Automation and the web package is at web/. Branch: web-rebuild.
+
+TARGET: Phase 3a — Installation, Supply, Board tabs (iOS parity)
+COMMIT: 25580d8
+
+Context for this phase (original intent, handoff doc, commit message, files changed) is in this repo at: reviews/context/phase-3a.md — READ THAT FILE FIRST.
+
+Use shell commands to:
+  git show --stat 25580d8
+  git show 25580d8
+to inspect the full diff. Then read any files you need from the working tree (they may have evolved since this commit — note any later changes).
+
+Your output must be a well-structured markdown review with these sections:
+  1. Summary of the phase (2-3 sentences — what it did).
+  2. Alignment with original plan (does the implementation match the handoff doc / commit intent? Any missing objectives?).
+  3. Correctness issues (bugs, race conditions, missing error handling, incorrect semantics). Prioritise P0/P1/P2.
+  4. Security issues (XSS, auth, CSRF, injection, leaked secrets, PII, CORS). Each item tagged with severity.
+  5. Performance issues (re-renders, N+1, large bundles, memory leaks, blocking work on main thread).
+  6. Accessibility issues (semantic HTML, keyboard nav, ARIA, colour contrast, focus management).
+  7. Code quality (duplication, dead code, type-safety holes, naming, convention drift vs. rest of repo).
+  8. Test coverage gaps.
+  9. Suggested fixes — each as a numbered item with: file:line, what to change, why. Be concrete.
+  10. Overall verdict (ship / ship with fixes / needs rework) and top 3 priority fixes.
+
+Be specific — cite file paths and line numbers. Avoid generic advice. If the code is good, say so with evidence. Do NOT modify files; this is review only.
+
+mcp startup: no servers
+codex
+Reviewing `25580d8` against the phase handoff first, then I’ll inspect the full commit diff and current file state to identify regressions, missing objectives, and risk areas with line-specific findings.
+exec
+/bin/zsh -lc "sed -n '1,240p' reviews/context/phase-3a.md" in /Users/derekbeckley/Developer/EICR_Automation exited 1 in 0ms:
+sed: reviews/context/phase-3a.md: No such file or directory
+exec
+/bin/zsh -lc 'git show --stat 25580d8' in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc 'git show 25580d8' in /Users/derekbeckley/Developer/EICR_Automation succeeded in 1.50s:
+2026-04-17 23:36:15.267 xcodebuild[28656:67179152]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:36:15.491 xcodebuild[28656:67179150] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-lERDYYow' (errno=Operation not permitted)
+2026-04-17 23:36:15.860 xcodebuild[28660:67179170]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:36:15.961 xcodebuild[28660:67179167] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+commit 25580d8b570ad2c2e04d0e212f0802fc377749cb
+Author: Derek Beckley <derekbeckley@Dereks-Mac-mini.broadband>
+Date:   Fri Apr 17 12:28:07 2026 +0100
+
+    feat(web): Phase 3a — Installation, Supply, Board tabs (iOS parity)
+    
+    Replace the three TabStub placeholders with the first real form tabs, built
+    on the SectionCard / FloatingLabelInput / SelectChips / SegmentedControl /
+    NumericStepper primitives landed in the previous commit.
+    
+    Installation tab (src/app/job/[id]/installation/page.tsx)
+     · Hero banner — blue→green gradient + building glyph (iOS parity)
+     · Client details  (name, address parts, phone, email)
+     · Installation address  (address parts, occupier)
+ succeeded in 1.50s:
+2026-04-17 23:36:15.267 xcodebuild[28655:67179151]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:36:15.491 xcodebuild[28655:67179149] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-lstKb1YR' (errno=Operation not permitted)
+2026-04-17 23:36:15.860 xcodebuild[28659:67179169]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:36:15.961 xcodebuild[28659:67179168] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+commit 25580d8b570ad2c2e04d0e212f0802fc377749cb
+Author: Derek Beckley <derekbeckley@Dereks-Mac-mini.broadband>
+Date:   Fri Apr 17 12:28:07 2026 +0100
+
+    feat(web): Phase 3a — Installation, Supply, Board tabs (iOS parity)
+    
+    Replace the three TabStub placeholders with the first real form tabs, built
+    on the SectionCard / FloatingLabelInput / SelectChips / SegmentedControl /
+    NumericStepper primitives landed in the previous commit.
+    
+    Installation tab (src/app/job/[id]/installation/page.tsx)
+     · Hero banner — blue→green gradient + building glyph (iOS parity)
+     · Client details  (name, address parts, phone, email)
+     · Installation address  (address parts, occupier)
+codex
+The handoff doc path I was given does not exist at repo root, so I’m locating it and continuing with the commit inspection. I’m also polling the `git show` sessions because the sandbox delayed their first output.
+exec
+/bin/zsh -lc "rg --files | rg 'phase-3a\\.md"'$|reviews/context'"'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+web/reviews/claude/phase-3a.md
+web/reviews/context/phase-3a.md
+web/reviews/context/phase-5d.md
+web/reviews/context/phase-7b2.md
+web/reviews/context/phase-4d.md
+web/reviews/context/phase-6a.md
+web/reviews/context/phase-7b3.md
+web/reviews/context/phase-4e.md
+web/reviews/context/phase-7a.md
+web/reviews/context/phase-5a.md
+web/reviews/context/phase-4a.md
+web/reviews/context/phase-2.md
+web/reviews/context/phase-1.md
+web/reviews/context/phase-0.md
+web/reviews/context/phase-6b.md
+web/reviews/context/phase-3c.md
+web/reviews/context/phase-5b.md
+web/reviews/context/phase-7b4.md
+web/reviews/context/phase-4b.md
+web/reviews/context/phase-5c.md
+codex
+I have the phase intent and the commit diff. Next I’m reading the affected pages plus the context around `useJobContext` and input primitives, and I’m checking whether any of these files changed after `25580d8` so I can separate commit issues from later edits.
+exec
+/bin/zsh -lc "sed -n '1,240p' web/reviews/context/phase-3a.md" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "nl -ba web/src/app/job/[id]/board/page.tsx | sed -n '1,260p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "nl -ba web/src/app/job/[id]/supply/page.tsx | sed -n '1,260p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc 'git diff --stat 25580d8..HEAD -- web/src/app/job/[id]/installation/page.tsx web/src/app/job/[id]/supply/page.tsx web/src/app/job/[id]/board/page.tsx web/src/lib/job-context.tsx web/src/components/ui/floating-label-input.tsx web/src/components/ui/segmented-control.tsx web/src/components/ui/select-chips.tsx web/src/components/ui/numeric-stepper.tsx web/src/components/ui/section-card.tsx' in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+# Phase 3a — Context
+
+**Commit:** `25580d8`
+
+## Commit message
+
+```
+commit 25580d8b570ad2c2e04d0e212f0802fc377749cb
+Author:     Derek Beckley <derekbeckley@Dereks-Mac-mini.broadband>
+AuthorDate: Fri Apr 17 12:28:07 2026 +0100
+Commit:     Derek Beckley <derekbeckley@Dereks-Mac-mini.broadband>
+CommitDate: Fri Apr 17 12:28:07 2026 +0100
+
+    feat(web): Phase 3a — Installation, Supply, Board tabs (iOS parity)
+    
+    Replace the three TabStub placeholders with the first real form tabs, built
+    on the SectionCard / FloatingLabelInput / SelectChips / SegmentedControl /
+    NumericStepper primitives landed in the previous commit.
+    
+    Installation tab (src/app/job/[id]/installation/page.tsx)
+ succeeded in 0ms:
+zsh:1: no matches found: web/src/app/job/[id]/board/page.tsx
+ succeeded in 0ms:
+zsh:1: no matches found: web/src/app/job/[id]/supply/page.tsx
+ exited 1 in 0ms:
+zsh:1: no matches found: web/src/app/job/[id]/installation/page.tsx
+exec
+/bin/zsh -lc "nl -ba web/src/app/job/[id]/installation/page.tsx | sed -n '1,260p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+zsh:1: no matches found: web/src/app/job/[id]/installation/page.tsx
+codex
+The shell is globbing the `[id]` segment, so I’m rerunning those reads with quoted paths and then checking the shared state/update code.
+exec
+/bin/zsh -lc "nl -ba 'web/src/app/job/[id]/board/page.tsx' | sed -n '1,260p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	'use client';
+     2	
+     3	import * as React from 'react';
+     4	import { Boxes, Cable, CircuitBoard, MapPin, Plus, ShieldCheck, Trash2 } from 'lucide-react';
+     5	import { useJobContext } from '@/lib/job-context';
+     6	import { FloatingLabelInput } from '@/components/ui/floating-label-input';
+     7	import { SectionCard } from '@/components/ui/section-card';
+     8	import { SelectChips } from '@/components/ui/select-chips';
+     9	
+    10	/**
+    11	 * Board tab — mirrors iOS `BoardTab.swift` + `BoardInfo.swift`.
+    12	 *
+    13	 * iOS supports multiple boards per job (main + sub-distribution); the web
+    14	 * stores the list in `job.board.boards`. We default to a single synthesized
+    15	 * main board if the array is empty so inspectors can start filling straight
+    16	 * away. Adding / removing boards is a Phase 3a feature — the full parent /
+    17	 * sub-main hierarchy editing lands with Phase 3b (Circuits) because that's
+    18	 * when the feed-circuit reference actually matters.
+    19	 *
+    20	 * Fields mapped 1-1 with `BoardInfo` (snake_case keys):
+exec
+/bin/zsh -lc "nl -ba 'web/src/lib/job-context.tsx' | sed -n '1,260p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	'use client';
+     2	
+     3	import * as React from 'react';
+     4	import type { CertificateType, JobDetail } from './types';
+     5	
+     6	/**
+     7	 * Per-job state container. Holds the fetched JobDetail plus a couple of
+     8	 * derived flags (dirty/syncing) and two mutators:
+     9	 *
+    10	 *  - updateJob(partial) — local merge, does not hit the network. Every
+    11	 *    input in the job tabs calls this; a debounced save effect (Phase 4)
+    12	 *    flushes to the backend.
+    13	 *  - setJob(full)        — replace wholesale (used after a network save
+    14	 *    round-trip so server-derived fields like updated_at can flow in).
+    15	 *
+    16	 * The shape deliberately mirrors the legacy `useJob` hook so the tab
+    17	 * components from Phase 3+ read the same API.
+    18	 */
+    19	interface JobContextValue {
+    20	  job: JobDetail;
+exec
+/bin/zsh -lc "nl -ba 'web/src/app/job/[id]/supply/page.tsx' | sed -n '1,260p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "nl -ba 'web/src/app/job/[id]/installation/page.tsx' | sed -n '1,260p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	'use client';
+     2	
+     3	import * as React from 'react';
+     4	import { Cable, Gauge, Layers, Power, ShieldCheck, Sigma, Wrench, Zap } from 'lucide-react';
+     5	import { useJobContext } from '@/lib/job-context';
+     6	import { FloatingLabelInput } from '@/components/ui/floating-label-input';
+     7	import { SectionCard } from '@/components/ui/section-card';
+     8	import { SegmentedControl } from '@/components/ui/segmented-control';
+     9	import { SelectChips } from '@/components/ui/select-chips';
+    10	
+    11	/**
+    12	 * Supply tab — mirrors iOS `SupplyTab.swift` + `SupplyCharacteristics.swift`.
+    13	 *
+    14	 * Eight section cards in the same order iOS uses so users who switch
+    15	 * platforms mid-job land in the same mental model:
+    16	 *   1. Supply details        (earthing, live conductors, voltages, freq, PFC, Ze)
+    17	 *   2. Means of earthing     (distributor / electrode choice + electrode detail)
+    18	 *   3. Main switch           (BS EN, poles, voltage, current, fuse, location)
+    19	 *   4. RCD                   (In, time delay, operating time — design + tested)
+    20	 *   5. Earthing conductor    (material, CSA, continuity)
+ succeeded in 0ms:
+     1	'use client';
+     2	
+     3	import * as React from 'react';
+     4	import {
+     5	  Building2,
+     6	  Calendar,
+     7	  CheckCircle,
+     8	  ClipboardList,
+     9	  FileText,
+    10	  Home,
+    11	  Ruler,
+    12	  ShieldCheck,
+    13	  User,
+    14	} from 'lucide-react';
+    15	import { useJobContext } from '@/lib/job-context';
+    16	import { FloatingLabelInput } from '@/components/ui/floating-label-input';
+    17	import { NumericStepper } from '@/components/ui/numeric-stepper';
+    18	import { SectionCard } from '@/components/ui/section-card';
+    19	import { SegmentedControl } from '@/components/ui/segmented-control';
+    20	import { SelectChips } from '@/components/ui/select-chips';
+exec
+/bin/zsh -lc "git diff --stat 25580d8..HEAD -- 'web/src/app/job/[id]/installation/page.tsx' 'web/src/app/job/[id]/supply/page.tsx' 'web/src/app/job/[id]/board/page.tsx' 'web/src/lib/job-context.tsx' 'web/src/components/ui/floating-label-input.tsx' 'web/src/components/ui/segmented-control.tsx' 'web/src/components/ui/select-chips.tsx' 'web/src/components/ui/numeric-stepper.tsx' 'web/src/components/ui/section-card.tsx'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 1.05s:
+2026-04-17 23:36:55.851 xcodebuild[28704:67179632]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:36:55.949 xcodebuild[28704:67179631] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-Iwc5MrZ2' (errno=Operation not permitted)
+2026-04-17 23:36:56.238 xcodebuild[28706:67179646]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:36:56.337 xcodebuild[28706:67179645] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+exec
+/bin/zsh -lc "nl -ba 'web/src/app/job/[id]/installation/page.tsx' | sed -n '261,420p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "nl -ba 'web/src/app/job/[id]/supply/page.tsx' | sed -n '261,430p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+   261	                { value: 'yes', label: 'Yes', variant: 'pass' },
+   262	                { value: 'no', label: 'No', variant: 'fail' },
+   263	              ]}
+   264	            />
+   265	            <label className="mt-2 text-[11px] uppercase tracking-[0.06em] text-[var(--color-text-tertiary)]">
+   266	              Evidence of additions / alterations?
+   267	            </label>
+   268	            <SegmentedControl
+   269	              aria-label="Evidence of additions or alterations"
+   270	              value={
+   271	                details.evidence_of_additions_alterations === true
+   272	                  ? 'yes'
+   273	                  : details.evidence_of_additions_alterations === false
+   274	                    ? 'no'
+   275	                    : null
+   276	              }
+   277	              onChange={(v) => patch({ evidence_of_additions_alterations: v === 'yes' })}
+   278	              options={[
+   279	                { value: 'yes', label: 'Yes', variant: 'pass' },
+   280	                { value: 'no', label: 'No', variant: 'fail' },
+ succeeded in 0ms:
+   261	      </SectionCard>
+   262	
+   263	      <SectionCard accent="blue" icon={Cable} title="Earthing conductor">
+   264	        <div className="grid gap-3 md:grid-cols-3">
+   265	          <FloatingLabelInput
+   266	            label="Material"
+   267	            value={text('earthing_conductor_material')}
+   268	            onChange={(e) => patch({ earthing_conductor_material: e.target.value })}
+   269	          />
+   270	          <FloatingLabelInput
+   271	            label="CSA (mm²)"
+   272	            inputMode="decimal"
+   273	            value={text('earthing_conductor_csa')}
+   274	            onChange={(e) => patch({ earthing_conductor_csa: e.target.value })}
+   275	          />
+   276	          <FloatingLabelInput
+   277	            label="Continuity (Ω)"
+   278	            inputMode="decimal"
+   279	            value={text('earthing_conductor_continuity')}
+   280	            onChange={(e) => patch({ earthing_conductor_continuity: e.target.value })}
+exec
+/bin/zsh -lc "nl -ba 'web/src/app/job/[id]/board/page.tsx' | sed -n '261,380p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+   261	          />
+   262	        </div>
+   263	      </SectionCard>
+   264	
+   265	      {active.board_type === 'sub_distribution' || active.board_type === 'sub_main' ? (
+   266	        <SectionCard accent="magenta" icon={Cable} title="Sub-main cable">
+   267	          <div className="grid gap-3 md:grid-cols-2">
+   268	            <FloatingLabelInput
+   269	              label="Material"
+   270	              value={text('sub_main_cable_material')}
+   271	              onChange={(e) => patchActive({ sub_main_cable_material: e.target.value })}
+   272	            />
+   273	            <FloatingLabelInput
+   274	              label="Live CSA (mm²)"
+   275	              inputMode="decimal"
+   276	              value={text('sub_main_cable_csa')}
+   277	              onChange={(e) => patchActive({ sub_main_cable_csa: e.target.value })}
+   278	            />
+   279	            <FloatingLabelInput
+   280	              label="Length (m)"
+codex
+The phase files are unchanged since `25580d8`, so line numbers in the working tree match the reviewed commit. I’m now reading the shared input components and type definitions to validate whether the new forms preserve semantics and accessible labelling.
+exec
+/bin/zsh -lc "nl -ba 'web/src/components/ui/numeric-stepper.tsx' | sed -n '1,260p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "nl -ba 'web/src/components/ui/segmented-control.tsx' | sed -n '1,260p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "nl -ba 'web/src/components/ui/select-chips.tsx' | sed -n '1,260p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "nl -ba 'web/src/components/ui/section-card.tsx' | sed -n '1,260p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "nl -ba 'web/src/components/ui/floating-label-input.tsx' | sed -n '1,260p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	'use client';
+     2	
+     3	import * as React from 'react';
+     4	import { cn } from '@/lib/utils';
+     5	
+     6	/**
+     7	 * SegmentedControl — the row of PASS / FAIL / LIM / N/A pill buttons used
+     8	 * across iOS inspection + circuits screens.
+     9	 *
+    10	 * Selected segment is fully filled with a semantic colour (green/red/amber/gray);
+    11	 * unselected segments render as a dark-surface outlined pill with white text.
+    12	 *
+    13	 * Built as a controlled component so callers pass `value` + `onChange` and we
+    14	 * keep it dumb. Accepts an arbitrary list of options so the same primitive
+    15	 * works for { PASS/FAIL/LIM/NA }, { YES/NO }, { IMP/ADD/SWA/PVC } etc.
+    16	 */
+    17	export type SegmentVariant = 'pass' | 'fail' | 'lim' | 'neutral' | 'info';
+    18	
+    19	export type SegmentOption<T extends string = string> = {
+    20	  value: T;
+ succeeded in 0ms:
+     1	'use client';
+     2	
+     3	import * as React from 'react';
+     4	import { ChevronDown, ChevronUp } from 'lucide-react';
+     5	import { cn } from '@/lib/utils';
+     6	import { FloatingLabelInput } from './floating-label-input';
+     7	
+     8	/**
+     9	 * NumericStepper — FloatingLabelInput with up/down chevrons on the right.
+    10	 * Used for circuit currents (In, Ib), cable sizes, number of circuits etc.
+    11	 *
+    12	 * Keeps numeric semantics (inputMode="decimal", optional min/max/step) but
+    13	 * lets the user step by `step` (default 1) via the chevron buttons. Values
+    14	 * are emitted as numbers to the parent via `onValueChange`; raw text changes
+    15	 * still fire onChange so callers can use this inside react-hook-form.
+    16	 */
+    17	export type NumericStepperProps = {
+    18	  label: string;
+    19	  value: number | '';
+    20	  onValueChange: (next: number | '') => void;
+ succeeded in 0ms:
+     1	'use client';
+     2	
+     3	import * as React from 'react';
+     4	import { ChevronDown } from 'lucide-react';
+     5	import { cn } from '@/lib/utils';
+     6	
+     7	/**
+     8	 * SelectChips — iOS-style dropdown followed by a row of chips that show the
+     9	 * currently selected option (tapping the chip does nothing; the dropdown is
+    10	 * canonical). Used on Installation / Supply tabs for earthing arrangement,
+    11	 * supply type, tariff etc.
+    12	 *
+    13	 * Tapping the dropdown toggles a small list rendered *inline below* the
+    14	 * trigger (not a portal / sheet — iOS uses an inline wheel, web uses inline
+    15	 * list). Keyboard nav: arrow up/down while open, Enter to commit, Esc to
+    16	 * close. Closing on outside click handled by a click-outside listener on
+    17	 * the document.
+    18	 */
+    19	export type SelectOption = { value: string; label: string };
+    20	
+ succeeded in 0ms:
+     1	'use client';
+     2	
+     3	import * as React from 'react';
+     4	import { cn } from '@/lib/utils';
+     5	
+     6	/**
+     7	 * FloatingLabelInput — iOS-style form field.
+     8	 *
+     9	 * Visual: tall rounded box (h-14) on surface-2 with the LABEL sitting top-left
+    10	 * at 11 px and the VALUE beneath it at 15 px. Focus state lifts the border
+    11	 * to brand-blue. When the input is empty and unfocused, the label stays in
+    12	 * place (iOS does not float down into the value slot — the two lines are
+    13	 * always stacked).
+    14	 *
+    15	 * Supports:
+    16	 *   - `trailing` slot for per-field suffix icons (stepper arrows, chevrons,
+    17	 *     unit chips). Renders inside the right edge.
+    18	 *   - `state`: 'error' surfaces the failed token outline.
+    19	 *   - Refs forwarded so callers can use react-hook-form etc.
+    20	 */
+ succeeded in 0ms:
+     1	import * as React from 'react';
+     2	import { cn } from '@/lib/utils';
+     3	
+     4	/**
+     5	 * SectionCard — the repeating "form card" unit across every /job/[id]/... tab.
+     6	 *
+     7	 * Mirrors the iOS JobDetail form cards: rounded dark-surface container with a
+     8	 * 3 px coloured accent stripe running down the LEFT edge. The accent colour
+     9	 * is semantic:
+    10	 *   blue    — default (Installation, Staff, Design)
+    11	 *   green   — supply / power / pass-state aggregate (Supply)
+    12	 *   amber   — partial / warning (Circuits with failures)
+    13	 *   magenta — design / limitations (Extent)
+    14	 *   red     — failure (Observations)
+    15	 *
+    16	 * Layout:
+    17	 *   - Optional icon + title header row (matches iOS SF Symbols + Bold title)
+    18	 *   - Optional bottom-centre `</>` code chip (via `showCodeChip` prop) — a
+    19	 *     tiny decorative pill used on some iOS cards.
+    20	 *
+exec
+/bin/zsh -lc "nl -ba 'web/src/lib/types.ts' | sed -n '1,260p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	/**
+     2	 * Shared domain types. Kept minimal — only the shapes Phase 1–2 need;
+     3	 * per-tab detail types land in later phases when their screens do.
+     4	 */
+     5	
+     6	export interface User {
+     7	  id: string;
+     8	  email: string;
+     9	  name: string;
+    10	  company_name?: string;
+    11	  role?: 'admin' | 'user';
+    12	  /** System-wide tenant membership. Nullable for legacy users not yet bound to a company. */
+    13	  company_id?: string;
+    14	  /** Role within a company. `owner`/`admin` grant company-admin privileges; `employee` is rank-and-file. */
+    15	  company_role?: 'owner' | 'admin' | 'employee';
+    16	}
+    17	
+    18	/**
+    19	 * Inspector profile — the API shape stored as one JSON array per user at
+    20	 * `settings/{userId}/inspector_profiles.json`. The backend persists the
+codex
+I’ve confirmed the phase pages themselves are unchanged since the target commit. I’m checking nearby tests and model conventions now, because a couple of likely issues are emerging around derived dates and accessibility semantics rather than obvious rendering failures.
+exec
+/bin/zsh -lc "rg -n \"installation/page|supply/page|board/page|NumericStepper|SelectChips|SegmentedControl|JobProvider|useJobContext\" web/src web/tests web/__tests__ 'web' --glob '"'!**/node_modules/**'"'" in /Users/derekbeckley/Developer/EICR_Automation exited 2 in 0ms:
+rg: web/tests: No such file or directory (os error 2)
+rg: web/__tests__: No such file or directory (os error 2)
+web/src/lib/job-context.tsx:30:export function useJobContext(): JobContextValue {
+web/src/lib/job-context.tsx:33:    throw new Error('useJobContext must be used inside a <JobProvider>');
+web/src/lib/job-context.tsx:38:export function JobProvider({
+web/src/lib/job-context.tsx:30:export function useJobContext(): JobContextValue {
+web/src/lib/job-context.tsx:33:    throw new Error('useJobContext must be used inside a <JobProvider>');
+web/src/lib/job-context.tsx:38:export function JobProvider({
+web/src/lib/recording-context.tsx:17:import { useJobContext } from './job-context';
+web/src/lib/recording-context.tsx:119:  const { job, updateJob } = useJobContext();
+web/src/lib/recording-context.tsx:17:import { useJobContext } from './job-context';
+web/src/lib/recording-context.tsx:119:  const { job, updateJob } = useJobContext();
+web/src/components/live-fill/live-fill-view.tsx:5:import { useJobContext } from '@/lib/job-context';
+web/src/components/live-fill/live-fill-view.tsx:31:  const { job, certificateType } = useJobContext();
+web/src/lib/recording/apply-document-extraction.ts:42: *  `web/src/app/job/[id]/installation/page.tsx:42-76` and the backend
+web/src/lib/recording/apply-document-extraction.ts:42: *  `web/src/app/job/[id]/installation/page.tsx:42-76` and the backend
+web/PHASE_7C_HANDOFF.md:52:- `web/src/lib/job-context.tsx` — `JobProvider.updateJob` still does only the in-memory merge. **No caller of `queueSaveJob` exists yet.** Phase 4's debounced-save flush is the intended first consumer; when it lands it should call `queueSaveJob(userId, jobId, patch, { optimisticDetail: mergedJob })` in place of the raw `api.saveJob`. Wiring it now would be speculative per CLAUDE.md §"Don't design for hypothetical future requirements" — the mechanism lands here so the consumer doesn't need to reinvent it.
+web/PHASE_7C_HANDOFF.md:102:- **First consumer** — `JobProvider`'s debounced save effect doesn't exist yet (Phase 4 shipped recording + extraction but stopped before save flush). When it lands it should call `queueSaveJob` rather than `api.saveJob` directly, in the same commit that introduces the save flush.
+web/reviews/codex/phase-1.raw.txt:143:/bin/zsh -lc "nl -ba web/src/app/dashboard/page.tsx | sed -n '1,320p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+web/reviews/codex/phase-1.raw.txt:189:/bin/zsh -lc "git show 21a82b9:web/src/app/dashboard/page.tsx | nl -ba | sed -n '1,340p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+exec
+/bin/zsh -lc "find web -maxdepth 4 \\( -path '*/__tests__/*' -o -path '*/tests/*' -o -name '*.test.*' -o -name '*.spec.*' \\) | sed -n '1,240p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+
+exec
+/bin/zsh -lc "git show 25580d8:'web/src/app/job/[id]/installation/page.tsx' | nl -ba | sed -n '90,240p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "git show 25580d8:'web/src/app/job/[id]/board/page.tsx' | nl -ba | sed -n '60,330p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "git show 25580d8:'web/src/app/job/[id]/supply/page.tsx' | nl -ba | sed -n '110,360p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 1.23s:
+2026-04-17 23:37:32.980 xcodebuild[28784:67180138]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:37:33.089 xcodebuild[28784:67180136] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-Dvn1myTM' (errno=Operation not permitted)
+2026-04-17 23:37:33.452 xcodebuild[28789:67180167]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:37:33.560 xcodebuild[28789:67180163] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+    60	
+    61	export default function BoardPage() {
+    62	  const { job, certificateType, updateJob } = useJobContext();
+    63	  const boardState = (job.board ?? {}) as BoardShape;
+    64	  const boards =
+    65	    boardState.boards && boardState.boards.length > 0 ? boardState.boards : [newBoard()];
+    66	
+    67	  const [activeId, setActiveId] = React.useState(boards[0].id);
+    68	  const active = boards.find((b) => b.id === activeId) ?? boards[0];
+    69	
+    70	  const persistBoards = (next: BoardRecord[]) => {
+    71	    updateJob({ board: { ...boardState, boards: next } });
+    72	  };
+    73	
+ succeeded in 1.23s:
+2026-04-17 23:37:32.979 xcodebuild[28785:67180139]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:37:33.089 xcodebuild[28785:67180134] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-F5XEib5s' (errno=Operation not permitted)
+2026-04-17 23:37:33.452 xcodebuild[28790:67180165]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:37:33.560 xcodebuild[28790:67180162] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+    90	  const patch = React.useCallback(
+    91	    (next: Partial<InstallationShape>) => {
+    92	      updateJob({ installation: { ...details, ...next } });
+    93	    },
+    94	    [details, updateJob]
+    95	  );
+    96	
+    97	  /** Compute next-due from date_of_inspection + years for instant feedback. */
+    98	  const setYears = (years: number | '') => {
+    99	    if (years === '') return patch({ next_inspection_years: undefined });
+   100	    const base = details.date_of_inspection ? new Date(details.date_of_inspection) : new Date();
+   101	    const due = new Date(base);
+   102	    due.setFullYear(base.getFullYear() + years);
+   103	    patch({
+ succeeded in 1.23s:
+2026-04-17 23:37:32.980 xcodebuild[28783:67180137]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:37:33.089 xcodebuild[28783:67180135] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-RxNANLQU' (errno=Operation not permitted)
+2026-04-17 23:37:33.452 xcodebuild[28791:67180166]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:37:33.560 xcodebuild[28791:67180164] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+   110	            value={text('earth_loop_impedance_ze')}
+   111	            onChange={(e) => patch({ earth_loop_impedance_ze: e.target.value })}
+   112	          />
+   113	        </div>
+   114	        <div className="flex flex-col gap-2">
+   115	          <label className="text-[11px] uppercase tracking-[0.06em] text-[var(--color-text-tertiary)]">
+   116	            Supply polarity confirmed?
+   117	          </label>
+   118	          <SegmentedControl
+   119	            aria-label="Supply polarity confirmed"
+   120	            value={
+   121	              bool('supply_polarity_confirmed') === true
+   122	                ? 'yes'
+   123	                : bool('supply_polarity_confirmed') === false
+codex
+I’m validating one more area before writing: whether these new tab keys actually match the backend job payload. If they don’t, the UI can look complete while reading/writing the wrong fields, which would outrank the purely UX issues.
+exec
+/bin/zsh -lc "nl -ba 'src/routes/jobs.js' | sed -n '560,760p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+   560	
+   561	    if (!job && (circuits.length > 0 || Object.keys(extractedData).length > 0)) {
+   562	      job = {
+   563	        id: jobId,
+   564	        address: extractedData.address || jobId,
+   565	        status: 'done',
+   566	        created_at: new Date().toISOString(),
+   567	        updated_at: new Date().toISOString(),
+   568	      };
+   569	    }
+   570	
+   571	    if (!job) {
+   572	      return res.status(404).json({ error: 'Job not found' });
+   573	    }
+   574	
+   575	    res.json({
+   576	      id: job.id,
+   577	      address: job.address || extractedData.address || jobId,
+   578	      status: job.status || 'done',
+   579	      created_at: job.created_at,
+exec
+/bin/zsh -lc "nl -ba 'web/src/lib/api-client.ts' | sed -n '1,260p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	import {
+     2	  type AdminUser,
+     3	  ApiError,
+     4	  type CCUAnalysis,
+     5	  type CompanyJobRow,
+     6	  type CompanyMember,
+     7	  type CompanySettings,
+     8	  type CompanyStats,
+     9	  type DocumentExtractionResponse,
+    10	  type InspectorProfile,
+    11	  type InviteEmployeeResponse,
+    12	  type Job,
+    13	  type JobDetail,
+    14	  type LoginResponse,
+    15	  type Paginated,
+    16	  type User,
+    17	} from './types';
+    18	import { getToken } from './auth';
+    19	
+    20	/**
+exec
+/bin/zsh -lc "rg -n \"installation_details|supply_characteristics|board_info|boards|inspection_schedule|extent_and_type|design_construction|inspector_id|installation:|supply:|board:\" src web/src -g '"'!**/node_modules/**'"'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+web/src/lib/types.ts:351:  installation_details?: Record<string, unknown>;
+web/src/lib/types.ts:352:  supply_characteristics?: Record<string, unknown>;
+web/src/lib/types.ts:353:  board_info?: Record<string, unknown>;
+src/ocr_certificate.js:28:  "installation_details": {
+src/ocr_certificate.js:41:  "supply_characteristics": {
+src/ocr_certificate.js:56:  "board_info": {
+src/ocr_certificate.js:299:      installation_details: extracted.installation_details || {
+src/ocr_certificate.js:312:      supply_characteristics: extracted.supply_characteristics || {
+src/ocr_certificate.js:323:        spd_type_supply: '',
+src/ocr_certificate.js:327:      board_info: extracted.board_info || {
+src/ocr_certificate.js:392:      hasAddress: !!result.installation_details.address,
+web/src/lib/recording/apply-document-extraction.ts:167: *  if the job has no boards yet. Mirrors the synth + merge pattern in
+web/src/lib/recording/apply-document-extraction.ts:173:): { board: Record<string, unknown>; boardId: string } | null {
+web/src/lib/recording/apply-document-extraction.ts:175:  const boardState = (job.board as { boards?: BoardRecord[] } | undefined) ?? {};
+web/src/lib/recording/apply-document-extraction.ts:176:  const boards: BoardRecord[] = boardState.boards ? [...boardState.boards] : [];
+web/src/lib/recording/apply-document-extraction.ts:182:  let idx = targetBoardId ? boards.findIndex((b) => b.id === targetBoardId) : 0;
+web/src/lib/recording/apply-document-extraction.ts:183:  if (idx < 0 || boards.length === 0) {
+web/src/lib/recording/apply-document-extraction.ts:185:    if (boards.length === 0) {
+web/src/lib/recording/apply-document-extraction.ts:187:      boards.push({ id: newId, designation: 'DB1', board_type: 'main' });
+web/src/lib/recording/apply-document-extraction.ts:194:  const existing = boards[idx];
+codex
+Backend shape is still relevant here. I’m reading the job types around the legacy/new field aliases now to determine whether this phase was already depending on a translation layer, or whether the new tabs were introduced on keys the API didn’t serve.
+exec
+/bin/zsh -lc "nl -ba 'web/src/lib/types.ts' | sed -n '320,390p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+   320	  ocpd_type?: string;
+   321	  ocpd_rating_a?: string;
+   322	  ocpd_bs_en?: string;
+   323	  ocpd_breaking_capacity_ka?: string;
+   324	  rcd_type?: string;
+   325	  rcd_operating_current_ma?: string;
+   326	  rcd_bs_en?: string;
+   327	  ring_r1_ohm?: string;
+   328	  ring_rn_ohm?: string;
+   329	  ring_r2_ohm?: string;
+   330	  r1_r2_ohm?: string;
+   331	  r2_ohm?: string;
+   332	  ir_live_live_mohm?: string;
+   333	  ir_live_earth_mohm?: string;
+   334	  measured_zs_ohm?: string;
+   335	  polarity_confirmed?: string;
+   336	  rcd_time_ms?: string;
+   337	  rcd_button_confirmed?: string;
+   338	  [key: string]: unknown;
+   339	}
+exec
+/bin/zsh -lc "nl -ba 'web/src/app/job/[id]/layout.tsx' | sed -n '1,180p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "nl -ba 'web/src/app/job/[id]/staff/page.tsx' | sed -n '60,170p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	'use client';
+     2	
+     3	import * as React from 'react';
+     4	import { useParams, useRouter } from 'next/navigation';
+     5	import { AppShell } from '@/components/layout/app-shell';
+     6	import { JobHeader } from '@/components/job/job-header';
+     7	import { JobTabNav } from '@/components/job/job-tab-nav';
+     8	import { FloatingActionBar } from '@/components/job/floating-action-bar';
+     9	import { RecordingOverlay } from '@/components/recording/recording-overlay';
+    10	import { TranscriptBar } from '@/components/recording/transcript-bar';
+    11	import { LiveFillView } from '@/components/live-fill/live-fill-view';
+    12	import { JobProvider } from '@/lib/job-context';
+    13	import { RecordingProvider, useRecording } from '@/lib/recording-context';
+    14	import { api } from '@/lib/api-client';
+    15	import { clearAuth, getUser } from '@/lib/auth';
+    16	import { getCachedJob, putCachedJob } from '@/lib/pwa/job-cache';
+    17	import type { JobDetail } from '@/lib/types';
+    18	
+    19	/**
+    20	 * Shell for every /job/[id]/... route.
+ succeeded in 0ms:
+    60	  /**
+    61	   * Embedded inspector roster. Persisted on the job so a historic cert
+    62	   * renders correctly even after a staff member leaves. Refreshed from
+    63	   * `/api/inspectors` each time the tab mounts (Phase 6).
+    64	   */
+    65	  inspectors?: Inspector[];
+    66	};
+    67	
+    68	export default function StaffPage() {
+    69	  const { job, certificateType, updateJob } = useJobContext();
+    70	  const isEIC = certificateType === 'EIC';
+    71	  const data = job as unknown as StaffJobShape;
+    72	  const inspectors = data.inspectors ?? [];
+    73	
+    74	  const setRole = (role: keyof StaffJobShape, id: string) => {
+    75	    updateJob({ [role]: id } as Partial<typeof job>);
+    76	  };
+    77	
+    78	  // Test-equipment card surfaces the roster entry currently bound to
+    79	  // the primary Inspector role (both EICR "Inspected by" and EIC
+exec
+/bin/zsh -lc "nl -ba 'web/src/app/job/[id]/pdf/page.tsx' | sed -n '120,190p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+   120	        <p className="pt-1 text-[11.5px] text-[var(--color-text-tertiary)]">
+   121	          PDF generation wires up in Phase 5 — this tab currently shows readiness only.
+   122	        </p>
+   123	      </SectionCard>
+   124	    </div>
+   125	  );
+   126	}
+   127	
+   128	/* ----------------------------------------------------------------------- */
+   129	
+   130	function computeWarnings(data: PdfJobShape, isEIC: boolean): string[] {
+   131	  const w: string[] = [];
+   132	  const inst = (data.installation ?? {}) as Record<string, unknown>;
+   133	  if (!str(inst.address_line1) && !str(inst.address)) {
+   134	    w.push('Installation address not set');
+   135	  }
+   136	  if (!str(inst.date_of_inspection)) {
+   137	    w.push('Inspection date not set');
+   138	  }
+   139	
+exec
+/bin/zsh -lc "nl -ba 'web/src/app/job/[id]/circuits/page.tsx' | sed -n '80,170p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "nl -ba 'src/utils/jobs.js' | sed -n '80,160p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+    80	/**
+    81	 * Transform extracted data from pipeline format to UI format.
+    82	 */
+    83	export function transformExtractedData(extractedInstallation, extractedBoard) {
+    84	  const installation = extractedInstallation || {};
+    85	  const board = extractedBoard || {};
+    86	
+    87	  const installation_details = {
+    88	    client_name: installation.client_name || '',
+    89	    address: installation.address || '',
+    90	    postcode: installation.postcode || '',
+    91	    town: installation.town || '',
+    92	    county: installation.county || '',
+    93	    premises_description: installation.premises_description || board.premises_description || '',
+    94	    installation_records_available:
+    95	      installation.installation_records_available ?? board.installation_records_available ?? false,
+    96	    evidence_of_additions_alterations:
+    97	      installation.evidence_of_additions_alterations ??
+    98	      board.evidence_of_additions_alterations ??
+    99	      false,
+ succeeded in 0ms:
+    80	  const { job, updateJob } = useJobContext();
+    81	  const [expandedId, setExpandedId] = React.useState<string | null>(null);
+    82	  const [actionHint, setActionHint] = React.useState<string | null>(null);
+    83	  const [ccuBusy, setCcuBusy] = React.useState(false);
+    84	  const [ccuError, setCcuError] = React.useState<string | null>(null);
+    85	  const [ccuQuestions, setCcuQuestions] = React.useState<string[]>([]);
+    86	  const ccuInputRef = React.useRef<HTMLInputElement>(null);
+    87	  const [docBusy, setDocBusy] = React.useState(false);
+    88	  const [docError, setDocError] = React.useState<string | null>(null);
+    89	  const docInputRef = React.useRef<HTMLInputElement>(null);
+    90	
+    91	  const circuits = (job.circuits ?? []) as unknown as Circuit[];
+    92	  const boards = ((job.board as { boards?: { id: string; designation?: string }[] } | undefined)
+    93	    ?.boards ?? []) as { id: string; designation?: string }[];
+    94	  const [selectedBoardId, setSelectedBoardId] = React.useState<string | null>(
+    95	    boards[0]?.id ?? null
+    96	  );
+    97	
+    98	  const visible = selectedBoardId
+    99	    ? circuits.filter((c) => c.board_id === selectedBoardId || c.board_id == null)
+exec
+/bin/zsh -lc "rg -n \"means_earthing_distributor|means_earthing_electrode|earth_electrode_type|bonding_other_na|next_inspection_due_date|next_inspection_years|supplied_from|ipf_rating|spd_type_supply|spd_type\\b\" src web/src -g '"'!**/node_modules/**'"'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+src/ocr_certificate.js:35:    "next_inspection_years": 5,
+src/ocr_certificate.js:52:    "spd_type_supply": "",
+src/ocr_certificate.js:116:- next_inspection_years: Number from "Recommended interval" or "Next inspection" fields
+src/ocr_certificate.js:306:        next_inspection_years: 5,
+src/ocr_certificate.js:323:        spd_type_supply: '',
+web/src/lib/types.ts:277:  spd_type?: string | null;
+web/src/lib/types.ts:282:  spd_type_supply?: string | null;
+src/routes/calendar.js:152:        next_inspection_years: 5,
+src/routes/extraction.js:808:  "spd_type": "string or null",
+src/routes/extraction.js:972:    if (!analysis.spd_type_supply && analysis.main_switch_type) {
+src/routes/extraction.js:973:      analysis.spd_type_supply = analysis.main_switch_type;
+src/routes/extraction.js:1364:    "next_inspection_years": 5,
+web/src/lib/recording/apply-document-extraction.ts:124:  // next_inspection_years is a number in the web schema; the backend
+web/src/lib/recording/apply-document-extraction.ts:126:  if (!hasValue(existing.next_inspection_years) && hasValue(incoming.next_inspection_years)) {
+web/src/lib/recording/apply-document-extraction.ts:128:      typeof incoming.next_inspection_years === 'number'
+web/src/lib/recording/apply-document-extraction.ts:129:        ? incoming.next_inspection_years
+web/src/lib/recording/apply-document-extraction.ts:130:        : Number(incoming.next_inspection_years);
+web/src/lib/recording/apply-document-extraction.ts:132:      next.next_inspection_years = parsed;
+web/src/lib/recording/apply-extraction.ts:53:  earth_electrode_type: 'supply',
+web/src/lib/recording/apply-extraction.ts:83:  spd_type_supply: 'board',
+codex
+## 1. Summary of the phase
+Phase 3a replaced the `TabStub` placeholders with real client-side forms for the Installation, Supply, and Board tabs, using the new `SectionCard`, `FloatingLabelInput`, `SelectChips`, `SegmentedControl`, and `NumericStepper` primitives. It also introduced the first multi-board UI on the web side and conditional EIC/EICR sections intended to match the iOS flow.
+
+The three reviewed page files are unchanged in the current working tree since `25580d8`, so the file/line references below still match the commit.
+
+## 2. Alignment with original plan
+Mostly aligned on surface area: the tabs, sections, conditional EIC/EICR rendering, hero banners, and multi-board controls described in the handoff are present.
+
+Two important gaps remain:
+- The “Staff hint card — links to `/staff`” objective was not met. The card is only decorative text in [installation/page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/job/[id]/installation/page.tsx:352); there is no actual navigation affordance.
+- The implementation does not align with the backend job contract. The new pages read/write `job.installation`, `job.supply`, and `job.board`, but the API still serves `installation_details`, `supply_characteristics`, `board_info`, and top-level `boards` from [src/routes/jobs.js](/Users/derekbeckley/Developer/EICR_Automation/src/routes/jobs.js:575). That means the phase matches the handoff intent visually, but not the data model actually returned by the backend.
+
+## 3. Correctness issues
+- **P1** Existing job data will not hydrate into these tabs because the pages read the wrong root keys. Installation reads `job.installation` in [installation/page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/job/[id]/installation/page.tsx:88), Supply reads `job.supply` in [supply/page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/job/[id]/supply/page.tsx:44), and Board reads `job.board` in [board/page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/job/[id]/board/page.tsx:63). The backend response still returns `installation_details`, `supply_characteristics`, `board_info`, and top-level `boards` in [src/routes/jobs.js](/Users/derekbeckley/Developer/EICR_Automation/src/routes/jobs.js:575). On real fetched jobs, these forms will start blank even when data exists.
+- **P1** The Board tab ignores persisted board data and synthesizes a new `DB1` instead. [board/page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/job/[id]/board/page.tsx:64) only looks for `job.board.boards`; the API provides `boards` at the top level and `board_info` separately. Result: existing boards are invisible, and the UI can present a fake empty board over real data.
+- **P2** “Next inspection due” is derived inconsistently. In [installation/page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/job/[id]/installation/page.tsx:98), the due date is recomputed only when the year stepper changes. Editing the inspection date later does not recompute it, and clearing the year only clears `next_inspection_years`, leaving a stale `next_inspection_due_date` behind.
+- **P2** The means-of-earthing toggle is stored as two booleans (`means_earthing_distributor` and `means_earthing_electrode`) in [supply/page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/job/[id]/supply/page.tsx:144). Those keys have no other consumer in the repo, so this is currently a UI-only encoding of a single state and is likely to drift from extraction/PDF/save logic.
+
+## 4. Security issues
+No concrete security defects stood out in this phase’s diff. I did not see new XSS, auth, CSRF, secret-handling, or PII-exposure issues in these three pages.
+
+## 5. Performance issues
+- The job context updates the whole `job` object on every keystroke in [job-context.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/job-context.tsx:55), so each input change rerenders the entire active page and all controlled fields. That is acceptable for now, but these tabs are already large enough that typing latency is a realistic future risk on lower-end devices.
+- `SelectChips` renders each option twice, once in the dropdown list and again in the chip row, in [select-chips.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/ui/select-chips.tsx:85) and [select-chips.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/ui/select-chips.tsx:127). This is not severe, but it adds DOM weight across many repeated controls.
+
+## 6. Accessibility issues
+- `SegmentedControl` uses `role="radiogroup"`/`role="radio"` in [segmented-control.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/ui/segmented-control.tsx:47) but does not implement arrow-key navigation or roving tabindex. It works as a row of buttons, not as an accessible radio group.
+- `SelectChips` claims keyboard navigation in its docblock, but there are no key handlers in [select-chips.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/ui/select-chips.tsx:7). The listbox semantics are incomplete.
+- The board selector pills have no selected-state semantics in [board/page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/job/[id]/board/page.tsx:102). Screen readers get plain buttons, not “selected board” state.
+- The board notes `<textarea>` in [board/page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/job/[id]/board/page.tsx:301) has no associated label, only a section heading and placeholder.
+
+## 7. Code quality
+- The frontend contract is drifting because page-local shapes are duplicated instead of being normalized centrally. The pages depend on `installation`/`supply`/`board`, while the backend and extraction types still speak `installation_details`/`supply_characteristics`/`board_info`/`boards`; see [types.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/types.ts:192) and [types.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/types.ts:350).
+- The staff hint copy is misleading. [installation/page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/job/[id]/installation/page.tsx:356) says assignment “lives on the Staff tab,” but the card is non-interactive.
+- The custom `MultilineField` in [installation/page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/job/[id]/installation/page.tsx:370) and the inline board notes textarea duplicate form-field behavior outside the shared primitives, which increases drift risk.
+
+## 8. Test coverage gaps
+I could not find frontend test/spec files under `web/` covering these tabs or the shared form primitives.
+
+High-value missing tests:
+- Hydration tests proving fetched API payloads populate Installation/Supply/Board fields from the real backend shape.
+- Board tests for existing `boards` data, add/remove behavior, and active-board switching.
+- Installation tests for due-date recomputation when either date or interval changes, and for clearing the interval.
+- Accessibility tests for segmented controls, listbox/select behavior, and textarea labelling.
+
+## 9. Suggested fixes
+1. `web/src/app/job/[id]/installation/page.tsx:88`, `web/src/app/job/[id]/supply/page.tsx:44`, `web/src/app/job/[id]/board/page.tsx:63`, `web/src/lib/types.ts:192`  
+   Normalize the job payload at the API boundary or in `JobProvider` so the UI reads a single canonical shape. Either map backend fields into `installation`/`supply`/`board` on fetch, or update these pages to read `installation_details`/`supply_characteristics`/`board_info` plus top-level `boards`. This is the highest-priority correctness fix because current fetched jobs will not populate these forms.
+
+2. `web/src/app/job/[id]/board/page.tsx:64`, `src/routes/jobs.js:584`  
+   Rework Board hydration to consume existing top-level `boards` and `board_info` instead of synthesizing `[newBoard()]` whenever `job.board.boards` is missing. Otherwise the tab hides real persisted board data and invents an empty board.
+
+3. `web/src/app/job/[id]/installation/page.tsx:98`  
+   Make `next_inspection_due_date` a deterministic derivation from `date_of_inspection` and `next_inspection_years`, recomputing when either changes and clearing when the interval is cleared. This removes stale derived state and avoids invalid due dates surviving edits.
+
+4. `web/src/app/job/[id]/installation/page.tsx:352`  
+   Turn the Staff hint card into an actual link or button that navigates to `/job/[id]/staff`. The handoff explicitly called for a link; the current implementation is only decorative copy.
+
+5. `web/src/components/ui/segmented-control.tsx:47`  
+   Add roving tabindex and arrow-key handling consistent with radio-group semantics, or drop the radio roles and present it as a button group with accurate semantics. Right now the ARIA contract is incomplete.
+
+6. `web/src/components/ui/select-chips.tsx:7`  
+   Either implement the documented keyboard behavior or remove the misleading comment and simplify the ARIA. At minimum, add keyboard open/close and option navigation if this remains a custom listbox.
+
+7. `web/src/app/job/[id]/board/page.tsx:301`  
+   Add a programmatic label for the notes textarea, ideally reusing a shared textarea primitive. Placeholder text is not a label.
+
+8. `web/src/app/job/[id]/supply/page.tsx:144`  
+   Replace the two-boolean means-of-earthing representation with one canonical field, or explicitly map it into the backend/extraction model. A single choice encoded as two booleans is fragile and currently repo-local.
+
+## 10. Overall verdict
+**Needs rework.**
+
+The UI surface is strong and broadly matches the phase handoff, but the main data-model integration is wrong: these tabs read a frontend-only shape while the backend still returns different keys, and the Board tab in particular can hide real persisted data behind a synthesized empty board.
+
+Top 3 priority fixes:
+1. Fix the frontend/backend job-shape mismatch for Installation, Supply, and Board data.
+2. Fix Board hydration so existing `boards`/`board_info` are shown instead of synthesized `DB1`.
+3. Fix `next_inspection_due_date` derivation and add tests around date/interval changes.
+tokens used
+136,806
+## 1. Summary of the phase
+Phase 3a replaced the `TabStub` placeholders with real client-side forms for the Installation, Supply, and Board tabs, using the new `SectionCard`, `FloatingLabelInput`, `SelectChips`, `SegmentedControl`, and `NumericStepper` primitives. It also introduced the first multi-board UI on the web side and conditional EIC/EICR sections intended to match the iOS flow.
+
+The three reviewed page files are unchanged in the current working tree since `25580d8`, so the file/line references below still match the commit.
+
+## 2. Alignment with original plan
+Mostly aligned on surface area: the tabs, sections, conditional EIC/EICR rendering, hero banners, and multi-board controls described in the handoff are present.
+
+Two important gaps remain:
+- The “Staff hint card — links to `/staff`” objective was not met. The card is only decorative text in [installation/page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/job/[id]/installation/page.tsx:352); there is no actual navigation affordance.
+- The implementation does not align with the backend job contract. The new pages read/write `job.installation`, `job.supply`, and `job.board`, but the API still serves `installation_details`, `supply_characteristics`, `board_info`, and top-level `boards` from [src/routes/jobs.js](/Users/derekbeckley/Developer/EICR_Automation/src/routes/jobs.js:575). That means the phase matches the handoff intent visually, but not the data model actually returned by the backend.
+
+## 3. Correctness issues
+- **P1** Existing job data will not hydrate into these tabs because the pages read the wrong root keys. Installation reads `job.installation` in [installation/page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/job/[id]/installation/page.tsx:88), Supply reads `job.supply` in [supply/page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/job/[id]/supply/page.tsx:44), and Board reads `job.board` in [board/page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/job/[id]/board/page.tsx:63). The backend response still returns `installation_details`, `supply_characteristics`, `board_info`, and top-level `boards` in [src/routes/jobs.js](/Users/derekbeckley/Developer/EICR_Automation/src/routes/jobs.js:575). On real fetched jobs, these forms will start blank even when data exists.
+- **P1** The Board tab ignores persisted board data and synthesizes a new `DB1` instead. [board/page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/job/[id]/board/page.tsx:64) only looks for `job.board.boards`; the API provides `boards` at the top level and `board_info` separately. Result: existing boards are invisible, and the UI can present a fake empty board over real data.
+- **P2** “Next inspection due” is derived inconsistently. In [installation/page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/job/[id]/installation/page.tsx:98), the due date is recomputed only when the year stepper changes. Editing the inspection date later does not recompute it, and clearing the year only clears `next_inspection_years`, leaving a stale `next_inspection_due_date` behind.
+- **P2** The means-of-earthing toggle is stored as two booleans (`means_earthing_distributor` and `means_earthing_electrode`) in [supply/page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/job/[id]/supply/page.tsx:144). Those keys have no other consumer in the repo, so this is currently a UI-only encoding of a single state and is likely to drift from extraction/PDF/save logic.
+
+## 4. Security issues
+No concrete security defects stood out in this phase’s diff. I did not see new XSS, auth, CSRF, secret-handling, or PII-exposure issues in these three pages.
+
+## 5. Performance issues
+- The job context updates the whole `job` object on every keystroke in [job-context.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/job-context.tsx:55), so each input change rerenders the entire active page and all controlled fields. That is acceptable for now, but these tabs are already large enough that typing latency is a realistic future risk on lower-end devices.
+- `SelectChips` renders each option twice, once in the dropdown list and again in the chip row, in [select-chips.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/ui/select-chips.tsx:85) and [select-chips.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/ui/select-chips.tsx:127). This is not severe, but it adds DOM weight across many repeated controls.
+
+## 6. Accessibility issues
+- `SegmentedControl` uses `role="radiogroup"`/`role="radio"` in [segmented-control.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/ui/segmented-control.tsx:47) but does not implement arrow-key navigation or roving tabindex. It works as a row of buttons, not as an accessible radio group.
+- `SelectChips` claims keyboard navigation in its docblock, but there are no key handlers in [select-chips.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/ui/select-chips.tsx:7). The listbox semantics are incomplete.
+- The board selector pills have no selected-state semantics in [board/page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/job/[id]/board/page.tsx:102). Screen readers get plain buttons, not “selected board” state.
+- The board notes `<textarea>` in [board/page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/job/[id]/board/page.tsx:301) has no associated label, only a section heading and placeholder.
+
+## 7. Code quality
+- The frontend contract is drifting because page-local shapes are duplicated instead of being normalized centrally. The pages depend on `installation`/`supply`/`board`, while the backend and extraction types still speak `installation_details`/`supply_characteristics`/`board_info`/`boards`; see [types.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/types.ts:192) and [types.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/types.ts:350).
+- The staff hint copy is misleading. [installation/page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/job/[id]/installation/page.tsx:356) says assignment “lives on the Staff tab,” but the card is non-interactive.
+- The custom `MultilineField` in [installation/page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/job/[id]/installation/page.tsx:370) and the inline board notes textarea duplicate form-field behavior outside the shared primitives, which increases drift risk.
+
+## 8. Test coverage gaps
+I could not find frontend test/spec files under `web/` covering these tabs or the shared form primitives.
+
+High-value missing tests:
+- Hydration tests proving fetched API payloads populate Installation/Supply/Board fields from the real backend shape.
+- Board tests for existing `boards` data, add/remove behavior, and active-board switching.
+- Installation tests for due-date recomputation when either date or interval changes, and for clearing the interval.
+- Accessibility tests for segmented controls, listbox/select behavior, and textarea labelling.
+
+## 9. Suggested fixes
+1. `web/src/app/job/[id]/installation/page.tsx:88`, `web/src/app/job/[id]/supply/page.tsx:44`, `web/src/app/job/[id]/board/page.tsx:63`, `web/src/lib/types.ts:192`  
+   Normalize the job payload at the API boundary or in `JobProvider` so the UI reads a single canonical shape. Either map backend fields into `installation`/`supply`/`board` on fetch, or update these pages to read `installation_details`/`supply_characteristics`/`board_info` plus top-level `boards`. This is the highest-priority correctness fix because current fetched jobs will not populate these forms.
+
+2. `web/src/app/job/[id]/board/page.tsx:64`, `src/routes/jobs.js:584`  
+   Rework Board hydration to consume existing top-level `boards` and `board_info` instead of synthesizing `[newBoard()]` whenever `job.board.boards` is missing. Otherwise the tab hides real persisted board data and invents an empty board.
+
+3. `web/src/app/job/[id]/installation/page.tsx:98`  
+   Make `next_inspection_due_date` a deterministic derivation from `date_of_inspection` and `next_inspection_years`, recomputing when either changes and clearing when the interval is cleared. This removes stale derived state and avoids invalid due dates surviving edits.
+
+4. `web/src/app/job/[id]/installation/page.tsx:352`  
+   Turn the Staff hint card into an actual link or button that navigates to `/job/[id]/staff`. The handoff explicitly called for a link; the current implementation is only decorative copy.
+
+5. `web/src/components/ui/segmented-control.tsx:47`  
+   Add roving tabindex and arrow-key handling consistent with radio-group semantics, or drop the radio roles and present it as a button group with accurate semantics. Right now the ARIA contract is incomplete.
+
+6. `web/src/components/ui/select-chips.tsx:7`  
+   Either implement the documented keyboard behavior or remove the misleading comment and simplify the ARIA. At minimum, add keyboard open/close and option navigation if this remains a custom listbox.
+
+7. `web/src/app/job/[id]/board/page.tsx:301`  
+   Add a programmatic label for the notes textarea, ideally reusing a shared textarea primitive. Placeholder text is not a label.
+
+8. `web/src/app/job/[id]/supply/page.tsx:144`  
+   Replace the two-boolean means-of-earthing representation with one canonical field, or explicitly map it into the backend/extraction model. A single choice encoded as two booleans is fragile and currently repo-local.
+
+## 10. Overall verdict
+**Needs rework.**
+
+The UI surface is strong and broadly matches the phase handoff, but the main data-model integration is wrong: these tabs read a frontend-only shape while the backend still returns different keys, and the Board tab in particular can hide real persisted data behind a synthesized empty board.
+
+Top 3 priority fixes:
+1. Fix the frontend/backend job-shape mismatch for Installation, Supply, and Board data.
+2. Fix Board hydration so existing `boards`/`board_info` are shown instead of synthesized `DB1`.
+3. Fix `next_inspection_due_date` derivation and add tests around date/interval changes.

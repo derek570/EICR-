@@ -1,0 +1,915 @@
+OpenAI Codex v0.116.0 (research preview)
+--------
+workdir: /Users/derekbeckley/Developer/EICR_Automation
+model: gpt-5.4
+provider: openai
+approval: never
+sandbox: read-only
+reasoning effort: none
+reasoning summaries: none
+session id: 019d9dba-1ccb-7a82-b53d-c96c5d0576d8
+--------
+user
+You are performing a rigorous code review of a single phase of a Next.js 16 / React 19 PWA frontend rebuild for an electrical-certificate automation tool (EICR / EIC). The repo root is at /Users/derekbeckley/Developer/EICR_Automation and the web package is at web/. Branch: web-rebuild.
+
+TARGET: Phase 6a — settings hub + inspector profiles
+COMMIT: 2ef8ec6
+
+Context for this phase (original intent, handoff doc, commit message, files changed) is in this repo at: reviews/context/phase-6a.md — READ THAT FILE FIRST.
+
+Use shell commands to:
+  git show --stat 2ef8ec6
+  git show 2ef8ec6
+to inspect the full diff. Then read any files you need from the working tree (they may have evolved since this commit — note any later changes).
+
+Your output must be a well-structured markdown review with these sections:
+  1. Summary of the phase (2-3 sentences — what it did).
+  2. Alignment with original plan (does the implementation match the handoff doc / commit intent? Any missing objectives?).
+  3. Correctness issues (bugs, race conditions, missing error handling, incorrect semantics). Prioritise P0/P1/P2.
+  4. Security issues (XSS, auth, CSRF, injection, leaked secrets, PII, CORS). Each item tagged with severity.
+  5. Performance issues (re-renders, N+1, large bundles, memory leaks, blocking work on main thread).
+  6. Accessibility issues (semantic HTML, keyboard nav, ARIA, colour contrast, focus management).
+  7. Code quality (duplication, dead code, type-safety holes, naming, convention drift vs. rest of repo).
+  8. Test coverage gaps.
+  9. Suggested fixes — each as a numbered item with: file:line, what to change, why. Be concrete.
+  10. Overall verdict (ship / ship with fixes / needs rework) and top 3 priority fixes.
+
+Be specific — cite file paths and line numbers. Avoid generic advice. If the code is good, say so with evidence. Do NOT modify files; this is review only.
+
+mcp startup: no servers
+codex
+Reviewing `phase-6a` against the handoff context and commit `2ef8ec6` first, then I’ll trace the affected files in the working tree to separate commit-era issues from later changes.
+exec
+/bin/zsh -lc "sed -n '1,220p' reviews/context/phase-6a.md" in /Users/derekbeckley/Developer/EICR_Automation exited 1 in 0ms:
+sed: reviews/context/phase-6a.md: No such file or directory
+exec
+/bin/zsh -lc 'git show --stat --format=fuller 2ef8ec6' in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc 'git show --format=fuller --no-ext-diff 2ef8ec6' in /Users/derekbeckley/Developer/EICR_Automation succeeded in 1.18s:
+2026-04-18 00:15:21.064 xcodebuild[36149:67220199]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:15:21.169 xcodebuild[36149:67220196] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-dkSELBDK' (errno=Operation not permitted)
+2026-04-18 00:15:21.508 xcodebuild[36154:67220223]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:15:21.612 xcodebuild[36154:67220221] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+commit 2ef8ec6470c967078c5a9074e6c38c22256e83be
+Author:     Derek Beckley <derekbeckley@Dereks-Mac-mini.broadband>
+AuthorDate: Fri Apr 17 18:40:53 2026 +0100
+Commit:     Derek Beckley <derekbeckley@Dereks-Mac-mini.broadband>
+CommitDate: Fri Apr 17 18:40:53 2026 +0100
+
+    feat(web): Phase 6a settings hub + inspector profiles
+    
+    WHAT
+    Ports iOS settings surface to the web rebuild: a /settings hub, a
+    /settings/staff list, and a shared /settings/staff/[inspectorId] add/edit
+    page (with 'new' sentinel for creation). Adds signature capture via an
+    HTML5 canvas + Pointer Events, equipment tracking (5 instruments × serial
+    + calibration date), and a default-inspector mutex enforced client-side
+ succeeded in 1.18s:
+2026-04-18 00:15:21.064 xcodebuild[36150:67220198]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:15:21.169 xcodebuild[36150:67220197] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-ez7cDvgS' (errno=Operation not permitted)
+2026-04-18 00:15:21.508 xcodebuild[36155:67220224]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:15:21.612 xcodebuild[36155:67220222] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+commit 2ef8ec6470c967078c5a9074e6c38c22256e83be
+Author:     Derek Beckley <derekbeckley@Dereks-Mac-mini.broadband>
+AuthorDate: Fri Apr 17 18:40:53 2026 +0100
+Commit:     Derek Beckley <derekbeckley@Dereks-Mac-mini.broadband>
+CommitDate: Fri Apr 17 18:40:53 2026 +0100
+
+    feat(web): Phase 6a settings hub + inspector profiles
+    
+    WHAT
+    Ports iOS settings surface to the web rebuild: a /settings hub, a
+    /settings/staff list, and a shared /settings/staff/[inspectorId] add/edit
+    page (with 'new' sentinel for creation). Adds signature capture via an
+    HTML5 canvas + Pointer Events, equipment tracking (5 instruments × serial
+    + calibration date), and a default-inspector mutex enforced client-side
+codex
+The context file path in the prompt does not exist at repo root, so I’m locating it in-tree and waiting for the `git show` output to flush without assuming the first path was correct.
+exec
+/bin/zsh -lc "rg --files | rg 'phase-6a\\.md"'$|reviews/context'"'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+web/reviews/claude/phase-6a.md
+web/reviews/context/phase-3a.md
+web/reviews/context/phase-5d.md
+web/reviews/context/phase-7b2.md
+web/reviews/context/phase-4d.md
+web/reviews/context/phase-6a.md
+web/reviews/context/phase-7b3.md
+web/reviews/context/phase-4e.md
+web/reviews/context/phase-7a.md
+web/reviews/context/phase-5a.md
+web/reviews/context/phase-4a.md
+web/reviews/context/phase-2.md
+web/reviews/context/phase-1.md
+web/reviews/context/phase-0.md
+web/reviews/context/phase-6b.md
+web/reviews/context/phase-3c.md
+web/reviews/context/phase-5b.md
+web/reviews/context/phase-7b4.md
+web/reviews/context/phase-4b.md
+web/reviews/context/phase-5c.md
+codex
+I have the commit metadata and changed-file list. Next I’m reading the phase handoff plus the actual file contents with line numbers so I can pin findings to the committed behavior and call out any drift in the working tree.
+exec
+/bin/zsh -lc "sed -n '1,260p' web/reviews/context/phase-6a.md" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+# Phase 6a — Context
+
+**Commit:** `2ef8ec6`
+
+## Commit message
+
+```
+commit 2ef8ec6470c967078c5a9074e6c38c22256e83be
+Author:     Derek Beckley <derekbeckley@Dereks-Mac-mini.broadband>
+AuthorDate: Fri Apr 17 18:40:53 2026 +0100
+Commit:     Derek Beckley <derekbeckley@Dereks-Mac-mini.broadband>
+CommitDate: Fri Apr 17 18:40:53 2026 +0100
+
+    feat(web): Phase 6a settings hub + inspector profiles
+    
+    WHAT
+    Ports iOS settings surface to the web rebuild: a /settings hub, a
+    /settings/staff list, and a shared /settings/staff/[inspectorId] add/edit
+    page (with 'new' sentinel for creation). Adds signature capture via an
+    HTML5 canvas + Pointer Events, equipment tracking (5 instruments × serial
+exec
+/bin/zsh -lc "nl -ba web/src/app/settings/staff/page.tsx | sed -n '1,360p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	'use client';
+     2	
+     3	import * as React from 'react';
+     4	import Link from 'next/link';
+     5	import { useRouter } from 'next/navigation';
+     6	import { ChevronRight, Plus, Trash2, UserPlus, Wrench } from 'lucide-react';
+     7	import { api } from '@/lib/api-client';
+     8	import { useCurrentUser } from '@/lib/use-current-user';
+     9	import type { InspectorProfile } from '@/lib/types';
+    10	import { Button } from '@/components/ui/button';
+    11	
+    12	/**
+    13	 * Staff members list. Ports iOS `InspectorListView.swift`:
+    14	 *   - Gradient hero header with stacked avatars + count
+    15	 *   - Card list of inspectors (avatar circle, name, position, default pill)
+    16	 *   - Swipe-to-delete → long-press context menu on mobile; here a
+    17	 *     trash icon with a confirm dialog matches the web idiom better.
+    18	 *   - Empty state with primary Add button
+    19	 *
+    20	 * Data: fetched once on mount via `api.inspectorProfiles`. Mutations
+exec
+/bin/zsh -lc "nl -ba web/src/app/settings/page.tsx | sed -n '1,260p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc 'git diff 2ef8ec6 -- web/src/app/settings/page.tsx web/src/app/settings/staff/page.tsx web/src/app/settings/staff/[inspectorId]/page.tsx web/src/components/settings/signature-canvas.tsx web/src/lib/api-client.ts web/src/lib/use-current-user.ts web/src/middleware.ts src/routes/settings.js' in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	'use client';
+     2	
+     3	import * as React from 'react';
+     4	import Link from 'next/link';
+     5	import { useRouter } from 'next/navigation';
+     6	import { Building2, ChevronRight, LayoutDashboard, LogOut, ShieldCheck, Users } from 'lucide-react';
+     7	import { api } from '@/lib/api-client';
+     8	import { clearAuth } from '@/lib/auth';
+     9	import { useCurrentUser } from '@/lib/use-current-user';
+    10	import { isCompanyAdmin, isSystemAdmin } from '@/lib/roles';
+    11	import { Button } from '@/components/ui/button';
+    12	import { IOSInstallHint } from '@/components/pwa/ios-install-hint';
+    13	
+    14	/**
+    15	 * Settings hub. Ports iOS `SettingsView.swift` — hero profile header,
+    16	 * role badges, and stacked link cards into sub-sections.
+    17	 *
+    18	 * Phase 6a ships only the Staff section live. Company / Admin link
+    19	 * cards render conditionally (so the role gating is correct from day
+    20	 * one) but route to placeholders until 6b / 6c land — see the guarded
+ exited 1 in 0ms:
+zsh:1: no matches found: web/src/app/settings/staff/[inspectorId]/page.tsx
+exec
+/bin/zsh -lc "nl -ba web/src/components/settings/signature-canvas.tsx | sed -n '1,340p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "nl -ba 'web/src/app/settings/staff/[inspectorId]/page.tsx' | sed -n '1,420p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	'use client';
+     2	
+     3	import * as React from 'react';
+     4	import { api } from '@/lib/api-client';
+     5	import { Button } from '@/components/ui/button';
+     6	
+     7	/**
+     8	 * SignatureCanvas — pen-drawn signature capture, ported from iOS
+     9	 * `SignatureCaptureView.swift`.
+    10	 *
+    11	 * Rendering: single HTML5 `<canvas>` driven by Pointer Events. Strokes
+    12	 * are built from raw point arrays (matches iOS) and rendered with
+    13	 * quadratic-curve smoothing (Catmull-Rom-lite) so the pen-trail feels
+    14	 * continuous even at low sample rates. Stored in state as `lines:
+    15	 * Point[][]` so undo (clear) is a one-assignment operation and
+    16	 * re-render is cheap (paint-to-canvas, not React-tree).
+    17	 *
+    18	 * Background handling:
+    19	 *   - If `initialUrl` is provided, we draw that image as the background
+    20	 *     on mount and treat it as "has signature" so the Clear button shows.
+ succeeded in 0ms:
+     1	'use client';
+     2	
+     3	import * as React from 'react';
+     4	import Link from 'next/link';
+     5	import { useParams, useRouter } from 'next/navigation';
+     6	import {
+     7	  Briefcase,
+     8	  Bolt,
+     9	  ChevronDown,
+    10	  ChevronRight,
+    11	  Globe,
+    12	  IdCard,
+    13	  Link2,
+    14	  PenLine,
+    15	  ShieldCheck,
+    16	  Star,
+    17	  User as UserIcon,
+    18	  Wrench,
+    19	} from 'lucide-react';
+    20	import { api } from '@/lib/api-client';
+exec
+/bin/zsh -lc "nl -ba web/src/lib/api-client.ts | sed -n '250,380p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "nl -ba src/routes/settings.js | sed -n '150,320p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+   250	    filename: string,
+   251	    opts: { thumbnail?: boolean } = {}
+   252	  ): Promise<Blob> {
+   253	    const token = getToken();
+   254	    const headers = new Headers();
+   255	    if (token) headers.set('Authorization', `Bearer ${token}`);
+   256	    const qs = opts.thumbnail ? '?thumbnail=true' : '';
+   257	    const res = await fetch(
+   258	      `${API_BASE_URL}/api/job/${encodeURIComponent(userId)}/${encodeURIComponent(jobId)}/photos/${encodeURIComponent(filename)}${qs}`,
+   259	      { headers, credentials: 'include' }
+   260	    );
+   261	    if (!res.ok) {
+   262	      const body = await res.text().catch(() => '');
+   263	      throw new ApiError(res.status, body || res.statusText);
+   264	    }
+   265	    return res.blob();
+   266	  },
+   267	
+   268	  /**
+   269	   * Partial update. Backend merges with the persisted doc, so callers
+ succeeded in 0ms:
+   150	  }
+   151	});
+   152	
+   153	/**
+   154	 * Get inspector profiles for a user
+   155	 * GET /api/inspector-profiles/:userId
+   156	 */
+   157	router.get('/inspector-profiles/:userId', auth.requireAuth, async (req, res) => {
+   158	  const { userId } = req.params;
+   159	
+   160	  if (req.user.id !== userId) {
+   161	    return res.status(403).json({ error: 'Access denied' });
+   162	  }
+   163	
+   164	  try {
+   165	    const s3Key = `settings/${userId}/inspector_profiles.json`;
+   166	    const content = await storage.downloadText(s3Key);
+   167	
+   168	    if (content) {
+   169	      res.json(JSON.parse(content));
+exec
+/bin/zsh -lc "nl -ba web/src/middleware.ts | sed -n '1,220p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	import { NextResponse, type NextRequest } from 'next/server';
+     2	
+     3	/**
+     4	 * Route guard.
+     5	 *
+     6	 * Public paths (login, legal, offline, static assets, API proxy calls)
+     7	 * pass through. Everything else requires an unexpired JWT cookie; missing
+     8	 * or expired token → redirect to /login with ?redirect=<attempted path>.
+     9	 */
+    10	
+    11	const PUBLIC_PREFIXES = ['/login', '/legal', '/offline'];
+    12	
+    13	interface JwtPayload {
+    14	  exp?: number;
+    15	  role?: 'admin' | 'user';
+    16	}
+    17	
+    18	function decodeJwt(token: string): JwtPayload | null {
+    19	  try {
+    20	    const [, payload] = token.split('.');
+exec
+/bin/zsh -lc "nl -ba web/src/lib/use-current-user.ts | sed -n '1,200p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	'use client';
+     2	
+     3	import * as React from 'react';
+     4	import { api } from './api-client';
+     5	import { getUser } from './auth';
+     6	import type { User } from './types';
+     7	
+     8	/**
+     9	 * `useCurrentUser` — reactive view of the signed-in user.
+    10	 *
+    11	 * Why: role-gated rendering (see `lib/roles.ts`) needs the *live* user,
+    12	 * not the snapshot stashed in localStorage at login time. A system admin
+    13	 * who gets demoted mid-session should lose access on the next page
+    14	 * render, not at next login. We hydrate instantly from `getUser()` (so
+    15	 * the first paint already knows the role) and then revalidate via
+    16	 * `api.me()` in the background.
+    17	 *
+    18	 * The `refresh` callback lets callers force a re-read after an action
+    19	 * they know will have changed role/state (e.g. the admin UI updating
+    20	 * its own account).
+exec
+/bin/zsh -lc "git show 2ef8ec6:'web/src/app/settings/staff/[inspectorId]/page.tsx' | nl -ba | sed -n '1,420p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "git show 2ef8ec6:'web/src/app/settings/staff/page.tsx' | nl -ba | sed -n '1,360p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 1.18s:
+2026-04-18 00:15:53.544 xcodebuild[36214:67220691]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:15:53.649 xcodebuild[36214:67220688] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-WyE8xha3' (errno=Operation not permitted)
+2026-04-18 00:15:54.005 xcodebuild[36218:67220711]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:15:54.108 xcodebuild[36218:67220708] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+     1	'use client';
+     2	
+     3	import * as React from 'react';
+     4	import Link from 'next/link';
+     5	import { useRouter } from 'next/navigation';
+     6	import { ChevronRight, Plus, Trash2, UserPlus, Wrench } from 'lucide-react';
+     7	import { api } from '@/lib/api-client';
+     8	import { useCurrentUser } from '@/lib/use-current-user';
+     9	import type { InspectorProfile } from '@/lib/types';
+    10	import { Button } from '@/components/ui/button';
+    11	
+    12	/**
+    13	 * Staff members list. Ports iOS `InspectorListView.swift`:
+    14	 *   - Gradient hero header with stacked avatars + count
+ succeeded in 1.18s:
+2026-04-18 00:15:53.544 xcodebuild[36215:67220690]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:15:53.649 xcodebuild[36215:67220689] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-YP6lgTah' (errno=Operation not permitted)
+2026-04-18 00:15:54.005 xcodebuild[36219:67220710]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:15:54.108 xcodebuild[36219:67220709] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+     1	'use client';
+     2	
+     3	import * as React from 'react';
+     4	import Link from 'next/link';
+     5	import { useParams, useRouter } from 'next/navigation';
+     6	import {
+     7	  Briefcase,
+     8	  Bolt,
+     9	  ChevronDown,
+    10	  ChevronRight,
+    11	  Globe,
+    12	  IdCard,
+    13	  Link2,
+    14	  PenLine,
+codex
+I’m cross-checking the committed versions directly now. The working tree has later Phase 6b/7 changes in some of these files, so I’m being careful to anchor findings to `2ef8ec6` and only mention later drift where it materially affects the review.
+exec
+/bin/zsh -lc "git show 2ef8ec6:'web/src/components/settings/signature-canvas.tsx' | nl -ba | sed -n '1,340p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "git show 2ef8ec6:'web/src/app/settings/page.tsx' | nl -ba | sed -n '1,260p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 1.17s:
+2026-04-18 00:16:02.856 xcodebuild[36244:67220926]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:16:02.959 xcodebuild[36244:67220924] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-M7o2Jm5X' (errno=Operation not permitted)
+2026-04-18 00:16:03.282 xcodebuild[36247:67220946]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:16:03.384 xcodebuild[36247:67220944] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+     1	'use client';
+     2	
+     3	import * as React from 'react';
+     4	import Link from 'next/link';
+     5	import { useRouter } from 'next/navigation';
+     6	import { Building2, ChevronRight, LogOut, ShieldCheck, Users } from 'lucide-react';
+     7	import { api } from '@/lib/api-client';
+     8	import { clearAuth } from '@/lib/auth';
+     9	import { useCurrentUser } from '@/lib/use-current-user';
+    10	import { isCompanyAdmin, isSystemAdmin } from '@/lib/roles';
+    11	import { Button } from '@/components/ui/button';
+    12	
+    13	/**
+    14	 * Settings hub. Ports iOS `SettingsView.swift` — hero profile header,
+ succeeded in 1.17s:
+2026-04-18 00:16:02.856 xcodebuild[36243:67220925]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:16:02.959 xcodebuild[36243:67220923] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-a90dV0xN' (errno=Operation not permitted)
+2026-04-18 00:16:03.282 xcodebuild[36248:67220945]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:16:03.384 xcodebuild[36248:67220943] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+     1	'use client';
+     2	
+     3	import * as React from 'react';
+     4	import { api } from '@/lib/api-client';
+     5	import { Button } from '@/components/ui/button';
+     6	
+     7	/**
+     8	 * SignatureCanvas — pen-drawn signature capture, ported from iOS
+     9	 * `SignatureCaptureView.swift`.
+    10	 *
+    11	 * Rendering: single HTML5 `<canvas>` driven by Pointer Events. Strokes
+    12	 * are built from raw point arrays (matches iOS) and rendered with
+    13	 * quadratic-curve smoothing (Catmull-Rom-lite) so the pen-trail feels
+    14	 * continuous even at low sample rates. Stored in state as `lines:
+exec
+/bin/zsh -lc "git show 2ef8ec6:'web/src/middleware.ts' | nl -ba | sed -n '1,180p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "git show 2ef8ec6:'web/src/lib/use-current-user.ts' | nl -ba | sed -n '1,120p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 1.15s:
+2026-04-18 00:16:10.323 xcodebuild[36266:67221097]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:16:10.427 xcodebuild[36266:67221096] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-Oqtlgr8B' (errno=Operation not permitted)
+2026-04-18 00:16:10.746 xcodebuild[36270:67221117]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:16:10.849 xcodebuild[36270:67221115] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+     1	import { NextResponse, type NextRequest } from 'next/server';
+     2	
+     3	/**
+     4	 * Route guard.
+     5	 *
+     6	 * Public paths (login, legal, offline, static assets, API proxy calls)
+     7	 * pass through. Everything else requires an unexpired JWT cookie; missing
+     8	 * or expired token → redirect to /login with ?redirect=<attempted path>.
+     9	 */
+    10	
+    11	const PUBLIC_PREFIXES = ['/login', '/legal', '/offline'];
+    12	
+    13	interface JwtPayload {
+    14	  exp?: number;
+ succeeded in 1.15s:
+2026-04-18 00:16:10.323 xcodebuild[36265:67221098]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:16:10.427 xcodebuild[36265:67221095] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-6rWNEmJ9' (errno=Operation not permitted)
+2026-04-18 00:16:10.747 xcodebuild[36269:67221118]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:16:10.849 xcodebuild[36269:67221116] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+     1	'use client';
+     2	
+     3	import * as React from 'react';
+     4	import { api } from './api-client';
+     5	import { getUser } from './auth';
+     6	import type { User } from './types';
+     7	
+     8	/**
+     9	 * `useCurrentUser` — reactive view of the signed-in user.
+    10	 *
+    11	 * Why: role-gated rendering (see `lib/roles.ts`) needs the *live* user,
+    12	 * not the snapshot stashed in localStorage at login time. A system admin
+    13	 * who gets demoted mid-session should lose access on the next page
+    14	 * render, not at next login. We hydrate instantly from `getUser()` (so
+exec
+/bin/zsh -lc "rg -n \"api\\.me\\(|function request|const request|getToken\\(|cm_user|setAuth\\(|clearAuth\\(\" web/src/lib -g '"'!**/*.map'"'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+web/src/lib/auth.ts:11:const USER_KEY = 'cm_user';
+web/src/lib/auth.ts:14:export function getToken(): string | null {
+web/src/lib/auth.ts:30:export function setAuth(token: string, user: User): void {
+web/src/lib/auth.ts:39:export function clearAuth(): void {
+web/src/lib/pwa/job-cache.ts:27: *     observations, so on `clearAuth()` (sign-out) we purge the entire
+web/src/lib/pwa/job-cache.ts:34: *     protection, and `clearAuth()` is the only durable wipe.
+web/src/lib/pwa/job-cache.ts:89:    const request = indexedDB.open(DB_NAME, DB_VERSION);
+web/src/lib/pwa/job-cache.ts:256: * Wipe every cached record in every store. Called from `clearAuth()` on
+web/src/lib/use-current-user.ts:16: * `api.me()` in the background.
+web/src/lib/use-current-user.ts:33:      const fresh = await api.me();
+web/src/lib/use-current-user.ts:38:        localStorage.setItem('cm_user', JSON.stringify(fresh));
+web/src/lib/recording/sonnet-session.ts:152:    const token = getToken();
+web/src/lib/api-client.ts:34:async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+web/src/lib/api-client.ts:37:  const token = getToken();
+web/src/lib/api-client.ts:253:    const token = getToken();
+web/src/lib/api-client.ts:350:    const token = getToken();
+web/src/lib/api-client.ts:423:    const token = getToken();
+exec
+/bin/zsh -lc "git show 2ef8ec6:'web/src/lib/api-client.ts' | nl -ba | sed -n '250,370p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 1.03s:
+2026-04-18 00:16:17.810 xcodebuild[36283:67221252]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:16:17.909 xcodebuild[36283:67221251] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-qS8aUCYU' (errno=Operation not permitted)
+2026-04-18 00:16:18.195 xcodebuild[36285:67221260]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:16:18.292 xcodebuild[36285:67221259] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+   250	    const res = await fetch(
+   251	      `${API_BASE_URL}/api/job/${encodeURIComponent(userId)}/${encodeURIComponent(jobId)}/photos/${encodeURIComponent(filename)}${qs}`,
+   252	      { headers, credentials: 'include' }
+   253	    );
+   254	    if (!res.ok) {
+   255	      const body = await res.text().catch(() => '');
+   256	      throw new ApiError(res.status, body || res.statusText);
+   257	    }
+   258	    return res.blob();
+   259	  },
+   260	
+   261	  /**
+   262	   * Partial update. Backend merges with the persisted doc, so callers
+   263	   * only need to send the fields that changed.
+codex
+I’ve got enough of the phase-specific surface now. I’m checking the shared auth/API helpers because several likely failure modes here are cross-cutting rather than local to the settings pages.
+exec
+/bin/zsh -lc "nl -ba web/src/lib/auth.ts | sed -n '1,120p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	import type { User } from './types';
+     2	import { clearJobCache } from './pwa/job-cache';
+     3	
+     4	/**
+     5	 * Auth-token helpers. Token is stored in localStorage (for API calls) and
+     6	 * also mirrored into a cookie so the Next.js middleware can gate routes
+     7	 * before hitting the client.
+     8	 */
+     9	
+    10	const TOKEN_KEY = 'cm_token';
+    11	const USER_KEY = 'cm_user';
+    12	const COOKIE_MAX_AGE = 60 * 60 * 24 * 7; // 7 days
+    13	
+    14	export function getToken(): string | null {
+    15	  if (typeof window === 'undefined') return null;
+    16	  return localStorage.getItem(TOKEN_KEY);
+    17	}
+    18	
+    19	export function getUser(): User | null {
+    20	  if (typeof window === 'undefined') return null;
+exec
+/bin/zsh -lc "nl -ba web/src/lib/api-client.ts | sed -n '1,120p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	import {
+     2	  type AdminUser,
+     3	  ApiError,
+     4	  type CCUAnalysis,
+     5	  type CompanyJobRow,
+     6	  type CompanyMember,
+     7	  type CompanySettings,
+     8	  type CompanyStats,
+     9	  type DocumentExtractionResponse,
+    10	  type InspectorProfile,
+    11	  type InviteEmployeeResponse,
+    12	  type Job,
+    13	  type JobDetail,
+    14	  type LoginResponse,
+    15	  type Paginated,
+    16	  type User,
+    17	} from './types';
+    18	import { getToken } from './auth';
+    19	
+    20	/**
+exec
+/bin/zsh -lc "rg -n \"settings/admin|not authorised|not authorized|Access denied|403\" web/src/app web/src/components | sed -n '1,200p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+web/src/app/settings/admin/users/page.tsx:131:          onClick={() => router.push('/settings/admin/users/new')}
+web/src/app/settings/admin/users/page.tsx:221:      href={`/settings/admin/users/${encodeURIComponent(row.id)}`}
+web/src/app/settings/company/dashboard/page.tsx:36: * too so non-admins get a friendly "not authorised" instead of a 403
+web/src/app/settings/company/dashboard/page.tsx:60:  // Role gate — belt-and-braces. Middleware gates /settings/admin/*;
+web/src/app/settings/company/dashboard/page.tsx:62:  // backend will 403 without company-admin, so we intercept here.
+web/src/app/settings/admin/users/new/page.tsx:77:      router.push('/settings/admin/users');
+web/src/app/settings/admin/users/new/page.tsx:104:          href="/settings/admin/users"
+web/src/app/settings/admin/users/new/page.tsx:205:              onClick={() => router.push('/settings/admin/users')}
+web/src/app/settings/page.tsx:128:            href="/settings/admin/users"
+web/src/app/settings/admin/users/[userId]/page.tsx:140:        <Button variant="secondary" onClick={() => router.push('/settings/admin/users')}>
+web/src/app/settings/admin/users/[userId]/page.tsx:169:      router.push('/settings/admin/users');
+web/src/app/settings/admin/users/[userId]/page.tsx:199:          href="/settings/admin/users"
+web/src/app/settings/admin/users/[userId]/page.tsx:373:            onClick={() => router.push('/settings/admin/users')}
+exec
+/bin/zsh -lc "sed -n '260,520p' web/reviews/context/phase-6a.md" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+## Implementation plan
+
+### 0. Pre-work (once, before 6a)
+
+- Extend `User` in `web/src/lib/types.ts`:
+  ```ts
+  export interface User {
+    id: string;
+    email: string;
+    name: string;
+    company_name?: string;
+    role?: 'admin' | 'user';
+    company_id?: string;
+    company_role?: 'owner' | 'admin' | 'employee';
+  }
+  ```
+- Add three type exports: `InspectorProfile`, `CompanySettings`,
+  `AdminUser` (extends User with `is_active`, `last_login`,
+  `locked_until`, `failed_login_attempts`). Do this up-front so the
+  API-client methods added per sub-phase can be fully typed.
+exec
+/bin/zsh -lc "rg --files web | rg 'test|spec|__tests__'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+web/src/lib/constants/inspection-schedule.ts
+web/src/app/settings/staff/[inspectorId]/page.tsx
+web/src/app/job/[id]/inspection/page.tsx
+exec
+/bin/zsh -lc "rg -n \"default.*staff|default inspector|is_default|signature\" src/routes web/src/app/settings web/src/components/settings web/src/lib -g '"'!**/*.map'"'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+web/src/components/settings/signature-canvas.tsx:8: * SignatureCanvas — pen-drawn signature capture, ported from iOS
+web/src/components/settings/signature-canvas.tsx:20: *     on mount and treat it as "has signature" so the Clear button shows.
+web/src/components/settings/signature-canvas.tsx:23: *     of an existing signature produces a merged PNG. That matches iOS
+web/src/components/settings/signature-canvas.tsx:51:   * User id for authed signature fetch. Required when `initialSignatureFile`
+web/src/components/settings/signature-canvas.tsx:56:   * S3 key of an existing signature (from `inspector.signature_file`).
+web/src/components/settings/signature-canvas.tsx:110:      // Background (existing signature, if loaded).
+web/src/components/settings/signature-canvas.tsx:152:    // --- Load background signature -----------------------------------------
+web/src/components/settings/signature-canvas.tsx:169:          img.onerror = () => setLoadError('Failed to render saved signature');
+web/src/components/settings/signature-canvas.tsx:172:          if (!cancelled) setLoadError('Failed to load saved signature');
+web/src/components/settings/signature-canvas.tsx:273:              Draw your signature above — it will be saved when you save the profile.
+web/src/components/settings/logo-uploader.tsx:22: *    observation-photo + signature-canvas implementations.
+web/src/app/settings/page.tsx:93:          subtitle="Manage inspectors, signatures, and test equipment"
+web/src/app/settings/staff/page.tsx:79:  const defaultInspector = inspectors.find((i) => i.is_default);
+web/src/app/settings/staff/page.tsx:221:        {inspector.is_default ? (
+web/src/app/settings/staff/page.tsx:299:          {inspector.is_default ? ' This is your default staff member.' : ''}
+web/src/app/settings/staff/[inspectorId]/page.tsx:29:} from '@/components/settings/signature-canvas';
+web/src/app/settings/staff/[inspectorId]/page.tsx:43: * `signature_file` set. Doing it in this order means we never persist a
+web/src/app/settings/staff/[inspectorId]/page.tsx:44: * profile pointing at a non-existent signature; if the upload fails we
+web/src/app/settings/staff/[inspectorId]/page.tsx:47: * `is_default` on any profile implies all other profiles MUST be
+web/src/app/settings/staff/[inspectorId]/page.tsx:48: * `is_default = false` — the toggle logic in `togglingDefault` handles
+exec
+/bin/zsh -lc 'git show --name-only --format=oneline 2ef8ec6' in /Users/derekbeckley/Developer/EICR_Automation succeeded in 1.03s:
+2026-04-18 00:16:33.775 xcodebuild[36308:67221470] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-NS88ohK2' (errno=Operation not permitted)
+2026-04-18 00:16:34.061 xcodebuild[36310:67221481]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:16:34.159 xcodebuild[36310:67221480] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+2ef8ec6470c967078c5a9074e6c38c22256e83be feat(web): Phase 6a settings hub + inspector profiles
+CLAUDE.md
+src/routes/settings.js
+web/src/app/settings/layout.tsx
+web/src/app/settings/page.tsx
+web/src/app/settings/staff/[inspectorId]/page.tsx
+web/src/app/settings/staff/page.tsx
+web/src/components/settings/signature-canvas.tsx
+web/src/lib/api-client.ts
+web/src/lib/roles.ts
+web/src/lib/types.ts
+web/src/lib/use-current-user.ts
+web/src/middleware.ts
+exec
+/bin/zsh -lc "nl -ba src/routes/settings.js | sed -n '1,120p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	/**
+     2	 * Settings routes — user defaults, company settings, inspector profiles, schema, regulations
+     3	 */
+     4	
+     5	import { Router } from 'express';
+     6	import fs from 'node:fs/promises';
+     7	import path from 'node:path';
+     8	import multer from 'multer';
+     9	import os from 'node:os';
+    10	import * as auth from '../auth.js';
+    11	import * as storage from '../storage.js';
+    12	import logger from '../logger.js';
+    13	import { createFileFilter, handleUploadError } from '../utils/upload.js';
+    14	
+    15	const router = Router();
+    16	
+    17	// Multer for signature uploads (PNG + JPEG only)
+    18	const upload = multer({
+    19	  storage: multer.diskStorage({
+    20	    destination: os.tmpdir(),
+exec
+/bin/zsh -lc "rg -n \"ConfirmDeleteDialog|role=\\\"dialog\\\"|aria-modal|focus\" web/src/app/settings/staff web/src/components -g '"'!**/*.map'"'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+web/src/app/settings/staff/page.tsx:22: * via a `focus` listener. Matches iOS behaviour where the list re-loads
+web/src/app/settings/staff/page.tsx:47:  // Refresh on tab focus — cheap way to pick up edits after navigating
+web/src/app/settings/staff/page.tsx:52:    window.addEventListener('focus', onFocus);
+web/src/app/settings/staff/page.tsx:53:    return () => window.removeEventListener('focus', onFocus);
+web/src/app/settings/staff/page.tsx:119:        <ConfirmDeleteDialog
+web/src/app/settings/staff/page.tsx:193:        className="flex flex-1 items-center gap-3 focus-visible:outline-2 focus-visible:outline-[var(--color-brand-blue)] rounded-[var(--radius-md)]"
+web/src/app/settings/staff/page.tsx:272:function ConfirmDeleteDialog({
+web/src/app/settings/staff/page.tsx:286:      role="dialog"
+web/src/app/settings/staff/page.tsx:287:      aria-modal="true"
+web/src/components/observations/observation-sheet.tsx:169:      role="dialog"
+web/src/components/observations/observation-sheet.tsx:170:      aria-modal="true"
+web/src/components/observations/observation-sheet.tsx:249:              className="h-11 rounded-[var(--radius-md)] border border-[var(--color-border-default)] bg-[var(--color-surface-1)] px-3 text-[14px] text-[var(--color-text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--color-brand-blue)]"
+web/src/components/observations/observation-sheet.tsx:267:              className="rounded-[var(--radius-md)] border border-[var(--color-border-default)] bg-[var(--color-surface-1)] px-3 py-2 text-[14px] leading-snug text-[var(--color-text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--color-brand-blue)]"
+web/src/components/observations/observation-sheet.tsx:285:              className="rounded-[var(--radius-md)] border border-[var(--color-border-default)] bg-[var(--color-surface-1)] px-3 py-2 text-[14px] leading-snug text-[var(--color-text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--color-brand-blue)]"
+web/src/components/job/floating-action-bar.tsx:135:      className="flex h-12 w-12 flex-col items-center justify-center gap-0.5 rounded-full shadow-[0_4px_14px_rgba(0,0,0,0.4)] transition active:scale-95 focus-visible:outline-2 focus-visible:outline-white"
+web/src/components/job/floating-action-bar.tsx:152:        'ml-1 flex h-14 w-14 flex-col items-center justify-center rounded-full transition active:scale-95 focus-visible:outline-2 focus-visible:outline-white',
+web/src/components/recording/recording-overlay.tsx:66:      role="dialog"
+web/src/components/recording/recording-overlay.tsx:67:      aria-modal="true"
+web/src/components/recording/recording-overlay.tsx:281:      className="flex h-9 w-9 items-center justify-center rounded-full bg-white/15 text-white transition hover:bg-white/25 focus-visible:outline-2 focus-visible:outline-white"
+web/src/components/job/job-header.tsx:31:          className="inline-flex items-center gap-0.5 rounded-[var(--radius-md)] px-2 py-1.5 text-[15px] font-medium text-[var(--color-brand-blue)] transition hover:bg-[var(--color-surface-2)] focus-visible:outline-2 focus-visible:outline-[var(--color-brand-blue)]"
+exec
+/bin/zsh -lc 'rg -n "tsc --noEmit|npm run lint|vitest|jest|playwright|cypress|testing-library" web package.json web/package.json' in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+web/package.json:11:    "typecheck": "tsc --noEmit",
+web/package.json:43:    "@playwright/test": "^1.59.1",
+package.json:13:    "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js",
+package.json:14:    "test:coverage": "node --experimental-vm-modules node_modules/jest/bin/jest.js --coverage",
+package.json:49:    "playwright": "^1.58.0",
+package.json:85:    "jest": "^29.7.0",
+web/scripts/verify-visual.ts:12:import { chromium, type Browser, type Page } from '@playwright/test';
+web/package.json:11:    "typecheck": "tsc --noEmit",
+web/package.json:43:    "@playwright/test": "^1.59.1",
+web/reviews/codex/phase-1.raw.txt:339:    12	import { chromium, type Browser, type Page } from '@playwright/test';
+web/reviews/codex/phase-1.raw.txt:364:/bin/zsh -lc "rg --files web | rg '(test|spec)\\.(ts|tsx|js|jsx)"'$|playwright|vitest|jest'"'" in /Users/derekbeckley/Developer/EICR_Automation exited 1 in 0ms:
+web/PHASE_7B_HANDOFF.md:109:npm run lint                       # 0 errors, 6 warnings (baseline — unchanged from 6c/7a)
+web/PHASE_5D_HANDOFF.md:171:npx tsc --noEmit
+web/PHASE_5D_HANDOFF.md:172:npm run lint
+web/PHASE_6C_HANDOFF.md:188:npx tsc --noEmit     # must be clean
+web/PHASE_6C_HANDOFF.md:189:npm run lint         # do not regress the 6-warning baseline
+web/PHASE_7C_HANDOFF.md:60:npx tsc --noEmit                    # clean (main)
+web/PHASE_7C_HANDOFF.md:61:npx tsc --noEmit -p tsconfig.sw.json # clean (service worker)
+web/PHASE_7C_HANDOFF.md:62:npm run lint                         # 0 errors, 6 pre-existing warnings (unchanged from 7b)
+web/README.md:18:npm run lint
+codex
+I’ve isolated the main defect cluster: default-profile invariants, stale state when moving between inspectors, and signature handling that treats “loaded background” as “dirty drawing”. I’m pulling exact context line numbers now so the alignment section can be precise rather than hand-wavy.
+exec
+/bin/zsh -lc "nl -ba web/reviews/context/phase-6a.md | sed -n '120,220p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "nl -ba web/reviews/context/phase-6a.md | sed -n '260,380p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+   120	signatures are the highest-value piece for the MVP — an inspector can't
+   121	produce a valid certificate without them, and admin CRUD is only used
+   122	by a handful of system admins.
+   123	
+   124	## iOS reference
+   125	
+   126	| Concern | File · line |
+   127	|---|---|
+   128	| Settings hub (role-gated sections) | `CertMateUnified/Sources/Views/Settings/SettingsView.swift` (441 lines) |
+   129	| Alt settings hub (collapsible sections) | `CertMateUnified/Sources/Views/Settings/SettingsHubView.swift` (345 lines) |
+   130	| Inspector list | `CertMateUnified/Sources/Views/Inspector/InspectorListView.swift` |
+   131	| Inspector detail editor | `CertMateUnified/Sources/Views/Inspector/InspectorDetailView.swift` (400+ lines) |
+   132	| Signature capture (pen canvas) | `CertMateUnified/Sources/Views/Components/SignatureCaptureView.swift` |
+   133	| Company details form | `CertMateUnified/Sources/Views/CompanyDetails/CompanyDetailsView.swift` |
+   134	| Company admin dashboard (Jobs/Team/Stats) | `CertMateUnified/Sources/Views/Admin/CompanyDashboardView.swift` |
+   135	| System admin: list users | `CertMateUnified/Sources/Views/Admin/AdminUsersListView.swift` |
+   136	| System admin: edit user | `CertMateUnified/Sources/Views/Admin/AdminEditUserView.swift` |
+   137	| System admin: create user | `CertMateUnified/Sources/Views/Admin/AdminCreateUserView.swift` |
+   138	| Photo picker (logo upload) | `CertMateUnified/Sources/Views/Components/PhotoPickerView.swift` |
+   139	| User model (role flags) | `CertMateUnified/Sources/Models/User.swift` |
+ succeeded in 0ms:
+   260	## Implementation plan
+   261	
+   262	### 0. Pre-work (once, before 6a)
+   263	
+   264	- Extend `User` in `web/src/lib/types.ts`:
+   265	  ```ts
+   266	  export interface User {
+   267	    id: string;
+   268	    email: string;
+   269	    name: string;
+   270	    company_name?: string;
+   271	    role?: 'admin' | 'user';
+   272	    company_id?: string;
+   273	    company_role?: 'owner' | 'admin' | 'employee';
+   274	  }
+   275	  ```
+   276	- Add three type exports: `InspectorProfile`, `CompanySettings`,
+   277	  `AdminUser` (extends User with `is_active`, `last_login`,
+   278	  `locked_until`, `failed_login_attempts`). Do this up-front so the
+   279	  API-client methods added per sub-phase can be fully typed.
+exec
+/bin/zsh -lc "nl -ba web/src/app/settings/layout.tsx | sed -n '1,80p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	import { AppShell } from '@/components/layout/app-shell';
+     2	
+     3	/**
+     4	 * All /settings/* screens share the same AppShell. Per-section chrome
+     5	 * (sub-nav, breadcrumbs) lives in each page rather than here because the
+     6	 * settings tree is shallow enough to not benefit from a persistent rail.
+     7	 */
+     8	export default function SettingsLayout({ children }: { children: React.ReactNode }) {
+     9	  return <AppShell>{children}</AppShell>;
+    10	}
+exec
+/bin/zsh -lc 'git diff --stat 2ef8ec6 -- web/src/app/settings/page.tsx web/src/lib/api-client.ts web/src/middleware.ts' in /Users/derekbeckley/Developer/EICR_Automation succeeded in 1.12s:
+2026-04-18 00:17:45.051 xcodebuild[36550:67222754]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:17:45.177 xcodebuild[36550:67222753] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-hEPzbITc' (errno=Operation not permitted)
+2026-04-18 00:17:45.493 xcodebuild[36552:67222762]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:17:45.590 xcodebuild[36552:67222761] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+ web/src/app/settings/page.tsx |  44 ++++++---
+ web/src/lib/api-client.ts     | 224 ++++++++++++++++++++++++++++++++++++++++++
+ web/src/middleware.ts         |  12 ++-
+ 3 files changed, 266 insertions(+), 14 deletions(-)
+codex
+## 1. Summary of the phase
+
+Phase 6a adds the new `/settings` tree for the web rebuild: a settings hub, a staff list, and a shared add/edit page for inspector profiles, plus signature capture and equipment fields. It also adds shared role helpers, a `useCurrentUser()` hook, middleware role gating for `/settings/admin/*`, and a backend signature-download route so stored signature PNGs can be rendered through authenticated requests.
+
+The implementation largely matches the commit intent for 6a. Note that the working tree has later edits in `web/src/app/settings/page.tsx`, `web/src/lib/api-client.ts`, and `web/src/middleware.ts`; findings below are anchored to commit `2ef8ec6` unless stated otherwise.
+
+## 2. Alignment with original plan
+
+Mostly aligned:
+- It ships the planned 6a routes and core mechanics from the handoff: settings hub, staff list, detail editor, signature canvas, typed API helpers, role helpers, middleware role check, and the backend signature-read endpoint.
+- It follows the intended two-step signature flow and the full-array PUT model for inspector profiles.
+
+Partial / missing alignment:
+- The handoff called for a `/settings` layout with persistent settings chrome (`back-to-dashboard + tabs/sidebar`) at `web/reviews/context/phase-6a.md:299-303`, but the shipped layout is only `AppShell` with no settings-specific navigation: [web/src/app/settings/layout.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/settings/layout.tsx:1).
+- The handoff explicitly said admin surfaces should have role-gated rendering and a friendly “not authorised” UI, not only routing/redirects (`web/reviews/context/phase-6a.md:145-150`). This commit implements redirect-based middleware gating only: [web/src/middleware.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/middleware.ts:54).
+
+## 3. Correctness issues
+
+- [P1] The “exactly one default inspector” invariant is not enforced. Deleting the current default simply removes it with no reassignment ([web/src/app/settings/staff/page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/settings/staff/page.tsx:56)), and editing a profile can unset `is_default` without promoting another profile ([web/src/app/settings/staff/[inspectorId]/page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/settings/staff/%5BinspectorId%5D/page.tsx:154)). That leaves zero defaults, which conflicts with the phase rationale that certificate generation needs one default inspector.
+- [P1] Inspector state leaks across client-side navigation. The detail page does not clear `form`/`showEquipment` when `inspectorId` changes before the next fetch resolves ([web/src/app/settings/staff/[inspectorId]/page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/settings/staff/%5BinspectorId%5D/page.tsx:66)), and `SignatureCanvas` does not clear its internal background when `initialSignatureFile` becomes `null` or changes ([web/src/components/settings/signature-canvas.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/settings/signature-canvas.tsx:153)). Result: navigating from inspector A to B can show A’s stale details/signature, and if B has no signature the old one can persist and be saved onto B.
+- [P2] An unchanged existing signature is treated as a fresh upload on every save. `getBlob()` returns a PNG whenever a background image exists, even if the user never drew anything ([web/src/components/settings/signature-canvas.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/settings/signature-canvas.tsx:220)), and the detail page uploads whenever `getBlob()` returns non-null ([web/src/app/settings/staff/[inspectorId]/page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/settings/staff/%5BinspectorId%5D/page.tsx:136)). That causes needless uploads, new S3 keys on unrelated edits, and orphaned old signature objects.
+- [P2] Signature upload temp files are only deleted on success. If `readFile` or `uploadBytes` throws, the `catch` path returns 500 without unlinking the multer temp file ([src/routes/settings.js](/Users/derekbeckley/Developer/EICR_Automation/src/routes/settings.js:270)). Over time this can leak disk space on the backend host.
+
+## 4. Security issues
+
+No new phase-specific security vulnerabilities stood out in this commit.
+
+Evidence:
+- The new signature GET route is auth-protected and tenant-scoped ([src/routes/settings.js](/Users/derekbeckley/Developer/EICR_Automation/src/routes/settings.js:219)).
+- Uploads are constrained to PNG/JPEG via the shared file filter ([src/routes/settings.js](/Users/derekbeckley/Developer/EICR_Automation/src/routes/settings.js:17)).
+- User-entered profile fields are rendered through React, so this phase does not introduce obvious XSS sinks.
+
+## 5. Performance issues
+
+- [P2] Unchanged signatures are re-uploaded on every profile save, which adds avoidable network latency and S3 churn on otherwise small edits ([web/src/components/settings/signature-canvas.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/settings/signature-canvas.tsx:220), [web/src/app/settings/staff/[inspectorId]/page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/settings/staff/%5BinspectorId%5D/page.tsx:136)).
+- [P2] Failed signature uploads leak temp files on disk, which is a backend resource leak rather than a frontend perf issue, but it will accumulate under repeated failures ([src/routes/settings.js](/Users/derekbeckley/Developer/EICR_Automation/src/routes/settings.js:275)).
+
+## 6. Accessibility issues
+
+- [P2] The delete confirmation dialog has `role="dialog"` and `aria-modal`, but no focus trap, no initial focus target, no Escape handling, and no focus restoration ([web/src/app/settings/staff/page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/settings/staff/page.tsx:284)). Keyboard and screen-reader users can fall behind the modal.
+- [P2] The signature control is pointer-only and is exposed as `role="img"` even though it is interactive ([web/src/components/settings/signature-canvas.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/settings/signature-canvas.tsx:256)). There is no keyboard-accessible fallback or alternative upload path, so users who cannot draw on a pointer device cannot complete that part of the form.
+
+## 7. Code quality
+
+- `SignatureCanvas` duplicates its clear logic in two places: the imperative handle and the Clear button handler ([web/src/components/settings/signature-canvas.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/settings/signature-canvas.tsx:228), [web/src/components/settings/signature-canvas.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/settings/signature-canvas.tsx:281)). That already contributed to weak state semantics around “background loaded” vs “user changed”.
+- `useCurrentUser()` writes `cm_user` directly instead of reusing a shared auth-storage helper, which duplicates storage-key knowledge and drifts from the rest of the auth abstraction ([web/src/lib/use-current-user.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/use-current-user.ts:35), [web/src/lib/auth.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/auth.ts:10)).
+- `EmptyState` takes an unused `count` prop ([web/src/app/settings/staff/page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/settings/staff/page.tsx:246)). Minor, but it suggests the page-level components were shipped without a cleanup pass.
+
+## 8. Test coverage gaps
+
+No automated tests were added for this phase, and the risky paths here are exactly the ones that need coverage:
+
+- Default-profile invariant: create first profile, switch default, unset default, delete default.
+- Inspector-to-inspector navigation: stale form/signature/equipment state should not bleed between routes.
+- Signature save semantics: untouched background should not upload; cleared background should remove `signature_file`; newly drawn signature should upload once.
+- Middleware vs UI role gating for `/settings/admin/*`.
+- Dialog keyboard behavior and signature-canvas accessibility.
+
+## 9. Suggested fixes
+
+1. [web/src/app/settings/staff/page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/settings/staff/page.tsx:56): when deleting a profile, if it was the default and another profile remains, promote one deterministically before PUT; if it was the last profile, allow empty. This preserves the “always one default when any profiles exist” invariant.
+2. [web/src/app/settings/staff/[inspectorId]/page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/settings/staff/%5BinspectorId%5D/page.tsx:154): prevent saving a non-empty profile list with zero defaults. Either disallow unchecking the sole default, or auto-promote another profile when the current default is unset.
+3. [web/src/app/settings/staff/[inspectorId]/page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/settings/staff/%5BinspectorId%5D/page.tsx:66): reset transient page state immediately on `inspectorId` change (`setForm(null)`, `setAllProfiles(null)`, `setShowEquipment(false)`, `setError(null)`) so old inspector data is not rendered while the next fetch is in flight.
+4. [web/src/components/settings/signature-canvas.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/settings/signature-canvas.tsx:153): on any `initialSignatureFile` change, explicitly clear previous background/load error first; if the new prop is null, leave the canvas empty. This fixes stale-signature bleed.
+5. [web/src/components/settings/signature-canvas.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/settings/signature-canvas.tsx:220): track a separate dirty flag for user-drawn changes. `getBlob()` should return a blob only when the signature was created/modified in this session, not merely when an existing background is present.
+6. [web/src/app/settings/staff/[inspectorId]/page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/settings/staff/%5BinspectorId%5D/page.tsx:136): use the dirty flag from the canvas so saves only upload when needed, and preserve the existing `signature_file` key when the signature is unchanged.
+7. [src/routes/settings.js](/Users/derekbeckley/Developer/EICR_Automation/src/routes/settings.js:270): move temp-file cleanup into a `finally` block so failed uploads do not leave files behind in `os.tmpdir()`.
+8. [web/src/app/settings/staff/page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/settings/staff/page.tsx:284): add proper modal focus management: autofocus the least-destructive action, trap focus inside, close on Escape, and restore focus to the triggering delete button.
+9. [web/src/components/settings/signature-canvas.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/settings/signature-canvas.tsx:256): replace `role="img"` with semantics appropriate for an interactive control, and provide an accessible fallback for users who cannot draw with pointer input.
+
+## 10. Overall verdict
+
+**Needs rework.**
+
+Top 3 priority fixes:
+1. Fix stale inspector/signature state when navigating between staff profiles.
+2. Enforce the single-default invariant on save and delete.
+3. Add signature dirty tracking so unchanged signatures are not re-uploaded and old keys are not orphaned.
+tokens used
+94,500
+## 1. Summary of the phase
+
+Phase 6a adds the new `/settings` tree for the web rebuild: a settings hub, a staff list, and a shared add/edit page for inspector profiles, plus signature capture and equipment fields. It also adds shared role helpers, a `useCurrentUser()` hook, middleware role gating for `/settings/admin/*`, and a backend signature-download route so stored signature PNGs can be rendered through authenticated requests.
+
+The implementation largely matches the commit intent for 6a. Note that the working tree has later edits in `web/src/app/settings/page.tsx`, `web/src/lib/api-client.ts`, and `web/src/middleware.ts`; findings below are anchored to commit `2ef8ec6` unless stated otherwise.
+
+## 2. Alignment with original plan
+
+Mostly aligned:
+- It ships the planned 6a routes and core mechanics from the handoff: settings hub, staff list, detail editor, signature canvas, typed API helpers, role helpers, middleware role check, and the backend signature-read endpoint.
+- It follows the intended two-step signature flow and the full-array PUT model for inspector profiles.
+
+Partial / missing alignment:
+- The handoff called for a `/settings` layout with persistent settings chrome (`back-to-dashboard + tabs/sidebar`) at `web/reviews/context/phase-6a.md:299-303`, but the shipped layout is only `AppShell` with no settings-specific navigation: [web/src/app/settings/layout.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/settings/layout.tsx:1).
+- The handoff explicitly said admin surfaces should have role-gated rendering and a friendly “not authorised” UI, not only routing/redirects (`web/reviews/context/phase-6a.md:145-150`). This commit implements redirect-based middleware gating only: [web/src/middleware.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/middleware.ts:54).
+
+## 3. Correctness issues
+
+- [P1] The “exactly one default inspector” invariant is not enforced. Deleting the current default simply removes it with no reassignment ([web/src/app/settings/staff/page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/settings/staff/page.tsx:56)), and editing a profile can unset `is_default` without promoting another profile ([web/src/app/settings/staff/[inspectorId]/page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/settings/staff/%5BinspectorId%5D/page.tsx:154)). That leaves zero defaults, which conflicts with the phase rationale that certificate generation needs one default inspector.
+- [P1] Inspector state leaks across client-side navigation. The detail page does not clear `form`/`showEquipment` when `inspectorId` changes before the next fetch resolves ([web/src/app/settings/staff/[inspectorId]/page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/settings/staff/%5BinspectorId%5D/page.tsx:66)), and `SignatureCanvas` does not clear its internal background when `initialSignatureFile` becomes `null` or changes ([web/src/components/settings/signature-canvas.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/settings/signature-canvas.tsx:153)). Result: navigating from inspector A to B can show A’s stale details/signature, and if B has no signature the old one can persist and be saved onto B.
+- [P2] An unchanged existing signature is treated as a fresh upload on every save. `getBlob()` returns a PNG whenever a background image exists, even if the user never drew anything ([web/src/components/settings/signature-canvas.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/settings/signature-canvas.tsx:220)), and the detail page uploads whenever `getBlob()` returns non-null ([web/src/app/settings/staff/[inspectorId]/page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/settings/staff/%5BinspectorId%5D/page.tsx:136)). That causes needless uploads, new S3 keys on unrelated edits, and orphaned old signature objects.
+- [P2] Signature upload temp files are only deleted on success. If `readFile` or `uploadBytes` throws, the `catch` path returns 500 without unlinking the multer temp file ([src/routes/settings.js](/Users/derekbeckley/Developer/EICR_Automation/src/routes/settings.js:270)). Over time this can leak disk space on the backend host.
+
+## 4. Security issues
+
+No new phase-specific security vulnerabilities stood out in this commit.
+
+Evidence:
+- The new signature GET route is auth-protected and tenant-scoped ([src/routes/settings.js](/Users/derekbeckley/Developer/EICR_Automation/src/routes/settings.js:219)).
+- Uploads are constrained to PNG/JPEG via the shared file filter ([src/routes/settings.js](/Users/derekbeckley/Developer/EICR_Automation/src/routes/settings.js:17)).
+- User-entered profile fields are rendered through React, so this phase does not introduce obvious XSS sinks.
+
+## 5. Performance issues
+
+- [P2] Unchanged signatures are re-uploaded on every profile save, which adds avoidable network latency and S3 churn on otherwise small edits ([web/src/components/settings/signature-canvas.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/settings/signature-canvas.tsx:220), [web/src/app/settings/staff/[inspectorId]/page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/settings/staff/%5BinspectorId%5D/page.tsx:136)).
+- [P2] Failed signature uploads leak temp files on disk, which is a backend resource leak rather than a frontend perf issue, but it will accumulate under repeated failures ([src/routes/settings.js](/Users/derekbeckley/Developer/EICR_Automation/src/routes/settings.js:275)).
+
+## 6. Accessibility issues
+
+- [P2] The delete confirmation dialog has `role="dialog"` and `aria-modal`, but no focus trap, no initial focus target, no Escape handling, and no focus restoration ([web/src/app/settings/staff/page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/settings/staff/page.tsx:284)). Keyboard and screen-reader users can fall behind the modal.
+- [P2] The signature control is pointer-only and is exposed as `role="img"` even though it is interactive ([web/src/components/settings/signature-canvas.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/settings/signature-canvas.tsx:256)). There is no keyboard-accessible fallback or alternative upload path, so users who cannot draw on a pointer device cannot complete that part of the form.
+
+## 7. Code quality
+
+- `SignatureCanvas` duplicates its clear logic in two places: the imperative handle and the Clear button handler ([web/src/components/settings/signature-canvas.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/settings/signature-canvas.tsx:228), [web/src/components/settings/signature-canvas.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/settings/signature-canvas.tsx:281)). That already contributed to weak state semantics around “background loaded” vs “user changed”.
+- `useCurrentUser()` writes `cm_user` directly instead of reusing a shared auth-storage helper, which duplicates storage-key knowledge and drifts from the rest of the auth abstraction ([web/src/lib/use-current-user.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/use-current-user.ts:35), [web/src/lib/auth.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/auth.ts:10)).
+- `EmptyState` takes an unused `count` prop ([web/src/app/settings/staff/page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/settings/staff/page.tsx:246)). Minor, but it suggests the page-level components were shipped without a cleanup pass.
+
+## 8. Test coverage gaps
+
+No automated tests were added for this phase, and the risky paths here are exactly the ones that need coverage:
+
+- Default-profile invariant: create first profile, switch default, unset default, delete default.
+- Inspector-to-inspector navigation: stale form/signature/equipment state should not bleed between routes.
+- Signature save semantics: untouched background should not upload; cleared background should remove `signature_file`; newly drawn signature should upload once.
+- Middleware vs UI role gating for `/settings/admin/*`.
+- Dialog keyboard behavior and signature-canvas accessibility.
+
+## 9. Suggested fixes
+
+1. [web/src/app/settings/staff/page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/settings/staff/page.tsx:56): when deleting a profile, if it was the default and another profile remains, promote one deterministically before PUT; if it was the last profile, allow empty. This preserves the “always one default when any profiles exist” invariant.
+2. [web/src/app/settings/staff/[inspectorId]/page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/settings/staff/%5BinspectorId%5D/page.tsx:154): prevent saving a non-empty profile list with zero defaults. Either disallow unchecking the sole default, or auto-promote another profile when the current default is unset.
+3. [web/src/app/settings/staff/[inspectorId]/page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/settings/staff/%5BinspectorId%5D/page.tsx:66): reset transient page state immediately on `inspectorId` change (`setForm(null)`, `setAllProfiles(null)`, `setShowEquipment(false)`, `setError(null)`) so old inspector data is not rendered while the next fetch is in flight.
+4. [web/src/components/settings/signature-canvas.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/settings/signature-canvas.tsx:153): on any `initialSignatureFile` change, explicitly clear previous background/load error first; if the new prop is null, leave the canvas empty. This fixes stale-signature bleed.
+5. [web/src/components/settings/signature-canvas.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/settings/signature-canvas.tsx:220): track a separate dirty flag for user-drawn changes. `getBlob()` should return a blob only when the signature was created/modified in this session, not merely when an existing background is present.
+6. [web/src/app/settings/staff/[inspectorId]/page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/settings/staff/%5BinspectorId%5D/page.tsx:136): use the dirty flag from the canvas so saves only upload when needed, and preserve the existing `signature_file` key when the signature is unchanged.
+7. [src/routes/settings.js](/Users/derekbeckley/Developer/EICR_Automation/src/routes/settings.js:270): move temp-file cleanup into a `finally` block so failed uploads do not leave files behind in `os.tmpdir()`.
+8. [web/src/app/settings/staff/page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/settings/staff/page.tsx:284): add proper modal focus management: autofocus the least-destructive action, trap focus inside, close on Escape, and restore focus to the triggering delete button.
+9. [web/src/components/settings/signature-canvas.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/settings/signature-canvas.tsx:256): replace `role="img"` with semantics appropriate for an interactive control, and provide an accessible fallback for users who cannot draw with pointer input.
+
+## 10. Overall verdict
+
+**Needs rework.**
+
+Top 3 priority fixes:
+1. Fix stale inspector/signature state when navigating between staff profiles.
+2. Enforce the single-default invariant on save and delete.
+3. Add signature dirty tracking so unchanged signatures are not re-uploaded and old keys are not orphaned.

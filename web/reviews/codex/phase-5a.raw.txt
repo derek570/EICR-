@@ -1,0 +1,779 @@
+OpenAI Codex v0.116.0 (research preview)
+--------
+workdir: /Users/derekbeckley/Developer/EICR_Automation
+model: gpt-5.4
+provider: openai
+approval: never
+sandbox: read-only
+reasoning effort: none
+reasoning summaries: none
+session id: 019d9dae-4cca-74d3-be2f-2fbb15f09bb9
+--------
+user
+You are performing a rigorous code review of a single phase of a Next.js 16 / React 19 PWA frontend rebuild for an electrical-certificate automation tool (EICR / EIC). The repo root is at /Users/derekbeckley/Developer/EICR_Automation and the web package is at web/. Branch: web-rebuild.
+
+TARGET: Phase 5a — CCU photo capture + GPT Vision merge on Circuits tab
+COMMIT: 35b5310
+
+Context for this phase (original intent, handoff doc, commit message, files changed) is in this repo at: reviews/context/phase-5a.md — READ THAT FILE FIRST.
+
+Use shell commands to:
+  git show --stat 35b5310
+  git show 35b5310
+to inspect the full diff. Then read any files you need from the working tree (they may have evolved since this commit — note any later changes).
+
+Your output must be a well-structured markdown review with these sections:
+  1. Summary of the phase (2-3 sentences — what it did).
+  2. Alignment with original plan (does the implementation match the handoff doc / commit intent? Any missing objectives?).
+  3. Correctness issues (bugs, race conditions, missing error handling, incorrect semantics). Prioritise P0/P1/P2.
+  4. Security issues (XSS, auth, CSRF, injection, leaked secrets, PII, CORS). Each item tagged with severity.
+  5. Performance issues (re-renders, N+1, large bundles, memory leaks, blocking work on main thread).
+  6. Accessibility issues (semantic HTML, keyboard nav, ARIA, colour contrast, focus management).
+  7. Code quality (duplication, dead code, type-safety holes, naming, convention drift vs. rest of repo).
+  8. Test coverage gaps.
+  9. Suggested fixes — each as a numbered item with: file:line, what to change, why. Be concrete.
+  10. Overall verdict (ship / ship with fixes / needs rework) and top 3 priority fixes.
+
+Be specific — cite file paths and line numbers. Avoid generic advice. If the code is good, say so with evidence. Do NOT modify files; this is review only.
+
+mcp startup: no servers
+codex
+Reviewing commit `35b5310` against the phase handoff and current working tree. I’m starting with the phase context, commit diff, and touched files so I can trace intended behavior against what actually shipped.
+exec
+/bin/zsh -lc "sed -n '1,220p' reviews/context/phase-5a.md" in /Users/derekbeckley/Developer/EICR_Automation exited 1 in 0ms:
+sed: reviews/context/phase-5a.md: No such file or directory
+exec
+/bin/zsh -lc 'git show 35b5310' in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc 'git show --stat 35b5310' in /Users/derekbeckley/Developer/EICR_Automation succeeded in 1.39s:
+2026-04-18 00:02:26.969 xcodebuild[33599:67207291]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:02:27.172 xcodebuild[33599:67207288] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-RTZQciFy' (errno=Operation not permitted)
+2026-04-18 00:02:27.556 xcodebuild[33603:67207309]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:02:27.658 xcodebuild[33603:67207307] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+commit 35b531019f3cea2c84aa1b8a1c4b879a870063e3
+Author: Derek Beckley <derekbeckley@Dereks-Mac-mini.broadband>
+Date:   Fri Apr 17 13:58:54 2026 +0100
+
+    feat(web): Phase 5a CCU photo capture + GPT Vision merge on Circuits tab
+    
+    WHAT
+    Ports iOS CCU photo → fuseboard-analysis flow to the web rebuild.
+    Replaces the stub CCU button on `web/src/app/job/[id]/circuits/page.tsx`
+    with a working capture-first file picker that uploads to
+    `/api/analyze-ccu` and merges the response into the active board.
+    
+    New/changed:
+    - web/src/lib/recording/apply-ccu-analysis.ts (new) — merge helper
+ succeeded in 1.39s:
+2026-04-18 00:02:26.969 xcodebuild[33600:67207290]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:02:27.172 xcodebuild[33600:67207289] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-yMQ0alCN' (errno=Operation not permitted)
+2026-04-18 00:02:27.556 xcodebuild[33604:67207310]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:02:27.658 xcodebuild[33604:67207308] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+commit 35b531019f3cea2c84aa1b8a1c4b879a870063e3
+Author: Derek Beckley <derekbeckley@Dereks-Mac-mini.broadband>
+Date:   Fri Apr 17 13:58:54 2026 +0100
+
+    feat(web): Phase 5a CCU photo capture + GPT Vision merge on Circuits tab
+    
+    WHAT
+    Ports iOS CCU photo → fuseboard-analysis flow to the web rebuild.
+    Replaces the stub CCU button on `web/src/app/job/[id]/circuits/page.tsx`
+    with a working capture-first file picker that uploads to
+    `/api/analyze-ccu` and merges the response into the active board.
+    
+    New/changed:
+    - web/src/lib/recording/apply-ccu-analysis.ts (new) — merge helper
+codex
+The stated context file path doesn’t exist at repo root, so I’m locating it and also retrying the commit inspection in a way that avoids the temp-cache issue from the sandbox. After that I’ll open the touched sources from the working tree for exact line references.
+exec
+/bin/zsh -lc "rg --files | rg 'phase-5a\\.md"'$|reviews/context'"'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+web/reviews/claude/phase-5a.md
+web/reviews/context/phase-3a.md
+web/reviews/context/phase-5d.md
+web/reviews/context/phase-7b2.md
+web/reviews/context/phase-4d.md
+web/reviews/context/phase-6a.md
+web/reviews/context/phase-7b3.md
+web/reviews/context/phase-4e.md
+web/reviews/context/phase-7a.md
+web/reviews/context/phase-5a.md
+web/reviews/context/phase-4a.md
+web/reviews/context/phase-2.md
+web/reviews/context/phase-1.md
+web/reviews/context/phase-0.md
+web/reviews/context/phase-6b.md
+web/reviews/context/phase-3c.md
+web/reviews/context/phase-5b.md
+web/reviews/context/phase-7b4.md
+web/reviews/context/phase-4b.md
+web/reviews/context/phase-5c.md
+codex
+I have the phase diff. Next I’m reading the current working-tree versions of the touched files plus the job update path, because a few of the risks here depend on how partial patches merge and whether the current tree already diverged from this commit.
+exec
+/bin/zsh -lc "nl -ba web/reviews/context/phase-5a.md | sed -n '1,240p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	# Phase 5a — Context
+     2	
+     3	**Commit:** `35b5310`
+     4	
+     5	## Commit message
+     6	
+     7	```
+     8	commit 35b531019f3cea2c84aa1b8a1c4b879a870063e3
+     9	Author:     Derek Beckley <derekbeckley@Dereks-Mac-mini.broadband>
+    10	AuthorDate: Fri Apr 17 13:58:54 2026 +0100
+    11	Commit:     Derek Beckley <derekbeckley@Dereks-Mac-mini.broadband>
+    12	CommitDate: Fri Apr 17 13:58:54 2026 +0100
+    13	
+    14	    feat(web): Phase 5a CCU photo capture + GPT Vision merge on Circuits tab
+    15	    
+    16	    WHAT
+    17	    Ports iOS CCU photo → fuseboard-analysis flow to the web rebuild.
+    18	    Replaces the stub CCU button on `web/src/app/job/[id]/circuits/page.tsx`
+    19	    with a working capture-first file picker that uploads to
+    20	    `/api/analyze-ccu` and merges the response into the active board.
+exec
+/bin/zsh -lc "nl -ba web/src/app/job/[id]/circuits/page.tsx | sed -n '1,420p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+zsh:1: no matches found: web/src/app/job/[id]/circuits/page.tsx
+exec
+/bin/zsh -lc "nl -ba web/src/lib/types.ts | sed -n '1,220p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	/**
+     2	 * Shared domain types. Kept minimal — only the shapes Phase 1–2 need;
+     3	 * per-tab detail types land in later phases when their screens do.
+     4	 */
+     5	
+     6	export interface User {
+     7	  id: string;
+     8	  email: string;
+     9	  name: string;
+    10	  company_name?: string;
+    11	  role?: 'admin' | 'user';
+    12	  /** System-wide tenant membership. Nullable for legacy users not yet bound to a company. */
+    13	  company_id?: string;
+    14	  /** Role within a company. `owner`/`admin` grant company-admin privileges; `employee` is rank-and-file. */
+    15	  company_role?: 'owner' | 'admin' | 'employee';
+    16	}
+    17	
+    18	/**
+    19	 * Inspector profile — the API shape stored as one JSON array per user at
+    20	 * `settings/{userId}/inspector_profiles.json`. The backend persists the
+exec
+/bin/zsh -lc "nl -ba web/src/lib/api-client.ts | sed -n '1,260p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	import {
+     2	  type AdminUser,
+     3	  ApiError,
+     4	  type CCUAnalysis,
+     5	  type CompanyJobRow,
+     6	  type CompanyMember,
+     7	  type CompanySettings,
+     8	  type CompanyStats,
+     9	  type DocumentExtractionResponse,
+    10	  type InspectorProfile,
+    11	  type InviteEmployeeResponse,
+    12	  type Job,
+    13	  type JobDetail,
+    14	  type LoginResponse,
+    15	  type Paginated,
+    16	  type User,
+    17	} from './types';
+    18	import { getToken } from './auth';
+    19	
+    20	/**
+exec
+/bin/zsh -lc "nl -ba web/src/lib/recording/apply-ccu-analysis.ts | sed -n '1,420p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	/**
+     2	 * Fold a /api/analyze-ccu response onto a JobDetail patch.
+     3	 *
+     4	 * Mirrors the iOS `FuseboardAnalysisApplier.hardwareUpdate` flow
+     5	 * (Sources/Processing/FuseboardAnalysisApplier.swift). The key
+     6	 * properties that flow must preserve, in order of importance:
+     7	 *
+     8	 *   1. **Never clobber user-typed values.** The 3-tier priority guard
+     9	 *      (pre-existing manual > CCU > recording-time Sonnet) is the
+    10	 *      whole reason this endpoint is safe to re-run — `mergeField`
+    11	 *      below is the non-empty-only variant.
+    12	 *   2. **Preserve test readings on matched circuits.** If circuit #4
+    13	 *      on the new board fuzzy-matches circuit #4 on the old board,
+    14	 *      the new OCPD/RCD hardware overwrites but `measured_zs_ohm`,
+    15	 *      `r1_r2_ohm`, `ir_live_earth_mohm`, `rcd_time_ms`, etc. stay.
+    16	 *   3. **Never lose a circuit with readings.** If the new analysis
+    17	 *      omits a circuit that used to exist AND it has test data, we
+    18	 *      append it after the new layout rather than dropping it.
+    19	 *
+    20	 * We don't port iOS's `CircuitMatcher` fuzzy-designation matcher yet
+exec
+/bin/zsh -lc "rg -n \"updateJob\\(|function updateJob|const updateJob|useJobContext|JobProvider\" web/src -g '"'!**/*.map'"'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+web/src/lib/job-context.tsx:10: *  - updateJob(partial) — local merge, does not hit the network. Every
+web/src/lib/job-context.tsx:30:export function useJobContext(): JobContextValue {
+web/src/lib/job-context.tsx:33:    throw new Error('useJobContext must be used inside a <JobProvider>');
+web/src/lib/job-context.tsx:38:export function JobProvider({
+web/src/lib/job-context.tsx:55:  const updateJob = React.useCallback((patch: Partial<JobDetail>) => {
+web/src/lib/recording-context.tsx:17:import { useJobContext } from './job-context';
+web/src/lib/recording-context.tsx:119:  const { job, updateJob } = useJobContext();
+web/src/lib/recording-context.tsx:145:  const updateJobRef = React.useRef(updateJob);
+web/src/lib/recording/apply-document-extraction.ts:87:  /** Feed to `updateJob(patch)` — only sections that changed are present. */
+web/src/app/job/[id]/page.tsx:5:import { useJobContext } from '@/lib/job-context';
+web/src/app/job/[id]/page.tsx:15:  const { job, certificateType } = useJobContext();
+web/src/components/live-fill/live-fill-view.tsx:5:import { useJobContext } from '@/lib/job-context';
+web/src/components/live-fill/live-fill-view.tsx:31:  const { job, certificateType } = useJobContext();
+web/src/app/job/[id]/pdf/page.tsx:13:import { useJobContext } from '@/lib/job-context';
+web/src/app/job/[id]/pdf/page.tsx:46:  const { job, certificateType } = useJobContext();
+web/src/app/job/[id]/observations/page.tsx:6:import { useJobContext } from '@/lib/job-context';
+web/src/app/job/[id]/observations/page.tsx:50:  const { job, certificateType, updateJob } = useJobContext();
+web/src/app/job/[id]/observations/page.tsx:85:      updateJob({ observations: nextList });
+web/src/app/job/[id]/observations/page.tsx:87:      updateJob({ observations: [...observations, next] });
+web/src/app/job/[id]/observations/page.tsx:93:    updateJob({ observations: observations.filter((o) => o.id !== id) });
+exec
+/bin/zsh -lc "nl -ba 'web/src/lib/job-context.tsx' | sed -n '1,180p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "nl -ba 'web/src/app/job/[id]/circuits/page.tsx' | sed -n '1,420p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	'use client';
+     2	
+     3	import * as React from 'react';
+     4	import type { CertificateType, JobDetail } from './types';
+     5	
+     6	/**
+     7	 * Per-job state container. Holds the fetched JobDetail plus a couple of
+     8	 * derived flags (dirty/syncing) and two mutators:
+     9	 *
+    10	 *  - updateJob(partial) — local merge, does not hit the network. Every
+    11	 *    input in the job tabs calls this; a debounced save effect (Phase 4)
+    12	 *    flushes to the backend.
+    13	 *  - setJob(full)        — replace wholesale (used after a network save
+    14	 *    round-trip so server-derived fields like updated_at can flow in).
+    15	 *
+    16	 * The shape deliberately mirrors the legacy `useJob` hook so the tab
+    17	 * components from Phase 3+ read the same API.
+    18	 */
+    19	interface JobContextValue {
+    20	  job: JobDetail;
+ succeeded in 0ms:
+     1	'use client';
+     2	
+     3	import * as React from 'react';
+     4	import {
+     5	  Calculator,
+     6	  Camera,
+     7	  CircuitBoard,
+     8	  FileDown,
+     9	  FlipHorizontal2,
+    10	  List,
+    11	  Loader2,
+    12	  Plus,
+    13	  SlidersHorizontal,
+    14	  Trash2,
+    15	  X,
+    16	  Zap,
+    17	} from 'lucide-react';
+    18	import { api } from '@/lib/api-client';
+    19	import { useJobContext } from '@/lib/job-context';
+    20	import { ApiError } from '@/lib/types';
+exec
+/bin/zsh -lc "nl -ba 'web/src/lib/recording/apply-document-extraction.ts' | sed -n '1,260p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	/**
+     2	 * Fold a /api/analyze-document response onto a JobDetail patch.
+     3	 *
+     4	 * Used by the "Extract" button on the Circuits tab (Phase 5b). The
+     5	 * backend runs GPT Vision over a photo of a prior EICR/EIC, handwritten
+     6	 * test sheet, or typed record and returns the full formData envelope.
+     7	 * This helper merges each section into the live job, with the 3-tier
+     8	 * priority guard applied *everywhere*:
+     9	 *
+    10	 *   Pre-existing user/CCU value  >  Document extraction  >  (empty)
+    11	 *
+    12	 * This is stricter than iOS `CertificateMerger.merge()` (Sources/
+    13	 * Processing/CertificateMerger.swift:7-167), which overwrites
+    14	 * non-empty extracted values on installation/supply/board. The Phase 5
+    15	 * handoff memo explicitly requires the fill-empty-only policy across
+    16	 * all sections so a user mid-edit never has their typing clobbered.
+    17	 *
+    18	 * Section routing mirrors the backend response envelope exactly —
+    19	 * backend keys are already 1:1 with web JobDetail section keys so no
+    20	 * translation is needed, only whitelisting (so unknown prompt-evolution
+exec
+/bin/zsh -lc "rg -n \"apply-ccu-analysis|analyze-ccu|CCU\" web/src web/tests web/__tests__ -g '"'!web/.next/**'"'" in /Users/derekbeckley/Developer/EICR_Automation exited 2 in 0ms:
+rg: web/tests: No such file or directory (os error 2)
+rg: web/__tests__: No such file or directory (os error 2)
+web/src/lib/types.ts:203:  // CCU analysis output — populated once a consumer-unit photo is uploaded.
+web/src/lib/types.ts:242: * Response from POST /api/analyze-ccu. Claude Sonnet 4.6 analyses a
+web/src/lib/types.ts:248: * new keys. `apply-ccu-analysis.ts` picks only the fields it knows
+web/src/lib/types.ts:251:export interface CCUAnalysisCircuit {
+web/src/lib/types.ts:265:export interface CCUAnalysis {
+web/src/lib/types.ts:283:  circuits?: CCUAnalysisCircuit[];
+web/src/lib/types.ts:304: * phone snap). Unlike CCU, doc extraction returns structured data only —
+web/src/lib/recording/apply-document-extraction.ts:10: *   Pre-existing user/CCU value  >  Document extraction  >  (empty)
+web/src/lib/recording/apply-document-extraction.ts:168: *  `apply-ccu-analysis.ts:buildBoardPatch`. Fill-empty-only. */
+web/src/lib/recording/apply-extraction.ts:8: *   2. Apply 3-tier priority: pre-existing manual/CCU values win over
+web/src/lib/recording/apply-ccu-analysis.ts:2: * Fold a /api/analyze-ccu response onto a JobDetail patch.
+web/src/lib/recording/apply-ccu-analysis.ts:9: *      (pre-existing manual > CCU > recording-time Sonnet) is the
+web/src/lib/recording/apply-ccu-analysis.ts:23: * is correct when CCU re-analysis is run on the same physical board
+web/src/lib/recording/apply-ccu-analysis.ts:29:import type { CCUAnalysis, CCUAnalysisCircuit, CircuitRow, JobDetail } from '../types';
+web/src/lib/recording/apply-ccu-analysis.ts:90:  analysis: CCUAnalysis,
+web/src/lib/recording/apply-ccu-analysis.ts:162:function buildSupplyPatch(job: JobDetail, analysis: CCUAnalysis): Record<string, unknown> | null {
+web/src/lib/recording/apply-ccu-analysis.ts:197: *  sufficient when CCU re-analysis is scoped to a single board. */
+web/src/lib/recording/apply-ccu-analysis.ts:200:  analysis: CCUAnalysis,
+exec
+/bin/zsh -lc "rg -n \"applyCcuAnalysisToJob|analyzeCCU|questionsForInspector|ccu_analysis|CCUAnalysis\" web -g '"'!web/.next/**'"'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+web/src/lib/types.ts:204:  ccu_analysis?: Record<string, unknown>;
+web/src/lib/types.ts:245: * free-form `questionsForInspector` list, and a usage/cost breakdown.
+web/src/lib/types.ts:251:export interface CCUAnalysisCircuit {
+web/src/lib/types.ts:265:export interface CCUAnalysis {
+web/src/lib/types.ts:283:  circuits?: CCUAnalysisCircuit[];
+web/src/lib/types.ts:284:  questionsForInspector?: string[];
+web/src/lib/types.ts:305: * no `questionsForInspector`.
+web/src/lib/recording/apply-ccu-analysis.ts:29:import type { CCUAnalysis, CCUAnalysisCircuit, CircuitRow, JobDetail } from '../types';
+web/src/lib/recording/apply-ccu-analysis.ts:90:  analysis: CCUAnalysis,
+web/src/lib/recording/apply-ccu-analysis.ts:162:function buildSupplyPatch(job: JobDetail, analysis: CCUAnalysis): Record<string, unknown> | null {
+web/src/lib/recording/apply-ccu-analysis.ts:200:  analysis: CCUAnalysis,
+web/src/lib/recording/apply-ccu-analysis.ts:249:  analysed: CCUAnalysisCircuit,
+web/src/lib/recording/apply-ccu-analysis.ts:290:function buildNewCircuit(analysed: CCUAnalysisCircuit, boardId: string): CircuitRow {
+web/src/lib/recording/apply-ccu-analysis.ts:328:function buildMissingRcdQuestions(analysis: CCUAnalysis): string[] {
+web/src/lib/recording/apply-ccu-analysis.ts:341:export function applyCcuAnalysisToJob(
+web/src/lib/recording/apply-ccu-analysis.ts:343:  analysis: CCUAnalysis,
+web/src/lib/recording/apply-ccu-analysis.ts:359:  patch.ccu_analysis = analysis as unknown as Record<string, unknown>;
+web/src/lib/recording/apply-ccu-analysis.ts:362:    ...(analysis.questionsForInspector ?? []),
+web/src/lib/api-client.ts:4:  type CCUAnalysis,
+web/src/lib/api-client.ts:153:   * SPD fields, a circuits array, and `questionsForInspector`. Single
+codex
+I’ve confirmed the local merge model in `JobProvider`: `updateJob` is just a top-level shallow merge, so any async handler that builds whole section bags from a captured `job` snapshot needs extra scrutiny. I’m checking downstream uses of `ccu_analysis` and the board/circuit schemas now, because that determines whether overwrite and field-mapping issues are real defects or just design choices.
+exec
+/bin/zsh -lc 'git diff --stat 35b5310..HEAD -- web/src/app/job/[id]/circuits/page.tsx web/src/lib/recording/apply-ccu-analysis.ts web/src/lib/api-client.ts web/src/lib/types.ts web/src/lib/recording/apply-extraction.ts web/src/lib/job-context.tsx' in /Users/derekbeckley/Developer/EICR_Automation exited 1 in 0ms:
+zsh:1: no matches found: web/src/app/job/[id]/circuits/page.tsx
+exec
+/bin/zsh -lc "nl -ba 'web/src/lib/recording/sonnet-session.ts' | sed -n '100,180p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "nl -ba 'web/src/lib/types.ts' | sed -n '220,360p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+   100	    turns?: number;
+   101	    cacheReads?: number;
+   102	    cacheWrites?: number;
+   103	    input?: number;
+   104	    output?: number;
+   105	  };
+   106	  [key: string]: unknown;
+   107	}
+   108	
+   109	export interface SonnetSessionCallbacks {
+   110	  onStateChange?: (state: SonnetConnectionState) => void;
+   111	  onSessionAck?: (status: string) => void;
+   112	  onExtraction?: (result: ExtractionResult) => void;
+   113	  onQuestion?: (q: SonnetQuestion) => void;
+   114	  onVoiceCommandResponse?: (payload: VoiceCommandResponse) => void;
+   115	  onCostUpdate?: (update: CostUpdate) => void;
+   116	  onError?: (err: Error, recoverable: boolean) => void;
+   117	}
+   118	
+   119	export interface SessionStartOptions {
+ succeeded in 0ms:
+   220	  location?: string;
+   221	  remedial?: string;
+   222	  /**
+   223	   * Filenames of photos attached to this observation. The backend stores
+   224	   * bytes in S3 under `jobs/{userId}/{folderName}/photos/{filename}` and
+   225	   * renders at `/api/job/:userId/:jobId/photos/:filename`. Matches the
+   226	   * iOS `Observation.photos` field (serialised under the same JSON key)
+   227	   * so a job round-trips losslessly between clients.
+   228	   */
+   229	  photos?: string[];
+   230	}
+   231	
+   232	export interface InspectorInfo {
+   233	  id?: string;
+   234	  name?: string;
+   235	  position?: string;
+   236	  enrolment_number?: string;
+   237	  signature_key?: string;
+   238	  organisation?: string;
+   239	}
+exec
+/bin/zsh -lc "rg -n \"ccu_analysis|main_switch_position|rcd_rating_a|rcd_operating_current_ma|rcd_type|spd_status|spd_type_supply|board_id == null|board_id === selectedBoardId\" web/src -g '"'!web/.next/**'"'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+web/src/lib/types.ts:204:  ccu_analysis?: Record<string, unknown>;
+web/src/lib/types.ts:260:  rcd_type?: 'AC' | 'A' | 'B' | 'F' | 'S' | null;
+web/src/lib/types.ts:274:  main_switch_position?: 'left' | 'right' | null;
+web/src/lib/types.ts:282:  spd_type_supply?: string | null;
+web/src/lib/types.ts:324:  rcd_type?: string;
+web/src/lib/types.ts:325:  rcd_operating_current_ma?: string;
+web/src/lib/recording/apply-document-extraction.ts:83:  'spd_status',
+web/src/lib/recording/apply-extraction.ts:83:  spd_type_supply: 'board',
+web/src/lib/recording/apply-ccu-analysis.ts:140:  // spd_status deterministically (Fitted / Not Fitted). When the
+web/src/lib/recording/apply-ccu-analysis.ts:145:    next.spd_status = 'Fitted';
+web/src/lib/recording/apply-ccu-analysis.ts:148:    next.spd_status = 'Not Fitted';
+web/src/lib/recording/apply-ccu-analysis.ts:176:    apply('spd_type_supply', analysis.spd_type);
+web/src/lib/recording/apply-ccu-analysis.ts:181:    for (const key of ['spd_bs_en', 'spd_type_supply', 'spd_short_circuit', 'spd_rated_current']) {
+web/src/lib/recording/apply-ccu-analysis.ts:191:  apply('spd_type_supply', analysis.spd_type_supply);
+web/src/lib/recording/apply-ccu-analysis.ts:208:    (c) => (c.board_id as string | undefined) === boardId || c.board_id == null
+web/src/lib/recording/apply-ccu-analysis.ts:276:  const rcdType = normaliseRcdType(analysed.rcd_type);
+web/src/lib/recording/apply-ccu-analysis.ts:277:  if (rcdType) next.rcd_type = rcdType;
+web/src/lib/recording/apply-ccu-analysis.ts:280:  // has a rcd_rating_a field that's independent. Keep both keys in
+web/src/lib/recording/apply-ccu-analysis.ts:282:  next.rcd_operating_current_ma = mergeField(
+web/src/lib/recording/apply-ccu-analysis.ts:283:    next.rcd_operating_current_ma as string | undefined,
+codex
+The main correctness questions left are field semantics: whether the CCU merge is writing into the same keys the UI actually reads, and whether any intended board metadata is simply dropped. I’m opening the board and circuit editors for that mapping check, and then I’ll synthesize the review with severities.
+exec
+/bin/zsh -lc "nl -ba 'web/src/app/job/[id]/board/page.tsx' | sed -n '1,240p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "nl -ba 'web/src/app/job/[id]/circuits/page.tsx' | sed -n '560,660p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+   560	          <SectionCard accent="amber" title="OCPD">
+   561	            <div className="grid gap-3 md:grid-cols-2">
+   562	              <FloatingLabelInput
+   563	                label="BS EN"
+   564	                value={text('ocpd_bs_en')}
+   565	                onChange={(e) => onPatch({ ocpd_bs_en: e.target.value })}
+   566	              />
+   567	              <SelectChips
+   568	                label="Type"
+   569	                value={text('ocpd_type') || null}
+   570	                options={OCPD_TYPES}
+   571	                onChange={(v) => onPatch({ ocpd_type: v })}
+   572	              />
+   573	              <FloatingLabelInput
+   574	                label="Rating (A)"
+   575	                inputMode="decimal"
+   576	                value={text('ocpd_rating_a')}
+   577	                onChange={(e) => onPatch({ ocpd_rating_a: e.target.value })}
+   578	              />
+   579	              <FloatingLabelInput
+ succeeded in 0ms:
+     1	'use client';
+     2	
+     3	import * as React from 'react';
+     4	import { Boxes, Cable, CircuitBoard, MapPin, Plus, ShieldCheck, Trash2 } from 'lucide-react';
+     5	import { useJobContext } from '@/lib/job-context';
+     6	import { FloatingLabelInput } from '@/components/ui/floating-label-input';
+     7	import { SectionCard } from '@/components/ui/section-card';
+     8	import { SelectChips } from '@/components/ui/select-chips';
+     9	
+    10	/**
+    11	 * Board tab — mirrors iOS `BoardTab.swift` + `BoardInfo.swift`.
+    12	 *
+    13	 * iOS supports multiple boards per job (main + sub-distribution); the web
+    14	 * stores the list in `job.board.boards`. We default to a single synthesized
+    15	 * main board if the array is empty so inspectors can start filling straight
+    16	 * away. Adding / removing boards is a Phase 3a feature — the full parent /
+    17	 * sub-main hierarchy editing lands with Phase 3b (Circuits) because that's
+    18	 * when the feed-circuit reference actually matters.
+    19	 *
+    20	 * Fields mapped 1-1 with `BoardInfo` (snake_case keys):
+exec
+/bin/zsh -lc "git diff --stat 35b5310..HEAD -- 'web/src/app/job/[id]/circuits/page.tsx' 'web/src/lib/recording/apply-ccu-analysis.ts' 'web/src/lib/api-client.ts' 'web/src/lib/types.ts' 'web/src/lib/recording/apply-extraction.ts' 'web/src/lib/job-context.tsx'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "git diff 35b5310..HEAD -- 'web/src/app/job/[id]/circuits/page.tsx' 'web/src/lib/recording/apply-ccu-analysis.ts' 'web/src/lib/api-client.ts' 'web/src/lib/types.ts' 'web/src/lib/recording/apply-extraction.ts' 'web/src/lib/job-context.tsx'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 1.23s:
+2026-04-18 00:03:22.480 xcodebuild[33864:67208326]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:03:22.619 xcodebuild[33864:67208324] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-N80adBQi' (errno=Operation not permitted)
+2026-04-18 00:03:22.973 xcodebuild[33868:67208346]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:03:23.077 xcodebuild[33868:67208344] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+ web/src/app/job/[id]/circuits/page.tsx    |  88 ++++++-
+ web/src/lib/api-client.ts                 | 405 ++++++++++++++++++++++++++++++
+ web/src/lib/recording/apply-extraction.ts | 113 ++++++++-
+ web/src/lib/types.ts                      | 228 ++++++++++++++++-
+ 4 files changed, 824 insertions(+), 10 deletions(-)
+ succeeded in 1.23s:
+2026-04-18 00:03:22.480 xcodebuild[33865:67208327]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:03:22.619 xcodebuild[33865:67208325] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-MEVHnMlC' (errno=Operation not permitted)
+2026-04-18 00:03:22.973 xcodebuild[33869:67208347]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:03:23.077 xcodebuild[33869:67208345] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+diff --git a/web/src/app/job/[id]/circuits/page.tsx b/web/src/app/job/[id]/circuits/page.tsx
+index 65aca68..8b5616a 100644
+--- a/web/src/app/job/[id]/circuits/page.tsx
++++ b/web/src/app/job/[id]/circuits/page.tsx
+@@ -19,6 +19,7 @@ import { api } from '@/lib/api-client';
+ import { useJobContext } from '@/lib/job-context';
+ import { ApiError } from '@/lib/types';
+ import { applyCcuAnalysisToJob } from '@/lib/recording/apply-ccu-analysis';
++import { applyDocumentExtractionToJob } from '@/lib/recording/apply-document-extraction';
+ import { FloatingLabelInput } from '@/components/ui/floating-label-input';
+ import { SectionCard } from '@/components/ui/section-card';
+ import { SegmentedControl } from '@/components/ui/segmented-control';
+@@ -83,6 +84,9 @@ export default function CircuitsPage() {
+   const [ccuError, setCcuError] = React.useState<string | null>(null);
+exec
+/bin/zsh -lc 'cat web/package.json' in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "nl -ba 'web/src/lib/recording/apply-extraction.ts' | sed -n '1,150p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+{
+  "name": "web",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev --turbopack",
+    "build": "next build --webpack",
+    "start": "next start",
+    "lint": "eslint",
+    "verify": "tsx scripts/verify-visual.ts",
+    "typecheck": "tsc --noEmit",
+    "pwa:icons": "node scripts/generate-pwa-icons.mjs"
+  },
+  "dependencies": {
+    "@dnd-kit/core": "^6.3.1",
+    "@dnd-kit/modifiers": "^9.0.0",
+    "@dnd-kit/sortable": "^10.0.0",
+    "@dnd-kit/utilities": "^3.2.2",
+    "@hookform/resolvers": "^5.2.2",
+    "@radix-ui/react-checkbox": "^1.3.3",
+ succeeded in 0ms:
+     1	/**
+     2	 * Map a Sonnet extraction result onto a JobDetail patch.
+     3	 *
+     4	 * Responsibilities:
+     5	 *   1. Route each reading to the correct section of the job (supply,
+     6	 *      board, installation, extent, design, or the matching circuit
+     7	 *      row) based on field name.
+     8	 *   2. Apply 3-tier priority: pre-existing manual/CCU values win over
+     9	 *      fresh Sonnet readings. Sonnet's own de-dup lives server-side; we
+    10	 *      re-check here in case the server-side state snapshot lagged
+    11	 *      behind a user edit.
+    12	 *   3. Apply `circuit_updates` — create or rename a CircuitRow so
+    13	 *      subsequent readings have somewhere to land.
+    14	 *   4. Append `observations` not already present.
+    15	 *
+    16	 * Returns a partial `JobDetail` patch, or null if nothing changed so
+    17	 * the caller can skip an `updateJob` cycle (avoids needless re-renders
+    18	 * when Sonnet returns an empty result).
+    19	 */
+    20	
+exec
+/bin/zsh -lc "rg --files web | rg 'test|spec|vitest|playwright'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+web/src/lib/constants/inspection-schedule.ts
+web/src/app/job/[id]/inspection/page.tsx
+web/src/app/settings/staff/[inspectorId]/page.tsx
+codex
+I have one confirmed data-loss bug and one confirmed persistence/design mismatch. I’m verifying whether there’s also a field-mapping regression against the board editor, because the current tree exposes both board `name` and `model`, and Phase 5a only writes one of them.
+exec
+/bin/zsh -lc "git show 35b5310:'web/src/app/job/[id]/board/page.tsx' | nl -ba | sed -n '1,220p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "git show 35b5310:'web/src/lib/types.ts' | nl -ba | sed -n '180,320p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "git show 35b5310:'web/src/app/job/[id]/circuits/page.tsx' | nl -ba | sed -n '560,660p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 1.33s:
+2026-04-18 00:03:48.504 xcodebuild[33903:67208689]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:03:48.664 xcodebuild[33903:67208685] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-r6PYeuOu' (errno=Operation not permitted)
+2026-04-18 00:03:49.087 xcodebuild[33909:67208724]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:03:49.195 xcodebuild[33909:67208721] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+ succeeded in 1.35s:
+2026-04-18 00:03:48.504 xcodebuild[33902:67208690]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:03:48.664 xcodebuild[33902:67208683] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-3i6p2lDm' (errno=Operation not permitted)
+2026-04-18 00:03:49.087 xcodebuild[33908:67208725]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:03:49.195 xcodebuild[33908:67208722] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+     1	'use client';
+     2	
+     3	import * as React from 'react';
+     4	import { Boxes, Cable, CircuitBoard, MapPin, Plus, ShieldCheck, Trash2 } from 'lucide-react';
+     5	import { useJobContext } from '@/lib/job-context';
+     6	import { FloatingLabelInput } from '@/components/ui/floating-label-input';
+     7	import { SectionCard } from '@/components/ui/section-card';
+     8	import { SelectChips } from '@/components/ui/select-chips';
+     9	
+    10	/**
+    11	 * Board tab — mirrors iOS `BoardTab.swift` + `BoardInfo.swift`.
+    12	 *
+    13	 * iOS supports multiple boards per job (main + sub-distribution); the web
+    14	 * stores the list in `job.board.boards`. We default to a single synthesized
+ succeeded in 1.33s:
+2026-04-18 00:03:48.504 xcodebuild[33904:67208691]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:03:48.664 xcodebuild[33904:67208686] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-icnJGVRW' (errno=Operation not permitted)
+2026-04-18 00:03:49.087 xcodebuild[33910:67208726]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:03:49.195 xcodebuild[33910:67208723] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+   560	              <FloatingLabelInput
+   561	                label="R1+R2 (Ω)"
+   562	                inputMode="decimal"
+   563	                value={text('r1_r2_ohm')}
+   564	                onChange={(e) => onPatch({ r1_r2_ohm: e.target.value })}
+   565	              />
+   566	              <FloatingLabelInput
+   567	                label="R2 (Ω)"
+   568	                inputMode="decimal"
+   569	                value={text('r2_ohm')}
+   570	                onChange={(e) => onPatch({ r2_ohm: e.target.value })}
+   571	              />
+   572	              <FloatingLabelInput
+   573	                label="Measured Zs (Ω)"
+exec
+/bin/zsh -lc "nl -ba 'web/src/components/live-fill/live-fill-view.tsx' | sed -n '220,280p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+   220	            <LiveField
+   221	              fieldKey="board.main_switch_current"
+   222	              label="Rating (A)"
+   223	              value={str(board.main_switch_current)}
+   224	              monospace
+   225	            />
+   226	            <LiveField
+   227	              fieldKey="board.main_switch_poles"
+   228	              label="Poles"
+   229	              value={str(board.main_switch_poles)}
+   230	            />
+   231	            <LiveField
+   232	              fieldKey="board.main_switch_voltage"
+   233	              label="Voltage (V)"
+   234	              value={str(board.main_switch_voltage)}
+   235	              monospace
+   236	            />
+   237	            <LiveField
+   238	              fieldKey="board.rcd_operating_current"
+   239	              label="RCD IΔn (mA)"
+exec
+/bin/zsh -lc "nl -ba 'web/src/app/job/[id]/supply/page.tsx' | sed -n '330,390p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+   330	            label="Lightning protection"
+   331	            value={text('bonding_lightning')}
+   332	            onChange={(e) => patch({ bonding_lightning: e.target.value })}
+   333	          />
+   334	          <FloatingLabelInput
+   335	            label="Other"
+   336	            value={text('bonding_other')}
+   337	            onChange={(e) => patch({ bonding_other: e.target.value })}
+   338	            trailing={
+   339	              <button
+   340	                type="button"
+   341	                onClick={() => patch({ bonding_other_na: !bool('bonding_other_na') })}
+   342	                className={`rounded-full px-2 py-0.5 text-[11px] font-semibold transition ${
+   343	                  bool('bonding_other_na')
+   344	                    ? 'bg-[var(--color-brand-blue)] text-white'
+   345	                    : 'bg-[var(--color-surface-2)] text-[var(--color-text-secondary)]'
+   346	                }`}
+   347	              >
+   348	                N/A
+   349	              </button>
+exec
+/bin/zsh -lc "rg -n \"\\bmodel\\b|board\\.model|name\\)|label=\\\"Model\\\"\" web/src -g '"'!web/.next/**'"'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+web/src/lib/roles.ts:7: * model evolves.
+web/src/lib/pwa/outbox.ts:41: * Conflict model (last-writer-wins):
+web/src/lib/recording/deepgram-service.ts:204:      model: 'nova-3',
+web/src/lib/recording/sleep-manager.ts:16: * uses a Silero VAD ONNX model (threshold 0.80, 12-of-30 frames) which
+web/src/lib/recording/sleep-manager.ts:18: * `onnxruntime-web` + Silero v5 model and swap the RMS path for a real
+web/src/lib/recording/apply-ccu-analysis.ts:358:  // what the model returned without re-uploading the image.
+web/src/lib/api-client.ts:235:      `/api/job/${encodeURIComponent(userId)}/${encodeURIComponent(jobId)}/photos/${encodeURIComponent(filename)}`,
+web/src/lib/api-client.ts:258:      `${API_BASE_URL}/api/job/${encodeURIComponent(userId)}/${encodeURIComponent(jobId)}/photos/${encodeURIComponent(filename)}${qs}`,
+web/src/lib/api-client.ts:299:   * iOS `APIClient.updateInspectorProfiles`. Concurrency model is
+web/src/lib/api-client.ts:354:      `${API_BASE_URL}/api/settings/${encodeURIComponent(userId)}/signatures/${encodeURIComponent(filename)}`,
+web/src/lib/api-client.ts:427:      `${API_BASE_URL}/api/settings/${encodeURIComponent(userId)}/logo/${encodeURIComponent(filename)}`,
+web/src/components/live-fill/live-fill-view.tsx:77:              value={str(installation.client_name)}
+web/src/components/live-fill/live-fill-view.tsx:98:              value={str(installation.occupier_name)}
+web/src/components/observations/observation-sheet.tsx:138:      await api.deleteObservationPhoto(userId, jobId, filename);
+web/src/components/observations/observation-sheet.tsx:141:        photos: (d.photos ?? []).filter((f) => f !== filename),
+web/src/components/observations/observation-sheet.tsx:362:                {photos.map((filename) => (
+web/src/components/observations/observation-sheet.tsx:376:                      onClick={() => deletePhoto(filename)}
+web/src/middleware.ts:50:    if (pathname !== '/') url.searchParams.set('redirect', pathname);
+web/src/app/job/[id]/installation/page.tsx:37: * Save model: every change calls `updateJob` which merges locally and flips
+web/src/app/job/[id]/board/page.tsx:159:            label="Model"
+codex
+## 1. Summary of the phase
+Phase 5a replaces the stub CCU rail action with a real camera-first file picker on the Circuits tab, posts the image to `/api/analyze-ccu`, and merges the returned board/circuit data into the current job. It also adds a dedicated CCU merge helper, CCU response types, inline status/error UI, and dismissible follow-up questions for unresolved RCD types.
+
+The current working tree has moved on since `35b5310` by adding document-extraction flow and broader API/types changes, but the core CCU helper and its merge semantics are still materially the same, so the findings below still apply.
+
+## 2. Alignment with original plan
+Broadly, yes: the commit does wire the CCU button to a real upload flow, adds `api.analyzeCCU`, ports the iOS-style circuit merge/data-loss guard, persists raw analysis, and surfaces inspector questions.
+
+Two gaps versus the stated intent:
+- The handoff says the response includes main-switch metadata, but only `main_switch_bs_en`, voltage, and current are consumed; `main_switch_type`, `main_switch_poles`, and `main_switch_position` are typed but dropped ([types.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/types.ts:268), [apply-ccu-analysis.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording/apply-ccu-analysis.ts:122)).
+- The handoff says RCD normalisation mirrors iOS for `AC/A/B/F/S/A-S/B-S/B+`, but the Circuits UI only offers `AC/A/B/F`, so several “valid” imported values cannot be represented in the editor ([apply-ccu-analysis.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording/apply-ccu-analysis.ts:35), [page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/job/[id]/circuits/page.tsx:57)).
+
+## 3. Correctness issues
+- **P0** Async stale-state merge can drop user edits made while analysis is running. `handleCcuFile` awaits the upload, then computes `applyCcuAnalysisToJob(job, analysis, ...)` from the render-time `job` snapshot and finally calls `updateJob(patch)`; `updateJob` is only a shallow top-level merge. Any edits to `board`, `supply`, or `circuits` made during the request window can be overwritten by stale whole-section bags ([page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/job/[id]/circuits/page.tsx:130), [job-context.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/job-context.tsx:55), [apply-ccu-analysis.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording/apply-ccu-analysis.ts:88)).
+- **P1** `ccu_analysis` is overwritten globally, so analysing a second board destroys the first board’s raw analysis, which breaks the commit’s “review/retry without re-uploading” goal for multi-board jobs ([apply-ccu-analysis.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording/apply-ccu-analysis.ts:357)).
+- **P2** `analysis.board_model` is written into `board.name`, but the board UI has a separate `model` field. Result: imported board model lands in the wrong slot and the actual Model input stays empty ([apply-ccu-analysis.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording/apply-ccu-analysis.ts:119), [board/page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/job/[id]/board/page.tsx:148)).
+- **P2** Valid imported RCD types can become invisible/uneditable in the Circuits UI. The merge helper accepts `S`, `A-S`, `B-S`, and `B+`, but the chip options only include `AC/A/B/F` ([apply-ccu-analysis.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording/apply-ccu-analysis.ts:35), [page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/job/[id]/circuits/page.tsx:601)).
+- **P2** The phase types `main_switch_type`, `main_switch_poles`, and `main_switch_position`, but the merge helper ignores them completely, so part of the analyser output is silently discarded ([types.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/types.ts:270), [apply-ccu-analysis.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording/apply-ccu-analysis.ts:122)).
+
+## 4. Security issues
+- No phase-specific security defects stood out in this diff. The upload goes through the existing authenticated `request()` wrapper with bearer auth plus `credentials: 'include'` ([api-client.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/api-client.ts:34)).
+
+## 5. Performance issues
+- No major phase-specific performance problem found. The merge is linear over circuits and the UI work is modest.
+- Minor: `buildBoardPatch()` always returns a fresh `board` object even when nothing changed, which causes unnecessary dirty-state churn and rerenders ([apply-ccu-analysis.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording/apply-ccu-analysis.ts:153)).
+
+## 6. Accessibility issues
+- **Low** Every dismiss button has the same accessible name, `Dismiss question`, so screen-reader users cannot tell which prompt they are dismissing. Include the question text or circuit ref in the label ([page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/job/[id]/circuits/page.tsx:335)).
+
+## 7. Code quality
+- The merge helper has good inline documentation and the data-loss guard is clearly implemented.
+- There is some schema drift: the helper/commentary assumes one set of board/RCD semantics while the current UI exposes another (`name` vs `model`, full iOS RCD list vs truncated chip list).
+- `ccu_analysis` is stored as an unstructured `Record<string, unknown>` cast, which weakens type guarantees right where long-lived persisted analysis data is being saved ([apply-ccu-analysis.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording/apply-ccu-analysis.ts:359)).
+
+## 8. Test coverage gaps
+- I did not find automated unit/integration tests for `applyCcuAnalysisToJob`, `handleCcuFile`, or the CCU rail flow. `web/package.json` has lint/typecheck and a visual verification script, but no test runner/specs for this logic.
+- Missing cases:
+  - user edits while CCU upload is in flight
+  - multi-board jobs with two CCU analyses
+  - unmatched existing circuits with and without readings
+  - valid imported RCD types outside `AC/A/B/F`
+  - board-model field mapping
+
+## 9. Suggested fixes
+1. [web/src/app/job/[id]/circuits/page.tsx:130](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/job/[id]/circuits/page.tsx:130), [web/src/lib/job-context.tsx:55](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/job-context.tsx:55): rebase the CCU patch against the latest job state, not the render snapshot. Either add a functional `updateJob(prev => next)` path or hold `jobRef.current` and compute `applyCcuAnalysisToJob(jobRef.current, analysis, ...)` at resolve time. This closes the data-loss bug for in-flight edits.
+2. [web/src/lib/recording/apply-ccu-analysis.ts:357](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording/apply-ccu-analysis.ts:357): store raw analysis per board, e.g. `ccu_analysis: { ...(job.ccu_analysis ?? {}), [boardId]: analysis }`, or append a timestamped history. This preserves review/retry data across multiple boards.
+3. [web/src/lib/recording/apply-ccu-analysis.ts:119](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording/apply-ccu-analysis.ts:119), [web/src/app/job/[id]/board/page.tsx:159](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/job/[id]/board/page.tsx:159): map `analysis.board_model` into `board.model` instead of `board.name`, or populate both if legacy consumers still read `name`. This aligns the merge with the actual editor schema.
+4. [web/src/app/job/[id]/circuits/page.tsx:57](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/job/[id]/circuits/page.tsx:57): extend `RCD_TYPES` to include `S`, `A-S`, `B-S`, and `B+`, or narrow `VALID_RCD_TYPES` to what the UI can truly render. Right now imported values can silently disappear from the selector state.
+5. [web/src/lib/recording/apply-ccu-analysis.ts:122](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording/apply-ccu-analysis.ts:122): either merge `main_switch_type` / `main_switch_poles` / `main_switch_position` into board fields the app understands, or remove them from the typed contract until they are actually supported. Silent drop is easy to miss and hard to debug.
+6. [web/src/app/job/[id]/circuits/page.tsx:335](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/job/[id]/circuits/page.tsx:335): change the dismiss button label to something like `Dismiss question: What is the RCD type for circuit 4?` for screen-reader clarity.
+7. [web/src/lib/recording/apply-ccu-analysis.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording/apply-ccu-analysis.ts:1): add unit tests around merge semantics, especially stale-state rebasing, unmatched-circuit preservation, multi-board storage, and RCD type handling.
+
+## 10. Overall verdict
+**Needs rework.**
+
+Top 3 priority fixes:
+1. Fix the stale async merge that can overwrite user edits during CCU analysis.
+2. Stop overwriting `ccu_analysis` globally; preserve raw analysis per board/history.
+3. Align imported field semantics with the UI schema, especially `board_model` and the full supported RCD type set.
+tokens used
+80,242
+## 1. Summary of the phase
+Phase 5a replaces the stub CCU rail action with a real camera-first file picker on the Circuits tab, posts the image to `/api/analyze-ccu`, and merges the returned board/circuit data into the current job. It also adds a dedicated CCU merge helper, CCU response types, inline status/error UI, and dismissible follow-up questions for unresolved RCD types.
+
+The current working tree has moved on since `35b5310` by adding document-extraction flow and broader API/types changes, but the core CCU helper and its merge semantics are still materially the same, so the findings below still apply.
+
+## 2. Alignment with original plan
+Broadly, yes: the commit does wire the CCU button to a real upload flow, adds `api.analyzeCCU`, ports the iOS-style circuit merge/data-loss guard, persists raw analysis, and surfaces inspector questions.
+
+Two gaps versus the stated intent:
+- The handoff says the response includes main-switch metadata, but only `main_switch_bs_en`, voltage, and current are consumed; `main_switch_type`, `main_switch_poles`, and `main_switch_position` are typed but dropped ([types.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/types.ts:268), [apply-ccu-analysis.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording/apply-ccu-analysis.ts:122)).
+- The handoff says RCD normalisation mirrors iOS for `AC/A/B/F/S/A-S/B-S/B+`, but the Circuits UI only offers `AC/A/B/F`, so several “valid” imported values cannot be represented in the editor ([apply-ccu-analysis.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording/apply-ccu-analysis.ts:35), [page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/job/[id]/circuits/page.tsx:57)).
+
+## 3. Correctness issues
+- **P0** Async stale-state merge can drop user edits made while analysis is running. `handleCcuFile` awaits the upload, then computes `applyCcuAnalysisToJob(job, analysis, ...)` from the render-time `job` snapshot and finally calls `updateJob(patch)`; `updateJob` is only a shallow top-level merge. Any edits to `board`, `supply`, or `circuits` made during the request window can be overwritten by stale whole-section bags ([page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/job/[id]/circuits/page.tsx:130), [job-context.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/job-context.tsx:55), [apply-ccu-analysis.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording/apply-ccu-analysis.ts:88)).
+- **P1** `ccu_analysis` is overwritten globally, so analysing a second board destroys the first board’s raw analysis, which breaks the commit’s “review/retry without re-uploading” goal for multi-board jobs ([apply-ccu-analysis.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording/apply-ccu-analysis.ts:357)).
+- **P2** `analysis.board_model` is written into `board.name`, but the board UI has a separate `model` field. Result: imported board model lands in the wrong slot and the actual Model input stays empty ([apply-ccu-analysis.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording/apply-ccu-analysis.ts:119), [board/page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/job/[id]/board/page.tsx:148)).
+- **P2** Valid imported RCD types can become invisible/uneditable in the Circuits UI. The merge helper accepts `S`, `A-S`, `B-S`, and `B+`, but the chip options only include `AC/A/B/F` ([apply-ccu-analysis.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording/apply-ccu-analysis.ts:35), [page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/job/[id]/circuits/page.tsx:601)).
+- **P2** The phase types `main_switch_type`, `main_switch_poles`, and `main_switch_position`, but the merge helper ignores them completely, so part of the analyser output is silently discarded ([types.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/types.ts:270), [apply-ccu-analysis.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording/apply-ccu-analysis.ts:122)).
+
+## 4. Security issues
+- No phase-specific security defects stood out in this diff. The upload goes through the existing authenticated `request()` wrapper with bearer auth plus `credentials: 'include'` ([api-client.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/api-client.ts:34)).
+
+## 5. Performance issues
+- No major phase-specific performance problem found. The merge is linear over circuits and the UI work is modest.
+- Minor: `buildBoardPatch()` always returns a fresh `board` object even when nothing changed, which causes unnecessary dirty-state churn and rerenders ([apply-ccu-analysis.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording/apply-ccu-analysis.ts:153)).
+
+## 6. Accessibility issues
+- **Low** Every dismiss button has the same accessible name, `Dismiss question`, so screen-reader users cannot tell which prompt they are dismissing. Include the question text or circuit ref in the label ([page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/job/[id]/circuits/page.tsx:335)).
+
+## 7. Code quality
+- The merge helper has good inline documentation and the data-loss guard is clearly implemented.
+- There is some schema drift: the helper/commentary assumes one set of board/RCD semantics while the current UI exposes another (`name` vs `model`, full iOS RCD list vs truncated chip list).
+- `ccu_analysis` is stored as an unstructured `Record<string, unknown>` cast, which weakens type guarantees right where long-lived persisted analysis data is being saved ([apply-ccu-analysis.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording/apply-ccu-analysis.ts:359)).
+
+## 8. Test coverage gaps
+- I did not find automated unit/integration tests for `applyCcuAnalysisToJob`, `handleCcuFile`, or the CCU rail flow. `web/package.json` has lint/typecheck and a visual verification script, but no test runner/specs for this logic.
+- Missing cases:
+  - user edits while CCU upload is in flight
+  - multi-board jobs with two CCU analyses
+  - unmatched existing circuits with and without readings
+  - valid imported RCD types outside `AC/A/B/F`
+  - board-model field mapping
+
+## 9. Suggested fixes
+1. [web/src/app/job/[id]/circuits/page.tsx:130](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/job/[id]/circuits/page.tsx:130), [web/src/lib/job-context.tsx:55](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/job-context.tsx:55): rebase the CCU patch against the latest job state, not the render snapshot. Either add a functional `updateJob(prev => next)` path or hold `jobRef.current` and compute `applyCcuAnalysisToJob(jobRef.current, analysis, ...)` at resolve time. This closes the data-loss bug for in-flight edits.
+2. [web/src/lib/recording/apply-ccu-analysis.ts:357](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording/apply-ccu-analysis.ts:357): store raw analysis per board, e.g. `ccu_analysis: { ...(job.ccu_analysis ?? {}), [boardId]: analysis }`, or append a timestamped history. This preserves review/retry data across multiple boards.
+3. [web/src/lib/recording/apply-ccu-analysis.ts:119](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording/apply-ccu-analysis.ts:119), [web/src/app/job/[id]/board/page.tsx:159](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/job/[id]/board/page.tsx:159): map `analysis.board_model` into `board.model` instead of `board.name`, or populate both if legacy consumers still read `name`. This aligns the merge with the actual editor schema.
+4. [web/src/app/job/[id]/circuits/page.tsx:57](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/job/[id]/circuits/page.tsx:57): extend `RCD_TYPES` to include `S`, `A-S`, `B-S`, and `B+`, or narrow `VALID_RCD_TYPES` to what the UI can truly render. Right now imported values can silently disappear from the selector state.
+5. [web/src/lib/recording/apply-ccu-analysis.ts:122](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording/apply-ccu-analysis.ts:122): either merge `main_switch_type` / `main_switch_poles` / `main_switch_position` into board fields the app understands, or remove them from the typed contract until they are actually supported. Silent drop is easy to miss and hard to debug.
+6. [web/src/app/job/[id]/circuits/page.tsx:335](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/job/[id]/circuits/page.tsx:335): change the dismiss button label to something like `Dismiss question: What is the RCD type for circuit 4?` for screen-reader clarity.
+7. [web/src/lib/recording/apply-ccu-analysis.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording/apply-ccu-analysis.ts:1): add unit tests around merge semantics, especially stale-state rebasing, unmatched-circuit preservation, multi-board storage, and RCD type handling.
+
+## 10. Overall verdict
+**Needs rework.**
+
+Top 3 priority fixes:
+1. Fix the stale async merge that can overwrite user edits during CCU analysis.
+2. Stop overwriting `ccu_analysis` globally; preserve raw analysis per board/history.
+3. Align imported field semantics with the UI schema, especially `board_model` and the full supported RCD type set.

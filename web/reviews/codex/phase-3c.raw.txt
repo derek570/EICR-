@@ -1,0 +1,1018 @@
+OpenAI Codex v0.116.0 (research preview)
+--------
+workdir: /Users/derekbeckley/Developer/EICR_Automation
+model: gpt-5.4
+provider: openai
+approval: never
+sandbox: read-only
+reasoning effort: none
+reasoning summaries: none
+session id: 019d9d9c-5b16-7c31-b3a4-2c9f74c634d9
+--------
+user
+You are performing a rigorous code review of a single phase of a Next.js 16 / React 19 PWA frontend rebuild for an electrical-certificate automation tool (EICR / EIC). The repo root is at /Users/derekbeckley/Developer/EICR_Automation and the web package is at web/. Branch: web-rebuild.
+
+TARGET: Phase 3c — Extent, Design, Inspection, Staff, PDF & Observations tabs
+COMMIT: 88e7c4e
+
+Context for this phase (original intent, handoff doc, commit message, files changed) is in this repo at: reviews/context/phase-3c.md — READ THAT FILE FIRST.
+
+Use shell commands to:
+  git show --stat 88e7c4e
+  git show 88e7c4e
+to inspect the full diff. Then read any files you need from the working tree (they may have evolved since this commit — note any later changes).
+
+Your output must be a well-structured markdown review with these sections:
+  1. Summary of the phase (2-3 sentences — what it did).
+  2. Alignment with original plan (does the implementation match the handoff doc / commit intent? Any missing objectives?).
+  3. Correctness issues (bugs, race conditions, missing error handling, incorrect semantics). Prioritise P0/P1/P2.
+  4. Security issues (XSS, auth, CSRF, injection, leaked secrets, PII, CORS). Each item tagged with severity.
+  5. Performance issues (re-renders, N+1, large bundles, memory leaks, blocking work on main thread).
+  6. Accessibility issues (semantic HTML, keyboard nav, ARIA, colour contrast, focus management).
+  7. Code quality (duplication, dead code, type-safety holes, naming, convention drift vs. rest of repo).
+  8. Test coverage gaps.
+  9. Suggested fixes — each as a numbered item with: file:line, what to change, why. Be concrete.
+  10. Overall verdict (ship / ship with fixes / needs rework) and top 3 priority fixes.
+
+Be specific — cite file paths and line numbers. Avoid generic advice. If the code is good, say so with evidence. Do NOT modify files; this is review only.
+
+mcp startup: no servers
+codex
+Reviewing phase `88e7c4e` against the handoff context first, then I’ll inspect the commit diff and read the touched files in the working tree to compare intent versus implementation.
+exec
+/bin/zsh -lc "sed -n '1,220p' reviews/context/phase-3c.md" in /Users/derekbeckley/Developer/EICR_Automation exited 1 in 0ms:
+sed: reviews/context/phase-3c.md: No such file or directory
+exec
+/bin/zsh -lc 'git show --stat --summary 88e7c4e' in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc 'git show --format=medium --no-ext-diff 88e7c4e' in /Users/derekbeckley/Developer/EICR_Automation succeeded in 1.20s:
+2026-04-17 23:42:50.064 xcodebuild[29841:67185048]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:42:50.202 xcodebuild[29841:67185047] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-FbnVQ3ql' (errno=Operation not permitted)
+2026-04-17 23:42:50.544 xcodebuild[29846:67185067]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:42:50.647 xcodebuild[29846:67185065] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+commit 88e7c4ed1357e0105159e940d8ead5e4ab038842
+Author: Derek Beckley <derekbeckley@Dereks-Mac-mini.broadband>
+Date:   Fri Apr 17 12:44:36 2026 +0100
+
+    feat(web): Phase 3c — Extent, Design, Inspection, Staff, PDF & Observations tabs
+    
+    What: Replaces the five remaining TabStub placeholders plus the observations
+    route with full iOS-parity forms.
+    
+    • Extent — two SectionCards (Extent of Work / Comments) with character
+      counters. EIC-only installation-type picker (new_installation, addition,
+      alteration, consumer_unit_upgrade — enum ported verbatim from iOS
+      Constants.installationTypes so PDF mapping stays identical).
+    
+ succeeded in 1.20s:
+2026-04-17 23:42:50.064 xcodebuild[29842:67185049]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:42:50.202 xcodebuild[29842:67185046] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-9HS3I3dr' (errno=Operation not permitted)
+2026-04-17 23:42:50.544 xcodebuild[29845:67185066]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:42:50.647 xcodebuild[29845:67185064] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+commit 88e7c4ed1357e0105159e940d8ead5e4ab038842
+Author: Derek Beckley <derekbeckley@Dereks-Mac-mini.broadband>
+Date:   Fri Apr 17 12:44:36 2026 +0100
+
+    feat(web): Phase 3c — Extent, Design, Inspection, Staff, PDF & Observations tabs
+    
+    What: Replaces the five remaining TabStub placeholders plus the observations
+    route with full iOS-parity forms.
+    
+    • Extent — two SectionCards (Extent of Work / Comments) with character
+      counters. EIC-only installation-type picker (new_installation, addition,
+      alteration, consumer_unit_upgrade — enum ported verbatim from iOS
+      Constants.installationTypes so PDF mapping stays identical).
+    
+codex
+The context file path from the prompt doesn’t resolve as-is, so I’m locating it in the repo and retrying the commit inspection with minimal git environment to avoid pager/toolchain noise.
+exec
+/bin/zsh -lc "rg --files | rg 'phase-3c\\.md"'$|reviews/.*/phase-3c'"\\.md"'$'"'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+web/reviews/claude/phase-3c.md
+web/reviews/context/phase-3c.md
+codex
+I have the commit metadata and partial diff. Next I’m reading the phase handoff plus the current versions of the touched pages and the job context so I can verify semantics, not just UI shape.
+exec
+/bin/zsh -lc "sed -n '1,240p' web/reviews/context/phase-3c.md" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+# Phase 3c — Context
+
+**Commit:** `88e7c4e`
+
+## Commit message
+
+```
+commit 88e7c4ed1357e0105159e940d8ead5e4ab038842
+Author:     Derek Beckley <derekbeckley@Dereks-Mac-mini.broadband>
+AuthorDate: Fri Apr 17 12:44:36 2026 +0100
+Commit:     Derek Beckley <derekbeckley@Dereks-Mac-mini.broadband>
+CommitDate: Fri Apr 17 12:44:36 2026 +0100
+
+    feat(web): Phase 3c — Extent, Design, Inspection, Staff, PDF & Observations tabs
+    
+    What: Replaces the five remaining TabStub placeholders plus the observations
+    route with full iOS-parity forms.
+    
+    • Extent — two SectionCards (Extent of Work / Comments) with character
+      counters. EIC-only installation-type picker (new_installation, addition,
+exec
+/bin/zsh -lc "nl -ba web/src/app/job/[id]/staff/page.tsx | sed -n '1,420p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "nl -ba web/src/app/job/[id]/extent/page.tsx | sed -n '1,260p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+zsh:1: no matches found: web/src/app/job/[id]/extent/page.tsx
+ succeeded in 0ms:
+zsh:1: no matches found: web/src/app/job/[id]/staff/page.tsx
+exec
+/bin/zsh -lc "nl -ba web/src/app/job/[id]/inspection/page.tsx | sed -n '1,420p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+zsh:1: no matches found: web/src/app/job/[id]/inspection/page.tsx
+exec
+/bin/zsh -lc "nl -ba web/src/app/job/[id]/pdf/page.tsx | sed -n '1,320p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "nl -ba web/src/app/job/[id]/design/page.tsx | sed -n '1,240p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+zsh:1: no matches found: web/src/app/job/[id]/pdf/page.tsx
+ succeeded in 0ms:
+zsh:1: no matches found: web/src/app/job/[id]/design/page.tsx
+exec
+/bin/zsh -lc "nl -ba web/src/app/job/[id]/observations/page.tsx | sed -n '1,340p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+zsh:1: no matches found: web/src/app/job/[id]/observations/page.tsx
+exec
+/bin/zsh -lc "nl -ba web/src/lib/constants/inspection-schedule.ts | sed -n '1,460p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	/**
+     2	 * BS 7671 inspection schedule data.
+     3	 *
+     4	 * Ported verbatim from iOS `Sources/Utilities/Constants.swift`:
+     5	 *  - `eicrScheduleSections` → EICR_SCHEDULE (7 sections, ~90 items)
+     6	 *  - `eicScheduleItems`     → EIC_SCHEDULE (14 top-level items)
+     7	 *
+     8	 * Keep in sync with iOS. If an item ref moves or description changes, it
+     9	 * must change in both files — the PDF renderer indexes outcomes by ref.
+    10	 */
+    11	
+    12	export type ScheduleItem = { ref: string; description: string };
+    13	export type ScheduleSection = { title: string; items: ScheduleItem[] };
+    14	
+    15	export const EICR_SCHEDULE: ScheduleSection[] = [
+    16	  {
+    17	    title: '1. External condition of intake equipment (visual inspection only)',
+    18	    items: [
+    19	      {
+    20	        ref: '1.1',
+exec
+/bin/zsh -lc "nl -ba web/src/lib/job-context.tsx | sed -n '1,320p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	'use client';
+     2	
+     3	import * as React from 'react';
+     4	import type { CertificateType, JobDetail } from './types';
+     5	
+     6	/**
+     7	 * Per-job state container. Holds the fetched JobDetail plus a couple of
+     8	 * derived flags (dirty/syncing) and two mutators:
+     9	 *
+    10	 *  - updateJob(partial) — local merge, does not hit the network. Every
+    11	 *    input in the job tabs calls this; a debounced save effect (Phase 4)
+    12	 *    flushes to the backend.
+    13	 *  - setJob(full)        — replace wholesale (used after a network save
+    14	 *    round-trip so server-derived fields like updated_at can flow in).
+    15	 *
+    16	 * The shape deliberately mirrors the legacy `useJob` hook so the tab
+    17	 * components from Phase 3+ read the same API.
+    18	 */
+    19	interface JobContextValue {
+    20	  job: JobDetail;
+codex
+I hit zsh globbing on the dynamic route paths. I’m rerunning those reads with quoted paths and also checking whether any of these files changed after `88e7c4e`, since the prompt calls that out explicitly.
+exec
+/bin/zsh -lc "nl -ba \"web/src/app/job/[id]/inspection/page.tsx\" | sed -n '1,420p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "nl -ba \"web/src/app/job/[id]/extent/page.tsx\" | sed -n '1,260p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	'use client';
+     2	
+     3	import * as React from 'react';
+     4	import { MessageSquareText, Ruler } from 'lucide-react';
+     5	import { useJobContext } from '@/lib/job-context';
+     6	import { SectionCard } from '@/components/ui/section-card';
+     7	import { SelectChips } from '@/components/ui/select-chips';
+     8	
+     9	/**
+    10	 * Extent & Type tab — mirrors iOS `ExtentTab.swift`.
+    11	 *
+    12	 * Two sections: "Extent of Work" (scope + installation type picker) and
+    13	 * "Comments". Both bodies are multiline text. EIC installation types are
+    14	 * the Constants.installationTypes enum lifted from iOS verbatim so the
+    15	 * eventual PDF mapping matches.
+    16	 *
+    17	 * Data shape: `job.extent: Record<string, unknown>` — we keep the string
+    18	 * values we care about typed, leave the record permissive so future fields
+    19	 * pass through without schema changes.
+    20	 */
+ succeeded in 0ms:
+     1	'use client';
+     2	
+     3	import * as React from 'react';
+     4	import {
+     5	  BathIcon,
+     6	  Bolt,
+     7	  ClipboardCheck,
+     8	  Eye,
+     9	  Flame,
+    10	  MapPin,
+    11	  Shield,
+    12	  SlidersHorizontal,
+    13	  Wrench,
+    14	} from 'lucide-react';
+    15	import { useJobContext } from '@/lib/job-context';
+    16	import { SectionCard } from '@/components/ui/section-card';
+    17	import { cn } from '@/lib/utils';
+    18	import {
+    19	  EIC_SCHEDULE,
+    20	  EICR_SCHEDULE,
+exec
+/bin/zsh -lc "nl -ba \"web/src/app/job/[id]/design/page.tsx\" | sed -n '1,240p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	'use client';
+     2	
+     3	import * as React from 'react';
+     4	import { AlertTriangle, CheckCircle2, Info, PencilRuler } from 'lucide-react';
+     5	import { useJobContext } from '@/lib/job-context';
+     6	import { SectionCard } from '@/components/ui/section-card';
+     7	
+     8	/**
+     9	 * Design & Construction tab — mirrors iOS `DesignTab.swift`.
+    10	 *
+    11	 * A single section capturing BS 7671 departures. Includes the iOS "No
+    12	 * Departures" green capsule shortcut that prefills both fields with the
+    13	 * standard N/A strings so inspectors aren't retyping the same answer on
+    14	 * every unremarkable certificate.
+    15	 *
+    16	 * Data shape: `job.design.departures_from_bs7671` + `departure_details`
+    17	 * strings. Snake_case to match the backend JobFormData persistence.
+    18	 */
+    19	
+    20	type DesignShape = {
+exec
+/bin/zsh -lc "nl -ba \"web/src/app/job/[id]/pdf/page.tsx\" | sed -n '1,340p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "nl -ba \"web/src/app/job/[id]/observations/page.tsx\" | sed -n '1,360p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	'use client';
+     2	
+     3	import * as React from 'react';
+     4	import {
+     5	  AlertTriangle,
+     6	  CheckCircle2,
+     7	  Download,
+     8	  Eye,
+     9	  FileText,
+    10	  Loader2,
+    11	  Share2,
+    12	} from 'lucide-react';
+    13	import { useJobContext } from '@/lib/job-context';
+    14	import { SectionCard } from '@/components/ui/section-card';
+    15	import { cn } from '@/lib/utils';
+    16	
+    17	/**
+    18	 * PDF tab — mirrors iOS `PDFTab.swift`.
+    19	 *
+    20	 * Surfaces the "is this certificate ready to publish?" state: hero banner
+ succeeded in 0ms:
+     1	'use client';
+     2	
+     3	import * as React from 'react';
+     4	import { useParams } from 'next/navigation';
+     5	import { AlertTriangle, ImageIcon, MapPin, Plus, Trash2 } from 'lucide-react';
+     6	import { useJobContext } from '@/lib/job-context';
+     7	import type { ObservationRow } from '@/lib/types';
+     8	import { getUser } from '@/lib/auth';
+     9	import { SectionCard } from '@/components/ui/section-card';
+    10	import { ObservationPhoto } from '@/components/observations/observation-photo';
+    11	import { ObservationSheet } from '@/components/observations/observation-sheet';
+    12	import { cn } from '@/lib/utils';
+    13	
+    14	/**
+    15	 * Observations tab — mirrors iOS `ObservationsTab.swift`.
+    16	 *
+    17	 * Layout: gradient hero with C1/C2/C3/FI tally + Add button, then a list
+    18	 * of observation cards. Tap Add for a new blank sheet, tap any card to
+    19	 * edit. The photo upload flow (Phase 5c) lives in <ObservationSheet>;
+    20	 * this page just renders up to three thumbnails inline per card and
+exec
+/bin/zsh -lc "nl -ba \"web/src/app/job/[id]/staff/page.tsx\" | sed -n '1,420p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	'use client';
+     2	
+     3	import * as React from 'react';
+     4	import {
+     5	  CheckCircle2,
+     6	  ClipboardCheck,
+     7	  Gauge,
+     8	  Hammer,
+     9	  Info,
+    10	  PencilRuler,
+    11	  ShieldCheck,
+    12	  Signature,
+    13	  UserCheck,
+    14	  Wrench,
+    15	  Zap as ZapIcon,
+    16	} from 'lucide-react';
+    17	import { useJobContext } from '@/lib/job-context';
+    18	import { SectionCard } from '@/components/ui/section-card';
+    19	import { cn } from '@/lib/utils';
+    20	
+exec
+/bin/zsh -lc "git diff --stat 88e7c4e..HEAD -- web/src/app/job/'[id]'/design/page.tsx web/src/app/job/'[id]'/extent/page.tsx web/src/app/job/'[id]'/inspection/page.tsx web/src/app/job/'[id]'/staff/page.tsx web/src/app/job/'[id]'/pdf/page.tsx web/src/app/job/'[id]'/observations/page.tsx web/src/lib/constants/inspection-schedule.ts" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 1.04s:
+2026-04-17 23:43:27.625 xcodebuild[30029:67185696]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:43:27.724 xcodebuild[30029:67185695] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-3KBXdKmX' (errno=Operation not permitted)
+2026-04-17 23:43:28.012 xcodebuild[30031:67185704]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:43:28.110 xcodebuild[30031:67185703] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+ web/src/app/job/[id]/observations/page.tsx | 162 +++++++++++++++++++++++++----
+ 1 file changed, 142 insertions(+), 20 deletions(-)
+codex
+Only `observations/page.tsx` has changed since `88e7c4e`. I’m diffing that file now so I can separate phase findings from later follow-up changes instead of attributing current-only behavior to the reviewed commit.
+exec
+/bin/zsh -lc 'git diff 88e7c4e..HEAD -- "web/src/app/job/[id]/observations/page.tsx"' in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "git show 88e7c4e:\"web/src/app/job/[id]/observations/page.tsx\" | nl -ba | sed -n '1,360p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "git show 88e7c4e:\"web/src/app/job/[id]/pdf/page.tsx\" | nl -ba | sed -n '1,260p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "git show 88e7c4e:\"web/src/app/job/[id]/inspection/page.tsx\" | nl -ba | sed -n '1,420p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 1.32s:
+2026-04-17 23:43:39.679 xcodebuild[30057:67185909]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:43:39.837 xcodebuild[30057:67185903] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-i8fHuIqD' (errno=Operation not permitted)
+2026-04-17 23:43:40.221 xcodebuild[30064:67185963]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:43:40.334 xcodebuild[30064:67185956] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+     1	'use client';
+     2	
+     3	import * as React from 'react';
+     4	import {
+     5	  BathIcon,
+     6	  Bolt,
+     7	  ClipboardCheck,
+     8	  Eye,
+     9	  Flame,
+    10	  MapPin,
+    11	  Shield,
+    12	  SlidersHorizontal,
+    13	  Wrench,
+    14	} from 'lucide-react';
+ succeeded in 1.35s:
+2026-04-17 23:43:39.679 xcodebuild[30055:67185908]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:43:39.837 xcodebuild[30055:67185904] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-JcgzT9Fq' (errno=Operation not permitted)
+2026-04-17 23:43:40.221 xcodebuild[30066:67185962]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:43:40.334 xcodebuild[30066:67185959] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+     1	'use client';
+     2	
+     3	import * as React from 'react';
+     4	import { AlertTriangle, MapPin, Plus, Trash2 } from 'lucide-react';
+     5	import { useJobContext } from '@/lib/job-context';
+     6	import type { ObservationRow } from '@/lib/types';
+     7	import { SectionCard } from '@/components/ui/section-card';
+     8	import { cn } from '@/lib/utils';
+     9	
+    10	/**
+    11	 * Observations tab — mirrors iOS `ObservationsTab.swift`.
+    12	 *
+    13	 * Hero banner with C1/C2/C3/FI tally, an Add button (wires up to the
+    14	 * AddObservation sheet in Phase 5), and a list of observation cards.
+ succeeded in 1.33s:
+2026-04-17 23:43:39.679 xcodebuild[30056:67185907]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:43:39.837 xcodebuild[30056:67185902] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-1KkTzInb' (errno=Operation not permitted)
+2026-04-17 23:43:40.221 xcodebuild[30065:67185961]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:43:40.334 xcodebuild[30065:67185958] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+     1	'use client';
+     2	
+     3	import * as React from 'react';
+     4	import {
+     5	  AlertTriangle,
+     6	  CheckCircle2,
+     7	  Download,
+     8	  Eye,
+     9	  FileText,
+    10	  Loader2,
+    11	  Share2,
+    12	} from 'lucide-react';
+    13	import { useJobContext } from '@/lib/job-context';
+    14	import { SectionCard } from '@/components/ui/section-card';
+ succeeded in 1.35s:
+2026-04-17 23:43:39.679 xcodebuild[30054:67185906]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:43:39.837 xcodebuild[30054:67185901] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-6AI0cFQz' (errno=Operation not permitted)
+2026-04-17 23:43:40.221 xcodebuild[30063:67185960]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:43:40.334 xcodebuild[30063:67185957] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+diff --git a/web/src/app/job/[id]/observations/page.tsx b/web/src/app/job/[id]/observations/page.tsx
+index 4040324..10eab0e 100644
+--- a/web/src/app/job/[id]/observations/page.tsx
++++ b/web/src/app/job/[id]/observations/page.tsx
+@@ -1,26 +1,24 @@
+ 'use client';
+ 
+ import * as React from 'react';
+-import { AlertTriangle, MapPin, Plus, Trash2 } from 'lucide-react';
++import { useParams } from 'next/navigation';
++import { AlertTriangle, ImageIcon, MapPin, Plus, Trash2 } from 'lucide-react';
+ import { useJobContext } from '@/lib/job-context';
+ import type { ObservationRow } from '@/lib/types';
++import { getUser } from '@/lib/auth';
+codex
+I’ve isolated the later-only observations changes. Now I’m checking the shared types and surrounding components to confirm whether the reviewed phase matches the persisted job schema and whether any fields or interactions are mismatched.
+exec
+/bin/zsh -lc "nl -ba web/src/components/ui/select-chips.tsx | sed -n '1,260p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	'use client';
+     2	
+     3	import * as React from 'react';
+     4	import { ChevronDown } from 'lucide-react';
+     5	import { cn } from '@/lib/utils';
+     6	
+     7	/**
+     8	 * SelectChips — iOS-style dropdown followed by a row of chips that show the
+     9	 * currently selected option (tapping the chip does nothing; the dropdown is
+    10	 * canonical). Used on Installation / Supply tabs for earthing arrangement,
+    11	 * supply type, tariff etc.
+    12	 *
+    13	 * Tapping the dropdown toggles a small list rendered *inline below* the
+    14	 * trigger (not a portal / sheet — iOS uses an inline wheel, web uses inline
+    15	 * list). Keyboard nav: arrow up/down while open, Enter to commit, Esc to
+    16	 * close. Closing on outside click handled by a click-outside listener on
+    17	 * the document.
+    18	 */
+    19	export type SelectOption = { value: string; label: string };
+    20	
+exec
+/bin/zsh -lc "nl -ba web/src/components/ui/section-card.tsx | sed -n '1,260p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	import * as React from 'react';
+     2	import { cn } from '@/lib/utils';
+     3	
+     4	/**
+     5	 * SectionCard — the repeating "form card" unit across every /job/[id]/... tab.
+     6	 *
+     7	 * Mirrors the iOS JobDetail form cards: rounded dark-surface container with a
+     8	 * 3 px coloured accent stripe running down the LEFT edge. The accent colour
+     9	 * is semantic:
+    10	 *   blue    — default (Installation, Staff, Design)
+    11	 *   green   — supply / power / pass-state aggregate (Supply)
+    12	 *   amber   — partial / warning (Circuits with failures)
+    13	 *   magenta — design / limitations (Extent)
+    14	 *   red     — failure (Observations)
+    15	 *
+    16	 * Layout:
+    17	 *   - Optional icon + title header row (matches iOS SF Symbols + Bold title)
+    18	 *   - Optional bottom-centre `</>` code chip (via `showCodeChip` prop) — a
+    19	 *     tiny decorative pill used on some iOS cards.
+    20	 *
+exec
+/bin/zsh -lc "nl -ba web/src/lib/types.ts | sed -n '1,320p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	/**
+     2	 * Shared domain types. Kept minimal — only the shapes Phase 1–2 need;
+     3	 * per-tab detail types land in later phases when their screens do.
+     4	 */
+     5	
+     6	export interface User {
+     7	  id: string;
+     8	  email: string;
+     9	  name: string;
+    10	  company_name?: string;
+    11	  role?: 'admin' | 'user';
+    12	  /** System-wide tenant membership. Nullable for legacy users not yet bound to a company. */
+    13	  company_id?: string;
+    14	  /** Role within a company. `owner`/`admin` grant company-admin privileges; `employee` is rank-and-file. */
+    15	  company_role?: 'owner' | 'admin' | 'employee';
+    16	}
+    17	
+    18	/**
+    19	 * Inspector profile — the API shape stored as one JSON array per user at
+    20	 * `settings/{userId}/inspector_profiles.json`. The backend persists the
+exec
+/bin/zsh -lc "rg -n \"observations|ObservationSheet|ObservationPhoto|getUser\\(\" web/src -g '"'!**/*.map'"'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "rg -n \"type JobDetail|interface JobDetail|authorised_by_id|designer_id|constructor_id|inspection:|observations\\??:|date_of_inspection|inspection_date|installation_type|departures_from_bs7671|job\\.extent|job\\.design\" web/src/lib web/src/app -g '"'!**/*.map'"'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+web/src/lib/auth.ts:19:export function getUser(): User | null {
+web/src/lib/pwa/job-cache.ts:27: *     observations, so on `clearAuth()` (sign-out) we purge the entire
+web/src/lib/use-current-user.ts:14: * render, not at next login. We hydrate instantly from `getUser()` (so
+web/src/lib/use-current-user.ts:27:  const [user, setUser] = React.useState<User | null>(() => getUser());
+web/src/lib/api-client.ts:174:   * board, circuits, observations). Image only — PDFs not supported
+web/src/lib/api-client.ts:195:   * name "photo" (matches iOS `APIClient.uploadObservationPhoto`).
+web/src/lib/api-client.ts:206:  uploadObservationPhoto(
+web/src/lib/api-client.ts:226:   * `uploadObservationPhoto`. After the request resolves, remove the
+web/src/lib/api-client.ts:229:  deleteObservationPhoto(
+web/src/lib/recording/apply-document-extraction.ts:90:  summary: { circuits: number; observations: number };
+web/src/lib/recording/apply-document-extraction.ts:284: * Append new observations using the iOS dedupe rules
+web/src/lib/recording/apply-document-extraction.ts:294:): { observations: ObservationRow[]; count: number } | null {
+web/src/lib/recording/apply-document-extraction.ts:305:  const existingRows = [...((job.observations as ObservationRow[] | undefined) ?? [])];
+web/src/lib/recording/apply-document-extraction.ts:346:    // observations tab can show them without another backend round-trip.
+web/src/lib/recording/apply-document-extraction.ts:362:  return added > 0 ? { observations: existingRows, count: added } : null;
+web/src/lib/recording/apply-document-extraction.ts:367: * and observations merged so the UI can render "Document read — X
+web/src/lib/recording/apply-document-extraction.ts:368: * circuits, Y observations merged" in the action hint.
+web/src/lib/recording/apply-document-extraction.ts:380:  const summary = { circuits: 0, observations: 0 };
+web/src/lib/recording/apply-document-extraction.ts:415:  const observationsResult = mergeObservations(job, formData.observations ?? []);
+web/src/lib/recording/apply-document-extraction.ts:416:  if (observationsResult) {
+ succeeded in 0ms:
+web/src/lib/types.ts:192:export interface JobDetail extends Job {
+web/src/lib/types.ts:199:  observations?: ObservationRow[];
+web/src/lib/types.ts:355:  observations?: DocumentExtractionObservation[];
+web/src/lib/pwa/queue-save-job.ts:2:import { ApiError, type JobDetail } from '@/lib/types';
+web/src/lib/api-client.ts:13:  type JobDetail,
+web/src/app/job/[id]/observations/page.tsx:85:      updateJob({ observations: nextList });
+web/src/app/job/[id]/observations/page.tsx:87:      updateJob({ observations: [...observations, next] });
+web/src/app/job/[id]/observations/page.tsx:93:    updateJob({ observations: observations.filter((o) => o.id !== id) });
+web/src/app/job/[id]/installation/page.tsx:57:  date_of_inspection?: string; // ISO yyyy-mm-dd
+web/src/app/job/[id]/installation/page.tsx:97:  /** Compute next-due from date_of_inspection + years for instant feedback. */
+web/src/app/job/[id]/installation/page.tsx:100:    const base = details.date_of_inspection ? new Date(details.date_of_inspection) : new Date();
+web/src/app/job/[id]/installation/page.tsx:209:            value={details.date_of_inspection ?? ''}
+web/src/app/job/[id]/installation/page.tsx:210:            onChange={(e) => patch({ date_of_inspection: e.target.value })}
+web/src/app/job/[id]/installation/page.tsx:217:              onChange={(e) => patch({ date_of_previous_inspection: e.target.value })}
+web/src/lib/recording/apply-document-extraction.ts:90:  summary: { circuits: number; observations: number };
+web/src/lib/recording/apply-document-extraction.ts:294:): { observations: ObservationRow[]; count: number } | null {
+web/src/lib/recording/apply-document-extraction.ts:362:  return added > 0 ? { observations: existingRows, count: added } : null;
+web/src/lib/recording/apply-document-extraction.ts:380:  const summary = { circuits: 0, observations: 0 };
+web/src/app/job/[id]/pdf/page.tsx:38:  observations?: unknown[];
+web/src/app/job/[id]/pdf/page.tsx:40:  authorised_by_id?: string;
+codex
+I’ve confirmed the frontend types don’t actually model the new staff fields. I’m checking the rest of the repo now to see whether the backend/job schema already expects these root-level IDs or whether this phase invented a shape that nothing else consumes yet.
+exec
+/bin/zsh -lc "nl -ba web/src/lib/recording/apply-extraction.ts | sed -n '80,280p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+    80	  rcd_time_delay: 'board',
+    81	  rcd_operating_time: 'board',
+    82	  spd_bs_en: 'board',
+    83	  spd_type_supply: 'board',
+    84	  spd_short_circuit: 'board',
+    85	  spd_rated_current: 'board',
+    86	  manufacturer: 'board',
+    87	  // Installation
+    88	  address: 'installation',
+    89	  postcode: 'installation',
+    90	  town: 'installation',
+    91	  county: 'installation',
+    92	  client_name: 'installation',
+    93	  client_address: 'installation',
+    94	  client_postcode: 'installation',
+    95	  client_town: 'installation',
+    96	  client_county: 'installation',
+    97	  client_phone: 'installation',
+    98	  client_email: 'installation',
+    99	  reason_for_report: 'installation',
+exec
+/bin/zsh -lc "nl -ba web/src/lib/pwa/queue-save-job.ts | sed -n '1,260p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	import { api } from '@/lib/api-client';
+     2	import { ApiError, type JobDetail } from '@/lib/types';
+     3	import { getCachedJob, putCachedJob } from './job-cache';
+     4	import { enqueueSaveJobMutation, removeMutation } from './outbox';
+     5	
+     6	/**
+     7	 * Offline-tolerant write path for `api.saveJob` (Phase 7c).
+     8	 *
+     9	 * Why this exists:
+    10	 *   - The raw `api.saveJob` throws on any network failure, which means
+    11	 *     an inspector tapping "save" in a basement consumer-unit room just
+    12	 *     loses their edit. This wrapper promises the mutation will be
+    13	 *     retried until it either succeeds or the attempts cap kicks in.
+    14	 *   - Writing to the outbox BEFORE firing the network request is what
+    15	 *     makes this durable: if the user closes the tab immediately after
+    16	 *     save (common — phone pockets, offline → offline transitions), the
+    17	 *     mutation still lives in IDB and the next session's replay worker
+    18	 *     picks it up.
+    19	 *
+    20	 * Order of operations (do not reorder — each step's failure mode matters):
+exec
+/bin/zsh -lc "nl -ba web/src/app/job/[id]/installation/page.tsx | sed -n '1,280p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+zsh:1: no matches found: web/src/app/job/[id]/installation/page.tsx
+exec
+/bin/zsh -lc "rg -n \"authorised_by_id|designer_id|constructor_id|inspector_id|inspectors\\]?:|inspection\\.items|mark_section_7_na|is_tt_earthing|has_microgeneration|installation_type|departures_from_bs7671|departure_details\" . -g '"'!web/.next/**'"' -g '"'!node_modules/**'"'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+./src/routes/jobs.js:589:      inspector_id: extractedData.inspector_id || null,
+./src/routes/jobs.js:661:    inspector_id,
+./src/routes/jobs.js:732:    if (inspector_id !== undefined) {
+./src/routes/jobs.js:733:      extractedData.inspector_id = inspector_id;
+./docs/reference/field-reference.md:171:| `installation_type` | select | new_installation, addition, alteration |
+./docs/reference/field-reference.md:178:| `departures_from_bs7671` | text | Usually "None" |
+./docs/reference/field-reference.md:179:| `departure_details` | text | Explanation if departures exist |
+./src/extraction/sonnet-stream.js:168:  'installation_type',
+./src/extraction/sonnet-stream.js:169:  'departures_from_bs7671',
+./src/extraction/sonnet-stream.js:170:  'departure_details',
+./packages/shared-utils/src/build-local-job.ts:26:  inspector_id?: JobDetail["inspector_id"];
+./packages/shared-utils/src/build-local-job.ts:50:    inspector_id: job.inspector_id,
+./packages/shared-types/src/schemas.ts:74:  inspector_id: z.string().optional(),
+./packages/shared-types/src/job.ts:29:  inspector_id?: string;
+./packages/shared-types/src/job.ts:43:  inspector_id?: string;
+./packages/shared-types/src/job.ts:95:  installation_type: 'new_installation' | 'addition' | 'alteration';
+./packages/shared-types/src/job.ts:100:  departures_from_bs7671: string;
+./packages/shared-types/src/job.ts:101:  departure_details?: string;
+./web/src/components/live-fill/live-fill-view.tsx:130:                fieldKey="extent.installation_type"
+./web/src/components/live-fill/live-fill-view.tsx:132:                value={str(extent.installation_type)}
+codex
+The repo already has a known frontend/backend shape drift from earlier phases. I’m reading the job API now to determine which of Phase 3c’s new fields are actually persisted server-side versus remaining frontend-only.
+exec
+/bin/zsh -lc "nl -ba src/routes/jobs.js | sed -n '560,760p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "nl -ba packages/shared-types/src/job.ts | sed -n '1,180p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "nl -ba packages/shared-utils/src/build-local-job.ts | sed -n '1,140p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	/**
+     2	 * Core job types — Job, JobDetail, SaveJobData, LocalJob.
+     3	 */
+     4	
+     5	import type { Circuit, Board, BoardInfo } from './circuit';
+     6	import type { Observation } from './observation';
+     7	import type { SupplyCharacteristics } from './supply';
+     8	
+     9	export type CertificateType = 'EICR' | 'EIC';
+    10	
+    11	export interface Job {
+    12	  id: string;
+    13	  address: string;
+    14	  status: 'pending' | 'processing' | 'done' | 'failed';
+    15	  created_at: string;
+    16	  updated_at?: string;
+    17	  certificate_type?: CertificateType;
+    18	}
+    19	
+    20	export interface JobDetail extends Job {
+ succeeded in 0ms:
+   560	
+   561	    if (!job && (circuits.length > 0 || Object.keys(extractedData).length > 0)) {
+   562	      job = {
+   563	        id: jobId,
+   564	        address: extractedData.address || jobId,
+   565	        status: 'done',
+   566	        created_at: new Date().toISOString(),
+   567	        updated_at: new Date().toISOString(),
+   568	      };
+   569	    }
+   570	
+   571	    if (!job) {
+   572	      return res.status(404).json({ error: 'Job not found' });
+   573	    }
+   574	
+   575	    res.json({
+   576	      id: job.id,
+   577	      address: job.address || extractedData.address || jobId,
+   578	      status: job.status || 'done',
+   579	      created_at: job.created_at,
+ succeeded in 0ms:
+     1	import type { JobDetail } from "@certmate/shared-types";
+     2	
+     3	export interface LocalJobInput {
+     4	  id: string;
+     5	  userId: string;
+     6	  currentJob: JobDetail;
+     7	  overrides?: Partial<JobDetail>;
+     8	  isDirty: boolean;
+     9	  lastSynced: number | null;
+    10	}
+    11	
+    12	export interface LocalJobRecord {
+    13	  id: string;
+    14	  userId: string;
+    15	  address: string;
+    16	  status: "pending" | "processing" | "done" | "failed";
+    17	  created_at: string;
+    18	  certificate_type: "EICR" | "EIC";
+    19	  circuits: JobDetail["circuits"];
+    20	  observations: JobDetail["observations"];
+exec
+/bin/zsh -lc "nl -ba docs/reference/field-reference.md | sed -n '160,205p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+   160	- **4.4** - Fire rating of enclosure (non-combustible CU required)
+   161	- **4.9** - Circuit identification/labelling
+   162	- **5.12.1** - RCD protection for socket outlets 32A or less
+   163	
+   164	## EIC-Only Tabs
+   165	
+   166	**Extent & Type (`/job/[id]/extent`):**
+   167	
+   168	| Field | Type | Options |
+   169	|-------|------|---------|
+   170	| `extent` | text | What work was done |
+   171	| `installation_type` | select | new_installation, addition, alteration |
+   172	| `comments` | text | Additional notes |
+   173	
+   174	**Design & Construction (`/job/[id]/design`):**
+   175	
+   176	| Field | Type | Notes |
+   177	|-------|------|-------|
+   178	| `departures_from_bs7671` | text | Usually "None" |
+   179	| `departure_details` | text | Explanation if departures exist |
+codex
+There’s a stronger schema mismatch than I expected: shared types and the backend still use the old save shape. I’m checking the web API client and any save/mapping layer to see whether Phase 3c translates its new frontend state before persistence, or if these fields would be dropped/mis-serialized.
+exec
+/bin/zsh -lc "nl -ba web/src/lib/api-client.ts | sed -n '1,260p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	import {
+     2	  type AdminUser,
+     3	  ApiError,
+     4	  type CCUAnalysis,
+     5	  type CompanyJobRow,
+     6	  type CompanyMember,
+     7	  type CompanySettings,
+     8	  type CompanyStats,
+     9	  type DocumentExtractionResponse,
+    10	  type InspectorProfile,
+    11	  type InviteEmployeeResponse,
+    12	  type Job,
+    13	  type JobDetail,
+    14	  type LoginResponse,
+    15	  type Paginated,
+    16	  type User,
+    17	} from './types';
+    18	import { getToken } from './auth';
+    19	
+    20	/**
+exec
+/bin/zsh -lc "rg -n \"saveJob\\(|installation_details|supply_characteristics|inspection_schedule|extent_and_type|design_construction|board_info|inspector_id\" web/src/lib web/src/app -g '"'!**/*.map'"'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+web/src/lib/types.ts:351:  installation_details?: Record<string, unknown>;
+web/src/lib/types.ts:352:  supply_characteristics?: Record<string, unknown>;
+web/src/lib/types.ts:353:  board_info?: Record<string, unknown>;
+web/src/lib/pwa/outbox-replay.ts:106:          await api.saveJob(m.userId, m.jobId, m.patch);
+web/src/lib/pwa/queue-save-job.ts:77:    await api.saveJob(userId, jobId, patch);
+web/src/lib/recording/apply-document-extraction.ts:384:  const installationIncoming = formData.installation_details ?? {};
+web/src/lib/recording/apply-document-extraction.ts:389:  const supplyIncoming = formData.supply_characteristics ?? {};
+web/src/lib/recording/apply-document-extraction.ts:394:  const boardIncoming = formData.board_info ?? {};
+web/src/app/job/[id]/staff/page.tsx:32: *   - job.inspector_id
+web/src/app/job/[id]/staff/page.tsx:56:  inspector_id?: string;
+web/src/app/job/[id]/staff/page.tsx:80:  // "Inspection & Testing" use inspector_id).
+web/src/app/job/[id]/staff/page.tsx:81:  const activeInspector = inspectors.find((i) => i.id === data.inspector_id);
+web/src/app/job/[id]/staff/page.tsx:128:            selectedId={data.inspector_id}
+web/src/app/job/[id]/staff/page.tsx:129:            onSelect={(id) => setRole('inspector_id', id)}
+web/src/app/job/[id]/staff/page.tsx:139:            selectedId={data.inspector_id}
+web/src/app/job/[id]/staff/page.tsx:140:            onSelect={(id) => setRole('inspector_id', id)}
+web/src/lib/api-client.ts:272:  saveJob(
+web/src/app/job/[id]/pdf/page.tsx:39:  inspector_id?: string;
+web/src/app/job/[id]/pdf/page.tsx:153:    if (!data.inspector_id) w.push('Inspection & testing not assigned (Staff tab)');
+web/src/app/job/[id]/pdf/page.tsx:155:    if (!data.inspector_id) w.push('Inspector not assigned (Staff tab)');
+exec
+/bin/zsh -lc "nl -ba web/src/app/job/[id]/layout.tsx | sed -n '1,220p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+zsh:1: no matches found: web/src/app/job/[id]/layout.tsx
+exec
+/bin/bash -c "nl -ba web/src/app/job/[id]/installation/page.tsx | sed -n '1,280p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	'use client';
+     2	
+     3	import * as React from 'react';
+     4	import {
+     5	  Building2,
+     6	  Calendar,
+     7	  CheckCircle,
+     8	  ClipboardList,
+     9	  FileText,
+    10	  Home,
+    11	  Ruler,
+    12	  ShieldCheck,
+    13	  User,
+    14	} from 'lucide-react';
+    15	import { useJobContext } from '@/lib/job-context';
+    16	import { FloatingLabelInput } from '@/components/ui/floating-label-input';
+    17	import { NumericStepper } from '@/components/ui/numeric-stepper';
+    18	import { SectionCard } from '@/components/ui/section-card';
+    19	import { SegmentedControl } from '@/components/ui/segmented-control';
+    20	import { SelectChips } from '@/components/ui/select-chips';
+exec
+/bin/zsh -lc "nl -ba web/src/lib/api-client.ts | sed -n '260,340p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+   260	    );
+   261	    if (!res.ok) {
+   262	      const body = await res.text().catch(() => '');
+   263	      throw new ApiError(res.status, body || res.statusText);
+   264	    }
+   265	    return res.blob();
+   266	  },
+   267	
+   268	  /**
+   269	   * Partial update. Backend merges with the persisted doc, so callers
+   270	   * only need to send the fields that changed.
+   271	   */
+   272	  saveJob(
+   273	    userId: string,
+   274	    jobId: string,
+   275	    updates: Partial<JobDetail>
+   276	  ): Promise<{ success: boolean }> {
+   277	    return request(`/api/job/${encodeURIComponent(userId)}/${encodeURIComponent(jobId)}`, {
+   278	      method: 'PATCH',
+   279	      body: JSON.stringify(updates),
+codex
+The client is issuing `PATCH` for saves while the server handler I’ve read so far is `PUT`. I’m checking whether a PATCH route exists; if not, that’s a broader persistence blocker that affects how much of Phase 3c is actually usable.
+exec
+/bin/zsh -lc "rg -n \"router\\.(patch|put)\\('/job/:userId/:jobId\" src/routes/jobs.js" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/bash -c "nl -ba web/src/app/job/[id]/layout.tsx | sed -n '1,240p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+651:router.put('/job/:userId/:jobId', auth.requireAuth, async (req, res) => {
+ succeeded in 0ms:
+     1	'use client';
+     2	
+     3	import * as React from 'react';
+     4	import { useParams, useRouter } from 'next/navigation';
+     5	import { AppShell } from '@/components/layout/app-shell';
+     6	import { JobHeader } from '@/components/job/job-header';
+     7	import { JobTabNav } from '@/components/job/job-tab-nav';
+     8	import { FloatingActionBar } from '@/components/job/floating-action-bar';
+     9	import { RecordingOverlay } from '@/components/recording/recording-overlay';
+    10	import { TranscriptBar } from '@/components/recording/transcript-bar';
+    11	import { LiveFillView } from '@/components/live-fill/live-fill-view';
+    12	import { JobProvider } from '@/lib/job-context';
+    13	import { RecordingProvider, useRecording } from '@/lib/recording-context';
+    14	import { api } from '@/lib/api-client';
+    15	import { clearAuth, getUser } from '@/lib/auth';
+    16	import { getCachedJob, putCachedJob } from '@/lib/pwa/job-cache';
+    17	import type { JobDetail } from '@/lib/types';
+    18	
+    19	/**
+    20	 * Shell for every /job/[id]/... route.
+exec
+/bin/zsh -lc "nl -ba src/routes/jobs.js | sed -n '760,920p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+   760	          const newPrefix = `jobs/${userId}/${sanitizedAddress}/output/`;
+   761	          await storage.uploadText(
+   762	            JSON.stringify(extractedData, null, 2),
+   763	            `${newPrefix}extracted_data.json`
+   764	          );
+   765	          if (circuits && Array.isArray(circuits) && circuits.length > 0) {
+   766	            const csvContent = circuitsToCSV(circuits);
+   767	            await storage.uploadText(csvContent, `${newPrefix}test_results.csv`);
+   768	          }
+   769	          await storage.deletePrefix(oldPrefix);
+   770	          logger.info('Migrated S3 data to new address folder', {
+   771	            jobId,
+   772	            oldFolder: folderName,
+   773	            newFolder: sanitizedAddress,
+   774	          });
+   775	        } catch (migrateErr) {
+   776	          logger.warn('Failed to migrate S3 folder on address change', {
+   777	            jobId,
+   778	            error: migrateErr.message,
+   779	          });
+codex
+I’ve got the main shape-level problems. I’m doing one last pass on downstream consumers of the new fields and enums so I can distinguish “UI-only inconsistency” from “this will break save/PDF generation once wired.”
+exec
+/bin/zsh -lc "rg -n \"inspector_profiles|settings/staff|InspectorProfile|uploadSignature|signature_file|mft_serial_number|continuity_serial_number\" web/src src packages -g '"'!web/.next/**'"' -g '"'!node_modules/**'"'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "rg -n \"consumer_unit_upgrade|new_installation|addition|alteration|installation_type\" python packages src web -g '"'!web/.next/**'"' -g '"'!node_modules/**'"'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "rg -n \"inspection_schedule|InspectionSchedule|tick'|FI|✗|✓|outcome\" python packages src web -g '"'!web/.next/**'"' -g '"'!node_modules/**'"'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+packages/shared-types/src/job.ts:104:export interface InspectorProfile {
+packages/shared-types/src/job.ts:109:  signature_file?: string;
+src/process_job.js:34:async function loadInspectorProfile(projectRoot) {
+src/process_job.js:35:  const profilesPath = path.join(projectRoot, 'config', 'inspector_profiles.json');
+src/process_job.js:42:      mft_serial_number: '',
+src/process_job.js:43:      signature_file: null,
+src/process_job.js:56:        mft_serial_number: '',
+src/process_job.js:57:        signature_file: null,
+src/process_job.js:70:          mft_serial_number: found.mft_serial_number || '',
+src/process_job.js:71:          signature_file: found.signature_file
+src/process_job.js:72:            ? path.join(projectRoot, 'assets', 'signatures', found.signature_file)
+src/process_job.js:85:        mft_serial_number: defaultProfile.mft_serial_number || '',
+src/process_job.js:86:        signature_file: defaultProfile.signature_file
+src/process_job.js:87:          ? path.join(projectRoot, 'assets', 'signatures', defaultProfile.signature_file)
+src/process_job.js:98:      mft_serial_number: first.mft_serial_number || '',
+src/process_job.js:99:      signature_file: first.signature_file
+src/process_job.js:100:        ? path.join(projectRoot, 'assets', 'signatures', first.signature_file)
+src/process_job.js:108:      mft_serial_number: '',
+src/process_job.js:109:      signature_file: null,
+src/process_job.js:579:  const inspector = await loadInspectorProfile(projectRoot);
+ succeeded in 0ms:
+src/ocr_certificate.js:34:    "evidence_of_additions_alterations": false,
+src/ocr_certificate.js:305:        evidence_of_additions_alterations: false,
+python/eicr_pdf_generator.py:88:    ("4.18", "RCD(s) provided for additional protection / requirements - includes RCBOs (411.3.3; 415.1)", False),
+python/eicr_pdf_generator.py:108:    ("5.12", "Provision of additional requirements for protection by RCD not exceeding 30 mA:", False),
+python/eicr_pdf_generator.py:483:            [Paragraph('<b>Evidence of additions/alterations:</b>', self.styles['TableCell']),
+python/eicr_pdf_generator.py:484:             Paragraph('Yes' if installation.get('additions_alterations') else 'No', self.styles['TableCell']), '', ''],
+packages/shared-types/src/job.ts:63:  evidence_of_additions_alterations: boolean;
+packages/shared-types/src/job.ts:95:  installation_type: 'new_installation' | 'addition' | 'alteration';
+python/eic_pdf_generator.py:370:        install_type = installation.get('installation_type', 'new_installation')
+python/eic_pdf_generator.py:372:        new_check = TickBox(10, checked=(install_type == 'new_installation'))
+python/eic_pdf_generator.py:373:        addition_check = TickBox(10, checked=(install_type == 'addition'))
+python/eic_pdf_generator.py:374:        alteration_check = TickBox(10, checked=(install_type == 'alteration'))
+python/eic_pdf_generator.py:379:             addition_check, Paragraph("An addition to an existing installation", self.styles['SmallText']),
+python/eic_pdf_generator.py:380:             alteration_check, Paragraph("An alteration to an existing installation", self.styles['SmallText'])],
+python/eic_pdf_generator.py:393:            [Paragraph("<b>Comments on existing installation (in the case of an addition or alteration see Regulation 644.1.2):</b>", self.styles['SmallText'])],
+python/eic_pdf_generator.py:1323:            "6. This Certificate is intended to be issued only for a new electrical installation or for new work associated with an alteration or an addition to an existing installation. It should not have been issued for the inspection and testing of an existing electrical installation. An 'Electrical Installation Condition Report (EICR)' should have been issued for such an inspection.",
+python/eic_pdf_generator.py:1328:            "11. Where the installation includes alternative or additional sources of supply, warning notices should be found at the origin or meter position.",
+python/eic_pdf_generator.py:1509:            'installation_type': 'new_installation',
+web/PHASE_7C_HANDOFF.md:104:- **Service-worker-driven Background Sync API.** Would let the queue drain while the tab is closed. Not in 7c — Safari doesn't support it and the additional complexity isn't justified by the visit-frequency of an inspector's open tab.
+web/reviews/codex/phase-3b.md:5:The commit substantially advances the tab toward iOS parity and is directionally consistent with the handoff. The working tree has since evolved beyond `983a294` by wiring CCU/document extraction into the same page; those later additions are not part of the scored phase review below unless explicitly noted.
+ succeeded in 0ms:
+web/PHASE_7A_HANDOFF.md:65:- Plus the Serwist bundler log: `✓ (serwist) Bundling the service worker script with the URL '/sw.js' and the scope '/'...`
+python/generate_full_pdf.py:381:        'inspection_schedule': {
+python/generate_full_pdf.py:383:            'default_code': 'tick',
+packages/shared-utils/src/build-local-job.ts:25:  inspection_schedule?: JobDetail["inspection_schedule"];
+packages/shared-utils/src/build-local-job.ts:49:    inspection_schedule: job.inspection_schedule,
+src/ocr_certificate.js:109:=== FIELD EXTRACTION RULES ===
+src/ocr_certificate.js:166:- code: C1 (Danger), C2 (Potentially dangerous), C3 (Improvement), FI (Further investigation)
+packages/shared-utils/src/keyword-boost-generator.ts:131:  ['FI', 1.5],
+web/src/lib/types.ts:218:  code?: 'C1' | 'C2' | 'C3' | 'FI';
+web/src/lib/recording-context.tsx:84:   *  out-of-range). FIFO — oldest first. Phase 4d renders these inline
+python/eicr_pdf_generator.py:35:YELLOW_FI = colors.HexColor('#FFD700')         # Gold/yellow for FI
+python/eicr_pdf_generator.py:42:PURPLE_FI = YELLOW_FI
+python/eicr_pdf_generator.py:282:    def _get_outcome_cell(self, outcome: str) -> Table:
+python/eicr_pdf_generator.py:283:        """Get a formatted circular outcome badge for inspection schedule."""
+python/eicr_pdf_generator.py:285:            'tick': GREEN_CHECK, '✓': GREEN_CHECK,
+python/eicr_pdf_generator.py:287:            'FI': PURPLE_FI, 'LIM': colors.HexColor('#6C757D'),
+python/eicr_pdf_generator.py:291:        display_text = '✓' if outcome in ['tick', '✓'] else outcome
+python/eicr_pdf_generator.py:292:        bg_color = color_map.get(outcome, GRAY_NA)
+python/eicr_pdf_generator.py:320:            'C1': RED_C1, 'C2': ORANGE_C2, 'C3': BLUE_C3, 'FI': PURPLE_FI
+python/eicr_pdf_generator.py:630:            "recommended for observations identified as 'Further investigation required' (code FI). Observations "
+codex
+## 1. Summary of the phase
+Phase 3c replaces the remaining stub tabs with real UI for Extent, Design, Inspection, Staff, PDF, and Observations, and adds a large `inspection-schedule` constants module for the EICR/EIC schedules. The implementation gets most of the visual structure in place, but several of the new tabs are still disconnected from the repo’s actual data contracts, so “editable end-to-end” is not true yet.
+
+## 2. Alignment with original plan
+The phase matches the handoff on broad UI scope: Extent, Design, Inspection, PDF, and the schedule constants are all present and broadly shaped as described. The main misses are:
+- `staff/page.tsx` does not actually source staff from the existing settings API, so the role pickers are empty in real usage.
+- In commit `88e7c4e`, `observations/page.tsx:86-94` still had a disabled Add button and no edit/collapse flow, which does not meet the “full iOS-parity forms” framing. The working tree has since evolved and now wires add/edit/photo flow there, so that specific gap is commit-only.
+- The new data shapes for inspection/staff/extent do not align with the shared/backend contracts, so the UI intent and persistence intent diverge.
+
+## 3. Correctness issues
+- `P0`: None found.
+- `P1` `web/src/app/job/[id]/staff/page.tsx:71-72,105-153` — the page reads `job.inspectors`, but `JobDetail` does not define that field (`web/src/lib/types.ts:192-207`) and `GET /api/job` does not return it (`src/routes/jobs.js:575-592`). Result: the staff tab is effectively unusable and will always render the empty state unless some external code mutates a frontend-only field.
+- `P1` `web/src/app/job/[id]/inspection/page.tsx:42-52,79-111` — the new inspection model is incompatible with the shared/backend model. This page stores `items: Record<ref, outcome>` plus `is_tt_earthing`/`has_microgeneration`/`mark_section_7_na`, but the shared contract expects `inspection_schedule.items[ref] = { outcome: ... }` with camelCase flags (`packages/shared-types/src/job.ts:81-91`), and the backend only persists `inspection_schedule` (`src/routes/jobs.js:653-740`). Once save wiring lands, this data will not round-trip cleanly.
+- `P1` `web/src/app/job/[id]/extent/page.tsx:28-33` — `consumer_unit_upgrade` is introduced as a valid `installation_type`, but the shared type only allows `new_installation | addition | alteration` (`packages/shared-types/src/job.ts:93-97`), and the EIC PDF renderer only knows those three (`python/eic_pdf_generator.py:370-380`). That new value will not render correctly downstream.
+- `P1` `web/src/app/job/[id]/pdf/page.tsx:35-42,140-142` — readiness checks look for boards at `job.board.boards`, but the backend/shared shape exposes `boards` at the top level (`src/routes/jobs.js:583-591`, `packages/shared-types/src/job.ts:24-32`). Real jobs can therefore show a false “No boards added” warning.
+- `P2` `web/src/app/job/[id]/design/page.tsx:29-33`, `extent/page.tsx:40-44`, `inspection/page.tsx:72-80` — all three pages build nested patches from stale closure state (`{ ...data, ...next }` / `{ ...insp, ...next }`) before calling `updateJob`. Because `updateJob` only shallow-merges the root object (`web/src/lib/job-context.tsx:55-58`), same-tick/concurrent writes to the same section can overwrite each other.
+- `P2` In commit `88e7c4e`, `web/src/app/job/[id]/observations/page.tsx:86-94,107-113` shipped a disabled Add button and a remove-only list. That was materially short of a usable observations form. HEAD has since added `ObservationSheet`, so this is no longer true in the working tree.
+
+## 4. Security issues
+- No phase-specific security findings. I did not see any new `dangerouslySetInnerHTML`, auth bypass, CSRF, secret leakage, or injection surface introduced in these files.
+
+## 5. Performance issues
+- `web/src/app/job/[id]/inspection/page.tsx:183-247,301-364` — every chip tap rerenders the full EICR schedule (roughly 90 rows / 700+ buttons). `ScheduleRow` is not memoized and all handlers are recreated, so this will be noticeable on mobile Safari.
+- `web/src/app/job/[id]/pdf/page.tsx:49-52` — `useMemo` is effectively defeated because `data` is the whole `job` object; every job update recomputes warnings even when unrelated fields change. Minor, but avoidable.
+
+## 6. Accessibility issues
+- `web/src/app/job/[id]/inspection/page.tsx:269-286` — the custom switch buttons have `role="switch"` and `aria-checked`, but no accessible name. The visible text is adjacent, not programmatically associated, so screen readers will announce an unlabeled switch.
+- In commit `88e7c4e`, the observations empty state told users to “Tap Add” while the Add button was disabled (`observations/page.tsx:86-94,100-105`). That was a poor keyboard/screen-reader experience, though it has been fixed later in HEAD.
+
+## 7. Code quality
+- `web/src/app/job/[id]/staff/page.tsx:71,75` and `web/src/app/job/[id]/pdf/page.tsx:47` rely on `as unknown as ...` casts to hide schema drift instead of fixing `JobDetail`.
+- `web/src/app/job/[id]/staff/page.tsx:302-306` uses a `Record<string, unknown>` cast just to force a `style` prop through an icon component. That is a code smell and makes the prop surface harder to reason about.
+- `web/src/app/job/[id]/inspection/page.tsx:54-64` defines 8 section icons/accents for a 7-section schedule; harmless, but it suggests the constants were not tightened after implementation.
+
+## 8. Test coverage gaps
+- No tests for inspection schedule serialization against `InspectionSchedule`.
+- No tests for PDF readiness warnings, especially the board/staff checks.
+- No tests covering EIC `installation_type` values and PDF output.
+- No tests for staff-tab population from saved inspector profiles/settings.
+- No regression test for observations usability at the commit state versus later working-tree changes.
+
+## 9. Suggested fixes
+1. `web/src/app/job/[id]/staff/page.tsx:71-72` — stop reading `job.inspectors`; fetch inspector profiles from the existing settings API (`web/src/lib/api-client.ts:292-309`) and map `InspectorProfile` into the UI shape. This makes the tab actually usable.
+2. `web/src/lib/types.ts:192-207`, `staff/page.tsx:71,75`, `pdf/page.tsx:47` — extend `JobDetail` with the staff IDs you actually use, or move them into a typed nested bag. Remove the `unknown` casts so future schema drift becomes compile-time visible.
+3. `web/src/app/job/[id]/inspection/page.tsx:42-52,79-111` — change the local state shape to match `packages/shared-types/src/job.ts:81-91` (`items[ref] = { outcome }`, shared flag names), or add an explicit mapper at the save boundary. Right now the UI model and persistence model disagree.
+4. `web/src/app/job/[id]/extent/page.tsx:28-33` — either remove `consumer_unit_upgrade` or update shared types and the PDF generator to support it. Leaving it frontend-only will create invalid persisted data.
+5. `web/src/app/job/[id]/pdf/page.tsx:140-142` — read boards from the real top-level `job.boards` shape, or normalize backend payloads before they enter `JobProvider`. This fixes false “No boards added” warnings.
+6. `web/src/app/job/[id]/inspection/page.tsx:269-286` — add `aria-label`/`aria-labelledby` to each switch, or wrap the label text and switch in a single labeled control. Unnamed switches are not acceptable.
+7. `web/src/app/job/[id]/inspection/page.tsx:301-364` — memoize `ScheduleRow` and stabilize per-row handlers. This will cut unnecessary rerenders on the largest page in the phase.
+8. `web/src/app/job/[id]/design/page.tsx:29-33`, `extent/page.tsx:40-44`, `inspection/page.tsx:72-80` — replace closure-based nested merges with functional updates based on latest state. Otherwise concurrent writes will continue to clobber each other.
+9. `88e7c4e:web/src/app/job/[id]/observations/page.tsx:86-94` — if reviewing the commit strictly, wire Add/edit before claiming iOS parity. HEAD has already moved in this direction; keep that later fix.
+
+## 10. Overall verdict
+**Needs rework.**
+
+Top 3 priority fixes:
+1. Make the staff tab read real inspector profiles instead of nonexistent `job.inspectors`.
+2. Align the inspection tab’s data model with the shared/backend `inspection_schedule` contract.
+3. Remove or fully support `consumer_unit_upgrade`, and fix PDF readiness to read boards from the actual payload shape.
+tokens used
+129,727
+## 1. Summary of the phase
+Phase 3c replaces the remaining stub tabs with real UI for Extent, Design, Inspection, Staff, PDF, and Observations, and adds a large `inspection-schedule` constants module for the EICR/EIC schedules. The implementation gets most of the visual structure in place, but several of the new tabs are still disconnected from the repo’s actual data contracts, so “editable end-to-end” is not true yet.
+
+## 2. Alignment with original plan
+The phase matches the handoff on broad UI scope: Extent, Design, Inspection, PDF, and the schedule constants are all present and broadly shaped as described. The main misses are:
+- `staff/page.tsx` does not actually source staff from the existing settings API, so the role pickers are empty in real usage.
+- In commit `88e7c4e`, `observations/page.tsx:86-94` still had a disabled Add button and no edit/collapse flow, which does not meet the “full iOS-parity forms” framing. The working tree has since evolved and now wires add/edit/photo flow there, so that specific gap is commit-only.
+- The new data shapes for inspection/staff/extent do not align with the shared/backend contracts, so the UI intent and persistence intent diverge.
+
+## 3. Correctness issues
+- `P0`: None found.
+- `P1` `web/src/app/job/[id]/staff/page.tsx:71-72,105-153` — the page reads `job.inspectors`, but `JobDetail` does not define that field (`web/src/lib/types.ts:192-207`) and `GET /api/job` does not return it (`src/routes/jobs.js:575-592`). Result: the staff tab is effectively unusable and will always render the empty state unless some external code mutates a frontend-only field.
+- `P1` `web/src/app/job/[id]/inspection/page.tsx:42-52,79-111` — the new inspection model is incompatible with the shared/backend model. This page stores `items: Record<ref, outcome>` plus `is_tt_earthing`/`has_microgeneration`/`mark_section_7_na`, but the shared contract expects `inspection_schedule.items[ref] = { outcome: ... }` with camelCase flags (`packages/shared-types/src/job.ts:81-91`), and the backend only persists `inspection_schedule` (`src/routes/jobs.js:653-740`). Once save wiring lands, this data will not round-trip cleanly.
+- `P1` `web/src/app/job/[id]/extent/page.tsx:28-33` — `consumer_unit_upgrade` is introduced as a valid `installation_type`, but the shared type only allows `new_installation | addition | alteration` (`packages/shared-types/src/job.ts:93-97`), and the EIC PDF renderer only knows those three (`python/eic_pdf_generator.py:370-380`). That new value will not render correctly downstream.
+- `P1` `web/src/app/job/[id]/pdf/page.tsx:35-42,140-142` — readiness checks look for boards at `job.board.boards`, but the backend/shared shape exposes `boards` at the top level (`src/routes/jobs.js:583-591`, `packages/shared-types/src/job.ts:24-32`). Real jobs can therefore show a false “No boards added” warning.
+- `P2` `web/src/app/job/[id]/design/page.tsx:29-33`, `extent/page.tsx:40-44`, `inspection/page.tsx:72-80` — all three pages build nested patches from stale closure state (`{ ...data, ...next }` / `{ ...insp, ...next }`) before calling `updateJob`. Because `updateJob` only shallow-merges the root object (`web/src/lib/job-context.tsx:55-58`), same-tick/concurrent writes to the same section can overwrite each other.
+- `P2` In commit `88e7c4e`, `web/src/app/job/[id]/observations/page.tsx:86-94,107-113` shipped a disabled Add button and a remove-only list. That was materially short of a usable observations form. HEAD has since added `ObservationSheet`, so this is no longer true in the working tree.
+
+## 4. Security issues
+- No phase-specific security findings. I did not see any new `dangerouslySetInnerHTML`, auth bypass, CSRF, secret leakage, or injection surface introduced in these files.
+
+## 5. Performance issues
+- `web/src/app/job/[id]/inspection/page.tsx:183-247,301-364` — every chip tap rerenders the full EICR schedule (roughly 90 rows / 700+ buttons). `ScheduleRow` is not memoized and all handlers are recreated, so this will be noticeable on mobile Safari.
+- `web/src/app/job/[id]/pdf/page.tsx:49-52` — `useMemo` is effectively defeated because `data` is the whole `job` object; every job update recomputes warnings even when unrelated fields change. Minor, but avoidable.
+
+## 6. Accessibility issues
+- `web/src/app/job/[id]/inspection/page.tsx:269-286` — the custom switch buttons have `role="switch"` and `aria-checked`, but no accessible name. The visible text is adjacent, not programmatically associated, so screen readers will announce an unlabeled switch.
+- In commit `88e7c4e`, the observations empty state told users to “Tap Add” while the Add button was disabled (`observations/page.tsx:86-94,100-105`). That was a poor keyboard/screen-reader experience, though it has been fixed later in HEAD.
+
+## 7. Code quality
+- `web/src/app/job/[id]/staff/page.tsx:71,75` and `web/src/app/job/[id]/pdf/page.tsx:47` rely on `as unknown as ...` casts to hide schema drift instead of fixing `JobDetail`.
+- `web/src/app/job/[id]/staff/page.tsx:302-306` uses a `Record<string, unknown>` cast just to force a `style` prop through an icon component. That is a code smell and makes the prop surface harder to reason about.
+- `web/src/app/job/[id]/inspection/page.tsx:54-64` defines 8 section icons/accents for a 7-section schedule; harmless, but it suggests the constants were not tightened after implementation.
+
+## 8. Test coverage gaps
+- No tests for inspection schedule serialization against `InspectionSchedule`.
+- No tests for PDF readiness warnings, especially the board/staff checks.
+- No tests covering EIC `installation_type` values and PDF output.
+- No tests for staff-tab population from saved inspector profiles/settings.
+- No regression test for observations usability at the commit state versus later working-tree changes.
+
+## 9. Suggested fixes
+1. `web/src/app/job/[id]/staff/page.tsx:71-72` — stop reading `job.inspectors`; fetch inspector profiles from the existing settings API (`web/src/lib/api-client.ts:292-309`) and map `InspectorProfile` into the UI shape. This makes the tab actually usable.
+2. `web/src/lib/types.ts:192-207`, `staff/page.tsx:71,75`, `pdf/page.tsx:47` — extend `JobDetail` with the staff IDs you actually use, or move them into a typed nested bag. Remove the `unknown` casts so future schema drift becomes compile-time visible.
+3. `web/src/app/job/[id]/inspection/page.tsx:42-52,79-111` — change the local state shape to match `packages/shared-types/src/job.ts:81-91` (`items[ref] = { outcome }`, shared flag names), or add an explicit mapper at the save boundary. Right now the UI model and persistence model disagree.
+4. `web/src/app/job/[id]/extent/page.tsx:28-33` — either remove `consumer_unit_upgrade` or update shared types and the PDF generator to support it. Leaving it frontend-only will create invalid persisted data.
+5. `web/src/app/job/[id]/pdf/page.tsx:140-142` — read boards from the real top-level `job.boards` shape, or normalize backend payloads before they enter `JobProvider`. This fixes false “No boards added” warnings.
+6. `web/src/app/job/[id]/inspection/page.tsx:269-286` — add `aria-label`/`aria-labelledby` to each switch, or wrap the label text and switch in a single labeled control. Unnamed switches are not acceptable.
+7. `web/src/app/job/[id]/inspection/page.tsx:301-364` — memoize `ScheduleRow` and stabilize per-row handlers. This will cut unnecessary rerenders on the largest page in the phase.
+8. `web/src/app/job/[id]/design/page.tsx:29-33`, `extent/page.tsx:40-44`, `inspection/page.tsx:72-80` — replace closure-based nested merges with functional updates based on latest state. Otherwise concurrent writes will continue to clobber each other.
+9. `88e7c4e:web/src/app/job/[id]/observations/page.tsx:86-94` — if reviewing the commit strictly, wire Add/edit before claiming iOS parity. HEAD has already moved in this direction; keep that later fix.
+
+## 10. Overall verdict
+**Needs rework.**
+
+Top 3 priority fixes:
+1. Make the staff tab read real inspector profiles instead of nonexistent `job.inspectors`.
+2. Align the inspection tab’s data model with the shared/backend `inspection_schedule` contract.
+3. Remove or fully support `consumer_unit_upgrade`, and fix PDF readiness to read boards from the actual payload shape.

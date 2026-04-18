@@ -1,0 +1,661 @@
+OpenAI Codex v0.116.0 (research preview)
+--------
+workdir: /Users/derekbeckley/Developer/EICR_Automation
+model: gpt-5.4
+provider: openai
+approval: never
+sandbox: read-only
+reasoning effort: none
+reasoning summaries: none
+session id: 019d9dca-2412-7b02-8b10-83c0f02d19d4
+--------
+user
+You are performing a rigorous code review of a single phase of a Next.js 16 / React 19 PWA frontend rebuild for an electrical-certificate automation tool (EICR / EIC). The repo root is at /Users/derekbeckley/Developer/EICR_Automation and the web package is at web/. Branch: web-rebuild.
+
+TARGET: Phase 7b — IDB read-through cache for jobs
+COMMIT: 2d3527f
+
+Context for this phase (original intent, handoff doc, commit message, files changed) is in this repo at: reviews/context/phase-7b2.md — READ THAT FILE FIRST.
+
+Use shell commands to:
+  git show --stat 2d3527f
+  git show 2d3527f
+to inspect the full diff. Then read any files you need from the working tree (they may have evolved since this commit — note any later changes).
+
+Your output must be a well-structured markdown review with these sections:
+  1. Summary of the phase (2-3 sentences — what it did).
+  2. Alignment with original plan (does the implementation match the handoff doc / commit intent? Any missing objectives?).
+  3. Correctness issues (bugs, race conditions, missing error handling, incorrect semantics). Prioritise P0/P1/P2.
+  4. Security issues (XSS, auth, CSRF, injection, leaked secrets, PII, CORS). Each item tagged with severity.
+  5. Performance issues (re-renders, N+1, large bundles, memory leaks, blocking work on main thread).
+  6. Accessibility issues (semantic HTML, keyboard nav, ARIA, colour contrast, focus management).
+  7. Code quality (duplication, dead code, type-safety holes, naming, convention drift vs. rest of repo).
+  8. Test coverage gaps.
+  9. Suggested fixes — each as a numbered item with: file:line, what to change, why. Be concrete.
+  10. Overall verdict (ship / ship with fixes / needs rework) and top 3 priority fixes.
+
+Be specific — cite file paths and line numbers. Avoid generic advice. If the code is good, say so with evidence. Do NOT modify files; this is review only.
+
+mcp startup: no servers
+codex
+Reviewing phase `7b` against the handoff doc and commit `2d3527f`. I’m starting with the context file and the exact commit diff, then I’ll trace the touched code in the current working tree to check for regressions or later drift.
+exec
+/bin/zsh -lc "sed -n '1,240p' reviews/context/phase-7b2.md" in /Users/derekbeckley/Developer/EICR_Automation exited 1 in 0ms:
+sed: reviews/context/phase-7b2.md: No such file or directory
+exec
+/bin/zsh -lc 'git show --stat 2d3527f' in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc 'git show 2d3527f' in /Users/derekbeckley/Developer/EICR_Automation succeeded in 1.26s:
+2026-04-18 00:32:50.423 xcodebuild[39305:67237548]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:32:50.527 xcodebuild[39305:67237546] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-fgZXxKeV' (errno=Operation not permitted)
+2026-04-18 00:32:50.928 xcodebuild[39319:67237646]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:32:51.032 xcodebuild[39319:67237591] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+commit 2d3527fec6e26384717b6683698bc90cb2017aef
+Author: Derek Beckley <derekbeckley@Dereks-Mac-mini.broadband>
+Date:   Fri Apr 17 22:20:34 2026 +0100
+
+    feat(web): Phase 7b — IDB read-through cache for jobs
+    
+    Stale-while-revalidate at the two top-level fetch sites (dashboard job
+    list, job detail layout) backed by a new IDB database `certmate-cache`
+    so previously-visited pages render from local cache when the network
+    is unreachable, instead of falling through to the /offline shell.
+    
+    Closes the biggest scope item in PHASE_7A_HANDOFF.md §"Scope exclusions":
+      "No IDB read-through cache — offline jobs will 404 to /offline."
+    
+ succeeded in 1.26s:
+2026-04-18 00:32:50.423 xcodebuild[39304:67237549]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:32:50.527 xcodebuild[39304:67237547] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-JMj1epOg' (errno=Operation not permitted)
+2026-04-18 00:32:50.928 xcodebuild[39318:67237647]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:32:51.032 xcodebuild[39318:67237590] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+commit 2d3527fec6e26384717b6683698bc90cb2017aef
+Author: Derek Beckley <derekbeckley@Dereks-Mac-mini.broadband>
+Date:   Fri Apr 17 22:20:34 2026 +0100
+
+    feat(web): Phase 7b — IDB read-through cache for jobs
+    
+    Stale-while-revalidate at the two top-level fetch sites (dashboard job
+    list, job detail layout) backed by a new IDB database `certmate-cache`
+    so previously-visited pages render from local cache when the network
+    is unreachable, instead of falling through to the /offline shell.
+    
+    Closes the biggest scope item in PHASE_7A_HANDOFF.md §"Scope exclusions":
+      "No IDB read-through cache — offline jobs will 404 to /offline."
+    
+codex
+The context file path in the prompt doesn’t exist at repo root, so I’m locating it and continuing from there. I also need to re-run the git inspection in a way that avoids the local temp-directory issue so I can get the actual diff output.
+exec
+/bin/zsh -lc "rg --files | rg 'phase-7b2\\.md"'$|phase-7b.*'"\\.md"'$'"'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+web/reviews/codex/phase-7b1.md
+web/reviews/context/phase-7b2.md
+web/reviews/context/phase-7b3.md
+web/reviews/context/phase-7b4.md
+web/reviews/context/phase-7b1.md
+web/reviews/claude/phase-7b2.md
+web/reviews/claude/phase-7b3.md
+web/reviews/claude/phase-7b.md
+web/reviews/claude/phase-7b4.md
+web/reviews/claude/phase-7b1.md
+codex
+I have the commit diff now. Next I’m reading the phase handoff doc plus the current working-tree versions of the touched files and a couple of related consumers to check whether the implementation actually matches the intended cache semantics and whether later edits changed the risk profile.
+exec
+/bin/zsh -lc "nl -ba web/reviews/context/phase-7b2.md | sed -n '1,260p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	# Phase 7b2 — Context
+     2	
+     3	**Commit:** `2d3527f`
+     4	
+     5	## Commit message
+     6	
+     7	```
+     8	commit 2d3527fec6e26384717b6683698bc90cb2017aef
+     9	Author:     Derek Beckley <derekbeckley@Dereks-Mac-mini.broadband>
+    10	AuthorDate: Fri Apr 17 22:20:34 2026 +0100
+    11	Commit:     Derek Beckley <derekbeckley@Dereks-Mac-mini.broadband>
+    12	CommitDate: Fri Apr 17 22:20:34 2026 +0100
+    13	
+    14	    feat(web): Phase 7b — IDB read-through cache for jobs
+    15	    
+    16	    Stale-while-revalidate at the two top-level fetch sites (dashboard job
+    17	    list, job detail layout) backed by a new IDB database `certmate-cache`
+    18	    so previously-visited pages render from local cache when the network
+    19	    is unreachable, instead of falling through to the /offline shell.
+    20	    
+exec
+/bin/zsh -lc "nl -ba web/src/lib/auth.ts | sed -n '1,180p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "nl -ba web/src/app/job/[id]/layout.tsx | sed -n '1,240p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	import type { User } from './types';
+     2	import { clearJobCache } from './pwa/job-cache';
+     3	
+     4	/**
+     5	 * Auth-token helpers. Token is stored in localStorage (for API calls) and
+     6	 * also mirrored into a cookie so the Next.js middleware can gate routes
+     7	 * before hitting the client.
+     8	 */
+     9	
+    10	const TOKEN_KEY = 'cm_token';
+    11	const USER_KEY = 'cm_user';
+    12	const COOKIE_MAX_AGE = 60 * 60 * 24 * 7; // 7 days
+    13	
+    14	export function getToken(): string | null {
+    15	  if (typeof window === 'undefined') return null;
+    16	  return localStorage.getItem(TOKEN_KEY);
+    17	}
+    18	
+    19	export function getUser(): User | null {
+    20	  if (typeof window === 'undefined') return null;
+ succeeded in 0ms:
+zsh:1: no matches found: web/src/app/job/[id]/layout.tsx
+exec
+/bin/zsh -lc "nl -ba web/src/app/dashboard/page.tsx | sed -n '1,240p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	'use client';
+     2	
+     3	import * as React from 'react';
+     4	import { useRouter } from 'next/navigation';
+     5	import {
+     6	  Building2,
+     7	  ChevronRight,
+     8	  FilePlus,
+     9	  LogOut,
+    10	  PlayCircle,
+    11	  Search,
+    12	  Settings,
+    13	  Shield,
+    14	  SlidersHorizontal,
+    15	  UserCheck,
+    16	} from 'lucide-react';
+    17	import { api } from '@/lib/api-client';
+    18	import { clearAuth, getUser } from '@/lib/auth';
+    19	import { getCachedJobs, putCachedJobs } from '@/lib/pwa/job-cache';
+    20	import type { Job } from '@/lib/types';
+exec
+/bin/zsh -lc "nl -ba web/src/lib/pwa/job-cache.ts | sed -n '1,280p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	import type { Job, JobDetail } from '@/lib/types';
+     2	
+     3	/**
+     4	 * IndexedDB read-through cache for job data (Phase 7b).
+     5	 *
+     6	 * Purpose: when the user goes offline (subway, job-site basement, flaky
+     7	 * mobile data) or the server is briefly unreachable, the dashboard job
+     8	 * list and any previously-opened job detail still render from cache
+     9	 * instead of falling to the branded /offline shell and losing access to
+    10	 * their work. The cache is *shown first* (stale-while-revalidate) so
+    11	 * every page load feels instant even when the network is fine.
+    12	 *
+    13	 * Why vanilla IDB (no `idb` package):
+    14	 *   - Only two stores, two shapes, five operations — not worth the
+    15	 *     dependency or its bundle weight.
+    16	 *   - 7c's outbox will add more stores; if that commit wants a richer
+    17	 *     wrapper it can upgrade this file then. Keep 7b focused.
+    18	 *
+    19	 * Why not React Query's persister:
+    20	 *   - The app doesn't use React Query yet — data-fetching is imperative
+codex
+The current tree has moved on to later PWA work, so I’m separating commit-specific issues from later drift. I’m checking the job state provider and auth/fetch plumbing now because the cache logic relies on their lifecycle behavior.
+exec
+/bin/zsh -lc "nl -ba 'web/src/app/job/[id]/layout.tsx' | sed -n '1,260p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	'use client';
+     2	
+     3	import * as React from 'react';
+     4	import { useParams, useRouter } from 'next/navigation';
+     5	import { AppShell } from '@/components/layout/app-shell';
+     6	import { JobHeader } from '@/components/job/job-header';
+     7	import { JobTabNav } from '@/components/job/job-tab-nav';
+     8	import { FloatingActionBar } from '@/components/job/floating-action-bar';
+     9	import { RecordingOverlay } from '@/components/recording/recording-overlay';
+    10	import { TranscriptBar } from '@/components/recording/transcript-bar';
+    11	import { LiveFillView } from '@/components/live-fill/live-fill-view';
+    12	import { JobProvider } from '@/lib/job-context';
+    13	import { RecordingProvider, useRecording } from '@/lib/recording-context';
+    14	import { api } from '@/lib/api-client';
+    15	import { clearAuth, getUser } from '@/lib/auth';
+    16	import { getCachedJob, putCachedJob } from '@/lib/pwa/job-cache';
+    17	import type { JobDetail } from '@/lib/types';
+    18	
+    19	/**
+    20	 * Shell for every /job/[id]/... route.
+exec
+/bin/zsh -lc "rg --files web | rg 'test|spec|__tests__|vitest|playwright'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+web/src/lib/constants/inspection-schedule.ts
+web/src/app/settings/staff/[inspectorId]/page.tsx
+web/src/app/job/[id]/inspection/page.tsx
+exec
+/bin/zsh -lc "rg -n \"function JobProvider|useEffect\\(\\[initial\\]|setIsDirty|initial\\]\" web/src/lib web/src/app -g'*.tsx' -g'*.ts'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "rg -n \"jobs\\(|job\\(|saveJob|clearAuth\\(|getUser\\(\" web/src/lib web/src/app -g'*.ts' -g'*.tsx'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+web/src/lib/auth.ts:19:export function getUser(): User | null {
+web/src/lib/auth.ts:39:export function clearAuth(): void {
+web/src/app/job/[id]/observations/page.tsx:53:  const userId = React.useMemo(() => getUser()?.id ?? null, []);
+web/src/lib/use-current-user.ts:14: * render, not at next login. We hydrate instantly from `getUser()` (so
+web/src/lib/use-current-user.ts:27:  const [user, setUser] = React.useState<User | null>(() => getUser());
+web/src/lib/pwa/outbox-replay.ts:105:        if (m.op === 'saveJob') {
+web/src/lib/pwa/outbox-replay.ts:106:          await api.saveJob(m.userId, m.jobId, m.patch);
+web/src/lib/pwa/job-cache.ts:27: *     observations, so on `clearAuth()` (sign-out) we purge the entire
+web/src/lib/pwa/job-cache.ts:34: *     protection, and `clearAuth()` is the only durable wipe.
+web/src/lib/pwa/job-cache.ts:256: * Wipe every cached record in every store. Called from `clearAuth()` on
+web/src/app/job/[id]/layout.tsx:45:    const user = getUser();
+web/src/app/job/[id]/layout.tsx:74:      .job(user.id, jobId)
+web/src/app/job/[id]/layout.tsx:83:          clearAuth();
+web/src/lib/pwa/queue-save-job.ts:7: * Offline-tolerant write path for `api.saveJob` (Phase 7c).
+web/src/lib/pwa/queue-save-job.ts:10: *   - The raw `api.saveJob` throws on any network failure, which means
+web/src/lib/pwa/queue-save-job.ts:77:    await api.saveJob(userId, jobId, patch);
+web/src/app/dashboard/page.tsx:42:    const user = getUser();
+web/src/app/dashboard/page.tsx:73:      .jobs(user.id)
+web/src/app/dashboard/page.tsx:85:          clearAuth();
+web/src/app/dashboard/page.tsx:128:    const user = getUser();
+ succeeded in 0ms:
+web/src/lib/job-context.tsx:38:export function JobProvider({
+web/src/lib/job-context.tsx:46:  const [isDirty, setIsDirty] = React.useState(false);
+web/src/lib/job-context.tsx:52:    setIsDirty(false);
+web/src/lib/job-context.tsx:53:  }, [initial]);
+web/src/lib/job-context.tsx:57:    setIsDirty(true);
+web/src/app/job/[id]/layout.tsx:60:    // whatever cache painted. `JobProvider`'s `useEffect([initial])`
+web/src/app/job/[id]/layout.tsx:62:    // because `setIsDirty(false)` only runs when the prop identity
+exec
+/bin/zsh -lc "nl -ba web/src/lib/api-client.ts | sed -n '100,180p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "nl -ba web/src/lib/job-context.tsx | sed -n '1,220p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	'use client';
+     2	
+     3	import * as React from 'react';
+     4	import type { CertificateType, JobDetail } from './types';
+     5	
+     6	/**
+     7	 * Per-job state container. Holds the fetched JobDetail plus a couple of
+     8	 * derived flags (dirty/syncing) and two mutators:
+     9	 *
+    10	 *  - updateJob(partial) — local merge, does not hit the network. Every
+    11	 *    input in the job tabs calls this; a debounced save effect (Phase 4)
+    12	 *    flushes to the backend.
+    13	 *  - setJob(full)        — replace wholesale (used after a network save
+    14	 *    round-trip so server-derived fields like updated_at can flow in).
+    15	 *
+    16	 * The shape deliberately mirrors the legacy `useJob` hook so the tab
+    17	 * components from Phase 3+ read the same API.
+    18	 */
+    19	interface JobContextValue {
+    20	  job: JobDetail;
+ succeeded in 0ms:
+   100	    return request<LoginResponse>('/api/auth/login', {
+   101	      method: 'POST',
+   102	      body: JSON.stringify({ email, password }),
+   103	    });
+   104	  },
+   105	
+   106	  logout(): Promise<void> {
+   107	    return request<void>('/api/auth/logout', { method: 'POST' });
+   108	  },
+   109	
+   110	  me(): Promise<User> {
+   111	    return request<User>('/api/auth/me');
+   112	  },
+   113	
+   114	  jobs(userId: string): Promise<Job[]> {
+   115	    return request<Job[]>(`/api/jobs/${encodeURIComponent(userId)}`);
+   116	  },
+   117	
+   118	  createJob(userId: string, certificateType: 'EICR' | 'EIC'): Promise<{ id: string }> {
+   119	    return request<{ id: string }>(`/api/jobs/${encodeURIComponent(userId)}`, {
+exec
+/bin/zsh -lc "git diff --stat 2d3527f..HEAD -- web/src/app/dashboard/page.tsx 'web/src/app/job/[id]/layout.tsx' web/src/lib/auth.ts web/src/lib/pwa/job-cache.ts" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "git diff 2d3527f..HEAD -- web/src/app/dashboard/page.tsx 'web/src/app/job/[id]/layout.tsx' web/src/lib/auth.ts web/src/lib/pwa/job-cache.ts" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 1.14s:
+2026-04-18 00:33:22.679 xcodebuild[39368:67238114]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:33:22.781 xcodebuild[39368:67238113] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-5jP1BlcM' (errno=Operation not permitted)
+2026-04-18 00:33:23.097 xcodebuild[39372:67238133]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:33:23.201 xcodebuild[39372:67238132] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+ web/src/lib/pwa/job-cache.ts | 72 ++++++++++++++++++++++++++++++++++++--------
+ 1 file changed, 59 insertions(+), 13 deletions(-)
+ succeeded in 1.14s:
+2026-04-18 00:33:22.679 xcodebuild[39369:67238115]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:33:22.781 xcodebuild[39369:67238112] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-aycXvdmY' (errno=Operation not permitted)
+2026-04-18 00:33:23.097 xcodebuild[39373:67238134]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:33:23.201 xcodebuild[39373:67238131] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+diff --git a/web/src/lib/pwa/job-cache.ts b/web/src/lib/pwa/job-cache.ts
+index 7f5bbdd..5221551 100644
+--- a/web/src/lib/pwa/job-cache.ts
++++ b/web/src/lib/pwa/job-cache.ts
+@@ -42,10 +42,23 @@ import type { Job, JobDetail } from '@/lib/types';
+  *     reopen the connection; the handle stays alive for the tab.
+  */
+ 
+-const DB_NAME = 'certmate-cache';
+-const DB_VERSION = 1;
++/*
++ * Schema versioning:
++ *   v1 (Phase 7b): `jobs-list` + `job-detail` stores.
++ *   v2 (Phase 7c): added `outbox` store (keyPath `id`, index `by-user` on
+codex
+I’ve confirmed the touched app files are unchanged since `2d3527f`; only `job-cache.ts` evolved later for 7c. I’m drilling into the fetch/error semantics now, because most likely failures here are stale-state races and auth-handling edge cases rather than the raw IDB wrapper itself.
+exec
+/bin/zsh -lc "nl -ba web/src/lib/api-client.ts | sed -n '1,110p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	import {
+     2	  type AdminUser,
+     3	  ApiError,
+     4	  type CCUAnalysis,
+     5	  type CompanyJobRow,
+     6	  type CompanyMember,
+     7	  type CompanySettings,
+     8	  type CompanyStats,
+     9	  type DocumentExtractionResponse,
+    10	  type InspectorProfile,
+    11	  type InviteEmployeeResponse,
+    12	  type Job,
+    13	  type JobDetail,
+    14	  type LoginResponse,
+    15	  type Paginated,
+    16	  type User,
+    17	} from './types';
+    18	import { getToken } from './auth';
+    19	
+    20	/**
+exec
+/bin/zsh -lc "rg -n \"setError\\(|Couldn’t load job|Recent Jobs|No certificates yet|role=\\\"alert\\\"|offline\" web/src/app web/src/components -g'*.tsx'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "rg -n \"indexedDB|job-cache|getCachedJob|getCachedJobs|putCachedJob|putCachedJobs|clearJobCache\" web/src -g'*.ts' -g'*.tsx'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+web/src/app/offline/page.tsx:13: * shimmer line) so the transition from online to offline doesn't feel
+web/src/app/offline/page.tsx:30:          <h1 className="mt-3 text-[26px] font-bold tracking-tight">You&rsquo;re offline</h1>
+web/src/app/login/page.tsx:51:    setError(null);
+web/src/app/login/page.tsx:59:          setError('Wrong email or password.');
+web/src/app/login/page.tsx:61:          setError('Account locked — try again in a few minutes.');
+web/src/app/login/page.tsx:63:          setError(err.message || "Couldn't sign in. Try again.");
+web/src/app/login/page.tsx:65:          setError("Couldn't sign in. Try again.");
+web/src/app/login/page.tsx:105:            role="alert"
+web/src/app/error.tsx:22: *    login/offline visual language so an unhandled error doesn't dump
+web/src/app/job/[id]/layout.tsx:89:        // full job record offline rather than being bounced to an error
+web/src/app/job/[id]/layout.tsx:92:        setError(err.message);
+web/src/app/job/[id]/layout.tsx:148:          role="alert"
+web/src/app/job/[id]/layout.tsx:152:          Couldn’t load job: {error}
+web/src/components/observations/observation-sheet.tsx:352:                role="alert"
+web/src/app/job/[id]/circuits/page.tsx:309:              role="alert"
+web/src/app/job/[id]/circuits/page.tsx:318:              role="alert"
+web/src/app/dashboard/page.tsx:29: *  - Recent Jobs <N> list (coloured stripe + status pill)
+web/src/app/dashboard/page.tsx:60:    // AppShell offline indicator (separate 7b commit) will tell them
+web/src/app/dashboard/page.tsx:90:        // the banner — "offline with stale data" is a better UX than
+web/src/app/dashboard/page.tsx:91:        // "offline with an error message on top of stale data".
+ succeeded in 0ms:
+web/src/lib/auth.ts:2:import { clearJobCache } from './pwa/job-cache';
+web/src/lib/auth.ts:50:  // the redirect still proceeds (clearJobCache swallows internally).
+web/src/lib/auth.ts:51:  void clearJobCache();
+web/src/lib/pwa/job-cache.ts:37: *   - Every export early-returns a null-ish value when `indexedDB` is
+web/src/lib/pwa/job-cache.ts:50: *                  rather than in a separate DB so `clearJobCache()` +
+web/src/lib/pwa/job-cache.ts:83:  return typeof indexedDB !== 'undefined';
+web/src/lib/pwa/job-cache.ts:89:    const request = indexedDB.open(DB_NAME, DB_VERSION);
+web/src/lib/pwa/job-cache.ts:157:      console.warn('[job-cache] request failed', request.error);
+web/src/lib/pwa/job-cache.ts:167:      console.warn('[job-cache] transaction failed', tx.error);
+web/src/lib/pwa/job-cache.ts:171:      console.warn('[job-cache] transaction aborted', tx.error);
+web/src/lib/pwa/job-cache.ts:179:export async function getCachedJobs(userId: string): Promise<Job[] | null> {
+web/src/lib/pwa/job-cache.ts:188:    console.warn('[job-cache] getCachedJobs failed', err);
+web/src/lib/pwa/job-cache.ts:193:export async function putCachedJobs(userId: string, jobs: Job[]): Promise<void> {
+web/src/lib/pwa/job-cache.ts:203:    console.warn('[job-cache] putCachedJobs failed', err);
+web/src/lib/pwa/job-cache.ts:213:export async function getCachedJob(userId: string, jobId: string): Promise<JobDetail | null> {
+web/src/lib/pwa/job-cache.ts:224:    console.warn('[job-cache] getCachedJob failed', err);
+web/src/lib/pwa/job-cache.ts:229:export async function putCachedJob(
+web/src/lib/pwa/job-cache.ts:249:    console.warn('[job-cache] putCachedJob failed', err);
+web/src/lib/pwa/job-cache.ts:273:export async function clearJobCache(): Promise<void> {
+web/src/lib/pwa/job-cache.ts:283:    console.warn('[job-cache] clearJobCache failed', err);
+codex
+Two concrete race paths have shown up in the SWR wiring, and I’m validating whether they’re real or just comments drifting from the actual closures. I’m also checking the auth error contract, because these pages are still keying off message text rather than the typed `ApiError.status`.
+exec
+/bin/zsh -lc "rg -n \"class ApiError|export class ApiError|interface ApiError\" web/src/lib -g'*.ts'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "nl -ba web/src/lib/types.ts | sed -n '1,120p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+web/src/lib/types.ts:370:export class ApiError extends Error {
+ succeeded in 0ms:
+     1	/**
+     2	 * Shared domain types. Kept minimal — only the shapes Phase 1–2 need;
+     3	 * per-tab detail types land in later phases when their screens do.
+     4	 */
+     5	
+     6	export interface User {
+     7	  id: string;
+     8	  email: string;
+     9	  name: string;
+    10	  company_name?: string;
+    11	  role?: 'admin' | 'user';
+    12	  /** System-wide tenant membership. Nullable for legacy users not yet bound to a company. */
+    13	  company_id?: string;
+    14	  /** Role within a company. `owner`/`admin` grant company-admin privileges; `employee` is rank-and-file. */
+    15	  company_role?: 'owner' | 'admin' | 'employee';
+    16	}
+    17	
+    18	/**
+    19	 * Inspector profile — the API shape stored as one JSON array per user at
+    20	 * `settings/{userId}/inspector_profiles.json`. The backend persists the
+exec
+/bin/zsh -lc "rg -n \"/401/.test\\(err\\.message\\)|err instanceof ApiError|\\.status === 401|status >= 500\" web/src/app web/src/lib -g'*.ts' -g'*.tsx'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+web/src/app/login/page.tsx:58:        if (err instanceof ApiError && err.status === 401) {
+web/src/app/login/page.tsx:60:        } else if (err instanceof ApiError && err.status === 423) {
+web/src/lib/pwa/outbox-replay.ts:186:  if (err instanceof ApiError) return `HTTP ${err.status}: ${err.message}`;
+web/src/lib/pwa/queue-save-job.ts:84:    if (err instanceof ApiError && err.status >= 400 && err.status < 500) {
+web/src/app/job/[id]/layout.tsx:82:        if (/401/.test(err.message)) {
+web/src/lib/api-client.ts:57:      if (res.status >= 500) {
+web/src/lib/api-client.ts:80:          (err instanceof ApiError && err.status >= 500))
+web/src/app/dashboard/page.tsx:84:        if (/401/.test(err.message)) {
+web/src/app/job/[id]/circuits/page.tsx:161:        err instanceof ApiError
+web/src/app/job/[id]/circuits/page.tsx:216:        err instanceof ApiError
+web/src/app/settings/company/dashboard/page.tsx:395:      if (err instanceof ApiError && err.status === 409) {
+web/src/app/settings/admin/users/[userId]/page.tsx:171:      if (err instanceof ApiError && err.status === 400) {
+web/src/app/settings/admin/users/[userId]/page.tsx:423:      if (err instanceof ApiError && err.status === 400) {
+web/src/app/settings/admin/users/new/page.tsx:79:      if (err instanceof ApiError && err.status === 409) {
+web/src/app/settings/admin/users/new/page.tsx:81:      } else if (err instanceof ApiError && err.status === 400) {
+exec
+/bin/zsh -lc "nl -ba web/src/lib/types.ts | sed -n '360,405p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+   360	  formData: DocumentExtractionFormData;
+   361	}
+   362	
+   363	/** Envelope used by POST /api/auth/login. */
+   364	export interface LoginResponse {
+   365	  token: string;
+   366	  user: User;
+   367	}
+   368	
+   369	/** Client-side API error surface. */
+   370	export class ApiError extends Error {
+   371	  constructor(
+   372	    public status: number,
+   373	    message: string
+   374	  ) {
+   375	    super(message);
+   376	    this.name = 'ApiError';
+   377	  }
+   378	}
+codex
+## 1. Summary of the phase
+
+Phase `7b` adds a client-side IndexedDB read-through cache for the dashboard job list and per-job detail payloads, then switches both top-level fetch sites to a stale-while-revalidate pattern. It also clears that cache on sign-out so cached job data is not left behind on shared devices.
+
+I checked the handoff/context doc first, reviewed `git show --stat 2d3527f` and `git show 2d3527f`, then read the current working-tree files. The current tree has later drift only in [job-cache.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/pwa/job-cache.ts:1) for Phase 7c (`DB_VERSION = 2`, outbox store); [dashboard/page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/dashboard/page.tsx:1), [job layout](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/job/[id]/layout.tsx:1), and [auth.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/auth.ts:1) are unchanged in the relevant logic.
+
+## 2. Alignment with original plan
+
+This implementation broadly matches the handoff and commit intent:
+
+- It adds the promised IDB cache module and uses it at the two intended fetch sites.
+- It keeps the cache best-effort and SSR-safe.
+- It clears cached job data from `clearAuth()`.
+- It does not overreach into write-path/offline mutation work, which the handoff explicitly deferred to 7c/7d.
+
+What is missing is not scope, but correctness in the SWR coordination: the comments claim stale cache cannot overwrite fresher network data, but the actual closure logic does not enforce that.
+
+## 3. Correctness issues
+
+### P1: Late cache reads can overwrite fresher network data on both pages
+- [dashboard/page.tsx:64](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/dashboard/page.tsx:64)
+- [job layout:65](</Users/derekbeckley/Developer/EICR_Automation/web/src/app/job/[id]/layout.tsx:65>)
+
+Both cache callbacks test `jobs === null` / `job === null`, but those values are captured from the effect’s initial render. Because the dependency array intentionally omits `jobs`/`job`, those callbacks always see the initial `null`. If the network returns first and the cache resolves later, the stale cache can still call `setJobs(cached)` / `setJob(cached)` and clobber the fresh response. This directly contradicts the intended “late cache can’t overwrite fresh network data” behavior.
+
+### P1: Dashboard can miss valid cached data if the network fails before IDB resolves
+- [dashboard/page.tsx:82](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/dashboard/page.tsx:82)
+
+On network failure, the dashboard immediately does `setError(err.message)` and `setJobs([])` when `hadCache` is still `false`. If the cache read resolves slightly later, it is blocked by the same stale `jobs === null` guard path in intent, and in practice the UI is already forced into the empty/error state. Result: an offline user can still lose a perfectly valid cached dashboard, depending on timing.
+
+### P2: The cached DB handle is never closed on `versionchange`, so future schema upgrades can be blocked by older tabs
+- [job-cache.ts:86](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/pwa/job-cache.ts:86)
+
+`openDB()` caches the `IDBDatabase` for the tab lifetime, but the code never installs `db.onversionchange = ... db.close()`. That means a later schema bump in another tab can be blocked indefinitely by an older tab holding the connection open. This was theoretical in `7b`, but it is now relevant in the current tree because Phase 7c already bumped the DB to v2.
+
+## 4. Security issues
+
+- `[none found, low]` I did not find a new XSS/auth/CSRF/injection/secret-leak issue introduced by this phase.
+- `[note]` Clearing the cache on sign-out is defense-in-depth rather than the primary isolation boundary; the actual read paths are already keyed by `userId`.
+
+## 5. Performance issues
+
+- `[P2]` No eviction policy for `job-detail`; every opened job is retained until sign-out. [job-cache.ts:229](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/pwa/job-cache.ts:229) stores `cachedAt`, but nothing uses it for TTL/LRU cleanup. For inspectors with long-lived sessions and many jobs, storage can grow without bound until quota pressure starts causing silent cache-write failures.
+- `[P2]` Because of the stale-closure bug above, a slower cache read can trigger an unnecessary extra render after fresh network data has already painted. [dashboard/page.tsx:64](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/dashboard/page.tsx:64), [job layout:65](</Users/derekbeckley/Developer/EICR_Automation/web/src/app/job/[id]/layout.tsx:65>)
+
+## 6. Accessibility issues
+
+No material accessibility regressions stood out in this phase. The added behavior is mostly data-loading logic, and the visible error states continue to use `role="alert"` correctly in the touched screens.
+
+## 7. Code quality
+
+- The IDB helper is well-contained and keeps the surface area small; avoiding a new dependency is reasonable here.
+- `cachedAt` is written but unused in Phase 7b, which suggests either incomplete freshness semantics or dead metadata. [job-cache.ts:199](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/pwa/job-cache.ts:199), [job-cache.ts:244](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/pwa/job-cache.ts:244)
+- The comments in both fetch sites overstate correctness: they describe a guard against cache clobbering fresh data, but the implementation does not actually provide that guarantee. That mismatch makes future maintenance riskier.
+
+## 8. Test coverage gaps
+
+I did not find targeted automated coverage for this phase’s cache behavior.
+
+Missing tests:
+- Dashboard: cache resolves after network success, and must not overwrite fresh data.
+- Dashboard: network fails before cache resolves, and cached jobs should still paint.
+- Job layout: cache resolves after network success, and must not overwrite fresh detail.
+- Auth sign-out: `clearAuth()` clears both IDB stores.
+- IDB open/upgrade behavior: stale tabs release the DB on `versionchange`.
+
+## 9. Suggested fixes
+
+1. [web/src/app/dashboard/page.tsx:64](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/dashboard/page.tsx:64) and [web/src/app/job/[id]/layout.tsx:65](</Users/derekbeckley/Developer/EICR_Automation/web/src/app/job/[id]/layout.tsx:65>)  
+   Replace the `jobs === null` / `job === null` closure checks with a ref or functional-state gate that reads current state at callback time.  
+   Why: the current callbacks capture the initial `null` and can overwrite fresher network data.
+
+2. [web/src/app/dashboard/page.tsx:82](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/dashboard/page.tsx:82)  
+   Do not immediately force `setJobs([])` on network failure until the cache read has definitely completed and returned no data. Coordinate the two async paths with refs or `Promise.allSettled`.  
+   Why: otherwise offline users can lose a valid cached dashboard due to timing.
+
+3. [web/src/lib/pwa/job-cache.ts:127](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/pwa/job-cache.ts:127)  
+   In `request.onsuccess`, attach `db.onversionchange = () => { db.close(); dbPromise = null; }`.  
+   Why: without this, old tabs can block later schema upgrades, which is now a real concern given the current tree’s v2 upgrade.
+
+4. [web/src/lib/pwa/job-cache.ts:199](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/pwa/job-cache.ts:199) and [web/src/lib/pwa/job-cache.ts:244](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/pwa/job-cache.ts:244)  
+   Either use `cachedAt` for TTL/LRU pruning or remove it until freshness/eviction is implemented.  
+   Why: right now it adds schema/storage cost without enforcing any retention policy.
+
+5. [web/src/app/dashboard/page.tsx:84](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/dashboard/page.tsx:84) and [web/src/app/job/[id]/layout.tsx:82](</Users/derekbeckley/Developer/EICR_Automation/web/src/app/job/[id]/layout.tsx:82>)  
+   Branch on `err instanceof ApiError && err.status === 401` rather than regexing `err.message`.  
+   Why: the client already has a typed error surface; message matching is brittle and can miss auth failures depending on backend response text.
+
+## 10. Overall verdict
+
+**Ship with fixes.**
+
+The phase is directionally right and mostly aligned with the handoff, but the two SWR race conditions are real and undercut the core promise of “cache first, then fresh, without clobbering.” Top 3 fixes:
+
+1. Fix stale-closure cache clobbering on dashboard and job detail.
+2. Fix the dashboard “network fails before cache resolves” race.
+3. Add `onversionchange` DB-handle cleanup in `job-cache.ts`.
+tokens used
+61,127
+## 1. Summary of the phase
+
+Phase `7b` adds a client-side IndexedDB read-through cache for the dashboard job list and per-job detail payloads, then switches both top-level fetch sites to a stale-while-revalidate pattern. It also clears that cache on sign-out so cached job data is not left behind on shared devices.
+
+I checked the handoff/context doc first, reviewed `git show --stat 2d3527f` and `git show 2d3527f`, then read the current working-tree files. The current tree has later drift only in [job-cache.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/pwa/job-cache.ts:1) for Phase 7c (`DB_VERSION = 2`, outbox store); [dashboard/page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/dashboard/page.tsx:1), [job layout](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/job/[id]/layout.tsx:1), and [auth.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/auth.ts:1) are unchanged in the relevant logic.
+
+## 2. Alignment with original plan
+
+This implementation broadly matches the handoff and commit intent:
+
+- It adds the promised IDB cache module and uses it at the two intended fetch sites.
+- It keeps the cache best-effort and SSR-safe.
+- It clears cached job data from `clearAuth()`.
+- It does not overreach into write-path/offline mutation work, which the handoff explicitly deferred to 7c/7d.
+
+What is missing is not scope, but correctness in the SWR coordination: the comments claim stale cache cannot overwrite fresher network data, but the actual closure logic does not enforce that.
+
+## 3. Correctness issues
+
+### P1: Late cache reads can overwrite fresher network data on both pages
+- [dashboard/page.tsx:64](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/dashboard/page.tsx:64)
+- [job layout:65](</Users/derekbeckley/Developer/EICR_Automation/web/src/app/job/[id]/layout.tsx:65>)
+
+Both cache callbacks test `jobs === null` / `job === null`, but those values are captured from the effect’s initial render. Because the dependency array intentionally omits `jobs`/`job`, those callbacks always see the initial `null`. If the network returns first and the cache resolves later, the stale cache can still call `setJobs(cached)` / `setJob(cached)` and clobber the fresh response. This directly contradicts the intended “late cache can’t overwrite fresh network data” behavior.
+
+### P1: Dashboard can miss valid cached data if the network fails before IDB resolves
+- [dashboard/page.tsx:82](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/dashboard/page.tsx:82)
+
+On network failure, the dashboard immediately does `setError(err.message)` and `setJobs([])` when `hadCache` is still `false`. If the cache read resolves slightly later, it is blocked by the same stale `jobs === null` guard path in intent, and in practice the UI is already forced into the empty/error state. Result: an offline user can still lose a perfectly valid cached dashboard, depending on timing.
+
+### P2: The cached DB handle is never closed on `versionchange`, so future schema upgrades can be blocked by older tabs
+- [job-cache.ts:86](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/pwa/job-cache.ts:86)
+
+`openDB()` caches the `IDBDatabase` for the tab lifetime, but the code never installs `db.onversionchange = ... db.close()`. That means a later schema bump in another tab can be blocked indefinitely by an older tab holding the connection open. This was theoretical in `7b`, but it is now relevant in the current tree because Phase 7c already bumped the DB to v2.
+
+## 4. Security issues
+
+- `[none found, low]` I did not find a new XSS/auth/CSRF/injection/secret-leak issue introduced by this phase.
+- `[note]` Clearing the cache on sign-out is defense-in-depth rather than the primary isolation boundary; the actual read paths are already keyed by `userId`.
+
+## 5. Performance issues
+
+- `[P2]` No eviction policy for `job-detail`; every opened job is retained until sign-out. [job-cache.ts:229](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/pwa/job-cache.ts:229) stores `cachedAt`, but nothing uses it for TTL/LRU cleanup. For inspectors with long-lived sessions and many jobs, storage can grow without bound until quota pressure starts causing silent cache-write failures.
+- `[P2]` Because of the stale-closure bug above, a slower cache read can trigger an unnecessary extra render after fresh network data has already painted. [dashboard/page.tsx:64](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/dashboard/page.tsx:64), [job layout:65](</Users/derekbeckley/Developer/EICR_Automation/web/src/app/job/[id]/layout.tsx:65>)
+
+## 6. Accessibility issues
+
+No material accessibility regressions stood out in this phase. The added behavior is mostly data-loading logic, and the visible error states continue to use `role="alert"` correctly in the touched screens.
+
+## 7. Code quality
+
+- The IDB helper is well-contained and keeps the surface area small; avoiding a new dependency is reasonable here.
+- `cachedAt` is written but unused in Phase 7b, which suggests either incomplete freshness semantics or dead metadata. [job-cache.ts:199](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/pwa/job-cache.ts:199), [job-cache.ts:244](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/pwa/job-cache.ts:244)
+- The comments in both fetch sites overstate correctness: they describe a guard against cache clobbering fresh data, but the implementation does not actually provide that guarantee. That mismatch makes future maintenance riskier.
+
+## 8. Test coverage gaps
+
+I did not find targeted automated coverage for this phase’s cache behavior.
+
+Missing tests:
+- Dashboard: cache resolves after network success, and must not overwrite fresh data.
+- Dashboard: network fails before cache resolves, and cached jobs should still paint.
+- Job layout: cache resolves after network success, and must not overwrite fresh detail.
+- Auth sign-out: `clearAuth()` clears both IDB stores.
+- IDB open/upgrade behavior: stale tabs release the DB on `versionchange`.
+
+## 9. Suggested fixes
+
+1. [web/src/app/dashboard/page.tsx:64](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/dashboard/page.tsx:64) and [web/src/app/job/[id]/layout.tsx:65](</Users/derekbeckley/Developer/EICR_Automation/web/src/app/job/[id]/layout.tsx:65>)  
+   Replace the `jobs === null` / `job === null` closure checks with a ref or functional-state gate that reads current state at callback time.  
+   Why: the current callbacks capture the initial `null` and can overwrite fresher network data.
+
+2. [web/src/app/dashboard/page.tsx:82](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/dashboard/page.tsx:82)  
+   Do not immediately force `setJobs([])` on network failure until the cache read has definitely completed and returned no data. Coordinate the two async paths with refs or `Promise.allSettled`.  
+   Why: otherwise offline users can lose a valid cached dashboard due to timing.
+
+3. [web/src/lib/pwa/job-cache.ts:127](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/pwa/job-cache.ts:127)  
+   In `request.onsuccess`, attach `db.onversionchange = () => { db.close(); dbPromise = null; }`.  
+   Why: without this, old tabs can block later schema upgrades, which is now a real concern given the current tree’s v2 upgrade.
+
+4. [web/src/lib/pwa/job-cache.ts:199](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/pwa/job-cache.ts:199) and [web/src/lib/pwa/job-cache.ts:244](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/pwa/job-cache.ts:244)  
+   Either use `cachedAt` for TTL/LRU pruning or remove it until freshness/eviction is implemented.  
+   Why: right now it adds schema/storage cost without enforcing any retention policy.
+
+5. [web/src/app/dashboard/page.tsx:84](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/dashboard/page.tsx:84) and [web/src/app/job/[id]/layout.tsx:82](</Users/derekbeckley/Developer/EICR_Automation/web/src/app/job/[id]/layout.tsx:82>)  
+   Branch on `err instanceof ApiError && err.status === 401` rather than regexing `err.message`.  
+   Why: the client already has a typed error surface; message matching is brittle and can miss auth failures depending on backend response text.
+
+## 10. Overall verdict
+
+**Ship with fixes.**
+
+The phase is directionally right and mostly aligned with the handoff, but the two SWR race conditions are real and undercut the core promise of “cache first, then fresh, without clobbering.” Top 3 fixes:
+
+1. Fix stale-closure cache clobbering on dashboard and job detail.
+2. Fix the dashboard “network fails before cache resolves” race.
+3. Add `onversionchange` DB-handle cleanup in `job-cache.ts`.

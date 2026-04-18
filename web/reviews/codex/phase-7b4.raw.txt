@@ -1,0 +1,549 @@
+OpenAI Codex v0.116.0 (research preview)
+--------
+workdir: /Users/derekbeckley/Developer/EICR_Automation
+model: gpt-5.4
+provider: openai
+approval: never
+sandbox: read-only
+reasoning effort: none
+reasoning summaries: none
+session id: 019d9dcf-5b13-71b1-b2d6-0eb1ca16af19
+--------
+user
+You are performing a rigorous code review of a single phase of a Next.js 16 / React 19 PWA frontend rebuild for an electrical-certificate automation tool (EICR / EIC). The repo root is at /Users/derekbeckley/Developer/EICR_Automation and the web package is at web/. Branch: web-rebuild.
+
+TARGET: Phase 7b — iOS Add-to-Home-Screen hint (closes 7b)
+COMMIT: 1ec4e22
+
+Context for this phase (original intent, handoff doc, commit message, files changed) is in this repo at: reviews/context/phase-7b4.md — READ THAT FILE FIRST.
+
+Use shell commands to:
+  git show --stat 1ec4e22
+  git show 1ec4e22
+to inspect the full diff. Then read any files you need from the working tree (they may have evolved since this commit — note any later changes).
+
+Your output must be a well-structured markdown review with these sections:
+  1. Summary of the phase (2-3 sentences — what it did).
+  2. Alignment with original plan (does the implementation match the handoff doc / commit intent? Any missing objectives?).
+  3. Correctness issues (bugs, race conditions, missing error handling, incorrect semantics). Prioritise P0/P1/P2.
+  4. Security issues (XSS, auth, CSRF, injection, leaked secrets, PII, CORS). Each item tagged with severity.
+  5. Performance issues (re-renders, N+1, large bundles, memory leaks, blocking work on main thread).
+  6. Accessibility issues (semantic HTML, keyboard nav, ARIA, colour contrast, focus management).
+  7. Code quality (duplication, dead code, type-safety holes, naming, convention drift vs. rest of repo).
+  8. Test coverage gaps.
+  9. Suggested fixes — each as a numbered item with: file:line, what to change, why. Be concrete.
+  10. Overall verdict (ship / ship with fixes / needs rework) and top 3 priority fixes.
+
+Be specific — cite file paths and line numbers. Avoid generic advice. If the code is good, say so with evidence. Do NOT modify files; this is review only.
+
+mcp startup: no servers
+codex
+Reviewing commit `1ec4e22` against the phase handoff first, then I’ll inspect the full diff and the current versions of the touched files to look for regressions or drift since the commit.
+exec
+/bin/zsh -lc "sed -n '1,240p' reviews/context/phase-7b4.md" in /Users/derekbeckley/Developer/EICR_Automation exited 1 in 0ms:
+sed: reviews/context/phase-7b4.md: No such file or directory
+exec
+/bin/zsh -lc 'git show 1ec4e22' in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc 'git show --stat 1ec4e22' in /Users/derekbeckley/Developer/EICR_Automation succeeded in 1.14s:
+2026-04-18 00:38:32.535 xcodebuild[40458:67243363]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:38:32.639 xcodebuild[40458:67243361] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-Mv5g1AMb' (errno=Operation not permitted)
+2026-04-18 00:38:32.960 xcodebuild[40462:67243382]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:38:33.063 xcodebuild[40462:67243379] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+commit 1ec4e22934c384ddf240ef667d41cd18fd132ed0
+Author: Derek Beckley <derekbeckley@Dereks-Mac-mini.broadband>
+Date:   Fri Apr 17 22:30:31 2026 +0100
+
+    feat(web): Phase 7b iOS Add-to-Home-Screen hint (closes 7b)
+    
+    Final scope-exclusion item from PHASE_7A_HANDOFF.md §"Scope exclusions":
+    closes Phase 7b. Without this, iPhone/iPad users have no pathway to
+    discover that CertMate is installable — Safari never fires
+    `beforeinstallprompt`, so the AppShell `<InstallButton />` stays hidden
+    on iOS. A dismissible banner on `/settings` is the planned
+    accommodation.
+    
+    Why here, why now:
+ succeeded in 1.14s:
+2026-04-18 00:38:32.535 xcodebuild[40459:67243364]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:38:32.639 xcodebuild[40459:67243362] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-zxKy5y2G' (errno=Operation not permitted)
+2026-04-18 00:38:32.960 xcodebuild[40463:67243381]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:38:33.063 xcodebuild[40463:67243380] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+commit 1ec4e22934c384ddf240ef667d41cd18fd132ed0
+Author: Derek Beckley <derekbeckley@Dereks-Mac-mini.broadband>
+Date:   Fri Apr 17 22:30:31 2026 +0100
+
+    feat(web): Phase 7b iOS Add-to-Home-Screen hint (closes 7b)
+    
+    Final scope-exclusion item from PHASE_7A_HANDOFF.md §"Scope exclusions":
+    closes Phase 7b. Without this, iPhone/iPad users have no pathway to
+    discover that CertMate is installable — Safari never fires
+    `beforeinstallprompt`, so the AppShell `<InstallButton />` stays hidden
+    on iOS. A dismissible banner on `/settings` is the planned
+    accommodation.
+    
+    Why here, why now:
+codex
+The handoff path in the prompt doesn’t exist as written, so I’m locating the actual review context file and retrying the commit inspection with a safer temp/cache setup to avoid the sandboxed `git` temp-file failures.
+exec
+/bin/zsh -lc "rg --files reviews | rg 'phase-7b'" in /Users/derekbeckley/Developer/EICR_Automation exited 1 in 0ms:
+rg: reviews: IO error for operation on reviews: No such file or directory (os error 2)
+exec
+/bin/zsh -lc 'env TMPDIR=$PWD/.tmp GIT_PAGER=cat git --no-pager show --stat 1ec4e22' in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc 'env TMPDIR=$PWD/.tmp GIT_PAGER=cat git --no-pager show 1ec4e22' in /Users/derekbeckley/Developer/EICR_Automation succeeded in 1.12s:
+2026-04-18 00:38:40.628 xcodebuild[40478:67243514]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:38:40.730 xcodebuild[40478:67243510] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-R2xsXbXA' (errno=Operation not permitted)
+2026-04-18 00:38:41.045 xcodebuild[40483:67243538]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:38:41.149 xcodebuild[40483:67243536] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+commit 1ec4e22934c384ddf240ef667d41cd18fd132ed0
+Author: Derek Beckley <derekbeckley@Dereks-Mac-mini.broadband>
+Date:   Fri Apr 17 22:30:31 2026 +0100
+
+    feat(web): Phase 7b iOS Add-to-Home-Screen hint (closes 7b)
+    
+    Final scope-exclusion item from PHASE_7A_HANDOFF.md §"Scope exclusions":
+    closes Phase 7b. Without this, iPhone/iPad users have no pathway to
+    discover that CertMate is installable — Safari never fires
+    `beforeinstallprompt`, so the AppShell `<InstallButton />` stays hidden
+    on iOS. A dismissible banner on `/settings` is the planned
+    accommodation.
+    
+    Why here, why now:
+ succeeded in 1.11s:
+2026-04-18 00:38:40.730 xcodebuild[40479:67243513] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-kUUYqKQN' (errno=Operation not permitted)
+2026-04-18 00:38:41.045 xcodebuild[40482:67243537]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:38:41.149 xcodebuild[40482:67243535] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+commit 1ec4e22934c384ddf240ef667d41cd18fd132ed0
+Author: Derek Beckley <derekbeckley@Dereks-Mac-mini.broadband>
+Date:   Fri Apr 17 22:30:31 2026 +0100
+
+    feat(web): Phase 7b iOS Add-to-Home-Screen hint (closes 7b)
+    
+    Final scope-exclusion item from PHASE_7A_HANDOFF.md §"Scope exclusions":
+    closes Phase 7b. Without this, iPhone/iPad users have no pathway to
+    discover that CertMate is installable — Safari never fires
+    `beforeinstallprompt`, so the AppShell `<InstallButton />` stays hidden
+    on iOS. A dismissible banner on `/settings` is the planned
+    accommodation.
+    
+    Why here, why now:
+      * On Chrome/Edge/Android, `beforeinstallprompt` is captured in
+codex
+The repository layout in the prompt is slightly off as well, so I’m checking the actual top-level directories from the current workspace before I continue with the review.
+exec
+/bin/zsh -lc pwd in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+/Users/derekbeckley/Developer/EICR_Automation
+exec
+/bin/zsh -lc 'ls -la' in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+total 2160
+drwx------   60 derekbeckley  staff    1920 Apr 17 23:10 .
+drwxr-xr-x   23 derekbeckley  staff     736 Apr 14 18:56 ..
+-rw-r--r--@   1 derekbeckley  staff   10244 Mar  9 09:29 .DS_Store
+drwx------    5 derekbeckley  staff     160 Apr 10 21:36 .claude
+-rw-r--r--    1 derekbeckley  staff     290 Apr 16 17:56 .dockerignore
+-rw-r--r--    1 derekbeckley  staff     322 Apr 12 19:51 .env
+-rw-r--r--    1 derekbeckley  staff    1349 Apr 12 19:51 .env.example
+drwxr-xr-x   17 derekbeckley  staff     544 Apr 17 23:33 .git
+drwxr-xr-x    3 derekbeckley  staff      96 Mar 18 06:09 .github
+-rw-r--r--    1 derekbeckley  staff    1386 Apr 16 17:29 .gitignore
+drwxr-xr-x    5 derekbeckley  staff     160 Apr 15 07:44 .husky
+-rw-r--r--    1 derekbeckley  staff     725 Apr 10 21:36 .mcp.json
+drwxr-xr-x    4 derekbeckley  staff     128 Apr 17 18:37 .optimizer-plans
+-rw-r--r--    1 derekbeckley  staff     106 Apr 10 21:36 .prettierrc
+-rw-r--r--    1 derekbeckley  staff   16895 Apr 17 18:37 AUDIO_PIPELINE_AUDIT.md
+-rw-r--r--    1 derekbeckley  staff   12468 Apr 17 23:10 CLAUDE.md
+drwxr-xr-x   15 derekbeckley  staff     480 Apr  3 16:46 CertMateAndroid
+drwx------   34 derekbeckley  staff    1088 Apr 16 15:15 CertMateUnified
+-rw-r--r--    1 derekbeckley  staff    3009 Apr 17 18:37 DEPLOY_NOTES.md
+exec
+/bin/zsh -lc "find . -maxdepth 3 -iname '*phase-7b*' -o -path './*reviews*'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 264ms:
+./web/reviews
+./web/reviews/aggregator-prompt.md
+./web/reviews/context
+./web/reviews/claude
+./web/reviews/codex
+./web/reviews/README.md
+./web/reviews/logs
+./web/reviews/phases.tsv
+./web/reviews/run-codex.sh
+codex
+The review assets live under `web/reviews`, not repo root. I’ve found the right area and am pulling the handoff plus the commit output from there.
+exec
+/bin/zsh -lc "sed -n '1,240p' web/reviews/context/phase-7b4.md" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+# Phase 7b4 — Context
+
+**Commit:** `1ec4e22`
+
+## Commit message
+
+```
+commit 1ec4e22934c384ddf240ef667d41cd18fd132ed0
+Author:     Derek Beckley <derekbeckley@Dereks-Mac-mini.broadband>
+AuthorDate: Fri Apr 17 22:30:31 2026 +0100
+Commit:     Derek Beckley <derekbeckley@Dereks-Mac-mini.broadband>
+CommitDate: Fri Apr 17 22:30:31 2026 +0100
+
+    feat(web): Phase 7b iOS Add-to-Home-Screen hint (closes 7b)
+    
+    Final scope-exclusion item from PHASE_7A_HANDOFF.md §"Scope exclusions":
+    closes Phase 7b. Without this, iPhone/iPad users have no pathway to
+    discover that CertMate is installable — Safari never fires
+    `beforeinstallprompt`, so the AppShell `<InstallButton />` stays hidden
+    on iOS. A dismissible banner on `/settings` is the planned
+codex
+I have the commit and handoff context now. Next I’m reading the current versions of the touched files, plus adjacent PWA install code, to separate commit-specific issues from anything introduced later.
+exec
+/bin/zsh -lc "nl -ba web/src/components/pwa/ios-install-hint.tsx | sed -n '1,220p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	'use client';
+     2	
+     3	import * as React from 'react';
+     4	import { Share, Plus, X } from 'lucide-react';
+     5	
+     6	/**
+     7	 * Dismissible "Add to Home Screen" banner for iOS Safari users.
+     8	 *
+     9	 * Why this exists — the missing piece vs. Chrome/Edge/Android:
+    10	 *   Those browsers fire `beforeinstallprompt`, which we capture in
+    11	 *   `install-store.ts` and expose via the `<InstallButton />` in the
+    12	 *   AppShell header. iOS Safari does NOT fire that event at all; the
+    13	 *   only way to install on iOS is:
+    14	 *     Share icon → Add to Home Screen → Add
+    15	 *   So iPhone/iPad users would never learn the app is installable
+    16	 *   without explicit guidance. This banner provides that guidance,
+    17	 *   once, on `/settings` (low-traffic page, avoids nagging daily
+    18	 *   workflows).
+    19	 *
+    20	 * Where it renders:
+exec
+/bin/zsh -lc "nl -ba web/src/lib/pwa/install-store.ts | sed -n '1,260p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "nl -ba web/src/components/pwa/install-button.tsx | sed -n '1,220p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	import { create } from 'zustand';
+     2	
+     3	/**
+     4	 * Chrome / Edge / Android WebView fire `beforeinstallprompt` when the app
+     5	 * meets the PWA install criteria. We stash the event in a store instead
+     6	 * of acting on it immediately so the user, not the browser, decides when
+     7	 * to install — auto-banners hurt conversion and annoy power users.
+     8	 *
+     9	 * Safari (desktop + iOS) does NOT fire this event at all; the store will
+    10	 * simply stay empty there and `<InstallButton />` will render nothing.
+    11	 * An iOS "Add to Home Screen" hint on `/settings` is a Phase 7b add-on.
+    12	 */
+    13	export interface BeforeInstallPromptEvent extends Event {
+    14	  readonly platforms: string[];
+    15	  readonly userChoice: Promise<{ outcome: 'accepted' | 'dismissed'; platform: string }>;
+    16	  prompt(): Promise<void>;
+    17	}
+    18	
+    19	interface InstallState {
+    20	  deferredPrompt: BeforeInstallPromptEvent | null;
+ succeeded in 0ms:
+     1	'use client';
+     2	
+     3	import { Button } from '@/components/ui/button';
+     4	import { useInstallStore } from '@/lib/pwa/install-store';
+     5	
+     6	/**
+     7	 * Renders nothing until the browser has fired `beforeinstallprompt`. On
+     8	 * click, shows the native install prompt, then clears the stored event
+     9	 * (browsers allow `prompt()` to be called at most once per event).
+    10	 *
+    11	 * Ghost + small to sit quietly next to the Sign-out button in AppShell.
+    12	 * If the install dialog is dismissed, we still clear the deferred prompt
+    13	 * — Chrome won't fire `beforeinstallprompt` again in the same session, so
+    14	 * hiding the button is the correct affordance (re-shows on next visit).
+    15	 */
+    16	export function InstallButton() {
+    17	  const deferredPrompt = useInstallStore((s) => s.deferredPrompt);
+    18	  const canInstall = useInstallStore((s) => s.canInstall);
+    19	  const setDeferred = useInstallStore((s) => s.setDeferred);
+    20	
+exec
+/bin/zsh -lc "nl -ba web/src/app/settings/page.tsx | sed -n '1,220p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	'use client';
+     2	
+     3	import * as React from 'react';
+     4	import Link from 'next/link';
+     5	import { useRouter } from 'next/navigation';
+     6	import { Building2, ChevronRight, LayoutDashboard, LogOut, ShieldCheck, Users } from 'lucide-react';
+     7	import { api } from '@/lib/api-client';
+     8	import { clearAuth } from '@/lib/auth';
+     9	import { useCurrentUser } from '@/lib/use-current-user';
+    10	import { isCompanyAdmin, isSystemAdmin } from '@/lib/roles';
+    11	import { Button } from '@/components/ui/button';
+    12	import { IOSInstallHint } from '@/components/pwa/ios-install-hint';
+    13	
+    14	/**
+    15	 * Settings hub. Ports iOS `SettingsView.swift` — hero profile header,
+    16	 * role badges, and stacked link cards into sub-sections.
+    17	 *
+    18	 * Phase 6a ships only the Staff section live. Company / Admin link
+    19	 * cards render conditionally (so the role gating is correct from day
+    20	 * one) but route to placeholders until 6b / 6c land — see the guarded
+codex
+I’ve got two concrete review angles already: the iPad detection path looks incomplete, and the storage read path isn’t protected the way the commit message claims. I’m checking the surrounding test patterns now so I can tie those issues to precise coverage gaps rather than generic “add tests” advice.
+exec
+/bin/zsh -lc 'cat web/package.json' in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+{
+  "name": "web",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev --turbopack",
+    "build": "next build --webpack",
+    "start": "next start",
+    "lint": "eslint",
+    "verify": "tsx scripts/verify-visual.ts",
+    "typecheck": "tsc --noEmit",
+    "pwa:icons": "node scripts/generate-pwa-icons.mjs"
+  },
+  "dependencies": {
+    "@dnd-kit/core": "^6.3.1",
+    "@dnd-kit/modifiers": "^9.0.0",
+    "@dnd-kit/sortable": "^10.0.0",
+    "@dnd-kit/utilities": "^3.2.2",
+    "@hookform/resolvers": "^5.2.2",
+    "@radix-ui/react-checkbox": "^1.3.3",
+exec
+/bin/zsh -lc "rg -n \"IOSInstallHint|ios-install-hint|beforeinstallprompt|InstallButton|offline-indicator|use-online-status\" web/src web/tests web/__tests__ web -g '*test*' -g '*spec*'" in /Users/derekbeckley/Developer/EICR_Automation exited 2 in 0ms:
+rg: web/tests: No such file or directory (os error 2)
+rg: web/__tests__: No such file or directory (os error 2)
+exec
+/bin/zsh -lc "find web -maxdepth 4 \\( -iname '*test.*' -o -iname '*spec.*' \\) | sed -n '1,240p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+web/node_modules/@types/node/test.d.ts
+exec
+/bin/zsh -lc "find web -maxdepth 4 -type f | rg 'playwright|spec|test'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+web/_screenshots/phase-2-2026-04-17T10-46-55-561Z/phase-2-eicr-inspector.desktop.png
+web/_screenshots/phase-2-2026-04-17T10-46-55-561Z/phase-2-eic-inspector.mobile.png
+web/_screenshots/phase-2-2026-04-17T10-46-55-561Z/phase-2-eicr-inspector.mobile.png
+web/_screenshots/phase-2-2026-04-17T10-46-55-561Z/phase-2-eic-inspector.desktop.png
+web/_screenshots/phase-2-2026-04-17T10-46-55-561Z/phase-2-eic-inspection.desktop.png
+web/_screenshots/phase-2-2026-04-17T10-46-55-561Z/phase-2-eicr-inspection.mobile.png
+web/_screenshots/phase-2-2026-04-17T10-46-55-561Z/phase-2-eicr-inspection.desktop.png
+web/_screenshots/phase-2-2026-04-17T10-46-55-561Z/phase-2-eic-inspection.mobile.png
+web/_screenshots/phase-2-2026-04-17T10-44-09-573Z/phase-2-eicr-inspector.desktop.png
+web/_screenshots/phase-2-2026-04-17T10-44-09-573Z/phase-2-eic-inspector.mobile.png
+web/_screenshots/phase-2-2026-04-17T10-44-09-573Z/phase-2-eicr-inspector.mobile.png
+web/_screenshots/phase-2-2026-04-17T10-44-09-573Z/phase-2-eic-inspector.desktop.png
+web/_screenshots/phase-2-2026-04-17T10-44-09-573Z/phase-2-eic-inspection.desktop.png
+web/_screenshots/phase-2-2026-04-17T10-44-09-573Z/phase-2-eicr-inspection.mobile.png
+web/_screenshots/phase-2-2026-04-17T10-44-09-573Z/phase-2-eicr-inspection.desktop.png
+web/_screenshots/phase-2-2026-04-17T10-44-09-573Z/phase-2-eic-inspection.mobile.png
+web/_screenshots/phase-2-2026-04-17T11-25-58-348Z/phase-2-eic-inspection.desktop.png
+web/_screenshots/phase-2-2026-04-17T11-25-58-348Z/phase-2-eicr-inspection.mobile.png
+web/_screenshots/phase-2-2026-04-17T11-25-58-348Z/phase-2-eicr-inspection.desktop.png
+web/_screenshots/phase-2-2026-04-17T11-25-58-348Z/phase-2-eic-inspection.mobile.png
+exec
+/bin/zsh -lc 'rg -n "IOSInstallHint|ios-install-hint|beforeinstallprompt|InstallButton|offline-indicator|use-online-status" web' in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+web/src/lib/pwa/install-store.ts:4: * Chrome / Edge / Android WebView fire `beforeinstallprompt` when the app
+web/src/lib/pwa/install-store.ts:10: * simply stay empty there and `<InstallButton />` will render nothing.
+web/src/components/pwa/ios-install-hint.tsx:10: *   Those browsers fire `beforeinstallprompt`, which we capture in
+web/src/components/pwa/ios-install-hint.tsx:11: *   `install-store.ts` and expose via the `<InstallButton />` in the
+web/src/components/pwa/ios-install-hint.tsx:28: *     `<InstallButton />`, so double-prompting is redundant.
+web/src/components/pwa/ios-install-hint.tsx:63:export function IOSInstallHint() {
+web/src/components/pwa/offline-indicator.tsx:5:import { useOnlineStatus } from '@/lib/pwa/use-online-status';
+web/src/components/pwa/offline-indicator.tsx:10: * cluster items (user name, <InstallButton />, Sign-out) so it doesn't
+web/src/components/pwa/install-prompt-provider.tsx:7: * Renders nothing. Attaches window listeners for `beforeinstallprompt` and
+web/src/components/pwa/install-prompt-provider.tsx:12: * `beforeinstallprompt` on any page including `/login`; if we waited until
+web/src/components/pwa/install-prompt-provider.tsx:33:    window.addEventListener('beforeinstallprompt', onBeforeInstallPrompt);
+web/src/components/pwa/install-prompt-provider.tsx:36:      window.removeEventListener('beforeinstallprompt', onBeforeInstallPrompt);
+web/src/components/pwa/install-button.tsx:7: * Renders nothing until the browser has fired `beforeinstallprompt`. On
+web/src/components/pwa/install-button.tsx:13: * — Chrome won't fire `beforeinstallprompt` again in the same session, so
+web/src/components/pwa/install-button.tsx:16:export function InstallButton() {
+web/src/components/layout/app-shell.tsx:10:import { InstallButton } from '@/components/pwa/install-button';
+web/src/components/layout/app-shell.tsx:11:import { OfflineIndicator } from '@/components/pwa/offline-indicator';
+web/src/components/layout/app-shell.tsx:99:           * `beforeinstallprompt` and the deferred event is live in the
+web/src/components/layout/app-shell.tsx:104:          <InstallButton />
+web/src/app/layout.tsx:60:         * Mounted at the root so Chrome's `beforeinstallprompt` is captured
+exec
+/bin/zsh -lc 'git diff 1ec4e22..HEAD -- web/src/components/pwa/ios-install-hint.tsx web/src/app/settings/page.tsx' in /Users/derekbeckley/Developer/EICR_Automation succeeded in 1.02s:
+2026-04-18 00:39:32.102 xcodebuild[40539:67244207]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:39:32.201 xcodebuild[40539:67244206] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-USmixydc' (errno=Operation not permitted)
+2026-04-18 00:39:32.487 xcodebuild[40541:67244216]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:39:32.584 xcodebuild[40541:67244215] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+codex
+There are effectively no automated tests in `web/` for this area right now, which makes the install hint logic entirely manual/regression-prone. I’m doing one last pass for working-tree drift and then I’ll write the review with commit-vs-current distinctions called out explicitly.
+exec
+/bin/zsh -lc "nl -ba web/PHASE_7B_HANDOFF.md | sed -n '80,120p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+    80	
+    81	**`navigator.onLine` truthiness caveat** (documented in both files): `true` means "the device has a network interface", NOT "the backend is reachable". Captive-portal wifi, hotel DNS hijack, and ISP blocks all look "online" to the browser. The pill handles only the clear-cut no-interface case; real retry logic must be driven by failed fetches (the SWR paths from `2d3527f`).
+    82	
+    83	### 4. iOS Add-to-Home-Screen hint (`1ec4e22`)
+    84	
+    85	**New**
+    86	
+    87	- `web/src/components/pwa/ios-install-hint.tsx` — dismissible `<aside role="region">` on `/settings`. Renders only when **all** of:
+    88	  - `/iPad|iPhone|iPod/.test(navigator.userAgent) && !('MSStream' in window)` (the `MSStream` guard filters old Windows Phones that spoofed iOS UAs).
+    89	  - NOT `(navigator as IOSNavigator).standalone === true` (iOS-specific property, typed via a local interface extension rather than polluting a global declare).
+    90	  - NOT `window.matchMedia('(display-mode: standalone)').matches` (cross-browser standard, reliable on iPadOS 16+).
+    91	  - `localStorage.getItem('cm_pwa_ios_hint_dismissed:v1') !== '1'`.
+    92	
+    93	  The `:v1` suffix on the dismissal key is deliberate: a future campaign can reset the pool by bumping to `:v2` with no data-migration step. try/catch around `setItem` handles private-mode Safari + quota-exceeded.
+    94	
+    95	  Visual: brand-blue-tinted surface (`color-mix(in srgb, var(--color-brand-blue) 10%, var(--color-surface-2))`) + 30%-opacity brand-blue border (matches 6b LinkCards so it feels native). Plus icon tile, numbered ol with inline Share icon on step 1 (brand-blue — mirrors what the user sees in Safari's toolbar), bolded "Add to Home Screen" / "Add" on step 2. Top-right × dismiss button, 32×32 hit area.
+    96	
+    97	**Modified**
+    98	
+    99	- `web/src/app/settings/page.tsx` — single import + single render site, between the hero profile section and the TEAM SectionGroup. The banner self-suppresses in every no-show case, so the settings page has no platform-specific branching.
+exec
+/bin/zsh -lc 'git status --short -- web/src/components/pwa/ios-install-hint.tsx web/src/app/settings/page.tsx' in /Users/derekbeckley/Developer/EICR_Automation succeeded in 1.07s:
+2026-04-18 00:39:40.980 xcodebuild[40562:67244344]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:39:41.080 xcodebuild[40562:67244343] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-Iu6tlhnz' (errno=Operation not permitted)
+2026-04-18 00:39:41.382 xcodebuild[40607:67244447]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:39:41.482 xcodebuild[40607:67244440] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+codex
+**1. Summary of the phase**
+
+Phase 7b adds a new client component, [`IOSInstallHint`](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/pwa/ios-install-hint.tsx:63), and mounts it on [`/settings`](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/settings/page.tsx:79) to give Safari/iOS users a manual “Share → Add to Home Screen → Add” install path that Safari does not expose through `beforeinstallprompt`. The banner is dismissible, persisted in `localStorage`, and self-suppresses for non-iOS and already-installed sessions.
+
+The current working tree matches commit `1ec4e22` for the reviewed files; there is no later drift in [`ios-install-hint.tsx`](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/pwa/ios-install-hint.tsx:1) or [`settings/page.tsx`](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/settings/page.tsx:1).
+
+**2. Alignment with original plan**
+
+The implementation matches the handoff closely on structure and intent: it adds a dismissible hint component, stores dismissal under the versioned key, checks standalone mode, and mounts the banner on `/settings` between the hero and TEAM section as described in [the handoff](/Users/derekbeckley/Developer/EICR_Automation/web/PHASE_7B_HANDOFF.md:83).
+
+One objective is only partially met: the handoff says this phase gives “iOS users” a path to install, but the UA gate in [`ios-install-hint.tsx`](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/pwa/ios-install-hint.tsx:73) misses modern iPadOS devices that present desktop-class Safari user agents. That means part of the intended audience still never sees the hint.
+
+**3. Correctness issues**
+
+- **P1** Modern iPads are missed by the install-hint gate in [`web/src/components/pwa/ios-install-hint.tsx:73`](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/pwa/ios-install-hint.tsx:73). The regex only matches `iPad|iPhone|iPod`, but current iPadOS Safari commonly reports a desktop-style UA (`Macintosh`) and relies on touch-capability heuristics instead. Result: a real iPad user can fall through the “non-iOS” path and never get the add-to-home-screen guidance this phase was meant to provide.
+- **P2** The `localStorage` read is not protected in [`web/src/components/pwa/ios-install-hint.tsx:82`](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/pwa/ios-install-hint.tsx:82), even though the phase rationale explicitly calls out storage robustness. `setItem` is wrapped in `try/catch`, but `getItem` can also throw in restricted-storage contexts. In those cases the effect can fail before `setVisible(true)`, turning a best-effort hint into a runtime error path.
+
+**4. Security issues**
+
+- No material security issues found in this phase. The component uses static copy only, does not introduce dynamic HTML injection, and persists only a boolean-like dismissal flag in `localStorage`.
+
+**5. Performance issues**
+
+- No meaningful performance issues found. The component does one mount-time effect, one `matchMedia` check, and a single small conditional render on a low-traffic page.
+
+**6. Accessibility issues**
+
+- **P2** The region label in [`web/src/components/pwa/ios-install-hint.tsx:103`](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/pwa/ios-install-hint.tsx:103) says “Install CertMate on your iPhone,” but the feature is intended for both iPhone and iPad users. For iPad users who do see the banner, that is incorrect assistive copy.
+- **P2** The inline Share icon is given `aria-label="Share"` in [`web/src/components/pwa/ios-install-hint.tsx:140`](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/pwa/ios-install-hint.tsx:140). Inside an already-readable sentence, that creates redundant or awkward screen-reader output. This icon is decorative support for the sentence and should be `aria-hidden`.
+
+**7. Code quality**
+
+- The phase is otherwise cleanly scoped: the install decision stays encapsulated in [`IOSInstallHint`](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/pwa/ios-install-hint.tsx:63), and [`settings/page.tsx`](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/settings/page.tsx:79) remains free of platform branching.
+- The main code-quality weakness is that platform detection and storage access are embedded directly in the effect with no helper abstraction, which makes the already-fragile UA logic harder to test and easier to regress.
+
+**8. Test coverage gaps**
+
+- There are effectively no automated tests in `web/` covering this feature; I did not find any app test files for this area.
+- Missing cases that should be covered:
+  - iPhone Safari renders the hint on first visit.
+  - Dismiss sets the storage key and suppresses subsequent renders.
+  - Standalone mode suppresses the banner.
+  - Modern iPadOS desktop-style UA still renders the banner.
+  - Storage read/write failures do not throw and fail closed safely.
+  - Screen-reader semantics for the region label and dismiss control.
+
+**9. Suggested fixes**
+
+1. [`web/src/components/pwa/ios-install-hint.tsx:73`](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/pwa/ios-install-hint.tsx:73)  
+   Extend iOS detection to cover modern iPadOS desktop-class Safari, e.g. include a branch such as `navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1` alongside the current regex. This is the highest-priority fix because it blocks a real portion of the intended iOS audience from ever seeing the hint.
+
+2. [`web/src/components/pwa/ios-install-hint.tsx:82`](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/pwa/ios-install-hint.tsx:82)  
+   Wrap the `localStorage.getItem()` read in the same defensive `try/catch` approach used for `setItem`, or centralize both behind a tiny safe-storage helper. The current code handles write failures but not read failures, which does not match the stated resilience goal.
+
+3. [`web/src/components/pwa/ios-install-hint.tsx:103`](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/pwa/ios-install-hint.tsx:103)  
+   Change the region label to platform-neutral copy such as “Install CertMate on your device” or “Add CertMate to your Home Screen.” That keeps assistive text correct for both phones and tablets.
+
+4. [`web/src/components/pwa/ios-install-hint.tsx:137`](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/pwa/ios-install-hint.tsx:137)  
+   Mark the inline `Share` icon `aria-hidden` and let the surrounding sentence carry the meaning. This avoids redundant announcements while preserving the visual cue.
+
+5. [`web/src/components/pwa/ios-install-hint.tsx:66`](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/pwa/ios-install-hint.tsx:66)  
+   Add automated coverage for the mount effect behavior in a new component test or Playwright spec, specifically for iPhone UA, modern iPad UA, standalone suppression, dismissed suppression, and storage failure paths. Right now the feature is protected only by manual testing.
+
+**10. Overall verdict**
+
+**Ship with fixes.** The phase is well-scoped and mostly matches the handoff, but it has one significant functional miss: modern iPads can be excluded from the hint entirely. The storage-read robustness and a11y copy issues are lower severity but worth correcting in the same pass.
+
+Top 3 priority fixes:
+1. Fix iPadOS detection in [`ios-install-hint.tsx:73`](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/pwa/ios-install-hint.tsx:73).
+2. Guard `localStorage.getItem()` in [`ios-install-hint.tsx:82`](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/pwa/ios-install-hint.tsx:82).
+3. Add regression tests for install-hint visibility/suppression behavior.
+tokens used
+70,927
+**1. Summary of the phase**
+
+Phase 7b adds a new client component, [`IOSInstallHint`](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/pwa/ios-install-hint.tsx:63), and mounts it on [`/settings`](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/settings/page.tsx:79) to give Safari/iOS users a manual “Share → Add to Home Screen → Add” install path that Safari does not expose through `beforeinstallprompt`. The banner is dismissible, persisted in `localStorage`, and self-suppresses for non-iOS and already-installed sessions.
+
+The current working tree matches commit `1ec4e22` for the reviewed files; there is no later drift in [`ios-install-hint.tsx`](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/pwa/ios-install-hint.tsx:1) or [`settings/page.tsx`](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/settings/page.tsx:1).
+
+**2. Alignment with original plan**
+
+The implementation matches the handoff closely on structure and intent: it adds a dismissible hint component, stores dismissal under the versioned key, checks standalone mode, and mounts the banner on `/settings` between the hero and TEAM section as described in [the handoff](/Users/derekbeckley/Developer/EICR_Automation/web/PHASE_7B_HANDOFF.md:83).
+
+One objective is only partially met: the handoff says this phase gives “iOS users” a path to install, but the UA gate in [`ios-install-hint.tsx`](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/pwa/ios-install-hint.tsx:73) misses modern iPadOS devices that present desktop-class Safari user agents. That means part of the intended audience still never sees the hint.
+
+**3. Correctness issues**
+
+- **P1** Modern iPads are missed by the install-hint gate in [`web/src/components/pwa/ios-install-hint.tsx:73`](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/pwa/ios-install-hint.tsx:73). The regex only matches `iPad|iPhone|iPod`, but current iPadOS Safari commonly reports a desktop-style UA (`Macintosh`) and relies on touch-capability heuristics instead. Result: a real iPad user can fall through the “non-iOS” path and never get the add-to-home-screen guidance this phase was meant to provide.
+- **P2** The `localStorage` read is not protected in [`web/src/components/pwa/ios-install-hint.tsx:82`](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/pwa/ios-install-hint.tsx:82), even though the phase rationale explicitly calls out storage robustness. `setItem` is wrapped in `try/catch`, but `getItem` can also throw in restricted-storage contexts. In those cases the effect can fail before `setVisible(true)`, turning a best-effort hint into a runtime error path.
+
+**4. Security issues**
+
+- No material security issues found in this phase. The component uses static copy only, does not introduce dynamic HTML injection, and persists only a boolean-like dismissal flag in `localStorage`.
+
+**5. Performance issues**
+
+- No meaningful performance issues found. The component does one mount-time effect, one `matchMedia` check, and a single small conditional render on a low-traffic page.
+
+**6. Accessibility issues**
+
+- **P2** The region label in [`web/src/components/pwa/ios-install-hint.tsx:103`](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/pwa/ios-install-hint.tsx:103) says “Install CertMate on your iPhone,” but the feature is intended for both iPhone and iPad users. For iPad users who do see the banner, that is incorrect assistive copy.
+- **P2** The inline Share icon is given `aria-label="Share"` in [`web/src/components/pwa/ios-install-hint.tsx:140`](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/pwa/ios-install-hint.tsx:140). Inside an already-readable sentence, that creates redundant or awkward screen-reader output. This icon is decorative support for the sentence and should be `aria-hidden`.
+
+**7. Code quality**
+
+- The phase is otherwise cleanly scoped: the install decision stays encapsulated in [`IOSInstallHint`](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/pwa/ios-install-hint.tsx:63), and [`settings/page.tsx`](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/settings/page.tsx:79) remains free of platform branching.
+- The main code-quality weakness is that platform detection and storage access are embedded directly in the effect with no helper abstraction, which makes the already-fragile UA logic harder to test and easier to regress.
+
+**8. Test coverage gaps**
+
+- There are effectively no automated tests in `web/` covering this feature; I did not find any app test files for this area.
+- Missing cases that should be covered:
+  - iPhone Safari renders the hint on first visit.
+  - Dismiss sets the storage key and suppresses subsequent renders.
+  - Standalone mode suppresses the banner.
+  - Modern iPadOS desktop-style UA still renders the banner.
+  - Storage read/write failures do not throw and fail closed safely.
+  - Screen-reader semantics for the region label and dismiss control.
+
+**9. Suggested fixes**
+
+1. [`web/src/components/pwa/ios-install-hint.tsx:73`](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/pwa/ios-install-hint.tsx:73)  
+   Extend iOS detection to cover modern iPadOS desktop-class Safari, e.g. include a branch such as `navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1` alongside the current regex. This is the highest-priority fix because it blocks a real portion of the intended iOS audience from ever seeing the hint.
+
+2. [`web/src/components/pwa/ios-install-hint.tsx:82`](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/pwa/ios-install-hint.tsx:82)  
+   Wrap the `localStorage.getItem()` read in the same defensive `try/catch` approach used for `setItem`, or centralize both behind a tiny safe-storage helper. The current code handles write failures but not read failures, which does not match the stated resilience goal.
+
+3. [`web/src/components/pwa/ios-install-hint.tsx:103`](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/pwa/ios-install-hint.tsx:103)  
+   Change the region label to platform-neutral copy such as “Install CertMate on your device” or “Add CertMate to your Home Screen.” That keeps assistive text correct for both phones and tablets.
+
+4. [`web/src/components/pwa/ios-install-hint.tsx:137`](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/pwa/ios-install-hint.tsx:137)  
+   Mark the inline `Share` icon `aria-hidden` and let the surrounding sentence carry the meaning. This avoids redundant announcements while preserving the visual cue.
+
+5. [`web/src/components/pwa/ios-install-hint.tsx:66`](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/pwa/ios-install-hint.tsx:66)  
+   Add automated coverage for the mount effect behavior in a new component test or Playwright spec, specifically for iPhone UA, modern iPad UA, standalone suppression, dismissed suppression, and storage failure paths. Right now the feature is protected only by manual testing.
+
+**10. Overall verdict**
+
+**Ship with fixes.** The phase is well-scoped and mostly matches the handoff, but it has one significant functional miss: modern iPads can be excluded from the hint entirely. The storage-read robustness and a11y copy issues are lower severity but worth correcting in the same pass.
+
+Top 3 priority fixes:
+1. Fix iPadOS detection in [`ios-install-hint.tsx:73`](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/pwa/ios-install-hint.tsx:73).
+2. Guard `localStorage.getItem()` in [`ios-install-hint.tsx:82`](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/pwa/ios-install-hint.tsx:82).
+3. Add regression tests for install-hint visibility/suppression behavior.

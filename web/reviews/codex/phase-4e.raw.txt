@@ -1,0 +1,578 @@
+OpenAI Codex v0.116.0 (research preview)
+--------
+workdir: /Users/derekbeckley/Developer/EICR_Automation
+model: gpt-5.4
+provider: openai
+approval: never
+sandbox: read-only
+reasoning effort: none
+reasoning summaries: none
+session id: 019d9dab-7610-79a2-abfc-c37a9367ea20
+--------
+user
+You are performing a rigorous code review of a single phase of a Next.js 16 / React 19 PWA frontend rebuild for an electrical-certificate automation tool (EICR / EIC). The repo root is at /Users/derekbeckley/Developer/EICR_Automation and the web package is at web/. Branch: web-rebuild.
+
+TARGET: Phase 4e — VAD sleep/wake with 3s ring buffer replay
+COMMIT: 9f1dba6
+
+Context for this phase (original intent, handoff doc, commit message, files changed) is in this repo at: reviews/context/phase-4e.md — READ THAT FILE FIRST.
+
+Use shell commands to:
+  git show --stat 9f1dba6
+  git show 9f1dba6
+to inspect the full diff. Then read any files you need from the working tree (they may have evolved since this commit — note any later changes).
+
+Your output must be a well-structured markdown review with these sections:
+  1. Summary of the phase (2-3 sentences — what it did).
+  2. Alignment with original plan (does the implementation match the handoff doc / commit intent? Any missing objectives?).
+  3. Correctness issues (bugs, race conditions, missing error handling, incorrect semantics). Prioritise P0/P1/P2.
+  4. Security issues (XSS, auth, CSRF, injection, leaked secrets, PII, CORS). Each item tagged with severity.
+  5. Performance issues (re-renders, N+1, large bundles, memory leaks, blocking work on main thread).
+  6. Accessibility issues (semantic HTML, keyboard nav, ARIA, colour contrast, focus management).
+  7. Code quality (duplication, dead code, type-safety holes, naming, convention drift vs. rest of repo).
+  8. Test coverage gaps.
+  9. Suggested fixes — each as a numbered item with: file:line, what to change, why. Be concrete.
+  10. Overall verdict (ship / ship with fixes / needs rework) and top 3 priority fixes.
+
+Be specific — cite file paths and line numbers. Avoid generic advice. If the code is good, say so with evidence. Do NOT modify files; this is review only.
+
+mcp startup: no servers
+codex
+Reviewing phase `4e` against the handoff and commit diff first, then I’ll trace the touched code in the current working tree to check for regressions, missing intent, and test gaps.
+exec
+/bin/zsh -lc "sed -n '1,220p' reviews/context/phase-4e.md" in /Users/derekbeckley/Developer/EICR_Automation exited 1 in 0ms:
+sed: reviews/context/phase-4e.md: No such file or directory
+exec
+/bin/zsh -lc 'git show --stat 9f1dba6' in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc 'git show 9f1dba6' in /Users/derekbeckley/Developer/EICR_Automation succeeded in 1.13s:
+2026-04-17 23:59:20.154 xcodebuild[33107:67203926]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:59:20.256 xcodebuild[33107:67203924] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-0UXGQoh8' (errno=Operation not permitted)
+2026-04-17 23:59:20.576 xcodebuild[33113:67203962]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:59:20.679 xcodebuild[33113:67203960] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+commit 9f1dba67f72a6e675bd5cbab18a026c5b9ea048e
+Author: Derek Beckley <derekbeckley@Dereks-Mac-mini.broadband>
+Date:   Fri Apr 17 13:30:22 2026 +0100
+
+    feat(web): Phase 4e VAD sleep/wake with 3s ring buffer replay
+    
+    WHAT — Port iOS SleepManager + AudioRingBuffer to web so the recording
+    pipeline auto-powers down during silence and re-wakes on speech, matching
+    the three-tier active/dozing/sleeping power model. 15s of no-final-
+    transcript triggers doze (Deepgram WS paused, Sonnet paused, cost ticker
+    stopped); 30min of dozing triggers sleep (Deepgram + Sonnet fully
+    disconnected, mic kept running); RMS heuristic on the live mic wakes
+    back to active and replays the last 3s of audio into Deepgram so words
+    spoken just before wake reach the ASR.
+ succeeded in 1.13s:
+2026-04-17 23:59:20.154 xcodebuild[33106:67203925]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:59:20.256 xcodebuild[33106:67203923] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-LOlUJBss' (errno=Operation not permitted)
+2026-04-17 23:59:20.576 xcodebuild[33112:67203963]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:59:20.679 xcodebuild[33112:67203961] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+commit 9f1dba67f72a6e675bd5cbab18a026c5b9ea048e
+Author: Derek Beckley <derekbeckley@Dereks-Mac-mini.broadband>
+Date:   Fri Apr 17 13:30:22 2026 +0100
+
+    feat(web): Phase 4e VAD sleep/wake with 3s ring buffer replay
+    
+    WHAT — Port iOS SleepManager + AudioRingBuffer to web so the recording
+    pipeline auto-powers down during silence and re-wakes on speech, matching
+    the three-tier active/dozing/sleeping power model. 15s of no-final-
+    transcript triggers doze (Deepgram WS paused, Sonnet paused, cost ticker
+    stopped); 30min of dozing triggers sleep (Deepgram + Sonnet fully
+    disconnected, mic kept running); RMS heuristic on the live mic wakes
+    back to active and replays the last 3s of audio into Deepgram so words
+    spoken just before wake reach the ASR.
+codex
+The context file path from the prompt doesn’t exist at repo root, so I’m locating it and pulling the commit output directly from git sessions now. After that I’ll inspect the touched files in the current tree for drift since `9f1dba6`.
+exec
+/bin/zsh -lc "rg --files | rg 'phase-4e\\.md"'$|reviews/context'"'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+web/reviews/claude/phase-4e.md
+web/reviews/context/phase-3a.md
+web/reviews/context/phase-5d.md
+web/reviews/context/phase-7b2.md
+web/reviews/context/phase-4d.md
+web/reviews/context/phase-6a.md
+web/reviews/context/phase-7b3.md
+web/reviews/context/phase-4e.md
+web/reviews/context/phase-7a.md
+web/reviews/context/phase-5a.md
+web/reviews/context/phase-4a.md
+web/reviews/context/phase-2.md
+web/reviews/context/phase-1.md
+web/reviews/context/phase-0.md
+web/reviews/context/phase-6b.md
+web/reviews/context/phase-3c.md
+web/reviews/context/phase-5b.md
+web/reviews/context/phase-7b4.md
+web/reviews/context/phase-4b.md
+web/reviews/context/phase-5c.md
+codex
+I have the phase intent and full commit diff. Next I’m reading the current versions of the touched modules and nearby tests so I can distinguish commit-era defects from later fixes or drift.
+exec
+/bin/zsh -lc "nl -ba web/src/lib/recording/deepgram-service.ts | sed -n '1,320p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "nl -ba web/src/lib/recording/sleep-manager.ts | sed -n '1,260p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "nl -ba web/src/lib/recording/audio-ring-buffer.ts | sed -n '1,220p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "nl -ba web/reviews/context/phase-4e.md | sed -n '1,240p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "nl -ba web/src/lib/recording-context.tsx | sed -n '1,760p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	/**
+     2	 * Fixed-size Int16 PCM ring buffer. Port of iOS `AudioRingBuffer.swift`.
+     3	 *
+     4	 * Captures the last ~3 seconds of 16kHz mono mic audio so that when the
+     5	 * `SleepManager` wakes the stream, the words spoken _just before_ VAD
+     6	 * detected speech can be replayed to Deepgram — otherwise the first
+     7	 * sentence after wake is always half-missing.
+     8	 *
+     9	 * The buffer stores Int16 samples (post-PCM conversion) rather than
+    10	 * Float32 so `drain()` can hand the chunk straight to
+    11	 * `DeepgramService.sendInt16PCM()` without an extra copy. Writes from
+    12	 * Float32 use the same clamp-and-scale as `deepgram-service.ts`.
+    13	 */
+    14	
+    15	export class AudioRingBuffer {
+    16	  readonly capacity: number;
+    17	  private buffer: Int16Array;
+    18	  private writeIndex = 0;
+    19	  private isFull = false;
+    20	
+ succeeded in 0ms:
+     1	/**
+     2	 * VAD sleep/wake state machine. Port of iOS `SleepManager.swift`.
+     3	 *
+     4	 * Drives three power-saving tiers while the inspector is recording:
+     5	 *
+     6	 *   active ──15s no final transcript──► dozing
+     7	 *   dozing ──1800s dozing──────────────► sleeping
+     8	 *   dozing/sleeping ──VAD wake (speech)──► active
+     9	 *
+    10	 * **Doze** keeps the Deepgram WS open but stops forwarding real samples
+    11	 * (KeepAlive + silent PCM keeps the socket alive, <100ms wake latency).
+    12	 * **Sleep** fully disconnects Deepgram after 30 minutes of dozing; wake
+    13	 * from sleep reopens the WS + replays the 3-second ring buffer.
+    14	 *
+    15	 * Phase 4e ships a functional RMS-energy wake path. The iOS reference
+    16	 * uses a Silero VAD ONNX model (threshold 0.80, 12-of-30 frames) which
+    17	 * is more resistant to tool noise / breath / footsteps. TODO: land
+    18	 * `onnxruntime-web` + Silero v5 model and swap the RMS path for a real
+    19	 * VAD in `processAudioFrame`.
+    20	 *
+ succeeded in 0ms:
+     1	# Phase 4e — Context
+     2	
+     3	**Commit:** `9f1dba6`
+     4	
+     5	## Commit message
+     6	
+     7	```
+     8	commit 9f1dba67f72a6e675bd5cbab18a026c5b9ea048e
+     9	Author:     Derek Beckley <derekbeckley@Dereks-Mac-mini.broadband>
+    10	AuthorDate: Fri Apr 17 13:30:22 2026 +0100
+    11	Commit:     Derek Beckley <derekbeckley@Dereks-Mac-mini.broadband>
+    12	CommitDate: Fri Apr 17 13:30:22 2026 +0100
+    13	
+    14	    feat(web): Phase 4e VAD sleep/wake with 3s ring buffer replay
+    15	    
+    16	    WHAT — Port iOS SleepManager + AudioRingBuffer to web so the recording
+    17	    pipeline auto-powers down during silence and re-wakes on speech, matching
+    18	    the three-tier active/dozing/sleeping power model. 15s of no-final-
+    19	    transcript triggers doze (Deepgram WS paused, Sonnet paused, cost ticker
+    20	    stopped); 30min of dozing triggers sleep (Deepgram + Sonnet fully
+ succeeded in 0ms:
+     1	/**
+     2	 * Direct-to-Deepgram Nova-3 WebSocket client.
+     3	 *
+     4	 * Mirrors the iOS `DeepgramService.swift` protocol so the two clients
+     5	 * behave identically — same URL parameters (nova-3 / linear16 / 16kHz /
+     6	 * en-GB / interim_results / endpointing=300 / utterance_end_ms=2000 /
+     7	 * vad_events=true) and the same subprotocol auth (`['token', apiKey]`).
+     8	 *
+     9	 * Pause/resume + auto-reconnect are deferred to Phase 4e where the
+    10	 * SleepDetector lands — until then this service offers the minimum
+    11	 * viable surface needed to deliver interim + final transcripts to the
+    12	 * RecordingContext: `connect`, `sendSamples`, `disconnect`.
+    13	 *
+    14	 * Apart from the different runtime, the URL and message shapes are
+    15	 * identical to transcript-standalone — keep in sync if Deepgram params
+    16	 * change there.
+    17	 */
+    18	
+    19	export type DeepgramConnectionState = 'disconnected' | 'connecting' | 'connected' | 'error';
+    20	
+ succeeded in 0ms:
+     1	'use client';
+     2	
+     3	import * as React from 'react';
+     4	import { startMicCapture, type MicCaptureHandle } from './recording/mic-capture';
+     5	import { DeepgramService, type DeepgramConnectionState } from './recording/deepgram-service';
+     6	import {
+     7	  SonnetSession,
+     8	  type ExtractionResult,
+     9	  type SonnetConnectionState,
+    10	  type SonnetQuestion,
+    11	} from './recording/sonnet-session';
+    12	import { applyExtractionToJob } from './recording/apply-extraction';
+    13	import { AudioRingBuffer } from './recording/audio-ring-buffer';
+    14	import { SleepManager, type SleepState } from './recording/sleep-manager';
+    15	import { useLiveFillStore } from './recording/live-fill-state';
+    16	import { api } from './api-client';
+    17	import { useJobContext } from './job-context';
+    18	
+    19	/**
+    20	 * Recording context.
+codex
+The working tree still matches the phase logic in the touched modules, but there are also stale comments around the state machine that no longer describe Phase 4e accurately. I’m checking Sonnet and test coverage next because the main remaining risks here are around resume semantics and untested timer/race behavior.
+exec
+/bin/zsh -lc "nl -ba web/src/lib/recording/sonnet-session.ts | sed -n '200,320p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+   200	      if (event.code !== 1000 && event.code !== 1005) {
+   201	        this.callbacks.onError?.(new Error(`Sonnet WS closed (code=${event.code})`), true);
+   202	      }
+   203	    };
+   204	
+   205	    this.ws = ws;
+   206	  }
+   207	
+   208	  /** Feed a final Deepgram transcript into the Sonnet session. No-op if
+   209	   *  the text is empty. Messages sent before `onopen` are queued. */
+   210	  sendTranscript(text: string, options?: { confirmationsEnabled?: boolean }): void {
+   211	    const trimmed = text?.trim();
+   212	    if (!trimmed) return;
+   213	    if (!this.ws || this.state === 'connecting') {
+   214	      this.preConnectQueue.push(trimmed);
+   215	      return;
+   216	    }
+   217	    if (this.state !== 'connected') return;
+   218	    this.sendRaw({
+   219	      type: 'transcript',
+exec
+/bin/zsh -lc "rg --files web | rg '(test|spec)\\.(ts|tsx)"'$|/__tests__/|/tests/'"'" in /Users/derekbeckley/Developer/EICR_Automation exited 1 in 0ms:
+
+exec
+/bin/zsh -lc 'git blame -L 541,586 web/src/lib/recording-context.tsx' in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc 'git blame -L 390,430 web/src/lib/recording-context.tsx' in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc 'git blame -L 105,163 web/src/lib/recording/deepgram-service.ts' in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc 'git blame -L 105,188 web/src/lib/recording/sleep-manager.ts' in /Users/derekbeckley/Developer/EICR_Automation succeeded in 1.29s:
+2026-04-17 23:59:50.038 xcodebuild[33161:67204325]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:59:50.151 xcodebuild[33161:67204323] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-1d33eko5' (errno=Operation not permitted)
+2026-04-17 23:59:50.500 xcodebuild[33167:67204367]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:59:50.613 xcodebuild[33167:67204360] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+9f1dba67 (Derek Beckley 2026-04-17 13:30:22 +0100 390)   const handleWake = React.useCallback(
+9f1dba67 (Derek Beckley 2026-04-17 13:30:22 +0100 391)     async (from: Exclude<SleepState, 'active'>) => {
+9f1dba67 (Derek Beckley 2026-04-17 13:30:22 +0100 392)       try {
+9f1dba67 (Derek Beckley 2026-04-17 13:30:22 +0100 393)         if (from === 'sleeping') {
+9f1dba67 (Derek Beckley 2026-04-17 13:30:22 +0100 394)           // Deepgram + Sonnet were disconnected; reopen them but DON'T
+9f1dba67 (Derek Beckley 2026-04-17 13:30:22 +0100 395)           // touch the mic or ring buffer — mic is still running and the
+9f1dba67 (Derek Beckley 2026-04-17 13:30:22 +0100 396)           // ring buffer holds the pre-wake audio we want to replay. The
+9f1dba67 (Derek Beckley 2026-04-17 13:30:22 +0100 397)           // Sonnet server preserves conversation state for 5 min (see
+9f1dba67 (Derek Beckley 2026-04-17 13:30:22 +0100 398)           // sonnet-stream.js) so the new WS picks up where we left off.
+9f1dba67 (Derek Beckley 2026-04-17 13:30:22 +0100 399)           const mic = micRef.current;
+9f1dba67 (Derek Beckley 2026-04-17 13:30:22 +0100 400)           if (!mic) {
+9f1dba67 (Derek Beckley 2026-04-17 13:30:22 +0100 401)             // Mic died while sleeping — start a fresh pipeline. Rare.
+9f1dba67 (Derek Beckley 2026-04-17 13:30:22 +0100 402)             await beginMicPipeline();
+9f1dba67 (Derek Beckley 2026-04-17 13:30:22 +0100 403)           } else {
+ succeeded in 1.29s:
+2026-04-17 23:59:50.038 xcodebuild[33159:67204329]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:59:50.151 xcodebuild[33159:67204324] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-d2iTBEVq' (errno=Operation not permitted)
+2026-04-17 23:59:50.500 xcodebuild[33166:67204362]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:59:50.613 xcodebuild[33166:67204358] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+9f1dba67 (Derek Beckley 2026-04-17 13:30:22 +0100 105)   onSpeechActivity(): void {
+9f1dba67 (Derek Beckley 2026-04-17 13:30:22 +0100 106)     if (this.state !== 'active') return;
+9f1dba67 (Derek Beckley 2026-04-17 13:30:22 +0100 107)     this.armNoTranscriptTimer();
+9f1dba67 (Derek Beckley 2026-04-17 13:30:22 +0100 108)   }
+9f1dba67 (Derek Beckley 2026-04-17 13:30:22 +0100 109) 
+9f1dba67 (Derek Beckley 2026-04-17 13:30:22 +0100 110)   /** Feed each mic-level RMS sample in so the wake heuristic can fire.
+9f1dba67 (Derek Beckley 2026-04-17 13:30:22 +0100 111)    *  No-op while in `active`. */
+9f1dba67 (Derek Beckley 2026-04-17 13:30:22 +0100 112)   processAudioLevel(rms: number): void {
+9f1dba67 (Derek Beckley 2026-04-17 13:30:22 +0100 113)     if (this.state === 'active') return;
+9f1dba67 (Derek Beckley 2026-04-17 13:30:22 +0100 114)     if (performance.now() < this.cooldownUntilMs) {
+9f1dba67 (Derek Beckley 2026-04-17 13:30:22 +0100 115)       this.consecutiveSpeechFrames = 0;
+9f1dba67 (Derek Beckley 2026-04-17 13:30:22 +0100 116)       return;
+9f1dba67 (Derek Beckley 2026-04-17 13:30:22 +0100 117)     }
+9f1dba67 (Derek Beckley 2026-04-17 13:30:22 +0100 118) 
+ succeeded in 1.29s:
+2026-04-17 23:59:50.038 xcodebuild[33160:67204327]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:59:50.151 xcodebuild[33160:67204321] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-I30dVAOq' (errno=Operation not permitted)
+2026-04-17 23:59:50.499 xcodebuild[33169:67204363]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:59:50.613 xcodebuild[33169:67204359] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+9e93907c (Derek Beckley 2026-04-17 12:58:20 +0100 105)   /** Send a Float32Array block (mic samples). Resamples to 16kHz if needed
+9f1dba67 (Derek Beckley 2026-04-17 13:30:22 +0100 106)    *  and converts to Int16 PCM before framing. No-op if not connected or
+9f1dba67 (Derek Beckley 2026-04-17 13:30:22 +0100 107)    *  if the service has been paused by the SleepManager. */
+9e93907c (Derek Beckley 2026-04-17 12:58:20 +0100 108)   sendSamples(samples: Float32Array): void {
+9f1dba67 (Derek Beckley 2026-04-17 13:30:22 +0100 109)     if (this.paused) return;
+9e93907c (Derek Beckley 2026-04-17 12:58:20 +0100 110)     if (!this.ws || this.state !== 'connected' || samples.length === 0) return;
+9e93907c (Derek Beckley 2026-04-17 12:58:20 +0100 111) 
+9e93907c (Derek Beckley 2026-04-17 12:58:20 +0100 112)     const resampled = this.sourceSampleRate === 16000 ? samples : this.resampleTo16k(samples);
+9e93907c (Derek Beckley 2026-04-17 12:58:20 +0100 113) 
+9e93907c (Derek Beckley 2026-04-17 12:58:20 +0100 114)     const int16 = new Int16Array(resampled.length);
+9e93907c (Derek Beckley 2026-04-17 12:58:20 +0100 115)     for (let i = 0; i < resampled.length; i++) {
+9e93907c (Derek Beckley 2026-04-17 12:58:20 +0100 116)       const clamped = Math.max(-1, Math.min(1, resampled[i]));
+9e93907c (Derek Beckley 2026-04-17 12:58:20 +0100 117)       int16[i] = Math.round(clamped * 32767);
+9e93907c (Derek Beckley 2026-04-17 12:58:20 +0100 118)     }
+ succeeded in 1.30s:
+2026-04-17 23:59:50.038 xcodebuild[33158:67204326]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:59:50.151 xcodebuild[33158:67204322] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-EbdvWTY5' (errno=Operation not permitted)
+2026-04-17 23:59:50.500 xcodebuild[33168:67204366]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:59:50.613 xcodebuild[33168:67204361] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+b0eb64c1 (Derek Beckley 2026-04-17 12:50:53 +0100 541)   const pause = React.useCallback(() => {
+b0eb64c1 (Derek Beckley 2026-04-17 12:50:53 +0100 542)     if (state !== 'active') return;
+b6c4b658 (Derek Beckley 2026-04-17 13:20:08 +0100 543)     sonnetRef.current?.pause();
+9f1dba67 (Derek Beckley 2026-04-17 13:30:22 +0100 544)     deepgramRef.current?.pause();
+72fb7dac (Derek Beckley 2026-04-17 12:54:23 +0100 545)     clearTick();
+72fb7dac (Derek Beckley 2026-04-17 12:54:23 +0100 546)     setMicLevel(0);
+b0eb64c1 (Derek Beckley 2026-04-17 12:50:53 +0100 547)     setState('dozing');
+9f1dba67 (Derek Beckley 2026-04-17 13:30:22 +0100 548)   }, [state, clearTick]);
+b0eb64c1 (Derek Beckley 2026-04-17 12:50:53 +0100 549) 
+9f1dba67 (Derek Beckley 2026-04-17 13:30:22 +0100 550)   /** Manual resume — mirrors the wake path. If Deepgram was torn down
+9f1dba67 (Derek Beckley 2026-04-17 13:30:22 +0100 551)    *  (sleeping), reopen it; otherwise just unpause and replay the ring
+9f1dba67 (Derek Beckley 2026-04-17 13:30:22 +0100 552)    *  buffer so any audio captured while paused reaches the ASR. The mic
+9f1dba67 (Derek Beckley 2026-04-17 13:30:22 +0100 553)    *  + ring buffer keep running through both doze and sleep, so the
+9f1dba67 (Derek Beckley 2026-04-17 13:30:22 +0100 554)    *  replay is always valid. */
+codex
+Two core paths need closer scrutiny now: the manual pause/resume path appears decoupled from the new `SleepManager`, and the sleep-wake replay path may be sending buffered PCM before Deepgram is actually connected. I’m confirming the sample-rate and mic behavior because that directly affects whether the 3-second replay is valid on real browsers.
+exec
+/bin/zsh -lc "nl -ba web/src/lib/recording/mic-capture.ts | sed -n '1,260p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	/**
+     2	 * Microphone capture helper — opens an AudioContext + AudioWorklet and
+     3	 * streams raw Float32Array samples from the mic to callbacks on the
+     4	 * main thread.
+     5	 *
+     6	 * Used by `RecordingProvider` to drive the VU meter (Phase 4b) and the
+     7	 * Deepgram Nova-3 WebSocket (Phase 4c) + SleepDetector VAD (Phase 4e).
+     8	 *
+     9	 * Usage:
+    10	 *   const handle = await startMicCapture({ onSamples, onLevel });
+    11	 *   // …later
+    12	 *   handle.stop();
+    13	 *
+    14	 * Design notes:
+    15	 *   - Requests a 16kHz mono stream with echo cancellation + noise
+    16	 *     suppression (Deepgram's preferred input for Nova-3).
+    17	 *   - Uses `{ ideal: 16000 }` not a bare `16000` — iOS Safari throws
+    18	 *     OverconstrainedError on bare values.
+    19	 *   - Falls back to `ScriptProcessorNode` on browsers where
+    20	 *     `AudioWorklet.addModule` throws (older Edge, some corporate VPN
+exec
+/bin/zsh -lc "nl -ba web/src/components/recording/recording-overlay.tsx | sed -n '1,340p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	'use client';
+     2	
+     3	import * as React from 'react';
+     4	import {
+     5	  ChevronDown,
+     6	  HelpCircle,
+     7	  Mic,
+     8	  MicOff,
+     9	  Pause,
+    10	  Play,
+    11	  Square,
+    12	  X as CloseIcon,
+    13	} from 'lucide-react';
+    14	import { useRecording, formatCost, formatElapsed } from '@/lib/recording-context';
+    15	import { cn } from '@/lib/utils';
+    16	
+    17	/**
+    18	 * Recording overlay — mirrors iOS `RecordingOverlay.swift`.
+    19	 *
+    20	 * Full-height bottom-sheet (mobile) / centred modal card (desktop) that
+codex
+## 1. Summary of the phase
+
+Phase `4e` adds a browser-side sleep/wake state machine to the recording pipeline: after 15s without a final transcript it dozes, after 30 minutes of dozing it sleeps, and speech is meant to wake it back up. It also adds a 3-second audio ring buffer so buffered pre-wake audio can be replayed into Deepgram, plus `pause()`/`resume()` support in `DeepgramService` to keep the socket alive during doze.
+
+I reviewed the handoff in [phase-4e.md](/Users/derekbeckley/Developer/EICR_Automation/web/reviews/context/phase-4e.md:1), the commit diff for `9f1dba6`, and the current working-tree versions of the touched files. The current tree still contains the same 4e logic; later changes are mostly unrelated additions plus some stale comments.
+
+## 2. Alignment with original plan
+
+The broad shape matches the handoff: new `SleepManager` and `AudioRingBuffer` classes were added, `DeepgramService` gained pause/resume/replay support, and `RecordingProvider` now wires speech activity, audio levels, doze/sleep callbacks, and replay on wake.
+
+Two objectives are only partially met:
+
+- The “manual pause routes through the same doze handler” intent is not actually implemented. `pause()` / `resume()` mutate provider state directly instead of driving the `SleepManager`, so the provider state and the sleep-state machine can diverge ([recording-context.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording-context.tsx:541), [sleep-manager.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording/sleep-manager.ts:105)).
+- The handoff says the iOS constants were lifted “1:1”, including energy floor `0.002` ([phase-4e.md](/Users/derekbeckley/Developer/EICR_Automation/web/reviews/context/phase-4e.md:41)). The implementation uses `0.02` and feeds `SleepManager` a smoothed UI level rather than raw RMS ([sleep-manager.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording/sleep-manager.ts:58), [mic-capture.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording/mic-capture.ts:104)).
+
+## 3. Correctness issues
+
+- **P1** Replay after wake-from-sleep is usually dropped. `handleWake()` and manual `resume()` call `await openDeepgram(...)` and immediately send the drained replay buffer ([recording-context.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording-context.tsx:404), [recording-context.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording-context.tsx:564)). But `openDeepgram()` only waits for token fetch; `DeepgramService.connect()` is synchronous and the socket is still `connecting` until `ws.onopen` ([recording-context.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording-context.tsx:228), [deepgram-service.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording/deepgram-service.ts:63), [deepgram-service.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording/deepgram-service.ts:132)). `sendInt16PCM()` no-ops unless state is `connected`, so the advertised 3s replay is lost on the cold-reconnect path.
+- **P1** Manual pause/resume is not synchronized with `SleepManager`, which leaves timers and internal state stale. `pause()` just pauses Deepgram/Sonnet and sets provider state to `dozing`; it never transitions `SleepManager` out of `active` ([recording-context.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording-context.tsx:541)). `resume()` sets provider state back to `active` but never tells `SleepManager` to re-arm/reset ([recording-context.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording-context.tsx:555)). Because `SleepManager` gates `onSpeechActivity()` and wake processing on its own internal state ([sleep-manager.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording/sleep-manager.ts:105), [sleep-manager.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording/sleep-manager.ts:112)), an active session can still be on the dozing timer, auto-sleep while the UI says “Recording”, or re-doze immediately after manual resume.
+- **P1** The replay buffer assumes 16kHz even when capture is not 16kHz. `AudioRingBuffer` is hard-coded to `new AudioRingBuffer(3, 16000)` and stores raw incoming mic samples ([recording-context.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording-context.tsx:347), [audio-ring-buffer.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording/audio-ring-buffer.ts:21)). `MicCaptureHandle.sampleRate` is dynamic ([mic-capture.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording/mic-capture.ts:134)), and `DeepgramService.sendSamples()` already resamples live audio when it is not 16kHz ([deepgram-service.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording/deepgram-service.ts:112)). The replay path does not, so on browsers that ignore the requested `AudioContext({ sampleRate: 16000 })`, replay duration shrinks and PCM is sent at the wrong effective rate.
+- **P2** The wake heuristic is not actually using “raw RMS” as documented. `mic-capture` maps RMS through a nonlinear curve and EMA smoothing before calling `onLevel` ([mic-capture.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording/mic-capture.ts:104)), and `SleepManager.processAudioLevel()` consumes that value ([recording-context.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording-context.tsx:356), [sleep-manager.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording/sleep-manager.ts:112)). That means the handoff’s “energy floor 0.002” is not directly meaningful in this implementation, and wake sensitivity will not match iOS observationally as claimed.
+
+## 4. Security issues
+
+No phase-specific security findings in the reviewed diff.
+
+- **None observed**: no new XSS, auth, CSRF, secret-leak, or CORS issues in the touched code paths.
+
+## 5. Performance issues
+
+No major new performance regressions stood out beyond the correctness problems above.
+
+- **P2** Replay currently does an extra full copy in `sendInt16PCM()` before `ws.send()` ([deepgram-service.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording/deepgram-service.ts:136)). At 3s this is probably acceptable, but it becomes more expensive if replay duration grows or if higher-than-16kHz samples are mistakenly buffered.
+- **P2** `AudioRingBuffer.writeFloat32()` converts every incoming sample on the main thread ([audio-ring-buffer.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording/audio-ring-buffer.ts:28)). For a 3-second buffer this is still reasonable, but if accurate cross-sample-rate replay is required, doing resampling once at write time or inside the worklet would be cleaner.
+
+## 6. Accessibility issues
+
+No new phase-specific accessibility regressions were introduced in the touched files.
+
+Residual existing risk in the current tree:
+
+- **P2** The recording overlay is marked as a modal dialog but still has no visible focus-trap / initial-focus / return-focus handling in the component itself ([recording-overlay.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/recording/recording-overlay.tsx:64)). That predates or sits outside this phase, but it remains an accessibility gap.
+
+## 7. Code quality
+
+- The implementation is generally readable and well-commented. Separation of concerns is good: `SleepManager` only owns timers/state, `AudioRingBuffer` owns buffering, and the provider wires side effects.
+- There is comment drift in the current working tree. `RecordingProvider`’s header still says “VAD sleep/wake (Phase 4e) still to come” and shows a `60s` / `5m` state machine ([recording-context.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording-context.tsx:29), [recording-context.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording-context.tsx:36)). That is now materially wrong.
+- `pause()` / `resume()` duplicate parts of the wake/doze behavior rather than sharing a single transition API, which is how the state divergence bug slipped in ([recording-context.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording-context.tsx:443), [recording-context.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording-context.tsx:541)).
+
+## 8. Test coverage gaps
+
+There do not appear to be any `test` / `spec` files under `web/` for this area.
+
+Missing coverage is significant for this phase:
+
+- No unit tests for `SleepManager` timer transitions: active → dozing → sleeping, cooldown behavior, wake threshold behavior.
+- No tests for `AudioRingBuffer` ordering, wraparound, drain/reset semantics, or non-16k input assumptions.
+- No provider/integration tests for auto-doze, auto-wake, manual pause/resume, and wake-from-sleep replay.
+- No tests for socket-readiness races on reconnect, which is where the main replay bug lives.
+
+## 9. Suggested fixes
+
+1. **[web/src/lib/recording-context.tsx:541](\/Users\/derekbeckley\/Developer\/EICR_Automation\/web\/src\/lib\/recording-context.tsx:541)**  
+   Change manual `pause()` / `resume()` to drive the `SleepManager` instead of bypassing it. Add explicit public methods such as `enterDozing()` and `wake()` on `SleepManager`, or route the manual buttons through the same callback path used by `onEnterDozing` / `onWake`.  
+   Why: keeps provider state, timers, cooldown, and wake logic in sync; avoids sleeping an “active” session or carrying stale timers across manual resume.
+
+2. **[web/src/lib/recording-context.tsx:404](\/Users\/derekbeckley\/Developer\/EICR_Automation\/web\/src\/lib\/recording-context.tsx:404)** and **[web/src/lib/recording/deepgram-service.ts:63](\/Users\/derekbeckley\/Developer\/EICR_Automation\/web\/src\/lib\/recording/deepgram-service.ts:63)**  
+   Make `openDeepgram()` wait for `ws.onopen` before resolving, or queue replay/live PCM inside `DeepgramService` until the socket reaches `connected`. Do not drain the ring buffer until the connection is ready.  
+   Why: the current reconnect path drops the replay buffer, which breaks the headline feature for wake-from-sleep.
+
+3. **[web/src/lib/recording-context.tsx:347](\/Users\/derekbeckley\/Developer\/EICR_Automation\/web\/src\/lib\/recording-context.tsx:347)** and **[web/src/lib/recording/audio-ring-buffer.ts:21](\/Users\/derekbeckley\/Developer\/EICR_Automation\/web\/src\/lib\/recording/audio-ring-buffer.ts:21)**  
+   Stop assuming the ring buffer input is already 16kHz. Either buffer at the actual mic sample rate and resample on replay, or resample to 16k before writing into the ring buffer.  
+   Why: otherwise replay duration and PCM timing are wrong whenever the browser does not honor the requested 16kHz audio context.
+
+4. **[web/src/lib/recording/sleep-manager.ts:58](\/Users\/derekbeckley\/Developer\/EICR_Automation\/web\/src\/lib\/recording/sleep-manager.ts:58)** and **[web/src/lib/recording/mic-capture.ts:104](\/Users\/derekbeckley\/Developer\/EICR_Automation\/web\/src\/lib\/recording/mic-capture.ts:104)**  
+   Decide whether `SleepManager` should consume raw RMS or the mapped/smoothed UI level, and make the docs/constants match that choice. If parity with iOS matters, feed raw RMS into the wake heuristic and keep the UI transform separate.  
+   Why: current comments and thresholds are misleading, and wake sensitivity cannot be reasoned about from the stated constants.
+
+5. **[web/src/lib/recording-context.tsx:19](\/Users\/derekbeckley\/Developer\/EICR_Automation\/web\/src\/lib\/recording-context.tsx:19)**  
+   Update the top-level provider comments/state diagram to reflect the shipped 4e behavior and actual timeouts.  
+   Why: the current comments still describe pre-4e behavior and will mislead future work.
+
+6. **[web/src/lib/recording/sleep-manager.ts:66](\/Users\/derekbeckley\/Developer\/EICR_Automation\/web\/src\/lib\/recording/sleep-manager.ts:66)**, **[web/src/lib/recording/audio-ring-buffer.ts:15](\/Users\/derekbeckley\/Developer\/EICR_Automation\/web\/src\/lib\/recording/audio-ring-buffer.ts:15)**, **[web/src/lib/recording-context.tsx:340](\/Users\/derekbeckley\/Developer\/EICR_Automation\/web\/src\/lib\/recording-context.tsx:340)**  
+   Add unit tests for timer transitions, wraparound/drain ordering, manual pause/resume parity, and wake-from-sleep replay sequencing.  
+   Why: this phase is timer-heavy and race-prone; the current defects are exactly the sort of issues automated tests should catch.
+
+## 10. Overall verdict
+
+**Needs rework.**
+
+Top 3 priority fixes:
+
+1. Synchronize manual pause/resume with `SleepManager` so the state machine cannot diverge from the UI.
+2. Make wake-from-sleep replay wait for a connected Deepgram socket instead of sending into `connecting`.
+3. Fix the ring-buffer sample-rate assumption so replay is actually valid on real browser capture rates.
+tokens used
+88,166
+## 1. Summary of the phase
+
+Phase `4e` adds a browser-side sleep/wake state machine to the recording pipeline: after 15s without a final transcript it dozes, after 30 minutes of dozing it sleeps, and speech is meant to wake it back up. It also adds a 3-second audio ring buffer so buffered pre-wake audio can be replayed into Deepgram, plus `pause()`/`resume()` support in `DeepgramService` to keep the socket alive during doze.
+
+I reviewed the handoff in [phase-4e.md](/Users/derekbeckley/Developer/EICR_Automation/web/reviews/context/phase-4e.md:1), the commit diff for `9f1dba6`, and the current working-tree versions of the touched files. The current tree still contains the same 4e logic; later changes are mostly unrelated additions plus some stale comments.
+
+## 2. Alignment with original plan
+
+The broad shape matches the handoff: new `SleepManager` and `AudioRingBuffer` classes were added, `DeepgramService` gained pause/resume/replay support, and `RecordingProvider` now wires speech activity, audio levels, doze/sleep callbacks, and replay on wake.
+
+Two objectives are only partially met:
+
+- The “manual pause routes through the same doze handler” intent is not actually implemented. `pause()` / `resume()` mutate provider state directly instead of driving the `SleepManager`, so the provider state and the sleep-state machine can diverge ([recording-context.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording-context.tsx:541), [sleep-manager.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording/sleep-manager.ts:105)).
+- The handoff says the iOS constants were lifted “1:1”, including energy floor `0.002` ([phase-4e.md](/Users/derekbeckley/Developer/EICR_Automation/web/reviews/context/phase-4e.md:41)). The implementation uses `0.02` and feeds `SleepManager` a smoothed UI level rather than raw RMS ([sleep-manager.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording/sleep-manager.ts:58), [mic-capture.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording/mic-capture.ts:104)).
+
+## 3. Correctness issues
+
+- **P1** Replay after wake-from-sleep is usually dropped. `handleWake()` and manual `resume()` call `await openDeepgram(...)` and immediately send the drained replay buffer ([recording-context.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording-context.tsx:404), [recording-context.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording-context.tsx:564)). But `openDeepgram()` only waits for token fetch; `DeepgramService.connect()` is synchronous and the socket is still `connecting` until `ws.onopen` ([recording-context.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording-context.tsx:228), [deepgram-service.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording/deepgram-service.ts:63), [deepgram-service.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording/deepgram-service.ts:132)). `sendInt16PCM()` no-ops unless state is `connected`, so the advertised 3s replay is lost on the cold-reconnect path.
+- **P1** Manual pause/resume is not synchronized with `SleepManager`, which leaves timers and internal state stale. `pause()` just pauses Deepgram/Sonnet and sets provider state to `dozing`; it never transitions `SleepManager` out of `active` ([recording-context.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording-context.tsx:541)). `resume()` sets provider state back to `active` but never tells `SleepManager` to re-arm/reset ([recording-context.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording-context.tsx:555)). Because `SleepManager` gates `onSpeechActivity()` and wake processing on its own internal state ([sleep-manager.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording/sleep-manager.ts:105), [sleep-manager.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording/sleep-manager.ts:112)), an active session can still be on the dozing timer, auto-sleep while the UI says “Recording”, or re-doze immediately after manual resume.
+- **P1** The replay buffer assumes 16kHz even when capture is not 16kHz. `AudioRingBuffer` is hard-coded to `new AudioRingBuffer(3, 16000)` and stores raw incoming mic samples ([recording-context.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording-context.tsx:347), [audio-ring-buffer.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording/audio-ring-buffer.ts:21)). `MicCaptureHandle.sampleRate` is dynamic ([mic-capture.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording/mic-capture.ts:134)), and `DeepgramService.sendSamples()` already resamples live audio when it is not 16kHz ([deepgram-service.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording/deepgram-service.ts:112)). The replay path does not, so on browsers that ignore the requested `AudioContext({ sampleRate: 16000 })`, replay duration shrinks and PCM is sent at the wrong effective rate.
+- **P2** The wake heuristic is not actually using “raw RMS” as documented. `mic-capture` maps RMS through a nonlinear curve and EMA smoothing before calling `onLevel` ([mic-capture.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording/mic-capture.ts:104)), and `SleepManager.processAudioLevel()` consumes that value ([recording-context.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording-context.tsx:356), [sleep-manager.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording/sleep-manager.ts:112)). That means the handoff’s “energy floor 0.002” is not directly meaningful in this implementation, and wake sensitivity will not match iOS observationally as claimed.
+
+## 4. Security issues
+
+No phase-specific security findings in the reviewed diff.
+
+- **None observed**: no new XSS, auth, CSRF, secret-leak, or CORS issues in the touched code paths.
+
+## 5. Performance issues
+
+No major new performance regressions stood out beyond the correctness problems above.
+
+- **P2** Replay currently does an extra full copy in `sendInt16PCM()` before `ws.send()` ([deepgram-service.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording/deepgram-service.ts:136)). At 3s this is probably acceptable, but it becomes more expensive if replay duration grows or if higher-than-16kHz samples are mistakenly buffered.
+- **P2** `AudioRingBuffer.writeFloat32()` converts every incoming sample on the main thread ([audio-ring-buffer.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording/audio-ring-buffer.ts:28)). For a 3-second buffer this is still reasonable, but if accurate cross-sample-rate replay is required, doing resampling once at write time or inside the worklet would be cleaner.
+
+## 6. Accessibility issues
+
+No new phase-specific accessibility regressions were introduced in the touched files.
+
+Residual existing risk in the current tree:
+
+- **P2** The recording overlay is marked as a modal dialog but still has no visible focus-trap / initial-focus / return-focus handling in the component itself ([recording-overlay.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/recording/recording-overlay.tsx:64)). That predates or sits outside this phase, but it remains an accessibility gap.
+
+## 7. Code quality
+
+- The implementation is generally readable and well-commented. Separation of concerns is good: `SleepManager` only owns timers/state, `AudioRingBuffer` owns buffering, and the provider wires side effects.
+- There is comment drift in the current working tree. `RecordingProvider`’s header still says “VAD sleep/wake (Phase 4e) still to come” and shows a `60s` / `5m` state machine ([recording-context.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording-context.tsx:29), [recording-context.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording-context.tsx:36)). That is now materially wrong.
+- `pause()` / `resume()` duplicate parts of the wake/doze behavior rather than sharing a single transition API, which is how the state divergence bug slipped in ([recording-context.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording-context.tsx:443), [recording-context.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording-context.tsx:541)).
+
+## 8. Test coverage gaps
+
+There do not appear to be any `test` / `spec` files under `web/` for this area.
+
+Missing coverage is significant for this phase:
+
+- No unit tests for `SleepManager` timer transitions: active → dozing → sleeping, cooldown behavior, wake threshold behavior.
+- No tests for `AudioRingBuffer` ordering, wraparound, drain/reset semantics, or non-16k input assumptions.
+- No provider/integration tests for auto-doze, auto-wake, manual pause/resume, and wake-from-sleep replay.
+- No tests for socket-readiness races on reconnect, which is where the main replay bug lives.
+
+## 9. Suggested fixes
+
+1. **[web/src/lib/recording-context.tsx:541](\/Users\/derekbeckley\/Developer\/EICR_Automation\/web\/src\/lib\/recording-context.tsx:541)**  
+   Change manual `pause()` / `resume()` to drive the `SleepManager` instead of bypassing it. Add explicit public methods such as `enterDozing()` and `wake()` on `SleepManager`, or route the manual buttons through the same callback path used by `onEnterDozing` / `onWake`.  
+   Why: keeps provider state, timers, cooldown, and wake logic in sync; avoids sleeping an “active” session or carrying stale timers across manual resume.
+
+2. **[web/src/lib/recording-context.tsx:404](\/Users\/derekbeckley\/Developer\/EICR_Automation\/web\/src\/lib\/recording-context.tsx:404)** and **[web/src/lib/recording/deepgram-service.ts:63](\/Users\/derekbeckley\/Developer\/EICR_Automation\/web\/src\/lib\/recording/deepgram-service.ts:63)**  
+   Make `openDeepgram()` wait for `ws.onopen` before resolving, or queue replay/live PCM inside `DeepgramService` until the socket reaches `connected`. Do not drain the ring buffer until the connection is ready.  
+   Why: the current reconnect path drops the replay buffer, which breaks the headline feature for wake-from-sleep.
+
+3. **[web/src/lib/recording-context.tsx:347](\/Users\/derekbeckley\/Developer\/EICR_Automation\/web\/src\/lib\/recording-context.tsx:347)** and **[web/src/lib/recording/audio-ring-buffer.ts:21](\/Users\/derekbeckley\/Developer\/EICR_Automation\/web\/src\/lib\/recording/audio-ring-buffer.ts:21)**  
+   Stop assuming the ring buffer input is already 16kHz. Either buffer at the actual mic sample rate and resample on replay, or resample to 16k before writing into the ring buffer.  
+   Why: otherwise replay duration and PCM timing are wrong whenever the browser does not honor the requested 16kHz audio context.
+
+4. **[web/src/lib/recording/sleep-manager.ts:58](\/Users\/derekbeckley\/Developer\/EICR_Automation\/web\/src\/lib\/recording/sleep-manager.ts:58)** and **[web/src/lib/recording/mic-capture.ts:104](\/Users\/derekbeckley\/Developer\/EICR_Automation\/web\/src\/lib\/recording/mic-capture.ts:104)**  
+   Decide whether `SleepManager` should consume raw RMS or the mapped/smoothed UI level, and make the docs/constants match that choice. If parity with iOS matters, feed raw RMS into the wake heuristic and keep the UI transform separate.  
+   Why: current comments and thresholds are misleading, and wake sensitivity cannot be reasoned about from the stated constants.
+
+5. **[web/src/lib/recording-context.tsx:19](\/Users\/derekbeckley\/Developer\/EICR_Automation\/web\/src\/lib\/recording-context.tsx:19)**  
+   Update the top-level provider comments/state diagram to reflect the shipped 4e behavior and actual timeouts.  
+   Why: the current comments still describe pre-4e behavior and will mislead future work.
+
+6. **[web/src/lib/recording/sleep-manager.ts:66](\/Users\/derekbeckley\/Developer\/EICR_Automation\/web\/src\/lib\/recording/sleep-manager.ts:66)**, **[web/src/lib/recording/audio-ring-buffer.ts:15](\/Users\/derekbeckley\/Developer\/EICR_Automation\/web\/src\/lib\/recording/audio-ring-buffer.ts:15)**, **[web/src/lib/recording-context.tsx:340](\/Users\/derekbeckley\/Developer\/EICR_Automation\/web\/src\/lib\/recording-context.tsx:340)**  
+   Add unit tests for timer transitions, wraparound/drain ordering, manual pause/resume parity, and wake-from-sleep replay sequencing.  
+   Why: this phase is timer-heavy and race-prone; the current defects are exactly the sort of issues automated tests should catch.
+
+## 10. Overall verdict
+
+**Needs rework.**
+
+Top 3 priority fixes:
+
+1. Synchronize manual pause/resume with `SleepManager` so the state machine cannot diverge from the UI.
+2. Make wake-from-sleep replay wait for a connected Deepgram socket instead of sending into `connecting`.
+3. Fix the ring-buffer sample-rate assumption so replay is actually valid on real browser capture rates.

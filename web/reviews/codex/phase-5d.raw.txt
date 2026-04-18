@@ -1,0 +1,703 @@
+OpenAI Codex v0.116.0 (research preview)
+--------
+workdir: /Users/derekbeckley/Developer/EICR_Automation
+model: gpt-5.4
+provider: openai
+approval: never
+sandbox: read-only
+reasoning effort: none
+reasoning summaries: none
+session id: 019d9db6-d040-7ea0-8b0b-9ab4afa5cedc
+--------
+user
+You are performing a rigorous code review of a single phase of a Next.js 16 / React 19 PWA frontend rebuild for an electrical-certificate automation tool (EICR / EIC). The repo root is at /Users/derekbeckley/Developer/EICR_Automation and the web package is at web/. Branch: web-rebuild.
+
+TARGET: Phase 5d — LiveFillView (brand-blue flash as Sonnet fields populate)
+COMMIT: cccd548
+
+Context for this phase (original intent, handoff doc, commit message, files changed) is in this repo at: reviews/context/phase-5d.md — READ THAT FILE FIRST.
+
+Use shell commands to:
+  git show --stat cccd548
+  git show cccd548
+to inspect the full diff. Then read any files you need from the working tree (they may have evolved since this commit — note any later changes).
+
+Your output must be a well-structured markdown review with these sections:
+  1. Summary of the phase (2-3 sentences — what it did).
+  2. Alignment with original plan (does the implementation match the handoff doc / commit intent? Any missing objectives?).
+  3. Correctness issues (bugs, race conditions, missing error handling, incorrect semantics). Prioritise P0/P1/P2.
+  4. Security issues (XSS, auth, CSRF, injection, leaked secrets, PII, CORS). Each item tagged with severity.
+  5. Performance issues (re-renders, N+1, large bundles, memory leaks, blocking work on main thread).
+  6. Accessibility issues (semantic HTML, keyboard nav, ARIA, colour contrast, focus management).
+  7. Code quality (duplication, dead code, type-safety holes, naming, convention drift vs. rest of repo).
+  8. Test coverage gaps.
+  9. Suggested fixes — each as a numbered item with: file:line, what to change, why. Be concrete.
+  10. Overall verdict (ship / ship with fixes / needs rework) and top 3 priority fixes.
+
+Be specific — cite file paths and line numbers. Avoid generic advice. If the code is good, say so with evidence. Do NOT modify files; this is review only.
+
+mcp startup: no servers
+codex
+I’m reviewing commit `cccd548` against the phase handoff, starting with the context doc and the full git diff so I can compare intent versus implementation before I assess risks.
+exec
+/bin/zsh -lc "sed -n '1,220p' reviews/context/phase-5d.md" in /Users/derekbeckley/Developer/EICR_Automation exited 1 in 0ms:
+sed: reviews/context/phase-5d.md: No such file or directory
+exec
+/bin/zsh -lc 'git show --stat cccd548' in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc 'git show cccd548' in /Users/derekbeckley/Developer/EICR_Automation succeeded in 1.25s:
+2026-04-18 00:11:44.493 xcodebuild[35415:67216497]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:11:44.597 xcodebuild[35415:67216495] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-TQuqf2BA' (errno=Operation not permitted)
+2026-04-18 00:11:45.019 xcodebuild[35429:67216616]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:11:45.121 xcodebuild[35429:67216614] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+commit cccd5487c83ae98f678af6b6c59839f1a25b471f
+Author: Derek Beckley <derekbeckley@Dereks-Mac-mini.broadband>
+Date:   Fri Apr 17 17:22:45 2026 +0100
+
+    feat(web): Phase 5d LiveFillView
+    
+    While recording, swap the active tab's content for a full-form live
+    dashboard that flashes brand-blue every time Sonnet fills a field,
+    fading back to transparent over ~2s. Ports iOS LiveFillView.swift so
+    the web client matches iOS parity — inspectors no longer have to tab-
+    hunt mid-session to verify what's been captured, which was breaking
+    the "speak hands-free, verify at end" workflow.
+    
+    Why this design:
+ succeeded in 1.25s:
+2026-04-18 00:11:44.493 xcodebuild[35414:67216496]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:11:44.597 xcodebuild[35414:67216494] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-zPMjibh8' (errno=Operation not permitted)
+2026-04-18 00:11:45.019 xcodebuild[35428:67216617]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:11:45.121 xcodebuild[35428:67216615] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+commit cccd5487c83ae98f678af6b6c59839f1a25b471f
+Author: Derek Beckley <derekbeckley@Dereks-Mac-mini.broadband>
+Date:   Fri Apr 17 17:22:45 2026 +0100
+
+    feat(web): Phase 5d LiveFillView
+    
+    While recording, swap the active tab's content for a full-form live
+    dashboard that flashes brand-blue every time Sonnet fills a field,
+    fading back to transparent over ~2s. Ports iOS LiveFillView.swift so
+    the web client matches iOS parity — inspectors no longer have to tab-
+    hunt mid-session to verify what's been captured, which was breaking
+    the "speak hands-free, verify at end" workflow.
+    
+    Why this design:
+codex
+The phase context file isn’t at the path you gave relative to repo root, so I’m locating it and then pulling the commit diff plus the current versions of touched files for line-accurate review.
+exec
+/bin/zsh -lc "rg --files | rg 'phase-5d\\.md"'$|reviews/context'"'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+web/reviews/claude/phase-5d.md
+web/reviews/context/phase-3a.md
+web/reviews/context/phase-5d.md
+web/reviews/context/phase-7b2.md
+web/reviews/context/phase-4d.md
+web/reviews/context/phase-6a.md
+web/reviews/context/phase-7b3.md
+web/reviews/context/phase-4e.md
+web/reviews/context/phase-7a.md
+web/reviews/context/phase-5a.md
+web/reviews/context/phase-4a.md
+web/reviews/context/phase-2.md
+web/reviews/context/phase-1.md
+web/reviews/context/phase-0.md
+web/reviews/context/phase-6b.md
+web/reviews/context/phase-3c.md
+web/reviews/context/phase-5b.md
+web/reviews/context/phase-7b4.md
+web/reviews/context/phase-4b.md
+web/reviews/context/phase-5c.md
+codex
+I have the commit intent and diff. Next I’m reading the handoff plus current versions of the touched files so I can spot intent drift, regressions, and any later edits that affect line references.
+exec
+/bin/zsh -lc "sed -n '1,260p' web/reviews/context/phase-5d.md" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+# Phase 5d — Context
+
+**Commit:** `cccd548`
+
+## Commit message
+
+```
+commit cccd5487c83ae98f678af6b6c59839f1a25b471f
+Author:     Derek Beckley <derekbeckley@Dereks-Mac-mini.broadband>
+AuthorDate: Fri Apr 17 17:22:45 2026 +0100
+Commit:     Derek Beckley <derekbeckley@Dereks-Mac-mini.broadband>
+CommitDate: Fri Apr 17 17:22:45 2026 +0100
+
+    feat(web): Phase 5d LiveFillView
+    
+    While recording, swap the active tab's content for a full-form live
+    dashboard that flashes brand-blue every time Sonnet fills a field,
+    fading back to transparent over ~2s. Ports iOS LiveFillView.swift so
+    the web client matches iOS parity — inspectors no longer have to tab-
+    hunt mid-session to verify what's been captured, which was breaking
+exec
+/bin/zsh -lc "nl -ba web/src/lib/recording/live-fill-state.ts | sed -n '1,260p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	/**
+     2	 * LiveFillState — tracks which JobDetail fields were recently filled by
+     3	 * Sonnet (or any other live-fill producer) so <LiveFillView> + its child
+     4	 * <LiveField> primitives can flash a brand-blue highlight that fades
+     5	 * back to transparent over ~2 seconds.
+     6	 *
+     7	 * Mirrors iOS `LiveFillState.swift`:
+     8	 *   - `recentlyUpdated` — Map<fieldKey, timestamp(ms)>. A key is "recent"
+     9	 *      if (now - ts) < windowMs (default 3000).
+    10	 *   - `lastUpdatedSection` — the section that owns the most-recent update;
+    11	 *      drives the auto-scroll effect inside <LiveFillView>.
+    12	 *   - `markUpdated(keys)` — records a batch of field-key updates at a
+    13	 *      single timestamp. Also updates `lastUpdatedSection` from the last
+    14	 *      key's prefix.
+    15	 *   - `isRecent(key)` / `isFieldRecent` — O(1) lookup used by <LiveField>.
+    16	 *   - `reset()` — clears the map on recording start/stop.
+    17	 *
+    18	 * Why a module-level singleton store instead of React context:
+    19	 *   The store is mutated from inside `useCallback`s in RecordingProvider
+    20	 *   and read by many <LiveField> leaves. A context would re-render every
+exec
+/bin/zsh -lc "nl -ba web/src/lib/recording/apply-extraction.ts | sed -n '250,460p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+   250	    const code = parseObservationCode(obs.code);
+   251	    existing.push({
+   252	      id,
+   253	      code,
+   254	      description: text,
+   255	      location: obs.item_location ?? undefined,
+   256	    });
+   257	    changed = true;
+   258	  }
+   259	  return changed ? existing : null;
+   260	}
+   261	
+   262	export function parseObservationCode(
+   263	  raw: string | undefined
+   264	): 'C1' | 'C2' | 'C3' | 'FI' | undefined {
+   265	  if (!raw) return undefined;
+   266	  const upper = raw.trim().toUpperCase();
+   267	  if (upper === 'C1' || upper === 'C2' || upper === 'C3' || upper === 'FI') {
+   268	    return upper;
+   269	  }
+exec
+/bin/zsh -lc "nl -ba web/src/components/live-fill/live-field.tsx | sed -n '1,220p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	'use client';
+     2	
+     3	import * as React from 'react';
+     4	import { useIsFieldRecent } from '@/lib/recording/live-fill-state';
+     5	import { cn } from '@/lib/utils';
+     6	
+     7	/**
+     8	 * LiveField — a label + value cell that flashes brand-blue when its
+     9	 * key is marked recent in the LiveFillStore.
+    10	 *
+    11	 * Mirrors iOS `LiveField` (LiveFillView.swift:804-856):
+    12	 *   - At rest:     transparent background.
+    13	 *   - On flash:    brand-blue @ 0.15 alpha background, with a 2s ease-out
+    14	 *                  transition back to transparent.
+    15	 *   - Empty value: renders an em-dash so the cell still occupies space
+    16	 *                  (preserves spatial memory — iOS parity point #4 in the
+    17	 *                  handoff doc).
+    18	 *
+    19	 * Implementation is CSS-only: toggling `data-recent="true|false"` re-
+    20	 * triggers the `transition: background-color 2s ease-out` every time
+exec
+/bin/zsh -lc "nl -ba web/src/components/live-fill/live-fill-view.tsx | sed -n '1,260p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "nl -ba web/src/lib/recording-context.tsx | sed -n '100,560p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	'use client';
+     2	
+     3	import * as React from 'react';
+     4	import { AlertTriangle, Building2, CircuitBoard, ClipboardList, Layers, Zap } from 'lucide-react';
+     5	import { useJobContext } from '@/lib/job-context';
+     6	import { useIsFieldRecent, useLiveFillStore } from '@/lib/recording/live-fill-state';
+     7	import type { CircuitRow, ObservationRow } from '@/lib/types';
+     8	import { SectionCard } from '@/components/ui/section-card';
+     9	import { LiveField, LiveFieldWide } from './live-field';
+    10	
+    11	/**
+    12	 * LiveFillView — the full-form live dashboard shown while a recording
+    13	 * session is active. Ports iOS `LiveFillView.swift`.
+    14	 *
+    15	 * Sections (in scroll order):
+    16	 *   1. Installation — client + premises metadata
+    17	 *   2. Supply       — earthing, Ze, PFC, voltage, SPD
+    18	 *   3. Board        — main switch + board-level SPD
+    19	 *   4. Circuits     — one row per circuit, readings inline
+    20	 *   5. Observations — EICR only (EIC has no observations)
+ succeeded in 0ms:
+   100	  expand: () => void;
+   101	  /** Dismiss a question from the queue without sending a correction.
+   102	   *  Used when the inspector taps the × on a question bubble. */
+   103	  dismissQuestion: (index: number) => void;
+   104	  /** Indicates whether the overlay is currently expanded. When false the session
+   105	   *  may still be running; the transcript bar stays visible at the top. */
+   106	  isOverlayOpen: boolean;
+   107	};
+   108	
+   109	type RecordingCtx = RecordingSnapshot & RecordingActions;
+   110	
+   111	const Ctx = React.createContext<RecordingCtx | null>(null);
+   112	
+   113	// Deepgram Nova-3 streaming — $0.0077/min at the inspector tier. We tick
+   114	// cost in real time so the hero readout feels live; Phase 4d will splice
+   115	// Sonnet token costs in on top.
+   116	const DEEPGRAM_USD_PER_MIN = 0.0077;
+   117	
+   118	export function RecordingProvider({ children }: { children: React.ReactNode }) {
+   119	  const { job, updateJob } = useJobContext();
+exec
+/bin/zsh -lc "nl -ba web/src/app/globals.css | sed -n '220,320p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+   220	  animation: orb-drift 9s ease-in-out infinite;
+   221	  pointer-events: none;
+   222	}
+   223	
+   224	/* Hide scrollbars on the horizontal tab strip (mobile job nav). */
+   225	.scrollbar-hide::-webkit-scrollbar {
+   226	  display: none;
+   227	}
+   228	.scrollbar-hide {
+   229	  scrollbar-width: none;
+   230	  -ms-overflow-style: none;
+   231	}
+   232	
+   233	/* =============================================================================
+   234	 * LiveFillView flash — brand-blue highlight that fades back to transparent
+   235	 * over 2s ease-out. Toggling `data-recent="true|false"` re-triggers the
+   236	 * transition every time a field is marked fresh by the LiveFillStore.
+   237	 * Respect prefers-reduced-motion — shorten to 200ms so the signal is still
+   238	 * visible without the slow animation.
+   239	 * ============================================================================= */
+exec
+/bin/zsh -lc "nl -ba web/src/app/job/[id]/layout.tsx | sed -n '1,180p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+zsh:1: no matches found: web/src/app/job/[id]/layout.tsx
+codex
+I’ve got most of the relevant code. I’m pulling the rest of `LiveFillView` and the job layout with line numbers now so the findings can cite exact locations, including any later working-tree drift.
+exec
+/bin/zsh -lc "nl -ba web/src/components/live-fill/live-fill-view.tsx | sed -n '260,520p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "nl -ba 'web/src/app/job/[id]/layout.tsx' | sed -n '1,180p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	'use client';
+     2	
+     3	import * as React from 'react';
+     4	import { useParams, useRouter } from 'next/navigation';
+     5	import { AppShell } from '@/components/layout/app-shell';
+     6	import { JobHeader } from '@/components/job/job-header';
+     7	import { JobTabNav } from '@/components/job/job-tab-nav';
+     8	import { FloatingActionBar } from '@/components/job/floating-action-bar';
+     9	import { RecordingOverlay } from '@/components/recording/recording-overlay';
+    10	import { TranscriptBar } from '@/components/recording/transcript-bar';
+    11	import { LiveFillView } from '@/components/live-fill/live-fill-view';
+    12	import { JobProvider } from '@/lib/job-context';
+    13	import { RecordingProvider, useRecording } from '@/lib/recording-context';
+    14	import { api } from '@/lib/api-client';
+    15	import { clearAuth, getUser } from '@/lib/auth';
+    16	import { getCachedJob, putCachedJob } from '@/lib/pwa/job-cache';
+    17	import type { JobDetail } from '@/lib/types';
+    18	
+    19	/**
+    20	 * Shell for every /job/[id]/... route.
+ succeeded in 0ms:
+   260	      <div data-section="circuits" className="cm-live-section">
+   261	        <SectionCard accent="amber" icon={CircuitBoard} title={`Circuits (${circuits.length})`}>
+   262	          {circuits.length === 0 ? (
+   263	            <p className="text-[13px] italic text-[var(--color-text-tertiary)]">
+   264	              No circuits yet — start describing circuits (e.g. “Circuit 1, lighting, B6”) and
+   265	              they’ll populate here as Sonnet extracts them.
+   266	            </p>
+   267	          ) : (
+   268	            <div className="flex flex-col gap-2">
+   269	              {circuits.map((c) => (
+   270	                <LiveCircuitRow key={c.id} circuit={c} />
+   271	              ))}
+   272	            </div>
+   273	          )}
+   274	        </SectionCard>
+   275	      </div>
+   276	
+   277	      {/* ── Observations (EICR only) ───────────────────────────────── */}
+   278	      {certificateType !== 'EIC' ? (
+   279	        <div data-section="observations" className="cm-live-section">
+exec
+/bin/zsh -lc "rg -n \"applyExtractionToJob\\(|LiveFillView|useLiveFillStore|useIsFieldRecent|liveFillStore|role=\\\"status\\\"|aria-live=\\\"polite\\\"\" web/src web/tests web/__tests__" in /Users/derekbeckley/Developer/EICR_Automation exited 2 in 0ms:
+rg: web/tests: No such file or directory (os error 2)
+rg: web/__tests__: No such file or directory (os error 2)
+web/src/lib/recording-context.tsx:15:import { useLiveFillStore } from './recording/live-fill-state';
+web/src/lib/recording-context.tsx:120:  const liveFill = useLiveFillStore();
+web/src/lib/recording-context.tsx:280:      const applied = applyExtractionToJob(jobRef.current, result);
+web/src/lib/recording-context.tsx:283:        // Feed LiveFillState so <LiveFillView> can flash the fields
+web/src/lib/recording/live-fill-state.ts:3: * Sonnet (or any other live-fill producer) so <LiveFillView> + its child
+web/src/lib/recording/live-fill-state.ts:11: *      drives the auto-scroll effect inside <LiveFillView>.
+web/src/lib/recording/live-fill-state.ts:181:/** Hook used by <LiveFillView> + RecordingProvider. Returns a stable
+web/src/lib/recording/live-fill-state.ts:185:export function useLiveFillStore(): LiveFillStoreHandle {
+web/src/lib/recording/live-fill-state.ts:207:export function useIsFieldRecent(key: string, windowMs: number = DEFAULT_WINDOW_MS): boolean {
+web/src/lib/recording/live-fill-state.ts:216:export const liveFillStore = store;
+web/src/lib/recording/apply-extraction.ts:344:   *  LiveFillView can flash exactly the cells Sonnet filled. */
+web/src/lib/recording/apply-extraction.ts:352:export function applyExtractionToJob(
+web/src/components/live-fill/live-field.tsx:4:import { useIsFieldRecent } from '@/lib/recording/live-fill-state';
+web/src/components/live-fill/live-field.tsx:11: * Mirrors iOS `LiveField` (LiveFillView.swift:804-856):
+web/src/components/live-fill/live-field.tsx:43:  const recent = useIsFieldRecent(fieldKey);
+web/src/components/live-fill/live-field.tsx:91:  const recent = useIsFieldRecent(fieldKey);
+web/src/components/live-fill/live-fill-view.tsx:6:import { useIsFieldRecent, useLiveFillStore } from '@/lib/recording/live-fill-state';
+web/src/components/live-fill/live-fill-view.tsx:12: * LiveFillView — the full-form live dashboard shown while a recording
+codex
+I’m checking the actual job schema and extraction routing now. Most likely defects here are key mismatches between `changedKeys` and the fields `LiveFillView` subscribes to, plus any semantic/accessibility side effects from the live region.
+exec
+/bin/zsh -lc 'rg -n "field_clears|applyCircuit0Readings|applyCircuitReadings|routeSupplyField|Section =|type Section" web/src/lib/recording/apply-extraction.ts' in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "nl -ba web/src/lib/types.ts | sed -n '1,280p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+30:type Section = 'supply' | 'board' | 'installation' | 'extent' | 'design';
+117:function routeSupplyField(field: string): Section {
+133:function applyCircuit0Readings(
+141:    const section = routeSupplyField(reading.field);
+166:function applyCircuitReadings(
+350: *  the extraction was effectively empty. Any field_clears on circuit 0
+358:  const fieldClears = result.field_clears ?? [];
+364:  const supplyPatches = applyCircuit0Readings(job, readings);
+370:  // Circuit 0 field_clears — delete key from the right section.
+373:    const section = routeSupplyField(clear.field);
+386:  const newCircuits = applyCircuitReadings(job, readings, circuitUpdates, fieldClears);
+ succeeded in 0ms:
+     1	/**
+     2	 * Shared domain types. Kept minimal — only the shapes Phase 1–2 need;
+     3	 * per-tab detail types land in later phases when their screens do.
+     4	 */
+     5	
+     6	export interface User {
+     7	  id: string;
+     8	  email: string;
+     9	  name: string;
+    10	  company_name?: string;
+    11	  role?: 'admin' | 'user';
+    12	  /** System-wide tenant membership. Nullable for legacy users not yet bound to a company. */
+    13	  company_id?: string;
+    14	  /** Role within a company. `owner`/`admin` grant company-admin privileges; `employee` is rank-and-file. */
+    15	  company_role?: 'owner' | 'admin' | 'employee';
+    16	}
+    17	
+    18	/**
+    19	 * Inspector profile — the API shape stored as one JSON array per user at
+    20	 * `settings/{userId}/inspector_profiles.json`. The backend persists the
+exec
+/bin/zsh -lc "rg -n \"nominal_voltage_u|nominal_voltage_uo|nominal_voltage|supply_frequency|nominal_frequency|main_switch_current|main_switch_voltage|rcd_operating_current|spd_type_supply|spd_rated_current|occupation|occupier_name|premises_description|date_of_inspection|estimated_age_of_installation|extent_of_installation|installation_type|measured_zs_ohm|r1_r2_ohm|ir_live_earth_mohm|ir_live_live_mohm|polarity_confirmed|ocpd_rating_a|ocpd_type|rcd_type\" web/src/lib/types.ts web/src/lib/recording web/src/app web/src/components | sed -n '1,240p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+web/src/lib/types.ts:254:  ocpd_type?: 'B' | 'C' | 'D' | null;
+web/src/lib/types.ts:255:  ocpd_rating_a?: string | null;
+web/src/lib/types.ts:260:  rcd_type?: 'AC' | 'A' | 'B' | 'F' | 'S' | null;
+web/src/lib/types.ts:272:  main_switch_current?: string | null;
+web/src/lib/types.ts:273:  main_switch_voltage?: string | null;
+web/src/lib/types.ts:278:  spd_rated_current_a?: string | null;
+web/src/lib/types.ts:281:  spd_rated_current?: string | null;
+web/src/lib/types.ts:282:  spd_type_supply?: string | null;
+web/src/lib/types.ts:320:  ocpd_type?: string;
+web/src/lib/types.ts:321:  ocpd_rating_a?: string;
+web/src/lib/types.ts:324:  rcd_type?: string;
+web/src/lib/types.ts:325:  rcd_operating_current_ma?: string;
+web/src/lib/types.ts:330:  r1_r2_ohm?: string;
+web/src/lib/types.ts:332:  ir_live_live_mohm?: string;
+web/src/lib/types.ts:333:  ir_live_earth_mohm?: string;
+web/src/lib/types.ts:334:  measured_zs_ohm?: string;
+web/src/lib/types.ts:335:  polarity_confirmed?: string;
+web/src/lib/recording/apply-document-extraction.ts:50:  'premises_description',
+web/src/lib/recording/apply-document-extraction.ts:52:  'occupier_name',
+web/src/lib/recording/apply-document-extraction.ts:55:  'estimated_age_of_installation',
+codex
+I’ve identified one likely architectural footgun: `RecordingProvider` subscribes to the live-fill snapshot, so I’m checking whether that causes avoidable provider-wide rerenders through the recording context on every Sonnet field update.
+exec
+/bin/zsh -lc "nl -ba web/src/lib/recording-context.tsx | sed -n '560,760p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+   560	        const mic = micRef.current;
+   561	        if (!mic) {
+   562	          await beginMicPipeline();
+   563	        } else {
+   564	          await openDeepgram(mic.sampleRate);
+   565	          openSonnet();
+   566	          const replay = ringBufferRef.current?.drain();
+   567	          if (replay && replay.length > 0) {
+   568	            deepgramRef.current?.sendInt16PCM(replay);
+   569	          }
+   570	        }
+   571	      } else {
+   572	        const replay = ringBufferRef.current?.drain();
+   573	        deepgramRef.current?.resume(replay);
+   574	        sonnetRef.current?.resume();
+   575	      }
+   576	      setState('active');
+   577	      beginTick();
+   578	    } catch (err) {
+   579	      const msg = err instanceof Error ? err.message : String(err);
+exec
+/bin/zsh -lc "rg -n \"const value = React.useMemo|<Ctx\\.Provider|useRecording\\(\" web/src/lib/recording-context.tsx" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "nl -ba web/src/lib/recording/apply-extraction.ts | sed -n '1,240p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+609:  const value = React.useMemo<RecordingCtx>(
+652:  return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
+655:export function useRecording(): RecordingCtx {
+ succeeded in 0ms:
+     1	/**
+     2	 * Map a Sonnet extraction result onto a JobDetail patch.
+     3	 *
+     4	 * Responsibilities:
+     5	 *   1. Route each reading to the correct section of the job (supply,
+     6	 *      board, installation, extent, design, or the matching circuit
+     7	 *      row) based on field name.
+     8	 *   2. Apply 3-tier priority: pre-existing manual/CCU values win over
+     9	 *      fresh Sonnet readings. Sonnet's own de-dup lives server-side; we
+    10	 *      re-check here in case the server-side state snapshot lagged
+    11	 *      behind a user edit.
+    12	 *   3. Apply `circuit_updates` — create or rename a CircuitRow so
+    13	 *      subsequent readings have somewhere to land.
+    14	 *   4. Append `observations` not already present.
+    15	 *
+    16	 * Returns a partial `JobDetail` patch, or null if nothing changed so
+    17	 * the caller can skip an `updateJob` cycle (avoids needless re-renders
+    18	 * when Sonnet returns an empty result).
+    19	 */
+    20	
+codex
+I’m checking whether any extraction targets a section that the live view never renders. If so, the flash pipeline is “working” internally but inspectors still won’t see those updates, which is a real parity miss.
+exec
+/bin/zsh -lc "rg -n \"design|departures_from_bs7671|departure_details|design_comments\" web/src/app/job/[id] web/src/components web/src/lib | sed -n '1,220p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+zsh:1: no matches found: web/src/app/job/[id]
+exec
+/bin/zsh -lc "rg -n \"certificate_type|JobTabNav|extent/page|design/page|observations/page\" 'web/src/app/job/[id]' 'web/src/components/job'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+web/src/components/job/job-tab-nav.tsx:63:export function JobTabNav({
+web/src/app/job/[id]/layout.tsx:7:import { JobTabNav } from '@/components/job/job-tab-nav';
+web/src/app/job/[id]/layout.tsx:25: *   ├─── JobTabNav (horizontal strip)────┤
+web/src/app/job/[id]/layout.tsx:111:              <JobTabNav jobId={jobId} certificateType={job.certificate_type ?? 'EICR'} />
+exec
+/bin/zsh -lc "nl -ba web/src/components/job/job-tab-nav.tsx | sed -n '1,220p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	'use client';
+     2	
+     3	import Link from 'next/link';
+     4	import { usePathname } from 'next/navigation';
+     5	import {
+     6	  Boxes,
+     7	  ClipboardCheck,
+     8	  DraftingCompass,
+     9	  FileText,
+    10	  LayoutDashboard,
+    11	  List,
+    12	  Ruler,
+    13	  Settings2,
+    14	  UserCheck,
+    15	  Zap,
+    16	} from 'lucide-react';
+    17	import type { CertificateType } from '@/lib/types';
+    18	import { cn } from '@/lib/utils';
+    19	
+    20	/**
+exec
+/bin/zsh -lc "rg --files 'web/src/app/job/[id]' | rg '/(design|extent|observations|supply|installation|circuits)/page\\.tsx"'$'"'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+web/src/app/job/[id]/observations/page.tsx
+web/src/app/job/[id]/supply/page.tsx
+web/src/app/job/[id]/extent/page.tsx
+web/src/app/job/[id]/installation/page.tsx
+web/src/app/job/[id]/circuits/page.tsx
+web/src/app/job/[id]/design/page.tsx
+exec
+/bin/zsh -lc "nl -ba 'web/src/app/job/[id]/board/page.tsx' | sed -n '1,260p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	'use client';
+     2	
+     3	import * as React from 'react';
+     4	import { Boxes, Cable, CircuitBoard, MapPin, Plus, ShieldCheck, Trash2 } from 'lucide-react';
+     5	import { useJobContext } from '@/lib/job-context';
+     6	import { FloatingLabelInput } from '@/components/ui/floating-label-input';
+     7	import { SectionCard } from '@/components/ui/section-card';
+     8	import { SelectChips } from '@/components/ui/select-chips';
+     9	
+    10	/**
+    11	 * Board tab — mirrors iOS `BoardTab.swift` + `BoardInfo.swift`.
+    12	 *
+    13	 * iOS supports multiple boards per job (main + sub-distribution); the web
+    14	 * stores the list in `job.board.boards`. We default to a single synthesized
+    15	 * main board if the array is empty so inspectors can start filling straight
+    16	 * away. Adding / removing boards is a Phase 3a feature — the full parent /
+    17	 * sub-main hierarchy editing lands with Phase 3b (Circuits) because that's
+    18	 * when the feed-circuit reference actually matters.
+    19	 *
+    20	 * Fields mapped 1-1 with `BoardInfo` (snake_case keys):
+exec
+/bin/zsh -lc "rg --files 'web/src/app/job/[id]' | rg '/board/page\\.tsx"'$'"'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+web/src/app/job/[id]/board/page.tsx
+exec
+/bin/zsh -lc "nl -ba 'web/src/app/job/[id]/design/page.tsx' | sed -n '1,220p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	'use client';
+     2	
+     3	import * as React from 'react';
+     4	import { AlertTriangle, CheckCircle2, Info, PencilRuler } from 'lucide-react';
+     5	import { useJobContext } from '@/lib/job-context';
+     6	import { SectionCard } from '@/components/ui/section-card';
+     7	
+     8	/**
+     9	 * Design & Construction tab — mirrors iOS `DesignTab.swift`.
+    10	 *
+    11	 * A single section capturing BS 7671 departures. Includes the iOS "No
+    12	 * Departures" green capsule shortcut that prefills both fields with the
+    13	 * standard N/A strings so inspectors aren't retyping the same answer on
+    14	 * every unremarkable certificate.
+    15	 *
+    16	 * Data shape: `job.design.departures_from_bs7671` + `departure_details`
+    17	 * strings. Snake_case to match the backend JobFormData persistence.
+    18	 */
+    19	
+    20	type DesignShape = {
+codex
+I have enough to write findings, but I’m checking whether these files changed after `cccd548` so I can explicitly separate commit-level issues from later working-tree drift.
+exec
+/bin/zsh -lc 'git rev-parse HEAD' in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "git status --short -- web/src/app/globals.css 'web/src/app/job/[id]/layout.tsx' web/src/components/live-fill/live-field.tsx web/src/components/live-fill/live-fill-view.tsx web/src/lib/recording-context.tsx web/src/lib/recording/apply-extraction.ts web/src/lib/recording/live-fill-state.ts" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "git diff --stat cccd548..HEAD -- web/src/app/globals.css 'web/src/app/job/[id]/layout.tsx' web/src/components/live-fill/live-field.tsx web/src/components/live-fill/live-fill-view.tsx web/src/lib/recording-context.tsx web/src/lib/recording/apply-extraction.ts web/src/lib/recording/live-fill-state.ts" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 1.30s:
+2026-04-18 00:13:16.474 xcodebuild[35769:67218328]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:13:16.628 xcodebuild[35769:67218322] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-fwkro22q' (errno=Operation not permitted)
+2026-04-18 00:13:17.004 xcodebuild[35776:67218372]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:13:17.112 xcodebuild[35776:67218365] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+e64f756c2b949acd0273501bf5096dcfe3021b65
+ succeeded in 1.28s:
+2026-04-18 00:13:16.474 xcodebuild[35767:67218327]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:13:16.628 xcodebuild[35767:67218323] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-BLdyqIgr' (errno=Operation not permitted)
+2026-04-18 00:13:17.004 xcodebuild[35775:67218371]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:13:17.112 xcodebuild[35775:67218366] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+ succeeded in 1.29s:
+2026-04-18 00:13:16.474 xcodebuild[35768:67218329]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:13:16.628 xcodebuild[35768:67218324] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-XoIxfkhT' (errno=Operation not permitted)
+2026-04-18 00:13:17.004 xcodebuild[35774:67218370]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:13:17.112 xcodebuild[35774:67218367] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+ web/src/app/job/[id]/layout.tsx | 35 ++++++++++++++++++++++++++++++++++-
+ 1 file changed, 34 insertions(+), 1 deletion(-)
+codex
+There is later drift after `cccd548`: only [`web/src/app/job/[id]/layout.tsx`](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/job/[id]/layout.tsx:1) changed between that commit and current `HEAD` (`e64f756c`). I’m opening that delta so I can call out which observations are commit-level versus later changes.
+exec
+/bin/zsh -lc "git diff cccd548..HEAD -- 'web/src/app/job/[id]/layout.tsx'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 1.04s:
+2026-04-18 00:13:26.730 xcodebuild[35787:67218468]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:13:26.828 xcodebuild[35787:67218467] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-9QBG4siO' (errno=Operation not permitted)
+2026-04-18 00:13:27.117 xcodebuild[35791:67218488]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:13:27.215 xcodebuild[35791:67218487] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+diff --git a/web/src/app/job/[id]/layout.tsx b/web/src/app/job/[id]/layout.tsx
+index 86a61dd..d855485 100644
+--- a/web/src/app/job/[id]/layout.tsx
++++ b/web/src/app/job/[id]/layout.tsx
+@@ -13,6 +13,7 @@ import { JobProvider } from '@/lib/job-context';
+ import { RecordingProvider, useRecording } from '@/lib/recording-context';
+ import { api } from '@/lib/api-client';
+ import { clearAuth, getUser } from '@/lib/auth';
++import { getCachedJob, putCachedJob } from '@/lib/pwa/job-cache';
+ import type { JobDetail } from '@/lib/types';
+ 
+ /**
+@@ -47,10 +48,34 @@ export default function JobLayout({ children }: { children: React.ReactNode }) {
+       return;
+codex
+## 1. Summary of the phase
+Phase 5d adds a recording-time `LiveFillView` that replaces the active tab body while recording is `active`/`dozing`/`sleeping`, and flashes fields brand-blue as Sonnet-populated values land. It also extends extraction application to return `changedKeys`, then feeds those keys into a module-level live-fill store so individual fields can subscribe to their own recency state.
+
+Note on later drift: after `cccd548`, only [`web/src/app/job/[id]/layout.tsx`](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/job/[id]/layout.tsx:1) changed on `HEAD` (`e64f756`) for job-cache loading; the live-fill implementation files are otherwise unchanged, so the findings below still apply to the shipped phase.
+
+## 2. Alignment with original plan
+The implementation matches the main handoff mechanics well: `applyExtractionToJob` now returns `{ patch, changedKeys }` in [`apply-extraction.ts`](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording/apply-extraction.ts:340), there is a dedicated live-fill store in [`live-fill-state.ts`](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording/live-fill-state.ts:81), a CSS-only `LiveField` primitive in [`live-field.tsx`](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/live-fill/live-field.tsx:27), and Option A mounting in [`layout.tsx`](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/job/[id]/layout.tsx:135).
+
+The main miss versus the handoff is completeness of the “full form” view. `LiveFillView` does not render any Design section at all, even though extraction and the store both support `design.*` keys in [`apply-extraction.ts`](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording/apply-extraction.ts:30) and [`live-fill-state.ts`](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording/live-fill-state.ts:37). It also omits several fields explicitly called out in the handoff’s board/install goals, so this is not full parity yet.
+
+## 3. Correctness issues
+- `P1` Missing Design rendering breaks the “full form” contract for any `design.*` extraction updates. `applyExtractionToJob` emits change keys for `design` fields and `LiveFillStore` can set `lastUpdatedSection` to `design`, but `LiveFillView` has no `data-section="design"` target and no design card at all. That means those extracted fields cannot be seen live, and auto-scroll is a no-op for that section. References: [`apply-extraction.ts:30`]( /Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording/apply-extraction.ts:30), [`apply-extraction.ts:400`]( /Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording/apply-extraction.ts:400), [`live-fill-state.ts:37`]( /Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording/live-fill-state.ts:37), [`live-fill-state.ts:52`]( /Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording/live-fill-state.ts:52), [`live-fill-view.tsx:62`]( /Users/derekbeckley/Developer/EICR_Automation/web/src/components/live-fill/live-fill-view.tsx:62).
+- `P2` The live dashboard is materially incomplete relative to the planned board/install content. For example, the board card omits designation, location, phases, Ze, Zs at DB, and IPF at DB, despite those being central fields in the handoff and present on the board page. References: [`live-fill-view.tsx:206`]( /Users/derekbeckley/Developer/EICR_Automation/web/src/components/live-fill/live-fill-view.tsx:206), [`board/page.tsx:20`]( /Users/derekbeckley/Developer/EICR_Automation/web/src/app/job/[id]/board/page.tsx:20), [`board/page.tsx:172`]( /Users/derekbeckley/Developer/EICR_Automation/web/src/app/job/[id]/board/page.tsx:172), [`board/page.tsx:185`]( /Users/derekbeckley/Developer/EICR_Automation/web/src/app/job/[id]/board/page.tsx:185).
+- `P2` On current `HEAD`, repo conventions have drifted further away from this implementation: the tab nav now always exposes Extent and Design for both cert types, but `LiveFillView` still hides Extent for EICR and never shows Design. That later change is not caused by `cccd548`, but it makes the phase mismatch more visible. References: [`job-tab-nav.tsx:28`]( /Users/derekbeckley/Developer/EICR_Automation/web/src/components/job/job-tab-nav.tsx:28), [`job-tab-nav.tsx:50`]( /Users/derekbeckley/Developer/EICR_Automation/web/src/components/job/job-tab-nav.tsx:50), [`live-fill-view.tsx:119`]( /Users/derekbeckley/Developer/EICR_Automation/web/src/components/live-fill/live-fill-view.tsx:119).
+
+## 4. Security issues
+- No security findings in this phase. I did not see XSS sinks, auth regressions, CSRF exposure, secret leakage, or unsafe HTML insertion in the reviewed changes. The rendering stays within normal React escaping paths.
+
+## 5. Performance issues
+- `P2` The per-field subscription optimization is partially defeated by subscribing `RecordingProvider` itself to `useLiveFillStore()`. Every `markUpdated()` changes the snapshot, which rerenders `RecordingProvider`; because `applyExtraction`, `start`, and `stop` all depend on `liveFill`, the recording context value also churns and can force all `useRecording()` consumers to rerender on every extraction batch. References: [`recording-context.tsx:118`]( /Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording-context.tsx:118), [`recording-context.tsx:278`]( /Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording-context.tsx:278), [`recording-context.tsx:475`]( /Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording-context.tsx:475), [`recording-context.tsx:523`]( /Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording-context.tsx:523), [`recording-context.tsx:609`]( /Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording-context.tsx:609), [`live-fill-state.ts:185`]( /Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording/live-fill-state.ts:185).
+
+## 6. Accessibility issues
+- `P2` The entire live dashboard is marked as one `role="status" aria-live="polite"` region. Because this subtree is large and updates frequently, screen readers are likely to announce excessive content repeatedly as fields populate, which will be noisy at best and disruptive at worst during recording. A small dedicated live-announcement node would be safer than making the full surface live. Reference: [`live-fill-view.tsx:63`]( /Users/derekbeckley/Developer/EICR_Automation/web/src/components/live-fill/live-fill-view.tsx:63).
+- `P2` The flash effect is purely color-based. Reduced motion is handled, but there is no secondary non-color cue for “recently updated” fields, which weakens the signal for users with low color discrimination. References: [`globals.css:240`]( /Users/derekbeckley/Developer/EICR_Automation/web/src/app/globals.css:240), [`live-field.tsx:50`]( /Users/derekbeckley/Developer/EICR_Automation/web/src/components/live-fill/live-field.tsx:50).
+
+## 7. Code quality
+- There is clear thought in the diffing approach and the singleton store design; `changedKeys` diffing in [`apply-extraction.ts`](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording/apply-extraction.ts:395) is more robust than deriving UI keys from raw extractor output.
+- `LiveField` and `LiveFieldWide` duplicate most of their implementation. It is minor, but the duplication makes changes to empty-state or flash semantics easier to drift. References: [`live-field.tsx:27`]( /Users/derekbeckley/Developer/EICR_Automation/web/src/components/live-fill/live-field.tsx:27), [`live-field.tsx:80`]( /Users/derekbeckley/Developer/EICR_Automation/web/src/components/live-fill/live-field.tsx:80).
+- The biggest convention drift is data-shape mismatch: the board tab now centers on `board.boards[]`, while `LiveFillView` still renders only the older flat board fields. That may be intentional short-term, but it increases parity debt. References: [`board/page.tsx:31`]( /Users/derekbeckley/Developer/EICR_Automation/web/src/app/job/[id]/board/page.tsx:31), [`live-fill-view.tsx:54`]( /Users/derekbeckley/Developer/EICR_Automation/web/src/components/live-fill/live-fill-view.tsx:54).
+
+## 8. Test coverage gaps
+No tests were added in this commit, and I did not find test coverage for the new live-fill paths.
+
+Gaps:
+- `applyExtractionToJob` should have unit tests proving `changedKeys` for scalar, new-circuit, existing-circuit, field-clear, and observation cases.
+- `LiveFillStore` should have timer/reset tests for `markUpdated()`, cleanup expiry, and repeated updates to the same section.
+- `LiveFillView` should have component tests for section gating, `data-section` targets, and live-field flashing keys.
+- Accessibility behavior should be tested, especially avoiding over-broadcast from the live region.
+
+## 9. Suggested fixes
+1. [`web/src/components/live-fill/live-fill-view.tsx:62`](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/live-fill/live-fill-view.tsx:62) — Add a rendered Design section with `data-section="design"` and fields for at least `design.departures_from_bs7671`, `design.departure_details`, and `design.design_comments`. This fixes the current case where `design.*` updates are produced by extraction/store code but are invisible in the live dashboard.
+2. [`web/src/components/live-fill/live-fill-view.tsx:71`](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/live-fill/live-fill-view.tsx:71) — Expand Installation/Supply/Board coverage to include the fields named in the handoff, especially board designation, location, phases, `ze`, `zs_at_db`, and `ipf_at_db`. The phase currently falls short of the promised “full form” parity.
+3. [`web/src/lib/recording-context.tsx:118`](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording-context.tsx:118) — Stop using the snapshot-subscribing `useLiveFillStore()` inside `RecordingProvider`. Use direct stable methods from `liveFillStore` or split the hook so provider code can call `markUpdated/reset` without subscribing to `lastUpdatedSection/lastUpdatedAt`. This preserves the intended leaf-only rerender behavior.
+4. [`web/src/components/live-fill/live-fill-view.tsx:63`](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/live-fill/live-fill-view.tsx:63) — Replace the root `role="status" aria-live="polite"` with a small dedicated announcer that emits concise text like “Supply updated” or “Circuit 4 updated”. This avoids repeated announcement of a large subtree.
+5. [`web/src/lib/recording/apply-extraction.ts:273`](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording/apply-extraction.ts:273) — Add unit tests around `SCALAR_SECTIONS`/diff helpers before extending live-fill further. This is the contract that all UI flashing now depends on, and it is easy to regress as extractor fields evolve.
+
+## 10. Overall verdict
+**Ship with fixes.**
+
+The core mechanism is sound: extraction diffing, store cleanup, and field-level subscriptions are all sensible. The main reasons I would not call this “fully done” are that the live view is not actually full-form yet, and the provider-level subscription undercuts the performance story the commit message claims.
+
+Top 3 priority fixes:
+1. Render Design in `LiveFillView` so `design.*` updates are visible and scrollable.
+2. Remove the `RecordingProvider` subscription to live-fill snapshots to avoid provider-wide rerenders on every extraction update.
+3. Replace the full-surface live region with a focused announcement mechanism.
+tokens used
+141,886
+## 1. Summary of the phase
+Phase 5d adds a recording-time `LiveFillView` that replaces the active tab body while recording is `active`/`dozing`/`sleeping`, and flashes fields brand-blue as Sonnet-populated values land. It also extends extraction application to return `changedKeys`, then feeds those keys into a module-level live-fill store so individual fields can subscribe to their own recency state.
+
+Note on later drift: after `cccd548`, only [`web/src/app/job/[id]/layout.tsx`](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/job/[id]/layout.tsx:1) changed on `HEAD` (`e64f756`) for job-cache loading; the live-fill implementation files are otherwise unchanged, so the findings below still apply to the shipped phase.
+
+## 2. Alignment with original plan
+The implementation matches the main handoff mechanics well: `applyExtractionToJob` now returns `{ patch, changedKeys }` in [`apply-extraction.ts`](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording/apply-extraction.ts:340), there is a dedicated live-fill store in [`live-fill-state.ts`](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording/live-fill-state.ts:81), a CSS-only `LiveField` primitive in [`live-field.tsx`](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/live-fill/live-field.tsx:27), and Option A mounting in [`layout.tsx`](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/job/[id]/layout.tsx:135).
+
+The main miss versus the handoff is completeness of the “full form” view. `LiveFillView` does not render any Design section at all, even though extraction and the store both support `design.*` keys in [`apply-extraction.ts`](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording/apply-extraction.ts:30) and [`live-fill-state.ts`](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording/live-fill-state.ts:37). It also omits several fields explicitly called out in the handoff’s board/install goals, so this is not full parity yet.
+
+## 3. Correctness issues
+- `P1` Missing Design rendering breaks the “full form” contract for any `design.*` extraction updates. `applyExtractionToJob` emits change keys for `design` fields and `LiveFillStore` can set `lastUpdatedSection` to `design`, but `LiveFillView` has no `data-section="design"` target and no design card at all. That means those extracted fields cannot be seen live, and auto-scroll is a no-op for that section. References: [`apply-extraction.ts:30`]( /Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording/apply-extraction.ts:30), [`apply-extraction.ts:400`]( /Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording/apply-extraction.ts:400), [`live-fill-state.ts:37`]( /Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording/live-fill-state.ts:37), [`live-fill-state.ts:52`]( /Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording/live-fill-state.ts:52), [`live-fill-view.tsx:62`]( /Users/derekbeckley/Developer/EICR_Automation/web/src/components/live-fill/live-fill-view.tsx:62).
+- `P2` The live dashboard is materially incomplete relative to the planned board/install content. For example, the board card omits designation, location, phases, Ze, Zs at DB, and IPF at DB, despite those being central fields in the handoff and present on the board page. References: [`live-fill-view.tsx:206`]( /Users/derekbeckley/Developer/EICR_Automation/web/src/components/live-fill/live-fill-view.tsx:206), [`board/page.tsx:20`]( /Users/derekbeckley/Developer/EICR_Automation/web/src/app/job/[id]/board/page.tsx:20), [`board/page.tsx:172`]( /Users/derekbeckley/Developer/EICR_Automation/web/src/app/job/[id]/board/page.tsx:172), [`board/page.tsx:185`]( /Users/derekbeckley/Developer/EICR_Automation/web/src/app/job/[id]/board/page.tsx:185).
+- `P2` On current `HEAD`, repo conventions have drifted further away from this implementation: the tab nav now always exposes Extent and Design for both cert types, but `LiveFillView` still hides Extent for EICR and never shows Design. That later change is not caused by `cccd548`, but it makes the phase mismatch more visible. References: [`job-tab-nav.tsx:28`]( /Users/derekbeckley/Developer/EICR_Automation/web/src/components/job/job-tab-nav.tsx:28), [`job-tab-nav.tsx:50`]( /Users/derekbeckley/Developer/EICR_Automation/web/src/components/job/job-tab-nav.tsx:50), [`live-fill-view.tsx:119`]( /Users/derekbeckley/Developer/EICR_Automation/web/src/components/live-fill/live-fill-view.tsx:119).
+
+## 4. Security issues
+- No security findings in this phase. I did not see XSS sinks, auth regressions, CSRF exposure, secret leakage, or unsafe HTML insertion in the reviewed changes. The rendering stays within normal React escaping paths.
+
+## 5. Performance issues
+- `P2` The per-field subscription optimization is partially defeated by subscribing `RecordingProvider` itself to `useLiveFillStore()`. Every `markUpdated()` changes the snapshot, which rerenders `RecordingProvider`; because `applyExtraction`, `start`, and `stop` all depend on `liveFill`, the recording context value also churns and can force all `useRecording()` consumers to rerender on every extraction batch. References: [`recording-context.tsx:118`]( /Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording-context.tsx:118), [`recording-context.tsx:278`]( /Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording-context.tsx:278), [`recording-context.tsx:475`]( /Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording-context.tsx:475), [`recording-context.tsx:523`]( /Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording-context.tsx:523), [`recording-context.tsx:609`]( /Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording-context.tsx:609), [`live-fill-state.ts:185`]( /Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording/live-fill-state.ts:185).
+
+## 6. Accessibility issues
+- `P2` The entire live dashboard is marked as one `role="status" aria-live="polite"` region. Because this subtree is large and updates frequently, screen readers are likely to announce excessive content repeatedly as fields populate, which will be noisy at best and disruptive at worst during recording. A small dedicated live-announcement node would be safer than making the full surface live. Reference: [`live-fill-view.tsx:63`]( /Users/derekbeckley/Developer/EICR_Automation/web/src/components/live-fill/live-fill-view.tsx:63).
+- `P2` The flash effect is purely color-based. Reduced motion is handled, but there is no secondary non-color cue for “recently updated” fields, which weakens the signal for users with low color discrimination. References: [`globals.css:240`]( /Users/derekbeckley/Developer/EICR_Automation/web/src/app/globals.css:240), [`live-field.tsx:50`]( /Users/derekbeckley/Developer/EICR_Automation/web/src/components/live-fill/live-field.tsx:50).
+
+## 7. Code quality
+- There is clear thought in the diffing approach and the singleton store design; `changedKeys` diffing in [`apply-extraction.ts`](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording/apply-extraction.ts:395) is more robust than deriving UI keys from raw extractor output.
+- `LiveField` and `LiveFieldWide` duplicate most of their implementation. It is minor, but the duplication makes changes to empty-state or flash semantics easier to drift. References: [`live-field.tsx:27`]( /Users/derekbeckley/Developer/EICR_Automation/web/src/components/live-fill/live-field.tsx:27), [`live-field.tsx:80`]( /Users/derekbeckley/Developer/EICR_Automation/web/src/components/live-fill/live-field.tsx:80).
+- The biggest convention drift is data-shape mismatch: the board tab now centers on `board.boards[]`, while `LiveFillView` still renders only the older flat board fields. That may be intentional short-term, but it increases parity debt. References: [`board/page.tsx:31`]( /Users/derekbeckley/Developer/EICR_Automation/web/src/app/job/[id]/board/page.tsx:31), [`live-fill-view.tsx:54`]( /Users/derekbeckley/Developer/EICR_Automation/web/src/components/live-fill/live-fill-view.tsx:54).
+
+## 8. Test coverage gaps
+No tests were added in this commit, and I did not find test coverage for the new live-fill paths.
+
+Gaps:
+- `applyExtractionToJob` should have unit tests proving `changedKeys` for scalar, new-circuit, existing-circuit, field-clear, and observation cases.
+- `LiveFillStore` should have timer/reset tests for `markUpdated()`, cleanup expiry, and repeated updates to the same section.
+- `LiveFillView` should have component tests for section gating, `data-section` targets, and live-field flashing keys.
+- Accessibility behavior should be tested, especially avoiding over-broadcast from the live region.
+
+## 9. Suggested fixes
+1. [`web/src/components/live-fill/live-fill-view.tsx:62`](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/live-fill/live-fill-view.tsx:62) — Add a rendered Design section with `data-section="design"` and fields for at least `design.departures_from_bs7671`, `design.departure_details`, and `design.design_comments`. This fixes the current case where `design.*` updates are produced by extraction/store code but are invisible in the live dashboard.
+2. [`web/src/components/live-fill/live-fill-view.tsx:71`](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/live-fill/live-fill-view.tsx:71) — Expand Installation/Supply/Board coverage to include the fields named in the handoff, especially board designation, location, phases, `ze`, `zs_at_db`, and `ipf_at_db`. The phase currently falls short of the promised “full form” parity.
+3. [`web/src/lib/recording-context.tsx:118`](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording-context.tsx:118) — Stop using the snapshot-subscribing `useLiveFillStore()` inside `RecordingProvider`. Use direct stable methods from `liveFillStore` or split the hook so provider code can call `markUpdated/reset` without subscribing to `lastUpdatedSection/lastUpdatedAt`. This preserves the intended leaf-only rerender behavior.
+4. [`web/src/components/live-fill/live-fill-view.tsx:63`](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/live-fill/live-fill-view.tsx:63) — Replace the root `role="status" aria-live="polite"` with a small dedicated announcer that emits concise text like “Supply updated” or “Circuit 4 updated”. This avoids repeated announcement of a large subtree.
+5. [`web/src/lib/recording/apply-extraction.ts:273`](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording/apply-extraction.ts:273) — Add unit tests around `SCALAR_SECTIONS`/diff helpers before extending live-fill further. This is the contract that all UI flashing now depends on, and it is easy to regress as extractor fields evolve.
+
+## 10. Overall verdict
+**Ship with fixes.**
+
+The core mechanism is sound: extraction diffing, store cleanup, and field-level subscriptions are all sensible. The main reasons I would not call this “fully done” are that the live view is not actually full-form yet, and the provider-level subscription undercuts the performance story the commit message claims.
+
+Top 3 priority fixes:
+1. Render Design in `LiveFillView` so `design.*` updates are visible and scrollable.
+2. Remove the `RecordingProvider` subscription to live-fill snapshots to avoid provider-wide rerenders on every extraction update.
+3. Replace the full-surface live region with a focused announcement mechanism.
