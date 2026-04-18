@@ -119,6 +119,15 @@ export interface SonnetSessionCallbacks {
 export interface SessionStartOptions {
   sessionId: string;
   jobId: string;
+  /**
+   * Explicit certificate type for this session. Must match the job's
+   * `certificate_type` — Sonnet routes against a different extraction
+   * schema per type, so an EIC job sent as EICR silently drops the
+   * design-section readings and writes them into the wrong fields.
+   * Passed explicitly (not only inside `jobState`) so the server can
+   * validate + branch before it unpacks the snapshot.
+   */
+  certificateType: 'EICR' | 'EIC';
   /** Snapshot of the current JobDetail — certificateType + any pre-filled
    *  fields. Sent so Sonnet has pre-populated CCU/manual data as context. */
   jobState?: unknown;
@@ -174,6 +183,7 @@ export class SonnetSession {
         type: 'session_start',
         sessionId: options.sessionId,
         jobId: options.jobId,
+        certificateType: options.certificateType,
         jobState: options.jobState,
       });
       // Flush anything queued while connecting.

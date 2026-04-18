@@ -3,6 +3,7 @@
 import * as React from 'react';
 import { startMicCapture, type MicCaptureHandle } from './recording/mic-capture';
 import { DeepgramService, type DeepgramConnectionState } from './recording/deepgram-service';
+import { resampleTo16k } from './recording/resample';
 import {
   SonnetSession,
   type ExtractionResult,
@@ -329,9 +330,17 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         }
       },
     });
+    // Route certificate type off the live job snapshot, not a hardcoded
+    // default. An EIC job sent as EICR would silently run against the
+    // wrong Sonnet extraction schema and drop the design-section fields.
+    // Fallback to 'EICR' only when the backend somehow omitted the type
+    // (legacy jobs created before the column existed); defensive, but we
+    // log so the drift is visible during QA.
+    const certificateType = jobRef.current.certificate_type ?? 'EICR';
     session.connect({
       sessionId,
       jobId,
+      certificateType,
       jobState: jobRef.current,
     });
     sonnetRef.current = session;
@@ -344,14 +353,28 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
   const beginMicPipeline = React.useCallback(async () => {
     // Fresh ring buffer on every mic open — the previous session's tail
     // is irrelevant after a teardown. 3s @ 16kHz mirrors iOS.
+    //
+    // The ring buffer is intentionally fixed at 16kHz: every consumer
+    // (Deepgram, the ASR wake-replay, iOS) speaks 16kHz natively, so we
+    // resample ONCE at the ingress boundary below and everything
+    // downstream is already in the correct rate. Prior to this, the
+    // ring buffer was sized for 16kHz but written with raw mic-rate
+    // samples (48kHz on most iOS builds), so a "3-second" replay was
+    // really ~1 second of audio labelled at the wrong rate — Deepgram
+    // heard a chipmunk and the first few seconds after wake were lost.
     ringBufferRef.current = new AudioRingBuffer(3, 16000);
     const handle = await startMicCapture({
       onSamples: (samples) => {
+        // Single resample point. `handle.sampleRate` is the AudioContext's
+        // ACTUAL rate (browsers honour the 16000 hint only on some builds).
+        // Post-resample data is 16kHz Float32 regardless of the hardware
+        // rate, so both downstream sinks can trust the sample count.
+        const samples16k = resampleTo16k(samples, handle.sampleRate);
         // Always write to the ring buffer, even while paused. That's
         // what lets wake-from-doze replay the 3 seconds leading up to
         // the VAD fire.
-        ringBufferRef.current?.writeFloat32(samples);
-        deepgramRef.current?.sendSamples(samples);
+        ringBufferRef.current?.writeFloat32(samples16k);
+        deepgramRef.current?.sendSamples(samples16k);
       },
       onLevel: (level) => {
         const now = performance.now();
@@ -372,7 +395,12 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
       },
     });
     micRef.current = handle;
-    await openDeepgram(handle.sampleRate);
+    // Samples arrive at DeepgramService already resampled to 16kHz (see
+    // the onSamples callback above), so declare the source rate as 16k
+    // regardless of `handle.sampleRate`. Otherwise DeepgramService would
+    // resample a second time with a ratio based on the raw device rate
+    // and produce double-transformed audio.
+    await openDeepgram(16000);
     // Sonnet session opens alongside Deepgram. Run sequentially so the
     // scoped Deepgram token fetch doesn't contend with the Sonnet
     // handshake on slow networks; both are cheap so this is fine.
@@ -401,7 +429,10 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
             // Mic died while sleeping — start a fresh pipeline. Rare.
             await beginMicPipeline();
           } else {
-            await openDeepgram(mic.sampleRate);
+            // Ring buffer is already 16kHz (see beginMicPipeline) and
+            // the onSamples callback keeps resampling upstream, so
+            // DeepgramService always speaks 16kHz for this session.
+            await openDeepgram(16000);
             openSonnet();
             const replay = ringBufferRef.current?.drain();
             if (replay && replay.length > 0) {
@@ -561,7 +592,10 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         if (!mic) {
           await beginMicPipeline();
         } else {
-          await openDeepgram(mic.sampleRate);
+          // Ingress resample in `beginMicPipeline` keeps the ring buffer
+          // + DeepgramService in 16kHz for this session — no need to
+          // forward the raw device rate here.
+          await openDeepgram(16000);
           openSonnet();
           const replay = ringBufferRef.current?.drain();
           if (replay && replay.length > 0) {

@@ -47,6 +47,13 @@ export class DeepgramService {
   // but the WS stays open via the KeepAlive loop. Lets the SleepManager
   // re-wake in <100ms without a full reconnect.
   private paused = false;
+  // WebSocket fires BOTH `onerror` and `onclose` for most failure modes
+  // (spec says either can fire standalone but Chrome/Safari currently
+  // fire both). Without a guard the upstream recording-context would
+  // see two `onError` callbacks for a single close and trigger two
+  // reconnects — doubling Deepgram connect-storm billing on flaky links.
+  // This flag is reset every `connect()`.
+  private errorEmitted = false;
 
   constructor(callbacks: DeepgramCallbacks) {
     this.callbacks = callbacks;
@@ -66,13 +73,23 @@ export class DeepgramService {
       return;
     }
     this.sourceSampleRate = sourceSampleRate;
+    this.errorEmitted = false;
     this.setState('connecting');
 
     const url = this.buildURL();
     // Deepgram accepts subprotocol token auth; URL query params are blocked
-    // on iOS Safari during the HTTP→WS upgrade (rules/mistakes.md).
+    // on iOS Safari during the HTTP→WS upgrade (rules/mistakes.md). The
+    // ['token', apiKey] two-element array is the format Deepgram expects
+    // — a single "token, key" string (comma-space) is rejected by newer
+    // Deepgram validation.
     const ws = new WebSocket(url, ['token', apiKey]);
     ws.binaryType = 'arraybuffer';
+
+    const emitError = (err: Error) => {
+      if (this.errorEmitted) return;
+      this.errorEmitted = true;
+      this.callbacks.onError?.(err);
+    };
 
     ws.onopen = () => {
       this.setState('connected');
@@ -85,7 +102,7 @@ export class DeepgramService {
 
     ws.onerror = () => {
       this.setState('error');
-      this.callbacks.onError?.(new Error('Deepgram WebSocket error'));
+      emitError(new Error('Deepgram WebSocket error'));
     };
 
     ws.onclose = (event) => {
@@ -95,7 +112,7 @@ export class DeepgramService {
         this.setState('disconnected');
       }
       if (event.code !== 1000 && event.code !== 1005) {
-        this.callbacks.onError?.(new Error(`Deepgram WS closed (code=${event.code})`));
+        emitError(new Error(`Deepgram WS closed (code=${event.code})`));
       }
     };
 

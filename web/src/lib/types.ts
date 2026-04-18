@@ -201,7 +201,13 @@ export interface JobDetail extends Job {
   design?: Record<string, unknown>;
   inspector?: InspectorInfo;
   // CCU analysis output — populated once a consumer-unit photo is uploaded.
+  // `ccu_analysis` is the most-recent flat copy (kept for legacy debug
+  // panels and single-board jobs); `ccu_analysis_by_board` is the per-
+  // board authoritative map, keyed by `board.id`. Writing both keeps
+  // existing consumers working while preventing the multi-board cross-
+  // bleed the single flat field caused.
   ccu_analysis?: Record<string, unknown>;
+  ccu_analysis_by_board?: Record<string, Record<string, unknown>>;
   /** Most recent recording session id (for resume/review). */
   last_session_id?: string;
 }

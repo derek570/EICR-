@@ -116,6 +116,14 @@ function buildBoardPatch(
   );
   if (manufacturer !== undefined) next.manufacturer = manufacturer;
 
+  // `analysis.board_model` is the manufacturer's model string (e.g.
+  // "Wylex NH10"). Store it in its own `board_model` field so downstream
+  // consumers that need the model specifically (PDF, compliance report)
+  // don't have to re-derive it from the `name`. Keep `name` in sync with
+  // `board_model` when the user hasn't supplied a separate display name
+  // — matches the iOS `BoardInfo` mapping and avoids an empty UI label.
+  const boardModel = mergeField(next.board_model as string | undefined, analysis.board_model);
+  if (boardModel !== undefined) next.board_model = boardModel;
   const boardName = mergeField(next.name as string | undefined, analysis.board_model);
   if (boardName !== undefined) next.name = boardName;
 
@@ -354,8 +362,21 @@ export function applyCcuAnalysisToJob(
   const circuits = buildCircuitsPatch(job, analysis, boardId);
   if (circuits) patch.circuits = circuits;
 
-  // Always persist the raw analysis so review/retry flows can inspect
-  // what the model returned without re-uploading the image.
+  // Persist the raw analysis keyed per-board so multi-board jobs don't
+  // cross-bleed. The legacy implementation stored a single flat
+  // `job.ccu_analysis`, which meant re-running CCU analysis on DB2
+  // silently overwrote the DB1 photo's extracted metadata. Keying by
+  // `boardId` keeps each board's raw response scoped while retaining
+  // the audit trail for review/retry flows.
+  const existingAnalyses = job.ccu_analysis_by_board ?? {};
+  patch.ccu_analysis_by_board = {
+    ...existingAnalyses,
+    [boardId]: analysis as unknown as Record<string, unknown>,
+  };
+  // Mirror the most recent analysis onto the legacy flat field for any
+  // downstream consumer that still reads `ccu_analysis` directly
+  // (e.g. the debug panel). Safe because the per-board map above is
+  // authoritative — the flat copy is just a cache.
   patch.ccu_analysis = analysis as unknown as Record<string, unknown>;
 
   const questions = [
