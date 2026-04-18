@@ -16,6 +16,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { EICRExtractionSession } from './eicr-extraction-session.js';
 import { QuestionGate } from './question-gate.js';
 import { needsRefinement, refineObservation } from './observation-code-lookup.js';
+import { sonnetSessionStore } from './sonnet-session-store.js';
 import * as storage from '../storage.js';
 import logger from '../logger.js';
 
@@ -464,7 +465,27 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
             break;
 
           case 'session_resume':
-            if (currentSessionId && activeSessions.has(currentSessionId)) {
+            // Wave 4c.5 (rehydrate-on-reconnect) vs. legacy (sleep/wake) are
+            // disambiguated by the presence of `msg.sessionId` on the payload:
+            //
+            //   { type: 'session_resume', sessionId: '<uuid>' }   → rehydrate
+            //   { type: 'session_resume' }                         → legacy wake
+            //
+            // The legacy wake path operates on an already-open socket that's
+            // been paused by `session_pause`. It cannot carry a sessionId
+            // because the iOS sleep/wake protocol predates Wave 4c.5 and has
+            // no server-minted identifier to quote back. Keeping both paths
+            // behind the one frame name preserves backward compatibility with
+            // the iOS client during the rollout window.
+            if (msg.sessionId) {
+              const {
+                sessionId: newSessionId,
+                ack,
+                activeEntryKey,
+              } = handleSessionResumeRehydrate(ws, userId, msg.sessionId);
+              currentSessionId = activeEntryKey;
+              ws.send(JSON.stringify({ type: 'session_ack', ...ack, sessionId: newSessionId }));
+            } else if (currentSessionId && activeSessions.has(currentSessionId)) {
               const resumeEntry = activeSessions.get(currentSessionId);
               resumeEntry.session.resume();
               const pauseDurationMs = resumeEntry.pauseStartTime
@@ -563,7 +584,17 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
       if (jobState) {
         existing.session.updateJobState(jobState);
       }
-      ws.send(JSON.stringify({ type: 'session_ack', status: 'reconnected' }));
+      // Mirror the started/resumed paths: include the rehydration sessionId
+      // so the client can keep using `session_resume` later. The reconnect
+      // branch predates Wave 4c.5 but there's no harm in emitting the token
+      // here too — clients that ignore the field behave exactly as before.
+      ws.send(
+        JSON.stringify({
+          type: 'session_ack',
+          status: 'reconnected',
+          sessionId: existing.rehydrateSessionId || null,
+        })
+      );
       // Flush any extraction results that were buffered while the socket was disconnected
       flushPendingExtractions(ws, existing, sessionId);
       logger.info('Session reconnected', { sessionId, turns: existing.session.turnCount });
@@ -663,6 +694,18 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
       jobState?.installation_details?.address ||
       null;
 
+    // Wave 4c.5: mint a server-side rehydration sessionId so the client can
+    // issue `session_resume { sessionId }` after a dropped WebSocket. The
+    // stored payload only needs to reference the `activeSessions` entry —
+    // the full multi-turn Sonnet context lives on `session.messages` inside
+    // that entry and is rebound on rehydrate. Storing metadata only keeps
+    // the store entries small (~100 bytes) so the LRU cap is cheap.
+    const rehydrateSessionId = sonnetSessionStore.create(userId, {
+      clientSessionId: sessionId,
+      jobId: jobId || null,
+      certType,
+    });
+
     activeSessions.set(sessionId, {
       session,
       questionGate,
@@ -675,10 +718,107 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
       isExtracting: false,
       pendingTranscripts: [],
       pendingExtractions: [],
+      rehydrateSessionId,
     });
 
-    ws.send(JSON.stringify({ type: 'session_ack', status: 'started' }));
-    logger.info('Session started', { sessionId, jobId, jobAddress, certType });
+    ws.send(
+      JSON.stringify({ type: 'session_ack', status: 'started', sessionId: rehydrateSessionId })
+    );
+    logger.info('Session started', {
+      sessionId,
+      rehydrateSessionId,
+      jobId,
+      jobAddress,
+      certType,
+    });
+  }
+
+  /**
+   * Wave 4c.5 rehydrate path. Returns the ack payload fields for the caller
+   * to wrap into the outgoing `session_ack` frame, plus the `activeSessions`
+   * key the connection should track going forward. Never throws — an
+   * unknown / expired / wrong-user token all degrade to a fresh session_ack
+   * so the client can start over without a separate error channel.
+   *
+   * The caller is responsible for:
+   *   - sending the frame
+   *   - setting `currentSessionId` to `activeEntryKey`
+   *
+   * On a successful rehydrate we also rebind `entry.ws` and `entry.questionGate`
+   * to the new socket, the same shape as `handleSessionStart`'s reconnection
+   * branch does, so extraction callbacks target the live socket.
+   */
+  function handleSessionResumeRehydrate(ws, userId, requestedSessionId) {
+    const stored = sonnetSessionStore.resume(requestedSessionId, userId);
+
+    // Miss → mint a fresh rehydration token with no underlying entry. The
+    // client will treat this as a brand-new session and follow up with
+    // `session_start` on its next transcript. We don't pre-create the
+    // runtime state here because we don't yet know the jobId / jobState
+    // the client will want bound — those arrive with session_start.
+    if (!stored) {
+      logger.info('session_resume miss — returning fresh session_ack', {
+        userId,
+        requestedSessionId,
+      });
+      // No entry minted yet; return status=new with no sessionId so the
+      // client knows rehydration failed and must send session_start.
+      return { sessionId: null, ack: { status: 'new' }, activeEntryKey: null };
+    }
+
+    const { clientSessionId } = stored;
+    const entry = activeSessions.get(clientSessionId);
+
+    // TTL-valid store hit but the runtime entry is gone (e.g. the 5-min
+    // disconnectTimer fired and cleaned up activeSessions, but the store
+    // entry was also ~5 min old so we're on the TTL boundary). Treat as
+    // a miss — no context to rehydrate.
+    if (!entry) {
+      logger.info('session_resume store hit but activeSessions entry missing', {
+        userId,
+        requestedSessionId,
+        clientSessionId,
+      });
+      sonnetSessionStore.remove(requestedSessionId);
+      return { sessionId: null, ack: { status: 'new' }, activeEntryKey: null };
+    }
+
+    // Cancel any pending disconnect timer — we're live again.
+    if (entry.disconnectTimer) {
+      clearTimeout(entry.disconnectTimer);
+      entry.disconnectTimer = null;
+    }
+
+    // Rebind the socket + questionGate callback to the new WS, matching the
+    // handleSessionStart reconnection branch. This preserves the Anthropic
+    // conversation history (lives on entry.session.messages).
+    entry.ws = ws;
+    entry.questionGate.destroy();
+    entry.questionGate = new QuestionGate((questions) => {
+      for (const q of questions) {
+        if (ws.readyState === ws.OPEN) {
+          const { type: questionType, ...rest } = q;
+          ws.send(JSON.stringify({ type: 'question', question_type: questionType, ...rest }));
+        }
+      }
+    });
+
+    // Flush any extraction results that were buffered while the socket was
+    // disconnected — same path as handleSessionStart's reconnect branch.
+    flushPendingExtractions(ws, entry, clientSessionId);
+
+    logger.info('session_resume rehydrated', {
+      userId,
+      requestedSessionId,
+      clientSessionId,
+      turns: entry.session.turnCount,
+    });
+
+    return {
+      sessionId: requestedSessionId,
+      ack: { status: 'resumed' },
+      activeEntryKey: clientSessionId,
+    };
   }
 
   function flushPendingExtractions(ws, entry, sessionId) {
@@ -931,6 +1071,12 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
 
     if (ws.readyState === ws.OPEN) {
       ws.send(JSON.stringify({ type: 'session_ack', status: 'stopped', sessionStats: summary }));
+    }
+    // Invalidate the rehydration token — a cleanly-stopped session has no
+    // context worth preserving and we don't want a stale token lingering in
+    // the store for the full TTL.
+    if (entry.rehydrateSessionId) {
+      sonnetSessionStore.remove(entry.rehydrateSessionId);
     }
     activeSessions.delete(sessionId);
     logger.info('Session stopped', { sessionId });
