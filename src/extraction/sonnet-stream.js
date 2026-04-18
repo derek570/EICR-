@@ -16,6 +16,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { EICRExtractionSession } from './eicr-extraction-session.js';
 import { QuestionGate } from './question-gate.js';
 import { needsRefinement, refineObservation } from './observation-code-lookup.js';
+import { sonnetSessionStore } from './sonnet-session-store.js';
 import * as storage from '../storage.js';
 import logger from '../logger.js';
 
@@ -563,7 +564,17 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
       if (jobState) {
         existing.session.updateJobState(jobState);
       }
-      ws.send(JSON.stringify({ type: 'session_ack', status: 'reconnected' }));
+      // Mirror the started/resumed paths: include the rehydration sessionId
+      // so the client can keep using `session_resume` later. The reconnect
+      // branch predates Wave 4c.5 but there's no harm in emitting the token
+      // here too — clients that ignore the field behave exactly as before.
+      ws.send(
+        JSON.stringify({
+          type: 'session_ack',
+          status: 'reconnected',
+          sessionId: existing.rehydrateSessionId || null,
+        })
+      );
       // Flush any extraction results that were buffered while the socket was disconnected
       flushPendingExtractions(ws, existing, sessionId);
       logger.info('Session reconnected', { sessionId, turns: existing.session.turnCount });
@@ -663,6 +674,18 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
       jobState?.installation_details?.address ||
       null;
 
+    // Wave 4c.5: mint a server-side rehydration sessionId so the client can
+    // issue `session_resume { sessionId }` after a dropped WebSocket. The
+    // stored payload only needs to reference the `activeSessions` entry —
+    // the full multi-turn Sonnet context lives on `session.messages` inside
+    // that entry and is rebound on rehydrate. Storing metadata only keeps
+    // the store entries small (~100 bytes) so the LRU cap is cheap.
+    const rehydrateSessionId = sonnetSessionStore.create(userId, {
+      clientSessionId: sessionId,
+      jobId: jobId || null,
+      certType,
+    });
+
     activeSessions.set(sessionId, {
       session,
       questionGate,
@@ -675,10 +698,19 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
       isExtracting: false,
       pendingTranscripts: [],
       pendingExtractions: [],
+      rehydrateSessionId,
     });
 
-    ws.send(JSON.stringify({ type: 'session_ack', status: 'started' }));
-    logger.info('Session started', { sessionId, jobId, jobAddress, certType });
+    ws.send(
+      JSON.stringify({ type: 'session_ack', status: 'started', sessionId: rehydrateSessionId })
+    );
+    logger.info('Session started', {
+      sessionId,
+      rehydrateSessionId,
+      jobId,
+      jobAddress,
+      certType,
+    });
   }
 
   function flushPendingExtractions(ws, entry, sessionId) {
@@ -931,6 +963,12 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
 
     if (ws.readyState === ws.OPEN) {
       ws.send(JSON.stringify({ type: 'session_ack', status: 'stopped', sessionStats: summary }));
+    }
+    // Invalidate the rehydration token — a cleanly-stopped session has no
+    // context worth preserving and we don't want a stale token lingering in
+    // the store for the full TTL.
+    if (entry.rehydrateSessionId) {
+      sonnetSessionStore.remove(entry.rehydrateSessionId);
     }
     activeSessions.delete(sessionId);
     logger.info('Session stopped', { sessionId });
