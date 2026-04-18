@@ -44,21 +44,82 @@ async function getOpenAIClient() {
  * that needs refinement (missing code/regulation/low confidence), call
  * `gpt-5-search-api` and emit an `observation_update` message to iOS. Runs
  * AFTER the extraction result has been sent so it doesn't block the main turn.
+ *
+ * Phase C (#5, #8): takes `entry` instead of a bare ws so we resolve
+ * `entry.ws` at send time. On reconnect the session-swap path updates
+ * `entry.ws`, so refinements in flight when the socket swaps still land on
+ * the live connection. Also pre-flight-checks ws state BEFORE each
+ * `refineObservation` call so we don't burn search tokens on a socket we
+ * already know is dead. Failed/skipped refinements remain in
+ * `entry.pendingRefinements` so the reconnect flush re-kicks them.
  */
-async function refineObservationsAsync(ws, sessionId, observations) {
-  if (!Array.isArray(observations) || observations.length === 0) return;
+async function refineObservationsAsync(entry, sessionId, observations) {
+  if (!entry || !Array.isArray(observations) || observations.length === 0) return;
   const toRefine = observations.filter(needsRefinement);
   if (toRefine.length === 0) return;
 
   const openai = await getOpenAIClient();
   if (!openai) return;
 
+  // Phase C #8: mark every obs as pending BEFORE we start so a reconnect
+  // that arrives during the await can see what's in flight.
+  entry.pendingRefinements = entry.pendingRefinements || new Map();
+  entry.recentlyRefinedIds = entry.recentlyRefinedIds || new Map();
   for (const obs of toRefine) {
+    if (!obs.observation_id) continue; // no id → can't dedupe on reconnect
+    // Duplicate guard: if we successfully refined this id in the last 2s
+    // (short TTL), skip — the reconnect path may re-kick the same list.
+    const recentExpiry = entry.recentlyRefinedIds.get(obs.observation_id);
+    if (recentExpiry && recentExpiry > Date.now()) continue;
+    entry.pendingRefinements.set(obs.observation_id, { obs, attemptedAt: Date.now() });
+  }
+
+  for (const obs of toRefine) {
+    // Same dedupe check as above — re-read in case the previous iteration
+    // of this loop already completed the same id on a parallel call.
+    if (obs.observation_id) {
+      const recentExpiry = entry.recentlyRefinedIds.get(obs.observation_id);
+      if (recentExpiry && recentExpiry > Date.now()) continue;
+    }
     try {
+      // Phase C #8 pre-flight: if the session's socket is already closed AND
+      // there's no reconnect window pending, leave the obs in pendingRefinements
+      // so the reconnect flush handles it. Saves a 1-3s search on a dead ws.
+      if (entry.ws?.readyState !== entry.ws?.OPEN && !entry.disconnectTimer) {
+        logger.info('Refinement deferred — socket closed, no reconnect pending', {
+          sessionId,
+          observationId: (obs.observation_id || '').slice(0, 8),
+        });
+        continue;
+      }
       const refined = await refineObservation(openai, obs);
-      if (!refined) continue;
-      if (ws.readyState !== ws.OPEN) return; // session moved on
-      ws.send(
+      if (!refined) {
+        // No refinement produced — treat as resolved (no update to send).
+        if (obs.observation_id) entry.pendingRefinements.delete(obs.observation_id);
+        continue;
+      }
+      // Resolve ws at SEND time, not call time — if the socket was swapped
+      // during the await (doze/wake, transient drop), `entry.ws` now points
+      // at the live socket.
+      const currentWs = entry.ws;
+      if (!currentWs || currentWs.readyState !== currentWs.OPEN) {
+        // Socket not available — leave in pendingRefinements for reconnect
+        // flush. We already paid for the search, so don't call it again.
+        // Cache the result on the pending entry so re-kick can short-circuit.
+        if (obs.observation_id) {
+          entry.pendingRefinements.set(obs.observation_id, {
+            obs,
+            refined,
+            attemptedAt: Date.now(),
+          });
+        }
+        logger.info('Refinement result queued (socket dropped mid-refine)', {
+          sessionId,
+          observationId: (obs.observation_id || '').slice(0, 8),
+        });
+        continue;
+      }
+      currentWs.send(
         JSON.stringify({
           type: 'observation_update',
           // Phase A: echo the server-assigned observation_id so iOS can patch
@@ -72,6 +133,12 @@ async function refineObservationsAsync(ws, sessionId, observations) {
           source: refined.source,
         })
       );
+      if (obs.observation_id) {
+        entry.pendingRefinements.delete(obs.observation_id);
+        // Phase C #5 duplicate guard: 2s window where a reconnect re-kick
+        // must not re-issue the refinement.
+        entry.recentlyRefinedIds.set(obs.observation_id, Date.now() + 2000);
+      }
       logger.info('observation_update sent', {
         sessionId,
         observationId: (obs.observation_id || '').slice(0, 8),
@@ -83,7 +150,74 @@ async function refineObservationsAsync(ws, sessionId, observations) {
         sessionId,
         error: err.message,
       });
+      // Leave in pendingRefinements — reconnect will retry.
     }
+  }
+}
+
+/**
+ * Phase C #5: on reconnect, re-kick any observations whose refinement
+ * never reached the iOS client. If we have a cached `refined` (search
+ * already ran and the result is buffered), send it directly — avoids a
+ * second search call. Otherwise re-enter the normal flow.
+ */
+async function replayPendingRefinements(entry, sessionId) {
+  if (!entry?.pendingRefinements || entry.pendingRefinements.size === 0) return;
+  // Prune expired recentlyRefinedIds so the map doesn't grow without bound.
+  if (entry.recentlyRefinedIds) {
+    const now = Date.now();
+    for (const [id, expiry] of entry.recentlyRefinedIds.entries()) {
+      if (expiry <= now) entry.recentlyRefinedIds.delete(id);
+    }
+  }
+  const toReplay = Array.from(entry.pendingRefinements.values());
+  logger.info('Replaying pending refinements on reconnect', {
+    sessionId,
+    count: toReplay.length,
+  });
+  const needsFreshSearch = [];
+  for (const { obs, refined } of toReplay) {
+    if (refined) {
+      // Cached result from a mid-refine socket drop — send directly.
+      if (!entry.ws || entry.ws.readyState !== entry.ws.OPEN) return;
+      try {
+        entry.ws.send(
+          JSON.stringify({
+            type: 'observation_update',
+            observation_id: obs.observation_id || null,
+            observation_text: obs.observation_text || obs.description || '',
+            code: refined.code,
+            regulation: refined.regulation,
+            rationale: refined.rationale,
+            source: refined.source,
+          })
+        );
+        if (obs.observation_id) {
+          entry.pendingRefinements.delete(obs.observation_id);
+          entry.recentlyRefinedIds.set(obs.observation_id, Date.now() + 2000);
+        }
+        logger.info('observation_update sent (replayed cached)', {
+          sessionId,
+          observationId: (obs.observation_id || '').slice(0, 8),
+        });
+      } catch (err) {
+        logger.warn('Replay cached observation_update failed', {
+          sessionId,
+          error: err.message,
+        });
+      }
+    } else {
+      needsFreshSearch.push(obs);
+    }
+  }
+  if (needsFreshSearch.length > 0) {
+    // Clear the pending entries first — refineObservationsAsync re-adds them
+    // under the dedupe guard to avoid the window where the same id is both
+    // pending AND in flight.
+    for (const obs of needsFreshSearch) {
+      if (obs.observation_id) entry.pendingRefinements.delete(obs.observation_id);
+    }
+    await refineObservationsAsync(entry, sessionId, needsFreshSearch);
   }
 }
 
@@ -692,8 +826,8 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
           // Mirror the live-transcript path: fire BPG4 refinement for any new
           // observations so the code/regulation gets upgraded even when the
           // result came from the batch flush rather than the direct handler.
-          if (Array.isArray(result.observations) && result.observations.length > 0) {
-            refineObservationsAsync(currentWs, sessionId, result.observations).catch((err) => {
+          if (Array.isArray(result.observations) && result.observations.length > 0 && entryRef) {
+            refineObservationsAsync(entryRef, sessionId, result.observations).catch((err) => {
               logger.warn('refineObservationsAsync unhandled (batch)', {
                 sessionId,
                 error: err?.message,
@@ -778,6 +912,15 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
       isExtracting: false,
       pendingTranscripts: [],
       pendingExtractions: [],
+      // Phase C #8: refinements in flight when the socket drops — re-kicked
+      // on reconnect via replayPendingRefinements(). Maps observation_id →
+      // { obs, refined?, attemptedAt }. If `refined` is cached, the replay
+      // skips the search and sends the existing result directly.
+      pendingRefinements: new Map(),
+      // Phase C #5 short-TTL dedupe: observation_ids whose refinement was
+      // successfully sent in the last 2s. Reconnect replays must not re-fire
+      // these, and refineObservationsAsync checks it before each search call.
+      recentlyRefinedIds: new Map(),
       rehydrateSessionId,
     });
 
@@ -882,30 +1025,45 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
   }
 
   function flushPendingExtractions(ws, entry, sessionId) {
-    if (!entry.pendingExtractions.length) return;
-    const buffered = [...entry.pendingExtractions];
-    entry.pendingExtractions.length = 0;
-    logger.info('Flushing pending extractions on reconnect', {
-      sessionId,
-      count: buffered.length,
-    });
-    for (const result of buffered) {
+    if (entry.pendingExtractions.length) {
+      const buffered = [...entry.pendingExtractions];
+      entry.pendingExtractions.length = 0;
+      logger.info('Flushing pending extractions on reconnect', {
+        sessionId,
+        count: buffered.length,
+      });
+      for (const result of buffered) {
+        try {
+          const { questions_for_user, extracted_readings, observationUpdates, ...rest } = result;
+          const resultWithoutQuestions = { readings: extracted_readings, ...rest };
+          ws.send(JSON.stringify({ type: 'extraction', result: resultWithoutQuestions }));
+          // Phase A: if the buffered extraction carried RULE 6 correction edits,
+          // replay them on the restored socket so iOS doesn't miss the patch.
+          dispatchObservationUpdates(ws, sessionId, observationUpdates);
+        } catch (err) {
+          logger.error('Failed to flush buffered extraction', { sessionId, error: err.message });
+        }
+      }
+      // Send current cost update after flushing all buffered extractions
       try {
-        const { questions_for_user, extracted_readings, observationUpdates, ...rest } = result;
-        const resultWithoutQuestions = { readings: extracted_readings, ...rest };
-        ws.send(JSON.stringify({ type: 'extraction', result: resultWithoutQuestions }));
-        // Phase A: if the buffered extraction carried RULE 6 correction edits,
-        // replay them on the restored socket so iOS doesn't miss the patch.
-        dispatchObservationUpdates(ws, sessionId, observationUpdates);
+        ws.send(JSON.stringify(entry.session.costTracker.toCostUpdate()));
       } catch (err) {
-        logger.error('Failed to flush buffered extraction', { sessionId, error: err.message });
+        logger.error('Failed to send cost update after flush', { sessionId, error: err.message });
       }
     }
-    // Send current cost update after flushing all buffered extractions
-    try {
-      ws.send(JSON.stringify(entry.session.costTracker.toCostUpdate()));
-    } catch (err) {
-      logger.error('Failed to send cost update after flush', { sessionId, error: err.message });
+    // Phase C #5/#8: re-kick any in-flight observation refinements whose
+    // `observation_update` never reached iOS before the socket dropped. Fire
+    // and forget — cached refinements send directly, otherwise a fresh search
+    // is enqueued. Runs unconditionally (independent of pendingExtractions)
+    // because a refinement can be pending even with zero buffered extractions
+    // (e.g. batch already flushed, refinement still awaiting BPG4).
+    if (entry.pendingRefinements && entry.pendingRefinements.size > 0) {
+      replayPendingRefinements(entry, sessionId).catch((err) => {
+        logger.warn('replayPendingRefinements unhandled', {
+          sessionId,
+          error: err?.message,
+        });
+      });
     }
   }
 
@@ -1032,8 +1190,8 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         // immediately; the refined code/regulation arrives a second or two
         // later as an `observation_update` and the iOS client patches the
         // already-rendered observation in place.
-        if (Array.isArray(result.observations) && result.observations.length > 0) {
-          refineObservationsAsync(ws, sessionId, result.observations).catch((err) => {
+        if (Array.isArray(result.observations) && result.observations.length > 0 && entry) {
+          refineObservationsAsync(entry, sessionId, result.observations).catch((err) => {
             logger.warn('refineObservationsAsync unhandled', {
               sessionId,
               error: err?.message,
