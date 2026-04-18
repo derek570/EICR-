@@ -139,6 +139,23 @@ export function buildJobFixture(overrides: Partial<JobDetail> = {}): JobDetail {
  * stub at `deepgram-ws-stub.ts` operates at the browser level instead).
  */
 export async function stubRecordFlowApi(page: Page, job: JobDetail): Promise<void> {
+  // Playwright consults routes in *reverse* registration order (last
+  // added → first matched). Register the catch-all FIRST so specific
+  // routes below win, then bail the catch-all to `route.fallback()`
+  // when it matches a known endpoint.
+  //
+  // The catch-all returns 500 rather than aborting so a spec that
+  // forgets to stub an endpoint surfaces as a failed render (visible
+  // in the page's error alert) rather than silently hanging on a real
+  // network fetch.
+  await page.route(/\/api\//, (route) =>
+    route.fulfill({
+      status: 500,
+      contentType: 'application/json',
+      body: JSON.stringify({ error: 'Unstubbed API call in e2e' }),
+    })
+  );
+
   // Job detail endpoint — /api/job/:userId/:jobId.
   await page.route(/\/api\/job\/[^/]+\/[^/]+$/, async (route) => {
     if (route.request().method() !== 'GET') return route.fallback();
@@ -149,23 +166,12 @@ export async function stubRecordFlowApi(page: Page, job: JobDetail): Promise<voi
     });
   });
 
-  // Deepgram scoped token — /api/deepgram-proxy.
+  // Deepgram scoped token — /api/deepgram-proxy?sessionId=...
   await page.route(/\/api\/deepgram-proxy/, (route) =>
     route.fulfill({
       status: 200,
       contentType: 'application/json',
       body: JSON.stringify({ key: 'test-deepgram-key' }),
-    })
-  );
-
-  // Any other /api/* call during the record flow is a surprise — fail
-  // fast with 500 so the spec author sees it rather than hanging on a
-  // real fetch.
-  await page.route(/\/api\//, (route) =>
-    route.fulfill({
-      status: 500,
-      contentType: 'application/json',
-      body: JSON.stringify({ error: 'Unstubbed API call in e2e' }),
     })
   );
 }

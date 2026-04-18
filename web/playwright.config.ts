@@ -43,7 +43,19 @@ export default defineConfig({
   projects: [
     {
       name: 'chromium',
-      use: { ...devices['Desktop Chrome'] },
+      use: {
+        ...devices['Desktop Chrome'],
+        // `--use-fake-ui-for-media-stream` auto-accepts the mic
+        // permission prompt (Playwright's `grantPermissions` covers
+        // some but not all Chromium builds in headless mode).
+        // `--use-fake-device-for-media-stream` synthesises a silent
+        // audio device so `getUserMedia` resolves — without it
+        // headless Chromium reports "Requested device not found" and
+        // the record flow flips to `state === 'error'` on start().
+        launchOptions: {
+          args: ['--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream'],
+        },
+      },
     },
     {
       name: 'webkit',
