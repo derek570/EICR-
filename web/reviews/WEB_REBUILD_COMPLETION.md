@@ -1,7 +1,7 @@
 # Web Rebuild — Completion Handoff
 
-**Branch:** `web-rebuild` (updated post Wave 3 Functional merge)
-**Status:** shipping path through **Wave 3 Functional (client-side)** complete. Wave 4, Wave 4c.5 (Sonnet reconnect — cross-stack), Wave 5, cross-cutting deferrals, and Phase 8 remain before promotion to `main`.
+**Branch:** `web-rebuild` (updated post Wave 4 batch 1 merge)
+**Status:** shipping path through **Wave 4 batch 1** complete (D4 RBAC + D5 Radix Dialog + Wave 4c.5 cross-stack Sonnet reconnect). Wave 4 batch 2 (6c admin-user edit + 6b tail + D12 tail), Wave 5, cross-cutting deferrals, and Phase 8 remain before promotion to `main`.
 **Purpose:** single hand-off-to-finish. A subsequent agent (loop-scheduled subagent or human) can read this and run the remaining waves without re-deriving context from 12 prior handoffs.
 
 ---
@@ -38,23 +38,29 @@
 | **Wave 3f** | D3 status state machine + 4b KeepAlive bufferedAmount gate + WS factory seam + 4e `{ ideal }` lock-in; promoted 2 `it.todo` to real tests | +3 (73 total, 0 todo) | `WAVE_3F_HANDOFF.md` |
 | **Wave 3h** | Playwright harness (chromium + webkit) + record flow spec + browser-side WS stub | +4 Playwright specs | `WAVE_3H_HANDOFF.md` |
 | **Wave 3 Functional (closeout)** | Unified Wave 3 closeout; 4c deferred as Wave 4c.5 | — | `WAVE_3_FUNCTIONAL_HANDOFF.md` |
+| **Wave 4 D4** | RBAC depth-of-defence: sign `role`/`company_id`/`company_role` into JWT; middleware HMAC-SHA256 verify; typed `SystemRole`/`CompanyRole` + `getUserRole`/`getCompanyRole` getters | +14 (+3 backend, +11 web) | `WAVE_4_D4_HANDOFF.md` |
+| **Wave 4 D5** | Radix Dialog primitives (`dialog.tsx`, `confirm-dialog.tsx`); 6 ad-hoc modals migrated; `window.confirm` banishment; Playwright focus-trap spec flipped to live | +0 vitest, +1 Playwright (focus-trap) | `WAVE_4_D5_HANDOFF.md` |
+| **Wave 4c.5 backend** | `session_ack` server-minted `sessionId`; `session_resume` rehydrate handler (5-min TTL, LRU-capped in-memory store, user-boundary enforced) | +29 backend (19 unit + 10 integration) | `WAVE_4C5_BACKEND_HANDOFF.md` |
+| **Wave 4c.5 client** | Flag-gated (`NEXT_PUBLIC_RECORDING_RECONNECT_ENABLED`) reconnect state machine; AWS full-jitter backoff (`500 * 2^(n-1)`, cap 10 s, max 5 attempts); `session_resume` on reconnect; close-code logging matches Deepgram | +18 vitest | `WAVE_4C5_CLIENT_HANDOFF.md` |
+| **Wave 4 batch 1 closeout** | Unified integration of D4 + D5 + 4c.5 backend + 4c.5 client | — | `WAVE_4_HANDOFF.md` |
 
 **Live in production (iOS side):** Deepgram auto-sleep 3-tier + server-side Sonnet v3 multi-turn.
 
 ### Test surface
 
-- **73 total vitest** (0 `it.todo`) + **4 Playwright specs** (3 passing chromium + 1 `fixme` on focus-trap pending Wave 4 D5).
-- Unit: `outbox`, `outbox-replay`, `apply-ccu-analysis`, `api-client`, `adapters`, `auth-redirect`, `middleware`, `deepgram-service`, `mic-capture`.
+- **102 total vitest** (0 `it.todo`) + **4 Playwright specs** (4/4 chromium green in D5 agent worktree; focus-trap spec now live after Wave 4 D5; full post-merge Playwright rerun pending).
+- Unit: `outbox`, `outbox-replay`, `apply-ccu-analysis`, `api-client`, `adapters`, `auth-redirect`, `middleware`, `deepgram-service`, `mic-capture`, `auth-role-getters`, `sonnet-session`.
 - Integration: outbox → replay → cache-warm via MSW.
-- Fake-WS (vitest): `DeepgramService` reconnect guard + resample correctness + `bufferedAmount` gating.
-- E2E (Playwright): record flow (start/pause/resume/stop, prefers-reduced-motion) on chromium; harness smoke on chromium + webkit.
-- **Still missing:** RTL component tests for `JobProvider.updateJob`, dashboard cache race, login redirect rules (FIX_PLAN §E E2). Other 5 Playwright E2E flows (login, job edit, admin, offline, PWA) — Wave 4/5.
+- Fake-WS (vitest): `DeepgramService` reconnect guard + resample correctness + `bufferedAmount` gating; `SonnetSession` reconnect state machine.
+- E2E (Playwright): record flow (start/pause/resume/stop, prefers-reduced-motion, focus-trap) on chromium; harness smoke on chromium + webkit.
+- **Still missing:** RTL component tests for `JobProvider.updateJob`, dashboard cache race, login redirect rules (FIX_PLAN §E E2). Other 5 Playwright E2E flows (login, job edit, admin, offline, PWA) — Wave 4 batch 2 / Wave 5.
 
-### Quality gates (post Wave 3 Functional merge)
+### Quality gates (post Wave 4 batch 1 merge)
 
 ```
-vitest run     → 73/73 (0 todo)
-playwright     → 4 specs: 3 passing chromium + 1 fixme (webkit record-flow skipped — headless mic limitation)
+vitest run     → 102/102 (0 todo)
+jest (backend) → 305/305 (3 skipped pre-existing — OPENAI_API_KEY gated)
+playwright     → not yet rerun post-merge; D5 agent reported 4/4 chromium green
 tsc --noEmit   → clean
 npm run lint   → 0 errors, 6 pre-existing warnings (queued for Wave 5)
 ```
@@ -69,7 +75,7 @@ Three functional waves + two cross-cutting threads + one deployment phase, in re
 
 D3 + 4b + 4e + Playwright landed via Waves 3f + 3h. See `WAVE_3_FUNCTIONAL_HANDOFF.md`. 4c split out as **Wave 4c.5** (§2.1b below) because it's cross-stack.
 
-### 2.1b Wave 4c.5 — Sonnet `session_resume` on reconnect (cross-stack, NEW)
+### 2.1b Wave 4c.5 — Sonnet `session_resume` on reconnect (cross-stack) ✅ SHIPPED
 
 **Why split out:** `web/src/lib/recording/sonnet-session.ts` has no reconnect pathway at all — it opens one WS, and on close fires an error. Adding `session_resume` is not a client-only change: the server's `session_ack` payload (in `src/extraction/sonnet-stream.js`) does not carry a session ID today, and the server does not rehydrate multi-turn Sonnet context on a `session_resume` frame. This is a coordinated backend + client release, not a single-agent sub-item.
 
@@ -88,17 +94,19 @@ D3 + 4b + 4e + Playwright landed via Waves 3f + 3h. See `WAVE_3_FUNCTIONAL_HANDO
 
 ### 2.2 Wave 4 — RBAC + admin UX + modal a11y
 
+**Batch 1 (D4 + D5 + 4c.5 backend + 4c.5 client) ✅ SHIPPED** — see `WAVE_4_HANDOFF.md` for the unified integration handoff.
+
+**Batch 2 (queued):**
+
 | Item | Surface | Size | Blocker / decision |
 |---|---|---|---|
-| **D4** JWT carries `company_role`; middleware admin matcher; signature verify | `src/routes/keys.js` payload + `web/src/middleware.ts` + `web/src/lib/auth.ts` | M | Q3 — HttpOnly cookie migration (defer to Phase 9 recommended) |
-| **D5** Radix Dialog sweep across 6 modal sites; replace `window.confirm` | 5c / 6a / 6b / 6c modals | M | Q5 — Radix vs react-focus-lock. Recommend Radix (portal + a11y). |
-| **6c** admin-user edit: `company_id` / `company_role` editable; confirm modal on deactivate; new backend `/api/admin/users/:id` | `settings/admin/users/[userId]/page.tsx` + `src/routes/admin.js` | M | Q8 — endpoint approval |
+| **6c** admin-user edit: `company_id` / `company_role` editable; confirm modal on deactivate (uses new `<ConfirmDialog confirmVariant="danger">` from D5); new backend `/api/admin/users/:id` | `settings/admin/users/[userId]/page.tsx` + `src/routes/admin.js` | M | Q8 — approved; D4 middleware now reliably gates this surface |
 | **6b** per-company settings key fix (kill-list #15 rider) | `src/routes/settings.js` + settings forms | S | — |
 | **D12 tail** — promote `parseOrThrow` on login + admin writes | `api-client.ts` + affected adapters | S | — |
 
-**Parallelisation:** D4, D5, 6c are three independent subagent scopes. 6b folds into whichever sub-agent touches `settings.js`. D12 tail folds in wherever adapters are touched.
+**Parallelisation:** single subagent can land all three (shared `src/routes/*.js` surface + shared admin UI page).
 
-**Gate:** WCAG 2.1 AA keyboard-only walk through all 6 modals; RBAC E2E green (dotted-path middleware; company-dashboard gating; forged-JWT `company_role` rejection).
+**Gate:** WCAG 2.1 AA keyboard-only walk through all 6 modals (D5 already proved focus-trap E2E on recording overlay; repeat for deactivate confirm); RBAC E2E green (dotted-path middleware — shipped in D4; company-dashboard gating — shipped in D4; forged-JWT `company_role` rejection — shipped in D4).
 
 ---
 
