@@ -229,7 +229,7 @@ describe('DeepgramService', () => {
       // ratio = 3, outLen = floor(12/3) = 4, srcIdx = 0, 3, 6, 9
       // All are integer indices so the lo/hi branches collapse to `lo`.
       const expected = [0, 3, 6, 9].map((idx) =>
-        Math.round(Math.max(-1, Math.min(1, input[idx])) * 32767),
+        Math.round(Math.max(-1, Math.min(1, input[idx])) * 32767)
       );
       expect(received.length).toBe(expected.length);
       for (let i = 0; i < expected.length; i++) {
@@ -266,9 +266,7 @@ describe('DeepgramService', () => {
         const hi = Math.min(lo + 1, input.length - 1);
         const frac = srcIdx - lo;
         const interpolated = input[lo] * (1 - frac) + input[hi] * frac;
-        const expected = Math.round(
-          Math.max(-1, Math.min(1, interpolated)) * 32767,
-        );
+        const expected = Math.round(Math.max(-1, Math.min(1, interpolated)) * 32767);
         // ±1 LSB tolerance absorbs accumulated float rounding.
         expect(Math.abs(received[i] - expected)).toBeLessThanOrEqual(1);
       }
@@ -333,36 +331,137 @@ describe('DeepgramService', () => {
   // ────────────────────────────────────────────────────────────────────────
   // Case (c): KeepAlive gated on `bufferedAmount`.
   //
-  // The FIX_PLAN (§C Phase 4b, P1: line 144) flags this as an UNFIXED
-  // defect. Wave 3c is test-only — per the task brief, we document rather
-  // than patch the product.
+  // Wave 3f landed both the product fix and a constructor-level WS seam
+  // on DeepgramService so these assertions are now exercisable. The
+  // seam is necessary because `mock-socket` hard-codes
+  // `bufferedAmount = 0` — without a way to inject a WS whose
+  // `bufferedAmount` is mutable, no test can observe the gate.
   //
-  // Two independent blockers make this test un-runnable as stated:
-  //
-  //   1. Product code (`deepgram-service.ts:254-267`) does NOT inspect
-  //      `ws.bufferedAmount` inside the `setInterval` body. KeepAlive is
-  //      gated only on `idleMs >= 8000` and `state === 'connected'`.
-  //      A strict "KeepAlive suppressed when bufferedAmount > 0" assertion
-  //      would fail here — correctly, because the product is wrong.
-  //
-  //   2. `mock-socket` (used by `jest-websocket-mock`) does NOT implement
-  //      `bufferedAmount` — it's hard-coded to `0` with a literal
-  //      `// TODO: handle bufferedAmount` comment in its send path. Even
-  //      once the product starts reading `bufferedAmount`, a realistic
-  //      test needs either a patched mock-socket or a hand-rolled fake WS
-  //      that drives `bufferedAmount` manually.
-  //
-  // Both blockers are documented in `reviews/WAVE_3C_HANDOFF.md`. The
-  // `it.todo` placeholders preserve the shape of the expected assertions
-  // for the fix wave.
+  // Fake WS: minimum-viable subclass of EventTarget exposing the subset
+  // of the WebSocket interface DeepgramService actually calls. Has a
+  // publicly mutable `bufferedAmount` + `readyState` so the test can
+  // drive backpressure from the outside. Keeps the surface small (~50
+  // lines) per the Wave 3c hand-off recommendation; the alternative
+  // would have been patching mock-socket or adding a getter hook
+  // specifically for bufferedAmount.
   // ────────────────────────────────────────────────────────────────────────
   describe('KeepAlive gated on bufferedAmount', () => {
-    it.todo(
-      'suppresses KeepAlive frame when ws.bufferedAmount > 0 (BLOCKED: product defect + mock-socket gap — see file header and WAVE_3C_HANDOFF.md)',
-    );
-    it.todo(
-      'sends the next scheduled KeepAlive once bufferedAmount drains to 0',
-    );
+    type SentFrame = string | ArrayBuffer;
+
+    /** Minimum WebSocket-shaped fake with a mutable `bufferedAmount`. */
+    class FakeBufferedWs extends EventTarget {
+      static OPEN = 1;
+      readyState: number = 0; // CONNECTING
+      bufferedAmount = 0;
+      binaryType: BinaryType = 'blob';
+      sentFrames: SentFrame[] = [];
+      onopen: ((ev: Event) => void) | null = null;
+      onmessage: ((ev: MessageEvent) => void) | null = null;
+      onerror: ((ev: Event) => void) | null = null;
+      onclose: ((ev: CloseEvent) => void) | null = null;
+
+      open() {
+        this.readyState = FakeBufferedWs.OPEN;
+        this.onopen?.(new Event('open'));
+      }
+
+      send(data: string | ArrayBufferLike | Blob | ArrayBufferView) {
+        // Only the string / ArrayBuffer paths are used in production
+        // (JSON control + Int16 PCM), so we narrow to those here; any
+        // other frame type is an assertion failure at the test level.
+        if (typeof data === 'string') {
+          this.sentFrames.push(data);
+        } else if (data instanceof ArrayBuffer) {
+          this.sentFrames.push(data);
+        } else {
+          throw new Error('FakeBufferedWs: unexpected frame type');
+        }
+      }
+
+      close(_code?: number) {
+        this.readyState = 3; // CLOSED
+        this.onclose?.(new CloseEvent('close', { code: _code ?? 1000 }));
+      }
+    }
+
+    function makeFakeFactory(): {
+      factory: (url: string, protocols?: string[]) => WebSocket;
+      ws: FakeBufferedWs;
+    } {
+      const ws = new FakeBufferedWs();
+      // DeepgramService treats WS.OPEN as the numeric constant from the
+      // global lib.dom.d.ts — our fake's `readyState = 1` matches. The
+      // factory intentionally ignores url/protocols because the fake
+      // doesn't model Deepgram's URL contract — only the narrow
+      // subsurface (`send` / `bufferedAmount` / `readyState` / `onX`)
+      // the DeepgramService calls in the KeepAlive path.
+      const factory = () => ws as unknown as WebSocket;
+      return { factory, ws };
+    }
+
+    it('suppresses KeepAlive JSON + silence when ws.bufferedAmount > 0', () => {
+      vi.useFakeTimers({
+        toFake: ['setInterval', 'clearInterval', 'setTimeout', 'clearTimeout', 'performance'],
+      });
+
+      const { factory, ws } = makeFakeFactory();
+      const service = new DeepgramService(
+        {
+          onInterimTranscript: vi.fn(),
+          onFinalTranscript: vi.fn(),
+        },
+        factory
+      );
+      service.connect('fake-api-key', 16000);
+      // Drive the fake through the open handshake so startKeepAlive()
+      // registers its interval.
+      ws.open();
+
+      // Simulate backpressure BEFORE the first interval tick fires.
+      // The `lastAudioSendMs === 0` path treats idle as Infinity so the
+      // 8-second idle gate is satisfied; only the new bufferedAmount
+      // gate should suppress the KeepAlive here.
+      ws.bufferedAmount = 1024;
+
+      vi.advanceTimersByTime(10_000);
+
+      expect(ws.sentFrames).toEqual([]);
+    });
+
+    it('sends the next scheduled KeepAlive once bufferedAmount drains to 0', () => {
+      vi.useFakeTimers({
+        toFake: ['setInterval', 'clearInterval', 'setTimeout', 'clearTimeout', 'performance'],
+      });
+
+      const { factory, ws } = makeFakeFactory();
+      const service = new DeepgramService(
+        {
+          onInterimTranscript: vi.fn(),
+          onFinalTranscript: vi.fn(),
+        },
+        factory
+      );
+      service.connect('fake-api-key', 16000);
+      ws.open();
+
+      // Tick 1 (t=10s): backpressured → suppressed.
+      ws.bufferedAmount = 2048;
+      vi.advanceTimersByTime(10_000);
+      expect(ws.sentFrames.length).toBe(0);
+
+      // Drain the buffer before the next tick. Interval fires again at
+      // t=20s; this time the gate should let it through (idle still
+      // Infinity since no audio has been sent yet).
+      ws.bufferedAmount = 0;
+      vi.advanceTimersByTime(10_000);
+
+      // Two frames per tick: JSON control then 500 ms silent PCM.
+      expect(ws.sentFrames.length).toBe(2);
+      expect(typeof ws.sentFrames[0]).toBe('string');
+      expect(JSON.parse(ws.sentFrames[0] as string)).toEqual({ type: 'KeepAlive' });
+      expect(ws.sentFrames[1]).toBeInstanceOf(ArrayBuffer);
+      expect((ws.sentFrames[1] as ArrayBuffer).byteLength).toBe(8000 * 2);
+    });
   });
 
   // Separate describe — these are positive assertions for the KeepAlive

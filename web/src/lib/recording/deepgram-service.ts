@@ -35,10 +35,26 @@ export interface DeepgramCallbacks {
   onError?: (err: Error) => void;
 }
 
+/**
+ * Constructor-level seam for injecting an alternate WebSocket factory.
+ *
+ * Defaults to the global `WebSocket` constructor in production. Tests
+ * use this to inject a fake WS whose `bufferedAmount` is mutable so the
+ * KeepAlive-gating regression can be asserted — `mock-socket`'s
+ * `bufferedAmount` is hardcoded to 0 (see WAVE_3C_HANDOFF.md "Known
+ * limitation"), which makes the gate unobservable through the default
+ * test harness.
+ *
+ * The shape intentionally mirrors `new WebSocket(url, protocols)` so
+ * drop-in substitution costs one line.
+ */
+export type WebSocketFactory = (url: string, protocols?: string[]) => WebSocket;
+
 export class DeepgramService {
   private ws: WebSocket | null = null;
   private state: DeepgramConnectionState = 'disconnected';
   private callbacks: DeepgramCallbacks;
+  private wsFactory: WebSocketFactory;
   private sourceSampleRate = 16000;
   // Tracked so the KeepAlive loop only fires during extended silence.
   private lastAudioSendMs = 0;
@@ -55,8 +71,13 @@ export class DeepgramService {
   // This flag is reset every `connect()`.
   private errorEmitted = false;
 
-  constructor(callbacks: DeepgramCallbacks) {
+  constructor(callbacks: DeepgramCallbacks, wsFactory?: WebSocketFactory) {
     this.callbacks = callbacks;
+    // Default to the real global WebSocket. Tests pass a factory whose
+    // sockets expose a mutable `bufferedAmount` so the KeepAlive gate
+    // can be exercised deterministically. Kept as an optional second
+    // arg so every existing call site keeps working unchanged.
+    this.wsFactory = wsFactory ?? ((url, protocols) => new WebSocket(url, protocols));
   }
 
   get connectionState(): DeepgramConnectionState {
@@ -81,8 +102,9 @@ export class DeepgramService {
     // on iOS Safari during the HTTP→WS upgrade (rules/mistakes.md). The
     // ['token', apiKey] two-element array is the format Deepgram expects
     // — a single "token, key" string (comma-space) is rejected by newer
-    // Deepgram validation.
-    const ws = new WebSocket(url, ['token', apiKey]);
+    // Deepgram validation. `wsFactory` defaults to the global `WebSocket`
+    // constructor; see `WebSocketFactory` doc comment for the test seam.
+    const ws = this.wsFactory(url, ['token', apiKey]);
     ws.binaryType = 'arraybuffer';
 
     const emitError = (err: Error) => {
@@ -108,10 +130,19 @@ export class DeepgramService {
     ws.onclose = (event) => {
       this.stopKeepAlive();
       this.ws = null;
+      const willReconnect = event.code !== 1000 && event.code !== 1005;
+      // Log close code + reason on every close so backend/ops can
+      // correlate flaky-link incidents with browser-side reconnect
+      // behaviour. 1000 (normal) + 1005 (no status) are expected
+      // teardowns (disconnect() / server CloseStream response); anything
+      // else is a reconnect candidate upstream.
+      console.info(
+        `[deepgram] close code=${event.code} reason=${JSON.stringify(event.reason ?? '')} reconnect=${willReconnect}`
+      );
       if (this.state !== 'error') {
         this.setState('disconnected');
       }
-      if (event.code !== 1000 && event.code !== 1005) {
+      if (willReconnect) {
         emitError(new Error(`Deepgram WS closed (code=${event.code})`));
       }
     };
@@ -250,11 +281,25 @@ export class DeepgramService {
 
   /** Keep Deepgram's idle timeout from closing the stream during silence
    *  (default is 10s). Send KeepAlive JSON + 500ms of silent PCM every 10s
-   *  when no real audio has been sent in the last 8s. Matches iOS. */
+   *  when no real audio has been sent in the last 8s. Matches iOS.
+   *
+   *  Skips the tick when `ws.bufferedAmount > 0` — i.e. real audio is
+   *  still queued up waiting for the socket to drain. Dumping a JSON
+   *  frame + 500 ms of silent PCM on top of a backpressured socket only
+   *  makes the backpressure worse and Deepgram treats the arriving
+   *  silence as real audio during a live utterance, degrading interim
+   *  transcripts. The next scheduled tick (10 s later) re-evaluates, so
+   *  once the buffer drains back to 0 the KeepAlive resumes normally. */
   private startKeepAlive() {
     this.stopKeepAlive();
     this.keepAliveTimer = setInterval(() => {
       if (!this.ws || this.state !== 'connected') return;
+      // Backpressure gate — skip this tick if the browser still has
+      // bytes queued for the socket. See `WebSocketFactory` + the 4b
+      // tests for how this gets exercised (mock-socket hardcodes
+      // bufferedAmount=0 so the product-level test requires an injected
+      // fake WS with a mutable bufferedAmount field).
+      if (this.ws.bufferedAmount > 0) return;
       const idleMs = this.lastAudioSendMs ? performance.now() - this.lastAudioSendMs : Infinity;
       if (idleMs < 8000) return;
       try {
