@@ -15,8 +15,71 @@ import { WebSocketServer } from 'ws';
 import Anthropic from '@anthropic-ai/sdk';
 import { EICRExtractionSession } from './eicr-extraction-session.js';
 import { QuestionGate } from './question-gate.js';
+import { needsRefinement, refineObservation } from './observation-code-lookup.js';
 import * as storage from '../storage.js';
 import logger from '../logger.js';
+
+// Lazy-initialised OpenAI client for observation refinement (gpt-5-search-api).
+// Kept at module scope so repeat refinements reuse the same HTTPS pool.
+let _openaiClient = null;
+async function getOpenAIClient() {
+  if (_openaiClient) return _openaiClient;
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) return null;
+  try {
+    const OpenAI = (await import('openai')).default;
+    _openaiClient = new OpenAI({ apiKey });
+    return _openaiClient;
+  } catch (err) {
+    logger.warn('OpenAI client init failed — observation refinement disabled', {
+      error: err.message,
+    });
+    return null;
+  }
+}
+
+/**
+ * Fire-and-forget observation refinement. For each observation in the result
+ * that needs refinement (missing code/regulation/low confidence), call
+ * `gpt-5-search-api` and emit an `observation_update` message to iOS. Runs
+ * AFTER the extraction result has been sent so it doesn't block the main turn.
+ */
+async function refineObservationsAsync(ws, sessionId, observations) {
+  if (!Array.isArray(observations) || observations.length === 0) return;
+  const toRefine = observations.filter(needsRefinement);
+  if (toRefine.length === 0) return;
+
+  const openai = await getOpenAIClient();
+  if (!openai) return;
+
+  for (const obs of toRefine) {
+    try {
+      const refined = await refineObservation(openai, obs);
+      if (!refined) continue;
+      if (ws.readyState !== ws.OPEN) return; // session moved on
+      ws.send(
+        JSON.stringify({
+          type: 'observation_update',
+          observation_text: obs.observation_text || obs.description || '',
+          code: refined.code,
+          regulation: refined.regulation,
+          rationale: refined.rationale,
+          source: refined.source,
+        })
+      );
+      logger.info('observation_update sent', {
+        sessionId,
+        code: refined.code,
+        textPreview: (obs.observation_text || '').slice(0, 60),
+      });
+    } catch (err) {
+      logger.warn('Observation refinement iteration failed', {
+        sessionId,
+        error: err.message,
+      });
+    }
+  }
+}
 
 // --- Per-connection rate limiting for transcript messages ---
 const WS_RATE_LIMIT = {
@@ -538,6 +601,18 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
           const resultWithoutQuestions = { readings: extracted_readings, ...rest };
           currentWs.send(JSON.stringify({ type: 'extraction', result: resultWithoutQuestions }));
 
+          // Mirror the live-transcript path: fire BPG4 refinement for any new
+          // observations so the code/regulation gets upgraded even when the
+          // result came from the batch flush rather than the direct handler.
+          if (Array.isArray(result.observations) && result.observations.length > 0) {
+            refineObservationsAsync(currentWs, sessionId, result.observations).catch((err) => {
+              logger.warn('refineObservationsAsync unhandled (batch)', {
+                sessionId,
+                error: err?.message,
+              });
+            });
+          }
+
           // Forward voice command response from batch extraction (same as handleTranscript)
           if (spoken_response || action) {
             currentWs.send(
@@ -689,6 +764,20 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         const { questions_for_user, extracted_readings, spoken_response, action, ...rest } = result;
         const resultWithoutQuestions = { readings: extracted_readings, ...rest };
         ws.send(JSON.stringify({ type: 'extraction', result: resultWithoutQuestions }));
+
+        // Fire-and-forget BPG4 / BS 7671 refinement for new observations. Runs
+        // AFTER extraction is sent so the inspector sees the observation
+        // immediately; the refined code/regulation arrives a second or two
+        // later as an `observation_update` and the iOS client patches the
+        // already-rendered observation in place.
+        if (Array.isArray(result.observations) && result.observations.length > 0) {
+          refineObservationsAsync(ws, sessionId, result.observations).catch((err) => {
+            logger.warn('refineObservationsAsync unhandled', {
+              sessionId,
+              error: err?.message,
+            });
+          });
+        }
 
         // If Sonnet returned a spoken_response or action (query/command recognised),
         // forward as a voice_command_response — iOS handles these via the existing
