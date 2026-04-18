@@ -7,6 +7,11 @@ import { Input, Label } from '@/components/ui/input';
 import { Logo } from '@/components/brand/logo';
 import { api } from '@/lib/api-client';
 import { setAuth } from '@/lib/auth';
+// sanitiseRedirect lives in `@/lib/auth-redirect` (Wave 2) so it can be
+// unit-tested without mounting the login page. The implementation note
+// about accepted shapes lives there; this import is intentionally
+// single-purpose.
+import { sanitiseRedirect } from '@/lib/auth-redirect';
 import { ApiError } from '@/lib/types';
 
 /**
@@ -34,24 +39,6 @@ export default function LoginPage() {
       </Suspense>
     </main>
   );
-}
-
-/**
- * Accept only same-origin, absolute-path redirects. Rejects protocol-
- * relative (`//evil.com/...`), absolute URLs (`https://evil.com`),
- * backslash-encoded variants, and anything that does not begin with a
- * single `/`. This closes the open-redirect that otherwise let a
- * phishing link of the form `/login?redirect=https://evil.com` bounce
- * an authenticated user off-site the moment they signed in.
- */
-function sanitiseRedirect(raw: string | null): string {
-  if (!raw) return '/dashboard';
-  // Must start with a single `/` and the second char must not be
-  // another `/` or `\` (which browsers collapse to scheme-relative).
-  if (raw.length > 1 && raw[0] === '/' && raw[1] !== '/' && raw[1] !== '\\') {
-    return raw;
-  }
-  return '/dashboard';
 }
 
 function LoginForm() {
