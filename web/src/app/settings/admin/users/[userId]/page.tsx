@@ -21,7 +21,10 @@ import type { AdminUser } from '@/lib/types';
 import { ApiError } from '@/lib/types';
 import { Button } from '@/components/ui/button';
 import { FloatingLabelInput } from '@/components/ui/floating-label-input';
+import { LabelledSelect } from '@/components/ui/labelled-select';
+import { Pill } from '@/components/ui/pill';
 import { SectionCard } from '@/components/ui/section-card';
+import { formatShortDate } from '@/lib/format';
 
 /**
  * Admin edit user page. Ports iOS `AdminEditUserView.swift`.
@@ -505,99 +508,6 @@ function ResetPasswordSheet({
 }
 
 // ---------------------------------------------------------------------------
-
-function LabelledSelect({
-  label,
-  value,
-  onChange,
-  options,
-  disabled = false,
-}: {
-  label: string;
-  value: string;
-  onChange: (v: string) => void;
-  options: { value: string; label: string }[];
-  disabled?: boolean;
-}) {
-  const reactId = React.useId();
-  return (
-    <div className="flex flex-col gap-1">
-      <div
-        className={`group relative flex h-14 items-stretch rounded-[var(--radius-md)] border bg-[var(--color-surface-1)] transition focus-within:border-[var(--color-brand-blue)] ${
-          disabled
-            ? 'border-[var(--color-border-subtle)] opacity-60'
-            : 'border-[var(--color-border-default)]'
-        }`}
-      >
-        <div className="flex flex-1 flex-col justify-center px-3">
-          <label
-            htmlFor={reactId}
-            className="pointer-events-none text-[11px] font-medium uppercase tracking-[0.06em] text-[var(--color-text-tertiary)]"
-          >
-            {label}
-          </label>
-          <select
-            id={reactId}
-            value={value}
-            onChange={(e) => onChange(e.target.value)}
-            disabled={disabled}
-            className="w-full bg-transparent text-[15px] font-medium text-[var(--color-text-primary)] focus:outline-none disabled:cursor-not-allowed"
-          >
-            {options.map((o) => (
-              <option key={o.value} value={o.value}>
-                {o.label}
-              </option>
-            ))}
-          </select>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function Pill({
-  color,
-  children,
-}: {
-  color: 'blue' | 'green' | 'red' | 'amber';
-  children: React.ReactNode;
-}) {
-  const c =
-    color === 'blue'
-      ? 'var(--color-brand-blue)'
-      : color === 'green'
-        ? 'var(--color-brand-green)'
-        : color === 'red'
-          ? 'var(--color-status-failed)'
-          : 'var(--color-status-processing)';
-  return (
-    <span
-      className="rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.05em]"
-      style={{
-        color: c,
-        background: `color-mix(in oklab, ${c} 15%, transparent)`,
-      }}
-    >
-      {children}
-    </span>
-  );
-}
-
-function formatShortDate(iso: string | null | undefined): string {
-  if (!iso) return '';
-  try {
-    const d = new Date(iso);
-    const now = new Date();
-    const sameYear = d.getFullYear() === now.getFullYear();
-    return d.toLocaleDateString(undefined, {
-      day: 'numeric',
-      month: 'short',
-      ...(sameYear ? {} : { year: 'numeric' }),
-    });
-  } catch {
-    return iso;
-  }
-}
 
 function formatFullDate(iso: string): string {
   try {

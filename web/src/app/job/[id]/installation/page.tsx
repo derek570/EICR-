@@ -14,6 +14,7 @@ import {
 } from 'lucide-react';
 import { useJobContext } from '@/lib/job-context';
 import { FloatingLabelInput } from '@/components/ui/floating-label-input';
+import { MultilineField } from '@/components/ui/multiline-field';
 import { NumericStepper } from '@/components/ui/numeric-stepper';
 import { SectionCard } from '@/components/ui/section-card';
 import { SegmentedControl } from '@/components/ui/segmented-control';
@@ -355,44 +356,6 @@ export default function InstallationPage() {
         title="Staff"
         subtitle="Inspector assignment lives on the Staff tab."
         showCodeChip
-      />
-    </div>
-  );
-}
-
-/* ----------------------------------------------------------------------- */
-
-/**
- * MultilineField — FloatingLabelInput's shape with a textarea.
- * Inline here (vs. a primitive) because only the Report Notes block
- * on Installation/Extent actually wants multi-line input.
- */
-function MultilineField({
-  label,
-  value,
-  onChange,
-  rows = 3,
-}: {
-  label: string;
-  value: string;
-  onChange: (v: string) => void;
-  rows?: number;
-}) {
-  const id = React.useId();
-  return (
-    <div className="flex flex-col rounded-[var(--radius-md)] border border-[var(--color-border-default)] bg-[var(--color-surface-1)] px-3 py-2 transition focus-within:border-[var(--color-brand-blue)]">
-      <label
-        htmlFor={id}
-        className="text-[11px] font-medium uppercase tracking-[0.06em] text-[var(--color-text-tertiary)]"
-      >
-        {label}
-      </label>
-      <textarea
-        id={id}
-        rows={rows}
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        className="w-full resize-none bg-transparent text-[15px] font-medium text-[var(--color-text-primary)] placeholder:text-[var(--color-text-tertiary)]/60 focus:outline-none"
       />
     </div>
   );
