@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { AlertTriangle, ArrowLeft, CloudUpload, RotateCcw, Trash2 } from 'lucide-react';
 import { discardMutation, requeueMutation, type OutboxMutation } from '@/lib/pwa/outbox';
 import { useOutboxState } from '@/lib/pwa/use-outbox-state';
+import { ConfirmDialog } from '@/components/ui/confirm-dialog';
 
 /**
  * Offline-sync admin page (Phase 7d).
@@ -32,10 +33,11 @@ import { useOutboxState } from '@/lib/pwa/use-outbox-state';
  *     `outbox.ts` helpers. A network interruption mid-action is
  *     impossible because IDB is local-only; the page can even be
  *     used entirely offline.
- *   - Discard is two-step (requires `window.confirm`) — this is the
- *     only data-loss path in the rebuild and the confirm click is
- *     cheap insurance against a misplaced tap. Re-queue is one-step
- *     because worst case it re-poisons without losing anything.
+ *   - Discard is two-step (routed through `<ConfirmDialog>` from Wave 4
+ *     D5) — this is the only data-loss path in the rebuild and the
+ *     extra tap is cheap insurance against a misplaced one. Re-queue
+ *     is one-step because worst case it re-poisons without losing
+ *     anything.
  *   - Field patches are shown as a JSON preview (≤ 240 chars) to help
  *     inspectors decide. Full patches are kept in the mutation but
  *     not surfaced in UI — they're always small (single field flips
@@ -45,9 +47,16 @@ import { useOutboxState } from '@/lib/pwa/use-outbox-state';
 export default function SyncAdminPage() {
   const { pending, poisoned, loading } = useOutboxState();
   const [busyId, setBusyId] = React.useState<string | null>(null);
+  const [pendingDiscard, setPendingDiscard] = React.useState<OutboxMutation | null>(null);
 
-  async function handleDiscard(m: OutboxMutation) {
-    if (!confirm('Discard this edit? This can\u2019t be undone.')) return;
+  function handleDiscard(m: OutboxMutation) {
+    setPendingDiscard(m);
+  }
+
+  async function performDiscard() {
+    const m = pendingDiscard;
+    if (!m) return;
+    setPendingDiscard(null);
     setBusyId(m.id);
     try {
       await discardMutation(m.id);
@@ -136,6 +145,20 @@ export default function SyncAdminPage() {
           ))}
         </Section>
       ) : null}
+
+      <ConfirmDialog
+        open={pendingDiscard !== null}
+        onOpenChange={(next) => {
+          if (!next) setPendingDiscard(null);
+        }}
+        title="Discard this edit?"
+        description={
+          'This can\u2019t be undone. The edit will be removed from the outbox and never reach the server.'
+        }
+        confirmLabel="Discard"
+        confirmVariant="danger"
+        onConfirm={performDiscard}
+      />
     </main>
   );
 }

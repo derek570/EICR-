@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 import { useRecording, formatCost, formatElapsed } from '@/lib/recording-context';
 import { cn } from '@/lib/utils';
+import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog';
 
 /**
  * Recording overlay — mirrors iOS `RecordingOverlay.swift`.
@@ -46,9 +47,14 @@ export function RecordingOverlay() {
     dismissQuestion,
   } = useRecording();
 
-  // Only render when the overlay is explicitly open. When minimised the
-  // transcript bar takes over at the top of the page.
-  if (!isOverlayOpen) return null;
+  // Radix drives open/close through a boolean + onOpenChange; Esc, overlay
+  // click, and the Close parts all route through there. Closing the
+  // overlay via Esc or outside-click is treated as a "minimise" (matches
+  // the old behaviour — the session keeps running; only the bottom sheet
+  // hides and the top transcript bar takes over).
+  const handleOpenChange = (open: boolean) => {
+    if (!open) minimise();
+  };
 
   const isActive = state === 'active';
   const isPaused = state === 'dozing' || state === 'sleeping';
@@ -62,171 +68,183 @@ export function RecordingOverlay() {
   const ringScale = 1 + Math.min(0.35, Math.max(0, micLevel) * 0.35);
 
   return (
-    <div
-      role="dialog"
-      aria-modal="true"
-      aria-label="Recording session"
-      className="fixed inset-0 z-50 flex items-end justify-center bg-black/60 backdrop-blur-sm md:items-center"
-    >
-      <div
-        className="relative flex w-full flex-col overflow-hidden rounded-t-[var(--radius-xl)] border-t border-[var(--color-border-default)] bg-[var(--color-surface-1)] shadow-[0_-12px_48px_rgba(0,0,0,0.55)] md:rounded-[var(--radius-xl)] md:border md:shadow-[0_20px_64px_rgba(0,0,0,0.6)]"
-        style={{ maxWidth: '520px', maxHeight: '88dvh' }}
+    <Dialog open={isOverlayOpen} onOpenChange={handleOpenChange}>
+      {/* `unstyled` drops the centred-card defaults so we can render the
+          mobile bottom-sheet / desktop card layout below. Radix still
+          gives us the focus-trap spine, Esc, focus restore, aria-modal,
+          and portal mount. `aria-label` goes on DialogContent so the
+          Playwright focus-trap spec can resolve it via
+          `getByRole('dialog', { name: /recording session/i })`. */}
+      <DialogContent
+        unstyled
+        aria-label="Recording session"
+        className="flex items-end justify-center bg-black/60 backdrop-blur-sm md:items-center"
+        onPointerDownOutside={(e) => e.preventDefault()}
       >
-        {/* ── Hero bar ─────────────────────────────────────────────── */}
+        {/* Radix requires a DialogTitle for a11y (and Playwright's
+            `name:` filter targets the accessible name); hide it visually
+            because our hero bar shows its own time + state pill. */}
+        <DialogTitle className="sr-only">Recording session</DialogTitle>
         <div
-          className="flex items-center justify-between gap-3 px-5 py-4"
-          style={{
-            background:
-              'linear-gradient(135deg, var(--color-brand-blue) 0%, var(--color-brand-green) 100%)',
-          }}
+          className="relative flex w-full flex-col overflow-hidden rounded-t-[var(--radius-xl)] border-t border-[var(--color-border-default)] bg-[var(--color-surface-1)] shadow-[0_-12px_48px_rgba(0,0,0,0.55)] md:rounded-[var(--radius-xl)] md:border md:shadow-[0_20px_64px_rgba(0,0,0,0.6)]"
+          style={{ maxWidth: '520px', maxHeight: '88dvh' }}
         >
-          <div className="flex min-w-0 flex-1 flex-col gap-1">
-            <div className="flex items-center gap-2">
-              <StatePill state={state} />
-            </div>
-            <div className="flex items-baseline gap-3">
-              <span className="font-mono text-[28px] font-bold tabular-nums text-white">
-                {formatElapsed(elapsedSec)}
-              </span>
-              <span
-                className="rounded-full px-2 py-0.5 text-[11px] font-semibold uppercase tracking-[0.08em] text-white"
-                style={{ background: 'rgba(0,0,0,0.25)' }}
-              >
-                {formatCost(costUsd)}
-              </span>
-            </div>
-          </div>
-          <div className="flex items-center gap-1.5">
-            <HeroIconButton label="Minimise" icon={ChevronDown} onClick={minimise} />
-            <HeroIconButton label="End" icon={CloseIcon} onClick={stop} />
-          </div>
-        </div>
-
-        {/* ── Mic visualiser ──────────────────────────────────────── */}
-        <div className="flex items-center justify-center px-6 py-8">
-          <div className="relative flex h-40 w-40 items-center justify-center">
-            <div
-              aria-hidden
-              className={cn(
-                'absolute inset-0 rounded-full transition-transform duration-100 ease-out',
-                isActive ? '' : 'opacity-40'
-              )}
-              style={{
-                transform: `scale(${ringScale})`,
-                background:
-                  'radial-gradient(circle, rgba(0,204,102,0.35) 0%, rgba(0,204,102,0) 70%)',
-              }}
-            />
-            <div
-              aria-hidden
-              className={cn(
-                'absolute inset-4 rounded-full border-2',
-                isActive ? 'animate-pulse' : ''
-              )}
-              style={{
-                borderColor: isError
-                  ? 'var(--color-status-failed)'
-                  : isPaused
-                    ? 'var(--color-status-processing)'
-                    : 'var(--color-brand-green)',
-              }}
-            />
-            <div
-              className="flex h-20 w-20 items-center justify-center rounded-full shadow-[0_8px_32px_rgba(0,204,102,0.55)]"
-              style={{
-                background: isError
-                  ? 'var(--color-status-failed)'
-                  : isPaused
-                    ? 'var(--color-status-processing)'
-                    : 'var(--color-brand-green)',
-              }}
-            >
-              {isError || isPaused ? (
-                <MicOff className="h-8 w-8 text-white" strokeWidth={2.25} aria-hidden />
-              ) : (
-                <Mic className="h-8 w-8 text-white" strokeWidth={2.25} aria-hidden />
-              )}
-            </div>
-          </div>
-        </div>
-
-        {/* ── Sonnet questions ─────────────────────────────────────── */}
-        {questions.length > 0 ? (
+          {/* ── Hero bar ─────────────────────────────────────────────── */}
           <div
-            className="flex flex-col gap-2 border-t border-[var(--color-border-default)] bg-[var(--color-brand-blue)]/10 px-5 py-3"
-            aria-live="polite"
+            className="flex items-center justify-between gap-3 px-5 py-4"
+            style={{
+              background:
+                'linear-gradient(135deg, var(--color-brand-blue) 0%, var(--color-brand-green) 100%)',
+            }}
           >
-            {questions.map((q, i) => (
-              <div
-                key={`${i}-${q.question}`}
-                className="flex items-start gap-2 rounded-[var(--radius-md)] bg-[var(--color-surface-1)] px-3 py-2 shadow-[0_1px_2px_rgba(0,0,0,0.25)]"
-              >
-                <HelpCircle
-                  className="mt-0.5 h-4 w-4 shrink-0 text-[var(--color-brand-blue)]"
-                  strokeWidth={2.25}
-                  aria-hidden
-                />
-                <p className="flex-1 text-[13px] leading-snug text-[var(--color-text-primary)]">
-                  {q.question}
-                </p>
-                <button
-                  type="button"
-                  onClick={() => dismissQuestion(i)}
-                  aria-label="Dismiss question"
-                  className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[var(--color-text-tertiary)] transition hover:bg-[var(--color-surface-2)]"
-                >
-                  <CloseIcon className="h-3.5 w-3.5" strokeWidth={2.25} aria-hidden />
-                </button>
+            <div className="flex min-w-0 flex-1 flex-col gap-1">
+              <div className="flex items-center gap-2">
+                <StatePill state={state} />
               </div>
-            ))}
+              <div className="flex items-baseline gap-3">
+                <span className="font-mono text-[28px] font-bold tabular-nums text-white">
+                  {formatElapsed(elapsedSec)}
+                </span>
+                <span
+                  className="rounded-full px-2 py-0.5 text-[11px] font-semibold uppercase tracking-[0.08em] text-white"
+                  style={{ background: 'rgba(0,0,0,0.25)' }}
+                >
+                  {formatCost(costUsd)}
+                </span>
+              </div>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <HeroIconButton label="Minimise" icon={ChevronDown} onClick={minimise} />
+              <HeroIconButton label="End" icon={CloseIcon} onClick={stop} />
+            </div>
           </div>
-        ) : null}
 
-        {/* ── Transcript log ───────────────────────────────────────── */}
-        <div className="flex min-h-[180px] flex-1 flex-col gap-2 overflow-y-auto border-t border-[var(--color-border-default)] px-5 py-4">
-          {errorMessage ? (
-            <p className="text-[13px] text-[var(--color-status-failed)]">{errorMessage}</p>
-          ) : (
-            <>
-              {/* Interim partial — greyed italic, always renders on top of
-                   the log until Deepgram emits a final. */}
-              {interim ? (
-                <p className="text-[14px] italic leading-snug text-[var(--color-text-tertiary)]">
-                  {interim}
-                </p>
-              ) : null}
-              {visibleTranscript.length === 0 && !interim ? (
-                <p className="text-[13px] italic text-[var(--color-text-tertiary)]">
-                  {isRequesting
-                    ? 'Requesting microphone permission…'
-                    : 'Start speaking — transcripts will appear here in real time.'}
-                </p>
-              ) : (
-                visibleTranscript.map((u, i) => (
-                  <p
-                    key={u.id}
-                    className="text-[14px] leading-snug text-[var(--color-text-primary)] transition-opacity"
-                    style={{ opacity: 1 - i * 0.15 }}
-                  >
-                    {u.text}
+          {/* ── Mic visualiser ──────────────────────────────────────── */}
+          <div className="flex items-center justify-center px-6 py-8">
+            <div className="relative flex h-40 w-40 items-center justify-center">
+              <div
+                aria-hidden
+                className={cn(
+                  'absolute inset-0 rounded-full transition-transform duration-100 ease-out',
+                  isActive ? '' : 'opacity-40'
+                )}
+                style={{
+                  transform: `scale(${ringScale})`,
+                  background:
+                    'radial-gradient(circle, rgba(0,204,102,0.35) 0%, rgba(0,204,102,0) 70%)',
+                }}
+              />
+              <div
+                aria-hidden
+                className={cn(
+                  'absolute inset-4 rounded-full border-2',
+                  isActive ? 'animate-pulse' : ''
+                )}
+                style={{
+                  borderColor: isError
+                    ? 'var(--color-status-failed)'
+                    : isPaused
+                      ? 'var(--color-status-processing)'
+                      : 'var(--color-brand-green)',
+                }}
+              />
+              <div
+                className="flex h-20 w-20 items-center justify-center rounded-full shadow-[0_8px_32px_rgba(0,204,102,0.55)]"
+                style={{
+                  background: isError
+                    ? 'var(--color-status-failed)'
+                    : isPaused
+                      ? 'var(--color-status-processing)'
+                      : 'var(--color-brand-green)',
+                }}
+              >
+                {isError || isPaused ? (
+                  <MicOff className="h-8 w-8 text-white" strokeWidth={2.25} aria-hidden />
+                ) : (
+                  <Mic className="h-8 w-8 text-white" strokeWidth={2.25} aria-hidden />
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* ── Sonnet questions ─────────────────────────────────────── */}
+          {questions.length > 0 ? (
+            <div
+              className="flex flex-col gap-2 border-t border-[var(--color-border-default)] bg-[var(--color-brand-blue)]/10 px-5 py-3"
+              aria-live="polite"
+            >
+              {questions.map((q, i) => (
+                <div
+                  key={`${i}-${q.question}`}
+                  className="flex items-start gap-2 rounded-[var(--radius-md)] bg-[var(--color-surface-1)] px-3 py-2 shadow-[0_1px_2px_rgba(0,0,0,0.25)]"
+                >
+                  <HelpCircle
+                    className="mt-0.5 h-4 w-4 shrink-0 text-[var(--color-brand-blue)]"
+                    strokeWidth={2.25}
+                    aria-hidden
+                  />
+                  <p className="flex-1 text-[13px] leading-snug text-[var(--color-text-primary)]">
+                    {q.question}
                   </p>
-                ))
-              )}
-            </>
-          )}
-        </div>
+                  <button
+                    type="button"
+                    onClick={() => dismissQuestion(i)}
+                    aria-label="Dismiss question"
+                    className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[var(--color-text-tertiary)] transition hover:bg-[var(--color-surface-2)]"
+                  >
+                    <CloseIcon className="h-3.5 w-3.5" strokeWidth={2.25} aria-hidden />
+                  </button>
+                </div>
+              ))}
+            </div>
+          ) : null}
 
-        {/* ── Controls ────────────────────────────────────────────── */}
-        <div className="flex items-center justify-center gap-3 border-t border-[var(--color-border-default)] bg-[var(--color-surface-0)] px-5 py-4">
-          {isPaused ? (
-            <ControlButton primary label="Resume" icon={Play} onClick={resume} />
-          ) : (
-            <ControlButton label="Pause" icon={Pause} onClick={pause} disabled={!isActive} />
-          )}
-          <ControlButton destructive label="Stop" icon={Square} onClick={stop} />
+          {/* ── Transcript log ───────────────────────────────────────── */}
+          <div className="flex min-h-[180px] flex-1 flex-col gap-2 overflow-y-auto border-t border-[var(--color-border-default)] px-5 py-4">
+            {errorMessage ? (
+              <p className="text-[13px] text-[var(--color-status-failed)]">{errorMessage}</p>
+            ) : (
+              <>
+                {/* Interim partial — greyed italic, always renders on top of
+                   the log until Deepgram emits a final. */}
+                {interim ? (
+                  <p className="text-[14px] italic leading-snug text-[var(--color-text-tertiary)]">
+                    {interim}
+                  </p>
+                ) : null}
+                {visibleTranscript.length === 0 && !interim ? (
+                  <p className="text-[13px] italic text-[var(--color-text-tertiary)]">
+                    {isRequesting
+                      ? 'Requesting microphone permission…'
+                      : 'Start speaking — transcripts will appear here in real time.'}
+                  </p>
+                ) : (
+                  visibleTranscript.map((u, i) => (
+                    <p
+                      key={u.id}
+                      className="text-[14px] leading-snug text-[var(--color-text-primary)] transition-opacity"
+                      style={{ opacity: 1 - i * 0.15 }}
+                    >
+                      {u.text}
+                    </p>
+                  ))
+                )}
+              </>
+            )}
+          </div>
+
+          {/* ── Controls ────────────────────────────────────────────── */}
+          <div className="flex items-center justify-center gap-3 border-t border-[var(--color-border-default)] bg-[var(--color-surface-0)] px-5 py-4">
+            {isPaused ? (
+              <ControlButton primary label="Resume" icon={Play} onClick={resume} />
+            ) : (
+              <ControlButton label="Pause" icon={Pause} onClick={pause} disabled={!isActive} />
+            )}
+            <ControlButton destructive label="Stop" icon={Square} onClick={stop} />
+          </div>
         </div>
-      </div>
-    </div>
+      </DialogContent>
+    </Dialog>
   );
 }
 

@@ -20,6 +20,8 @@ import { isSystemAdmin } from '@/lib/roles';
 import type { AdminUser } from '@/lib/types';
 import { ApiError } from '@/lib/types';
 import { Button } from '@/components/ui/button';
+import { ConfirmDialog } from '@/components/ui/confirm-dialog';
+import { Dialog, DialogContent, DialogTitle, DialogDescription } from '@/components/ui/dialog';
 import { FloatingLabelInput } from '@/components/ui/floating-label-input';
 import { LabelledSelect } from '@/components/ui/labelled-select';
 import { Pill } from '@/components/ui/pill';
@@ -62,6 +64,7 @@ export default function AdminEditUserPage() {
   const [error, setError] = React.useState<string | null>(null);
   const [unlocking, setUnlocking] = React.useState(false);
   const [showResetSheet, setShowResetSheet] = React.useState(false);
+  const [showUnlockConfirm, setShowUnlockConfirm] = React.useState(false);
 
   const [name, setName] = React.useState('');
   const [email, setEmail] = React.useState('');
@@ -186,8 +189,8 @@ export default function AdminEditUserPage() {
     }
   }
 
-  async function handleUnlock() {
-    if (!window.confirm('Unlock this account? Failed-login count will reset.')) return;
+  async function performUnlock() {
+    setShowUnlockConfirm(false);
     setUnlocking(true);
     setError(null);
     try {
@@ -354,7 +357,7 @@ export default function AdminEditUserPage() {
             </div>
             <Button
               variant="secondary"
-              onClick={handleUnlock}
+              onClick={() => setShowUnlockConfirm(true)}
               disabled={unlocking}
               className="gap-2 shrink-0"
             >
@@ -396,6 +399,19 @@ export default function AdminEditUserPage() {
           onClose={() => setShowResetSheet(false)}
         />
       ) : null}
+
+      <ConfirmDialog
+        open={showUnlockConfirm}
+        onOpenChange={(next) => {
+          if (!next) setShowUnlockConfirm(false);
+        }}
+        title="Unlock this account?"
+        description="The failed-login count will reset and the user will be able to attempt sign-in again immediately."
+        confirmLabel="Unlock"
+        confirmLabelBusy="Unlocking…"
+        busy={unlocking}
+        onConfirm={performUnlock}
+      />
     </main>
   );
 }
@@ -445,35 +461,26 @@ function ResetPasswordSheet({
   }
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm"
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="reset-title"
-    >
-      <div className="mx-4 w-full max-w-md rounded-[var(--radius-lg)] border border-[var(--color-border-subtle)] bg-[var(--color-surface-2)] p-5 shadow-lg">
+    <Dialog open onOpenChange={(next) => (next ? undefined : handleClose())}>
+      <DialogContent>
         {done ? (
           <>
-            <h3 id="reset-title" className="text-[17px] font-bold text-[var(--color-text-primary)]">
-              Password reset
-            </h3>
-            <p className="mt-2 text-[13px] text-[var(--color-text-secondary)]">
+            <DialogTitle>Password reset</DialogTitle>
+            <DialogDescription>
               <strong>{userName}</strong>&apos;s password has been updated. All existing sessions
               for this user have been signed out — they&apos;ll need to log in again.
-            </p>
+            </DialogDescription>
             <div className="mt-5 flex justify-end">
               <Button onClick={handleClose}>Done</Button>
             </div>
           </>
         ) : (
           <>
-            <h3 id="reset-title" className="text-[17px] font-bold text-[var(--color-text-primary)]">
-              Reset password
-            </h3>
-            <p className="mt-2 text-[13px] text-[var(--color-text-secondary)]">
+            <DialogTitle>Reset password</DialogTitle>
+            <DialogDescription>
               Set a new password for <strong>{userName}</strong>. Hand it off out-of-band — the user
               will be logged out of every device.
-            </p>
+            </DialogDescription>
             <form onSubmit={submit} className="mt-4 flex flex-col gap-3">
               <FloatingLabelInput
                 label="New password"
@@ -502,8 +509,8 @@ function ResetPasswordSheet({
             </form>
           </>
         )}
-      </div>
-    </div>
+      </DialogContent>
+    </Dialog>
   );
 }
 
