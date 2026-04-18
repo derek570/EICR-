@@ -4,6 +4,7 @@ import * as React from 'react';
 import { useRouter } from 'next/navigation';
 import { ChevronLeft, MoreHorizontal } from 'lucide-react';
 import { useJobContext } from '@/lib/job-context';
+import { IconButton } from '@/components/ui/icon-button';
 
 /**
  * iOS-style job detail header:
@@ -41,18 +42,21 @@ export function JobHeader() {
           {job.address || 'Untitled job'}
         </h1>
 
-        <button
-          type="button"
+        {/* D8: 44×44 (was 36×36 — h-9 w-9). The surface variant preserves
+         * the iOS filled-circle affordance; brand-blue text is added via
+         * className since it's job-header-specific and not a shared variant. */}
+        <IconButton
+          variant="surface"
           aria-label="Job menu"
           onClick={() => {
             // Placeholder for the iOS header's 3-dot menu. Full set of
             // actions (rename, delete, export, etc.) lands in Phase 6.
             console.log('[job-header] overflow menu');
           }}
-          className="ml-auto inline-flex h-9 w-9 items-center justify-center rounded-full bg-[var(--color-surface-2)] text-[var(--color-brand-blue)] transition hover:bg-[var(--color-surface-3)] focus-visible:outline-2 focus-visible:outline-[var(--color-brand-blue)]"
+          className="ml-auto text-[var(--color-brand-blue)]"
         >
           <MoreHorizontal className="h-5 w-5" strokeWidth={2} aria-hidden />
-        </button>
+        </IconButton>
       </div>
 
       <div className="flex justify-center pb-1">

@@ -9,6 +9,7 @@ import { useCurrentUser } from '@/lib/use-current-user';
 import type { InspectorProfile } from '@/lib/types';
 import { Button } from '@/components/ui/button';
 import { ConfirmDialog } from '@/components/ui/confirm-dialog';
+import { IconButton } from '@/components/ui/icon-button';
 
 /**
  * Staff members list. Ports iOS `InspectorListView.swift`:
@@ -244,14 +245,15 @@ function InspectorRow({
         ) : null}
         <ChevronRight className="h-4 w-4 text-[var(--color-text-tertiary)]" aria-hidden />
       </Link>
-      <button
-        type="button"
+      {/* D8: 44×44 (was 36×36 — h-9 w-9). Destructive variant gives the
+       * same red-on-hover affordance the bespoke className used. */}
+      <IconButton
+        variant="destructive"
         onClick={onDelete}
         aria-label={`Delete ${inspector.name || 'staff member'}`}
-        className="flex h-9 w-9 items-center justify-center rounded-full text-[var(--color-text-tertiary)] hover:bg-[color-mix(in_oklab,var(--color-status-failed)_10%,transparent)] hover:text-[var(--color-status-failed)]"
       >
         <Trash2 className="h-4 w-4" aria-hidden />
-      </button>
+      </IconButton>
     </div>
   );
 }

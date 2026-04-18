@@ -37,8 +37,17 @@ export const metadata: Metadata = {
 export const viewport: Viewport = {
   width: 'device-width',
   initialScale: 1,
-  maximumScale: 1,
-  userScalable: false,
+  // D9 / WCAG 1.4.4 — pinch-zoom MUST remain available. The previous
+  // `maximumScale: 1` + `userScalable: false` combo prevented users
+  // (notably low-vision inspectors) from zooming to read small
+  // certificate data, and is the canonical example cited by WebAIM for
+  // a WCAG 1.4.4 failure. iOS Safari's native font-boost handling plus
+  // our own 16 px minimum input font-size (prevents the auto-zoom-on-
+  // focus behaviour that was the original excuse for disabling zoom)
+  // mean we can safely allow user scaling with no UX regression.
+  // If, in testing on a real device, we see the iOS form-field auto-
+  // zoom re-emerge (inputs < 16 px font-size re-trigger it), fix the
+  // input font-size — do NOT re-disable zoom.
   viewportFit: 'cover',
   // Aligned with `manifest.theme_color` and `surface-0` (`#0a0a0a`) so the
   // iOS status-bar tint, Android task-switcher card, and the app's top

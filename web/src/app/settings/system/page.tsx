@@ -6,6 +6,7 @@ import { AlertTriangle, ArrowLeft, CloudUpload, RotateCcw, Trash2 } from 'lucide
 import { discardMutation, requeueMutation, type OutboxMutation } from '@/lib/pwa/outbox';
 import { useOutboxState } from '@/lib/pwa/use-outbox-state';
 import { ConfirmDialog } from '@/components/ui/confirm-dialog';
+import { IconButton } from '@/components/ui/icon-button';
 
 /**
  * Offline-sync admin page (Phase 7d).
@@ -77,13 +78,12 @@ export default function SyncAdminPage() {
   return (
     <main className="mx-auto flex w-full max-w-3xl flex-col gap-6 px-4 py-6">
       <div className="flex items-center gap-3">
-        <Link
-          href="/settings"
-          aria-label="Back to settings"
-          className="inline-flex h-9 w-9 items-center justify-center rounded-full text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-2)]"
-        >
-          <ArrowLeft className="h-4 w-4" aria-hidden />
-        </Link>
+        {/* D8: 44×44 back-link (was 36×36). */}
+        <IconButton asChild aria-label="Back to settings">
+          <Link href="/settings">
+            <ArrowLeft className="h-4 w-4" aria-hidden />
+          </Link>
+        </IconButton>
         <div className="flex flex-col">
           <h1 className="text-[20px] font-bold text-[var(--color-text-primary)]">Offline Sync</h1>
           <p className="text-[13px] text-[var(--color-text-secondary)]">

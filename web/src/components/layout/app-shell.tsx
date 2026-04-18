@@ -7,6 +7,7 @@ import { Logo } from '@/components/brand/logo';
 import { api } from '@/lib/api-client';
 import { clearAuth, getUser } from '@/lib/auth';
 import { Button } from '@/components/ui/button';
+import { IconButton } from '@/components/ui/icon-button';
 import { InstallButton } from '@/components/pwa/install-button';
 import { OfflineIndicator } from '@/components/pwa/offline-indicator';
 import { useOutboxReplay } from '@/lib/pwa/outbox-replay';
@@ -56,25 +57,25 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       >
         <div className="flex items-center gap-3">
           {!isDashboard ? (
-            <Link
-              href="/dashboard"
-              aria-label="Back to dashboard"
-              className="inline-flex h-10 w-10 items-center justify-center rounded-full text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-2)]"
-            >
-              <svg
-                width="20"
-                height="20"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2.5"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                aria-hidden
-              >
-                <path d="M15 18l-6-6 6-6" />
-              </svg>
-            </Link>
+            // D8: 44×44 (was 40×40 — h-10 w-10). Rendered via IconButton
+            // with asChild so the Next <Link> remains the actual element.
+            <IconButton asChild aria-label="Back to dashboard">
+              <Link href="/dashboard">
+                <svg
+                  width="20"
+                  height="20"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2.5"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden
+                >
+                  <path d="M15 18l-6-6 6-6" />
+                </svg>
+              </Link>
+            </IconButton>
           ) : null}
           <Link href="/dashboard" aria-label="CertMate home">
             <Logo size="md" />
