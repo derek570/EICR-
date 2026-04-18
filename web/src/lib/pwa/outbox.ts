@@ -97,15 +97,28 @@ export interface OutboxMutation {
  *   blips without thrashing the network).
  * - MAX_BACKOFF_MS: cap so we don't end up with a 10-minute retry stall
  *   when the user has been continuously online.
- * - MAX_ATTEMPTS: after this many 4xx/5xx/network failures a row is
- *   poisoned. 10 is long enough to weather an hour-ish of spotty
- *   connectivity (2s, 4s, 8s, 16s, 32s, 64s, 128s, 256s, 300s, 300s
- *   — totals ~18 minutes at the cap) without retaining a permanently
- *   broken mutation that'll 4xx every time it replays.
+ * - MAX_ATTEMPTS: after this many 5xx/network failures a row is
+ *   poisoned by attempt-counter exhaustion. 4xx responses (except
+ *   401) are poisoned immediately by the replay worker without
+ *   consuming the attempt counter — P0-12 decision — so this value
+ *   only governs the "transient failure" window. 15 attempts gives
+ *   ~1 hour of backoff coverage at the 5-min cap (2s, 4s, 8s, 16s,
+ *   32s, 64s, 128s, 256s, then seven more at the 300s cap — roughly
+ *   45 minutes end-to-end). That's long enough to ride out a
+ *   captive-portal session, a deploy-window partial outage, or a
+ *   backend rolling restart, without retaining a row that's been
+ *   failing for an entire inspection day.
+ *
+ *   Wave 1 decision Q3: started at 10 attempts (~18 min coverage),
+ *   bumped to 15 before Wave 2's replay-loop tests hard-code the
+ *   expectation. Revisit if production telemetry shows rows
+ *   poisoning because of mid-range outages (in which case bump
+ *   further) or surviving long after they should have been
+ *   discarded (in which case drop).
  */
 const BASE_BACKOFF_MS = 2_000;
 const MAX_BACKOFF_MS = 5 * 60 * 1_000;
-export const MAX_ATTEMPTS = 10;
+export const MAX_ATTEMPTS = 15;
 
 function generateId(): string {
   // crypto.randomUUID is in every evergreen browser + Node 19+;
