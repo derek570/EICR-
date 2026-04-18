@@ -32,11 +32,45 @@ All 17 P0 items from the kill-list are fixed. A single-line summary per item wit
 
 ---
 
-## What was not touched (intentional)
+## Post-merge decisions (previously "open questions")
 
-- **Auto-migration of legacy logo S3 keys.** The P0-15 fix keeps a read-fallback to `settings/${userId}/logos/…` but new uploads only ever hit the company-scoped path. A one-shot migration can run in Wave 2 once a tenant inventory job is written.
-- **PUT company-settings company_role gate.** `settings.js` still allows any authenticated user whose path param matches their own id to PUT company settings. Restricting to `company_role ∈ {owner, admin}` was deferred — the UI needs to surface read-only affordances first. Flagged at top of `companySettingsPrefix()` docstring.
-- **`MAX_ATTEMPTS` tuning.** Kept at 10 — sufficient for field observations so far. Reconsider once Wave 2 telemetry is in place.
+The three decisions flagged at the bottom of the initial handoff have been researched and landed. Summary + rationale for each below; the code lives in a follow-up commit on top of the Wave 1 stack (see `git log --oneline`).
+
+### Q1 — Legacy company-settings S3 key migration
+
+**Decision: Lazy read-fallback in `GET /api/settings/:userId/company`.**
+
+Three options were considered:
+
+| Option | Pros | Cons |
+|---|---|---|
+| A — One-shot migration job | Eager, predictable end state | Needs tenant inventory + has to pick a winner when multiple users in the same company had divergent legacy copies (the exact race P0-15 exists to prevent). Cross-tenant write-heavy migration is risky to run on a live deploy. |
+| B — Do nothing (natural overwrite) | Zero code, zero risk | Every post-deploy user sees blank defaults until someone fills them in. Multi-user firms race all over again because the UI doesn't distinguish "company hasn't set these" from "defaults fell back". |
+| **C — Lazy read-fallback** | Zero migration cost, zero orphaned data, first admin PUT promotes the legacy copy into the company key | If two employees' legacy files differed, whichever admin opens the settings page first wins. |
+
+Option C landed. The fallback helper `downloadCompanySettings(user)` tries the company-scoped key first; if absent, it reads the caller's legacy per-user file. Because Q2 (below) gates PUT to company admins, the "whichever admin wins" behaviour is exactly who we want to trust with the implicit merge decision. Legacy files stay in S3 for audit — once the company-scoped key exists, the fallback is never consulted again and the legacy files are dead weight only.
+
+Logo GET already had this fallback (landed as part of P0-15); the company-settings GET fallback is symmetric.
+
+### Q2 — Gate PUT to `company_role ∈ {owner, admin}`
+
+**Decision: Gate immediately, at the server.**
+
+Pre-P0-15 this was a nice-to-have: an employee's rogue PUT only rewrote their own per-user copy. Post-P0-15 it's a data-integrity regression *introduced by the fix* — an employee with a valid session could now curl the endpoint and rewrite the entire company's branding / contact details, which then propagate to every subsequent PDF for every user in the firm.
+
+The frontend already gates the save button via `isCompanyAdmin(user)` (which allows `owner`, `admin`, and system admins), so the backend gate has zero UI impact — it just closes the server-side hole. System admins are explicitly allowed on the backend so cross-tenant repair work doesn't require owner impersonation.
+
+New helper `canEditCompanySettings(user)` is applied to both `PUT /settings/:userId/company` *and* `POST /settings/:userId/logo` — logo upload is shared-state too because the returned S3 key gets merged into `company_settings.logo_file`.
+
+### Q3 — Outbox `MAX_ATTEMPTS`
+
+**Decision: Bump 10 → 15.**
+
+Current policy: exponential backoff with a 5-min cap. With 10 attempts, total time from first failure to poisoning is ~18 min at the cap. Offline time doesn't consume attempts (the worker short-circuits when `navigator.onLine` is false), so the 18-min window only applies to *server-reachable-but-failing* scenarios (captive portal, deploy partial outage, backend rolling restart).
+
+15 attempts gives ~45-60 min of coverage, which comfortably rides out a typical deploy window or captive-portal session without retaining rows that have genuinely been failing all day. P0-12 already routes 4xx (except 401) to immediate poisoning, so this counter only governs *transient* failure retention — which is exactly what we want to tune for real-world flakiness.
+
+Landed now (not deferred to Wave 2) so the replay-loop tests can hard-code the final value instead of being written against 10 and then rewritten when we bump.
 
 ---
 
@@ -72,12 +106,13 @@ Per `FIX_PLAN.md`:
 
 ---
 
-## Open questions for Derek
+## Remaining known gaps (genuinely deferred)
 
-1. Should the P0-15 company-scoped key be backfilled via a one-shot ECS task, or left to natural overwrite on the next inspector save? (Natural is safer but means ~N weeks of stale PDFs for multi-user firms.)
-2. Do we want PUT `/settings/:userId/company` gated to `company_role ∈ {owner, admin}` before Wave 2 ships, or is that acceptable follow-up work?
-3. `MAX_ATTEMPTS = 10` on the outbox — keep or bump? Needs a decision before Wave 2's replay-loop tests hard-code the expectation.
+Now that Q1–Q3 are closed, the only outstanding items are:
+
+- **Logo S3 migration.** New uploads land at the company-scoped prefix; legacy per-user logo paths are still served via read-fallback. A one-shot cleanup that deletes legacy files after the company-scoped copy exists can run whenever a tenant inventory job is written, but there's no correctness pressure — the fallback is cheap and legacy files are quiescent once unreferenced.
+- **Telemetry on outbox poisoning.** `MAX_ATTEMPTS = 15` is a considered guess; Wave 2 should surface a count of poisoned rows per deploy so we can tune with evidence instead of intuition.
 
 ---
 
-Kill-list done. Ready for Wave 2 when you are.
+Kill-list + Q1/Q2/Q3 decisions done. Ready for Wave 2 when you are.
