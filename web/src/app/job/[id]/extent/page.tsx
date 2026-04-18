@@ -35,7 +35,9 @@ const INSTALLATION_TYPES = [
 
 export default function ExtentPage() {
   const { job, certificateType, updateJob } = useJobContext();
-  const data = (job.extent ?? {}) as ExtentShape;
+  // See DesignPage for the rationale — memo-wrap keeps identity stable
+  // so `patch` isn't rebuilt every render.
+  const data = React.useMemo<ExtentShape>(() => (job.extent ?? {}) as ExtentShape, [job.extent]);
   const isEIC = certificateType === 'EIC';
 
   const patch = React.useCallback(

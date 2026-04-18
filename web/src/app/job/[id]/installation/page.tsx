@@ -86,7 +86,12 @@ const PREMISES_OPTIONS = [
 export default function InstallationPage() {
   const { job, certificateType, updateJob } = useJobContext();
   const isEIC = certificateType === 'EIC';
-  const details = (job.installation ?? {}) as InstallationShape;
+  // See DesignPage for the rationale — memo-wrap keeps identity stable
+  // so `patch` isn't rebuilt every render.
+  const details = React.useMemo<InstallationShape>(
+    () => (job.installation ?? {}) as InstallationShape,
+    [job.installation]
+  );
 
   const patch = React.useCallback(
     (next: Partial<InstallationShape>) => {

@@ -14,7 +14,6 @@ import {
   UserCheck,
   Zap,
 } from 'lucide-react';
-import type { CertificateType } from '@/lib/types';
 import { cn } from '@/lib/utils';
 
 /**
@@ -60,14 +59,14 @@ const UNIFIED_TABS: Tab[] = [
   { slug: '/pdf', label: 'PDF', Icon: FileText },
 ];
 
-export function JobTabNav({
-  jobId,
-  certificateType: _certificateType,
-}: {
-  jobId: string;
-  /** Retained for API compatibility; unified tab set ignores cert type. */
-  certificateType: CertificateType;
-}) {
+/**
+ * The `certificateType` prop was retained through Wave 4 as dead API
+ * surface after the tab set was unified for EICR + EIC. Wave 5 drops
+ * it — no consumer reads it, and the ESLint `no-unused-vars` warning
+ * was the last blocker on the lint-zero acceptance gate. Call sites
+ * update to stop passing it.
+ */
+export function JobTabNav({ jobId }: { jobId: string }) {
   const pathname = usePathname();
   const base = `/job/${jobId}`;
 

@@ -118,7 +118,7 @@ export default function JobLayout({ children }: { children: React.ReactNode }) {
           <RecordingProvider>
             <div className="flex min-h-[calc(100dvh-56px)] flex-col">
               <JobHeader />
-              <JobTabNav jobId={jobId} certificateType={job.certificate_type ?? 'EICR'} />
+              <JobTabNav jobId={jobId} />
               <TranscriptBar />
               <JobBody>{children}</JobBody>
               <FloatingActionBar />
