@@ -275,6 +275,100 @@ export async function putCachedJob(
   }
 }
 
+// ---------- Queued-outbox overlay (Wave 5 D7) ----------
+
+/**
+ * Read the cached `JobDetail` with every non-poisoned outbox mutation
+ * for the same `(userId, jobId)` overlaid on top, FIFO.
+ *
+ * Why this exists (D7):
+ *   Without the overlay, a reload-after-offline-edit flashes the pre-
+ *   edit server doc until the replay worker drains the queue. Pre-D7
+ *   the queued-offline path DID write-through the cache (Wave 1
+ *   P0-13), but the cache row is authoritative-last-server-write, so
+ *   a subsequent network success on a DIFFERENT field from another
+ *   client would blow the optimistic patch away — the cached doc
+ *   goes back to pre-edit even while the mutation still sits in the
+ *   outbox. This helper makes the outbox authoritative over any
+ *   `(userId, jobId)` field it touches until the row drains.
+ *
+ * Conflict resolution (documented per D7 non-negotiable):
+ *   When the server wrote field X (flowed into the cached doc) and
+ *   the client has a queued patch touching field Y AND field X, the
+ *   overlay applies the queued patch last — so for every field the
+ *   user touched, their pending write wins over the server's later
+ *   write, and every untouched field shows the server's latest.
+ *   This matches the iOS `APIClient.saveJob` + Sonnet
+ *   `session_resume` last-writer-wins-per-field contract: the
+ *   inspector's local intent wins until the server confirms, at
+ *   which point the outbox row is removed and the cache write-through
+ *   in `outbox-replay.ts` promotes the field into the shared state.
+ *
+ *   If two queued mutations both touch field Y, FIFO order (earliest
+ *   enqueue first, then later ones overwrite) matches the replay
+ *   worker's order-preservation contract — the overlay and the
+ *   eventual replay stay in lockstep.
+ *
+ *   If a queued row targets a cached doc that does NOT exist (no
+ *   server snapshot ever reached the device), we return null — the
+ *   calling page's network fetch will populate eventually; we don't
+ *   invent defaults for required JobDetail fields.
+ *
+ * Why NOT fold into `getCachedJob`:
+ *   - The replay worker in `outbox-replay.ts` needs the RAW cached
+ *     server snapshot to write-through — overlaying an already-queued
+ *     row onto the cache on success would double-apply the patch.
+ *   - This helper imports the outbox, which would create a cycle
+ *     (outbox.ts already imports from job-cache.ts for `openDB` /
+ *     `wrapTransaction` helpers). Put the overlay in a sibling
+ *     file to break the cycle explicitly.
+ *
+ * Performance: one extra IDB `getAll()` on the outbox per read. The
+ * outbox is expected to stay tiny; the read is sub-millisecond in
+ * normal use.
+ */
+export async function getCachedJobWithOverlay(
+  userId: string,
+  jobId: string
+): Promise<JobDetail | null> {
+  const base = await getCachedJob(userId, jobId);
+  if (!base) return null;
+
+  // Dynamic import to break the outbox → job-cache module cycle. The
+  // outbox module already imports helpers from here; a static import
+  // the other way would create a load-order hazard that existing
+  // webpack bundlers would resolve non-deterministically. Defer the
+  // require to call-time so both modules finish initialising before
+  // either is consumed.
+  //
+  // We intentionally do NOT import via `@/lib/pwa/outbox` directly —
+  // the named-import form also triggers the cycle at module-scope
+  // because TS hoists the `import { ... } from` statement above local
+  // bindings. `await import(...)` keeps the cycle lazy.
+  const outbox = (await import('./outbox')) as typeof import('./outbox');
+  const pending = await outbox.listPendingMutations();
+
+  const relevant = pending
+    .filter((m) => m.userId === userId && m.jobId === jobId && m.op === 'saveJob')
+    .sort((a, b) => a.createdAt - b.createdAt);
+
+  if (relevant.length === 0) return base;
+
+  // FIFO overlay: shallow spread is sufficient because the outbox
+  // patches are flat `Partial<JobDetail>` patches (individual field
+  // flips from the debounced save path), and the JobDetail section
+  // objects — `installation`, `extent`, `supply`, etc. — are fully
+  // replaced by saveJob callers, not partially merged. If a future
+  // phase starts sending deep-partial section edits, this is the one
+  // place to upgrade to a deep merge; today the simpler contract
+  // matches iOS exactly.
+  let merged: JobDetail = base;
+  for (const m of relevant) {
+    merged = { ...merged, ...(m.patch as Partial<JobDetail>) };
+  }
+  return merged;
+}
+
 // ---------- Eviction ----------
 
 /**
