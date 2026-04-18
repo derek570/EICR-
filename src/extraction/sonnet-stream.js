@@ -568,6 +568,12 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
           );
           questionGate.resolveByFields(resolvedFields);
         }
+        // Drop pending observation_* / field-less unclear questions when Sonnet
+        // has just extracted an observation — resolveByFields can't do this
+        // because observations carry field=null/circuit=null.
+        if (Array.isArray(result.observations) && result.observations.length > 0) {
+          questionGate.resolveObservationQuestions(result.observations.length);
+        }
       } catch (err) {
         logger.error('Batch flush callback error', { sessionId, error: err.message });
       }
@@ -726,6 +732,12 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
           result.extracted_readings.map((r) => `${r.field}:${r.circuit}`)
         );
         entry.questionGate.resolveByFields(resolvedFields);
+      }
+
+      // Resolve observation-only questions when Sonnet extracted an observation.
+      // Mirrors the batch-flush callback path above.
+      if (Array.isArray(result.observations) && result.observations.length > 0) {
+        entry.questionGate.resolveObservationQuestions(result.observations.length);
       }
 
       // Periodic orphaned value review — every 10 extraction turns

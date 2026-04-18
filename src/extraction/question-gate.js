@@ -47,6 +47,41 @@ export class QuestionGate {
     }
   }
 
+  // Sonnet extracted one or more observations on this turn. Drop any queued
+  // observation-related questions (observation_confirmation, observation_code,
+  // observation_unclear, and generic unclear/field-null questions) — they
+  // would fire AFTER the observation is already on-screen, which was the
+  // kitchen-observation regression seen in session B607831E.
+  //
+  // resolveByFields is keyed on `field:circuit`, but observations set both
+  // to null so those keys collide across unrelated defects. This method is
+  // type-aware and drops any question that can only be about "this
+  // observation we just captured".
+  resolveObservationQuestions(observationCount = 1) {
+    if (observationCount <= 0 || this.pendingQuestions.length === 0) return;
+    const before = this.pendingQuestions.length;
+    this.pendingQuestions = this.pendingQuestions.filter((q) => {
+      const type = (q.type || '').toLowerCase();
+      if (type.startsWith('observation_')) return false;
+      // Also drop unclear questions with no field/circuit — they are almost
+      // always "what's the observation?" from the unclear/too-short path.
+      if (type === 'unclear' && !q.field && !q.circuit) return false;
+      return true;
+    });
+    const dropped = before - this.pendingQuestions.length;
+    if (dropped > 0) {
+      logger.info('Observation questions resolved by extraction', {
+        dropped,
+        observationCount,
+        remaining: this.pendingQuestions.length,
+      });
+    }
+    if (this.pendingQuestions.length === 0 && this.gateTimer) {
+      clearTimeout(this.gateTimer);
+      this.gateTimer = null;
+    }
+  }
+
   resetTimer() {
     if (this.gateTimer) clearTimeout(this.gateTimer);
     this.gateTimer = setTimeout(() => this.flush(), this.GATE_DELAY_MS);
