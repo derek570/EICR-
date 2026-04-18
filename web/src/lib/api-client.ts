@@ -1,3 +1,4 @@
+import { type ZodTypeAny } from 'zod';
 import {
   type AdminUser,
   ApiError,
@@ -15,6 +16,33 @@ import {
   type Paginated,
   type User,
 } from './types';
+import {
+  AdminSuccessResponseSchema,
+  AdminUserListSchema,
+  AdminUserSchema,
+  CCUAnalysisSchema,
+  CompanyJobListSchema,
+  CompanyMemberListSchema,
+  CompanySettingsSchema,
+  CompanyStatsSchema,
+  CreateJobResponseSchema,
+  DeepgramKeyResponseSchema,
+  DeleteJobResponseSchema,
+  DeleteObservationPhotoResponseSchema,
+  DocumentExtractionResponseSchema,
+  InspectorProfileListSchema,
+  InviteEmployeeResponseSchema,
+  JobDetailSchema,
+  JobListSchema,
+  LoginResponseSchema,
+  SaveJobResponseSchema,
+  UpdateSettingsResponseSchema,
+  UploadLogoResponseSchema,
+  UploadObservationPhotoResponseSchema,
+  UploadSignatureResponseSchema,
+  UserSchema,
+  parseOrWarn,
+} from './adapters';
 import { getToken } from './auth';
 
 /**
@@ -25,13 +53,27 @@ import { getToken } from './auth';
  * - Retries only idempotent methods — the legacy client retried everything,
  *   which caused duplicate POSTs on flaky networks.
  * - Throws `ApiError` on non-2xx so callers can branch on `.status`.
+ * - **Wave 2b:** every successful response is routed through a zod schema
+ *   from `./adapters`. Validation is intentionally non-throwing (`parseOrWarn`
+ *   logs a console warning and falls back to the raw payload on drift) so
+ *   prompt / DB evolution on the backend doesn't block the inspector mid-
+ *   certificate. See `./adapters/validate.ts` for the rationale.
  */
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3000';
 
 const IDEMPOTENT = new Set(['GET', 'HEAD', 'OPTIONS']);
 
-async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+/**
+ * Low-level fetch. Responsible for auth, retries, error envelope parsing.
+ * Does NOT validate the response — that's the adapter's job. Callers should
+ * prefer the typed `api.*` helpers which wrap this in `parseOrWarn(...)`.
+ *
+ * The schema is optional so routes that return opaque bodies (JWT-mint
+ * responses the caller consumes as-is, HTML error pages on proxy failure)
+ * can skip validation without fighting the type system.
+ */
+async function request<T>(path: string, init: RequestInit = {}, schema?: ZodTypeAny): Promise<T> {
   const method = (init.method ?? 'GET').toUpperCase();
   const headers = new Headers(init.headers);
   const token = getToken();
@@ -76,7 +118,12 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 
       const contentType = res.headers.get('content-type') ?? '';
       if (contentType.includes('application/json')) {
-        return (await res.json()) as T;
+        const raw = (await res.json()) as unknown;
+        if (schema) {
+          // parseOrWarn never throws; a drift logs + returns raw.
+          return parseOrWarn(schema, raw, `${method} ${path}`) as T;
+        }
+        return raw as T;
       }
       return (await res.text()) as unknown as T;
     } catch (err) {
@@ -138,10 +185,14 @@ export const api = {
   baseUrl: API_BASE_URL,
 
   login(email: string, password: string): Promise<LoginResponse> {
-    return request<LoginResponse>('/api/auth/login', {
-      method: 'POST',
-      body: JSON.stringify({ email, password }),
-    });
+    return request<LoginResponse>(
+      '/api/auth/login',
+      {
+        method: 'POST',
+        body: JSON.stringify({ email, password }),
+      },
+      LoginResponseSchema
+    );
   },
 
   logout(): Promise<void> {
@@ -149,30 +200,38 @@ export const api = {
   },
 
   me(): Promise<User> {
-    return request<User>('/api/auth/me');
+    return request<User>('/api/auth/me', {}, UserSchema);
   },
 
   jobs(userId: string): Promise<Job[]> {
-    return request<Job[]>(`/api/jobs/${encodeURIComponent(userId)}`);
+    return request<Job[]>(`/api/jobs/${encodeURIComponent(userId)}`, {}, JobListSchema);
   },
 
   createJob(userId: string, certificateType: 'EICR' | 'EIC'): Promise<{ id: string }> {
-    return request<{ id: string }>(`/api/jobs/${encodeURIComponent(userId)}`, {
-      method: 'POST',
-      body: JSON.stringify({ certificate_type: certificateType }),
-    });
+    return request<{ id: string }>(
+      `/api/jobs/${encodeURIComponent(userId)}`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ certificate_type: certificateType }),
+      },
+      CreateJobResponseSchema
+    );
   },
 
   deleteJob(userId: string, jobId: string): Promise<{ success: boolean }> {
-    return request(`/api/job/${encodeURIComponent(userId)}/${encodeURIComponent(jobId)}`, {
-      method: 'DELETE',
-    });
+    return request(
+      `/api/job/${encodeURIComponent(userId)}/${encodeURIComponent(jobId)}`,
+      { method: 'DELETE' },
+      DeleteJobResponseSchema
+    );
   },
 
   /** Full job detail payload — all tabs worth of data. */
   job(userId: string, jobId: string): Promise<JobDetail> {
     return request<JobDetail>(
-      `/api/job/${encodeURIComponent(userId)}/${encodeURIComponent(jobId)}`
+      `/api/job/${encodeURIComponent(userId)}/${encodeURIComponent(jobId)}`,
+      {},
+      JobDetailSchema
     );
   },
 
@@ -184,7 +243,9 @@ export const api = {
    */
   deepgramKey(sessionId: string): Promise<{ key: string }> {
     return request<{ key: string }>(
-      `/api/deepgram-proxy?sessionId=${encodeURIComponent(sessionId)}`
+      `/api/deepgram-proxy?sessionId=${encodeURIComponent(sessionId)}`,
+      {},
+      DeepgramKeyResponseSchema
     );
   },
 
@@ -202,10 +263,11 @@ export const api = {
   analyzeCCU(photo: Blob | File): Promise<CCUAnalysis> {
     const form = new FormData();
     form.append('photo', photo);
-    return request<CCUAnalysis>('/api/analyze-ccu', {
-      method: 'POST',
-      body: form,
-    });
+    return request<CCUAnalysis>(
+      '/api/analyze-ccu',
+      { method: 'POST', body: form },
+      CCUAnalysisSchema
+    );
   },
 
   /**
@@ -224,10 +286,11 @@ export const api = {
   analyzeDocument(photo: Blob | File): Promise<DocumentExtractionResponse> {
     const form = new FormData();
     form.append('photo', photo);
-    return request<DocumentExtractionResponse>('/api/analyze-document', {
-      method: 'POST',
-      body: form,
-    });
+    return request<DocumentExtractionResponse>(
+      '/api/analyze-document',
+      { method: 'POST', body: form },
+      DocumentExtractionResponseSchema
+    );
   },
 
   /**
@@ -254,10 +317,11 @@ export const api = {
   }> {
     const form = new FormData();
     form.append('photo', photo);
-    return request(`/api/job/${encodeURIComponent(userId)}/${encodeURIComponent(jobId)}/photos`, {
-      method: 'POST',
-      body: form,
-    });
+    return request(
+      `/api/job/${encodeURIComponent(userId)}/${encodeURIComponent(jobId)}/photos`,
+      { method: 'POST', body: form },
+      UploadObservationPhotoResponseSchema
+    );
   },
 
   /**
@@ -274,7 +338,8 @@ export const api = {
   ): Promise<{ success: true }> {
     return request(
       `/api/job/${encodeURIComponent(userId)}/${encodeURIComponent(jobId)}/photos/${encodeURIComponent(filename)}`,
-      { method: 'DELETE' }
+      { method: 'DELETE' },
+      DeleteObservationPhotoResponseSchema
     );
   },
 
@@ -320,10 +385,14 @@ export const api = {
     jobId: string,
     updates: Partial<JobDetail>
   ): Promise<{ success: boolean }> {
-    return request(`/api/job/${encodeURIComponent(userId)}/${encodeURIComponent(jobId)}`, {
-      method: 'PUT',
-      body: JSON.stringify(updates),
-    });
+    return request(
+      `/api/job/${encodeURIComponent(userId)}/${encodeURIComponent(jobId)}`,
+      {
+        method: 'PUT',
+        body: JSON.stringify(updates),
+      },
+      SaveJobResponseSchema
+    );
   },
 
   // ----------------------------------------------------------------
@@ -336,7 +405,11 @@ export const api = {
    * default-flag logic. Missing file returns `[]`.
    */
   inspectorProfiles(userId: string): Promise<InspectorProfile[]> {
-    return request<InspectorProfile[]>(`/api/inspector-profiles/${encodeURIComponent(userId)}`);
+    return request<InspectorProfile[]>(
+      `/api/inspector-profiles/${encodeURIComponent(userId)}`,
+      {},
+      InspectorProfileListSchema
+    );
   },
 
   /**
@@ -349,10 +422,14 @@ export const api = {
     userId: string,
     profiles: InspectorProfile[]
   ): Promise<{ success: true }> {
-    return request(`/api/inspector-profiles/${encodeURIComponent(userId)}`, {
-      method: 'PUT',
-      body: JSON.stringify(profiles),
-    });
+    return request(
+      `/api/inspector-profiles/${encodeURIComponent(userId)}`,
+      {
+        method: 'PUT',
+        body: JSON.stringify(profiles),
+      },
+      UpdateSettingsResponseSchema
+    );
   },
 
   /**
@@ -375,10 +452,11 @@ export const api = {
     const file =
       blob instanceof File ? blob : new File([blob], 'signature.png', { type: 'image/png' });
     form.append('signature', file);
-    return request(`/api/inspector-profiles/${encodeURIComponent(userId)}/upload-signature`, {
-      method: 'POST',
-      body: form,
-    });
+    return request(
+      `/api/inspector-profiles/${encodeURIComponent(userId)}/upload-signature`,
+      { method: 'POST', body: form },
+      UploadSignatureResponseSchema
+    );
   },
 
   /**
@@ -417,7 +495,11 @@ export const api = {
    * render), matching the shape we type as `CompanySettings`.
    */
   companySettings(userId: string): Promise<CompanySettings> {
-    return request<CompanySettings>(`/api/settings/${encodeURIComponent(userId)}/company`);
+    return request<CompanySettings>(
+      `/api/settings/${encodeURIComponent(userId)}/company`,
+      {},
+      CompanySettingsSchema
+    );
   },
 
   /**
@@ -426,10 +508,14 @@ export const api = {
    * merging partial edits — we don't shadow that decision here.
    */
   updateCompanySettings(userId: string, settings: CompanySettings): Promise<{ success: true }> {
-    return request(`/api/settings/${encodeURIComponent(userId)}/company`, {
-      method: 'PUT',
-      body: JSON.stringify(settings),
-    });
+    return request(
+      `/api/settings/${encodeURIComponent(userId)}/company`,
+      {
+        method: 'PUT',
+        body: JSON.stringify(settings),
+      },
+      UpdateSettingsResponseSchema
+    );
   },
 
   /**
@@ -451,10 +537,11 @@ export const api = {
     // the server regenerates the final S3 filename anyway.
     const file = blob instanceof File ? blob : new File([blob], 'logo.png', { type: 'image/png' });
     form.append('logo', file);
-    return request(`/api/settings/${encodeURIComponent(userId)}/logo`, {
-      method: 'POST',
-      body: form,
-    });
+    return request(
+      `/api/settings/${encodeURIComponent(userId)}/logo`,
+      { method: 'POST', body: form },
+      UploadLogoResponseSchema
+    );
   },
 
   /**
@@ -490,7 +577,11 @@ export const api = {
    * hits this so non-admins never trigger the 403.
    */
   companyUsers(companyId: string): Promise<CompanyMember[]> {
-    return request<CompanyMember[]>(`/api/companies/${encodeURIComponent(companyId)}/users`);
+    return request<CompanyMember[]>(
+      `/api/companies/${encodeURIComponent(companyId)}/users`,
+      {},
+      CompanyMemberListSchema
+    );
   },
 
   /**
@@ -509,13 +600,19 @@ export const api = {
     const qs = new URLSearchParams({ limit: String(limit), offset: String(offset) });
     if (params.employeeId) qs.set('employee_id', params.employeeId);
     return request<Paginated<CompanyJobRow>>(
-      `/api/companies/${encodeURIComponent(companyId)}/jobs?${qs.toString()}`
+      `/api/companies/${encodeURIComponent(companyId)}/jobs?${qs.toString()}`,
+      {},
+      CompanyJobListSchema
     );
   },
 
   /** Company-level counts envelope (see `CompanyStats`). */
   companyStats(companyId: string): Promise<CompanyStats> {
-    return request<CompanyStats>(`/api/companies/${encodeURIComponent(companyId)}/stats`);
+    return request<CompanyStats>(
+      `/api/companies/${encodeURIComponent(companyId)}/stats`,
+      {},
+      CompanyStatsSchema
+    );
   },
 
   /**
@@ -532,7 +629,8 @@ export const api = {
   ): Promise<InviteEmployeeResponse> {
     return request<InviteEmployeeResponse>(
       `/api/companies/${encodeURIComponent(companyId)}/invite`,
-      { method: 'POST', body: JSON.stringify(body) }
+      { method: 'POST', body: JSON.stringify(body) },
+      InviteEmployeeResponseSchema
     );
   },
 
@@ -551,7 +649,11 @@ export const api = {
     const limit = params.limit ?? 50;
     const offset = params.offset ?? 0;
     const qs = new URLSearchParams({ limit: String(limit), offset: String(offset) });
-    return request<Paginated<AdminUser>>(`/api/admin/users?${qs.toString()}`);
+    return request<Paginated<AdminUser>>(
+      `/api/admin/users?${qs.toString()}`,
+      {},
+      AdminUserListSchema
+    );
   },
 
   /**
@@ -569,10 +671,14 @@ export const api = {
     company_id?: string;
     company_role?: 'owner' | 'admin' | 'employee';
   }): Promise<AdminUser> {
-    return request<AdminUser>('/api/admin/users', {
-      method: 'POST',
-      body: JSON.stringify(body),
-    });
+    return request<AdminUser>(
+      '/api/admin/users',
+      {
+        method: 'POST',
+        body: JSON.stringify(body),
+      },
+      AdminUserSchema
+    );
   },
 
   /**
@@ -598,10 +704,14 @@ export const api = {
       is_active?: boolean;
     }
   ): Promise<{ success: true }> {
-    return request(`/api/admin/users/${encodeURIComponent(userId)}`, {
-      method: 'PUT',
-      body: JSON.stringify(patch),
-    });
+    return request(
+      `/api/admin/users/${encodeURIComponent(userId)}`,
+      {
+        method: 'PUT',
+        body: JSON.stringify(patch),
+      },
+      AdminSuccessResponseSchema
+    );
   },
 
   /**
@@ -611,10 +721,14 @@ export const api = {
    * "existing sessions signed out" note so the admin knows.
    */
   adminResetPassword(userId: string, password: string): Promise<{ success: true }> {
-    return request(`/api/admin/users/${encodeURIComponent(userId)}/reset-password`, {
-      method: 'POST',
-      body: JSON.stringify({ password }),
-    });
+    return request(
+      `/api/admin/users/${encodeURIComponent(userId)}/reset-password`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ password }),
+      },
+      AdminSuccessResponseSchema
+    );
   },
 
   /**
@@ -625,8 +739,10 @@ export const api = {
    * pointless POST.
    */
   adminUnlockUser(userId: string): Promise<{ success: true }> {
-    return request(`/api/admin/users/${encodeURIComponent(userId)}/unlock`, {
-      method: 'POST',
-    });
+    return request(
+      `/api/admin/users/${encodeURIComponent(userId)}/unlock`,
+      { method: 'POST' },
+      AdminSuccessResponseSchema
+    );
   },
 };
