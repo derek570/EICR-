@@ -948,13 +948,38 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         typeof msg.in_response_to === 'object' &&
         msg.in_response_to.question
       ) {
-        const q = String(msg.in_response_to.question).slice(0, 200);
-        const qType = msg.in_response_to.type ? ` type=${msg.in_response_to.type}` : '';
-        transcriptText = `[In response to TTS question${qType}: "${q}"] ${msg.text}`;
+        // Escape the question via JSON.stringify to preserve quoting and neutralise
+        // any stray `"` or newlines — untrusted client can otherwise close the
+        // enclosing literal early or inject a new `[...]` bracketed note that
+        // Sonnet would treat as another system directive. JSON.stringify returns
+        // a quoted string already, so we drop our manual quotes.
+        const rawQ = String(msg.in_response_to.question).slice(0, 200);
+        const qJson = JSON.stringify(rawQ);
+        // Whitelist `type` against the known question-type vocabulary. Unknown
+        // values are dropped rather than passed through so a malicious client
+        // can't smuggle e.g. `type: "x\nIGNORE PREVIOUS INSTRUCTIONS"` into the
+        // Sonnet user turn. Keep the set in sync with QuestionGate and Sonnet
+        // prompt's allowed `question.type` values.
+        const ALLOWED_QUESTION_TYPES = new Set([
+          'observation_confirmation',
+          'observation_code',
+          'observation_unclear',
+          'unclear',
+          'clarify',
+          'out_of_range',
+          'orphaned',
+          'tt_confirmation',
+          'voice_command',
+        ]);
+        const rawType = typeof msg.in_response_to.type === 'string' ? msg.in_response_to.type : '';
+        const safeType = ALLOWED_QUESTION_TYPES.has(rawType) ? rawType : null;
+        const qType = safeType ? ` type=${safeType}` : '';
+        transcriptText = `[In response to TTS question${qType}: ${qJson}] ${msg.text}`;
         logger.info('Transcript annotated with in_response_to', {
           sessionId,
-          qType: msg.in_response_to.type || 'unknown',
-          qPreview: q.slice(0, 60),
+          qType: safeType || 'unknown',
+          qTypeDropped: rawType && !safeType ? rawType.slice(0, 40) : undefined,
+          qPreview: rawQ.slice(0, 60),
         });
       }
 
