@@ -1,0 +1,786 @@
+OpenAI Codex v0.116.0 (research preview)
+--------
+workdir: /Users/derekbeckley/Developer/EICR_Automation
+model: gpt-5.4
+provider: openai
+approval: never
+sandbox: read-only
+reasoning effort: none
+reasoning summaries: none
+session id: 019d9dbd-de24-7cf1-8c8a-21958c4192b5
+--------
+user
+You are performing a rigorous code review of a single phase of a Next.js 16 / React 19 PWA frontend rebuild for an electrical-certificate automation tool (EICR / EIC). The repo root is at /Users/derekbeckley/Developer/EICR_Automation and the web package is at web/. Branch: web-rebuild.
+
+TARGET: Phase 6b — company settings + company-admin dashboard
+COMMIT: 6e85e9e
+
+Context for this phase (original intent, handoff doc, commit message, files changed) is in this repo at: reviews/context/phase-6b.md — READ THAT FILE FIRST.
+
+Use shell commands to:
+  git show --stat 6e85e9e
+  git show 6e85e9e
+to inspect the full diff. Then read any files you need from the working tree (they may have evolved since this commit — note any later changes).
+
+Your output must be a well-structured markdown review with these sections:
+  1. Summary of the phase (2-3 sentences — what it did).
+  2. Alignment with original plan (does the implementation match the handoff doc / commit intent? Any missing objectives?).
+  3. Correctness issues (bugs, race conditions, missing error handling, incorrect semantics). Prioritise P0/P1/P2.
+  4. Security issues (XSS, auth, CSRF, injection, leaked secrets, PII, CORS). Each item tagged with severity.
+  5. Performance issues (re-renders, N+1, large bundles, memory leaks, blocking work on main thread).
+  6. Accessibility issues (semantic HTML, keyboard nav, ARIA, colour contrast, focus management).
+  7. Code quality (duplication, dead code, type-safety holes, naming, convention drift vs. rest of repo).
+  8. Test coverage gaps.
+  9. Suggested fixes — each as a numbered item with: file:line, what to change, why. Be concrete.
+  10. Overall verdict (ship / ship with fixes / needs rework) and top 3 priority fixes.
+
+Be specific — cite file paths and line numbers. Avoid generic advice. If the code is good, say so with evidence. Do NOT modify files; this is review only.
+
+mcp startup: no servers
+codex
+Reviewing phase `6e85e9e` against the handoff context and full diff first, then I’ll trace the affected files in `web/` to verify behavior and note any drift in the current working tree.
+exec
+/bin/zsh -lc "sed -n '1,220p' reviews/context/phase-6b.md" in /Users/derekbeckley/Developer/EICR_Automation exited 1 in 0ms:
+sed: reviews/context/phase-6b.md: No such file or directory
+exec
+/bin/zsh -lc 'git show 6e85e9e' in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc 'git show --stat 6e85e9e' in /Users/derekbeckley/Developer/EICR_Automation succeeded in 1.24s:
+2026-04-18 00:19:26.616 xcodebuild[36968:67224886]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:19:26.757 xcodebuild[36968:67224885] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-xXHGVbiP' (errno=Operation not permitted)
+2026-04-18 00:19:27.125 xcodebuild[36973:67224903]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:19:27.227 xcodebuild[36973:67224901] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+commit 6e85e9e777a2e6ae8fb4f94d302027e7948efed3
+Author: Derek Beckley <derekbeckley@Dereks-Mac-mini.broadband>
+Date:   Fri Apr 17 19:23:09 2026 +0100
+
+    feat(web): Phase 6b company settings + company-admin dashboard
+    
+    Lands the company sub-tree of the settings rebuild: a read-only-by-default
+    CompanyDetails page visible to any authenticated user, and a company-admin
+    dashboard with Jobs / Team / Stats tabs. Settings hub flipped from
+    "Coming in Phase 6b" placeholders to live links.
+    
+    Why (problem): inspectors need to verify the company stamp (reg number,
+    logo) that will print on certs they generate. Hiding the page from
+    non-admins makes that harder without any security benefit — the data
+ succeeded in 1.25s:
+2026-04-18 00:19:26.616 xcodebuild[36969:67224887]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:19:26.757 xcodebuild[36969:67224884] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-mrVIusTs' (errno=Operation not permitted)
+2026-04-18 00:19:27.125 xcodebuild[36972:67224902]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:19:27.227 xcodebuild[36972:67224900] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+commit 6e85e9e777a2e6ae8fb4f94d302027e7948efed3
+Author: Derek Beckley <derekbeckley@Dereks-Mac-mini.broadband>
+Date:   Fri Apr 17 19:23:09 2026 +0100
+
+    feat(web): Phase 6b company settings + company-admin dashboard
+    
+    Lands the company sub-tree of the settings rebuild: a read-only-by-default
+    CompanyDetails page visible to any authenticated user, and a company-admin
+    dashboard with Jobs / Team / Stats tabs. Settings hub flipped from
+    "Coming in Phase 6b" placeholders to live links.
+    
+    Why (problem): inspectors need to verify the company stamp (reg number,
+    logo) that will print on certs they generate. Hiding the page from
+    non-admins makes that harder without any security benefit — the data
+codex
+The context file path from the prompt isn’t resolving at repo root, so I’m locating it and letting the `git show` calls finish before I inspect the touched files in detail.
+exec
+/bin/zsh -lc "rg --files | rg 'phase-6b\\.md"'$|reviews/context'"'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+web/reviews/claude/phase-6b.md
+web/reviews/context/phase-3a.md
+web/reviews/context/phase-5d.md
+web/reviews/context/phase-7b2.md
+web/reviews/context/phase-4d.md
+web/reviews/context/phase-6a.md
+web/reviews/context/phase-7b3.md
+web/reviews/context/phase-4e.md
+web/reviews/context/phase-7a.md
+web/reviews/context/phase-5a.md
+web/reviews/context/phase-4a.md
+web/reviews/context/phase-2.md
+web/reviews/context/phase-1.md
+web/reviews/context/phase-0.md
+web/reviews/context/phase-6b.md
+web/reviews/context/phase-3c.md
+web/reviews/context/phase-5b.md
+web/reviews/context/phase-7b4.md
+web/reviews/context/phase-4b.md
+web/reviews/context/phase-5c.md
+codex
+I have the commit metadata and file list. Next I’m reading the actual phase handoff doc plus the current versions of the touched files with line numbers so the review can distinguish commit behavior from any later drift.
+exec
+/bin/zsh -lc "nl -ba src/routes/settings.js | sed -n '1,460p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "nl -ba web/src/app/settings/company/dashboard/page.tsx | sed -n '1,420p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "nl -ba web/src/app/settings/company/page.tsx | sed -n '1,320p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	'use client';
+     2	
+     3	import * as React from 'react';
+     4	import Link from 'next/link';
+     5	import { useRouter } from 'next/navigation';
+     6	import {
+     7	  AtSign,
+     8	  Building2,
+     9	  ChevronRight,
+    10	  Globe,
+    11	  LayoutDashboard,
+    12	  MapPin,
+    13	  Phone,
+    14	  Receipt,
+    15	  ShieldCheck,
+    16	} from 'lucide-react';
+    17	import { api } from '@/lib/api-client';
+    18	import { useCurrentUser } from '@/lib/use-current-user';
+    19	import { isCompanyAdmin } from '@/lib/roles';
+    20	import type { CompanySettings } from '@/lib/types';
+ succeeded in 0ms:
+     1	'use client';
+     2	
+     3	import * as React from 'react';
+     4	import Link from 'next/link';
+     5	import { useRouter } from 'next/navigation';
+     6	import {
+     7	  Briefcase,
+     8	  ChevronLeft,
+     9	  ChevronRight,
+    10	  Clock,
+    11	  Copy,
+    12	  Mail,
+    13	  ShieldAlert,
+    14	  UserPlus,
+    15	  Users,
+    16	} from 'lucide-react';
+    17	import { api } from '@/lib/api-client';
+    18	import { useCurrentUser } from '@/lib/use-current-user';
+    19	import { isCompanyAdmin, isSystemAdmin } from '@/lib/roles';
+    20	import type {
+ succeeded in 0ms:
+     1	/**
+     2	 * Settings routes — user defaults, company settings, inspector profiles, schema, regulations
+     3	 */
+     4	
+     5	import { Router } from 'express';
+     6	import fs from 'node:fs/promises';
+     7	import path from 'node:path';
+     8	import multer from 'multer';
+     9	import os from 'node:os';
+    10	import * as auth from '../auth.js';
+    11	import * as storage from '../storage.js';
+    12	import logger from '../logger.js';
+    13	import { createFileFilter, handleUploadError } from '../utils/upload.js';
+    14	
+    15	const router = Router();
+    16	
+    17	// Multer for signature uploads (PNG + JPEG only)
+    18	const upload = multer({
+    19	  storage: multer.diskStorage({
+    20	    destination: os.tmpdir(),
+exec
+/bin/zsh -lc "sed -n '1,260p' web/reviews/context/phase-6b.md" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+# Phase 6b — Context
+
+**Commit:** `6e85e9e`
+
+## Commit message
+
+```
+commit 6e85e9e777a2e6ae8fb4f94d302027e7948efed3
+Author:     Derek Beckley <derekbeckley@Dereks-Mac-mini.broadband>
+AuthorDate: Fri Apr 17 19:23:09 2026 +0100
+Commit:     Derek Beckley <derekbeckley@Dereks-Mac-mini.broadband>
+CommitDate: Fri Apr 17 19:23:09 2026 +0100
+
+    feat(web): Phase 6b company settings + company-admin dashboard
+    
+    Lands the company sub-tree of the settings rebuild: a read-only-by-default
+    CompanyDetails page visible to any authenticated user, and a company-admin
+    dashboard with Jobs / Team / Stats tabs. Settings hub flipped from
+    "Coming in Phase 6b" placeholders to live links.
+    
+exec
+/bin/zsh -lc "nl -ba web/src/app/settings/company/dashboard/page.tsx | sed -n '421,840p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+   421	  }
+   422	
+   423	  return (
+   424	    <div
+   425	      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm"
+   426	      role="dialog"
+   427	      aria-modal="true"
+   428	      aria-labelledby="invite-title"
+   429	    >
+   430	      <div className="mx-4 w-full max-w-md rounded-[var(--radius-lg)] border border-[var(--color-border-subtle)] bg-[var(--color-surface-2)] p-5 shadow-lg">
+   431	        {result ? (
+   432	          <>
+   433	            <h3
+   434	              id="invite-title"
+   435	              className="text-[17px] font-bold text-[var(--color-text-primary)]"
+   436	            >
+   437	              Employee invited
+   438	            </h3>
+   439	            <p className="mt-2 text-[13px] text-[var(--color-text-secondary)]">
+   440	              <strong>{result.name}</strong> has been added as an employee. Send them the temporary
+codex
+I have the main frontend and settings route code. I’m checking the company API contract, role middleware, and any post-commit drift so I can separate real phase defects from behavior that was corrected later.
+exec
+/bin/zsh -lc "nl -ba web/src/app/settings/page.tsx | sed -n '1,220p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	'use client';
+     2	
+     3	import * as React from 'react';
+     4	import Link from 'next/link';
+     5	import { useRouter } from 'next/navigation';
+     6	import { Building2, ChevronRight, LayoutDashboard, LogOut, ShieldCheck, Users } from 'lucide-react';
+     7	import { api } from '@/lib/api-client';
+     8	import { clearAuth } from '@/lib/auth';
+     9	import { useCurrentUser } from '@/lib/use-current-user';
+    10	import { isCompanyAdmin, isSystemAdmin } from '@/lib/roles';
+    11	import { Button } from '@/components/ui/button';
+    12	import { IOSInstallHint } from '@/components/pwa/ios-install-hint';
+    13	
+    14	/**
+    15	 * Settings hub. Ports iOS `SettingsView.swift` — hero profile header,
+    16	 * role badges, and stacked link cards into sub-sections.
+    17	 *
+    18	 * Phase 6a ships only the Staff section live. Company / Admin link
+    19	 * cards render conditionally (so the role gating is correct from day
+    20	 * one) but route to placeholders until 6b / 6c land — see the guarded
+exec
+/bin/zsh -lc "nl -ba web/src/components/settings/logo-uploader.tsx | sed -n '1,260p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	'use client';
+     2	
+     3	import * as React from 'react';
+     4	import { ImageOff, Upload, X } from 'lucide-react';
+     5	import { api } from '@/lib/api-client';
+     6	import { ApiError } from '@/lib/types';
+     7	import { Button } from '@/components/ui/button';
+     8	
+     9	/**
+    10	 * LogoUploader — company branding image picker.
+    11	 *
+    12	 * Why it's bespoke and not a generic photo picker:
+    13	 *  - Logos render on every PDF cert header, so the preview box mirrors
+    14	 *    the actual ~200×60 PDF slot (short-wide) to give admins a realistic
+    15	 *    idea of how their logo will look stamped.
+    16	 *  - Uploads go to a dedicated endpoint (`/api/settings/:userId/logo`)
+    17	 *    that returns an S3 key we MERGE into `company_settings.logo_file`
+    18	 *    — we don't PUT the settings blob from here. The parent form owns
+    19	 *    the save; we just hand back the key via `onUploaded`.
+    20	 *  - Reads existing logos via the auth'd blob-fetch pattern (browsers
+exec
+/bin/zsh -lc "rg -n \"companies/.+users|companies/.+jobs|companies/.+stats|companies/.+invite|requireCompanyAdmin|company_role|settings/company/dashboard\" src web/src -g '"'!**/node_modules/**'"'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+web/src/lib/roles.ts:29:  return u.company_role === 'owner' || u.company_role === 'admin';
+web/src/lib/types.ts:15:  company_role?: 'owner' | 'admin' | 'employee';
+web/src/lib/types.ts:88: * `GET /api/companies/:companyId/users`. Thin read-only projection of
+web/src/lib/types.ts:98:  company_role?: 'owner' | 'admin' | 'employee';
+web/src/lib/types.ts:105: * Company-scoped job row from `GET /api/companies/:companyId/jobs`.
+web/src/lib/types.ts:124: * Response envelope from `GET /api/companies/:companyId/stats`. Shape
+src/routes/companies.js:6: * - Company admin/owner (company_role: 'owner'/'admin'): can view company jobs,
+src/routes/companies.js:29:import { requireAdmin, requireCompanyAdmin } from '../auth.js';
+src/routes/companies.js:143: * GET /api/companies/:companyId/users
+src/routes/companies.js:146:router.get('/:companyId/users', requireCompanyAdmin, async (req, res) => {
+src/routes/companies.js:164: * POST /api/companies/:companyId/invite
+src/routes/companies.js:170:router.post('/:companyId/invite', requireCompanyAdmin, async (req, res) => {
+src/routes/companies.js:208:      company_role: 'employee',
+src/routes/companies.js:236: * POST /api/companies/:companyId/users/:userId/assign
+src/routes/companies.js:238: * Body: { company_role?: 'owner' | 'admin' | 'employee' }
+src/routes/companies.js:243:    const { company_role } = req.body;
+src/routes/companies.js:246:    const role = company_role || 'employee';
+src/routes/companies.js:250:        .json({ error: `company_role must be one of: ${validRoles.join(', ')}` });
+src/routes/companies.js:263:      company_role: role,
+src/routes/companies.js:283: * GET /api/companies/:companyId/jobs
+exec
+/bin/zsh -lc 'git diff --stat 6e85e9e..HEAD -- web/src/app/settings/company/dashboard/page.tsx web/src/app/settings/company/page.tsx web/src/components/settings/logo-uploader.tsx web/src/lib/api-client.ts web/src/lib/types.ts src/routes/settings.js web/src/app/settings/page.tsx' in /Users/derekbeckley/Developer/EICR_Automation succeeded in 1.03s:
+2026-04-18 00:19:54.488 xcodebuild[37010:67225323] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-xPd3sigK' (errno=Operation not permitted)
+2026-04-18 00:19:54.778 xcodebuild[37012:67225333]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:19:54.876 xcodebuild[37012:67225332] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+ web/src/app/settings/page.tsx | 11 +++++-
+ web/src/lib/api-client.ts     | 89 +++++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 98 insertions(+), 2 deletions(-)
+exec
+/bin/zsh -lc "nl -ba src/routes/companies.js | sed -n '130,390p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "nl -ba src/auth.js | sed -n '288,340p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+   288	export function requireAdmin(req, res, next) {
+   289	  if (!req.user || req.user.role !== 'admin') {
+   290	    return res.status(403).json({ error: 'Admin access required' });
+   291	  }
+   292	  next();
+   293	}
+   294	
+   295	/**
+   296	 * Express middleware to require company admin/owner role.
+   297	 * Must be used AFTER requireAuth (so req.user is set).
+   298	 * System admins (role === 'admin') also pass this check.
+   299	 */
+   300	export function requireCompanyAdmin(req, res, next) {
+   301	  if (!req.user) {
+   302	    return res.status(401).json({ error: 'Authentication required' });
+   303	  }
+   304	
+   305	  // System-level admins always have company admin access
+   306	  if (req.user.role === 'admin') {
+   307	    return next();
+ succeeded in 0ms:
+   130	      changes: Object.keys(req.body),
+   131	    });
+   132	
+   133	    res.json({ success: true });
+   134	  } catch (error) {
+   135	    logger.error('Failed to update company', { error: error.message });
+   136	    res.status(500).json({ error: 'Failed to update company' });
+   137	  }
+   138	});
+   139	
+   140	// ============= Company Users =============
+   141	
+   142	/**
+   143	 * GET /api/companies/:companyId/users
+   144	 * List all users in a company (company admin or system admin)
+   145	 */
+   146	router.get('/:companyId/users', requireCompanyAdmin, async (req, res) => {
+   147	  try {
+   148	    const { companyId } = req.params;
+   149	
+exec
+/bin/zsh -lc "nl -ba web/src/lib/roles.ts | sed -n '1,120p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	import type { User } from './types';
+     2	
+     3	/**
+     4	 * Role predicates. iOS uses `user.isAdmin` and `user.isCompanyAdmin`
+     5	 * computed properties; the web mirrors them here so role checks stay
+     6	 * consistent across the codebase and easy to update when the role
+     7	 * model evolves.
+     8	 *
+     9	 * `isSystemAdmin` — the top-tier "platform admin" flag. Grants access
+    10	 * to /settings/admin/* (user CRUD, lockout management, etc.).
+    11	 *
+    12	 * `isCompanyAdmin` — EITHER a system admin OR a company `owner` /
+    13	 * `admin`. Grants access to company-scoped admin surfaces (invite
+    14	 * employees, edit branding, see team-wide stats). System admins are
+    15	 * always company-admins so the fallback holds for cross-tenant ops.
+    16	 *
+    17	 * These are the ONLY role helpers callers should use — do not inline
+    18	 * `u?.role === 'admin'` at the call site. Keeps the entire codebase
+    19	 * pointing at a single source of truth.
+    20	 */
+codex
+Only two touched files changed after `6e85e9e`. I’m checking those deltas now to see whether any issues I find were already fixed later, so the review can call that out explicitly.
+exec
+/bin/zsh -lc "rg -n \"companySettings\\(|updateCompanySettings\\(|uploadCompanyLogo\\(|fetchLogoBlob\\(|companyUsers\\(|companyJobs\\(|companyStats\\(|inviteEmployee\\(\" web/src -g '"'!**/node_modules/**'"'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+web/src/lib/api-client.ts:373:  companySettings(userId: string): Promise<CompanySettings> {
+web/src/lib/api-client.ts:382:  updateCompanySettings(userId: string, settings: CompanySettings): Promise<{ success: true }> {
+web/src/lib/api-client.ts:399:  uploadCompanyLogo(
+web/src/lib/api-client.ts:421:  async fetchLogoBlob(userId: string, logoFile: string): Promise<Blob> {
+web/src/lib/api-client.ts:446:  companyUsers(companyId: string): Promise<CompanyMember[]> {
+web/src/lib/api-client.ts:457:  companyJobs(
+web/src/lib/api-client.ts:471:  companyStats(companyId: string): Promise<CompanyStats> {
+web/src/lib/api-client.ts:483:  inviteEmployee(
+web/src/app/settings/company/page.tsx:64:        const s = await api.companySettings(user.id);
+web/src/app/settings/company/page.tsx:97:      await api.updateCompanySettings(user.id, settings);
+web/src/components/settings/logo-uploader.tsx:61:      const res = await api.uploadCompanyLogo(userId, file);
+web/src/components/settings/logo-uploader.tsx:159:      .fetchLogoBlob(userId, logoFile)
+web/src/app/settings/company/dashboard/page.tsx:159:      .companyJobs(companyId, { limit: JOBS_PAGE_SIZE, offset })
+web/src/app/settings/company/dashboard/page.tsx:279:      .companyUsers(companyId)
+web/src/app/settings/company/dashboard/page.tsx:388:      const res = await api.inviteEmployee(companyId, {
+web/src/app/settings/company/dashboard/page.tsx:528:      .companyStats(companyId)
+exec
+/bin/zsh -lc "rg -n \"describe\\(|it\\(|test\\(\" web/src src test tests __tests__ -g '"'!**/node_modules/**'"' | rg \"settings/company|company dashboard|invite employee|logo|companySettings|companyJobs|companyStats|companyUsers\"" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+rg: test: No such file or directory (os error 2)
+rg: tests: No such file or directory (os error 2)
+rg: __tests__: No such file or directory (os error 2)
+web/src/lib/api-client.ts:422:    const filename = logoFile.split('/').pop() ?? logoFile;
+web/src/app/settings/company/dashboard/page.tsx:383:  async function submit(e: React.FormEvent) {
+exec
+/bin/zsh -lc 'git diff 6e85e9e..HEAD -- web/src/app/settings/page.tsx' in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc 'git diff 6e85e9e..HEAD -- web/src/lib/api-client.ts' in /Users/derekbeckley/Developer/EICR_Automation succeeded in 1.16s:
+2026-04-18 00:20:10.293 xcodebuild[37037:67225570]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:20:10.395 xcodebuild[37037:67225568] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-ANHtxNuW' (errno=Operation not permitted)
+2026-04-18 00:20:10.712 xcodebuild[37041:67225589]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:20:10.814 xcodebuild[37041:67225587] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+diff --git a/web/src/app/settings/page.tsx b/web/src/app/settings/page.tsx
+index 037182f..d49e2fb 100644
+--- a/web/src/app/settings/page.tsx
++++ b/web/src/app/settings/page.tsx
+@@ -9,6 +9,7 @@ import { clearAuth } from '@/lib/auth';
+ import { useCurrentUser } from '@/lib/use-current-user';
+ import { isCompanyAdmin, isSystemAdmin } from '@/lib/roles';
+ import { Button } from '@/components/ui/button';
++import { IOSInstallHint } from '@/components/pwa/ios-install-hint';
+ 
+ /**
+  * Settings hub. Ports iOS `SettingsView.swift` — hero profile header,
+@@ -75,6 +76,14 @@ export default function SettingsHubPage() {
+         </div>
+ succeeded in 1.15s:
+2026-04-18 00:20:10.293 xcodebuild[37036:67225571]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:20:10.395 xcodebuild[37036:67225569] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-XR5rGeJL' (errno=Operation not permitted)
+2026-04-18 00:20:10.712 xcodebuild[37040:67225588]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:20:10.814 xcodebuild[37040:67225586] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+diff --git a/web/src/lib/api-client.ts b/web/src/lib/api-client.ts
+index 2dcc33e..74b124e 100644
+--- a/web/src/lib/api-client.ts
++++ b/web/src/lib/api-client.ts
+@@ -1,4 +1,5 @@
+ import {
++  type AdminUser,
+   ApiError,
+   type CCUAnalysis,
+   type CompanyJobRow,
+@@ -488,4 +489,92 @@ export const api = {
+       { method: 'POST', body: JSON.stringify(body) }
+     );
+   },
+exec
+/bin/zsh -lc "nl -ba web/src/lib/use-current-user.ts | sed -n '1,220p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	'use client';
+     2	
+     3	import * as React from 'react';
+     4	import { api } from './api-client';
+     5	import { getUser } from './auth';
+     6	import type { User } from './types';
+     7	
+     8	/**
+     9	 * `useCurrentUser` — reactive view of the signed-in user.
+    10	 *
+    11	 * Why: role-gated rendering (see `lib/roles.ts`) needs the *live* user,
+    12	 * not the snapshot stashed in localStorage at login time. A system admin
+    13	 * who gets demoted mid-session should lose access on the next page
+    14	 * render, not at next login. We hydrate instantly from `getUser()` (so
+    15	 * the first paint already knows the role) and then revalidate via
+    16	 * `api.me()` in the background.
+    17	 *
+    18	 * The `refresh` callback lets callers force a re-read after an action
+    19	 * they know will have changed role/state (e.g. the admin UI updating
+    20	 * its own account).
+exec
+/bin/zsh -lc "nl -ba web/src/middleware.ts | sed -n '1,220p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	import { NextResponse, type NextRequest } from 'next/server';
+     2	
+     3	/**
+     4	 * Route guard.
+     5	 *
+     6	 * Public paths (login, legal, offline, static assets, API proxy calls)
+     7	 * pass through. Everything else requires an unexpired JWT cookie; missing
+     8	 * or expired token → redirect to /login with ?redirect=<attempted path>.
+     9	 */
+    10	
+    11	const PUBLIC_PREFIXES = ['/login', '/legal', '/offline'];
+    12	
+    13	interface JwtPayload {
+    14	  exp?: number;
+    15	  role?: 'admin' | 'user';
+    16	}
+    17	
+    18	function decodeJwt(token: string): JwtPayload | null {
+    19	  try {
+    20	    const [, payload] = token.split('.');
+exec
+/bin/zsh -lc "rg --files web | rg '\\.(test|spec)\\.(ts|tsx|js|jsx)"'$'"'" in /Users/derekbeckley/Developer/EICR_Automation exited 1 in 0ms:
+
+exec
+/bin/zsh -lc 'git grep -n "settings/company/dashboard" 6e85e9e -- web/src/middleware.ts web/src/app/settings/company/dashboard/page.tsx web/src/app/settings/page.tsx' in /Users/derekbeckley/Developer/EICR_Automation succeeded in 1.03s:
+2026-04-18 00:20:18.925 xcodebuild[37058:67225729] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-t1DUAgcE' (errno=Operation not permitted)
+2026-04-18 00:20:19.216 xcodebuild[37060:67225755]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:20:19.313 xcodebuild[37060:67225754] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+6e85e9e:web/src/app/settings/company/dashboard/page.tsx:61:  // /settings/company/dashboard is technically reachable but the
+6e85e9e:web/src/app/settings/page.tsx:106:            href="/settings/company/dashboard"
+codex
+I’m validating the core data model now. The biggest question is whether “company settings” are truly company-wide or still keyed per user; if that layer is wrong, the UI can look correct while persisting the wrong entity.
+exec
+/bin/zsh -lc "nl -ba web/src/lib/types.ts | sed -n '1,110p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "nl -ba src/storage.js | sed -n '1,220p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	/**
+     2	 * Shared domain types. Kept minimal — only the shapes Phase 1–2 need;
+     3	 * per-tab detail types land in later phases when their screens do.
+     4	 */
+     5	
+     6	export interface User {
+     7	  id: string;
+     8	  email: string;
+     9	  name: string;
+    10	  company_name?: string;
+    11	  role?: 'admin' | 'user';
+    12	  /** System-wide tenant membership. Nullable for legacy users not yet bound to a company. */
+    13	  company_id?: string;
+    14	  /** Role within a company. `owner`/`admin` grant company-admin privileges; `employee` is rank-and-file. */
+    15	  company_role?: 'owner' | 'admin' | 'employee';
+    16	}
+    17	
+    18	/**
+    19	 * Inspector profile — the API shape stored as one JSON array per user at
+    20	 * `settings/{userId}/inspector_profiles.json`. The backend persists the
+ succeeded in 0ms:
+     1	/**
+     2	 * Storage abstraction for EICR-oMatic 3000.
+     3	 * Supports both local filesystem (development) and AWS S3 (production).
+     4	 */
+     5	
+     6	import fs from "node:fs/promises";
+     7	import fssync from "node:fs";
+     8	import path from "node:path";
+     9	import { Readable } from "node:stream";
+    10	import logger from "./logger.js";
+    11	
+    12	// Determine storage mode from environment
+    13	const S3_BUCKET = process.env.S3_BUCKET;
+    14	const USE_S3 = !!S3_BUCKET;
+    15	
+    16	// Lazy-loaded S3 client
+    17	let _s3Client = null;
+    18	
+    19	async function getS3() {
+    20	  if (!_s3Client) {
+exec
+/bin/zsh -lc "rg -n \"CompanyDetailsView|company details|company settings|company stamp|company branding\" web/reviews/context/phase-6b.md web/reviews/context/phase-6a.md CLAUDE.md -g '"'!**/node_modules/**'"'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+web/reviews/context/phase-6b.md:14:    feat(web): Phase 6b company settings + company-admin dashboard
+web/reviews/context/phase-6b.md:21:    Why (problem): inspectors need to verify the company stamp (reg number,
+web/reviews/context/phase-6b.md:162:| Company details form | `CertMateUnified/Sources/Views/CompanyDetails/CompanyDetailsView.swift` |
+web/reviews/context/phase-6b.md:384:- `web/src/app/settings/company/page.tsx` — company details form.
+web/reviews/context/phase-6b.md:502:- `feat(web): Phase 6b company settings + company-admin dashboard`
+CLAUDE.md:196:| 2026-04-17 | Web Phase 6b — company settings + company-admin Jobs/Team/Stats dashboard. |
+web/reviews/context/phase-6a.md:67:    - Scope: 6a only. 6b (company settings + company-admin dashboard) and
+web/reviews/context/phase-6a.md:133:| Company details form | `CertMateUnified/Sources/Views/CompanyDetails/CompanyDetailsView.swift` |
+web/reviews/context/phase-6a.md:355:- `web/src/app/settings/company/page.tsx` — company details form.
+web/reviews/context/phase-6a.md:473:- `feat(web): Phase 6b company settings + company-admin dashboard`
+exec
+/bin/zsh -lc "rg -n \"company_settings\\.json|logo_file|company_registration|company_settings\" src web -g '"'!**/node_modules/**'"'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+src/routes/settings.js:107:    const s3Key = `settings/${userId}/company_settings.json`;
+src/routes/settings.js:119:        company_registration: '',
+src/routes/settings.js:120:        logo_file: null,
+src/routes/settings.js:142:    const s3Key = `settings/${userId}/company_settings.json`;
+src/routes/settings.js:295: * `settings/{userId}/company_settings.json` and is stamped onto every PDF
+src/routes/settings.js:299: * merges into `company_settings.logo_file` via the existing PUT route.
+src/routes/settings.js:302: *  1. POST bytes → get `{ logo_file: s3Key }`
+src/routes/settings.js:303: *  2. PUT company settings with `logo_file` set
+src/routes/settings.js:336:      res.json({ success: true, logo_file: s3Key });
+web/src/lib/types.ts:57: * `settings/{userId}/company_settings.json`. Used by the PDF generators
+web/src/lib/types.ts:67:  company_registration?: string;
+web/src/lib/types.ts:68:  logo_file?: string | null;
+web/src/lib/api-client.ts:391:   * POST the bytes, get back an S3 key, merge onto `company_settings.logo_file`,
+web/src/lib/api-client.ts:402:  ): Promise<{ success: true; logo_file: string }> {
+web/src/components/settings/logo-uploader.tsx:17: *    that returns an S3 key we MERGE into `company_settings.logo_file`
+web/src/components/settings/logo-uploader.tsx:43:  /** Current S3 key from `company_settings.logo_file`, if any. */
+web/src/components/settings/logo-uploader.tsx:62:      onUploaded(res.logo_file);
+web/src/app/settings/company/page.tsx:43: * the next Save PUT carries the new `logo_file`. Order of operations
+web/src/app/settings/company/page.tsx:154:            logoFile={settings.logo_file}
+web/src/app/settings/company/page.tsx:155:            onUploaded={(key) => update('logo_file', key)}
+exec
+/bin/zsh -lc "nl -ba web/PHASE_6_HANDOFF.md | sed -n '220,330p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+   220	  enrolment_number, organisation), `isDefault` toggle, equipment
+   221	  section (10 FloatingLabelInputs grouped into 5 device rows with a
+   222	  Collapse wrapper), and the signature canvas.
+   223	- `web/src/components/settings/signature-canvas.tsx` — HTML5
+   224	  `<canvas>` with pointer events. Reads existing signature via
+   225	  `<ObservationPhoto>`-style auth'd blob fetch (signatures are
+   226	  private S3 objects behind the API). Export: `canvas.toBlob('image/png')`
+   227	  on user tap-Save. Expose a `clear()` and a `getBlob()` to the
+   228	  parent form. Respect `prefers-reduced-motion` (no smoothing animation).
+   229	
+   230	**API client methods (add):**
+   231	- `api.inspectorProfiles(userId): Promise<InspectorProfile[]>` — GET
+   232	- `api.updateInspectorProfiles(userId, profiles): Promise<void>` — PUT
+   233	- `api.uploadSignature(userId, blob): Promise<{signature_file: string}>`
+   234	  — multipart POST, reuse the `uploadObservationPhoto` pattern (same
+   235	  `FormData` + `Authorization` header dance).
+   236	- `api.fetchSignatureBlob(userId, filename)` — bespoke `fetch`
+   237	  returning a `Blob`, identical to `api.fetchPhotoBlob`. Different
+   238	  path (`/api/settings/:userId/signatures/:filename`) — verify with
+   239	  a `curl` first; if no direct route exists, the multipart upload
+exec
+/bin/zsh -lc "sed -n '1,180p' web/reviews/claude/phase-6b.md" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+# Phase 6b Review — Company Settings + Company-Admin Dashboard
+
+**Commit:** `6e85e9e`
+**Scope:** `src/routes/settings.js` (+112), `web/src/lib/types.ts` (+85), `web/src/lib/api-client.ts` (+135), `web/src/components/settings/logo-uploader.tsx` (new, 189), `web/src/app/settings/company/page.tsx` (new, 233), `web/src/app/settings/company/dashboard/page.tsx` (new, 720), `web/src/app/settings/page.tsx` (+22/-11), `CLAUDE.md` (+1).
+
+---
+
+## 1. Summary
+
+Phase 6b lands the three company-scoped surfaces the handoff called out:
+
+1. `GET/PUT /api/settings/:userId/company` read-through form (`/settings/company`) — visible to everyone, editable by company-admins.
+2. New `POST /api/settings/:userId/logo` + `GET /api/settings/:userId/logo/:filename` endpoints with 10 MB cap and PNG/JPEG-only filter, plus a two-step save (upload → merge key → PUT blob) in `LogoUploader`.
+3. A 3-tab dashboard at `/settings/company/dashboard` (Jobs / Team / Stats) with an Invite sheet that surfaces a one-time plaintext temp password.
+
+The code is workmanlike and broadly faithful to the handoff, with good component/typing hygiene (named `CompanyMember`, `CompanyJobRow`, `CompanyStats`, `Paginated<T>` match the on-wire shape). There are a handful of real correctness issues worth fixing before a wider rollout — the most impactful are (a) the `user_id` filter semantics on `/api/companies/:companyId/jobs` being **post-paginated on the backend**, (b) a fundamental mismatch between the "non-admins can still view company details" narrative and the per-user S3 storage shape, and (c) missing `/settings/company/dashboard` middleware gating that the handoff explicitly asked for.
+
+## 2. Alignment with handoff
+
+| Handoff requirement | Status |
+exec
+/bin/zsh -lc "nl -ba src/auth.js | sed -n '120,190p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+   120	  // Generate token with rotation claims
+   121	  const token = jwt.sign(
+   122	    {
+   123	      userId: user.id,
+   124	      email: user.email,
+   125	      tv: user.token_version || 0,
+   126	      jti: crypto.randomUUID(),
+   127	    },
+   128	    getJwtSecret(),
+   129	    { expiresIn: JWT_EXPIRY }
+   130	  );
+   131	
+   132	  // Return user without password hash
+   133	  const safeUser = {
+   134	    id: user.id,
+   135	    email: user.email,
+   136	    name: user.name || '',
+   137	    company_name: user.company_name || '',
+   138	    role: user.role || 'user',
+   139	    company_id: user.company_id || null,
+codex
+## 1. Summary
+
+Phase 6b adds the company branch of Settings: a company-details page at `/settings/company`, a dedicated logo upload/download path in `src/routes/settings.js`, and a company-admin dashboard at `/settings/company/dashboard` with Jobs, Team, and Stats tabs plus the one-time temporary-password invite flow.
+
+The UI structure, typing, and overall scope mostly match the handoff. The main problem is that the implementation stores “company settings” per user, not per company, which breaks the core “all employees can view the company stamp” intent.
+
+## 2. Alignment with original plan
+
+The phase matches most of the handoff: live settings links, a read-only non-admin company page, dedicated logo upload, segmented dashboard tabs, and temp-password reveal/copy on invite.
+
+The two meaningful misses are:
+- The claimed triple-layer dashboard gate was not actually delivered. [`web/src/middleware.ts:58`](/Users/derekbeckley/Developer/EICR_Automation/web/src/middleware.ts:58) still only guards `/settings/admin`, not `/settings/company/dashboard`, and JWTs do not currently include `role` or `company_role` claims anyway ([`src/auth.js:121`](/Users/derekbeckley/Developer/EICR_Automation/src/auth.js:121)).
+- “Company settings” are still modelled as one blob per user ([`web/src/lib/types.ts:56`](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/types.ts:56)), which does not match the product intent of a shared company-wide branding record.
+
+Current working-tree drift after `6e85e9e` is limited to later-phase changes in `web/src/app/settings/page.tsx` and `web/src/lib/api-client.ts`; the phase-6b files under review are otherwise unchanged.
+
+## 3. Correctness issues
+
+- **P1** [`web/src/app/settings/company/page.tsx:64`](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/settings/company/page.tsx:64), [`src/routes/settings.js:99`](/Users/derekbeckley/Developer/EICR_Automation/src/routes/settings.js:99), [`src/routes/settings.js:133`](/Users/derekbeckley/Developer/EICR_Automation/src/routes/settings.js:133): company branding is fetched and saved under `settings/{userId}/company_settings.json`, so each employee/admin gets their own independent blob. Non-admins following the new “Company Details” link will usually see their own empty settings, not the company’s actual branding, and multiple company admins can diverge permanently.
+- **P1** [`src/routes/settings.js:329`](/Users/derekbeckley/Developer/EICR_Automation/src/routes/settings.js:329), [`src/routes/settings.js:336`](/Users/derekbeckley/Developer/EICR_Automation/src/routes/settings.js:336), [`src/storage.js:94`](/Users/derekbeckley/Developer/EICR_Automation/src/storage.js:94): the new logo upload route ignores the boolean result from `storage.uploadBytes`. On storage failure it still returns success and a `logo_file` key, so the client can save a broken reference that later 404s.
+- **P2** [`web/src/app/settings/company/dashboard/page.tsx:155`](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/settings/company/dashboard/page.tsx:155), [`web/src/app/settings/company/dashboard/page.tsx:275`](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/settings/company/dashboard/page.tsx:275), [`web/src/app/settings/company/dashboard/page.tsx:524`](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/settings/company/dashboard/page.tsx:524): the tab fetch effects do not clear `error` before retry or on success. After one transient failure, a tab can stay stuck on the error banner until remount.
+
+## 4. Security issues
+
+- **[Low]** [`web/src/app/settings/company/dashboard/page.tsx:380`](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/settings/company/dashboard/page.tsx:380): the plaintext temporary password is kept in React state until modal close. That is not an auth bypass, but it enlarges the exposure window to browser extensions and React DevTools.
+- **[Low]** No material XSS/auth/CSRF regression stood out in the changed code. The new logo path does at least require auth, rejects SVG, and blocks simple path traversal.
+
+## 5. Performance issues
+
+- [`web/src/app/settings/company/dashboard/page.tsx:135`](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/settings/company/dashboard/page.tsx:135): tab panels unmount on every switch, so Jobs/Team/Stats all refetch and lose local state when revisited. That adds avoidable network churn and resets the jobs pager.
+- [`web/src/app/settings/company/dashboard/page.tsx:325`](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/settings/company/dashboard/page.tsx:325): the team list reload is triggered immediately after invite success, before the user dismisses the password modal, causing an extra fetch during the most sensitive part of the flow.
+
+## 6. Accessibility issues
+
+- [`web/src/app/settings/company/dashboard/page.tsx:423`](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/settings/company/dashboard/page.tsx:423): the custom invite modal has `role="dialog"`/`aria-modal`, but no focus trap, no initial focus, no Esc handling, and no focus restoration.
+- [`web/src/app/settings/company/page.tsx:142`](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/settings/company/page.tsx:142), [`:162`](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/settings/company/page.tsx:162), [`:201`](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/settings/company/page.tsx:201): the “view-only” company screen is rendered as disabled inputs. Disabled controls are not focusable or easily selectable, which is a poor fit for a screen whose purpose is to let inspectors verify and copy details.
+
+## 7. Code quality
+
+- The commit message and comments describe a triple-layer gate, but the implementation only has client-side gating plus backend enforcement. The docs and code are out of sync.
+- The code is internally consistent around the wrong storage model: `CompanySettings` is explicitly documented as “one JSON blob per user” while the feature narrative treats it as shared company data.
+- The async loading pattern is duplicated three times in the dashboard tabs with the same loading/error/cancel logic. A small shared hook would reduce drift.
+
+## 8. Test coverage gaps
+
+There are no matching tests for this area; `rg --files web | rg '\.(test|spec)\.(ts|tsx|js|jsx)$'` returned no settings/company coverage.
+
+Missing coverage that matters here:
+- Company details read/write using a shared company record.
+- Logo upload failure path.
+- Invite modal clearing the temp password on close/unmount.
+- Dashboard role/no-company states.
+- Tab retry behavior after a failed request.
+
+## 9. Suggested fixes
+
+1. [`src/routes/settings.js:99`](/Users/derekbeckley/Developer/EICR_Automation/src/routes/settings.js:99), [`src/routes/settings.js:133`](/Users/derekbeckley/Developer/EICR_Automation/src/routes/settings.js:133), [`src/routes/settings.js:309`](/Users/derekbeckley/Developer/EICR_Automation/src/routes/settings.js:309), [`web/src/app/settings/company/page.tsx:64`](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/settings/company/page.tsx:64): move company settings and logos to a company-scoped key keyed by `company_id`, or resolve one canonical company-settings owner server-side. This is needed so every employee sees the same branding and every admin edits the same record.
+2. [`src/routes/settings.js:329`](/Users/derekbeckley/Developer/EICR_Automation/src/routes/settings.js:329), [`src/storage.js:94`](/Users/derekbeckley/Developer/EICR_Automation/src/storage.js:94): check the return value of `storage.uploadBytes`; if it is false, return `500` and do not emit `logo_file`. Move temp-file cleanup into `finally` so failures do not leave garbage behind.
+3. [`web/src/middleware.ts:58`](/Users/derekbeckley/Developer/EICR_Automation/web/src/middleware.ts:58), [`src/auth.js:121`](/Users/derekbeckley/Developer/EICR_Automation/src/auth.js:121): either add signed `role`/`company_role` claims and enforce `/settings/company/dashboard` in middleware, or remove the “triple-layer gate” claim from comments/docs. The current implementation does not match the stated design.
+4. [`web/src/app/settings/company/dashboard/page.tsx:155`](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/settings/company/dashboard/page.tsx:155), [`:275`](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/settings/company/dashboard/page.tsx:275), [`:524`](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/settings/company/dashboard/page.tsx:524): call `setError(null)` before each fetch and clear it on success so retries can recover cleanly.
+5. [`web/src/app/settings/company/dashboard/page.tsx:135`](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/settings/company/dashboard/page.tsx:135): keep tab panels mounted or hoist fetched state into the parent so switching tabs does not refetch/reset all tab state.
+6. [`web/src/app/settings/company/dashboard/page.tsx:423`](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/settings/company/dashboard/page.tsx:423), [`web/src/app/settings/company/page.tsx:142`](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/settings/company/page.tsx:142): replace the custom modal with an accessible dialog primitive, and use `readOnly` inputs or plain text for non-admin company details instead of disabled fields.
+
+## 10. Overall verdict
+
+**Needs rework.**
+
+Top 3 priority fixes:
+1. Make company settings/logo storage truly company-scoped.
+2. Fail logo uploads when storage writes fail instead of returning a fake success key.
+3. Align the dashboard auth gate with the documented design, or explicitly narrow the design claim.
+tokens used
+95,166
+## 1. Summary
+
+Phase 6b adds the company branch of Settings: a company-details page at `/settings/company`, a dedicated logo upload/download path in `src/routes/settings.js`, and a company-admin dashboard at `/settings/company/dashboard` with Jobs, Team, and Stats tabs plus the one-time temporary-password invite flow.
+
+The UI structure, typing, and overall scope mostly match the handoff. The main problem is that the implementation stores “company settings” per user, not per company, which breaks the core “all employees can view the company stamp” intent.
+
+## 2. Alignment with original plan
+
+The phase matches most of the handoff: live settings links, a read-only non-admin company page, dedicated logo upload, segmented dashboard tabs, and temp-password reveal/copy on invite.
+
+The two meaningful misses are:
+- The claimed triple-layer dashboard gate was not actually delivered. [`web/src/middleware.ts:58`](/Users/derekbeckley/Developer/EICR_Automation/web/src/middleware.ts:58) still only guards `/settings/admin`, not `/settings/company/dashboard`, and JWTs do not currently include `role` or `company_role` claims anyway ([`src/auth.js:121`](/Users/derekbeckley/Developer/EICR_Automation/src/auth.js:121)).
+- “Company settings” are still modelled as one blob per user ([`web/src/lib/types.ts:56`](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/types.ts:56)), which does not match the product intent of a shared company-wide branding record.
+
+Current working-tree drift after `6e85e9e` is limited to later-phase changes in `web/src/app/settings/page.tsx` and `web/src/lib/api-client.ts`; the phase-6b files under review are otherwise unchanged.
+
+## 3. Correctness issues
+
+- **P1** [`web/src/app/settings/company/page.tsx:64`](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/settings/company/page.tsx:64), [`src/routes/settings.js:99`](/Users/derekbeckley/Developer/EICR_Automation/src/routes/settings.js:99), [`src/routes/settings.js:133`](/Users/derekbeckley/Developer/EICR_Automation/src/routes/settings.js:133): company branding is fetched and saved under `settings/{userId}/company_settings.json`, so each employee/admin gets their own independent blob. Non-admins following the new “Company Details” link will usually see their own empty settings, not the company’s actual branding, and multiple company admins can diverge permanently.
+- **P1** [`src/routes/settings.js:329`](/Users/derekbeckley/Developer/EICR_Automation/src/routes/settings.js:329), [`src/routes/settings.js:336`](/Users/derekbeckley/Developer/EICR_Automation/src/routes/settings.js:336), [`src/storage.js:94`](/Users/derekbeckley/Developer/EICR_Automation/src/storage.js:94): the new logo upload route ignores the boolean result from `storage.uploadBytes`. On storage failure it still returns success and a `logo_file` key, so the client can save a broken reference that later 404s.
+- **P2** [`web/src/app/settings/company/dashboard/page.tsx:155`](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/settings/company/dashboard/page.tsx:155), [`web/src/app/settings/company/dashboard/page.tsx:275`](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/settings/company/dashboard/page.tsx:275), [`web/src/app/settings/company/dashboard/page.tsx:524`](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/settings/company/dashboard/page.tsx:524): the tab fetch effects do not clear `error` before retry or on success. After one transient failure, a tab can stay stuck on the error banner until remount.
+
+## 4. Security issues
+
+- **[Low]** [`web/src/app/settings/company/dashboard/page.tsx:380`](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/settings/company/dashboard/page.tsx:380): the plaintext temporary password is kept in React state until modal close. That is not an auth bypass, but it enlarges the exposure window to browser extensions and React DevTools.
+- **[Low]** No material XSS/auth/CSRF regression stood out in the changed code. The new logo path does at least require auth, rejects SVG, and blocks simple path traversal.
+
+## 5. Performance issues
+
+- [`web/src/app/settings/company/dashboard/page.tsx:135`](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/settings/company/dashboard/page.tsx:135): tab panels unmount on every switch, so Jobs/Team/Stats all refetch and lose local state when revisited. That adds avoidable network churn and resets the jobs pager.
+- [`web/src/app/settings/company/dashboard/page.tsx:325`](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/settings/company/dashboard/page.tsx:325): the team list reload is triggered immediately after invite success, before the user dismisses the password modal, causing an extra fetch during the most sensitive part of the flow.
+
+## 6. Accessibility issues
+
+- [`web/src/app/settings/company/dashboard/page.tsx:423`](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/settings/company/dashboard/page.tsx:423): the custom invite modal has `role="dialog"`/`aria-modal`, but no focus trap, no initial focus, no Esc handling, and no focus restoration.
+- [`web/src/app/settings/company/page.tsx:142`](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/settings/company/page.tsx:142), [`:162`](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/settings/company/page.tsx:162), [`:201`](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/settings/company/page.tsx:201): the “view-only” company screen is rendered as disabled inputs. Disabled controls are not focusable or easily selectable, which is a poor fit for a screen whose purpose is to let inspectors verify and copy details.
+
+## 7. Code quality
+
+- The commit message and comments describe a triple-layer gate, but the implementation only has client-side gating plus backend enforcement. The docs and code are out of sync.
+- The code is internally consistent around the wrong storage model: `CompanySettings` is explicitly documented as “one JSON blob per user” while the feature narrative treats it as shared company data.
+- The async loading pattern is duplicated three times in the dashboard tabs with the same loading/error/cancel logic. A small shared hook would reduce drift.
+
+## 8. Test coverage gaps
+
+There are no matching tests for this area; `rg --files web | rg '\.(test|spec)\.(ts|tsx|js|jsx)$'` returned no settings/company coverage.
+
+Missing coverage that matters here:
+- Company details read/write using a shared company record.
+- Logo upload failure path.
+- Invite modal clearing the temp password on close/unmount.
+- Dashboard role/no-company states.
+- Tab retry behavior after a failed request.
+
+## 9. Suggested fixes
+
+1. [`src/routes/settings.js:99`](/Users/derekbeckley/Developer/EICR_Automation/src/routes/settings.js:99), [`src/routes/settings.js:133`](/Users/derekbeckley/Developer/EICR_Automation/src/routes/settings.js:133), [`src/routes/settings.js:309`](/Users/derekbeckley/Developer/EICR_Automation/src/routes/settings.js:309), [`web/src/app/settings/company/page.tsx:64`](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/settings/company/page.tsx:64): move company settings and logos to a company-scoped key keyed by `company_id`, or resolve one canonical company-settings owner server-side. This is needed so every employee sees the same branding and every admin edits the same record.
+2. [`src/routes/settings.js:329`](/Users/derekbeckley/Developer/EICR_Automation/src/routes/settings.js:329), [`src/storage.js:94`](/Users/derekbeckley/Developer/EICR_Automation/src/storage.js:94): check the return value of `storage.uploadBytes`; if it is false, return `500` and do not emit `logo_file`. Move temp-file cleanup into `finally` so failures do not leave garbage behind.
+3. [`web/src/middleware.ts:58`](/Users/derekbeckley/Developer/EICR_Automation/web/src/middleware.ts:58), [`src/auth.js:121`](/Users/derekbeckley/Developer/EICR_Automation/src/auth.js:121): either add signed `role`/`company_role` claims and enforce `/settings/company/dashboard` in middleware, or remove the “triple-layer gate” claim from comments/docs. The current implementation does not match the stated design.
+4. [`web/src/app/settings/company/dashboard/page.tsx:155`](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/settings/company/dashboard/page.tsx:155), [`:275`](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/settings/company/dashboard/page.tsx:275), [`:524`](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/settings/company/dashboard/page.tsx:524): call `setError(null)` before each fetch and clear it on success so retries can recover cleanly.
+5. [`web/src/app/settings/company/dashboard/page.tsx:135`](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/settings/company/dashboard/page.tsx:135): keep tab panels mounted or hoist fetched state into the parent so switching tabs does not refetch/reset all tab state.
+6. [`web/src/app/settings/company/dashboard/page.tsx:423`](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/settings/company/dashboard/page.tsx:423), [`web/src/app/settings/company/page.tsx:142`](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/settings/company/page.tsx:142): replace the custom modal with an accessible dialog primitive, and use `readOnly` inputs or plain text for non-admin company details instead of disabled fields.
+
+## 10. Overall verdict
+
+**Needs rework.**
+
+Top 3 priority fixes:
+1. Make company settings/logo storage truly company-scoped.
+2. Fail logo uploads when storage writes fail instead of returning a fake success key.
+3. Align the dashboard auth gate with the documented design, or explicitly narrow the design claim.

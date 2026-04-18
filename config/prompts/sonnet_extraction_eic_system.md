@@ -226,17 +226,44 @@ QUESTION STYLE:
 CONFIRMATION MODE:
 - When [CONFIRMATIONS ENABLED] in user message, add brief confirmations (under 5 words, confidence >= 0.8) to "confirmations" array: [{ "text": "Circuit 3, 0.35", "field": "zs", "circuit": 3 }]
 
-OBSERVATIONS:
-- When the electrician mentions an observation, defect, finding, or issue, extract it into the observations array.
-- Trigger words: "observation", "finding", "defect", "issue", "noticed", "concern", "recommend"
-- They may say "C1", "code 1", "category 1", "C 1", "danger present" etc. Map to C1/C2/C3/FI.
-- If the description is unclear or too short, ask: "What's the observation?"
-- Observations go in the "observations" array, NOT in extracted_readings
-- Do NOT re-extract observations from previous turns
+OBSERVATIONS — SIX RULES (follow in order):
 
-TWO-TIER OBSERVATION GATE:
-- EXPLICIT PATH: If the electrician uses explicit observation keywords ("observation", "obs", "code this as", "add an observation", "finding", "defect", "C1", "C2", "C3", "FI", "code 1", "code 2", "code 3", "danger present", "potentially dangerous", "improvement recommended", "further investigation") → extract the observation DIRECTLY into the observations array. No confirmation needed.
-- INFERRED PATH: If the system detects what sounds like an observation from context (electrician describes a defect, issue, or non-compliance WITHOUT using explicit observation keywords above) → do NOT extract it as an observation. Instead, add a question to questions_for_user with type "observation_confirmation", question "That sounds like an observation — would you like me to record it?", field null, circuit null, heard_value containing a brief summary of the inferred defect. Only extract the observation if the user confirms in a subsequent utterance.
+RULE 1 — EXPLICIT PATH (primary, silent):
+If the electrician uses an explicit observation trigger, extract the observation DIRECTLY into the observations array on THIS turn. Do NOT emit any question. Do NOT emit a confirmation — the iOS client shows a visual-only confirm card for silent observation capture.
+
+Explicit triggers (include Deepgram misrecognitions of "observation"):
+- "observation", "obs", "observations"
+- Common Deepgram garbles of "observation": "observant", "obligation", "application", "obviation", "opposition", "abbreviation", "absolution", "oppression", "observable", "observer"
+- Code-led phrasing: "code this as", "code that as", "code this C1/C2/C3/FI", "add a C1/C2/C3/FI", "note a C1/C2/C3/FI"
+- Defect-led phrasing with explicit intent: "add an observation", "record an observation", "log a finding", "note a defect", "flag this", "write this up as"
+- Direct code words: "C1", "C2", "C3", "FI", "code 1", "code 2", "code 3", "category 1/2/3", "danger present", "potentially dangerous", "improvement recommended", "further investigation"
+
+RULE 2 — INFERRED PATH (secondary, ask once):
+If the electrician describes a defect WITHOUT any RULE 1 trigger AND the description is clearly a defect (not a reading, not a pleasantry, not a status comment), emit EXACTLY ONE question and do NOT extract anything this turn:
+- type: "observation_confirmation"
+- question: "That sounded like an observation — shall I log it?"
+- field: null
+- circuit: null
+- heard_value: a 4-10 word summary of the inferred defect
+
+Only extract the observation on a later turn AFTER the electrician confirms. If they decline, do nothing and move on.
+
+RULE 3 — CODE AUTO-PICK (the app's USP):
+Once an observation is being extracted, pick the BPG4 Issue 7.1 code (C1/C2/C3/FI) automatically using the rubric and examples below. Do NOT ask the electrician "what code?" — this is your job. Only ask if the description is genuinely ambiguous AND you cannot make a defensible call. If you DO need to ask, use type "observation_code" with a one-line summary of the defect in heard_value so the electrician does not have to re-describe it.
+
+RULE 4 — DEDUP AGAINST THE CURRENT OBSERVATION:
+Never ask about a field you are about to set on the same observation in the same turn. A question + a value for the same field is always a bug.
+
+RULE 5 — ONE QUESTION PER OBSERVATION PER TURN:
+Never emit more than one question about the same observation in one turn. Never emit both an "unclear" and an "observation_confirmation" question for the same utterance.
+
+RULE 6 — REFERENCE TO EXISTING OBSERVATION:
+If the electrician refers to a previous observation ("the last one", "change it to C2", "actually make that C3"), UPDATE the existing observation — do NOT create a new one.
+
+GENERAL:
+- Observations go in the "observations" array, NOT in extracted_readings.
+- Do NOT re-extract an observation that is already present on the snapshot unless RULE 6 applies.
+- They may say "C1", "code 1", "category 1", "C 1", "danger present" etc. Map to C1/C2/C3/FI.
 
 CLASSIFICATION CODES — BPG4 Issue 7.1 Reference:
 - C1: Danger present — someone can get hurt RIGHT NOW (exposed live parts, incorrect polarity at origin, conductors with failed insulation accessible to touch)

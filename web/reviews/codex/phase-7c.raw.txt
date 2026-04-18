@@ -1,0 +1,581 @@
+OpenAI Codex v0.116.0 (research preview)
+--------
+workdir: /Users/derekbeckley/Developer/EICR_Automation
+model: gpt-5.4
+provider: openai
+approval: never
+sandbox: read-only
+reasoning effort: none
+reasoning summaries: none
+session id: 019d9dd1-bc18-7762-bf33-78f22f543b55
+--------
+user
+You are performing a rigorous code review of a single phase of a Next.js 16 / React 19 PWA frontend rebuild for an electrical-certificate automation tool (EICR / EIC). The repo root is at /Users/derekbeckley/Developer/EICR_Automation and the web package is at web/. Branch: web-rebuild.
+
+TARGET: Phase 7c — offline mutation outbox + replay worker
+COMMIT: e64f756
+
+Context for this phase (original intent, handoff doc, commit message, files changed) is in this repo at: reviews/context/phase-7c.md — READ THAT FILE FIRST.
+
+Use shell commands to:
+  git show --stat e64f756
+  git show e64f756
+to inspect the full diff. Then read any files you need from the working tree (they may have evolved since this commit — note any later changes).
+
+Your output must be a well-structured markdown review with these sections:
+  1. Summary of the phase (2-3 sentences — what it did).
+  2. Alignment with original plan (does the implementation match the handoff doc / commit intent? Any missing objectives?).
+  3. Correctness issues (bugs, race conditions, missing error handling, incorrect semantics). Prioritise P0/P1/P2.
+  4. Security issues (XSS, auth, CSRF, injection, leaked secrets, PII, CORS). Each item tagged with severity.
+  5. Performance issues (re-renders, N+1, large bundles, memory leaks, blocking work on main thread).
+  6. Accessibility issues (semantic HTML, keyboard nav, ARIA, colour contrast, focus management).
+  7. Code quality (duplication, dead code, type-safety holes, naming, convention drift vs. rest of repo).
+  8. Test coverage gaps.
+  9. Suggested fixes — each as a numbered item with: file:line, what to change, why. Be concrete.
+  10. Overall verdict (ship / ship with fixes / needs rework) and top 3 priority fixes.
+
+Be specific — cite file paths and line numbers. Avoid generic advice. If the code is good, say so with evidence. Do NOT modify files; this is review only.
+
+mcp startup: no servers
+codex
+Reviewing phase `7c` against the handoff doc and commit `e64f756` first, then I’ll inspect the touched files in the working tree for any later drift that affects the review.
+exec
+/bin/zsh -lc "sed -n '1,260p' reviews/context/phase-7c.md" in /Users/derekbeckley/Developer/EICR_Automation exited 1 in 0ms:
+sed: reviews/context/phase-7c.md: No such file or directory
+exec
+/bin/zsh -lc 'git show e64f756' in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc 'git show --stat e64f756' in /Users/derekbeckley/Developer/EICR_Automation succeeded in 1.13s:
+2026-04-18 00:41:08.498 xcodebuild[40885:67245654]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:41:08.603 xcodebuild[40885:67245652] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-x7iKJhzv' (errno=Operation not permitted)
+2026-04-18 00:41:08.922 xcodebuild[40888:67245673]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:41:09.024 xcodebuild[40888:67245671] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+commit e64f756c2b949acd0273501bf5096dcfe3021b65
+Author: Derek Beckley <derekbeckley@Dereks-Mac-mini.broadband>
+Date:   Fri Apr 17 23:11:05 2026 +0100
+
+    feat(web): Phase 7c offline mutation outbox + replay worker
+    
+    What
+    ----
+    Mechanism-only commit for Phase 7c: durable IndexedDB outbox that
+    captures `saveJob` mutations before the network attempt, plus a
+    replay worker that drains the queue as soon as connectivity returns.
+    Closes the biggest Phase 7b scope exclusion — offline edits no longer
+    vanish on network failure.
+    
+ succeeded in 1.13s:
+2026-04-18 00:41:08.498 xcodebuild[40884:67245653]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:41:08.603 xcodebuild[40884:67245651] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-OFgqNklE' (errno=Operation not permitted)
+2026-04-18 00:41:08.922 xcodebuild[40889:67245674]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:41:09.024 xcodebuild[40889:67245672] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+commit e64f756c2b949acd0273501bf5096dcfe3021b65
+Author: Derek Beckley <derekbeckley@Dereks-Mac-mini.broadband>
+Date:   Fri Apr 17 23:11:05 2026 +0100
+
+    feat(web): Phase 7c offline mutation outbox + replay worker
+    
+    What
+    ----
+    Mechanism-only commit for Phase 7c: durable IndexedDB outbox that
+    captures `saveJob` mutations before the network attempt, plus a
+    replay worker that drains the queue as soon as connectivity returns.
+    Closes the biggest Phase 7b scope exclusion — offline edits no longer
+    vanish on network failure.
+    
+codex
+The context file path from the prompt does not exist at repo root, so I’m locating it and continuing with the commit diff inspection from there.
+exec
+/bin/zsh -lc "rg --files -g 'phase-7c.md' -g '"'!node_modules'"'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+web/reviews/claude/phase-7c.md
+web/reviews/context/phase-7c.md
+codex
+I have the commit intent and full changed-file list. Next I’m reading the touched source files with line numbers from the working tree so I can anchor findings precisely and note any drift after `e64f756`.
+exec
+/bin/zsh -lc "nl -ba web/src/lib/pwa/job-cache.ts | sed -n '1,260p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	import type { Job, JobDetail } from '@/lib/types';
+     2	
+     3	/**
+     4	 * IndexedDB read-through cache for job data (Phase 7b).
+     5	 *
+     6	 * Purpose: when the user goes offline (subway, job-site basement, flaky
+     7	 * mobile data) or the server is briefly unreachable, the dashboard job
+     8	 * list and any previously-opened job detail still render from cache
+     9	 * instead of falling to the branded /offline shell and losing access to
+    10	 * their work. The cache is *shown first* (stale-while-revalidate) so
+    11	 * every page load feels instant even when the network is fine.
+    12	 *
+    13	 * Why vanilla IDB (no `idb` package):
+    14	 *   - Only two stores, two shapes, five operations — not worth the
+    15	 *     dependency or its bundle weight.
+    16	 *   - 7c's outbox will add more stores; if that commit wants a richer
+    17	 *     wrapper it can upgrade this file then. Keep 7b focused.
+    18	 *
+    19	 * Why not React Query's persister:
+    20	 *   - The app doesn't use React Query yet — data-fetching is imperative
+exec
+/bin/zsh -lc "nl -ba web/src/lib/pwa/outbox.ts | sed -n '1,320p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "nl -ba web/src/lib/pwa/queue-save-job.ts | sed -n '1,220p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	import { api } from '@/lib/api-client';
+     2	import { ApiError, type JobDetail } from '@/lib/types';
+     3	import { getCachedJob, putCachedJob } from './job-cache';
+     4	import { enqueueSaveJobMutation, removeMutation } from './outbox';
+     5	
+     6	/**
+     7	 * Offline-tolerant write path for `api.saveJob` (Phase 7c).
+     8	 *
+     9	 * Why this exists:
+    10	 *   - The raw `api.saveJob` throws on any network failure, which means
+    11	 *     an inspector tapping "save" in a basement consumer-unit room just
+    12	 *     loses their edit. This wrapper promises the mutation will be
+    13	 *     retried until it either succeeds or the attempts cap kicks in.
+    14	 *   - Writing to the outbox BEFORE firing the network request is what
+    15	 *     makes this durable: if the user closes the tab immediately after
+    16	 *     save (common — phone pockets, offline → offline transitions), the
+    17	 *     mutation still lives in IDB and the next session's replay worker
+    18	 *     picks it up.
+    19	 *
+    20	 * Order of operations (do not reorder — each step's failure mode matters):
+ succeeded in 0ms:
+     1	import type { JobDetail } from '@/lib/types';
+     2	import {
+     3	  DB_NAME,
+     4	  OUTBOX_INDEX_BY_USER,
+     5	  STORE_OUTBOX,
+     6	  isSupported,
+     7	  openDB,
+     8	  wrapRequest,
+     9	  wrapTransaction,
+    10	} from './job-cache';
+    11	
+    12	/**
+    13	 * Offline mutation queue (Phase 7c).
+    14	 *
+    15	 * Purpose: when an inspector edits a job field while offline (subway,
+    16	 * basement consumer-unit room, flaky 3G on a rural site visit), the
+    17	 * current write path — `api.saveJob` — rejects and the edit is lost.
+    18	 * This store captures each mutation in IndexedDB so the replay worker
+    19	 * (`outbox-replay.ts`) can retry it as soon as connectivity returns, and
+    20	 * the next `/dashboard` / `/job/[id]` visit reads the optimistic value
+exec
+/bin/zsh -lc "nl -ba web/src/components/layout/app-shell.tsx | sed -n '1,200p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	'use client';
+     2	
+     3	import * as React from 'react';
+     4	import Link from 'next/link';
+     5	import { usePathname, useRouter } from 'next/navigation';
+     6	import { Logo } from '@/components/brand/logo';
+     7	import { api } from '@/lib/api-client';
+     8	import { clearAuth, getUser } from '@/lib/auth';
+     9	import { Button } from '@/components/ui/button';
+    10	import { InstallButton } from '@/components/pwa/install-button';
+    11	import { OfflineIndicator } from '@/components/pwa/offline-indicator';
+    12	import { useOutboxReplay } from '@/lib/pwa/outbox-replay';
+    13	
+    14	/**
+    15	 * Top-nav + page frame for all authenticated screens.
+    16	 * Single-stack navigation (no persistent tabs), matches iOS CertMate
+    17	 * which uses NavigationStack rather than TabView for the primary flow.
+    18	 */
+    19	export function AppShell({ children }: { children: React.ReactNode }) {
+    20	  const pathname = usePathname();
+exec
+/bin/zsh -lc "nl -ba web/src/lib/pwa/outbox-replay.ts | sed -n '1,320p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	'use client';
+     2	
+     3	import * as React from 'react';
+     4	import { api } from '@/lib/api-client';
+     5	import { ApiError } from '@/lib/types';
+     6	import {
+     7	  listPendingMutations,
+     8	  markMutationFailed,
+     9	  removeMutation,
+    10	  type OutboxMutation,
+    11	} from './outbox';
+    12	
+    13	/**
+    14	 * Replay worker for the offline mutation outbox (Phase 7c).
+    15	 *
+    16	 * Lifecycle + trigger surface:
+    17	 *   1. Mount-time pass — covers "tab reopens while already online with
+    18	 *      pending mutations" (the common case after a subway commute).
+    19	 *   2. `online` window event — the browser's reconnection signal.
+    20	 *      Caveat: `navigator.onLine` returning true doesn't guarantee the
+exec
+/bin/zsh -lc "nl -ba web/src/lib/pwa/job-cache.ts | sed -n '260,360p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+   260	 * Phase 7c: this also nukes the `outbox` store. The handoff flagged two
+   261	 * options — purge only the signing-out user's outbox rows, or wipe the
+   262	 * whole outbox on every sign-out. We take the latter for symmetry with
+   263	 * the read cache and because it's strictly safer: a pending offline
+   264	 * mutation replayed under the wrong user's credentials (e.g. after a
+   265	 * sign-out/sign-in swap on a shared tablet) would corrupt data far worse
+   266	 * than losing a pending edit. Documented trade-off in
+   267	 * PHASE_7C_HANDOFF.md §"Shared-device safety".
+   268	 *
+   269	 * We don't `deleteDatabase` — that would force a full schema upgrade
+   270	 * dance on the next access and could block if another tab is open. A
+   271	 * `.clear()` per store is faster and safe under concurrent tabs.
+   272	 */
+   273	export async function clearJobCache(): Promise<void> {
+   274	  if (!isSupported()) return;
+   275	  try {
+   276	    const db = await openDB();
+   277	    const tx = db.transaction([STORE_JOBS_LIST, STORE_JOB_DETAIL, STORE_OUTBOX], 'readwrite');
+   278	    tx.objectStore(STORE_JOBS_LIST).clear();
+   279	    tx.objectStore(STORE_JOB_DETAIL).clear();
+codex
+I’ve got the core implementation. I’m checking the surrounding write/auth paths and current test surface now, because most meaningful defects here will come from how the mechanism integrates rather than the happy-path IDB code alone.
+exec
+/bin/zsh -lc "nl -ba web/src/lib/api-client.ts | sed -n '1,260p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	import {
+     2	  type AdminUser,
+     3	  ApiError,
+     4	  type CCUAnalysis,
+     5	  type CompanyJobRow,
+     6	  type CompanyMember,
+     7	  type CompanySettings,
+     8	  type CompanyStats,
+     9	  type DocumentExtractionResponse,
+    10	  type InspectorProfile,
+    11	  type InviteEmployeeResponse,
+    12	  type Job,
+    13	  type JobDetail,
+    14	  type LoginResponse,
+    15	  type Paginated,
+    16	  type User,
+    17	} from './types';
+    18	import { getToken } from './auth';
+    19	
+    20	/**
+exec
+/bin/zsh -lc "nl -ba web/src/lib/auth.ts | sed -n '1,220p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	import type { User } from './types';
+     2	import { clearJobCache } from './pwa/job-cache';
+     3	
+     4	/**
+     5	 * Auth-token helpers. Token is stored in localStorage (for API calls) and
+     6	 * also mirrored into a cookie so the Next.js middleware can gate routes
+     7	 * before hitting the client.
+     8	 */
+     9	
+    10	const TOKEN_KEY = 'cm_token';
+    11	const USER_KEY = 'cm_user';
+    12	const COOKIE_MAX_AGE = 60 * 60 * 24 * 7; // 7 days
+    13	
+    14	export function getToken(): string | null {
+    15	  if (typeof window === 'undefined') return null;
+    16	  return localStorage.getItem(TOKEN_KEY);
+    17	}
+    18	
+    19	export function getUser(): User | null {
+    20	  if (typeof window === 'undefined') return null;
+exec
+/bin/zsh -lc "rg -n \"queueSaveJob|saveJob\\(|clearJobCache\\(|clearAuth\\(|logout\\(\" web/src -g '"'!**/*.map'"'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+web/src/lib/auth.ts:39:export function clearAuth(): void {
+web/src/lib/auth.ts:51:  void clearJobCache();
+web/src/lib/pwa/outbox-replay.ts:106:          await api.saveJob(m.userId, m.jobId, m.patch);
+web/src/lib/pwa/job-cache.ts:27: *     observations, so on `clearAuth()` (sign-out) we purge the entire
+web/src/lib/pwa/job-cache.ts:34: *     protection, and `clearAuth()` is the only durable wipe.
+web/src/lib/pwa/job-cache.ts:50: *                  rather than in a separate DB so `clearJobCache()` +
+web/src/lib/pwa/job-cache.ts:256: * Wipe every cached record in every store. Called from `clearAuth()` on
+web/src/lib/pwa/job-cache.ts:273:export async function clearJobCache(): Promise<void> {
+web/src/lib/pwa/queue-save-job.ts:4:import { enqueueSaveJobMutation, removeMutation } from './outbox';
+web/src/lib/pwa/queue-save-job.ts:55:export async function queueSaveJob(
+web/src/lib/pwa/queue-save-job.ts:73:  const mutation = await enqueueSaveJobMutation(userId, jobId, patch);
+web/src/lib/pwa/queue-save-job.ts:77:    await api.saveJob(userId, jobId, patch);
+web/src/lib/pwa/outbox.ts:142:export async function enqueueSaveJobMutation(
+web/src/lib/pwa/outbox.ts:249: * Wipe every row in the outbox — called from `clearJobCache()` on
+web/src/lib/api-client.ts:106:  logout(): Promise<void> {
+web/src/lib/api-client.ts:272:  saveJob(
+web/src/components/layout/app-shell.tsx:41:      await api.logout();
+web/src/components/layout/app-shell.tsx:45:    clearAuth();
+web/src/app/job/[id]/layout.tsx:83:          clearAuth();
+web/src/app/dashboard/page.tsx:85:          clearAuth();
+exec
+/bin/zsh -lc "rg -n \"outbox|queue-save-job|useOutboxReplay|clearJobCache\" web -g '*test*' -g '*spec*' -g '"'!node_modules'"'" in /Users/derekbeckley/Developer/EICR_Automation exited 1 in 0ms:
+
+exec
+/bin/zsh -lc 'git diff --stat e64f756..HEAD -- web/src/components/layout/app-shell.tsx web/src/lib/pwa/job-cache.ts web/src/lib/pwa/outbox-replay.ts web/src/lib/pwa/outbox.ts web/src/lib/pwa/queue-save-job.ts web/PHASE_7C_HANDOFF.md' in /Users/derekbeckley/Developer/EICR_Automation succeeded in 1.01s:
+2026-04-18 00:41:37.808 xcodebuild[40931:67246013] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-nRXcy9O5' (errno=Operation not permitted)
+2026-04-18 00:41:38.092 xcodebuild[40933:67246023]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:41:38.190 xcodebuild[40933:67246022] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+exec
+/bin/zsh -lc "nl -ba web/src/lib/api-client.ts | sed -n '260,340p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+   260	    );
+   261	    if (!res.ok) {
+   262	      const body = await res.text().catch(() => '');
+   263	      throw new ApiError(res.status, body || res.statusText);
+   264	    }
+   265	    return res.blob();
+   266	  },
+   267	
+   268	  /**
+   269	   * Partial update. Backend merges with the persisted doc, so callers
+   270	   * only need to send the fields that changed.
+   271	   */
+   272	  saveJob(
+   273	    userId: string,
+   274	    jobId: string,
+   275	    updates: Partial<JobDetail>
+   276	  ): Promise<{ success: boolean }> {
+   277	    return request(`/api/job/${encodeURIComponent(userId)}/${encodeURIComponent(jobId)}`, {
+   278	      method: 'PATCH',
+   279	      body: JSON.stringify(updates),
+exec
+/bin/zsh -lc "rg -n \"JobProvider|updateJob|debounced|save flush|saveJob\" web/src/lib web/src/app web/src/components -g '"'!node_modules'"'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+web/src/lib/job-context.tsx:10: *  - updateJob(partial) — local merge, does not hit the network. Every
+web/src/lib/job-context.tsx:11: *    input in the job tabs calls this; a debounced save effect (Phase 4)
+web/src/lib/job-context.tsx:22:  updateJob: (patch: Partial<JobDetail>) => void;
+web/src/lib/job-context.tsx:33:    throw new Error('useJobContext must be used inside a <JobProvider>');
+web/src/lib/job-context.tsx:38:export function JobProvider({
+web/src/lib/job-context.tsx:55:  const updateJob = React.useCallback((patch: Partial<JobDetail>) => {
+web/src/lib/job-context.tsx:64:      updateJob,
+web/src/lib/job-context.tsx:69:    [job, updateJob, isDirty, isSaving]
+web/src/lib/recording-context.tsx:29: * into the active `JobDetail` via `updateJob`. VAD sleep/wake (Phase
+web/src/lib/recording-context.tsx:119:  const { job, updateJob } = useJobContext();
+web/src/lib/recording-context.tsx:139:  // a render cycle. updateJob callers still trigger the normal React
+web/src/lib/recording-context.tsx:145:  const updateJobRef = React.useRef(updateJob);
+web/src/lib/recording-context.tsx:147:    updateJobRef.current = updateJob;
+web/src/lib/recording-context.tsx:148:  }, [updateJob]);
+web/src/lib/recording-context.tsx:282:        updateJobRef.current(applied.patch);
+web/src/lib/pwa/outbox-replay.ts:105:        if (m.op === 'saveJob') {
+web/src/lib/pwa/outbox-replay.ts:106:          await api.saveJob(m.userId, m.jobId, m.patch);
+web/src/lib/pwa/queue-save-job.ts:7: * Offline-tolerant write path for `api.saveJob` (Phase 7c).
+web/src/lib/pwa/queue-save-job.ts:10: *   - The raw `api.saveJob` throws on any network failure, which means
+web/src/lib/pwa/queue-save-job.ts:77:    await api.saveJob(userId, jobId, patch);
+codex
+I’ve narrowed the review to a few concrete semantics questions. I’m pulling line-numbered context from the handoff doc now so the alignment section can distinguish “implementation bug” from “the plan itself chose this tradeoff.”
+exec
+/bin/zsh -lc "nl -ba web/reviews/context/phase-7c.md | sed -n '1,260p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	# Phase 7c — Context
+     2	
+     3	**Commit:** `e64f756`
+     4	
+     5	## Commit message
+     6	
+     7	```
+     8	commit e64f756c2b949acd0273501bf5096dcfe3021b65
+     9	Author:     Derek Beckley <derekbeckley@Dereks-Mac-mini.broadband>
+    10	AuthorDate: Fri Apr 17 23:11:05 2026 +0100
+    11	Commit:     Derek Beckley <derekbeckley@Dereks-Mac-mini.broadband>
+    12	CommitDate: Fri Apr 17 23:11:05 2026 +0100
+    13	
+    14	    feat(web): Phase 7c offline mutation outbox + replay worker
+    15	    
+    16	    What
+    17	    ----
+    18	    Mechanism-only commit for Phase 7c: durable IndexedDB outbox that
+    19	    captures `saveJob` mutations before the network attempt, plus a
+    20	    replay worker that drains the queue as soon as connectivity returns.
+exec
+/bin/zsh -lc "nl -ba web/src/lib/job-context.tsx | sed -n '1,140p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "nl -ba web/PHASE_7C_HANDOFF.md | sed -n '1,260p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	'use client';
+     2	
+     3	import * as React from 'react';
+     4	import type { CertificateType, JobDetail } from './types';
+     5	
+     6	/**
+     7	 * Per-job state container. Holds the fetched JobDetail plus a couple of
+     8	 * derived flags (dirty/syncing) and two mutators:
+     9	 *
+    10	 *  - updateJob(partial) — local merge, does not hit the network. Every
+    11	 *    input in the job tabs calls this; a debounced save effect (Phase 4)
+    12	 *    flushes to the backend.
+    13	 *  - setJob(full)        — replace wholesale (used after a network save
+    14	 *    round-trip so server-derived fields like updated_at can flow in).
+    15	 *
+    16	 * The shape deliberately mirrors the legacy `useJob` hook so the tab
+    17	 * components from Phase 3+ read the same API.
+    18	 */
+    19	interface JobContextValue {
+    20	  job: JobDetail;
+ succeeded in 0ms:
+     1	# Phase 7c — Offline mutation outbox + replay worker (handoff)
+     2	
+     3	> Web rebuild · branch `web-rebuild` · Phase 7b closed at `1ec4e22` (iOS
+     4	> Add-to-Home-Screen hint).
+     5	
+     6	## Objective
+     7	
+     8	Close the most painful scope exclusion from Phase 7b: **offline edits
+     9	still vanish**. When an inspector changes a field on-site with no
+    10	connectivity, the raw `api.saveJob` rejects and the edit is lost. Phase
+    11	7c captures each mutation in IndexedDB before the network attempt,
+    12	replays the queue the moment connectivity returns, and preserves FIFO
+    13	ordering across retries so per-field last-writer-wins semantics match
+    14	iOS.
+    15	
+    16	7c ships the **mechanism** only — the queue, the wrapper, the replay
+    17	worker. UI polish (pending-count badges, conflict dialogs, poisoned-row
+    18	admin screen) is intentionally deferred to Phase 7d. Keeping the
+    19	mechanism commit compact is a correctness guarantee: a busted outbox
+    20	corrupts user data, and a focused diff is the only way to review the
+codex
+## 1. Summary of the phase
+
+Phase 7c adds the offline-write mechanism: an IndexedDB `outbox` store, a `queueSaveJob()` wrapper that enqueues before attempting `api.saveJob()`, and a `useOutboxReplay()` worker mounted from `AppShell` to retry queued mutations when the tab comes online or becomes visible. It also bumps the shared IDB schema to v2 and clears the outbox on sign-out.
+
+I reviewed `reviews/context/phase-7c.md`, `git show --stat e64f756`, `git show e64f756`, and the current working-tree versions of the touched files. The touched source files appear unchanged since `e64f756`.
+
+## 2. Alignment with original plan
+
+Broadly, the implementation matches the handoff’s intended shape: shared DB upgrade, dedicated outbox module, replay hook mounted under the auth-gated shell, and global purge on sign-out all line up with the plan in [web/PHASE_7C_HANDOFF.md](/Users/derekbeckley/Developer/EICR_Automation/web/PHASE_7C_HANDOFF.md:29), [web/PHASE_7C_HANDOFF.md](/Users/derekbeckley/Developer/EICR_Automation/web/PHASE_7C_HANDOFF.md:44), and [web/src/components/layout/app-shell.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/layout/app-shell.tsx:29).
+
+The main gap is that the phase still does not wire `queueSaveJob()` into any real save path, which the handoff explicitly documents as deliberate in [web/PHASE_7C_HANDOFF.md](/Users/derekbeckley/Developer/EICR_Automation/web/PHASE_7C_HANDOFF.md:50) and is consistent with [web/src/lib/job-context.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/job-context.tsx:10). So it matches the mechanism-only plan, but it does not yet achieve the user-visible outcome implied by “offline edits no longer vanish” until a caller is added.
+
+## 3. Correctness issues
+
+- `P1` Durability is not actually enforced for enqueue writes. The handoff says `enqueueSaveJobMutation()` must throw on IDB failure, but it reuses `wrapTransaction()` / `wrapRequest()` from the cache layer, and those helpers resolve successfully after transaction/request errors instead of rejecting ([web/src/lib/pwa/job-cache.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/pwa/job-cache.ts:153), [web/src/lib/pwa/job-cache.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/pwa/job-cache.ts:163)). As a result, `enqueueSaveJobMutation()` can return a mutation ID even if the `put()` never committed ([web/src/lib/pwa/outbox.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/pwa/outbox.ts:161)). That breaks the core contract of the phase: a failed durable write becomes indistinguishable from success.
+
+- `P1` Queued offline edits are not reflected in the cached read model, so an offline reload can still “lose” the user’s latest edit from the UI even though it survives in the outbox. `queueSaveJob()` only refreshes the read cache after an inline 2xx success ([web/src/lib/pwa/queue-save-job.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/pwa/queue-save-job.ts:91)); on offline/network failure it returns immediately without updating `job-detail` cache ([web/src/lib/pwa/queue-save-job.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/pwa/queue-save-job.ts:78)). That conflicts with the handoff’s stated goal that offline edits survive tab closes and that later visits read the optimistic value from IDB ([web/PHASE_7C_HANDOFF.md](/Users/derekbeckley/Developer/EICR_Automation/web/PHASE_7C_HANDOFF.md:8), [web/src/lib/pwa/outbox.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/pwa/outbox.ts:18)). The replay worker also removes successful rows without warming the read cache, so stale cached detail can persist after background replay ([web/src/lib/pwa/outbox-replay.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/pwa/outbox-replay.ts:103)).
+
+- `P2` A single 4xx patch can block the entire queue, including unrelated jobs, for up to the full poisoning window. `queueSaveJob()` preserves 4xx rows in the outbox ([web/src/lib/pwa/queue-save-job.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/pwa/queue-save-job.ts:79)), and the worker stops on the first failure globally ([web/src/lib/pwa/outbox-replay.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/pwa/outbox-replay.ts:78)). Because pending rows are processed in one global FIFO list ([web/src/lib/pwa/outbox.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/pwa/outbox.ts:180)), one permanently invalid mutation for job A can stall later valid mutations for job B until it poisons. That is stricter than needed for per-job last-writer-wins and creates avoidable head-of-line blocking.
+
+## 4. Security issues
+
+No new security issues stood out in this phase. The code stays within existing auth patterns, does not introduce new HTML rendering paths, and does not expose new network surfaces.
+
+## 5. Performance issues
+
+No material performance issues found for the intended scale. `getAll()` + in-memory sort on the outbox is acceptable for the documented “single digits / low dozens” queue size in [web/src/lib/pwa/outbox.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/pwa/outbox.ts:175).
+
+## 6. Accessibility issues
+
+No accessibility regressions found in this phase. The functional changes are mostly non-visual; the only UI touchpoint is mounting the replay hook in `AppShell`, which does not alter interaction semantics.
+
+## 7. Code quality
+
+The main code-quality concern is architectural: the outbox reuses cache-layer helpers whose semantics are explicitly “best effort” ([web/src/lib/pwa/job-cache.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/pwa/job-cache.ts:148)), but the outbox needs strict failure propagation. That abstraction mismatch directly caused the durability bug above.
+
+Otherwise, the new modules are well-scoped and readable, and the phase stayed disciplined about not mixing UI polish into correctness-critical plumbing.
+
+## 8. Test coverage gaps
+
+There do not appear to be any tests covering this mechanism.
+
+Missing coverage that matters here:
+- enqueue should reject when the IDB transaction aborts
+- offline queueing should preserve the edited value across reload/offline revisit
+- replay success should update cached job detail
+- 4xx handling should not stall unrelated queued mutations
+- sign-out should purge `outbox` deterministically
+- FIFO ordering / backoff timing should be asserted in code, not only documented in the handoff
+
+## 9. Suggested fixes
+
+1. [web/src/lib/pwa/job-cache.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/pwa/job-cache.ts:153), [web/src/lib/pwa/outbox.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/pwa/outbox.ts:161)  
+   Split the cache wrappers from the outbox wrappers. `enqueueSaveJobMutation()` needs a request/transaction helper that rejects on `onerror` / `onabort` instead of resolving `null`/`void`.  
+   Why: the outbox cannot claim durability if failed IDB writes are treated as success.
+
+2. [web/src/lib/pwa/queue-save-job.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/pwa/queue-save-job.ts:78), [web/src/lib/pwa/outbox-replay.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/pwa/outbox-replay.ts:103)  
+   Apply the patch to the cached job detail when a mutation is queued but not yet synced, and also refresh/merge cached detail after replay success. If you do not want to mutate the base cache, overlay pending mutations during cached reads.  
+   Why: without this, offline reloads still render stale data and the phase does not satisfy the “offline edits survive tab close / revisit” goal.
+
+3. [web/src/lib/pwa/queue-save-job.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/pwa/queue-save-job.ts:84), [web/src/lib/pwa/outbox-replay.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/pwa/outbox-replay.ts:87), [web/src/lib/pwa/outbox.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/pwa/outbox.ts:180)  
+   Change terminal 4xx handling so it does not sit at the head of the global queue for ~18 minutes. Options: poison immediately on first 4xx, or partition replay ordering by `jobId` so unrelated jobs can continue.  
+   Why: the current global stop-on-failure policy lets one bad row starve valid later work across the whole app.
+
+4. [web/src/lib/pwa/outbox-replay.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/pwa/outbox-replay.ts:67)  
+   Add automated tests around `processOnce()` covering: stop-on-first-transient-failure, successful replay/removal, 4xx terminal behavior, and timer rescheduling to `nextAttemptAt`.  
+   Why: this file encodes the phase’s core semantics and currently relies on comments/handoff prose rather than executable guarantees.
+
+5. [web/src/lib/pwa/queue-save-job.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/pwa/queue-save-job.ts:55)  
+   Add tests for the three outcomes: enqueue failure, inline 2xx success, and offline/5xx queued return.  
+   Why: this wrapper is the future integration point, and small behavior changes here will silently change user data guarantees.
+
+## 10. Overall verdict
+
+**Needs rework**
+
+Top 3 priority fixes:
+1. Make outbox enqueue/remove/update operations fail loudly on IDB transaction errors instead of reusing best-effort cache wrappers.
+2. Preserve queued edits in the offline read path so reloads/offline revisits do not show stale pre-edit data.
+3. Prevent one invalid 4xx row from blocking the entire global replay queue for unrelated later mutations.
+tokens used
+65,264
+## 1. Summary of the phase
+
+Phase 7c adds the offline-write mechanism: an IndexedDB `outbox` store, a `queueSaveJob()` wrapper that enqueues before attempting `api.saveJob()`, and a `useOutboxReplay()` worker mounted from `AppShell` to retry queued mutations when the tab comes online or becomes visible. It also bumps the shared IDB schema to v2 and clears the outbox on sign-out.
+
+I reviewed `reviews/context/phase-7c.md`, `git show --stat e64f756`, `git show e64f756`, and the current working-tree versions of the touched files. The touched source files appear unchanged since `e64f756`.
+
+## 2. Alignment with original plan
+
+Broadly, the implementation matches the handoff’s intended shape: shared DB upgrade, dedicated outbox module, replay hook mounted under the auth-gated shell, and global purge on sign-out all line up with the plan in [web/PHASE_7C_HANDOFF.md](/Users/derekbeckley/Developer/EICR_Automation/web/PHASE_7C_HANDOFF.md:29), [web/PHASE_7C_HANDOFF.md](/Users/derekbeckley/Developer/EICR_Automation/web/PHASE_7C_HANDOFF.md:44), and [web/src/components/layout/app-shell.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/layout/app-shell.tsx:29).
+
+The main gap is that the phase still does not wire `queueSaveJob()` into any real save path, which the handoff explicitly documents as deliberate in [web/PHASE_7C_HANDOFF.md](/Users/derekbeckley/Developer/EICR_Automation/web/PHASE_7C_HANDOFF.md:50) and is consistent with [web/src/lib/job-context.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/job-context.tsx:10). So it matches the mechanism-only plan, but it does not yet achieve the user-visible outcome implied by “offline edits no longer vanish” until a caller is added.
+
+## 3. Correctness issues
+
+- `P1` Durability is not actually enforced for enqueue writes. The handoff says `enqueueSaveJobMutation()` must throw on IDB failure, but it reuses `wrapTransaction()` / `wrapRequest()` from the cache layer, and those helpers resolve successfully after transaction/request errors instead of rejecting ([web/src/lib/pwa/job-cache.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/pwa/job-cache.ts:153), [web/src/lib/pwa/job-cache.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/pwa/job-cache.ts:163)). As a result, `enqueueSaveJobMutation()` can return a mutation ID even if the `put()` never committed ([web/src/lib/pwa/outbox.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/pwa/outbox.ts:161)). That breaks the core contract of the phase: a failed durable write becomes indistinguishable from success.
+
+- `P1` Queued offline edits are not reflected in the cached read model, so an offline reload can still “lose” the user’s latest edit from the UI even though it survives in the outbox. `queueSaveJob()` only refreshes the read cache after an inline 2xx success ([web/src/lib/pwa/queue-save-job.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/pwa/queue-save-job.ts:91)); on offline/network failure it returns immediately without updating `job-detail` cache ([web/src/lib/pwa/queue-save-job.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/pwa/queue-save-job.ts:78)). That conflicts with the handoff’s stated goal that offline edits survive tab closes and that later visits read the optimistic value from IDB ([web/PHASE_7C_HANDOFF.md](/Users/derekbeckley/Developer/EICR_Automation/web/PHASE_7C_HANDOFF.md:8), [web/src/lib/pwa/outbox.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/pwa/outbox.ts:18)). The replay worker also removes successful rows without warming the read cache, so stale cached detail can persist after background replay ([web/src/lib/pwa/outbox-replay.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/pwa/outbox-replay.ts:103)).
+
+- `P2` A single 4xx patch can block the entire queue, including unrelated jobs, for up to the full poisoning window. `queueSaveJob()` preserves 4xx rows in the outbox ([web/src/lib/pwa/queue-save-job.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/pwa/queue-save-job.ts:79)), and the worker stops on the first failure globally ([web/src/lib/pwa/outbox-replay.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/pwa/outbox-replay.ts:78)). Because pending rows are processed in one global FIFO list ([web/src/lib/pwa/outbox.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/pwa/outbox.ts:180)), one permanently invalid mutation for job A can stall later valid mutations for job B until it poisons. That is stricter than needed for per-job last-writer-wins and creates avoidable head-of-line blocking.
+
+## 4. Security issues
+
+No new security issues stood out in this phase. The code stays within existing auth patterns, does not introduce new HTML rendering paths, and does not expose new network surfaces.
+
+## 5. Performance issues
+
+No material performance issues found for the intended scale. `getAll()` + in-memory sort on the outbox is acceptable for the documented “single digits / low dozens” queue size in [web/src/lib/pwa/outbox.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/pwa/outbox.ts:175).
+
+## 6. Accessibility issues
+
+No accessibility regressions found in this phase. The functional changes are mostly non-visual; the only UI touchpoint is mounting the replay hook in `AppShell`, which does not alter interaction semantics.
+
+## 7. Code quality
+
+The main code-quality concern is architectural: the outbox reuses cache-layer helpers whose semantics are explicitly “best effort” ([web/src/lib/pwa/job-cache.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/pwa/job-cache.ts:148)), but the outbox needs strict failure propagation. That abstraction mismatch directly caused the durability bug above.
+
+Otherwise, the new modules are well-scoped and readable, and the phase stayed disciplined about not mixing UI polish into correctness-critical plumbing.
+
+## 8. Test coverage gaps
+
+There do not appear to be any tests covering this mechanism.
+
+Missing coverage that matters here:
+- enqueue should reject when the IDB transaction aborts
+- offline queueing should preserve the edited value across reload/offline revisit
+- replay success should update cached job detail
+- 4xx handling should not stall unrelated queued mutations
+- sign-out should purge `outbox` deterministically
+- FIFO ordering / backoff timing should be asserted in code, not only documented in the handoff
+
+## 9. Suggested fixes
+
+1. [web/src/lib/pwa/job-cache.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/pwa/job-cache.ts:153), [web/src/lib/pwa/outbox.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/pwa/outbox.ts:161)  
+   Split the cache wrappers from the outbox wrappers. `enqueueSaveJobMutation()` needs a request/transaction helper that rejects on `onerror` / `onabort` instead of resolving `null`/`void`.  
+   Why: the outbox cannot claim durability if failed IDB writes are treated as success.
+
+2. [web/src/lib/pwa/queue-save-job.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/pwa/queue-save-job.ts:78), [web/src/lib/pwa/outbox-replay.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/pwa/outbox-replay.ts:103)  
+   Apply the patch to the cached job detail when a mutation is queued but not yet synced, and also refresh/merge cached detail after replay success. If you do not want to mutate the base cache, overlay pending mutations during cached reads.  
+   Why: without this, offline reloads still render stale data and the phase does not satisfy the “offline edits survive tab close / revisit” goal.
+
+3. [web/src/lib/pwa/queue-save-job.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/pwa/queue-save-job.ts:84), [web/src/lib/pwa/outbox-replay.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/pwa/outbox-replay.ts:87), [web/src/lib/pwa/outbox.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/pwa/outbox.ts:180)  
+   Change terminal 4xx handling so it does not sit at the head of the global queue for ~18 minutes. Options: poison immediately on first 4xx, or partition replay ordering by `jobId` so unrelated jobs can continue.  
+   Why: the current global stop-on-failure policy lets one bad row starve valid later work across the whole app.
+
+4. [web/src/lib/pwa/outbox-replay.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/pwa/outbox-replay.ts:67)  
+   Add automated tests around `processOnce()` covering: stop-on-first-transient-failure, successful replay/removal, 4xx terminal behavior, and timer rescheduling to `nextAttemptAt`.  
+   Why: this file encodes the phase’s core semantics and currently relies on comments/handoff prose rather than executable guarantees.
+
+5. [web/src/lib/pwa/queue-save-job.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/pwa/queue-save-job.ts:55)  
+   Add tests for the three outcomes: enqueue failure, inline 2xx success, and offline/5xx queued return.  
+   Why: this wrapper is the future integration point, and small behavior changes here will silently change user data guarantees.
+
+## 10. Overall verdict
+
+**Needs rework**
+
+Top 3 priority fixes:
+1. Make outbox enqueue/remove/update operations fail loudly on IDB transaction errors instead of reusing best-effort cache wrappers.
+2. Preserve queued edits in the offline read path so reloads/offline revisits do not show stale pre-edit data.
+3. Prevent one invalid 4xx row from blocking the entire global replay queue for unrelated later mutations.

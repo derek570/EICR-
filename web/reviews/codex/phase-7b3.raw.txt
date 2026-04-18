@@ -1,0 +1,620 @@
+OpenAI Codex v0.116.0 (research preview)
+--------
+workdir: /Users/derekbeckley/Developer/EICR_Automation
+model: gpt-5.4
+provider: openai
+approval: never
+sandbox: read-only
+reasoning effort: none
+reasoning summaries: none
+session id: 019d9dcc-fa69-7ad0-8582-848e8e0ed6fb
+--------
+user
+You are performing a rigorous code review of a single phase of a Next.js 16 / React 19 PWA frontend rebuild for an electrical-certificate automation tool (EICR / EIC). The repo root is at /Users/derekbeckley/Developer/EICR_Automation and the web package is at web/. Branch: web-rebuild.
+
+TARGET: Phase 7b — AppShell offline indicator
+COMMIT: a85487f
+
+Context for this phase (original intent, handoff doc, commit message, files changed) is in this repo at: reviews/context/phase-7b3.md — READ THAT FILE FIRST.
+
+Use shell commands to:
+  git show --stat a85487f
+  git show a85487f
+to inspect the full diff. Then read any files you need from the working tree (they may have evolved since this commit — note any later changes).
+
+Your output must be a well-structured markdown review with these sections:
+  1. Summary of the phase (2-3 sentences — what it did).
+  2. Alignment with original plan (does the implementation match the handoff doc / commit intent? Any missing objectives?).
+  3. Correctness issues (bugs, race conditions, missing error handling, incorrect semantics). Prioritise P0/P1/P2.
+  4. Security issues (XSS, auth, CSRF, injection, leaked secrets, PII, CORS). Each item tagged with severity.
+  5. Performance issues (re-renders, N+1, large bundles, memory leaks, blocking work on main thread).
+  6. Accessibility issues (semantic HTML, keyboard nav, ARIA, colour contrast, focus management).
+  7. Code quality (duplication, dead code, type-safety holes, naming, convention drift vs. rest of repo).
+  8. Test coverage gaps.
+  9. Suggested fixes — each as a numbered item with: file:line, what to change, why. Be concrete.
+  10. Overall verdict (ship / ship with fixes / needs rework) and top 3 priority fixes.
+
+Be specific — cite file paths and line numbers. Avoid generic advice. If the code is good, say so with evidence. Do NOT modify files; this is review only.
+
+mcp startup: no servers
+codex
+Reviewing phase 7b against its handoff doc and commit diff first, then I’ll trace the touched code in the working tree to check for regressions, missing objectives, and test gaps.
+exec
+/bin/zsh -lc "sed -n '1,240p' reviews/context/phase-7b3.md" in /Users/derekbeckley/Developer/EICR_Automation exited 1 in 0ms:
+sed: reviews/context/phase-7b3.md: No such file or directory
+exec
+/bin/zsh -lc 'git show a85487f' in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc 'git show --stat a85487f' in /Users/derekbeckley/Developer/EICR_Automation succeeded in 1.15s:
+2026-04-18 00:35:56.622 xcodebuild[39935:67240677]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:35:56.727 xcodebuild[39935:67240674] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-O0cFz5rH' (errno=Operation not permitted)
+2026-04-18 00:35:57.050 xcodebuild[39940:67240693]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:35:57.153 xcodebuild[39940:67240691] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+commit a85487f6b4ec2c09b3852288a447580223a184de
+Author: Derek Beckley <derekbeckley@Dereks-Mac-mini.broadband>
+Date:   Fri Apr 17 22:25:39 2026 +0100
+
+    feat(web): Phase 7b — AppShell offline indicator
+    
+    Adds an amber "Offline" pill to the AppShell header right-cluster
+    that appears whenever the browser reports navigator.onLine === false.
+    Pairs with the IDB cache (2d3527f) so the inspector knows WHY the
+    dashboard/job looks the same as last time — the SWR cache may be
+    showing stale data and the pill is how they know connectivity is
+    the reason.
+    
+    Closes PHASE_7A_HANDOFF.md §"Scope exclusions":
+ succeeded in 1.15s:
+2026-04-18 00:35:56.622 xcodebuild[39936:67240676]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:35:56.727 xcodebuild[39936:67240675] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-M1Koc0Gt' (errno=Operation not permitted)
+2026-04-18 00:35:57.050 xcodebuild[39939:67240694]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:35:57.153 xcodebuild[39939:67240692] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+commit a85487f6b4ec2c09b3852288a447580223a184de
+Author: Derek Beckley <derekbeckley@Dereks-Mac-mini.broadband>
+Date:   Fri Apr 17 22:25:39 2026 +0100
+
+    feat(web): Phase 7b — AppShell offline indicator
+    
+    Adds an amber "Offline" pill to the AppShell header right-cluster
+    that appears whenever the browser reports navigator.onLine === false.
+    Pairs with the IDB cache (2d3527f) so the inspector knows WHY the
+    dashboard/job looks the same as last time — the SWR cache may be
+    showing stale data and the pill is how they know connectivity is
+    the reason.
+    
+    Closes PHASE_7A_HANDOFF.md §"Scope exclusions":
+codex
+The repo path in the prompt doesn’t match the missing context file, so I’m locating the handoff doc and re-running the commit inspection in a way that avoids the shell temp/cache issue.
+exec
+/bin/zsh -lc "rg --files | rg 'phase-7b3\\.md"'$|phase-7b.*'"\\.md"'$|reviews/context'"'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+web/reviews/codex/phase-7b1.md
+web/reviews/codex/phase-7b2.md
+web/reviews/context/phase-6c.md
+web/reviews/context/phase-3b.md
+web/reviews/context/phase-7b1.md
+web/reviews/context/phase-7c.md
+web/reviews/context/phase-5c.md
+web/reviews/context/phase-4c.md
+web/reviews/context/phase-4b.md
+web/reviews/context/phase-7b4.md
+web/reviews/context/phase-3a.md
+web/reviews/context/phase-5d.md
+web/reviews/context/phase-7b2.md
+web/reviews/context/phase-4d.md
+web/reviews/context/phase-6a.md
+web/reviews/context/phase-7b3.md
+web/reviews/context/phase-4e.md
+web/reviews/context/phase-7a.md
+web/reviews/context/phase-5a.md
+web/reviews/context/phase-4a.md
+exec
+/bin/zsh -lc 'env TMPDIR=$PWD/.tmp HOME=$PWD XDG_CACHE_HOME=$PWD/.cache git show --stat --no-ext-diff --no-textconv a85487f' in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc 'env TMPDIR=$PWD/.tmp HOME=$PWD XDG_CACHE_HOME=$PWD/.cache git show --no-ext-diff --no-textconv a85487f' in /Users/derekbeckley/Developer/EICR_Automation succeeded in 1.60s:
+2026-04-18 00:36:04.385 xcodebuild[39953:67240834]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:36:04.488 xcodebuild[39953:67240832] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-AnUFw4dJ' (errno=Operation not permitted)
+2026-04-18 00:36:04.820 xcodebuild[39958:67240852]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:36:04.925 xcodebuild[39958:67240850] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+commit a85487f6b4ec2c09b3852288a447580223a184de
+Author: Derek Beckley <derekbeckley@Dereks-Mac-mini.broadband>
+Date:   Fri Apr 17 22:25:39 2026 +0100
+
+    feat(web): Phase 7b — AppShell offline indicator
+    
+    Adds an amber "Offline" pill to the AppShell header right-cluster
+    that appears whenever the browser reports navigator.onLine === false.
+    Pairs with the IDB cache (2d3527f) so the inspector knows WHY the
+    dashboard/job looks the same as last time — the SWR cache may be
+    showing stale data and the pill is how they know connectivity is
+    the reason.
+    
+    Closes PHASE_7A_HANDOFF.md §"Scope exclusions":
+ succeeded in 1.60s:
+2026-04-18 00:36:04.385 xcodebuild[39954:67240835]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:36:04.488 xcodebuild[39954:67240833] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-0VlFX0dC' (errno=Operation not permitted)
+2026-04-18 00:36:04.820 xcodebuild[39957:67240853]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:36:04.925 xcodebuild[39957:67240851] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+commit a85487f6b4ec2c09b3852288a447580223a184de
+Author: Derek Beckley <derekbeckley@Dereks-Mac-mini.broadband>
+Date:   Fri Apr 17 22:25:39 2026 +0100
+
+    feat(web): Phase 7b — AppShell offline indicator
+    
+    Adds an amber "Offline" pill to the AppShell header right-cluster
+    that appears whenever the browser reports navigator.onLine === false.
+    Pairs with the IDB cache (2d3527f) so the inspector knows WHY the
+    dashboard/job looks the same as last time — the SWR cache may be
+    showing stale data and the pill is how they know connectivity is
+    the reason.
+    
+    Closes PHASE_7A_HANDOFF.md §"Scope exclusions":
+exec
+/bin/zsh -lc "sed -n '1,240p' web/reviews/context/phase-7b3.md" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+# Phase 7b3 — Context
+
+**Commit:** `a85487f`
+
+## Commit message
+
+```
+commit a85487f6b4ec2c09b3852288a447580223a184de
+Author:     Derek Beckley <derekbeckley@Dereks-Mac-mini.broadband>
+AuthorDate: Fri Apr 17 22:25:39 2026 +0100
+Commit:     Derek Beckley <derekbeckley@Dereks-Mac-mini.broadband>
+CommitDate: Fri Apr 17 22:25:39 2026 +0100
+
+    feat(web): Phase 7b — AppShell offline indicator
+    
+    Adds an amber "Offline" pill to the AppShell header right-cluster
+    that appears whenever the browser reports navigator.onLine === false.
+    Pairs with the IDB cache (2d3527f) so the inspector knows WHY the
+    dashboard/job looks the same as last time — the SWR cache may be
+    showing stale data and the pill is how they know connectivity is
+exec
+/bin/zsh -lc 'GIT_PAGER=cat git --no-pager show --stat --no-ext-diff --no-textconv a85487f' in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc 'GIT_PAGER=cat git --no-pager show --no-ext-diff --no-textconv a85487f' in /Users/derekbeckley/Developer/EICR_Automation succeeded in 1.29s:
+2026-04-18 00:36:10.880 xcodebuild[40013:67241151]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:36:11.004 xcodebuild[40013:67241150] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-jSn8x19k' (errno=Operation not permitted)
+2026-04-18 00:36:11.334 xcodebuild[40018:67241171]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:36:11.438 xcodebuild[40018:67241169] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+commit a85487f6b4ec2c09b3852288a447580223a184de
+Author: Derek Beckley <derekbeckley@Dereks-Mac-mini.broadband>
+Date:   Fri Apr 17 22:25:39 2026 +0100
+
+    feat(web): Phase 7b — AppShell offline indicator
+    
+    Adds an amber "Offline" pill to the AppShell header right-cluster
+    that appears whenever the browser reports navigator.onLine === false.
+    Pairs with the IDB cache (2d3527f) so the inspector knows WHY the
+    dashboard/job looks the same as last time — the SWR cache may be
+    showing stale data and the pill is how they know connectivity is
+    the reason.
+    
+    Closes PHASE_7A_HANDOFF.md §"Scope exclusions":
+ succeeded in 1.27s:
+2026-04-18 00:36:10.880 xcodebuild[40012:67241152]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:36:11.004 xcodebuild[40012:67241149] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-0LhzqY8Y' (errno=Operation not permitted)
+2026-04-18 00:36:11.334 xcodebuild[40017:67241172]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:36:11.438 xcodebuild[40017:67241170] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+commit a85487f6b4ec2c09b3852288a447580223a184de
+Author: Derek Beckley <derekbeckley@Dereks-Mac-mini.broadband>
+Date:   Fri Apr 17 22:25:39 2026 +0100
+
+    feat(web): Phase 7b — AppShell offline indicator
+    
+    Adds an amber "Offline" pill to the AppShell header right-cluster
+    that appears whenever the browser reports navigator.onLine === false.
+    Pairs with the IDB cache (2d3527f) so the inspector knows WHY the
+    dashboard/job looks the same as last time — the SWR cache may be
+    showing stale data and the pill is how they know connectivity is
+    the reason.
+    
+    Closes PHASE_7A_HANDOFF.md §"Scope exclusions":
+codex
+I have the handoff context. Next I’m pulling the actual commit contents and current file state so I can compare intent versus implementation and note any later drift in the working tree.
+exec
+/bin/zsh -lc 'GIT_PAGER=cat git rev-parse --show-toplevel && GIT_PAGER=cat git rev-parse --is-inside-work-tree && GIT_PAGER=cat git cat-file -p a85487f' in /Users/derekbeckley/Developer/EICR_Automation succeeded in 3.31s:
+2026-04-18 00:36:16.956 xcodebuild[40029:67241249]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:36:17.055 xcodebuild[40029:67241248] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-fpNjhSRq' (errno=Operation not permitted)
+2026-04-18 00:36:17.338 xcodebuild[40033:67241257]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:36:17.435 xcodebuild[40033:67241256] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+/Users/derekbeckley/Developer/EICR_Automation
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-zOFfHQaq' (errno=Operation not permitted)
+2026-04-18 00:36:18.098 xcodebuild[40039:67241290]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:36:18.196 xcodebuild[40039:67241289] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-ROoluN3J' (errno=Operation not permitted)
+2026-04-18 00:36:18.480 xcodebuild[40041:67241298]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:36:18.580 xcodebuild[40041:67241297] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+true
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-TVH3zbzb' (errno=Operation not permitted)
+2026-04-18 00:36:19.236 xcodebuild[40045:67241317]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:36:19.334 xcodebuild[40045:67241316] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+exec
+/bin/zsh -lc "nl -ba web/src/components/pwa/offline-indicator.tsx | sed -n '1,220p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "nl -ba web/src/components/layout/app-shell.tsx | sed -n '1,220p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	'use client';
+     2	
+     3	import * as React from 'react';
+     4	import { WifiOff } from 'lucide-react';
+     5	import { useOnlineStatus } from '@/lib/pwa/use-online-status';
+     6	
+     7	/**
+     8	 * Compact pill that appears in the AppShell header whenever the browser
+     9	 * reports the device as offline. Designed to sit flush with other header
+    10	 * cluster items (user name, <InstallButton />, Sign-out) so it doesn't
+    11	 * re-layout the header when it pops in/out.
+    12	 *
+    13	 * Design choices:
+    14	 *   - Amber (`--color-status-processing`) instead of red. Red communicates
+    15	 *     "something broke" (destructive / error); amber communicates
+    16	 *     "degraded — be aware". Offline with a cached render is degraded,
+    17	 *     not broken — the inspector can still review and browse. Red would
+    18	 *     read as panic-inducing for a state the SWR layer (7b IDB cache)
+    19	 *     gracefully handles.
+    20	 *   - Small text on desktop, icon-only below the `sm` breakpoint. The
+ succeeded in 0ms:
+     1	'use client';
+     2	
+     3	import * as React from 'react';
+     4	import Link from 'next/link';
+     5	import { usePathname, useRouter } from 'next/navigation';
+     6	import { Logo } from '@/components/brand/logo';
+     7	import { api } from '@/lib/api-client';
+     8	import { clearAuth, getUser } from '@/lib/auth';
+     9	import { Button } from '@/components/ui/button';
+    10	import { InstallButton } from '@/components/pwa/install-button';
+    11	import { OfflineIndicator } from '@/components/pwa/offline-indicator';
+    12	import { useOutboxReplay } from '@/lib/pwa/outbox-replay';
+    13	
+    14	/**
+    15	 * Top-nav + page frame for all authenticated screens.
+    16	 * Single-stack navigation (no persistent tabs), matches iOS CertMate
+    17	 * which uses NavigationStack rather than TabView for the primary flow.
+    18	 */
+    19	export function AppShell({ children }: { children: React.ReactNode }) {
+    20	  const pathname = usePathname();
+exec
+/bin/zsh -lc "nl -ba web/src/lib/pwa/use-online-status.ts | sed -n '1,220p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	'use client';
+     2	
+     3	import * as React from 'react';
+     4	
+     5	/**
+     6	 * Subscribes to `navigator.onLine` and the `online` / `offline` window
+     7	 * events so components can render based on current connectivity.
+     8	 *
+     9	 * Returns a simple boolean — most callers just want to know if they're
+    10	 * online right now. Consumers that need "was offline, just came back"
+    11	 * semantics can derive it locally by holding the previous value in a
+    12	 * ref; keeping this hook small avoids tempting callers to depend on
+    13	 * transient state that's easy to get wrong across remounts.
+    14	 *
+    15	 * SSR / first-paint:
+    16	 *   - On the server and during the first client render, `navigator`
+    17	 *     doesn't exist, so we default to `true` (optimistic). If the user
+    18	 *     really is offline, the `offline` event (or the initial
+    19	 *     `navigator.onLine` check inside the effect) will flip state
+    20	 *     within a tick — the alternative of defaulting to `false` would
+exec
+/bin/zsh -lc 'git status --short web/src/components/layout/app-shell.tsx web/src/components/pwa/offline-indicator.tsx web/src/lib/pwa/use-online-status.ts web/src/components/pwa' in /Users/derekbeckley/Developer/EICR_Automation succeeded in 1.01s:
+2026-04-18 00:36:25.491 xcodebuild[40062:67241394] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-PFZKgkbp' (errno=Operation not permitted)
+2026-04-18 00:36:25.773 xcodebuild[40064:67241403]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:36:25.871 xcodebuild[40064:67241402] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+codex
+The current working tree still has the phase 7b files, but `app-shell.tsx` has since gained 7c outbox replay logic. I’m checking for any drift from the reviewed commit and whether this phase added meaningful automated coverage.
+exec
+/bin/zsh -lc "rg --files web | rg '(test|spec)\\.(ts|tsx)"'$'"'" in /Users/derekbeckley/Developer/EICR_Automation exited 1 in 0ms:
+
+exec
+/bin/zsh -lc 'GIT_PAGER=cat git --no-pager diff a85487f..HEAD -- web/src/components/layout/app-shell.tsx web/src/components/pwa/offline-indicator.tsx web/src/lib/pwa/use-online-status.ts' in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "rg -n \"OfflineIndicator|useOnlineStatus|navigator\\.onLine|offline indicator|offline\" web/src web/tests web/__tests__ web/test 2>/dev/null" in /Users/derekbeckley/Developer/EICR_Automation exited 2 in 0ms:
+web/src/lib/auth.ts:45:  // doesn't keep one inspector's jobs available for offline render
+web/src/lib/pwa/outbox-replay.ts:14: * Replay worker for the offline mutation outbox (Phase 7c).
+web/src/lib/pwa/outbox-replay.ts:20: *      Caveat: `navigator.onLine` returning true doesn't guarantee the
+web/src/lib/pwa/outbox-replay.ts:27: *      extended-offline case where no 'online' event will fire
+web/src/lib/pwa/outbox-replay.ts:31: *      backgrounded during the offline period; iOS Safari throttles
+web/src/lib/pwa/outbox-replay.ts:73:      if (typeof navigator !== 'undefined' && !navigator.onLine) return;
+web/src/lib/pwa/job-cache.ts:6: * Purpose: when the user goes offline (subway, job-site basement, flaky
+web/src/lib/pwa/job-cache.ts:9: * instead of falling to the branded /offline shell and losing access to
+web/src/lib/pwa/job-cache.ts:49: *                  `userId`) for the offline mutation queue. Defined here
+web/src/lib/pwa/job-cache.ts:258: * for the next inspector to render offline.
+web/src/lib/pwa/job-cache.ts:263: * the read cache and because it's strictly safer: a pending offline
+web/src/lib/pwa/queue-save-job.ts:16: *     save (common — phone pockets, offline → offline transitions), the
+web/src/lib/pwa/queue-save-job.ts:48: * We deliberately do NOT throw on plain network errors: every offline
+web/src/lib/pwa/queue-save-job.ts:49: * edit is expected to go through this path, and turning every offline
+web/src/lib/pwa/queue-save-job.ts:87:    // Transient (network / 5xx / offline) — replay worker owns it.
+web/src/lib/pwa/use-online-status.ts:6: * Subscribes to `navigator.onLine` and the `online` / `offline` window
+web/src/lib/pwa/use-online-status.ts:10: * online right now. Consumers that need "was offline, just came back"
+web/src/lib/pwa/use-online-status.ts:18: *     really is offline, the `offline` event (or the initial
+web/src/lib/pwa/use-online-status.ts:19: *     `navigator.onLine` check inside the effect) will flip state
+web/src/lib/pwa/use-online-status.ts:21: *     show the offline indicator for one frame on every cold render.
+ succeeded in 1.04s:
+2026-04-18 00:36:38.629 xcodebuild[40073:67241527]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:36:38.727 xcodebuild[40073:67241526] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-iKwTdk1q' (errno=Operation not permitted)
+2026-04-18 00:36:39.010 xcodebuild[40079:67241573]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:36:39.107 xcodebuild[40079:67241572] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+diff --git a/web/src/components/layout/app-shell.tsx b/web/src/components/layout/app-shell.tsx
+index af4572d..e988165 100644
+--- a/web/src/components/layout/app-shell.tsx
++++ b/web/src/components/layout/app-shell.tsx
+@@ -9,6 +9,7 @@ import { clearAuth, getUser } from '@/lib/auth';
+ import { Button } from '@/components/ui/button';
+ import { InstallButton } from '@/components/pwa/install-button';
+ import { OfflineIndicator } from '@/components/pwa/offline-indicator';
++import { useOutboxReplay } from '@/lib/pwa/outbox-replay';
+ 
+ /**
+  * Top-nav + page frame for all authenticated screens.
+@@ -25,6 +26,16 @@ export function AppShell({ children }: { children: React.ReactNode }) {
+     if (u) setUserName(u.name || u.email);
+exec
+/bin/zsh -lc "nl -ba web/src/components/pwa/install-button.tsx | sed -n '1,220p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	'use client';
+     2	
+     3	import { Button } from '@/components/ui/button';
+     4	import { useInstallStore } from '@/lib/pwa/install-store';
+     5	
+     6	/**
+     7	 * Renders nothing until the browser has fired `beforeinstallprompt`. On
+     8	 * click, shows the native install prompt, then clears the stored event
+     9	 * (browsers allow `prompt()` to be called at most once per event).
+    10	 *
+    11	 * Ghost + small to sit quietly next to the Sign-out button in AppShell.
+    12	 * If the install dialog is dismissed, we still clear the deferred prompt
+    13	 * — Chrome won't fire `beforeinstallprompt` again in the same session, so
+    14	 * hiding the button is the correct affordance (re-shows on next visit).
+    15	 */
+    16	export function InstallButton() {
+    17	  const deferredPrompt = useInstallStore((s) => s.deferredPrompt);
+    18	  const canInstall = useInstallStore((s) => s.canInstall);
+    19	  const setDeferred = useInstallStore((s) => s.setDeferred);
+    20	
+exec
+/bin/zsh -lc "nl -ba web/src/app/layout.tsx | sed -n '1,220p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	import type { Metadata, Viewport } from 'next';
+     2	import { Toaster } from 'sonner';
+     3	import { InstallPromptProvider } from '@/components/pwa/install-prompt-provider';
+     4	import { SwUpdateProvider } from '@/components/pwa/sw-update-provider';
+     5	import './globals.css';
+     6	
+     7	export const metadata: Metadata = {
+     8	  title: 'CertMate — EICR-oMatic',
+     9	  description: 'Voice-driven EICR / EIC certificate authoring',
+    10	  applicationName: 'CertMate',
+    11	  // `icons` makes Next emit <link rel="icon"> + <link rel="apple-touch-icon">
+    12	  // pointing at the files generated by `scripts/generate-pwa-icons.mjs`.
+    13	  // Keeping these explicit (rather than relying on `src/app/icon.tsx`
+    14	  // conventions) means the raster assets live in `public/` and are served
+    15	  // unhashed with the SW's CacheFirst "icons" rule applied.
+    16	  icons: {
+    17	    icon: [
+    18	      { url: '/favicon.svg', type: 'image/svg+xml' },
+    19	      { url: '/favicon-32.png', sizes: '32x32', type: 'image/png' },
+    20	      { url: '/icons/icon-192.png', sizes: '192x192', type: 'image/png' },
+exec
+/bin/zsh -lc "rg -n \"color-status-processing|color-surface-0|color-text-secondary\" web/src web/app web/styles web/src/app -g '"'!**/*.map'"'" in /Users/derekbeckley/Developer/EICR_Automation exited 2 in 0ms:
+rg: web/app: No such file or directory (os error 2)
+rg: web/styles: No such file or directory (os error 2)
+web/src/app/offline/page.tsx:31:          <p className="text-sm text-[var(--color-text-secondary)]">
+web/src/app/login/page.tsx:186:        <p className="text-sm text-[var(--color-text-secondary)]">
+web/src/app/globals.css:15:  --color-surface-0: #0a0a0f; /* page background */
+web/src/app/globals.css:23:  --color-text-secondary: #a0a0aa;
+web/src/app/globals.css:34:  --color-status-processing: #ff9f0a;
+web/src/app/globals.css:100:  background: var(--color-surface-0);
+web/src/app/error.tsx:96:          <p className="text-sm text-[var(--color-text-secondary)]">
+web/src/app/error.tsx:104:          <p className="mb-4 font-mono text-xs text-[var(--color-text-secondary)] break-all">
+web/src/app/job/[id]/page.tsx:46:        <p className="text-sm text-[var(--color-text-secondary)]">
+web/src/app/job/[id]/page.tsx:63:            <span className="text-xs text-[var(--color-text-secondary)]">{s.desc}</span>
+web/src/app/job/[id]/observations/page.tsx:26:  C2: 'var(--color-status-processing)',
+web/src/app/job/[id]/observations/page.tsx:152:          <p className="text-[13px] text-[var(--color-text-secondary)]">
+web/src/app/job/[id]/observations/page.tsx:261:              <span className="inline-flex items-center gap-1 text-[12px] text-[var(--color-text-secondary)]">
+web/src/app/job/[id]/observations/page.tsx:288:        <p className="border-t border-[var(--color-border-default)]/50 pt-2 text-[12.5px] italic text-[var(--color-text-secondary)]">
+web/src/app/job/[id]/observations/page.tsx:312:            <span className="inline-flex h-12 items-center justify-center rounded-[var(--radius-sm)] border border-[var(--color-border-subtle)] bg-[var(--color-surface-2)] px-2 text-[11px] font-semibold text-[var(--color-text-secondary)]">
+web/src/app/job/[id]/staff/page.tsx:187:          <p className="text-[12.5px] leading-snug text-[var(--color-text-secondary)]">
+web/src/app/job/[id]/staff/page.tsx:226:                  <span className="truncate text-[12px] text-[var(--color-text-secondary)]">
+web/src/app/job/[id]/staff/page.tsx:310:        <div className="flex flex-wrap items-center gap-3 text-[11.5px] text-[var(--color-text-secondary)]">
+codex
+I’ve identified one potentially material mismatch already: the offline indicator’s assistive text tells users that changes will sync later, but the handoff explicitly says offline writes are still out of scope for 7b. I’m pinning exact line references before drafting the review.
+exec
+/bin/zsh -lc "nl -ba web/reviews/context/phase-7b3.md | sed -n '1,260p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "nl -ba web/src/app/globals.css | sed -n '1,80p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	@import "tailwindcss";
+     2	
+     3	/* =============================================================================
+     4	 * CertMate Design Tokens (port of iOS CMDesign system)
+     5	 * Reference: CertMateUnified/Sources/Helpers/CertMateDesign.swift
+     6	 * ============================================================================= */
+     7	@theme {
+     8	  /* ---------- Brand ---------- */
+     9	  --color-brand-blue: #0066ff;
+    10	  --color-brand-blue-soft: #3b82f6;
+    11	  --color-brand-green: #00cc66;
+    12	  --color-brand-green-soft: #22c55e;
+    13	
+    14	  /* ---------- Surface hierarchy (dark mode, forced) ---------- */
+    15	  --color-surface-0: #0a0a0f; /* page background */
+    16	  --color-surface-1: #141419; /* elevated panel */
+    17	  --color-surface-2: #1c1c24; /* card */
+    18	  --color-surface-3: #24242e; /* hovered / top-of-stack card */
+    19	  --color-surface-4: #2d2d38; /* pressed */
+    20	
+ succeeded in 0ms:
+     1	# Phase 7b3 — Context
+     2	
+     3	**Commit:** `a85487f`
+     4	
+     5	## Commit message
+     6	
+     7	```
+     8	commit a85487f6b4ec2c09b3852288a447580223a184de
+     9	Author:     Derek Beckley <derekbeckley@Dereks-Mac-mini.broadband>
+    10	AuthorDate: Fri Apr 17 22:25:39 2026 +0100
+    11	Commit:     Derek Beckley <derekbeckley@Dereks-Mac-mini.broadband>
+    12	CommitDate: Fri Apr 17 22:25:39 2026 +0100
+    13	
+    14	    feat(web): Phase 7b — AppShell offline indicator
+    15	    
+    16	    Adds an amber "Offline" pill to the AppShell header right-cluster
+    17	    that appears whenever the browser reports navigator.onLine === false.
+    18	    Pairs with the IDB cache (2d3527f) so the inspector knows WHY the
+    19	    dashboard/job looks the same as last time — the SWR cache may be
+    20	    showing stale data and the pill is how they know connectivity is
+exec
+/bin/zsh -lc "nl -ba web/src/app/job/[id]/layout.tsx | sed -n '70,120p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+zsh:1: no matches found: web/src/app/job/[id]/layout.tsx
+exec
+/bin/zsh -lc "nl -ba web/src/app/dashboard/page.tsx | sed -n '50,110p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+    50	    //
+    51	    // Read cache first so the list paints instantly (avoids the 4-row
+    52	    // shimmer on a warm device, and makes the dashboard usable in
+    53	    // airplane mode / site basement / dead-spot van where the fetch
+    54	    // below will never land). The network call still fires in parallel
+    55	    // and replaces the UI + cache on success.
+    56	    //
+    57	    // Error handling diverges from 7a: if the network fails but we
+    58	    // already painted from cache, we DON'T surface an error banner —
+    59	    // the inspector can still browse their jobs, and the forthcoming
+    60	    // AppShell offline indicator (separate 7b commit) will tell them
+    61	    // the data is stale. Only show an error when there's nothing to
+    62	    // paint at all.
+    63	    let hadCache = false;
+    64	    getCachedJobs(user.id).then((cached) => {
+    65	      if (cancelled) return;
+    66	      if (cached && jobs === null) {
+    67	        setJobs(cached);
+    68	        hadCache = true;
+    69	      }
+exec
+/bin/zsh -lc "nl -ba 'web/src/app/job/[id]/layout.tsx' | sed -n '70,120p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+    70	      }
+    71	    });
+    72	
+    73	    api
+    74	      .job(user.id, jobId)
+    75	      .then((detail) => {
+    76	        if (cancelled) return;
+    77	        setJob(detail);
+    78	        void putCachedJob(user.id, jobId, detail);
+    79	      })
+    80	      .catch((err: Error) => {
+    81	        if (cancelled) return;
+    82	        if (/401/.test(err.message)) {
+    83	          clearAuth();
+    84	          router.replace('/login');
+    85	          return;
+    86	        }
+    87	        // Cached-paint-and-carry-on — same rationale as the dashboard.
+    88	        // If the tab was previously visited, the inspector keeps their
+    89	        // full job record offline rather than being bounced to an error
+codex
+## 1. Summary of the phase
+This commit adds an AppShell-level offline indicator for authenticated screens. It introduces a small client hook around `navigator.onLine` plus `online`/`offline` window events, then mounts an amber `Offline` pill at the start of the header’s right cluster in [web/src/components/layout/app-shell.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/layout/app-shell.tsx:83).
+
+## 2. Alignment with original plan
+The implementation matches the main handoff intent in [web/reviews/context/phase-7b3.md](/Users/derekbeckley/Developer/EICR_Automation/web/reviews/context/phase-7b3.md:177): it adds the hook, adds the pill, and places it first in the AppShell header cluster. One detail does not fully match the documented intent: the handoff says both `title` and `aria-label` should carry the full explanatory string, but the code only gives the full wording to `aria-label`, while `title` is shortened in [web/src/components/pwa/offline-indicator.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/pwa/offline-indicator.tsx:54).
+
+Later working-tree drift is minimal for this phase: `offline-indicator.tsx` and `use-online-status.ts` are unchanged since `a85487f`; `app-shell.tsx` has since gained `useOutboxReplay()` for Phase 7c, but the offline-indicator integration is unchanged.
+
+## 3. Correctness issues
+- **P1** Misleading offline-write semantics for assistive users in [web/src/components/pwa/offline-indicator.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/pwa/offline-indicator.tsx:54): `aria-label` says “changes will not sync until your connection returns.” The Phase 7b handoff explicitly says offline writes are still out of scope and “offline edits still vanish” in [web/reviews/context/phase-7b3.md](/Users/derekbeckley/Developer/EICR_Automation/web/reviews/context/phase-7b3.md:123) and again in the deferred-scope section at [phase-7b3.md:249](/Users/derekbeckley/Developer/EICR_Automation/web/reviews/context/phase-7b3.md:249). That copy implies a queued/outbox model that does not exist in this phase, which can mislead users about data safety.
+
+## 4. Security issues
+- No security issues identified in this commit. The change is UI-only and does not introduce new input handling, auth flow, storage of secrets, or network surface.
+
+## 5. Performance issues
+- No material performance issues identified. `useOnlineStatus()` is a small, single-subscription hook mounted once in AppShell, and the indicator returns `null` in the common online case.
+
+## 6. Accessibility issues
+- **P2** Hover text is weaker than the documented and screen-reader text in [web/src/components/pwa/offline-indicator.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/pwa/offline-indicator.tsx:54): the handoff says `title` and `aria-label` should both expose the full explanatory message, but `title="Offline — showing cached data"` drops the write-risk warning and the full explanation promised in [web/reviews/context/phase-7b3.md](/Users/derekbeckley/Developer/EICR_Automation/web/reviews/context/phase-7b3.md:47). This is not catastrophic, but it is a real parity/accessibility miss versus the stated design.
+
+## 7. Code quality
+- Code quality is otherwise solid. The hook is SSR-safe, listeners are cleaned up correctly in [web/src/lib/pwa/use-online-status.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/pwa/use-online-status.ts:38), and AppShell placement matches the phase intent in [web/src/components/layout/app-shell.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/layout/app-shell.tsx:84).
+- Conventionally, this phase is comment-heavy but coherent with the repo’s documented handoff style.
+
+## 8. Test coverage gaps
+- No automated tests were added for this phase, and I did not find any `*.test.ts(x)` / `*.spec.ts(x)` files under `web/`.
+- Missing coverage areas:
+  - `useOnlineStatus()` initial optimistic render, mount-time correction, and listener cleanup in [web/src/lib/pwa/use-online-status.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/pwa/use-online-status.ts:35)
+  - `OfflineIndicator` null render when online and visible render when offline in [web/src/components/pwa/offline-indicator.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/pwa/offline-indicator.tsx:47)
+  - Copy/a11y assertions so the status text cannot regress into promising unsupported offline sync
+
+## 9. Suggested fixes
+1. [web/src/components/pwa/offline-indicator.tsx:54] Change the `aria-label` to remove the unsupported promise that edits will sync later. Suggested direction: “You are offline. Some data may be previously loaded. Reconnect before making changes.” This matches Phase 7b’s actual contract and avoids implying a 7c-style outbox.
+2. [web/src/components/pwa/offline-indicator.tsx:55] Make `title` match the same full, corrected message as `aria-label`, or remove `title` entirely if you do not want hover-only copy. The current shortened title does not match the handoff intent and omits important context.
+3. [web/src/lib/pwa/use-online-status.ts:35] Add tests for the hook and indicator behavior. At minimum, cover initial `true`, mount correction from `navigator.onLine`, `online`/`offline` event transitions, and offline-indicator render/null behavior so this UX does not regress silently.
+
+## 10. Overall verdict
+**Ship with fixes.**
+
+Top 3 priority fixes:
+1. Fix the misleading `aria-label` copy that currently implies offline edits will sync later.
+2. Align or remove the `title` so hover users get the same corrected message.
+3. Add basic automated coverage for `useOnlineStatus()` and `OfflineIndicator`.
+
+The phase is small and mostly well-executed. The main problem is not structural code quality; it is that the accessibility copy currently overstates offline capability relative to what Phase 7b actually ships.
+tokens used
+50,856
+## 1. Summary of the phase
+This commit adds an AppShell-level offline indicator for authenticated screens. It introduces a small client hook around `navigator.onLine` plus `online`/`offline` window events, then mounts an amber `Offline` pill at the start of the header’s right cluster in [web/src/components/layout/app-shell.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/layout/app-shell.tsx:83).
+
+## 2. Alignment with original plan
+The implementation matches the main handoff intent in [web/reviews/context/phase-7b3.md](/Users/derekbeckley/Developer/EICR_Automation/web/reviews/context/phase-7b3.md:177): it adds the hook, adds the pill, and places it first in the AppShell header cluster. One detail does not fully match the documented intent: the handoff says both `title` and `aria-label` should carry the full explanatory string, but the code only gives the full wording to `aria-label`, while `title` is shortened in [web/src/components/pwa/offline-indicator.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/pwa/offline-indicator.tsx:54).
+
+Later working-tree drift is minimal for this phase: `offline-indicator.tsx` and `use-online-status.ts` are unchanged since `a85487f`; `app-shell.tsx` has since gained `useOutboxReplay()` for Phase 7c, but the offline-indicator integration is unchanged.
+
+## 3. Correctness issues
+- **P1** Misleading offline-write semantics for assistive users in [web/src/components/pwa/offline-indicator.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/pwa/offline-indicator.tsx:54): `aria-label` says “changes will not sync until your connection returns.” The Phase 7b handoff explicitly says offline writes are still out of scope and “offline edits still vanish” in [web/reviews/context/phase-7b3.md](/Users/derekbeckley/Developer/EICR_Automation/web/reviews/context/phase-7b3.md:123) and again in the deferred-scope section at [phase-7b3.md:249](/Users/derekbeckley/Developer/EICR_Automation/web/reviews/context/phase-7b3.md:249). That copy implies a queued/outbox model that does not exist in this phase, which can mislead users about data safety.
+
+## 4. Security issues
+- No security issues identified in this commit. The change is UI-only and does not introduce new input handling, auth flow, storage of secrets, or network surface.
+
+## 5. Performance issues
+- No material performance issues identified. `useOnlineStatus()` is a small, single-subscription hook mounted once in AppShell, and the indicator returns `null` in the common online case.
+
+## 6. Accessibility issues
+- **P2** Hover text is weaker than the documented and screen-reader text in [web/src/components/pwa/offline-indicator.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/pwa/offline-indicator.tsx:54): the handoff says `title` and `aria-label` should both expose the full explanatory message, but `title="Offline — showing cached data"` drops the write-risk warning and the full explanation promised in [web/reviews/context/phase-7b3.md](/Users/derekbeckley/Developer/EICR_Automation/web/reviews/context/phase-7b3.md:47). This is not catastrophic, but it is a real parity/accessibility miss versus the stated design.
+
+## 7. Code quality
+- Code quality is otherwise solid. The hook is SSR-safe, listeners are cleaned up correctly in [web/src/lib/pwa/use-online-status.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/pwa/use-online-status.ts:38), and AppShell placement matches the phase intent in [web/src/components/layout/app-shell.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/layout/app-shell.tsx:84).
+- Conventionally, this phase is comment-heavy but coherent with the repo’s documented handoff style.
+
+## 8. Test coverage gaps
+- No automated tests were added for this phase, and I did not find any `*.test.ts(x)` / `*.spec.ts(x)` files under `web/`.
+- Missing coverage areas:
+  - `useOnlineStatus()` initial optimistic render, mount-time correction, and listener cleanup in [web/src/lib/pwa/use-online-status.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/pwa/use-online-status.ts:35)
+  - `OfflineIndicator` null render when online and visible render when offline in [web/src/components/pwa/offline-indicator.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/pwa/offline-indicator.tsx:47)
+  - Copy/a11y assertions so the status text cannot regress into promising unsupported offline sync
+
+## 9. Suggested fixes
+1. [web/src/components/pwa/offline-indicator.tsx:54] Change the `aria-label` to remove the unsupported promise that edits will sync later. Suggested direction: “You are offline. Some data may be previously loaded. Reconnect before making changes.” This matches Phase 7b’s actual contract and avoids implying a 7c-style outbox.
+2. [web/src/components/pwa/offline-indicator.tsx:55] Make `title` match the same full, corrected message as `aria-label`, or remove `title` entirely if you do not want hover-only copy. The current shortened title does not match the handoff intent and omits important context.
+3. [web/src/lib/pwa/use-online-status.ts:35] Add tests for the hook and indicator behavior. At minimum, cover initial `true`, mount correction from `navigator.onLine`, `online`/`offline` event transitions, and offline-indicator render/null behavior so this UX does not regress silently.
+
+## 10. Overall verdict
+**Ship with fixes.**
+
+Top 3 priority fixes:
+1. Fix the misleading `aria-label` copy that currently implies offline edits will sync later.
+2. Align or remove the `title` so hover users get the same corrected message.
+3. Add basic automated coverage for `useOnlineStatus()` and `OfflineIndicator`.
+
+The phase is small and mostly well-executed. The main problem is not structural code quality; it is that the accessibility copy currently overstates offline capability relative to what Phase 7b actually ships.

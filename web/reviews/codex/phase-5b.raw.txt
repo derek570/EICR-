@@ -1,0 +1,790 @@
+OpenAI Codex v0.116.0 (research preview)
+--------
+workdir: /Users/derekbeckley/Developer/EICR_Automation
+model: gpt-5.4
+provider: openai
+approval: never
+sandbox: read-only
+reasoning effort: none
+reasoning summaries: none
+session id: 019d9db1-9969-72d2-9bb7-fdbc9aa83b5a
+--------
+user
+You are performing a rigorous code review of a single phase of a Next.js 16 / React 19 PWA frontend rebuild for an electrical-certificate automation tool (EICR / EIC). The repo root is at /Users/derekbeckley/Developer/EICR_Automation and the web package is at web/. Branch: web-rebuild.
+
+TARGET: Phase 5b — document extraction on Circuits tab
+COMMIT: 766735f
+
+Context for this phase (original intent, handoff doc, commit message, files changed) is in this repo at: reviews/context/phase-5b.md — READ THAT FILE FIRST.
+
+Use shell commands to:
+  git show --stat 766735f
+  git show 766735f
+to inspect the full diff. Then read any files you need from the working tree (they may have evolved since this commit — note any later changes).
+
+Your output must be a well-structured markdown review with these sections:
+  1. Summary of the phase (2-3 sentences — what it did).
+  2. Alignment with original plan (does the implementation match the handoff doc / commit intent? Any missing objectives?).
+  3. Correctness issues (bugs, race conditions, missing error handling, incorrect semantics). Prioritise P0/P1/P2.
+  4. Security issues (XSS, auth, CSRF, injection, leaked secrets, PII, CORS). Each item tagged with severity.
+  5. Performance issues (re-renders, N+1, large bundles, memory leaks, blocking work on main thread).
+  6. Accessibility issues (semantic HTML, keyboard nav, ARIA, colour contrast, focus management).
+  7. Code quality (duplication, dead code, type-safety holes, naming, convention drift vs. rest of repo).
+  8. Test coverage gaps.
+  9. Suggested fixes — each as a numbered item with: file:line, what to change, why. Be concrete.
+  10. Overall verdict (ship / ship with fixes / needs rework) and top 3 priority fixes.
+
+Be specific — cite file paths and line numbers. Avoid generic advice. If the code is good, say so with evidence. Do NOT modify files; this is review only.
+
+mcp startup: no servers
+codex
+I’m reviewing Phase 5b against its stated intent first, then I’ll inspect commit `766735f` and the current working-tree versions of the touched files so I can call out both commit-level issues and any later drift.
+exec
+/bin/zsh -lc "sed -n '1,220p' reviews/context/phase-5b.md" in /Users/derekbeckley/Developer/EICR_Automation exited 1 in 0ms:
+sed: reviews/context/phase-5b.md: No such file or directory
+exec
+/bin/zsh -lc 'git show --stat --oneline 766735f' in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc 'git show 766735f --' in /Users/derekbeckley/Developer/EICR_Automation succeeded in 1.56s:
+2026-04-18 00:06:03.488 xcodebuild[34311:67210763]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:06:03.716 xcodebuild[34311:67210760] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-Sf7xgGDa' (errno=Operation not permitted)
+2026-04-18 00:06:04.096 xcodebuild[34316:67210798]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:06:04.199 xcodebuild[34316:67210795] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+766735f feat(web): Phase 5b document extraction on Circuits tab
+ CLAUDE.md                                          |   1 +
+ web/src/app/job/[id]/circuits/page.tsx             |  88 ++++-
+ web/src/lib/api-client.ts                          |  23 ++
+ web/src/lib/recording/apply-document-extraction.ts | 422 +++++++++++++++++++++
+ web/src/lib/recording/apply-extraction.ts          |   4 +-
+ web/src/lib/types.ts                               |  62 +++
+ 6 files changed, 596 insertions(+), 4 deletions(-)
+ succeeded in 1.56s:
+2026-04-18 00:06:03.488 xcodebuild[34312:67210762]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:06:03.716 xcodebuild[34312:67210761] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-6CZs6jy2' (errno=Operation not permitted)
+2026-04-18 00:06:04.096 xcodebuild[34317:67210797]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:06:04.199 xcodebuild[34317:67210796] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+commit 766735f402f3021e17aafdc81764095552f23f01
+Author: Derek Beckley <derekbeckley@Dereks-Mac-mini.broadband>
+Date:   Fri Apr 17 14:42:47 2026 +0100
+
+    feat(web): Phase 5b document extraction on Circuits tab
+    
+    What
+    ----
+    Wire the "Extract" button on the Circuits action rail (web rebuild, branch
+    `web-rebuild`). One tap opens an image picker, POSTs the photo to the
+    existing `/api/analyze-document` endpoint, and non-destructively merges
+    the returned formData into every section of the job.
+    
+    Why
+codex
+The context file path in the prompt doesn’t exist as written, so I’m locating the actual review handoff file and checking whether any of the Phase 5b files changed after `766735f`. Then I’ll read the current versions for exact line references.
+exec
+/bin/zsh -lc 'git diff --stat 766735f..HEAD -- web/src/app/job/[id]/circuits/page.tsx web/src/lib/api-client.ts web/src/lib/recording/apply-document-extraction.ts web/src/lib/recording/apply-extraction.ts web/src/lib/types.ts CLAUDE.md' in /Users/derekbeckley/Developer/EICR_Automation exited 1 in 0ms:
+zsh:1: no matches found: web/src/app/job/[id]/circuits/page.tsx
+exec
+/bin/zsh -lc 'git diff 766735f..HEAD -- web/src/app/job/[id]/circuits/page.tsx web/src/lib/api-client.ts web/src/lib/recording/apply-document-extraction.ts web/src/lib/recording/apply-extraction.ts web/src/lib/types.ts CLAUDE.md' in /Users/derekbeckley/Developer/EICR_Automation exited 1 in 0ms:
+zsh:1: no matches found: web/src/app/job/[id]/circuits/page.tsx
+exec
+/bin/zsh -lc "rg --files | rg 'phase-5b\\.md"'$|reviews/.*/phase-5b'"\\.md"'$|context/.*/phase-5b'"\\.md"'$'"'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+web/reviews/claude/phase-5b.md
+web/reviews/context/phase-5b.md
+codex
+I found the handoff at `web/reviews/context/phase-5b.md`; the prompt’s path was missing the `web/` prefix. I’m re-running the post-commit diff with the bracketed route path quoted so I can distinguish commit issues from later edits.
+exec
+/bin/zsh -lc "sed -n '1,260p' web/reviews/context/phase-5b.md" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+# Phase 5b — Context
+
+**Commit:** `766735f`
+
+## Commit message
+
+```
+commit 766735f402f3021e17aafdc81764095552f23f01
+Author:     Derek Beckley <derekbeckley@Dereks-Mac-mini.broadband>
+AuthorDate: Fri Apr 17 14:42:47 2026 +0100
+Commit:     Derek Beckley <derekbeckley@Dereks-Mac-mini.broadband>
+CommitDate: Fri Apr 17 14:42:47 2026 +0100
+
+    feat(web): Phase 5b document extraction on Circuits tab
+    
+    What
+    ----
+    Wire the "Extract" button on the Circuits action rail (web rebuild, branch
+    `web-rebuild`). One tap opens an image picker, POSTs the photo to the
+    existing `/api/analyze-document` endpoint, and non-destructively merges
+exec
+/bin/zsh -lc "git diff --stat 766735f..HEAD -- 'web/src/app/job/[id]/circuits/page.tsx' web/src/lib/api-client.ts web/src/lib/recording/apply-document-extraction.ts web/src/lib/recording/apply-extraction.ts web/src/lib/types.ts CLAUDE.md" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "git diff 766735f..HEAD -- 'web/src/app/job/[id]/circuits/page.tsx' web/src/lib/api-client.ts web/src/lib/recording/apply-document-extraction.ts web/src/lib/recording/apply-extraction.ts web/src/lib/types.ts CLAUDE.md" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 1.13s:
+2026-04-18 00:06:21.225 xcodebuild[34350:67211036]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:06:21.328 xcodebuild[34350:67211035] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-749KpEoD' (errno=Operation not permitted)
+2026-04-18 00:06:21.643 xcodebuild[34355:67211060]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:06:21.746 xcodebuild[34355:67211058] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+ CLAUDE.md                                 | 331 ++++----------------------
+ web/src/lib/api-client.ts                 | 382 ++++++++++++++++++++++++++++++
+ web/src/lib/recording/apply-extraction.ts | 109 ++++++++-
+ web/src/lib/types.ts                      | 166 ++++++++++++-
+ 4 files changed, 695 insertions(+), 293 deletions(-)
+ succeeded in 1.12s:
+2026-04-18 00:06:21.328 xcodebuild[34351:67211034] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-k2yT6fjk' (errno=Operation not permitted)
+2026-04-18 00:06:21.643 xcodebuild[34354:67211061]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:06:21.746 xcodebuild[34354:67211059] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+diff --git a/CLAUDE.md b/CLAUDE.md
+index 05f2ab4..23a1c1e 100644
+--- a/CLAUDE.md
++++ b/CLAUDE.md
+@@ -69,47 +69,22 @@ npm run lint                       # ESLint
+ npm run format                     # Prettier
+ ```
+ 
+-### Deploy (CI/CD via GitHub Actions)
++### Deploy
+ 
+-**Primary method:** Push to `main` triggers automatic deployment via `.github/workflows/deploy.yml`.
++Push to `main` → GitHub Actions runs tests, builds ARM64 Docker images, pushes to ECR, deploys to ECS (~30 min end-to-end). Monitor: https://github.com/derek570/EICR-/actions
+ 
+-```
+codex
+I have the phase intent and the later drift. Now I’m reading the current source around the merge helpers, page state updates, and the backend document schema so the findings are tied to actual semantics rather than just the diff text.
+exec
+/bin/zsh -lc "nl -ba 'web/src/app/job/[id]/circuits/page.tsx' | sed -n '1,520p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	'use client';
+     2	
+     3	import * as React from 'react';
+     4	import {
+     5	  Calculator,
+     6	  Camera,
+     7	  CircuitBoard,
+     8	  FileDown,
+     9	  FlipHorizontal2,
+    10	  List,
+    11	  Loader2,
+    12	  Plus,
+    13	  SlidersHorizontal,
+    14	  Trash2,
+    15	  X,
+    16	  Zap,
+    17	} from 'lucide-react';
+    18	import { api } from '@/lib/api-client';
+    19	import { useJobContext } from '@/lib/job-context';
+    20	import { ApiError } from '@/lib/types';
+exec
+/bin/zsh -lc "nl -ba web/src/lib/types.ts | sed -n '120,280p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+   120	  employee_email?: string | null;
+   121	}
+   122	
+   123	/**
+   124	 * Response envelope from `GET /api/companies/:companyId/stats`. Shape
+   125	 * comes from `db.getCompanyStats` — status counts + two derived totals.
+   126	 * We surface these as a tiny grid on the dashboard (no charts in 6b
+   127	 * per the handoff's scope exclusions).
+   128	 */
+   129	export interface CompanyStats {
+   130	  company?: {
+   131	    id: string;
+   132	    name: string;
+   133	    is_active?: boolean;
+   134	    created_at?: string;
+   135	  };
+   136	  jobs_by_status?: Record<string, number>;
+   137	  total_jobs?: number;
+   138	  active_employees?: number;
+   139	  jobs_last_7_days?: number;
+exec
+/bin/zsh -lc "nl -ba web/src/lib/recording/apply-extraction.ts | sed -n '1,460p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	/**
+     2	 * Map a Sonnet extraction result onto a JobDetail patch.
+     3	 *
+     4	 * Responsibilities:
+     5	 *   1. Route each reading to the correct section of the job (supply,
+     6	 *      board, installation, extent, design, or the matching circuit
+     7	 *      row) based on field name.
+     8	 *   2. Apply 3-tier priority: pre-existing manual/CCU values win over
+     9	 *      fresh Sonnet readings. Sonnet's own de-dup lives server-side; we
+    10	 *      re-check here in case the server-side state snapshot lagged
+    11	 *      behind a user edit.
+    12	 *   3. Apply `circuit_updates` — create or rename a CircuitRow so
+    13	 *      subsequent readings have somewhere to land.
+    14	 *   4. Append `observations` not already present.
+    15	 *
+    16	 * Returns a partial `JobDetail` patch, or null if nothing changed so
+    17	 * the caller can skip an `updateJob` cycle (avoids needless re-renders
+    18	 * when Sonnet returns an empty result).
+    19	 */
+    20	
+exec
+/bin/zsh -lc "nl -ba web/src/lib/recording/apply-document-extraction.ts | sed -n '1,460p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	/**
+     2	 * Fold a /api/analyze-document response onto a JobDetail patch.
+     3	 *
+     4	 * Used by the "Extract" button on the Circuits tab (Phase 5b). The
+     5	 * backend runs GPT Vision over a photo of a prior EICR/EIC, handwritten
+     6	 * test sheet, or typed record and returns the full formData envelope.
+     7	 * This helper merges each section into the live job, with the 3-tier
+     8	 * priority guard applied *everywhere*:
+     9	 *
+    10	 *   Pre-existing user/CCU value  >  Document extraction  >  (empty)
+    11	 *
+    12	 * This is stricter than iOS `CertificateMerger.merge()` (Sources/
+    13	 * Processing/CertificateMerger.swift:7-167), which overwrites
+    14	 * non-empty extracted values on installation/supply/board. The Phase 5
+    15	 * handoff memo explicitly requires the fill-empty-only policy across
+    16	 * all sections so a user mid-edit never has their typing clobbered.
+    17	 *
+    18	 * Section routing mirrors the backend response envelope exactly —
+    19	 * backend keys are already 1:1 with web JobDetail section keys so no
+    20	 * translation is needed, only whitelisting (so unknown prompt-evolution
+exec
+/bin/zsh -lc "nl -ba web/src/lib/job-context.tsx | sed -n '1,260p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "rg -n \"analyze-document|installation_details|supply_characteristics|board_info|observations\" src/routes/extraction.js web/src/app/job/[id]/observations -g '"'!**/*.map'"'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	'use client';
+     2	
+     3	import * as React from 'react';
+     4	import type { CertificateType, JobDetail } from './types';
+     5	
+     6	/**
+     7	 * Per-job state container. Holds the fetched JobDetail plus a couple of
+     8	 * derived flags (dirty/syncing) and two mutators:
+     9	 *
+    10	 *  - updateJob(partial) — local merge, does not hit the network. Every
+    11	 *    input in the job tabs calls this; a debounced save effect (Phase 4)
+    12	 *    flushes to the backend.
+    13	 *  - setJob(full)        — replace wholesale (used after a network save
+    14	 *    round-trip so server-derived fields like updated_at can flow in).
+    15	 *
+    16	 * The shape deliberately mirrors the legacy `useJob` hook so the tab
+    17	 * components from Phase 3+ read the same API.
+    18	 */
+    19	interface JobContextValue {
+    20	  job: JobDetail;
+ exited 1 in 0ms:
+zsh:1: no matches found: web/src/app/job/[id]/observations
+exec
+/bin/zsh -lc "nl -ba web/src/lib/api-client.ts | sed -n '1,260p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	import {
+     2	  type AdminUser,
+     3	  ApiError,
+     4	  type CCUAnalysis,
+     5	  type CompanyJobRow,
+     6	  type CompanyMember,
+     7	  type CompanySettings,
+     8	  type CompanyStats,
+     9	  type DocumentExtractionResponse,
+    10	  type InspectorProfile,
+    11	  type InviteEmployeeResponse,
+    12	  type Job,
+    13	  type JobDetail,
+    14	  type LoginResponse,
+    15	  type Paginated,
+    16	  type User,
+    17	} from './types';
+    18	import { getToken } from './auth';
+    19	
+    20	/**
+codex
+I’m checking the backend contract and the observations UI now. That’s the main way to tell whether the new merge logic is semantically correct or just internally consistent.
+exec
+/bin/zsh -lc "nl -ba src/routes/extraction.js | sed -n '1320,1495p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+  1320	- OCPD: type (B/C/D), rating (A), BS/EN, breaking capacity (kA)
+  1321	- RCD: type (AC/A/B/F/S), operating current (mA), BS/EN
+  1322	- Ring continuity: R1, Rn, R2 (ohms)
+  1323	- r1+r2 and r2 values (ohms)
+  1324	- Insulation resistance: live-live and live-earth (MΩ) — prefix with > if greater than
+  1325	- Earth fault loop impedance Zs (ohms)
+  1326	- Polarity confirmed (true/false)
+  1327	- RCD trip time (ms)
+  1328	- RCD button test confirmed (true/false)
+  1329	
+  1330	### Observations
+  1331	For each observation/defect noted:
+  1332	- Classification code: C1 (danger present), C2 (potentially dangerous), C3 (improvement recommended), FI (further investigation)
+  1333	- Observation text (the defect description)
+  1334	- Item/location
+  1335	- Schedule item reference
+  1336	- Regulation reference
+  1337	
+  1338	## RULES
+  1339	- Only extract data you can actually read — do NOT guess or fabricate values
+exec
+/bin/zsh -lc "rg -n \"analyze-document|installation_details|supply_characteristics|board_info|schedule_item|regulation|observation_text|item_location\" src/routes/extraction.js 'web/src/app/job/[id]/observations/page.tsx' web/src/components -g '"'!**/*.map'"'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+src/routes/extraction.js:964:    // the supply_characteristics schema keys (spd_rated_current, spd_bs_en, etc.)
+src/routes/extraction.js:1249: * POST /api/analyze-document
+src/routes/extraction.js:1251:router.post('/analyze-document', auth.requireAuth, upload.single('photo'), async (req, res) => {
+src/routes/extraction.js:1351:  "installation_details": {
+src/routes/extraction.js:1368:  "supply_characteristics": {
+src/routes/extraction.js:1375:  "board_info": {
+src/routes/extraction.js:1414:      "observation_text": "Description of defect",
+src/routes/extraction.js:1415:      "item_location": "Distribution board",
+src/routes/extraction.js:1416:      "schedule_item": "4.2",
+src/routes/extraction.js:1417:      "regulation": "Reg 421.1.201"
+src/routes/extraction.js:1501:      installation_details: extracted.installation_details || {},
+src/routes/extraction.js:1502:      supply_characteristics: extracted.supply_characteristics || {},
+src/routes/extraction.js:1503:      board_info: extracted.board_info || {},
+src/routes/extraction.js:1514:      hasInstallation: Object.keys(formData.installation_details).length > 0,
+src/routes/extraction.js:1515:      hasSupply: Object.keys(formData.supply_characteristics).length > 0,
+src/routes/extraction.js:1516:      hasBoard: Object.keys(formData.board_info).length > 0,
+src/routes/extraction.js:1544:    const { observation_text, code, item_location } = req.body;
+src/routes/extraction.js:1546:    if (!observation_text || !observation_text.trim()) {
+src/routes/extraction.js:1547:      return res.status(400).json({ error: 'observation_text is required' });
+src/routes/extraction.js:1560:      location: item_location || 'unknown',
+exec
+/bin/zsh -lc 'git show 766735f''^:'"'web/src/app/job/[id]/circuits/page.tsx' | nl -ba | sed -n '70,430p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 1.01s:
+2026-04-18 00:06:45.468 xcodebuild[34597:67211924] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-ehkNDSjH' (errno=Operation not permitted)
+2026-04-18 00:06:45.753 xcodebuild[34599:67211938]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:06:45.850 xcodebuild[34599:67211937] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+    70	  return {
+    71	    id: (globalThis.crypto?.randomUUID?.() ?? `c-${Date.now()}-${Math.random()}`).toString(),
+    72	    board_id: boardId,
+    73	    circuit_ref: ref,
+    74	    circuit_designation: '',
+    75	  };
+    76	}
+    77	
+    78	export default function CircuitsPage() {
+    79	  const { job, updateJob } = useJobContext();
+    80	  const [expandedId, setExpandedId] = React.useState<string | null>(null);
+    81	  const [actionHint, setActionHint] = React.useState<string | null>(null);
+    82	  const [ccuBusy, setCcuBusy] = React.useState(false);
+    83	  const [ccuError, setCcuError] = React.useState<string | null>(null);
+    84	  const [ccuQuestions, setCcuQuestions] = React.useState<string[]>([]);
+codex
+The backend schema confirms the exact document payload. I’m doing one more pass over the observations and board/circuit consumers to see whether Phase 5b introduced fields that the rest of the web app actually renders, ignores, or mishandles.
+exec
+/bin/zsh -lc "nl -ba 'web/src/app/job/[id]/observations/page.tsx' | sed -n '1,360p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	'use client';
+     2	
+     3	import * as React from 'react';
+     4	import { useParams } from 'next/navigation';
+     5	import { AlertTriangle, ImageIcon, MapPin, Plus, Trash2 } from 'lucide-react';
+     6	import { useJobContext } from '@/lib/job-context';
+     7	import type { ObservationRow } from '@/lib/types';
+     8	import { getUser } from '@/lib/auth';
+     9	import { SectionCard } from '@/components/ui/section-card';
+    10	import { ObservationPhoto } from '@/components/observations/observation-photo';
+    11	import { ObservationSheet } from '@/components/observations/observation-sheet';
+    12	import { cn } from '@/lib/utils';
+    13	
+    14	/**
+    15	 * Observations tab — mirrors iOS `ObservationsTab.swift`.
+    16	 *
+    17	 * Layout: gradient hero with C1/C2/C3/FI tally + Add button, then a list
+    18	 * of observation cards. Tap Add for a new blank sheet, tap any card to
+    19	 * edit. The photo upload flow (Phase 5c) lives in <ObservationSheet>;
+    20	 * this page just renders up to three thumbnails inline per card and
+exec
+/bin/zsh -lc "rg -n \"photos\\?|schedule_item|regulation|general_condition_of_installation|prospective_fault_current|earth_loop_impedance_ze|spd_status|board_id|circuit_ref\" web/src -g '"'!**/*.map'"'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+web/src/lib/types.ts:229:  photos?: string[];
+web/src/lib/types.ts:313:  circuit_ref?: string;
+web/src/lib/types.ts:345:  schedule_item?: string;
+web/src/lib/types.ts:346:  regulation?: string;
+web/src/lib/recording/apply-document-extraction.ts:56:  'general_condition_of_installation',
+web/src/lib/recording/apply-document-extraction.ts:72:  'prospective_fault_current',
+web/src/lib/recording/apply-document-extraction.ts:73:  'earth_loop_impedance_ze',
+web/src/lib/recording/apply-document-extraction.ts:83:  'spd_status',
+web/src/lib/recording/apply-document-extraction.ts:215: *  `circuit_ref`. Matched rows get their empty fields filled (never
+web/src/lib/recording/apply-document-extraction.ts:217: *  tagged with `board_id`. Returns the full updated circuits array or
+web/src/lib/recording/apply-document-extraction.ts:230:    const ref = (row.circuit_ref ?? row.number) as string | undefined;
+web/src/lib/recording/apply-document-extraction.ts:237:    const refRaw = analysed.circuit_ref;
+web/src/lib/recording/apply-document-extraction.ts:247:        if (field === 'circuit_ref') continue; // keep existing casing
+web/src/lib/recording/apply-document-extraction.ts:265:        circuit_ref: String(refRaw),
+web/src/lib/recording/apply-document-extraction.ts:268:      if (boardId) row.board_id = boardId;
+web/src/lib/recording/apply-document-extraction.ts:286: *   - Duplicate if both `schedule_item` AND `code` match an existing row
+web/src/lib/recording/apply-document-extraction.ts:299:    schedule_item?: string;
+web/src/lib/recording/apply-document-extraction.ts:307:    const scheduleItemRaw = (row as unknown as Record<string, unknown>).schedule_item;
+web/src/lib/recording/apply-document-extraction.ts:310:      schedule_item: typeof scheduleItemRaw === 'string' ? scheduleItemRaw.trim() : undefined,
+web/src/lib/recording/apply-document-extraction.ts:323:    const scheduleItem = obs.schedule_item?.trim();
+exec
+/bin/zsh -lc "rg -n \"applyDocumentExtractionToJob|analyzeDocument\\(|DocumentExtractionResponse|DocumentExtractionCircuit|DocumentExtractionObservation\" web/src -g '"'!**/*.map'"'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+web/src/lib/types.ts:312:export interface DocumentExtractionCircuit {
+web/src/lib/types.ts:341:export interface DocumentExtractionObservation {
+web/src/lib/types.ts:354:  circuits?: DocumentExtractionCircuit[];
+web/src/lib/types.ts:355:  observations?: DocumentExtractionObservation[];
+web/src/lib/types.ts:358:export interface DocumentExtractionResponse {
+web/src/lib/recording/apply-document-extraction.ts:31:  DocumentExtractionCircuit,
+web/src/lib/recording/apply-document-extraction.ts:33:  DocumentExtractionObservation,
+web/src/lib/recording/apply-document-extraction.ts:34:  DocumentExtractionResponse,
+web/src/lib/recording/apply-document-extraction.ts:222:  incoming: DocumentExtractionCircuit[],
+web/src/lib/recording/apply-document-extraction.ts:293:  incoming: DocumentExtractionObservation[]
+web/src/lib/recording/apply-document-extraction.ts:374:export function applyDocumentExtractionToJob(
+web/src/lib/recording/apply-document-extraction.ts:376:  response: DocumentExtractionResponse,
+web/src/lib/api-client.ts:9:  type DocumentExtractionResponse,
+web/src/lib/api-client.ts:183:  analyzeDocument(photo: Blob | File): Promise<DocumentExtractionResponse> {
+web/src/lib/api-client.ts:186:    return request<DocumentExtractionResponse>('/api/analyze-document', {
+web/src/app/job/[id]/circuits/page.tsx:22:import { applyDocumentExtractionToJob } from '@/lib/recording/apply-document-extraction';
+web/src/app/job/[id]/circuits/page.tsx:191:      const response = await api.analyzeDocument(file);
+web/src/app/job/[id]/circuits/page.tsx:192:      const { patch, summary } = applyDocumentExtractionToJob(job, response, {
+codex
+I’ve narrowed this to a few concrete areas: merge semantics, board targeting, stale-state behavior, and whether extracted metadata is actually consumable elsewhere. I’m verifying the remaining likely edge cases against the surrounding board/supply/installation UIs before I write the review.
+exec
+/bin/zsh -lc "nl -ba 'web/src/app/job/[id]/supply/page.tsx' | sed -n '1,220p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "nl -ba 'web/src/app/job/[id]/installation/page.tsx' | sed -n '40,360p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	'use client';
+     2	
+     3	import * as React from 'react';
+     4	import { Cable, Gauge, Layers, Power, ShieldCheck, Sigma, Wrench, Zap } from 'lucide-react';
+     5	import { useJobContext } from '@/lib/job-context';
+     6	import { FloatingLabelInput } from '@/components/ui/floating-label-input';
+     7	import { SectionCard } from '@/components/ui/section-card';
+     8	import { SegmentedControl } from '@/components/ui/segmented-control';
+     9	import { SelectChips } from '@/components/ui/select-chips';
+    10	
+    11	/**
+    12	 * Supply tab — mirrors iOS `SupplyTab.swift` + `SupplyCharacteristics.swift`.
+    13	 *
+    14	 * Eight section cards in the same order iOS uses so users who switch
+    15	 * platforms mid-job land in the same mental model:
+    16	 *   1. Supply details        (earthing, live conductors, voltages, freq, PFC, Ze)
+    17	 *   2. Means of earthing     (distributor / electrode choice + electrode detail)
+    18	 *   3. Main switch           (BS EN, poles, voltage, current, fuse, location)
+    19	 *   4. RCD                   (In, time delay, operating time — design + tested)
+    20	 *   5. Earthing conductor    (material, CSA, continuity)
+ succeeded in 0ms:
+    40	 */
+    41	
+    42	type InstallationShape = {
+    43	  client_name?: string;
+    44	  client_address?: string;
+    45	  client_town?: string;
+    46	  client_county?: string;
+    47	  client_postcode?: string;
+    48	  client_phone?: string;
+    49	  client_email?: string;
+    50	
+    51	  address?: string;
+    52	  town?: string;
+    53	  county?: string;
+    54	  postcode?: string;
+    55	  occupier_name?: string;
+    56	
+    57	  date_of_inspection?: string; // ISO yyyy-mm-dd
+    58	  date_of_previous_inspection?: string;
+    59	  next_inspection_years?: number;
+exec
+/bin/zsh -lc "nl -ba 'web/src/app/job/[id]/board/page.tsx' | sed -n '1,240p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "nl -ba web/src/lib/recording/apply-ccu-analysis.ts | sed -n '180,340p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	'use client';
+     2	
+     3	import * as React from 'react';
+     4	import { Boxes, Cable, CircuitBoard, MapPin, Plus, ShieldCheck, Trash2 } from 'lucide-react';
+     5	import { useJobContext } from '@/lib/job-context';
+     6	import { FloatingLabelInput } from '@/components/ui/floating-label-input';
+     7	import { SectionCard } from '@/components/ui/section-card';
+     8	import { SelectChips } from '@/components/ui/select-chips';
+     9	
+    10	/**
+    11	 * Board tab — mirrors iOS `BoardTab.swift` + `BoardInfo.swift`.
+    12	 *
+    13	 * iOS supports multiple boards per job (main + sub-distribution); the web
+    14	 * stores the list in `job.board.boards`. We default to a single synthesized
+    15	 * main board if the array is empty so inspectors can start filling straight
+    16	 * away. Adding / removing boards is a Phase 3a feature — the full parent /
+    17	 * sub-main hierarchy editing lands with Phase 3b (Circuits) because that's
+    18	 * when the feed-circuit reference actually matters.
+    19	 *
+    20	 * Fields mapped 1-1 with `BoardInfo` (snake_case keys):
+ succeeded in 0ms:
+   180	    // iOS parity: explicit N/A stamps when there's no SPD in the CU.
+   181	    for (const key of ['spd_bs_en', 'spd_type_supply', 'spd_short_circuit', 'spd_rated_current']) {
+   182	      if (!hasValue(existing[key])) {
+   183	        next[key] = 'N/A';
+   184	        changed = true;
+   185	      }
+   186	    }
+   187	  }
+   188	
+   189	  // Backend also sends fallbacks derived from the main switch.
+   190	  apply('spd_rated_current', analysis.spd_rated_current);
+   191	  apply('spd_type_supply', analysis.spd_type_supply);
+   192	
+   193	  return changed ? next : null;
+   194	}
+   195	
+   196	/** Build the circuit-list patch. Matches by `circuit_ref` only —
+   197	 *  sufficient when CCU re-analysis is scoped to a single board. */
+   198	function buildCircuitsPatch(
+   199	  job: JobDetail,
+codex
+I’ve got the core findings. I’m doing a last check on the exact line numbers for the stale-state and no-op board-patch paths, plus whether the `success: false` contract mismatch is still present in the current tree.
+exec
+/bin/zsh -lc "nl -ba web/src/lib/types.ts | sed -n '300,370p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+   300	
+   301	/**
+   302	 * Response from POST /api/analyze-document. GPT Vision extracts EICR/EIC
+   303	 * certificate data from an image (typed cert, handwritten test sheet,
+   304	 * phone snap). Unlike CCU, doc extraction returns structured data only —
+   305	 * no `questionsForInspector`.
+   306	 *
+   307	 * Field keys match the backend prompt schema in
+   308	 * `src/routes/extraction.js:1349-1420` 1:1 so the merge helper can copy
+   309	 * straight onto JobDetail section bags. Kept permissive (all optional +
+   310	 * index signature) so prompt additions don't break the client.
+   311	 */
+   312	export interface DocumentExtractionCircuit {
+   313	  circuit_ref?: string;
+   314	  circuit_designation?: string;
+   315	  live_csa_mm2?: string;
+   316	  cpc_csa_mm2?: string;
+   317	  wiring_type?: string;
+   318	  ref_method?: string;
+   319	  number_of_points?: string;
+exec
+/bin/zsh -lc "nl -ba src/routes/extraction.js | sed -n '1496,1536p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+  1496	
+  1497	    // Wrap in { success, formData } envelope to match TranscriptExtractionResponse
+  1498	    const formData = {
+  1499	      circuits: extracted.circuits || [],
+  1500	      observations: extracted.observations || [],
+  1501	      installation_details: extracted.installation_details || {},
+  1502	      supply_characteristics: extracted.supply_characteristics || {},
+  1503	      board_info: extracted.board_info || {},
+  1504	    };
+  1505	
+  1506	    const inputCost = (promptTokens * 0.002) / 1000;
+  1507	    const outputCost = (completionTokens * 0.012) / 1000;
+  1508	
+  1509	    logger.info('Document extraction parsed', {
+  1510	      userId: req.user.id,
+  1511	      model,
+  1512	      circuitCount: formData.circuits.length,
+  1513	      observationCount: formData.observations.length,
+  1514	      hasInstallation: Object.keys(formData.installation_details).length > 0,
+  1515	      hasSupply: Object.keys(formData.supply_characteristics).length > 0,
+exec
+/bin/zsh -lc "git log --oneline --decorate --max-count=8 -- web/src/lib/api-client.ts web/src/lib/recording/apply-extraction.ts web/src/lib/types.ts CLAUDE.md 'web/src/app/job/[id]/circuits/page.tsx' web/src/lib/recording/apply-document-extraction.ts" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 1.03s:
+2026-04-18 00:07:19.569 xcodebuild[34635:67212431] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-Diw35sRb' (errno=Operation not permitted)
+2026-04-18 00:07:19.858 xcodebuild[34637:67212441]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:07:19.956 xcodebuild[34637:67212440] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+e64f756 (HEAD -> web-rebuild) feat(web): Phase 7c offline mutation outbox + replay worker
+a2fb5db docs: register new reference files in CLAUDE.md index
+bda4c6b docs: collapse deploy block + refresh Current Focus in CLAUDE.md
+e3d1669 docs: trim CLAUDE.md changelog to one-liners; full history → reference
+4725181 docs: extract VAD sleep/wake investigation journal to docs/reference/
+a95a1d4 docs: extract iOS TestFlight deploy runbook to docs/reference/
+1ec4e22 feat(web): Phase 7b iOS Add-to-Home-Screen hint (closes 7b)
+a85487f feat(web): Phase 7b — AppShell offline indicator
+codex
+The working tree drift after `766735f` is limited for the reviewed code path: `circuits/page.tsx` and `apply-document-extraction.ts` are unchanged since the phase commit, while `api-client.ts`, `apply-extraction.ts`, `types.ts`, and `CLAUDE.md` were expanded later for Phases 6/7. I’m checking for any Phase-5b-specific tests before I finalize the review.
+exec
+/bin/zsh -lc "rg -n \"apply-ccu-analysis|applyExtractionToJob|CircuitsPage|observations/page\" web -g '*test*' -g '*spec*'" in /Users/derekbeckley/Developer/EICR_Automation exited 1 in 0ms:
+
+exec
+/bin/zsh -lc "rg -n \"apply-document-extraction|analyzeDocument|document extraction|analyze-document|applyDocumentExtractionToJob\" web -g '*test*' -g '*spec*'" in /Users/derekbeckley/Developer/EICR_Automation exited 1 in 0ms:
+
+codex
+## 1. Summary of the phase
+
+Phase 5b wires the Circuits-tab `Extract` rail button to `/api/analyze-document`, adds client types/API plumbing, and introduces a merge helper that folds extracted installation, supply, board, circuit, and observation data into the current `JobDetail`. The merge policy is intentionally “fill empty only”, with circuit matching by `circuit_ref` and observation dedupe based on iOS-style keys.
+
+I reviewed commit `766735f` plus the current working tree. For this phase’s core path, [page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/job/[id]/circuits/page.tsx:79) and [apply-document-extraction.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording/apply-document-extraction.ts:1) are unchanged since the commit; [api-client.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/api-client.ts:1), [apply-extraction.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording/apply-extraction.ts:1), [types.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/types.ts:1), and `CLAUDE.md` have evolved later for Phases 6/7.
+
+## 2. Alignment with original plan
+
+The implementation broadly matches the handoff doc and commit intent:
+
+- `Extract` is now wired on the Circuits rail, opens a library-first image picker, posts multipart to `/api/analyze-document`, and merges non-destructively.
+- The merge helper applies the fill-empty-only rule across installation, supply, board, circuits, and observations.
+- Circuit matching is by case-insensitive `circuit_ref`, and unmatched rows are appended with `board_id`.
+- Observation dedupe follows the intended `(schedule_item + code)` or `(location + first-50-char prefix)` logic.
+- PDF support is correctly deferred.
+
+Missing / weakly met objectives:
+
+- The implementation is not actually safe against in-flight concurrent edits, despite the handoff’s stated goal that extraction must be safe to run after the inspector has started typing.
+- The helper comment says malformed / `success: false` envelopes are tolerated, but the code does not implement that check.
+
+## 3. Correctness issues
+
+### P1
+- **Stale-state merge can overwrite user edits made while extraction is in flight.**  
+  The document patch is computed from the `job` object captured when the request started in [circuits/page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/job/[id]/circuits/page.tsx:182), then applied later with a shallow section replace via [job-context.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/job-context.tsx:55). Because [apply-document-extraction.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording/apply-document-extraction.ts:374) builds whole-section / whole-array patches from that old snapshot, any manual edits the user makes in `installation`, `supply`, `board`, `circuits`, or `observations` during the upload/analysis window can be lost when `updateJob(patch)` lands. This directly violates the intended “safe after typing has started” behavior.
+
+### P2
+- **`mergeBoard()` returns a board patch even when nothing changed.**  
+  In [apply-document-extraction.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording/apply-document-extraction.ts:175), `boards` is always cloned when `boardState.boards` exists, so the guard at line 205 (`boards === boardState.boards`) is never true. Result: extraction often returns a synthetic “changed” `board` patch with identical data, unnecessarily marking the job dirty and causing extra rerenders. It also makes the surrounding code believe a board patch exists when none was meaningfully produced.
+
+- **Circuits without `circuit_ref` are silently dropped.**  
+  [apply-document-extraction.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording/apply-document-extraction.ts:236) skips any extracted circuit whose `circuit_ref` is missing. That means partially legible prior certs or handwritten sheets can lose otherwise useful designation/OCPD/RCD/test data entirely, with no warning and no summary signal.
+
+- **Commented contract and actual behavior diverge for `success: false`.**  
+  The public helper comment in [apply-document-extraction.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording/apply-document-extraction.ts:370) claims malformed / `success: false` responses return an empty patch. The implementation immediately reads `response.formData` and never checks `response.success` at all. Today the backend returns `200 { success: true, formData }` on success and non-2xx on failure ([extraction.js](/Users/derekbeckley/Developer/EICR_Automation/src/routes/extraction.js:1497)), so this is latent, but the helper’s documented behavior is false.
+
+## 4. Security issues
+
+- No Phase-5b-specific security issues found in the reviewed frontend path. The upload uses `FormData`, error text is rendered as text content, and I did not see an XSS/auth/CORS regression introduced by this commit.
+
+## 5. Performance issues
+
+- **No-op board patches create unnecessary state churn.**  
+  Same root cause as above in [apply-document-extraction.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording/apply-document-extraction.ts:175). This forces needless `updateJob` work even when document extraction yielded no board-level data.
+
+- **Whole-array replacement for circuits/observations amplifies rerender cost.**  
+  [apply-document-extraction.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording/apply-document-extraction.ts:227) and [apply-document-extraction.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording/apply-document-extraction.ts:305) rebuild and replace full arrays. That is acceptable for current scale, but combined with the stale-state issue it increases the blast radius of each response.
+
+## 6. Accessibility issues
+
+- No major accessibility regressions found in this phase. The trigger remains a native button, errors use `role="alert"`, and status text uses `role="status"` in [circuits/page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/job/[id]/circuits/page.tsx:297).
+
+Minor note:
+- The empty-state copy still only mentions CCU Photo and not document extraction ([circuits/page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/job/[id]/circuits/page.tsx:348)), which is a UX/content gap rather than an accessibility defect.
+
+## 7. Code quality
+
+- **Type-safety hole around preserved observation metadata.**  
+  The helper deliberately preserves `schedule_item` and `regulation` by casting `ObservationRow` to `Record<string, unknown>` in [apply-document-extraction.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording/apply-document-extraction.ts:347), but `ObservationRow` still does not declare those fields in the current tree ([types.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/types.ts:216)). That makes downstream usage invisible to TypeScript and encourages more bag-casting.
+
+- **Misleading comments.**  
+  The `success: false` comment in [apply-document-extraction.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording/apply-document-extraction.ts:370) does not match behavior. Comments this specific need to stay exact.
+
+## 8. Test coverage gaps
+
+There are no Phase-5b-targeted tests in `web/` for:
+
+- document extraction merge semantics
+- observation dedupe idempotency
+- board synthesis / board-targeting behavior
+- no-op extraction behavior
+- concurrent user-edit vs async extraction race handling
+- malformed / partial backend envelopes
+
+This phase is merge-logic-heavy and should not rely on manual verification alone.
+
+## 9. Suggested fixes
+
+1. [web/src/app/job/[id]/circuits/page.tsx:182](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/job/[id]/circuits/page.tsx:182), [web/src/lib/job-context.tsx:55](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/job-context.tsx:55), [web/src/lib/recording/apply-document-extraction.ts:374](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording/apply-document-extraction.ts:374): change the extraction apply path to merge against the latest job state at commit time, not the stale closure snapshot. Either add a functional `updateJob(prev => next)` API or re-read current state before applying. This prevents user edits made during upload/analysis from being overwritten.
+
+2. [web/src/lib/recording/apply-document-extraction.ts:175](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording/apply-document-extraction.ts:175): fix `mergeBoard()` so it returns `null` when no board field changed. Track a real `boardChanged` boolean instead of using `boards === boardState.boards`, which is ineffective after cloning. This avoids false dirty state and pointless rerenders.
+
+3. [web/src/lib/recording/apply-document-extraction.ts:236](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording/apply-document-extraction.ts:236): decide and implement a fallback policy for extracted circuits without `circuit_ref`. At minimum, count and surface them as skipped; preferably append them with a synthesized ref or quarantine bucket if enough identifying data exists. Silent drop is too lossy.
+
+4. [web/src/lib/recording/apply-document-extraction.ts:370](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording/apply-document-extraction.ts:370): either enforce `if (!response?.success) return empty patch` or remove the misleading comment. The code and documented contract should match.
+
+5. [web/src/lib/types.ts:216](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/types.ts:216) and [web/src/lib/recording/apply-document-extraction.ts:345](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording/apply-document-extraction.ts:345): add `schedule_item?: string` and `regulation?: string` to `ObservationRow` if the app intends to preserve them. That removes the `Record<string, unknown>` cast and makes future UI use safer.
+
+6. Add focused tests around [web/src/lib/recording/apply-document-extraction.ts:110](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording/apply-document-extraction.ts:110), [220](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording/apply-document-extraction.ts:220), and [291](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording/apply-document-extraction.ts:291): cover fill-empty-only merges, idempotent re-run of the same doc, no-op board extraction, missing `circuit_ref`, and observation dedupe edge cases.
+
+## 10. Overall verdict
+
+**Needs rework.**
+
+The phase is directionally strong and mostly aligned with the plan, but the stale-state merge race is a real data-loss risk in exactly the workflow this feature is meant to support. The no-op board patch bug and lack of coverage around merge edge cases make the current implementation too fragile to ship as-is.
+
+Top 3 priority fixes:
+
+1. Eliminate the stale-snapshot overwrite race during async extraction.
+2. Fix `mergeBoard()` so no-op document reads do not emit fake board patches.
+3. Add tests for idempotency, board targeting, and partial/malformed extraction inputs.
+tokens used
+86,349
+## 1. Summary of the phase
+
+Phase 5b wires the Circuits-tab `Extract` rail button to `/api/analyze-document`, adds client types/API plumbing, and introduces a merge helper that folds extracted installation, supply, board, circuit, and observation data into the current `JobDetail`. The merge policy is intentionally “fill empty only”, with circuit matching by `circuit_ref` and observation dedupe based on iOS-style keys.
+
+I reviewed commit `766735f` plus the current working tree. For this phase’s core path, [page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/job/[id]/circuits/page.tsx:79) and [apply-document-extraction.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording/apply-document-extraction.ts:1) are unchanged since the commit; [api-client.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/api-client.ts:1), [apply-extraction.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording/apply-extraction.ts:1), [types.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/types.ts:1), and `CLAUDE.md` have evolved later for Phases 6/7.
+
+## 2. Alignment with original plan
+
+The implementation broadly matches the handoff doc and commit intent:
+
+- `Extract` is now wired on the Circuits rail, opens a library-first image picker, posts multipart to `/api/analyze-document`, and merges non-destructively.
+- The merge helper applies the fill-empty-only rule across installation, supply, board, circuits, and observations.
+- Circuit matching is by case-insensitive `circuit_ref`, and unmatched rows are appended with `board_id`.
+- Observation dedupe follows the intended `(schedule_item + code)` or `(location + first-50-char prefix)` logic.
+- PDF support is correctly deferred.
+
+Missing / weakly met objectives:
+
+- The implementation is not actually safe against in-flight concurrent edits, despite the handoff’s stated goal that extraction must be safe to run after the inspector has started typing.
+- The helper comment says malformed / `success: false` envelopes are tolerated, but the code does not implement that check.
+
+## 3. Correctness issues
+
+### P1
+- **Stale-state merge can overwrite user edits made while extraction is in flight.**  
+  The document patch is computed from the `job` object captured when the request started in [circuits/page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/job/[id]/circuits/page.tsx:182), then applied later with a shallow section replace via [job-context.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/job-context.tsx:55). Because [apply-document-extraction.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording/apply-document-extraction.ts:374) builds whole-section / whole-array patches from that old snapshot, any manual edits the user makes in `installation`, `supply`, `board`, `circuits`, or `observations` during the upload/analysis window can be lost when `updateJob(patch)` lands. This directly violates the intended “safe after typing has started” behavior.
+
+### P2
+- **`mergeBoard()` returns a board patch even when nothing changed.**  
+  In [apply-document-extraction.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording/apply-document-extraction.ts:175), `boards` is always cloned when `boardState.boards` exists, so the guard at line 205 (`boards === boardState.boards`) is never true. Result: extraction often returns a synthetic “changed” `board` patch with identical data, unnecessarily marking the job dirty and causing extra rerenders. It also makes the surrounding code believe a board patch exists when none was meaningfully produced.
+
+- **Circuits without `circuit_ref` are silently dropped.**  
+  [apply-document-extraction.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording/apply-document-extraction.ts:236) skips any extracted circuit whose `circuit_ref` is missing. That means partially legible prior certs or handwritten sheets can lose otherwise useful designation/OCPD/RCD/test data entirely, with no warning and no summary signal.
+
+- **Commented contract and actual behavior diverge for `success: false`.**  
+  The public helper comment in [apply-document-extraction.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording/apply-document-extraction.ts:370) claims malformed / `success: false` responses return an empty patch. The implementation immediately reads `response.formData` and never checks `response.success` at all. Today the backend returns `200 { success: true, formData }` on success and non-2xx on failure ([extraction.js](/Users/derekbeckley/Developer/EICR_Automation/src/routes/extraction.js:1497)), so this is latent, but the helper’s documented behavior is false.
+
+## 4. Security issues
+
+- No Phase-5b-specific security issues found in the reviewed frontend path. The upload uses `FormData`, error text is rendered as text content, and I did not see an XSS/auth/CORS regression introduced by this commit.
+
+## 5. Performance issues
+
+- **No-op board patches create unnecessary state churn.**  
+  Same root cause as above in [apply-document-extraction.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording/apply-document-extraction.ts:175). This forces needless `updateJob` work even when document extraction yielded no board-level data.
+
+- **Whole-array replacement for circuits/observations amplifies rerender cost.**  
+  [apply-document-extraction.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording/apply-document-extraction.ts:227) and [apply-document-extraction.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording/apply-document-extraction.ts:305) rebuild and replace full arrays. That is acceptable for current scale, but combined with the stale-state issue it increases the blast radius of each response.
+
+## 6. Accessibility issues
+
+- No major accessibility regressions found in this phase. The trigger remains a native button, errors use `role="alert"`, and status text uses `role="status"` in [circuits/page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/job/[id]/circuits/page.tsx:297).
+
+Minor note:
+- The empty-state copy still only mentions CCU Photo and not document extraction ([circuits/page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/job/[id]/circuits/page.tsx:348)), which is a UX/content gap rather than an accessibility defect.
+
+## 7. Code quality
+
+- **Type-safety hole around preserved observation metadata.**  
+  The helper deliberately preserves `schedule_item` and `regulation` by casting `ObservationRow` to `Record<string, unknown>` in [apply-document-extraction.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording/apply-document-extraction.ts:347), but `ObservationRow` still does not declare those fields in the current tree ([types.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/types.ts:216)). That makes downstream usage invisible to TypeScript and encourages more bag-casting.
+
+- **Misleading comments.**  
+  The `success: false` comment in [apply-document-extraction.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording/apply-document-extraction.ts:370) does not match behavior. Comments this specific need to stay exact.
+
+## 8. Test coverage gaps
+
+There are no Phase-5b-targeted tests in `web/` for:
+
+- document extraction merge semantics
+- observation dedupe idempotency
+- board synthesis / board-targeting behavior
+- no-op extraction behavior
+- concurrent user-edit vs async extraction race handling
+- malformed / partial backend envelopes
+
+This phase is merge-logic-heavy and should not rely on manual verification alone.
+
+## 9. Suggested fixes
+
+1. [web/src/app/job/[id]/circuits/page.tsx:182](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/job/[id]/circuits/page.tsx:182), [web/src/lib/job-context.tsx:55](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/job-context.tsx:55), [web/src/lib/recording/apply-document-extraction.ts:374](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording/apply-document-extraction.ts:374): change the extraction apply path to merge against the latest job state at commit time, not the stale closure snapshot. Either add a functional `updateJob(prev => next)` API or re-read current state before applying. This prevents user edits made during upload/analysis from being overwritten.
+
+2. [web/src/lib/recording/apply-document-extraction.ts:175](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording/apply-document-extraction.ts:175): fix `mergeBoard()` so it returns `null` when no board field changed. Track a real `boardChanged` boolean instead of using `boards === boardState.boards`, which is ineffective after cloning. This avoids false dirty state and pointless rerenders.
+
+3. [web/src/lib/recording/apply-document-extraction.ts:236](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording/apply-document-extraction.ts:236): decide and implement a fallback policy for extracted circuits without `circuit_ref`. At minimum, count and surface them as skipped; preferably append them with a synthesized ref or quarantine bucket if enough identifying data exists. Silent drop is too lossy.
+
+4. [web/src/lib/recording/apply-document-extraction.ts:370](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording/apply-document-extraction.ts:370): either enforce `if (!response?.success) return empty patch` or remove the misleading comment. The code and documented contract should match.
+
+5. [web/src/lib/types.ts:216](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/types.ts:216) and [web/src/lib/recording/apply-document-extraction.ts:345](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording/apply-document-extraction.ts:345): add `schedule_item?: string` and `regulation?: string` to `ObservationRow` if the app intends to preserve them. That removes the `Record<string, unknown>` cast and makes future UI use safer.
+
+6. Add focused tests around [web/src/lib/recording/apply-document-extraction.ts:110](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording/apply-document-extraction.ts:110), [220](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording/apply-document-extraction.ts:220), and [291](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording/apply-document-extraction.ts:291): cover fill-empty-only merges, idempotent re-run of the same doc, no-op board extraction, missing `circuit_ref`, and observation dedupe edge cases.
+
+## 10. Overall verdict
+
+**Needs rework.**
+
+The phase is directionally strong and mostly aligned with the plan, but the stale-state merge race is a real data-loss risk in exactly the workflow this feature is meant to support. The no-op board patch bug and lack of coverage around merge edge cases make the current implementation too fragile to ship as-is.
+
+Top 3 priority fixes:
+
+1. Eliminate the stale-snapshot overwrite race during async extraction.
+2. Fix `mergeBoard()` so no-op document reads do not emit fake board patches.
+3. Add tests for idempotency, board targeting, and partial/malformed extraction inputs.

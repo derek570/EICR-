@@ -361,26 +361,24 @@ router.post('/proxy/deepgram-streaming-key', auth.requireAuth, async (req, res) 
     logger.info('Deepgram temp streaming key issued', { userId });
     res.json({ key });
   } catch (error) {
-    // Fallback: if temp token creation fails, use master key directly
-    // This ensures recording sessions aren't silently broken by API changes
-    logger.warn('Deepgram temp token failed, falling back to master key', {
+    // P0-10 — NEVER fall back to the master key. The previous code
+    // returned the Deepgram master API key directly to the browser
+    // when temp-token creation failed, which is a standing credential
+    // leak — that key has full project scope and lives for the
+    // lifetime of the secret, not 30s. Temp-token failures are almost
+    // always transient (Deepgram /auth/grant rate limit, network
+    // blip, clock skew) so the correct response is 503 and let the
+    // client retry. A true outage will surface as "recording
+    // unavailable" in the UI rather than a silent credential
+    // exfiltration.
+    logger.error('Deepgram temp token grant failed', {
       userId,
       error: error.message,
     });
-    try {
-      const masterKey = await getDeepgramKey();
-      if (masterKey) {
-        logger.info('Deepgram master key fallback issued', { userId });
-        res.json({ key: masterKey });
-        return;
-      }
-    } catch (fallbackErr) {
-      logger.error('Deepgram master key fallback also failed', {
-        userId,
-        error: fallbackErr.message,
-      });
-    }
-    res.status(500).json({ error: 'Failed to create Deepgram streaming key' });
+    res.status(503).json({
+      error: 'Deepgram streaming key temporarily unavailable. Please retry.',
+      code: 'deepgram_temp_token_failed',
+    });
   }
 });
 

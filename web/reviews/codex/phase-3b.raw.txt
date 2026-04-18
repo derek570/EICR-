@@ -1,0 +1,720 @@
+OpenAI Codex v0.116.0 (research preview)
+--------
+workdir: /Users/derekbeckley/Developer/EICR_Automation
+model: gpt-5.4
+provider: openai
+approval: never
+sandbox: read-only
+reasoning effort: none
+reasoning summaries: none
+session id: 019d9d99-fb03-70b1-8a1b-41adfab5458f
+--------
+user
+You are performing a rigorous code review of a single phase of a Next.js 16 / React 19 PWA frontend rebuild for an electrical-certificate automation tool (EICR / EIC). The repo root is at /Users/derekbeckley/Developer/EICR_Automation and the web package is at web/. Branch: web-rebuild.
+
+TARGET: Phase 3b — Circuits tab with collapsible cards + iOS action rail
+COMMIT: 983a294
+
+Context for this phase (original intent, handoff doc, commit message, files changed) is in this repo at: reviews/context/phase-3b.md — READ THAT FILE FIRST.
+
+Use shell commands to:
+  git show --stat 983a294
+  git show 983a294
+to inspect the full diff. Then read any files you need from the working tree (they may have evolved since this commit — note any later changes).
+
+Your output must be a well-structured markdown review with these sections:
+  1. Summary of the phase (2-3 sentences — what it did).
+  2. Alignment with original plan (does the implementation match the handoff doc / commit intent? Any missing objectives?).
+  3. Correctness issues (bugs, race conditions, missing error handling, incorrect semantics). Prioritise P0/P1/P2.
+  4. Security issues (XSS, auth, CSRF, injection, leaked secrets, PII, CORS). Each item tagged with severity.
+  5. Performance issues (re-renders, N+1, large bundles, memory leaks, blocking work on main thread).
+  6. Accessibility issues (semantic HTML, keyboard nav, ARIA, colour contrast, focus management).
+  7. Code quality (duplication, dead code, type-safety holes, naming, convention drift vs. rest of repo).
+  8. Test coverage gaps.
+  9. Suggested fixes — each as a numbered item with: file:line, what to change, why. Be concrete.
+  10. Overall verdict (ship / ship with fixes / needs rework) and top 3 priority fixes.
+
+Be specific — cite file paths and line numbers. Avoid generic advice. If the code is good, say so with evidence. Do NOT modify files; this is review only.
+
+mcp startup: no servers
+codex
+Reviewing commit `983a294` against the phase handoff first, then I’ll inspect the full diff and the relevant working-tree files to identify regressions, missing objectives, and test gaps.
+exec
+/bin/zsh -lc "sed -n '1,220p' reviews/context/phase-3b.md" in /Users/derekbeckley/Developer/EICR_Automation exited 1 in 0ms:
+sed: reviews/context/phase-3b.md: No such file or directory
+exec
+/bin/zsh -lc 'git show 983a294' in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc 'git show --stat 983a294' in /Users/derekbeckley/Developer/EICR_Automation succeeded in 1.20s:
+2026-04-17 23:40:13.819 xcodebuild[29409:67182778]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:40:13.959 xcodebuild[29409:67182777] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-vRQ4N5rg' (errno=Operation not permitted)
+2026-04-17 23:40:14.307 xcodebuild[29413:67182801]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:40:14.409 xcodebuild[29413:67182799] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+commit 983a294c9f40d3d9511e304a5bffd943637b43ec
+Author: Derek Beckley <derekbeckley@Dereks-Mac-mini.broadband>
+Date:   Fri Apr 17 12:34:07 2026 +0100
+
+    feat(web): Phase 3b — Circuits tab with collapsible cards + iOS action rail
+    
+    What: Full Circuits tab replacing the TabStub placeholder. Board-filter pill
+    selector at top; right-hand action rail (Add/Delete/Defaults/Reverse/
+    Calculate/CCU/Extract) mirroring the iOS colour palette exactly (blue / red /
+    magenta #ff375f / pink #ec4899 / green / orange #ff9f0a / blue). Circuits
+    render as CircuitCard collapsibles with ref badge + designation + cable/OCPD
+    summary; expanded card surfaces 5 SectionCards: Identity, Cable, OCPD, RCD,
+    Test readings — covering all ~29 Circuit fields from iOS Circuit.swift.
+    
+ succeeded in 1.20s:
+2026-04-17 23:40:13.819 xcodebuild[29408:67182779]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:40:13.959 xcodebuild[29408:67182776] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-JdpZYs2m' (errno=Operation not permitted)
+2026-04-17 23:40:14.307 xcodebuild[29412:67182802]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:40:14.409 xcodebuild[29412:67182800] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+commit 983a294c9f40d3d9511e304a5bffd943637b43ec
+Author: Derek Beckley <derekbeckley@Dereks-Mac-mini.broadband>
+Date:   Fri Apr 17 12:34:07 2026 +0100
+
+    feat(web): Phase 3b — Circuits tab with collapsible cards + iOS action rail
+    
+    What: Full Circuits tab replacing the TabStub placeholder. Board-filter pill
+    selector at top; right-hand action rail (Add/Delete/Defaults/Reverse/
+    Calculate/CCU/Extract) mirroring the iOS colour palette exactly (blue / red /
+    magenta #ff375f / pink #ec4899 / green / orange #ff9f0a / blue). Circuits
+    render as CircuitCard collapsibles with ref badge + designation + cable/OCPD
+    summary; expanded card surfaces 5 SectionCards: Identity, Cable, OCPD, RCD,
+    Test readings — covering all ~29 Circuit fields from iOS Circuit.swift.
+    
+codex
+The context file path from the prompt does not exist at repo root, so I’m locating it and then pulling the rest of the diff output from the running `git show` sessions.
+exec
+/bin/zsh -lc "rg --files | rg 'phase-3b\\.md"'$|reviews/context'"'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+web/reviews/claude/phase-3b.md
+web/reviews/context/phase-3a.md
+web/reviews/context/phase-5d.md
+web/reviews/context/phase-7b2.md
+web/reviews/context/phase-4d.md
+web/reviews/context/phase-6a.md
+web/reviews/context/phase-7b3.md
+web/reviews/context/phase-4e.md
+web/reviews/context/phase-7a.md
+web/reviews/context/phase-5a.md
+web/reviews/context/phase-4a.md
+web/reviews/context/phase-2.md
+web/reviews/context/phase-1.md
+web/reviews/context/phase-0.md
+web/reviews/context/phase-6b.md
+web/reviews/context/phase-3c.md
+web/reviews/context/phase-5b.md
+web/reviews/context/phase-7b4.md
+web/reviews/context/phase-4b.md
+web/reviews/context/phase-5c.md
+codex
+I have the commit diff. Next I’m reading the current Circuits page and the supporting UI/context types so I can separate commit-introduced issues from any later changes in the working tree.
+exec
+/bin/zsh -lc "sed -n '1,260p' web/reviews/context/phase-3b.md" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+# Phase 3b — Context
+
+**Commit:** `983a294`
+
+## Commit message
+
+```
+commit 983a294c9f40d3d9511e304a5bffd943637b43ec
+Author:     Derek Beckley <derekbeckley@Dereks-Mac-mini.broadband>
+AuthorDate: Fri Apr 17 12:34:07 2026 +0100
+Commit:     Derek Beckley <derekbeckley@Dereks-Mac-mini.broadband>
+CommitDate: Fri Apr 17 12:34:07 2026 +0100
+
+    feat(web): Phase 3b — Circuits tab with collapsible cards + iOS action rail
+    
+    What: Full Circuits tab replacing the TabStub placeholder. Board-filter pill
+    selector at top; right-hand action rail (Add/Delete/Defaults/Reverse/
+    Calculate/CCU/Extract) mirroring the iOS colour palette exactly (blue / red /
+    magenta #ff375f / pink #ec4899 / green / orange #ff9f0a / blue). Circuits
+    render as CircuitCard collapsibles with ref badge + designation + cable/OCPD
+exec
+/bin/zsh -lc "nl -ba web/src/app/job/[id]/circuits/page.tsx | sed -n '1,260p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+zsh:1: no matches found: web/src/app/job/[id]/circuits/page.tsx
+exec
+/bin/zsh -lc "nl -ba web/src/app/job/[id]/circuits/page.tsx | sed -n '261,520p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+zsh:1: no matches found: web/src/app/job/[id]/circuits/page.tsx
+exec
+/bin/zsh -lc "rg -n \"useJobContext|updateJob|circuits|board\" web/src/lib web/src/components web/src/app -g'*.ts' -g'*.tsx'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+web/src/app/login/page.tsx:42:  const redirect = params.get('redirect') ?? '/dashboard';
+web/src/lib/job-context.tsx:10: *  - updateJob(partial) — local merge, does not hit the network. Every
+web/src/lib/job-context.tsx:22:  updateJob: (patch: Partial<JobDetail>) => void;
+web/src/lib/job-context.tsx:30:export function useJobContext(): JobContextValue {
+web/src/lib/job-context.tsx:33:    throw new Error('useJobContext must be used inside a <JobProvider>');
+web/src/lib/job-context.tsx:55:  const updateJob = React.useCallback((patch: Partial<JobDetail>) => {
+web/src/lib/job-context.tsx:64:      updateJob,
+web/src/lib/job-context.tsx:69:    [job, updateJob, isDirty, isSaving]
+web/src/components/live-fill/live-fill-view.tsx:4:import { AlertTriangle, Building2, CircuitBoard, ClipboardList, Layers, Zap } from 'lucide-react';
+web/src/components/live-fill/live-fill-view.tsx:5:import { useJobContext } from '@/lib/job-context';
+web/src/components/live-fill/live-fill-view.tsx:12: * LiveFillView — the full-form live dashboard shown while a recording
+web/src/components/live-fill/live-fill-view.tsx:18: *   3. Board        — main switch + board-level SPD
+web/src/components/live-fill/live-fill-view.tsx:31:  const { job, certificateType } = useJobContext();
+web/src/components/live-fill/live-fill-view.tsx:54:  const board = (job.board ?? {}) as Record<string, unknown>;
+web/src/components/live-fill/live-fill-view.tsx:56:  const circuits = job.circuits ?? [];
+web/src/components/live-fill/live-fill-view.tsx:207:      <div data-section="board" className="cm-live-section">
+web/src/components/live-fill/live-fill-view.tsx:208:        <SectionCard accent="blue" icon={CircuitBoard} title="Main board">
+web/src/components/live-fill/live-fill-view.tsx:211:              fieldKey="board.manufacturer"
+web/src/components/live-fill/live-fill-view.tsx:213:              value={str(board.manufacturer)}
+web/src/components/live-fill/live-fill-view.tsx:216:              fieldKey="board.main_switch_bs_en"
+codex
+I’ve confirmed the phase context and that the Circuits page still exists in the working tree. Now I’m reading the current implementation with line numbers plus the job/context and UI primitives it depends on.
+exec
+/bin/zsh -lc "nl -ba 'web/src/app/job/[id]/circuits/page.tsx' | sed -n '1,260p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	'use client';
+     2	
+     3	import * as React from 'react';
+     4	import {
+     5	  Calculator,
+     6	  Camera,
+     7	  CircuitBoard,
+     8	  FileDown,
+     9	  FlipHorizontal2,
+    10	  List,
+    11	  Loader2,
+    12	  Plus,
+    13	  SlidersHorizontal,
+    14	  Trash2,
+    15	  X,
+    16	  Zap,
+    17	} from 'lucide-react';
+    18	import { api } from '@/lib/api-client';
+    19	import { useJobContext } from '@/lib/job-context';
+    20	import { ApiError } from '@/lib/types';
+exec
+/bin/zsh -lc "nl -ba web/src/components/ui/segmented-control.tsx | sed -n '1,240p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	'use client';
+     2	
+     3	import * as React from 'react';
+     4	import { cn } from '@/lib/utils';
+     5	
+     6	/**
+     7	 * SegmentedControl — the row of PASS / FAIL / LIM / N/A pill buttons used
+     8	 * across iOS inspection + circuits screens.
+     9	 *
+    10	 * Selected segment is fully filled with a semantic colour (green/red/amber/gray);
+    11	 * unselected segments render as a dark-surface outlined pill with white text.
+    12	 *
+    13	 * Built as a controlled component so callers pass `value` + `onChange` and we
+    14	 * keep it dumb. Accepts an arbitrary list of options so the same primitive
+    15	 * works for { PASS/FAIL/LIM/NA }, { YES/NO }, { IMP/ADD/SWA/PVC } etc.
+    16	 */
+    17	export type SegmentVariant = 'pass' | 'fail' | 'lim' | 'neutral' | 'info';
+    18	
+    19	export type SegmentOption<T extends string = string> = {
+    20	  value: T;
+exec
+/bin/zsh -lc "nl -ba web/src/components/ui/floating-label-input.tsx | sed -n '1,260p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	'use client';
+     2	
+     3	import * as React from 'react';
+     4	import { cn } from '@/lib/utils';
+     5	
+     6	/**
+     7	 * FloatingLabelInput — iOS-style form field.
+     8	 *
+     9	 * Visual: tall rounded box (h-14) on surface-2 with the LABEL sitting top-left
+    10	 * at 11 px and the VALUE beneath it at 15 px. Focus state lifts the border
+    11	 * to brand-blue. When the input is empty and unfocused, the label stays in
+    12	 * place (iOS does not float down into the value slot — the two lines are
+    13	 * always stacked).
+    14	 *
+    15	 * Supports:
+    16	 *   - `trailing` slot for per-field suffix icons (stepper arrows, chevrons,
+    17	 *     unit chips). Renders inside the right edge.
+    18	 *   - `state`: 'error' surfaces the failed token outline.
+    19	 *   - Refs forwarded so callers can use react-hook-form etc.
+    20	 */
+exec
+/bin/zsh -lc "nl -ba web/src/lib/job-context.tsx | sed -n '1,220p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	'use client';
+     2	
+     3	import * as React from 'react';
+     4	import type { CertificateType, JobDetail } from './types';
+     5	
+     6	/**
+     7	 * Per-job state container. Holds the fetched JobDetail plus a couple of
+     8	 * derived flags (dirty/syncing) and two mutators:
+     9	 *
+    10	 *  - updateJob(partial) — local merge, does not hit the network. Every
+    11	 *    input in the job tabs calls this; a debounced save effect (Phase 4)
+    12	 *    flushes to the backend.
+    13	 *  - setJob(full)        — replace wholesale (used after a network save
+    14	 *    round-trip so server-derived fields like updated_at can flow in).
+    15	 *
+    16	 * The shape deliberately mirrors the legacy `useJob` hook so the tab
+    17	 * components from Phase 3+ read the same API.
+    18	 */
+    19	interface JobContextValue {
+    20	  job: JobDetail;
+exec
+/bin/zsh -lc "nl -ba 'web/src/app/job/[id]/circuits/page.tsx' | sed -n '261,520p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+   261	            </h2>
+   262	            <span className="text-[11px] text-[var(--color-text-tertiary)]">
+   263	              {visible.length} {visible.length === 1 ? 'circuit' : 'circuits'}
+   264	            </span>
+   265	          </div>
+   266	
+   267	          {/* Hidden file input for CCU capture. `capture="environment"`
+   268	              is the iOS Safari hint to open the rear camera; the
+   269	              browser falls back to the library picker if the user
+   270	              denies camera permission. */}
+   271	          <input
+   272	            ref={ccuInputRef}
+   273	            type="file"
+   274	            accept="image/*"
+   275	            capture="environment"
+   276	            onChange={handleCcuFile}
+   277	            className="sr-only"
+   278	            aria-hidden
+   279	          />
+   280	
+exec
+/bin/zsh -lc "nl -ba web/src/components/ui/select-chips.tsx | sed -n '1,240p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	'use client';
+     2	
+     3	import * as React from 'react';
+     4	import { ChevronDown } from 'lucide-react';
+     5	import { cn } from '@/lib/utils';
+     6	
+     7	/**
+     8	 * SelectChips — iOS-style dropdown followed by a row of chips that show the
+     9	 * currently selected option (tapping the chip does nothing; the dropdown is
+    10	 * canonical). Used on Installation / Supply tabs for earthing arrangement,
+    11	 * supply type, tariff etc.
+    12	 *
+    13	 * Tapping the dropdown toggles a small list rendered *inline below* the
+    14	 * trigger (not a portal / sheet — iOS uses an inline wheel, web uses inline
+    15	 * list). Keyboard nav: arrow up/down while open, Enter to commit, Esc to
+    16	 * close. Closing on outside click handled by a click-outside listener on
+    17	 * the document.
+    18	 */
+    19	export type SelectOption = { value: string; label: string };
+    20	
+codex
+The current page has grown beyond the reviewed commit with live CCU/doc actions, but the core Phase 3b structure is still intact. I’m checking the underlying data types and adjacent flows now to validate semantics like board scoping, IDs, and how circuits are merged elsewhere.
+exec
+/bin/zsh -lc "nl -ba web/src/lib/types.ts | sed -n '1,280p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "nl -ba web/src/lib/recording/apply-document-extraction.ts | sed -n '360,460p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+   360	  }
+   361	
+   362	  return added > 0 ? { observations: existingRows, count: added } : null;
+   363	}
+   364	
+   365	/**
+   366	 * Public entry point. Returns the patch + a summary count of circuits
+   367	 * and observations merged so the UI can render "Document read — X
+   368	 * circuits, Y observations merged" in the action hint.
+   369	 *
+   370	 * When the response envelope is malformed (missing `formData` or
+   371	 * `success: false`), we return an empty patch rather than throwing —
+   372	 * the caller already surfaces transport-layer errors via ApiError.
+   373	 */
+   374	export function applyDocumentExtractionToJob(
+   375	  job: JobDetail,
+   376	  response: DocumentExtractionResponse,
+   377	  options: { targetBoardId?: string | null } = {}
+   378	): DocumentApplyResult {
+   379	  const patch: Partial<JobDetail> = {};
+ succeeded in 0ms:
+     1	/**
+     2	 * Shared domain types. Kept minimal — only the shapes Phase 1–2 need;
+     3	 * per-tab detail types land in later phases when their screens do.
+     4	 */
+     5	
+     6	export interface User {
+     7	  id: string;
+     8	  email: string;
+     9	  name: string;
+    10	  company_name?: string;
+    11	  role?: 'admin' | 'user';
+    12	  /** System-wide tenant membership. Nullable for legacy users not yet bound to a company. */
+    13	  company_id?: string;
+    14	  /** Role within a company. `owner`/`admin` grant company-admin privileges; `employee` is rank-and-file. */
+    15	  company_role?: 'owner' | 'admin' | 'employee';
+    16	}
+    17	
+    18	/**
+    19	 * Inspector profile — the API shape stored as one JSON array per user at
+    20	 * `settings/{userId}/inspector_profiles.json`. The backend persists the
+exec
+/bin/zsh -lc "nl -ba web/src/lib/recording/apply-ccu-analysis.ts | sed -n '190,340p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+   190	  apply('spd_rated_current', analysis.spd_rated_current);
+   191	  apply('spd_type_supply', analysis.spd_type_supply);
+   192	
+   193	  return changed ? next : null;
+   194	}
+   195	
+   196	/** Build the circuit-list patch. Matches by `circuit_ref` only —
+   197	 *  sufficient when CCU re-analysis is scoped to a single board. */
+   198	function buildCircuitsPatch(
+   199	  job: JobDetail,
+   200	  analysis: CCUAnalysis,
+   201	  boardId: string
+   202	): CircuitRow[] | null {
+   203	  const incoming = analysis.circuits ?? [];
+   204	  if (incoming.length === 0) return null;
+   205	
+   206	  const allCircuits = (job.circuits ?? []) as CircuitRow[];
+   207	  const boardCircuits = allCircuits.filter(
+   208	    (c) => (c.board_id as string | undefined) === boardId || c.board_id == null
+   209	  );
+exec
+/bin/zsh -lc "rg -n \"type CircuitRow|interface CircuitRow|export type CircuitRow|export interface CircuitRow|type JobDetail|interface JobDetail\" web/src/lib -g'*.ts' -g'*.tsx'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+web/src/lib/pwa/queue-save-job.ts:2:import { ApiError, type JobDetail } from '@/lib/types';
+web/src/lib/types.ts:192:export interface JobDetail extends Job {
+web/src/lib/types.ts:209:export interface CircuitRow {
+web/src/lib/api-client.ts:13:  type JobDetail,
+exec
+/bin/zsh -lc "git diff 983a294..HEAD -- 'web/src/app/job/[id]/circuits/page.tsx'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 1.03s:
+2026-04-17 23:40:47.878 xcodebuild[29467:67183244]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:40:47.975 xcodebuild[29467:67183243] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-QzItTo5g' (errno=Operation not permitted)
+2026-04-17 23:40:48.265 xcodebuild[29469:67183252]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:40:48.362 xcodebuild[29469:67183251] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+diff --git a/web/src/app/job/[id]/circuits/page.tsx b/web/src/app/job/[id]/circuits/page.tsx
+index ab67cf1..8b5616a 100644
+--- a/web/src/app/job/[id]/circuits/page.tsx
++++ b/web/src/app/job/[id]/circuits/page.tsx
+@@ -8,12 +8,18 @@ import {
+   FileDown,
+   FlipHorizontal2,
+   List,
++  Loader2,
+   Plus,
+   SlidersHorizontal,
+   Trash2,
++  X,
+   Zap,
+codex
+I’ve got the main behavioral risks. I’m doing one last pass over related tests and adjacent patterns so the review can distinguish real defects from intentional design tradeoffs, and I’ll call out where the working tree has diverged from commit `983a294`.
+exec
+/bin/zsh -lc "nl -ba 'web/src/app/job/[id]/page.tsx' | sed -n '1,120p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "nl -ba 'web/src/app/job/[id]/installation/page.tsx' | sed -n '80,130p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	'use client';
+     2	
+     3	import Link from 'next/link';
+     4	import { useParams } from 'next/navigation';
+     5	import { useJobContext } from '@/lib/job-context';
+     6	
+     7	/**
+     8	 * Job overview / index tab — the default screen when a user opens a job.
+     9	 *
+    10	 * Shows a grid of shortcut cards to every tab in the unified set, plus a
+    11	 * short tip. Real completion status per section lights up as each Phase 3
+    12	 * tab lands; for now we chip every card with "Not started".
+    13	 */
+    14	export default function JobOverviewPage() {
+    15	  const { job, certificateType } = useJobContext();
+    16	  const params = useParams<{ id: string }>();
+    17	  const jobId = params.id;
+    18	  const base = `/job/${jobId}`;
+    19	
+    20	  // Unified tab set — mirrors the floating action bar + tab nav order so
+ succeeded in 0ms:
+    80	  { value: 'Commercial', label: 'Commercial' },
+    81	  { value: 'Industrial', label: 'Industrial' },
+    82	  { value: 'Other', label: 'Other' },
+    83	];
+    84	
+    85	export default function InstallationPage() {
+    86	  const { job, certificateType, updateJob } = useJobContext();
+    87	  const isEIC = certificateType === 'EIC';
+    88	  const details = (job.installation ?? {}) as InstallationShape;
+    89	
+    90	  const patch = React.useCallback(
+    91	    (next: Partial<InstallationShape>) => {
+    92	      updateJob({ installation: { ...details, ...next } });
+    93	    },
+    94	    [details, updateJob]
+    95	  );
+    96	
+    97	  /** Compute next-due from date_of_inspection + years for instant feedback. */
+    98	  const setYears = (years: number | '') => {
+    99	    if (years === '') return patch({ next_inspection_years: undefined });
+exec
+/bin/zsh -lc "rg -n \"circuits/page|CircuitsPage|CircuitCard|apply-ccu-analysis|apply-document-extraction|SegmentedControl|SelectChips\" web -g'*test*' -g'*spec*'" in /Users/derekbeckley/Developer/EICR_Automation exited 1 in 0ms:
+
+exec
+/bin/zsh -lc "git show 983a294:'web/src/app/job/[id]/circuits/page.tsx' | nl -ba | sed -n '1,260p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "git show 983a294:'web/src/app/job/[id]/circuits/page.tsx' | nl -ba | sed -n '261,520p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 1.14s:
+2026-04-17 23:41:20.924 xcodebuild[29502:67183674]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:41:21.030 xcodebuild[29502:67183673] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-VtkaeqJA' (errno=Operation not permitted)
+2026-04-17 23:41:21.348 xcodebuild[29506:67183694]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:41:21.451 xcodebuild[29506:67183691] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+     1	'use client';
+     2	
+     3	import * as React from 'react';
+     4	import {
+     5	  Calculator,
+     6	  Camera,
+     7	  CircuitBoard,
+     8	  FileDown,
+     9	  FlipHorizontal2,
+    10	  List,
+    11	  Plus,
+    12	  SlidersHorizontal,
+    13	  Trash2,
+    14	  Zap,
+ succeeded in 1.14s:
+2026-04-17 23:41:20.924 xcodebuild[29501:67183675]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:41:21.030 xcodebuild[29501:67183672] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-V6uv0L23' (errno=Operation not permitted)
+2026-04-17 23:41:21.348 xcodebuild[29505:67183693]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:41:21.451 xcodebuild[29505:67183692] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+   261	  const text = (k: keyof Circuit) => circuit[k] ?? '';
+   262	  const ref = text('circuit_ref') || '—';
+   263	  const designation = text('circuit_designation') || 'Untitled circuit';
+   264	  const rating = text('ocpd_rating_a');
+   265	
+   266	  return (
+   267	    <article className="overflow-hidden rounded-[var(--radius-lg)] border border-[var(--color-border-subtle)] bg-[var(--color-surface-2)]">
+   268	      <header className="flex items-center gap-3 px-4 py-3">
+   269	        <button
+   270	          type="button"
+   271	          onClick={onToggle}
+   272	          className="flex min-w-0 flex-1 items-center gap-3 text-left"
+   273	          aria-expanded={expanded}
+   274	        >
+codex
+## 1. Summary of the phase
+
+Phase 3b replaces the `TabStub` Circuits placeholder with a full client-side editing surface in [`web/src/app/job/[id]/circuits/page.tsx`](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/job/[id]/circuits/page.tsx). It introduces board-filter pills, an iOS-style action rail, collapsible circuit cards, and grouped form sections for circuit identity, cable, OCPD, RCD, and test readings.
+
+The commit substantially advances the tab toward iOS parity and is directionally consistent with the handoff. The working tree has since evolved beyond `983a294` by wiring CCU/document extraction into the same page; those later additions are not part of the scored phase review below unless explicitly noted.
+
+## 2. Alignment with original plan
+
+Mostly aligned:
+- The placeholder is replaced with a real Circuits editor.
+- The board-filter UI, collapsible cards, grouped sections, and polarity segmented control all match the stated intent.
+- The phase does cover most of the circuit data surface and uses the same local `updateJob` pattern as other Phase 3 tabs.
+
+Missing / mismatched objectives:
+- The handoff and commit message say `Add / Delete / Reverse are wired directly`, but the action-rail Delete button is still a stub in commit `983a294` (`web/src/app/job/[id]/circuits/page.tsx`, commit lines 190-195).
+- “Board filter” semantics are incomplete: unassigned circuits are shown under every selected board rather than being scoped cleanly to one board or an explicit “All/Unassigned” view (`page.tsx`, commit lines 85-87).
+- No tests landed with the phase, despite the amount of stateful UI and data mutation logic introduced.
+
+## 3. Correctness issues
+
+### P1
+- `web/src/app/job/[id]/circuits/page.tsx:96-100` in commit `983a294` generates a new `circuit_ref` from `visible.length + 1`. This produces duplicate refs after deletions, after manual renames, or when filtering by board. That is not just cosmetic: later merge logic matches circuits by `circuit_ref` per board in [`web/src/lib/recording/apply-ccu-analysis.ts:214-245`](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording/apply-ccu-analysis.ts:214), so duplicate refs create ambiguous merges and can attach extracted data to the wrong row.
+
+- `web/src/app/job/[id]/circuits/page.tsx:85-87` in commit `983a294` makes every board-specific view include rows whose `board_id` is `null`. In a multi-board job, the same unassigned circuit appears under every board pill, so counts are wrong and edits/deletes from “Board B” can silently mutate a circuit that is not actually assigned to Board B.
+
+### P2
+- `web/src/app/job/[id]/circuits/page.tsx:108` reverses the entire `circuits` array, not the filtered board subset the user is currently looking at. In a multi-board job, using Reverse while a board pill is selected will reorder circuits belonging to other boards too. If “Reverse” is intended to act on the visible board, this is the wrong scope.
+
+- `web/src/app/job/[id]/circuits/page.tsx:190-195` exposes a prominent Delete action on the rail that does not delete anything. Because each card already has a working remove button, this is not catastrophic, but it is a misleading affordance on a primary workflow surface.
+
+## 4. Security issues
+
+No material security issues found in commit `983a294`.
+
+I did not see XSS, auth, CSRF, secret leakage, or unsafe HTML injection in the reviewed phase. The page is local-state-only in this commit.
+
+## 5. Performance issues
+
+- `web/src/app/job/[id]/circuits/page.tsx:89-94,169-178` rebuilds the full circuits array on every keystroke and re-renders the entire visible list. With a large certificate, editing one expanded card will still re-render all sibling cards because `CircuitCard` is not memoized and all handlers are recreated inline. This is probably acceptable for small jobs, but it will degrade as circuit counts rise.
+
+- `web/src/app/job/[id]/circuits/page.tsx:112-219` keeps all expanded card content mounted only for the active item, which is good. The main remaining cost is top-level list churn, not hidden DOM.
+
+## 6. Accessibility issues
+
+- [`web/src/components/ui/segmented-control.tsx:47-77`](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/ui/segmented-control.tsx:47) uses `role="radiogroup"` / `role="radio"` but does not implement keyboard interaction expected for radio groups, especially arrow-key movement. That affects the new polarity control introduced by this phase.
+
+- [`web/src/components/ui/select-chips.tsx:51-121`](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/ui/select-chips.tsx:51) claims keyboard navigation in the file header comment, but the implementation has no `onKeyDown` handling for arrow keys, Enter, or Escape. This phase relies on that component for OCPD/RCD type selection, so keyboard users get a worse-than-documented experience.
+
+- `web/src/app/job/[id]/circuits/page.tsx:269-301` in commit `983a294` sets `aria-expanded` on the card toggle button, but there is no `aria-controls` relationship to the expanded panel. This is a minor semantic gap, not a blocker.
+
+## 7. Code quality
+
+- `web/src/app/job/[id]/circuits/page.tsx:43` uses `type Circuit = Record<string, string | undefined> & { id: string }`, which throws away the already-available `CircuitRow` shape and weakens type safety across the whole page. It makes typos in field keys easy to ship undetected.
+
+- `web/src/app/job/[id]/circuits/page.tsx:78-90` relies on repeated `unknown as` casts instead of a typed adapter or a proper tab-local interface. That is convention drift relative to the rest of the Phase 3 screens, which are still permissive but generally keep section-local shapes more explicit.
+
+- The commit message overstates the implementation status for Delete. That is not a code defect by itself, but it makes the phase harder to trust and review.
+
+## 8. Test coverage gaps
+
+No relevant tests were found for:
+- board filtering semantics
+- adding/removing/reversing circuits
+- collapsible card expansion behavior
+- circuit ref generation uniqueness
+- polarity segmented control behavior
+- OCPD/RCD chip selection behavior
+- dirty-state updates from circuit edits
+
+That is the main process gap in this phase.
+
+## 9. Suggested fixes
+
+1. `web/src/app/job/[id]/circuits/page.tsx:96-100`  
+   Change new ref generation to derive the next numeric ref from the max existing `circuit_ref` on the selected board, not `visible.length + 1`.  
+   Why: avoids duplicate refs after deletes/reorders and prevents downstream merge ambiguity.
+
+2. `web/src/app/job/[id]/circuits/page.tsx:85-87`  
+   Stop including `board_id == null` rows in every board-filtered view. Either add an explicit `All` / `Unassigned` filter or eagerly assign legacy rows to a concrete board during migration.  
+   Why: current filtering duplicates circuits across boards and makes edits semantically incorrect.
+
+3. `web/src/app/job/[id]/circuits/page.tsx:108`  
+   If Reverse is intended to operate on the current board, reverse only the visible board subset and then merge it back with untouched rows from other boards.  
+   Why: current behavior mutates hidden boards unexpectedly.
+
+4. `web/src/app/job/[id]/circuits/page.tsx:190-195`  
+   Either wire the action-rail Delete button to delete the active/expanded circuit with confirmation, or relabel/remove it until that flow exists.  
+   Why: the current UI advertises a working primary action that is only a stub.
+
+5. `web/src/app/job/[id]/circuits/page.tsx:43,78-90`  
+   Replace `Record<string, string | undefined>` and `unknown as` casting with a concrete tab-local circuit interface extending `CircuitRow`.  
+   Why: this phase is field-heavy; stronger typing materially reduces key-name mistakes and makes future extraction work safer.
+
+6. `web/src/components/ui/segmented-control.tsx:47-77`  
+   Add roving focus or standard radio-group arrow-key behavior, and keep Tab entering/leaving the group predictable.  
+   Why: the polarity control currently looks like a radio group but does not behave like one for keyboard users.
+
+7. `web/src/components/ui/select-chips.tsx:51-121`  
+   Implement the keyboard support promised in the component comment, or trim the comment and add native semantics that match actual behavior.  
+   Why: this phase depends on the component for circuit OCPD/RCD selection, and the current accessibility story is incomplete.
+
+8. `web/src/app/job/[id]/circuits/page.tsx:169-178,248-497`  
+   Memoize `CircuitCard` and stabilize per-row handlers where practical.  
+   Why: reduces full-list re-render churn while editing large jobs.
+
+## 10. Overall verdict
+
+**Ship with fixes.**
+
+The phase is a substantial improvement and broadly matches the intended UX, but it has two real data-semantics problems and one clear scope mismatch that should be cleaned up before relying on it for multi-board or extraction-heavy workflows.
+
+Top 3 priority fixes:
+1. Fix `circuit_ref` generation so new rows cannot collide.
+2. Fix board filtering so unassigned circuits do not appear under every board.
+3. Either wire or remove the action-rail Delete button so the UI matches the documented phase intent.
+tokens used
+55,254
+## 1. Summary of the phase
+
+Phase 3b replaces the `TabStub` Circuits placeholder with a full client-side editing surface in [`web/src/app/job/[id]/circuits/page.tsx`](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/job/[id]/circuits/page.tsx). It introduces board-filter pills, an iOS-style action rail, collapsible circuit cards, and grouped form sections for circuit identity, cable, OCPD, RCD, and test readings.
+
+The commit substantially advances the tab toward iOS parity and is directionally consistent with the handoff. The working tree has since evolved beyond `983a294` by wiring CCU/document extraction into the same page; those later additions are not part of the scored phase review below unless explicitly noted.
+
+## 2. Alignment with original plan
+
+Mostly aligned:
+- The placeholder is replaced with a real Circuits editor.
+- The board-filter UI, collapsible cards, grouped sections, and polarity segmented control all match the stated intent.
+- The phase does cover most of the circuit data surface and uses the same local `updateJob` pattern as other Phase 3 tabs.
+
+Missing / mismatched objectives:
+- The handoff and commit message say `Add / Delete / Reverse are wired directly`, but the action-rail Delete button is still a stub in commit `983a294` (`web/src/app/job/[id]/circuits/page.tsx`, commit lines 190-195).
+- “Board filter” semantics are incomplete: unassigned circuits are shown under every selected board rather than being scoped cleanly to one board or an explicit “All/Unassigned” view (`page.tsx`, commit lines 85-87).
+- No tests landed with the phase, despite the amount of stateful UI and data mutation logic introduced.
+
+## 3. Correctness issues
+
+### P1
+- `web/src/app/job/[id]/circuits/page.tsx:96-100` in commit `983a294` generates a new `circuit_ref` from `visible.length + 1`. This produces duplicate refs after deletions, after manual renames, or when filtering by board. That is not just cosmetic: later merge logic matches circuits by `circuit_ref` per board in [`web/src/lib/recording/apply-ccu-analysis.ts:214-245`](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/recording/apply-ccu-analysis.ts:214), so duplicate refs create ambiguous merges and can attach extracted data to the wrong row.
+
+- `web/src/app/job/[id]/circuits/page.tsx:85-87` in commit `983a294` makes every board-specific view include rows whose `board_id` is `null`. In a multi-board job, the same unassigned circuit appears under every board pill, so counts are wrong and edits/deletes from “Board B” can silently mutate a circuit that is not actually assigned to Board B.
+
+### P2
+- `web/src/app/job/[id]/circuits/page.tsx:108` reverses the entire `circuits` array, not the filtered board subset the user is currently looking at. In a multi-board job, using Reverse while a board pill is selected will reorder circuits belonging to other boards too. If “Reverse” is intended to act on the visible board, this is the wrong scope.
+
+- `web/src/app/job/[id]/circuits/page.tsx:190-195` exposes a prominent Delete action on the rail that does not delete anything. Because each card already has a working remove button, this is not catastrophic, but it is a misleading affordance on a primary workflow surface.
+
+## 4. Security issues
+
+No material security issues found in commit `983a294`.
+
+I did not see XSS, auth, CSRF, secret leakage, or unsafe HTML injection in the reviewed phase. The page is local-state-only in this commit.
+
+## 5. Performance issues
+
+- `web/src/app/job/[id]/circuits/page.tsx:89-94,169-178` rebuilds the full circuits array on every keystroke and re-renders the entire visible list. With a large certificate, editing one expanded card will still re-render all sibling cards because `CircuitCard` is not memoized and all handlers are recreated inline. This is probably acceptable for small jobs, but it will degrade as circuit counts rise.
+
+- `web/src/app/job/[id]/circuits/page.tsx:112-219` keeps all expanded card content mounted only for the active item, which is good. The main remaining cost is top-level list churn, not hidden DOM.
+
+## 6. Accessibility issues
+
+- [`web/src/components/ui/segmented-control.tsx:47-77`](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/ui/segmented-control.tsx:47) uses `role="radiogroup"` / `role="radio"` but does not implement keyboard interaction expected for radio groups, especially arrow-key movement. That affects the new polarity control introduced by this phase.
+
+- [`web/src/components/ui/select-chips.tsx:51-121`](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/ui/select-chips.tsx:51) claims keyboard navigation in the file header comment, but the implementation has no `onKeyDown` handling for arrow keys, Enter, or Escape. This phase relies on that component for OCPD/RCD type selection, so keyboard users get a worse-than-documented experience.
+
+- `web/src/app/job/[id]/circuits/page.tsx:269-301` in commit `983a294` sets `aria-expanded` on the card toggle button, but there is no `aria-controls` relationship to the expanded panel. This is a minor semantic gap, not a blocker.
+
+## 7. Code quality
+
+- `web/src/app/job/[id]/circuits/page.tsx:43` uses `type Circuit = Record<string, string | undefined> & { id: string }`, which throws away the already-available `CircuitRow` shape and weakens type safety across the whole page. It makes typos in field keys easy to ship undetected.
+
+- `web/src/app/job/[id]/circuits/page.tsx:78-90` relies on repeated `unknown as` casts instead of a typed adapter or a proper tab-local interface. That is convention drift relative to the rest of the Phase 3 screens, which are still permissive but generally keep section-local shapes more explicit.
+
+- The commit message overstates the implementation status for Delete. That is not a code defect by itself, but it makes the phase harder to trust and review.
+
+## 8. Test coverage gaps
+
+No relevant tests were found for:
+- board filtering semantics
+- adding/removing/reversing circuits
+- collapsible card expansion behavior
+- circuit ref generation uniqueness
+- polarity segmented control behavior
+- OCPD/RCD chip selection behavior
+- dirty-state updates from circuit edits
+
+That is the main process gap in this phase.
+
+## 9. Suggested fixes
+
+1. `web/src/app/job/[id]/circuits/page.tsx:96-100`  
+   Change new ref generation to derive the next numeric ref from the max existing `circuit_ref` on the selected board, not `visible.length + 1`.  
+   Why: avoids duplicate refs after deletes/reorders and prevents downstream merge ambiguity.
+
+2. `web/src/app/job/[id]/circuits/page.tsx:85-87`  
+   Stop including `board_id == null` rows in every board-filtered view. Either add an explicit `All` / `Unassigned` filter or eagerly assign legacy rows to a concrete board during migration.  
+   Why: current filtering duplicates circuits across boards and makes edits semantically incorrect.
+
+3. `web/src/app/job/[id]/circuits/page.tsx:108`  
+   If Reverse is intended to operate on the current board, reverse only the visible board subset and then merge it back with untouched rows from other boards.  
+   Why: current behavior mutates hidden boards unexpectedly.
+
+4. `web/src/app/job/[id]/circuits/page.tsx:190-195`  
+   Either wire the action-rail Delete button to delete the active/expanded circuit with confirmation, or relabel/remove it until that flow exists.  
+   Why: the current UI advertises a working primary action that is only a stub.
+
+5. `web/src/app/job/[id]/circuits/page.tsx:43,78-90`  
+   Replace `Record<string, string | undefined>` and `unknown as` casting with a concrete tab-local circuit interface extending `CircuitRow`.  
+   Why: this phase is field-heavy; stronger typing materially reduces key-name mistakes and makes future extraction work safer.
+
+6. `web/src/components/ui/segmented-control.tsx:47-77`  
+   Add roving focus or standard radio-group arrow-key behavior, and keep Tab entering/leaving the group predictable.  
+   Why: the polarity control currently looks like a radio group but does not behave like one for keyboard users.
+
+7. `web/src/components/ui/select-chips.tsx:51-121`  
+   Implement the keyboard support promised in the component comment, or trim the comment and add native semantics that match actual behavior.  
+   Why: this phase depends on the component for circuit OCPD/RCD selection, and the current accessibility story is incomplete.
+
+8. `web/src/app/job/[id]/circuits/page.tsx:169-178,248-497`  
+   Memoize `CircuitCard` and stabilize per-row handlers where practical.  
+   Why: reduces full-list re-render churn while editing large jobs.
+
+## 10. Overall verdict
+
+**Ship with fixes.**
+
+The phase is a substantial improvement and broadly matches the intended UX, but it has two real data-semantics problems and one clear scope mismatch that should be cleaned up before relying on it for multi-board or extraction-heavy workflows.
+
+Top 3 priority fixes:
+1. Fix `circuit_ref` generation so new rows cannot collide.
+2. Fix board filtering so unassigned circuits do not appear under every board.
+3. Either wire or remove the action-rail Delete button so the UI matches the documented phase intent.

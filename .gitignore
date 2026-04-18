@@ -77,6 +77,37 @@ frontend/
 # ===== Backups =====
 backups/
 
+# ===== Claude Code local state =====
+# Harness worktree + optimizer scratch — local agent tooling, not repo state
+.claude/worktrees/
+.optimizer-plans/
+
+# ===== Rebuild-era scratch docs (superseded by web/PHASE_*_HANDOFF.md) =====
+# These were working notes from the pre-rebuild audit phase; they reference
+# the dead frontend/ tree. Kept locally if still useful, never committed.
+/AUDIO_PIPELINE_AUDIT.md
+/DEPLOY_NOTES.md
+/FIX_CHECKLIST.md
+/FIX_VERIFICATION.md
+/PARITY_DIFF.md
+/POST_MORTEM.md
+/REBUILD_RECOMMENDATION.md
+/RUNTIME_TEST_RESULTS.md
+/VERIFICATION_REPORT.md
+/ios-web-audit.md
+/parity-checklist.md
+/test-results.md
+/postmortem/
+
+# ===== Archive subdirs not already tracked =====
+# _archive/web-legacy is tracked (historical record). New _archive/ entries
+# — especially _archive/personal (contains Derek's C&G PDF) — must NOT ship.
+_archive/CertMate_EICR_App/
+_archive/CertMate_old/
+_archive/media/
+_archive/misc/
+_archive/personal/
+
 # ===== OS Generated =====
 .DS_Store
 .DS_Store?

@@ -1,0 +1,1058 @@
+OpenAI Codex v0.116.0 (research preview)
+--------
+workdir: /Users/derekbeckley/Developer/EICR_Automation
+model: gpt-5.4
+provider: openai
+approval: never
+sandbox: read-only
+reasoning effort: none
+reasoning summaries: none
+session id: 019d9da8-29f3-7233-b2c3-5e61b6c3a569
+--------
+user
+You are performing a rigorous code review of a single phase of a Next.js 16 / React 19 PWA frontend rebuild for an electrical-certificate automation tool (EICR / EIC). The repo root is at /Users/derekbeckley/Developer/EICR_Automation and the web package is at web/. Branch: web-rebuild.
+
+TARGET: Phase 4d — server-side Sonnet multi-turn extraction + field propagation
+COMMIT: b6c4b65
+
+Context for this phase (original intent, handoff doc, commit message, files changed) is in this repo at: reviews/context/phase-4d.md — READ THAT FILE FIRST.
+
+Use shell commands to:
+  git show --stat b6c4b65
+  git show b6c4b65
+to inspect the full diff. Then read any files you need from the working tree (they may have evolved since this commit — note any later changes).
+
+Your output must be a well-structured markdown review with these sections:
+  1. Summary of the phase (2-3 sentences — what it did).
+  2. Alignment with original plan (does the implementation match the handoff doc / commit intent? Any missing objectives?).
+  3. Correctness issues (bugs, race conditions, missing error handling, incorrect semantics). Prioritise P0/P1/P2.
+  4. Security issues (XSS, auth, CSRF, injection, leaked secrets, PII, CORS). Each item tagged with severity.
+  5. Performance issues (re-renders, N+1, large bundles, memory leaks, blocking work on main thread).
+  6. Accessibility issues (semantic HTML, keyboard nav, ARIA, colour contrast, focus management).
+  7. Code quality (duplication, dead code, type-safety holes, naming, convention drift vs. rest of repo).
+  8. Test coverage gaps.
+  9. Suggested fixes — each as a numbered item with: file:line, what to change, why. Be concrete.
+  10. Overall verdict (ship / ship with fixes / needs rework) and top 3 priority fixes.
+
+Be specific — cite file paths and line numbers. Avoid generic advice. If the code is good, say so with evidence. Do NOT modify files; this is review only.
+
+mcp startup: no servers
+codex
+Reviewing commit `b6c4b65` against the phase handoff and the full diff first, then I’ll trace the touched code in `web/` to verify correctness, security, and coverage against the stated intent.
+exec
+/bin/zsh -lc "sed -n '1,240p' reviews/context/phase-4d.md" in /Users/derekbeckley/Developer/EICR_Automation exited 1 in 0ms:
+sed: reviews/context/phase-4d.md: No such file or directory
+exec
+/bin/zsh -lc 'git show --stat b6c4b65' in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc 'git show --no-ext-diff --format=medium b6c4b65' in /Users/derekbeckley/Developer/EICR_Automation succeeded in 1.13s:
+2026-04-17 23:55:44.771 xcodebuild[32390:67200389]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:55:44.875 xcodebuild[32390:67200387] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-xFfCVMjf' (errno=Operation not permitted)
+2026-04-17 23:55:45.196 xcodebuild[32395:67200410]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:55:45.299 xcodebuild[32395:67200409] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+commit b6c4b658da3ed1fd27bdf8bf5eb6dc6099712c6c
+Author: Derek Beckley <derekbeckley@Dereks-Mac-mini.broadband>
+Date:   Fri Apr 17 13:20:08 2026 +0100
+
+    feat(web): Phase 4d server-side Sonnet multi-turn extraction + field propagation
+    
+    Completes the recording pipeline at parity with iOS: Deepgram finals feed
+    a server-side Sonnet WebSocket, structured readings flow back and merge
+    into the active JobDetail, gated questions surface in the overlay, and
+    session_pause/resume hooks align cost tracking across doze/wake
+    transitions (ready for Phase 4e).
+    
+    **Why:** Phase 4c delivered live transcripts but the form fields still
+    had to be typed by hand — the critical "voice-drives-the-certificate"
+ succeeded in 1.13s:
+2026-04-17 23:55:44.771 xcodebuild[32391:67200388]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:55:44.875 xcodebuild[32391:67200386] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-TZcLdXQO' (errno=Operation not permitted)
+2026-04-17 23:55:45.196 xcodebuild[32394:67200411]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:55:45.299 xcodebuild[32394:67200408] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+commit b6c4b658da3ed1fd27bdf8bf5eb6dc6099712c6c
+Author: Derek Beckley <derekbeckley@Dereks-Mac-mini.broadband>
+Date:   Fri Apr 17 13:20:08 2026 +0100
+
+    feat(web): Phase 4d server-side Sonnet multi-turn extraction + field propagation
+    
+    Completes the recording pipeline at parity with iOS: Deepgram finals feed
+    a server-side Sonnet WebSocket, structured readings flow back and merge
+    into the active JobDetail, gated questions surface in the overlay, and
+    session_pause/resume hooks align cost tracking across doze/wake
+    transitions (ready for Phase 4e).
+    
+    **Why:** Phase 4c delivered live transcripts but the form fields still
+    had to be typed by hand — the critical "voice-drives-the-certificate"
+codex
+The context file path from the prompt isn’t present at repo root as written, so I’m locating it and continuing with the commit inspection from git directly. After that I’ll read the current working-tree versions of the touched files to spot any post-commit drift.
+exec
+/bin/zsh -lc "rg --files | rg 'phase-4d\\.md"'$|reviews/.*/phase-4d'"\\.md"'$'"'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+web/reviews/claude/phase-4d.md
+web/reviews/context/phase-4d.md
+codex
+I have the commit diff now. Next I’m reading the phase handoff plus the current versions of the touched files and the job types they write into, so the review can separate commit-level issues from any later drift in the working tree.
+exec
+/bin/zsh -lc "sed -n '1,260p' web/reviews/context/phase-4d.md" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+# Phase 4d — Context
+
+**Commit:** `b6c4b65`
+
+## Commit message
+
+```
+commit b6c4b658da3ed1fd27bdf8bf5eb6dc6099712c6c
+Author:     Derek Beckley <derekbeckley@Dereks-Mac-mini.broadband>
+AuthorDate: Fri Apr 17 13:20:08 2026 +0100
+Commit:     Derek Beckley <derekbeckley@Dereks-Mac-mini.broadband>
+CommitDate: Fri Apr 17 13:20:08 2026 +0100
+
+    feat(web): Phase 4d server-side Sonnet multi-turn extraction + field propagation
+    
+    Completes the recording pipeline at parity with iOS: Deepgram finals feed
+    a server-side Sonnet WebSocket, structured readings flow back and merge
+    into the active JobDetail, gated questions surface in the overlay, and
+    session_pause/resume hooks align cost tracking across doze/wake
+    transitions (ready for Phase 4e).
+exec
+/bin/zsh -lc "sed -n '1,260p' web/src/lib/recording/sonnet-session.ts" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "sed -n '1,240p' web/src/components/recording/recording-overlay.tsx" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "sed -n '1,260p' web/src/lib/recording-context.tsx" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+/**
+ * Server-side Sonnet multi-turn extraction WebSocket client.
+ *
+ * Mirrors the iOS `ServerWebSocketService` surface — same message shapes,
+ * same lifecycle: connect on session start, stream final Deepgram
+ * transcripts in, receive structured `extraction` results, `question`
+ * prompts, `voice_command_response` payloads, and `cost_update` snapshots
+ * back out. Auth is JWT via the `?token=` query param because browsers
+ * cannot set Authorization headers during the HTTP→WS upgrade (iOS
+ * Safari strips them too — see rules/mistakes.md).
+ *
+ * Server protocol: src/extraction/sonnet-stream.js
+ *   - inbound from client: session_start, transcript, job_state_update,
+ *     correction, session_pause, session_resume, session_stop
+ *   - outbound to client:  session_ack, extraction, question,
+ *     voice_command_response, cost_update, error
+ */
+
+import { api } from '../api-client';
+import { getToken } from '../auth';
+ succeeded in 0ms:
+'use client';
+
+import * as React from 'react';
+import {
+  ChevronDown,
+  HelpCircle,
+  Mic,
+  MicOff,
+  Pause,
+  Play,
+  Square,
+  X as CloseIcon,
+} from 'lucide-react';
+import { useRecording, formatCost, formatElapsed } from '@/lib/recording-context';
+import { cn } from '@/lib/utils';
+
+/**
+ * Recording overlay — mirrors iOS `RecordingOverlay.swift`.
+ *
+ * Full-height bottom-sheet (mobile) / centred modal card (desktop) that
+ succeeded in 0ms:
+'use client';
+
+import * as React from 'react';
+import { startMicCapture, type MicCaptureHandle } from './recording/mic-capture';
+import { DeepgramService, type DeepgramConnectionState } from './recording/deepgram-service';
+import {
+  SonnetSession,
+  type ExtractionResult,
+  type SonnetConnectionState,
+  type SonnetQuestion,
+} from './recording/sonnet-session';
+import { applyExtractionToJob } from './recording/apply-extraction';
+import { AudioRingBuffer } from './recording/audio-ring-buffer';
+import { SleepManager, type SleepState } from './recording/sleep-manager';
+import { useLiveFillStore } from './recording/live-fill-state';
+import { api } from './api-client';
+import { useJobContext } from './job-context';
+
+/**
+ * Recording context.
+exec
+/bin/zsh -lc "sed -n '1,260p' web/src/lib/recording/apply-extraction.ts" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+/**
+ * Map a Sonnet extraction result onto a JobDetail patch.
+ *
+ * Responsibilities:
+ *   1. Route each reading to the correct section of the job (supply,
+ *      board, installation, extent, design, or the matching circuit
+ *      row) based on field name.
+ *   2. Apply 3-tier priority: pre-existing manual/CCU values win over
+ *      fresh Sonnet readings. Sonnet's own de-dup lives server-side; we
+ *      re-check here in case the server-side state snapshot lagged
+ *      behind a user edit.
+ *   3. Apply `circuit_updates` — create or rename a CircuitRow so
+ *      subsequent readings have somewhere to land.
+ *   4. Append `observations` not already present.
+ *
+ * Returns a partial `JobDetail` patch, or null if nothing changed so
+ * the caller can skip an `updateJob` cycle (avoids needless re-renders
+ * when Sonnet returns an empty result).
+ */
+
+exec
+/bin/zsh -lc 'rg -n "export interface JobDetail|type JobDetail|interface CircuitRow|interface ObservationRow|type CircuitRow|type ObservationRow" web/src' in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+web/src/lib/types.ts:192:export interface JobDetail extends Job {
+web/src/lib/types.ts:209:export interface CircuitRow {
+web/src/lib/types.ts:216:export interface ObservationRow {
+web/src/lib/pwa/queue-save-job.ts:2:import { ApiError, type JobDetail } from '@/lib/types';
+web/src/components/observations/observation-sheet.tsx:6:import { ApiError, type ObservationRow } from '@/lib/types';
+web/src/lib/api-client.ts:13:  type JobDetail,
+codex
+I’ve confirmed the working tree has already moved past this commit in `recording-context.tsx`, so I’m pinning findings to the commit diff while checking current type definitions and surrounding code for semantic mismatches.
+exec
+/bin/zsh -lc "nl -ba web/src/lib/types.ts | sed -n '180,250p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "nl -ba web/src/lib/recording/apply-extraction.ts | sed -n '1,260p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+   180	}
+   181	
+   182	/**
+   183	 * Full job detail payload returned by GET /api/job/:userId/:jobId.
+   184	 * Structure mirrors the iOS `JobFormData` Swift struct (lifted here as
+   185	 * Partial<> so we can add fields per-tab as phases land without breaking
+   186	 * the rest of the app).
+   187	 *
+   188	 * Each section below is a free-form record of string/bool values — the
+   189	 * backend has historically been permissive about keys. Tab-specific
+   190	 * schemas tighten these up when the relevant phase lands.
+   191	 */
+   192	export interface JobDetail extends Job {
+   193	  // Mirror fields of the list-view Job, plus every tab's data bag:
+   194	  installation?: Record<string, unknown>;
+   195	  extent?: Record<string, unknown>;
+   196	  supply?: Record<string, unknown>;
+   197	  board?: Record<string, unknown>;
+   198	  circuits?: CircuitRow[];
+   199	  observations?: ObservationRow[];
+ succeeded in 0ms:
+     1	/**
+     2	 * Map a Sonnet extraction result onto a JobDetail patch.
+     3	 *
+     4	 * Responsibilities:
+     5	 *   1. Route each reading to the correct section of the job (supply,
+     6	 *      board, installation, extent, design, or the matching circuit
+     7	 *      row) based on field name.
+     8	 *   2. Apply 3-tier priority: pre-existing manual/CCU values win over
+     9	 *      fresh Sonnet readings. Sonnet's own de-dup lives server-side; we
+    10	 *      re-check here in case the server-side state snapshot lagged
+    11	 *      behind a user edit.
+    12	 *   3. Apply `circuit_updates` — create or rename a CircuitRow so
+    13	 *      subsequent readings have somewhere to land.
+    14	 *   4. Append `observations` not already present.
+    15	 *
+    16	 * Returns a partial `JobDetail` patch, or null if nothing changed so
+    17	 * the caller can skip an `updateJob` cycle (avoids needless re-renders
+    18	 * when Sonnet returns an empty result).
+    19	 */
+    20	
+exec
+/bin/zsh -lc "nl -ba web/src/lib/recording/sonnet-session.ts | sed -n '1,260p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	/**
+     2	 * Server-side Sonnet multi-turn extraction WebSocket client.
+     3	 *
+     4	 * Mirrors the iOS `ServerWebSocketService` surface — same message shapes,
+     5	 * same lifecycle: connect on session start, stream final Deepgram
+     6	 * transcripts in, receive structured `extraction` results, `question`
+     7	 * prompts, `voice_command_response` payloads, and `cost_update` snapshots
+     8	 * back out. Auth is JWT via the `?token=` query param because browsers
+     9	 * cannot set Authorization headers during the HTTP→WS upgrade (iOS
+    10	 * Safari strips them too — see rules/mistakes.md).
+    11	 *
+    12	 * Server protocol: src/extraction/sonnet-stream.js
+    13	 *   - inbound from client: session_start, transcript, job_state_update,
+    14	 *     correction, session_pause, session_resume, session_stop
+    15	 *   - outbound to client:  session_ack, extraction, question,
+    16	 *     voice_command_response, cost_update, error
+    17	 */
+    18	
+    19	import { api } from '../api-client';
+    20	import { getToken } from '../auth';
+exec
+/bin/zsh -lc "nl -ba web/src/lib/recording-context.tsx | sed -n '1,260p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "nl -ba web/src/components/recording/recording-overlay.tsx | sed -n '1,220p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	'use client';
+     2	
+     3	import * as React from 'react';
+     4	import {
+     5	  ChevronDown,
+     6	  HelpCircle,
+     7	  Mic,
+     8	  MicOff,
+     9	  Pause,
+    10	  Play,
+    11	  Square,
+    12	  X as CloseIcon,
+    13	} from 'lucide-react';
+    14	import { useRecording, formatCost, formatElapsed } from '@/lib/recording-context';
+    15	import { cn } from '@/lib/utils';
+    16	
+    17	/**
+    18	 * Recording overlay — mirrors iOS `RecordingOverlay.swift`.
+    19	 *
+    20	 * Full-height bottom-sheet (mobile) / centred modal card (desktop) that
+ succeeded in 0ms:
+     1	'use client';
+     2	
+     3	import * as React from 'react';
+     4	import { startMicCapture, type MicCaptureHandle } from './recording/mic-capture';
+     5	import { DeepgramService, type DeepgramConnectionState } from './recording/deepgram-service';
+     6	import {
+     7	  SonnetSession,
+     8	  type ExtractionResult,
+     9	  type SonnetConnectionState,
+    10	  type SonnetQuestion,
+    11	} from './recording/sonnet-session';
+    12	import { applyExtractionToJob } from './recording/apply-extraction';
+    13	import { AudioRingBuffer } from './recording/audio-ring-buffer';
+    14	import { SleepManager, type SleepState } from './recording/sleep-manager';
+    15	import { useLiveFillStore } from './recording/live-fill-state';
+    16	import { api } from './api-client';
+    17	import { useJobContext } from './job-context';
+    18	
+    19	/**
+    20	 * Recording context.
+exec
+/bin/zsh -lc "rg -n \"updateJob\\(|function updateJob|const updateJob|useJobContext\" web/src/lib web/src/components | sed -n '1,220p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+web/src/lib/job-context.tsx:10: *  - updateJob(partial) — local merge, does not hit the network. Every
+web/src/lib/job-context.tsx:30:export function useJobContext(): JobContextValue {
+web/src/lib/job-context.tsx:33:    throw new Error('useJobContext must be used inside a <JobProvider>');
+web/src/lib/job-context.tsx:55:  const updateJob = React.useCallback((patch: Partial<JobDetail>) => {
+web/src/components/live-fill/live-fill-view.tsx:5:import { useJobContext } from '@/lib/job-context';
+web/src/components/live-fill/live-fill-view.tsx:31:  const { job, certificateType } = useJobContext();
+web/src/lib/recording-context.tsx:17:import { useJobContext } from './job-context';
+web/src/lib/recording-context.tsx:119:  const { job, updateJob } = useJobContext();
+web/src/lib/recording-context.tsx:145:  const updateJobRef = React.useRef(updateJob);
+web/src/components/job/job-header.tsx:6:import { useJobContext } from '@/lib/job-context';
+web/src/components/job/job-header.tsx:23:  const { job, isDirty, isSaving } = useJobContext();
+web/src/lib/recording/apply-document-extraction.ts:87:  /** Feed to `updateJob(patch)` — only sections that changed are present. */
+web/src/lib/recording/apply-ccu-analysis.ts:54:  /** `updateJob(patch)` — only sections that changed are present. */
+web/src/lib/recording/apply-ccu-analysis.ts:339: *  expected to `updateJob(result.patch)` and surface `result.questions`
+exec
+/bin/zsh -lc "nl -ba web/src/lib/job-context.tsx | sed -n '1,180p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "nl -ba web/src/lib/recording-context.tsx | sed -n '260,520p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	'use client';
+     2	
+     3	import * as React from 'react';
+     4	import type { CertificateType, JobDetail } from './types';
+     5	
+     6	/**
+     7	 * Per-job state container. Holds the fetched JobDetail plus a couple of
+     8	 * derived flags (dirty/syncing) and two mutators:
+     9	 *
+    10	 *  - updateJob(partial) — local merge, does not hit the network. Every
+    11	 *    input in the job tabs calls this; a debounced save effect (Phase 4)
+    12	 *    flushes to the backend.
+    13	 *  - setJob(full)        — replace wholesale (used after a network save
+    14	 *    round-trip so server-derived fields like updated_at can flow in).
+    15	 *
+    16	 * The shape deliberately mirrors the legacy `useJob` hook so the tab
+    17	 * components from Phase 3+ read the same API.
+    18	 */
+    19	interface JobContextValue {
+    20	  job: JobDetail;
+ succeeded in 0ms:
+   260	      onError: (err) => {
+   261	        // Only surface in the UI if we're not already closing down — a
+   262	        // normal CloseStream can race with `stop()` and emit a spurious
+   263	        // error that would otherwise flip the overlay red.
+   264	        if (deepgramRef.current) {
+   265	          setErrorMessage(err.message);
+   266	        }
+   267	      },
+   268	    });
+   269	    service.connect(key, sourceSampleRate);
+   270	    deepgramRef.current = service;
+   271	  }, []);
+   272	
+   273	  /** Apply a structured Sonnet extraction to the active JobDetail.
+   274	   *  Kept in a stable callback so the Sonnet WS callbacks don't rebind
+   275	   *  every render. Reads the current job from `jobRef` to decide whether
+   276	   *  to overwrite (3-tier priority: pre-existing manual data wins over
+   277	   *  Sonnet unless Sonnet is explicitly clearing / correcting). */
+   278	  const applyExtraction = React.useCallback(
+   279	    (result: ExtractionResult) => {
+exec
+/bin/zsh -lc "nl -ba web/src/lib/recording/apply-extraction.ts | sed -n '260,360p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+   260	}
+   261	
+   262	export function parseObservationCode(
+   263	  raw: string | undefined
+   264	): 'C1' | 'C2' | 'C3' | 'FI' | undefined {
+   265	  if (!raw) return undefined;
+   266	  const upper = raw.trim().toUpperCase();
+   267	  if (upper === 'C1' || upper === 'C2' || upper === 'C3' || upper === 'FI') {
+   268	    return upper;
+   269	  }
+   270	  return undefined;
+   271	}
+   272	
+   273	/** Sections whose flat records feed LiveFillState section keys. */
+   274	const SCALAR_SECTIONS: Section[] = ['installation', 'supply', 'board', 'extent', 'design'];
+   275	
+   276	/** Diff two section records and emit dot-path keys for any value that
+   277	 *  changed. Only reports keys whose new value passes `hasValue` — zero
+   278	 *  / empty strings / nulls get suppressed so the flash doesn't fire on
+   279	 *  a no-op re-assignment from Sonnet. */
+exec
+/bin/zsh -lc "nl -ba web/src/lib/recording/sonnet-session.ts | sed -n '260,420p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+   260	    }
+   261	    try {
+   262	      if (ws.readyState === WebSocket.OPEN) {
+   263	        this.sendRaw({ type: 'session_stop' });
+   264	      }
+   265	    } catch {
+   266	      // ignore
+   267	    }
+   268	    // 300ms grace so the server can flush pending extractions + the
+   269	    // final session_ack before we yank the socket. Matches the
+   270	    // Deepgram teardown pattern in deepgram-service.ts.
+   271	    setTimeout(() => {
+   272	      try {
+   273	        ws.close(1000);
+   274	      } catch {
+   275	        // ignore
+   276	      }
+   277	      this.ws = null;
+   278	      this.setState('disconnected');
+   279	    }, 300);
+exec
+/bin/zsh -lc 'rg -n "question_type|session_pause|session_resume|session_stop|job_state_update|totalJobCost|api/sonnet-stream|cost_update|field_clears|circuit_updates" -S .' in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+./web/src/lib/recording-context.tsx:126:  // `cost_update` messages and summed into the user-facing readout.
+./web/src/lib/recording-context.tsx:183:      // is authoritative from server-side `cost_update` snapshots.
+./web/src/lib/recording-context.tsx:285:        // only had `field_clears`, which we deliberately don't flash).
+./web/src/lib/recording-context.tsx:316:        // Server sends totalJobCost in USD. We keep Sonnet cost
+./web/src/lib/recording-context.tsx:319:        if (typeof update.totalJobCost === 'number') {
+./web/src/lib/recording-context.tsx:320:          setSonnetCostUsd(update.totalJobCost);
+./AUDIO_PIPELINE_AUDIT.md:104:   └── WS #2 ──► wss://backend/api/sonnet-stream  (Text: JSON transcript messages)
+./AUDIO_PIPELINE_AUDIT.md:126:- **Endpoint:** `wss://backend/api/sonnet-stream?token=<jwt>`
+./AUDIO_PIPELINE_AUDIT.md:128:- **Protocol:** `session_start` → `transcript` messages → `session_stop`
+./AUDIO_PIPELINE_AUDIT.md:367:[ServerWebSocketService] → wss://backend/api/sonnet-stream
+./CLAUDE.md:95:    -> ServerWebSocketService (wss://backend/api/sonnet-stream) + regex hints
+./src/__tests__/cost-tracker.test.js:222:      expect(update.type).toBe('cost_update');
+./src/__tests__/cost-tracker.test.js:234:      expect(typeof update.totalJobCost).toBe('number');
+./web/src/lib/recording/apply-extraction.ts:12: *   3. Apply `circuit_updates` — create or rename a CircuitRow so
+./web/src/lib/recording/apply-extraction.ts:145:    // typed a correction since the last job_state_update landed.
+./web/src/lib/recording/apply-extraction.ts:198:  // Apply circuit_updates (create / rename designation) first so
+./web/src/lib/recording/apply-extraction.ts:350: *  the extraction was effectively empty. Any field_clears on circuit 0
+./web/src/lib/recording/apply-extraction.ts:357:  const circuitUpdates = result.circuit_updates ?? [];
+./web/src/lib/recording/apply-extraction.ts:358:  const fieldClears = result.field_clears ?? [];
+./web/src/lib/recording/apply-extraction.ts:370:  // Circuit 0 field_clears — delete key from the right section.
+codex
+I found an existing review artifact in the repo, but I’m not using it as the answer. I’m reading the backend protocol directly now to confirm whether the frontend semantics in this commit actually match the server contract.
+exec
+/bin/zsh -lc "nl -ba src/extraction/sonnet-stream.js | sed -n '430,520p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "nl -ba src/extraction/sonnet-stream.js | sed -n '330,430p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+   330	
+   331	          case 'transcript':
+   332	            if (!transcriptLimiter.check()) {
+   333	              logger.warn('WebSocket transcript rate limit exceeded', {
+   334	                userId,
+   335	                sessionId: currentSessionId,
+   336	              });
+   337	              ws.send(
+   338	                JSON.stringify({
+   339	                  type: 'error',
+   340	                  message: 'Rate limit exceeded — too many transcript messages',
+   341	                  recoverable: false,
+   342	                })
+   343	              );
+   344	              ws.close(1008, 'Rate limit exceeded');
+   345	              return;
+   346	            }
+   347	            await handleTranscript(ws, currentSessionId, msg, preSessionBuffer);
+   348	            break;
+   349	
+ succeeded in 0ms:
+   430	        // (no audio for 60s) and reconnects when speech resumes. The original 30s timeout
+   431	        // was too short — inspectors frequently pause between circuits (putting down meter
+   432	        // probes, moving to next board) and would lose their entire extraction context.
+   433	        // 5 minutes covers the vast majority of between-circuit pauses without leaking
+   434	        // memory from abandoned sessions.
+   435	        entry.disconnectTimer = setTimeout(() => {
+   436	          logger.info('Session timed out, cleaning up', { sessionId: currentSessionId });
+   437	          entry.questionGate.destroy();
+   438	          activeSessions.delete(currentSessionId);
+   439	        }, 300000);
+   440	      }
+   441	    });
+   442	  });
+   443	
+   444	  async function handleSessionStart(ws, userId, msg, getAnthropicKey) {
+   445	    const { sessionId, jobId, jobState } = msg;
+   446	    if (!sessionId) throw new Error('sessionId required');
+   447	
+   448	    // Reuse existing session if reconnecting (within 30s timeout or old ws still open)
+   449	    if (activeSessions.has(sessionId)) {
+exec
+/bin/zsh -lc "nl -ba config/prompts/sonnet_extraction_system.md | sed -n '20,80p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "nl -ba src/extraction/sonnet-stream.js | sed -n '760,820p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+   760	
+   761	    // Attach job identity so cost can be traced back to the job
+   762	    summary.jobId = entry.jobId || null;
+   763	    summary.jobAddress = entry.jobAddress || null;
+   764	    summary.certType = entry.certType || null;
+   765	    summary.sessionId = sessionId;
+   766	
+   767	    // Save cost summary to S3
+   768	    try {
+   769	      const s3Key = `session-analytics/${entry.userId}/${sessionId}/cost_summary.json`;
+   770	      await storage.uploadJson(summary, s3Key);
+   771	      logger.info('Cost summary saved', {
+   772	        s3Key,
+   773	        jobId: entry.jobId,
+   774	        jobAddress: entry.jobAddress,
+   775	      });
+   776	    } catch (error) {
+   777	      logger.error('Failed to save cost summary to S3', { error: error.message });
+   778	    }
+   779	
+ succeeded in 0ms:
+    20	- The electrician identifies circuits by number ("circuit 1", "number 3") or description ("ring final", "cooker", "downstairs sockets").
+    21	- Look ONLY at the current utterance to determine the circuit. If the utterance does NOT contain a circuit number or circuit name, set circuit to -1. There is NO "active circuit" -- previous utterances do NOT set context for later ones.
+    22	- DO NOT infer the circuit from conversation history. DO NOT assume "they were just talking about circuit 3 so this must be circuit 3". Every utterance stands alone for circuit assignment.
+    23	- Example: Previous was "circuit 3 Zs 0.35", current is "insulation 200" -> [{circuit: -1, field: "insulation_resistance_l_e", value: ">200"}] + ask which circuit. Same for "live to live lim" -> circuit -1 + ask.
+    24	- EXCEPTION — RING CONTINUITY SEQUENCE CARRYOVER: Electricians commonly give ring continuity readings (lives, neutrals, earths) together for the same circuit across consecutive utterances. When the PREVIOUS utterance assigned ring_continuity_r1 (lives) and/or ring_continuity_rn (neutrals) to a specific circuit, AND the current utterance contains a ring continuity field (ring_continuity_r1, ring_continuity_rn, or ring_continuity_r2) with NO explicit circuit reference, inherit the circuit from the previous ring continuity reading. Use the previous utterance ONLY to resolve the circuit for this reading — do NOT re-extract prior values. This ONLY applies when: (1) the previous reading was a ring continuity field, (2) the current reading is also a ring continuity field, and (3) no other circuit context is stated in the current utterance. For all non-ring-continuity readings, the standard "every utterance stands alone" rule still applies.
+    25	- Example of carryover: Previous was "circuit 1 lives 0.05 neutrals 0.06", current is "earths 0.07" -> earths inherits circuit 1: [{circuit: 1, field: "ring_continuity_r2", value: 0.07}]. No question needed.
+    26	- Example of NO carryover: Previous was "circuit 1 lives 0.05 neutrals 0.06", current is "Zs 0.35" -> Zs does NOT inherit circuit 1: [{circuit: -1, field: "zs", value: 0.35}] + ask which circuit.
+    27	- Example of explicit override: Previous was "circuit 1 lives 0.05 neutrals 0.06", current is "earths 0.07 on circuit 2" -> use circuit 2 (explicitly stated), do NOT inherit circuit 1: [{circuit: 2, field: "ring_continuity_r2", value: 0.07}].
+    28	- If the current utterance explicitly says a circuit number or name, use it for all readings in that utterance.
+    29	- DESCRIPTION MATCHING: When the user refers to a circuit by description (e.g., "cooker", "kitchen sockets", "upstairs lights"), match it against the CIRCUIT SCHEDULE descriptions. A match is valid if the spoken description is a clear substring or synonym of a schedule entry (e.g., "cooker" matches "Cooker", "kitchen sockets" matches "Kitchen Ring Final", "lights" matches "Lighting"). Use the matched circuit number.
+    30	- If a description matches MULTIPLE circuits in the schedule (e.g., "sockets" matches both "Kitchen Sockets" and "Lounge Sockets"), set circuit to -1 and ask: "[description] -- circuit [X], [Y], or [Z]?"
+    31	- If a description matches NO circuits in the schedule, set circuit to -1 and ask: "Which circuit number is [description]?"
+    32	- NEVER guess when there is genuine ambiguity -- but a clear single match to the schedule IS a match, not a guess.
+    33	- Circuit 0 means supply/installation-level readings (Ze, PFC, earthing, address, client etc.) -- NOT a real circuit. Supply readings do NOT need a circuit reference.
+    34	- CIRCUIT NAMING: If the user says "circuit N is [description]" (e.g., "circuit 2 is upstairs lighting"), return a circuit_updates entry with action "create" (if circuit N is not in the schedule) or "rename" (if it exists). Do NOT return this as an extracted_reading.
+    35	- CIRCUIT NAMING by description only: If user says "[description] circuit" without a number and it doesn't match any existing circuit, ask: "What circuit number is [description]?"
+    36	- CIRCUIT REASSIGNMENT: If a reading was previously extracted for one circuit and the user corrects it to a different circuit, include the corrected reading in extracted_readings AND add a field_clears entry for the old circuit. Example: Zs 0.83 was on circuit 2, user says "that's circuit 1" -> extracted_readings: [{circuit:1, field:"zs", value:0.83}], field_clears: [{circuit:2, field:"zs"}].
+    37	- Confidence: 0.0-1.0. Skip readings below 0.5.
+    38	- For ring continuity: r1 and r2 are individual conductor resistances; r1_plus_r2 is the loop value
+    39	- Ring continuity (R1/Rn/R2/lives/neutrals/earths) ONLY applies to ring/socket circuits, NEVER lighting circuits.
+exec
+/bin/zsh -lc "nl -ba packages/shared-types/src/recording.ts | sed -n '1,160p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	/**
+     2	 * Recording pipeline types — Deepgram, WebSocket, cost tracking, CCU analysis.
+     3	 */
+     4	
+     5	export type DeepgramConnectionState = 'disconnected' | 'connecting' | 'connected' | 'reconnecting';
+     6	
+     7	export interface DeepgramWord {
+     8	  word: string;
+     9	  start: number;
+    10	  end: number;
+    11	  confidence: number;
+    12	  punctuated_word?: string;
+    13	}
+    14	
+    15	export interface ServerCostUpdate {
+    16	  deepgramCost: number;
+    17	  sonnetCost: number;
+    18	  totalSessionCost: number;
+    19	  totalJobCost: number;
+    20	  deepgramMinutes: number;
+exec
+/bin/zsh -lc "rg -n \"circuit_designation|description|designation\" web/src src config/prompts | sed -n '1,240p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+config/prompts/extraction_system.md:8:    "premises_description": "Residential|Commercial|Industrial|Agricultural|Other",
+config/prompts/extraction_system.md:69:      "text": "Thorough description of the fault ONLY - DO NOT suggest fixes or remedial action",
+config/prompts/extraction_system.md:160:- circuit_designation: Description (e.g., "Lights Kitchen", "Sockets Ring")
+config/prompts/extraction_system.md:220:A standalone float value (typically 0.01-10.0) appearing right after a circuit description
+config/prompts/extraction_system.md:239:- Do NOT create observations for "observation of..." - require "the observation is..." or clear defect description
+config/prompts/sonnet_extraction_eic_system.md:20:- The electrician identifies circuits by number ("circuit 1", "number 3") or description ("ring final", "cooker", "downstairs sockets").
+config/prompts/sonnet_extraction_eic_system.md:25:- DESCRIPTION MATCHING: When the user refers to a circuit by description (e.g., "cooker", "kitchen sockets", "upstairs lights"), match it against the CIRCUIT SCHEDULE descriptions. A match is valid if the spoken description is a clear substring or synonym of a schedule entry (e.g., "cooker" matches "Cooker", "kitchen sockets" matches "Kitchen Ring Final", "lights" matches "Lighting"). Use the matched circuit number.
+config/prompts/sonnet_extraction_eic_system.md:26:- If a description matches MULTIPLE circuits in the schedule (e.g., "sockets" matches both "Kitchen Sockets" and "Lounge Sockets"), set circuit to -1 and ask: "[description] -- circuit [X], [Y], or [Z]?"
+config/prompts/sonnet_extraction_eic_system.md:27:- If a description matches NO circuits in the schedule, set circuit to -1 and ask: "Which circuit number is [description]?"
+config/prompts/sonnet_extraction_eic_system.md:30:- CIRCUIT NAMING: If the user says "circuit N is [description]" (e.g., "circuit 2 is upstairs lighting"), return a circuit_updates entry with action "create" (if circuit N is not in the schedule) or "rename" (if it exists). Do NOT return this as an extracted_reading.
+config/prompts/sonnet_extraction_eic_system.md:31:- CIRCUIT NAMING by description only: If user says "[description] circuit" without a number and it doesn't match any existing circuit, ask: "What circuit number is [description]?"
+config/prompts/sonnet_extraction_eic_system.md:96:- extent_of_installation: Description of the extent of installation covered by the certificate. Can be very detailed (e.g., "complete rewire of ground floor and first floor", "new consumer unit and all final circuits", "addition of kitchen ring final and cooker circuit"). Extract the full description as spoken.
+config/prompts/sonnet_extraction_eic_system.md:99:- departure_details: If departures exist, the details. Extract the full description as spoken.
+config/prompts/sonnet_extraction_eic_system.md:108:- "All circuits are [value]" / "every circuit [field] is [value]" / "same for all": Return one extracted_reading PER circuit in the schedule with the same field and value. Use each circuit's actual number. IMPORTANT: Skip any circuit whose designation is "Spare" — spare circuits have no device and should never receive bulk readings.
+config/prompts/sonnet_extraction_eic_system.md:122:- wiring_type: BS 7671 wiring type LETTER CODE only: "A" (sheathed/T&E), "B" (single in conduit), "C" (single in trunking), "D" (SWA/armoured). If the inspector says a cable description like "Twin & Earth" or "T&E", return "A". If "SWA" or "armoured", return "D". Always return a single letter, never a description. NOT the reference method -- that is ref_method.
+config/prompts/sonnet_extraction_eic_system.md:125:- circuit_description: what the circuit supplies (e.g., "Kitchen Sockets", "Upstairs Lighting")
+config/prompts/sonnet_extraction_eic_system.md:156:- bonding_other: description of other bonding (e.g., "swimming pool", "central heating")
+config/prompts/sonnet_extraction_eic_system.md:198:- premises_description: Residential|Commercial|Industrial|Agricultural|Other
+config/prompts/sonnet_extraction_eic_system.md:233:- If the description is unclear or too short, ask: "What's the observation?"
+config/prompts/sonnet_extraction_eic_system.md:429:1=circuit_designation 2=wiring_type 3=ref_method 4=number_of_points 5=cable_size 6=cable_size_earth 7=ocpd_type 8=ocpd_rating 9=ocpd_bs_en 10=ocpd_breaking_capacity 11=rcd_type 12=rcd_operating_current_ma 13=rcd_bs_en 14=r1_plus_r2 15=r2 16=ring_continuity_r1 17=ring_continuity_rn 18=ring_continuity_r2 19=ir_test_voltage 20=insulation_resistance_l_l 21=insulation_resistance_l_e 22=zs 23=rcd_trip_time 24=rcd_button_confirmed 25=afdd_button_confirmed 26=polarity 27=max_disconnect_time
+codex
+The server contract exposes at least one concrete mismatch already: it reads `jobState.certificateType`, but this client sends the raw `JobDetail` object, whose type carrier is `certificate_type`. I’m verifying whether that downgrades all EIC sessions to the EICR prompt.
+exec
+/bin/zsh -lc "nl -ba src/extraction/eicr-extraction-session.js | sed -n '940,1025p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+   940	        const key = JSON.stringify(alert);
+   941	        if (!this.stateSnapshot.validation_alerts.some((a) => JSON.stringify(a) === key)) {
+   942	          this.stateSnapshot.validation_alerts.push(alert);
+   943	        }
+   944	      }
+   945	    }
+   946	  }
+   947	
+   948	  /**
+   949	   * Build a compact state snapshot message for the API.
+   950	   * Returns null if nothing has been extracted yet.
+   951	   *
+   952	   * Includes the circuit schedule (designations, supply info, hardware) alongside
+   953	   * extracted values so Sonnet retains full context even when older conversational
+   954	   * messages drop out of the sliding window.
+   955	   */
+   956	  buildStateSnapshotMessage() {
+   957	    const hasCircuits = Object.keys(this.stateSnapshot.circuits).length > 0;
+   958	    const hasPending = this.stateSnapshot.pending_readings.length > 0;
+   959	    const hasObs = this.stateSnapshot.observations.length > 0;
+exec
+/bin/zsh -lc "nl -ba web/src/lib/recording/apply-ccu-analysis.ts | sed -n '240,320p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+   240	    const hasReadings = READING_KEYS.some((k) => hasValue(row[k]));
+   241	    if (hasReadings) next.push(row);
+   242	  }
+   243	
+   244	  return [...otherBoardCircuits, ...next];
+   245	}
+   246	
+   247	function mergeMatchedCircuit(
+   248	  existing: CircuitRow,
+   249	  analysed: CCUAnalysisCircuit,
+   250	  boardId: string
+   251	): CircuitRow {
+   252	  const next: CircuitRow = { ...existing };
+   253	  next.board_id = boardId;
+   254	  next.circuit_ref = String(analysed.circuit_number);
+   255	
+   256	  // Designation — only fill if empty (iOS line 128).
+   257	  const label = analysed.label?.trim();
+   258	  if (!hasValue(next.circuit_designation) && label && label !== 'null') {
+   259	    next.circuit_designation = label;
+exec
+/bin/zsh -lc "nl -ba web/src/lib/types.ts | sed -n '1,120p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	/**
+     2	 * Shared domain types. Kept minimal — only the shapes Phase 1–2 need;
+     3	 * per-tab detail types land in later phases when their screens do.
+     4	 */
+     5	
+     6	export interface User {
+     7	  id: string;
+     8	  email: string;
+     9	  name: string;
+    10	  company_name?: string;
+    11	  role?: 'admin' | 'user';
+    12	  /** System-wide tenant membership. Nullable for legacy users not yet bound to a company. */
+    13	  company_id?: string;
+    14	  /** Role within a company. `owner`/`admin` grant company-admin privileges; `employee` is rank-and-file. */
+    15	  company_role?: 'owner' | 'admin' | 'employee';
+    16	}
+    17	
+    18	/**
+    19	 * Inspector profile — the API shape stored as one JSON array per user at
+    20	 * `settings/{userId}/inspector_profiles.json`. The backend persists the
+exec
+/bin/zsh -lc "nl -ba web/src/lib/recording/apply-document-extraction.ts | sed -n '250,340p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+   250	        row[field] = value;
+   251	        rowChanged = true;
+   252	      }
+   253	      if (rowChanged) {
+   254	        existing[idx] = row;
+   255	        affected += 1;
+   256	      }
+   257	    } else {
+   258	      // Unmatched — build a new row with whatever non-empty fields the
+   259	      // extractor populated.
+   260	      const id =
+   261	        globalThis.crypto?.randomUUID?.() ??
+   262	        `c-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+   263	      const row: CircuitRow = {
+   264	        id,
+   265	        circuit_ref: String(refRaw),
+   266	        circuit_designation: '',
+   267	      };
+   268	      if (boardId) row.board_id = boardId;
+   269	      for (const [field, value] of Object.entries(analysed)) {
+exec
+/bin/zsh -lc "rg -n \"certificate_type|certificateType\" web/src src | sed -n '1,220p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+src/services/email.js:29:export async function sendCertificateEmail({ to, clientName, address, pdfBuffer, pdfFilename, certificateType }) {
+src/services/email.js:35:  const type = certificateType === "EIC" ? "Electrical Installation Certificate" : "Electrical Installation Condition Report";
+src/services/email.js:54:        filename: pdfFilename || `${certificateType}_${address}.pdf`,
+src/routes/email.js:43:    const certificateType = job.certificate_type || "EICR";
+src/routes/email.js:60:      certificateType,
+src/routes/email.js:118:    const certificateType = job.certificate_type || "EICR";
+src/routes/email.js:130:      certificateType,
+src/routes/clients.js:209:        certificate_type: j.certificate_type,
+src/routes/ocr.js:44:  const { data, certificateType } = req.body;
+src/routes/ocr.js:80:      certificate_type: certificateType || 'EICR',
+src/routes/calendar.js:137:      certificate_type: certType,
+src/routes/jobs.js:137:  const certificateType = req.body.certificate_type || 'EICR';
+src/routes/jobs.js:146:      certificate_type: certificateType,
+src/routes/jobs.js:151:    logger.info('Blank job created', { userId, jobId, certificateType });
+src/routes/jobs.js:160:      certificate_type: certificateType,
+src/routes/jobs.js:177:  const certificateType = req.body.certificateType || 'EICR';
+src/routes/jobs.js:205:      certificate_type: certificateType,
+src/routes/jobs.js:581:      certificate_type: job.certificate_type || extractedData.certificate_type || 'EICR',
+src/routes/jobs.js:1027:      certificate_type: sourceJob.certificate_type || 'EICR',
+web/src/lib/job-context.tsx:21:  certificateType: CertificateType;
+exec
+/bin/zsh -lc "nl -ba web/src/lib/recording/apply-extraction.ts | sed -n '360,440p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+   360	
+   361	  const patch: Partial<JobDetail> = {};
+   362	
+   363	  // Circuit 0 readings — split by section.
+   364	  const supplyPatches = applyCircuit0Readings(job, readings);
+   365	  for (const section of Object.keys(supplyPatches) as Section[]) {
+   366	    const merged = supplyPatches[section];
+   367	    if (merged) patch[section] = merged;
+   368	  }
+   369	
+   370	  // Circuit 0 field_clears — delete key from the right section.
+   371	  for (const clear of fieldClears) {
+   372	    if (clear.circuit !== 0 || !clear.field) continue;
+   373	    const section = routeSupplyField(clear.field);
+   374	    const existing =
+   375	      (patch[section] as Record<string, unknown> | undefined) ??
+   376	      (job[section] as Record<string, unknown> | undefined) ??
+   377	      {};
+   378	    if (clear.field in existing) {
+   379	      const next = { ...existing };
+codex
+I’ve narrowed the core behavioural risks. I’m checking whether this phase added any direct tests around the new extraction mapper or Sonnet session client; if not, that will be a major coverage gap because the bugs here are protocol-level and easy to miss manually.
+exec
+/bin/zsh -lc 'rg -n "applyExtractionToJob|SonnetSession|recording-context|questions|session_resume|session_pause" web/src web/tests web/__tests__ 2>/dev/null' in /Users/derekbeckley/Developer/EICR_Automation exited 2 in 0ms:
+web/src/lib/recording-context.tsx:7:  SonnetSession,
+web/src/lib/recording-context.tsx:12:import { applyExtractionToJob } from './recording/apply-extraction';
+web/src/lib/recording-context.tsx:83:  /** Gated questions surfaced by Sonnet (unclear value, orphaned reading,
+web/src/lib/recording-context.tsx:86:  questions: SonnetQuestion[];
+web/src/lib/recording-context.tsx:133:  const [questions, setQuestions] = React.useState<SonnetQuestion[]>([]);
+web/src/lib/recording-context.tsx:156:  const sonnetRef = React.useRef<SonnetSession | null>(null);
+web/src/lib/recording-context.tsx:280:      const applied = applyExtractionToJob(jobRef.current, result);
+web/src/lib/recording-context.tsx:296:   *  readings + questions + cost. Shared between `start()` and
+web/src/lib/recording-context.tsx:301:    const session = new SonnetSession({
+web/src/lib/recording-context.tsx:619:      questions,
+web/src/lib/recording-context.tsx:639:      questions,
+web/src/lib/types.ts:245: * free-form `questionsForInspector` list, and a usage/cost breakdown.
+web/src/lib/types.ts:284:  questionsForInspector?: string[];
+web/src/lib/types.ts:305: * no `questionsForInspector`.
+web/src/lib/api-client.ts:153:   * SPD fields, a circuits array, and `questionsForInspector`. Single
+web/src/lib/recording/apply-ccu-analysis.ts:58:   * augmented with auto-generated questions for RCD-protected
+web/src/lib/recording/apply-ccu-analysis.ts:62:  questions: string[];
+web/src/lib/recording/apply-ccu-analysis.ts:338:/** Public entry point. Returns the patch + questions. The caller is
+web/src/lib/recording/apply-ccu-analysis.ts:339: *  expected to `updateJob(result.patch)` and surface `result.questions`
+web/src/lib/recording/apply-ccu-analysis.ts:361:  const questions = [
+exec
+/bin/zsh -lc "find web -maxdepth 4 \\( -path '*/__tests__/*' -o -path '*/tests/*' \\) -type f | sed -n '1,240p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+
+exec
+/bin/zsh -lc 'git show --name-only --format=oneline b6c4b65' in /Users/derekbeckley/Developer/EICR_Automation succeeded in 1.02s:
+2026-04-17 23:57:17.383 xcodebuild[32716:67202140] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-GHmeFVx3' (errno=Operation not permitted)
+2026-04-17 23:57:17.669 xcodebuild[32718:67202149]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:57:17.766 xcodebuild[32718:67202148] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+b6c4b658da3ed1fd27bdf8bf5eb6dc6099712c6c feat(web): Phase 4d server-side Sonnet multi-turn extraction + field propagation
+web/src/components/recording/recording-overlay.tsx
+web/src/lib/recording-context.tsx
+web/src/lib/recording/apply-extraction.ts
+web/src/lib/recording/sonnet-session.ts
+exec
+/bin/zsh -lc "nl -ba web/src/lib/recording-context.tsx | sed -n '520,620p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+   520	    liveFill,
+   521	  ]);
+   522	
+   523	  const stop = React.useCallback(() => {
+   524	    clearTick();
+   525	    teardownMic();
+   526	    teardownDeepgram();
+   527	    teardownSonnet();
+   528	    teardownSleep();
+   529	    setState('idle');
+   530	    setMicLevel(0);
+   531	    setOverlayOpen(false);
+   532	    setQuestions([]);
+   533	    liveFill.reset();
+   534	  }, [clearTick, teardownMic, teardownDeepgram, teardownSonnet, teardownSleep, liveFill]);
+   535	
+   536	  /** Manual pause — the inspector tapped the Pause button. Routes
+   537	   *  through the same doze handler the SleepManager would use when the
+   538	   *  15s timer fires, so pause behaviour is consistent with automatic
+   539	   *  sleep: Deepgram WS stays alive, Sonnet pauses, cost tracker stops,
+codex
+The working tree has already fixed at least one of the pause-path problems in later phases, so I’m pulling exact line numbers from the `b6c4b65` snapshots now. That keeps the review anchored to the phase under review instead of today’s tree.
+exec
+/bin/zsh -lc "git show b6c4b65:web/src/lib/recording-context.tsx | nl -ba | sed -n '240,460p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "git show b6c4b65:web/src/components/recording/recording-overlay.tsx | nl -ba | sed -n '140,220p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "git show b6c4b65:web/src/lib/recording/apply-extraction.ts | nl -ba | sed -n '120,320p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "git show b6c4b65:web/src/lib/recording/sonnet-session.ts | nl -ba | sed -n '140,380p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 1.22s:
+2026-04-17 23:57:50.510 xcodebuild[32758:67202470] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-YztXZ2P3' (errno=Operation not permitted)
+2026-04-17 23:57:50.857 xcodebuild[32767:67202518]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:57:50.971 xcodebuild[32767:67202513] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+   140	
+   141	  get connectionState(): SonnetConnectionState {
+   142	    return this.state;
+   143	  }
+   144	
+   145	  /** Open the WebSocket and send `session_start`. Safe to call once per
+   146	   *  recording session — callers should `disconnect()` before reopening. */
+   147	  connect(options: SessionStartOptions): void {
+   148	    if (this.ws && this.state !== 'disconnected') return;
+   149	    this.startOptions = options;
+   150	    this.setState('connecting');
+   151	
+   152	    const token = getToken();
+   153	    if (!token) {
+   154	      this.setState('error');
+ succeeded in 1.23s:
+2026-04-17 23:57:50.403 xcodebuild[32760:67202476]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:57:50.510 xcodebuild[32760:67202472] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-ngyjX7bN' (errno=Operation not permitted)
+2026-04-17 23:57:50.857 xcodebuild[32766:67202515]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:57:50.971 xcodebuild[32766:67202511] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+   140	                    ? 'var(--color-status-processing)'
+   141	                    : 'var(--color-brand-green)',
+   142	              }}
+   143	            >
+   144	              {isError || isPaused ? (
+   145	                <MicOff className="h-8 w-8 text-white" strokeWidth={2.25} aria-hidden />
+   146	              ) : (
+   147	                <Mic className="h-8 w-8 text-white" strokeWidth={2.25} aria-hidden />
+   148	              )}
+   149	            </div>
+   150	          </div>
+   151	        </div>
+   152	
+   153	        {/* ── Sonnet questions ─────────────────────────────────────── */}
+ succeeded in 1.23s:
+2026-04-17 23:57:50.403 xcodebuild[32759:67202477]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:57:50.510 xcodebuild[32759:67202471] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-shAoBuHM' (errno=Operation not permitted)
+2026-04-17 23:57:50.857 xcodebuild[32768:67202517]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:57:50.971 xcodebuild[32768:67202514] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+   120	
+   121	/** Non-empty / non-null check used by the 3-tier priority guard. */
+   122	function hasValue(v: unknown): boolean {
+   123	  if (v == null) return false;
+   124	  if (typeof v === 'string') return v.trim().length > 0;
+   125	  if (typeof v === 'boolean' || typeof v === 'number') return true;
+   126	  if (Array.isArray(v)) return v.length > 0;
+   127	  if (typeof v === 'object') return Object.keys(v as object).length > 0;
+   128	  return false;
+   129	}
+   130	
+   131	/** Apply all readings belonging to circuit 0. Returns a map of
+   132	 *  section → merged record that can be folded into the final patch. */
+   133	function applyCircuit0Readings(
+ succeeded in 1.26s:
+2026-04-17 23:57:50.399 xcodebuild[32757:67202463]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:57:50.510 xcodebuild[32757:67202461] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-W3ldD44m' (errno=Operation not permitted)
+2026-04-17 23:57:50.858 xcodebuild[32765:67202516]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:57:50.971 xcodebuild[32765:67202512] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+   240	        // normal CloseStream can race with `stop()` and emit a spurious
+   241	        // error that would otherwise flip the overlay red.
+   242	        if (deepgramRef.current) {
+   243	          setErrorMessage(err.message);
+   244	        }
+   245	      },
+   246	    });
+   247	    service.connect(key, sourceSampleRate);
+   248	    deepgramRef.current = service;
+   249	  }, []);
+   250	
+   251	  /** Apply a structured Sonnet extraction to the active JobDetail.
+   252	   *  Kept in a stable callback so the Sonnet WS callbacks don't rebind
+   253	   *  every render. Reads the current job from `jobRef` to decide whether
+codex
+**Review scope**
+
+`recording-context.tsx` and `apply-extraction.ts` have evolved further in the working tree since `b6c4b65` (Phase 4e/live-fill work), so the findings below are anchored to the `b6c4b65` snapshot and cross-checked against the current backend contract.
+
+## 1. Summary of the phase
+
+Phase 4d closes the core “voice fills the certificate” loop on the web client. It adds a browser Sonnet WebSocket client, forwards final Deepgram transcripts to it, maps returned structured readings into `JobDetail`, surfaces Sonnet questions in the recording overlay, and rolls Sonnet cost into the recording cost display.
+
+## 2. Alignment with original plan
+
+Mostly aligned with the handoff doc and commit intent. The four promised deliverables landed: Sonnet WS client, extraction-to-job mapper, recording context integration, and overlay question rendering.
+
+Two objectives do not fully hold up in the implementation:
+- The intended pause/resume parity with iOS is not actually achieved, because the pause path stops the server session instead of preserving it.
+- The intent to support both EICR and EIC extraction is undermined by sending the wrong certificate-type shape to the backend, which defaults the session to the EICR prompt.
+
+## 3. Correctness issues
+
+- `[P1]` Manual pause destroys the Sonnet session instead of pausing it. In `web/src/lib/recording-context.tsx:384-402`, `pause()` sends `session_pause` and then immediately calls `teardownSonnet()`. `teardownSonnet()` calls `disconnect()`, which sends `session_stop` in `web/src/lib/recording/sonnet-session.ts:253-279`. On the server, `session_stop` deletes the active session in `src/extraction/sonnet-stream.js:403-405,780-783`. That contradicts the handoff’s “5-minute reconnect window” intent and breaks multi-turn continuity across manual pause/resume.
+- `[P1]` `session_resume` is dropped on every resume. `resume()` in `web/src/lib/recording-context.tsx:404-415` calls `beginMicPipeline()` and then immediately `sonnetRef.current?.resume()`. But `SonnetSession.resume()` only sends when `state === 'connected'` (`web/src/lib/recording/sonnet-session.ts:247-250`), while `connect()` is still in `'connecting'` until `onopen` (`:147-186`). Result: the resume signal is silently lost.
+- `[P1]` EIC sessions are started with the wrong certificate type. The client sends raw `jobRef.current` as `jobState` (`web/src/lib/recording-context.tsx:301-305`), where the field is `certificate_type`. The server reads `jobState?.certificateType` in `src/extraction/sonnet-stream.js:445-485` and otherwise falls back to `'eicr'` (`:483`). That means EIC jobs will use the EICR extraction prompt unless something else rewrites the shape first.
+- `[P2]` Observation dedupe is too aggressive and can drop real defects. `web/src/lib/recording/apply-extraction.ts:233-259` dedupes solely by lowercased observation text, ignoring `location`, `schedule_item`, and `code`. Two identical observations in different locations will collapse into one row.
+
+## 4. Security issues
+
+- `[Medium]` JWT is placed in the WebSocket query string in `web/src/lib/recording/sonnet-session.ts:290-296`. That is vulnerable to leakage via reverse-proxy access logs, infrastructure tracing, and URL capture tooling. If query auth is unavoidable for browser WS upgrades, this should be a short-lived one-time ticket rather than the bearer JWT itself.
+- `[Low]` The WS target is derived directly from `api.baseUrl` in `web/src/lib/recording/sonnet-session.ts:290-296`. A misconfigured `NEXT_PUBLIC_API_URL` would send both transcript data and auth material to an unintended host. That is more of a deployment hardening issue than an exploit in normal operation.
+
+## 5. Performance issues
+
+- `[P2]` This phase increases full job-tree rerenders during recording. `applyExtractionToJob()` returns whole section objects / full `circuits` arrays, and `updateJob()` does a top-level shallow merge in `web/src/lib/job-context.tsx:55-58`. During active extraction this will rerender all `useJobContext()` consumers, not just the fields that changed.
+- `[P2]` `applyCircuitReadings()` always clones the `circuits` array when any per-circuit update/clear is present (`web/src/lib/recording/apply-extraction.ts:172-230`), even when the effective result is a no-op. That creates avoidable work during noisy or duplicate Sonnet turns.
+
+## 6. Accessibility issues
+
+No clear new accessibility regression in this phase. The added question strip is reasonably implemented:
+- `aria-live="polite"` on the question container in `web/src/components/recording/recording-overlay.tsx:155-158`
+- Explicit dismiss button labels in `:172-179`
+
+Residual risk: the overlay still appears to be a modal without explicit focus trapping/restoration, but that predates this phase rather than being introduced by it.
+
+## 7. Code quality
+
+- `web/src/lib/recording/sonnet-session.ts:149` stores `startOptions` but never uses it.
+- `web/src/lib/recording/sonnet-session.ts:361-362` casts inbound `cost_update` blindly to `CostUpdate`, bypassing the type’s literal guarantees.
+- `web/src/lib/recording/apply-extraction.ts:35-38` hard-codes circuit-0 routing and falls back unknown fields to `supply`; that is an intentional trade-off, but it is drift-prone and can silently mis-route new backend fields.
+
+## 8. Test coverage gaps
+
+- No frontend tests were added for `SonnetSession` lifecycle: connect, pre-connect transcript queueing, pause/resume, reconnect, and close handling.
+- No unit tests cover `applyExtractionToJob()` for section routing, manual-value preservation, `field_clears`, `circuit_updates`, or observation dedupe.
+- No integration test verifies the frontend/server contract for `jobState`, especially the `certificateType`/`certificate_type` mismatch.
+- No regression test covers the manual pause/resume path against the server’s `activeSessions` behaviour.
+
+## 9. Suggested fixes
+
+1. `web/src/lib/recording-context.tsx:384-402` and `web/src/lib/recording/sonnet-session.ts:253-279`  
+   Change manual pause so it does not call the `session_stop` path. Either keep the Sonnet WS open after `session_pause`, or add a disconnect mode that closes the socket without sending `session_stop`.  
+   Why: current pause destroys the multi-turn session and breaks the advertised reconnect window.
+
+2. `web/src/lib/recording/sonnet-session.ts:247-250` and `web/src/lib/recording-context.tsx:404-415`  
+   Queue `session_resume` until the socket reaches `connected`, or send it from `onSessionAck('reconnected')` / `onopen`.  
+   Why: the current resume call races with connection establishment and is dropped.
+
+3. `web/src/lib/recording-context.tsx:301-305`  
+   Send a normalized `jobState` shape that includes `certificateType: jobRef.current.certificate_type`, or update the server to accept `certificate_type` too.  
+   Why: EIC sessions currently fall back to the EICR extractor.
+
+4. `web/src/lib/recording/apply-extraction.ts:233-259`  
+   Deduplicate observations using `schedule_item + code`, or `location + text prefix`, matching the stronger strategy already used in `apply-document-extraction.ts:283-339`.  
+   Why: text-only dedupe collapses distinct defects at different locations.
+
+5. `web/src/lib/recording/sonnet-session.ts:290-296`  
+   Replace query-string JWT auth with a short-lived WS ticket endpoint, or at minimum constrain/validate the host in production before opening the socket.  
+   Why: reduces bearer-token exposure and accidental exfiltration to a misconfigured host.
+
+6. `web/src/lib/recording/apply-extraction.ts:166-230`  
+   Return `null` when `circuit_updates` / `field_clears` produce no effective changes instead of always returning a cloned array.  
+   Why: avoids unnecessary `updateJob()` calls and broad rerenders during recording.
+
+7. `web/src/lib/recording/sonnet-session.ts` and `web/src/lib/recording/apply-extraction.ts`  
+   Add unit tests for WS lifecycle and extraction mapping, plus one integration test that pauses/resumes and confirms the server keeps exactly one logical session alive.  
+   Why: these bugs are protocol-level and easy to miss manually.
+
+## 10. Overall verdict
+
+**Needs rework.**
+
+Top 3 priority fixes:
+1. Fix pause/resume so manual pause preserves the Sonnet session and resume reliably sends `session_resume`.
+2. Fix the `certificateType` / `certificate_type` contract mismatch so EIC jobs use the correct extractor.
+3. Fix observation dedupe so identical descriptions in different locations are not lost.
+tokens used
+101,810
+**Review scope**
+
+`recording-context.tsx` and `apply-extraction.ts` have evolved further in the working tree since `b6c4b65` (Phase 4e/live-fill work), so the findings below are anchored to the `b6c4b65` snapshot and cross-checked against the current backend contract.
+
+## 1. Summary of the phase
+
+Phase 4d closes the core “voice fills the certificate” loop on the web client. It adds a browser Sonnet WebSocket client, forwards final Deepgram transcripts to it, maps returned structured readings into `JobDetail`, surfaces Sonnet questions in the recording overlay, and rolls Sonnet cost into the recording cost display.
+
+## 2. Alignment with original plan
+
+Mostly aligned with the handoff doc and commit intent. The four promised deliverables landed: Sonnet WS client, extraction-to-job mapper, recording context integration, and overlay question rendering.
+
+Two objectives do not fully hold up in the implementation:
+- The intended pause/resume parity with iOS is not actually achieved, because the pause path stops the server session instead of preserving it.
+- The intent to support both EICR and EIC extraction is undermined by sending the wrong certificate-type shape to the backend, which defaults the session to the EICR prompt.
+
+## 3. Correctness issues
+
+- `[P1]` Manual pause destroys the Sonnet session instead of pausing it. In `web/src/lib/recording-context.tsx:384-402`, `pause()` sends `session_pause` and then immediately calls `teardownSonnet()`. `teardownSonnet()` calls `disconnect()`, which sends `session_stop` in `web/src/lib/recording/sonnet-session.ts:253-279`. On the server, `session_stop` deletes the active session in `src/extraction/sonnet-stream.js:403-405,780-783`. That contradicts the handoff’s “5-minute reconnect window” intent and breaks multi-turn continuity across manual pause/resume.
+- `[P1]` `session_resume` is dropped on every resume. `resume()` in `web/src/lib/recording-context.tsx:404-415` calls `beginMicPipeline()` and then immediately `sonnetRef.current?.resume()`. But `SonnetSession.resume()` only sends when `state === 'connected'` (`web/src/lib/recording/sonnet-session.ts:247-250`), while `connect()` is still in `'connecting'` until `onopen` (`:147-186`). Result: the resume signal is silently lost.
+- `[P1]` EIC sessions are started with the wrong certificate type. The client sends raw `jobRef.current` as `jobState` (`web/src/lib/recording-context.tsx:301-305`), where the field is `certificate_type`. The server reads `jobState?.certificateType` in `src/extraction/sonnet-stream.js:445-485` and otherwise falls back to `'eicr'` (`:483`). That means EIC jobs will use the EICR extraction prompt unless something else rewrites the shape first.
+- `[P2]` Observation dedupe is too aggressive and can drop real defects. `web/src/lib/recording/apply-extraction.ts:233-259` dedupes solely by lowercased observation text, ignoring `location`, `schedule_item`, and `code`. Two identical observations in different locations will collapse into one row.
+
+## 4. Security issues
+
+- `[Medium]` JWT is placed in the WebSocket query string in `web/src/lib/recording/sonnet-session.ts:290-296`. That is vulnerable to leakage via reverse-proxy access logs, infrastructure tracing, and URL capture tooling. If query auth is unavoidable for browser WS upgrades, this should be a short-lived one-time ticket rather than the bearer JWT itself.
+- `[Low]` The WS target is derived directly from `api.baseUrl` in `web/src/lib/recording/sonnet-session.ts:290-296`. A misconfigured `NEXT_PUBLIC_API_URL` would send both transcript data and auth material to an unintended host. That is more of a deployment hardening issue than an exploit in normal operation.
+
+## 5. Performance issues
+
+- `[P2]` This phase increases full job-tree rerenders during recording. `applyExtractionToJob()` returns whole section objects / full `circuits` arrays, and `updateJob()` does a top-level shallow merge in `web/src/lib/job-context.tsx:55-58`. During active extraction this will rerender all `useJobContext()` consumers, not just the fields that changed.
+- `[P2]` `applyCircuitReadings()` always clones the `circuits` array when any per-circuit update/clear is present (`web/src/lib/recording/apply-extraction.ts:172-230`), even when the effective result is a no-op. That creates avoidable work during noisy or duplicate Sonnet turns.
+
+## 6. Accessibility issues
+
+No clear new accessibility regression in this phase. The added question strip is reasonably implemented:
+- `aria-live="polite"` on the question container in `web/src/components/recording/recording-overlay.tsx:155-158`
+- Explicit dismiss button labels in `:172-179`
+
+Residual risk: the overlay still appears to be a modal without explicit focus trapping/restoration, but that predates this phase rather than being introduced by it.
+
+## 7. Code quality
+
+- `web/src/lib/recording/sonnet-session.ts:149` stores `startOptions` but never uses it.
+- `web/src/lib/recording/sonnet-session.ts:361-362` casts inbound `cost_update` blindly to `CostUpdate`, bypassing the type’s literal guarantees.
+- `web/src/lib/recording/apply-extraction.ts:35-38` hard-codes circuit-0 routing and falls back unknown fields to `supply`; that is an intentional trade-off, but it is drift-prone and can silently mis-route new backend fields.
+
+## 8. Test coverage gaps
+
+- No frontend tests were added for `SonnetSession` lifecycle: connect, pre-connect transcript queueing, pause/resume, reconnect, and close handling.
+- No unit tests cover `applyExtractionToJob()` for section routing, manual-value preservation, `field_clears`, `circuit_updates`, or observation dedupe.
+- No integration test verifies the frontend/server contract for `jobState`, especially the `certificateType`/`certificate_type` mismatch.
+- No regression test covers the manual pause/resume path against the server’s `activeSessions` behaviour.
+
+## 9. Suggested fixes
+
+1. `web/src/lib/recording-context.tsx:384-402` and `web/src/lib/recording/sonnet-session.ts:253-279`  
+   Change manual pause so it does not call the `session_stop` path. Either keep the Sonnet WS open after `session_pause`, or add a disconnect mode that closes the socket without sending `session_stop`.  
+   Why: current pause destroys the multi-turn session and breaks the advertised reconnect window.
+
+2. `web/src/lib/recording/sonnet-session.ts:247-250` and `web/src/lib/recording-context.tsx:404-415`  
+   Queue `session_resume` until the socket reaches `connected`, or send it from `onSessionAck('reconnected')` / `onopen`.  
+   Why: the current resume call races with connection establishment and is dropped.
+
+3. `web/src/lib/recording-context.tsx:301-305`  
+   Send a normalized `jobState` shape that includes `certificateType: jobRef.current.certificate_type`, or update the server to accept `certificate_type` too.  
+   Why: EIC sessions currently fall back to the EICR extractor.
+
+4. `web/src/lib/recording/apply-extraction.ts:233-259`  
+   Deduplicate observations using `schedule_item + code`, or `location + text prefix`, matching the stronger strategy already used in `apply-document-extraction.ts:283-339`.  
+   Why: text-only dedupe collapses distinct defects at different locations.
+
+5. `web/src/lib/recording/sonnet-session.ts:290-296`  
+   Replace query-string JWT auth with a short-lived WS ticket endpoint, or at minimum constrain/validate the host in production before opening the socket.  
+   Why: reduces bearer-token exposure and accidental exfiltration to a misconfigured host.
+
+6. `web/src/lib/recording/apply-extraction.ts:166-230`  
+   Return `null` when `circuit_updates` / `field_clears` produce no effective changes instead of always returning a cloned array.  
+   Why: avoids unnecessary `updateJob()` calls and broad rerenders during recording.
+
+7. `web/src/lib/recording/sonnet-session.ts` and `web/src/lib/recording/apply-extraction.ts`  
+   Add unit tests for WS lifecycle and extraction mapping, plus one integration test that pauses/resumes and confirms the server keeps exactly one logical session alive.  
+   Why: these bugs are protocol-level and easy to miss manually.
+
+## 10. Overall verdict
+
+**Needs rework.**
+
+Top 3 priority fixes:
+1. Fix pause/resume so manual pause preserves the Sonnet session and resume reliably sends `session_resume`.
+2. Fix the `certificateType` / `certificate_type` contract mismatch so EIC jobs use the correct extractor.
+3. Fix observation dedupe so identical descriptions in different locations are not lost.

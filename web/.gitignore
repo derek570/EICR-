@@ -13,6 +13,11 @@
 # testing
 /coverage
 
+# Playwright (Wave 3H) — per-run artifacts, not checked in
+/test-results
+/playwright-report
+/playwright/.cache
+
 # next.js
 /.next/
 /out/
@@ -39,3 +44,15 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# verify harness output (local-only)
+/_screenshots
+
+# Serwist service worker build artifacts (regenerated on every `next build`)
+/public/sw.js
+/public/sw.js.map
+/public/swe-worker-*.js
+/public/swe-worker-*.js.map
+/public/workbox-*.js
+/public/workbox-*.js.map
+

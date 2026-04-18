@@ -1,0 +1,624 @@
+OpenAI Codex v0.116.0 (research preview)
+--------
+workdir: /Users/derekbeckley/Developer/EICR_Automation
+model: gpt-5.4
+provider: openai
+approval: never
+sandbox: read-only
+reasoning effort: none
+reasoning summaries: none
+session id: 019d9da2-7d57-7e52-b0f2-09c4f8a8f617
+--------
+user
+You are performing a rigorous code review of a single phase of a Next.js 16 / React 19 PWA frontend rebuild for an electrical-certificate automation tool (EICR / EIC). The repo root is at /Users/derekbeckley/Developer/EICR_Automation and the web package is at web/. Branch: web-rebuild.
+
+TARGET: Phase 4b — real mic capture via AudioWorklet + RMS VU meter
+COMMIT: 72fb7da
+
+Context for this phase (original intent, handoff doc, commit message, files changed) is in this repo at: reviews/context/phase-4b.md — READ THAT FILE FIRST.
+
+Use shell commands to:
+  git show --stat 72fb7da
+  git show 72fb7da
+to inspect the full diff. Then read any files you need from the working tree (they may have evolved since this commit — note any later changes).
+
+Your output must be a well-structured markdown review with these sections:
+  1. Summary of the phase (2-3 sentences — what it did).
+  2. Alignment with original plan (does the implementation match the handoff doc / commit intent? Any missing objectives?).
+  3. Correctness issues (bugs, race conditions, missing error handling, incorrect semantics). Prioritise P0/P1/P2.
+  4. Security issues (XSS, auth, CSRF, injection, leaked secrets, PII, CORS). Each item tagged with severity.
+  5. Performance issues (re-renders, N+1, large bundles, memory leaks, blocking work on main thread).
+  6. Accessibility issues (semantic HTML, keyboard nav, ARIA, colour contrast, focus management).
+  7. Code quality (duplication, dead code, type-safety holes, naming, convention drift vs. rest of repo).
+  8. Test coverage gaps.
+  9. Suggested fixes — each as a numbered item with: file:line, what to change, why. Be concrete.
+  10. Overall verdict (ship / ship with fixes / needs rework) and top 3 priority fixes.
+
+Be specific — cite file paths and line numbers. Avoid generic advice. If the code is good, say so with evidence. Do NOT modify files; this is review only.
+
+mcp startup: no servers
+codex
+Reviewing commit `72fb7da` against the phase handoff first, then I’ll inspect the full diff and read the current working-tree versions of any touched files to catch drift since that commit.
+exec
+/bin/zsh -lc "sed -n '1,220p' reviews/context/phase-4b.md" in /Users/derekbeckley/Developer/EICR_Automation exited 1 in 0ms:
+sed: reviews/context/phase-4b.md: No such file or directory
+exec
+/bin/zsh -lc 'git show 72fb7da' in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc 'git show --stat 72fb7da' in /Users/derekbeckley/Developer/EICR_Automation succeeded in 1.45s:
+2026-04-17 23:49:34.436 xcodebuild[31271:67194367]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:49:34.644 xcodebuild[31271:67194366] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-eYJ0DNVo' (errno=Operation not permitted)
+2026-04-17 23:49:35.078 xcodebuild[31282:67194453]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:49:35.182 xcodebuild[31282:67194452] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+commit 72fb7dac47cf26e28a8da9c57df3d843f7d0a4e9
+Author: Derek Beckley <derekbeckley@Dereks-Mac-mini.broadband>
+Date:   Fri Apr 17 12:54:23 2026 +0100
+
+    feat(web): Phase 4b real mic capture via AudioWorklet + RMS VU meter
+    
+    What
+    - Add `web/public/audio-worklet-processor.js` — 128-sample PCM capture
+      processor that posts Float32Array blocks to the main thread with a
+      transferable buffer (zero-copy).
+    - Add `web/src/lib/recording/mic-capture.ts` — `startMicCapture({
+      onSamples, onLevel, onError })` helper that opens the mic at 16kHz
+      mono, wires the AudioWorklet (with ScriptProcessor fallback for
+      older browsers / corporate VPN blockers), computes RMS per block,
+ succeeded in 1.46s:
+2026-04-17 23:49:34.436 xcodebuild[31272:67194368]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:49:34.644 xcodebuild[31272:67194365] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-9HDqFrII' (errno=Operation not permitted)
+2026-04-17 23:49:35.078 xcodebuild[31281:67194454]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:49:35.182 xcodebuild[31281:67194451] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+commit 72fb7dac47cf26e28a8da9c57df3d843f7d0a4e9
+Author: Derek Beckley <derekbeckley@Dereks-Mac-mini.broadband>
+Date:   Fri Apr 17 12:54:23 2026 +0100
+
+    feat(web): Phase 4b real mic capture via AudioWorklet + RMS VU meter
+    
+    What
+    - Add `web/public/audio-worklet-processor.js` — 128-sample PCM capture
+      processor that posts Float32Array blocks to the main thread with a
+      transferable buffer (zero-copy).
+    - Add `web/src/lib/recording/mic-capture.ts` — `startMicCapture({
+      onSamples, onLevel, onError })` helper that opens the mic at 16kHz
+      mono, wires the AudioWorklet (with ScriptProcessor fallback for
+      older browsers / corporate VPN blockers), computes RMS per block,
+codex
+The context file path in the prompt doesn’t exist at repo root, so I’m locating it and polling the `git show` sessions to get the full commit details without assuming the path.
+exec
+/bin/zsh -lc "rg --files -g 'phase-4b.md' -g 'reviews/**'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+web/reviews/claude/phase-4b.md
+web/reviews/context/phase-4b.md
+codex
+I have the commit diff now. Next I’m reading the handoff doc from the actual `web/reviews/context/phase-4b.md` path and the current working-tree versions of the touched files so I can separate commit-era issues from anything changed later.
+exec
+/bin/zsh -lc "nl -ba web/src/lib/recording/mic-capture.ts | sed -n '1,240p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "sed -n '1,260p' web/reviews/context/phase-4b.md" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+# Phase 4b — Context
+
+**Commit:** `72fb7da`
+
+## Commit message
+
+```
+commit 72fb7dac47cf26e28a8da9c57df3d843f7d0a4e9
+Author:     Derek Beckley <derekbeckley@Dereks-Mac-mini.broadband>
+AuthorDate: Fri Apr 17 12:54:23 2026 +0100
+Commit:     Derek Beckley <derekbeckley@Dereks-Mac-mini.broadband>
+CommitDate: Fri Apr 17 12:54:23 2026 +0100
+
+    feat(web): Phase 4b real mic capture via AudioWorklet + RMS VU meter
+    
+    What
+    - Add `web/public/audio-worklet-processor.js` — 128-sample PCM capture
+      processor that posts Float32Array blocks to the main thread with a
+      transferable buffer (zero-copy).
+    - Add `web/src/lib/recording/mic-capture.ts` — `startMicCapture({
+ succeeded in 0ms:
+     1	/**
+     2	 * Microphone capture helper — opens an AudioContext + AudioWorklet and
+     3	 * streams raw Float32Array samples from the mic to callbacks on the
+     4	 * main thread.
+     5	 *
+     6	 * Used by `RecordingProvider` to drive the VU meter (Phase 4b) and the
+     7	 * Deepgram Nova-3 WebSocket (Phase 4c) + SleepDetector VAD (Phase 4e).
+     8	 *
+     9	 * Usage:
+    10	 *   const handle = await startMicCapture({ onSamples, onLevel });
+    11	 *   // …later
+    12	 *   handle.stop();
+    13	 *
+    14	 * Design notes:
+    15	 *   - Requests a 16kHz mono stream with echo cancellation + noise
+    16	 *     suppression (Deepgram's preferred input for Nova-3).
+    17	 *   - Uses `{ ideal: 16000 }` not a bare `16000` — iOS Safari throws
+    18	 *     OverconstrainedError on bare values.
+    19	 *   - Falls back to `ScriptProcessorNode` on browsers where
+    20	 *     `AudioWorklet.addModule` throws (older Edge, some corporate VPN
+exec
+/bin/zsh -lc "nl -ba web/public/audio-worklet-processor.js | sed -n '1,200p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "nl -ba web/src/lib/recording-context.tsx | sed -n '1,280p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	// PCM capture AudioWorklet — runs on the audio rendering thread.
+     2	//
+     3	// Captures each 128-sample block from the mic, copies it into a fresh
+     4	// Float32Array, and posts it to the main thread using a transferable
+     5	// buffer (zero-copy). The RecordingContext in the main thread computes
+     6	// RMS for the VU meter and forwards samples to the Deepgram WebSocket
+     7	// (Phase 4c) + SleepDetector (Phase 4e).
+     8	//
+     9	// Kept deliberately minimal — any downstream processing (resample to
+    10	// 16kHz, PCM16 conversion, ring buffer) happens on the main thread so
+    11	// this file stays small, auditable, and cacheable.
+    12	class PCMCaptureProcessor extends AudioWorkletProcessor {
+    13	  process(inputs) {
+    14	    const input = inputs[0];
+    15	    if (input && input.length > 0 && input[0] && input[0].length > 0) {
+    16	      // Copy so the underlying ArrayBuffer is transferable (the caller's
+    17	      // Float32Array view would otherwise be aliased to a worklet-owned
+    18	      // buffer that Chrome reuses across process() calls).
+    19	      const samples = new Float32Array(input[0]);
+    20	      this.port.postMessage({ samples }, [samples.buffer]);
+ succeeded in 0ms:
+     1	'use client';
+     2	
+     3	import * as React from 'react';
+     4	import { startMicCapture, type MicCaptureHandle } from './recording/mic-capture';
+     5	import { DeepgramService, type DeepgramConnectionState } from './recording/deepgram-service';
+     6	import {
+     7	  SonnetSession,
+     8	  type ExtractionResult,
+     9	  type SonnetConnectionState,
+    10	  type SonnetQuestion,
+    11	} from './recording/sonnet-session';
+    12	import { applyExtractionToJob } from './recording/apply-extraction';
+    13	import { AudioRingBuffer } from './recording/audio-ring-buffer';
+    14	import { SleepManager, type SleepState } from './recording/sleep-manager';
+    15	import { useLiveFillStore } from './recording/live-fill-state';
+    16	import { api } from './api-client';
+    17	import { useJobContext } from './job-context';
+    18	
+    19	/**
+    20	 * Recording context.
+codex
+The current working tree has moved on into Phases 4c/4d, so I’m isolating the `72fb7da` behavior and checking whether any later edits in the same files would change the line references or invalidate a commit-era finding.
+exec
+/bin/zsh -lc 'git blame -L 172,260 72fb7da''^ -- web/src/lib/recording-context.tsx' in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "git show 72fb7da:web/src/lib/recording-context.tsx | nl -ba | sed -n '1,260p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "git show 72fb7da:web/src/lib/recording/mic-capture.ts | nl -ba | sed -n '1,220p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "git show 72fb7da:web/public/audio-worklet-processor.js | nl -ba | sed -n '1,120p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 1.28s:
+2026-04-17 23:49:57.949 xcodebuild[31322:67194760]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:49:58.063 xcodebuild[31322:67194753] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-uCg6hnYp' (errno=Operation not permitted)
+2026-04-17 23:49:58.429 xcodebuild[31330:67194806]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:49:58.544 xcodebuild[31330:67194802] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+     1	// PCM capture AudioWorklet — runs on the audio rendering thread.
+     2	//
+     3	// Captures each 128-sample block from the mic, copies it into a fresh
+     4	// Float32Array, and posts it to the main thread using a transferable
+     5	// buffer (zero-copy). The RecordingContext in the main thread computes
+     6	// RMS for the VU meter and forwards samples to the Deepgram WebSocket
+     7	// (Phase 4c) + SleepDetector (Phase 4e).
+     8	//
+     9	// Kept deliberately minimal — any downstream processing (resample to
+    10	// 16kHz, PCM16 conversion, ring buffer) happens on the main thread so
+    11	// this file stays small, auditable, and cacheable.
+    12	class PCMCaptureProcessor extends AudioWorkletProcessor {
+    13	  process(inputs) {
+    14	    const input = inputs[0];
+ succeeded in 1.28s:
+2026-04-17 23:49:57.949 xcodebuild[31324:67194763]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:49:58.063 xcodebuild[31324:67194755] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-m6POG2Jc' (errno=Operation not permitted)
+2026-04-17 23:49:58.429 xcodebuild[31331:67194809]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:49:58.544 xcodebuild[31331:67194805] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+     1	/**
+     2	 * Microphone capture helper — opens an AudioContext + AudioWorklet and
+     3	 * streams raw Float32Array samples from the mic to callbacks on the
+     4	 * main thread.
+     5	 *
+     6	 * Used by `RecordingProvider` to drive the VU meter (Phase 4b) and the
+     7	 * Deepgram Nova-3 WebSocket (Phase 4c) + SleepDetector VAD (Phase 4e).
+     8	 *
+     9	 * Usage:
+    10	 *   const handle = await startMicCapture({ onSamples, onLevel });
+    11	 *   // …later
+    12	 *   handle.stop();
+    13	 *
+    14	 * Design notes:
+ succeeded in 1.28s:
+2026-04-17 23:49:57.949 xcodebuild[31323:67194762]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:49:58.063 xcodebuild[31323:67194754] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-vItaiVDV' (errno=Operation not permitted)
+2026-04-17 23:49:58.429 xcodebuild[31332:67194807]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:49:58.544 xcodebuild[31332:67194803] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+     1	'use client';
+     2	
+     3	import * as React from 'react';
+     4	import { startMicCapture, type MicCaptureHandle } from './recording/mic-capture';
+     5	
+     6	/**
+     7	 * Recording context.
+     8	 *
+     9	 * Holds the UI state that every surface needs while the inspector is
+    10	 * recording. Phase 4b wires real microphone capture via an AudioWorklet
+    11	 * → RMS pipeline so the VU meter reacts to actual audio. Deepgram
+    12	 * Nova-3 transcription (Phase 4c), Sonnet multi-turn extraction (Phase
+    13	 * 4d), and VAD sleep/wake (Phase 4e) are still to come — until then
+    14	 * the transcript stays empty and the cost ticks only with Deepgram's
+ succeeded in 1.31s:
+2026-04-17 23:49:57.949 xcodebuild[31321:67194761]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:49:58.063 xcodebuild[31321:67194756] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-WFojQ8mz' (errno=Operation not permitted)
+2026-04-17 23:49:58.429 xcodebuild[31329:67194808]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:49:58.544 xcodebuild[31329:67194804] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+b0eb64c1 (Derek Beckley 2026-04-17 12:50:53 +0100 172)     if (state !== 'active') return;
+b0eb64c1 (Derek Beckley 2026-04-17 12:50:53 +0100 173)     clearTimers();
+b0eb64c1 (Derek Beckley 2026-04-17 12:50:53 +0100 174)     setState('dozing');
+b0eb64c1 (Derek Beckley 2026-04-17 12:50:53 +0100 175)   }, [state, clearTimers]);
+b0eb64c1 (Derek Beckley 2026-04-17 12:50:53 +0100 176) 
+b0eb64c1 (Derek Beckley 2026-04-17 12:50:53 +0100 177)   const resume = React.useCallback(() => {
+b0eb64c1 (Derek Beckley 2026-04-17 12:50:53 +0100 178)     if (state !== 'dozing' && state !== 'sleeping') return;
+b0eb64c1 (Derek Beckley 2026-04-17 12:50:53 +0100 179)     setState('active');
+b0eb64c1 (Derek Beckley 2026-04-17 12:50:53 +0100 180)     beginSynthLoop();
+b0eb64c1 (Derek Beckley 2026-04-17 12:50:53 +0100 181)   }, [state, beginSynthLoop]);
+b0eb64c1 (Derek Beckley 2026-04-17 12:50:53 +0100 182) 
+b0eb64c1 (Derek Beckley 2026-04-17 12:50:53 +0100 183)   const minimise = React.useCallback(() => setOverlayOpen(false), []);
+b0eb64c1 (Derek Beckley 2026-04-17 12:50:53 +0100 184)   const expand = React.useCallback(() => setOverlayOpen(true), []);
+b0eb64c1 (Derek Beckley 2026-04-17 12:50:53 +0100 185) 
+codex
+I’ve pinned the commit-era line numbers. I’m checking the UI consumers now to verify whether the new `error` and empty-transcript states actually surface the behavior claimed in the commit message.
+exec
+/bin/zsh -lc 'rg -n "recording-overlay|RecordingOverlay|Transcript" web/src' in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "rg -n \"Listening…|Listening...|errorMessage|micLevel|useRecording\\(\" web/src -g '"'!**/*.test.*'"'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+web/src/lib/recording-context.tsx:45: * the real RMS signal. Transcripts will be emitted by the Deepgram
+web/src/lib/recording-context.tsx:52:export type TranscriptUtterance = {
+web/src/lib/recording-context.tsx:73:  transcript: TranscriptUtterance[];
+web/src/lib/recording-context.tsx:129:  const [transcript, setTranscript] = React.useState<TranscriptUtterance[]>([]);
+web/src/lib/recording-context.tsx:233:      onInterimTranscript: (text) => {
+web/src/lib/recording-context.tsx:236:      onFinalTranscript: (text, confidence) => {
+web/src/lib/recording-context.tsx:238:        setTranscript((prev) => {
+web/src/lib/recording-context.tsx:239:          const next: TranscriptUtterance[] = [
+web/src/lib/recording-context.tsx:254:        sonnetRef.current?.sendTranscript(text);
+web/src/lib/recording-context.tsx:483:    setTranscript([]);
+web/src/lib/recording/deepgram-service.ts:30:  onInterimTranscript: (text: string, confidence: number) => void;
+web/src/lib/recording/deepgram-service.ts:31:  onFinalTranscript: (text: string, confidence: number, words: DeepgramWord[]) => void;
+web/src/lib/recording/deepgram-service.ts:302:          this.callbacks.onFinalTranscript(transcript, confidence, words);
+web/src/lib/recording/deepgram-service.ts:304:          this.callbacks.onInterimTranscript(transcript, confidence);
+web/src/lib/recording/sonnet-session.ts:132:  // Transcripts that arrive before the socket finishes opening are queued
+web/src/lib/recording/sonnet-session.ts:210:  sendTranscript(text: string, options?: { confirmationsEnabled?: boolean }): void {
+web/src/lib/recording/sleep-manager.ts:40:   *  (iOS `noTranscriptTimeout`). */
+web/src/lib/recording/sleep-manager.ts:41:  noTranscriptTimeoutSec?: number;
+web/src/lib/recording/sleep-manager.ts:59:  noTranscriptTimeoutSec: 15,
+web/src/lib/recording/sleep-manager.ts:71:  private noTranscriptTimer: ReturnType<typeof setTimeout> | null = null;
+ succeeded in 0ms:
+web/src/lib/recording-context.tsx:44: * `start()` opens the mic via AudioWorklet and drives `micLevel` off
+web/src/lib/recording-context.tsx:47: * the "Listening…" placeholder and the transcript log stays empty.
+web/src/lib/recording-context.tsx:66:  micLevel: number;
+web/src/lib/recording-context.tsx:88:  errorMessage: string | null;
+web/src/lib/recording-context.tsx:122:  const [micLevel, setMicLevel] = React.useState(0);
+web/src/lib/recording-context.tsx:134:  const [errorMessage, setErrorMessage] = React.useState<string | null>(null);
+web/src/lib/recording-context.tsx:612:      micLevel,
+web/src/lib/recording-context.tsx:620:      errorMessage,
+web/src/lib/recording-context.tsx:632:      micLevel,
+web/src/lib/recording-context.tsx:640:      errorMessage,
+web/src/lib/recording-context.tsx:655:export function useRecording(): RecordingCtx {
+web/src/lib/pwa/outbox-replay.ts:121:        const message = errorMessage(err);
+web/src/lib/pwa/outbox-replay.ts:185:function errorMessage(err: unknown): string {
+web/src/components/recording/transcript-bar.tsx:18:  const { state, elapsedSec, transcript, interim, isOverlayOpen, expand } = useRecording();
+web/src/components/recording/transcript-bar.tsx:55:        {latest ?? (state === 'requesting-mic' ? 'Requesting microphone…' : 'Listening…')}
+web/src/components/recording/recording-overlay.tsx:34:    micLevel,
+web/src/components/recording/recording-overlay.tsx:40:    errorMessage,
+web/src/components/recording/recording-overlay.tsx:47:  } = useRecording();
+web/src/components/recording/recording-overlay.tsx:62:  const ringScale = 1 + Math.min(0.35, Math.max(0, micLevel) * 0.35);
+web/src/components/recording/recording-overlay.tsx:187:          {errorMessage ? (
+exec
+/bin/zsh -lc "nl -ba web/src/components/recording/recording-overlay.tsx | sed -n '1,260p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "nl -ba web/src/components/recording/transcript-bar.tsx | sed -n '1,160p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	'use client';
+     2	
+     3	import * as React from 'react';
+     4	import { Mic, ChevronUp } from 'lucide-react';
+     5	import { useRecording, formatElapsed } from '@/lib/recording-context';
+     6	import { cn } from '@/lib/utils';
+     7	
+     8	/**
+     9	 * Transcript bar — thin, top-docked strip that stays visible whenever a
+    10	 * recording session is running but the full overlay is minimised.
+    11	 *
+    12	 * Mirrors the iOS "minimised recording pill" that slides in under the
+    13	 * nav bar: mic icon (pulsing when active), running elapsed time, and
+    14	 * the latest final utterance truncated to a single line. Tap to expand
+    15	 * back into the full overlay.
+    16	 */
+    17	export function TranscriptBar() {
+    18	  const { state, elapsedSec, transcript, interim, isOverlayOpen, expand } = useRecording();
+    19	
+    20	  // Only render when there's a session running AND the overlay is not expanded.
+ succeeded in 0ms:
+     1	'use client';
+     2	
+     3	import * as React from 'react';
+     4	import {
+     5	  ChevronDown,
+     6	  HelpCircle,
+     7	  Mic,
+     8	  MicOff,
+     9	  Pause,
+    10	  Play,
+    11	  Square,
+    12	  X as CloseIcon,
+    13	} from 'lucide-react';
+    14	import { useRecording, formatCost, formatElapsed } from '@/lib/recording-context';
+    15	import { cn } from '@/lib/utils';
+    16	
+    17	/**
+    18	 * Recording overlay — mirrors iOS `RecordingOverlay.swift`.
+    19	 *
+    20	 * Full-height bottom-sheet (mobile) / centred modal card (desktop) that
+exec
+/bin/zsh -lc "rg --files web | rg '(test|spec)\\.(ts|tsx|js)"'$'"'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "rg -n \"mic-capture|recording-context|RecordingProvider|TranscriptBar|RecordingOverlay\" web/src web/tests web/__tests__ web -g '*test*' -g '*spec*'" in /Users/derekbeckley/Developer/EICR_Automation exited 1 in 0ms:
+
+ exited 2 in 0ms:
+rg: web/tests: No such file or directory (os error 2)
+rg: web/__tests__: No such file or directory (os error 2)
+codex
+## 1. Summary of the phase
+
+Phase 4b replaces the Phase 4a synthetic recording loop with real microphone capture using `getUserMedia` plus an `AudioWorklet`/`ScriptProcessor` pipeline. It also feeds a live RMS-derived mic level into `RecordingProvider`, starts/stops elapsed time and notional Deepgram cost while streaming, and surfaces microphone errors into the existing recording UI.
+
+## 2. Alignment with original plan
+
+The implementation mostly matches the handoff and commit intent:
+
+- `web/public/audio-worklet-processor.js` was added and posts `Float32Array` blocks back to the main thread.
+- `web/src/lib/recording/mic-capture.ts` centralises mic setup, level calculation, and fallback logic as planned.
+- `RecordingProvider.start()` / `resume()` now use real mic capture instead of the Phase 4a synth loop, and transcripts stay empty pending Phase 4c.
+
+Minor misses vs. stated intent:
+
+- The commit message says the overlay renders a `"Listening…"` placeholder while waiting; in practice the minimised transcript bar shows `"Listening…"`, but the overlay body shows `"Start speaking — transcripts will appear here in real time."` rather than the claimed placeholder.
+- The “friendly permission denied” handling is only implemented in `start()`, not in `resume()`, so the behavior is inconsistent after a pause/resume cycle.
+
+## 3. Correctness issues
+
+### P1
+
+- `web/src/lib/recording-context.tsx:132-170`, `172-178`
+  `start()` is not cancellation-safe. If the user hits Stop while `startMicCapture()` is still awaiting `getUserMedia` / `AudioContext` setup, `stop()` sets the state back to `idle`, but the in-flight `start()` continues and can later set `micRef`, flip state to `active`, and restart ticking. This can reopen recording after the user explicitly cancelled.
+
+- `web/src/lib/recording/mic-capture.ts:79-82`
+  The AudioWorklet path connects `source -> workletNode` but never connects the worklet into a live downstream graph. Web Audio rendering is pull-based; a disconnected processor is not guaranteed to run. The fallback path explicitly connects to `audioContext.destination` to stay alive, but the preferred worklet path does not, so the “real mic capture” path is at risk of producing no callbacks in browsers that require a rendered graph.
+
+### P2
+
+- `web/src/lib/recording-context.tsx:191-216`
+  `resume()` does not reuse the same permission-denied normalization as `start()`. If mic permission is revoked or re-prompted on resume, the user gets the raw browser error string instead of the friendly message promised by the phase.
+
+- `web/src/lib/recording-context.tsx:148-153`, `201-206`
+  The `onError` handlers mutate global provider state without checking that the failing capture handle is still the current one. Combined with the uncancelled async start/resume path, a stale capture instance can race and overwrite a newer session’s state.
+
+- `web/src/lib/recording-context.tsx:134-139`, `148-153`
+  Error recovery does not reset `micLevel`. After an error, the overlay can retain a stale ring scale from the previous audio level, which is misleading for an error/permission-denied state.
+
+## 4. Security issues
+
+No material Phase 4b security findings.
+
+- `None [low]`: No new XSS, auth, CSRF, injection, secret leakage, or CORS issues were introduced in this phase from the code reviewed.
+
+## 5. Performance issues
+
+- `web/src/lib/recording-context.tsx:141-147`, `194-200`
+  The 60 Hz throttling on `setMicLevel` is a good guard and avoids the obvious render flood from ~8 ms audio callbacks.
+
+- `web/src/lib/recording/mic-capture.ts:83-88`
+  The `ScriptProcessorNode` fallback uses a 4096-frame buffer, which is a large latency step for a VU meter and future streaming consumers. This is probably acceptable as a fallback, but it will feel visibly laggier than the worklet path.
+
+No major render or memory regressions beyond the correctness issues above.
+
+## 6. Accessibility issues
+
+- `web/src/components/recording/recording-overlay.tsx:65-70`
+  The overlay uses `role="dialog"` and `aria-modal="true"`, which is good, but there is still no visible focus management or initial focus target. That appears to predate 4b rather than being introduced here.
+
+- Phase 4b itself did not introduce a clear new accessibility regression in the reviewed diff.
+
+## 7. Code quality
+
+- `web/src/lib/recording-context.tsx:141-153`, `194-206`
+  The mic bootstrap and error-handling logic is duplicated between `start()` and `resume()`. That duplication already caused behavior drift: `start()` normalizes permission-denied errors, `resume()` does not.
+
+- `web/src/lib/recording/mic-capture.ts:35-37`
+  The `onSamples` comment says “the underlying buffer is reused by the caller,” but both paths allocate/copy fresh `Float32Array`s before invoking callbacks. The comment does not match the implementation.
+
+## 8. Test coverage gaps
+
+There appears to be no test coverage for this area; I did not find any `test`/`spec` files under `web/`.
+
+Missing coverage that matters for this phase:
+
+- `start()` cancellation while permission is pending.
+- AudioWorklet path actually producing callbacks.
+- ScriptProcessor fallback behavior.
+- Permission-denied handling in both `start()` and `resume()`.
+- Mic track ended / device unplugged error propagation.
+- UI state after start, pause, resume, stop, and error transitions.
+
+## 9. Suggested fixes
+
+1. `web/src/lib/recording-context.tsx:132-170`
+   Add request/session scoping to `start()`. Capture a local session token before awaiting `startMicCapture()`, and after each await confirm it is still the active request before mutating state or storing `micRef`.
+   Why: prevents Stop/cancel races from resurrecting a session after the user has already ended it.
+
+2. `web/src/lib/recording-context.tsx:191-216`
+   Apply the same session-token / cancellation guard to `resume()`, and share the mic-open path with `start()` via a single helper.
+   Why: fixes the same race on resume and removes duplicated logic that is already drifting.
+
+3. `web/src/lib/recording/mic-capture.ts:79-82`
+   Keep the worklet in a live graph, e.g. connect it to a muted `GainNode` (`gain.value = 0`) and then to `audioContext.destination`, or use a processor configuration that is explicitly valid as a sink.
+   Why: ensures the preferred AudioWorklet path actually renders and emits `port.onmessage` callbacks across browsers.
+
+4. `web/src/lib/recording-context.tsx:158-167`, `211-214`
+   Extract error normalization into a shared helper and use it from both `start()` and `resume()`.
+   Why: makes permission-denied behavior consistent with the phase intent.
+
+5. `web/src/lib/recording-context.tsx:148-153`, `201-206`
+   Bind `onError` to the specific `MicCaptureHandle` or session token that created it, and ignore callbacks from stale handles.
+   Why: prevents old sessions from flipping the provider into `error` after a newer session has started.
+
+6. `web/src/lib/recording-context.tsx:134-139`, `148-153`, `172-178`
+   Reset `micLevel` to `0` on new start attempts and on error transitions.
+   Why: avoids stale VU visuals in error and retry flows.
+
+7. `web/src/lib/recording/mic-capture.ts:35-37`
+   Update the `onSamples` doc comment to reflect the actual ownership/copy semantics.
+   Why: the current comment is misleading for future Phase 4c/4e consumers.
+
+## 10. Overall verdict
+
+**Ship with fixes**
+
+The phase is close to the stated intent and the structure is sound, but there are two important correctness risks in the core recording path: the uncancelled async start/resume flow and the incomplete AudioWorklet graph. Those are both central to “real mic capture,” so I would fix them before treating Phase 4b as reliable.
+
+Top 3 priority fixes:
+
+1. Make `start()` / `resume()` cancellation-safe so Stop cannot be undone by an in-flight mic request.
+2. Keep the AudioWorklet connected to a live graph so the preferred capture path actually runs.
+3. Deduplicate mic startup/error handling and normalize permission-denied behavior consistently in both `start()` and `resume()`.
+
+Line numbers above refer to the `72fb7da` snapshot from `git show`; the working tree has since evolved into later phases, but these findings were reviewed against the Phase 4b commit itself.
+tokens used
+75,545
+## 1. Summary of the phase
+
+Phase 4b replaces the Phase 4a synthetic recording loop with real microphone capture using `getUserMedia` plus an `AudioWorklet`/`ScriptProcessor` pipeline. It also feeds a live RMS-derived mic level into `RecordingProvider`, starts/stops elapsed time and notional Deepgram cost while streaming, and surfaces microphone errors into the existing recording UI.
+
+## 2. Alignment with original plan
+
+The implementation mostly matches the handoff and commit intent:
+
+- `web/public/audio-worklet-processor.js` was added and posts `Float32Array` blocks back to the main thread.
+- `web/src/lib/recording/mic-capture.ts` centralises mic setup, level calculation, and fallback logic as planned.
+- `RecordingProvider.start()` / `resume()` now use real mic capture instead of the Phase 4a synth loop, and transcripts stay empty pending Phase 4c.
+
+Minor misses vs. stated intent:
+
+- The commit message says the overlay renders a `"Listening…"` placeholder while waiting; in practice the minimised transcript bar shows `"Listening…"`, but the overlay body shows `"Start speaking — transcripts will appear here in real time."` rather than the claimed placeholder.
+- The “friendly permission denied” handling is only implemented in `start()`, not in `resume()`, so the behavior is inconsistent after a pause/resume cycle.
+
+## 3. Correctness issues
+
+### P1
+
+- `web/src/lib/recording-context.tsx:132-170`, `172-178`
+  `start()` is not cancellation-safe. If the user hits Stop while `startMicCapture()` is still awaiting `getUserMedia` / `AudioContext` setup, `stop()` sets the state back to `idle`, but the in-flight `start()` continues and can later set `micRef`, flip state to `active`, and restart ticking. This can reopen recording after the user explicitly cancelled.
+
+- `web/src/lib/recording/mic-capture.ts:79-82`
+  The AudioWorklet path connects `source -> workletNode` but never connects the worklet into a live downstream graph. Web Audio rendering is pull-based; a disconnected processor is not guaranteed to run. The fallback path explicitly connects to `audioContext.destination` to stay alive, but the preferred worklet path does not, so the “real mic capture” path is at risk of producing no callbacks in browsers that require a rendered graph.
+
+### P2
+
+- `web/src/lib/recording-context.tsx:191-216`
+  `resume()` does not reuse the same permission-denied normalization as `start()`. If mic permission is revoked or re-prompted on resume, the user gets the raw browser error string instead of the friendly message promised by the phase.
+
+- `web/src/lib/recording-context.tsx:148-153`, `201-206`
+  The `onError` handlers mutate global provider state without checking that the failing capture handle is still the current one. Combined with the uncancelled async start/resume path, a stale capture instance can race and overwrite a newer session’s state.
+
+- `web/src/lib/recording-context.tsx:134-139`, `148-153`
+  Error recovery does not reset `micLevel`. After an error, the overlay can retain a stale ring scale from the previous audio level, which is misleading for an error/permission-denied state.
+
+## 4. Security issues
+
+No material Phase 4b security findings.
+
+- `None [low]`: No new XSS, auth, CSRF, injection, secret leakage, or CORS issues were introduced in this phase from the code reviewed.
+
+## 5. Performance issues
+
+- `web/src/lib/recording-context.tsx:141-147`, `194-200`
+  The 60 Hz throttling on `setMicLevel` is a good guard and avoids the obvious render flood from ~8 ms audio callbacks.
+
+- `web/src/lib/recording/mic-capture.ts:83-88`
+  The `ScriptProcessorNode` fallback uses a 4096-frame buffer, which is a large latency step for a VU meter and future streaming consumers. This is probably acceptable as a fallback, but it will feel visibly laggier than the worklet path.
+
+No major render or memory regressions beyond the correctness issues above.
+
+## 6. Accessibility issues
+
+- `web/src/components/recording/recording-overlay.tsx:65-70`
+  The overlay uses `role="dialog"` and `aria-modal="true"`, which is good, but there is still no visible focus management or initial focus target. That appears to predate 4b rather than being introduced here.
+
+- Phase 4b itself did not introduce a clear new accessibility regression in the reviewed diff.
+
+## 7. Code quality
+
+- `web/src/lib/recording-context.tsx:141-153`, `194-206`
+  The mic bootstrap and error-handling logic is duplicated between `start()` and `resume()`. That duplication already caused behavior drift: `start()` normalizes permission-denied errors, `resume()` does not.
+
+- `web/src/lib/recording/mic-capture.ts:35-37`
+  The `onSamples` comment says “the underlying buffer is reused by the caller,” but both paths allocate/copy fresh `Float32Array`s before invoking callbacks. The comment does not match the implementation.
+
+## 8. Test coverage gaps
+
+There appears to be no test coverage for this area; I did not find any `test`/`spec` files under `web/`.
+
+Missing coverage that matters for this phase:
+
+- `start()` cancellation while permission is pending.
+- AudioWorklet path actually producing callbacks.
+- ScriptProcessor fallback behavior.
+- Permission-denied handling in both `start()` and `resume()`.
+- Mic track ended / device unplugged error propagation.
+- UI state after start, pause, resume, stop, and error transitions.
+
+## 9. Suggested fixes
+
+1. `web/src/lib/recording-context.tsx:132-170`
+   Add request/session scoping to `start()`. Capture a local session token before awaiting `startMicCapture()`, and after each await confirm it is still the active request before mutating state or storing `micRef`.
+   Why: prevents Stop/cancel races from resurrecting a session after the user has already ended it.
+
+2. `web/src/lib/recording-context.tsx:191-216`
+   Apply the same session-token / cancellation guard to `resume()`, and share the mic-open path with `start()` via a single helper.
+   Why: fixes the same race on resume and removes duplicated logic that is already drifting.
+
+3. `web/src/lib/recording/mic-capture.ts:79-82`
+   Keep the worklet in a live graph, e.g. connect it to a muted `GainNode` (`gain.value = 0`) and then to `audioContext.destination`, or use a processor configuration that is explicitly valid as a sink.
+   Why: ensures the preferred AudioWorklet path actually renders and emits `port.onmessage` callbacks across browsers.
+
+4. `web/src/lib/recording-context.tsx:158-167`, `211-214`
+   Extract error normalization into a shared helper and use it from both `start()` and `resume()`.
+   Why: makes permission-denied behavior consistent with the phase intent.
+
+5. `web/src/lib/recording-context.tsx:148-153`, `201-206`
+   Bind `onError` to the specific `MicCaptureHandle` or session token that created it, and ignore callbacks from stale handles.
+   Why: prevents old sessions from flipping the provider into `error` after a newer session has started.
+
+6. `web/src/lib/recording-context.tsx:134-139`, `148-153`, `172-178`
+   Reset `micLevel` to `0` on new start attempts and on error transitions.
+   Why: avoids stale VU visuals in error and retry flows.
+
+7. `web/src/lib/recording/mic-capture.ts:35-37`
+   Update the `onSamples` doc comment to reflect the actual ownership/copy semantics.
+   Why: the current comment is misleading for future Phase 4c/4e consumers.
+
+## 10. Overall verdict
+
+**Ship with fixes**
+
+The phase is close to the stated intent and the structure is sound, but there are two important correctness risks in the core recording path: the uncancelled async start/resume flow and the incomplete AudioWorklet graph. Those are both central to “real mic capture,” so I would fix them before treating Phase 4b as reliable.
+
+Top 3 priority fixes:
+
+1. Make `start()` / `resume()` cancellation-safe so Stop cannot be undone by an in-flight mic request.
+2. Keep the AudioWorklet connected to a live graph so the preferred capture path actually runs.
+3. Deduplicate mic startup/error handling and normalize permission-denied behavior consistently in both `start()` and `resume()`.
+
+Line numbers above refer to the `72fb7da` snapshot from `git show`; the working tree has since evolved into later phases, but these findings were reviewed against the Phase 4b commit itself.

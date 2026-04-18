@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  CertMate brand monogram — "CM" lockup on brand blue.
+  Source of truth for the installable-PWA icon (any-purpose).
+
+  viewBox 512x512: sharp downsamples to 192 / 384 / 512 as needed.
+  Rounded-square mask (22% radius ≈ 112/512) matches the iOS safe-area
+  rounding and renders identically inside Android adaptive-icon masks.
+
+  Glyph is rendered with geometric paths (not <text>) so rasterisation
+  via librsvg is font-independent and produces identical output on any
+  build host.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <clipPath id="round">
+      <rect x="0" y="0" width="512" height="512" rx="112" ry="112"/>
+    </clipPath>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#1A78FF"/>
+      <stop offset="100%" stop-color="#0066FF"/>
+    </linearGradient>
+  </defs>
+  <g clip-path="url(#round)">
+    <rect width="512" height="512" fill="url(#bg)"/>
+    <!--
+      "C" — open ring at left, 24px thick.
+      Drawn as a single closed path (outer arc + inner arc) so the
+      interior is cut cleanly via even-odd fill.
+    -->
+    <path
+      fill="#ffffff"
+      fill-rule="evenodd"
+      d="
+        M 256 112
+        A 144 144 0 1 0 256 400
+        L 256 346
+        A 90 90 0 1 1 256 166
+        Z
+      "
+      transform="translate(-48 0)"
+    />
+    <!--
+      "M" — two vertical columns plus V-shaped inner notch.
+      Drawn as a single filled polygon.
+    -->
+    <path
+      fill="#ffffff"
+      d="
+        M 256 112
+        L 304 112
+        L 360 240
+        L 416 112
+        L 464 112
+        L 464 400
+        L 410 400
+        L 410 230
+        L 380 300
+        L 340 300
+        L 310 230
+        L 310 400
+        L 256 400
+        Z
+      "
+      transform="translate(-32 0)"
+    />
+  </g>
+</svg>

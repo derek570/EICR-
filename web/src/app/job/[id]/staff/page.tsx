@@ -1,0 +1,327 @@
+'use client';
+
+import * as React from 'react';
+import {
+  CheckCircle2,
+  ClipboardCheck,
+  Gauge,
+  Hammer,
+  Info,
+  PencilRuler,
+  ShieldCheck,
+  Signature,
+  UserCheck,
+  Wrench,
+  Zap as ZapIcon,
+} from 'lucide-react';
+import { useJobContext } from '@/lib/job-context';
+import { SectionCard } from '@/components/ui/section-card';
+import { cn } from '@/lib/utils';
+
+/**
+ * Staff tab — mirrors iOS `InspectorTab.swift`.
+ *
+ * EICR shows two role pickers: "Inspected & Tested By" and "Authorised By".
+ * EIC shows three: Designer, Constructor, Inspection & Testing. Each role
+ * picker is a list of Inspector profiles (MVP: a locally-fetched stub list
+ * — settings CRUD arrives in Phase 6). Selecting an inspector also reveals
+ * a Test Equipment card showing serial numbers + calibration dates for the
+ * 5 test instruments (MFT, Continuity, IR, Earth fault, RCD).
+ *
+ * State shape (snake_case per JobFormData):
+ *   - job.inspector_id
+ *   - job.authorised_by_id     (EICR)
+ *   - job.designer_id          (EIC)
+ *   - job.constructor_id       (EIC)
+ *   - job.inspectors: Inspector[] (future: loaded from /api/inspectors)
+ */
+
+type Inspector = {
+  id: string;
+  full_name: string;
+  position?: string;
+  mft_serial?: string;
+  mft_calibration_date?: string;
+  continuity_serial?: string;
+  continuity_calibration_date?: string;
+  insulation_serial?: string;
+  insulation_calibration_date?: string;
+  earth_fault_serial?: string;
+  earth_fault_calibration_date?: string;
+  rcd_serial?: string;
+  rcd_calibration_date?: string;
+};
+
+type StaffJobShape = {
+  inspector_id?: string;
+  authorised_by_id?: string;
+  designer_id?: string;
+  constructor_id?: string;
+  /**
+   * Embedded inspector roster. Persisted on the job so a historic cert
+   * renders correctly even after a staff member leaves. Refreshed from
+   * `/api/inspectors` each time the tab mounts (Phase 6).
+   */
+  inspectors?: Inspector[];
+};
+
+export default function StaffPage() {
+  const { job, certificateType, updateJob } = useJobContext();
+  const isEIC = certificateType === 'EIC';
+  const data = job as unknown as StaffJobShape;
+  const inspectors = data.inspectors ?? [];
+
+  const setRole = (role: keyof StaffJobShape, id: string) => {
+    updateJob({ [role]: id } as Partial<typeof job>);
+  };
+
+  // Test-equipment card surfaces the roster entry currently bound to
+  // the primary Inspector role (both EICR "Inspected by" and EIC
+  // "Inspection & Testing" use inspector_id).
+  const activeInspector = inspectors.find((i) => i.id === data.inspector_id);
+
+  return (
+    <div
+      className="mx-auto flex w-full flex-col gap-5 px-4 py-6 md:px-8 md:py-8"
+      style={{ maxWidth: '960px' }}
+    >
+      <div
+        className="relative flex items-center justify-between overflow-hidden rounded-[var(--radius-xl)] px-5 py-5 md:px-6 md:py-6"
+        style={{
+          background:
+            'linear-gradient(135deg, var(--color-brand-blue) 0%, var(--color-brand-green) 100%)',
+        }}
+      >
+        <div className="flex flex-col gap-1">
+          <p className="text-[11px] uppercase tracking-[0.14em] text-white/75">{certificateType}</p>
+          <h2 className="text-[22px] font-bold text-white md:text-[26px]">Staff Assignments</h2>
+          <p className="text-[13px] text-white/85">
+            {isEIC ? 'Design, construction & testing' : 'Inspection & authorisation'}
+          </p>
+        </div>
+        <UserCheck className="h-10 w-10 text-white/30" strokeWidth={2} aria-hidden />
+      </div>
+
+      {isEIC ? (
+        <>
+          <RolePickerCard
+            accent="blue"
+            icon={PencilRuler}
+            title="Responsible for Design"
+            inspectors={inspectors}
+            selectedId={data.designer_id}
+            onSelect={(id) => setRole('designer_id', id)}
+          />
+          <RolePickerCard
+            accent="amber"
+            icon={Hammer}
+            title="Responsible for Construction"
+            inspectors={inspectors}
+            selectedId={data.constructor_id}
+            onSelect={(id) => setRole('constructor_id', id)}
+          />
+          <RolePickerCard
+            accent="green"
+            icon={ClipboardCheck}
+            title="Inspection & Testing"
+            inspectors={inspectors}
+            selectedId={data.inspector_id}
+            onSelect={(id) => setRole('inspector_id', id)}
+          />
+        </>
+      ) : (
+        <>
+          <RolePickerCard
+            accent="blue"
+            icon={ShieldCheck}
+            title="Inspected and Tested By"
+            inspectors={inspectors}
+            selectedId={data.inspector_id}
+            onSelect={(id) => setRole('inspector_id', id)}
+          />
+          <RolePickerCard
+            accent="magenta"
+            icon={Signature}
+            title="Authorised By"
+            inspectors={inspectors}
+            selectedId={data.authorised_by_id}
+            onSelect={(id) => setRole('authorised_by_id', id)}
+          />
+        </>
+      )}
+
+      {activeInspector ? <EquipmentCard inspector={activeInspector} /> : null}
+    </div>
+  );
+}
+
+/* ----------------------------------------------------------------------- */
+
+function RolePickerCard({
+  accent,
+  icon,
+  title,
+  inspectors,
+  selectedId,
+  onSelect,
+}: {
+  accent: 'blue' | 'green' | 'amber' | 'magenta' | 'red';
+  icon: React.ComponentType<{ className?: string; 'aria-hidden'?: boolean; strokeWidth?: number }>;
+  title: string;
+  inspectors: Inspector[];
+  selectedId: string | undefined;
+  onSelect: (id: string) => void;
+}) {
+  return (
+    <SectionCard accent={accent} icon={icon} title={title}>
+      {inspectors.length === 0 ? (
+        <div
+          className="flex items-start gap-2 rounded-[var(--radius-md)] px-3 py-2.5"
+          style={{ background: 'rgba(0, 102, 255, 0.06)' }}
+        >
+          <Info
+            className="mt-0.5 h-4 w-4 shrink-0"
+            style={{ color: 'var(--color-brand-blue)' }}
+            aria-hidden
+          />
+          <p className="text-[12.5px] leading-snug text-[var(--color-text-secondary)]">
+            No staff profiles configured yet. Add inspectors under{' '}
+            <span className="font-semibold">Settings → Inspectors</span> (Phase 6) — selecting one
+            here will auto-fill name, position, enrolment number, signature &amp; test-equipment
+            serials on the final PDF.
+          </p>
+        </div>
+      ) : (
+        inspectors.map((i) => {
+          const selected = i.id === selectedId;
+          return (
+            <button
+              key={i.id}
+              type="button"
+              onClick={() => onSelect(i.id)}
+              aria-pressed={selected}
+              className={cn(
+                'flex items-center gap-3 rounded-[var(--radius-md)] border px-3 py-2.5 text-left transition',
+                selected
+                  ? 'border-[var(--color-brand-blue)]/40 bg-[var(--color-brand-blue)]/[0.06]'
+                  : 'border-transparent bg-[var(--color-surface-2)] hover:border-[var(--color-border-default)]'
+              )}
+            >
+              <span
+                className={cn(
+                  'flex h-10 w-10 items-center justify-center rounded-full font-semibold',
+                  selected ? 'text-white' : 'text-[var(--color-brand-blue)]'
+                )}
+                style={{
+                  background: selected ? 'var(--color-brand-blue)' : 'rgba(0, 102, 255, 0.12)',
+                }}
+              >
+                {i.full_name.trim().charAt(0).toUpperCase() || '?'}
+              </span>
+              <span className="flex min-w-0 flex-1 flex-col">
+                <span className="truncate text-[15px] font-medium text-[var(--color-text-primary)]">
+                  {i.full_name}
+                </span>
+                {i.position ? (
+                  <span className="truncate text-[12px] text-[var(--color-text-secondary)]">
+                    {i.position}
+                  </span>
+                ) : null}
+              </span>
+              {selected ? (
+                <CheckCircle2
+                  className="h-5 w-5 shrink-0"
+                  style={{ color: 'var(--color-brand-green)' }}
+                  aria-hidden
+                />
+              ) : null}
+            </button>
+          );
+        })
+      )}
+    </SectionCard>
+  );
+}
+
+/* ----------------------------------------------------------------------- */
+
+function EquipmentCard({ inspector }: { inspector: Inspector }) {
+  return (
+    <SectionCard accent="green" icon={Wrench} title="Test Equipment">
+      <EquipmentRow
+        icon={Gauge}
+        name="MFT"
+        serial={inspector.mft_serial}
+        calibration={inspector.mft_calibration_date}
+      />
+      <EquipmentRow
+        icon={ZapIcon}
+        name="Continuity"
+        serial={inspector.continuity_serial}
+        calibration={inspector.continuity_calibration_date}
+      />
+      <EquipmentRow
+        icon={ShieldCheck}
+        name="Insulation Resistance"
+        serial={inspector.insulation_serial}
+        calibration={inspector.insulation_calibration_date}
+      />
+      <EquipmentRow
+        icon={ZapIcon}
+        name="Earth Fault Loop"
+        serial={inspector.earth_fault_serial}
+        calibration={inspector.earth_fault_calibration_date}
+      />
+      <EquipmentRow
+        icon={ShieldCheck}
+        name="RCD"
+        serial={inspector.rcd_serial}
+        calibration={inspector.rcd_calibration_date}
+      />
+    </SectionCard>
+  );
+}
+
+function EquipmentRow({
+  icon: Icon,
+  name,
+  serial,
+  calibration,
+}: {
+  icon: React.ComponentType<{ className?: string; 'aria-hidden'?: boolean }>;
+  name: string;
+  serial?: string;
+  calibration?: string;
+}) {
+  return (
+    <div className="flex items-center gap-3 py-1.5">
+      <span
+        className="flex h-8 w-8 items-center justify-center rounded-[var(--radius-sm)]"
+        style={{ background: 'rgba(0, 204, 102, 0.12)' }}
+      >
+        <Icon
+          className="h-4 w-4"
+          aria-hidden
+          {...({ style: { color: 'var(--color-brand-green)' } } as Record<string, unknown>)}
+        />
+      </span>
+      <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+        <span className="text-[14px] font-medium text-[var(--color-text-primary)]">{name}</span>
+        <div className="flex flex-wrap items-center gap-3 text-[11.5px] text-[var(--color-text-secondary)]">
+          <span>
+            <span className="mr-1 font-bold" style={{ color: 'var(--color-brand-blue)' }}>
+              S/N
+            </span>
+            {serial ?? '—'}
+          </span>
+          <span>
+            <span className="mr-1 font-bold" style={{ color: 'var(--color-brand-green)' }}>
+              Cal
+            </span>
+            {calibration ?? '—'}
+          </span>
+        </div>
+      </div>
+    </div>
+  );
+}

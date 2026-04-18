@@ -1,0 +1,1128 @@
+OpenAI Codex v0.116.0 (research preview)
+--------
+workdir: /Users/derekbeckley/Developer/EICR_Automation
+model: gpt-5.4
+provider: openai
+approval: never
+sandbox: read-only
+reasoning effort: none
+reasoning summaries: none
+session id: 019d9d92-0282-7170-8c6b-dbab5da92afe
+--------
+user
+You are performing a rigorous code review of a single phase of a Next.js 16 / React 19 PWA frontend rebuild for an electrical-certificate automation tool (EICR / EIC). The repo root is at /Users/derekbeckley/Developer/EICR_Automation and the web package is at web/. Branch: web-rebuild.
+
+TARGET: Phase 2 — job detail shell with 10 tabs
+COMMIT: 83b0863
+
+Context for this phase (original intent, handoff doc, commit message, files changed) is in this repo at: reviews/context/phase-2.md — READ THAT FILE FIRST.
+
+Use shell commands to:
+  git show --stat 83b0863
+  git show 83b0863
+to inspect the full diff. Then read any files you need from the working tree (they may have evolved since this commit — note any later changes).
+
+Your output must be a well-structured markdown review with these sections:
+  1. Summary of the phase (2-3 sentences — what it did).
+  2. Alignment with original plan (does the implementation match the handoff doc / commit intent? Any missing objectives?).
+  3. Correctness issues (bugs, race conditions, missing error handling, incorrect semantics). Prioritise P0/P1/P2.
+  4. Security issues (XSS, auth, CSRF, injection, leaked secrets, PII, CORS). Each item tagged with severity.
+  5. Performance issues (re-renders, N+1, large bundles, memory leaks, blocking work on main thread).
+  6. Accessibility issues (semantic HTML, keyboard nav, ARIA, colour contrast, focus management).
+  7. Code quality (duplication, dead code, type-safety holes, naming, convention drift vs. rest of repo).
+  8. Test coverage gaps.
+  9. Suggested fixes — each as a numbered item with: file:line, what to change, why. Be concrete.
+  10. Overall verdict (ship / ship with fixes / needs rework) and top 3 priority fixes.
+
+Be specific — cite file paths and line numbers. Avoid generic advice. If the code is good, say so with evidence. Do NOT modify files; this is review only.
+
+mcp startup: no servers
+codex
+Reviewing commit `83b0863` against the phase handoff first, then I’ll inspect the full diff and the current working-tree versions of the touched files to separate commit-era issues from later changes.
+exec
+/bin/zsh -lc "sed -n '1,240p' reviews/context/phase-2.md" in /Users/derekbeckley/Developer/EICR_Automation exited 1 in 0ms:
+sed: reviews/context/phase-2.md: No such file or directory
+exec
+/bin/zsh -lc 'git show --stat --format=fuller 83b0863' in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc 'git show --format=fuller --no-ext-diff 83b0863' in /Users/derekbeckley/Developer/EICR_Automation succeeded in 1.18s:
+2026-04-17 23:31:32.674 xcodebuild[27385:67173414]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:31:32.779 xcodebuild[27385:67173412] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-b0Icth13' (errno=Operation not permitted)
+2026-04-17 23:31:33.109 xcodebuild[27399:67173457]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:31:33.215 xcodebuild[27399:67173455] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+commit 83b0863a3e63e4fe1f0e7bf61e42e1e0dd736e75
+Author:     Derek Beckley <derekbeckley@Dereks-Mac-mini.broadband>
+AuthorDate: Fri Apr 17 11:49:17 2026 +0100
+Commit:     Derek Beckley <derekbeckley@Dereks-Mac-mini.broadband>
+CommitDate: Fri Apr 17 11:49:17 2026 +0100
+
+    feat(web): Phase 2 — job detail shell with 10 tabs
+    
+    Adds the navigable skeleton for every /job/[id]/... route plus supporting
+    infrastructure. Tab contents are TabStub placeholders; real editing
+    surfaces land in Phase 3a/3b/3c.
+    
+    What
+    - JobProvider context (lib/job-context.tsx): holds fetched JobDetail +
+ succeeded in 1.18s:
+2026-04-17 23:31:32.674 xcodebuild[27386:67173413]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:31:32.779 xcodebuild[27386:67173411] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-rI64BI6j' (errno=Operation not permitted)
+2026-04-17 23:31:33.109 xcodebuild[27400:67173456]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:31:33.215 xcodebuild[27400:67173454] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+commit 83b0863a3e63e4fe1f0e7bf61e42e1e0dd736e75
+Author:     Derek Beckley <derekbeckley@Dereks-Mac-mini.broadband>
+AuthorDate: Fri Apr 17 11:49:17 2026 +0100
+Commit:     Derek Beckley <derekbeckley@Dereks-Mac-mini.broadband>
+CommitDate: Fri Apr 17 11:49:17 2026 +0100
+
+    feat(web): Phase 2 — job detail shell with 10 tabs
+    
+    Adds the navigable skeleton for every /job/[id]/... route plus supporting
+    infrastructure. Tab contents are TabStub placeholders; real editing
+    surfaces land in Phase 3a/3b/3c.
+    
+    What
+    - JobProvider context (lib/job-context.tsx): holds fetched JobDetail +
+codex
+The handoff doc path wasn’t where described, so I’m locating it in the repo and re-running the commit inspection with a non-interactive git setup to avoid pager/toolchain noise.
+exec
+/bin/zsh -lc "rg --files | rg 'phase-2\\.md"'$|reviews/context'"'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+web/reviews/claude/phase-2.md
+web/reviews/context/phase-3a.md
+web/reviews/context/phase-5d.md
+web/reviews/context/phase-7b2.md
+web/reviews/context/phase-4d.md
+web/reviews/context/phase-6a.md
+web/reviews/context/phase-7b3.md
+web/reviews/context/phase-4e.md
+web/reviews/context/phase-7a.md
+web/reviews/context/phase-5a.md
+web/reviews/context/phase-4a.md
+web/reviews/context/phase-2.md
+web/reviews/context/phase-1.md
+web/reviews/context/phase-0.md
+web/reviews/context/phase-6b.md
+web/reviews/context/phase-3c.md
+web/reviews/context/phase-5b.md
+web/reviews/context/phase-7b4.md
+web/reviews/context/phase-4b.md
+web/reviews/context/phase-5c.md
+codex
+I have the Phase 2 diff. Next I’m checking the current versions of the affected files and adjacent infrastructure so I can tie findings to exact lines and distinguish commit issues from later edits.
+exec
+/bin/zsh -lc 'git diff --name-status 83b0863..HEAD -- web/src/app/job/[id]/layout.tsx web/src/app/job/[id]/page.tsx web/src/components/job/job-header.tsx web/src/components/job/job-tab-nav.tsx web/src/components/job/tab-stub.tsx web/src/lib/api-client.ts web/src/lib/job-context.tsx web/src/lib/types.ts web/scripts/verify-visual.ts web/src/app/globals.css' in /Users/derekbeckley/Developer/EICR_Automation exited 1 in 0ms:
+zsh:1: no matches found: web/src/app/job/[id]/layout.tsx
+exec
+/bin/zsh -lc "nl -ba web/src/components/job/job-tab-nav.tsx | sed -n '1,220p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "nl -ba web/src/app/job/[id]/layout.tsx | sed -n '1,220p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	'use client';
+     2	
+     3	import Link from 'next/link';
+     4	import { usePathname } from 'next/navigation';
+     5	import {
+     6	  Boxes,
+     7	  ClipboardCheck,
+     8	  DraftingCompass,
+     9	  FileText,
+    10	  LayoutDashboard,
+    11	  List,
+    12	  Ruler,
+    13	  Settings2,
+    14	  UserCheck,
+    15	  Zap,
+    16	} from 'lucide-react';
+    17	import type { CertificateType } from '@/lib/types';
+    18	import { cn } from '@/lib/utils';
+    19	
+    20	/**
+ succeeded in 0ms:
+zsh:1: no matches found: web/src/app/job/[id]/layout.tsx
+exec
+/bin/zsh -lc "nl -ba web/src/lib/job-context.tsx | sed -n '1,220p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	'use client';
+     2	
+     3	import * as React from 'react';
+     4	import type { CertificateType, JobDetail } from './types';
+     5	
+     6	/**
+     7	 * Per-job state container. Holds the fetched JobDetail plus a couple of
+     8	 * derived flags (dirty/syncing) and two mutators:
+     9	 *
+    10	 *  - updateJob(partial) — local merge, does not hit the network. Every
+    11	 *    input in the job tabs calls this; a debounced save effect (Phase 4)
+    12	 *    flushes to the backend.
+    13	 *  - setJob(full)        — replace wholesale (used after a network save
+    14	 *    round-trip so server-derived fields like updated_at can flow in).
+    15	 *
+    16	 * The shape deliberately mirrors the legacy `useJob` hook so the tab
+    17	 * components from Phase 3+ read the same API.
+    18	 */
+    19	interface JobContextValue {
+    20	  job: JobDetail;
+exec
+/bin/zsh -lc "noglob nl -ba 'web/src/app/job/[id]/layout.tsx' | sed -n '1,220p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	'use client';
+     2	
+     3	import * as React from 'react';
+     4	import { useParams, useRouter } from 'next/navigation';
+     5	import { AppShell } from '@/components/layout/app-shell';
+     6	import { JobHeader } from '@/components/job/job-header';
+     7	import { JobTabNav } from '@/components/job/job-tab-nav';
+     8	import { FloatingActionBar } from '@/components/job/floating-action-bar';
+     9	import { RecordingOverlay } from '@/components/recording/recording-overlay';
+    10	import { TranscriptBar } from '@/components/recording/transcript-bar';
+    11	import { LiveFillView } from '@/components/live-fill/live-fill-view';
+    12	import { JobProvider } from '@/lib/job-context';
+    13	import { RecordingProvider, useRecording } from '@/lib/recording-context';
+    14	import { api } from '@/lib/api-client';
+    15	import { clearAuth, getUser } from '@/lib/auth';
+    16	import { getCachedJob, putCachedJob } from '@/lib/pwa/job-cache';
+    17	import type { JobDetail } from '@/lib/types';
+    18	
+    19	/**
+    20	 * Shell for every /job/[id]/... route.
+exec
+/bin/zsh -lc "nl -ba web/src/components/job/job-header.tsx | sed -n '1,220p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "nl -ba web/src/app/job/[id]/page.tsx | sed -n '1,220p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	'use client';
+     2	
+     3	import * as React from 'react';
+     4	import { useRouter } from 'next/navigation';
+     5	import { ChevronLeft, MoreHorizontal } from 'lucide-react';
+     6	import { useJobContext } from '@/lib/job-context';
+     7	
+     8	/**
+     9	 * iOS-style job detail header:
+    10	 *
+    11	 *    [ < Back ]         <address>                  [ ··· ]
+    12	 *
+    13	 * - Back button on the left (chevron + "Back" text), tinted brand blue.
+    14	 * - Centred title showing the job address (truncated on narrow screens).
+    15	 * - Overflow 3-dot menu button on the right — placeholder wired to a
+    16	 *   console handler until Phase 6 settings + delete actions land.
+    17	 *
+    18	 * Save-status indicator moves beneath the centred title as a small pill so
+    19	 * it remains visible without fighting the iOS header symmetry.
+    20	 */
+ succeeded in 0ms:
+zsh:1: no matches found: web/src/app/job/[id]/page.tsx
+exec
+/bin/zsh -lc "noglob git diff --name-status 83b0863..HEAD -- 'web/src/app/job/[id]/layout.tsx' 'web/src/app/job/[id]/page.tsx' 'web/src/components/job/job-header.tsx' 'web/src/components/job/job-tab-nav.tsx' 'web/src/components/job/tab-stub.tsx' 'web/src/lib/api-client.ts' 'web/src/lib/job-context.tsx' 'web/src/lib/types.ts' 'web/scripts/verify-visual.ts' 'web/src/app/globals.css'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 1.06s:
+2026-04-17 23:31:59.447 xcodebuild[27620:67174232]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:31:59.547 xcodebuild[27620:67174231] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-2tciCCIj' (errno=Operation not permitted)
+2026-04-17 23:31:59.837 xcodebuild[27622:67174240]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:31:59.937 xcodebuild[27622:67174239] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+M	web/scripts/verify-visual.ts
+M	web/src/app/globals.css
+M	web/src/app/job/[id]/layout.tsx
+M	web/src/app/job/[id]/page.tsx
+M	web/src/components/job/job-header.tsx
+M	web/src/components/job/job-tab-nav.tsx
+M	web/src/lib/api-client.ts
+M	web/src/lib/types.ts
+exec
+/bin/zsh -lc "noglob nl -ba 'web/src/app/job/[id]/page.tsx' | sed -n '1,220p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "sed -n '1,260p' web/reviews/context/phase-2.md" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	'use client';
+     2	
+     3	import Link from 'next/link';
+     4	import { useParams } from 'next/navigation';
+     5	import { useJobContext } from '@/lib/job-context';
+     6	
+     7	/**
+     8	 * Job overview / index tab — the default screen when a user opens a job.
+     9	 *
+    10	 * Shows a grid of shortcut cards to every tab in the unified set, plus a
+    11	 * short tip. Real completion status per section lights up as each Phase 3
+    12	 * tab lands; for now we chip every card with "Not started".
+    13	 */
+    14	export default function JobOverviewPage() {
+    15	  const { job, certificateType } = useJobContext();
+    16	  const params = useParams<{ id: string }>();
+    17	  const jobId = params.id;
+    18	  const base = `/job/${jobId}`;
+    19	
+    20	  // Unified tab set — mirrors the floating action bar + tab nav order so
+ succeeded in 0ms:
+# Phase 2 — Context
+
+**Commit:** `83b0863`
+
+## Commit message
+
+```
+commit 83b0863a3e63e4fe1f0e7bf61e42e1e0dd736e75
+Author:     Derek Beckley <derekbeckley@Dereks-Mac-mini.broadband>
+AuthorDate: Fri Apr 17 11:49:17 2026 +0100
+Commit:     Derek Beckley <derekbeckley@Dereks-Mac-mini.broadband>
+CommitDate: Fri Apr 17 11:49:17 2026 +0100
+
+    feat(web): Phase 2 — job detail shell with 10 tabs
+    
+    Adds the navigable skeleton for every /job/[id]/... route plus supporting
+    infrastructure. Tab contents are TabStub placeholders; real editing
+    surfaces land in Phase 3a/3b/3c.
+    
+    What
+exec
+/bin/zsh -lc "nl -ba web/src/lib/types.ts | sed -n '1,220p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "nl -ba web/src/lib/api-client.ts | sed -n '1,240p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	/**
+     2	 * Shared domain types. Kept minimal — only the shapes Phase 1–2 need;
+     3	 * per-tab detail types land in later phases when their screens do.
+     4	 */
+     5	
+     6	export interface User {
+     7	  id: string;
+     8	  email: string;
+     9	  name: string;
+    10	  company_name?: string;
+    11	  role?: 'admin' | 'user';
+    12	  /** System-wide tenant membership. Nullable for legacy users not yet bound to a company. */
+    13	  company_id?: string;
+    14	  /** Role within a company. `owner`/`admin` grant company-admin privileges; `employee` is rank-and-file. */
+    15	  company_role?: 'owner' | 'admin' | 'employee';
+    16	}
+    17	
+    18	/**
+    19	 * Inspector profile — the API shape stored as one JSON array per user at
+    20	 * `settings/{userId}/inspector_profiles.json`. The backend persists the
+ succeeded in 0ms:
+     1	import {
+     2	  type AdminUser,
+     3	  ApiError,
+     4	  type CCUAnalysis,
+     5	  type CompanyJobRow,
+     6	  type CompanyMember,
+     7	  type CompanySettings,
+     8	  type CompanyStats,
+     9	  type DocumentExtractionResponse,
+    10	  type InspectorProfile,
+    11	  type InviteEmployeeResponse,
+    12	  type Job,
+    13	  type JobDetail,
+    14	  type LoginResponse,
+    15	  type Paginated,
+    16	  type User,
+    17	} from './types';
+    18	import { getToken } from './auth';
+    19	
+    20	/**
+exec
+/bin/zsh -lc "nl -ba web/src/lib/types.ts | sed -n '220,300p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+   220	  location?: string;
+   221	  remedial?: string;
+   222	  /**
+   223	   * Filenames of photos attached to this observation. The backend stores
+   224	   * bytes in S3 under `jobs/{userId}/{folderName}/photos/{filename}` and
+   225	   * renders at `/api/job/:userId/:jobId/photos/:filename`. Matches the
+   226	   * iOS `Observation.photos` field (serialised under the same JSON key)
+   227	   * so a job round-trips losslessly between clients.
+   228	   */
+   229	  photos?: string[];
+   230	}
+   231	
+   232	export interface InspectorInfo {
+   233	  id?: string;
+   234	  name?: string;
+   235	  position?: string;
+   236	  enrolment_number?: string;
+   237	  signature_key?: string;
+   238	  organisation?: string;
+   239	}
+exec
+/bin/zsh -lc "rg -n \"saveJob\\(\" web/src/lib/api-client.ts web/src -g '"'!**/node_modules/**'"'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+web/src/lib/api-client.ts:272:  saveJob(
+web/src/lib/pwa/outbox-replay.ts:106:          await api.saveJob(m.userId, m.jobId, m.patch);
+web/src/lib/pwa/queue-save-job.ts:77:    await api.saveJob(userId, jobId, patch);
+web/src/lib/api-client.ts:272:  saveJob(
+exec
+/bin/zsh -lc "rg -n \"JobTabNav|TabStub|JobProvider|useJobContext|api\\.job\\(|api\\.saveJob\\(|/job/\\[id\\]/\" web/src -g '"'!**/node_modules/**'"'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+web/src/lib/job-context.tsx:30:export function useJobContext(): JobContextValue {
+web/src/lib/job-context.tsx:33:    throw new Error('useJobContext must be used inside a <JobProvider>');
+web/src/lib/job-context.tsx:38:export function JobProvider({
+web/src/lib/recording-context.tsx:17:import { useJobContext } from './job-context';
+web/src/lib/recording-context.tsx:119:  const { job, updateJob } = useJobContext();
+web/src/lib/pwa/outbox-replay.ts:106:          await api.saveJob(m.userId, m.jobId, m.patch);
+web/src/lib/pwa/queue-save-job.ts:77:    await api.saveJob(userId, jobId, patch);
+web/src/lib/recording/apply-document-extraction.ts:42: *  `web/src/app/job/[id]/installation/page.tsx:42-76` and the backend
+web/src/components/live-fill/live-fill-view.tsx:5:import { useJobContext } from '@/lib/job-context';
+web/src/components/live-fill/live-fill-view.tsx:31:  const { job, certificateType } = useJobContext();
+web/src/components/job/tab-stub.tsx:10:export function TabStub({
+web/src/components/job/floating-action-bar.tsx:17: * Floating action bar — pinned to the bottom of every /job/[id]/… route.
+web/src/components/job/job-header.tsx:6:import { useJobContext } from '@/lib/job-context';
+web/src/components/job/job-header.tsx:23:  const { job, isDirty, isSaving } = useJobContext();
+web/src/components/job/job-tab-nav.tsx:63:export function JobTabNav({
+web/src/components/ui/section-card.tsx:5: * SectionCard — the repeating "form card" unit across every /job/[id]/... tab.
+web/src/app/job/[id]/page.tsx:5:import { useJobContext } from '@/lib/job-context';
+web/src/app/job/[id]/page.tsx:15:  const { job, certificateType } = useJobContext();
+web/src/app/job/[id]/observations/page.tsx:6:import { useJobContext } from '@/lib/job-context';
+web/src/app/job/[id]/observations/page.tsx:50:  const { job, certificateType, updateJob } = useJobContext();
+codex
+I’m now validating the job shell against the surrounding auth/layout model and checking whether the save/fetch semantics are actually correct for the backend and later tab implementations.
+exec
+/bin/zsh -lc "nl -ba web/src/lib/auth.ts | sed -n '1,220p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "nl -ba web/src/components/layout/app-shell.tsx | sed -n '1,240p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	import type { User } from './types';
+     2	import { clearJobCache } from './pwa/job-cache';
+     3	
+     4	/**
+     5	 * Auth-token helpers. Token is stored in localStorage (for API calls) and
+     6	 * also mirrored into a cookie so the Next.js middleware can gate routes
+     7	 * before hitting the client.
+     8	 */
+     9	
+    10	const TOKEN_KEY = 'cm_token';
+    11	const USER_KEY = 'cm_user';
+    12	const COOKIE_MAX_AGE = 60 * 60 * 24 * 7; // 7 days
+    13	
+    14	export function getToken(): string | null {
+    15	  if (typeof window === 'undefined') return null;
+    16	  return localStorage.getItem(TOKEN_KEY);
+    17	}
+    18	
+    19	export function getUser(): User | null {
+    20	  if (typeof window === 'undefined') return null;
+ succeeded in 0ms:
+     1	'use client';
+     2	
+     3	import * as React from 'react';
+     4	import Link from 'next/link';
+     5	import { usePathname, useRouter } from 'next/navigation';
+     6	import { Logo } from '@/components/brand/logo';
+     7	import { api } from '@/lib/api-client';
+     8	import { clearAuth, getUser } from '@/lib/auth';
+     9	import { Button } from '@/components/ui/button';
+    10	import { InstallButton } from '@/components/pwa/install-button';
+    11	import { OfflineIndicator } from '@/components/pwa/offline-indicator';
+    12	import { useOutboxReplay } from '@/lib/pwa/outbox-replay';
+    13	
+    14	/**
+    15	 * Top-nav + page frame for all authenticated screens.
+    16	 * Single-stack navigation (no persistent tabs), matches iOS CertMate
+    17	 * which uses NavigationStack rather than TabView for the primary flow.
+    18	 */
+    19	export function AppShell({ children }: { children: React.ReactNode }) {
+    20	  const pathname = usePathname();
+exec
+/bin/zsh -lc "nl -ba web/src/app/job/[id]/staff/page.tsx | sed -n '1,240p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "nl -ba web/src/lib/pwa/queue-save-job.ts | sed -n '1,220p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+zsh:1: no matches found: web/src/app/job/[id]/staff/page.tsx
+ succeeded in 0ms:
+     1	import { api } from '@/lib/api-client';
+     2	import { ApiError, type JobDetail } from '@/lib/types';
+     3	import { getCachedJob, putCachedJob } from './job-cache';
+     4	import { enqueueSaveJobMutation, removeMutation } from './outbox';
+     5	
+     6	/**
+     7	 * Offline-tolerant write path for `api.saveJob` (Phase 7c).
+     8	 *
+     9	 * Why this exists:
+    10	 *   - The raw `api.saveJob` throws on any network failure, which means
+    11	 *     an inspector tapping "save" in a basement consumer-unit room just
+    12	 *     loses their edit. This wrapper promises the mutation will be
+    13	 *     retried until it either succeeds or the attempts cap kicks in.
+    14	 *   - Writing to the outbox BEFORE firing the network request is what
+    15	 *     makes this durable: if the user closes the tab immediately after
+    16	 *     save (common — phone pockets, offline → offline transitions), the
+    17	 *     mutation still lives in IDB and the next session's replay worker
+    18	 *     picks it up.
+    19	 *
+    20	 * Order of operations (do not reorder — each step's failure mode matters):
+exec
+/bin/zsh -lc "noglob nl -ba 'web/src/app/job/[id]/installation/page.tsx' | sed -n '1,220p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "noglob nl -ba 'web/src/app/job/[id]/supply/page.tsx' | sed -n '1,220p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "noglob nl -ba 'web/src/app/job/[id]/observations/page.tsx' | sed -n '1,260p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	'use client';
+     2	
+     3	import * as React from 'react';
+     4	import { useParams } from 'next/navigation';
+     5	import { AlertTriangle, ImageIcon, MapPin, Plus, Trash2 } from 'lucide-react';
+     6	import { useJobContext } from '@/lib/job-context';
+     7	import type { ObservationRow } from '@/lib/types';
+     8	import { getUser } from '@/lib/auth';
+     9	import { SectionCard } from '@/components/ui/section-card';
+    10	import { ObservationPhoto } from '@/components/observations/observation-photo';
+    11	import { ObservationSheet } from '@/components/observations/observation-sheet';
+    12	import { cn } from '@/lib/utils';
+    13	
+    14	/**
+    15	 * Observations tab — mirrors iOS `ObservationsTab.swift`.
+    16	 *
+    17	 * Layout: gradient hero with C1/C2/C3/FI tally + Add button, then a list
+    18	 * of observation cards. Tap Add for a new blank sheet, tap any card to
+    19	 * edit. The photo upload flow (Phase 5c) lives in <ObservationSheet>;
+    20	 * this page just renders up to three thumbnails inline per card and
+ succeeded in 0ms:
+     1	'use client';
+     2	
+     3	import * as React from 'react';
+     4	import {
+     5	  Building2,
+     6	  Calendar,
+     7	  CheckCircle,
+     8	  ClipboardList,
+     9	  FileText,
+    10	  Home,
+    11	  Ruler,
+    12	  ShieldCheck,
+    13	  User,
+    14	} from 'lucide-react';
+    15	import { useJobContext } from '@/lib/job-context';
+    16	import { FloatingLabelInput } from '@/components/ui/floating-label-input';
+    17	import { NumericStepper } from '@/components/ui/numeric-stepper';
+    18	import { SectionCard } from '@/components/ui/section-card';
+    19	import { SegmentedControl } from '@/components/ui/segmented-control';
+    20	import { SelectChips } from '@/components/ui/select-chips';
+ succeeded in 0ms:
+     1	'use client';
+     2	
+     3	import * as React from 'react';
+     4	import { Cable, Gauge, Layers, Power, ShieldCheck, Sigma, Wrench, Zap } from 'lucide-react';
+     5	import { useJobContext } from '@/lib/job-context';
+     6	import { FloatingLabelInput } from '@/components/ui/floating-label-input';
+     7	import { SectionCard } from '@/components/ui/section-card';
+     8	import { SegmentedControl } from '@/components/ui/segmented-control';
+     9	import { SelectChips } from '@/components/ui/select-chips';
+    10	
+    11	/**
+    12	 * Supply tab — mirrors iOS `SupplyTab.swift` + `SupplyCharacteristics.swift`.
+    13	 *
+    14	 * Eight section cards in the same order iOS uses so users who switch
+    15	 * platforms mid-job land in the same mental model:
+    16	 *   1. Supply details        (earthing, live conductors, voltages, freq, PFC, Ze)
+    17	 *   2. Means of earthing     (distributor / electrode choice + electrode detail)
+    18	 *   3. Main switch           (BS EN, poles, voltage, current, fuse, location)
+    19	 *   4. RCD                   (In, time delay, operating time — design + tested)
+    20	 *   5. Earthing conductor    (material, CSA, continuity)
+exec
+/bin/zsh -lc "rg -n \"middleware|token=.*SameSite|matcher|/job/\\[id\\]\" web/src web -g 'middleware.ts' -g '"'!**/node_modules/**'"'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+web/src/middleware.ts:33:export function middleware(req: NextRequest) {
+web/src/middleware.ts:55:  // role client-side via useCurrentUser, but a middleware check avoids
+web/src/middleware.ts:76:  matcher: ['/((?!_next/static|_next/image|favicon.ico).*)'],
+web/src/middleware.ts:33:export function middleware(req: NextRequest) {
+web/src/middleware.ts:55:  // role client-side via useCurrentUser, but a middleware check avoids
+web/src/middleware.ts:76:  matcher: ['/((?!_next/static|_next/image|favicon.ico).*)'],
+exec
+/bin/zsh -lc "noglob nl -ba 'web/src/app/job/[id]/extent/page.tsx' | sed -n '1,160p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "nl -ba web/src/middleware.ts | sed -n '1,180p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	import { NextResponse, type NextRequest } from 'next/server';
+     2	
+     3	/**
+     4	 * Route guard.
+     5	 *
+     6	 * Public paths (login, legal, offline, static assets, API proxy calls)
+     7	 * pass through. Everything else requires an unexpired JWT cookie; missing
+     8	 * or expired token → redirect to /login with ?redirect=<attempted path>.
+     9	 */
+    10	
+    11	const PUBLIC_PREFIXES = ['/login', '/legal', '/offline'];
+    12	
+    13	interface JwtPayload {
+    14	  exp?: number;
+    15	  role?: 'admin' | 'user';
+    16	}
+    17	
+    18	function decodeJwt(token: string): JwtPayload | null {
+    19	  try {
+    20	    const [, payload] = token.split('.');
+ succeeded in 0ms:
+     1	'use client';
+     2	
+     3	import * as React from 'react';
+     4	import { MessageSquareText, Ruler } from 'lucide-react';
+     5	import { useJobContext } from '@/lib/job-context';
+     6	import { SectionCard } from '@/components/ui/section-card';
+     7	import { SelectChips } from '@/components/ui/select-chips';
+     8	
+     9	/**
+    10	 * Extent & Type tab — mirrors iOS `ExtentTab.swift`.
+    11	 *
+    12	 * Two sections: "Extent of Work" (scope + installation type picker) and
+    13	 * "Comments". Both bodies are multiline text. EIC installation types are
+    14	 * the Constants.installationTypes enum lifted from iOS verbatim so the
+    15	 * eventual PDF mapping matches.
+    16	 *
+    17	 * Data shape: `job.extent: Record<string, unknown>` — we keep the string
+    18	 * values we care about typed, leave the record permissive so future fields
+    19	 * pass through without schema changes.
+    20	 */
+exec
+/bin/zsh -lc "noglob nl -ba 'web/src/app/job/[id]/design/page.tsx' | sed -n '1,160p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "noglob nl -ba 'web/src/app/job/[id]/pdf/page.tsx' | sed -n '1,180p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	'use client';
+     2	
+     3	import * as React from 'react';
+     4	import { AlertTriangle, CheckCircle2, Info, PencilRuler } from 'lucide-react';
+     5	import { useJobContext } from '@/lib/job-context';
+     6	import { SectionCard } from '@/components/ui/section-card';
+     7	
+     8	/**
+     9	 * Design & Construction tab — mirrors iOS `DesignTab.swift`.
+    10	 *
+    11	 * A single section capturing BS 7671 departures. Includes the iOS "No
+    12	 * Departures" green capsule shortcut that prefills both fields with the
+    13	 * standard N/A strings so inspectors aren't retyping the same answer on
+    14	 * every unremarkable certificate.
+    15	 *
+    16	 * Data shape: `job.design.departures_from_bs7671` + `departure_details`
+    17	 * strings. Snake_case to match the backend JobFormData persistence.
+    18	 */
+    19	
+    20	type DesignShape = {
+ succeeded in 0ms:
+     1	'use client';
+     2	
+     3	import * as React from 'react';
+     4	import {
+     5	  AlertTriangle,
+     6	  CheckCircle2,
+     7	  Download,
+     8	  Eye,
+     9	  FileText,
+    10	  Loader2,
+    11	  Share2,
+    12	} from 'lucide-react';
+    13	import { useJobContext } from '@/lib/job-context';
+    14	import { SectionCard } from '@/components/ui/section-card';
+    15	import { cn } from '@/lib/utils';
+    16	
+    17	/**
+    18	 * PDF tab — mirrors iOS `PDFTab.swift`.
+    19	 *
+    20	 * Surfaces the "is this certificate ready to publish?" state: hero banner
+codex
+I’ve isolated the Phase 2 shell itself. Now I’m checking the backend contract for `/api/job/:userId/:jobId` and whether the Phase 2 route set can reach invalid cert-specific tabs or rely on client-trusted identifiers.
+exec
+/bin/zsh -lc "rg -n \"api/job/.+:userId|/api/job/|router\\.get\\('/api/job|PATCH.*api/job|GET /api/job\" src web src/routes -g '"'!**/node_modules/**'"'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+src/routes/email.js:17: * POST /api/job/:userId/:jobId/email
+src/routes/email.js:86: * POST /api/job/:userId/:jobId/whatsapp
+src/routes/photos.js:32: * GET /api/job/:userId/:jobId/photos
+src/routes/photos.js:65:                url: `/api/job/${userId}/${jobId}/photos/${encodeURIComponent(filename)}`,
+src/routes/photos.js:66:                thumbnail_url: `/api/job/${userId}/${jobId}/photos/${encodeURIComponent(filename)}?thumbnail=true`,
+src/routes/photos.js:85: * GET /api/job/:userId/:jobId/photos/:filename
+src/routes/photos.js:140: * POST /api/job/:userId/:jobId/photos
+src/routes/photos.js:177:          url: `/api/job/${userId}/${jobId}/photos/${encodeURIComponent(filename)}`,
+src/routes/photos.js:178:          thumbnail_url: `/api/job/${userId}/${jobId}/photos/${encodeURIComponent(filename)}?thumbnail=true`,
+src/routes/photos.js:191: * DELETE /api/job/:userId/:jobId/photos/:filename
+src/routes/jobs.js:51: * GET /api/jobs/:userId
+src/routes/jobs.js:472: * GET /api/job/:userId/:jobId
+src/routes/jobs.js:601: * GET /api/job/:userId/:jobId/debug
+src/routes/jobs.js:649: * PUT /api/job/:userId/:jobId
+src/routes/jobs.js:796: * DELETE /api/job/:userId/:jobId
+src/routes/jobs.js:849: * GET /api/job/:userId/:jobId/history
+src/routes/jobs.js:878: * GET /api/job/:userId/:jobId/history/:versionId
+src/routes/jobs.js:904: * POST /api/job/:userId/:jobId/clone
+src/routes/pdf.js:20: * POST /api/job/:userId/:jobId/generate-pdf
+src/routes/email.js:17: * POST /api/job/:userId/:jobId/email
+exec
+/bin/zsh -lc "noglob git show 83b0863:'web/src/app/job/[id]/page.tsx' | nl -ba | sed -n '1,220p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "noglob git show 83b0863:'web/src/components/job/job-tab-nav.tsx' | nl -ba | sed -n '1,220p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "noglob git show 83b0863:'web/src/app/job/[id]/layout.tsx' | nl -ba | sed -n '1,220p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 1.33s:
+2026-04-17 23:32:53.643 xcodebuild[27721:67175419]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:32:53.801 xcodebuild[27721:67175415] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-TpDbOg6P' (errno=Operation not permitted)
+2026-04-17 23:32:54.175 xcodebuild[27727:67175455]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:32:54.283 xcodebuild[27727:67175450] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+     1	'use client';
+     2	
+     3	import Link from 'next/link';
+     4	import { Card, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+     5	import { useJobContext } from '@/lib/job-context';
+     6	import { useParams } from 'next/navigation';
+     7	
+     8	/**
+     9	 * Job overview / index tab. Shows a quick summary of completion progress
+    10	 * across each section and links to the relevant tabs. Real progress math
+    11	 * lands alongside each Phase 3 tab — for now we show "Not started" chips.
+    12	 */
+    13	export default function JobOverviewPage() {
+    14	  const { job, certificateType } = useJobContext();
+ succeeded in 1.33s:
+2026-04-17 23:32:53.643 xcodebuild[27719:67175418]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:32:53.801 xcodebuild[27719:67175416] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-4RRtJ6Nt' (errno=Operation not permitted)
+2026-04-17 23:32:54.175 xcodebuild[27725:67175453]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:32:54.283 xcodebuild[27725:67175452] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+     1	'use client';
+     2	
+     3	import Link from 'next/link';
+     4	import { usePathname } from 'next/navigation';
+     5	import type { CertificateType } from '@/lib/types';
+     6	import { cn } from '@/lib/utils';
+     7	
+     8	/**
+     9	 * Job tab navigation.
+    10	 *
+    11	 * Desktop: vertical sidebar (~200px).
+    12	 * Mobile:  horizontal scroll strip under the job header.
+    13	 *
+    14	 * Tab ordering mirrors the iOS JobDetailView enum — EICR and EIC diverge
+ succeeded in 1.33s:
+2026-04-17 23:32:53.643 xcodebuild[27720:67175420]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:32:53.801 xcodebuild[27720:67175417] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-iVkIfJk4' (errno=Operation not permitted)
+2026-04-17 23:32:54.176 xcodebuild[27726:67175454]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:32:54.283 xcodebuild[27726:67175451] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+     1	'use client';
+     2	
+     3	import * as React from 'react';
+     4	import { useParams, useRouter } from 'next/navigation';
+     5	import { AppShell } from '@/components/layout/app-shell';
+     6	import { JobHeader } from '@/components/job/job-header';
+     7	import { JobTabNav } from '@/components/job/job-tab-nav';
+     8	import { JobProvider } from '@/lib/job-context';
+     9	import { api } from '@/lib/api-client';
+    10	import { clearAuth, getUser } from '@/lib/auth';
+    11	import type { JobDetail } from '@/lib/types';
+    12	
+    13	/**
+    14	 * Shell for every /job/[id]/... route.
+exec
+/bin/zsh -lc "nl -ba src/routes/jobs.js | sed -n '472,760p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+   472	 * GET /api/job/:userId/:jobId
+   473	 */
+   474	router.get('/job/:userId/:jobId', auth.requireAuth, async (req, res) => {
+   475	  const { userId, jobId } = req.params;
+   476	
+   477	  const hasAccess = await auth.canAccessUser(req, userId);
+   478	  if (!hasAccess) {
+   479	    return res.status(403).json({ error: 'Access denied' });
+   480	  }
+   481	
+   482	  try {
+   483	    let job = await resolveJob(userId, jobId);
+   484	
+   485	    const folderName = sanitizeS3Path(job?.address) || jobId;
+   486	    const s3Prefix = `jobs/${userId}/${folderName}/output/`;
+   487	
+   488	    let circuits = [];
+   489	    try {
+   490	      const csvContent = await storage.downloadText(`${s3Prefix}test_results.csv`);
+   491	      if (csvContent) {
+exec
+/bin/zsh -lc "nl -ba web/src/lib/api-client.ts | sed -n '248,292p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+   248	    userId: string,
+   249	    jobId: string,
+   250	    filename: string,
+   251	    opts: { thumbnail?: boolean } = {}
+   252	  ): Promise<Blob> {
+   253	    const token = getToken();
+   254	    const headers = new Headers();
+   255	    if (token) headers.set('Authorization', `Bearer ${token}`);
+   256	    const qs = opts.thumbnail ? '?thumbnail=true' : '';
+   257	    const res = await fetch(
+   258	      `${API_BASE_URL}/api/job/${encodeURIComponent(userId)}/${encodeURIComponent(jobId)}/photos/${encodeURIComponent(filename)}${qs}`,
+   259	      { headers, credentials: 'include' }
+   260	    );
+   261	    if (!res.ok) {
+   262	      const body = await res.text().catch(() => '');
+   263	      throw new ApiError(res.status, body || res.statusText);
+   264	    }
+   265	    return res.blob();
+   266	  },
+   267	
+exec
+/bin/zsh -lc "rg -n \"router\\.patch\\('/job/:userId/:jobId|PATCH /api/job/:userId/:jobId|router\\.patch\\('/job/\" src/routes src -g '"'!**/node_modules/**'"'" in /Users/derekbeckley/Developer/EICR_Automation exited 1 in 0ms:
+
+exec
+/bin/zsh -lc "noglob git show 83b0863:'web/src/lib/api-client.ts' | nl -ba | sed -n '110,170p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "noglob git show 83b0863:'web/src/lib/types.ts' | nl -ba | sed -n '1,140p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 1.14s:
+2026-04-17 23:33:11.232 xcodebuild[27811:67175798]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:33:11.336 xcodebuild[27811:67175796] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-cGlZcdkw' (errno=Operation not permitted)
+2026-04-17 23:33:11.656 xcodebuild[27816:67175819]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:33:11.760 xcodebuild[27816:67175818] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+   110	    return request(`/api/job/${encodeURIComponent(userId)}/${encodeURIComponent(jobId)}`, {
+   111	      method: 'DELETE',
+   112	    });
+   113	  },
+   114	
+   115	  /** Full job detail payload — all tabs worth of data. */
+   116	  job(userId: string, jobId: string): Promise<JobDetail> {
+   117	    return request<JobDetail>(
+   118	      `/api/job/${encodeURIComponent(userId)}/${encodeURIComponent(jobId)}`
+   119	    );
+   120	  },
+   121	
+   122	  /**
+   123	   * Partial update. Backend merges with the persisted doc, so callers
+ succeeded in 1.14s:
+2026-04-17 23:33:11.232 xcodebuild[27812:67175799]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:33:11.336 xcodebuild[27812:67175797] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-FnHdW6nw' (errno=Operation not permitted)
+2026-04-17 23:33:11.656 xcodebuild[27815:67175820]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:33:11.760 xcodebuild[27815:67175817] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+     1	/**
+     2	 * Shared domain types. Kept minimal — only the shapes Phase 1–2 need;
+     3	 * per-tab detail types land in later phases when their screens do.
+     4	 */
+     5	
+     6	export interface User {
+     7	  id: string;
+     8	  email: string;
+     9	  name: string;
+    10	  company_name?: string;
+    11	  role?: 'admin' | 'user';
+    12	}
+    13	
+    14	export type CertificateType = 'EICR' | 'EIC';
+exec
+/bin/zsh -lc "nl -ba src/__tests__/jobs.test.js | sed -n '159,240p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+   159	  describe('GET /api/job/:userId/:jobId', () => {
+   160	    test('should return 401 without auth', async () => {
+   161	      const res = await supertest(app).get('/api/job/user-1/job-1');
+   162	      expect(res.status).toBe(401);
+   163	    });
+   164	
+   165	    test('should return 403 for wrong user', async () => {
+   166	      const token = makeToken('user-1');
+   167	      const res = await supertest(app)
+   168	        .get('/api/job/user-2/job-1')
+   169	        .set('Authorization', `Bearer ${token}`);
+   170	      expect(res.status).toBe(403);
+   171	    });
+   172	
+   173	    test('should return 404 when job and S3 data are both missing', async () => {
+   174	      mockGetJob.mockResolvedValue(null);
+   175	      mockGetJobByAddress.mockResolvedValue(null);
+   176	      mockDownloadText.mockResolvedValue(null);
+   177	
+   178	      const token = makeToken('user-1');
+exec
+/bin/zsh -lc "rg -n \"verify-visual|playwright|vitest|jest|job tab|job detail|overview\" web -g '"'!**/node_modules/**'"'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+web/src/lib/job-context.tsx:11: *    input in the job tabs calls this; a debounced save effect (Phase 4)
+web/src/lib/pwa/job-cache.ts:8: * list and any previously-opened job detail still render from cache
+web/src/lib/types.ts:183: * Full job detail payload returned by GET /api/job/:userId/:jobId.
+web/src/lib/api-client.ts:131:  /** Full job detail payload — all tabs worth of data. */
+web/src/components/job/job-header.tsx:9: * iOS-style job detail header:
+web/src/components/job/job-tab-nav.tsx:91:            key={tab.slug || 'overview'}
+web/src/app/job/[id]/page.tsx:8: * Job overview / index tab — the default screen when a user opens a job.
+web/reviews/phases.tsv:4:2	83b0863	Phase 2 — job detail shell with 10 tabs
+web/reviews/codex/phase-1.raw.txt:278:/bin/zsh -lc "git show 21a82b9:web/scripts/verify-visual.ts | nl -ba | sed -n '1,260p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+web/reviews/codex/phase-1.raw.txt:339:    12	import { chromium, type Browser, type Page } from '@playwright/test';
+web/reviews/codex/phase-1.raw.txt:364:/bin/zsh -lc "rg --files web | rg '(test|spec)\\.(ts|tsx|js|jsx)"'$|playwright|vitest|jest'"'" in /Users/derekbeckley/Developer/EICR_Automation exited 1 in 0ms:
+web/reviews/codex/phase-1.raw.txt:367:/bin/zsh -lc 'rg -n "login|dashboard|middleware|api-client|setAuth|clearAuth|verify-visual|AnimatedCounter|JobRow" web/src web/scripts web/tests web/__tests__ web/e2e' in /Users/derekbeckley/Developer/EICR_Automation exited 2 in 0ms:
+web/reviews/codex/phase-1.raw.txt:377:web/scripts/verify-visual.ts:37: * A JWT that never expires (exp: 2099-01-01) so the middleware's atob() decode
+web/reviews/codex/phase-1.raw.txt:378:web/scripts/verify-visual.ts:38: * accepts it. Signature is ignored — middleware only checks shape + exp.
+web/reviews/codex/phase-1.raw.txt:379:web/scripts/verify-visual.ts:54:  await page.goto(baseUrl + '/login', { waitUntil: 'domcontentloaded' });
+web/reviews/codex/phase-1.raw.txt:380:web/scripts/verify-visual.ts:66:  { path: '/login', name: 'phase-1-login' },
+web/reviews/codex/phase-1.raw.txt:381:web/scripts/verify-visual.ts:68:    path: '/dashboard',
+web/reviews/codex/phase-1.raw.txt:382:web/scripts/verify-visual.ts:69:    name: 'phase-1-dashboard',
+web/reviews/codex/phase-1.raw.txt:383:web/scripts/verify-visual.ts:71:    // triggered by the dashboard's useEffect resolve against our mocks
+web/reviews/codex/phase-1.raw.txt:384:web/scripts/verify-visual.ts:297:      const requiresAuth = route.path === '/dashboard' || route.path.startsWith('/job');
+codex
+I’ve got two substantive infrastructure mismatches now. I’m pulling exact line references from the current `verify-visual.ts` and the backend tests so I can anchor the review cleanly and note where the branch has moved since `83b0863`.
+exec
+/bin/zsh -lc "nl -ba web/scripts/verify-visual.ts | sed -n '90,220p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+    90	        })
+    91	      );
+    92	    },
+    93	  },
+    94	];
+    95	
+    96	/**
+    97	 * Phase 2 — all 10 job-detail tabs for both EICR and EIC certificate types.
+    98	 * We mock a pair of job detail responses so we can capture tab content
+    99	 * without needing the backend to be reachable.
+   100	 */
+   101	const MOCK_EICR_JOB = {
+   102	  id: 'demo-eicr',
+   103	  address: '42 Bonham Road, Bristol BS2 8HX',
+   104	  status: 'pending',
+   105	  created_at: '2026-03-12T09:00:00.000Z',
+   106	  updated_at: '2026-03-14T12:00:00.000Z',
+   107	  certificate_type: 'EICR',
+   108	  installation: {},
+   109	  supply: {},
+exec
+/bin/zsh -lc "noglob git show 83b0863:'web/scripts/verify-visual.ts' | nl -ba | sed -n '90,220p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "noglob git show 83b0863:'web/src/lib/job-context.tsx' | nl -ba | sed -n '1,140p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "noglob git show 83b0863:'web/src/components/job/job-header.tsx' | nl -ba | sed -n '1,120p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 1.26s:
+2026-04-17 23:33:48.282 xcodebuild[28163:67176839]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:33:48.437 xcodebuild[28163:67176835] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-26jzbHFU' (errno=Operation not permitted)
+2026-04-17 23:33:48.810 xcodebuild[28171:67176877]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:33:48.919 xcodebuild[28171:67176874] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+     1	'use client';
+     2	
+     3	import * as React from 'react';
+     4	import type { CertificateType, JobDetail } from './types';
+     5	
+     6	/**
+     7	 * Per-job state container. Holds the fetched JobDetail plus a couple of
+     8	 * derived flags (dirty/syncing) and two mutators:
+     9	 *
+    10	 *  - updateJob(partial) — local merge, does not hit the network. Every
+    11	 *    input in the job tabs calls this; a debounced save effect (Phase 4)
+    12	 *    flushes to the backend.
+    13	 *  - setJob(full)        — replace wholesale (used after a network save
+    14	 *    round-trip so server-derived fields like updated_at can flow in).
+ succeeded in 1.29s:
+2026-04-17 23:33:48.282 xcodebuild[28162:67176837]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:33:48.437 xcodebuild[28162:67176827] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-F6p9b8L0' (errno=Operation not permitted)
+2026-04-17 23:33:48.811 xcodebuild[28169:67176879]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:33:48.919 xcodebuild[28169:67176876] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+    90	        })
+    91	      );
+    92	    },
+    93	  },
+    94	];
+    95	
+    96	/**
+    97	 * Phase 2 — all 10 job-detail tabs for both EICR and EIC certificate types.
+    98	 * We mock a pair of job detail responses so we can capture tab content
+    99	 * without needing the backend to be reachable.
+   100	 */
+   101	const MOCK_EICR_JOB = {
+   102	  id: 'demo-eicr',
+   103	  address: '42 Bonham Road, Bristol BS2 8HX',
+ succeeded in 1.26s:
+2026-04-17 23:33:48.437 xcodebuild[28164:67176836] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-A5BpBSiQ' (errno=Operation not permitted)
+2026-04-17 23:33:48.811 xcodebuild[28170:67176878]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:33:48.919 xcodebuild[28170:67176875] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+     1	'use client';
+     2	
+     3	import { useJobContext } from '@/lib/job-context';
+     4	
+     5	/**
+     6	 * Per-job header bar. Shows address + certificate type pill + save status.
+     7	 * Lives inside the AppShell's top nav on desktop, stacks beneath it on mobile.
+     8	 */
+     9	export function JobHeader() {
+    10	  const { job, certificateType, isDirty, isSaving } = useJobContext();
+    11	  const created = new Date(job.created_at);
+    12	  const createdLabel = Number.isNaN(created.getTime())
+    13	    ? ''
+    14	    : created.toLocaleDateString(undefined, {
+    15	        day: '2-digit',
+exec
+/bin/zsh -lc "noglob git show 83b0863:'web/src/components/job/tab-stub.tsx' | nl -ba | sed -n '1,120p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 1.03s:
+2026-04-17 23:33:54.201 xcodebuild[28219:67177021]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:33:54.300 xcodebuild[28219:67177020] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-Embk12S8' (errno=Operation not permitted)
+2026-04-17 23:33:54.587 xcodebuild[28221:67177031]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:33:54.685 xcodebuild[28221:67177030] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+     1	'use client';
+     2	
+     3	import { Card, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+     4	
+     5	/**
+     6	 * Placeholder tab body. Lets us ship the navigable shell in Phase 2 before
+     7	 * any tab's real form lands. Each subsequent phase replaces one of these
+     8	 * with the genuine editing UI.
+     9	 */
+    10	export function TabStub({
+    11	  title,
+    12	  summary,
+    13	  landsIn,
+    14	}: {
+codex
+# Review: Phase 2 (`83b0863`)
+
+## 1. Summary of the phase
+Phase 2 introduced the `/job/[id]/...` shell: a shared job layout, `JobProvider` context, header, tab navigation, overview screen, and placeholder pages for the non-overview tabs. It also added a Phase 2 visual harness in `verify-visual.ts` and the first typed client surface for fetching/saving a full job detail document.
+
+Current-branch note: the touched files have evolved since `83b0863` (`layout.tsx`, `page.tsx`, `job-header.tsx`, `job-tab-nav.tsx`, `api-client.ts`, `types.ts`, `verify-visual.ts`, `globals.css` all changed later), but the main contract issues below still persist in the current tree.
+
+## 2. Alignment with original plan
+The implementation broadly matches the handoff: job-detail routing exists, the shared shell is in place, overview exists, and the tab scaffold shipped separately from the real forms.
+
+Gaps/mismatches:
+- The commit message says the Phase 2 visual harness covers 18 routes / 36 screenshots, but the code in `83b0863:web/scripts/verify-visual.ts:164-195` actually generates 19 routes: 9 EICR + 10 EIC.
+- The handoff describes cert-type-aware tab sets matching iOS. The nav/overview are cert-aware in `83b0863`, but the routes themselves are not guarded, so unsupported screens remain directly reachable by URL.
+
+## 3. Correctness issues
+
+### P1
+- **Frontend job model does not match the backend API contract.**  
+  Phase 2 introduced `JobDetail` with keys like `installation`, `supply`, `board`, `inspection`, `extent`, `design`, and `inspector` in [`web/src/lib/types.ts:192`]( /Users/derekbeckley/Developer/EICR_Automation/web/src/lib/types.ts:192 ). Current tab consumers read those fields directly, e.g. [`web/src/app/job/[id]/installation/page.tsx:86`]( /Users/derekbeckley/Developer/EICR_Automation/web/src/app/job/[id]/installation/page.tsx:86 ) and [`web/src/app/job/[id]/supply/page.tsx:43`]( /Users/derekbeckley/Developer/EICR_Automation/web/src/app/job/[id]/supply/page.tsx:43 ). But the backend returns and persists different keys: `installation_details`, `supply_characteristics`, `board_info`/`boards`, `inspection_schedule`, `extent_and_type`, `design_construction`, `inspector_id` in [`src/routes/jobs.js:575-592`]( /Users/derekbeckley/Developer/EICR_Automation/src/routes/jobs.js:575 ) and [`src/routes/jobs.js:653-740`]( /Users/derekbeckley/Developer/EICR_Automation/src/routes/jobs.js:653 ). The Phase 2 visual mocks use the frontend-only shape in `83b0863:web/scripts/verify-visual.ts:101-130`, so the harness masks the integration break instead of catching it.
+- **`api.saveJob()` uses `PATCH`, but the backend only implements `PUT`.**  
+  The Phase 2 client added `saveJob` with `method: 'PATCH'` in [`web/src/lib/api-client.ts:272-280`]( /Users/derekbeckley/Developer/EICR_Automation/web/src/lib/api-client.ts:272 ). The backend route is `PUT /api/job/:userId/:jobId` in [`src/routes/jobs.js:651`]( /Users/derekbeckley/Developer/EICR_Automation/src/routes/jobs.js:651 ), and the backend tests only cover `PUT` in [`src/__tests__/jobs.test.js:202-228`]( /Users/derekbeckley/Developer/EICR_Automation/src/__tests__/jobs.test.js:202 ). Once Phase 4/7 started calling `saveJob`, this became a hard integration failure.
+
+### P2
+- **401 handling is brittle and may strand expired sessions on an error card.**  
+  In the Phase 2 layout, auth expiry is detected with `/401/.test(err.message)` (`83b0863:web/src/app/job/[id]/layout.tsx:46-53`; same pattern still exists in [`web/src/app/job/[id]/layout.tsx:80-85`]( /Users/derekbeckley/Developer/EICR_Automation/web/src/app/job/[id]/layout.tsx:80 )). But `request()` throws `ApiError(status, body || statusText)` in [`web/src/lib/api-client.ts:62-64`]( /Users/derekbeckley/Developer/EICR_Automation/web/src/lib/api-client.ts:62 ), so a normal 401 message like `"Unauthorized"` will not match. Result: users can get a permanent “Couldn’t load job” card instead of being signed out and redirected.
+- **Wrong-cert tab routes are reachable directly.**  
+  Phase 2 created separate pages for `/extent`, `/design`, and `/observations`, and the harness comment explicitly says `extent` “renders either way” in `83b0863:web/scripts/verify-visual.ts:167`. That means an EICR job can still open `/extent` or `/design`, and an EIC job can still open `/observations`, even though the cert-specific nav hides them. If the intent is iOS parity, these routes should redirect or 404.
+
+## 4. Security issues
+- **None identified specific to this phase.** The backend correctly re-authorizes access on job fetch/update via `auth.canAccessUser` in [`src/routes/jobs.js:477-480`]( /Users/derekbeckley/Developer/EICR_Automation/src/routes/jobs.js:477 ) and [`src/routes/jobs.js:666-669`]( /Users/derekbeckley/Developer/EICR_Automation/src/routes/jobs.js:666 ).
+
+## 5. Performance issues
+- **P2: every job edit invalidates the entire job shell.**  
+  `JobProvider` stores the full `job` object and exposes one context value object in `83b0863:web/src/lib/job-context.tsx:55-70` (still the same in [`web/src/lib/job-context.tsx:55-70`]( /Users/derekbeckley/Developer/EICR_Automation/web/src/lib/job-context.tsx:55 )). Any field update forces all consumers of `useJobContext()` to re-render, including header and any future heavy tabs. Acceptable for stubs; likely noticeable once circuits/observations are populated.
+
+## 6. Accessibility issues
+- **P2: save-status changes are not announced to assistive tech.**  
+  `SaveStatus` is just a changing `<span>` with no `role="status"` / `aria-live` in `83b0863:web/src/components/job/job-header.tsx:37-59` (same issue remains in [`web/src/components/job/job-header.tsx:65-87`]( /Users/derekbeckley/Developer/EICR_Automation/web/src/components/job/job-header.tsx:65 )). “Saved / Unsaved / Saving…” is important state and should be announced.
+- **P2: loading shell is visual-only.**  
+  `JobShellLoading` is shimmer blocks only, with no accessible loading text or `aria-busy` marker in `83b0863:web/src/app/job/[id]/layout.tsx:79-109`. Screen-reader users get almost no feedback while the job loads.
+
+## 7. Code quality
+- **Tab metadata is duplicated in three places.**  
+  Phase 2 hard-coded tab definitions in `83b0863:web/src/components/job/job-tab-nav.tsx:21-44`, `83b0863:web/src/app/job/[id]/page.tsx:18-44`, and `83b0863:web/scripts/verify-visual.ts:164-195`. This already caused drift later: the current nav is unified while the Phase 2 overview/harness logic originally assumed cert-specific sets. One source of truth was needed here.
+- **Type naming drift from backend semantics starts in this phase.**  
+  The Phase 2 `JobDetail` names read like a normalized UI model, but no adapter layer was added. That leaves the codebase in an awkward half-state: UI-friendly names on the client, legacy persistence names on the server, and no explicit translation point.
+
+## 8. Test coverage gaps
+- The web workspace still has no unit/integration test coverage for this shell; `rg` only finds the Playwright-style `verify-visual.ts` harness, not real `*.test.*` files under `web/`.
+- Missing high-value coverage:
+  1. API contract tests proving `api.job()` and `api.saveJob()` match the backend field names and HTTP verbs.
+  2. Route tests for wrong-cert deep links (`/extent`, `/design`, `/observations`).
+  3. Auth-expiry tests verifying a 401 redirects to `/login` instead of rendering the error card.
+  4. Consistency tests for tab metadata so nav, overview, and visual harness cannot drift.
+
+## 9. Suggested fixes
+1. **`web/src/lib/api-client.ts:131-135,272-280`**  
+   Add an explicit adapter layer: map backend payloads (`installation_details`, `supply_characteristics`, `extent_and_type`, etc.) into the UI model on read, and map UI edits back to backend keys on save. Also change `saveJob()` to use `PUT` unless/until the backend supports `PATCH`.  
+   Why: this is the main integration break and the foundation all later phases build on.
+
+2. **`web/src/lib/types.ts:192-239`**  
+   Either redefine `JobDetail` to the backend’s actual wire format, or introduce separate `ApiJobDetail` and `UiJobDetail` types and convert between them in the API client.  
+   Why: the current single type claims the wrong contract and makes the visual harness lie.
+
+3. **`web/src/app/job/[id]/layout.tsx:80-85`**  
+   Replace regex-on-message auth detection with `err instanceof ApiError && err.status === 401`.  
+   Why: redirect behavior should depend on the status code, not brittle string matching.
+
+4. **`web/src/app/job/[id]/extent/page.tsx`, `design/page.tsx`, `observations/page.tsx`**  
+   Add certificate-type guards and redirect or `notFound()` when the route is invalid for the current job type.  
+   Why: nav parity is not enough if unsupported screens remain deep-linkable.
+
+5. **`web/src/components/job/job-header.tsx:65-87`**  
+   Wrap the save indicator in a polite live region, e.g. `role="status" aria-live="polite"`.  
+   Why: save state is meaningful asynchronous feedback.
+
+6. **`web/src/app/job/[id]/layout.tsx:143-163`**  
+   Add a screen-reader-visible loading message and/or `aria-busy` on the loading shell.  
+   Why: shimmer alone is not accessible.
+
+7. **`web/src/components/job/job-tab-nav.tsx`, `web/src/app/job/[id]/page.tsx`, `web/scripts/verify-visual.ts`**  
+   Export one shared tab-config module and consume it from nav, overview, and the visual harness.  
+   Why: this removes drift and would have prevented the later parity regressions.
+
+8. **`web/scripts/verify-visual.ts:164-195`**  
+   Assert the generated route count and keep the comment accurate.  
+   Why: the current code/comment mismatch makes the visual verification story less trustworthy.
+
+## 10. Overall verdict
+**Needs rework.**
+
+Top 3 priority fixes:
+1. Align the client/server job-detail contract.
+2. Fix `saveJob()` to use the backend’s actual method and payload.
+3. Replace brittle 401 handling with real status-based auth redirects.
+tokens used
+105,896
+# Review: Phase 2 (`83b0863`)
+
+## 1. Summary of the phase
+Phase 2 introduced the `/job/[id]/...` shell: a shared job layout, `JobProvider` context, header, tab navigation, overview screen, and placeholder pages for the non-overview tabs. It also added a Phase 2 visual harness in `verify-visual.ts` and the first typed client surface for fetching/saving a full job detail document.
+
+Current-branch note: the touched files have evolved since `83b0863` (`layout.tsx`, `page.tsx`, `job-header.tsx`, `job-tab-nav.tsx`, `api-client.ts`, `types.ts`, `verify-visual.ts`, `globals.css` all changed later), but the main contract issues below still persist in the current tree.
+
+## 2. Alignment with original plan
+The implementation broadly matches the handoff: job-detail routing exists, the shared shell is in place, overview exists, and the tab scaffold shipped separately from the real forms.
+
+Gaps/mismatches:
+- The commit message says the Phase 2 visual harness covers 18 routes / 36 screenshots, but the code in `83b0863:web/scripts/verify-visual.ts:164-195` actually generates 19 routes: 9 EICR + 10 EIC.
+- The handoff describes cert-type-aware tab sets matching iOS. The nav/overview are cert-aware in `83b0863`, but the routes themselves are not guarded, so unsupported screens remain directly reachable by URL.
+
+## 3. Correctness issues
+
+### P1
+- **Frontend job model does not match the backend API contract.**  
+  Phase 2 introduced `JobDetail` with keys like `installation`, `supply`, `board`, `inspection`, `extent`, `design`, and `inspector` in [`web/src/lib/types.ts:192`]( /Users/derekbeckley/Developer/EICR_Automation/web/src/lib/types.ts:192 ). Current tab consumers read those fields directly, e.g. [`web/src/app/job/[id]/installation/page.tsx:86`]( /Users/derekbeckley/Developer/EICR_Automation/web/src/app/job/[id]/installation/page.tsx:86 ) and [`web/src/app/job/[id]/supply/page.tsx:43`]( /Users/derekbeckley/Developer/EICR_Automation/web/src/app/job/[id]/supply/page.tsx:43 ). But the backend returns and persists different keys: `installation_details`, `supply_characteristics`, `board_info`/`boards`, `inspection_schedule`, `extent_and_type`, `design_construction`, `inspector_id` in [`src/routes/jobs.js:575-592`]( /Users/derekbeckley/Developer/EICR_Automation/src/routes/jobs.js:575 ) and [`src/routes/jobs.js:653-740`]( /Users/derekbeckley/Developer/EICR_Automation/src/routes/jobs.js:653 ). The Phase 2 visual mocks use the frontend-only shape in `83b0863:web/scripts/verify-visual.ts:101-130`, so the harness masks the integration break instead of catching it.
+- **`api.saveJob()` uses `PATCH`, but the backend only implements `PUT`.**  
+  The Phase 2 client added `saveJob` with `method: 'PATCH'` in [`web/src/lib/api-client.ts:272-280`]( /Users/derekbeckley/Developer/EICR_Automation/web/src/lib/api-client.ts:272 ). The backend route is `PUT /api/job/:userId/:jobId` in [`src/routes/jobs.js:651`]( /Users/derekbeckley/Developer/EICR_Automation/src/routes/jobs.js:651 ), and the backend tests only cover `PUT` in [`src/__tests__/jobs.test.js:202-228`]( /Users/derekbeckley/Developer/EICR_Automation/src/__tests__/jobs.test.js:202 ). Once Phase 4/7 started calling `saveJob`, this became a hard integration failure.
+
+### P2
+- **401 handling is brittle and may strand expired sessions on an error card.**  
+  In the Phase 2 layout, auth expiry is detected with `/401/.test(err.message)` (`83b0863:web/src/app/job/[id]/layout.tsx:46-53`; same pattern still exists in [`web/src/app/job/[id]/layout.tsx:80-85`]( /Users/derekbeckley/Developer/EICR_Automation/web/src/app/job/[id]/layout.tsx:80 )). But `request()` throws `ApiError(status, body || statusText)` in [`web/src/lib/api-client.ts:62-64`]( /Users/derekbeckley/Developer/EICR_Automation/web/src/lib/api-client.ts:62 ), so a normal 401 message like `"Unauthorized"` will not match. Result: users can get a permanent “Couldn’t load job” card instead of being signed out and redirected.
+- **Wrong-cert tab routes are reachable directly.**  
+  Phase 2 created separate pages for `/extent`, `/design`, and `/observations`, and the harness comment explicitly says `extent` “renders either way” in `83b0863:web/scripts/verify-visual.ts:167`. That means an EICR job can still open `/extent` or `/design`, and an EIC job can still open `/observations`, even though the cert-specific nav hides them. If the intent is iOS parity, these routes should redirect or 404.
+
+## 4. Security issues
+- **None identified specific to this phase.** The backend correctly re-authorizes access on job fetch/update via `auth.canAccessUser` in [`src/routes/jobs.js:477-480`]( /Users/derekbeckley/Developer/EICR_Automation/src/routes/jobs.js:477 ) and [`src/routes/jobs.js:666-669`]( /Users/derekbeckley/Developer/EICR_Automation/src/routes/jobs.js:666 ).
+
+## 5. Performance issues
+- **P2: every job edit invalidates the entire job shell.**  
+  `JobProvider` stores the full `job` object and exposes one context value object in `83b0863:web/src/lib/job-context.tsx:55-70` (still the same in [`web/src/lib/job-context.tsx:55-70`]( /Users/derekbeckley/Developer/EICR_Automation/web/src/lib/job-context.tsx:55 )). Any field update forces all consumers of `useJobContext()` to re-render, including header and any future heavy tabs. Acceptable for stubs; likely noticeable once circuits/observations are populated.
+
+## 6. Accessibility issues
+- **P2: save-status changes are not announced to assistive tech.**  
+  `SaveStatus` is just a changing `<span>` with no `role="status"` / `aria-live` in `83b0863:web/src/components/job/job-header.tsx:37-59` (same issue remains in [`web/src/components/job/job-header.tsx:65-87`]( /Users/derekbeckley/Developer/EICR_Automation/web/src/components/job/job-header.tsx:65 )). “Saved / Unsaved / Saving…” is important state and should be announced.
+- **P2: loading shell is visual-only.**  
+  `JobShellLoading` is shimmer blocks only, with no accessible loading text or `aria-busy` marker in `83b0863:web/src/app/job/[id]/layout.tsx:79-109`. Screen-reader users get almost no feedback while the job loads.
+
+## 7. Code quality
+- **Tab metadata is duplicated in three places.**  
+  Phase 2 hard-coded tab definitions in `83b0863:web/src/components/job/job-tab-nav.tsx:21-44`, `83b0863:web/src/app/job/[id]/page.tsx:18-44`, and `83b0863:web/scripts/verify-visual.ts:164-195`. This already caused drift later: the current nav is unified while the Phase 2 overview/harness logic originally assumed cert-specific sets. One source of truth was needed here.
+- **Type naming drift from backend semantics starts in this phase.**  
+  The Phase 2 `JobDetail` names read like a normalized UI model, but no adapter layer was added. That leaves the codebase in an awkward half-state: UI-friendly names on the client, legacy persistence names on the server, and no explicit translation point.
+
+## 8. Test coverage gaps
+- The web workspace still has no unit/integration test coverage for this shell; `rg` only finds the Playwright-style `verify-visual.ts` harness, not real `*.test.*` files under `web/`.
+- Missing high-value coverage:
+  1. API contract tests proving `api.job()` and `api.saveJob()` match the backend field names and HTTP verbs.
+  2. Route tests for wrong-cert deep links (`/extent`, `/design`, `/observations`).
+  3. Auth-expiry tests verifying a 401 redirects to `/login` instead of rendering the error card.
+  4. Consistency tests for tab metadata so nav, overview, and visual harness cannot drift.
+
+## 9. Suggested fixes
+1. **`web/src/lib/api-client.ts:131-135,272-280`**  
+   Add an explicit adapter layer: map backend payloads (`installation_details`, `supply_characteristics`, `extent_and_type`, etc.) into the UI model on read, and map UI edits back to backend keys on save. Also change `saveJob()` to use `PUT` unless/until the backend supports `PATCH`.  
+   Why: this is the main integration break and the foundation all later phases build on.
+
+2. **`web/src/lib/types.ts:192-239`**  
+   Either redefine `JobDetail` to the backend’s actual wire format, or introduce separate `ApiJobDetail` and `UiJobDetail` types and convert between them in the API client.  
+   Why: the current single type claims the wrong contract and makes the visual harness lie.
+
+3. **`web/src/app/job/[id]/layout.tsx:80-85`**  
+   Replace regex-on-message auth detection with `err instanceof ApiError && err.status === 401`.  
+   Why: redirect behavior should depend on the status code, not brittle string matching.
+
+4. **`web/src/app/job/[id]/extent/page.tsx`, `design/page.tsx`, `observations/page.tsx`**  
+   Add certificate-type guards and redirect or `notFound()` when the route is invalid for the current job type.  
+   Why: nav parity is not enough if unsupported screens remain deep-linkable.
+
+5. **`web/src/components/job/job-header.tsx:65-87`**  
+   Wrap the save indicator in a polite live region, e.g. `role="status" aria-live="polite"`.  
+   Why: save state is meaningful asynchronous feedback.
+
+6. **`web/src/app/job/[id]/layout.tsx:143-163`**  
+   Add a screen-reader-visible loading message and/or `aria-busy` on the loading shell.  
+   Why: shimmer alone is not accessible.
+
+7. **`web/src/components/job/job-tab-nav.tsx`, `web/src/app/job/[id]/page.tsx`, `web/scripts/verify-visual.ts`**  
+   Export one shared tab-config module and consume it from nav, overview, and the visual harness.  
+   Why: this removes drift and would have prevented the later parity regressions.
+
+8. **`web/scripts/verify-visual.ts:164-195`**  
+   Assert the generated route count and keep the comment accurate.  
+   Why: the current code/comment mismatch makes the visual verification story less trustworthy.
+
+## 10. Overall verdict
+**Needs rework.**
+
+Top 3 priority fixes:
+1. Align the client/server job-detail contract.
+2. Fix `saveJob()` to use the backend’s actual method and payload.
+3. Replace brittle 401 handling with real status-based auth redirects.

@@ -1,0 +1,911 @@
+OpenAI Codex v0.116.0 (research preview)
+--------
+workdir: /Users/derekbeckley/Developer/EICR_Automation
+model: gpt-5.4
+provider: openai
+approval: never
+sandbox: read-only
+reasoning effort: none
+reasoning summaries: none
+session id: 019d9d8a-1160-7b31-a918-23274cadafd1
+--------
+user
+You are performing a rigorous code review of a single phase of a Next.js 16 / React 19 PWA frontend rebuild for an electrical-certificate automation tool (EICR / EIC). The repo root is at /Users/derekbeckley/Developer/EICR_Automation and the web package is at web/. Branch: web-rebuild.
+
+TARGET: Phase 0 — ground-up rebuild foundation
+COMMIT: 881d437
+
+Context for this phase (original intent, handoff doc, commit message, files changed) is in this repo at: reviews/context/phase-0.md — READ THAT FILE FIRST.
+
+Use shell commands to:
+  git show --stat 881d437
+  git show 881d437
+to inspect the full diff. Then read any files you need from the working tree (they may have evolved since this commit — note any later changes).
+
+Your output must be a well-structured markdown review with these sections:
+  1. Summary of the phase (2-3 sentences — what it did).
+  2. Alignment with original plan (does the implementation match the handoff doc / commit intent? Any missing objectives?).
+  3. Correctness issues (bugs, race conditions, missing error handling, incorrect semantics). Prioritise P0/P1/P2.
+  4. Security issues (XSS, auth, CSRF, injection, leaked secrets, PII, CORS). Each item tagged with severity.
+  5. Performance issues (re-renders, N+1, large bundles, memory leaks, blocking work on main thread).
+  6. Accessibility issues (semantic HTML, keyboard nav, ARIA, colour contrast, focus management).
+  7. Code quality (duplication, dead code, type-safety holes, naming, convention drift vs. rest of repo).
+  8. Test coverage gaps.
+  9. Suggested fixes — each as a numbered item with: file:line, what to change, why. Be concrete.
+  10. Overall verdict (ship / ship with fixes / needs rework) and top 3 priority fixes.
+
+Be specific — cite file paths and line numbers. Avoid generic advice. If the code is good, say so with evidence. Do NOT modify files; this is review only.
+
+mcp startup: no servers
+codex
+Reviewing `881d437` against the Phase 0 handoff first, then I’ll inspect the commit diff and read the affected files in the current tree to identify regressions, gaps, and any later changes.
+exec
+/bin/zsh -lc "sed -n '1,240p' reviews/context/phase-0.md" in /Users/derekbeckley/Developer/EICR_Automation exited 1 in 0ms:
+sed: reviews/context/phase-0.md: No such file or directory
+exec
+/bin/zsh -lc 'git show --stat --format=fuller 881d437' in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc 'git show --format=fuller --no-ext-diff 881d437' in /Users/derekbeckley/Developer/EICR_Automation succeeded in 1.38s:
+2026-04-17 23:22:51.611 xcodebuild[23763:67160910]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:22:51.793 xcodebuild[23763:67160908] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-zIVxAHCm' (errno=Operation not permitted)
+2026-04-17 23:22:52.174 xcodebuild[23767:67160928]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:22:52.277 xcodebuild[23767:67160926] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+commit 881d437d327b2363f087a185fa2ec79813318dd2
+Author:     Derek Beckley <derekbeckley@Dereks-Mac-mini.broadband>
+AuthorDate: Fri Apr 17 11:31:32 2026 +0100
+Commit:     Derek Beckley <derekbeckley@Dereks-Mac-mini.broadband>
+CommitDate: Fri Apr 17 11:31:32 2026 +0100
+
+    feat(web): Phase 0 — ground-up rebuild foundation
+    
+    WHAT
+    - Archive the previous `web/` app to `_archive/web-legacy/` for reference.
+    - Fresh Next.js 16 + React 19 + Tailwind 4 + TypeScript scaffold at `web/`
+      created via `create-next-app`, then extended with design tokens, base UI
+      primitives, and a Playwright visual-verification harness.
+    
+ succeeded in 1.38s:
+2026-04-17 23:22:51.611 xcodebuild[23762:67160909]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:22:51.793 xcodebuild[23762:67160907] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-zt153tHM' (errno=Operation not permitted)
+2026-04-17 23:22:52.174 xcodebuild[23766:67160929]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:22:52.277 xcodebuild[23766:67160927] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+commit 881d437d327b2363f087a185fa2ec79813318dd2
+Author:     Derek Beckley <derekbeckley@Dereks-Mac-mini.broadband>
+AuthorDate: Fri Apr 17 11:31:32 2026 +0100
+Commit:     Derek Beckley <derekbeckley@Dereks-Mac-mini.broadband>
+CommitDate: Fri Apr 17 11:31:32 2026 +0100
+
+    feat(web): Phase 0 — ground-up rebuild foundation
+    
+    WHAT
+    - Archive the previous `web/` app to `_archive/web-legacy/` for reference.
+    - Fresh Next.js 16 + React 19 + Tailwind 4 + TypeScript scaffold at `web/`
+      created via `create-next-app`, then extended with design tokens, base UI
+      primitives, and a Playwright visual-verification harness.
+    
+codex
+The handoff file path from the prompt isn’t present at the repo root, so I’m locating it in-tree and re-running the commit inspection with `--no-pager` to avoid the pager/xcode path issue.
+exec
+/bin/zsh -lc "rg --files | rg 'phase-0\\.md"'$|reviews/.*/phase-0'"\\.md"'$'"'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+web/reviews/context/phase-0.md
+exec
+/bin/zsh -lc 'GIT_PAGER=cat git --no-pager show --format=fuller --no-ext-diff 881d437' in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc 'GIT_PAGER=cat git --no-pager show --stat --format=fuller 881d437' in /Users/derekbeckley/Developer/EICR_Automation succeeded in 1.16s:
+2026-04-17 23:22:59.907 xcodebuild[23781:67161083]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:23:00.013 xcodebuild[23781:67161080] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-TfzlrwKS' (errno=Operation not permitted)
+2026-04-17 23:23:00.328 xcodebuild[23785:67161103]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:23:00.432 xcodebuild[23785:67161100] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+commit 881d437d327b2363f087a185fa2ec79813318dd2
+Author:     Derek Beckley <derekbeckley@Dereks-Mac-mini.broadband>
+AuthorDate: Fri Apr 17 11:31:32 2026 +0100
+Commit:     Derek Beckley <derekbeckley@Dereks-Mac-mini.broadband>
+CommitDate: Fri Apr 17 11:31:32 2026 +0100
+
+    feat(web): Phase 0 — ground-up rebuild foundation
+    
+    WHAT
+    - Archive the previous `web/` app to `_archive/web-legacy/` for reference.
+    - Fresh Next.js 16 + React 19 + Tailwind 4 + TypeScript scaffold at `web/`
+      created via `create-next-app`, then extended with design tokens, base UI
+      primitives, and a Playwright visual-verification harness.
+    
+ succeeded in 1.16s:
+2026-04-17 23:22:59.907 xcodebuild[23782:67161082]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:23:00.013 xcodebuild[23782:67161081] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-2VoYimoj' (errno=Operation not permitted)
+2026-04-17 23:23:00.328 xcodebuild[23786:67161102]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:23:00.432 xcodebuild[23786:67161101] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+commit 881d437d327b2363f087a185fa2ec79813318dd2
+Author:     Derek Beckley <derekbeckley@Dereks-Mac-mini.broadband>
+AuthorDate: Fri Apr 17 11:31:32 2026 +0100
+Commit:     Derek Beckley <derekbeckley@Dereks-Mac-mini.broadband>
+CommitDate: Fri Apr 17 11:31:32 2026 +0100
+
+    feat(web): Phase 0 — ground-up rebuild foundation
+    
+    WHAT
+    - Archive the previous `web/` app to `_archive/web-legacy/` for reference.
+    - Fresh Next.js 16 + React 19 + Tailwind 4 + TypeScript scaffold at `web/`
+      created via `create-next-app`, then extended with design tokens, base UI
+      primitives, and a Playwright visual-verification harness.
+    
+exec
+/bin/zsh -lc "sed -n '1,260p' web/reviews/context/phase-0.md" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+# Phase 0 — Context
+
+**Commit:** `881d437`
+
+## Commit message
+
+```
+commit 881d437d327b2363f087a185fa2ec79813318dd2
+Author:     Derek Beckley <derekbeckley@Dereks-Mac-mini.broadband>
+AuthorDate: Fri Apr 17 11:31:32 2026 +0100
+Commit:     Derek Beckley <derekbeckley@Dereks-Mac-mini.broadband>
+CommitDate: Fri Apr 17 11:31:32 2026 +0100
+
+    feat(web): Phase 0 — ground-up rebuild foundation
+    
+    WHAT
+    - Archive the previous `web/` app to `_archive/web-legacy/` for reference.
+    - Fresh Next.js 16 + React 19 + Tailwind 4 + TypeScript scaffold at `web/`
+      created via `create-next-app`, then extended with design tokens, base UI
+      primitives, and a Playwright visual-verification harness.
+codex
+I have the Phase 0 intent and full commit diff. Next I’m checking the current `web/` foundation files and the branch delta since `881d437` so I can separate issues in the reviewed commit from later evolution.
+exec
+/bin/zsh -lc "nl -ba web/README.md | sed -n '1,260p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "nl -ba web/next.config.ts | sed -n '1,240p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	import type { NextConfig } from 'next';
+     2	import withSerwistInit from '@serwist/next';
+     3	
+     4	/**
+     5	 * Phase 7a: wrap the Next config with Serwist so every production build
+     6	 * emits `public/sw.js` from `src/app/sw.ts`. Serwist auto-registers the SW
+     7	 * on the client (no manual registration component needed).
+     8	 *
+     9	 * - `cacheOnNavigation: false` is the default, but set explicitly so a
+    10	 *   future reader doesn't flip it without noticing. We never want Serwist
+    11	 *   stashing authenticated HTML in a runtime cache — every auth-gated
+    12	 *   navigation falls through to the network-only default in `sw.ts`.
+    13	 * - `reloadOnOnline: true` (default) means the SPA reloads when the browser
+    14	 *   reports `online` after being offline. That's the right thing for 7a —
+    15	 *   we don't have an outbox yet, so a reload is the cleanest way to get
+    16	 *   fresh data once the network is back.
+    17	 * - `disable: process.env.NODE_ENV === 'development'` keeps the dev server
+    18	 *   clean; HMR and the SW don't mix, and we don't want a stale dev SW
+    19	 *   serving cached assets after `npm start`.
+    20	 */
+ succeeded in 0ms:
+     1	# CertMate Web (ground-up rebuild)
+     2	
+     3	Next.js 16 + React 19 + Tailwind 4 web client for the CertMate EICR / EIC
+     4	platform. Shares the existing Node.js backend at
+     5	`../src/` (no changes required) and aims for **full visual and behavioural
+     6	parity with the iOS app** at `../CertMateUnified/`.
+     7	
+     8	The previous web client lives at `../_archive/web-legacy/` for reference
+     9	while this rebuild proceeds.
+    10	
+    11	## Development
+    12	
+    13	```bash
+    14	npm install
+    15	npm run dev       # turbopack dev server on :3000
+    16	npm run verify    # spin up dev + screenshot every route (Playwright)
+    17	npm run typecheck
+    18	npm run lint
+    19	```
+    20	
+exec
+/bin/zsh -lc "nl -ba web/package.json | sed -n '1,240p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	{
+     2	  "name": "web",
+     3	  "version": "0.1.0",
+     4	  "private": true,
+     5	  "scripts": {
+     6	    "dev": "next dev --turbopack",
+     7	    "build": "next build --webpack",
+     8	    "start": "next start",
+     9	    "lint": "eslint",
+    10	    "verify": "tsx scripts/verify-visual.ts",
+    11	    "typecheck": "tsc --noEmit",
+    12	    "pwa:icons": "node scripts/generate-pwa-icons.mjs"
+    13	  },
+    14	  "dependencies": {
+    15	    "@dnd-kit/core": "^6.3.1",
+    16	    "@dnd-kit/modifiers": "^9.0.0",
+    17	    "@dnd-kit/sortable": "^10.0.0",
+    18	    "@dnd-kit/utilities": "^3.2.2",
+    19	    "@hookform/resolvers": "^5.2.2",
+    20	    "@radix-ui/react-checkbox": "^1.3.3",
+exec
+/bin/zsh -lc 'git rev-parse --abbrev-ref HEAD' in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc 'git log --oneline --decorate 881d437..HEAD -- web' in /Users/derekbeckley/Developer/EICR_Automation succeeded in 1.14s:
+2026-04-17 23:23:14.195 xcodebuild[23814:67161391]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:23:14.300 xcodebuild[23814:67161387] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-J7FcG85I' (errno=Operation not permitted)
+2026-04-17 23:23:14.616 xcodebuild[23819:67161413]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:23:14.720 xcodebuild[23819:67161410] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+web-rebuild
+ succeeded in 1.12s:
+2026-04-17 23:23:14.300 xcodebuild[23815:67161390] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-tuOQtlZ5' (errno=Operation not permitted)
+2026-04-17 23:23:14.616 xcodebuild[23820:67161412]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:23:14.720 xcodebuild[23820:67161411] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+e64f756 (HEAD -> web-rebuild) feat(web): Phase 7c offline mutation outbox + replay worker
+d4dc9c0 docs(web): Phase 7b handoff document
+1ec4e22 feat(web): Phase 7b iOS Add-to-Home-Screen hint (closes 7b)
+a85487f feat(web): Phase 7b — AppShell offline indicator
+2d3527f feat(web): Phase 7b — IDB read-through cache for jobs
+ce8323a feat(web): Phase 7b kickoff — user-initiated SW update handoff
+eb72acc feat(web): Phase 7a PWA foundation
+bc11914 feat(web): Phase 6c system-admin user management
+6e85e9e feat(web): Phase 6b company settings + company-admin dashboard
+3e902d8 fix(web): wrap /login useSearchParams in Suspense so next build passes
+2ef8ec6 feat(web): Phase 6a settings hub + inspector profiles
+cccd548 feat(web): Phase 5d LiveFillView
+f3aedf6 docs(web): Phase 5d LiveFillView handoff
+6a73517 feat(web): Phase 5c observation photos
+766735f feat(web): Phase 5b document extraction on Circuits tab
+exec
+/bin/zsh -lc "nl -ba web/src/app/page.tsx | sed -n '1,260p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	import { redirect } from 'next/navigation';
+     2	
+     3	/**
+     4	 * Root — middleware redirects unauthenticated users to /login, so
+     5	 * reaching this page means the user is signed in. Forward to dashboard.
+     6	 */
+     7	export default function RootRedirect() {
+     8	  redirect('/dashboard');
+     9	}
+exec
+/bin/zsh -lc "nl -ba web/src/app/layout.tsx | sed -n '1,220p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	import type { Metadata, Viewport } from 'next';
+     2	import { Toaster } from 'sonner';
+     3	import { InstallPromptProvider } from '@/components/pwa/install-prompt-provider';
+     4	import { SwUpdateProvider } from '@/components/pwa/sw-update-provider';
+     5	import './globals.css';
+     6	
+     7	export const metadata: Metadata = {
+     8	  title: 'CertMate — EICR-oMatic',
+     9	  description: 'Voice-driven EICR / EIC certificate authoring',
+    10	  applicationName: 'CertMate',
+    11	  // `icons` makes Next emit <link rel="icon"> + <link rel="apple-touch-icon">
+    12	  // pointing at the files generated by `scripts/generate-pwa-icons.mjs`.
+    13	  // Keeping these explicit (rather than relying on `src/app/icon.tsx`
+    14	  // conventions) means the raster assets live in `public/` and are served
+    15	  // unhashed with the SW's CacheFirst "icons" rule applied.
+    16	  icons: {
+    17	    icon: [
+    18	      { url: '/favicon.svg', type: 'image/svg+xml' },
+    19	      { url: '/favicon-32.png', sizes: '32x32', type: 'image/png' },
+    20	      { url: '/icons/icon-192.png', sizes: '192x192', type: 'image/png' },
+exec
+/bin/zsh -lc "nl -ba web/src/app/globals.css | sed -n '1,280p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	@import "tailwindcss";
+     2	
+     3	/* =============================================================================
+     4	 * CertMate Design Tokens (port of iOS CMDesign system)
+     5	 * Reference: CertMateUnified/Sources/Helpers/CertMateDesign.swift
+     6	 * ============================================================================= */
+     7	@theme {
+     8	  /* ---------- Brand ---------- */
+     9	  --color-brand-blue: #0066ff;
+    10	  --color-brand-blue-soft: #3b82f6;
+    11	  --color-brand-green: #00cc66;
+    12	  --color-brand-green-soft: #22c55e;
+    13	
+    14	  /* ---------- Surface hierarchy (dark mode, forced) ---------- */
+    15	  --color-surface-0: #0a0a0f; /* page background */
+    16	  --color-surface-1: #141419; /* elevated panel */
+    17	  --color-surface-2: #1c1c24; /* card */
+    18	  --color-surface-3: #24242e; /* hovered / top-of-stack card */
+    19	  --color-surface-4: #2d2d38; /* pressed */
+    20	
+exec
+/bin/zsh -lc 'GIT_PAGER=cat git --no-pager rev-parse --abbrev-ref HEAD' in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc 'GIT_PAGER=cat git --no-pager log --oneline --decorate 881d437..HEAD -- web' in /Users/derekbeckley/Developer/EICR_Automation succeeded in 1.14s:
+2026-04-17 23:23:23.072 xcodebuild[24033:67161957]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:23:23.174 xcodebuild[24033:67161955] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-uvyUt8Oo' (errno=Operation not permitted)
+2026-04-17 23:23:23.492 xcodebuild[24037:67161975]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:23:23.595 xcodebuild[24037:67161973] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+web-rebuild
+ succeeded in 1.15s:
+2026-04-17 23:23:23.071 xcodebuild[24034:67161956]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:23:23.174 xcodebuild[24034:67161954] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-g1Ft8YMt' (errno=Operation not permitted)
+2026-04-17 23:23:23.492 xcodebuild[24038:67161976]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:23:23.595 xcodebuild[24038:67161974] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+e64f756 (HEAD -> web-rebuild) feat(web): Phase 7c offline mutation outbox + replay worker
+d4dc9c0 docs(web): Phase 7b handoff document
+1ec4e22 feat(web): Phase 7b iOS Add-to-Home-Screen hint (closes 7b)
+a85487f feat(web): Phase 7b — AppShell offline indicator
+2d3527f feat(web): Phase 7b — IDB read-through cache for jobs
+ce8323a feat(web): Phase 7b kickoff — user-initiated SW update handoff
+eb72acc feat(web): Phase 7a PWA foundation
+bc11914 feat(web): Phase 6c system-admin user management
+6e85e9e feat(web): Phase 6b company settings + company-admin dashboard
+3e902d8 fix(web): wrap /login useSearchParams in Suspense so next build passes
+2ef8ec6 feat(web): Phase 6a settings hub + inspector profiles
+cccd548 feat(web): Phase 5d LiveFillView
+f3aedf6 docs(web): Phase 5d LiveFillView handoff
+6a73517 feat(web): Phase 5c observation photos
+exec
+/bin/zsh -lc "nl -ba web/src/components/ui/button.tsx | sed -n '1,220p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "nl -ba web/scripts/verify-visual.ts | sed -n '1,260p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	import * as React from 'react';
+     2	import { cva, type VariantProps } from 'class-variance-authority';
+     3	import { Slot } from '@radix-ui/react-slot';
+     4	import { cn } from '@/lib/utils';
+     5	
+     6	/**
+     7	 * Button — matches iOS CertMate button styles.
+     8	 * - Primary: filled brand blue, white text, 600 weight
+     9	 * - Secondary: bordered, primary text
+    10	 * - Ghost: no border, primary text, hover bg
+    11	 * - Destructive: filled red
+    12	 * Minimum 44px hit area for touch targets.
+    13	 */
+    14	const buttonVariants = cva(
+    15	  'inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-[var(--radius-md)] font-semibold transition active:scale-[0.98] disabled:opacity-50 disabled:pointer-events-none focus-visible:outline-2 focus-visible:outline-[var(--color-brand-blue)]',
+    16	  {
+    17	    variants: {
+    18	      variant: {
+    19	        primary: 'bg-[var(--color-brand-blue)] text-white hover:brightness-110',
+    20	        secondary:
+ succeeded in 0ms:
+     1	/**
+     2	 * Visual verification harness.
+     3	 *
+     4	 * Spins up `next dev` on a free port, screenshots every configured route at
+     5	 * iPhone 14 Pro viewport + desktop viewport, writes PNGs to
+     6	 * `_screenshots/<timestamp>/...`. Designed to be run per phase so we can
+     7	 * visually diff against iOS reference shots stored in
+     8	 * `_reference/ios-screenshots/`.
+     9	 *
+    10	 * Usage: npm run verify [-- --keep-server]
+    11	 */
+    12	import { chromium, type Browser, type Page } from '@playwright/test';
+    13	import { spawn, ChildProcess } from 'node:child_process';
+    14	import { mkdirSync } from 'node:fs';
+    15	import { join } from 'node:path';
+    16	import { createServer } from 'node:net';
+    17	
+    18	type Viewport = { name: string; width: number; height: number; isMobile: boolean };
+    19	
+    20	const VIEWPORTS: Viewport[] = [
+exec
+/bin/zsh -lc "nl -ba web/src/components/brand/logo.tsx | sed -n '1,220p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "nl -ba web/src/components/ui/card.tsx | sed -n '1,220p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	import * as React from 'react';
+     2	import { cn } from '@/lib/utils';
+     3	
+     4	export function Card({
+     5	  className,
+     6	  glass = false,
+     7	  ...props
+     8	}: React.HTMLAttributes<HTMLDivElement> & { glass?: boolean }) {
+     9	  return (
+    10	    <div
+    11	      className={cn(
+    12	        'rounded-[var(--radius-lg)] p-4 md:p-6',
+    13	        glass
+    14	          ? 'cm-glass'
+    15	          : 'bg-[var(--color-surface-2)] border border-[var(--color-border-subtle)]',
+    16	        className
+    17	      )}
+    18	      {...props}
+    19	    />
+    20	  );
+ succeeded in 0ms:
+     1	import * as React from 'react';
+     2	import { cn } from '@/lib/utils';
+     3	
+     4	/**
+     5	 * CertMate wordmark. Simple text-based mark in brand blue on dark surface.
+     6	 * Swap for SVG asset when user provides a final brand mark.
+     7	 */
+     8	export function Logo({
+     9	  className,
+    10	  size = 'md',
+    11	}: {
+    12	  className?: string;
+    13	  size?: 'sm' | 'md' | 'lg';
+    14	}) {
+    15	  const sizeClass = {
+    16	    sm: 'text-base',
+    17	    md: 'text-xl',
+    18	    lg: 'text-2xl',
+    19	  }[size];
+    20	
+exec
+/bin/zsh -lc "nl -ba web/src/lib/design-tokens.ts | sed -n '1,220p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	/**
+     2	 * Design tokens — mirror of iOS CertMateDesign.swift.
+     3	 * Use these in TS when you need named access (e.g. Playwright assertions,
+     4	 * chart colours). For styling, prefer the CSS vars via Tailwind classes.
+     5	 */
+     6	
+     7	export const cmColors = {
+     8	  brand: {
+     9	    blue: '#0066FF',
+    10	    blueSoft: '#3B82F6',
+    11	    green: '#00CC66',
+    12	    greenSoft: '#22C55E',
+    13	  },
+    14	  surface: {
+    15	    0: '#0A0A0F',
+    16	    1: '#141419',
+    17	    2: '#1C1C24',
+    18	    3: '#24242E',
+    19	    4: '#2D2D38',
+    20	  },
+codex
+I’ve confirmed the current tree has moved beyond Phase 0 in `web/`, so I’m now anchoring line numbers to the files as they existed in `881d437` and checking which of those files changed later.
+exec
+/bin/zsh -lc 'GIT_PAGER=cat git --no-pager diff --name-status 881d437..HEAD -- web/src web/scripts web/package.json web/next.config.ts web/README.md' in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "git show 881d437:web/src/app/layout.tsx | nl -ba | sed -n '1,220p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "git show 881d437:web/src/app/page.tsx | nl -ba | sed -n '1,260p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "git show 881d437:web/src/app/globals.css | nl -ba | sed -n '1,260p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "git show 881d437:web/scripts/verify-visual.ts | nl -ba | sed -n '1,240p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 1.39s:
+2026-04-17 23:23:42.147 xcodebuild[24088:67162374]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:23:42.270 xcodebuild[24088:67162364] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-MUy3U1Wc' (errno=Operation not permitted)
+2026-04-17 23:23:42.659 xcodebuild[24099:67162422]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:23:42.779 xcodebuild[24099:67162415] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+     1	import type { Metadata, Viewport } from 'next';
+     2	import './globals.css';
+     3	
+     4	export const metadata: Metadata = {
+     5	  title: 'CertMate — EICR-oMatic',
+     6	  description: 'Voice-driven EICR / EIC certificate authoring',
+     7	  applicationName: 'CertMate',
+     8	  appleWebApp: {
+     9	    capable: true,
+    10	    title: 'CertMate',
+    11	    statusBarStyle: 'black-translucent',
+    12	  },
+    13	  formatDetection: {
+    14	    telephone: false,
+ succeeded in 1.39s:
+2026-04-17 23:23:42.147 xcodebuild[24090:67162373]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:23:42.271 xcodebuild[24090:67162367] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-di5ikHde' (errno=Operation not permitted)
+2026-04-17 23:23:42.670 xcodebuild[24102:67162429]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:23:42.790 xcodebuild[24102:67162428] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+M	web/next.config.ts
+M	web/package.json
+A	web/scripts/generate-pwa-icons.mjs
+A	web/scripts/icons/apple-icon.svg
+A	web/scripts/icons/favicon.svg
+A	web/scripts/icons/icon-maskable.svg
+A	web/scripts/icons/icon.svg
+M	web/scripts/verify-visual.ts
+A	web/src/app/dashboard/layout.tsx
+A	web/src/app/dashboard/page.tsx
+A	web/src/app/error.tsx
+M	web/src/app/globals.css
+A	web/src/app/job/[id]/board/page.tsx
+A	web/src/app/job/[id]/circuits/page.tsx
+ succeeded in 1.37s:
+2026-04-17 23:23:42.148 xcodebuild[24089:67162377]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:23:42.270 xcodebuild[24089:67162366] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-adb5AY06' (errno=Operation not permitted)
+2026-04-17 23:23:42.658 xcodebuild[24101:67162426]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:23:42.779 xcodebuild[24101:67162417] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+     1	/**
+     2	 * Visual verification harness.
+     3	 *
+     4	 * Spins up `next dev` on a free port, screenshots every configured route at
+     5	 * iPhone 14 Pro viewport + desktop viewport, writes PNGs to
+     6	 * `_screenshots/<timestamp>/...`. Designed to be run per phase so we can
+     7	 * visually diff against iOS reference shots stored in
+     8	 * `_reference/ios-screenshots/`.
+     9	 *
+    10	 * Usage: npm run verify [-- --keep-server]
+    11	 */
+    12	import { chromium, type Browser, type Page } from '@playwright/test';
+    13	import { spawn, ChildProcess } from 'node:child_process';
+    14	import { mkdirSync } from 'node:fs';
+ succeeded in 1.37s:
+2026-04-17 23:23:42.155 xcodebuild[24091:67162379]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:23:42.275 xcodebuild[24091:67162369] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-vzkWmcRE' (errno=Operation not permitted)
+2026-04-17 23:23:42.658 xcodebuild[24100:67162420]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:23:42.778 xcodebuild[24100:67162414] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+     1	import { Logo } from '@/components/brand/logo';
+     2	import { Button } from '@/components/ui/button';
+     3	import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '@/components/ui/card';
+     4	
+     5	/**
+     6	 * Phase 0 showcase — verifies the design-token pipeline renders as expected
+     7	 * before we start assembling real screens. This page gets replaced with a
+     8	 * `/login` redirect in Phase 1.
+     9	 */
+    10	export default function Phase0Showcase() {
+    11	  return (
+    12	    <main className="relative min-h-dvh overflow-hidden px-6 py-12 md:px-12">
+    13	      {/* Ambient orbs (preview of login immersive background) */}
+    14	      <div
+ succeeded in 1.38s:
+2026-04-17 23:23:42.152 xcodebuild[24092:67162383]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:23:42.270 xcodebuild[24092:67162372] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-ExkwnCQ4' (errno=Operation not permitted)
+2026-04-17 23:23:42.658 xcodebuild[24098:67162423]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:23:42.778 xcodebuild[24098:67162411] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+     1	@import "tailwindcss";
+     2	
+     3	/* =============================================================================
+     4	 * CertMate Design Tokens (port of iOS CMDesign system)
+     5	 * Reference: CertMateUnified/Sources/Helpers/CertMateDesign.swift
+     6	 * ============================================================================= */
+     7	@theme {
+     8	  /* ---------- Brand ---------- */
+     9	  --color-brand-blue: #0066ff;
+    10	  --color-brand-blue-soft: #3b82f6;
+    11	  --color-brand-green: #00cc66;
+    12	  --color-brand-green-soft: #22c55e;
+    13	
+    14	  /* ---------- Surface hierarchy (dark mode, forced) ---------- */
+exec
+/bin/zsh -lc "git show 881d437:web/next.config.ts | nl -ba | sed -n '1,220p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "git show 881d437:web/package.json | nl -ba | sed -n '1,220p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "git show 881d437:web/src/components/ui/card.tsx | nl -ba | sed -n '1,220p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "git show 881d437:web/src/lib/design-tokens.ts | nl -ba | sed -n '1,220p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "git show 881d437:web/src/components/ui/button.tsx | nl -ba | sed -n '1,220p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 1.37s:
+2026-04-17 23:23:57.592 xcodebuild[24178:67162726]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:23:57.716 xcodebuild[24178:67162717] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-2TfQumNj' (errno=Operation not permitted)
+2026-04-17 23:23:58.099 xcodebuild[24188:67162775]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:23:58.219 xcodebuild[24188:67162765] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+     1	{
+     2	  "name": "web",
+     3	  "version": "0.1.0",
+     4	  "private": true,
+     5	  "scripts": {
+     6	    "dev": "next dev --turbopack",
+     7	    "build": "next build",
+     8	    "start": "next start",
+     9	    "lint": "eslint",
+    10	    "verify": "tsx scripts/verify-visual.ts",
+    11	    "typecheck": "tsc --noEmit"
+    12	  },
+    13	  "dependencies": {
+    14	    "@dnd-kit/core": "^6.3.1",
+ succeeded in 1.38s:
+2026-04-17 23:23:57.596 xcodebuild[24181:67162727]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:23:57.718 xcodebuild[24181:67162721] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-8WYgzaWj' (errno=Operation not permitted)
+2026-04-17 23:23:58.105 xcodebuild[24191:67162781]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:23:58.221 xcodebuild[24191:67162773] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+     1	import type { NextConfig } from 'next';
+     2	
+     3	const nextConfig: NextConfig = {
+     4	  /* config options here */
+     5	};
+     6	
+     7	export default nextConfig;
+ succeeded in 1.37s:
+2026-04-17 23:23:57.599 xcodebuild[24179:67162733]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:23:57.716 xcodebuild[24179:67162719] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-lF3oQBNv' (errno=Operation not permitted)
+2026-04-17 23:23:58.104 xcodebuild[24187:67162777]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:23:58.221 xcodebuild[24187:67162766] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+     1	import * as React from 'react';
+     2	import { cn } from '@/lib/utils';
+     3	
+     4	export function Card({
+     5	  className,
+     6	  glass = false,
+     7	  ...props
+     8	}: React.HTMLAttributes<HTMLDivElement> & { glass?: boolean }) {
+     9	  return (
+    10	    <div
+    11	      className={cn(
+    12	        'rounded-[var(--radius-lg)] p-4 md:p-6',
+    13	        glass
+    14	          ? 'cm-glass'
+ succeeded in 1.36s:
+2026-04-17 23:23:57.594 xcodebuild[24177:67162730]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:23:57.716 xcodebuild[24177:67162716] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-PjWNz8PV' (errno=Operation not permitted)
+2026-04-17 23:23:58.118 xcodebuild[24190:67162783]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:23:58.233 xcodebuild[24190:67162774] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+     1	/**
+     2	 * Design tokens — mirror of iOS CertMateDesign.swift.
+     3	 * Use these in TS when you need named access (e.g. Playwright assertions,
+     4	 * chart colours). For styling, prefer the CSS vars via Tailwind classes.
+     5	 */
+     6	
+     7	export const cmColors = {
+     8	  brand: {
+     9	    blue: '#0066FF',
+    10	    blueSoft: '#3B82F6',
+    11	    green: '#00CC66',
+    12	    greenSoft: '#22C55E',
+    13	  },
+    14	  surface: {
+ succeeded in 1.36s:
+2026-04-17 23:23:57.597 xcodebuild[24180:67162725]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:23:57.716 xcodebuild[24180:67162720] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-LydYRdfn' (errno=Operation not permitted)
+2026-04-17 23:23:58.100 xcodebuild[24189:67162779]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:23:58.219 xcodebuild[24189:67162768] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+     1	import * as React from 'react';
+     2	import { cva, type VariantProps } from 'class-variance-authority';
+     3	import { Slot } from '@radix-ui/react-slot';
+     4	import { cn } from '@/lib/utils';
+     5	
+     6	/**
+     7	 * Button — matches iOS CertMate button styles.
+     8	 * - Primary: filled brand blue, white text, 600 weight
+     9	 * - Secondary: bordered, primary text
+    10	 * - Ghost: no border, primary text, hover bg
+    11	 * - Destructive: filled red
+    12	 * Minimum 44px hit area for touch targets.
+    13	 */
+    14	const buttonVariants = cva(
+codex
+I’ve got enough context to draft findings. I’m doing one last pass over test files and the current branch history around `web/` so I can call out coverage gaps and later follow-up changes accurately.
+exec
+/bin/zsh -lc "rg --files web | rg '(__tests__/|\\.test\\.|\\.spec\\.)'" in /Users/derekbeckley/Developer/EICR_Automation exited 1 in 0ms:
+
+exec
+/bin/zsh -lc 'GIT_PAGER=cat git --no-pager log --oneline --decorate --max-count=12 -- web' in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "git show 881d437:web/README.md | nl -ba | sed -n '1,220p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 1.16s:
+2026-04-17 23:24:51.255 xcodebuild[24535:67164001]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:24:51.362 xcodebuild[24535:67163999] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-Vh9D6nS1' (errno=Operation not permitted)
+2026-04-17 23:24:51.690 xcodebuild[24541:67164025]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:24:51.794 xcodebuild[24541:67164023] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+     1	# CertMate Web (ground-up rebuild)
+     2	
+     3	Next.js 16 + React 19 + Tailwind 4 web client for the CertMate EICR / EIC
+     4	platform. Shares the existing Node.js backend at
+     5	`../src/` (no changes required) and aims for **full visual and behavioural
+     6	parity with the iOS app** at `../CertMateUnified/`.
+     7	
+     8	The previous web client lives at `../_archive/web-legacy/` for reference
+     9	while this rebuild proceeds.
+    10	
+    11	## Development
+    12	
+    13	```bash
+    14	npm install
+ succeeded in 1.17s:
+2026-04-17 23:24:51.255 xcodebuild[24534:67164002]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:24:51.362 xcodebuild[24534:67164000] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-kQmWkCbf' (errno=Operation not permitted)
+2026-04-17 23:24:51.690 xcodebuild[24542:67164026]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:24:51.794 xcodebuild[24542:67164024] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+e64f756 (HEAD -> web-rebuild) feat(web): Phase 7c offline mutation outbox + replay worker
+d4dc9c0 docs(web): Phase 7b handoff document
+1ec4e22 feat(web): Phase 7b iOS Add-to-Home-Screen hint (closes 7b)
+a85487f feat(web): Phase 7b — AppShell offline indicator
+2d3527f feat(web): Phase 7b — IDB read-through cache for jobs
+ce8323a feat(web): Phase 7b kickoff — user-initiated SW update handoff
+eb72acc feat(web): Phase 7a PWA foundation
+bc11914 feat(web): Phase 6c system-admin user management
+6e85e9e feat(web): Phase 6b company settings + company-admin dashboard
+3e902d8 fix(web): wrap /login useSearchParams in Suspense so next build passes
+2ef8ec6 feat(web): Phase 6a settings hub + inspector profiles
+cccd548 feat(web): Phase 5d LiveFillView
+codex
+# 1. Summary of the phase
+
+Phase 0 cleanly archived the legacy `web/` app into `_archive/web-legacy/` and replaced `web/` with a fresh Next.js 16 / React 19 / Tailwind 4 scaffold. It also established the initial CertMate design-token layer, a small base UI set (`Logo`, `Button`, `Card`), and a Playwright-based screenshot harness for visual comparison.
+
+Current branch note: `web/` has moved substantially since `881d437` (`layout.tsx`, `page.tsx`, `globals.css`, `verify-visual.ts`, `package.json`, `next.config.ts`, and many new routes/components changed later), so the findings below are anchored to commit `881d437`.
+
+# 2. Alignment with original plan
+
+The implementation broadly matches the handoff doc and commit intent:
+
+- The legacy app was preserved rather than deleted.
+- A fresh scaffold was created at `web/`.
+- Design tokens were added in CSS and mirrored into TypeScript.
+- A visual verification harness was added.
+
+Two intent gaps remain:
+
+- The commit message claims a “single source of truth; no drift” for tokens, but the implementation is actually two manually maintained copies: CSS in [web/src/app/globals.css](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/globals.css:7) and TS in [web/src/lib/design-tokens.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/design-tokens.ts:7). That is not a single source of truth.
+- The commit message says the verify harness “spawns its own `next dev` on a free port so it never collides” and “cleans itself up on exit,” but the implementation has a port-selection race and only best-effort cleanup in a local `finally` block ([web/scripts/verify-visual.ts](/Users/derekbeckley/Developer/EICR_Automation/web/scripts/verify-visual.ts:36), [web/scripts/verify-visual.ts](/Users/derekbeckley/Developer/EICR_Automation/web/scripts/verify-visual.ts:127)).
+
+# 3. Correctness issues
+
+- `P2` Port allocation in the verify harness is racy. `freePort()` binds to port `0`, reads the assigned port, closes the socket, and only then starts `next dev` on that port ([web/scripts/verify-visual.ts:36-49](/Users/derekbeckley/Developer/EICR_Automation/web/scripts/verify-visual.ts:36), [web/scripts/verify-visual.ts:99-111](/Users/derekbeckley/Developer/EICR_Automation/web/scripts/verify-visual.ts:99)). Another process can claim the port in between, so the “never collides” guarantee is false.
+- `P2` The script advertises `npm run verify [-- --keep-server]`, but there is no argument parsing and the server is always terminated in `finally` ([web/scripts/verify-visual.ts:10](/Users/derekbeckley/Developer/EICR_Automation/web/scripts/verify-visual.ts:10), [web/scripts/verify-visual.ts:127-130](/Users/derekbeckley/Developer/EICR_Automation/web/scripts/verify-visual.ts:127)). That is incorrect CLI behaviour and misleading docs.
+- `P2` `PHASE` changes the output folder name but not the selected route set; the script always captures `PHASE_0_ROUTES` ([web/scripts/verify-visual.ts:34](/Users/derekbeckley/Developer/EICR_Automation/web/scripts/verify-visual.ts:34), [web/scripts/verify-visual.ts:97-104](/Users/derekbeckley/Developer/EICR_Automation/web/scripts/verify-visual.ts:97)). That can silently produce mislabeled artifacts.
+
+# 4. Security issues
+
+No concrete security issues were introduced in this phase.
+
+- `[none identified]` No auth, secret handling, XSS surface, or unsafe request logic was added in `881d437`.
+
+# 5. Performance issues
+
+- `P2` The showcase page combines large blurred elements with continuous animation (`.cm-orb`) and glassmorphism blur (`.cm-glass`) ([web/src/app/globals.css:185-222](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/globals.css:185), [web/src/app/page.tsx:14-37](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/page.tsx:14)). On lower-end mobile GPUs this is a common source of unnecessary compositing cost for a page whose purpose is only token verification.
+- `P2` Global `text-rendering: optimizeLegibility` on all text can add rendering cost without much value in an app UI ([web/src/app/globals.css:98-107](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/globals.css:98)).
+
+# 6. Accessibility issues
+
+- `P1` The root viewport disables zoom for the entire app via `maximumScale: 1` and `userScalable: false` ([web/src/app/layout.tsx:20-27](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/layout.tsx:20)). That is a WCAG 1.4.4 failure and a poor fit for a data-entry-heavy certificate workflow.
+- `P2` The showcase’s status-state row is visually list-like but not marked up as a list ([web/src/app/page.tsx:87-109](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/page.tsx:87)). Minor, but semantic structure is cheap here and improves SR navigation.
+
+# 7. Code quality
+
+- The token system is duplicated, not shared. CSS variables live in [web/src/app/globals.css:7-89](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/globals.css:7) and TS constants in [web/src/lib/design-tokens.ts:7-76](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/design-tokens.ts:7), with naming already drifting (`--spacing-2xl/3xl` vs `xxl/xxxl`).
+- `README` and comments overstate behaviour in the verify harness. The docs say “every route” and mention `--keep-server`, but the implementation is hardcoded to `/` and ignores CLI args ([web/README.md:43-47](/Users/derekbeckley/Developer/EICR_Automation/web/README.md:43), [web/scripts/verify-visual.ts:10](/Users/derekbeckley/Developer/EICR_Automation/web/scripts/verify-visual.ts:10)).
+- `.cm-card` is introduced but unused in this commit ([web/src/app/globals.css:192-196](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/globals.css:192)). Minor dead code.
+
+# 8. Test coverage gaps
+
+There are no tests under `web/` in this phase.
+
+Missing coverage that would have paid off immediately:
+
+- Token parity tests between CSS and `design-tokens.ts`.
+- A smoke test for root metadata/viewport settings.
+- Harness tests for route selection, output naming, and cleanup behaviour.
+- Visual baseline assertions beyond “write PNGs somewhere”.
+
+# 9. Suggested fixes
+
+1. `web/src/app/layout.tsx:20-27`  
+   Remove `maximumScale: 1` and `userScalable: false`. Let users zoom.  
+   Why: this is the highest-severity issue in the phase and blocks basic accessibility for inspectors on mobile.
+
+2. `web/scripts/verify-visual.ts:36-49, 99-111`  
+   Replace the close-then-reopen port flow with a retryable startup strategy. Either let the dev server choose a port and parse its output, or retry on bind failure instead of assuming the probed port stays free.  
+   Why: current behaviour violates the commit’s “never collides” guarantee and makes `npm run verify` flaky.
+
+3. `web/scripts/verify-visual.ts:10, 97-104, 127-130`  
+   Either implement CLI parsing for `--keep-server` and phase-based route selection, or remove those claims from the usage/docs until they exist.  
+   Why: the current interface is misleading and will produce confusing screenshots when `PHASE` is set.
+
+4. `web/src/app/globals.css:60-67` and `web/src/lib/design-tokens.ts:52-60`  
+   Move tokens to one canonical source and generate the other representation, or add a parity test that fails on drift. Also normalize naming (`2xl`/`3xl` vs `xxl`/`xxxl`).  
+   Why: the current implementation does not meet the stated “single source of truth” objective.
+
+5. `web/src/app/page.tsx:87-109`  
+   Mark the recording-state items up as a semantic list (`ul`/`li`) and preserve the visible labels.  
+   Why: improves screen-reader navigation for essentially no cost.
+
+6. `web/src/app/globals.css:185-222` and `web/src/app/page.tsx:14-37`  
+   Tone down or gate the orb/glass effects for visual verification pages, especially on mobile.  
+   Why: avoids paying GPU cost for decoration on a non-production showcase.
+
+# 10. Overall verdict
+
+**Ship with fixes.**
+
+The phase achieved its main foundation goals and is a reasonable base to build on, but it shipped with one real accessibility regression and a couple of harness/intent mismatches that should have been tightened before calling the foundation complete.
+
+Top 3 priority fixes:
+
+1. Re-enable pinch zoom in [web/src/app/layout.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/layout.tsx:20).
+2. Make the verify harness robust against port collisions in [web/scripts/verify-visual.ts](/Users/derekbeckley/Developer/EICR_Automation/web/scripts/verify-visual.ts:36).
+3. Eliminate token drift risk between [web/src/app/globals.css](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/globals.css:7) and [web/src/lib/design-tokens.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/design-tokens.ts:7).
+tokens used
+80,491
+# 1. Summary of the phase
+
+Phase 0 cleanly archived the legacy `web/` app into `_archive/web-legacy/` and replaced `web/` with a fresh Next.js 16 / React 19 / Tailwind 4 scaffold. It also established the initial CertMate design-token layer, a small base UI set (`Logo`, `Button`, `Card`), and a Playwright-based screenshot harness for visual comparison.
+
+Current branch note: `web/` has moved substantially since `881d437` (`layout.tsx`, `page.tsx`, `globals.css`, `verify-visual.ts`, `package.json`, `next.config.ts`, and many new routes/components changed later), so the findings below are anchored to commit `881d437`.
+
+# 2. Alignment with original plan
+
+The implementation broadly matches the handoff doc and commit intent:
+
+- The legacy app was preserved rather than deleted.
+- A fresh scaffold was created at `web/`.
+- Design tokens were added in CSS and mirrored into TypeScript.
+- A visual verification harness was added.
+
+Two intent gaps remain:
+
+- The commit message claims a “single source of truth; no drift” for tokens, but the implementation is actually two manually maintained copies: CSS in [web/src/app/globals.css](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/globals.css:7) and TS in [web/src/lib/design-tokens.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/design-tokens.ts:7). That is not a single source of truth.
+- The commit message says the verify harness “spawns its own `next dev` on a free port so it never collides” and “cleans itself up on exit,” but the implementation has a port-selection race and only best-effort cleanup in a local `finally` block ([web/scripts/verify-visual.ts](/Users/derekbeckley/Developer/EICR_Automation/web/scripts/verify-visual.ts:36), [web/scripts/verify-visual.ts](/Users/derekbeckley/Developer/EICR_Automation/web/scripts/verify-visual.ts:127)).
+
+# 3. Correctness issues
+
+- `P2` Port allocation in the verify harness is racy. `freePort()` binds to port `0`, reads the assigned port, closes the socket, and only then starts `next dev` on that port ([web/scripts/verify-visual.ts:36-49](/Users/derekbeckley/Developer/EICR_Automation/web/scripts/verify-visual.ts:36), [web/scripts/verify-visual.ts:99-111](/Users/derekbeckley/Developer/EICR_Automation/web/scripts/verify-visual.ts:99)). Another process can claim the port in between, so the “never collides” guarantee is false.
+- `P2` The script advertises `npm run verify [-- --keep-server]`, but there is no argument parsing and the server is always terminated in `finally` ([web/scripts/verify-visual.ts:10](/Users/derekbeckley/Developer/EICR_Automation/web/scripts/verify-visual.ts:10), [web/scripts/verify-visual.ts:127-130](/Users/derekbeckley/Developer/EICR_Automation/web/scripts/verify-visual.ts:127)). That is incorrect CLI behaviour and misleading docs.
+- `P2` `PHASE` changes the output folder name but not the selected route set; the script always captures `PHASE_0_ROUTES` ([web/scripts/verify-visual.ts:34](/Users/derekbeckley/Developer/EICR_Automation/web/scripts/verify-visual.ts:34), [web/scripts/verify-visual.ts:97-104](/Users/derekbeckley/Developer/EICR_Automation/web/scripts/verify-visual.ts:97)). That can silently produce mislabeled artifacts.
+
+# 4. Security issues
+
+No concrete security issues were introduced in this phase.
+
+- `[none identified]` No auth, secret handling, XSS surface, or unsafe request logic was added in `881d437`.
+
+# 5. Performance issues
+
+- `P2` The showcase page combines large blurred elements with continuous animation (`.cm-orb`) and glassmorphism blur (`.cm-glass`) ([web/src/app/globals.css:185-222](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/globals.css:185), [web/src/app/page.tsx:14-37](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/page.tsx:14)). On lower-end mobile GPUs this is a common source of unnecessary compositing cost for a page whose purpose is only token verification.
+- `P2` Global `text-rendering: optimizeLegibility` on all text can add rendering cost without much value in an app UI ([web/src/app/globals.css:98-107](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/globals.css:98)).
+
+# 6. Accessibility issues
+
+- `P1` The root viewport disables zoom for the entire app via `maximumScale: 1` and `userScalable: false` ([web/src/app/layout.tsx:20-27](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/layout.tsx:20)). That is a WCAG 1.4.4 failure and a poor fit for a data-entry-heavy certificate workflow.
+- `P2` The showcase’s status-state row is visually list-like but not marked up as a list ([web/src/app/page.tsx:87-109](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/page.tsx:87)). Minor, but semantic structure is cheap here and improves SR navigation.
+
+# 7. Code quality
+
+- The token system is duplicated, not shared. CSS variables live in [web/src/app/globals.css:7-89](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/globals.css:7) and TS constants in [web/src/lib/design-tokens.ts:7-76](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/design-tokens.ts:7), with naming already drifting (`--spacing-2xl/3xl` vs `xxl/xxxl`).
+- `README` and comments overstate behaviour in the verify harness. The docs say “every route” and mention `--keep-server`, but the implementation is hardcoded to `/` and ignores CLI args ([web/README.md:43-47](/Users/derekbeckley/Developer/EICR_Automation/web/README.md:43), [web/scripts/verify-visual.ts:10](/Users/derekbeckley/Developer/EICR_Automation/web/scripts/verify-visual.ts:10)).
+- `.cm-card` is introduced but unused in this commit ([web/src/app/globals.css:192-196](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/globals.css:192)). Minor dead code.
+
+# 8. Test coverage gaps
+
+There are no tests under `web/` in this phase.
+
+Missing coverage that would have paid off immediately:
+
+- Token parity tests between CSS and `design-tokens.ts`.
+- A smoke test for root metadata/viewport settings.
+- Harness tests for route selection, output naming, and cleanup behaviour.
+- Visual baseline assertions beyond “write PNGs somewhere”.
+
+# 9. Suggested fixes
+
+1. `web/src/app/layout.tsx:20-27`  
+   Remove `maximumScale: 1` and `userScalable: false`. Let users zoom.  
+   Why: this is the highest-severity issue in the phase and blocks basic accessibility for inspectors on mobile.
+
+2. `web/scripts/verify-visual.ts:36-49, 99-111`  
+   Replace the close-then-reopen port flow with a retryable startup strategy. Either let the dev server choose a port and parse its output, or retry on bind failure instead of assuming the probed port stays free.  
+   Why: current behaviour violates the commit’s “never collides” guarantee and makes `npm run verify` flaky.
+
+3. `web/scripts/verify-visual.ts:10, 97-104, 127-130`  
+   Either implement CLI parsing for `--keep-server` and phase-based route selection, or remove those claims from the usage/docs until they exist.  
+   Why: the current interface is misleading and will produce confusing screenshots when `PHASE` is set.
+
+4. `web/src/app/globals.css:60-67` and `web/src/lib/design-tokens.ts:52-60`  
+   Move tokens to one canonical source and generate the other representation, or add a parity test that fails on drift. Also normalize naming (`2xl`/`3xl` vs `xxl`/`xxxl`).  
+   Why: the current implementation does not meet the stated “single source of truth” objective.
+
+5. `web/src/app/page.tsx:87-109`  
+   Mark the recording-state items up as a semantic list (`ul`/`li`) and preserve the visible labels.  
+   Why: improves screen-reader navigation for essentially no cost.
+
+6. `web/src/app/globals.css:185-222` and `web/src/app/page.tsx:14-37`  
+   Tone down or gate the orb/glass effects for visual verification pages, especially on mobile.  
+   Why: avoids paying GPU cost for decoration on a non-production showcase.
+
+# 10. Overall verdict
+
+**Ship with fixes.**
+
+The phase achieved its main foundation goals and is a reasonable base to build on, but it shipped with one real accessibility regression and a couple of harness/intent mismatches that should have been tightened before calling the foundation complete.
+
+Top 3 priority fixes:
+
+1. Re-enable pinch zoom in [web/src/app/layout.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/layout.tsx:20).
+2. Make the verify harness robust against port collisions in [web/scripts/verify-visual.ts](/Users/derekbeckley/Developer/EICR_Automation/web/scripts/verify-visual.ts:36).
+3. Eliminate token drift risk between [web/src/app/globals.css](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/globals.css:7) and [web/src/lib/design-tokens.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/design-tokens.ts:7).

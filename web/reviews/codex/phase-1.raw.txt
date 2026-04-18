@@ -1,0 +1,656 @@
+OpenAI Codex v0.116.0 (research preview)
+--------
+workdir: /Users/derekbeckley/Developer/EICR_Automation
+model: gpt-5.4
+provider: openai
+approval: never
+sandbox: read-only
+reasoning effort: none
+reasoning summaries: none
+session id: 019d9d8e-b623-7ba2-a910-0545e4e8dc1b
+--------
+user
+You are performing a rigorous code review of a single phase of a Next.js 16 / React 19 PWA frontend rebuild for an electrical-certificate automation tool (EICR / EIC). The repo root is at /Users/derekbeckley/Developer/EICR_Automation and the web package is at web/. Branch: web-rebuild.
+
+TARGET: Phase 1 — auth + dashboard with visual verification
+COMMIT: 21a82b9
+
+Context for this phase (original intent, handoff doc, commit message, files changed) is in this repo at: reviews/context/phase-1.md — READ THAT FILE FIRST.
+
+Use shell commands to:
+  git show --stat 21a82b9
+  git show 21a82b9
+to inspect the full diff. Then read any files you need from the working tree (they may have evolved since this commit — note any later changes).
+
+Your output must be a well-structured markdown review with these sections:
+  1. Summary of the phase (2-3 sentences — what it did).
+  2. Alignment with original plan (does the implementation match the handoff doc / commit intent? Any missing objectives?).
+  3. Correctness issues (bugs, race conditions, missing error handling, incorrect semantics). Prioritise P0/P1/P2.
+  4. Security issues (XSS, auth, CSRF, injection, leaked secrets, PII, CORS). Each item tagged with severity.
+  5. Performance issues (re-renders, N+1, large bundles, memory leaks, blocking work on main thread).
+  6. Accessibility issues (semantic HTML, keyboard nav, ARIA, colour contrast, focus management).
+  7. Code quality (duplication, dead code, type-safety holes, naming, convention drift vs. rest of repo).
+  8. Test coverage gaps.
+  9. Suggested fixes — each as a numbered item with: file:line, what to change, why. Be concrete.
+  10. Overall verdict (ship / ship with fixes / needs rework) and top 3 priority fixes.
+
+Be specific — cite file paths and line numbers. Avoid generic advice. If the code is good, say so with evidence. Do NOT modify files; this is review only.
+
+mcp startup: no servers
+codex
+I’m reviewing commit `21a82b9` against the phase handoff first, then I’ll inspect the full diff and pull in the minimum working-tree context needed to verify correctness, security, and coverage.
+exec
+/bin/zsh -lc "sed -n '1,240p' reviews/context/phase-1.md" in /Users/derekbeckley/Developer/EICR_Automation exited 1 in 0ms:
+sed: reviews/context/phase-1.md: No such file or directory
+exec
+/bin/zsh -lc 'git show --stat 21a82b9' in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc 'git show 21a82b9' in /Users/derekbeckley/Developer/EICR_Automation succeeded in 1.16s:
+2026-04-17 23:27:55.890 xcodebuild[26408:67169032]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:27:55.996 xcodebuild[26408:67169030] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-JFk5HwcF' (errno=Operation not permitted)
+2026-04-17 23:27:56.321 xcodebuild[26412:67169056]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:27:56.424 xcodebuild[26412:67169055] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+commit 21a82b934796166efb0df456307603639415a892
+Author: Derek Beckley <derekbeckley@Dereks-Mac-mini.broadband>
+Date:   Fri Apr 17 11:39:16 2026 +0100
+
+    feat(web): Phase 1 — auth + dashboard with visual verification
+    
+    Adds the first authenticated surfaces of the ground-up rebuild:
+    
+    What
+    - /login page: glass card over triple ambient orbs (brand-blue / brand-green /
+      violet), CertMate wordmark, email+password form with inline error card,
+      useTransition pending state. ~420px card, works on iPhone and desktop.
+    - /dashboard page: sticky top-nav app shell, 3-up hero stats with animated
+      counters (0→value, ease-out cubic, 700ms, prefers-reduced-motion aware),
+ succeeded in 1.17s:
+2026-04-17 23:27:55.890 xcodebuild[26409:67169033]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:27:55.996 xcodebuild[26409:67169031] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-DC6MeXuG' (errno=Operation not permitted)
+2026-04-17 23:27:56.321 xcodebuild[26413:67169057]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:27:56.424 xcodebuild[26413:67169054] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+commit 21a82b934796166efb0df456307603639415a892
+Author: Derek Beckley <derekbeckley@Dereks-Mac-mini.broadband>
+Date:   Fri Apr 17 11:39:16 2026 +0100
+
+    feat(web): Phase 1 — auth + dashboard with visual verification
+    
+    Adds the first authenticated surfaces of the ground-up rebuild:
+    
+    What
+    - /login page: glass card over triple ambient orbs (brand-blue / brand-green /
+      violet), CertMate wordmark, email+password form with inline error card,
+      useTransition pending state. ~420px card, works on iPhone and desktop.
+    - /dashboard page: sticky top-nav app shell, 3-up hero stats with animated
+      counters (0→value, ease-out cubic, 700ms, prefers-reduced-motion aware),
+codex
+The handoff doc path in the prompt doesn’t exist at repo root, so I’m locating it and also working around the local `git` temp-cache issue so I can inspect the commit contents cleanly.
+exec
+/bin/zsh -lc "rg --files -g 'phase-1.md'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+web/reviews/context/phase-1.md
+web/reviews/claude/phase-1.md
+codex
+I have the commit metadata and touched files. Next I’m reading the phase handoff and the key implementation files with line numbers so I can compare intent versus actual behavior and call out any drift in the current tree.
+exec
+/bin/zsh -lc "sed -n '1,260p' web/reviews/context/phase-1.md" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+# Phase 1 — Context
+
+**Commit:** `21a82b9`
+
+## Commit message
+
+```
+commit 21a82b934796166efb0df456307603639415a892
+Author:     Derek Beckley <derekbeckley@Dereks-Mac-mini.broadband>
+AuthorDate: Fri Apr 17 11:39:16 2026 +0100
+Commit:     Derek Beckley <derekbeckley@Dereks-Mac-mini.broadband>
+CommitDate: Fri Apr 17 11:39:16 2026 +0100
+
+    feat(web): Phase 1 — auth + dashboard with visual verification
+    
+    Adds the first authenticated surfaces of the ground-up rebuild:
+    
+    What
+    - /login page: glass card over triple ambient orbs (brand-blue / brand-green /
+      violet), CertMate wordmark, email+password form with inline error card,
+exec
+/bin/zsh -lc "nl -ba web/src/app/login/page.tsx | sed -n '1,240p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	'use client';
+     2	
+     3	import { Suspense, useState, useTransition } from 'react';
+     4	import { useRouter, useSearchParams } from 'next/navigation';
+     5	import { Button } from '@/components/ui/button';
+     6	import { Input, Label } from '@/components/ui/input';
+     7	import { Logo } from '@/components/brand/logo';
+     8	import { api } from '@/lib/api-client';
+     9	import { setAuth } from '@/lib/auth';
+    10	import { ApiError } from '@/lib/types';
+    11	
+    12	/**
+    13	 * Login — ports the iOS LoginView look:
+    14	 *  - Dark gradient background with drifting brand-blue + brand-green orbs
+    15	 *  - Shimmer line under the hero
+    16	 *  - Glass card over the ambient background
+    17	 *  - 44 px tap targets on both fields and the button
+    18	 *
+    19	 * Why the Suspense wrapper: `useSearchParams()` opts the page out of
+    20	 * static rendering in Next.js App Router. Without a boundary above the
+exec
+/bin/zsh -lc "nl -ba web/src/middleware.ts | sed -n '1,220p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "nl -ba web/src/app/dashboard/page.tsx | sed -n '1,320p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	import { NextResponse, type NextRequest } from 'next/server';
+     2	
+     3	/**
+     4	 * Route guard.
+     5	 *
+     6	 * Public paths (login, legal, offline, static assets, API proxy calls)
+     7	 * pass through. Everything else requires an unexpired JWT cookie; missing
+     8	 * or expired token → redirect to /login with ?redirect=<attempted path>.
+     9	 */
+    10	
+    11	const PUBLIC_PREFIXES = ['/login', '/legal', '/offline'];
+    12	
+    13	interface JwtPayload {
+    14	  exp?: number;
+    15	  role?: 'admin' | 'user';
+    16	}
+    17	
+    18	function decodeJwt(token: string): JwtPayload | null {
+    19	  try {
+    20	    const [, payload] = token.split('.');
+ succeeded in 0ms:
+     1	'use client';
+     2	
+     3	import * as React from 'react';
+     4	import { useRouter } from 'next/navigation';
+     5	import {
+     6	  Building2,
+     7	  ChevronRight,
+     8	  FilePlus,
+     9	  LogOut,
+    10	  PlayCircle,
+    11	  Search,
+    12	  Settings,
+    13	  Shield,
+    14	  SlidersHorizontal,
+    15	  UserCheck,
+    16	} from 'lucide-react';
+    17	import { api } from '@/lib/api-client';
+    18	import { clearAuth, getUser } from '@/lib/auth';
+    19	import { getCachedJobs, putCachedJobs } from '@/lib/pwa/job-cache';
+    20	import type { Job } from '@/lib/types';
+codex
+The working tree has already moved past the target commit in at least the dashboard and middleware, so I’m switching to the committed file snapshots for the review and will note later drift separately where it matters.
+exec
+/bin/zsh -lc "git show 21a82b9:web/src/app/login/page.tsx | nl -ba | sed -n '1,260p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "git show 21a82b9:web/src/app/dashboard/page.tsx | nl -ba | sed -n '1,340p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "git show 21a82b9:web/src/lib/auth.ts | nl -ba | sed -n '1,220p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "git show 21a82b9:web/src/lib/api-client.ts | nl -ba | sed -n '1,220p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 1.24s:
+2026-04-17 23:28:20.140 xcodebuild[26455:67169386]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:28:20.250 xcodebuild[26455:67169384] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-p3UjY2u5' (errno=Operation not permitted)
+2026-04-17 23:28:20.597 xcodebuild[26471:67169440]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:28:20.708 xcodebuild[26471:67169439] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+     1	'use client';
+     2	
+     3	import { useState, useTransition } from 'react';
+     4	import { useRouter, useSearchParams } from 'next/navigation';
+     5	import { Button } from '@/components/ui/button';
+     6	import { Input, Label } from '@/components/ui/input';
+     7	import { Logo } from '@/components/brand/logo';
+     8	import { api } from '@/lib/api-client';
+     9	import { setAuth } from '@/lib/auth';
+    10	import { ApiError } from '@/lib/types';
+    11	
+    12	/**
+    13	 * Login — ports the iOS LoginView look:
+    14	 *  - Dark gradient background with drifting brand-blue + brand-green orbs
+ succeeded in 1.24s:
+2026-04-17 23:28:20.140 xcodebuild[26456:67169385]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:28:20.250 xcodebuild[26456:67169383] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-e3Q7Wcd4' (errno=Operation not permitted)
+2026-04-17 23:28:20.597 xcodebuild[26472:67169441]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:28:20.708 xcodebuild[26472:67169438] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+     1	'use client';
+     2	
+     3	import * as React from 'react';
+     4	import { useRouter } from 'next/navigation';
+     5	import { Button } from '@/components/ui/button';
+     6	import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '@/components/ui/card';
+     7	import { api } from '@/lib/api-client';
+     8	import { getUser, clearAuth } from '@/lib/auth';
+     9	import type { Job } from '@/lib/types';
+    10	import { AnimatedCounter } from '@/components/dashboard/animated-counter';
+    11	import { JobRow } from '@/components/dashboard/job-row';
+    12	
+    13	/**
+    14	 * Dashboard home — mirrors iOS DashboardView:
+ succeeded in 1.17s:
+2026-04-17 23:28:20.227 xcodebuild[26467:67169423]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:28:20.327 xcodebuild[26467:67169419] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-BtxcNHk4' (errno=Operation not permitted)
+2026-04-17 23:28:20.670 xcodebuild[26475:67169458]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:28:20.771 xcodebuild[26475:67169456] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+     1	import type { User } from './types';
+     2	
+     3	/**
+     4	 * Auth-token helpers. Token is stored in localStorage (for API calls) and
+     5	 * also mirrored into a cookie so the Next.js middleware can gate routes
+     6	 * before hitting the client.
+     7	 */
+     8	
+     9	const TOKEN_KEY = 'cm_token';
+    10	const USER_KEY = 'cm_user';
+    11	const COOKIE_MAX_AGE = 60 * 60 * 24 * 7; // 7 days
+    12	
+    13	export function getToken(): string | null {
+    14	  if (typeof window === 'undefined') return null;
+ succeeded in 1.17s:
+2026-04-17 23:28:20.227 xcodebuild[26468:67169421]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:28:20.327 xcodebuild[26468:67169420] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-0lxQPTAm' (errno=Operation not permitted)
+2026-04-17 23:28:20.670 xcodebuild[26476:67169459]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:28:20.771 xcodebuild[26476:67169457] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+     1	import { ApiError, type Job, type LoginResponse, type User } from './types';
+     2	import { getToken } from './auth';
+     3	
+     4	/**
+     5	 * Thin typed wrapper around the Node.js backend.
+     6	 *
+     7	 * Design notes:
+     8	 * - Base URL from `NEXT_PUBLIC_API_URL` (defaults to localhost:3000 for dev).
+     9	 * - Retries only idempotent methods — the legacy client retried everything,
+    10	 *   which caused duplicate POSTs on flaky networks.
+    11	 * - Throws `ApiError` on non-2xx so callers can branch on `.status`.
+    12	 */
+    13	
+    14	const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3000';
+exec
+/bin/zsh -lc "git show 21a82b9:web/src/components/layout/app-shell.tsx | nl -ba | sed -n '1,220p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "git show 21a82b9:web/src/components/dashboard/job-row.tsx | nl -ba | sed -n '1,220p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "git show 21a82b9:web/scripts/verify-visual.ts | nl -ba | sed -n '1,260p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "git show 21a82b9:web/src/middleware.ts | nl -ba | sed -n '1,220p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 1.29s:
+2026-04-17 23:28:32.965 xcodebuild[26518:67169775]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:28:33.082 xcodebuild[26518:67169771] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-yUxYYH6K' (errno=Operation not permitted)
+2026-04-17 23:28:33.464 xcodebuild[26525:67169811]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:28:33.576 xcodebuild[26525:67169803] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+     1	import { NextResponse, type NextRequest } from 'next/server';
+     2	
+     3	/**
+     4	 * Route guard.
+     5	 *
+     6	 * Public paths (login, legal, offline, static assets, API proxy calls)
+     7	 * pass through. Everything else requires an unexpired JWT cookie; missing
+     8	 * or expired token → redirect to /login with ?redirect=<attempted path>.
+     9	 */
+    10	
+    11	const PUBLIC_PREFIXES = ['/login', '/legal', '/offline'];
+    12	
+    13	function isTokenExpired(token: string): boolean {
+    14	  try {
+ succeeded in 1.31s:
+2026-04-17 23:28:32.965 xcodebuild[26519:67169772]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:28:33.082 xcodebuild[26519:67169768] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-N9IA8CEu' (errno=Operation not permitted)
+2026-04-17 23:28:33.464 xcodebuild[26528:67169807]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:28:33.576 xcodebuild[26528:67169802] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+     1	import Link from 'next/link';
+     2	import type { Job } from '@/lib/types';
+     3	
+     4	const STATUS_LABEL: Record<Job['status'], string> = {
+     5	  pending: 'Pending',
+     6	  processing: 'In progress',
+     7	  done: 'Complete',
+     8	  failed: 'Failed',
+     9	};
+    10	
+    11	const STATUS_COLOR: Record<Job['status'], string> = {
+    12	  pending: 'var(--color-status-pending)',
+    13	  processing: 'var(--color-status-processing)',
+    14	  done: 'var(--color-status-done)',
+ succeeded in 1.29s:
+2026-04-17 23:28:32.966 xcodebuild[26520:67169773]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:28:33.082 xcodebuild[26520:67169770] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-hhNM0Q0R' (errno=Operation not permitted)
+2026-04-17 23:28:33.464 xcodebuild[26526:67169810]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:28:33.576 xcodebuild[26526:67169805] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+     1	/**
+     2	 * Visual verification harness.
+     3	 *
+     4	 * Spins up `next dev` on a free port, screenshots every configured route at
+     5	 * iPhone 14 Pro viewport + desktop viewport, writes PNGs to
+     6	 * `_screenshots/<timestamp>/...`. Designed to be run per phase so we can
+     7	 * visually diff against iOS reference shots stored in
+     8	 * `_reference/ios-screenshots/`.
+     9	 *
+    10	 * Usage: npm run verify [-- --keep-server]
+    11	 */
+    12	import { chromium, type Browser, type Page } from '@playwright/test';
+    13	import { spawn, ChildProcess } from 'node:child_process';
+    14	import { mkdirSync } from 'node:fs';
+ succeeded in 1.31s:
+2026-04-17 23:28:32.965 xcodebuild[26517:67169774]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:28:33.082 xcodebuild[26517:67169769] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-3LVBZ9Nv' (errno=Operation not permitted)
+2026-04-17 23:28:33.464 xcodebuild[26527:67169806]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:28:33.576 xcodebuild[26527:67169804] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+     1	'use client';
+     2	
+     3	import * as React from 'react';
+     4	import Link from 'next/link';
+     5	import { usePathname, useRouter } from 'next/navigation';
+     6	import { Logo } from '@/components/brand/logo';
+     7	import { api } from '@/lib/api-client';
+     8	import { clearAuth, getUser } from '@/lib/auth';
+     9	import { Button } from '@/components/ui/button';
+    10	
+    11	/**
+    12	 * Top-nav + page frame for all authenticated screens.
+    13	 * Single-stack navigation (no persistent tabs), matches iOS CertMate
+    14	 * which uses NavigationStack rather than TabView for the primary flow.
+exec
+/bin/zsh -lc "rg --files web | rg '(test|spec)\\.(ts|tsx|js|jsx)"'$|playwright|vitest|jest'"'" in /Users/derekbeckley/Developer/EICR_Automation exited 1 in 0ms:
+
+exec
+/bin/zsh -lc 'rg -n "login|dashboard|middleware|api-client|setAuth|clearAuth|verify-visual|AnimatedCounter|JobRow" web/src web/scripts web/tests web/__tests__ web/e2e' in /Users/derekbeckley/Developer/EICR_Automation exited 2 in 0ms:
+rg: web/tests: No such file or directory (os error 2)
+rg: web/__tests__: No such file or directory (os error 2)
+rg: web/e2e: No such file or directory (os error 2)
+web/src/lib/auth.ts:6: * also mirrored into a cookie so the Next.js middleware can gate routes
+web/src/lib/auth.ts:30:export function setAuth(token: string, user: User): void {
+web/src/lib/auth.ts:34:  // Mirror into cookie so middleware can do a cheap expiry check.
+web/src/lib/auth.ts:39:export function clearAuth(): void {
+web/src/lib/auth.ts:46:  // under the next inspector's login. Fire-and-forget: the caller is
+web/src/lib/auth.ts:47:  // about to redirect to /login and doesn't need to wait for IDB, but
+web/scripts/verify-visual.ts:37: * A JWT that never expires (exp: 2099-01-01) so the middleware's atob() decode
+web/scripts/verify-visual.ts:38: * accepts it. Signature is ignored — middleware only checks shape + exp.
+web/scripts/verify-visual.ts:54:  await page.goto(baseUrl + '/login', { waitUntil: 'domcontentloaded' });
+web/scripts/verify-visual.ts:66:  { path: '/login', name: 'phase-1-login' },
+web/scripts/verify-visual.ts:68:    path: '/dashboard',
+web/scripts/verify-visual.ts:69:    name: 'phase-1-dashboard',
+web/scripts/verify-visual.ts:71:    // triggered by the dashboard's useEffect resolve against our mocks
+web/scripts/verify-visual.ts:297:      const requiresAuth = route.path === '/dashboard' || route.path.startsWith('/job');
+web/src/lib/recording-context.tsx:16:import { api } from './api-client';
+web/src/lib/pwa/outbox-replay.ts:4:import { api } from '@/lib/api-client';
+web/src/components/live-fill/live-fill-view.tsx:12: * LiveFillView — the full-form live dashboard shown while a recording
+exec
+/bin/zsh -lc "git show 21a82b9:web/src/app/dashboard/layout.tsx | nl -ba | sed -n '1,120p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "git show 21a82b9:web/src/app/page.tsx | nl -ba | sed -n '1,80p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 1.14s:
+2026-04-17 23:28:44.649 xcodebuild[26556:67170001]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:28:44.753 xcodebuild[26556:67169999] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-bxP4hDsJ' (errno=Operation not permitted)
+2026-04-17 23:28:45.069 xcodebuild[26560:67170030]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:28:45.174 xcodebuild[26560:67170028] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+     1	import { AppShell } from '@/components/layout/app-shell';
+     2	
+     3	export default function DashboardLayout({ children }: { children: React.ReactNode }) {
+     4	  return <AppShell>{children}</AppShell>;
+     5	}
+ succeeded in 1.14s:
+2026-04-17 23:28:44.649 xcodebuild[26557:67170002]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:28:44.753 xcodebuild[26557:67170000] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-FpZ7c7Ey' (errno=Operation not permitted)
+2026-04-17 23:28:45.069 xcodebuild[26561:67170029]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:28:45.174 xcodebuild[26561:67170027] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+     1	import { redirect } from 'next/navigation';
+     2	
+     3	/**
+     4	 * Root — middleware redirects unauthenticated users to /login, so
+     5	 * reaching this page means the user is signed in. Forward to dashboard.
+     6	 */
+     7	export default function RootRedirect() {
+     8	  redirect('/dashboard');
+     9	}
+exec
+/bin/zsh -lc "nl -ba web/src/lib/auth.ts | sed -n '1,120p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "nl -ba web/src/lib/pwa/job-cache.ts | sed -n '240,320p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	import type { User } from './types';
+     2	import { clearJobCache } from './pwa/job-cache';
+     3	
+     4	/**
+     5	 * Auth-token helpers. Token is stored in localStorage (for API calls) and
+     6	 * also mirrored into a cookie so the Next.js middleware can gate routes
+     7	 * before hitting the client.
+     8	 */
+     9	
+    10	const TOKEN_KEY = 'cm_token';
+    11	const USER_KEY = 'cm_user';
+    12	const COOKIE_MAX_AGE = 60 * 60 * 24 * 7; // 7 days
+    13	
+    14	export function getToken(): string | null {
+    15	  if (typeof window === 'undefined') return null;
+    16	  return localStorage.getItem(TOKEN_KEY);
+    17	}
+    18	
+    19	export function getUser(): User | null {
+    20	  if (typeof window === 'undefined') return null;
+ succeeded in 0ms:
+   240	      key: detailKey(userId, jobId),
+   241	      userId,
+   242	      jobId,
+   243	      detail,
+   244	      cachedAt: Date.now(),
+   245	    };
+   246	    store.put(record);
+   247	    await wrapTransaction(tx);
+   248	  } catch (err) {
+   249	    console.warn('[job-cache] putCachedJob failed', err);
+   250	  }
+   251	}
+   252	
+   253	// ---------- Eviction ----------
+   254	
+   255	/**
+   256	 * Wipe every cached record in every store. Called from `clearAuth()` on
+   257	 * sign-out so a shared device doesn't keep one inspector's jobs in IDB
+   258	 * for the next inspector to render offline.
+   259	 *
+codex
+I’ve confirmed the target commit had no route-level tests around the new auth/dashboard flow; the current tree adds later PWA safeguards, but those weren’t present in Phase 1. I’m now tightening the issue list to items that are specific, defensible, and line-referenced.
+exec
+/bin/zsh -lc "ls -la web && sed -n '1,220p' web/package.json" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+total 648
+drwxr-xr-x  27 derekbeckley  staff     864 Apr 17 23:20 .
+drwx------  60 derekbeckley  staff    1920 Apr 17 23:10 ..
+-rw-r--r--   1 derekbeckley  staff     741 Apr 17 21:34 .gitignore
+drwxr-xr-x  23 derekbeckley  staff     736 Apr 17 23:08 .next
+-rw-r--r--   1 derekbeckley  staff   10041 Apr 17 18:30 PHASE_5D_HANDOFF.md
+-rw-r--r--   1 derekbeckley  staff   13418 Apr 17 19:48 PHASE_6C_HANDOFF.md
+-rw-r--r--   1 derekbeckley  staff   23503 Apr 17 18:37 PHASE_6_HANDOFF.md
+-rw-r--r--   1 derekbeckley  staff   11227 Apr 17 21:46 PHASE_7A_HANDOFF.md
+-rw-r--r--   1 derekbeckley  staff   15754 Apr 17 22:36 PHASE_7B_HANDOFF.md
+-rw-r--r--   1 derekbeckley  staff   14163 Apr 17 23:09 PHASE_7C_HANDOFF.md
+-rw-r--r--   1 derekbeckley  staff    3559 Apr 17 18:30 README.md
+drwxr-xr-x   3 derekbeckley  staff      96 Apr 17 18:30 _reference
+drwxr-xr-x  13 derekbeckley  staff     416 Apr 17 12:42 _screenshots
+-rw-r--r--   1 derekbeckley  staff     986 Apr 17 22:07 eslint.config.mjs
+-rw-r--r--   1 derekbeckley  staff     247 Apr 17 13:19 next-env.d.ts
+-rw-r--r--   1 derekbeckley  staff    1361 Apr 17 21:35 next.config.ts
+drwxr-xr-x  16 derekbeckley  staff     512 Apr 17 21:35 node_modules
+-rw-r--r--   1 derekbeckley  staff    1555 Apr 17 21:44 package.json
+-rw-r--r--   1 derekbeckley  staff      94 Apr 17 11:24 postcss.config.mjs
+exec
+/bin/zsh -lc "git show 21a82b9:web/src/components/dashboard/animated-counter.tsx | nl -ba | sed -n '1,120p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc 'git diff --name-only 21a82b9..HEAD -- web/src/app/login/page.tsx web/src/app/dashboard/page.tsx web/src/lib/auth.ts web/src/middleware.ts' in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "git show 21a82b9:web/src/components/ui/input.tsx | nl -ba | sed -n '1,120p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 1.21s:
+2026-04-17 23:29:17.597 xcodebuild[26635:67170492]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:29:17.705 xcodebuild[26635:67170485] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-XewHaO9M' (errno=Operation not permitted)
+2026-04-17 23:29:18.048 xcodebuild[26642:67170523]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:29:18.157 xcodebuild[26642:67170518] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+     1	'use client';
+     2	
+     3	import * as React from 'react';
+     4	
+     5	/**
+     6	 * Animated counter matching iOS hero metric behaviour:
+     7	 * counts from 0 to `value` over ~700 ms with an ease-out curve.
+     8	 */
+     9	export function AnimatedCounter({
+    10	  value,
+    11	  durationMs = 700,
+    12	  className,
+    13	  'aria-label': ariaLabel,
+    14	}: {
+ succeeded in 1.18s:
+2026-04-17 23:29:17.597 xcodebuild[26636:67170494]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:29:17.705 xcodebuild[26636:67170490] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-KACqFuFd' (errno=Operation not permitted)
+2026-04-17 23:29:18.048 xcodebuild[26641:67170522]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:29:18.157 xcodebuild[26641:67170519] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+     1	import * as React from 'react';
+     2	import { cn } from '@/lib/utils';
+     3	
+     4	/**
+     5	 * Input matches iOS form fields: 44 px tall touch target, rounded-md,
+     6	 * subtle border on surface-2, brand-blue focus ring.
+     7	 */
+     8	export const Input = React.forwardRef<
+     9	  HTMLInputElement,
+    10	  React.InputHTMLAttributes<HTMLInputElement>
+    11	>(function Input({ className, type = 'text', ...props }, ref) {
+    12	  return (
+    13	    <input
+    14	      ref={ref}
+ succeeded in 1.19s:
+2026-04-17 23:29:17.597 xcodebuild[26637:67170495]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:29:17.705 xcodebuild[26637:67170491] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-rhI4dDto' (errno=Operation not permitted)
+2026-04-17 23:29:18.048 xcodebuild[26643:67170521]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:29:18.157 xcodebuild[26643:67170520] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+web/src/app/dashboard/page.tsx
+web/src/app/login/page.tsx
+web/src/lib/auth.ts
+web/src/middleware.ts
+codex
+## 1. Summary of the phase
+Phase 1 adds the first authenticated web surfaces: a `/login` screen, a guarded `/dashboard`, an authenticated app shell, and a thin typed API/auth layer. It also extends the Playwright visual-verification harness so login and dashboard can be snapshotted on mobile and desktop.
+
+Note on drift: the working tree has moved since `21a82b9` in at least `web/src/app/login/page.tsx`, `web/src/app/dashboard/page.tsx`, `web/src/lib/auth.ts`, and `web/src/middleware.ts`; notably, login now wraps `useSearchParams()` in `Suspense`, which appears to address one issue below.
+
+## 2. Alignment with original plan
+The implementation broadly matches the handoff doc and commit intent: login visuals, dashboard quick actions/list/empty state, app shell, middleware gate, auth helpers, API wrapper, and visual verification are all present.
+
+The main gap is that the “working entry” objective is undermined by a likely production-build problem in the login route and by a route guard that only checks unsigned JWT payload shape/expiry, which is weaker than “blocking unauthenticated navigation” in any security sense.
+
+## 3. Correctness issues
+- **P1** `useSearchParams()` is called directly in the page component without a `Suspense` boundary in the target commit, which is a known App Router build constraint in Next 16. See [web/src/app/login/page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/login/page.tsx:21). The current tree’s later refactor strongly suggests this was already hit and fixed.
+- **P1** JWT decoding in middleware does base64url character replacement but never restores padding before `atob()`. Valid JWTs with unpadded payload lengths can be rejected as “expired/invalid,” causing redirect loops for legitimate users. See [web/src/middleware.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/middleware.ts:15).
+- **P2** Dashboard auth-expiry handling keys off `/401/.test(err.message)` instead of `ApiError.status`, so a normal 401 body like `"Unauthorized"` will not clear auth or redirect. See [web/src/app/dashboard/page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/dashboard/page.tsx:38).
+- **P2** The dashboard hard-depends on the `cm_user` localStorage snapshot; if that entry is missing/corrupt but the auth cookie/token is still valid, the app forces `/login` instead of recovering via `/api/auth/me`. See [web/src/app/dashboard/page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/dashboard/page.tsx:27) and [web/src/lib/api-client.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/api-client.ts:94).
+
+## 4. Security issues
+- **[Medium] Open redirect after login.** The `redirect` query param is pushed without validation, so `/login?redirect=...` can send users to attacker-controlled locations after a successful sign-in. See [web/src/app/login/page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/login/page.tsx:22) and [web/src/app/login/page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/login/page.tsx:36).
+- **[Medium] Middleware gate is not real JWT validation.** It accepts any token-shaped cookie whose decoded payload has a future `exp`; signature is never verified. The visual harness explicitly relies on this with a fake JWT. See [web/src/middleware.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/middleware.ts:13) and [web/scripts/verify-visual.ts](/Users/derekbeckley/Developer/EICR_Automation/web/scripts/verify-visual.ts:37). That means protected frontend routes can be reached with a forged cookie.
+- **[Low] Auth cookie is not marked `Secure`.** The token cookie is set with `SameSite=Lax` but not `Secure`, so it can be transmitted over plain HTTP in non-TLS environments. See [web/src/lib/auth.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/auth.ts:35).
+
+## 5. Performance issues
+- Setup tiles use plain `<a href>` instead of `next/link`, which forces full page navigations and gives up client-side routing/prefetch for internal routes. See [web/src/app/dashboard/page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/dashboard/page.tsx:236).
+
+## 6. Accessibility issues
+- Setup tiles have hover styling but no visible keyboard focus treatment, so tab navigation on the dashboard has weak focus affordance. See [web/src/app/dashboard/page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/dashboard/page.tsx:236).
+- The app-shell logo link/back link also lack explicit `focus-visible` styling, unlike `JobRow`, so keyboard focus treatment is inconsistent. See [web/src/components/layout/app-shell.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/layout/app-shell.tsx:46) and [web/src/components/layout/app-shell.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/layout/app-shell.tsx:66).
+
+## 7. Code quality
+- Auth state handling is brittle and duplicated around localStorage snapshots instead of using a single “current user” source of truth. `api.me()` exists but is unused in Phase 1. See [web/src/lib/api-client.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/api-client.ts:94), [web/src/app/dashboard/page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/dashboard/page.tsx:27), and [web/src/components/layout/app-shell.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/layout/app-shell.tsx:21).
+- Error classification via regex on message text is fragile and will drift as backend responses change. See [web/src/app/dashboard/page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/dashboard/page.tsx:41).
+
+## 8. Test coverage gaps
+- No automated test for the login route’s `redirect` handling or open-redirect prevention.
+- No middleware tests for malformed JWTs, unpadded base64url payloads, expired tokens, or forged tokens.
+- No auth-flow test covering dashboard fetch 401s and redirect/clearAuth behavior.
+- No build/route test guarding against the `useSearchParams()` + `Suspense` App Router requirement.
+- Visual verification exists, but it only proves screenshots render under mocked auth/data.
+
+## 9. Suggested fixes
+1. `web/src/app/login/page.tsx:21` — wrap the `useSearchParams()` consumer in `Suspense` and keep the outer shell static. This avoids the Next 16 App Router build failure and matches the current working-tree fix.
+2. `web/src/middleware.ts:15` — replace ad hoc JWT parsing with a proper base64url decoder that restores padding, and preferably verify the token cryptographically or treat middleware as a UX gate only and re-check auth server-side. This prevents false logouts and forged-cookie route access.
+3. `web/src/app/login/page.tsx:22` — validate `redirect` before navigation: only allow same-origin absolute paths starting with `/`, and fall back to `/dashboard` otherwise. This closes the open redirect.
+4. `web/src/app/dashboard/page.tsx:38` — branch on `err instanceof ApiError && err.status === 401` instead of regexing `err.message`. This makes auth-expiry behavior deterministic.
+5. `web/src/app/dashboard/page.tsx:27` — if `getUser()` is missing but a token exists, call `api.me()` to recover the session instead of forcing `/login`. This avoids false sign-outs from stale/corrupt local storage.
+6. `web/src/lib/auth.ts:35` — add `Secure` to the cookie in HTTPS environments. This reduces token exposure on non-TLS requests.
+7. `web/src/app/dashboard/page.tsx:236` — use `next/link` for internal setup tiles and add `focus-visible` styles. This improves both routing performance and keyboard accessibility.
+8. `web/src/components/layout/app-shell.tsx:46` — add explicit `focus-visible` styling to the header links for consistency with `JobRow`.
+
+## 10. Overall verdict
+**Needs rework.**
+
+Top 3 priority fixes:
+1. Fix the login route build/runtime issue around `useSearchParams()` and `Suspense`.
+2. Harden middleware token handling: padding-safe decode at minimum, real verification if this guard is meant to enforce auth.
+3. Validate the post-login `redirect` target to eliminate the open redirect.
+tokens used
+63,803
+## 1. Summary of the phase
+Phase 1 adds the first authenticated web surfaces: a `/login` screen, a guarded `/dashboard`, an authenticated app shell, and a thin typed API/auth layer. It also extends the Playwright visual-verification harness so login and dashboard can be snapshotted on mobile and desktop.
+
+Note on drift: the working tree has moved since `21a82b9` in at least `web/src/app/login/page.tsx`, `web/src/app/dashboard/page.tsx`, `web/src/lib/auth.ts`, and `web/src/middleware.ts`; notably, login now wraps `useSearchParams()` in `Suspense`, which appears to address one issue below.
+
+## 2. Alignment with original plan
+The implementation broadly matches the handoff doc and commit intent: login visuals, dashboard quick actions/list/empty state, app shell, middleware gate, auth helpers, API wrapper, and visual verification are all present.
+
+The main gap is that the “working entry” objective is undermined by a likely production-build problem in the login route and by a route guard that only checks unsigned JWT payload shape/expiry, which is weaker than “blocking unauthenticated navigation” in any security sense.
+
+## 3. Correctness issues
+- **P1** `useSearchParams()` is called directly in the page component without a `Suspense` boundary in the target commit, which is a known App Router build constraint in Next 16. See [web/src/app/login/page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/login/page.tsx:21). The current tree’s later refactor strongly suggests this was already hit and fixed.
+- **P1** JWT decoding in middleware does base64url character replacement but never restores padding before `atob()`. Valid JWTs with unpadded payload lengths can be rejected as “expired/invalid,” causing redirect loops for legitimate users. See [web/src/middleware.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/middleware.ts:15).
+- **P2** Dashboard auth-expiry handling keys off `/401/.test(err.message)` instead of `ApiError.status`, so a normal 401 body like `"Unauthorized"` will not clear auth or redirect. See [web/src/app/dashboard/page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/dashboard/page.tsx:38).
+- **P2** The dashboard hard-depends on the `cm_user` localStorage snapshot; if that entry is missing/corrupt but the auth cookie/token is still valid, the app forces `/login` instead of recovering via `/api/auth/me`. See [web/src/app/dashboard/page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/dashboard/page.tsx:27) and [web/src/lib/api-client.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/api-client.ts:94).
+
+## 4. Security issues
+- **[Medium] Open redirect after login.** The `redirect` query param is pushed without validation, so `/login?redirect=...` can send users to attacker-controlled locations after a successful sign-in. See [web/src/app/login/page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/login/page.tsx:22) and [web/src/app/login/page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/login/page.tsx:36).
+- **[Medium] Middleware gate is not real JWT validation.** It accepts any token-shaped cookie whose decoded payload has a future `exp`; signature is never verified. The visual harness explicitly relies on this with a fake JWT. See [web/src/middleware.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/middleware.ts:13) and [web/scripts/verify-visual.ts](/Users/derekbeckley/Developer/EICR_Automation/web/scripts/verify-visual.ts:37). That means protected frontend routes can be reached with a forged cookie.
+- **[Low] Auth cookie is not marked `Secure`.** The token cookie is set with `SameSite=Lax` but not `Secure`, so it can be transmitted over plain HTTP in non-TLS environments. See [web/src/lib/auth.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/auth.ts:35).
+
+## 5. Performance issues
+- Setup tiles use plain `<a href>` instead of `next/link`, which forces full page navigations and gives up client-side routing/prefetch for internal routes. See [web/src/app/dashboard/page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/dashboard/page.tsx:236).
+
+## 6. Accessibility issues
+- Setup tiles have hover styling but no visible keyboard focus treatment, so tab navigation on the dashboard has weak focus affordance. See [web/src/app/dashboard/page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/dashboard/page.tsx:236).
+- The app-shell logo link/back link also lack explicit `focus-visible` styling, unlike `JobRow`, so keyboard focus treatment is inconsistent. See [web/src/components/layout/app-shell.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/layout/app-shell.tsx:46) and [web/src/components/layout/app-shell.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/layout/app-shell.tsx:66).
+
+## 7. Code quality
+- Auth state handling is brittle and duplicated around localStorage snapshots instead of using a single “current user” source of truth. `api.me()` exists but is unused in Phase 1. See [web/src/lib/api-client.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/api-client.ts:94), [web/src/app/dashboard/page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/dashboard/page.tsx:27), and [web/src/components/layout/app-shell.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/layout/app-shell.tsx:21).
+- Error classification via regex on message text is fragile and will drift as backend responses change. See [web/src/app/dashboard/page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/dashboard/page.tsx:41).
+
+## 8. Test coverage gaps
+- No automated test for the login route’s `redirect` handling or open-redirect prevention.
+- No middleware tests for malformed JWTs, unpadded base64url payloads, expired tokens, or forged tokens.
+- No auth-flow test covering dashboard fetch 401s and redirect/clearAuth behavior.
+- No build/route test guarding against the `useSearchParams()` + `Suspense` App Router requirement.
+- Visual verification exists, but it only proves screenshots render under mocked auth/data.
+
+## 9. Suggested fixes
+1. `web/src/app/login/page.tsx:21` — wrap the `useSearchParams()` consumer in `Suspense` and keep the outer shell static. This avoids the Next 16 App Router build failure and matches the current working-tree fix.
+2. `web/src/middleware.ts:15` — replace ad hoc JWT parsing with a proper base64url decoder that restores padding, and preferably verify the token cryptographically or treat middleware as a UX gate only and re-check auth server-side. This prevents false logouts and forged-cookie route access.
+3. `web/src/app/login/page.tsx:22` — validate `redirect` before navigation: only allow same-origin absolute paths starting with `/`, and fall back to `/dashboard` otherwise. This closes the open redirect.
+4. `web/src/app/dashboard/page.tsx:38` — branch on `err instanceof ApiError && err.status === 401` instead of regexing `err.message`. This makes auth-expiry behavior deterministic.
+5. `web/src/app/dashboard/page.tsx:27` — if `getUser()` is missing but a token exists, call `api.me()` to recover the session instead of forcing `/login`. This avoids false sign-outs from stale/corrupt local storage.
+6. `web/src/lib/auth.ts:35` — add `Secure` to the cookie in HTTPS environments. This reduces token exposure on non-TLS requests.
+7. `web/src/app/dashboard/page.tsx:236` — use `next/link` for internal setup tiles and add `focus-visible` styles. This improves both routing performance and keyboard accessibility.
+8. `web/src/components/layout/app-shell.tsx:46` — add explicit `focus-visible` styling to the header links for consistency with `JobRow`.
+
+## 10. Overall verdict
+**Needs rework.**
+
+Top 3 priority fixes:
+1. Fix the login route build/runtime issue around `useSearchParams()` and `Suspense`.
+2. Harden middleware token handling: padding-safe decode at minimum, real verification if this guard is meant to enforce auth.
+3. Validate the post-login `redirect` target to eliminate the open redirect.

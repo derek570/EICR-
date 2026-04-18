@@ -1,0 +1,25 @@
+PHASE_ID	COMMIT	TITLE
+0	881d437	Phase 0 — ground-up rebuild foundation
+1	21a82b9	Phase 1 — auth + dashboard with visual verification
+2	83b0863	Phase 2 — job detail shell with 10 tabs
+3a	25580d8	Phase 3a — Installation, Supply, Board tabs (iOS parity)
+3b	983a294	Phase 3b — Circuits tab with collapsible cards + iOS action rail
+3c	88e7c4e	Phase 3c — Extent, Design, Inspection, Staff, PDF & Observations tabs
+4a	b0eb64c	Phase 4a — recording overlay + transcript bar scaffold
+4b	72fb7da	Phase 4b — real mic capture via AudioWorklet + RMS VU meter
+4c	9e93907	Phase 4c — direct Deepgram Nova-3 WebSocket + live transcripts
+4d	b6c4b65	Phase 4d — server-side Sonnet multi-turn extraction + field propagation
+4e	9f1dba6	Phase 4e — VAD sleep/wake with 3s ring buffer replay
+5a	35b5310	Phase 5a — CCU photo capture + GPT Vision merge on Circuits tab
+5b	766735f	Phase 5b — document extraction on Circuits tab
+5c	6a73517	Phase 5c — observation photos
+5d	cccd548	Phase 5d — LiveFillView (brand-blue flash as Sonnet fields populate)
+6a	2ef8ec6	Phase 6a — settings hub + inspector profiles
+6b	6e85e9e	Phase 6b — company settings + company-admin dashboard
+6c	bc11914	Phase 6c — system-admin user management
+7a	eb72acc	Phase 7a — PWA foundation (Serwist, manifest, icons, offline/error boundary)
+7b1	ce8323a	Phase 7b kickoff — user-initiated SW update handoff
+7b2	2d3527f	Phase 7b — IDB read-through cache for jobs
+7b3	a85487f	Phase 7b — AppShell offline indicator
+7b4	1ec4e22	Phase 7b — iOS Add-to-Home-Screen hint (closes 7b)
+7c	e64f756	Phase 7c — offline mutation outbox + replay worker

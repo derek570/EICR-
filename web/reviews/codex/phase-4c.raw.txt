@@ -1,0 +1,665 @@
+OpenAI Codex v0.116.0 (research preview)
+--------
+workdir: /Users/derekbeckley/Developer/EICR_Automation
+model: gpt-5.4
+provider: openai
+approval: never
+sandbox: read-only
+reasoning effort: none
+reasoning summaries: none
+session id: 019d9da4-de1e-7252-81e0-46256a4732ad
+--------
+user
+You are performing a rigorous code review of a single phase of a Next.js 16 / React 19 PWA frontend rebuild for an electrical-certificate automation tool (EICR / EIC). The repo root is at /Users/derekbeckley/Developer/EICR_Automation and the web package is at web/. Branch: web-rebuild.
+
+TARGET: Phase 4c — direct Deepgram Nova-3 WebSocket + live transcripts
+COMMIT: 9e93907
+
+Context for this phase (original intent, handoff doc, commit message, files changed) is in this repo at: reviews/context/phase-4c.md — READ THAT FILE FIRST.
+
+Use shell commands to:
+  git show --stat 9e93907
+  git show 9e93907
+to inspect the full diff. Then read any files you need from the working tree (they may have evolved since this commit — note any later changes).
+
+Your output must be a well-structured markdown review with these sections:
+  1. Summary of the phase (2-3 sentences — what it did).
+  2. Alignment with original plan (does the implementation match the handoff doc / commit intent? Any missing objectives?).
+  3. Correctness issues (bugs, race conditions, missing error handling, incorrect semantics). Prioritise P0/P1/P2.
+  4. Security issues (XSS, auth, CSRF, injection, leaked secrets, PII, CORS). Each item tagged with severity.
+  5. Performance issues (re-renders, N+1, large bundles, memory leaks, blocking work on main thread).
+  6. Accessibility issues (semantic HTML, keyboard nav, ARIA, colour contrast, focus management).
+  7. Code quality (duplication, dead code, type-safety holes, naming, convention drift vs. rest of repo).
+  8. Test coverage gaps.
+  9. Suggested fixes — each as a numbered item with: file:line, what to change, why. Be concrete.
+  10. Overall verdict (ship / ship with fixes / needs rework) and top 3 priority fixes.
+
+Be specific — cite file paths and line numbers. Avoid generic advice. If the code is good, say so with evidence. Do NOT modify files; this is review only.
+
+mcp startup: no servers
+codex
+Reviewing commit `9e93907` against the Phase 4c handoff first, then I’ll inspect the full diff and the relevant working-tree files to check for regressions or later drift before writing findings.
+exec
+/bin/zsh -lc "sed -n '1,220p' reviews/context/phase-4c.md" in /Users/derekbeckley/Developer/EICR_Automation exited 1 in 0ms:
+sed: reviews/context/phase-4c.md: No such file or directory
+exec
+/bin/zsh -lc 'git show 9e93907' in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc 'git show --stat 9e93907' in /Users/derekbeckley/Developer/EICR_Automation succeeded in 1.39s:
+2026-04-17 23:52:07.689 xcodebuild[31707:67197079]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:52:07.876 xcodebuild[31707:67197076] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-bhm4roid' (errno=Operation not permitted)
+2026-04-17 23:52:08.257 xcodebuild[31711:67197097]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:52:08.360 xcodebuild[31711:67197096] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+commit 9e93907c8ea956d3343006338c80d67061e0005a
+Author: Derek Beckley <derekbeckley@Dereks-Mac-mini.broadband>
+Date:   Fri Apr 17 12:58:20 2026 +0100
+
+    feat(web): Phase 4c direct Deepgram Nova-3 WebSocket + live transcripts
+    
+    What
+    - Add `web/src/lib/recording/deepgram-service.ts` — minimal direct-to-
+      Deepgram Nova-3 WebSocket client. Mirrors iOS `DeepgramService.swift`
+      protocol: same URL params (nova-3 / linear16 / 16kHz / en-GB /
+      interim_results / endpointing=300 / utterance_end_ms=2000 /
+      vad_events=true) and subprotocol auth (`['token', apiKey]`). Handles
+      resampling (linear interp) and Float32→Int16 PCM conversion on the
+      main thread. Includes KeepAlive loop (JSON + 500ms silence every 10s
+ succeeded in 1.39s:
+2026-04-17 23:52:07.689 xcodebuild[31708:67197078]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:52:07.876 xcodebuild[31708:67197077] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-h367DRIi' (errno=Operation not permitted)
+2026-04-17 23:52:08.257 xcodebuild[31712:67197098]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:52:08.360 xcodebuild[31712:67197095] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+commit 9e93907c8ea956d3343006338c80d67061e0005a
+Author: Derek Beckley <derekbeckley@Dereks-Mac-mini.broadband>
+Date:   Fri Apr 17 12:58:20 2026 +0100
+
+    feat(web): Phase 4c direct Deepgram Nova-3 WebSocket + live transcripts
+    
+    What
+    - Add `web/src/lib/recording/deepgram-service.ts` — minimal direct-to-
+      Deepgram Nova-3 WebSocket client. Mirrors iOS `DeepgramService.swift`
+      protocol: same URL params (nova-3 / linear16 / 16kHz / en-GB /
+      interim_results / endpointing=300 / utterance_end_ms=2000 /
+      vad_events=true) and subprotocol auth (`['token', apiKey]`). Handles
+      resampling (linear interp) and Float32→Int16 PCM conversion on the
+      main thread. Includes KeepAlive loop (JSON + 500ms silence every 10s
+codex
+The handoff file path from the prompt doesn’t resolve at repo root, so I’m locating it in-tree and re-running the commit inspection with `--no-pager` to avoid the stalled pager output.
+exec
+/bin/zsh -lc "rg --files | rg 'phase-4c\\.md"'$'"'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+web/reviews/context/phase-4c.md
+web/reviews/claude/phase-4c.md
+codex
+I have the commit diff. Next I’m reading the Phase 4c handoff and the current versions of the touched files so I can distinguish commit-specific issues from later edits in the working tree.
+exec
+/bin/zsh -lc "sed -n '1,240p' web/reviews/context/phase-4c.md" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+# Phase 4c — Context
+
+**Commit:** `9e93907`
+
+## Commit message
+
+```
+commit 9e93907c8ea956d3343006338c80d67061e0005a
+Author:     Derek Beckley <derekbeckley@Dereks-Mac-mini.broadband>
+AuthorDate: Fri Apr 17 12:58:20 2026 +0100
+Commit:     Derek Beckley <derekbeckley@Dereks-Mac-mini.broadband>
+CommitDate: Fri Apr 17 12:58:20 2026 +0100
+
+    feat(web): Phase 4c direct Deepgram Nova-3 WebSocket + live transcripts
+    
+    What
+    - Add `web/src/lib/recording/deepgram-service.ts` — minimal direct-to-
+      Deepgram Nova-3 WebSocket client. Mirrors iOS `DeepgramService.swift`
+      protocol: same URL params (nova-3 / linear16 / 16kHz / en-GB /
+      interim_results / endpointing=300 / utterance_end_ms=2000 /
+exec
+/bin/zsh -lc "nl -ba web/src/lib/recording-context.tsx | sed -n '1,380p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	'use client';
+     2	
+     3	import * as React from 'react';
+     4	import { startMicCapture, type MicCaptureHandle } from './recording/mic-capture';
+     5	import { DeepgramService, type DeepgramConnectionState } from './recording/deepgram-service';
+     6	import {
+     7	  SonnetSession,
+     8	  type ExtractionResult,
+     9	  type SonnetConnectionState,
+    10	  type SonnetQuestion,
+    11	} from './recording/sonnet-session';
+    12	import { applyExtractionToJob } from './recording/apply-extraction';
+    13	import { AudioRingBuffer } from './recording/audio-ring-buffer';
+    14	import { SleepManager, type SleepState } from './recording/sleep-manager';
+    15	import { useLiveFillStore } from './recording/live-fill-state';
+    16	import { api } from './api-client';
+    17	import { useJobContext } from './job-context';
+    18	
+    19	/**
+    20	 * Recording context.
+exec
+/bin/zsh -lc "nl -ba web/src/lib/api-client.ts | sed -n '1,220p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "nl -ba web/src/lib/recording/deepgram-service.ts | sed -n '1,320p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	import {
+     2	  type AdminUser,
+     3	  ApiError,
+     4	  type CCUAnalysis,
+     5	  type CompanyJobRow,
+     6	  type CompanyMember,
+     7	  type CompanySettings,
+     8	  type CompanyStats,
+     9	  type DocumentExtractionResponse,
+    10	  type InspectorProfile,
+    11	  type InviteEmployeeResponse,
+    12	  type Job,
+    13	  type JobDetail,
+    14	  type LoginResponse,
+    15	  type Paginated,
+    16	  type User,
+    17	} from './types';
+    18	import { getToken } from './auth';
+    19	
+    20	/**
+ succeeded in 0ms:
+     1	/**
+     2	 * Direct-to-Deepgram Nova-3 WebSocket client.
+     3	 *
+     4	 * Mirrors the iOS `DeepgramService.swift` protocol so the two clients
+     5	 * behave identically — same URL parameters (nova-3 / linear16 / 16kHz /
+     6	 * en-GB / interim_results / endpointing=300 / utterance_end_ms=2000 /
+     7	 * vad_events=true) and the same subprotocol auth (`['token', apiKey]`).
+     8	 *
+     9	 * Pause/resume + auto-reconnect are deferred to Phase 4e where the
+    10	 * SleepDetector lands — until then this service offers the minimum
+    11	 * viable surface needed to deliver interim + final transcripts to the
+    12	 * RecordingContext: `connect`, `sendSamples`, `disconnect`.
+    13	 *
+    14	 * Apart from the different runtime, the URL and message shapes are
+    15	 * identical to transcript-standalone — keep in sync if Deepgram params
+    16	 * change there.
+    17	 */
+    18	
+    19	export type DeepgramConnectionState = 'disconnected' | 'connecting' | 'connected' | 'error';
+    20	
+exec
+/bin/zsh -lc "nl -ba web/src/components/recording/recording-overlay.tsx | sed -n '1,260p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	'use client';
+     2	
+     3	import * as React from 'react';
+     4	import {
+     5	  ChevronDown,
+     6	  HelpCircle,
+     7	  Mic,
+     8	  MicOff,
+     9	  Pause,
+    10	  Play,
+    11	  Square,
+    12	  X as CloseIcon,
+    13	} from 'lucide-react';
+    14	import { useRecording, formatCost, formatElapsed } from '@/lib/recording-context';
+    15	import { cn } from '@/lib/utils';
+    16	
+    17	/**
+    18	 * Recording overlay — mirrors iOS `RecordingOverlay.swift`.
+    19	 *
+    20	 * Full-height bottom-sheet (mobile) / centred modal card (desktop) that
+exec
+/bin/zsh -lc "nl -ba web/src/components/recording/transcript-bar.tsx | sed -n '1,220p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	'use client';
+     2	
+     3	import * as React from 'react';
+     4	import { Mic, ChevronUp } from 'lucide-react';
+     5	import { useRecording, formatElapsed } from '@/lib/recording-context';
+     6	import { cn } from '@/lib/utils';
+     7	
+     8	/**
+     9	 * Transcript bar — thin, top-docked strip that stays visible whenever a
+    10	 * recording session is running but the full overlay is minimised.
+    11	 *
+    12	 * Mirrors the iOS "minimised recording pill" that slides in under the
+    13	 * nav bar: mic icon (pulsing when active), running elapsed time, and
+    14	 * the latest final utterance truncated to a single line. Tap to expand
+    15	 * back into the full overlay.
+    16	 */
+    17	export function TranscriptBar() {
+    18	  const { state, elapsedSec, transcript, interim, isOverlayOpen, expand } = useRecording();
+    19	
+    20	  // Only render when there's a session running AND the overlay is not expanded.
+codex
+I’m checking for post-commit drift in these files and scanning adjacent code paths (`mic-capture`, tests) to validate whether the Phase 4c assumptions actually hold in the rest of the frontend.
+exec
+/bin/zsh -lc "nl -ba web/src/lib/recording/mic-capture.ts | sed -n '1,260p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	/**
+     2	 * Microphone capture helper — opens an AudioContext + AudioWorklet and
+     3	 * streams raw Float32Array samples from the mic to callbacks on the
+     4	 * main thread.
+     5	 *
+     6	 * Used by `RecordingProvider` to drive the VU meter (Phase 4b) and the
+     7	 * Deepgram Nova-3 WebSocket (Phase 4c) + SleepDetector VAD (Phase 4e).
+     8	 *
+     9	 * Usage:
+    10	 *   const handle = await startMicCapture({ onSamples, onLevel });
+    11	 *   // …later
+    12	 *   handle.stop();
+    13	 *
+    14	 * Design notes:
+    15	 *   - Requests a 16kHz mono stream with echo cancellation + noise
+    16	 *     suppression (Deepgram's preferred input for Nova-3).
+    17	 *   - Uses `{ ideal: 16000 }` not a bare `16000` — iOS Safari throws
+    18	 *     OverconstrainedError on bare values.
+    19	 *   - Falls back to `ScriptProcessorNode` on browsers where
+    20	 *     `AudioWorklet.addModule` throws (older Edge, some corporate VPN
+exec
+/bin/zsh -lc "rg -n \"deepgram|RecordingProvider|TranscriptBar|recording overlay|recording-context\" web/src web/tests web/__tests__ web -g '"'!web/node_modules'"'" in /Users/derekbeckley/Developer/EICR_Automation exited 2 in 0ms:
+rg: web/tests: No such file or directory (os error 2)
+rg: web/__tests__: No such file or directory (os error 2)
+web/src/lib/recording-context.tsx:5:import { DeepgramService, type DeepgramConnectionState } from './recording/deepgram-service';
+web/src/lib/recording-context.tsx:79:  deepgramState: DeepgramConnectionState;
+web/src/lib/recording-context.tsx:81:   *  `deepgramState` so the overlay can show both wires independently. */
+web/src/lib/recording-context.tsx:118:export function RecordingProvider({ children }: { children: React.ReactNode }) {
+web/src/lib/recording-context.tsx:127:  const [deepgramCostUsd, setDeepgramCostUsd] = React.useState(0);
+web/src/lib/recording-context.tsx:131:  const [deepgramState, setDeepgramState] = React.useState<DeepgramConnectionState>('disconnected');
+web/src/lib/recording-context.tsx:155:  const deepgramRef = React.useRef<DeepgramService | null>(null);
+web/src/lib/recording-context.tsx:194:    deepgramRef.current?.disconnect();
+web/src/lib/recording-context.tsx:195:    deepgramRef.current = null;
+web/src/lib/recording-context.tsx:230:    const { key } = await api.deepgramKey(sessionId);
+web/src/lib/recording-context.tsx:264:        if (deepgramRef.current) {
+web/src/lib/recording-context.tsx:270:    deepgramRef.current = service;
+web/src/lib/recording-context.tsx:354:        deepgramRef.current?.sendSamples(samples);
+web/src/lib/recording-context.tsx:408:              deepgramRef.current?.sendInt16PCM(replay);
+web/src/lib/recording-context.tsx:416:          deepgramRef.current?.resume(replay);
+web/src/lib/recording-context.tsx:454:        deepgramRef.current?.pause();
+web/src/lib/recording-context.tsx:544:    deepgramRef.current?.pause();
+web/src/lib/recording-context.tsx:568:            deepgramRef.current?.sendInt16PCM(replay);
+exec
+/bin/zsh -lc 'git diff --stat 9e93907..HEAD -- web/src/lib/recording/deepgram-service.ts web/src/lib/recording-context.tsx web/src/lib/api-client.ts web/src/components/recording/recording-overlay.tsx web/src/components/recording/transcript-bar.tsx' in /Users/derekbeckley/Developer/EICR_Automation succeeded in 1.04s:
+2026-04-17 23:52:33.746 xcodebuild[31946:67197775]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:52:33.844 xcodebuild[31946:67197773] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-clHU0AlL' (errno=Operation not permitted)
+2026-04-17 23:52:34.129 xcodebuild[31948:67197785]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:52:34.225 xcodebuild[31948:67197784] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+ web/src/components/recording/recording-overlay.tsx |  45 ++-
+ web/src/lib/api-client.ts                          | 434 ++++++++++++++++++++-
+ web/src/lib/recording-context.tsx                  | 361 ++++++++++++++++-
+ web/src/lib/recording/deepgram-service.ts          |  45 ++-
+ 4 files changed, 862 insertions(+), 23 deletions(-)
+codex
+I’ve identified a couple of likely behavioural problems in the new Deepgram path. I’m pulling the committed file snapshots with line numbers now so the review can cite the exact Phase 4c locations rather than later line drift on `HEAD`.
+exec
+/bin/zsh -lc "git show 9e93907:web/src/lib/recording-context.tsx | nl -ba | sed -n '1,340p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "git show 9e93907:web/src/lib/recording/deepgram-service.ts | nl -ba | sed -n '1,320p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "git show 9e93907:web/src/lib/api-client.ts | nl -ba | sed -n '130,170p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "git show 9e93907:web/src/components/recording/recording-overlay.tsx | nl -ba | sed -n '1,240p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "git show 9e93907:web/src/components/recording/transcript-bar.tsx | nl -ba | sed -n '1,140p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 1.44s:
+2026-04-17 23:52:59.084 xcodebuild[31985:67198105]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:52:59.229 xcodebuild[31985:67198096] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-0kATPY15' (errno=Operation not permitted)
+2026-04-17 23:52:59.646 xcodebuild[31999:67198164]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:52:59.772 xcodebuild[31999:67198156] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+   130	      `/api/deepgram-proxy?sessionId=${encodeURIComponent(sessionId)}`
+   131	    );
+   132	  },
+   133	
+   134	  /**
+   135	   * Partial update. Backend merges with the persisted doc, so callers
+   136	   * only need to send the fields that changed.
+   137	   */
+   138	  saveJob(
+   139	    userId: string,
+   140	    jobId: string,
+   141	    updates: Partial<JobDetail>
+   142	  ): Promise<{ success: boolean }> {
+   143	    return request(`/api/job/${encodeURIComponent(userId)}/${encodeURIComponent(jobId)}`, {
+ succeeded in 1.44s:
+2026-04-17 23:52:59.096 xcodebuild[31986:67198106]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:52:59.226 xcodebuild[31986:67198097] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-ROir8y7p' (errno=Operation not permitted)
+2026-04-17 23:52:59.651 xcodebuild[31996:67198158]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:52:59.769 xcodebuild[31996:67198151] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+     1	'use client';
+     2	
+     3	import * as React from 'react';
+     4	import { Mic, ChevronUp } from 'lucide-react';
+     5	import { useRecording, formatElapsed } from '@/lib/recording-context';
+     6	import { cn } from '@/lib/utils';
+     7	
+     8	/**
+     9	 * Transcript bar — thin, top-docked strip that stays visible whenever a
+    10	 * recording session is running but the full overlay is minimised.
+    11	 *
+    12	 * Mirrors the iOS "minimised recording pill" that slides in under the
+    13	 * nav bar: mic icon (pulsing when active), running elapsed time, and
+    14	 * the latest final utterance truncated to a single line. Tap to expand
+ succeeded in 1.44s:
+2026-04-17 23:52:59.085 xcodebuild[31987:67198113]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:52:59.226 xcodebuild[31987:67198100] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-LW1u9dSA' (errno=Operation not permitted)
+2026-04-17 23:52:59.646 xcodebuild[31998:67198159]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:52:59.769 xcodebuild[31998:67198152] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+     1	'use client';
+     2	
+     3	import * as React from 'react';
+     4	import { ChevronDown, Mic, MicOff, Pause, Play, Square, X as CloseIcon } from 'lucide-react';
+     5	import { useRecording, formatCost, formatElapsed } from '@/lib/recording-context';
+     6	import { cn } from '@/lib/utils';
+     7	
+     8	/**
+     9	 * Recording overlay — mirrors iOS `RecordingOverlay.swift`.
+    10	 *
+    11	 * Full-height bottom-sheet (mobile) / centred modal card (desktop) that
+    12	 * surfaces while the inspector is recording. Three zones:
+    13	 *
+    14	 *   1. Hero bar — state pill, elapsed timer, cost readout, minimise / close
+ succeeded in 1.46s:
+2026-04-17 23:52:59.096 xcodebuild[31988:67198115]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:52:59.226 xcodebuild[31988:67198102] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-oCstem5S' (errno=Operation not permitted)
+2026-04-17 23:52:59.650 xcodebuild[31995:67198163]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:52:59.770 xcodebuild[31995:67198150] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+     1	/**
+     2	 * Direct-to-Deepgram Nova-3 WebSocket client.
+     3	 *
+     4	 * Mirrors the iOS `DeepgramService.swift` protocol so the two clients
+     5	 * behave identically — same URL parameters (nova-3 / linear16 / 16kHz /
+     6	 * en-GB / interim_results / endpointing=300 / utterance_end_ms=2000 /
+     7	 * vad_events=true) and the same subprotocol auth (`['token', apiKey]`).
+     8	 *
+     9	 * Pause/resume + auto-reconnect are deferred to Phase 4e where the
+    10	 * SleepDetector lands — until then this service offers the minimum
+    11	 * viable surface needed to deliver interim + final transcripts to the
+    12	 * RecordingContext: `connect`, `sendSamples`, `disconnect`.
+    13	 *
+    14	 * Apart from the different runtime, the URL and message shapes are
+ succeeded in 1.46s:
+2026-04-17 23:52:59.086 xcodebuild[31984:67198108]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:52:59.226 xcodebuild[31984:67198093] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-OIbyLRXO' (errno=Operation not permitted)
+2026-04-17 23:52:59.650 xcodebuild[31997:67198157]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:52:59.771 xcodebuild[31997:67198153] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+     1	'use client';
+     2	
+     3	import * as React from 'react';
+     4	import { startMicCapture, type MicCaptureHandle } from './recording/mic-capture';
+     5	import { DeepgramService, type DeepgramConnectionState } from './recording/deepgram-service';
+     6	import { api } from './api-client';
+     7	
+     8	/**
+     9	 * Recording context.
+    10	 *
+    11	 * Holds the UI state that every surface needs while the inspector is
+    12	 * recording. Phase 4b added real microphone capture via AudioWorklet.
+    13	 * Phase 4c connects Deepgram Nova-3 directly from the browser: mic
+    14	 * samples stream to Deepgram, interim + final transcripts land in the
+codex
+I’ve got enough to write the review. One more quick pass for test files and any docs that contradict the new `/api/deepgram-proxy` contract, because that could change the alignment and suggested-fix sections.
+exec
+/bin/zsh -lc "sed -n '60,90p' web/README.md" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+
+Lessons from `../transcript-standalone/` (the working browser voice
+extractor) and the legacy web audit:
+
+- **AudioWorklet** for audio capture, not `MediaRecorder` (sub-100ms
+  latency, frame-by-frame Int16 PCM control).
+- **Resample every frame to 16 kHz** before sending — the OS-granted rate
+  may differ (the legacy web's ring-buffer replay bug was a missing
+  resample).
+- **Direct Deepgram Nova-3** WebSocket with subprotocol auth; no proxy
+  fallback (the proxy silently degraded to Nova-2 before).
+- **30 s temp tokens** via `/api/proxy/deepgram-streaming-key`, master key
+  cached 5 min in Secrets Manager hit.
+- **RMS-based client VAD** for sleep detection; Deepgram server-side VAD
+  for speech/utterance end.
+- **Ring buffer (5 s @ 16 kHz)** for pre-wake audio replay during doze
+  transitions.
+- **25 s grace** after wake, **20 s grace** after a Sonnet question.
+- **Wake Lock** requested on record, re-acquired on visibility change
+  (iOS Safari releases on blur).
+exec
+/bin/zsh -lc "rg --files web | rg '(__tests__|\\.test\\.|\\.spec\\.)'" in /Users/derekbeckley/Developer/EICR_Automation exited 1 in 0ms:
+
+exec
+/bin/zsh -lc 'git show 9e93907''^:web/src/lib/recording-context.tsx | nl -ba | sed -n '"'200,280p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 1.01s:
+2026-04-17 23:53:22.726 xcodebuild[32029:67198416] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-zedsP2S8' (errno=Operation not permitted)
+2026-04-17 23:53:23.012 xcodebuild[32031:67198426]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-17 23:53:23.109 xcodebuild[32031:67198425] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+   200	        },
+   201	        onError: (err) => {
+   202	          setErrorMessage(err.message);
+   203	          setState('error');
+   204	          teardownMic();
+   205	          clearTick();
+   206	        },
+   207	      });
+   208	      micRef.current = handle;
+   209	      setState('active');
+   210	      beginTick();
+   211	    } catch (err) {
+   212	      const msg = err instanceof Error ? err.message : String(err);
+   213	      setErrorMessage(msg);
+   214	      setState('error');
+codex
+## 1. Summary of the phase
+
+Phase 4c replaces the scaffolded transcript path with a direct browser-to-Deepgram Nova-3 WebSocket, fetching a short-lived token from the backend and streaming live mic PCM from the existing `AudioWorklet` pipeline. It also adds interim transcript UI in the overlay and minimised transcript bar, while appending final utterances into the rolling transcript log.
+
+## 2. Alignment with original plan
+
+The implementation matches most of the handoff/commit intent: it adds a dedicated `DeepgramService`, fetches a scoped token through `api.deepgramKey(sessionId)`, forwards live mic samples into Deepgram, and renders interim/final transcript text in the two recording surfaces.
+
+Missing/misaligned items:
+- `deepgramState` is added to context (`web/src/lib/recording-context.tsx:63-65,101,302` in commit `9e93907`) but is not actually surfaced in the Phase 4c UI, despite the comments saying it should be available “for debugability”.
+- In the current working tree, docs have drifted: [web/README.md](/Users/derekbeckley/Developer/EICR_Automation/web/README.md:69) still documents `/api/proxy/deepgram-streaming-key`, while Phase 4c code uses `/api/deepgram-proxy`.
+
+## 3. Correctness issues
+
+- **P1** `web/src/lib/recording-context.tsx:159-194,198-219,221-251,275-289`  
+  `start()`/`resume()` have no cancellation or generation guard around the async mic-open + token-fetch path. If the user taps `Stop`/`Pause` or the provider unmounts while `startMicCapture()` or `api.deepgramKey()` is in flight, the stale continuation can still assign `micRef`/`deepgramRef`, reopen the socket, and flip the session back to `active`. This is a real resurrected-session race.
+- **P1** `web/src/lib/recording/deepgram-service.ts:82-95,271-274` and `web/src/lib/recording-context.tsx:183-190,233-236`  
+  Deepgram transport failure does not transition the recording session into `error` or stop billing/timers. The provider only stores `errorMessage`; `state` remains `active`, the hero pill still says “Recording”, the mic stays open, and cost keeps increasing even though transcription is dead.
+- **P1** `web/src/lib/recording-context.tsx:159-194,198-219` and `web/src/lib/recording/deepgram-service.ts:103-120`  
+  Audio is captured before the token fetch and WebSocket handshake complete, and `sendSamples()` drops everything until `state === 'connected'`. Early speech right after start/resume is silently lost, so the first words of an utterance can disappear on slower networks.
+- **P2** `web/src/lib/recording/deepgram-service.ts:124-148`  
+  `disconnect()` schedules a delayed `setState('disconnected')` 300ms later. If a new `DeepgramService` instance is opened before that timeout fires, the old instance can still push `deepgramState` back to `disconnected`, producing stale UI state.
+
+## 4. Security issues
+
+- **P2** `web/src/lib/api-client.ts:144-147`  
+  Temporary Deepgram credential minting is done via a cacheable `GET` query (`/api/deepgram-proxy?sessionId=...`). That makes a credential-bearing response easier to cache or log in intermediaries/browser caches unless the backend is perfectly configured. This should be a `POST` with `cache: 'no-store'` and strict `Cache-Control: no-store` server-side.
+
+## 5. Performance issues
+
+- `web/src/lib/recording-context.tsx:294-328`  
+  The entire recording context value is rebuilt on every mic-level tick, elapsed-time tick, interim transcript update, and Deepgram state change. Phase 4c increases update frequency materially, so all `useRecording()` consumers rerender more often than necessary.
+- `web/src/lib/recording/deepgram-service.ts:103-120,177-188`  
+  Each audio block allocates fresh resample/output buffers on the main thread. The block size is small, so this is not catastrophic, but it does create steady GC churn in the hottest path.
+
+## 6. Accessibility issues
+
+- `web/src/components/recording/recording-overlay.tsx:143-173`  
+  Live transcript updates are not exposed through an `aria-live` region, so screen-reader users do not get the core Phase 4c feature announced as it changes.
+- `web/src/components/recording/transcript-bar.tsx:30-56`  
+  The button’s accessible name is always “Expand recording overlay”; it does not include the current elapsed time or transcript/interim text, so the live status is largely invisible to assistive tech.
+
+## 7. Code quality
+
+- `web/src/lib/recording-context.tsx:63-65,101,302` and `web/src/components/recording/*`  
+  `deepgramState` is wired through the provider but unused by the UI in this phase. That leaves dead public surface area and comments that overstate what shipped.
+- Current working tree drift: [web/README.md](/Users/derekbeckley/Developer/EICR_Automation/web/README.md:69) documents a different backend contract than the code. That increases integration risk.
+
+## 8. Test coverage gaps
+
+No automated tests were found under `web/` for this phase.
+
+Missing coverage is most acute for:
+- Deepgram message parsing and final/interim routing in `deepgram-service.ts`
+- `RecordingProvider` async lifecycle races (`start`/`stop`/`pause`/`resume`)
+- start-of-session audio buffering/first-utterance behaviour
+- overlay/transcript-bar rendering of interim vs final text
+- Deepgram failure handling and session state transitions
+
+## 9. Suggested fixes
+
+1. **`web/src/lib/recording-context.tsx:159-194,221-289`**  
+   Add a session-generation or cancellation ref and check it after every awaited step (`startMicCapture`, `api.deepgramKey`, WebSocket open). Ignore stale completions and avoid assigning refs/state if the session was stopped, paused, or superseded.  
+   Why: prevents resurrected mic/WebSocket sessions after `stop()`/`pause()`.
+
+2. **`web/src/lib/recording/deepgram-service.ts:82-95,271-274` and `web/src/lib/recording-context.tsx:183-190`**  
+   Treat Deepgram socket/message failures as fatal for Phase 4c: set `state` to `error`, clear the tick, tear down mic + socket, and distinguish clean close from error close.  
+   Why: the UI should not stay in “Recording” while transcription has already failed.
+
+3. **`web/src/lib/recording-context.tsx:198-219` and `web/src/lib/recording/deepgram-service.ts:59-121`**  
+   Either buffer outbound PCM until `ws.onopen` fires, or make `connect()` await readiness before `start()`/`resume()` mark the session active.  
+   Why: avoids clipping the inspector’s first words on slower token fetch/WS handshakes.
+
+4. **`web/src/lib/recording/deepgram-service.ts:124-148`**  
+   Store the disconnect timeout id and clear/ignore it when a new connection supersedes the old instance, or guard `onStateChange` with an instance token.  
+   Why: stale `disconnect()` callbacks should not overwrite the current session’s `deepgramState`.
+
+5. **`web/src/lib/api-client.ts:144-147`**  
+   Change Deepgram token minting to `POST`, add `cache: 'no-store'`, and ensure backend responses are marked `Cache-Control: no-store`.  
+   Why: temporary credentials should not rely on cache hygiene around a `GET` endpoint.
+
+6. **`web/src/components/recording/recording-overlay.tsx:143-173`**  
+   Add a polite live region for transcript updates, ideally with separate handling for interim vs final text to avoid over-announcement.  
+   Why: live transcription is otherwise inaccessible to screen-reader users.
+
+7. **`web/src/components/recording/transcript-bar.tsx:30-56`**  
+   Expose the current transcript/timer in the control’s accessible name or via `aria-describedby`.  
+   Why: the minimised bar currently communicates almost none of its live state semantically.
+
+8. **`web/src/lib/recording-context.tsx:294-328`**  
+   Split hot recording fields into narrower contexts or adopt context selectors.  
+   Why: live interim updates and 60Hz mic-level pushes currently rerender unrelated consumers.
+
+9. **`web/src/components/recording/*` or `web/src/lib/recording-context.tsx:63-65`**  
+   Either render `deepgramState` somewhere in the overlay as intended, or remove the debugability comments/public field until it is used.  
+   Why: reduces contract drift.
+
+## 10. Overall verdict
+
+**Needs rework.**
+
+Top 3 priority fixes:
+1. Guard the async `start()`/`resume()` pipeline against stale completions.
+2. Fail the recording session cleanly when Deepgram fails instead of staying `active`.
+3. Stop dropping initial audio before the WebSocket is ready.
+
+The current working tree has moved on substantially in `recording-context.tsx` and `deepgram-service.ts`, but the first two issues still appear to remain unresolved there.
+tokens used
+66,512
+## 1. Summary of the phase
+
+Phase 4c replaces the scaffolded transcript path with a direct browser-to-Deepgram Nova-3 WebSocket, fetching a short-lived token from the backend and streaming live mic PCM from the existing `AudioWorklet` pipeline. It also adds interim transcript UI in the overlay and minimised transcript bar, while appending final utterances into the rolling transcript log.
+
+## 2. Alignment with original plan
+
+The implementation matches most of the handoff/commit intent: it adds a dedicated `DeepgramService`, fetches a scoped token through `api.deepgramKey(sessionId)`, forwards live mic samples into Deepgram, and renders interim/final transcript text in the two recording surfaces.
+
+Missing/misaligned items:
+- `deepgramState` is added to context (`web/src/lib/recording-context.tsx:63-65,101,302` in commit `9e93907`) but is not actually surfaced in the Phase 4c UI, despite the comments saying it should be available “for debugability”.
+- In the current working tree, docs have drifted: [web/README.md](/Users/derekbeckley/Developer/EICR_Automation/web/README.md:69) still documents `/api/proxy/deepgram-streaming-key`, while Phase 4c code uses `/api/deepgram-proxy`.
+
+## 3. Correctness issues
+
+- **P1** `web/src/lib/recording-context.tsx:159-194,198-219,221-251,275-289`  
+  `start()`/`resume()` have no cancellation or generation guard around the async mic-open + token-fetch path. If the user taps `Stop`/`Pause` or the provider unmounts while `startMicCapture()` or `api.deepgramKey()` is in flight, the stale continuation can still assign `micRef`/`deepgramRef`, reopen the socket, and flip the session back to `active`. This is a real resurrected-session race.
+- **P1** `web/src/lib/recording/deepgram-service.ts:82-95,271-274` and `web/src/lib/recording-context.tsx:183-190,233-236`  
+  Deepgram transport failure does not transition the recording session into `error` or stop billing/timers. The provider only stores `errorMessage`; `state` remains `active`, the hero pill still says “Recording”, the mic stays open, and cost keeps increasing even though transcription is dead.
+- **P1** `web/src/lib/recording-context.tsx:159-194,198-219` and `web/src/lib/recording/deepgram-service.ts:103-120`  
+  Audio is captured before the token fetch and WebSocket handshake complete, and `sendSamples()` drops everything until `state === 'connected'`. Early speech right after start/resume is silently lost, so the first words of an utterance can disappear on slower networks.
+- **P2** `web/src/lib/recording/deepgram-service.ts:124-148`  
+  `disconnect()` schedules a delayed `setState('disconnected')` 300ms later. If a new `DeepgramService` instance is opened before that timeout fires, the old instance can still push `deepgramState` back to `disconnected`, producing stale UI state.
+
+## 4. Security issues
+
+- **P2** `web/src/lib/api-client.ts:144-147`  
+  Temporary Deepgram credential minting is done via a cacheable `GET` query (`/api/deepgram-proxy?sessionId=...`). That makes a credential-bearing response easier to cache or log in intermediaries/browser caches unless the backend is perfectly configured. This should be a `POST` with `cache: 'no-store'` and strict `Cache-Control: no-store` server-side.
+
+## 5. Performance issues
+
+- `web/src/lib/recording-context.tsx:294-328`  
+  The entire recording context value is rebuilt on every mic-level tick, elapsed-time tick, interim transcript update, and Deepgram state change. Phase 4c increases update frequency materially, so all `useRecording()` consumers rerender more often than necessary.
+- `web/src/lib/recording/deepgram-service.ts:103-120,177-188`  
+  Each audio block allocates fresh resample/output buffers on the main thread. The block size is small, so this is not catastrophic, but it does create steady GC churn in the hottest path.
+
+## 6. Accessibility issues
+
+- `web/src/components/recording/recording-overlay.tsx:143-173`  
+  Live transcript updates are not exposed through an `aria-live` region, so screen-reader users do not get the core Phase 4c feature announced as it changes.
+- `web/src/components/recording/transcript-bar.tsx:30-56`  
+  The button’s accessible name is always “Expand recording overlay”; it does not include the current elapsed time or transcript/interim text, so the live status is largely invisible to assistive tech.
+
+## 7. Code quality
+
+- `web/src/lib/recording-context.tsx:63-65,101,302` and `web/src/components/recording/*`  
+  `deepgramState` is wired through the provider but unused by the UI in this phase. That leaves dead public surface area and comments that overstate what shipped.
+- Current working tree drift: [web/README.md](/Users/derekbeckley/Developer/EICR_Automation/web/README.md:69) documents a different backend contract than the code. That increases integration risk.
+
+## 8. Test coverage gaps
+
+No automated tests were found under `web/` for this phase.
+
+Missing coverage is most acute for:
+- Deepgram message parsing and final/interim routing in `deepgram-service.ts`
+- `RecordingProvider` async lifecycle races (`start`/`stop`/`pause`/`resume`)
+- start-of-session audio buffering/first-utterance behaviour
+- overlay/transcript-bar rendering of interim vs final text
+- Deepgram failure handling and session state transitions
+
+## 9. Suggested fixes
+
+1. **`web/src/lib/recording-context.tsx:159-194,221-289`**  
+   Add a session-generation or cancellation ref and check it after every awaited step (`startMicCapture`, `api.deepgramKey`, WebSocket open). Ignore stale completions and avoid assigning refs/state if the session was stopped, paused, or superseded.  
+   Why: prevents resurrected mic/WebSocket sessions after `stop()`/`pause()`.
+
+2. **`web/src/lib/recording/deepgram-service.ts:82-95,271-274` and `web/src/lib/recording-context.tsx:183-190`**  
+   Treat Deepgram socket/message failures as fatal for Phase 4c: set `state` to `error`, clear the tick, tear down mic + socket, and distinguish clean close from error close.  
+   Why: the UI should not stay in “Recording” while transcription has already failed.
+
+3. **`web/src/lib/recording-context.tsx:198-219` and `web/src/lib/recording/deepgram-service.ts:59-121`**  
+   Either buffer outbound PCM until `ws.onopen` fires, or make `connect()` await readiness before `start()`/`resume()` mark the session active.  
+   Why: avoids clipping the inspector’s first words on slower token fetch/WS handshakes.
+
+4. **`web/src/lib/recording/deepgram-service.ts:124-148`**  
+   Store the disconnect timeout id and clear/ignore it when a new connection supersedes the old instance, or guard `onStateChange` with an instance token.  
+   Why: stale `disconnect()` callbacks should not overwrite the current session’s `deepgramState`.
+
+5. **`web/src/lib/api-client.ts:144-147`**  
+   Change Deepgram token minting to `POST`, add `cache: 'no-store'`, and ensure backend responses are marked `Cache-Control: no-store`.  
+   Why: temporary credentials should not rely on cache hygiene around a `GET` endpoint.
+
+6. **`web/src/components/recording/recording-overlay.tsx:143-173`**  
+   Add a polite live region for transcript updates, ideally with separate handling for interim vs final text to avoid over-announcement.  
+   Why: live transcription is otherwise inaccessible to screen-reader users.
+
+7. **`web/src/components/recording/transcript-bar.tsx:30-56`**  
+   Expose the current transcript/timer in the control’s accessible name or via `aria-describedby`.  
+   Why: the minimised bar currently communicates almost none of its live state semantically.
+
+8. **`web/src/lib/recording-context.tsx:294-328`**  
+   Split hot recording fields into narrower contexts or adopt context selectors.  
+   Why: live interim updates and 60Hz mic-level pushes currently rerender unrelated consumers.
+
+9. **`web/src/components/recording/*` or `web/src/lib/recording-context.tsx:63-65`**  
+   Either render `deepgramState` somewhere in the overlay as intended, or remove the debugability comments/public field until it is used.  
+   Why: reduces contract drift.
+
+## 10. Overall verdict
+
+**Needs rework.**
+
+Top 3 priority fixes:
+1. Guard the async `start()`/`resume()` pipeline against stale completions.
+2. Fail the recording session cleanly when Deepgram fails instead of staying `active`.
+3. Stop dropping initial audio before the WebSocket is ready.
+
+The current working tree has moved on substantially in `recording-context.tsx` and `deepgram-service.ts`, but the first two issues still appear to remain unresolved there.

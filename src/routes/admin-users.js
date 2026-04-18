@@ -15,6 +15,7 @@ import bcrypt from 'bcryptjs';
 import {
   listUsers,
   listUsersPaginated,
+  listCompanies,
   createUser,
   updateUser,
   getUserById,
@@ -28,6 +29,41 @@ import { parsePagination, paginatedResponse } from '../utils/pagination.js';
 import logger from '../logger.js';
 
 const router = Router();
+
+/**
+ * GET /api/admin/users/companies/list
+ * Lightweight `{id, name}[]` list of every company in the system.
+ *
+ * URL lives under the admin-users mount because this file is mounted
+ * at `/api/admin/users` in api.js. The nesting looks slightly odd but
+ * it inherits the `requireAdmin` gate without re-registering middleware
+ * elsewhere.
+ *
+ * Why a dedicated endpoint rather than reusing `GET /api/companies`:
+ * the existing route returns the full company row (settings JSON blob,
+ * timestamps, is_active, …). The admin-user edit page only needs to
+ * render a picker of `{id, name}` pairs, and round-tripping the whole
+ * payload just to `.map(({id, name}) => …)` in the client bloats the
+ * response by ~10x for no caller-side benefit. The separate route also
+ * lets us scope future pagination differently — the admin picker
+ * expects every company to be selectable, whereas the companies index
+ * page may need filters.
+ *
+ * The route lives under `admin-users.js` deliberately: `api.js` mounts
+ * it at `/api/admin/*` which is already gated by `requireAdmin`, so we
+ * inherit the RBAC without reopening the companies router's mount
+ * config. Keeps the scope of this fix to a single file.
+ */
+router.get('/companies/list', async (req, res) => {
+  try {
+    const companies = await listCompanies();
+    const lite = (companies || []).map((c) => ({ id: c.id, name: c.name }));
+    res.json(lite);
+  } catch (error) {
+    logger.error('Failed to list companies (lite)', { error: error.message });
+    res.status(500).json({ error: 'Failed to list companies' });
+  }
+});
 
 /**
  * GET /api/admin/users
@@ -133,6 +169,33 @@ router.put('/:userId', async (req, res) => {
     // Prevent admin from deactivating themselves
     if (userId === req.user.id && req.body.is_active === false) {
       return res.status(400).json({ error: 'Cannot deactivate your own account' });
+    }
+
+    // Prevent admin from reassigning their own company — mirrors the
+    // demote / deactivate guards. A system admin who accidentally moved
+    // themselves into a different tenant would lose company-admin
+    // surfaces silently. The 400 makes the failure explicit client-side;
+    // the UI also disables the picker for self-edits, so this is purely
+    // a backstop against a bypassed UI.
+    if (
+      userId === req.user.id &&
+      Object.prototype.hasOwnProperty.call(req.body, 'company_id') &&
+      req.body.company_id !== req.user.company_id
+    ) {
+      return res.status(400).json({ error: 'Cannot change your own company assignment' });
+    }
+
+    // Validate company_role enum — updateUser whitelists the field but
+    // doesn't check the value. An arbitrary string would silently write
+    // to the DB and later blow up in middleware which asserts the enum.
+    if (
+      Object.prototype.hasOwnProperty.call(req.body, 'company_role') &&
+      req.body.company_role !== null &&
+      !['owner', 'admin', 'employee'].includes(req.body.company_role)
+    ) {
+      return res
+        .status(400)
+        .json({ error: 'company_role must be "owner", "admin", or "employee"' });
     }
 
     await updateUser(userId, req.body);

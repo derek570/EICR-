@@ -1,0 +1,563 @@
+OpenAI Codex v0.116.0 (research preview)
+--------
+workdir: /Users/derekbeckley/Developer/EICR_Automation
+model: gpt-5.4
+provider: openai
+approval: never
+sandbox: read-only
+reasoning effort: none
+reasoning summaries: none
+session id: 019d9db4-6fe1-7af0-9370-e67f419b5408
+--------
+user
+You are performing a rigorous code review of a single phase of a Next.js 16 / React 19 PWA frontend rebuild for an electrical-certificate automation tool (EICR / EIC). The repo root is at /Users/derekbeckley/Developer/EICR_Automation and the web package is at web/. Branch: web-rebuild.
+
+TARGET: Phase 5c — observation photos
+COMMIT: 6a73517
+
+Context for this phase (original intent, handoff doc, commit message, files changed) is in this repo at: reviews/context/phase-5c.md — READ THAT FILE FIRST.
+
+Use shell commands to:
+  git show --stat 6a73517
+  git show 6a73517
+to inspect the full diff. Then read any files you need from the working tree (they may have evolved since this commit — note any later changes).
+
+Your output must be a well-structured markdown review with these sections:
+  1. Summary of the phase (2-3 sentences — what it did).
+  2. Alignment with original plan (does the implementation match the handoff doc / commit intent? Any missing objectives?).
+  3. Correctness issues (bugs, race conditions, missing error handling, incorrect semantics). Prioritise P0/P1/P2.
+  4. Security issues (XSS, auth, CSRF, injection, leaked secrets, PII, CORS). Each item tagged with severity.
+  5. Performance issues (re-renders, N+1, large bundles, memory leaks, blocking work on main thread).
+  6. Accessibility issues (semantic HTML, keyboard nav, ARIA, colour contrast, focus management).
+  7. Code quality (duplication, dead code, type-safety holes, naming, convention drift vs. rest of repo).
+  8. Test coverage gaps.
+  9. Suggested fixes — each as a numbered item with: file:line, what to change, why. Be concrete.
+  10. Overall verdict (ship / ship with fixes / needs rework) and top 3 priority fixes.
+
+Be specific — cite file paths and line numbers. Avoid generic advice. If the code is good, say so with evidence. Do NOT modify files; this is review only.
+
+mcp startup: no servers
+codex
+Reviewing phase `5c` at commit `6a73517`. I’m starting with the handoff/context doc and the commit diff, then I’ll inspect the current working-tree versions of touched files to identify any regressions or later changes that matter to this review.
+exec
+/bin/zsh -lc "sed -n '1,240p' reviews/context/phase-5c.md" in /Users/derekbeckley/Developer/EICR_Automation exited 1 in 0ms:
+sed: reviews/context/phase-5c.md: No such file or directory
+exec
+/bin/zsh -lc 'git show --stat 6a73517' in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc 'git show 6a73517' in /Users/derekbeckley/Developer/EICR_Automation succeeded in 1.14s:
+2026-04-18 00:09:07.947 xcodebuild[34984:67214230]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:09:08.051 xcodebuild[34984:67214229] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-1JHriERT' (errno=Operation not permitted)
+2026-04-18 00:09:08.369 xcodebuild[34987:67214250]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:09:08.472 xcodebuild[34987:67214247] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+commit 6a73517077047b79e6a9e5559d1f7ca2fa6280d2
+Author: Derek Beckley <derekbeckley@Dereks-Mac-mini.broadband>
+Date:   Fri Apr 17 16:53:13 2026 +0100
+
+    feat(web): Phase 5c observation photos
+    
+    What changed
+    ============
+    Inspectors can now capture or attach photos to observations on the web
+    frontend, matching iOS parity. Add/edit modal with Camera + Library
+    buttons, live thumbnail grid, per-photo delete, and inline preview on
+    each observation card.
+    
+    Why
+ succeeded in 1.14s:
+2026-04-18 00:09:07.947 xcodebuild[34983:67214231]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:09:08.051 xcodebuild[34983:67214228] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-OT5orByD' (errno=Operation not permitted)
+2026-04-18 00:09:08.369 xcodebuild[34988:67214249]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:09:08.472 xcodebuild[34988:67214248] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+commit 6a73517077047b79e6a9e5559d1f7ca2fa6280d2
+Author: Derek Beckley <derekbeckley@Dereks-Mac-mini.broadband>
+Date:   Fri Apr 17 16:53:13 2026 +0100
+
+    feat(web): Phase 5c observation photos
+    
+    What changed
+    ============
+    Inspectors can now capture or attach photos to observations on the web
+    frontend, matching iOS parity. Add/edit modal with Camera + Library
+    buttons, live thumbnail grid, per-photo delete, and inline preview on
+    each observation card.
+    
+    Why
+codex
+The context file path from the prompt doesn’t resolve as written, so I’m locating it in-repo and letting the `git show` commands finish. After that I’ll read the touched files at both the commit and current HEAD to separate phase issues from later edits.
+exec
+/bin/zsh -lc "rg --files | rg 'phase-5c\\.md"'$|reviews/.*/phase-5c'"\\.md"'$'"'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+web/reviews/claude/phase-5c.md
+web/reviews/context/phase-5c.md
+codex
+I have the phase context and the full commit diff. Next I’m reading the current versions of the touched files with line numbers, plus any tests or adjacent code that affect semantics, so I can distinguish phase defects from later follow-up changes.
+exec
+/bin/zsh -lc "nl -ba web/reviews/context/phase-5c.md | sed -n '1,260p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	# Phase 5c — Context
+     2	
+     3	**Commit:** `6a73517`
+     4	
+     5	## Commit message
+     6	
+     7	```
+     8	commit 6a73517077047b79e6a9e5559d1f7ca2fa6280d2
+     9	Author:     Derek Beckley <derekbeckley@Dereks-Mac-mini.broadband>
+    10	AuthorDate: Fri Apr 17 16:53:13 2026 +0100
+    11	Commit:     Derek Beckley <derekbeckley@Dereks-Mac-mini.broadband>
+    12	CommitDate: Fri Apr 17 16:53:13 2026 +0100
+    13	
+    14	    feat(web): Phase 5c observation photos
+    15	    
+    16	    What changed
+    17	    ============
+    18	    Inspectors can now capture or attach photos to observations on the web
+    19	    frontend, matching iOS parity. Add/edit modal with Camera + Library
+    20	    buttons, live thumbnail grid, per-photo delete, and inline preview on
+exec
+/bin/zsh -lc "nl -ba web/src/components/observations/observation-photo.tsx | sed -n '1,220p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "nl -ba web/src/app/job/[id]/observations/page.tsx | sed -n '1,320p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	'use client';
+     2	
+     3	import * as React from 'react';
+     4	import { ImageOff } from 'lucide-react';
+     5	import { api } from '@/lib/api-client';
+     6	import { ApiError } from '@/lib/types';
+     7	import { cn } from '@/lib/utils';
+     8	
+     9	/**
+    10	 * Authenticated photo renderer.
+    11	 *
+    12	 * The photo endpoint (`/api/job/:userId/:jobId/photos/:filename`) requires
+    13	 * a bearer token, so a plain `<img src>` won't work — the browser never
+    14	 * attaches our Authorization header on an image request. Instead, fetch
+    15	 * the bytes via `api.fetchPhotoBlob`, wrap in `URL.createObjectURL`, and
+    16	 * revoke on unmount (or when any of the inputs change) to avoid leaking
+    17	 * blob URLs.
+    18	 *
+    19	 * Behaviour:
+    20	 * - Loading  → neutral skeleton
+ succeeded in 0ms:
+zsh:1: no matches found: web/src/app/job/[id]/observations/page.tsx
+exec
+/bin/zsh -lc 'git diff 6a73517..HEAD -- web/src/app/job/[id]/observations/page.tsx web/src/components/observations/observation-photo.tsx web/src/components/observations/observation-sheet.tsx web/src/lib/api-client.ts web/src/lib/types.ts' in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "nl -ba web/src/components/observations/observation-sheet.tsx | sed -n '1,460p'" in /Users/derekbeckley/Developer/EICR_Automation exited 1 in 0ms:
+zsh:1: no matches found: web/src/app/job/[id]/observations/page.tsx
+ succeeded in 0ms:
+     1	'use client';
+     2	
+     3	import * as React from 'react';
+     4	import { Camera, FolderOpen, Loader2, MapPin, Trash2, X } from 'lucide-react';
+     5	import { api } from '@/lib/api-client';
+     6	import { ApiError, type ObservationRow } from '@/lib/types';
+     7	import { getUser } from '@/lib/auth';
+     8	import { Button } from '@/components/ui/button';
+     9	import { cn } from '@/lib/utils';
+    10	import { ObservationPhoto } from './observation-photo';
+    11	
+    12	/**
+    13	 * Add/edit observation sheet — mirrors iOS `EditObservationSheet.swift`.
+    14	 *
+    15	 * Fields: C1/C2/C3/FI code (chip row), location (single-line), description
+    16	 * (multi-line), remedial action (multi-line), and a photo grid with two
+    17	 * upload buttons (Camera + Library) matching iOS's two-button pattern.
+    18	 *
+    19	 * Why two buttons instead of a single file input?
+    20	 *   iOS UX shows Camera and Library as discrete actions. On iOS Safari
+exec
+/bin/zsh -lc "nl -ba web/src/lib/api-client.ts | sed -n '1,340p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	import {
+     2	  type AdminUser,
+     3	  ApiError,
+     4	  type CCUAnalysis,
+     5	  type CompanyJobRow,
+     6	  type CompanyMember,
+     7	  type CompanySettings,
+     8	  type CompanyStats,
+     9	  type DocumentExtractionResponse,
+    10	  type InspectorProfile,
+    11	  type InviteEmployeeResponse,
+    12	  type Job,
+    13	  type JobDetail,
+    14	  type LoginResponse,
+    15	  type Paginated,
+    16	  type User,
+    17	} from './types';
+    18	import { getToken } from './auth';
+    19	
+    20	/**
+exec
+/bin/zsh -lc "nl -ba web/src/lib/types.ts | sed -n '1,140p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	/**
+     2	 * Shared domain types. Kept minimal — only the shapes Phase 1–2 need;
+     3	 * per-tab detail types land in later phases when their screens do.
+     4	 */
+     5	
+     6	export interface User {
+     7	  id: string;
+     8	  email: string;
+     9	  name: string;
+    10	  company_name?: string;
+    11	  role?: 'admin' | 'user';
+    12	  /** System-wide tenant membership. Nullable for legacy users not yet bound to a company. */
+    13	  company_id?: string;
+    14	  /** Role within a company. `owner`/`admin` grant company-admin privileges; `employee` is rank-and-file. */
+    15	  company_role?: 'owner' | 'admin' | 'employee';
+    16	}
+    17	
+    18	/**
+    19	 * Inspector profile — the API shape stored as one JSON array per user at
+    20	 * `settings/{userId}/inspector_profiles.json`. The backend persists the
+exec
+/bin/zsh -lc "nl -ba web/src/lib/auth.ts | sed -n '1,220p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	import type { User } from './types';
+     2	import { clearJobCache } from './pwa/job-cache';
+     3	
+     4	/**
+     5	 * Auth-token helpers. Token is stored in localStorage (for API calls) and
+     6	 * also mirrored into a cookie so the Next.js middleware can gate routes
+     7	 * before hitting the client.
+     8	 */
+     9	
+    10	const TOKEN_KEY = 'cm_token';
+    11	const USER_KEY = 'cm_user';
+    12	const COOKIE_MAX_AGE = 60 * 60 * 24 * 7; // 7 days
+    13	
+    14	export function getToken(): string | null {
+    15	  if (typeof window === 'undefined') return null;
+    16	  return localStorage.getItem(TOKEN_KEY);
+    17	}
+    18	
+    19	export function getUser(): User | null {
+    20	  if (typeof window === 'undefined') return null;
+exec
+/bin/zsh -lc "nl -ba web/src/lib/job-context.tsx | sed -n '1,320p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	'use client';
+     2	
+     3	import * as React from 'react';
+     4	import type { CertificateType, JobDetail } from './types';
+     5	
+     6	/**
+     7	 * Per-job state container. Holds the fetched JobDetail plus a couple of
+     8	 * derived flags (dirty/syncing) and two mutators:
+     9	 *
+    10	 *  - updateJob(partial) — local merge, does not hit the network. Every
+    11	 *    input in the job tabs calls this; a debounced save effect (Phase 4)
+    12	 *    flushes to the backend.
+    13	 *  - setJob(full)        — replace wholesale (used after a network save
+    14	 *    round-trip so server-derived fields like updated_at can flow in).
+    15	 *
+    16	 * The shape deliberately mirrors the legacy `useJob` hook so the tab
+    17	 * components from Phase 3+ read the same API.
+    18	 */
+    19	interface JobContextValue {
+    20	  job: JobDetail;
+exec
+/bin/zsh -lc "nl -ba 'web/src/app/job/[id]/observations/page.tsx' | sed -n '1,340p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	'use client';
+     2	
+     3	import * as React from 'react';
+     4	import { useParams } from 'next/navigation';
+     5	import { AlertTriangle, ImageIcon, MapPin, Plus, Trash2 } from 'lucide-react';
+     6	import { useJobContext } from '@/lib/job-context';
+     7	import type { ObservationRow } from '@/lib/types';
+     8	import { getUser } from '@/lib/auth';
+     9	import { SectionCard } from '@/components/ui/section-card';
+    10	import { ObservationPhoto } from '@/components/observations/observation-photo';
+    11	import { ObservationSheet } from '@/components/observations/observation-sheet';
+    12	import { cn } from '@/lib/utils';
+    13	
+    14	/**
+    15	 * Observations tab — mirrors iOS `ObservationsTab.swift`.
+    16	 *
+    17	 * Layout: gradient hero with C1/C2/C3/FI tally + Add button, then a list
+    18	 * of observation cards. Tap Add for a new blank sheet, tap any card to
+    19	 * edit. The photo upload flow (Phase 5c) lives in <ObservationSheet>;
+    20	 * this page just renders up to three thumbnails inline per card and
+exec
+/bin/zsh -lc "rg -n \"updateJob\\(|saveJob\\(|observations\" web/src/lib web/src/app web/src/components | sed -n '1,260p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+web/src/lib/job-context.tsx:10: *  - updateJob(partial) — local merge, does not hit the network. Every
+web/src/components/live-fill/live-fill-view.tsx:20: *   5. Observations — EICR only (EIC has no observations)
+web/src/components/live-fill/live-fill-view.tsx:57:  const observations = job.observations ?? [];
+web/src/components/live-fill/live-fill-view.tsx:279:        <div data-section="observations" className="cm-live-section">
+web/src/components/live-fill/live-fill-view.tsx:283:            title={`Observations (${observations.length})`}
+web/src/components/live-fill/live-fill-view.tsx:285:            {observations.length === 0 ? (
+web/src/components/live-fill/live-fill-view.tsx:287:                No observations yet. Defects you describe land here tagged C1/C2/C3/FI.
+web/src/components/live-fill/live-fill-view.tsx:291:                {observations.map((o) => (
+web/src/components/observations/observation-sheet.tsx:34: *   the finished observation back into `job.observations`.
+web/src/app/globals.css:53:  /* ---------- Severity (observations) ---------- */
+web/src/lib/pwa/outbox-replay.ts:106:          await api.saveJob(m.userId, m.jobId, m.patch);
+web/src/lib/pwa/job-cache.ts:27: *     observations, so on `clearAuth()` (sign-out) we purge the entire
+web/src/lib/pwa/queue-save-job.ts:77:    await api.saveJob(userId, jobId, patch);
+web/src/lib/types.ts:199:  observations?: ObservationRow[];
+web/src/lib/types.ts:355:  observations?: DocumentExtractionObservation[];
+web/src/app/job/[id]/observations/page.tsx:10:import { ObservationPhoto } from '@/components/observations/observation-photo';
+web/src/app/job/[id]/observations/page.tsx:11:import { ObservationSheet } from '@/components/observations/observation-sheet';
+web/src/app/job/[id]/observations/page.tsx:55:  const observations = React.useMemo(() => job.observations ?? [], [job.observations]);
+web/src/app/job/[id]/observations/page.tsx:62:  const counts = React.useMemo(() => countByCode(observations), [observations]);
+web/src/app/job/[id]/observations/page.tsx:81:    const existingIdx = observations.findIndex((o) => o.id === next.id);
+exec
+/bin/zsh -lc "rg -n \"ObservationSheet|ObservationPhoto|uploadObservationPhoto|deleteObservationPhoto|fetchPhotoBlob|photo_keys|photos\\?: string\\[\\]\" web -g '"'!web/.next'"'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+web/src/lib/types.ts:229:  photos?: string[];
+web/src/lib/api-client.ts:195:   * name "photo" (matches iOS `APIClient.uploadObservationPhoto`).
+web/src/lib/api-client.ts:206:  uploadObservationPhoto(
+web/src/lib/api-client.ts:226:   * `uploadObservationPhoto`. After the request resolves, remove the
+web/src/lib/api-client.ts:229:  deleteObservationPhoto(
+web/src/lib/api-client.ts:247:  async fetchPhotoBlob(
+web/src/lib/api-client.ts:346:   * identical pattern to `fetchPhotoBlob`.
+web/src/components/observations/observation-sheet.tsx:10:import { ObservationPhoto } from './observation-photo';
+web/src/components/observations/observation-sheet.tsx:13: * Add/edit observation sheet — mirrors iOS `EditObservationSheet.swift`.
+web/src/components/observations/observation-sheet.tsx:60:export function ObservationSheet({
+web/src/components/observations/observation-sheet.tsx:119:      const { photo } = await api.uploadObservationPhoto(userId, jobId, file);
+web/src/components/observations/observation-sheet.tsx:138:      await api.deleteObservationPhoto(userId, jobId, filename);
+web/src/components/observations/observation-sheet.tsx:367:                    <ObservationPhoto
+web/src/components/observations/observation-photo.tsx:15: * the bytes via `api.fetchPhotoBlob`, wrap in `URL.createObjectURL`, and
+web/src/components/observations/observation-photo.tsx:28:export function ObservationPhoto({
+web/src/components/observations/observation-photo.tsx:54:      .fetchPhotoBlob(userId, jobId, filename, { thumbnail })
+web/src/components/observations/observation-photo.tsx:67:        console.warn(`ObservationPhoto load failed [${filename}]: ${message}`);
+web/PHASE_6_HANDOFF.md:105:| Multipart-upload reference | `api.uploadObservationPhoto` in `api-client.ts` (Phase 5c — reuse the exact pattern for signature + logo) |
+web/PHASE_6_HANDOFF.md:225:  `<ObservationPhoto>`-style auth'd blob fetch (signatures are
+web/PHASE_6_HANDOFF.md:234:  — multipart POST, reuse the `uploadObservationPhoto` pattern (same
+exec
+/bin/zsh -lc "git diff 6a73517..HEAD -- 'web/src/app/job/[id]/observations/page.tsx' web/src/components/observations/observation-photo.tsx web/src/components/observations/observation-sheet.tsx web/src/lib/api-client.ts web/src/lib/types.ts" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 1.03s:
+2026-04-18 00:09:38.056 xcodebuild[35038:67214612]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:09:38.155 xcodebuild[35038:67214611] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-aPFKt7dy' (errno=Operation not permitted)
+2026-04-18 00:09:38.442 xcodebuild[35041:67214630]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-04-18 00:09:38.539 xcodebuild[35041:67214629] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+diff --git a/web/src/lib/api-client.ts b/web/src/lib/api-client.ts
+index 24f4660..74b124e 100644
+--- a/web/src/lib/api-client.ts
++++ b/web/src/lib/api-client.ts
+@@ -1,10 +1,18 @@
+ import {
++  type AdminUser,
+   ApiError,
+   type CCUAnalysis,
++  type CompanyJobRow,
++  type CompanyMember,
++  type CompanySettings,
++  type CompanyStats,
+   type DocumentExtractionResponse,
+codex
+I’ve isolated two substantive behaviour risks in the phase: photo add/delete is only persisted to the sheet’s local draft, so `Cancel` or `Save` during an in-flight upload can desynchronise the observation JSON from the backend photo store. I’m checking current HEAD drift now, then I’ll write the review with commit-anchored line references and note any later changes explicitly.
+exec
+/bin/zsh -lc "nl -ba 'web/src/app/job/[id]/layout.tsx' | sed -n '1,220p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "nl -ba web/src/lib/pwa/queue-save-job.ts | sed -n '1,220p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+     1	'use client';
+     2	
+     3	import * as React from 'react';
+     4	import { useParams, useRouter } from 'next/navigation';
+     5	import { AppShell } from '@/components/layout/app-shell';
+     6	import { JobHeader } from '@/components/job/job-header';
+     7	import { JobTabNav } from '@/components/job/job-tab-nav';
+     8	import { FloatingActionBar } from '@/components/job/floating-action-bar';
+     9	import { RecordingOverlay } from '@/components/recording/recording-overlay';
+    10	import { TranscriptBar } from '@/components/recording/transcript-bar';
+    11	import { LiveFillView } from '@/components/live-fill/live-fill-view';
+    12	import { JobProvider } from '@/lib/job-context';
+    13	import { RecordingProvider, useRecording } from '@/lib/recording-context';
+    14	import { api } from '@/lib/api-client';
+    15	import { clearAuth, getUser } from '@/lib/auth';
+    16	import { getCachedJob, putCachedJob } from '@/lib/pwa/job-cache';
+    17	import type { JobDetail } from '@/lib/types';
+    18	
+    19	/**
+    20	 * Shell for every /job/[id]/... route.
+ succeeded in 0ms:
+     1	import { api } from '@/lib/api-client';
+     2	import { ApiError, type JobDetail } from '@/lib/types';
+     3	import { getCachedJob, putCachedJob } from './job-cache';
+     4	import { enqueueSaveJobMutation, removeMutation } from './outbox';
+     5	
+     6	/**
+     7	 * Offline-tolerant write path for `api.saveJob` (Phase 7c).
+     8	 *
+     9	 * Why this exists:
+    10	 *   - The raw `api.saveJob` throws on any network failure, which means
+    11	 *     an inspector tapping "save" in a basement consumer-unit room just
+    12	 *     loses their edit. This wrapper promises the mutation will be
+    13	 *     retried until it either succeeds or the attempts cap kicks in.
+    14	 *   - Writing to the outbox BEFORE firing the network request is what
+    15	 *     makes this durable: if the user closes the tab immediately after
+    16	 *     save (common — phone pockets, offline → offline transitions), the
+    17	 *     mutation still lives in IDB and the next session's replay worker
+    18	 *     picks it up.
+    19	 *
+    20	 * Order of operations (do not reorder — each step's failure mode matters):
+exec
+/bin/zsh -lc "rg --files web | rg '\\.(test|spec)\\.(ts|tsx)"'$|__tests__'"'" in /Users/derekbeckley/Developer/EICR_Automation exited 1 in 0ms:
+
+exec
+/bin/zsh -lc "rg -n \"role=\\\"button\\\"|aria-modal|dialog|focus\" web/src/components web/src/app | sed -n '1,260p'" in /Users/derekbeckley/Developer/EICR_Automationexec
+/bin/zsh -lc "rg -n \"isDirty|queueSaveJob\\(|saveJob\\(|deboun|useDeferredValue|beforeunload|optimisticDetail\" web/src | sed -n '1,260p'" in /Users/derekbeckley/Developer/EICR_Automation succeeded in 0ms:
+web/src/lib/job-context.tsx:11: *    input in the job tabs calls this; a debounced save effect (Phase 4)
+web/src/lib/job-context.tsx:24:  isDirty: boolean;
+web/src/lib/job-context.tsx:46:  const [isDirty, setIsDirty] = React.useState(false);
+web/src/lib/job-context.tsx:66:      isDirty,
+web/src/lib/job-context.tsx:69:    [job, updateJob, isDirty, isSaving]
+web/src/lib/pwa/outbox-replay.ts:106:          await api.saveJob(m.userId, m.jobId, m.patch);
+web/src/lib/pwa/queue-save-job.ts:55:export async function queueSaveJob(
+web/src/lib/pwa/queue-save-job.ts:69:    optimisticDetail?: JobDetail;
+web/src/lib/pwa/queue-save-job.ts:77:    await api.saveJob(userId, jobId, patch);
+web/src/lib/pwa/queue-save-job.ts:93:  if (opts.optimisticDetail) {
+web/src/lib/pwa/queue-save-job.ts:96:    void putCachedJob(userId, jobId, opts.optimisticDetail);
+web/src/components/job/job-header.tsx:23:  const { job, isDirty, isSaving } = useJobContext();
+web/src/components/job/job-header.tsx:59:        <SaveStatus isDirty={isDirty} isSaving={isSaving} />
+web/src/components/job/job-header.tsx:65:function SaveStatus({ isDirty, isSaving }: { isDirty: boolean; isSaving: boolean }) {
+web/src/components/job/job-header.tsx:74:  if (isDirty) {
+web/src/lib/api-client.ts:272:  saveJob(
+web/src/app/job/[id]/installation/page.tsx:38: * the dirty flag. The debounced POST lands in Phase 4 alongside recording —
+ succeeded in 0ms:
+web/src/app/globals.css:115::focus-visible {
+web/src/components/observations/observation-sheet.tsx:169:      role="dialog"
+web/src/components/observations/observation-sheet.tsx:170:      aria-modal="true"
+web/src/components/observations/observation-sheet.tsx:249:              className="h-11 rounded-[var(--radius-md)] border border-[var(--color-border-default)] bg-[var(--color-surface-1)] px-3 text-[14px] text-[var(--color-text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--color-brand-blue)]"
+web/src/components/observations/observation-sheet.tsx:267:              className="rounded-[var(--radius-md)] border border-[var(--color-border-default)] bg-[var(--color-surface-1)] px-3 py-2 text-[14px] leading-snug text-[var(--color-text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--color-brand-blue)]"
+web/src/components/observations/observation-sheet.tsx:285:              className="rounded-[var(--radius-md)] border border-[var(--color-border-default)] bg-[var(--color-surface-1)] px-3 py-2 text-[14px] leading-snug text-[var(--color-text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--color-brand-blue)]"
+web/src/components/job/floating-action-bar.tsx:135:      className="flex h-12 w-12 flex-col items-center justify-center gap-0.5 rounded-full shadow-[0_4px_14px_rgba(0,0,0,0.4)] transition active:scale-95 focus-visible:outline-2 focus-visible:outline-white"
+web/src/components/job/floating-action-bar.tsx:152:        'ml-1 flex h-14 w-14 flex-col items-center justify-center rounded-full transition active:scale-95 focus-visible:outline-2 focus-visible:outline-white',
+web/src/components/recording/recording-overlay.tsx:66:      role="dialog"
+web/src/components/recording/recording-overlay.tsx:67:      aria-modal="true"
+web/src/components/recording/recording-overlay.tsx:281:      className="flex h-9 w-9 items-center justify-center rounded-full bg-white/15 text-white transition hover:bg-white/25 focus-visible:outline-2 focus-visible:outline-white"
+web/src/app/job/[id]/observations/page.tsx:235:      role="button"
+web/src/components/job/job-header.tsx:31:          className="inline-flex items-center gap-0.5 rounded-[var(--radius-md)] px-2 py-1.5 text-[15px] font-medium text-[var(--color-brand-blue)] transition hover:bg-[var(--color-surface-2)] focus-visible:outline-2 focus-visible:outline-[var(--color-brand-blue)]"
+web/src/components/job/job-header.tsx:52:          className="ml-auto inline-flex h-9 w-9 items-center justify-center rounded-full bg-[var(--color-surface-2)] text-[var(--color-brand-blue)] transition hover:bg-[var(--color-surface-3)] focus-visible:outline-2 focus-visible:outline-[var(--color-brand-blue)]"
+web/src/components/pwa/install-button.tsx:12: * If the install dialog is dismissed, we still clear the deferred prompt
+web/src/components/pwa/install-button.tsx:27:      // Await the choice so we only clear once the dialog is actually done;
+web/src/components/ui/input.tsx:6: * subtle border on surface-2, brand-blue focus ring.
+web/src/components/ui/input.tsx:21:        'transition focus:border-[var(--color-brand-blue)] focus:outline-2 focus:outline-[var(--color-brand-blue)] focus:outline-offset-1',
+web/src/app/job/[id]/extent/page.tsx:120:      <div className="flex flex-col rounded-[var(--radius-md)] border border-[var(--color-border-default)] bg-[var(--color-surface-1)] px-3 py-2 transition focus-within:border-[var(--color-brand-blue)]">
+web/src/app/job/[id]/extent/page.tsx:132:          className="w-full resize-none bg-transparent text-[15px] font-medium text-[var(--color-text-primary)] placeholder:text-[var(--color-text-tertiary)]/60 focus:outline-none"
+codex
+## 1. Summary of the phase
+
+Phase 5c adds a real observation-photo workflow to the web rebuild: inspectors can open an add/edit sheet, capture or pick images, see thumbnail previews, delete photos, and view inline photo previews on observation cards. It also renames `ObservationRow.photo_keys` to `photos` and adds the API client methods needed to upload, delete, and fetch auth-protected photo blobs.
+
+## 2. Alignment with original plan
+
+This mostly matches the handoff doc and commit intent. The implementation does deliver the new sheet UI, separate Camera/Library affordances, authenticated blob fetch via `ObservationPhoto`, inline card previews, and the `photo_keys` → `photos` rename.
+
+The main miss is semantic rather than visual: the handoff describes eager upload/eager delete that should behave like iOS, but the implementation only applies photo adds/deletes to the sheet-local draft until `Save`. That means the backend photo store and the observation JSON can diverge if the user cancels or saves at the wrong time, which is not true parity with the intended flow.
+
+## 3. Correctness issues
+
+- **P1** `Cancel` can silently desynchronise photo state from the persisted observation. In [observation-sheet.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/observations/observation-sheet.tsx:119), successful uploads append the filename only to local `draft.photos`; in [observation-sheet.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/observations/observation-sheet.tsx:138), deletes remove it only from local draft; but [observation-sheet.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/observations/observation-sheet.tsx:178), [observation-sheet.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/observations/observation-sheet.tsx:194), and [observation-sheet.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/observations/observation-sheet.tsx:396) all discard that draft on cancel. Result: upload-then-cancel leaves an orphaned backend photo with no observation reference; delete-then-cancel leaves the observation still pointing at a filename that was already deleted server-side.
+- **P1** `Save` is allowed while an upload is still in flight, so the saved observation can omit the photo the user just selected. [observation-sheet.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/observations/observation-sheet.tsx:116) starts async upload, but [observation-sheet.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/observations/observation-sheet.tsx:399) does not disable Save. If the user taps Save before the upload resolves, [observation-sheet.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/observations/observation-sheet.tsx:154) persists the pre-upload draft and the later filename append is lost when the sheet unmounts.
+- **P2** The observation card is implemented as a clickable `div` with `role="button"` that contains a real `button` for remove, in [page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/job/[id]/observations/page.tsx:234) and [page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/job/[id]/observations/page.tsx:268). That is invalid interactive nesting and produces brittle keyboard/screen-reader behaviour.
+
+## 4. Security issues
+
+- **None found [low/informational]** in the reviewed phase. The photo routes use encoded path segments in [api-client.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/api-client.ts:216) and [api-client.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/api-client.ts:258), and the UI does not inject photo filenames into HTML unsafely.
+
+## 5. Performance issues
+
+- **P2** Every thumbnail mounts its own fetch/object-URL lifecycle in [observation-photo.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/observations/observation-photo.tsx:46), with no cache or deduplication. The same photo can be fetched twice when it appears in the card preview and the open sheet.
+- **P2** Large observation/photo lists will trigger one network request per thumbnail render in both [page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/job/[id]/observations/page.tsx:302) and [observation-sheet.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/observations/observation-sheet.tsx:367). That is probably acceptable for small defect-photo counts, but it does not scale well.
+
+## 6. Accessibility issues
+
+- **P1** Nested interactive controls on the observation card, at [page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/job/[id]/observations/page.tsx:234) and [page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/job/[id]/observations/page.tsx:268), are a real accessibility defect.
+- **P2** The modal has `role="dialog"` and `aria-modal`, but no focus trap, no initial focus placement, and no focus restoration on close in [observation-sheet.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/observations/observation-sheet.tsx:168). Keyboard users can tab behind the dialog.
+
+## 7. Code quality
+
+- The phase is generally clean and coherent: `ObservationPhoto` is well isolated, blob URLs are revoked correctly, and the API surface is small and typed.
+- The weak spot is state ownership. Photo side effects are backend-immediate but model-persistence is draft-local, which makes the component logic internally inconsistent and hard to reason about.
+- Current working-tree drift is low for this review: `observations/page.tsx`, `observation-sheet.tsx`, and `observation-photo.tsx` are unchanged since `6a73517`; `api-client.ts` and `types.ts` have later Phase 6 additions, but the Phase 5c methods/types are unchanged.
+
+## 8. Test coverage gaps
+
+There are no `test`/`spec` files under `web/` for this flow.
+
+Missing coverage I would expect here:
+- upload success/failure, delete success/failure, and cancel/save interactions for `ObservationSheet`
+- the “save during upload” race
+- `ObservationPhoto` skeleton/error/ready transitions and `URL.revokeObjectURL` cleanup
+- keyboard interaction for observation cards and dialog focus behaviour
+
+## 9. Suggested fixes
+
+1. [observation-sheet.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/observations/observation-sheet.tsx:119) and [page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/job/[id]/observations/page.tsx:80): persist photo add/delete to the parent observation state immediately after successful upload/delete, not only inside the sheet draft. This keeps `job.observations` aligned with backend side effects and fixes cancel-induced drift.
+2. [observation-sheet.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/observations/observation-sheet.tsx:399): disable `Save` and `Cancel` while `uploading` is true, or await outstanding upload promises before closing. This removes the lost-photo race.
+3. [page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/job/[id]/observations/page.tsx:234): replace the clickable `div[role="button"]` wrapper with a real button/link-style trigger plus a separate sibling remove button, or make the whole card non-interactive and add an explicit “Edit” button. This fixes invalid nested controls.
+4. [observation-sheet.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/observations/observation-sheet.tsx:168): add modal focus management: move initial focus into the sheet, trap focus while open, and restore focus to the triggering control on close.
+5. [observation-photo.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/observations/observation-photo.tsx:46): add a small in-memory cache keyed by `userId/jobId/filename/thumbnail` to dedupe fetches and reuse blob URLs across card preview + sheet grid.
+6. [observation-sheet.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/observations/observation-sheet.tsx:107): add tests covering upload/delete/cancel/save sequencing, especially the races above, before extending the same pattern to later authenticated-blob features.
+
+## 10. Overall verdict
+
+**Needs rework.**
+
+Top 3 priority fixes:
+1. Make photo add/delete persistence consistent with eager backend side effects.
+2. Prevent `Save`/close while uploads are still in flight.
+3. Fix the observation card’s invalid interactive structure for keyboard and screen-reader users.
+tokens used
+66,016
+## 1. Summary of the phase
+
+Phase 5c adds a real observation-photo workflow to the web rebuild: inspectors can open an add/edit sheet, capture or pick images, see thumbnail previews, delete photos, and view inline photo previews on observation cards. It also renames `ObservationRow.photo_keys` to `photos` and adds the API client methods needed to upload, delete, and fetch auth-protected photo blobs.
+
+## 2. Alignment with original plan
+
+This mostly matches the handoff doc and commit intent. The implementation does deliver the new sheet UI, separate Camera/Library affordances, authenticated blob fetch via `ObservationPhoto`, inline card previews, and the `photo_keys` → `photos` rename.
+
+The main miss is semantic rather than visual: the handoff describes eager upload/eager delete that should behave like iOS, but the implementation only applies photo adds/deletes to the sheet-local draft until `Save`. That means the backend photo store and the observation JSON can diverge if the user cancels or saves at the wrong time, which is not true parity with the intended flow.
+
+## 3. Correctness issues
+
+- **P1** `Cancel` can silently desynchronise photo state from the persisted observation. In [observation-sheet.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/observations/observation-sheet.tsx:119), successful uploads append the filename only to local `draft.photos`; in [observation-sheet.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/observations/observation-sheet.tsx:138), deletes remove it only from local draft; but [observation-sheet.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/observations/observation-sheet.tsx:178), [observation-sheet.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/observations/observation-sheet.tsx:194), and [observation-sheet.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/observations/observation-sheet.tsx:396) all discard that draft on cancel. Result: upload-then-cancel leaves an orphaned backend photo with no observation reference; delete-then-cancel leaves the observation still pointing at a filename that was already deleted server-side.
+- **P1** `Save` is allowed while an upload is still in flight, so the saved observation can omit the photo the user just selected. [observation-sheet.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/observations/observation-sheet.tsx:116) starts async upload, but [observation-sheet.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/observations/observation-sheet.tsx:399) does not disable Save. If the user taps Save before the upload resolves, [observation-sheet.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/observations/observation-sheet.tsx:154) persists the pre-upload draft and the later filename append is lost when the sheet unmounts.
+- **P2** The observation card is implemented as a clickable `div` with `role="button"` that contains a real `button` for remove, in [page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/job/[id]/observations/page.tsx:234) and [page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/job/[id]/observations/page.tsx:268). That is invalid interactive nesting and produces brittle keyboard/screen-reader behaviour.
+
+## 4. Security issues
+
+- **None found [low/informational]** in the reviewed phase. The photo routes use encoded path segments in [api-client.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/api-client.ts:216) and [api-client.ts](/Users/derekbeckley/Developer/EICR_Automation/web/src/lib/api-client.ts:258), and the UI does not inject photo filenames into HTML unsafely.
+
+## 5. Performance issues
+
+- **P2** Every thumbnail mounts its own fetch/object-URL lifecycle in [observation-photo.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/observations/observation-photo.tsx:46), with no cache or deduplication. The same photo can be fetched twice when it appears in the card preview and the open sheet.
+- **P2** Large observation/photo lists will trigger one network request per thumbnail render in both [page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/job/[id]/observations/page.tsx:302) and [observation-sheet.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/observations/observation-sheet.tsx:367). That is probably acceptable for small defect-photo counts, but it does not scale well.
+
+## 6. Accessibility issues
+
+- **P1** Nested interactive controls on the observation card, at [page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/job/[id]/observations/page.tsx:234) and [page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/job/[id]/observations/page.tsx:268), are a real accessibility defect.
+- **P2** The modal has `role="dialog"` and `aria-modal`, but no focus trap, no initial focus placement, and no focus restoration on close in [observation-sheet.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/observations/observation-sheet.tsx:168). Keyboard users can tab behind the dialog.
+
+## 7. Code quality
+
+- The phase is generally clean and coherent: `ObservationPhoto` is well isolated, blob URLs are revoked correctly, and the API surface is small and typed.
+- The weak spot is state ownership. Photo side effects are backend-immediate but model-persistence is draft-local, which makes the component logic internally inconsistent and hard to reason about.
+- Current working-tree drift is low for this review: `observations/page.tsx`, `observation-sheet.tsx`, and `observation-photo.tsx` are unchanged since `6a73517`; `api-client.ts` and `types.ts` have later Phase 6 additions, but the Phase 5c methods/types are unchanged.
+
+## 8. Test coverage gaps
+
+There are no `test`/`spec` files under `web/` for this flow.
+
+Missing coverage I would expect here:
+- upload success/failure, delete success/failure, and cancel/save interactions for `ObservationSheet`
+- the “save during upload” race
+- `ObservationPhoto` skeleton/error/ready transitions and `URL.revokeObjectURL` cleanup
+- keyboard interaction for observation cards and dialog focus behaviour
+
+## 9. Suggested fixes
+
+1. [observation-sheet.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/observations/observation-sheet.tsx:119) and [page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/job/[id]/observations/page.tsx:80): persist photo add/delete to the parent observation state immediately after successful upload/delete, not only inside the sheet draft. This keeps `job.observations` aligned with backend side effects and fixes cancel-induced drift.
+2. [observation-sheet.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/observations/observation-sheet.tsx:399): disable `Save` and `Cancel` while `uploading` is true, or await outstanding upload promises before closing. This removes the lost-photo race.
+3. [page.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/app/job/[id]/observations/page.tsx:234): replace the clickable `div[role="button"]` wrapper with a real button/link-style trigger plus a separate sibling remove button, or make the whole card non-interactive and add an explicit “Edit” button. This fixes invalid nested controls.
+4. [observation-sheet.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/observations/observation-sheet.tsx:168): add modal focus management: move initial focus into the sheet, trap focus while open, and restore focus to the triggering control on close.
+5. [observation-photo.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/observations/observation-photo.tsx:46): add a small in-memory cache keyed by `userId/jobId/filename/thumbnail` to dedupe fetches and reuse blob URLs across card preview + sheet grid.
+6. [observation-sheet.tsx](/Users/derekbeckley/Developer/EICR_Automation/web/src/components/observations/observation-sheet.tsx:107): add tests covering upload/delete/cancel/save sequencing, especially the races above, before extending the same pattern to later authenticated-blob features.
+
+## 10. Overall verdict
+
+**Needs rework.**
+
+Top 3 priority fixes:
+1. Make photo add/delete persistence consistent with eager backend side effects.
+2. Prevent `Save`/close while uploads are still in flight.
+3. Fix the observation card’s invalid interactive structure for keyboard and screen-reader users.

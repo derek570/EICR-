@@ -15,8 +15,260 @@ import { WebSocketServer } from 'ws';
 import Anthropic from '@anthropic-ai/sdk';
 import { EICRExtractionSession } from './eicr-extraction-session.js';
 import { QuestionGate } from './question-gate.js';
+import { needsRefinement, refineObservation } from './observation-code-lookup.js';
+import { sonnetSessionStore } from './sonnet-session-store.js';
 import * as storage from '../storage.js';
 import logger from '../logger.js';
+
+// Lazy-initialised OpenAI client for observation refinement (gpt-5-search-api).
+// Kept at module scope so repeat refinements reuse the same HTTPS pool.
+let _openaiClient = null;
+async function getOpenAIClient() {
+  if (_openaiClient) return _openaiClient;
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) return null;
+  try {
+    const OpenAI = (await import('openai')).default;
+    _openaiClient = new OpenAI({ apiKey });
+    return _openaiClient;
+  } catch (err) {
+    logger.warn('OpenAI client init failed — observation refinement disabled', {
+      error: err.message,
+    });
+    return null;
+  }
+}
+
+/**
+ * Fire-and-forget observation refinement. For each observation in the result
+ * that needs refinement (missing code/regulation/low confidence), call
+ * `gpt-5-search-api` and emit an `observation_update` message to iOS. Runs
+ * AFTER the extraction result has been sent so it doesn't block the main turn.
+ *
+ * Phase C (#5, #8): takes `entry` instead of a bare ws so we resolve
+ * `entry.ws` at send time. On reconnect the session-swap path updates
+ * `entry.ws`, so refinements in flight when the socket swaps still land on
+ * the live connection. Also pre-flight-checks ws state BEFORE each
+ * `refineObservation` call so we don't burn search tokens on a socket we
+ * already know is dead. Failed/skipped refinements remain in
+ * `entry.pendingRefinements` so the reconnect flush re-kicks them.
+ */
+async function refineObservationsAsync(entry, sessionId, observations) {
+  if (!entry || !Array.isArray(observations) || observations.length === 0) return;
+  const toRefine = observations.filter(needsRefinement);
+  if (toRefine.length === 0) return;
+
+  const openai = await getOpenAIClient();
+  if (!openai) return;
+
+  // Phase C #8: mark every obs as pending BEFORE we start so a reconnect
+  // that arrives during the await can see what's in flight.
+  entry.pendingRefinements = entry.pendingRefinements || new Map();
+  entry.recentlyRefinedIds = entry.recentlyRefinedIds || new Map();
+  for (const obs of toRefine) {
+    if (!obs.observation_id) continue; // no id → can't dedupe on reconnect
+    // Duplicate guard: if we successfully refined this id in the last 2s
+    // (short TTL), skip — the reconnect path may re-kick the same list.
+    const recentExpiry = entry.recentlyRefinedIds.get(obs.observation_id);
+    if (recentExpiry && recentExpiry > Date.now()) {
+      // Phase F: surface the dedupe block so CloudWatch can count how often
+      // the reconnect-replay path is doing redundant work (signals a
+      // reconnect loop or a Sonnet re-emit storm).
+      logger.info('observation_refinement_dedup_blocked', {
+        sessionId,
+        observationId: obs.observation_id.slice(0, 8),
+        expiresInMs: recentExpiry - Date.now(),
+      });
+      continue;
+    }
+    entry.pendingRefinements.set(obs.observation_id, { obs, attemptedAt: Date.now() });
+  }
+
+  for (const obs of toRefine) {
+    // Same dedupe check as above — re-read in case the previous iteration
+    // of this loop already completed the same id on a parallel call.
+    if (obs.observation_id) {
+      const recentExpiry = entry.recentlyRefinedIds.get(obs.observation_id);
+      if (recentExpiry && recentExpiry > Date.now()) continue;
+    }
+    try {
+      // Phase C #8 pre-flight: if the session's socket is already closed AND
+      // there's no reconnect window pending, leave the obs in pendingRefinements
+      // so the reconnect flush handles it. Saves a 1-3s search on a dead ws.
+      if (entry.ws?.readyState !== entry.ws?.OPEN && !entry.disconnectTimer) {
+        logger.info('Refinement deferred — socket closed, no reconnect pending', {
+          sessionId,
+          observationId: (obs.observation_id || '').slice(0, 8),
+        });
+        continue;
+      }
+      const refined = await refineObservation(openai, obs);
+      if (!refined) {
+        // No refinement produced — treat as resolved (no update to send).
+        if (obs.observation_id) entry.pendingRefinements.delete(obs.observation_id);
+        continue;
+      }
+      // Resolve ws at SEND time, not call time — if the socket was swapped
+      // during the await (doze/wake, transient drop), `entry.ws` now points
+      // at the live socket.
+      const currentWs = entry.ws;
+      if (!currentWs || currentWs.readyState !== currentWs.OPEN) {
+        // Socket not available — leave in pendingRefinements for reconnect
+        // flush. We already paid for the search, so don't call it again.
+        // Cache the result on the pending entry so re-kick can short-circuit.
+        if (obs.observation_id) {
+          entry.pendingRefinements.set(obs.observation_id, {
+            obs,
+            refined,
+            attemptedAt: Date.now(),
+          });
+        }
+        logger.info('Refinement result queued (socket dropped mid-refine)', {
+          sessionId,
+          observationId: (obs.observation_id || '').slice(0, 8),
+        });
+        continue;
+      }
+      currentWs.send(
+        JSON.stringify({
+          type: 'observation_update',
+          // Phase A: echo the server-assigned observation_id so iOS can patch
+          // the exact row even if Sonnet has since re-worded the observation
+          // text (fuzzy match becomes fallback only).
+          observation_id: obs.observation_id || null,
+          observation_text: obs.observation_text || obs.description || '',
+          code: refined.code,
+          regulation: refined.regulation,
+          rationale: refined.rationale,
+          source: refined.source,
+        })
+      );
+      if (obs.observation_id) {
+        entry.pendingRefinements.delete(obs.observation_id);
+        // Phase C #5 duplicate guard: 2s window where a reconnect re-kick
+        // must not re-issue the refinement.
+        entry.recentlyRefinedIds.set(obs.observation_id, Date.now() + 2000);
+      }
+      logger.info('observation_update sent', {
+        sessionId,
+        observationId: (obs.observation_id || '').slice(0, 8),
+        code: refined.code,
+        textPreview: (obs.observation_text || '').slice(0, 60),
+      });
+    } catch (err) {
+      logger.warn('Observation refinement iteration failed', {
+        sessionId,
+        error: err.message,
+      });
+      // Leave in pendingRefinements — reconnect will retry.
+    }
+  }
+}
+
+/**
+ * Phase C #5: on reconnect, re-kick any observations whose refinement
+ * never reached the iOS client. If we have a cached `refined` (search
+ * already ran and the result is buffered), send it directly — avoids a
+ * second search call. Otherwise re-enter the normal flow.
+ */
+async function replayPendingRefinements(entry, sessionId) {
+  if (!entry?.pendingRefinements || entry.pendingRefinements.size === 0) return;
+  // Prune expired recentlyRefinedIds so the map doesn't grow without bound.
+  if (entry.recentlyRefinedIds) {
+    const now = Date.now();
+    for (const [id, expiry] of entry.recentlyRefinedIds.entries()) {
+      if (expiry <= now) entry.recentlyRefinedIds.delete(id);
+    }
+  }
+  const toReplay = Array.from(entry.pendingRefinements.values());
+  logger.info('Replaying pending refinements on reconnect', {
+    sessionId,
+    count: toReplay.length,
+  });
+  const needsFreshSearch = [];
+  for (const { obs, refined } of toReplay) {
+    if (refined) {
+      // Cached result from a mid-refine socket drop — send directly.
+      if (!entry.ws || entry.ws.readyState !== entry.ws.OPEN) return;
+      try {
+        entry.ws.send(
+          JSON.stringify({
+            type: 'observation_update',
+            observation_id: obs.observation_id || null,
+            observation_text: obs.observation_text || obs.description || '',
+            code: refined.code,
+            regulation: refined.regulation,
+            rationale: refined.rationale,
+            source: refined.source,
+          })
+        );
+        if (obs.observation_id) {
+          entry.pendingRefinements.delete(obs.observation_id);
+          entry.recentlyRefinedIds.set(obs.observation_id, Date.now() + 2000);
+        }
+        logger.info('observation_update sent (replayed cached)', {
+          sessionId,
+          observationId: (obs.observation_id || '').slice(0, 8),
+        });
+      } catch (err) {
+        logger.warn('Replay cached observation_update failed', {
+          sessionId,
+          error: err.message,
+        });
+      }
+    } else {
+      needsFreshSearch.push(obs);
+    }
+  }
+  if (needsFreshSearch.length > 0) {
+    // Clear the pending entries first — refineObservationsAsync re-adds them
+    // under the dedupe guard to avoid the window where the same id is both
+    // pending AND in flight.
+    for (const obs of needsFreshSearch) {
+      if (obs.observation_id) entry.pendingRefinements.delete(obs.observation_id);
+    }
+    await refineObservationsAsync(entry, sessionId, needsFreshSearch);
+  }
+}
+
+/**
+ * Send any server-classified observation updates (RULE 6 correction edits)
+ * as `observation_update` messages. These carry the existing observation_id
+ * so iOS patches the existing row in place instead of creating a duplicate.
+ * This runs BEFORE the fire-and-forget BPG4 refinement so the iOS client
+ * sees the code change (e.g. "make that a C2") without waiting for the web
+ * search.
+ */
+function dispatchObservationUpdates(ws, sessionId, updates) {
+  if (!Array.isArray(updates) || updates.length === 0) return;
+  if (ws.readyState !== ws.OPEN) return;
+  for (const u of updates) {
+    try {
+      ws.send(
+        JSON.stringify({
+          type: 'observation_update',
+          observation_id: u.observation_id || null,
+          observation_text: u.observation_text || '',
+          code: u.code,
+          regulation: u.regulation || null,
+          rationale: u.rationale || null,
+          source: u.source || 'rule_6_edit',
+        })
+      );
+      logger.info('observation_update sent (rule_6_edit)', {
+        sessionId,
+        observationId: (u.observation_id || '').slice(0, 8),
+        code: u.code,
+        rationale: u.rationale,
+      });
+    } catch (err) {
+      logger.warn('dispatchObservationUpdates iteration failed', {
+        sessionId,
+        error: err.message,
+      });
+    }
+  }
+}
 
 // --- Per-connection rate limiting for transcript messages ---
 const WS_RATE_LIMIT = {
@@ -350,7 +602,37 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
           case 'job_state_update':
             if (currentSessionId && activeSessions.has(currentSessionId)) {
               activeSessions.get(currentSessionId).session.updateJobState(msg);
+              // Trace which StateSnapshot the next Sonnet turn will see. Critical when
+              // debugging "Sonnet asked about a circuit that's already on-screen" —
+              // absence of this log after a CCU extraction means the iOS side never
+              // fired `notifyJobStateChanged`.
+              const circuitCount = Array.isArray(msg.circuits)
+                ? msg.circuits.length
+                : Array.isArray(msg?.boards)
+                  ? msg.boards.reduce((n, b) => n + (b.circuits?.length || 0), 0)
+                  : 0;
+              logger.info('StateSnapshot refreshed', {
+                sessionId: currentSessionId,
+                reason: msg.reason || 'unspecified',
+                circuitCount,
+                boardCount: Array.isArray(msg?.boards) ? msg.boards.length : 0,
+              });
             }
+            break;
+
+          // Client-side diagnostic piggy-backed on the reliable WebSocket channel.
+          // Used by iOS to surface conditions that the multipart analytics upload
+          // can't report (because the upload itself is failing). Logged at info so
+          // CloudWatch Insights can query on category/payload.
+          case 'client_diagnostic':
+            logger.info('Client diagnostic', {
+              userId,
+              sessionId: currentSessionId,
+              category: msg.category || 'unspecified',
+              timestamp: msg.timestamp,
+              pendingAnalyticsUploads: msg.pendingAnalyticsUploads,
+              lastAnalyticsError: msg.lastAnalyticsError,
+            });
             break;
 
           case 'correction':
@@ -371,7 +653,27 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
             break;
 
           case 'session_resume':
-            if (currentSessionId && activeSessions.has(currentSessionId)) {
+            // Wave 4c.5 (rehydrate-on-reconnect) vs. legacy (sleep/wake) are
+            // disambiguated by the presence of `msg.sessionId` on the payload:
+            //
+            //   { type: 'session_resume', sessionId: '<uuid>' }   → rehydrate
+            //   { type: 'session_resume' }                         → legacy wake
+            //
+            // The legacy wake path operates on an already-open socket that's
+            // been paused by `session_pause`. It cannot carry a sessionId
+            // because the iOS sleep/wake protocol predates Wave 4c.5 and has
+            // no server-minted identifier to quote back. Keeping both paths
+            // behind the one frame name preserves backward compatibility with
+            // the iOS client during the rollout window.
+            if (msg.sessionId) {
+              const {
+                sessionId: newSessionId,
+                ack,
+                activeEntryKey,
+              } = handleSessionResumeRehydrate(ws, userId, msg.sessionId);
+              currentSessionId = activeEntryKey;
+              ws.send(JSON.stringify({ type: 'session_ack', ...ack, sessionId: newSessionId }));
+            } else if (currentSessionId && activeSessions.has(currentSessionId)) {
               const resumeEntry = activeSessions.get(currentSessionId);
               resumeEntry.session.resume();
               const pauseDurationMs = resumeEntry.pauseStartTime
@@ -470,7 +772,17 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
       if (jobState) {
         existing.session.updateJobState(jobState);
       }
-      ws.send(JSON.stringify({ type: 'session_ack', status: 'reconnected' }));
+      // Mirror the started/resumed paths: include the rehydration sessionId
+      // so the client can keep using `session_resume` later. The reconnect
+      // branch predates Wave 4c.5 but there's no harm in emitting the token
+      // here too — clients that ignore the field behave exactly as before.
+      ws.send(
+        JSON.stringify({
+          type: 'session_ack',
+          status: 'reconnected',
+          sessionId: existing.rehydrateSessionId || null,
+        })
+      );
       // Flush any extraction results that were buffered while the socket was disconnected
       flushPendingExtractions(ws, existing, sessionId);
       logger.info('Session reconnected', { sessionId, turns: existing.session.turnCount });
@@ -503,10 +815,35 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         const entryRef = activeSessions.get(sessionId);
         const currentWs = entryRef?.ws || ws;
         if (currentWs.readyState === currentWs.OPEN) {
-          const { questions_for_user, extracted_readings, spoken_response, action, ...rest } =
-            result;
+          const {
+            questions_for_user,
+            extracted_readings,
+            spoken_response,
+            action,
+            observationUpdates,
+            ...rest
+          } = result;
           const resultWithoutQuestions = { readings: extracted_readings, ...rest };
           currentWs.send(JSON.stringify({ type: 'extraction', result: resultWithoutQuestions }));
+
+          // Phase A: RULE 6 correction edits (same or similar text, new code)
+          // arrive classified by EICRExtractionSession into observationUpdates.
+          // Dispatch them immediately so iOS can patch the existing rows —
+          // these are NOT fed into refineObservationsAsync because the code is
+          // already set by the inspector; a web search would override it.
+          dispatchObservationUpdates(currentWs, sessionId, observationUpdates);
+
+          // Mirror the live-transcript path: fire BPG4 refinement for any new
+          // observations so the code/regulation gets upgraded even when the
+          // result came from the batch flush rather than the direct handler.
+          if (Array.isArray(result.observations) && result.observations.length > 0 && entryRef) {
+            refineObservationsAsync(entryRef, sessionId, result.observations).catch((err) => {
+              logger.warn('refineObservationsAsync unhandled (batch)', {
+                sessionId,
+                error: err?.message,
+              });
+            });
+          }
 
           // Forward voice command response from batch extraction (same as handleTranscript)
           if (spoken_response || action) {
@@ -538,6 +875,15 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
           );
           questionGate.resolveByFields(resolvedFields);
         }
+        // Drop pending observation_* / field-less unclear questions when Sonnet
+        // has just extracted an observation — resolveByFields can't do this
+        // because observations carry field=null/circuit=null.
+        if (Array.isArray(result.observations) && result.observations.length > 0) {
+          // Phase D: pass the observations array (not a count) so the gate can
+          // keep unrelated prior-turn obs questions — it only drops questions
+          // whose heard_value overlaps with one of the new observations.
+          questionGate.resolveObservationQuestions(result.observations);
+        }
       } catch (err) {
         logger.error('Batch flush callback error', { sessionId, error: err.message });
       }
@@ -552,6 +898,18 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
       jobState?.installation_details?.address ||
       null;
 
+    // Wave 4c.5: mint a server-side rehydration sessionId so the client can
+    // issue `session_resume { sessionId }` after a dropped WebSocket. The
+    // stored payload only needs to reference the `activeSessions` entry —
+    // the full multi-turn Sonnet context lives on `session.messages` inside
+    // that entry and is rebound on rehydrate. Storing metadata only keeps
+    // the store entries small (~100 bytes) so the LRU cap is cheap.
+    const rehydrateSessionId = sonnetSessionStore.create(userId, {
+      clientSessionId: sessionId,
+      jobId: jobId || null,
+      certType,
+    });
+
     activeSessions.set(sessionId, {
       session,
       questionGate,
@@ -564,34 +922,158 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
       isExtracting: false,
       pendingTranscripts: [],
       pendingExtractions: [],
+      // Phase C #8: refinements in flight when the socket drops — re-kicked
+      // on reconnect via replayPendingRefinements(). Maps observation_id →
+      // { obs, refined?, attemptedAt }. If `refined` is cached, the replay
+      // skips the search and sends the existing result directly.
+      pendingRefinements: new Map(),
+      // Phase C #5 short-TTL dedupe: observation_ids whose refinement was
+      // successfully sent in the last 2s. Reconnect replays must not re-fire
+      // these, and refineObservationsAsync checks it before each search call.
+      recentlyRefinedIds: new Map(),
+      rehydrateSessionId,
     });
 
-    ws.send(JSON.stringify({ type: 'session_ack', status: 'started' }));
-    logger.info('Session started', { sessionId, jobId, jobAddress, certType });
+    ws.send(
+      JSON.stringify({ type: 'session_ack', status: 'started', sessionId: rehydrateSessionId })
+    );
+    logger.info('Session started', {
+      sessionId,
+      rehydrateSessionId,
+      jobId,
+      jobAddress,
+      certType,
+    });
+  }
+
+  /**
+   * Wave 4c.5 rehydrate path. Returns the ack payload fields for the caller
+   * to wrap into the outgoing `session_ack` frame, plus the `activeSessions`
+   * key the connection should track going forward. Never throws — an
+   * unknown / expired / wrong-user token all degrade to a fresh session_ack
+   * so the client can start over without a separate error channel.
+   *
+   * The caller is responsible for:
+   *   - sending the frame
+   *   - setting `currentSessionId` to `activeEntryKey`
+   *
+   * On a successful rehydrate we also rebind `entry.ws` and `entry.questionGate`
+   * to the new socket, the same shape as `handleSessionStart`'s reconnection
+   * branch does, so extraction callbacks target the live socket.
+   */
+  function handleSessionResumeRehydrate(ws, userId, requestedSessionId) {
+    const stored = sonnetSessionStore.resume(requestedSessionId, userId);
+
+    // Miss → mint a fresh rehydration token with no underlying entry. The
+    // client will treat this as a brand-new session and follow up with
+    // `session_start` on its next transcript. We don't pre-create the
+    // runtime state here because we don't yet know the jobId / jobState
+    // the client will want bound — those arrive with session_start.
+    if (!stored) {
+      logger.info('session_resume miss — returning fresh session_ack', {
+        userId,
+        requestedSessionId,
+      });
+      // No entry minted yet; return status=new with no sessionId so the
+      // client knows rehydration failed and must send session_start.
+      return { sessionId: null, ack: { status: 'new' }, activeEntryKey: null };
+    }
+
+    const { clientSessionId } = stored;
+    const entry = activeSessions.get(clientSessionId);
+
+    // TTL-valid store hit but the runtime entry is gone (e.g. the 5-min
+    // disconnectTimer fired and cleaned up activeSessions, but the store
+    // entry was also ~5 min old so we're on the TTL boundary). Treat as
+    // a miss — no context to rehydrate.
+    if (!entry) {
+      logger.info('session_resume store hit but activeSessions entry missing', {
+        userId,
+        requestedSessionId,
+        clientSessionId,
+      });
+      sonnetSessionStore.remove(requestedSessionId);
+      return { sessionId: null, ack: { status: 'new' }, activeEntryKey: null };
+    }
+
+    // Cancel any pending disconnect timer — we're live again.
+    if (entry.disconnectTimer) {
+      clearTimeout(entry.disconnectTimer);
+      entry.disconnectTimer = null;
+    }
+
+    // Rebind the socket + questionGate callback to the new WS, matching the
+    // handleSessionStart reconnection branch. This preserves the Anthropic
+    // conversation history (lives on entry.session.messages).
+    entry.ws = ws;
+    entry.questionGate.destroy();
+    entry.questionGate = new QuestionGate((questions) => {
+      for (const q of questions) {
+        if (ws.readyState === ws.OPEN) {
+          const { type: questionType, ...rest } = q;
+          ws.send(JSON.stringify({ type: 'question', question_type: questionType, ...rest }));
+        }
+      }
+    });
+
+    // Flush any extraction results that were buffered while the socket was
+    // disconnected — same path as handleSessionStart's reconnect branch.
+    flushPendingExtractions(ws, entry, clientSessionId);
+
+    logger.info('session_resume rehydrated', {
+      userId,
+      requestedSessionId,
+      clientSessionId,
+      turns: entry.session.turnCount,
+    });
+
+    return {
+      sessionId: requestedSessionId,
+      ack: { status: 'resumed' },
+      activeEntryKey: clientSessionId,
+    };
   }
 
   function flushPendingExtractions(ws, entry, sessionId) {
-    if (!entry.pendingExtractions.length) return;
-    const buffered = [...entry.pendingExtractions];
-    entry.pendingExtractions.length = 0;
-    logger.info('Flushing pending extractions on reconnect', {
-      sessionId,
-      count: buffered.length,
-    });
-    for (const result of buffered) {
+    if (entry.pendingExtractions.length) {
+      const buffered = [...entry.pendingExtractions];
+      entry.pendingExtractions.length = 0;
+      logger.info('Flushing pending extractions on reconnect', {
+        sessionId,
+        count: buffered.length,
+      });
+      for (const result of buffered) {
+        try {
+          const { questions_for_user, extracted_readings, observationUpdates, ...rest } = result;
+          const resultWithoutQuestions = { readings: extracted_readings, ...rest };
+          ws.send(JSON.stringify({ type: 'extraction', result: resultWithoutQuestions }));
+          // Phase A: if the buffered extraction carried RULE 6 correction edits,
+          // replay them on the restored socket so iOS doesn't miss the patch.
+          dispatchObservationUpdates(ws, sessionId, observationUpdates);
+        } catch (err) {
+          logger.error('Failed to flush buffered extraction', { sessionId, error: err.message });
+        }
+      }
+      // Send current cost update after flushing all buffered extractions
       try {
-        const { questions_for_user, extracted_readings, ...rest } = result;
-        const resultWithoutQuestions = { readings: extracted_readings, ...rest };
-        ws.send(JSON.stringify({ type: 'extraction', result: resultWithoutQuestions }));
+        ws.send(JSON.stringify(entry.session.costTracker.toCostUpdate()));
       } catch (err) {
-        logger.error('Failed to flush buffered extraction', { sessionId, error: err.message });
+        logger.error('Failed to send cost update after flush', { sessionId, error: err.message });
       }
     }
-    // Send current cost update after flushing all buffered extractions
-    try {
-      ws.send(JSON.stringify(entry.session.costTracker.toCostUpdate()));
-    } catch (err) {
-      logger.error('Failed to send cost update after flush', { sessionId, error: err.message });
+    // Phase C #5/#8: re-kick any in-flight observation refinements whose
+    // `observation_update` never reached iOS before the socket dropped. Fire
+    // and forget — cached refinements send directly, otherwise a fresh search
+    // is enqueued. Runs unconditionally (independent of pendingExtractions)
+    // because a refinement can be pending even with zero buffered extractions
+    // (e.g. batch already flushed, refinement still awaiting BPG4).
+    if (entry.pendingRefinements && entry.pendingRefinements.size > 0) {
+      replayPendingRefinements(entry, sessionId).catch((err) => {
+        logger.warn('replayPendingRefinements unhandled', {
+          sessionId,
+          error: err?.message,
+        });
+      });
     }
   }
 
@@ -626,12 +1108,58 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
     }, 30000);
 
     try {
+      // If the iOS client tagged this transcript with `in_response_to`, prepend
+      // the TTS question context so Sonnet can interpret replies like "yes",
+      // "code 2", or "FI" that only make sense alongside the preceding prompt.
+      // We inline this as a bracketed note — it stays in the conversation
+      // history and helps future turns too.
+      let transcriptText = msg.text;
+      if (
+        msg.in_response_to &&
+        typeof msg.in_response_to === 'object' &&
+        msg.in_response_to.question
+      ) {
+        // Escape the question via JSON.stringify to preserve quoting and neutralise
+        // any stray `"` or newlines — untrusted client can otherwise close the
+        // enclosing literal early or inject a new `[...]` bracketed note that
+        // Sonnet would treat as another system directive. JSON.stringify returns
+        // a quoted string already, so we drop our manual quotes.
+        const rawQ = String(msg.in_response_to.question).slice(0, 200);
+        const qJson = JSON.stringify(rawQ);
+        // Whitelist `type` against the known question-type vocabulary. Unknown
+        // values are dropped rather than passed through so a malicious client
+        // can't smuggle e.g. `type: "x\nIGNORE PREVIOUS INSTRUCTIONS"` into the
+        // Sonnet user turn. Keep the set in sync with QuestionGate and Sonnet
+        // prompt's allowed `question.type` values.
+        const ALLOWED_QUESTION_TYPES = new Set([
+          'observation_confirmation',
+          'observation_code',
+          'observation_unclear',
+          'unclear',
+          'clarify',
+          'out_of_range',
+          'orphaned',
+          'tt_confirmation',
+          'voice_command',
+        ]);
+        const rawType = typeof msg.in_response_to.type === 'string' ? msg.in_response_to.type : '';
+        const safeType = ALLOWED_QUESTION_TYPES.has(rawType) ? rawType : null;
+        const qType = safeType ? ` type=${safeType}` : '';
+        transcriptText = `[In response to TTS question${qType}: ${qJson}] ${msg.text}`;
+        logger.info('Transcript annotated with in_response_to', {
+          sessionId,
+          qType: safeType || 'unknown',
+          qTypeDropped: rawType && !safeType ? rawType.slice(0, 40) : undefined,
+          qPreview: rawQ.slice(0, 60),
+        });
+      }
+
       logger.info('Extracting from transcript', {
         sessionId,
-        textPreview: msg.text.substring(0, 80),
+        textPreview: transcriptText.substring(0, 80),
       });
       const regexResults = msg.regexResults || entry.lastRegexResults || [];
-      const result = await entry.session.extractFromUtterance(msg.text, regexResults, {
+      const result = await entry.session.extractFromUtterance(transcriptText, regexResults, {
         confirmationsEnabled: msg.confirmations_enabled || false,
       });
       entry.lastRegexResults = [];
@@ -650,9 +1178,36 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
       // Rename extracted_readings → readings to match the web client interface
       // Strip spoken_response/action — they're sent separately as voice_command_response
       if (ws.readyState === ws.OPEN) {
-        const { questions_for_user, extracted_readings, spoken_response, action, ...rest } = result;
+        const {
+          questions_for_user,
+          extracted_readings,
+          spoken_response,
+          action,
+          observationUpdates,
+          ...rest
+        } = result;
         const resultWithoutQuestions = { readings: extracted_readings, ...rest };
         ws.send(JSON.stringify({ type: 'extraction', result: resultWithoutQuestions }));
+
+        // Phase A: dispatch RULE 6 correction edits (observation_id reused).
+        // These must fire before the BPG4 refinement path so iOS patches the
+        // code change before any web-search-based refinement considers the
+        // observation.
+        dispatchObservationUpdates(ws, sessionId, observationUpdates);
+
+        // Fire-and-forget BPG4 / BS 7671 refinement for new observations. Runs
+        // AFTER extraction is sent so the inspector sees the observation
+        // immediately; the refined code/regulation arrives a second or two
+        // later as an `observation_update` and the iOS client patches the
+        // already-rendered observation in place.
+        if (Array.isArray(result.observations) && result.observations.length > 0 && entry) {
+          refineObservationsAsync(entry, sessionId, result.observations).catch((err) => {
+            logger.warn('refineObservationsAsync unhandled', {
+              sessionId,
+              error: err?.message,
+            });
+          });
+        }
 
         // If Sonnet returned a spoken_response or action (query/command recognised),
         // forward as a voice_command_response — iOS handles these via the existing
@@ -696,6 +1251,14 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
           result.extracted_readings.map((r) => `${r.field}:${r.circuit}`)
         );
         entry.questionGate.resolveByFields(resolvedFields);
+      }
+
+      // Resolve observation-only questions when Sonnet extracted an observation.
+      // Mirrors the batch-flush callback path above.
+      if (Array.isArray(result.observations) && result.observations.length > 0) {
+        // Phase D: pass the observations array (not a count) so the gate can
+        // keep unrelated prior-turn obs questions.
+        entry.questionGate.resolveObservationQuestions(result.observations);
       }
 
       // Periodic orphaned value review — every 10 extraction turns
@@ -758,6 +1321,26 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
     const summary = entry.session.stop();
     entry.questionGate.destroy();
 
+    // Phase F: emit `observation_update_unmatched` for any refinement that
+    // never reached iOS. Paired with the iOS-side `observation_update_no_match`
+    // event so the session optimizer can spot one-way failures (server sent,
+    // client didn't match) vs. complete drop-off (server never sent). Fires
+    // here rather than on a periodic sweep so the event always lands at a
+    // deterministic point relative to session end.
+    if (entry.pendingRefinements && entry.pendingRefinements.size > 0) {
+      const now = Date.now();
+      for (const [id, pending] of entry.pendingRefinements.entries()) {
+        logger.info('observation_update_unmatched', {
+          sessionId,
+          observationId: id.slice(0, 8),
+          ageMs: now - (pending.attemptedAt || now),
+          hadRefinedCache: Boolean(pending.refined),
+        });
+      }
+      summary.observation_refinement_unmatched = entry.pendingRefinements.size;
+      entry.pendingRefinements.clear();
+    }
+
     // Attach job identity so cost can be traced back to the job
     summary.jobId = entry.jobId || null;
     summary.jobAddress = entry.jobAddress || null;
@@ -779,6 +1362,12 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
 
     if (ws.readyState === ws.OPEN) {
       ws.send(JSON.stringify({ type: 'session_ack', status: 'stopped', sessionStats: summary }));
+    }
+    // Invalidate the rehydration token — a cleanly-stopped session has no
+    // context worth preserving and we don't want a stale token lingering in
+    // the store for the full TTL.
+    if (entry.rehydrateSessionId) {
+      sonnetSessionStore.remove(entry.rehydrateSessionId);
     }
     activeSessions.delete(sessionId);
     logger.info('Session stopped', { sessionId });

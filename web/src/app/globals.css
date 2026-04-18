@@ -1,0 +1,355 @@
+@import "tailwindcss";
+
+/* =============================================================================
+ * CertMate Design Tokens (port of iOS CMDesign system)
+ * Reference: CertMateUnified/Sources/Helpers/CertMateDesign.swift
+ * ============================================================================= */
+@theme {
+  /* ---------- Brand ---------- */
+  --color-brand-blue: #0066ff;
+  --color-brand-blue-soft: #3b82f6;
+  --color-brand-green: #00cc66;
+  --color-brand-green-soft: #22c55e;
+
+  /* ---------- Surface hierarchy (dark mode, forced) ---------- */
+  --color-surface-0: #0a0a0f; /* page background */
+  --color-surface-1: #141419; /* elevated panel */
+  --color-surface-2: #1c1c24; /* card */
+  --color-surface-3: #24242e; /* hovered / top-of-stack card */
+  --color-surface-4: #2d2d38; /* pressed */
+
+  /* ---------- Text ---------- */
+  --color-text-primary: #f5f5f7;
+  --color-text-secondary: #a0a0aa;
+  --color-text-tertiary: #6e6e78;
+  --color-text-disabled: #48484f;
+
+  /* ---------- Borders / dividers ---------- */
+  --color-border-subtle: rgba(255, 255, 255, 0.06);
+  --color-border-default: rgba(255, 255, 255, 0.1);
+  --color-border-strong: rgba(255, 255, 255, 0.18);
+
+  /* ---------- Status ---------- */
+  --color-status-pending: #6e6e78;
+  --color-status-processing: #ff9f0a;
+  --color-status-done: #30d158;
+  --color-status-failed: #ff453a;
+  --color-status-limitation: #bf5af2;
+
+  /* ---------- Recording states ---------- */
+  --color-rec-idle: #6e6e78;
+  --color-rec-listening: #ffd60a;
+  --color-rec-speaking: #30d158;
+  --color-rec-trailing: #ff9f0a;
+  --color-rec-active: #ff453a;
+  --color-rec-paused: #ff9f0a;
+  --color-rec-confirmed: #30d158;
+
+  /* ---------- Transcript bar ---------- */
+  --color-transcript-keyword: #3b82f6;
+  --color-transcript-value-bg: rgba(48, 209, 88, 0.18);
+  --color-transcript-value-border: rgba(48, 209, 88, 0.36);
+
+  /* ---------- Severity (observations) ---------- */
+  --color-severity-c1: #ff453a;
+  --color-severity-c2: #ff9f0a;
+  --color-severity-c3: #0a84ff;
+  --color-severity-fi: #bf5af2;
+  --color-severity-ok: #30d158;
+
+  /* ---------- Spacing (4pt grid, matches CMDesign.Spacing) ---------- */
+  --spacing-xs: 2px;
+  --spacing-sm: 4px;
+  --spacing-md: 8px;
+  --spacing-lg: 16px;
+  --spacing-xl: 24px;
+  --spacing-2xl: 32px;
+  --spacing-3xl: 48px;
+
+  /* ---------- Radius ---------- */
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-xl: 20px;
+
+  /* ---------- Fonts (SF Pro Rounded stack on macOS/iOS, Inter fallback elsewhere) ---------- */
+  --font-rounded:
+    ui-rounded, -apple-system, BlinkMacSystemFont, "SF Pro Rounded", "SF Pro",
+    "Inter", "Segoe UI", system-ui, sans-serif;
+  --font-mono:
+    ui-monospace, "SF Mono", "Menlo", "Cascadia Code", Consolas, monospace;
+
+  /* ---------- Heights ---------- */
+  --h-input: 44px;
+  --h-button: 44px;
+  --h-touch-target: 44px;
+  --h-topnav: 56px;
+  --h-tabbar: 48px;
+  --h-transcript-strip: 56px;
+}
+
+/* =============================================================================
+ * Base styles
+ * ============================================================================= */
+:root {
+  color-scheme: dark;
+}
+
+html,
+body {
+  background: var(--color-surface-0);
+  color: var(--color-text-primary);
+  font-family: var(--font-rounded);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-feature-settings: "rlig" 1, "calt" 1;
+  text-rendering: optimizeLegibility;
+}
+
+body {
+  min-height: 100svh;
+  overscroll-behavior-y: none;
+}
+
+/* Focus ring: 2px in brand blue */
+:focus-visible {
+  outline: 2px solid var(--color-brand-blue);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+/* Smoother scrollbars on macOS/iOS */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--color-border-default);
+  border-radius: 999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-border-strong);
+}
+
+/* =============================================================================
+ * Motion — respects prefers-reduced-motion
+ * ============================================================================= */
+@keyframes pulse-dot {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.55;
+    transform: scale(1.15);
+  }
+}
+
+@keyframes shimmer {
+  0% {
+    background-position: -400px 0;
+  }
+  100% {
+    background-position: 400px 0;
+  }
+}
+
+@keyframes orb-drift {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0);
+  }
+  50% {
+    transform: translate3d(24px, -18px, 0);
+  }
+}
+
+/*
+ * D9 — global reduced-motion guard.
+ *
+ * Catches every animation/transition on the page in one rule so
+ * individual components don't have to opt in. The !important is
+ * deliberate (normally avoided): it overrides the per-element
+ * `transition-duration` utilities Tailwind emits inline, which
+ * otherwise beat a non-!important global rule.
+ *
+ * The per-feature `.cm-live-field`, `.cm-live-section`, and
+ * `.cm-dialog-*` blocks further down each have their own
+ * prefers-reduced-motion handling (e.g. the LiveFill flash keeps
+ * a 200ms tail so the signal is still visible). Those local
+ * rules are intentional overrides — !important here wins on
+ * duration but the local block can still set
+ * transition-property / animation-name to `none` to disable a
+ * visual effect while still firing an instantaneous state change.
+ *
+ * scroll-behavior:auto — supplements the motion reduction:
+ * smooth-scrolling a ladder-top inspector who has reduced-motion
+ * set is a bug on our part, not their OS preference.
+ */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* =============================================================================
+ * Utility classes
+ * ============================================================================= */
+.cm-glass {
+  background: color-mix(in srgb, var(--color-surface-2) 76%, transparent);
+  backdrop-filter: saturate(1.2) blur(18px);
+  -webkit-backdrop-filter: saturate(1.2) blur(18px);
+  border: 1px solid var(--color-border-default);
+}
+
+.cm-card {
+  background: var(--color-surface-2);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-lg);
+}
+
+.cm-pulse-dot {
+  animation: pulse-dot 0.9s ease-in-out infinite;
+}
+
+.cm-shimmer {
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(255, 255, 255, 0.06) 45%,
+    rgba(255, 255, 255, 0.14) 50%,
+    rgba(255, 255, 255, 0.06) 55%,
+    transparent 100%
+  );
+  background-size: 400px 100%;
+  animation: shimmer 2.4s linear infinite;
+}
+
+.cm-orb {
+  position: absolute;
+  border-radius: 999px;
+  filter: blur(60px);
+  opacity: 0.55;
+  animation: orb-drift 9s ease-in-out infinite;
+  pointer-events: none;
+}
+
+/* Hide scrollbars on the horizontal tab strip (mobile job nav). */
+.scrollbar-hide::-webkit-scrollbar {
+  display: none;
+}
+.scrollbar-hide {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+/* =============================================================================
+ * LiveFillView flash — brand-blue highlight that fades back to transparent
+ * over 2s ease-out. Toggling `data-recent="true|false"` re-triggers the
+ * transition every time a field is marked fresh by the LiveFillStore.
+ * Respect prefers-reduced-motion — shorten to 200ms so the signal is still
+ * visible without the slow animation.
+ * ============================================================================= */
+.cm-live-field {
+  background-color: transparent;
+  transition: background-color 2s ease-out;
+}
+.cm-live-field[data-recent='true'] {
+  background-color: color-mix(in srgb, var(--color-brand-blue) 18%, transparent);
+  transition: background-color 0s;
+}
+@media (prefers-reduced-motion: reduce) {
+  .cm-live-field {
+    transition: background-color 200ms ease-out;
+  }
+  .cm-live-field[data-recent='true'] {
+    transition: background-color 0s;
+  }
+}
+
+/* LiveFillView — section entrance stagger. Each .cm-live-section fades
+ * and rises 6px into place, offset by DOM position, so the overlay
+ * renders calmly instead of flashing every card at once. */
+.cm-live-section {
+  opacity: 0;
+  transform: translateY(6px);
+  animation: cm-live-section-in 320ms ease-out forwards;
+}
+.cm-live-section:nth-child(1) {
+  animation-delay: 0ms;
+}
+.cm-live-section:nth-child(2) {
+  animation-delay: 40ms;
+}
+.cm-live-section:nth-child(3) {
+  animation-delay: 80ms;
+}
+.cm-live-section:nth-child(4) {
+  animation-delay: 120ms;
+}
+.cm-live-section:nth-child(5) {
+  animation-delay: 160ms;
+}
+.cm-live-section:nth-child(6) {
+  animation-delay: 200ms;
+}
+@keyframes cm-live-section-in {
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .cm-live-section {
+    animation: none;
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* =============================================================================
+ * Radix Dialog transitions (Wave 4 D5)
+ *
+ * Radix flips `data-state` between "open" and "closed" on the Overlay
+ * and Content; we key simple fade/scale transitions off those values.
+ * `prefers-reduced-motion` collapses the duration to 0 so the open/close
+ * still fires (Radix needs the closed state to unmount) but without any
+ * visible motion.
+ * ========================================================================== */
+.cm-dialog-overlay {
+  transition: opacity 120ms ease-out;
+}
+.cm-dialog-overlay[data-state='closed'] {
+  opacity: 0;
+}
+.cm-dialog-overlay[data-state='open'] {
+  opacity: 1;
+}
+.cm-dialog-content {
+  transition:
+    opacity 150ms ease-out,
+    transform 150ms ease-out;
+}
+.cm-dialog-content[data-state='closed'] {
+  opacity: 0;
+  transform: translate(-50%, -50%) scale(0.96);
+}
+.cm-dialog-content[data-state='open'] {
+  opacity: 1;
+  transform: translate(-50%, -50%) scale(1);
+}
+@media (prefers-reduced-motion: reduce) {
+  .cm-dialog-overlay,
+  .cm-dialog-content {
+    transition: none;
+  }
+}
