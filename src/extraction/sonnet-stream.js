@@ -737,12 +737,33 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
     }, 30000);
 
     try {
+      // If the iOS client tagged this transcript with `in_response_to`, prepend
+      // the TTS question context so Sonnet can interpret replies like "yes",
+      // "code 2", or "FI" that only make sense alongside the preceding prompt.
+      // We inline this as a bracketed note — it stays in the conversation
+      // history and helps future turns too.
+      let transcriptText = msg.text;
+      if (
+        msg.in_response_to &&
+        typeof msg.in_response_to === 'object' &&
+        msg.in_response_to.question
+      ) {
+        const q = String(msg.in_response_to.question).slice(0, 200);
+        const qType = msg.in_response_to.type ? ` type=${msg.in_response_to.type}` : '';
+        transcriptText = `[In response to TTS question${qType}: "${q}"] ${msg.text}`;
+        logger.info('Transcript annotated with in_response_to', {
+          sessionId,
+          qType: msg.in_response_to.type || 'unknown',
+          qPreview: q.slice(0, 60),
+        });
+      }
+
       logger.info('Extracting from transcript', {
         sessionId,
-        textPreview: msg.text.substring(0, 80),
+        textPreview: transcriptText.substring(0, 80),
       });
       const regexResults = msg.regexResults || entry.lastRegexResults || [];
-      const result = await entry.session.extractFromUtterance(msg.text, regexResults, {
+      const result = await entry.session.extractFromUtterance(transcriptText, regexResults, {
         confirmationsEnabled: msg.confirmations_enabled || false,
       });
       entry.lastRegexResults = [];
