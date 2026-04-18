@@ -36,7 +36,12 @@ const withSerwist = withSerwistInit({
 });
 
 const nextConfig: NextConfig = {
-  /* config options here */
+  // `docker/nextjs.Dockerfile` copies `.next/standalone` + `.next/static`
+  // into the runner stage and invokes `node web/server.js`. That layout
+  // only exists when Next emits a standalone build, so this flag is
+  // mandatory for the production image — without it, the Docker build
+  // fails in buildx with "/app/web/.next/standalone: not found".
+  output: 'standalone',
 };
 
 export default withSerwist(nextConfig);
