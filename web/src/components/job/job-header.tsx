@@ -2,26 +2,33 @@
 
 import * as React from 'react';
 import { useRouter } from 'next/navigation';
-import { ChevronLeft, MoreHorizontal } from 'lucide-react';
+import { ChevronLeft } from 'lucide-react';
 import { useJobContext } from '@/lib/job-context';
-import { IconButton } from '@/components/ui/icon-button';
 
 /**
  * iOS-style job detail header:
  *
- *    [ < Back ]         <address>                  [ ··· ]
+ *    [ < Back ]         <address>
  *
  * - Back button on the left (chevron + "Back" text), tinted brand blue.
  * - Centred title showing the job address (truncated on narrow screens).
- * - Overflow 3-dot menu button on the right — placeholder wired to a
- *   console handler until Phase 6 settings + delete actions land.
  *
- * Save-status indicator moves beneath the centred title as a small pill so
- * it remains visible without fighting the iOS header symmetry.
+ * Pre-deploy: the 3-dot overflow menu that iOS carries on the right has
+ * been removed for web — its handler was a `console.log` stub and there
+ * are no wired menu actions yet (rename / delete / export all live on
+ * the Dashboard or in separate tabs on web). Shipping a button that
+ * only logs would be a lint-zero regression AND a user-visible dead
+ * control. Re-introduce when the actions land; a Phase-6 follow-up is
+ * tracked in the rebuild plan.
+ *
+ * Save-status indicator sits beneath the centred title as a small pill
+ * so it remains visible without fighting the iOS header symmetry. Now
+ * driven by the real save pipeline in `JobProvider` (was hardcoded to
+ * `false` pre-deploy).
  */
 export function JobHeader() {
   const router = useRouter();
-  const { job, isDirty, isSaving } = useJobContext();
+  const { job, isDirty, isSaving, saveError } = useJobContext();
 
   return (
     <header className="flex flex-col border-b border-[var(--color-border-subtle)] bg-[var(--color-surface-0)]/80 px-2 py-2 backdrop-blur md:px-4">
@@ -37,36 +44,43 @@ export function JobHeader() {
 
         <h1
           className="pointer-events-none absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 truncate text-center text-[17px] font-semibold text-[var(--color-text-primary)]"
-          style={{ maxWidth: 'calc(100% - 200px)' }}
+          style={{ maxWidth: 'calc(100% - 120px)' }}
         >
           {job.address || 'Untitled job'}
         </h1>
-
-        {/* D8: 44×44 (was 36×36 — h-9 w-9). The surface variant preserves
-         * the iOS filled-circle affordance; brand-blue text is added via
-         * className since it's job-header-specific and not a shared variant. */}
-        <IconButton
-          variant="surface"
-          aria-label="Job menu"
-          onClick={() => {
-            // Placeholder for the iOS header's 3-dot menu. Full set of
-            // actions (rename, delete, export, etc.) lands in Phase 6.
-            console.log('[job-header] overflow menu');
-          }}
-          className="ml-auto text-[var(--color-brand-blue)]"
-        >
-          <MoreHorizontal className="h-5 w-5" strokeWidth={2} aria-hidden />
-        </IconButton>
       </div>
 
       <div className="flex justify-center pb-1">
-        <SaveStatus isDirty={isDirty} isSaving={isSaving} />
+        <SaveStatus isDirty={isDirty} isSaving={isSaving} saveError={saveError} />
       </div>
     </header>
   );
 }
 
-function SaveStatus({ isDirty, isSaving }: { isDirty: boolean; isSaving: boolean }) {
+function SaveStatus({
+  isDirty,
+  isSaving,
+  saveError,
+}: {
+  isDirty: boolean;
+  isSaving: boolean;
+  saveError: string | null;
+}) {
+  // Error pill takes precedence — a 4xx save failure is the most
+  // important state for the inspector to see, and showing "Saving…"
+  // on top would hide the fact that something's broken.
+  if (saveError) {
+    return (
+      <span
+        role="alert"
+        className="flex shrink-0 items-center gap-1.5 rounded-full border border-[var(--color-status-failed)]/30 bg-[var(--color-status-failed)]/10 px-2.5 py-0.5 text-[11px] text-[var(--color-status-failed)]"
+        title={saveError}
+      >
+        <span className="block h-1.5 w-1.5 rounded-full bg-[var(--color-status-failed)]" />
+        Save failed
+      </span>
+    );
+  }
   if (isSaving) {
     return (
       <span className="flex shrink-0 items-center gap-1.5 rounded-full border border-[var(--color-border-subtle)] bg-[var(--color-surface-2)] px-2.5 py-0.5 text-[11px] text-[var(--color-text-secondary)]">
