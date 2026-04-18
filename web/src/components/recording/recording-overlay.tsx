@@ -78,8 +78,33 @@ export function RecordingOverlay() {
       <DialogContent
         unstyled
         aria-label="Recording session"
+        // The overlay has no single "description" sentence to pin an
+        // `aria-describedby` to — the transcript / state / questions
+        // are all dynamic regions. Passing `undefined` silences the
+        // Radix console warning without promising a description.
+        aria-describedby={undefined}
         className="flex items-end justify-center bg-black/60 backdrop-blur-sm md:items-center"
         onPointerDownOutside={(e) => e.preventDefault()}
+        // Radix's default focus restoration reads `document.activeElement`
+        // at dialog-open-time. Because `start()` is async and fires the
+        // `setOverlayOpen(true)` from inside a pointer click, the browser
+        // can briefly dump focus to `<body>` between the pointerup and
+        // the state flush — so Radix sometimes captures `<body>` as the
+        // restore target, making Esc a visual no-op for keyboard users.
+        // We fix that deterministically by pointing focus at the FAB
+        // ourselves on close. The FAB's aria-label flips between
+        // "Start recording" and "Open recording overlay" depending on
+        // whether the session is still running (minimise keeps it
+        // alive), so we match either label.
+        onCloseAutoFocus={(event) => {
+          const fab = document.querySelector<HTMLButtonElement>(
+            'button[aria-label="Start recording"], button[aria-label="Open recording overlay"]'
+          );
+          if (fab) {
+            event.preventDefault();
+            fab.focus();
+          }
+        }}
       >
         {/* Radix requires a DialogTitle for a11y (and Playwright's
             `name:` filter targets the accessible name); hide it visually

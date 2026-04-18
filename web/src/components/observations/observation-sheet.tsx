@@ -166,6 +166,10 @@ export function ObservationSheet({
       <DialogContent
         unstyled
         aria-label="Observation"
+        // The sheet is a form, not a single-paragraph prompt, so there's
+        // no `DialogDescription` to wire an `aria-describedby` to.
+        // Passing undefined silences Radix's console warning.
+        aria-describedby={undefined}
         className="flex items-end justify-center md:items-center"
       >
         {/* Panel */}
