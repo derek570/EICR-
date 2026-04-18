@@ -17,7 +17,7 @@ import {
 import { api } from '@/lib/api-client';
 import { useCurrentUser } from '@/lib/use-current-user';
 import { isSystemAdmin } from '@/lib/roles';
-import type { AdminUser } from '@/lib/types';
+import type { AdminUser, CompanyLite } from '@/lib/types';
 import { ApiError } from '@/lib/types';
 import { Button } from '@/components/ui/button';
 import { ConfirmDialog } from '@/components/ui/confirm-dialog';
@@ -65,12 +65,20 @@ export default function AdminEditUserPage() {
   const [unlocking, setUnlocking] = React.useState(false);
   const [showResetSheet, setShowResetSheet] = React.useState(false);
   const [showUnlockConfirm, setShowUnlockConfirm] = React.useState(false);
+  const [showDeactivateConfirm, setShowDeactivateConfirm] = React.useState(false);
 
   const [name, setName] = React.useState('');
   const [email, setEmail] = React.useState('');
   const [companyName, setCompanyName] = React.useState('');
   const [role, setRole] = React.useState<'admin' | 'user'>('user');
   const [isActive, setIsActive] = React.useState(true);
+  // Company assignment + company-role state. `companyId === ''` means
+  // "unassigned" (maps to a null write on save); `companyRole === ''`
+  // means "none" (also null on save). See `handleSave` for the
+  // null-coercion rules.
+  const [companyId, setCompanyId] = React.useState<string>('');
+  const [companyRole, setCompanyRole] = React.useState<'' | 'owner' | 'admin' | 'employee'>('');
+  const [companies, setCompanies] = React.useState<CompanyLite[]>([]);
 
   // Stable per-mount "now" — react-hooks/purity disallows Date.now() in render.
   // `load()` re-runs after unlock, so if the lockout expires naturally between
@@ -100,6 +108,8 @@ export default function AdminEditUserPage() {
           setCompanyName(found.company_name ?? '');
           setRole(found.role ?? 'user');
           setIsActive(found.is_active !== false);
+          setCompanyId(found.company_id ?? '');
+          setCompanyRole((found.company_role as typeof companyRole) ?? '');
           return;
         }
         if (!res.pagination.hasMore) break;
@@ -116,6 +126,28 @@ export default function AdminEditUserPage() {
     if (!currentUser) return;
     void load();
   }, [currentUser, load]);
+
+  // Fetch companies list for the picker. Runs once on mount (no
+  // dependency on `userId`) — the list is system-wide and rarely
+  // changes during a single edit session. Failure is silent beyond a
+  // console warn: the picker degrades to showing the raw UUID, which
+  // is still editable but less friendly. Don't block page render on
+  // this.
+  React.useEffect(() => {
+    if (!currentUser || !isSystemAdmin(currentUser)) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const list = await api.adminListCompanies();
+        if (!cancelled) setCompanies(list);
+      } catch (err) {
+        console.warn('[admin-edit] failed to load companies list', err);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [currentUser]);
 
   // Role gate.
   if (currentUser && !isSystemAdmin(currentUser)) {
@@ -154,6 +186,19 @@ export default function AdminEditUserPage() {
 
   async function handleSave() {
     if (!canSave) return;
+    // If the admin is toggling is_active from true → false, intercept
+    // and pop the confirm modal. The actual save fires from the
+    // modal's onConfirm. Skip the interception for self-edits (the
+    // isActive toggle is disabled anyway) and for reactivate paths
+    // (re-enabling is reversible + low-risk).
+    if (!isSelf && row?.is_active !== false && !isActive) {
+      setShowDeactivateConfirm(true);
+      return;
+    }
+    await performSave();
+  }
+
+  async function performSave() {
     setSaving(true);
     setError(null);
     try {
@@ -162,6 +207,19 @@ export default function AdminEditUserPage() {
       // empty-string company name that still passes truthy checks in
       // joins and search and silently corrupts the row.
       const trimmedCompany = companyName.trim();
+      // Guard the self-reassignment path client-side — matches the
+      // backend 400 in admin-users.js. An admin editing their own row
+      // never sends company_id in the patch so the server can't
+      // accidentally move them.
+      const companyAssignmentPatch: {
+        company_id?: string | null;
+        company_role?: 'owner' | 'admin' | 'employee' | null;
+      } = isSelf
+        ? {}
+        : {
+            company_id: companyId === '' ? null : companyId,
+            company_role: companyRole === '' ? null : companyRole,
+          };
       await api.adminUpdateUser(userId, {
         name: name.trim(),
         email: email.trim(),
@@ -170,6 +228,7 @@ export default function AdminEditUserPage() {
         // it anyway but we don't want to even send a value that would
         // bounce.
         ...(isSelf ? {} : { role, is_active: isActive }),
+        ...companyAssignmentPatch,
       });
       // If the admin edited their own record (name/email/company), the
       // stashed snapshot in localStorage is now stale. Refresh so the
@@ -186,6 +245,7 @@ export default function AdminEditUserPage() {
       }
     } finally {
       setSaving(false);
+      setShowDeactivateConfirm(false);
     }
   }
 
@@ -313,14 +373,49 @@ export default function AdminEditUserPage() {
           onChange={(e) => setCompanyName(e.target.value)}
           hint="Displayed on the user's certificates."
         />
-        <p className="text-[11px] text-[var(--color-text-tertiary)]">
-          Company ID: <code className="font-mono">{row.company_id ?? '—'}</code> · Company role:{' '}
-          <code className="font-mono">{row.company_role ?? '—'}</code>
-        </p>
-        <p className="text-[11px] text-[var(--color-text-tertiary)]">
-          Company reassignment isn&apos;t editable here — use the dedicated company assignment API
-          (full picker arrives in a later phase).
-        </p>
+        {/*
+          Company assignment picker — fed by `GET /api/admin/users/companies/list`.
+          Falls back to a static option list if the fetch fails so the
+          admin isn't locked out of editing the rest of the row.
+          Disabled for self-edits — the backend 400s on self-reassign,
+          and the disabled state keeps the UI honest about that.
+        */}
+        <LabelledSelect
+          label="Assigned Company"
+          value={companyId}
+          onChange={(v) => setCompanyId(v)}
+          disabled={isSelf}
+          options={[
+            { value: '', label: '— Unassigned —' },
+            // Preserve the currently-assigned company as an option
+            // even if the companies list hasn't loaded yet (or failed
+            // to load). Without this, opening the page for a user
+            // whose company doesn't match any loaded option would
+            // silently clear their assignment on save.
+            ...(companyId && !companies.some((c) => c.id === companyId)
+              ? [{ value: companyId, label: `Current (${companyId.slice(0, 8)}…)` }]
+              : []),
+            ...companies.map((c) => ({ value: c.id, label: c.name })),
+          ]}
+        />
+        <LabelledSelect
+          label="Company Role"
+          value={companyRole}
+          onChange={(v) => setCompanyRole(v as typeof companyRole)}
+          disabled={isSelf}
+          options={[
+            { value: '', label: '— None —' },
+            { value: 'employee', label: 'Employee' },
+            { value: 'admin', label: 'Admin (within company)' },
+            { value: 'owner', label: 'Owner' },
+          ]}
+        />
+        {isSelf ? (
+          <p className="text-[11px] text-[var(--color-text-tertiary)]">
+            Self-reassignment is blocked — moving yourself to a different company would silently
+            revoke your own admin access.
+          </p>
+        ) : null}
       </SectionCard>
 
       {/* Security */}
@@ -411,6 +506,33 @@ export default function AdminEditUserPage() {
         confirmLabelBusy="Unlocking…"
         busy={unlocking}
         onConfirm={performUnlock}
+      />
+
+      <ConfirmDialog
+        open={showDeactivateConfirm}
+        onOpenChange={(next) => {
+          // The user can cancel while the save is mid-flight; `busy`
+          // disables the buttons so this only fires on backdrop / Esc
+          // with no in-flight request. If they cancel we revert the
+          // isActive toggle so the checkbox state matches the row.
+          if (!next) {
+            setShowDeactivateConfirm(false);
+            if (!saving) setIsActive(true);
+          }
+        }}
+        title="Deactivate this account?"
+        description={
+          <>
+            <strong>{row.name || row.email}</strong> will no longer be able to sign in. Existing
+            sessions remain valid until their token version bumps on the next admin reset-password.
+            Reactivating later restores access immediately.
+          </>
+        }
+        confirmLabel="Deactivate"
+        confirmLabelBusy="Deactivating…"
+        confirmVariant="danger"
+        busy={saving}
+        onConfirm={performSave}
       />
     </main>
   );

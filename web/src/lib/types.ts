@@ -84,6 +84,16 @@ export interface AdminUser extends User {
 }
 
 /**
+ * Minimal company row used by the admin-user edit page company picker
+ * (`GET /api/admin/users/companies/list`). Full CompanySchema is
+ * overkill for a dropdown — we only need to render `{id, name}` pairs.
+ */
+export interface CompanyLite {
+  id: string;
+  name: string;
+}
+
+/**
  * Member of a company — the shape returned by
  * `GET /api/companies/:companyId/users`. Thin read-only projection of
  * the underlying user row: enough to render the team list in the
