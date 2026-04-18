@@ -85,25 +85,55 @@ export async function queueSaveJob(
       throw err;
     }
     // Transient (network / 5xx / offline) — replay worker owns it.
+    // Before returning, write-through the IDB cache so the next
+    // dashboard / job-detail visit shows the optimistic state
+    // instead of the pre-edit server doc. Without this step an
+    // inspector who saved a field offline and then navigated away
+    // would see their edit reappear-as-lost when the page remounts
+    // and reads from the cache before the replay worker finishes.
+    // The outbox row is still the durability source of truth —
+    // cache write-through is purely for in-session consistency.
+    await writeThroughCache(userId, jobId, patch, opts.optimisticDetail);
     return { queued: true, synced: false, mutationId: mutation.id };
   }
 
   // Step 3 — clear the outbox row and warm the read cache.
   await removeMutation(mutation.id);
-  if (opts.optimisticDetail) {
-    // Fire-and-forget: a failed cache write is a best-effort loss,
-    // the next SWR read will simply fetch from the network.
-    void putCachedJob(userId, jobId, opts.optimisticDetail);
-  } else {
-    // No optimistic detail — attempt a read-modify-write so the cache
-    // at least reflects the patch rather than whatever stale doc was
-    // there. If there's nothing cached, skip — we'd have to invent
-    // defaults for every required JobDetail field, and the next
-    // fetch will populate correctly anyway.
-    const current = await getCachedJob(userId, jobId);
-    if (current) {
-      void putCachedJob(userId, jobId, { ...current, ...patch });
-    }
-  }
+  await writeThroughCache(userId, jobId, patch, opts.optimisticDetail);
   return { queued: true, synced: true, mutationId: mutation.id };
+}
+
+/**
+ * Overlay a patch onto the cached `JobDetail`. Shared between the
+ * queued-offline and synced-success branches so the two paths stay
+ * in lockstep — the cache must reflect the patch whether or not the
+ * network call actually went through, otherwise the queued-offline
+ * path would show stale data only until the server round-trips and
+ * that intermediate flash is confusing in practice.
+ *
+ * Prefers `optimisticDetail` when the caller has it (covers the full
+ * merged doc including derived/computed fields the raw patch doesn't
+ * carry). Falls back to read-modify-write of just the patch keys.
+ * If there's nothing cached at all, skips — we'd have to invent
+ * defaults for every required JobDetail field, and the next fetch
+ * will populate correctly anyway.
+ *
+ * Fire-and-forget: a failed cache write is a best-effort loss (the
+ * next SWR read fetches from network), so the return value is `void`.
+ * This is the same non-strict tolerance `putCachedJob` already has.
+ */
+async function writeThroughCache(
+  userId: string,
+  jobId: string,
+  patch: Partial<JobDetail>,
+  optimisticDetail: JobDetail | undefined
+): Promise<void> {
+  if (optimisticDetail) {
+    await putCachedJob(userId, jobId, optimisticDetail);
+    return;
+  }
+  const current = await getCachedJob(userId, jobId);
+  if (current) {
+    await putCachedJob(userId, jobId, { ...current, ...patch });
+  }
 }

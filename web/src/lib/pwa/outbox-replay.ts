@@ -3,9 +3,11 @@
 import * as React from 'react';
 import { api } from '@/lib/api-client';
 import { ApiError } from '@/lib/types';
+import { getCachedJob, putCachedJob } from './job-cache';
 import {
   listPendingMutations,
   markMutationFailed,
+  markMutationPoisoned,
   removeMutation,
   type OutboxMutation,
 } from './outbox';
@@ -85,10 +87,27 @@ export function useOutboxReplay(): void {
             break;
           }
           const outcome = await attempt(m);
+          if (outcome === 'poisoned') {
+            // The patch itself is permanently rejected by the server
+            // (4xx). The row has been moved aside via
+            // `markMutationPoisoned` so `listPendingMutations` no
+            // longer returns it — skipping past it here is safe and
+            // prevents a single bad patch from head-of-line-blocking
+            // every subsequent queued edit.
+            //
+            // FIFO per-field correctness is only preserved for rows
+            // targeting the same field; a poisoned row's field will
+            // revert to whatever subsequent rows or the server think
+            // is correct. If the inspector re-queues it from the
+            // Phase 7d admin UI, it'll land at the tail of the queue
+            // and behave as a fresh edit — matching iOS
+            // last-writer-wins semantics.
+            continue;
+          }
           if (outcome === 'failed') {
             // Stop the batch — captive-portal / DNS hijack symmetry
             // and FIFO correctness both argue against pushing past
-            // the first failure.
+            // the first transient failure.
             break;
           }
         }
@@ -100,25 +119,54 @@ export function useOutboxReplay(): void {
       await scheduleNext();
     }
 
-    async function attempt(m: OutboxMutation): Promise<'ok' | 'failed'> {
+    async function attempt(m: OutboxMutation): Promise<'ok' | 'failed' | 'poisoned'> {
       try {
         if (m.op === 'saveJob') {
           await api.saveJob(m.userId, m.jobId, m.patch);
+          // Replay-success write-through: when the worker replays an
+          // offline mutation, overlay the patch onto the cached
+          // job-detail so the next dashboard / job-detail render
+          // reflects the now-synced state. Without this the UI would
+          // keep painting the pre-edit cached doc until the next
+          // network fetch, making a successful replay look like the
+          // edit was lost. Mirrors the queue-save-job.ts write-through
+          // — kept here rather than in a shared helper because the
+          // replay path only has `m.patch` (not a full JobDetail) so
+          // the read-modify-write form is the only option.
+          const current = await getCachedJob(m.userId, m.jobId);
+          if (current) {
+            void putCachedJob(m.userId, m.jobId, { ...current, ...m.patch });
+          }
         }
         await removeMutation(m.id);
         return 'ok';
       } catch (err) {
-        // A 4xx is a persistent server rejection — every retry would
-        // reproduce it. Let the attempt counter + backoff escalate it
-        // to poisoned (at which point Phase 7d UI can offer to discard
-        // or edit the patch). We do NOT discard here because silent
-        // data loss violates the durability contract that made this
-        // wrapper worth writing in the first place.
-        //
-        // A 5xx / network error is transient — same path, the backoff
-        // prevents hammering, and recovery is just "wait for the
-        // server to come back".
         const message = errorMessage(err);
+        // Split 4xx (excluding 401) from 5xx / network errors. A 4xx
+        // means the patch is permanently invalid under the current
+        // server state — retrying would just 4xx again forever and
+        // would head-of-line-block every later mutation. Poison the
+        // row so the loop can skip past it while keeping the data
+        // visible to the Phase 7d admin UI for a manual decision.
+        //
+        // 401 is treated as transient: the auth middleware clears the
+        // cookie on 401 responses, so the replay worker will stop
+        // firing until the inspector re-signs-in. Poisoning on 401
+        // would lose every pending edit simply because a token
+        // expired mid-commute.
+        //
+        // 5xx / network / TypeError are transient — exponential
+        // backoff is the right response. The inspector hasn't done
+        // anything wrong; the server will be back.
+        if (
+          err instanceof ApiError &&
+          err.status >= 400 &&
+          err.status < 500 &&
+          err.status !== 401
+        ) {
+          await markMutationPoisoned(m.id, message);
+          return 'poisoned';
+        }
         await markMutationFailed(m.id, message);
         return 'failed';
       }

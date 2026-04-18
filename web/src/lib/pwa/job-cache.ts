@@ -174,6 +174,31 @@ export function wrapTransaction(tx: IDBTransaction): Promise<void> {
   });
 }
 
+/**
+ * Strict variant of `wrapTransaction` for stores where silent failure
+ * causes data loss rather than a stale cache. The outbox is the main
+ * user — if an `enqueueSaveJobMutation` write silently no-ops because
+ * IDB quota is blown or the schema has drifted, the caller returns
+ * success and the mutation is gone forever. `wrapTransactionStrict`
+ * rejects on `onerror` / `onabort` so the caller can surface the
+ * failure (e.g. "offline save failed — please connect and retry").
+ *
+ * Read-through cache writes should keep using the lenient
+ * `wrapTransaction` because a dropped cache write is recoverable via
+ * the next network fetch — only correctness-critical writes need this.
+ */
+export function wrapTransactionStrict(tx: IDBTransaction): Promise<void> {
+  return new Promise((resolve, reject) => {
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => {
+      reject(tx.error ?? new Error('IndexedDB transaction failed'));
+    };
+    tx.onabort = () => {
+      reject(tx.error ?? new Error('IndexedDB transaction aborted'));
+    };
+  });
+}
+
 // ---------- Jobs list (dashboard) ----------
 
 export async function getCachedJobs(userId: string): Promise<Job[] | null> {

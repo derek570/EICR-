@@ -7,6 +7,7 @@ import {
   openDB,
   wrapRequest,
   wrapTransaction,
+  wrapTransactionStrict,
 } from './job-cache';
 
 /**
@@ -161,7 +162,13 @@ export async function enqueueSaveJobMutation(
   const db = await openDB();
   const tx = db.transaction(STORE_OUTBOX, 'readwrite');
   tx.objectStore(STORE_OUTBOX).put(mutation);
-  await wrapTransaction(tx);
+  // Strict wrapper — if IDB quota is blown or the tx aborts, we must
+  // surface that failure to the caller so the UI can flag "offline
+  // save failed" instead of silently dropping the inspector's edit.
+  // The lenient `wrapTransaction` would resolve either way and the
+  // missed write would never be noticed until the server state
+  // diverged from what the inspector thought they saved.
+  await wrapTransactionStrict(tx);
   return mutation;
 }
 
@@ -242,6 +249,67 @@ export async function markMutationFailed(id: string, error: string): Promise<voi
     await wrapTransaction(tx);
   } catch (err) {
     console.warn('[outbox] markMutationFailed failed', err);
+  }
+}
+
+/**
+ * Mark a mutation as poisoned immediately, bypassing the attempt
+ * counter. Called from the replay worker when the server returns a
+ * 4xx (other than 401 — that's handled as "refresh and retry" upstream)
+ * — a 400/403/404/409/422 means the patch itself is permanently
+ * invalid under the current server state, so retrying will just 4xx
+ * again forever. Leaving the row at the head of the FIFO queue would
+ * stall every subsequent mutation (head-of-line blocking), and
+ * silently discarding would lose the inspector's work. Poisoning lets
+ * the loop skip past it while keeping the row visible to the Phase 7d
+ * admin UI for a manual retry / discard decision.
+ *
+ * The `lastError` is capped at 500 chars for the same reason as
+ * `markMutationFailed` (IDB bloat on stack traces).
+ */
+export async function markMutationPoisoned(id: string, error: string): Promise<void> {
+  if (!isSupported()) return;
+  try {
+    const db = await openDB();
+    const tx = db.transaction(STORE_OUTBOX, 'readwrite');
+    const store = tx.objectStore(STORE_OUTBOX);
+    const current = (await wrapRequest(store.get(id))) as OutboxMutation | null;
+    if (!current) {
+      await wrapTransaction(tx);
+      return;
+    }
+    const updated: OutboxMutation = {
+      ...current,
+      poisoned: true,
+      lastError: error.slice(0, 500),
+      // Push `nextAttemptAt` far into the future so any legacy code
+      // path that forgets to check `poisoned` still won't pick it up.
+      nextAttemptAt: Number.MAX_SAFE_INTEGER,
+    };
+    store.put(updated);
+    await wrapTransaction(tx);
+  } catch (err) {
+    console.warn('[outbox] markMutationPoisoned failed', err);
+  }
+}
+
+/**
+ * Phase 7d admin UI needs to list the poisoned rows separately so an
+ * inspector can re-queue or discard them. Returning them sorted by
+ * `createdAt` keeps the UI stable across refreshes.
+ */
+export async function listPoisonedMutations(): Promise<OutboxMutation[]> {
+  if (!isSupported()) return [];
+  try {
+    const db = await openDB();
+    const tx = db.transaction(STORE_OUTBOX, 'readonly');
+    const store = tx.objectStore(STORE_OUTBOX);
+    const all = (await wrapRequest(store.getAll())) as OutboxMutation[] | null;
+    if (!all) return [];
+    return all.filter((m) => m.poisoned).sort((a, b) => a.createdAt - b.createdAt);
+  } catch (err) {
+    console.warn('[outbox] listPoisonedMutations failed', err);
+    return [];
   }
 }
 
