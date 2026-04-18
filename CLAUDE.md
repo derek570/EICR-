@@ -176,9 +176,9 @@ When modifying UI fields: update `config/field_schema.json` + [field-reference.m
 
 ## Current Focus / Active Work
 
-- Web rebuild on branch `web-rebuild` — Phase 7 closed. Next: Phase 8 staged deploy + production cutover.
-- Phases 0–7d shipped (scaffold → recording → capture → settings/admin → PWA foundation + update handoff + IDB read-through + offline indicator + iOS ATHS hint + offline mutation outbox + offline-sync UI polish)
-- Deepgram auto-sleep (3-tier Active/Dozing/Sleeping) + server-side Sonnet v3 multi-turn — live in production
+- **Web rebuild shipped to production 2026-04-18** via PR derek570/EICR-#1 (merge commit `9202351c`). `web-rebuild` merged into `main`; branch retained for reference. certmate.uk now serves the Next 16 / React 19 / PWA client from `web/`; `eicr-pwa` + `eicr-backend` ECS services updated (task defs `eicr-pwa:30`, `eicr-backend:27`), smoke tests green.
+- Deepgram auto-sleep (3-tier Active/Dozing/Sleeping) + server-side Sonnet v3 multi-turn — live in production.
+- Next candidates: debounced-save flush wiring `queueSaveJob` into JobProvider's save path (outbox is plumbed but has no production caller yet); Playwright E2E coverage for offline-sync flows.
 
 ## Changelog
 
@@ -186,6 +186,7 @@ Recent changes (one line each). Full commit-body-level detail in [docs/reference
 
 | Date | Summary |
 |------|---------|
+| 2026-04-18 | **Web Phase 8 — production cutover.** PR derek570/EICR-#1 merged `web-rebuild` (154 commits) into `main` (merge commit `9202351c`). CI deploy pipeline built/pushed ECR images, registered ARM64 task defs, force-new-deployment on `eicr-pwa` (rev 30) + `eicr-backend` (rev 27); services-stable + smoke green (certmate.uk/ → 307 /login, /api/health 200, /manifest.webmanifest + /sw.js served). Three pre-flight fixes shipped in the PR: `4b77316` CI `npm run build` (webpack flag via package.json not bare next build), `4cef21f` `output: 'standalone'` in next.config.ts (Dockerfile needs `.next/standalone` to exist), `07f79e6` Next 16 @next/swc platform-binary lockfile patch. **Closes the web rebuild.** |
 | 2026-04-18 | Web Wave 2a — test harness (vitest 4 + jsdom + RTL + fake-indexeddb) stood up; D12 ApiError JSON-envelope parsing (lifts `{error: "..."}` to `.message`, preserves `.body`; 401 classifiers switched from regex to `.status`); 32 regression tests (5 suites) backfilling Wave 1 fix surfaces. Wave 2b (D2 adapters) deferred. |
 | 2026-04-18 | Web Phase 7d — offline-sync UI (OfflineIndicator pending/failed pills, JobRow Pending chip, `/settings/system` admin page, discard/requeue helpers, BroadcastChannel change notifier). **Closes Phase 7.** |
 | 2026-04-17 | Web Phase 7c — offline mutation outbox + replay worker (IDB v2, exp backoff, FIFO). |
