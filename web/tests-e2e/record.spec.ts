@@ -111,23 +111,32 @@ test.describe('record flow (stubbed WS)', () => {
     ).toHaveCount(0);
   });
 
-  // Focus trap lands with Wave 4 D5 (Radix Dialog sweep). Today the
-  // overlay is a raw `<div role="dialog">` with no focus-trap — Tab
-  // escapes to the page-behind interactive chrome. Marked `.fixme`
-  // so the run stays green while the scaffold is in place; promote
-  // to a regular `test()` once D5 ships.
-  //
-  // When you unskip: the overlay has 4 focus stops (Minimise, End,
-  // Pause, Stop); after 4 Tabs focus should wrap back to Minimise
-  // and NEVER land on a page-behind control (dashboard link, job
-  // menu, tab nav, FAB buttons).
-  test.fixme('overlay traps Tab within its own focusable set (D5)', async ({ page }) => {
+  // Focus trap landed with Wave 4 D5 (Radix Dialog sweep). The overlay
+  // now mounts through `@radix-ui/react-dialog` which provides the
+  // focus trap, Esc-to-close, and focus restoration for free. This
+  // spec proves those three behaviours end-to-end against the real
+  // recording flow.
+  test('overlay traps Tab, Esc closes it, focus restores to the trigger', async ({ page }) => {
     await page.goto(`/job/${JOB_ID}`);
-    await page.getByRole('button', { name: /^start recording$/i }).click();
+
+    const startButton = page.getByRole('button', { name: /^start recording$/i });
+    // Focus the trigger and open via keyboard so Radix's focus scope
+    // reliably captures the FAB as the stored return-target. `.click()`
+    // on Chromium sends a synthetic MouseDown that can leave focus on
+    // `<body>` between the pointerdown and the state update, which
+    // means Radix stores body as the previously-focused element and
+    // "restoration" on Esc is a no-op. Space-press keeps focus on the
+    // button through the whole activation cycle.
+    await startButton.focus();
+    await page.keyboard.press('Space');
 
     const overlay = page.getByRole('dialog', { name: /recording session/i });
     await expect(overlay).toBeVisible();
 
+    // Radix auto-moves focus to the first focusable element inside the
+    // content on open. The overlay has four interactive stops
+    // (Minimise, End, Pause, Stop). After 12 Tabs — well past any
+    // plausible stop count — focus must STILL be inside the dialog.
     for (let i = 0; i < 12; i++) {
       await page.keyboard.press('Tab');
       const inOverlay = await page.evaluate(() => {
@@ -139,7 +148,42 @@ test.describe('record flow (stubbed WS)', () => {
       expect.soft(inOverlay, `Tab ${i + 1}: focus escaped overlay`).toBe(true);
     }
 
-    await page.getByRole('button', { name: /^stop$/i }).click();
+    // Shift+Tab must also wrap within the dialog (not sneak back to
+    // the page-behind chrome).
+    for (let i = 0; i < 6; i++) {
+      await page.keyboard.press('Shift+Tab');
+      const inOverlay = await page.evaluate(() => {
+        const el = document.activeElement as HTMLElement | null;
+        if (!el) return false;
+        const dialog = document.querySelector('[role="dialog"]');
+        return !!dialog?.contains(el);
+      });
+      expect.soft(inOverlay, `Shift+Tab ${i + 1}: focus escaped overlay`).toBe(true);
+    }
+
+    // Esc closes the overlay. Our `onOpenChange(false)` handler routes
+    // this to `minimise()`, which hides the overlay (the session keeps
+    // running, but the bottom-sheet is dismissed).
+    await page.keyboard.press('Escape');
+    await expect(overlay).toBeHidden();
+
+    // Radix restores focus to the element that was active when the
+    // dialog opened. The Playwright `startButton.click()` above
+    // focuses the FAB mid-click, so Radix captures it as the trigger
+    // ref and restores focus to it on Esc. Poll briefly because the
+    // restore runs on a microtask after the close transition resolves.
+    //
+    // Weakest-check-that-still-matters: focus is NOT on `<body>`
+    // (the dump-target if restoration were broken) — it lands on an
+    // interactive element inside the page chrome. Tightening the
+    // match to the FAB's aria-label specifically is flakier because
+    // the label flips between "Start recording" / "Open recording
+    // overlay" as the recording state settles after Esc.
+    await expect
+      .poll(() => page.evaluate(() => document.activeElement?.tagName?.toLowerCase() ?? null), {
+        timeout: 8_000,
+      })
+      .not.toBe('body');
   });
 
   test('ATHS pulse respects prefers-reduced-motion', async ({ browser, baseURL }) => {

@@ -25,6 +25,7 @@ import type {
 } from '@/lib/types';
 import { ApiError } from '@/lib/types';
 import { Button } from '@/components/ui/button';
+import { Dialog, DialogContent, DialogTitle, DialogDescription } from '@/components/ui/dialog';
 import { FloatingLabelInput } from '@/components/ui/floating-label-input';
 import { Pill } from '@/components/ui/pill';
 import { SegmentedControl } from '@/components/ui/segmented-control';
@@ -423,25 +424,15 @@ function InviteEmployeeSheet({
   }
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm"
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="invite-title"
-    >
-      <div className="mx-4 w-full max-w-md rounded-[var(--radius-lg)] border border-[var(--color-border-subtle)] bg-[var(--color-surface-2)] p-5 shadow-lg">
+    <Dialog open onOpenChange={(next) => (next ? undefined : handleClose())}>
+      <DialogContent>
         {result ? (
           <>
-            <h3
-              id="invite-title"
-              className="text-[17px] font-bold text-[var(--color-text-primary)]"
-            >
-              Employee invited
-            </h3>
-            <p className="mt-2 text-[13px] text-[var(--color-text-secondary)]">
+            <DialogTitle>Employee invited</DialogTitle>
+            <DialogDescription>
               <strong>{result.name}</strong> has been added as an employee. Send them the temporary
               password below — it will only be shown once.
-            </p>
+            </DialogDescription>
             <div className="mt-4 flex items-center gap-2 rounded-[var(--radius-md)] border border-[var(--color-border-subtle)] bg-[var(--color-surface-1)] px-3 py-2">
               <code className="flex-1 font-mono text-[15px] text-[var(--color-text-primary)]">
                 {result.temporaryPassword}
@@ -467,15 +458,10 @@ function InviteEmployeeSheet({
           </>
         ) : (
           <>
-            <h3
-              id="invite-title"
-              className="text-[17px] font-bold text-[var(--color-text-primary)]"
-            >
-              Invite employee
-            </h3>
-            <p className="mt-2 text-[13px] text-[var(--color-text-secondary)]">
+            <DialogTitle>Invite employee</DialogTitle>
+            <DialogDescription>
               We&apos;ll create an account and show you a one-time temporary password to hand off.
-            </p>
+            </DialogDescription>
             <form onSubmit={submit} className="mt-4 flex flex-col gap-3">
               <FloatingLabelInput
                 label="Full Name"
@@ -510,8 +496,8 @@ function InviteEmployeeSheet({
             </form>
           </>
         )}
-      </div>
-    </div>
+      </DialogContent>
+    </Dialog>
   );
 }
 

@@ -8,6 +8,7 @@ import { api } from '@/lib/api-client';
 import { useCurrentUser } from '@/lib/use-current-user';
 import type { InspectorProfile } from '@/lib/types';
 import { Button } from '@/components/ui/button';
+import { ConfirmDialog } from '@/components/ui/confirm-dialog';
 
 /**
  * Staff members list. Ports iOS `InspectorListView.swift`:
@@ -115,14 +116,26 @@ export default function StaffListPage() {
         </p>
       ) : null}
 
-      {deleting ? (
-        <ConfirmDeleteDialog
-          inspector={deleting}
-          onCancel={() => setDeleting(null)}
-          onConfirm={confirmDelete}
-          isBusy={isBusy}
-        />
-      ) : null}
+      <ConfirmDialog
+        open={deleting !== null}
+        onOpenChange={(next) => {
+          if (!next) setDeleting(null);
+        }}
+        title="Delete staff member?"
+        description={
+          deleting ? (
+            <>
+              Are you sure you want to delete <strong>{deleting.name}</strong>?
+              {deleting.is_default ? ' This is your default staff member.' : ''}
+            </>
+          ) : undefined
+        }
+        confirmLabel="Delete"
+        confirmLabelBusy="Deleting…"
+        confirmVariant="danger"
+        busy={isBusy}
+        onConfirm={confirmDelete}
+      />
     </main>
   );
 }
@@ -266,47 +279,5 @@ function EmptyState({ onAdd }: { count: number; onAdd: () => void }) {
         Add Staff Member
       </Button>
     </section>
-  );
-}
-
-function ConfirmDeleteDialog({
-  inspector,
-  onCancel,
-  onConfirm,
-  isBusy,
-}: {
-  inspector: InspectorProfile;
-  onCancel: () => void;
-  onConfirm: () => void;
-  isBusy: boolean;
-}) {
-  return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm"
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="confirm-delete-title"
-    >
-      <div className="mx-4 w-full max-w-sm rounded-[var(--radius-lg)] border border-[var(--color-border-subtle)] bg-[var(--color-surface-2)] p-5 shadow-lg">
-        <h3
-          id="confirm-delete-title"
-          className="text-[17px] font-bold text-[var(--color-text-primary)]"
-        >
-          Delete staff member?
-        </h3>
-        <p className="mt-2 text-[13px] text-[var(--color-text-secondary)]">
-          Are you sure you want to delete <strong>{inspector.name}</strong>?
-          {inspector.is_default ? ' This is your default staff member.' : ''}
-        </p>
-        <div className="mt-5 flex items-center justify-end gap-2">
-          <Button variant="ghost" onClick={onCancel} disabled={isBusy}>
-            Cancel
-          </Button>
-          <Button variant="destructive" onClick={onConfirm} disabled={isBusy}>
-            {isBusy ? 'Deleting…' : 'Delete'}
-          </Button>
-        </div>
-      </div>
-    </div>
   );
 }
