@@ -105,8 +105,24 @@ export function SwUpdateProvider() {
       if (registration) watchRegistration(registration);
     });
 
+    // First-install detection. If no SW controls this page at mount time,
+    // the first `controllerchange` is the brand-new SW taking over — NOT
+    // a user-initiated upgrade swap — and reloading would nuke any
+    // in-progress edits the user hasn't saved yet. Only reload on
+    // controllerchange when we know the page already had a controller
+    // (meaning this is an upgrade we've just accepted via SKIP_WAITING).
+    const hadControllerAtMount = navigator.serviceWorker.controller != null;
+
     function onControllerChange() {
       if (reloadedRef.current) return;
+      if (!hadControllerAtMount) {
+        // First-ever install claim — stay on the page. Subsequent
+        // upgrades within the same page lifecycle will still reload
+        // because the toast-driven SKIP_WAITING flow sets a different
+        // condition (the waiting worker was observed while a
+        // controller existed; see `promptToReload` above).
+        return;
+      }
       reloadedRef.current = true;
       window.location.reload();
     }

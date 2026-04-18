@@ -16,10 +16,22 @@ import type { CertificateType, JobDetail } from './types';
  * The shape deliberately mirrors the legacy `useJob` hook so the tab
  * components from Phase 3+ read the same API.
  */
+/**
+ * Accept either a plain partial (legacy ergonomics) OR a functional
+ * updater that derives the patch from the freshest `prev` snapshot.
+ *
+ * Async handlers MUST use the functional form — a captured `job`
+ * snapshot from the outer scope is almost always stale by the time
+ * the promise resolves (CCU/doc-extract/observation races all trace
+ * back to this). The plain-partial form is retained for simple
+ * synchronous input onChange handlers.
+ */
+type JobPatch = Partial<JobDetail> | ((prev: JobDetail) => Partial<JobDetail>);
+
 interface JobContextValue {
   job: JobDetail;
   certificateType: CertificateType;
-  updateJob: (patch: Partial<JobDetail>) => void;
+  updateJob: (patch: JobPatch) => void;
   setJob: (next: JobDetail) => void;
   isDirty: boolean;
   isSaving: boolean;
@@ -46,14 +58,26 @@ export function JobProvider({
   const [isDirty, setIsDirty] = React.useState(false);
   const [isSaving] = React.useState(false); // wired up in Phase 4
 
-  // Keep local state in sync when parent fetches a fresh copy.
+  // Keep local state in sync ONLY when the parent hands us a genuinely
+  // new job (different id) — otherwise every parent re-render clobbers
+  // the user's in-flight edits and resets `isDirty`. The dashboard's
+  // cache-then-hydrate pass re-provides `initial` with a fresh object
+  // identity even when nothing meaningful changed, so comparing by
+  // reference here is wrong; key on the stable `id`.
+  const lastInitialIdRef = React.useRef(initial.id);
   React.useEffect(() => {
-    setJob(initial);
-    setIsDirty(false);
+    if (lastInitialIdRef.current !== initial.id) {
+      lastInitialIdRef.current = initial.id;
+      setJob(initial);
+      setIsDirty(false);
+    }
   }, [initial]);
 
-  const updateJob = React.useCallback((patch: Partial<JobDetail>) => {
-    setJob((prev) => ({ ...prev, ...patch }));
+  const updateJob = React.useCallback((patch: JobPatch) => {
+    setJob((prev) => {
+      const resolved = typeof patch === 'function' ? patch(prev) : patch;
+      return { ...prev, ...resolved };
+    });
     setIsDirty(true);
   }, []);
 

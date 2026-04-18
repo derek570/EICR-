@@ -151,10 +151,15 @@ export default function AdminEditUserPage() {
     setSaving(true);
     setError(null);
     try {
+      // Clearing the company-name field sends `null` so the backend
+      // clears the column outright; passing `""` writes a literal
+      // empty-string company name that still passes truthy checks in
+      // joins and search and silently corrupts the row.
+      const trimmedCompany = companyName.trim();
       await api.adminUpdateUser(userId, {
         name: name.trim(),
         email: email.trim(),
-        company_name: companyName.trim(),
+        company_name: trimmedCompany === '' ? null : trimmedCompany,
         // Respect the self-edit guard client-side; the backend enforces
         // it anyway but we don't want to even send a value that would
         // bounce.

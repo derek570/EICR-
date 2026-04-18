@@ -268,6 +268,11 @@ export const api = {
   /**
    * Partial update. Backend merges with the persisted doc, so callers
    * only need to send the fields that changed.
+   *
+   * Uses PUT to match the route registered at `src/routes/jobs.js:651`
+   * (`router.put('/job/:userId/:jobId', …)`). The backend performs a
+   * server-side merge, so a PUT with a partial body still behaves like
+   * a patch from the caller's perspective.
    */
   saveJob(
     userId: string,
@@ -275,7 +280,7 @@ export const api = {
     updates: Partial<JobDetail>
   ): Promise<{ success: boolean }> {
     return request(`/api/job/${encodeURIComponent(userId)}/${encodeURIComponent(jobId)}`, {
-      method: 'PATCH',
+      method: 'PUT',
       body: JSON.stringify(updates),
     });
   },
@@ -541,7 +546,13 @@ export const api = {
     patch: {
       name?: string;
       email?: string;
-      company_name?: string;
+      /**
+       * Pass `null` to clear the company name on the backend. Passing
+       * an empty string persists the literal `""` and causes silent
+       * data corruption (the row still looks "unassigned" but every
+       * search and join treats it as a valid company name).
+       */
+      company_name?: string | null;
       role?: 'admin' | 'user';
       is_active?: boolean;
     }

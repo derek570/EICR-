@@ -10,9 +10,29 @@ import { NextResponse, type NextRequest } from 'next/server';
 
 const PUBLIC_PREFIXES = ['/login', '/legal', '/offline'];
 
+/**
+ * Static-asset allow-list. The old implementation used
+ * `pathname.includes('.')` which accidentally bypassed auth AND admin
+ * gating for ANY dynamic URL that happened to contain a dot (e.g. a
+ * job id like `job-2026.01.03` or `/settings/admin/users/user.name`).
+ * Whitelist the file extensions we actually serve instead.
+ */
+const STATIC_ASSET_EXT =
+  /\.(?:ico|png|jpg|jpeg|gif|svg|webp|avif|css|js|mjs|map|txt|xml|json|webmanifest|woff|woff2|ttf|otf|eot|mp3|mp4|webm|pdf)$/i;
+
+/**
+ * Admin-only surface matchers. Anything under these roots requires
+ * the JWT to carry `role === 'admin'` or (for company surfaces)
+ * a `company_role` of owner/admin. Server routes re-verify, but
+ * matching here avoids flash-of-admin-chrome for unauthorised users.
+ */
+const SYS_ADMIN_PREFIX = '/settings/admin';
+const COMPANY_ADMIN_PREFIX = '/settings/company';
+
 interface JwtPayload {
   exp?: number;
   role?: 'admin' | 'user';
+  company_role?: 'owner' | 'admin' | 'employee';
 }
 
 function decodeJwt(token: string): JwtPayload | null {
@@ -38,7 +58,7 @@ export function middleware(req: NextRequest) {
     PUBLIC_PREFIXES.some((p) => pathname.startsWith(p)) ||
     pathname.startsWith('/_next') ||
     pathname.startsWith('/api') ||
-    pathname.includes('.')
+    STATIC_ASSET_EXT.test(pathname)
   ) {
     return NextResponse.next();
   }
@@ -51,12 +71,24 @@ export function middleware(req: NextRequest) {
     return NextResponse.redirect(url);
   }
 
-  // Admin-only surfaces. Belt-and-braces — the settings pages also check
-  // role client-side via useCurrentUser, but a middleware check avoids
-  // any flash-of-admin-chrome for non-admins and catches tampered
-  // localStorage. The `role` claim is signed into the JWT by the backend.
-  if (pathname.startsWith('/settings/admin') && payload.role !== 'admin') {
+  // System-admin surfaces. `role === 'admin'` is signed into the JWT
+  // by the backend (`src/auth.js`), so a tampered localStorage user
+  // object can't promote anyone — the cookie-held token is authoritative.
+  if (pathname.startsWith(SYS_ADMIN_PREFIX) && payload.role !== 'admin') {
     return NextResponse.redirect(new URL('/settings', req.url));
+  }
+
+  // Company-admin surfaces — `/settings/company` AND its subroutes
+  // (notably `/settings/company/dashboard`, which paints employee PII
+  // before the server-side `requireAdmin` on its API calls kicks in).
+  // Allow `company_role` of owner/admin; a system admin can view any
+  // company too. Anyone else is bounced to the settings hub.
+  if (pathname.startsWith(COMPANY_ADMIN_PREFIX)) {
+    const isSysAdmin = payload.role === 'admin';
+    const isCompanyAdmin = payload.company_role === 'owner' || payload.company_role === 'admin';
+    if (!isSysAdmin && !isCompanyAdmin) {
+      return NextResponse.redirect(new URL('/settings', req.url));
+    }
   }
 
   // PWA guardrail. Next's App Router bakes server-action hashes into the
