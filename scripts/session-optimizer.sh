@@ -1830,13 +1830,19 @@ while true; do
   fi
 
   # ── Poll for new session analytics ──
+  # Discover sessions by either manifest.json (full iOS multipart upload) OR
+  # cost_summary.json (server-generated on WebSocket close — the only marker
+  # guaranteed when the iOS multipart analytics upload is failing, see 2026-04-18
+  # "ACTIVE BUG: Debug Log Upload Failing" in CertMateUnified memory).
+  # Strip whichever suffix matched and dedupe so each session path is seen once.
 
   SESSIONS=$(aws s3 ls "s3://${BUCKET}/${SESSION_PREFIX}" --recursive --region "$AWS_REGION" 2>/dev/null \
-    | grep 'manifest.json' \
-    | awk '{print $4}' || true)
+    | grep -E '/(manifest|cost_summary)\.json$' \
+    | awk '{print $4}' \
+    | sed -E 's#/(manifest|cost_summary)\.json$##' \
+    | sort -u || true)
 
-  for MANIFEST_KEY in $SESSIONS; do
-    SESSION_PATH="${MANIFEST_KEY%/manifest.json}"
+  for SESSION_PATH in $SESSIONS; do
 
     # Skip if already processed
     if jq -e ".processed_sessions | index(\"$SESSION_PATH\")" "$STATE_FILE" > /dev/null 2>&1; then
@@ -1883,7 +1889,7 @@ while true; do
     DEBUG_REPORTS_LOCAL="$WORK_DIR/debug_reports"
     mkdir -p "$SESSION_LOCAL" "$DEBUG_REPORTS_LOCAL"
 
-    aws s3 cp "s3://${BUCKET}/${SESSION_PATH}/manifest.json" "$SESSION_LOCAL/manifest.json" --region "$AWS_REGION"
+    aws s3 cp "s3://${BUCKET}/${SESSION_PATH}/manifest.json" "$SESSION_LOCAL/manifest.json" --region "$AWS_REGION" 2>/dev/null || true
     aws s3 cp "s3://${BUCKET}/${SESSION_PATH}/debug_log.jsonl" "$SESSION_LOCAL/debug_log.jsonl" --region "$AWS_REGION" 2>/dev/null || true
     aws s3 cp "s3://${BUCKET}/${SESSION_PATH}/field_sources.json" "$SESSION_LOCAL/field_sources.json" --region "$AWS_REGION" 2>/dev/null || true
     aws s3 cp "s3://${BUCKET}/${SESSION_PATH}/job_snapshot.json" "$SESSION_LOCAL/job_snapshot.json" --region "$AWS_REGION" 2>/dev/null || true
