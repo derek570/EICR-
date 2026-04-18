@@ -137,6 +137,16 @@ function isTokenExpired(payload: JwtPayload): boolean {
  * is still checked for expiry + presence, admin surfaces still gate on
  * the claim set, and the server re-authorises every write. A missing
  * secret is a known-degraded mode, not a silent failure.
+ *
+ * Pre-deploy hardening — fail closed in production. If `NODE_ENV` is
+ * `production` and `JWT_SECRET` is not present, we refuse to trust any
+ * claim set (returning `null` from this helper, which forces a redirect
+ * to `/login` downstream). The previous fallback to `unsafeDecodeJwt`
+ * meant a single misconfigured ECS task def would let a hand-crafted
+ * token with a forged `role: 'admin'` unlock every admin surface UI-side
+ * until the server-side `requireAdmin` kicked in on the next API call —
+ * long enough to leak the admin chrome + employee PII visible on the
+ * settings/company dashboard. Dev still tolerates a missing secret.
  */
 let warnedMissingSecret = false;
 function getJwtSecret(): string | null {
@@ -151,6 +161,17 @@ function getJwtSecret(): string | null {
     return null;
   }
   return secret;
+}
+
+/**
+ * Pre-deploy hardening — reject all cookies when JWT_SECRET is missing
+ * in production. Returning `true` from this helper makes the middleware
+ * treat every request as unauthenticated (redirect to /login) until the
+ * secret is restored, which is the correct failure mode for a forged
+ * claim set to unlock admin chrome.
+ */
+function isProductionWithoutSecret(): boolean {
+  return process.env.NODE_ENV === 'production' && !process.env.JWT_SECRET;
 }
 
 export async function middleware(req: NextRequest) {
@@ -168,6 +189,18 @@ export async function middleware(req: NextRequest) {
 
   const token = req.cookies.get('token')?.value;
   const secret = getJwtSecret();
+
+  // Production without a signing secret: refuse every claim set. This
+  // is a deliberate fail-closed — an operator misconfiguring the task
+  // def should lock users out of admin surfaces (loud, immediate, and
+  // recoverable by setting the env var) rather than silently granting
+  // access to anyone holding any cookie-shaped string.
+  if (isProductionWithoutSecret()) {
+    const url = new URL('/login', req.url);
+    if (pathname !== '/') url.searchParams.set('redirect', pathname);
+    return NextResponse.redirect(url);
+  }
+
   const payload = token
     ? secret
       ? await verifyAndDecodeJwt(token, secret)
