@@ -277,21 +277,29 @@ export class SonnetSession {
       // cycles get a fresh exponential ramp from attempt 1.
       this.reconnectAttempts = 0;
 
-      // Send `session_start` on every open. Commit C will branch this
-      // into `session_resume` when `hasConnectedOnce && sessionId`, but
-      // for Commit B we re-send `session_start` each reconnect — the
-      // server will allocate a fresh sessionId and any prior multi-turn
-      // context is dropped, matching today's behaviour when the user
-      // manually restarts recording.
-      const options = this.startOptions;
-      if (options) {
-        this.sendRaw({
-          type: 'session_start',
-          sessionId: options.sessionId,
-          jobId: options.jobId,
-          certificateType: options.certificateType,
-          jobState: options.jobState,
-        });
+      // Reconnect branch: if this is NOT the first successful open on
+      // this SonnetSession instance AND we captured a server-minted
+      // `sessionId` from a prior `session_ack`, echo the id back inside
+      // a `session_resume` frame BEFORE any other traffic. The backend
+      // uses that frame to rehydrate the multi-turn Sonnet conversation
+      // state within its 5-minute TTL window. Falls back to a fresh
+      // `session_start` when we have no id (legacy backend that didn't
+      // advertise one) — the server treats that exactly like a new
+      // session, which is the pre-4c.5 behaviour.
+      const isReconnect = this.hasConnectedOnce && this.sessionId != null;
+      if (isReconnect) {
+        this.sendRaw({ type: 'session_resume', sessionId: this.sessionId });
+      } else {
+        const options = this.startOptions;
+        if (options) {
+          this.sendRaw({
+            type: 'session_start',
+            sessionId: options.sessionId,
+            jobId: options.jobId,
+            certificateType: options.certificateType,
+            jobState: options.jobState,
+          });
+        }
       }
 
       this.hasConnectedOnce = true;
@@ -493,6 +501,21 @@ export class SonnetSession {
         const maybeId = json.sessionId;
         if (typeof maybeId === 'string' && maybeId.length > 0) {
           this.sessionId = maybeId;
+        }
+        // TTL-expired rehydration: if the previous ack status was
+        // 'resumed' and the server is now saying 'new', the 5-minute
+        // context-retention window elapsed (or the id was never known
+        // to the server). Surface a recoverable warning so the UI can
+        // hint to the user — keep going with the fresh session so they
+        // don't lose the recording, but flag the gap in field-fill
+        // continuity until Sonnet rebuilds context from the next few
+        // utterances.
+        const wasResumeAck = this.sessionStatus === 'resumed' && status === 'new';
+        if (wasResumeAck) {
+          this.callbacks.onError?.(
+            new Error('Sonnet session context expired — continuing with fresh session'),
+            true
+          );
         }
         if (status === 'new' || status === 'resumed') {
           this.sessionStatus = status;

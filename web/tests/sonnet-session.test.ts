@@ -287,6 +287,100 @@ describe('SonnetSession', () => {
     });
   });
 
+  // ────────────────────────────────────────────────────────────────────────
+  // Commit C — session_resume frame on reconnect
+  // ────────────────────────────────────────────────────────────────────────
+  describe('session_resume on reconnect (Commit C)', () => {
+    beforeEach(() => {
+      process.env.NEXT_PUBLIC_RECORDING_RECONNECT_ENABLED = 'true';
+      vi.spyOn(Math, 'random').mockReturnValue(0);
+    });
+    afterEach(() => {
+      delete process.env.NEXT_PUBLIC_RECORDING_RECONNECT_ENABLED;
+    });
+
+    it('first open sends session_start, NOT session_resume', async () => {
+      const session = new SonnetSession({});
+      session.connect({ sessionId: 'client-s', jobId: 'j', certificateType: 'EICR' });
+      await server.connected;
+
+      const firstRaw = await server.nextMessage;
+      const firstFrame = JSON.parse(firstRaw as string) as { type: string };
+      expect(firstFrame.type).toBe('session_start');
+    });
+
+    it('sends session_resume with captured sessionId on reconnect', async () => {
+      const session = new SonnetSession({});
+      session.connect({ sessionId: 'client-s', jobId: 'j', certificateType: 'EICR' });
+      await server.connected;
+
+      // Drain session_start.
+      await server.nextMessage;
+
+      // Server hands out a sessionId via session_ack.
+      server.send(JSON.stringify({ type: 'session_ack', status: 'new', sessionId: 'srv-xyz-1' }));
+      await Promise.resolve();
+
+      // Dirty close → state machine reconnects.
+      server.close({ code: 1006, reason: 'abnormal', wasClean: false });
+      await server.closed;
+
+      const next = new WS(SONNET_URL);
+      await next.connected;
+      const resumeRaw = await next.nextMessage;
+      const resumeFrame = JSON.parse(resumeRaw as string) as {
+        type: string;
+        sessionId: string;
+      };
+      expect(resumeFrame.type).toBe('session_resume');
+      expect(resumeFrame.sessionId).toBe('srv-xyz-1');
+    });
+
+    it('falls back to session_start on reconnect when server never advertised a sessionId', async () => {
+      const session = new SonnetSession({});
+      session.connect({ sessionId: 'client-s', jobId: 'j', certificateType: 'EICR' });
+      await server.connected;
+      await server.nextMessage; // session_start
+
+      // Legacy server ack — no sessionId.
+      server.send(JSON.stringify({ type: 'session_ack', status: 'new' }));
+      await Promise.resolve();
+
+      server.close({ code: 1006, reason: 'abnormal', wasClean: false });
+      await server.closed;
+
+      const next = new WS(SONNET_URL);
+      await next.connected;
+      const raw = await next.nextMessage;
+      const frame = JSON.parse(raw as string) as { type: string };
+      // No captured id → we can't meaningfully resume → send start.
+      expect(frame.type).toBe('session_start');
+    });
+
+    it('surfaces a warning when server returns status=new to a resume (TTL expired)', async () => {
+      const onError = vi.fn();
+      const session = new SonnetSession({ onError });
+      session.connect({ sessionId: 'client-s', jobId: 'j', certificateType: 'EICR' });
+      await server.connected;
+      await server.nextMessage;
+
+      // First ack — sessionStatus becomes 'resumed' so the next 'new' is
+      // interpreted as TTL expiry.
+      server.send(JSON.stringify({ type: 'session_ack', status: 'resumed', sessionId: 'srv-rr' }));
+      await Promise.resolve();
+
+      // Then server sends another ack with status='new' — TTL expired.
+      server.send(JSON.stringify({ type: 'session_ack', status: 'new', sessionId: 'srv-rr-2' }));
+      await Promise.resolve();
+
+      // Recoverable warning fired.
+      const warning = onError.mock.calls.find(
+        (c) => c[1] === true && /context expired/.test(String(c[0]))
+      );
+      expect(warning).toBeDefined();
+    });
+  });
+
   describe('backoff math', () => {
     it('produces non-negative delays within the cap for any jitter seed', () => {
       for (let attempt = 1; attempt <= 10; attempt++) {
