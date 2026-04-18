@@ -350,6 +350,21 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
           case 'job_state_update':
             if (currentSessionId && activeSessions.has(currentSessionId)) {
               activeSessions.get(currentSessionId).session.updateJobState(msg);
+              // Trace which StateSnapshot the next Sonnet turn will see. Critical when
+              // debugging "Sonnet asked about a circuit that's already on-screen" —
+              // absence of this log after a CCU extraction means the iOS side never
+              // fired `notifyJobStateChanged`.
+              const circuitCount = Array.isArray(msg.circuits)
+                ? msg.circuits.length
+                : Array.isArray(msg?.boards)
+                  ? msg.boards.reduce((n, b) => n + (b.circuits?.length || 0), 0)
+                  : 0;
+              logger.info('StateSnapshot refreshed', {
+                sessionId: currentSessionId,
+                reason: msg.reason || 'unspecified',
+                circuitCount,
+                boardCount: Array.isArray(msg?.boards) ? msg.boards.length : 0,
+              });
             }
             break;
 
