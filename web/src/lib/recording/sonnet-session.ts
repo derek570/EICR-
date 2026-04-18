@@ -108,7 +108,15 @@ export interface CostUpdate {
 
 export interface SonnetSessionCallbacks {
   onStateChange?: (state: SonnetConnectionState) => void;
-  onSessionAck?: (status: string) => void;
+  /**
+   * Fires on every `session_ack` frame. The optional `sessionId` is the
+   * server-minted identifier that the client must echo back inside a
+   * `session_resume` frame on a subsequent reconnect attempt so the
+   * backend can rehydrate the multi-turn Sonnet context. `status` is
+   * `'new'` for a freshly-allocated session or `'resumed'` for a
+   * successful rehydrate of a prior session within the TTL window.
+   */
+  onSessionAck?: (status: string, sessionId?: string) => void;
   onExtraction?: (result: ExtractionResult) => void;
   onQuestion?: (q: SonnetQuestion) => void;
   onVoiceCommandResponse?: (payload: VoiceCommandResponse) => void;
@@ -142,6 +150,18 @@ export class SonnetSession {
   // and flushed on `onopen` — otherwise the user loses anything said in
   // the first ~200ms while the WS handshakes.
   private preConnectQueue: string[] = [];
+  // Server-minted session identifier from the most recent `session_ack`.
+  // Unused on the first open (the server allocates it); on reconnect the
+  // state machine (Commit C, flag-gated) will echo it back inside a
+  // `session_resume` frame so the backend can rehydrate multi-turn
+  // Sonnet context within the 5-minute TTL window. Read-only externally
+  // for diagnostic purposes.
+  private sessionId: string | null = null;
+  // Tracks whether the most recent session_ack status was 'new' or
+  // 'resumed'. Useful for surfacing "lost context" warnings on reconnect
+  // when the server's TTL has expired (status flips from 'resumed' back
+  // to 'new' mid-session).
+  private sessionStatus: 'new' | 'resumed' | null = null;
 
   constructor(callbacks: SonnetSessionCallbacks = {}) {
     this.callbacks = callbacks;
@@ -328,7 +348,20 @@ export class SonnetSession {
     switch (type) {
       case 'session_ack': {
         const status = (json.status as string) ?? 'unknown';
-        this.callbacks.onSessionAck?.(status);
+        // Capture sessionId from the server so reconnect can echo it
+        // back inside `session_resume`. The server started emitting this
+        // field in Wave 4c.5 backend; older builds omit it, in which
+        // case we simply keep the previously-known value (or null on a
+        // fresh session) and reconnect will fall back to the original
+        // `session_start` flow.
+        const maybeId = json.sessionId;
+        if (typeof maybeId === 'string' && maybeId.length > 0) {
+          this.sessionId = maybeId;
+        }
+        if (status === 'new' || status === 'resumed') {
+          this.sessionStatus = status;
+        }
+        this.callbacks.onSessionAck?.(status, this.sessionId ?? undefined);
         break;
       }
       case 'extraction': {
