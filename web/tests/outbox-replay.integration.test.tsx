@@ -327,7 +327,98 @@ describe('Wave 3a · replay worker · MSW integration', () => {
     expect(row2?.attempts).toBe(0);
   });
 
-  it('5. FIFO order — two rows for the same jobId replay in enqueue order', async () => {
+  it('6. Wave 5 D7 · 429 rate limit does NOT poison — exponential backoff instead', async () => {
+    // Pre-D7 the replay worker poisoned any 4xx except 401, which
+    // silently dropped inspector edits during any server-side rate
+    // spike (429 is rate-limit feedback, transient by definition).
+    // D7 carves 429 + 408 + 401 out of the poison set. The assertion
+    // here is the inverse of the 4xx-poison case (test 2): 429 must
+    // increment attempts, push `nextAttemptAt` forward, leave the row
+    // pending.
+    const seed = await enqueueSaveJobMutation('u1', 'job-1', { address: 'rate limited' });
+    const seedRows = await listPendingMutations();
+    const originalNextAttemptAt = seedRows[0].nextAttemptAt;
+
+    server.use(
+      http.put(`${TEST_API_BASE}/api/job/u1/job-1`, () => {
+        return HttpResponse.json({ error: 'slow down' }, { status: 429 });
+      })
+    );
+
+    const handle = mountHook(() => useOutboxReplay());
+
+    await waitForOutbox(async () => {
+      const rows = await listPendingMutations();
+      return rows.length === 1 && rows[0].attempts === 1;
+    }, '429 attempt recorded');
+
+    const rowsAfter = await listPendingMutations();
+    const poisoned = await listPoisonedMutations();
+    expect(poisoned).toHaveLength(0); // NOT poisoned
+    expect(rowsAfter).toHaveLength(1);
+    expect(rowsAfter[0].id).toBe(seed.id);
+    expect(rowsAfter[0].attempts).toBe(1);
+    expect(rowsAfter[0].nextAttemptAt).toBeGreaterThan(originalNextAttemptAt);
+    expect(rowsAfter[0].lastError).toMatch(/HTTP 429/);
+
+    handle.unmount();
+  });
+
+  it('7. Wave 5 D7 · 408 request timeout does NOT poison', async () => {
+    const seed = await enqueueSaveJobMutation('u1', 'job-1', { address: 'timeout retry' });
+
+    server.use(
+      http.put(`${TEST_API_BASE}/api/job/u1/job-1`, () => {
+        return HttpResponse.json({ error: 'request timeout' }, { status: 408 });
+      })
+    );
+
+    const handle = mountHook(() => useOutboxReplay());
+
+    await waitForOutbox(async () => {
+      const rows = await listPendingMutations();
+      return rows.length === 1 && rows[0].attempts === 1;
+    }, '408 attempt recorded');
+
+    const poisoned = await listPoisonedMutations();
+    expect(poisoned).toHaveLength(0); // NOT poisoned
+    const rowsAfter = await listPendingMutations();
+    expect(rowsAfter[0].id).toBe(seed.id);
+    expect(rowsAfter[0].attempts).toBe(1);
+
+    handle.unmount();
+  });
+
+  it('8. Wave 5 D7 · poisoned row surfaces the structured error body (status + body summary)', async () => {
+    const m = await enqueueSaveJobMutation('u1', 'job-1', { address: 'bad patch' });
+
+    // Realistic validation error payload — the backend's standard
+    // shape per WAVE_2_HANDOFF.md D12. The D7 error surface should
+    // include the body summary so `/settings/system` tells the
+    // inspector why the server rejected (not just "HTTP 422").
+    server.use(
+      http.put(`${TEST_API_BASE}/api/job/u1/job-1`, () => {
+        return HttpResponse.json(
+          { error: 'postcode must be UK format', field: 'installation.postcode' },
+          { status: 422 }
+        );
+      })
+    );
+
+    mountHook(() => useOutboxReplay());
+
+    await waitForOutbox(async () => (await listPoisonedMutations()).length === 1, 'poisoned');
+
+    const poisoned = await listPoisonedMutations();
+    expect(poisoned).toHaveLength(1);
+    expect(poisoned[0].id).toBe(m.id);
+    // Structured error — status + body summary both present so the
+    // admin UI can show something actionable.
+    expect(poisoned[0].lastError).toMatch(/HTTP 422/);
+    expect(poisoned[0].lastError).toMatch(/postcode/);
+  });
+
+  it('9. FIFO order — two rows for the same jobId replay in enqueue order', async () => {
     await enqueueSaveJobMutation('u1', 'job-1', { address: 'first' });
     await new Promise((r) => setTimeout(r, 2));
     await enqueueSaveJobMutation('u1', 'job-1', { address: 'second' });

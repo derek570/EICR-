@@ -142,29 +142,46 @@ export function useOutboxReplay(): void {
         return 'ok';
       } catch (err) {
         const message = errorMessage(err);
-        // Split 4xx (excluding 401) from 5xx / network errors. A 4xx
-        // means the patch is permanently invalid under the current
+        // Split permanently-failing 4xx from the transient bucket. A
+        // permanent 4xx means the patch is invalid under the current
         // server state — retrying would just 4xx again forever and
         // would head-of-line-block every later mutation. Poison the
         // row so the loop can skip past it while keeping the data
         // visible to the Phase 7d admin UI for a manual decision.
         //
-        // 401 is treated as transient: the auth middleware clears the
-        // cookie on 401 responses, so the replay worker will stop
-        // firing until the inspector re-signs-in. Poisoning on 401
-        // would lose every pending edit simply because a token
-        // expired mid-commute.
+        // Exclusions (must stay transient):
+        //   - 401 (Unauthorized) — the auth middleware clears the
+        //     cookie on 401, so the replay worker will stop firing
+        //     until the inspector re-signs-in. Poisoning here would
+        //     lose every pending edit simply because a token expired
+        //     mid-commute.
+        //   - 408 (Request Timeout) — server is telling us to retry
+        //     the same request; transient by definition.
+        //   - 429 (Too Many Requests) — rate-limit feedback. The
+        //     replay worker's exponential backoff is the correct
+        //     response (Wave 5 D7 flagged this explicitly — 429 was
+        //     previously poisoning alongside 400/422 and silently
+        //     dropping the inspector's edits during any server-side
+        //     rate spike).
         //
         // 5xx / network / TypeError are transient — exponential
         // backoff is the right response. The inspector hasn't done
         // anything wrong; the server will be back.
-        if (
-          err instanceof ApiError &&
-          err.status >= 400 &&
-          err.status < 500 &&
-          err.status !== 401
-        ) {
-          await markMutationPoisoned(m.id, message);
+        //
+        // The structured error surface preserves `status` AND
+        // `body` in the lastError string so `/settings/system` can
+        // render actionable context (not just the bare message). D7
+        // scope: "on 4xx, immediately call markMutationPoisoned
+        // with {status, errorBody}" — the outbox API signature is
+        // string-only for backwards compatibility with Wave 1's
+        // MAX_ATTEMPTS path, so we encode the structured context as
+        // a single line here.
+        if (err instanceof ApiError && isPermanent4xx(err.status)) {
+          const body = err.body !== null && err.body !== undefined ? safeJsonSummary(err.body) : '';
+          const structured = body
+            ? `HTTP ${err.status}: ${err.message} — ${body}`
+            : `HTTP ${err.status}: ${err.message}`;
+          await markMutationPoisoned(m.id, structured);
           return 'poisoned';
         }
         await markMutationFailed(m.id, message);
@@ -234,4 +251,46 @@ function errorMessage(err: unknown): string {
   if (err instanceof ApiError) return `HTTP ${err.status}: ${err.message}`;
   if (err instanceof Error) return err.message;
   return String(err);
+}
+
+/**
+ * Wave 5 D7 — which 4xx statuses are "permanent" enough to warrant
+ * immediate poisoning. Pull the predicate out of the inline branch so
+ * tests can target it and future protocol additions (e.g. 425 Too
+ * Early, 451 Unavailable for Legal Reasons) land in one place.
+ *
+ * Transient exclusions (NOT poisoned, retry with backoff):
+ *   - 401 Unauthorized     — token expired; auth flow handles it.
+ *   - 408 Request Timeout  — server explicitly asked for a retry.
+ *   - 429 Too Many Requests — rate limit; backoff is the correct
+ *                             response per RFC 6585.
+ */
+function isPermanent4xx(status: number): boolean {
+  if (status < 400 || status >= 500) return false;
+  if (status === 401 || status === 408 || status === 429) return false;
+  return true;
+}
+
+/**
+ * Render an ApiError.body into a bounded single-line summary suitable
+ * for surfacing in the Phase 7d admin UI's `Last error:` row. Keeps
+ * the output short enough that IDB storage + wrapping in the card
+ * don't blow up on a 2 kB validation response.
+ *
+ * Graceful fallbacks: non-serialisable bodies, cyclic objects, and
+ * deliberately-opaque servers all degrade to `[unserialisable body]`
+ * so the `markMutationPoisoned` call never fails because of this
+ * helper.
+ */
+function safeJsonSummary(body: unknown): string {
+  try {
+    if (typeof body === 'string') {
+      return body.length <= 160 ? body : `${body.slice(0, 160)}\u2026`;
+    }
+    const text = JSON.stringify(body);
+    if (!text) return '';
+    return text.length <= 160 ? text : `${text.slice(0, 160)}\u2026`;
+  } catch {
+    return '[unserialisable body]';
+  }
 }
