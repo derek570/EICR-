@@ -27,6 +27,42 @@ const upload = multer({
   fileFilter: createFileFilter(['image/png', 'image/jpeg']),
 });
 
+/**
+ * P0-15 — Company settings (name, address, phone, email, website,
+ * registration, logo) are shared across every user in a company, so
+ * they MUST be keyed by `company_id` rather than by `user.id`.
+ *
+ * Historically these endpoints persisted to `settings/${userId}/…`,
+ * which meant each inspector in a shared company kept their own
+ * private copy. Two inspectors on the same firm editing "company
+ * address" would race each other — whichever saved last was the only
+ * version that appeared on their own generated PDFs, and the other
+ * user's PDFs still carried the old string. Every other company
+ * user's PDFs would continue to carry whatever was in THEIR personal
+ * copy (usually empty, depending on first-run state).
+ *
+ * Switching to company-scoped keying makes a single edit propagate to
+ * every user on the firm. Users without a `company_id` (the legacy
+ * path for solo inspectors who pre-date the companies feature) fall
+ * back to the userId path so their existing S3 files remain readable
+ * — we don't migrate them automatically because the fallback path is
+ * indistinguishable from the correct behaviour for single-user firms.
+ *
+ * NOTE on access control: the GET/PUT routes currently allow any
+ * authenticated user whose path param matches their own id. That
+ * passes unchanged here — the only correctness issue P0-15 addresses
+ * is the S3 key. A separate follow-up should gate PUT on
+ * company_role ∈ {owner, admin} once the UI surfaces a "you can view
+ * but not edit" affordance for employees.
+ */
+function companySettingsPrefix(user) {
+  if (user?.company_id) {
+    return `settings/company/${user.company_id}`;
+  }
+  // Legacy fallback — pre-companies single-user install.
+  return `settings/${user.id}`;
+}
+
 // Multer for logo uploads — same constraints as signatures. Company logos are
 // usually clean PNGs or JPEGs; we don't accept SVG to sidestep embedded-script
 // risk in user-uploaded content stamped onto PDF headers.
@@ -104,7 +140,7 @@ router.get('/settings/:userId/company', auth.requireAuth, async (req, res) => {
   }
 
   try {
-    const s3Key = `settings/${userId}/company_settings.json`;
+    const s3Key = `${companySettingsPrefix(req.user)}/company_settings.json`;
     const content = await storage.downloadText(s3Key);
 
     if (content) {
@@ -139,10 +175,13 @@ router.put('/settings/:userId/company', auth.requireAuth, async (req, res) => {
   }
 
   try {
-    const s3Key = `settings/${userId}/company_settings.json`;
+    const s3Key = `${companySettingsPrefix(req.user)}/company_settings.json`;
     await storage.uploadText(JSON.stringify(settings, null, 2), s3Key);
 
-    logger.info('Company settings updated', { userId });
+    logger.info('Company settings updated', {
+      userId,
+      companyId: req.user.company_id ?? null,
+    });
     res.json({ success: true });
   } catch (error) {
     logger.error('Failed to update company settings', { userId, error: error.message });
@@ -324,7 +363,7 @@ router.post(
     try {
       const ext = path.extname(file.originalname).toLowerCase() || '.png';
       const filename = `logo_${Date.now()}${ext}`;
-      const s3Key = `settings/${userId}/logos/${filename}`;
+      const s3Key = `${companySettingsPrefix(req.user)}/logos/${filename}`;
 
       const content = await fs.readFile(file.path);
       const contentType = ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg' : 'image/png';
@@ -332,7 +371,11 @@ router.post(
 
       await fs.unlink(file.path).catch(() => {});
 
-      logger.info('Company logo uploaded', { userId, filename });
+      logger.info('Company logo uploaded', {
+        userId,
+        companyId: req.user.company_id ?? null,
+        filename,
+      });
       res.json({ success: true, logo_file: s3Key });
     } catch (error) {
       logger.error('Failed to upload logo', { userId, error: error.message });
@@ -364,8 +407,17 @@ router.get('/settings/:userId/logo/:filename', auth.requireAuth, async (req, res
   }
 
   try {
-    const s3Key = `settings/${userId}/logos/${filename}`;
-    const bytes = await storage.downloadBytes(s3Key);
+    // Try company-scoped key first (P0-15 layout). Fall back to the
+    // legacy per-user key so any logos uploaded before this fix are
+    // still retrievable — the returned `logo_file` in the DB may
+    // point at either shape. New uploads only ever write the
+    // company-scoped key via `companySettingsPrefix`.
+    const companyKey = `${companySettingsPrefix(req.user)}/logos/${filename}`;
+    let bytes = await storage.downloadBytes(companyKey);
+    if (!bytes) {
+      const legacyKey = `settings/${userId}/logos/${filename}`;
+      bytes = await storage.downloadBytes(legacyKey);
+    }
     if (!bytes) {
       return res.status(404).json({ error: 'Logo not found' });
     }
