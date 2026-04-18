@@ -121,7 +121,13 @@ export default function CircuitsPage() {
 
   const reverse = () => persist([...circuits].reverse());
 
-  const stub = (label: string) => () => setActionHint(`${label} — wires up in Phase 5.`);
+  // Non-functional actions that the iOS app carries but the web rebuild
+  // hasn't wired yet. We keep the buttons visible (iOS parity, and so
+  // the inspector's muscle memory from the iOS app still lands on the
+  // right rail button) but surface an honest "not available yet" hint
+  // rather than a silent no-op. Was: "wires up in Phase 5" — which
+  // shipped misleading copy once the rest of Phase 5 landed.
+  const stub = (label: string) => () => setActionHint(`${label} — not available on web yet.`);
 
   const openCcuPicker = () => {
     setCcuError(null);

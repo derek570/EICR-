@@ -26,8 +26,9 @@ import { cn } from '@/lib/utils';
  * board, at least one circuit, at least one staff role) has a value.
  *
  * Generation itself still lives on the backend (`POST /api/pdf/:jobId`).
- * Wiring the actual generation call is deferred to Phase 5 (capture/flows)
- * so this tab today is a read-only status + stub.
+ * Wiring the actual generation call is deferred — this tab today is a
+ * read-only status + stub. Inspectors generate PDFs from the iOS app
+ * until the web generation endpoint ships.
  */
 
 type PdfJobShape = {
@@ -118,7 +119,9 @@ export default function PdfPage() {
           <ActionButton disabled label="Share" icon={Share2} />
         </div>
         <p className="pt-1 text-[11.5px] text-[var(--color-text-tertiary)]">
-          PDF generation wires up in Phase 5 — this tab currently shows readiness only.
+          PDF generation isn&rsquo;t wired up on web yet. This tab reports readiness and highlights
+          missing sections so the certificate is clean once generation lands; until then, generate
+          from the iOS app.
         </p>
       </SectionCard>
     </div>
