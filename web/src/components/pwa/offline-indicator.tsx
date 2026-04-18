@@ -1,62 +1,142 @@
 'use client';
 
 import * as React from 'react';
-import { WifiOff } from 'lucide-react';
+import Link from 'next/link';
+import { AlertTriangle, CloudUpload, WifiOff } from 'lucide-react';
 import { useOnlineStatus } from '@/lib/pwa/use-online-status';
+import { useOutboxState } from '@/lib/pwa/use-outbox-state';
 
 /**
- * Compact pill that appears in the AppShell header whenever the browser
- * reports the device as offline. Designed to sit flush with other header
- * cluster items (user name, <InstallButton />, Sign-out) so it doesn't
- * re-layout the header when it pops in/out.
+ * Sync-status cluster (Phase 7b amber offline pill + Phase 7d pending /
+ * poisoned counters). Exported as `OfflineIndicator` for header-import
+ * compatibility; despite the name it now renders up to three related
+ * pills depending on connectivity + outbox state.
  *
- * Design choices:
- *   - Amber (`--color-status-processing`) instead of red. Red communicates
- *     "something broke" (destructive / error); amber communicates
- *     "degraded — be aware". Offline with a cached render is degraded,
- *     not broken — the inspector can still review and browse. Red would
- *     read as panic-inducing for a state the SWR layer (7b IDB cache)
- *     gracefully handles.
- *   - Small text on desktop, icon-only below the `sm` breakpoint. The
- *     mobile header has strict space constraints (56px tall, Logo +
- *     user-name + install + sign-out already pack the right cluster);
- *     icon-only keeps the pill readable at tap-target size without
- *     pushing Sign-out off-screen on a 320px iPhone SE.
- *   - `title` + `aria-label` always carry the full string so hover and
- *     screen readers aren't starved even when the label is icon-only.
- *   - `aria-live="polite"` on the wrapper so screen readers announce
- *     state transitions without interrupting any in-flight speech.
- *     Deliberately NOT `assertive` — offline is informational, not an
- *     immediate action the user must take.
+ * Render matrix (all three pills can stack; in practice only one or two
+ * appear at a time):
  *
- * Why not also show a "back online" confirmation:
- *   - Serwist's `reloadOnOnline: true` (set in `next.config.ts` since
- *     7a) already triggers `window.location.reload()` when the browser
- *     fires `online` after being offline. By the time any "reconnected"
- *     toast would render, the page is already reloading — the toast
- *     would flash for a frame or two and disappear. The visible pill
- *     disappearing IS the confirmation.
+ *   - Offline + no pending  : amber "Offline" pill.
+ *   - Offline + pending > 0 : amber pill with a small blue dot badge
+ *                             (overlay, not a separate pill) — matches
+ *                             the 7c handoff recommendation. The dot
+ *                             communicates "queued work waiting for
+ *                             connectivity" without occupying more
+ *                             header space on mobile.
+ *   - Online  + pending > 0 : secondary blue pill "N syncing" — tells
+ *                             the inspector their earlier offline edits
+ *                             are still in flight so they don't panic
+ *                             when the browser pill disappears but the
+ *                             server hasn't caught up yet. Auto-hides
+ *                             when the replay worker drains the queue.
+ *   - Poisoned > 0          : red link-pill "N failed" pointing at
+ *                             `/settings/system`. Renders regardless of
+ *                             online state because poisoned rows never
+ *                             drain on their own — the admin UI is the
+ *                             only way to resolve them.
  *
- * `navigator.onLine` truthiness caveat (repeated from the hook):
- *   - `true` means "the device claims to have a network interface", NOT
- *     "requests will succeed". Captive-portal wifi, hotel DNS hijack,
- *     and ISP blocks all look "online" to the browser. The SWR paths
- *     in 7b handle actual request failures; this pill only handles the
- *     clear-cut "no interface at all" case.
+ * Accessibility:
+ *   - Each pill has its own `role="status"` + `aria-live="polite"` so
+ *     screen readers announce state transitions without interrupting
+ *     speech. Poisoned pill is a link, so it's keyboard-reachable via
+ *     Tab — discoverable even for users who don't use a pointer.
+ *   - Counts are baked into the accessible name (e.g. "3 pending edits
+ *     syncing") rather than shown only visually — matches WCAG 2.1 AA
+ *     guidance that status changes be announced meaningfully.
+ *   - The blue dot on the offline pill is `aria-hidden`; the pending
+ *     count is already in the pill's `aria-label` so the dot is pure
+ *     visual reinforcement.
+ *
+ * Why no "back online + all synced" toast:
+ *   - Serwist's `reloadOnOnline: true` (`next.config.ts`, set in 7a)
+ *     reloads the page when the browser fires `online`. A toast would
+ *     flash for a frame before the reload. The pills simply disappearing
+ *     IS the confirmation.
+ *
+ * `navigator.onLine` caveats apply — see `useOnlineStatus` for the full
+ * rationale. The pending/poisoned counts come from a real IDB read so
+ * they're accurate regardless of what the browser thinks the connection
+ * looks like.
  */
 export function OfflineIndicator() {
   const isOnline = useOnlineStatus();
-  if (isOnline) return null;
+  const { pending, poisoned, loading } = useOutboxState();
+  const pendingCount = pending.length;
+  const poisonedCount = poisoned.length;
+
+  // Nothing to show on the hot path — keep the header clean.
+  if (isOnline && pendingCount === 0 && poisonedCount === 0) return null;
+  // While the first IDB read is pending, only render the offline pill
+  // (if applicable). Suppresses a one-frame flicker on cold load where
+  // the pending/poisoned counts briefly default to 0 then populate.
+  const showPendingPills = !loading;
+
+  return (
+    <div className="flex items-center gap-1.5">
+      {!isOnline ? <OfflinePill pendingCount={showPendingPills ? pendingCount : 0} /> : null}
+      {isOnline && showPendingPills && pendingCount > 0 ? (
+        <PendingPill count={pendingCount} />
+      ) : null}
+      {showPendingPills && poisonedCount > 0 ? <PoisonedPill count={poisonedCount} /> : null}
+    </div>
+  );
+}
+
+function OfflinePill({ pendingCount }: { pendingCount: number }) {
+  const hasPending = pendingCount > 0;
+  const label = hasPending
+    ? `You are offline. ${pendingCount} edit${pendingCount === 1 ? '' : 's'} queued — will sync when your connection returns.`
+    : 'You are offline. Showing cached data; changes will not sync until your connection returns.';
   return (
     <span
       role="status"
       aria-live="polite"
-      aria-label="You are offline. Showing cached data; changes will not sync until your connection returns."
-      title="Offline — showing cached data"
-      className="inline-flex items-center gap-1.5 rounded-full border border-[var(--color-status-processing)]/40 bg-[var(--color-status-processing)]/15 px-2.5 py-1 text-[12px] font-semibold text-[var(--color-status-processing)]"
+      aria-label={label}
+      title={hasPending ? `Offline — ${pendingCount} queued` : 'Offline — showing cached data'}
+      className="relative inline-flex items-center gap-1.5 rounded-full border border-[var(--color-status-processing)]/40 bg-[var(--color-status-processing)]/15 px-2.5 py-1 text-[12px] font-semibold text-[var(--color-status-processing)]"
     >
       <WifiOff className="h-3.5 w-3.5" strokeWidth={2.25} aria-hidden />
       <span className="hidden sm:inline">Offline</span>
+      {hasPending ? (
+        <span
+          aria-hidden
+          className="absolute -right-0.5 -top-0.5 inline-flex h-2.5 w-2.5 items-center justify-center rounded-full border border-[var(--color-surface-0)] bg-[var(--color-brand-blue)]"
+        />
+      ) : null}
     </span>
+  );
+}
+
+function PendingPill({ count }: { count: number }) {
+  const label = `${count} pending edit${count === 1 ? '' : 's'} — will sync shortly`;
+  return (
+    <span
+      role="status"
+      aria-live="polite"
+      aria-label={label}
+      title={label}
+      className="inline-flex items-center gap-1.5 rounded-full border border-[var(--color-brand-blue)]/40 bg-[var(--color-brand-blue)]/15 px-2.5 py-1 text-[12px] font-semibold text-[var(--color-brand-blue)]"
+    >
+      <CloudUpload className="h-3.5 w-3.5" strokeWidth={2.25} aria-hidden />
+      <span className="hidden sm:inline">Syncing</span>
+      <span>{count}</span>
+    </span>
+  );
+}
+
+function PoisonedPill({ count }: { count: number }) {
+  const label = `${count} edit${count === 1 ? '' : 's'} failed — tap to review and retry`;
+  return (
+    <Link
+      href="/settings/system"
+      role="status"
+      aria-live="polite"
+      aria-label={label}
+      title={label}
+      className="inline-flex items-center gap-1.5 rounded-full border border-[var(--color-status-failed)]/40 bg-[var(--color-status-failed)]/15 px-2.5 py-1 text-[12px] font-semibold text-[var(--color-status-failed)] hover:bg-[var(--color-status-failed)]/25 focus-visible:outline-2 focus-visible:outline-[var(--color-status-failed)]"
+    >
+      <AlertTriangle className="h-3.5 w-3.5" strokeWidth={2.25} aria-hidden />
+      <span className="hidden sm:inline">Failed</span>
+      <span>{count}</span>
+    </Link>
   );
 }

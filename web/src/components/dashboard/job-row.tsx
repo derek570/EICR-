@@ -1,5 +1,5 @@
 import Link from 'next/link';
-import { ChevronRight, FileText } from 'lucide-react';
+import { ChevronRight, CloudUpload, FileText } from 'lucide-react';
 import type { Job } from '@/lib/types';
 
 /**
@@ -7,6 +7,13 @@ import type { Job } from '@/lib/types';
  * - 3px vertical stripe on the LEFT (blue=EICR, green=EIC)
  * - File icon in matching cert colour
  * - Address title + cert-type suffix + relative date
+ * - Optional "Pending sync" chip (Phase 7d) when this job has an
+ *   offline mutation still queued in the outbox. Rendered BETWEEN
+ *   the cert/date line and the status pill so it reads as "extra
+ *   state" rather than competing with the primary status. Kept
+ *   separate from the existing status pill so poisoned/failed
+ *   network state can't be confused with the backend's
+ *   pending/processing/done/failed job status.
  * - Amber PENDING / green DONE / red FAILED pill on the right
  * - Chevron right
  */
@@ -25,7 +32,7 @@ const STATUS_PILL: Record<Job['status'], { bg: string; fg: string }> = {
   failed: { bg: 'rgba(255,69,58,0.18)', fg: '#ff6b62' },
 };
 
-export function JobRow({ job }: { job: Job }) {
+export function JobRow({ job, pendingSync = false }: { job: Job; pendingSync?: boolean }) {
   const cert = job.certificate_type ?? 'EICR';
   const accent = cert === 'EIC' ? 'var(--color-brand-green)' : 'var(--color-brand-blue)';
   const date = new Date(job.updated_at ?? job.created_at);
@@ -69,6 +76,16 @@ export function JobRow({ job }: { job: Job }) {
         </p>
       </div>
 
+      {pendingSync ? (
+        <span
+          className="inline-flex flex-shrink-0 items-center gap-1 rounded-full border border-[var(--color-brand-blue)]/40 bg-[var(--color-brand-blue)]/15 px-2 py-0.5 text-[10px] font-semibold text-[var(--color-brand-blue)]"
+          title="Edits saved locally — will sync when you're online"
+          aria-label="Pending sync — edits saved locally"
+        >
+          <CloudUpload className="h-3 w-3" strokeWidth={2.25} aria-hidden />
+          <span className="hidden sm:inline">Pending</span>
+        </span>
+      ) : null}
       <span
         className="flex-shrink-0 rounded-full px-2.5 py-0.5 text-[10px] font-bold tracking-[0.1em]"
         style={{ background: pill.bg, color: pill.fg }}

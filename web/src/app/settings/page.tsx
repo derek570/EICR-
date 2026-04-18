@@ -3,10 +3,19 @@
 import * as React from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { Building2, ChevronRight, LayoutDashboard, LogOut, ShieldCheck, Users } from 'lucide-react';
+import {
+  Building2,
+  ChevronRight,
+  CloudUpload,
+  LayoutDashboard,
+  LogOut,
+  ShieldCheck,
+  Users,
+} from 'lucide-react';
 import { api } from '@/lib/api-client';
 import { clearAuth } from '@/lib/auth';
 import { useCurrentUser } from '@/lib/use-current-user';
+import { useOutboxState } from '@/lib/pwa/use-outbox-state';
 import { isCompanyAdmin, isSystemAdmin } from '@/lib/roles';
 import { Button } from '@/components/ui/button';
 import { IOSInstallHint } from '@/components/pwa/ios-install-hint';
@@ -23,6 +32,14 @@ import { IOSInstallHint } from '@/components/pwa/ios-install-hint';
 export default function SettingsHubPage() {
   const router = useRouter();
   const { user } = useCurrentUser();
+  // Phase 7d — surface the "Offline Sync" card only when there's
+  // something to do there. Rendering it unconditionally would clutter
+  // the hub for the 99% of sessions where the outbox is empty; the
+  // OfflineIndicator pills in the header still link to the page when
+  // poisoned rows exist, and pending-only rows drain themselves so
+  // there's no user-facing action to take.
+  const { pending, poisoned, loading: outboxLoading } = useOutboxState();
+  const hasOutboxWork = !outboxLoading && pending.length + poisoned.length > 0;
 
   async function handleSignOut() {
     try {
@@ -120,6 +137,27 @@ export default function SettingsHubPage() {
           />
         ) : null}
       </SectionGroup>
+
+      {/* Offline Sync — Phase 7d. Any authenticated user; conditionally
+          rendered only when the local outbox has pending or poisoned
+          rows. Counts are live via `useOutboxState` + BroadcastChannel
+          so the card disappears the moment the replay worker drains
+          the queue or the user discards/retries the last failed row. */}
+      {hasOutboxWork ? (
+        <SectionGroup title="OFFLINE SYNC">
+          <LinkCard
+            href="/settings/system"
+            icon={<CloudUpload className="h-5 w-5" aria-hidden />}
+            title="Offline Sync"
+            subtitle={
+              poisoned.length > 0
+                ? `${poisoned.length} failed \u00b7 ${pending.length} pending`
+                : `${pending.length} pending edit${pending.length === 1 ? '' : 's'} waiting to sync`
+            }
+            accent={poisoned.length > 0 ? 'blue' : 'green'}
+          />
+        </SectionGroup>
+      ) : null}
 
       {/* Administration — system admin only; landed in 6c */}
       {isSystemAdmin(user) ? (

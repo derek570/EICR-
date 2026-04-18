@@ -120,6 +120,69 @@ const BASE_BACKOFF_MS = 2_000;
 const MAX_BACKOFF_MS = 5 * 60 * 1_000;
 export const MAX_ATTEMPTS = 15;
 
+/**
+ * Cross-surface change notification (Phase 7d).
+ *
+ * Every outbox write notifies subscribers so UI consumers
+ * (`useOutboxState`, sync indicators, job-row chips) can refresh
+ * without polling. Two channels are used in parallel:
+ *
+ *   - A local `EventTarget` bus — needed because `BroadcastChannel`
+ *     does NOT deliver the sender's own messages. Same-tab subscribers
+ *     (the usual case — AppShell + dashboard + settings all render in
+ *     one tab) rely on this.
+ *   - A `BroadcastChannel` — picks up the slack when two tabs of the
+ *     same origin are open (e.g. inspector has the dashboard in one
+ *     tab and the poisoned-row admin page in another). A mutation in
+ *     tab A should refresh the list in tab B.
+ *
+ * Why not `storage` events: those only fire for `localStorage`, not
+ * IDB. BroadcastChannel is the cross-tab primitive that matches IDB's
+ * durability model.
+ *
+ * All notifications are fire-and-forget. Subscribers re-read from IDB
+ * themselves; the event carries no payload so there's no schema to
+ * keep in sync across tabs/builds.
+ */
+const BROADCAST_CHANNEL_NAME = 'certmate-outbox';
+const LOCAL_EVENT = 'outbox:change';
+const localBus: EventTarget | null = typeof EventTarget !== 'undefined' ? new EventTarget() : null;
+let broadcastChannel: BroadcastChannel | null = null;
+function getBroadcastChannel(): BroadcastChannel | null {
+  if (typeof BroadcastChannel === 'undefined') return null;
+  if (!broadcastChannel) {
+    try {
+      broadcastChannel = new BroadcastChannel(BROADCAST_CHANNEL_NAME);
+    } catch {
+      broadcastChannel = null;
+    }
+  }
+  return broadcastChannel;
+}
+function notifyOutboxChange(): void {
+  try {
+    localBus?.dispatchEvent(new Event(LOCAL_EVENT));
+  } catch {
+    // Old browsers without Event() ctor — benign drop.
+  }
+  try {
+    getBroadcastChannel()?.postMessage({ t: Date.now() });
+  } catch {
+    // BroadcastChannel.postMessage can throw if the channel is closed;
+    // drop silently — the local bus already covered the same-tab case.
+  }
+}
+export function subscribeOutboxChanges(fn: () => void): () => void {
+  const handler = () => fn();
+  localBus?.addEventListener(LOCAL_EVENT, handler);
+  const bc = getBroadcastChannel();
+  bc?.addEventListener('message', handler);
+  return () => {
+    localBus?.removeEventListener(LOCAL_EVENT, handler);
+    bc?.removeEventListener('message', handler);
+  };
+}
+
 function generateId(): string {
   // crypto.randomUUID is in every evergreen browser + Node 19+;
   // the type-check guard keeps SSR + older-Safari-that-shouldn't-be-here
@@ -182,6 +245,7 @@ export async function enqueueSaveJobMutation(
   // missed write would never be noticed until the server state
   // diverged from what the inspector thought they saved.
   await wrapTransactionStrict(tx);
+  notifyOutboxChange();
   return mutation;
 }
 
@@ -225,8 +289,62 @@ export async function removeMutation(id: string): Promise<void> {
     const tx = db.transaction(STORE_OUTBOX, 'readwrite');
     tx.objectStore(STORE_OUTBOX).delete(id);
     await wrapTransaction(tx);
+    notifyOutboxChange();
   } catch (err) {
     console.warn('[outbox] removeMutation failed', err);
+  }
+}
+
+/**
+ * User-initiated discard of a (usually poisoned) mutation from the
+ * Phase 7d admin UI. Semantically distinct from `removeMutation`
+ * (which is a replay-success cleanup) but uses the same store delete
+ * — separate export so future instrumentation can tell them apart
+ * without the callers having to thread a flag.
+ */
+export async function discardMutation(id: string): Promise<void> {
+  await removeMutation(id);
+}
+
+/**
+ * Resurrect a poisoned mutation — clears the poison flag, resets the
+ * attempt counter, and sets `nextAttemptAt` to now so the replay worker
+ * picks it up on its next trigger. Called from the Phase 7d admin UI
+ * when an inspector decides a previously-permanently-rejected patch
+ * should be retried (e.g. the underlying foreign key has since been
+ * restored on the server).
+ *
+ * Resetting `attempts` back to 0 is deliberate: if the server-side
+ * fix was real, we don't want the re-queued row to poison after a
+ * single retry just because it already burned its attempts budget.
+ * If the patch is still invalid, the poison path re-fires normally
+ * on the next failure.
+ */
+export async function requeueMutation(id: string): Promise<void> {
+  if (!isSupported()) return;
+  try {
+    const db = await openDB();
+    const tx = db.transaction(STORE_OUTBOX, 'readwrite');
+    const store = tx.objectStore(STORE_OUTBOX);
+    const current = (await wrapRequest(store.get(id))) as OutboxMutation | null;
+    if (!current) {
+      await wrapTransaction(tx);
+      return;
+    }
+    const updated: OutboxMutation = {
+      ...current,
+      poisoned: false,
+      attempts: 0,
+      nextAttemptAt: Date.now(),
+      // Keep the prior `lastError` so the admin UI can still show what
+      // failed before the user chose to retry — useful for telemetry
+      // if the same row poisons again immediately.
+    };
+    store.put(updated);
+    await wrapTransaction(tx);
+    notifyOutboxChange();
+  } catch (err) {
+    console.warn('[outbox] requeueMutation failed', err);
   }
 }
 
@@ -260,6 +378,7 @@ export async function markMutationFailed(id: string, error: string): Promise<voi
     };
     store.put(updated);
     await wrapTransaction(tx);
+    notifyOutboxChange();
   } catch (err) {
     console.warn('[outbox] markMutationFailed failed', err);
   }
@@ -301,6 +420,7 @@ export async function markMutationPoisoned(id: string, error: string): Promise<v
     };
     store.put(updated);
     await wrapTransaction(tx);
+    notifyOutboxChange();
   } catch (err) {
     console.warn('[outbox] markMutationPoisoned failed', err);
   }
@@ -339,6 +459,7 @@ export async function purgeOutbox(): Promise<void> {
     const tx = db.transaction(STORE_OUTBOX, 'readwrite');
     tx.objectStore(STORE_OUTBOX).clear();
     await wrapTransaction(tx);
+    notifyOutboxChange();
   } catch (err) {
     console.warn('[outbox] purgeOutbox failed', err);
   }

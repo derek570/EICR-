@@ -17,6 +17,7 @@ import {
 import { api } from '@/lib/api-client';
 import { clearAuth, getUser } from '@/lib/auth';
 import { getCachedJobs, putCachedJobs } from '@/lib/pwa/job-cache';
+import { useOutboxState } from '@/lib/pwa/use-outbox-state';
 import type { Job } from '@/lib/types';
 import { AnimatedCounter } from '@/components/dashboard/animated-counter';
 import { JobRow } from '@/components/dashboard/job-row';
@@ -37,6 +38,11 @@ export default function DashboardPage() {
   const [error, setError] = React.useState<string | null>(null);
   const [creating, setCreating] = React.useState(false);
   const [query, setQuery] = React.useState('');
+  // Phase 7d — surface the "Pending sync" chip on job rows that have
+  // an offline mutation still in the outbox. The hook refreshes on
+  // any outbox change (same-tab + BroadcastChannel across tabs) so
+  // the chip appears / disappears without a route change.
+  const { pendingJobIds } = useOutboxState();
 
   React.useEffect(() => {
     const user = getUser();
@@ -221,7 +227,7 @@ export default function DashboardPage() {
         ) : (
           <div className="flex flex-col gap-2">
             {recent.map((j) => (
-              <JobRow key={j.id} job={j} />
+              <JobRow key={j.id} job={j} pendingSync={pendingJobIds.has(j.id)} />
             ))}
           </div>
         )}
