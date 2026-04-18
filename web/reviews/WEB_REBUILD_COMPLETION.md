@@ -1,7 +1,7 @@
 # Web Rebuild — Completion Handoff
 
-**Branch:** `web-rebuild` @ `2d6199c`
-**Status:** shipping path through Wave 3 (test slice) complete. Functional Wave 3, Wave 4, Wave 5, cross-cutting deferrals, and Phase 8 remain before promotion to `main`.
+**Branch:** `web-rebuild` (updated post Wave 3 Functional merge)
+**Status:** shipping path through **Wave 3 Functional (client-side)** complete. Wave 4, Wave 4c.5 (Sonnet reconnect — cross-stack), Wave 5, cross-cutting deferrals, and Phase 8 remain before promotion to `main`.
 **Purpose:** single hand-off-to-finish. A subsequent agent (loop-scheduled subagent or human) can read this and run the remaining waves without re-deriving context from 12 prior handoffs.
 
 ---
@@ -35,21 +35,26 @@
 | **Wave 3a** | MSW integration tests for outbox → replay → cache-warm | +5 | `WAVE_3A_HANDOFF.md` |
 | **Wave 3b** | D11 component de-dupe (`Pill`, `LabelledSelect`, `MultilineField`, `formatShortDate`) | 0 (pure refactor) | `WAVE_3B_HANDOFF.md` |
 | **Wave 3c** | DeepgramService regression tests behind `jest-websocket-mock` | +13 + 2 `it.todo` | `WAVE_3C_HANDOFF.md` |
+| **Wave 3f** | D3 status state machine + 4b KeepAlive bufferedAmount gate + WS factory seam + 4e `{ ideal }` lock-in; promoted 2 `it.todo` to real tests | +3 (73 total, 0 todo) | `WAVE_3F_HANDOFF.md` |
+| **Wave 3h** | Playwright harness (chromium + webkit) + record flow spec + browser-side WS stub | +4 Playwright specs | `WAVE_3H_HANDOFF.md` |
+| **Wave 3 Functional (closeout)** | Unified Wave 3 closeout; 4c deferred as Wave 4c.5 | — | `WAVE_3_FUNCTIONAL_HANDOFF.md` |
 
 **Live in production (iOS side):** Deepgram auto-sleep 3-tier + server-side Sonnet v3 multi-turn.
 
 ### Test surface
 
-- **72 total** (70 passing + 2 intentional `it.todo`).
-- Unit: `outbox`, `outbox-replay`, `apply-ccu-analysis`, `api-client`, `adapters`, `auth-redirect`, `middleware`.
+- **73 total vitest** (0 `it.todo`) + **4 Playwright specs** (3 passing chromium + 1 `fixme` on focus-trap pending Wave 4 D5).
+- Unit: `outbox`, `outbox-replay`, `apply-ccu-analysis`, `api-client`, `adapters`, `auth-redirect`, `middleware`, `deepgram-service`, `mic-capture`.
 - Integration: outbox → replay → cache-warm via MSW.
-- Fake-WS: `DeepgramService` reconnect guard + resample correctness.
-- **Still missing:** RTL component tests for `JobProvider.updateJob`, dashboard cache race, login redirect rules (FIX_PLAN §E E2). Playwright not stood up.
+- Fake-WS (vitest): `DeepgramService` reconnect guard + resample correctness + `bufferedAmount` gating.
+- E2E (Playwright): record flow (start/pause/resume/stop, prefers-reduced-motion) on chromium; harness smoke on chromium + webkit.
+- **Still missing:** RTL component tests for `JobProvider.updateJob`, dashboard cache race, login redirect rules (FIX_PLAN §E E2). Other 5 Playwright E2E flows (login, job edit, admin, offline, PWA) — Wave 4/5.
 
-### Quality gates (as of `2d6199c`)
+### Quality gates (post Wave 3 Functional merge)
 
 ```
-vitest run     → 72/72 (70 pass + 2 todo)
+vitest run     → 73/73 (0 todo)
+playwright     → 4 specs: 3 passing chromium + 1 fixme (webkit record-flow skipped — headless mic limitation)
 tsc --noEmit   → clean
 npm run lint   → 0 errors, 6 pre-existing warnings (queued for Wave 5)
 ```
@@ -60,23 +65,24 @@ npm run lint   → 0 errors, 6 pre-existing warnings (queued for Wave 5)
 
 Three functional waves + two cross-cutting threads + one deployment phase, in recommended order.
 
-### 2.1 Functional Wave 3 — Recording pipeline hardening
+### 2.1 Functional Wave 3 — Recording pipeline hardening ✅ SHIPPED (client-side)
 
-**Why next:** the test net shipped in the Wave 3 test slice is sharpest against this code right now. Land the fixes while the net is load-bearing; otherwise it rots.
+D3 + 4b + 4e + Playwright landed via Waves 3f + 3h. See `WAVE_3_FUNCTIONAL_HANDOFF.md`. 4c split out as **Wave 4c.5** (§2.1b below) because it's cross-stack.
 
-| Item | Surface | Size | Notes |
+### 2.1b Wave 4c.5 — Sonnet `session_resume` on reconnect (cross-stack, NEW)
+
+**Why split out:** `web/src/lib/recording/sonnet-session.ts` has no reconnect pathway at all — it opens one WS, and on close fires an error. Adding `session_resume` is not a client-only change: the server's `session_ack` payload (in `src/extraction/sonnet-stream.js`) does not carry a session ID today, and the server does not rehydrate multi-turn Sonnet context on a `session_resume` frame. This is a coordinated backend + client release, not a single-agent sub-item.
+
+| Sub-item | Surface | Size | Blocker |
 |---|---|---|---|
-| **D3** sessionId guards + explicit status state machine | `web/src/lib/recording-context.tsx`, `deepgram-service.ts` | M | `start()`/`stop()`/`pause()` must not interleave with in-flight reconnects |
-| **4b** KeepAlive gated on `ws.bufferedAmount`; close-code logging | `deepgram-service.ts` | S | Promotes 2 `it.todo` stubs in `deepgram-service.test.ts`. **Blocker:** `mock-socket` hardcodes `bufferedAmount = 0`. Pick one in the fix PR: (a) hand-rolled fake WS (~60–80 lines) with mutable `bufferedAmount`, or (b) constructor-level WS seam on `DeepgramService`. Recommend (b) — smaller test surface, one-line product change. |
-| **4c** `session_resume` on reconnect + exponential backoff + close-code logging | `sonnet-session.ts` | M | — |
-| **4e** `getUserMedia` → `{ ideal: value }` per `~/.claude/rules/mistakes.md` | `recording-context.tsx` | S | iOS Safari `OverconstrainedError` fix |
-| **Playwright E2E — record flow** behind Deepgram WS stub: start → pause → resume → stop; overlay keyboard-trapped; ATHS pulse respects `prefers-reduced-motion` | `web/tests-e2e/record.spec.ts` (new) | L | First Playwright harness stand-up |
+| **Backend** add `sessionId` to `session_ack`; implement `session_resume` frame handler with 5-min TTL on rehydratable sessions; unit tests on session store | `src/extraction/sonnet-stream.js` + session store | M | Deploy before client-side flag flips |
+| **Client** reconnect state machine on `SonnetSession` (attempts counter, exponential backoff with jitter, terminal-failure surface to `RecordingProvider`); capture sessionId from `session_ack`; send `session_resume` on reconnect; match Deepgram close-code log format | `web/src/lib/recording/sonnet-session.ts` + `recording-context.tsx` | M | Backend must ship first OR client gates on a feature flag |
 
-**Parallelisation:**
-- Batch 1 (parallel agents): D3, 4e, Playwright harness stand-up — different files.
-- Batch 2 (serial on `deepgram-service.ts`): 4b → 4c.
+**Parallelisation:** Agent A (backend) + Agent B (client) run in parallel worktrees. Agent B ships behind a feature flag (`enableSonnetReconnect=false` by default) so deploy order doesn't matter; flip the flag post-backend-deploy.
 
-**Gate:** recordings survive 2× start/stop tornado + network flap; no duplicate reconnects; vitest ≥ 74 (2 todos promoted); `record.spec.ts` green.
+**Gate:** backend unit tests green; client vitest covers attempt counter / backoff / terminal-failure / session_resume frame shape; manual integration test against staging confirms rehydration across a forced WS close.
+
+**Note:** can run in parallel with Wave 4 since surfaces don't touch (Wave 4 = admin/RBAC/modals; 4c.5 = recording pipeline).
 
 ---
 
@@ -256,7 +262,8 @@ ALL rows must be green before the promotion PR is opened.
 | # | Gate | Verification |
 |---|---|---|
 | 1 | 17 Wave 1 kill-list items landed | `git log --grep "Wave 1"` or `WAVE_1_HANDOFF.md` checklist |
-| 2 | Functional Wave 3 shipped | D3/4b/4c/4e commits; 2 `it.todo` stubs in `deepgram-service.test.ts` promoted to passing tests |
+| 2 | Functional Wave 3 (client-side) shipped | D3/4b/4e commits landed; 2 `it.todo` stubs promoted to passing tests ✅ |
+| 2b | Wave 4c.5 (Sonnet session_resume) shipped | Backend `session_ack` carries `sessionId`; client reconnect state machine green behind flag; manual staging rehydration confirmed |
 | 3 | Wave 4 RBAC + modal a11y shipped | Radix Dialog sweep across 6 modals; JWT carries signed `company_role`; middleware admin matcher |
 | 4 | Wave 5 PWA durability + polish shipped | D7 strict wrappers + cache overlay + 4xx poison; D8/D9/D10 complete; `/offline` copy truthful |
 | 5 | Zod split + types.ts collapse done | `web/src/lib/types.ts` holds only view-model types; wire types re-exported from `@certmate/shared-types` |
@@ -295,14 +302,14 @@ Distilled from shipped waves so the next agent doesn't re-discover them.
 
 Compressed ~10 working days under the subagent pipeline, ~14–16 serial.
 
-### Week 1 — recording + RBAC
+### Week 1 — RBAC + cross-stack recording + contracts
 
 | Day | Work |
 |---|---|
-| 1 | Functional Wave 3 batch 1 (D3 + 4e + Playwright harness in parallel) |
-| 2 | Functional Wave 3 batch 2 (4b → 4c serial on `deepgram-service.ts`); promote 2 `it.todo` stubs; Playwright record.spec |
-| 3 | Wave 4 batch 1 (D4 + D5 + 6c in parallel; 6b + D12 tail folded in) |
-| 4 | Wave 4 cleanup + mini-wave 4.5 (zod v3/v4 split + `types.ts` collapse) |
+| 1 | Wave 4 batch 1 (D4 + D5 + 6c in parallel) + Wave 4c.5 backend agent (Sonnet session_ack sessionId) |
+| 2 | Wave 4 cleanup (6b + D12 tail) + Wave 4c.5 client agent (reconnect state machine) |
+| 3 | Flip 4c.5 feature flag in staging; manual rehydration test across forced WS close |
+| 4 | Mini-wave 4.5 (zod v3/v4 split + `types.ts` collapse) |
 | 5 | Buffer / wave-level integration testing |
 
 ### Week 2 — PWA polish + deploy
@@ -321,8 +328,10 @@ Compressed ~10 working days under the subagent pipeline, ~14–16 serial.
 
 Reverse-chronological. Each builds on the last.
 
-- [`WAVE_3_HANDOFF.md`](./WAVE_3_HANDOFF.md) — test-focused slice (just shipped)
-- [`WAVE_3A_HANDOFF.md`](./WAVE_3A_HANDOFF.md) · [`WAVE_3B_HANDOFF.md`](./WAVE_3B_HANDOFF.md) · [`WAVE_3C_HANDOFF.md`](./WAVE_3C_HANDOFF.md) — sub-wave detail
+- [`WAVE_3_FUNCTIONAL_HANDOFF.md`](./WAVE_3_FUNCTIONAL_HANDOFF.md) — client-side recording hardening (just shipped)
+- [`WAVE_3F_HANDOFF.md`](./WAVE_3F_HANDOFF.md) · [`WAVE_3H_HANDOFF.md`](./WAVE_3H_HANDOFF.md) — sub-wave detail
+- [`WAVE_3_HANDOFF.md`](./WAVE_3_HANDOFF.md) — test slice closeout
+- [`WAVE_3A_HANDOFF.md`](./WAVE_3A_HANDOFF.md) · [`WAVE_3B_HANDOFF.md`](./WAVE_3B_HANDOFF.md) · [`WAVE_3C_HANDOFF.md`](./WAVE_3C_HANDOFF.md) — test-slice sub-wave detail
 - [`WAVE_2B_HANDOFF.md`](./WAVE_2B_HANDOFF.md) — adapter layer + zod
 - [`WAVE_2_HANDOFF.md`](./WAVE_2_HANDOFF.md) — test harness + D12
 - [`WAVE_1_HANDOFF.md`](./WAVE_1_HANDOFF.md) — 17 P0 kill list
