@@ -44,6 +44,7 @@
 | **Wave 4c.5 client** | Flag-gated (`NEXT_PUBLIC_RECORDING_RECONNECT_ENABLED`) reconnect state machine; AWS full-jitter backoff (`500 * 2^(n-1)`, cap 10 s, max 5 attempts); `session_resume` on reconnect; close-code logging matches Deepgram | +18 vitest | `WAVE_4C5_CLIENT_HANDOFF.md` |
 | **Wave 4 batch 1 closeout** | Unified integration of D4 + D5 + 4c.5 backend + 4c.5 client | — | `WAVE_4_HANDOFF.md` |
 | **Wave 4 batch 2** | 6c editable `company_id`/`company_role` + deactivate `<ConfirmDialog>`; new `GET /api/admin/users/companies/list` lite endpoint + self-reassign guard; 6b tail regression-test sweep (5 supertest cases on `src/routes/settings.js` — already clean post-#15-fix); D12 tail `parseOrThrow` on login + admin writes (reads stay on `parseOrWarn`) | +14 web vitest, +13 backend jest | `WAVE_4_BATCH_2_HANDOFF.md` |
+| **Mini-wave 4.5** | Zod v3→v4 alignment (zero-source-change bump — Wave 2b adapter author pre-wrote v4-safe schemas); `types.ts` audit surfaced 6 wire-contract drifts with shared-types (User, AdminUser, CompanySettings, InspectorProfile, JobDetail, Circuit/Observation) flagged for Phase 9; only Job + CertificateType collapsed to re-exports | 0 new | `MINI_WAVE_4_5_HANDOFF.md` |
 
 **Live in production (iOS side):** Deepgram auto-sleep 3-tier + server-side Sonnet v3 multi-turn.
 
