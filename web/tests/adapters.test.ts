@@ -3,6 +3,7 @@ import {
   AdminUserListSchema,
   CCUAnalysisSchema,
   CompanyJobListSchema,
+  CompanyLiteListSchema,
   CompanyMemberListSchema,
   CompanySettingsSchema,
   CompanyStatsSchema,
@@ -13,8 +14,10 @@ import {
   JobListSchema,
   LoginResponseSchema,
   UserSchema,
+  parseOrThrow,
   parseOrWarn,
 } from '@/lib/adapters';
+import { ApiError } from '@/lib/types';
 
 /**
  * Wave 2b D2 — adapter round-trip tests (FIX_PLAN E1: "adapters (new):
@@ -398,5 +401,111 @@ describe('AdminUserListSchema', () => {
       pagination: { limit: 50, offset: 0, total: 1, hasMore: false },
     };
     expect(() => AdminUserListSchema.parse(fixture)).not.toThrow();
+  });
+});
+
+/**
+ * Wave 4 batch 2 — D12 tail. parseOrThrow promoted on login +
+ * admin writes. Silent drift on these surfaces is a real bug-hiding
+ * hazard, so we trade graceful degradation for a loud ApiError.
+ */
+describe('parseOrThrow contract', () => {
+  it('returns parsed data on success (parity with parseOrWarn happy path)', () => {
+    const result = parseOrThrow(
+      UserSchema,
+      { id: 'u1', email: 'a@b', name: 'A' },
+      'POST /api/auth/login'
+    );
+    expect(result).toMatchObject({ id: 'u1', email: 'a@b', name: 'A' });
+  });
+
+  it('throws ApiError with Response shape invalid on drift', () => {
+    const raw = { email: 'a@b' }; // missing id + name
+    let thrown: unknown = null;
+    const spy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      try {
+        parseOrThrow(UserSchema, raw, 'POST /api/auth/login');
+      } catch (err) {
+        thrown = err;
+      }
+    } finally {
+      spy.mockRestore();
+    }
+    expect(thrown).toBeInstanceOf(ApiError);
+    expect((thrown as ApiError).message).toBe('Response shape invalid');
+    // `.body` must carry the raw payload so callers catching the
+    // ApiError can still inspect what the server sent.
+    expect((thrown as ApiError).body).toBe(raw);
+  });
+
+  it('defaults the thrown ApiError status to 200 (fetch succeeded before parse)', () => {
+    const spy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    let thrown: ApiError | null = null;
+    try {
+      try {
+        parseOrThrow(UserSchema, {}, 'POST /api/auth/login');
+      } catch (err) {
+        thrown = err as ApiError;
+      }
+    } finally {
+      spy.mockRestore();
+    }
+    expect(thrown?.status).toBe(200);
+  });
+
+  it('accepts a custom httpStatus so callers surface the response code', () => {
+    const spy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    let thrown: ApiError | null = null;
+    try {
+      try {
+        parseOrThrow(UserSchema, {}, 'POST /api/auth/login', 201);
+      } catch (err) {
+        thrown = err as ApiError;
+      }
+    } finally {
+      spy.mockRestore();
+    }
+    expect(thrown?.status).toBe(201);
+  });
+
+  it('logs a console.warn before throwing for observability parity', () => {
+    const spy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      expect(() => parseOrThrow(UserSchema, { email: 'a@b' }, 'PUT /api/admin/users/:id')).toThrow(
+        ApiError
+      );
+      expect(spy).toHaveBeenCalledOnce();
+      expect(String(spy.mock.calls[0][0])).toMatch(/PUT \/api\/admin\/users\/:id/);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+});
+
+describe('CompanyLiteListSchema (admin picker)', () => {
+  it('accepts a minimal {id, name}[] payload', () => {
+    const fixture = [
+      { id: 'c1', name: 'Beckley Electrical' },
+      { id: 'c2', name: 'Other Firm Ltd' },
+    ];
+    const result = CompanyLiteListSchema.parse(fixture);
+    expect(result).toHaveLength(2);
+    expect(result[0].name).toBe('Beckley Electrical');
+  });
+
+  it('rejects a missing name field (drift would break the picker label)', () => {
+    const raw = [{ id: 'c1' }];
+    const { result, warnCalls } = (() => {
+      const spy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        const r = parseOrWarn(CompanyLiteListSchema, raw, 'GET /api/admin/users/companies/list');
+        return { result: r, warnCalls: spy.mock.calls };
+      } finally {
+        spy.mockRestore();
+      }
+    })();
+    expect(result).toBe(raw);
+    expect(warnCalls).toHaveLength(1);
   });
 });

@@ -21,3 +21,18 @@ export const AdminUserSchema = UserSchema.extend({
 export const AdminUserListSchema = paginatedSchema(AdminUserSchema);
 
 export const AdminSuccessResponseSchema = z.object({ success: z.literal(true) });
+
+/**
+ * Minimal `{id, name}` pairs returned by `GET /api/admin/users/companies/list`.
+ *
+ * Deliberately NOT reusing the full CompanySchema — the admin picker only
+ * needs `id` + `name`. A strict shape here means a zod drift at the
+ * picker endpoint surfaces via `parseOrWarn` even though the payload
+ * is tiny.
+ */
+export const CompanyLiteSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+});
+
+export const CompanyLiteListSchema = z.array(CompanyLiteSchema);
