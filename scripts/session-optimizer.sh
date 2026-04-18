@@ -1915,14 +1915,17 @@ while true; do
             jq ".processed_sessions += [\"${SESSION_PATH}\"] | del(.first_seen.\"${SESSION_PATH}\")" "$STATE_FILE" > "${STATE_FILE}.tmp" \
               && mv "${STATE_FILE}.tmp" "$STATE_FILE"
           else
+            # Don't notify: orphan/abandoned sessions (no debug_log after 1h) are routine cleanup,
+            # not actionable. Previously this fired a pushover per skipped session, and because the
+            # notify() dedup key is TITLE|MESSAGE (with SESSION_PATH baked into the message), every
+            # session produced a unique key — so large S3 backlogs spammed one push every ~10s.
             log "  Fallback analysis failed for $SESSION_PATH — marking as processed anyway"
-            notify "Session Skipped" "Session ${SESSION_PATH} — fallback analysis failed (no debug_log.jsonl)" 0
             jq ".processed_sessions += [\"${SESSION_PATH}\"] | del(.first_seen.\"${SESSION_PATH}\")" "$STATE_FILE" > "${STATE_FILE}.tmp" \
               && mv "${STATE_FILE}.tmp" "$STATE_FILE"
           fi
         else
+          # Don't notify — see comment above. Routine skip, auditable via log file only.
           log "  SKIP: No debug_log.jsonl after 1+ hour and missing manifest/job_snapshot — marking as processed"
-          notify "Session Skipped" "Session ${SESSION_PATH} skipped — no debug_log.jsonl or job_snapshot after 1+ hour" 0
           jq ".processed_sessions += [\"${SESSION_PATH}\"] | del(.first_seen.\"${SESSION_PATH}\")" "$STATE_FILE" > "${STATE_FILE}.tmp" \
             && mv "${STATE_FILE}.tmp" "$STATE_FILE"
         fi
