@@ -108,4 +108,205 @@ describe('SonnetSession', () => {
       expect(onSessionAck).toHaveBeenLastCalledWith('resumed', 'srv-first');
     });
   });
+
+  // ────────────────────────────────────────────────────────────────────────
+  // Commit B — reconnect state machine (feature-flagged)
+  //
+  // We stub `Math.random` to 0 so `computeBackoffDelay` collapses to 0 and
+  // reconnect attempts fire on the next tick. That lets us use real timers
+  // + `jest-websocket-mock`'s microtask-driven handshake without having to
+  // reconcile fake-timer interleaving with the mock-socket internals.
+  // ────────────────────────────────────────────────────────────────────────
+  describe('reconnect flag OFF (default)', () => {
+    it('fires a recoverable onError once for a dirty close and does NOT reconnect', async () => {
+      const onError = vi.fn();
+      const session = new SonnetSession({ onError });
+      session.connect({ sessionId: 's', jobId: 'j', certificateType: 'EICR' });
+      await server.connected;
+
+      server.close({ code: 1006, reason: 'abnormal', wasClean: false });
+      await server.closed;
+
+      // Stand up a second server so a misbehaving state machine would
+      // gladly reconnect. It must stay unconnected.
+      const probe = new WS(SONNET_URL);
+      await new Promise((r) => setTimeout(r, 50));
+      expect(probe.server.clients().length).toBe(0);
+
+      expect(onError).toHaveBeenCalledTimes(1);
+      expect(onError.mock.calls[0][1]).toBe(true); // recoverable
+    });
+
+    it('does not fire onError for a clean close (code 1000)', async () => {
+      const onError = vi.fn();
+      const session = new SonnetSession({ onError });
+      session.connect({ sessionId: 's', jobId: 'j', certificateType: 'EICR' });
+      await server.connected;
+
+      server.close({ code: 1000, reason: 'normal', wasClean: true });
+      await server.closed;
+
+      expect(onError).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('reconnect flag ON', () => {
+    beforeEach(() => {
+      process.env.NEXT_PUBLIC_RECORDING_RECONNECT_ENABLED = 'true';
+      // Collapse backoff to 0 so reconnect attempts fire on next tick.
+      vi.spyOn(Math, 'random').mockReturnValue(0);
+    });
+
+    afterEach(() => {
+      delete process.env.NEXT_PUBLIC_RECORDING_RECONNECT_ENABLED;
+    });
+
+    it('clean close (1000) does NOT trigger reconnect', async () => {
+      const onError = vi.fn();
+      const session = new SonnetSession({ onError });
+      session.connect({ sessionId: 's', jobId: 'j', certificateType: 'EICR' });
+      await server.connected;
+
+      server.close({ code: 1000, reason: 'normal', wasClean: true });
+      await server.closed;
+
+      const probe = new WS(SONNET_URL);
+      await new Promise((r) => setTimeout(r, 50));
+      expect(probe.server.clients().length).toBe(0);
+      expect(onError).not.toHaveBeenCalled();
+    });
+
+    it('dirty close schedules a reconnect that reaches a new server', async () => {
+      const session = new SonnetSession({});
+      session.connect({ sessionId: 's', jobId: 'j', certificateType: 'EICR' });
+      await server.connected;
+
+      server.close({ code: 1006, reason: 'abnormal', wasClean: false });
+      await server.closed;
+
+      const next = new WS(SONNET_URL);
+      await next.connected;
+      expect(session.connectionState).toBe('connected');
+    });
+
+    it('resets attempt counter on a clean open', async () => {
+      const onError = vi.fn();
+      const session = new SonnetSession({ onError });
+      session.connect({ sessionId: 's', jobId: 'j', certificateType: 'EICR' });
+      await server.connected;
+
+      // Break + reconnect once (attempt counter goes 0 -> 1 -> 0 on open).
+      server.close({ code: 1006, reason: 'abnormal', wasClean: false });
+      await server.closed;
+      let next = new WS(SONNET_URL);
+      await next.connected;
+      server = next;
+
+      // Break-and-reconnect 5 MORE times. If the counter didn't reset on
+      // the successful open above, attempt 6 would trip the MAX ceiling
+      // and fire a terminal error. It must not.
+      for (let i = 0; i < 5; i++) {
+        server.close({ code: 1006, reason: 'abnormal', wasClean: false });
+        await server.closed;
+        next = new WS(SONNET_URL);
+        await next.connected;
+        server = next;
+      }
+
+      expect(onError).not.toHaveBeenCalled();
+    });
+
+    it('terminates after max (5) attempts and fires terminal non-recoverable onError', async () => {
+      // To exercise the terminal path we need 5 dirty closes WITHOUT a
+      // successful open in between (an onopen resets the counter).
+      // Easiest way: stub `window.WebSocket` so every construction
+      // yields a socket whose onclose fires on next tick without a
+      // prior onopen. That drives attempts 1..5 to exhaustion, and
+      // the 6th close is the one that flips onError to non-recoverable.
+      const OriginalWS = window.WebSocket;
+      const fakeSockets: Array<{
+        close: () => void;
+        readyState: number;
+        onopen?: () => void;
+        onclose?: (e: CloseEvent) => void;
+        onerror?: () => void;
+        onmessage?: (e: MessageEvent) => void;
+        send: () => void;
+      }> = [];
+      class FakeWS {
+        readyState = 0;
+        onopen?: () => void;
+        onclose?: (e: CloseEvent) => void;
+        onerror?: () => void;
+        onmessage?: (e: MessageEvent) => void;
+        constructor() {
+          fakeSockets.push(this as unknown as (typeof fakeSockets)[number]);
+          // Fire a dirty close on next microtask — no onopen.
+          queueMicrotask(() => {
+            this.readyState = 3;
+            this.onclose?.({
+              code: 1006,
+              reason: 'no server',
+              wasClean: false,
+            } as CloseEvent);
+          });
+        }
+        close(): void {
+          this.readyState = 3;
+        }
+        send(): void {
+          /* no-op */
+        }
+      }
+      (window as unknown as { WebSocket: unknown }).WebSocket = FakeWS;
+
+      try {
+        const onError = vi.fn();
+        const session = new SonnetSession({ onError });
+        session.connect({ sessionId: 's', jobId: 'j', certificateType: 'EICR' });
+
+        // Each microtask cycle closes the current socket and the
+        // onclose handler schedules the next reconnect via
+        // `setTimeout(..., 0)` (jitter=0 from the beforeEach stub).
+        // Drain until the terminal error fires.
+        for (let i = 0; i < 20 && onError.mock.calls.length === 0; i++) {
+          await new Promise((r) => setTimeout(r, 5));
+        }
+        // Drain one more pass so the terminal onError definitely landed.
+        await new Promise((r) => setTimeout(r, 20));
+
+        // The terminal error is non-recoverable with the documented message.
+        const calls = onError.mock.calls;
+        const terminal = calls.find(
+          (c) => c[1] === false && /reconnect failed after 5 attempts/.test(String(c[0]))
+        );
+        expect(terminal).toBeDefined();
+      } finally {
+        (window as unknown as { WebSocket: unknown }).WebSocket = OriginalWS;
+      }
+    });
+  });
+
+  describe('backoff math', () => {
+    it('produces non-negative delays within the cap for any jitter seed', () => {
+      for (let attempt = 1; attempt <= 10; attempt++) {
+        for (const r of [0, 0.25, 0.5, 0.75, 1]) {
+          const d = SonnetSession.computeBackoffDelay(attempt, () => r);
+          expect(d).toBeGreaterThanOrEqual(0);
+          expect(d).toBeLessThanOrEqual(10_000);
+        }
+      }
+    });
+
+    it('maximum possible delay is monotonically non-decreasing across attempts until the cap', () => {
+      // `rand = () => 1` gives the upper bound of the jittered range.
+      const maxes = [1, 2, 3, 4, 5, 6].map((a) => SonnetSession.computeBackoffDelay(a, () => 1));
+      for (let i = 1; i < maxes.length; i++) {
+        expect(maxes[i]).toBeGreaterThanOrEqual(maxes[i - 1]);
+      }
+      // Attempt 5 with rand=1 should hit the cap (500 * 2^4 = 8000;
+      // attempt 6: 500 * 2^5 = 16000 → capped at 10 000).
+      expect(maxes[5]).toBe(10_000);
+    });
+  });
 });
