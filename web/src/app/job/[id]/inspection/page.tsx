@@ -66,7 +66,12 @@ const EICR_SECTION_ACCENTS: Array<'blue' | 'green' | 'amber' | 'magenta' | 'red'
 export default function InspectionPage() {
   const { job, certificateType, updateJob } = useJobContext();
   const isEIC = certificateType === 'EIC';
-  const insp = (job.inspection ?? {}) as InspectionShape;
+  // See DesignPage for the rationale — memo-wrap keeps identity stable
+  // so `patch` isn't rebuilt every render.
+  const insp = React.useMemo<InspectionShape>(
+    () => (job.inspection ?? {}) as InspectionShape,
+    [job.inspection]
+  );
   const items = insp.items ?? {};
 
   const patch = React.useCallback(

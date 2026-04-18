@@ -25,7 +25,12 @@ type DesignShape = {
 
 export default function DesignPage() {
   const { job, certificateType, updateJob } = useJobContext();
-  const data = (job.design ?? {}) as DesignShape;
+  // Memo-wrap the `?? {}` fallback so the identity stays stable across
+  // renders when `job.design` doesn't change. Without the memo, `data`
+  // is a fresh object on every render, which makes the useCallback below
+  // rebuild `patch` on every render and defeats the memoisation entirely
+  // (flagged by react-hooks/exhaustive-deps).
+  const data = React.useMemo<DesignShape>(() => (job.design ?? {}) as DesignShape, [job.design]);
 
   const patch = React.useCallback(
     (next: Partial<DesignShape>) => {

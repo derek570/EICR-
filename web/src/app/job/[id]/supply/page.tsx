@@ -41,7 +41,9 @@ const LIVE_CONDUCTOR_OPTIONS = [
 
 export default function SupplyPage() {
   const { job, certificateType, updateJob } = useJobContext();
-  const supply = (job.supply ?? {}) as SupplyShape;
+  // See DesignPage for the rationale — memo-wrap keeps identity stable
+  // so `patch` isn't rebuilt every render.
+  const supply = React.useMemo<SupplyShape>(() => (job.supply ?? {}) as SupplyShape, [job.supply]);
 
   const patch = React.useCallback(
     (next: SupplyShape) => {
