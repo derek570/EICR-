@@ -119,7 +119,18 @@ const DEEPGRAM_USD_PER_MIN = 0.0077;
 export function RecordingProvider({ children }: { children: React.ReactNode }) {
   const { job, updateJob } = useJobContext();
   const liveFill = useLiveFillStore();
-  const [state, setState] = React.useState<RecordingState>('idle');
+  const [state, setStateRaw] = React.useState<RecordingState>('idle');
+  // Mirror of `state` in a ref so that synchronous double-taps of
+  // start/stop/pause/resume see the *just-set* status instead of the
+  // closed-over React value from the previous render. Without this, two
+  // rapid Start taps both observe `state === 'idle'` and both enter the
+  // mic-request path, racing each other and leaking a second mic stream.
+  // The ref is written synchronously *inside* the state setter below.
+  const statusRef = React.useRef<RecordingState>('idle');
+  const setState = React.useCallback((next: RecordingState) => {
+    statusRef.current = next;
+    setStateRaw(next);
+  }, []);
   const [micLevel, setMicLevel] = React.useState(0);
   const [elapsedSec, setElapsedSec] = React.useState(0);
   // Realtime Deepgram streaming cost — ticked at 10Hz off the elapsed
@@ -229,6 +240,11 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
   const openDeepgram = React.useCallback(async (sourceSampleRate: number) => {
     const sessionId = sessionIdRef.current;
     const { key } = await api.deepgramKey(sessionId);
+    // Token fetch may take seconds on slow mobile; during that window a
+    // stop() can rotate sessionIdRef. Opening a WS after a stop() would
+    // leak a connection + billable seconds. Bail before constructing the
+    // DeepgramService.
+    if (sessionIdRef.current !== sessionId) return;
     const service = new DeepgramService({
       onStateChange: setDeepgramState,
       onInterimTranscript: (text) => {
@@ -405,7 +421,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     // scoped Deepgram token fetch doesn't contend with the Sonnet
     // handshake on slow networks; both are cheap so this is fine.
     openSonnet();
-  }, [clearTick, openDeepgram, openSonnet, teardownDeepgram, teardownMic, teardownSleep]);
+  }, [setState, clearTick, openDeepgram, openSonnet, teardownDeepgram, teardownMic, teardownSleep]);
 
   /** Auto-wake from doze/sleep. Invoked by the SleepManager when VAD
    *  spots speech — reopens whatever layers were torn down and drains
@@ -417,6 +433,12 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
    *  user action will surface any real problem. */
   const handleWake = React.useCallback(
     async (from: Exclude<SleepState, 'active'>) => {
+      // Snapshot sessionId + initial status — the SleepManager fires
+      // onWake asynchronously from a VAD tick; if stop() races us before
+      // openDeepgram() resolves, the late await must not revive state.
+      const sessionId = sessionIdRef.current;
+      // No sessionId → the session was already stopped. Don't re-open WS.
+      if (!sessionId) return;
       try {
         if (from === 'sleeping') {
           // Deepgram + Sonnet were disconnected; reopen them but DON'T
@@ -447,9 +469,17 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
           deepgramRef.current?.resume(replay);
           sonnetRef.current?.resume();
         }
+        // Session rotated while awaiting mic/WS reopen — drop the work
+        // so a dead session doesn't resurrect into `active`.
+        if (sessionIdRef.current !== sessionId) {
+          teardownDeepgram();
+          teardownSonnet();
+          return;
+        }
         setState('active');
         beginTick();
       } catch (err) {
+        if (sessionIdRef.current !== sessionId) return;
         const msg = err instanceof Error ? err.message : String(err);
         setErrorMessage(msg);
         setState('error');
@@ -460,6 +490,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
       }
     },
     [
+      setState,
       beginMicPipeline,
       beginTick,
       openDeepgram,
@@ -501,10 +532,16 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     });
     sleepManagerRef.current = mgr;
     mgr.start();
-  }, [clearTick, handleWake, teardownDeepgram, teardownSonnet]);
+  }, [setState, clearTick, handleWake, teardownDeepgram, teardownSonnet]);
 
   const start = React.useCallback(async () => {
-    if (state !== 'idle' && state !== 'error') return;
+    // Guard on the status ref (synchronous), not the closed-over `state`
+    // value from React. Two rapid start() calls land in the same React
+    // tick; the second one sees `state === 'idle'` via its closure even
+    // though the first has already called setState('requesting-mic'). The
+    // ref is updated synchronously inside setState, so the second tap
+    // sees `requesting-mic` and bails. Double-tap on Start now no-ops.
+    if (statusRef.current !== 'idle' && statusRef.current !== 'error') return;
     setErrorMessage(null);
     setState('requesting-mic');
     setOverlayOpen(true);
@@ -515,15 +552,36 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     setInterim('');
     setQuestions([]);
     liveFill.reset();
-    sessionIdRef.current = `sess_${Date.now().toString(36)}_${Math.random()
-      .toString(36)
-      .slice(2, 6)}`;
+    // Capture the new session id synchronously and snapshot it locally so
+    // that any async handler resolving below (mic permission prompt, WS
+    // handshake) can compare the id it started with against the CURRENT
+    // sessionIdRef.current. If they differ, a stop()+start() cycle has
+    // rotated the session and the late-resolving await belongs to a
+    // dead session — we bail and tear down the accidental resources.
+    const sessionId = `sess_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+    sessionIdRef.current = sessionId;
     try {
       await beginMicPipeline();
+      // sessionId rotated while awaiting the mic / WS handshake — drop
+      // the pipeline we just built on the floor so the fresh session
+      // isn't cross-contaminated. Without this guard, a rapid
+      // stop() → start() after a slow permission prompt would leave
+      // TWO DeepgramService / SonnetSession instances live.
+      if (sessionIdRef.current !== sessionId) {
+        teardownMic();
+        teardownDeepgram();
+        teardownSonnet();
+        return;
+      }
       buildSleepManager();
       setState('active');
       beginTick();
     } catch (err) {
+      if (sessionIdRef.current !== sessionId) {
+        // Error belongs to a superseded session — swallow silently so
+        // the new session's UI isn't flipped red by a stale error.
+        return;
+      }
       const msg = err instanceof Error ? err.message : String(err);
       // Most common: NotAllowedError (permission denied). Surface a
       // friendlier message — the raw DOMException name is hidden behind
@@ -540,7 +598,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
       teardownSleep();
     }
   }, [
-    state,
+    setState,
     beginMicPipeline,
     beginTick,
     buildSleepManager,
@@ -552,6 +610,13 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
   ]);
 
   const stop = React.useCallback(() => {
+    // Guard against double-tap of Stop. Also rotate the sessionId so any
+    // async handler still in flight (mic prompt, WS handshake) will see a
+    // mismatch and tear down its own accidental resources rather than
+    // racing through to setState('active'). Setting to empty string is
+    // enough — any string-compare against a real sessionId will differ.
+    if (statusRef.current === 'idle') return;
+    sessionIdRef.current = '';
     clearTick();
     teardownMic();
     teardownDeepgram();
@@ -562,7 +627,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     setOverlayOpen(false);
     setQuestions([]);
     liveFill.reset();
-  }, [clearTick, teardownMic, teardownDeepgram, teardownSonnet, teardownSleep, liveFill]);
+  }, [setState, clearTick, teardownMic, teardownDeepgram, teardownSonnet, teardownSleep, liveFill]);
 
   /** Manual pause — the inspector tapped the Pause button. Routes
    *  through the same doze handler the SleepManager would use when the
@@ -570,13 +635,17 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
    *  sleep: Deepgram WS stays alive, Sonnet pauses, cost tracker stops,
    *  and the mic keeps filling the ring buffer so resume can replay. */
   const pause = React.useCallback(() => {
-    if (state !== 'active') return;
+    // Synchronous guard via statusRef so pause()+pause() doesn't
+    // double-emit the doze transition (and so a late resume() closure
+    // from a pre-stop session can't flip `dozing → active` on a freshly
+    // restarted session).
+    if (statusRef.current !== 'active') return;
     sonnetRef.current?.pause();
     deepgramRef.current?.pause();
     clearTick();
     setMicLevel(0);
     setState('dozing');
-  }, [state, clearTick]);
+  }, [setState, clearTick]);
 
   /** Manual resume — mirrors the wake path. If Deepgram was torn down
    *  (sleeping), reopen it; otherwise just unpause and replay the ring
@@ -584,10 +653,17 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
    *  + ring buffer keep running through both doze and sleep, so the
    *  replay is always valid. */
   const resume = React.useCallback(async () => {
-    if (state !== 'dozing' && state !== 'sleeping') return;
+    // Synchronous guard. resume() is legal only from the paused/sleeping
+    // states — anything else (including a late retry from the overlay
+    // while we've already rotated to a fresh session) must no-op.
+    if (statusRef.current !== 'dozing' && statusRef.current !== 'sleeping') return;
+    const fromSleeping = statusRef.current === 'sleeping';
+    // Snapshot sessionId so the late-resolving openDeepgram / beginMic
+    // paths below can detect if a stop() raced them.
+    const sessionId = sessionIdRef.current;
     setErrorMessage(null);
     try {
-      if (state === 'sleeping') {
+      if (fromSleeping) {
         const mic = micRef.current;
         if (!mic) {
           await beginMicPipeline();
@@ -607,9 +683,18 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         deepgramRef.current?.resume(replay);
         sonnetRef.current?.resume();
       }
+      // stop() ran while we awaited openDeepgram / beginMicPipeline —
+      // drop the work on the floor. Otherwise we'd flip `idle → active`
+      // on a dead session.
+      if (sessionIdRef.current !== sessionId) {
+        teardownDeepgram();
+        teardownSonnet();
+        return;
+      }
       setState('active');
       beginTick();
     } catch (err) {
+      if (sessionIdRef.current !== sessionId) return;
       const msg = err instanceof Error ? err.message : String(err);
       setErrorMessage(msg);
       setState('error');
@@ -619,7 +704,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
       teardownSleep();
     }
   }, [
-    state,
+    setState,
     beginMicPipeline,
     beginTick,
     openDeepgram,
