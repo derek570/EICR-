@@ -1,8 +1,39 @@
 /**
- * Shared domain types. Kept minimal — only the shapes Phase 1–2 need;
- * per-tab detail types land in later phases when their screens do.
+ * Shared domain types.
+ *
+ * Post mini-wave 4.5, the wire types that match `@certmate/shared-types`
+ * byte-for-byte are re-exported from there; the shapes below are either
+ *   (a) web-only wire shapes not yet in shared-types, or
+ *   (b) wire shapes that genuinely differ from their shared-types
+ *       counterpart (web is permissive where shared-types is strict —
+ *       flagged inline), or
+ *   (c) view-model / client-side helpers (e.g. `ApiError`) that never
+ *       belong in shared-types.
+ *
+ * See `web/reviews/MINI_WAVE_4_5_HANDOFF.md` for the inventory and the
+ * shape-drift audit.
  */
 
+// ============================================================================
+// Re-exports from @certmate/shared-types (wire types that match 1:1)
+// ============================================================================
+// Imported for local use (e.g. `JobDetail extends Job`) and re-exported
+// so that callers can still `import { Job } from '@/lib/types'` unchanged.
+import type { Job, CertificateType } from '@certmate/shared-types';
+export type { Job, CertificateType };
+
+// ============================================================================
+// Web-local types (see handoff for why each stays local)
+// ============================================================================
+
+/**
+ * User — web extension of shared-types `User`.
+ *
+ * Shared-types `User` does not yet carry `company_id` / `company_role`
+ * (those were added during Phase 6 company-admin work and haven't been
+ * back-ported yet). Web owns the richer shape until shared-types is
+ * updated; flag tracked in MINI_WAVE_4_5_HANDOFF.md.
+ */
 export interface User {
   id: string;
   email: string;
@@ -178,16 +209,9 @@ export interface Paginated<T> {
   };
 }
 
-export type CertificateType = 'EICR' | 'EIC';
-
-export interface Job {
-  id: string;
-  address: string;
-  status: 'pending' | 'processing' | 'done' | 'failed';
-  created_at: string;
-  updated_at?: string;
-  certificate_type?: CertificateType;
-}
+// `CertificateType` and `Job` are re-exported from
+// `@certmate/shared-types` at the top of this file — their shapes match
+// that package 1:1. Local declarations removed in mini-wave 4.5.
 
 /**
  * Full job detail payload returned by GET /api/job/:userId/:jobId.
