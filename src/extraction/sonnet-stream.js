@@ -61,6 +61,10 @@ async function refineObservationsAsync(ws, sessionId, observations) {
       ws.send(
         JSON.stringify({
           type: 'observation_update',
+          // Phase A: echo the server-assigned observation_id so iOS can patch
+          // the exact row even if Sonnet has since re-worded the observation
+          // text (fuzzy match becomes fallback only).
+          observation_id: obs.observation_id || null,
           observation_text: obs.observation_text || obs.description || '',
           code: refined.code,
           regulation: refined.regulation,
@@ -70,11 +74,51 @@ async function refineObservationsAsync(ws, sessionId, observations) {
       );
       logger.info('observation_update sent', {
         sessionId,
+        observationId: (obs.observation_id || '').slice(0, 8),
         code: refined.code,
         textPreview: (obs.observation_text || '').slice(0, 60),
       });
     } catch (err) {
       logger.warn('Observation refinement iteration failed', {
+        sessionId,
+        error: err.message,
+      });
+    }
+  }
+}
+
+/**
+ * Send any server-classified observation updates (RULE 6 correction edits)
+ * as `observation_update` messages. These carry the existing observation_id
+ * so iOS patches the existing row in place instead of creating a duplicate.
+ * This runs BEFORE the fire-and-forget BPG4 refinement so the iOS client
+ * sees the code change (e.g. "make that a C2") without waiting for the web
+ * search.
+ */
+function dispatchObservationUpdates(ws, sessionId, updates) {
+  if (!Array.isArray(updates) || updates.length === 0) return;
+  if (ws.readyState !== ws.OPEN) return;
+  for (const u of updates) {
+    try {
+      ws.send(
+        JSON.stringify({
+          type: 'observation_update',
+          observation_id: u.observation_id || null,
+          observation_text: u.observation_text || '',
+          code: u.code,
+          regulation: u.regulation || null,
+          rationale: u.rationale || null,
+          source: u.source || 'rule_6_edit',
+        })
+      );
+      logger.info('observation_update sent (rule_6_edit)', {
+        sessionId,
+        observationId: (u.observation_id || '').slice(0, 8),
+        code: u.code,
+        rationale: u.rationale,
+      });
+    } catch (err) {
+      logger.warn('dispatchObservationUpdates iteration failed', {
         sessionId,
         error: err.message,
       });
@@ -627,10 +671,23 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         const entryRef = activeSessions.get(sessionId);
         const currentWs = entryRef?.ws || ws;
         if (currentWs.readyState === currentWs.OPEN) {
-          const { questions_for_user, extracted_readings, spoken_response, action, ...rest } =
-            result;
+          const {
+            questions_for_user,
+            extracted_readings,
+            spoken_response,
+            action,
+            observationUpdates,
+            ...rest
+          } = result;
           const resultWithoutQuestions = { readings: extracted_readings, ...rest };
           currentWs.send(JSON.stringify({ type: 'extraction', result: resultWithoutQuestions }));
+
+          // Phase A: RULE 6 correction edits (same or similar text, new code)
+          // arrive classified by EICRExtractionSession into observationUpdates.
+          // Dispatch them immediately so iOS can patch the existing rows —
+          // these are NOT fed into refineObservationsAsync because the code is
+          // already set by the inspector; a web search would override it.
+          dispatchObservationUpdates(currentWs, sessionId, observationUpdates);
 
           // Mirror the live-transcript path: fire BPG4 refinement for any new
           // observations so the code/regulation gets upgraded even when the
@@ -831,9 +888,12 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
     });
     for (const result of buffered) {
       try {
-        const { questions_for_user, extracted_readings, ...rest } = result;
+        const { questions_for_user, extracted_readings, observationUpdates, ...rest } = result;
         const resultWithoutQuestions = { readings: extracted_readings, ...rest };
         ws.send(JSON.stringify({ type: 'extraction', result: resultWithoutQuestions }));
+        // Phase A: if the buffered extraction carried RULE 6 correction edits,
+        // replay them on the restored socket so iOS doesn't miss the patch.
+        dispatchObservationUpdates(ws, sessionId, observationUpdates);
       } catch (err) {
         logger.error('Failed to flush buffered extraction', { sessionId, error: err.message });
       }
@@ -922,9 +982,22 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
       // Rename extracted_readings → readings to match the web client interface
       // Strip spoken_response/action — they're sent separately as voice_command_response
       if (ws.readyState === ws.OPEN) {
-        const { questions_for_user, extracted_readings, spoken_response, action, ...rest } = result;
+        const {
+          questions_for_user,
+          extracted_readings,
+          spoken_response,
+          action,
+          observationUpdates,
+          ...rest
+        } = result;
         const resultWithoutQuestions = { readings: extracted_readings, ...rest };
         ws.send(JSON.stringify({ type: 'extraction', result: resultWithoutQuestions }));
+
+        // Phase A: dispatch RULE 6 correction edits (observation_id reused).
+        // These must fire before the BPG4 refinement path so iOS patches the
+        // code change before any web-search-based refinement considers the
+        // observation.
+        dispatchObservationUpdates(ws, sessionId, observationUpdates);
 
         // Fire-and-forget BPG4 / BS 7671 refinement for new observations. Runs
         // AFTER extraction is sent so the inspector sees the observation

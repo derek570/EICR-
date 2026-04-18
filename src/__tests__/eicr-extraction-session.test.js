@@ -150,7 +150,9 @@ describe('EICRExtractionSession', () => {
     });
 
     test('should include already-created observations', () => {
-      session.extractedObservationTexts = ['missing earth bond at kitchen'];
+      session.extractedObservations = [
+        { id: 'test-id', text: 'missing earth bond at kitchen', code: 'C2' },
+      ];
       const msg = session.buildUserMessage('test');
       expect(msg).toContain('Observations already created');
       expect(msg).toContain('missing earth bond');
@@ -508,7 +510,9 @@ describe('EICRExtractionSession', () => {
     });
 
     test('should dedup observations with >50% word overlap', async () => {
-      session.extractedObservationTexts = ['missing earth bond at consumer unit'];
+      session.extractedObservations = [
+        { id: 'seed-id', text: 'missing earth bond at consumer unit', code: 'C2' },
+      ];
 
       mockCreate.mockResolvedValue({
         content: toolUseContent({

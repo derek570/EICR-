@@ -5,10 +5,19 @@
 import fssync from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { randomUUID } from 'node:crypto';
 import Anthropic from '@anthropic-ai/sdk';
 import { CostTracker } from './cost-tracker.js';
 import { lookupPostcode } from '../postcode_lookup.js';
 import logger from '../logger.js';
+
+// RULE 6 correction lead-in phrases — if Sonnet emits an observation whose
+// observation_text starts with one of these, treat it as an *edit* of the
+// most-recent matching observation rather than a new one. This rides
+// alongside the "same text, different code" classifier below; either path is
+// sufficient to mark the emission as an update.
+const OBSERVATION_CORRECTION_LEAD_IN =
+  /^(make (that|it)|change (it|that)|actually|update|correct)\b/i;
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -156,7 +165,13 @@ export class EICRExtractionSession {
     this.costTracker = new CostTracker();
     this.extractedReadingsCount = 0;
     this.askedQuestions = [];
-    this.extractedObservationTexts = []; // Track observations already sent to iOS for dedup
+    // Track observations already emitted to iOS so we can classify later
+    // observations as new / update / duplicate. Each entry is
+    // { id: UUID, text: lowercase-text, code: 'C1'|'C2'|... }. The `id` is
+    // the server-assigned observation_id that flows to iOS on the initial
+    // `extraction` message AND on later `observation_update` messages, so the
+    // client can patch rows in place without fuzzy text matching.
+    this.extractedObservations = [];
     this.turnCount = 0;
     this.circuitSchedule = '';
     this.circuitScheduleIncluded = false;
@@ -641,27 +656,78 @@ export class EICRExtractionSession {
       });
     }
 
-    // Dedup observations: filter out any that match already-sent observations
+    // Classify each observation as new / update / duplicate.
+    //
+    //  - NEW: text has <=50% word overlap with any existing observation.
+    //    Assign a fresh observation_id, keep in `result.observations`, track.
+    //  - UPDATE: text matches an existing (>50% word overlap) AND either the
+    //    code differs OR the text starts with a RULE 6 correction lead-in.
+    //    Re-uses the existing observation_id, moves to `result.observationUpdates`
+    //    so sonnet-stream.js dispatches it as an `observation_update` message,
+    //    and drops from `result.observations` so iOS doesn't create a duplicate
+    //    row. The stored `code` is updated so subsequent turns compare against
+    //    the latest classification.
+    //  - DUPLICATE: text matches AND code unchanged AND no correction lead-in.
+    //    Silently dropped.
+    //
+    // This is the "RULE 6 edit path" — without it the >50% dedupe filter
+    // silently discards `make that a C2` etc., which Sonnet emits per prompt
+    // RULE 6 as an observation-with-corrected-code.
+    if (!Array.isArray(result.observationUpdates)) result.observationUpdates = [];
     if (result.observations.length > 0) {
       result.observations = result.observations.filter((obs) => {
-        const text = (obs.observation_text || '').toLowerCase();
+        const text = (obs.observation_text || '').toLowerCase().trim();
         if (!text) return false;
-        const isDupe = this.extractedObservationTexts.some((prev) => {
-          // Check word overlap: >50% shared words = duplicate
-          const prevWords = new Set(prev.split(/\s+/));
+
+        // Find best matching existing observation (first >50% overlap match).
+        const match = this.extractedObservations.find((prev) => {
+          const prevWords = new Set(prev.text.split(/\s+/));
           const newWords = text.split(/\s+/);
           if (newWords.length === 0) return true;
           const overlap = newWords.filter((w) => prevWords.has(w)).length;
           return overlap / newWords.length > 0.5;
         });
-        if (isDupe) {
-          logger.info(
-            `Session ${this.sessionId} Observation deduped (server): ${text.substring(0, 60)}`
-          );
-        } else {
-          this.extractedObservationTexts.push(text);
+
+        if (!match) {
+          // NEW observation.
+          if (!obs.observation_id) obs.observation_id = randomUUID();
+          this.extractedObservations.push({
+            id: obs.observation_id,
+            text,
+            code: obs.code || null,
+          });
+          return true;
         }
-        return !isDupe;
+
+        // Candidate update. Must be a real correction — same code + same text
+        // is just Sonnet re-emitting and stays a dup.
+        const codeChanged = obs.code && match.code && obs.code !== match.code;
+        const hasLeadIn = OBSERVATION_CORRECTION_LEAD_IN.test(text);
+        if (codeChanged || hasLeadIn) {
+          // UPDATE — emit as observation_update with the original id so iOS
+          // patches the existing row in place. Does NOT flow through the
+          // extraction message body.
+          result.observationUpdates.push({
+            observation_id: match.id,
+            observation_text: obs.observation_text,
+            code: obs.code || match.code,
+            regulation: obs.regulation || null,
+            rationale: hasLeadIn ? 'correction_lead_in' : 'code_change',
+            source: 'rule_6_edit',
+          });
+          if (codeChanged) match.code = obs.code;
+          logger.info(
+            `Session ${this.sessionId} Observation update: ${match.id.slice(0, 8)} ` +
+              `${match.code || '?'}→${obs.code || '?'} (${hasLeadIn ? 'lead-in' : 'code-change'})`
+          );
+          return false;
+        }
+
+        // DUPLICATE — drop silently.
+        logger.info(
+          `Session ${this.sessionId} Observation deduped (server): ${text.substring(0, 60)}`
+        );
+        return false;
       });
     }
 
@@ -819,9 +885,9 @@ export class EICRExtractionSession {
     if (this.askedQuestions.length > 0) {
       parts.push(`Already asked (skip): ${this.askedQuestions.join('; ')}`);
     }
-    if (this.extractedObservationTexts.length > 0) {
+    if (this.extractedObservations.length > 0) {
       parts.push(
-        `Observations already created (do NOT re-extract): ${this.extractedObservationTexts.map((t) => t.substring(0, 60)).join('; ')}`
+        `Observations already created (do NOT re-extract): ${this.extractedObservations.map((o) => o.text.substring(0, 60)).join('; ')}`
       );
     }
     return parts.join('\n\n');
