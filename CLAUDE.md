@@ -186,6 +186,7 @@ Recent changes (one line each). Full commit-body-level detail in [docs/reference
 
 | Date | Summary |
 |------|---------|
+| 2026-04-18 | Web Wave 2a — test harness (vitest 4 + jsdom + RTL + fake-indexeddb) stood up; D12 ApiError JSON-envelope parsing (lifts `{error: "..."}` to `.message`, preserves `.body`; 401 classifiers switched from regex to `.status`); 32 regression tests (5 suites) backfilling Wave 1 fix surfaces. Wave 2b (D2 adapters) deferred. |
 | 2026-04-18 | Web Phase 7d — offline-sync UI (OfflineIndicator pending/failed pills, JobRow Pending chip, `/settings/system` admin page, discard/requeue helpers, BroadcastChannel change notifier). **Closes Phase 7.** |
 | 2026-04-17 | Web Phase 7c — offline mutation outbox + replay worker (IDB v2, exp backoff, FIFO). |
 | 2026-04-17 | Web Phase 7b — iOS Add-to-Home-Screen hint on `/settings`. **Closes Phase 7b.** |
