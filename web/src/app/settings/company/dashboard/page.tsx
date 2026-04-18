@@ -26,7 +26,9 @@ import type {
 import { ApiError } from '@/lib/types';
 import { Button } from '@/components/ui/button';
 import { FloatingLabelInput } from '@/components/ui/floating-label-input';
+import { Pill } from '@/components/ui/pill';
 import { SegmentedControl } from '@/components/ui/segmented-control';
+import { formatShortDate } from '@/lib/format';
 
 /**
  * Company admin dashboard. Ports iOS `CompanyDashboardView.swift`.
@@ -680,41 +682,4 @@ function EmptyState({
       </div>
     </section>
   );
-}
-
-function Pill({ color, children }: { color: 'blue' | 'green' | 'red'; children: React.ReactNode }) {
-  const c =
-    color === 'blue'
-      ? 'var(--color-brand-blue)'
-      : color === 'green'
-        ? 'var(--color-brand-green)'
-        : 'var(--color-status-failed)';
-  return (
-    <span
-      className="rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.05em]"
-      style={{
-        color: c,
-        background: `color-mix(in oklab, ${c} 15%, transparent)`,
-      }}
-    >
-      {children}
-    </span>
-  );
-}
-
-function formatShortDate(iso: string | null | undefined): string {
-  if (!iso) return '';
-  try {
-    const d = new Date(iso);
-    // Short human-readable — "12 Apr" / "12 Apr 2024" if not this year.
-    const now = new Date();
-    const sameYear = d.getFullYear() === now.getFullYear();
-    return d.toLocaleDateString(undefined, {
-      day: 'numeric',
-      month: 'short',
-      ...(sameYear ? {} : { year: 'numeric' }),
-    });
-  } catch {
-    return iso;
-  }
 }

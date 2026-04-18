@@ -17,6 +17,7 @@ import { isSystemAdmin } from '@/lib/roles';
 import { ApiError } from '@/lib/types';
 import { Button } from '@/components/ui/button';
 import { FloatingLabelInput } from '@/components/ui/floating-label-input';
+import { LabelledSelect } from '@/components/ui/labelled-select';
 import { SectionCard } from '@/components/ui/section-card';
 
 /**
@@ -214,56 +215,5 @@ export default function AdminCreateUserPage() {
         </div>
       </form>
     </main>
-  );
-}
-
-// ---------------------------------------------------------------------------
-
-function LabelledSelect({
-  label,
-  value,
-  onChange,
-  options,
-  disabled = false,
-}: {
-  label: string;
-  value: string;
-  onChange: (v: string) => void;
-  options: { value: string; label: string }[];
-  disabled?: boolean;
-}) {
-  const reactId = React.useId();
-  return (
-    <div className="flex flex-col gap-1">
-      <div
-        className={`group relative flex h-14 items-stretch rounded-[var(--radius-md)] border bg-[var(--color-surface-1)] transition focus-within:border-[var(--color-brand-blue)] ${
-          disabled
-            ? 'border-[var(--color-border-subtle)] opacity-60'
-            : 'border-[var(--color-border-default)]'
-        }`}
-      >
-        <div className="flex flex-1 flex-col justify-center px-3">
-          <label
-            htmlFor={reactId}
-            className="pointer-events-none text-[11px] font-medium uppercase tracking-[0.06em] text-[var(--color-text-tertiary)]"
-          >
-            {label}
-          </label>
-          <select
-            id={reactId}
-            value={value}
-            onChange={(e) => onChange(e.target.value)}
-            disabled={disabled}
-            className="w-full bg-transparent text-[15px] font-medium text-[var(--color-text-primary)] focus:outline-none"
-          >
-            {options.map((o) => (
-              <option key={o.value} value={o.value}>
-                {o.label}
-              </option>
-            ))}
-          </select>
-        </div>
-      </div>
-    </div>
   );
 }

@@ -17,6 +17,8 @@ import { useCurrentUser } from '@/lib/use-current-user';
 import { isSystemAdmin } from '@/lib/roles';
 import type { AdminUser } from '@/lib/types';
 import { Button } from '@/components/ui/button';
+import { Pill } from '@/components/ui/pill';
+import { formatShortDate } from '@/lib/format';
 
 /**
  * System-admin user list. Ports iOS `AdminUsersListView.swift`.
@@ -245,57 +247,35 @@ function AdminUserRow({ row, isSelf }: { row: AdminUser; isSelf: boolean }) {
         </span>
       </div>
       <div className="flex shrink-0 flex-wrap items-center justify-end gap-1">
-        {row.is_active === false ? <Pill color="red">Inactive</Pill> : null}
+        {row.is_active === false ? (
+          <Pill color="red" inline>
+            Inactive
+          </Pill>
+        ) : null}
         {isLocked ? (
-          <Pill color="amber">
+          <Pill color="amber" inline>
             <Lock className="mr-1 inline-block h-2.5 w-2.5" aria-hidden />
             Locked
           </Pill>
         ) : null}
         {row.role === 'admin' ? (
-          <Pill color="blue">
+          <Pill color="blue" inline>
             <ShieldCheck className="mr-1 inline-block h-2.5 w-2.5" aria-hidden />
             Admin
           </Pill>
         ) : (
-          <Pill color="neutral">User</Pill>
+          <Pill color="neutral" inline>
+            User
+          </Pill>
         )}
         {row.company_role && row.company_role !== 'employee' ? (
-          <Pill color="green">{row.company_role}</Pill>
+          <Pill color="green" inline>
+            {row.company_role}
+          </Pill>
         ) : null}
       </div>
       <ChevronRight className="h-4 w-4 shrink-0 text-[var(--color-text-tertiary)]" aria-hidden />
     </Link>
-  );
-}
-
-function Pill({
-  color,
-  children,
-}: {
-  color: 'blue' | 'green' | 'red' | 'amber' | 'neutral';
-  children: React.ReactNode;
-}) {
-  const c =
-    color === 'blue'
-      ? 'var(--color-brand-blue)'
-      : color === 'green'
-        ? 'var(--color-brand-green)'
-        : color === 'red'
-          ? 'var(--color-status-failed)'
-          : color === 'amber'
-            ? 'var(--color-status-processing)'
-            : 'var(--color-text-tertiary)';
-  return (
-    <span
-      className="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.05em]"
-      style={{
-        color: c,
-        background: `color-mix(in oklab, ${c} 15%, transparent)`,
-      }}
-    >
-      {children}
-    </span>
   );
 }
 
@@ -310,20 +290,4 @@ function LoadingRows({ count }: { count: number }) {
       ))}
     </div>
   );
-}
-
-function formatShortDate(iso: string | null | undefined): string {
-  if (!iso) return '';
-  try {
-    const d = new Date(iso);
-    const now = new Date();
-    const sameYear = d.getFullYear() === now.getFullYear();
-    return d.toLocaleDateString(undefined, {
-      day: 'numeric',
-      month: 'short',
-      ...(sameYear ? {} : { year: 'numeric' }),
-    });
-  } catch {
-    return iso;
-  }
 }
