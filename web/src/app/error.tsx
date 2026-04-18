@@ -94,8 +94,8 @@ export default function RootError({
           <Logo size="lg" />
           <h1 className="mt-3 text-[26px] font-bold tracking-tight">Something went wrong</h1>
           <p className="text-sm text-[var(--color-text-secondary)]">
-            We&rsquo;ve logged this and will take a look. You can try again — if the problem
-            persists after a reload, reopen the app.
+            Try again to reload this section. If the problem keeps happening, quote the reference
+            below when you report it via Settings &rsaquo; System.
           </p>
           <div className="cm-shimmer mt-2 h-px w-24 rounded-full" aria-hidden />
         </div>

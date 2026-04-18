@@ -11,11 +11,21 @@ import { Logo } from '@/components/brand/logo';
  *
  * Mirrors the login page's visual chrome (ambient orbs + glass card +
  * shimmer line) so the transition from online to offline doesn't feel
- * like hitting a "you broke the internet" dead-end. The card explicitly
- * tells the inspector that queued work will sync when they're back
- * online — true now (a full reload happens on `online` per the Serwist
- * `reloadOnOnline` default; no per-field sync yet) and forward-compatible
- * with the Phase 7c outbox.
+ * like hitting a "you broke the internet" dead-end.
+ *
+ * Copy policy (Wave 5 D10):
+ *   The card must only claim what we can actually guarantee. A full
+ *   reload happens on `online` per the Serwist `reloadOnOnline` default
+ *   (still global until Wave 5 D7 scopes it to `/offline` only per
+ *   FIX_PLAN Q6), and the Phase 7c outbox replays queued job-save
+ *   patches when the tab reconnects — but only for signed-in sessions
+ *   (AppShell-mounted replay worker) and only for mutations that use
+ *   the outbox. The `/offline` shell is reached from unauth'd routes
+ *   too (login, legal), so we can't promise "your changes will sync":
+ *   we say edits are kept locally (IDB) and will attempt to sync on
+ *   reconnect. "Attempt" is load-bearing — captive portals, 4xx
+ *   poisoning, and signed-out sessions all mean best-effort, not
+ *   guaranteed.
  */
 export default function OfflinePage() {
   return (
@@ -27,10 +37,10 @@ export default function OfflinePage() {
       >
         <div className="mb-6 flex flex-col items-start gap-2">
           <Logo size="lg" />
-          <h1 className="mt-3 text-[26px] font-bold tracking-tight">You&rsquo;re offline</h1>
+          <h1 className="mt-3 text-[26px] font-bold tracking-tight">You appear to be offline</h1>
           <p className="text-sm text-[var(--color-text-secondary)]">
-            Reconnect to continue. Any changes you made before losing signal are still on this
-            device and will sync automatically when the network returns.
+            This page needs a connection. Edits you made while signed in are kept on this device and
+            we&rsquo;ll try to sync them once you&rsquo;re back online.
           </p>
           <div className="cm-shimmer mt-2 h-px w-24 rounded-full" aria-hidden />
         </div>
