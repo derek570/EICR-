@@ -42,7 +42,10 @@ import {
   UploadSignatureResponseSchema,
   UserSchema,
   parseOrWarn,
+  parseOrThrow,
+  CompanyLiteListSchema,
 } from './adapters';
+import type { CompanyLite } from './types';
 import { getToken } from './auth';
 
 /**
@@ -73,7 +76,24 @@ const IDEMPOTENT = new Set(['GET', 'HEAD', 'OPTIONS']);
  * responses the caller consumes as-is, HTML error pages on proxy failure)
  * can skip validation without fighting the type system.
  */
-async function request<T>(path: string, init: RequestInit = {}, schema?: ZodTypeAny): Promise<T> {
+/**
+ * Wave 4 batch 2 (D12 tail): a handful of endpoints earn a strict-parse
+ * contract. When `options.strict === true`, a schema mismatch throws
+ * `ApiError('Response shape invalid')` instead of falling back to the
+ * raw payload. See `./adapters/validate.ts#parseOrThrow` for the full
+ * rationale — short version, login + admin writes where silent drift is
+ * unsafe.
+ */
+interface RequestOptions {
+  strict?: boolean;
+}
+
+async function request<T>(
+  path: string,
+  init: RequestInit = {},
+  schema?: ZodTypeAny,
+  options: RequestOptions = {}
+): Promise<T> {
   const method = (init.method ?? 'GET').toUpperCase();
   const headers = new Headers(init.headers);
   const token = getToken();
@@ -120,7 +140,12 @@ async function request<T>(path: string, init: RequestInit = {}, schema?: ZodType
       if (contentType.includes('application/json')) {
         const raw = (await res.json()) as unknown;
         if (schema) {
-          // parseOrWarn never throws; a drift logs + returns raw.
+          // Strict mode throws ApiError on drift (login + admin writes);
+          // default is parseOrWarn which logs + returns raw for graceful
+          // degradation on read paths.
+          if (options.strict) {
+            return parseOrThrow(schema, raw, `${method} ${path}`, res.status) as T;
+          }
           return parseOrWarn(schema, raw, `${method} ${path}`) as T;
         }
         return raw as T;
@@ -185,13 +210,20 @@ export const api = {
   baseUrl: API_BASE_URL,
 
   login(email: string, password: string): Promise<LoginResponse> {
+    // Strict parse — a malformed LoginResponse would silently persist
+    // a broken `token` / `user` into localStorage and the follow-up
+    // `/api/auth/me` would read as "not authenticated" in a way that's
+    // indistinguishable from a wrong-password failure. Throwing here
+    // surfaces the server-side shape bug cleanly in the login form's
+    // existing `catch (err) { setError(err.message) }` path.
     return request<LoginResponse>(
       '/api/auth/login',
       {
         method: 'POST',
         body: JSON.stringify({ email, password }),
       },
-      LoginResponseSchema
+      LoginResponseSchema,
+      { strict: true }
     );
   },
 
@@ -683,10 +715,14 @@ export const api = {
 
   /**
    * Patch a user row. Backend accepts any subset of
-   * `{name, email, company_name, role, is_active}`; unknown fields are
-   * ignored. The backend enforces self-demotion / self-deactivation
-   * guards (400 on either) so the client-side disabling on the edit
-   * form is purely UX — the server is the source of truth.
+   * `{name, email, company_name, role, is_active, company_id, company_role}`;
+   * unknown fields are ignored. The backend enforces self-demotion /
+   * self-deactivation / self-reassignment guards (400 on any of them)
+   * so the client-side disabling on the edit form is purely UX — the
+   * server is the source of truth.
+   *
+   * Wave 4 batch 2: strict parse — a malformed success response would
+   * silently read as "update landed" and hide real backend regressions.
    */
   adminUpdateUser(
     userId: string,
@@ -702,6 +738,18 @@ export const api = {
       company_name?: string | null;
       role?: 'admin' | 'user';
       is_active?: boolean;
+      /**
+       * Null clears the company assignment entirely; a UUID string
+       * moves the user into that company. Must match a row in
+       * `companies.id` — no FK check here, the backend enforces via
+       * the reference on write.
+       */
+      company_id?: string | null;
+      /**
+       * Null clears the company role; the enum values match the
+       * three-tier model enforced server-side.
+       */
+      company_role?: 'owner' | 'admin' | 'employee' | null;
     }
   ): Promise<{ success: true }> {
     return request(
@@ -710,7 +758,8 @@ export const api = {
         method: 'PUT',
         body: JSON.stringify(patch),
       },
-      AdminSuccessResponseSchema
+      AdminSuccessResponseSchema,
+      { strict: true }
     );
   },
 
@@ -719,6 +768,9 @@ export const api = {
    * increments the user's token version so every live JWT they hold
    * is invalidated on the next API call. Caller should surface the
    * "existing sessions signed out" note so the admin knows.
+   *
+   * Wave 4 batch 2: strict parse — destructive action; "silent drift
+   * reads as success" would hide a real backend failure.
    */
   adminResetPassword(userId: string, password: string): Promise<{ success: true }> {
     return request(
@@ -727,7 +779,8 @@ export const api = {
         method: 'POST',
         body: JSON.stringify({ password }),
       },
-      AdminSuccessResponseSchema
+      AdminSuccessResponseSchema,
+      { strict: true }
     );
   },
 
@@ -737,12 +790,26 @@ export const api = {
    * No-op if the user isn't locked — callers should gate the button
    * on `locked_until > now` so a naive double-click doesn't fire a
    * pointless POST.
+   *
+   * Wave 4 batch 2: strict parse for the same reason as the other
+   * admin writes.
    */
   adminUnlockUser(userId: string): Promise<{ success: true }> {
     return request(
       `/api/admin/users/${encodeURIComponent(userId)}/unlock`,
       { method: 'POST' },
-      AdminSuccessResponseSchema
+      AdminSuccessResponseSchema,
+      { strict: true }
     );
+  },
+
+  /**
+   * Lightweight `{id, name}[]` company list for the admin-user edit
+   * page's company picker. Read path, so uses the default
+   * `parseOrWarn` — a drifting name/id field shouldn't block the admin
+   * editing a user.
+   */
+  adminListCompanies(): Promise<CompanyLite[]> {
+    return request<CompanyLite[]>('/api/admin/users/companies/list', {}, CompanyLiteListSchema);
   },
 };

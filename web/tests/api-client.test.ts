@@ -182,6 +182,146 @@ describe('ApiError — D12 JSON envelope parsing', () => {
   });
 });
 
+/**
+ * Wave 4 batch 2 — D12 tail. login + admin writes strict-parse contract.
+ *
+ * These endpoints route through `parseOrThrow` inside `request()`, so
+ * a malformed 200 payload throws ApiError('Response shape invalid')
+ * instead of falling through as raw data. Verified end-to-end (fetch
+ * stub → request → schema parse) to guard against a future refactor
+ * that accidentally removes the `strict: true` option.
+ */
+describe('Wave 4 batch 2 — strict parse on login + admin writes', () => {
+  it('login throws ApiError on a drifted response shape', async () => {
+    restoreFetch = fetchStub([
+      {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+        // Missing required `user` block — a real backend regression
+        // would leak through as `{token}` only pre-Wave-4-batch-2.
+        _body: { token: 'abc' },
+      },
+    ]);
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await expect(api.login('a@b', 'pw')).rejects.toMatchObject({
+        message: 'Response shape invalid',
+      });
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('login passes through a valid LoginResponse unchanged', async () => {
+    restoreFetch = fetchStub([
+      {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+        _body: {
+          token: 'ey.fake.jwt',
+          user: {
+            id: 'u1',
+            email: 'a@b',
+            name: 'A',
+            role: 'admin',
+          },
+        },
+      },
+    ]);
+    const result = await api.login('a@b', 'pw');
+    expect(result.token).toBe('ey.fake.jwt');
+    expect(result.user.name).toBe('A');
+  });
+
+  it('adminUpdateUser throws ApiError on a mis-shaped success response', async () => {
+    restoreFetch = fetchStub([
+      {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+        // Schema demands `{success: true}` (literal true). Under the
+        // old parseOrWarn-only default, `{ok: true}` would silently
+        // return as raw and callers would read "the update worked".
+        _body: { ok: true },
+      },
+    ]);
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await expect(api.adminUpdateUser('u1', { name: 'New' })).rejects.toMatchObject({
+        message: 'Response shape invalid',
+      });
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('adminUpdateUser passes through a valid success envelope', async () => {
+    restoreFetch = fetchStub([
+      {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+        _body: { success: true },
+      },
+    ]);
+    const result = await api.adminUpdateUser('u1', { name: 'New' });
+    expect(result.success).toBe(true);
+  });
+
+  it('adminResetPassword throws on drift (destructive action guard)', async () => {
+    restoreFetch = fetchStub([
+      {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+        _body: { success: 'yes' },
+      },
+    ]);
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await expect(api.adminResetPassword('u1', 'pw12345678')).rejects.toMatchObject({
+        message: 'Response shape invalid',
+      });
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('adminUnlockUser throws on drift', async () => {
+    restoreFetch = fetchStub([
+      {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+        _body: { success: false },
+      },
+    ]);
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await expect(api.adminUnlockUser('u1')).rejects.toMatchObject({
+        message: 'Response shape invalid',
+      });
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('adminListCompanies degrades gracefully on drift (read path, parseOrWarn)', async () => {
+    restoreFetch = fetchStub([
+      {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+        _body: [{ id: 'c1' }], // missing `name` — drift
+      },
+    ]);
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      // Read path — returns raw instead of throwing. Picker will show
+      // the malformed row rather than block the admin from editing.
+      const result = await api.adminListCompanies();
+      expect(result).toEqual([{ id: 'c1' }]);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+});
+
 describe('saveJob (P0-1)', () => {
   it('uses PUT verb — backend has no PATCH route', async () => {
     const spy = vi.fn().mockResolvedValue(

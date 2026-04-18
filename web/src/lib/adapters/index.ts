@@ -14,7 +14,7 @@
  * source.
  */
 
-export { parseOrWarn } from './validate';
+export { parseOrWarn, parseOrThrow } from './validate';
 
 export { UserSchema, LoginResponseSchema } from './auth';
 export {
@@ -53,7 +53,13 @@ export {
   InviteEmployeeResponseSchema,
   paginatedSchema,
 } from './company';
-export { AdminUserSchema, AdminUserListSchema, AdminSuccessResponseSchema } from './admin';
+export {
+  AdminUserSchema,
+  AdminUserListSchema,
+  AdminSuccessResponseSchema,
+  CompanyLiteSchema,
+  CompanyLiteListSchema,
+} from './admin';
 export {
   UploadObservationPhotoResponseSchema,
   DeleteObservationPhotoResponseSchema,
