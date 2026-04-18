@@ -735,7 +735,10 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         // has just extracted an observation — resolveByFields can't do this
         // because observations carry field=null/circuit=null.
         if (Array.isArray(result.observations) && result.observations.length > 0) {
-          questionGate.resolveObservationQuestions(result.observations.length);
+          // Phase D: pass the observations array (not a count) so the gate can
+          // keep unrelated prior-turn obs questions — it only drops questions
+          // whose heard_value overlaps with one of the new observations.
+          questionGate.resolveObservationQuestions(result.observations);
         }
       } catch (err) {
         logger.error('Batch flush callback error', { sessionId, error: err.message });
@@ -1085,7 +1088,9 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
       // Resolve observation-only questions when Sonnet extracted an observation.
       // Mirrors the batch-flush callback path above.
       if (Array.isArray(result.observations) && result.observations.length > 0) {
-        entry.questionGate.resolveObservationQuestions(result.observations.length);
+        // Phase D: pass the observations array (not a count) so the gate can
+        // keep unrelated prior-turn obs questions.
+        entry.questionGate.resolveObservationQuestions(result.observations);
       }
 
       // Periodic orphaned value review — every 10 extraction turns
