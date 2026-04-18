@@ -13,7 +13,7 @@ import { JobProvider } from '@/lib/job-context';
 import { RecordingProvider, useRecording } from '@/lib/recording-context';
 import { api } from '@/lib/api-client';
 import { clearAuth, getUser } from '@/lib/auth';
-import { getCachedJob, putCachedJob } from '@/lib/pwa/job-cache';
+import { getCachedJobWithOverlay, putCachedJob } from '@/lib/pwa/job-cache';
 import { ApiError, type JobDetail } from '@/lib/types';
 
 /**
@@ -61,8 +61,16 @@ export default function JobLayout({ children }: { children: React.ReactNode }) {
     // handles the swap from cached → fresh without losing local edits,
     // because `setIsDirty(false)` only runs when the prop identity
     // changes, and callers above this layout don't re-provide.
+    // Wave 5 D7 — overlay any queued outbox mutation onto the cached
+    // doc before paint. Without this, a reload-after-offline-edit
+    // flashes the pre-edit server snapshot until the replay worker
+    // drains, and in the worst case (subsequent server write on a
+    // different field from another client) the cached doc is
+    // overwritten back to pre-edit while the mutation still lives in
+    // the outbox. Overlay lets the inspector trust that what they
+    // typed stays on screen.
     let hadCache = false;
-    getCachedJob(user.id, jobId).then((cached) => {
+    getCachedJobWithOverlay(user.id, jobId).then((cached) => {
       if (cancelled) return;
       if (cached && job === null) {
         setJob(cached);
