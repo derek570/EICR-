@@ -1,3 +1,4 @@
+import { z } from 'zod';
 import type { JobDetail } from '@/lib/types';
 import {
   DB_NAME,
@@ -119,6 +120,158 @@ export interface OutboxMutation {
 const BASE_BACKOFF_MS = 2_000;
 const MAX_BACKOFF_MS = 5 * 60 * 1_000;
 export const MAX_ATTEMPTS = 15;
+
+/**
+ * Reader-side strict wrapper (Wave 5 D7).
+ *
+ * Wave 1 P0-11 added `wrapTransactionStrict` on WRITER paths so a failed
+ * enqueue can't silently drop an inspector's edit. That still left the
+ * READER paths (`listPendingMutations`, `listPoisonedMutations`,
+ * `markMutationFailed`'s pre-read, `markMutationPoisoned`'s pre-read)
+ * trusting whatever shape `store.getAll()` / `store.get(id)` returned
+ * — the cast `as OutboxMutation[]` is a compile-time lie that says
+ * nothing about the runtime bytes. Real failure modes we need to guard:
+ *
+ *   - A half-applied schema upgrade from a concurrent tab leaves rows
+ *     missing a field the current build expects (e.g. `nextAttemptAt`
+ *     was added later, `poisoned` arrived in a subsequent bump).
+ *   - A browser extension or devtools session corrupts a single row
+ *     (manual IDB edit, speculative rewrite for "fuzzing").
+ *   - A future OutboxOp variant serialised by a never-released branch
+ *     leaves orphaned rows that the current code can't handle.
+ *   - A malformed `patch` (non-object, cyclic after JSON round-trip via
+ *     some extension) would crash the replay worker's spread expression
+ *     (`{ ...current, ...m.patch }`), head-of-line blocking every later
+ *     row.
+ *
+ * Policy on malformed rows: log a single warning + route the row to
+ * poisoned (with a distinguishing error prefix so `/settings/system`
+ * can surface the schema-drift case clearly) so the admin UI can
+ * discard or manually inspect. Do NOT throw — the outer reader's
+ * try/catch already downgrades to `[]`, which would disguise the
+ * corruption as an empty queue. Do NOT promote to `parseOrThrow` per
+ * the D7 scope boundary. The row stays visible to the admin surface
+ * instead of disappearing.
+ *
+ * Why a local schema (not `@/lib/adapters`): the adapter boundary is
+ * scoped to wire shapes. This is a storage-layer invariant — when the
+ * bytes we wrote ourselves come back different, that's IDB-level
+ * corruption, not an API-contract drift. Keeping the schema next to
+ * the interface it mirrors is the right DRY boundary; a single move
+ * if the two shapes ever diverge.
+ */
+const OutboxOpSchema = z.literal('saveJob');
+const OutboxMutationSchema = z.object({
+  id: z.string().min(1),
+  op: OutboxOpSchema,
+  userId: z.string().min(1),
+  jobId: z.string().min(1),
+  // `Partial<JobDetail>` is structurally `Record<string, unknown>` — the
+  // tab-by-tab field bags are already permissive (see adapters/job.ts),
+  // and a strict validator here would drift out of sync on every new
+  // tab field. What we DO enforce: the patch must be a plain object (not
+  // null, not an array, not a primitive) so the replay worker's spread
+  // doesn't explode.
+  patch: z.record(z.string(), z.unknown()),
+  createdAt: z.number().finite(),
+  attempts: z.number().int().nonnegative(),
+  nextAttemptAt: z.number().finite(),
+  lastError: z.string().optional(),
+  poisoned: z.boolean().optional(),
+});
+
+/**
+ * Parse a raw IDB row into a typed `OutboxMutation` or return `null`.
+ * `null` means "unusable — route via the malformed-row quarantine
+ * path"; the caller decides whether that's a drop, a poison-move, or
+ * a user-facing warning.
+ *
+ * Separate from the schema so the call sites read cleanly and the
+ * warning format stays consistent across reader paths.
+ */
+function parseOutboxRow(raw: unknown): OutboxMutation | null {
+  const result = OutboxMutationSchema.safeParse(raw);
+  if (result.success) return result.data as OutboxMutation;
+  const id =
+    raw && typeof raw === 'object' && 'id' in raw && typeof (raw as { id: unknown }).id === 'string'
+      ? ((raw as { id: string }).id as string)
+      : '<unknown>';
+  const issues = result.error.issues
+    .slice(0, 5)
+    .map((i) => `${i.path.join('.') || '<root>'}: ${i.message}`);
+  console.warn(`[outbox] malformed row id=${id}; schema drift or corruption`, issues);
+  return null;
+}
+
+/**
+ * Quarantine a row whose shape didn't parse. We can't call
+ * `markMutationPoisoned` directly because that reuses the same broken
+ * bytes via get/put — if the schema mismatch is because `nextAttemptAt`
+ * is missing, putting the row back keeps it missing. Instead, we write
+ * a fresh minimum-viable record with the extracted id and a clear
+ * error prefix so the `/settings/system` UI can distinguish schema
+ * drift from ordinary server 4xx rejection.
+ *
+ * If the row has no recoverable id (not even a string), we delete it
+ * outright — nothing else we can do, and leaving the corruption in
+ * place would poison every subsequent reader pass.
+ */
+async function quarantineMalformedRow(raw: unknown): Promise<void> {
+  if (!isSupported()) return;
+  try {
+    const db = await openDB();
+    const tx = db.transaction(STORE_OUTBOX, 'readwrite');
+    const store = tx.objectStore(STORE_OUTBOX);
+    const maybeId =
+      raw &&
+      typeof raw === 'object' &&
+      'id' in raw &&
+      typeof (raw as { id: unknown }).id === 'string'
+        ? ((raw as { id: string }).id as string)
+        : null;
+    if (!maybeId) {
+      // No usable key — there's nothing to quarantine. The whole
+      // `store.getAll()` filter in the reader drops this row already;
+      // this branch is only reached if a later reader produced it.
+      await wrapTransaction(tx);
+      return;
+    }
+    // Coerce required fields to safe defaults so subsequent reads
+    // (including the admin UI) can render the row's poison state.
+    // The inspector can then choose to discard; we can't safely replay
+    // data whose shape drifted out from under us.
+    const now = Date.now();
+    const quarantined: OutboxMutation = {
+      id: maybeId,
+      op: 'saveJob',
+      userId:
+        raw &&
+        typeof raw === 'object' &&
+        'userId' in raw &&
+        typeof (raw as { userId: unknown }).userId === 'string'
+          ? ((raw as { userId: string }).userId as string)
+          : '<unknown>',
+      jobId:
+        raw &&
+        typeof raw === 'object' &&
+        'jobId' in raw &&
+        typeof (raw as { jobId: unknown }).jobId === 'string'
+          ? ((raw as { jobId: string }).jobId as string)
+          : '<unknown>',
+      patch: {},
+      createdAt: now,
+      attempts: 0,
+      nextAttemptAt: Number.MAX_SAFE_INTEGER,
+      lastError: 'schema drift: row failed runtime validation',
+      poisoned: true,
+    };
+    store.put(quarantined);
+    await wrapTransaction(tx);
+    notifyOutboxChange();
+  } catch (err) {
+    console.warn('[outbox] quarantineMalformedRow failed', err);
+  }
+}
 
 /**
  * Cross-surface change notification (Phase 7d).
@@ -267,9 +420,29 @@ export async function listPendingMutations(): Promise<OutboxMutation[]> {
     const db = await openDB();
     const tx = db.transaction(STORE_OUTBOX, 'readonly');
     const store = tx.objectStore(STORE_OUTBOX);
-    const all = (await wrapRequest(store.getAll())) as OutboxMutation[] | null;
+    // Read raw to preserve the original shape (even unknown keys we don't
+    // model) for the validation pass. Casting directly to
+    // `OutboxMutation[]` here was the Wave 1 partial-fix leak — the
+    // writer strict-wrapper couldn't help if the reader handed callers
+    // garbage that TS happily typed as valid.
+    const all = (await wrapRequest(store.getAll())) as unknown[] | null;
     if (!all) return [];
-    return all.filter((m) => !m.poisoned).sort((a, b) => a.createdAt - b.createdAt);
+    const malformed: unknown[] = [];
+    const parsed: OutboxMutation[] = [];
+    for (const raw of all) {
+      const ok = parseOutboxRow(raw);
+      if (ok) parsed.push(ok);
+      else malformed.push(raw);
+    }
+    // Route the malformed rows to poison AFTER the readonly tx above has
+    // closed — can't mix readonly + readwrite on the same store in a
+    // single IDB transaction. Fire-and-forget; the admin UI picks them
+    // up on the next `useOutboxState` refresh triggered by
+    // `notifyOutboxChange` inside `quarantineMalformedRow`.
+    if (malformed.length > 0) {
+      void Promise.all(malformed.map(quarantineMalformedRow));
+    }
+    return parsed.filter((m) => !m.poisoned).sort((a, b) => a.createdAt - b.createdAt);
   } catch (err) {
     console.warn('[outbox] listPendingMutations failed', err);
     return [];
@@ -326,9 +499,19 @@ export async function requeueMutation(id: string): Promise<void> {
     const db = await openDB();
     const tx = db.transaction(STORE_OUTBOX, 'readwrite');
     const store = tx.objectStore(STORE_OUTBOX);
-    const current = (await wrapRequest(store.get(id))) as OutboxMutation | null;
-    if (!current) {
+    const raw = (await wrapRequest(store.get(id))) as unknown;
+    if (!raw) {
       await wrapTransaction(tx);
+      return;
+    }
+    const current = parseOutboxRow(raw);
+    if (!current) {
+      // Refuse to requeue a row we can't parse — resetting `attempts=0`
+      // and clearing `poisoned` on a shape-drifted row would re-enter
+      // the replay loop with bytes that crash the worker. Drop through
+      // to quarantine so the admin UI surfaces the corruption.
+      await wrapTransaction(tx);
+      await quarantineMalformedRow(raw);
       return;
     }
     const updated: OutboxMutation = {
@@ -361,11 +544,21 @@ export async function markMutationFailed(id: string, error: string): Promise<voi
     const db = await openDB();
     const tx = db.transaction(STORE_OUTBOX, 'readwrite');
     const store = tx.objectStore(STORE_OUTBOX);
-    const current = (await wrapRequest(store.get(id))) as OutboxMutation | null;
-    if (!current) {
+    const raw = (await wrapRequest(store.get(id))) as unknown;
+    if (!raw) {
       // Another tab removed the row while we were failing — accept and
       // move on. Don't resurrect; the winning tab's decision stands.
       await wrapTransaction(tx);
+      return;
+    }
+    const current = parseOutboxRow(raw);
+    if (!current) {
+      // Schema drift: can't safely read-modify-write. Quarantine via the
+      // malformed-row path (runs in its own tx so we abort the current
+      // one cleanly). Skip the attempts bump — we have no trustworthy
+      // count to increment.
+      await wrapTransaction(tx);
+      await quarantineMalformedRow(raw);
       return;
     }
     const newAttempts = current.attempts + 1;
@@ -405,9 +598,18 @@ export async function markMutationPoisoned(id: string, error: string): Promise<v
     const db = await openDB();
     const tx = db.transaction(STORE_OUTBOX, 'readwrite');
     const store = tx.objectStore(STORE_OUTBOX);
-    const current = (await wrapRequest(store.get(id))) as OutboxMutation | null;
-    if (!current) {
+    const raw = (await wrapRequest(store.get(id))) as unknown;
+    if (!raw) {
       await wrapTransaction(tx);
+      return;
+    }
+    const current = parseOutboxRow(raw);
+    if (!current) {
+      // Already malformed — the quarantine path is our one-true
+      // poison-move for schema-drift rows. Don't try to put() a
+      // field-tweaked copy of a shape we don't trust.
+      await wrapTransaction(tx);
+      await quarantineMalformedRow(raw);
       return;
     }
     const updated: OutboxMutation = {
@@ -437,9 +639,19 @@ export async function listPoisonedMutations(): Promise<OutboxMutation[]> {
     const db = await openDB();
     const tx = db.transaction(STORE_OUTBOX, 'readonly');
     const store = tx.objectStore(STORE_OUTBOX);
-    const all = (await wrapRequest(store.getAll())) as OutboxMutation[] | null;
+    const all = (await wrapRequest(store.getAll())) as unknown[] | null;
     if (!all) return [];
-    return all.filter((m) => m.poisoned).sort((a, b) => a.createdAt - b.createdAt);
+    const malformed: unknown[] = [];
+    const parsed: OutboxMutation[] = [];
+    for (const raw of all) {
+      const ok = parseOutboxRow(raw);
+      if (ok) parsed.push(ok);
+      else malformed.push(raw);
+    }
+    if (malformed.length > 0) {
+      void Promise.all(malformed.map(quarantineMalformedRow));
+    }
+    return parsed.filter((m) => m.poisoned).sort((a, b) => a.createdAt - b.createdAt);
   } catch (err) {
     console.warn('[outbox] listPoisonedMutations failed', err);
     return [];
@@ -468,3 +680,9 @@ export async function purgeOutbox(): Promise<void> {
 // Re-export the DB constants so callers that need to inspect or extend
 // the outbox (e.g. future Phase 7d UI queries) don't need two imports.
 export { DB_NAME, OUTBOX_INDEX_BY_USER, STORE_OUTBOX };
+
+// Export the schema + parse helper so tests can exercise the reader-side
+// strict-wrapper contract directly without needing to round-trip through
+// IDB. Production callers should not import these — use the typed list
+// helpers above instead.
+export { OutboxMutationSchema, parseOutboxRow };
