@@ -327,6 +327,16 @@ export class SonnetSession {
 
       const isClean = event.code === 1000 || event.code === 1005 || !this.shouldReconnect;
       const reconnectEnabled = isReconnectEnabled();
+      const willReconnect =
+        reconnectEnabled && !isClean && this.reconnectAttempts < RECONNECT_MAX_ATTEMPTS;
+
+      // Close-code log — matches `deepgram-service.ts` format for
+      // cross-stream grepping in ops tooling (see WAVE_3F_HANDOFF.md).
+      // `attempt` is the attempt number that JUST failed (0 for the
+      // initial open, 1..N for each reconnect cycle).
+      console.info(
+        `[sonnet] close code=${event.code} reason=${JSON.stringify(event.reason ?? '')} reconnect=${willReconnect} attempt=${this.reconnectAttempts}`
+      );
 
       if (!reconnectEnabled) {
         // Flag OFF — preserve pre-4c.5 behaviour exactly: non-clean close

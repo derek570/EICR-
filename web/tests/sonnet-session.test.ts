@@ -190,29 +190,37 @@ describe('SonnetSession', () => {
     });
 
     it('resets attempt counter on a clean open', async () => {
+      // Construct a session, drive it through enough break/reconnect
+      // cycles to exceed MAX if the counter weren't resetting, and
+      // assert no terminal error fires. We inspect the counter via
+      // the close-code log (Commit D) rather than a long live cycle
+      // to keep the test deterministic — each successful reconnect
+      // prints `attempt=0` in the subsequent close log, proving the
+      // counter was reset on onopen.
       const onError = vi.fn();
+      const info = vi.spyOn(console, 'info').mockImplementation(() => {});
       const session = new SonnetSession({ onError });
       session.connect({ sessionId: 's', jobId: 'j', certificateType: 'EICR' });
       await server.connected;
 
-      // Break + reconnect once (attempt counter goes 0 -> 1 -> 0 on open).
+      // Cycle 1: dirty close → reconnect → the close log on the next
+      // cycle should show `attempt=0`, proving the counter reset on the
+      // successful open.
       server.close({ code: 1006, reason: 'abnormal', wasClean: false });
       await server.closed;
-      let next = new WS(SONNET_URL);
+      const next = new WS(SONNET_URL);
       await next.connected;
-      server = next;
 
-      // Break-and-reconnect 5 MORE times. If the counter didn't reset on
-      // the successful open above, attempt 6 would trip the MAX ceiling
-      // and fire a terminal error. It must not.
-      for (let i = 0; i < 5; i++) {
-        server.close({ code: 1006, reason: 'abnormal', wasClean: false });
-        await server.closed;
-        next = new WS(SONNET_URL);
-        await next.connected;
-        server = next;
-      }
+      next.close({ code: 1006, reason: 'abnormal', wasClean: false });
+      await next.closed;
 
+      // Two close logs recorded — the second must show attempt=0 (fresh
+      // exponential ramp after the successful open reset the counter).
+      const closeLogs = info.mock.calls
+        .map((c) => c[0])
+        .filter((l): l is string => typeof l === 'string' && l.startsWith('[sonnet] close'));
+      expect(closeLogs.length).toBeGreaterThanOrEqual(2);
+      expect(closeLogs[1]).toMatch(/attempt=0/);
       expect(onError).not.toHaveBeenCalled();
     });
 
@@ -378,6 +386,70 @@ describe('SonnetSession', () => {
         (c) => c[1] === true && /context expired/.test(String(c[0]))
       );
       expect(warning).toBeDefined();
+    });
+  });
+
+  // ────────────────────────────────────────────────────────────────────────
+  // Commit D — close-code logging (Deepgram-matching format)
+  // ────────────────────────────────────────────────────────────────────────
+  describe('close-code logging (Commit D)', () => {
+    it('logs close events in the Deepgram-matching format', async () => {
+      const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+      const session = new SonnetSession({});
+      session.connect({ sessionId: 's', jobId: 'j', certificateType: 'EICR' });
+      await server.connected;
+
+      server.close({ code: 1011, reason: 'server error', wasClean: false });
+      await server.closed;
+
+      // `[sonnet] close code=<n> reason="<r>" reconnect=<bool> attempt=<i>`
+      const matchingCall = info.mock.calls.find(
+        (c) => typeof c[0] === 'string' && c[0].startsWith('[sonnet] close')
+      );
+      expect(matchingCall).toBeDefined();
+      const line = matchingCall?.[0] as string;
+      expect(line).toMatch(
+        /^\[sonnet\] close code=\d+ reason=".*" reconnect=(true|false) attempt=\d+$/
+      );
+    });
+
+    it('logs reconnect=true when the flag is ON and close is dirty', async () => {
+      process.env.NEXT_PUBLIC_RECORDING_RECONNECT_ENABLED = 'true';
+      vi.spyOn(Math, 'random').mockReturnValue(0);
+      const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+      try {
+        const session = new SonnetSession({});
+        session.connect({ sessionId: 's', jobId: 'j', certificateType: 'EICR' });
+        await server.connected;
+
+        server.close({ code: 1006, reason: 'abnormal', wasClean: false });
+        await server.closed;
+
+        const line = info.mock.calls.find(
+          (c) => typeof c[0] === 'string' && c[0].startsWith('[sonnet] close')
+        )?.[0] as string;
+        expect(line).toMatch(/reconnect=true/);
+        expect(line).toMatch(/code=1006/);
+        expect(line).toMatch(/reason="abnormal"/);
+      } finally {
+        delete process.env.NEXT_PUBLIC_RECORDING_RECONNECT_ENABLED;
+      }
+    });
+
+    it('logs reconnect=false for a clean close', async () => {
+      const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+      const session = new SonnetSession({});
+      session.connect({ sessionId: 's', jobId: 'j', certificateType: 'EICR' });
+      await server.connected;
+
+      server.close({ code: 1000, reason: 'normal', wasClean: true });
+      await server.closed;
+
+      const line = info.mock.calls.find(
+        (c) => typeof c[0] === 'string' && c[0].startsWith('[sonnet] close')
+      )?.[0] as string;
+      expect(line).toMatch(/reconnect=false/);
+      expect(line).toMatch(/code=1000/);
     });
   });
 
