@@ -22,6 +22,7 @@ import { useCurrentUser } from '@/lib/use-current-user';
 import type { InspectorProfile } from '@/lib/types';
 import { Button } from '@/components/ui/button';
 import { FloatingLabelInput } from '@/components/ui/floating-label-input';
+import { IconButton } from '@/components/ui/icon-button';
 import { SectionCard } from '@/components/ui/section-card';
 import {
   SignatureCanvas,
@@ -175,13 +176,12 @@ export default function InspectorDetailPage() {
     <main className="mx-auto flex w-full max-w-3xl flex-col gap-5 px-4 py-6 pb-32">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
-          <Link
-            href="/settings/staff"
-            className="inline-flex h-9 w-9 items-center justify-center rounded-full text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-3)]"
-            aria-label="Back to staff list"
-          >
-            <ChevronRight className="h-4 w-4 rotate-180" aria-hidden />
-          </Link>
+          {/* D8: 44×44 back-link (was 36×36). */}
+          <IconButton asChild aria-label="Back to staff list">
+            <Link href="/settings/staff">
+              <ChevronRight className="h-4 w-4 rotate-180" aria-hidden />
+            </Link>
+          </IconButton>
           <h1 className="text-[18px] font-bold text-[var(--color-text-primary)]">
             {isNew ? 'Add Staff Member' : 'Edit Staff Member'}
           </h1>

@@ -7,6 +7,7 @@ import { ApiError, type ObservationRow } from '@/lib/types';
 import { getUser } from '@/lib/auth';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog';
+import { IconButton } from '@/components/ui/icon-button';
 import { cn } from '@/lib/utils';
 import { ObservationPhoto } from './observation-photo';
 
@@ -181,14 +182,10 @@ export function ObservationSheet({
                 {observation.description ? 'Edit observation' : 'Add observation'}
               </h2>
             </DialogTitle>
-            <button
-              type="button"
-              onClick={onCancel}
-              className="inline-flex h-8 w-8 items-center justify-center rounded-full text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-2)]"
-              aria-label="Close"
-            >
+            {/* D8: 44×44 touch target (was h-8 w-8 = 32×32, failed WCAG 2.5.5). */}
+            <IconButton onClick={onCancel} aria-label="Close">
               <X className="h-4 w-4" aria-hidden />
-            </button>
+            </IconButton>
           </div>
 
           {/* Body — scrollable */}
@@ -363,14 +360,20 @@ export function ObservationSheet({
                         alt="Observation defect photo"
                         thumbnail
                       />
-                      <button
-                        type="button"
+                      {/* D8: expanded from 24×24 overlay to 44×44 touch target.
+                       * The opacity-90 + black translucent background keeps the
+                       * photo readable behind the button on a ~100px mobile
+                       * thumbnail — the glyph stays 16×16 via Trash2 sizing so
+                       * the visual weight is unchanged, only the hit area grew. */}
+                      <IconButton
+                        size="md"
+                        variant="overlay"
                         onClick={() => deletePhoto(filename)}
                         aria-label="Remove photo"
-                        className="absolute right-1 top-1 inline-flex h-6 w-6 items-center justify-center rounded-full bg-black/65 text-white opacity-90 transition hover:bg-black/80 hover:opacity-100"
+                        className="absolute right-1 top-1 opacity-90 hover:opacity-100"
                       >
-                        <Trash2 className="h-3 w-3" aria-hidden />
-                      </button>
+                        <Trash2 className="h-4 w-4" aria-hidden />
+                      </IconButton>
                     </div>
                   ))}
                 </div>

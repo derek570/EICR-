@@ -2,6 +2,7 @@
 
 import * as React from 'react';
 import { Share, Plus, X } from 'lucide-react';
+import { IconButton } from '@/components/ui/icon-button';
 
 /**
  * Dismissible "Add to Home Screen" banner for iOS Safari users.
@@ -103,14 +104,15 @@ export function IOSInstallHint() {
       aria-label="Install CertMate on your iPhone"
       className="relative overflow-hidden rounded-[var(--radius-lg)] border border-[var(--color-brand-blue)]/30 bg-[color-mix(in_srgb,var(--color-brand-blue)_10%,var(--color-surface-2))] p-5"
     >
-      <button
-        type="button"
+      {/* D8: 44×44 (was 32×32 — h-8 w-8). Positioning via className; the
+       * IconButton variant covers hover/focus/bg. */}
+      <IconButton
         onClick={dismiss}
         aria-label="Dismiss install hint"
-        className="absolute right-2.5 top-2.5 inline-flex h-8 w-8 items-center justify-center rounded-full text-[var(--color-text-tertiary)] transition hover:bg-[var(--color-surface-3)] hover:text-[var(--color-text-primary)]"
+        className="absolute right-1 top-1 text-[var(--color-text-tertiary)]"
       >
         <X className="h-4 w-4" strokeWidth={2} aria-hidden />
-      </button>
+      </IconButton>
 
       <div className="flex items-start gap-4 pr-8">
         <div

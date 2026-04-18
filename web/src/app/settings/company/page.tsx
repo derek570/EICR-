@@ -20,6 +20,7 @@ import { isCompanyAdmin } from '@/lib/roles';
 import type { CompanySettings } from '@/lib/types';
 import { Button } from '@/components/ui/button';
 import { FloatingLabelInput } from '@/components/ui/floating-label-input';
+import { IconButton } from '@/components/ui/icon-button';
 import { SectionCard } from '@/components/ui/section-card';
 import { LogoUploader } from '@/components/settings/logo-uploader';
 
@@ -108,13 +109,14 @@ export default function CompanySettingsPage() {
     <main className="mx-auto flex w-full max-w-3xl flex-col gap-5 px-4 py-6 pb-32">
       <div className="flex items-center justify-between gap-3">
         <div className="flex items-center gap-3">
-          <Link
-            href="/settings"
-            className="inline-flex h-9 w-9 items-center justify-center rounded-full text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-3)]"
-            aria-label="Back to settings"
-          >
-            <ChevronRight className="h-4 w-4 rotate-180" aria-hidden />
-          </Link>
+          {/* D8: 44×44 back-link (was 36×36 — h-9 w-9). asChild keeps
+           * Next <Link>'s prefetch behaviour while the IconButton enforces
+           * the touch target. */}
+          <IconButton asChild aria-label="Back to settings">
+            <Link href="/settings">
+              <ChevronRight className="h-4 w-4 rotate-180" aria-hidden />
+            </Link>
+          </IconButton>
           <h1 className="text-[18px] font-bold text-[var(--color-text-primary)]">
             Company Details
           </h1>

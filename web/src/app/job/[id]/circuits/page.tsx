@@ -21,6 +21,7 @@ import { ApiError } from '@/lib/types';
 import { applyCcuAnalysisToJob } from '@/lib/recording/apply-ccu-analysis';
 import { applyDocumentExtractionToJob } from '@/lib/recording/apply-document-extraction';
 import { FloatingLabelInput } from '@/components/ui/floating-label-input';
+import { IconButton } from '@/components/ui/icon-button';
 import { SectionCard } from '@/components/ui/section-card';
 import { SegmentedControl } from '@/components/ui/segmented-control';
 import { SelectChips } from '@/components/ui/select-chips';
@@ -332,14 +333,15 @@ export default function CircuitsPage() {
                   className="flex items-start justify-between gap-2 text-[12px] text-[var(--color-text-primary)]"
                 >
                   <span className="flex-1">{q}</span>
-                  <button
-                    type="button"
+                  {/* D8: 44×44 (was 20×20 — h-5 w-5). Hit area expands into
+                   * the row padding; visible glyph is unchanged at 12px. */}
+                  <IconButton
                     onClick={() => dismissQuestion(i)}
                     aria-label="Dismiss question"
-                    className="flex h-5 w-5 flex-shrink-0 items-center justify-center rounded-full text-[var(--color-text-tertiary)] transition hover:bg-[var(--color-surface-2)] hover:text-[var(--color-text-primary)]"
+                    className="flex-shrink-0 text-[var(--color-text-tertiary)]"
                   >
                     <X className="h-3 w-3" aria-hidden />
-                  </button>
+                  </IconButton>
                 </li>
               ))}
             </ul>
@@ -491,14 +493,16 @@ function CircuitCard({
             </span>
           </span>
         </button>
-        <button
-          type="button"
+        {/* D8: 44×44 (was 32×32 — h-8 w-8). Destructive variant styling
+         * matches the old bespoke red; hit area now WCAG-compliant. */}
+        <IconButton
+          variant="destructive"
           onClick={onRemove}
           aria-label={`Remove circuit ${ref}`}
-          className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full text-[var(--color-status-failed)]/80 transition hover:bg-[var(--color-status-failed)]/10 hover:text-[var(--color-status-failed)]"
+          className="flex-shrink-0"
         >
           <Trash2 className="h-4 w-4" aria-hidden />
-        </button>
+        </IconButton>
       </header>
 
       {expanded ? (

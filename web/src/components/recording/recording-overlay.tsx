@@ -14,6 +14,7 @@ import {
 import { useRecording, formatCost, formatElapsed } from '@/lib/recording-context';
 import { cn } from '@/lib/utils';
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog';
+import { IconButton } from '@/components/ui/icon-button';
 
 /**
  * Recording overlay — mirrors iOS `RecordingOverlay.swift`.
@@ -211,14 +212,17 @@ export function RecordingOverlay() {
                   <p className="flex-1 text-[13px] leading-snug text-[var(--color-text-primary)]">
                     {q.question}
                   </p>
-                  <button
-                    type="button"
+                  {/* D8: 44×44 (was 24×24 — h-6 w-6). The Sonnet-question
+                   * dismiss pip sits at the end of a row with text, so the
+                   * extra hit area grows outward into the row padding; the
+                   * visible glyph stays the same size. */}
+                  <IconButton
                     onClick={() => dismissQuestion(i)}
                     aria-label="Dismiss question"
-                    className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[var(--color-text-tertiary)] transition hover:bg-[var(--color-surface-2)]"
+                    className="shrink-0 text-[var(--color-text-tertiary)]"
                   >
                     <CloseIcon className="h-3.5 w-3.5" strokeWidth={2.25} aria-hidden />
-                  </button>
+                  </IconButton>
                 </div>
               ))}
             </div>
@@ -316,15 +320,17 @@ function HeroIconButton({
   icon: React.ComponentType<{ className?: string; strokeWidth?: number; 'aria-hidden'?: boolean }>;
   onClick: () => void;
 }) {
+  // D8: 44×44 (was 36×36). The overlay chrome lives on a dark gradient,
+  // so white/15 is bespoke and kept via className rather than adding a
+  // one-off IconButton variant.
   return (
-    <button
-      type="button"
+    <IconButton
       onClick={onClick}
       aria-label={label}
-      className="flex h-9 w-9 items-center justify-center rounded-full bg-white/15 text-white transition hover:bg-white/25 focus-visible:outline-2 focus-visible:outline-white"
+      className="bg-white/15 text-white hover:bg-white/25 focus-visible:outline-white"
     >
       <Icon className="h-4 w-4" strokeWidth={2.25} aria-hidden />
-    </button>
+    </IconButton>
   );
 }
 

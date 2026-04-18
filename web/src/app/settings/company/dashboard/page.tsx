@@ -27,6 +27,7 @@ import { ApiError } from '@/lib/types';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogTitle, DialogDescription } from '@/components/ui/dialog';
 import { FloatingLabelInput } from '@/components/ui/floating-label-input';
+import { IconButton } from '@/components/ui/icon-button';
 import { Pill } from '@/components/ui/pill';
 import { SegmentedControl } from '@/components/ui/segmented-control';
 import { formatShortDate } from '@/lib/format';
@@ -112,13 +113,12 @@ export default function CompanyDashboardPage() {
   return (
     <main className="mx-auto flex w-full max-w-3xl flex-col gap-5 px-4 py-6">
       <div className="flex items-center gap-3">
-        <Link
-          href="/settings"
-          className="inline-flex h-9 w-9 items-center justify-center rounded-full text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-3)]"
-          aria-label="Back to settings"
-        >
-          <ChevronLeft className="h-4 w-4" aria-hidden />
-        </Link>
+        {/* D8: 44×44 back-link (was 36×36). */}
+        <IconButton asChild aria-label="Back to settings">
+          <Link href="/settings">
+            <ChevronLeft className="h-4 w-4" aria-hidden />
+          </Link>
+        </IconButton>
         <h1 className="text-[18px] font-bold text-[var(--color-text-primary)]">
           Company Dashboard
         </h1>
