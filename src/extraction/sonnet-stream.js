@@ -70,7 +70,17 @@ async function refineObservationsAsync(entry, sessionId, observations) {
     // Duplicate guard: if we successfully refined this id in the last 2s
     // (short TTL), skip — the reconnect path may re-kick the same list.
     const recentExpiry = entry.recentlyRefinedIds.get(obs.observation_id);
-    if (recentExpiry && recentExpiry > Date.now()) continue;
+    if (recentExpiry && recentExpiry > Date.now()) {
+      // Phase F: surface the dedupe block so CloudWatch can count how often
+      // the reconnect-replay path is doing redundant work (signals a
+      // reconnect loop or a Sonnet re-emit storm).
+      logger.info('observation_refinement_dedup_blocked', {
+        sessionId,
+        observationId: obs.observation_id.slice(0, 8),
+        expiresInMs: recentExpiry - Date.now(),
+      });
+      continue;
+    }
     entry.pendingRefinements.set(obs.observation_id, { obs, attemptedAt: Date.now() });
   }
 
@@ -1310,6 +1320,26 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
 
     const summary = entry.session.stop();
     entry.questionGate.destroy();
+
+    // Phase F: emit `observation_update_unmatched` for any refinement that
+    // never reached iOS. Paired with the iOS-side `observation_update_no_match`
+    // event so the session optimizer can spot one-way failures (server sent,
+    // client didn't match) vs. complete drop-off (server never sent). Fires
+    // here rather than on a periodic sweep so the event always lands at a
+    // deterministic point relative to session end.
+    if (entry.pendingRefinements && entry.pendingRefinements.size > 0) {
+      const now = Date.now();
+      for (const [id, pending] of entry.pendingRefinements.entries()) {
+        logger.info('observation_update_unmatched', {
+          sessionId,
+          observationId: id.slice(0, 8),
+          ageMs: now - (pending.attemptedAt || now),
+          hadRefinedCache: Boolean(pending.refined),
+        });
+      }
+      summary.observation_refinement_unmatched = entry.pendingRefinements.size;
+      entry.pendingRefinements.clear();
+    }
 
     // Attach job identity so cost can be traced back to the job
     summary.jobId = entry.jobId || null;

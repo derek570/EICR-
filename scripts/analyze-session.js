@@ -955,6 +955,22 @@ function analyzeSession(sessionDir) {
       e.event === "question_deduped" &&
       e.data?.isObservationQuestion === "true"
   );
+  // Phase F: TTS misattribution heuristic — reply consumed an in-flight
+  // question that was >5s old AND there was a newer question already queued.
+  // High values here correlate with Sonnet re-asking the same question or
+  // TTS queue churn — both signal an opportunity to tighten the flow.
+  const replyMisattribSuspected = events.filter(
+    (e) => e.event === "reply_misattribution_suspected"
+  );
+  // Phase F: iOS inflight_question_anchored events give us queue-depth-at-
+  // anchor — a secondary signal. If > 25% of anchors happen with a non-empty
+  // queue, TTS delivery is lagging.
+  const inflightAnchored = events.filter(
+    (e) => e.event === "inflight_question_anchored"
+  );
+  const anchoredWithQueue = inflightAnchored.filter(
+    (e) => parseInt(e.data?.queueDepth || "0", 10) > 0
+  );
 
   const observationCount = observationCreatedEvents.length;
   const obsQuestionCount = questionAskedObs.length + questionAskedCodeLike.length;
@@ -993,6 +1009,33 @@ function analyzeSession(sessionDir) {
     // Signal for optimizer: anything > 1 here means a regression of the
     // B607831E class (multiple prompts for one observation).
     regression_flag: observationCount > 0 && obsQuestionCount / observationCount > 1,
+    // ── Phase F signals ──
+    // `refinement_lost_on_reconnect` proxies via observation_update_no_match
+    // on iOS — the server sent an update but the client couldn't match it
+    // to a local row (likely because the observation row was never created
+    // or was overwritten). Distinct from server-side
+    // observation_update_unmatched (logged at session stop when
+    // pendingRefinements still has entries) — that's in CloudWatch only.
+    refinement_lost_on_reconnect: observationUpdateNoMatch.length,
+    // `reply_misattribution_suspected`: TTS reply anchored to a stale
+    // in-flight question while a newer question was queued. Heuristic.
+    reply_misattribution_suspected: replyMisattribSuspected.length,
+    // `update_blocked_by_dedup`: server-side recentlyRefinedIds TTL hits.
+    // The iOS client can't see this directly — populated only when the
+    // session optimizer enriches with CloudWatch (null here signals
+    // "unavailable without CloudWatch", not zero).
+    update_blocked_by_dedup: null,
+    // Queue-depth-at-anchor: how often a question was anchored to TTS
+    // while OTHER questions were already queued ahead of it. High ratio
+    // means TTS delivery is the bottleneck, not Sonnet.
+    inflight_anchored_total: inflightAnchored.length,
+    inflight_anchored_with_queue: anchoredWithQueue.length,
+    inflight_queue_pressure:
+      inflightAnchored.length > 0
+        ? parseFloat(
+            (anchoredWithQueue.length / inflightAnchored.length).toFixed(2)
+          )
+        : null,
   };
 
   // ── Build analysis output ──
