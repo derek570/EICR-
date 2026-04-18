@@ -205,6 +205,50 @@ describe('auth', () => {
       expect(decoded.userId).toBe('user-1');
       expect(decoded.email).toBe('test@example.com');
     });
+
+    // Wave 4 D4 — signed RBAC claim set on the JWT. The Next.js
+    // middleware makes authorisation decisions off these claims, so
+    // they have to travel inside the HMAC-verified payload rather than
+    // the client-editable localStorage user blob.
+    test('JWT carries signed role + company_role + company_id claims', async () => {
+      const adminUser = {
+        ...testUser,
+        role: 'admin',
+        company_id: 'company-9',
+        company_role: 'owner',
+      };
+      mockGetUserByEmail.mockResolvedValue(adminUser);
+      mockUpdateLastLogin.mockResolvedValue();
+      mockLogAction.mockResolvedValue();
+
+      const result = await auth.authenticate('test@example.com', 'correct-password');
+
+      const decoded = jwt.verify(result.token, JWT_SECRET);
+      expect(decoded.role).toBe('admin');
+      expect(decoded.company_id).toBe('company-9');
+      expect(decoded.company_role).toBe('owner');
+    });
+
+    test('JWT defaults role=user + company_role=employee when DB row omits them', async () => {
+      // Legacy user rows pre-date the company tables. They must still
+      // mint a valid token — just with minimum-privilege claims.
+      const legacyUser = {
+        ...testUser,
+        role: undefined,
+        company_id: undefined,
+        company_role: undefined,
+      };
+      mockGetUserByEmail.mockResolvedValue(legacyUser);
+      mockUpdateLastLogin.mockResolvedValue();
+      mockLogAction.mockResolvedValue();
+
+      const result = await auth.authenticate('test@example.com', 'correct-password');
+
+      const decoded = jwt.verify(result.token, JWT_SECRET);
+      expect(decoded.role).toBe('user');
+      expect(decoded.company_role).toBe('employee');
+      expect(decoded.company_id).toBeNull();
+    });
   });
 
   describe('verifyToken', () => {
@@ -341,6 +385,33 @@ describe('auth', () => {
 
       expect(result.success).toBe(false);
       expect(result.error).toContain('not found or disabled');
+    });
+
+    // Wave 4 D4 — refreshed tokens carry the same signed RBAC claim
+    // set as a fresh login. Pick up the up-to-date role from the DB
+    // row so a mid-session promotion takes effect on rotation.
+    test('refreshed JWT re-reads role/company_role from DB (promotion path)', async () => {
+      const oldToken = jwt.sign(
+        { userId: 'user-1', email: 'test@example.com', tv: 0 },
+        JWT_SECRET,
+        { expiresIn: '24h' }
+      );
+      const promotedUser = {
+        ...activeUser,
+        role: 'admin',
+        company_id: 'company-77',
+        company_role: 'owner',
+      };
+      mockGetUserById.mockResolvedValue(promotedUser);
+      mockSetTokenVersion.mockResolvedValue();
+
+      const result = await auth.refreshToken(oldToken);
+
+      expect(result.success).toBe(true);
+      const decoded = jwt.verify(result.token, JWT_SECRET);
+      expect(decoded.role).toBe('admin');
+      expect(decoded.company_id).toBe('company-77');
+      expect(decoded.company_role).toBe('owner');
     });
   });
 

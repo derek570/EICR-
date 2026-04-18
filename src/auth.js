@@ -117,11 +117,25 @@ export async function authenticate(email, password, ipAddress = null) {
   await db.updateLastLogin(user.id);
   await db.logAction(user.id, 'login_success', {}, ipAddress);
 
-  // Generate token with rotation claims
+  // Generate token with rotation claims.
+  //
+  // Wave 4 D4 — `role` and `company_role` are now signed into the JWT
+  // so the Next.js middleware (and any other stateless claim consumer)
+  // can make authorisation decisions off the HMAC-verified payload,
+  // rather than trusting a client-mutable localStorage `cm_user` blob.
+  // The server still re-authorises on every write via `requireAdmin`
+  // and `requireCompanyAdmin` (see below) — signing the claims here is
+  // belt-and-braces, not the sole gate. `role` defaults to `'user'`
+  // and `company_role` to `'employee'` so legacy user rows without
+  // those columns still mint a valid token with the minimum-privilege
+  // claim set.
   const token = jwt.sign(
     {
       userId: user.id,
       email: user.email,
+      role: user.role || 'user',
+      company_id: user.company_id || null,
+      company_role: user.company_role || 'employee',
       tv: user.token_version || 0,
       jti: crypto.randomUUID(),
     },
@@ -221,11 +235,20 @@ export async function refreshToken(oldToken) {
     const newVersion = currentVersion + 1;
     await db.setTokenVersion(user.id, newVersion);
 
-    // Issue a fresh token with rotation claims
+    // Issue a fresh token with rotation claims.
+    // Wave 4 D4 — carry role + company_role through the refresh so a
+    // rotated token remains authoritative for middleware claim
+    // decisions. We read the up-to-date values from the DB row on
+    // purpose: a refresh is the right moment to pick up a role change
+    // (e.g. promote-to-admin) without waiting for a full logout /
+    // login. Mirrors the claim set minted in `authenticate()`.
     const token = jwt.sign(
       {
         userId: user.id,
         email: user.email,
+        role: user.role || 'user',
+        company_id: user.company_id || null,
+        company_role: user.company_role || 'employee',
         tv: newVersion,
         jti: crypto.randomUUID(),
       },
