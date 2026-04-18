@@ -917,6 +917,84 @@ function analyzeSession(sessionDir) {
       text: e.data?.text || "",
     }));
 
+  // ── 17. Observation capture quality ──
+  // Measures how cleanly the observation capture workflow ran:
+  //  • observation_confirmation questions fired (ideally 0 for explicit triggers)
+  //  • "what code?" / "what's the observation?" questions fired (ideally 0)
+  //  • observations created (silently via queueVisualOnly)
+  //  • observations refined by the server-side BPG4 web search
+  //  • turns-per-observation ratio — > 2 means Sonnet is asking for clarification
+  //
+  // Rationale: Session B607831E showed 4 observation questions for one dictated
+  // observation. These metrics let the optimizer spot regressions of that class
+  // at a glance, independent of overall session-level counts.
+
+  const observationCreatedEvents = events.filter(
+    (e) => e.event === "observation_created"
+  );
+  const observationRefinedEvents = events.filter(
+    (e) => e.event === "observation_refined"
+  );
+  const observationUpdateNoMatch = events.filter(
+    (e) => e.event === "observation_update_no_match"
+  );
+  const questionAskedObs = events.filter(
+    (e) =>
+      e.event === "question_asked" &&
+      /observation/i.test(String(e.data?.type || "")) === true
+  );
+  const questionAskedCodeLike = events.filter(
+    (e) =>
+      e.event === "question_asked" &&
+      String(e.data?.type || "") === "unclear" &&
+      !e.data?.field &&
+      !e.data?.circuit
+  );
+  const questionDedupedObs = events.filter(
+    (e) =>
+      e.event === "question_deduped" &&
+      e.data?.isObservationQuestion === "true"
+  );
+
+  const observationCount = observationCreatedEvents.length;
+  const obsQuestionCount = questionAskedObs.length + questionAskedCodeLike.length;
+  const refinedCount = observationRefinedEvents.length;
+
+  // "Clean" capture = observation appeared with zero associated TTS questions
+  // in a ±5s window. Approximates "inspector said observation and the app
+  // silently recorded it".
+  const cleanCaptureCount = observationCreatedEvents.filter((created) => {
+    const t = new Date(created.timestamp).getTime();
+    const nearbyQuestion = [...questionAskedObs, ...questionAskedCodeLike].some(
+      (q) => Math.abs(new Date(q.timestamp).getTime() - t) < 5000
+    );
+    return !nearbyQuestion;
+  }).length;
+
+  const observationCaptureQuality = {
+    observations_created: observationCount,
+    observations_refined: refinedCount,
+    observations_refined_no_match: observationUpdateNoMatch.length,
+    refinement_rate:
+      observationCount > 0
+        ? parseFloat((refinedCount / observationCount).toFixed(2))
+        : 0,
+    observation_questions_asked: obsQuestionCount,
+    observation_questions_deduped: questionDedupedObs.length,
+    clean_captures: cleanCaptureCount,
+    clean_capture_rate:
+      observationCount > 0
+        ? parseFloat((cleanCaptureCount / observationCount).toFixed(2))
+        : null,
+    questions_per_observation:
+      observationCount > 0
+        ? parseFloat((obsQuestionCount / observationCount).toFixed(2))
+        : 0,
+    // Signal for optimizer: anything > 1 here means a regression of the
+    // B607831E class (multiple prompts for one observation).
+    regression_flag: observationCount > 0 && obsQuestionCount / observationCount > 1,
+  };
+
   // ── Build analysis output ──
 
   const analysis = {
@@ -936,6 +1014,7 @@ function analyzeSession(sessionDir) {
     sonnet_prompt_audit: sonnetPromptAudit,
     repeated_values: repeatedValues,
     vad_sleep_analysis: vadSleepAnalysis,
+    observation_capture_quality: observationCaptureQuality,
     // Full transcript and voice commands (intent visibility)
     full_transcript: fullTranscriptOriginal,
     voice_commands: voiceCommands,
@@ -967,6 +1046,14 @@ function analyzeSession(sessionDir) {
   console.log(`  Voice commands: ${voiceCommands.total_sent} sent, ${voiceCommands.total_understood} understood, ${voiceCommands.total_failed} failed`);
   console.log(`  TTS-discarded utterances: ${ttsDiscarded.length}`);
   console.log(`  Sleep cycles: ${vadSleepAnalysis.total_sleep_cycles}`);
+  console.log(
+    `  Observations: ${observationCaptureQuality.observations_created} captured, ${observationCaptureQuality.observations_refined} refined, ${observationCaptureQuality.observation_questions_asked} questions, clean=${observationCaptureQuality.clean_capture_rate ?? "-"}`
+  );
+  if (observationCaptureQuality.regression_flag) {
+    console.log(
+      `  ⚠ Observation regression: ${observationCaptureQuality.questions_per_observation} questions per observation (> 1)`
+    );
+  }
   console.log(`  Sleep duration: ${vadSleepAnalysis.total_sleep_duration_sec}s (${vadSleepAnalysis.total_sleep_cycles} cycles)`);
   console.log(`  Total stream paused: ${vadSleepAnalysis.total_stream_paused_min}min (saved $${vadSleepAnalysis.deepgram_saved_usd.toFixed(4)} Deepgram)`);
   console.log(`  Buffer replays: ${vadSleepAnalysis.buffer_replays}`);
