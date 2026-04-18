@@ -168,6 +168,28 @@ body {
   }
 }
 
+/*
+ * D9 — global reduced-motion guard.
+ *
+ * Catches every animation/transition on the page in one rule so
+ * individual components don't have to opt in. The !important is
+ * deliberate (normally avoided): it overrides the per-element
+ * `transition-duration` utilities Tailwind emits inline, which
+ * otherwise beat a non-!important global rule.
+ *
+ * The per-feature `.cm-live-field`, `.cm-live-section`, and
+ * `.cm-dialog-*` blocks further down each have their own
+ * prefers-reduced-motion handling (e.g. the LiveFill flash keeps
+ * a 200ms tail so the signal is still visible). Those local
+ * rules are intentional overrides — !important here wins on
+ * duration but the local block can still set
+ * transition-property / animation-name to `none` to disable a
+ * visual effect while still firing an instantaneous state change.
+ *
+ * scroll-behavior:auto — supplements the motion reduction:
+ * smooth-scrolling a ladder-top inspector who has reduced-motion
+ * set is a bug on our part, not their OS preference.
+ */
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
