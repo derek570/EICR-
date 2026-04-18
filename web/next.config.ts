@@ -10,10 +10,19 @@ import withSerwistInit from '@serwist/next';
  *   future reader doesn't flip it without noticing. We never want Serwist
  *   stashing authenticated HTML in a runtime cache — every auth-gated
  *   navigation falls through to the network-only default in `sw.ts`.
- * - `reloadOnOnline: true` (default) means the SPA reloads when the browser
- *   reports `online` after being offline. That's the right thing for 7a —
- *   we don't have an outbox yet, so a reload is the cleanest way to get
- *   fresh data once the network is back.
+ * - `reloadOnOnline: false` (pre-deploy hardening). Phase 7a defaulted this
+ *   to true because there was no outbox; a reload after a flaky connection
+ *   was the cheapest way to resync. That logic inverted once Phase 7c
+ *   shipped the mutation outbox + SWR read cache: an `online` event on a
+ *   recording page would now force-reload, tearing down the Deepgram WS +
+ *   Sonnet session mid-utterance AND losing whatever local edits haven't
+ *   yet drained to the outbox (the debounced save in JobProvider hasn't
+ *   fired). Offline recovery is now handled explicitly — the SWR read
+ *   path re-hydrates from cache + refetches on mount, the replay worker
+ *   drains the outbox on 'online'. The dedicated update handoff
+ *   (`sw.ts` + sonner toast) owns the "new SW available → reload" path
+ *   for deploy rollouts. Leaving `reloadOnOnline: true` on top of all
+ *   that is a hazard, not a safety net.
  * - `disable: process.env.NODE_ENV === 'development'` keeps the dev server
  *   clean; HMR and the SW don't mix, and we don't want a stale dev SW
  *   serving cached assets after `npm start`.
@@ -22,7 +31,7 @@ const withSerwist = withSerwistInit({
   swSrc: 'src/app/sw.ts',
   swDest: 'public/sw.js',
   cacheOnNavigation: false,
-  reloadOnOnline: true,
+  reloadOnOnline: false,
   disable: process.env.NODE_ENV === 'development',
 });
 
