@@ -11,6 +11,9 @@ const TOKEN_KEY = 'cm_token';
 const USER_KEY = 'cm_user';
 const COOKIE_MAX_AGE = 60 * 60 * 24 * 7; // 7 days
 
+export type SystemRole = 'admin' | 'user';
+export type CompanyRole = 'owner' | 'admin' | 'employee';
+
 export function getToken(): string | null {
   if (typeof window === 'undefined') return null;
   return localStorage.getItem(TOKEN_KEY);
@@ -25,6 +28,38 @@ export function getUser(): User | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * Typed getters for the signed-in user's system-level `role` and
+ * company-level `company_role`. These read from the locally-cached
+ * `cm_user` blob populated at login by `setAuth` and refreshed by
+ * `useCurrentUser` via `/api/auth/me`.
+ *
+ * **Client-side UX only.** The values returned here MUST NOT be used
+ * for write authorisation — the backend (`requireAdmin`,
+ * `requireCompanyAdmin`) re-checks every mutating request against the
+ * server-verified JWT. The Next.js middleware (Wave 4 D4) is the
+ * authoritative page-level gate and verifies the HMAC on the JWT
+ * before trusting its claim set. These getters exist so components
+ * can render/hide the admin nav tab, the "invite employee" button,
+ * etc. without flashing the surface before the server catches up.
+ *
+ * Wave 4 D4 — extracted from scattered inline `user?.role === 'admin'`
+ * checks so there is a single point to change when the role model
+ * evolves (or when the storage migrates to HttpOnly cookies in Phase 9).
+ */
+export function getUserRole(user?: User | null): SystemRole | null {
+  const u = user === undefined ? getUser() : user;
+  if (!u) return null;
+  return u.role === 'admin' ? 'admin' : u.role === 'user' ? 'user' : null;
+}
+
+export function getCompanyRole(user?: User | null): CompanyRole | null {
+  const u = user === undefined ? getUser() : user;
+  if (!u) return null;
+  const r = u.company_role;
+  return r === 'owner' || r === 'admin' || r === 'employee' ? r : null;
 }
 
 export function setAuth(token: string, user: User): void {
