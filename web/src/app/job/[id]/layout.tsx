@@ -70,10 +70,18 @@ export default function JobLayout({ children }: { children: React.ReactNode }) {
     // the outbox. Overlay lets the inspector trust that what they
     // typed stays on screen.
     let hadCache = false;
+    // Track whether the network pass has already landed. If the network
+    // wins the race (common on warm connections) and the cache read
+    // resolves *later*, the cache must NOT overwrite the fresh server
+    // doc — the closure-captured `job === null` check is unreliable
+    // under React 19's concurrent rendering because the setter that
+    // runs in the network branch may not have flushed to the closure.
+    // A ref is the source of truth for "we already have fresh data".
+    let networkLanded = false;
     getCachedJobWithOverlay(user.id, jobId).then((cached) => {
-      if (cancelled) return;
-      if (cached && job === null) {
-        setJob(cached);
+      if (cancelled || networkLanded) return;
+      if (cached) {
+        setJob((prev) => prev ?? cached);
         hadCache = true;
       }
     });
@@ -82,6 +90,7 @@ export default function JobLayout({ children }: { children: React.ReactNode }) {
       .job(user.id, jobId)
       .then((detail) => {
         if (cancelled) return;
+        networkLanded = true;
         setJob(detail);
         void putCachedJob(user.id, jobId, detail);
       })
@@ -104,9 +113,10 @@ export default function JobLayout({ children }: { children: React.ReactNode }) {
     return () => {
       cancelled = true;
     };
-    // `job` intentionally omitted — we only want this effect to run on
-    // mount / jobId change, not every time the fetch updates state.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // Pre-deploy: the cache/network race guard moved from a closure
+    // check over `job` to the `networkLanded` flag above, so `job` no
+    // longer needs to be in deps — `jobId` + `router` fully describe
+    // when this effect should re-run. exhaustive-deps satisfied.
   }, [jobId, router]);
 
   return (

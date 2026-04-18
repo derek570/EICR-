@@ -1,17 +1,16 @@
 'use client';
 
 import * as React from 'react';
+import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import {
   Building2,
   ChevronRight,
   FilePlus,
   LogOut,
-  PlayCircle,
   Search,
   Settings,
   Shield,
-  SlidersHorizontal,
   UserCheck,
 } from 'lucide-react';
 import { api } from '@/lib/api-client';
@@ -67,10 +66,19 @@ export default function DashboardPage() {
     // the data is stale. Only show an error when there's nothing to
     // paint at all.
     let hadCache = false;
+    // Pre-deploy fix: the previous closure check `jobs === null` relied
+    // on the captured state at effect-run time, so a cache resolve that
+    // fired *after* a fast network win could clobber fresh server data
+    // with a stale IDB snapshot. A ref set the moment the network
+    // branch lands gives us an unambiguous "don't paint cache anymore"
+    // signal that doesn't depend on React's render timing.
+    let networkLanded = false;
     getCachedJobs(user.id).then((cached) => {
-      if (cancelled) return;
-      if (cached && jobs === null) {
-        setJobs(cached);
+      if (cancelled || networkLanded) return;
+      if (cached) {
+        // Functional setter so a racing network resolve can't be
+        // silently overwritten (we only paint cache if nothing's there).
+        setJobs((prev) => prev ?? cached);
         hadCache = true;
       }
     });
@@ -79,6 +87,7 @@ export default function DashboardPage() {
       .jobs(user.id)
       .then((list) => {
         if (cancelled) return;
+        networkLanded = true;
         setJobs(list);
         // Fire-and-forget cache write. Ignoring the promise is deliberate —
         // the UI already has the fresh data; a cache write failure is
@@ -107,12 +116,11 @@ export default function DashboardPage() {
     return () => {
       cancelled = true;
     };
-    // `jobs` is intentionally omitted from deps — this effect runs once
-    // per mount; re-running on every `setJobs` would cause a fetch loop.
-    // The `jobs === null` check inside the cache-hit branch is a guard
-    // against overwriting a fresh network result with stale cache in
-    // the rare case the cache resolves after the network.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // Pre-deploy: the cache/network race guard moved from a closure
+    // check over `jobs` to the `networkLanded` flag above, so `jobs`
+    // no longer needs to be referenced inside the effect — `router`
+    // is the only live dependency and the exhaustive-deps rule is
+    // satisfied without suppression.
   }, [router]);
 
   const stats = React.useMemo(() => {
@@ -238,17 +246,26 @@ export default function DashboardPage() {
         )}
       </section>
 
-      {/* ---------- Setup & Tools ---------- */}
+      {/* ---------- Setup & Tools ----------
+       *
+       * Pre-deploy: trimmed to routes that actually exist under
+       * `src/app/settings/`. The old set linked to `/settings/defaults`,
+       * `/settings/inspectors`, and `/tour` — none of those pages ship
+       * in this build, so every inspector landing on them would hit a
+       * 404 from the dashboard's primary nav. Defaults / Tour will come
+       * back as the routes land; the Staff tile points at the real
+       * `/settings/staff` page (was the legacy `/inspectors` URL from
+       * iOS). Log Out stays but is rendered by its own destructive
+       * variant so the colour tells the story.
+       */}
       <section className="flex flex-col gap-3 pt-2">
         <h2 className="text-[17px] font-semibold text-[var(--color-text-primary)]">
           Setup &amp; Tools
         </h2>
         <div className="grid gap-2 sm:grid-cols-2">
-          <SetupTile icon={SlidersHorizontal} label="Defaults" href="/settings/defaults" />
           <SetupTile icon={Building2} label="Company" href="/settings/company" />
-          <SetupTile icon={UserCheck} label="Staff" href="/settings/inspectors" />
+          <SetupTile icon={UserCheck} label="Staff" href="/settings/staff" />
           <SetupTile icon={Settings} label="Settings" href="/settings" />
-          <SetupTile icon={PlayCircle} label="Tour" trailing="OFF" href="/tour" />
           <SetupTile icon={LogOut} label="Log Out" variant="destructive" onClick={signOut} />
         </div>
       </section>
@@ -407,10 +424,15 @@ function SetupTile({
     'flex items-center gap-3 rounded-[14px] border border-[var(--color-border-subtle)] bg-[var(--color-surface-2)] px-4 py-3 text-left transition hover:bg-[var(--color-surface-3)] focus-visible:outline-2 focus-visible:outline-[var(--color-brand-blue)]';
 
   if (href) {
+    // Use next/link for internal destinations so the dashboard gets
+    // client-side navigation + prefetch. The old raw `<a href>` caused
+    // a full document navigation on every tap — visibly slower, and
+    // dropped the SWR dashboard state each time the user bounced out
+    // to settings.
     return (
-      <a href={href} className={classes}>
+      <Link href={href} className={classes} prefetch>
         {content}
-      </a>
+      </Link>
     );
   }
   return (
