@@ -4,7 +4,11 @@
  * Mirrors the iOS `DeepgramService.swift` protocol so the two clients
  * behave identically — same URL parameters (nova-3 / linear16 / 16kHz /
  * en-GB / interim_results / endpointing=300 / utterance_end_ms=2000 /
- * vad_events=true) and the same subprotocol auth (`['token', apiKey]`).
+ * vad_events=true). Auth differs by transport: iOS sets an
+ * `Authorization: Bearer <jwt>` header on the WS upgrade; browsers can't
+ * set upgrade headers so we pass the same JWT as the `bearer` subprotocol
+ * (`['bearer', apiKey]`). See `connect()` for the history of why this
+ * changed from `token` → `bearer`.
  *
  * Pause/resume + auto-reconnect are deferred to Phase 4e where the
  * SleepDetector lands — until then this service offers the minimum
@@ -98,13 +102,31 @@ export class DeepgramService {
     this.setState('connecting');
 
     const url = this.buildURL();
-    // Deepgram accepts subprotocol token auth; URL query params are blocked
-    // on iOS Safari during the HTTP→WS upgrade (rules/mistakes.md). The
-    // ['token', apiKey] two-element array is the format Deepgram expects
-    // — a single "token, key" string (comma-space) is rejected by newer
-    // Deepgram validation. `wsFactory` defaults to the global `WebSocket`
-    // constructor; see `WebSocketFactory` doc comment for the test seam.
-    const ws = this.wsFactory(url, ['token', apiKey]);
+    // Deepgram accepts subprotocol-based auth; URL query params are blocked
+    // on iOS Safari during the HTTP→WS upgrade (rules/mistakes.md), and
+    // browsers can't set an Authorization header on the WS upgrade at all
+    // (iOS's native URLSession can, which is why DeepgramService.swift uses
+    // an `Authorization: Bearer …` header instead).
+    //
+    // Scheme must match the credential the backend returns:
+    //   - Raw Deepgram master API key  → ['token', key]
+    //   - JWT from /v1/auth/grant      → ['bearer', jwt]   ← what we get now
+    //
+    // The backend (src/routes/keys.js, createDeepgramTempKey) mints JWTs via
+    // /v1/auth/grant as of 248953b (2026-04-18, P0-10 security fix — the old
+    // master-key fallback was dropped). Before that a 2026-03-31 hotfix
+    // (550278e) bypassed auth/grant and returned the master key directly,
+    // which is why this was ['token', …] historically. Using 'token' with a
+    // JWT makes Deepgram 401 the upgrade; the browser surfaces that as a
+    // generic WebSocket error with no body. Confirmed via DeepgramService.swift
+    // line 228-230 ("JWT+Token=401, JWT+Bearer=connected").
+    //
+    // Single comma-separated string (e.g. "bearer, jwt") is rejected by
+    // newer Deepgram validation — must be a two-element array.
+    //
+    // `wsFactory` defaults to the global `WebSocket` constructor; see
+    // `WebSocketFactory` doc comment for the test seam.
+    const ws = this.wsFactory(url, ['bearer', apiKey]);
     ws.binaryType = 'arraybuffer';
 
     const emitError = (err: Error) => {

@@ -40,7 +40,8 @@ const DEEPGRAM_URL = 'wss://api.deepgram.com/v1/listen';
 // frames that Deepgram actually sends, not automatic JSON.stringify.
 // `selectProtocol` echoes back the first subprotocol the client offers so
 // the fake WS completes the handshake; the service offers
-// `['token', apiKey]` and Deepgram picks `token`.
+// `['bearer', apiKey]` (JWT auth from /v1/auth/grant) and Deepgram picks
+// `bearer`.
 function makeServer(): WS {
   return new WS(DEEPGRAM_URL, { selectProtocol: (protocols) => protocols[0] });
 }
