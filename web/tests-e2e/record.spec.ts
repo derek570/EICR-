@@ -6,10 +6,18 @@ import { buildAuth, buildJobFixture, primeAuth, stubRecordFlowApi } from './fixt
  * Record flow E2E. Maps to WEB_REBUILD_COMPLETION.md §5 gate 9
  * "Record (stubbed WS)":
  *
- *   - start → pause → resume → stop a recording
- *   - overlay is keyboard-trapped (Tab cycles inside it)
- *   - ATHS pulse respects `prefers-reduced-motion`
- *   - no in-flight network error toasts after stop
+ *   - start → pause → resume → end a recording
+ *   - in-page chrome (toolbar + transcript bar + viewport ring) renders
+ *     while a session is active and tears down on End
+ *   - reduced-motion preference is plumbed through to the page
+ *   - no in-flight network error toasts after End
+ *
+ * Wave 5 D-pulse rebuild: the previous Radix Dialog overlay was replaced
+ * with a `RecordingChrome` (red pulsing viewport ring + bottom action
+ * toolbar + sticky transcript bar) so the live form stays visible during
+ * recording. The accompanying focus-trap / Esc-to-close test was dropped
+ * with the Dialog — the chrome is non-modal by design and there is no
+ * focus scope to assert.
  *
  * All external wires are stubbed at the browser boundary:
  *   - HTTP: `page.route()` handles `/api/job/...` + `/api/proxy/deepgram-streaming-key`
@@ -66,7 +74,7 @@ test.describe('record flow (stubbed WS)', () => {
     await stubRecordFlowApi(page, buildJobFixture({ id: JOB_ID }));
   });
 
-  test('start → pause → resume → stop transitions cleanly', async ({ page }) => {
+  test('start → pause → resume → end transitions cleanly', async ({ page }) => {
     await page.goto(`/job/${JOB_ID}`);
 
     // Start the session. Mic button is the prominent green FAB.
@@ -74,29 +82,38 @@ test.describe('record flow (stubbed WS)', () => {
     await expect(micButton).toBeVisible();
     await micButton.click();
 
-    // Overlay opens. `role=dialog` + accessible name lets us target it
-    // without reaching for a data-testid.
-    const overlay = page.getByRole('dialog', { name: /recording session/i });
-    await expect(overlay).toBeVisible();
+    // The new in-page chrome mounts a `role=toolbar` action bar with the
+    // "Recording controls" accessible name (recording-chrome.tsx). The
+    // viewport ring (`.cm-rec-ring`) and the sticky transcript bar
+    // (`role=status` "Live transcript") are the other two surfaces — all
+    // three appear together while a session is non-idle.
+    const toolbar = page.getByRole('toolbar', { name: /recording controls/i });
+    await expect(toolbar).toBeVisible();
+    await expect(page.locator('.cm-rec-ring')).toBeVisible();
+    await expect(page.getByRole('status', { name: /live transcript/i })).toBeVisible();
 
-    // State progresses past `requesting-mic`. The pill flips to
-    // "Recording" (active) once mic + WS handshake complete.
-    await expect(overlay.getByText(/recording/i).first()).toBeVisible({ timeout: 10_000 });
+    // Live state pill flips to "Listening" once mic + WS handshake
+    // complete (was "Recording" on the old overlay; renamed when the
+    // chrome adopted the iOS-style state language).
+    await expect(toolbar.getByText(/listening/i).first()).toBeVisible({ timeout: 10_000 });
 
     // Pause.
-    await overlay.getByRole('button', { name: /^pause$/i }).click();
-    await expect(overlay.getByText(/paused/i).first()).toBeVisible();
+    await toolbar.getByRole('button', { name: /^pause$/i }).click();
+    await expect(toolbar.getByText(/paused/i).first()).toBeVisible();
 
-    // Resume.
-    await overlay.getByRole('button', { name: /^resume$/i }).click();
-    // Recording pill returns.
-    await expect(overlay.getByText(/^recording$/i).first()).toBeVisible();
+    // Resume — the Pause control swaps to a Resume button while the
+    // session is dozing/sleeping.
+    await toolbar.getByRole('button', { name: /^resume$/i }).click();
+    await expect(toolbar.getByText(/listening/i).first()).toBeVisible();
 
-    // Stop.
-    await overlay.getByRole('button', { name: /^stop$/i }).click();
+    // End — equivalent to the old Stop. Tears the chrome down and
+    // returns the session to idle.
+    await toolbar.getByRole('button', { name: /^end$/i }).click();
 
-    // Overlay closes and the stop handler runs `state=idle`.
-    await expect(overlay).toBeHidden();
+    // All three chrome surfaces unmount on idle.
+    await expect(toolbar).toBeHidden();
+    await expect(page.locator('.cm-rec-ring')).toHaveCount(0);
+    await expect(page.getByRole('status', { name: /live transcript/i })).toHaveCount(0);
 
     // No in-flight error toast. Sonner's toaster container mounts
     // an empty `role=alert` region always; Next.js dev mode also
@@ -111,85 +128,14 @@ test.describe('record flow (stubbed WS)', () => {
     ).toHaveCount(0);
   });
 
-  // Focus trap landed with Wave 4 D5 (Radix Dialog sweep). The overlay
-  // now mounts through `@radix-ui/react-dialog` which provides the
-  // focus trap, Esc-to-close, and focus restoration for free. This
-  // spec proves those three behaviours end-to-end against the real
-  // recording flow.
-  test('overlay traps Tab, Esc closes it, focus restores to the trigger', async ({ page }) => {
-    await page.goto(`/job/${JOB_ID}`);
-
-    const startButton = page.getByRole('button', { name: /^start recording$/i });
-    // Focus the trigger and open via keyboard so Radix's focus scope
-    // reliably captures the FAB as the stored return-target. `.click()`
-    // on Chromium sends a synthetic MouseDown that can leave focus on
-    // `<body>` between the pointerdown and the state update, which
-    // means Radix stores body as the previously-focused element and
-    // "restoration" on Esc is a no-op. Space-press keeps focus on the
-    // button through the whole activation cycle.
-    await startButton.focus();
-    await page.keyboard.press('Space');
-
-    const overlay = page.getByRole('dialog', { name: /recording session/i });
-    await expect(overlay).toBeVisible();
-
-    // Radix auto-moves focus to the first focusable element inside the
-    // content on open. The overlay has four interactive stops
-    // (Minimise, End, Pause, Stop). After 12 Tabs — well past any
-    // plausible stop count — focus must STILL be inside the dialog.
-    for (let i = 0; i < 12; i++) {
-      await page.keyboard.press('Tab');
-      const inOverlay = await page.evaluate(() => {
-        const el = document.activeElement as HTMLElement | null;
-        if (!el) return false;
-        const dialog = document.querySelector('[role="dialog"]');
-        return !!dialog?.contains(el);
-      });
-      expect.soft(inOverlay, `Tab ${i + 1}: focus escaped overlay`).toBe(true);
-    }
-
-    // Shift+Tab must also wrap within the dialog (not sneak back to
-    // the page-behind chrome).
-    for (let i = 0; i < 6; i++) {
-      await page.keyboard.press('Shift+Tab');
-      const inOverlay = await page.evaluate(() => {
-        const el = document.activeElement as HTMLElement | null;
-        if (!el) return false;
-        const dialog = document.querySelector('[role="dialog"]');
-        return !!dialog?.contains(el);
-      });
-      expect.soft(inOverlay, `Shift+Tab ${i + 1}: focus escaped overlay`).toBe(true);
-    }
-
-    // Esc closes the overlay. Our `onOpenChange(false)` handler routes
-    // this to `minimise()`, which hides the overlay (the session keeps
-    // running, but the bottom-sheet is dismissed).
-    await page.keyboard.press('Escape');
-    await expect(overlay).toBeHidden();
-
-    // Radix restores focus to the element that was active when the
-    // dialog opened. The Playwright `startButton.click()` above
-    // focuses the FAB mid-click, so Radix captures it as the trigger
-    // ref and restores focus to it on Esc. Poll briefly because the
-    // restore runs on a microtask after the close transition resolves.
-    //
-    // Weakest-check-that-still-matters: focus is NOT on `<body>`
-    // (the dump-target if restoration were broken) — it lands on an
-    // interactive element inside the page chrome. Tightening the
-    // match to the FAB's aria-label specifically is flakier because
-    // the label flips between "Start recording" / "Open recording
-    // overlay" as the recording state settles after Esc.
-    await expect
-      .poll(() => page.evaluate(() => document.activeElement?.tagName?.toLowerCase() ?? null), {
-        timeout: 8_000,
-      })
-      .not.toBe('body');
-  });
-
-  test('ATHS pulse respects prefers-reduced-motion', async ({ browser, baseURL }) => {
+  test('reduced-motion preference is plumbed through to the recording chrome', async ({
+    browser,
+    baseURL,
+  }) => {
     // Fresh context so the reduced-motion preference applies from the
-    // very first paint — the overlay's ring animation is mounted on
-    // open, so toggling mid-test would be a no-op.
+    // very first paint — the ring's `cm-rec-ring` keyframes are wired
+    // at mount, so toggling mid-test would be a no-op for the global
+    // `@media (prefers-reduced-motion)` short-circuit.
     const context = await browser.newContext({
       reducedMotion: 'reduce',
     });
@@ -203,33 +149,29 @@ test.describe('record flow (stubbed WS)', () => {
       await page.emulateMedia({ reducedMotion: 'reduce' });
       await page.goto(`/job/${JOB_ID}`);
 
-      // The FAB mic button has `animate-pulse` when recording. Check
-      // the CSS media query resolves to `reduce` so any animation the
-      // overlay/FAB registers would be suppressed by the global
-      // `@media (prefers-reduced-motion)` rule.
+      // The CSS media query must resolve to `reduce` so any animation
+      // the chrome registers (`cm-rec-ring`, `cm-pulse-dot`) is
+      // suppressed by the global `@media (prefers-reduced-motion)`
+      // rule in globals.css.
       const prefersReduce = await page.evaluate(
         () => window.matchMedia('(prefers-reduced-motion: reduce)').matches
       );
       expect(prefersReduce).toBe(true);
 
       await page.getByRole('button', { name: /^start recording$/i }).click();
-      const overlay = page.getByRole('dialog', { name: /recording session/i });
-      await expect(overlay).toBeVisible();
+      const toolbar = page.getByRole('toolbar', { name: /recording controls/i });
+      await expect(toolbar).toBeVisible();
 
-      // Ring visualiser element has `animate-pulse` class when active.
-      // With reduced-motion emulated, the computed `animation-duration`
-      // on that element should be 0s or `none`. We don't strictly
-      // assert a value (the global stylesheet hook is a Wave 5 D9 item)
-      // but we DO assert the signal is available to the app. If D9
-      // lands the follow-up can tighten this assertion.
-      const hasReduceHook = await page.evaluate(() => {
-        const mq = window.matchMedia('(prefers-reduced-motion: reduce)');
-        return mq.matches;
-      });
-      expect(hasReduceHook).toBe(true);
+      // Ring renders regardless of motion preference; the keyframes
+      // animation is what gets neutralised, not the element itself.
+      // We don't strictly assert `animation-duration: 0s` here (the
+      // global stylesheet hook is still a Wave 5 D9 follow-up) but we
+      // DO assert the signal is available to the app. If D9 lands the
+      // follow-up can tighten this assertion against `cm-rec-ring`.
+      await expect(page.locator('.cm-rec-ring')).toBeVisible();
 
-      await page.getByRole('button', { name: /^stop$/i }).click();
-      await expect(overlay).toBeHidden();
+      await toolbar.getByRole('button', { name: /^end$/i }).click();
+      await expect(toolbar).toBeHidden();
     } finally {
       await context.close();
     }
