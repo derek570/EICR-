@@ -12,7 +12,7 @@ import { buildAuth, buildJobFixture, primeAuth, stubRecordFlowApi } from './fixt
  *   - no in-flight network error toasts after stop
  *
  * All external wires are stubbed at the browser boundary:
- *   - HTTP: `page.route()` handles `/api/job/...` + `/api/deepgram-proxy`
+ *   - HTTP: `page.route()` handles `/api/job/...` + `/api/proxy/deepgram-streaming-key`
  *   - WebSocket: `page.addInitScript(DEEPGRAM_WS_STUB)` replaces
  *     `window.WebSocket` before the app boots so Deepgram + Sonnet
  *     sockets connect in-process.

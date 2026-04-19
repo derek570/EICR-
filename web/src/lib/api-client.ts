@@ -268,15 +268,21 @@ export const api = {
   },
 
   /**
-   * Fetch a short-lived Deepgram Nova-3 API key scoped to a single
-   * recording session. Backend mints the token via the Deepgram
-   * Management API and returns `{ key: string }`. Token is typically
-   * valid for ~10 minutes — callers should re-request on reconnect.
+   * Fetch a short-lived Deepgram Nova-3 access token scoped to a single
+   * recording session. Backend (`POST /api/proxy/deepgram-streaming-key`,
+   * `src/routes/keys.js`) mints the token via Deepgram's
+   * `/v1/auth/grant` endpoint and returns `{ key: string }`. Token TTL
+   * is 30s — only needs to be valid at WS connect time; the WS stays
+   * open after token expiry. Callers should re-request on reconnect.
+   *
+   * `sessionId` is currently logged-only on the server (userId comes
+   * from the JWT) but we keep it in the signature + payload so future
+   * server-side scoping can land without churning every call site.
    */
   deepgramKey(sessionId: string): Promise<{ key: string }> {
     return request<{ key: string }>(
-      `/api/deepgram-proxy?sessionId=${encodeURIComponent(sessionId)}`,
-      {},
+      '/api/proxy/deepgram-streaming-key',
+      { method: 'POST', body: JSON.stringify({ sessionId }) },
       DeepgramKeyResponseSchema
     );
   },

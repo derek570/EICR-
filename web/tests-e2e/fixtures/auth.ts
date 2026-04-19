@@ -166,8 +166,8 @@ export async function stubRecordFlowApi(page: Page, job: JobDetail): Promise<voi
     });
   });
 
-  // Deepgram scoped token — /api/deepgram-proxy?sessionId=...
-  await page.route(/\/api\/deepgram-proxy/, (route) =>
+  // Deepgram scoped token — POST /api/proxy/deepgram-streaming-key
+  await page.route(/\/api\/proxy\/deepgram-streaming-key/, (route) =>
     route.fulfill({
       status: 200,
       contentType: 'application/json',
