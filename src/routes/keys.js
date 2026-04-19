@@ -322,8 +322,18 @@ async function getDeepgramProjectId(masterKey) {
  * The old /v1/projects/{id}/keys endpoint is deprecated and "too problematic"
  * per Deepgram community feedback.
  *
- * Token only needs to be valid at WS connection time — the WebSocket stays open
- * after token expiry. 30s TTL gives enough headroom for the client to connect.
+ * TTL must cover the full streaming session, not just the WS handshake. The
+ * old 30s TTL comment ("WebSocket stays open after token expiry") was wrong:
+ * Deepgram enforces JWT `exp` on the live stream and kills the socket on
+ * expiry with a TCP reset (no close frame), which the browser surfaces as a
+ * 1006 abnormal close after ~30s of talking. The web client has no
+ * auto-reconnect yet (deferred to Phase 4e — see web/src/lib/recording/
+ * deepgram-service.ts), so that single 1006 bubbles to the UI as
+ * "Deepgram WS closed (code=1006)". iOS didn't see this because its
+ * DeepgramService auto-reconnects with a fresh key. This was masked until
+ * 2026-04-18 by the 550278e master-key bypass; removing that bypass
+ * (248953b, P0-10) re-exposed the TTL. Bumping to 1h matches the effective
+ * max session length; Deepgram permits up to 24h on /v1/auth/grant.
  */
 async function createDeepgramTempKey(userId) {
   const masterKey = await getDeepgramKey();
@@ -331,6 +341,7 @@ async function createDeepgramTempKey(userId) {
     throw new Error('Deepgram API key not configured');
   }
 
+  const TOKEN_TTL_SECONDS = 3600;
   const response = await fetch('https://api.deepgram.com/v1/auth/grant', {
     method: 'POST',
     headers: {
@@ -338,7 +349,7 @@ async function createDeepgramTempKey(userId) {
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
-      time_to_live_in_seconds: 30,
+      time_to_live_in_seconds: TOKEN_TTL_SECONDS,
       scopes: ['usage:write'],
     }),
   });
@@ -349,7 +360,10 @@ async function createDeepgramTempKey(userId) {
   }
 
   const data = await response.json();
-  logger.info('Deepgram temp token created via /v1/auth/grant', { userId, ttl: 30 });
+  logger.info('Deepgram temp token created via /v1/auth/grant', {
+    userId,
+    ttl: TOKEN_TTL_SECONDS,
+  });
   return data.access_token;
 }
 
