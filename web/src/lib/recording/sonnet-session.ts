@@ -124,6 +124,19 @@ export interface SonnetSessionCallbacks {
   onError?: (err: Error, recoverable: boolean) => void;
 }
 
+/**
+ * Injectable plumbing for the reconnect state machine. Production wires
+ * the defaults (global `setTimeout`/`clearTimeout`); tests supply a
+ * controllable scheduler so the reconnect tick fires at a known point
+ * rather than depending on CI wallclock drift. The handle type is opaque
+ * — whatever the scheduler returns is what gets passed back to
+ * `clearScheduler`, mirroring the `setTimeout`/`clearTimeout` contract.
+ */
+export interface SonnetSessionDeps {
+  scheduler?: (cb: () => void, ms: number) => unknown;
+  clearScheduler?: (handle: unknown) => void;
+}
+
 export interface SessionStartOptions {
   sessionId: string;
   jobId: string;
@@ -193,7 +206,12 @@ export class SonnetSession {
   // Reconnect state machine fields — only consulted when the feature
   // flag is ON. Kept always-allocated to avoid a branch at every close.
   private reconnectAttempts = 0;
-  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private reconnectTimer: unknown = null;
+  // Injectable scheduler — defaults to global setTimeout/clearTimeout
+  // in production. Tests inject a controllable scheduler so the reconnect
+  // tick fires at a deterministic point (see SonnetSessionDeps).
+  private schedule: (cb: () => void, ms: number) => unknown;
+  private clearSchedule: (handle: unknown) => void;
   // Flipped to false by explicit disconnect() so an in-flight reconnect
   // timer knows to abort without opening a doomed-to-close socket.
   private shouldReconnect = true;
@@ -202,8 +220,11 @@ export class SonnetSession {
   // (reconnect) on the new socket's onopen.
   private hasConnectedOnce = false;
 
-  constructor(callbacks: SonnetSessionCallbacks = {}) {
+  constructor(callbacks: SonnetSessionCallbacks = {}, deps: SonnetSessionDeps = {}) {
     this.callbacks = callbacks;
+    this.schedule = deps.scheduler ?? ((cb, ms) => setTimeout(cb, ms));
+    this.clearSchedule =
+      deps.clearScheduler ?? ((h) => clearTimeout(h as ReturnType<typeof setTimeout>));
   }
 
   /**
@@ -371,8 +392,8 @@ export class SonnetSession {
   private scheduleReconnect(): void {
     this.reconnectAttempts += 1;
     const delay = SonnetSession.computeBackoffDelay(this.reconnectAttempts);
-    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
-    this.reconnectTimer = setTimeout(() => {
+    if (this.reconnectTimer) this.clearSchedule(this.reconnectTimer);
+    this.reconnectTimer = this.schedule(() => {
       this.reconnectTimer = null;
       // Late-abort: disconnect() might have been called while we were
       // waiting. `shouldReconnect` is the source of truth.
@@ -434,7 +455,7 @@ export class SonnetSession {
     // it to shut down.
     this.shouldReconnect = false;
     if (this.reconnectTimer) {
-      clearTimeout(this.reconnectTimer);
+      this.clearSchedule(this.reconnectTimer);
       this.reconnectTimer = null;
     }
     const ws = this.ws;
