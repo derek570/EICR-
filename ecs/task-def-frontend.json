@@ -29,6 +29,12 @@
         { "name": "NODE_ENV",     "value": "production" },
         { "name": "BACKEND_URL",  "value": "https://api.certmate.uk" }
       ],
+      "secrets": [
+        {
+          "name": "JWT_SECRET",
+          "valueFrom": "arn:aws:secretsmanager:eu-west-2:196390795898:secret:eicr/api-keys-7QEZZZ:JWT_SECRET::"
+        }
+      ],
       "mountPoints": [],
       "volumesFrom": [],
       "logConfiguration": {
