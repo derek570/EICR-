@@ -21,6 +21,35 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import WS from 'jest-websocket-mock';
 import { SonnetSession } from '@/lib/recording/sonnet-session';
 
+/**
+ * Controllable scheduler for reconnect-path tests. The reconnect tick is
+ * captured rather than fired on the wallclock — tests flush it manually
+ * *after* the second mock server is registered, so there's no race
+ * between `openSocket()` and `new WS(SONNET_URL)` and no dependency on
+ * CI timer latency (previously flaked at the 5s vitest default).
+ */
+function makeControlledScheduler(): {
+  scheduler: (cb: () => void, ms: number) => unknown;
+  clearScheduler: (handle: unknown) => void;
+  flush: () => void;
+} {
+  let pending: (() => void) | null = null;
+  return {
+    scheduler: (cb) => {
+      pending = cb;
+      return cb;
+    },
+    clearScheduler: (h) => {
+      if (pending === h) pending = null;
+    },
+    flush: () => {
+      const cb = pending;
+      pending = null;
+      cb?.();
+    },
+  };
+}
+
 const SONNET_URL = 'ws://localhost:3000/api/sonnet-stream';
 
 function makeServer(): WS {
@@ -177,14 +206,21 @@ describe('SonnetSession', () => {
     });
 
     it('dirty close schedules a reconnect that reaches a new server', async () => {
-      const session = new SonnetSession({});
+      const sched = makeControlledScheduler();
+      const session = new SonnetSession({}, sched);
       session.connect({ sessionId: 's', jobId: 'j', certificateType: 'EICR' });
       await server.connected;
 
       server.close({ code: 1006, reason: 'abnormal', wasClean: false });
       await server.closed;
 
+      // Stand up the second server BEFORE firing the captured reconnect
+      // tick so mock-socket has a live server to pair the new client
+      // socket with. Previously this relied on a real setTimeout(0)
+      // winning the race against the next test line — fine locally,
+      // flaky under CI load.
       const next = new WS(SONNET_URL);
+      sched.flush();
       await next.connected;
       expect(session.connectionState).toBe('connected');
     });
@@ -318,7 +354,8 @@ describe('SonnetSession', () => {
     });
 
     it('sends session_resume with captured sessionId on reconnect', async () => {
-      const session = new SonnetSession({});
+      const sched = makeControlledScheduler();
+      const session = new SonnetSession({}, sched);
       session.connect({ sessionId: 'client-s', jobId: 'j', certificateType: 'EICR' });
       await server.connected;
 
@@ -334,6 +371,7 @@ describe('SonnetSession', () => {
       await server.closed;
 
       const next = new WS(SONNET_URL);
+      sched.flush();
       await next.connected;
       const resumeRaw = await next.nextMessage;
       const resumeFrame = JSON.parse(resumeRaw as string) as {
@@ -345,7 +383,8 @@ describe('SonnetSession', () => {
     });
 
     it('falls back to session_start on reconnect when server never advertised a sessionId', async () => {
-      const session = new SonnetSession({});
+      const sched = makeControlledScheduler();
+      const session = new SonnetSession({}, sched);
       session.connect({ sessionId: 'client-s', jobId: 'j', certificateType: 'EICR' });
       await server.connected;
       await server.nextMessage; // session_start
@@ -358,6 +397,7 @@ describe('SonnetSession', () => {
       await server.closed;
 
       const next = new WS(SONNET_URL);
+      sched.flush();
       await next.connected;
       const raw = await next.nextMessage;
       const frame = JSON.parse(raw as string) as { type: string };
