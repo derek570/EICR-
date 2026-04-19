@@ -86,7 +86,7 @@ export default function RootLayout({
          * accent without needing per-call styling; for the bare
          * `toast('New version available', ...)` call we rely on the default
          * dark theme. Bottom-right keeps the toast clear of the mobile
-         * AppShell bottom nav and the RecordingOverlay mini-pill.
+         * AppShell bottom nav and the RecordingChrome action bar.
          */}
         <Toaster position="bottom-right" theme="dark" richColors closeButton />
       </body>

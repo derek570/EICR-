@@ -6,11 +6,10 @@ import { AppShell } from '@/components/layout/app-shell';
 import { JobHeader } from '@/components/job/job-header';
 import { JobTabNav } from '@/components/job/job-tab-nav';
 import { FloatingActionBar } from '@/components/job/floating-action-bar';
-import { RecordingOverlay } from '@/components/recording/recording-overlay';
+import { RecordingChrome } from '@/components/recording/recording-chrome';
 import { TranscriptBar } from '@/components/recording/transcript-bar';
-import { LiveFillView } from '@/components/live-fill/live-fill-view';
 import { JobProvider } from '@/lib/job-context';
-import { RecordingProvider, useRecording } from '@/lib/recording-context';
+import { RecordingProvider } from '@/lib/recording-context';
 import { api } from '@/lib/api-client';
 import { clearAuth, getUser } from '@/lib/auth';
 import { getCachedJobWithOverlay, putCachedJob } from '@/lib/pwa/job-cache';
@@ -130,33 +129,24 @@ export default function JobLayout({ children }: { children: React.ReactNode }) {
               <JobHeader />
               <JobTabNav jobId={jobId} />
               <TranscriptBar />
-              <JobBody>{children}</JobBody>
+              {/*
+               * Pre-deploy: the live tab content always renders during a
+               * recording session — the inspector wanted to keep the
+               * Overview / Circuits / Observations view in front of them
+               * with a red pulsing ring around the viewport, instead of
+               * being swapped out to <LiveFillView>. The form is the
+               * source of truth they're auditing in real time. The ring
+               * + bottom action bar live in <RecordingChrome>; the top
+               * transcript pill is <TranscriptBar>.
+               */}
+              <div className="flex-1 overflow-y-auto pb-28">{children}</div>
               <FloatingActionBar />
-              <RecordingOverlay />
+              <RecordingChrome />
             </div>
           </RecordingProvider>
         </JobProvider>
       )}
     </AppShell>
-  );
-}
-
-/**
- * While recording (active/dozing/sleeping), swap the active tab content
- * for <LiveFillView> so the inspector sees every extracted field update
- * in real time. Option A in the Phase 5d handoff — matches iOS exactly,
- * no z-index juggling, and the FloatingActionBar / TranscriptBar /
- * RecordingOverlay stay mounted at their usual positions.
- *
- * Lives inside <RecordingProvider> so the hook call is safe; has to be
- * its own component because useRecording can't be called from the
- * server-rendered layout boundary.
- */
-function JobBody({ children }: { children: React.ReactNode }) {
-  const { state } = useRecording();
-  const showLiveFill = state === 'active' || state === 'dozing' || state === 'sleeping';
-  return (
-    <div className="flex-1 overflow-y-auto pb-28">{showLiveFill ? <LiveFillView /> : children}</div>
   );
 }
 

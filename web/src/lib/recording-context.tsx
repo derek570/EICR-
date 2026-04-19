@@ -94,17 +94,9 @@ export type RecordingActions = {
   stop: () => void;
   pause: () => void;
   resume: () => void;
-  /** Dismisses the overlay without tearing down the session (mic button minimises
-   *  into the action bar — iOS parity). */
-  minimise: () => void;
-  /** Re-opens a minimised session. */
-  expand: () => void;
   /** Dismiss a question from the queue without sending a correction.
    *  Used when the inspector taps the × on a question bubble. */
   dismissQuestion: (index: number) => void;
-  /** Indicates whether the overlay is currently expanded. When false the session
-   *  may still be running; the transcript bar stays visible at the top. */
-  isOverlayOpen: boolean;
 };
 
 type RecordingCtx = RecordingSnapshot & RecordingActions;
@@ -144,7 +136,6 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
   const [sonnetState, setSonnetState] = React.useState<SonnetConnectionState>('disconnected');
   const [questions, setQuestions] = React.useState<SonnetQuestion[]>([]);
   const [errorMessage, setErrorMessage] = React.useState<string | null>(null);
-  const [isOverlayOpen, setOverlayOpen] = React.useState(false);
 
   // Job snapshot kept in a ref so we can send the latest `jobState` on
   // session_start / reconnect without making every Sonnet call depend on
@@ -544,7 +535,6 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     if (statusRef.current !== 'idle' && statusRef.current !== 'error') return;
     setErrorMessage(null);
     setState('requesting-mic');
-    setOverlayOpen(true);
     setElapsedSec(0);
     setDeepgramCostUsd(0);
     setSonnetCostUsd(0);
@@ -624,7 +614,6 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     teardownSleep();
     setState('idle');
     setMicLevel(0);
-    setOverlayOpen(false);
     setQuestions([]);
     liveFill.reset();
   }, [setState, clearTick, teardownMic, teardownDeepgram, teardownSonnet, teardownSleep, liveFill]);
@@ -715,8 +704,6 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     teardownSleep,
   ]);
 
-  const minimise = React.useCallback(() => setOverlayOpen(false), []);
-  const expand = React.useCallback(() => setOverlayOpen(true), []);
   const dismissQuestion = React.useCallback((index: number) => {
     setQuestions((prev) => prev.filter((_, i) => i !== index));
   }, []);
@@ -737,13 +724,10 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
       sonnetState,
       questions,
       errorMessage,
-      isOverlayOpen,
       start,
       stop,
       pause,
       resume,
-      minimise,
-      expand,
       dismissQuestion,
     }),
     [
@@ -757,13 +741,10 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
       sonnetState,
       questions,
       errorMessage,
-      isOverlayOpen,
       start,
       stop,
       pause,
       resume,
-      minimise,
-      expand,
       dismissQuestion,
     ]
   );

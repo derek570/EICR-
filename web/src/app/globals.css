@@ -169,6 +169,32 @@ body {
 }
 
 /*
+ * Recording ring — red border that breathes around the viewport while a
+ * session is live, mirroring iOS's REC indicator. The ring is drawn with
+ * an inset box-shadow (rather than border) so it doesn't take any layout
+ * width and so the inner glow can fade independently of the rim. The
+ * outer glow uses brand-fail (#ff453a) at varying alpha to read as
+ * "recording" without overpowering the page content underneath.
+ *
+ * Pause / sleeping states drop to amber (`--color-status-processing`) by
+ * swapping the ring colour at the JSX level; the keyframes are colour-
+ * agnostic via `--rec-ring-color`.
+ */
+@keyframes cm-rec-ring {
+  0%,
+  100% {
+    box-shadow:
+      inset 0 0 0 3px var(--rec-ring-color),
+      inset 0 0 18px 0 color-mix(in srgb, var(--rec-ring-color) 38%, transparent);
+  }
+  50% {
+    box-shadow:
+      inset 0 0 0 5px var(--rec-ring-color),
+      inset 0 0 36px 6px color-mix(in srgb, var(--rec-ring-color) 60%, transparent);
+  }
+}
+
+/*
  * D9 — global reduced-motion guard.
  *
  * Catches every animation/transition on the page in one rule so
@@ -219,6 +245,17 @@ body {
 
 .cm-pulse-dot {
   animation: pulse-dot 0.9s ease-in-out infinite;
+}
+
+/*
+ * Applied to the fixed-positioned recording ring overlay. Caller passes
+ * the colour via `--rec-ring-color` inline so the same class drives
+ * active (red), paused (amber), and sleeping (purple) without a class
+ * matrix. Honours prefers-reduced-motion via the global guard above —
+ * the ring stays drawn but stops breathing.
+ */
+.cm-rec-ring {
+  animation: cm-rec-ring 1.6s ease-in-out infinite;
 }
 
 .cm-shimmer {

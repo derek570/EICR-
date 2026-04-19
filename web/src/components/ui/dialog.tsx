@@ -28,9 +28,8 @@ import { cn } from '@/lib/utils';
  *
  * Callers that need a bottom-sheet layout on mobile (`items-end` vs
  * `items-center`) pass their own `className` to override `DialogContent`
- * defaults — see `recording-overlay.tsx` for the full-height sheet
- * variant and `observation-sheet.tsx` for the mobile-sheet + desktop-card
- * pattern.
+ * defaults — see `observation-sheet.tsx` for the mobile-sheet +
+ * desktop-card pattern.
  */
 
 const Dialog = DialogPrimitive.Root;
