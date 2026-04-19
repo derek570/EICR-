@@ -149,7 +149,18 @@ export default function JobOverviewPage() {
       </div>
 
       {/* ── Circuits ───────────────────────────────────────────── */}
-      <CircuitsPanel circuits={circuits} href={`${base}/circuits`} />
+      {/* Compact table: portrait phones / narrow tablets.
+          Wide landscape-style table: desktop (≥lg) by default, AND phones
+          held in landscape orientation. iOS users expect the full 29-
+          column schedule at a glance when they rotate the device; the
+          `@media (orientation: landscape)` escape hatch re-shows the wide
+          panel below 1024px as long as width > height. */}
+      <div className="lg:hidden landscape:hidden">
+        <CircuitsPanel circuits={circuits} href={`${base}/circuits`} />
+      </div>
+      <div className="hidden lg:block landscape:block">
+        <WideCircuitsPanel circuits={circuits} href={`${base}/circuits`} />
+      </div>
 
       {/* ── Observations (EICR only) ───────────────────────────── */}
       {certificateType === 'EICR' ? (
@@ -329,6 +340,179 @@ function CircuitTableRow({ circuit }: { circuit: CircuitRow }) {
       <td className="py-1.5 text-right font-mono tabular-nums">
         {cell(circuit.ir_live_earth_mohm)}
       </td>
+    </tr>
+  );
+}
+
+/* ----------------------------------------------------------------------- */
+
+/**
+ * Wide circuits panel — mirrors the iOS landscape Overview schedule.
+ *
+ * Renders the full 29-column circuit matrix in a two-row header group
+ * (Circuit / Cond / Dt / OCPD / RCD / Ring / Cont / IR / Test) with each
+ * row a compact read-only cell. Used on desktop (≥lg) by default, and
+ * on phones held in landscape orientation — both surfaces have enough
+ * horizontal real-estate to show the full schedule without the per-
+ * circuit drilldown that the compact panel forces on portrait.
+ *
+ * Data is sourced from the same `CircuitRow[]` as the compact panel;
+ * cells fall back to an em-dash when empty so the grid doesn't reflow
+ * as Sonnet/CCU fills values in. Tap anywhere jumps to the Circuits
+ * tab for edits — this view is read-only.
+ */
+function WideCircuitsPanel({ circuits, href }: { circuits: CircuitRow[]; href: string }) {
+  return (
+    <section className="flex flex-col gap-2 rounded-[var(--radius-lg)] border border-[var(--color-border-subtle)] bg-[var(--color-surface-2)] px-4 py-3">
+      <header className="flex items-center justify-between">
+        <div className="flex items-center gap-2 text-[var(--color-brand-blue)]">
+          <CircuitBoard className="h-4 w-4" strokeWidth={2.25} aria-hidden />
+          <span className="text-[13px] font-semibold uppercase tracking-[0.06em]">
+            Circuits ({circuits.length})
+          </span>
+        </div>
+        <Link
+          href={href}
+          className="text-[12px] font-semibold text-[var(--color-brand-blue)] hover:underline"
+        >
+          Open tab →
+        </Link>
+      </header>
+      {circuits.length === 0 ? (
+        <p className="py-3 text-[13px] italic text-[var(--color-text-tertiary)]">
+          No circuits yet — capture a CCU photo or dictate to populate the board.
+        </p>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[1100px] border-collapse text-[11.5px]">
+            <thead>
+              {/* Group header — mirrors iOS (Circuit / Cond / Dt / OCPD / RCD / Ring / Cont / IR / Test) */}
+              <tr className="text-[10px] uppercase tracking-[0.08em] text-[var(--color-brand-blue)]">
+                <th colSpan={2} className="py-1 text-left font-semibold">
+                  Circuit
+                </th>
+                <th colSpan={3} className="py-1 text-left font-semibold">
+                  Cond
+                </th>
+                <th colSpan={2} className="py-1 text-left font-semibold">
+                  Dt
+                </th>
+                <th colSpan={5} className="py-1 text-left font-semibold">
+                  OCPD
+                </th>
+                <th colSpan={4} className="py-1 text-left font-semibold">
+                  RCD
+                </th>
+                <th colSpan={3} className="py-1 text-left font-semibold">
+                  Ring
+                </th>
+                <th colSpan={2} className="py-1 text-left font-semibold">
+                  Cont
+                </th>
+                <th colSpan={3} className="py-1 text-left font-semibold">
+                  IR
+                </th>
+                <th colSpan={4} className="py-1 text-left font-semibold">
+                  Test
+                </th>
+              </tr>
+              <tr className="border-b border-[var(--color-border-subtle)] text-left text-[10px] uppercase tracking-[0.05em] text-[var(--color-text-tertiary)]">
+                <th className="py-1 pr-1 font-semibold">#</th>
+                <th className="py-1 pr-2 font-semibold">Desig</th>
+                <th className="py-1 pr-1 font-semibold">WT</th>
+                <th className="py-1 pr-1 font-semibold">RM</th>
+                <th className="py-1 pr-1 font-semibold">Pts</th>
+                <th className="py-1 pr-1 font-semibold">L</th>
+                <th className="py-1 pr-1 font-semibold">C</th>
+                <th className="py-1 pr-1 font-semibold">BS</th>
+                <th className="py-1 pr-1 font-semibold">Ty</th>
+                <th className="py-1 pr-1 font-semibold">A</th>
+                <th className="py-1 pr-1 font-semibold">kA</th>
+                <th className="py-1 pr-1 font-semibold">Zs</th>
+                <th className="py-1 pr-1 font-semibold">Ty</th>
+                <th className="py-1 pr-1 font-semibold">mA</th>
+                <th className="py-1 pr-1 font-semibold">ms</th>
+                <th className="py-1 pr-1 font-semibold">ΔT</th>
+                <th className="py-1 pr-1 font-semibold">r1</th>
+                <th className="py-1 pr-1 font-semibold">rn</th>
+                <th className="py-1 pr-1 font-semibold">r2</th>
+                <th className="py-1 pr-1 font-semibold">R1+R2</th>
+                <th className="py-1 pr-1 font-semibold">R2</th>
+                <th className="py-1 pr-1 font-semibold">V</th>
+                <th className="py-1 pr-1 font-semibold">L-L</th>
+                <th className="py-1 pr-1 font-semibold">L-E</th>
+                <th className="py-1 pr-1 font-semibold">P</th>
+                <th className="py-1 pr-1 font-semibold">Zs</th>
+                <th className="py-1 pr-1 font-semibold">ms</th>
+                <th className="py-1 pr-1 font-semibold">Rc</th>
+                <th className="py-1 font-semibold">Af</th>
+              </tr>
+            </thead>
+            <tbody>
+              {circuits.map((c) => (
+                <WideCircuitRow key={c.id} circuit={c} />
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function WideCircuitRow({ circuit }: { circuit: CircuitRow }) {
+  const ref = circuit.circuit_ref ?? circuit.number ?? '?';
+  const designation = (circuit.circuit_designation ?? circuit.description) as string | undefined;
+  const v = (key: string): string => {
+    const x = (circuit as Record<string, unknown>)[key];
+    if (x === null || x === undefined || x === '') return '—';
+    return String(x);
+  };
+  const num = (key: string) => (
+    <td className="py-1 pr-1 text-right font-mono tabular-nums">{v(key)}</td>
+  );
+  const txt = (key: string) => <td className="py-1 pr-1">{v(key)}</td>;
+  return (
+    <tr className="border-t border-[var(--color-border-subtle)]/60 text-[var(--color-text-primary)]">
+      <td className="py-1 pr-1 font-mono text-[var(--color-brand-blue)]">{String(ref)}</td>
+      <td className="max-w-[160px] truncate py-1 pr-2" title={designation ?? ''}>
+        {designation ?? <span className="italic text-[var(--color-text-tertiary)]">Unnamed</span>}
+      </td>
+      {/* Cond */}
+      {txt('wiring_type')}
+      {txt('ref_method')}
+      {num('number_of_points')}
+      {/* Dt — cable CSAs */}
+      {num('live_csa_mm2')}
+      {num('cpc_csa_mm2')}
+      {/* OCPD */}
+      {txt('ocpd_bs_en')}
+      {txt('ocpd_type')}
+      {num('ocpd_rating_a')}
+      {num('ocpd_short_circuit_ka')}
+      {num('ocpd_max_zs_ohm')}
+      {/* RCD */}
+      {txt('rcd_type')}
+      {num('rcd_rating_a')}
+      {num('rcd_trip_time_ms')}
+      {num('rcd_trip_current_ma')}
+      {/* Ring */}
+      {num('ring_r1_ohm')}
+      {num('ring_rn_ohm')}
+      {num('ring_r2_ohm')}
+      {/* Cont */}
+      {num('r1_r2_ohm')}
+      {num('r2_ohm')}
+      {/* IR */}
+      {num('ir_test_voltage_v')}
+      {num('ir_live_live_mohm')}
+      {num('ir_live_earth_mohm')}
+      {/* Test */}
+      {txt('polarity_confirmed')}
+      {num('measured_zs_ohm')}
+      {num('rcd_measured_trip_time_ms')}
+      {txt('rcd_button_confirmed')}
+      {txt('afdd_button_confirmed')}
     </tr>
   );
 }
