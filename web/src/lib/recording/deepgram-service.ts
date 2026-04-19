@@ -20,7 +20,12 @@
  * change there.
  */
 
-export type DeepgramConnectionState = 'disconnected' | 'connecting' | 'connected' | 'error';
+export type DeepgramConnectionState =
+  | 'disconnected'
+  | 'connecting'
+  | 'connected'
+  | 'reconnecting'
+  | 'error';
 
 export interface DeepgramWord {
   word: string;
@@ -37,7 +42,29 @@ export interface DeepgramCallbacks {
   onSpeechStarted?: () => void;
   onStateChange?: (state: DeepgramConnectionState) => void;
   onError?: (err: Error) => void;
+  /**
+   * Fires after a successful auto-reconnect (not on the initial open).
+   * Consumers typically replay their `AudioRingBuffer` via `sendInt16PCM()`
+   * here so words spoken during the WS downtime aren't lost — matching the
+   * iOS wake path that replays a 3-second ring buffer on Deepgram reopen.
+   */
+  onReconnected?: () => void;
 }
+
+/**
+ * Accepts either a raw key (one-shot, no auto-reconnect — the original
+ * Phase 4a contract) or an async fetcher that mints a fresh key on every
+ * (re)connect. Fetcher mode is what production uses post-2026-04-19:
+ * Deepgram's /v1/auth/grant JWTs are minted with a 30s TTL (src/routes/
+ * keys.js), which is fine for iOS because its DeepgramService auto-
+ * reconnects with a fresh key on close. Web had no reconnect logic until
+ * this change, so JWT expiry presented as a 1006 close after ~30s of
+ * talking. Bumping the backend TTL would've fixed the symptom but the
+ * backend is shared with iOS and shouldn't flex to work around a
+ * web-client gap — the correct fix is reconnect parity here. Static-key
+ * mode is preserved so existing unit tests keep working untouched.
+ */
+export type DeepgramKeySource = string | (() => Promise<string>);
 
 /**
  * Constructor-level seam for injecting an alternate WebSocket factory.
@@ -72,8 +99,43 @@ export class DeepgramService {
   // fire both). Without a guard the upstream recording-context would
   // see two `onError` callbacks for a single close and trigger two
   // reconnects — doubling Deepgram connect-storm billing on flaky links.
-  // This flag is reset every `connect()`.
+  // This flag is reset every `connect()` AND on each scheduled reconnect
+  // attempt (so a subsequent terminal failure after N retries can still
+  // fire onError once).
   private errorEmitted = false;
+
+  // ── Auto-reconnect state ─────────────────────────────────────────────
+  // Only populated in fetcher mode. Mirrors the iOS pattern
+  // (CertMateUnified/.../DeepgramService.swift — `shouldReconnect`,
+  // `isReconnectScheduled`, `reconnectAttempt`, `reconnectWorkItem`).
+  //
+  // `fetchKey` is stored because reconnection must mint a FRESH key, not
+  // reuse the cached JWT — the JWT is what expired in the first place.
+  private fetchKey: (() => Promise<string>) | null = null;
+  // Set true on fetcher-mode connect, flipped false by `disconnect()` so
+  // any in-flight async key-fetch aborts cleanly and no further retries
+  // are scheduled.
+  private shouldReconnect = false;
+  // Dedup: a single close can race ws.onerror + ws.onclose, or a stray
+  // delayed callback from a prior socket; without this flag one close
+  // would queue multiple reconnect timers and stampede Deepgram.
+  private isReconnectScheduled = false;
+  // Incremented on each scheduled attempt, reset to 0 on successful
+  // `ws.onopen`. Drives exponential backoff. NOT reset inside
+  // scheduleReconnect() because that would restart backoff on every
+  // retry and produce rapid-fire 1s spam against an unreachable server.
+  private reconnectAttempt = 0;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  // Caps exponential backoff at 30s — matches iOS `maxReconnectDelay`.
+  // Any higher and the user waits too long for service restoration on
+  // flaky mobile links; lower and we DOS Deepgram on prolonged outages.
+  private static readonly MAX_RECONNECT_DELAY_MS = 30_000;
+  // Tracks whether we've ever successfully opened the socket for this
+  // session. First-connect failures fire onError so the UI can surface
+  // "can't reach Deepgram"; reconnect failures stay silent (the
+  // `reconnecting` state change is the UI signal) so transient blips
+  // don't flash scary errors mid-session.
+  private hasEverOpened = false;
 
   constructor(callbacks: DeepgramCallbacks, wsFactory?: WebSocketFactory) {
     this.callbacks = callbacks;
@@ -89,17 +151,92 @@ export class DeepgramService {
   }
 
   /**
-   * Open a fresh WebSocket. Does not auto-reconnect — callers should
-   * reopen on close themselves (Phase 4e SleepDetector handles this).
+   * Open a Deepgram WebSocket.
+   *
+   * Two modes:
+   *  - **Static key** (`string`): one-shot connect. No auto-reconnect; a
+   *    reconnectable close fires `onError` and stops. Used by unit tests
+   *    and any caller that wants to manage the lifecycle itself.
+   *  - **Fetcher** (`() => Promise<string>`): auto-reconnect enabled. On
+   *    any reconnectable close (code ≠ 1000/1005) the service mints a
+   *    fresh key via the callback and reopens with exponential backoff
+   *    (1→2→4→8→16→30s cap). Matches iOS parity — see
+   *    `CertMateUnified/.../DeepgramService.swift scheduleReconnect()`.
+   *    Callers observe the round trip via `onStateChange('reconnecting')`
+   *    and `onReconnected` (fires after a successful reopen so the
+   *    caller's AudioRingBuffer can be replayed).
+   *
+   * Mode choice is locked at call time and reset on the next `connect()`.
    */
-  connect(apiKey: string, sourceSampleRate = 16000): void {
+  connect(keyOrFetcher: DeepgramKeySource, sourceSampleRate = 16000): void {
     if (this.ws && this.state !== 'disconnected') {
       // Already connecting/connected — caller mis-wired. No-op.
       return;
     }
     this.sourceSampleRate = sourceSampleRate;
     this.errorEmitted = false;
-    this.setState('connecting');
+    this.reconnectAttempt = 0;
+    this.isReconnectScheduled = false;
+    this.hasEverOpened = false;
+
+    if (typeof keyOrFetcher === 'function') {
+      this.fetchKey = keyOrFetcher;
+      this.shouldReconnect = true;
+      void this.openWithFreshKey();
+    } else {
+      this.fetchKey = null;
+      this.shouldReconnect = false;
+      this.openSocket(keyOrFetcher);
+    }
+  }
+
+  /**
+   * Fetcher-mode entry point. Mints a fresh key and opens the socket.
+   * Called on initial connect AND on every scheduled reconnect attempt.
+   * Kept separate from `openSocket()` so static-key mode (+ every
+   * existing unit test) doesn't pay for the async path.
+   */
+  private async openWithFreshKey(): Promise<void> {
+    if (!this.fetchKey) return;
+    this.setState(this.reconnectAttempt === 0 ? 'connecting' : 'reconnecting');
+    let key: string;
+    try {
+      key = await this.fetchKey();
+    } catch (err) {
+      // Key-fetch failed (backend 5xx, network, etc.). First-connect
+      // failures surface to the UI; reconnect failures stay quiet and
+      // the state machine keeps retrying — `reconnecting` is already
+      // the visible signal. Matches iOS `RECONNECT_KEY_FETCH_FAILED`
+      // behaviour which also silently reschedules.
+      //
+      // Gate on `reconnectAttempt === 0` not `hasEverOpened`: an
+      // always-down backend would leave hasEverOpened=false forever
+      // and spam onError on every retry. reconnectAttempt is 0 only
+      // on the very first call (it's incremented inside
+      // scheduleReconnect before the timer fires), so this emits
+      // exactly once per connect() session.
+      if (this.reconnectAttempt === 0) {
+        this.setState('error');
+        this.emitError(err instanceof Error ? err : new Error(String(err)));
+      }
+      this.scheduleReconnect();
+      return;
+    }
+    // `disconnect()` while the fetch was in flight — bail before we
+    // open a socket that would leak a connection + billable seconds.
+    if (!this.shouldReconnect) return;
+    this.openSocket(key);
+  }
+
+  /**
+   * Open the raw Deepgram WS for a specific key. Does not auto-reconnect
+   * on its own — the onclose handler delegates to `scheduleReconnect()`
+   * iff fetcher mode was selected at `connect()` time.
+   */
+  private openSocket(apiKey: string): void {
+    // Only flip to 'connecting' for the initial handshake; a reconnect
+    // already showed 'reconnecting' via openWithFreshKey.
+    if (this.state !== 'reconnecting') this.setState('connecting');
 
     const url = this.buildURL();
     // Deepgram accepts subprotocol-based auth; URL query params are blocked
@@ -129,15 +266,18 @@ export class DeepgramService {
     const ws = this.wsFactory(url, ['bearer', apiKey]);
     ws.binaryType = 'arraybuffer';
 
-    const emitError = (err: Error) => {
-      if (this.errorEmitted) return;
-      this.errorEmitted = true;
-      this.callbacks.onError?.(err);
-    };
-
     ws.onopen = () => {
+      const wasReconnect = this.hasEverOpened;
       this.setState('connected');
+      this.reconnectAttempt = 0; // success resets backoff
+      this.hasEverOpened = true;
       this.startKeepAlive();
+      if (wasReconnect) {
+        // Fire AFTER setState so the caller observes 'connected' first
+        // and any replay it sends through sendInt16PCM lands on an
+        // already-open socket.
+        this.callbacks.onReconnected?.();
+      }
     };
 
     ws.onmessage = (event) => {
@@ -145,31 +285,81 @@ export class DeepgramService {
     };
 
     ws.onerror = () => {
+      // In fetcher mode, defer to onclose — it will schedule a
+      // reconnect. Surfacing an error event here would double-fire
+      // through the `errorEmitted` guard and, worse, flash an error
+      // UI during every transient network blip.
+      if (this.shouldReconnect) return;
       this.setState('error');
-      emitError(new Error('Deepgram WebSocket error'));
+      this.emitError(new Error('Deepgram WebSocket error'));
     };
 
     ws.onclose = (event) => {
       this.stopKeepAlive();
       this.ws = null;
-      const willReconnect = event.code !== 1000 && event.code !== 1005;
+      const reconnectable = event.code !== 1000 && event.code !== 1005;
       // Log close code + reason on every close so backend/ops can
       // correlate flaky-link incidents with browser-side reconnect
       // behaviour. 1000 (normal) + 1005 (no status) are expected
       // teardowns (disconnect() / server CloseStream response); anything
-      // else is a reconnect candidate upstream.
+      // else is a reconnect candidate. `autoReconnect` disambiguates
+      // fetcher mode from static-key mode in the logs.
       console.info(
-        `[deepgram] close code=${event.code} reason=${JSON.stringify(event.reason ?? '')} reconnect=${willReconnect}`
+        `[deepgram] close code=${event.code} reason=${JSON.stringify(event.reason ?? '')} reconnectable=${reconnectable} autoReconnect=${this.shouldReconnect}`
       );
+      if (reconnectable && this.shouldReconnect) {
+        this.scheduleReconnect();
+        return;
+      }
       if (this.state !== 'error') {
         this.setState('disconnected');
       }
-      if (willReconnect) {
-        emitError(new Error(`Deepgram WS closed (code=${event.code})`));
+      if (reconnectable) {
+        // Static-key mode: surface the close so the caller can decide
+        // whether to reconnect (legacy Phase 4a contract + tests).
+        this.emitError(new Error(`Deepgram WS closed (code=${event.code})`));
       }
     };
 
     this.ws = ws;
+  }
+
+  private emitError(err: Error): void {
+    if (this.errorEmitted) return;
+    this.errorEmitted = true;
+    this.callbacks.onError?.(err);
+  }
+
+  /**
+   * Queue a fresh reconnect attempt. Dedup'd against concurrent callers
+   * (ws.onerror + ws.onclose for the same failure, or a stray delayed
+   * callback from a prior socket). Exponential backoff capped at 30s —
+   * matches iOS `scheduleReconnect()`.
+   */
+  private scheduleReconnect(): void {
+    if (!this.shouldReconnect || this.isReconnectScheduled) return;
+    this.isReconnectScheduled = true;
+    this.reconnectAttempt += 1;
+    const delayMs = Math.min(
+      Math.pow(2, this.reconnectAttempt - 1) * 1000,
+      DeepgramService.MAX_RECONNECT_DELAY_MS
+    );
+    this.setState('reconnecting');
+    console.info(
+      `[deepgram] reconnect scheduled attempt=${this.reconnectAttempt} delay=${delayMs}ms`
+    );
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      this.isReconnectScheduled = false;
+      if (!this.shouldReconnect) return;
+      // NOTE: errorEmitted is intentionally NOT reset here. After the
+      // initial onError fires (gated on reconnectAttempt === 0 in
+      // openWithFreshKey), subsequent retries stay silent — both the
+      // errorEmitted latch AND the reconnectAttempt gate independently
+      // suppress further emissions. Resetting errorEmitted would have
+      // re-enabled spammy per-retry errors.
+      void this.openWithFreshKey();
+    }, delayMs);
   }
 
   /** Send a Float32Array block (mic samples). Resamples to 16kHz if needed
@@ -232,10 +422,22 @@ export class DeepgramService {
     }
   }
 
-  /** Request a graceful stream close + tear the socket down. */
+  /** Request a graceful stream close + tear the socket down. Cancels any
+   *  pending auto-reconnect so a mid-backoff `stop()` doesn't leak a
+   *  billable WS seconds later. */
   disconnect(): void {
     this.stopKeepAlive();
     this.paused = false;
+    // Kill auto-reconnect BEFORE anything else — prevents onclose below
+    // from scheduling a fresh attempt on the way out, and short-circuits
+    // any in-flight `openWithFreshKey` key-fetch.
+    this.shouldReconnect = false;
+    this.fetchKey = null;
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    this.isReconnectScheduled = false;
     const ws = this.ws;
     if (!ws) {
       this.setState('disconnected');

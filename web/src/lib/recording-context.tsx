@@ -227,15 +227,16 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
 
   /** Open the Deepgram WS using a freshly-minted scoped token. Shared
    *  between `start()` and `resume()` so the reconnect path after doze
-   *  does not duplicate code. */
+   *  does not duplicate code.
+   *
+   *  Uses the DeepgramService fetcher mode so a 1006/1011 mid-session
+   *  (typically JWT expiry — backend mints 30s tokens, matching iOS) is
+   *  transparently recovered via auto-reconnect + fresh key. See
+   *  `recording/deepgram-service.ts` connect() docblock for the full
+   *  rationale (shared backend with iOS is why the fix is client-side,
+   *  not a TTL bump). */
   const openDeepgram = React.useCallback(async (sourceSampleRate: number) => {
     const sessionId = sessionIdRef.current;
-    const { key } = await api.deepgramKey(sessionId);
-    // Token fetch may take seconds on slow mobile; during that window a
-    // stop() can rotate sessionIdRef. Opening a WS after a stop() would
-    // leak a connection + billable seconds. Bail before constructing the
-    // DeepgramService.
-    if (sessionIdRef.current !== sessionId) return;
     const service = new DeepgramService({
       onStateChange: setDeepgramState,
       onInterimTranscript: (text) => {
@@ -265,17 +266,45 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         // AGC can't self-feed and keep the doze timer permanently armed.
         sleepManagerRef.current?.onSpeechActivity();
       },
+      onReconnected: () => {
+        // Socket just reopened after an auto-reconnect. Replay the
+        // ring buffer so words spoken during the backoff gap aren't
+        // lost — mirrors the iOS wake path. drain() returns undefined
+        // if the buffer is empty or unavailable, in which case the
+        // live sample loop picks up on its own.
+        const replay = ringBufferRef.current?.drain();
+        if (replay && replay.length > 0) {
+          deepgramRef.current?.sendInt16PCM(replay);
+        }
+      },
       onError: (err) => {
         // Only surface in the UI if we're not already closing down — a
         // normal CloseStream can race with `stop()` and emit a spurious
-        // error that would otherwise flip the overlay red.
+        // error that would otherwise flip the overlay red. In fetcher
+        // mode onError fires only for terminal failures (first-connect
+        // key fetch fail) — transient close codes are absorbed by the
+        // service's auto-reconnect and don't bubble here at all.
         if (deepgramRef.current) {
           setErrorMessage(err.message);
         }
       },
     });
-    service.connect(key, sourceSampleRate);
+    // Bind the ref BEFORE starting the async connect so a concurrent
+    // stop()/teardownDeepgram can call service.disconnect() and abort
+    // the in-flight key fetch via `shouldReconnect=false`.
     deepgramRef.current = service;
+    service.connect(async () => {
+      // Per-attempt guard: if stop() rotated the session while we were
+      // waiting for backoff + key fetch, bail so the service aborts
+      // reconnection cleanly (throw flows into openWithFreshKey's
+      // catch → suppressed reconnect reschedule, and disconnect() has
+      // already flipped shouldReconnect=false to short-circuit).
+      if (sessionIdRef.current !== sessionId) {
+        throw new Error('recording session rotated — aborting key fetch');
+      }
+      const { key } = await api.deepgramKey(sessionIdRef.current);
+      return key;
+    }, sourceSampleRate);
   }, []);
 
   /** Apply a structured Sonnet extraction to the active JobDetail.

@@ -546,6 +546,182 @@ describe('DeepgramService', () => {
       expect(server.messages.length).toBe(2);
     });
 
+    // ────────────────────────────────────────────────────────────────────
+    // Auto-reconnect (fetcher mode) — 2026-04-19 parity with iOS.
+    //
+    // Backend mints /v1/auth/grant JWTs with a 30s TTL shared with iOS.
+    // Before this change the web client had no reconnect logic, so the
+    // JWT expiring mid-stream produced a 1006 close that bubbled to the
+    // UI as "Deepgram WS closed (code=1006)" after a few sentences. The
+    // fix is client-side auto-reconnect with a fresh key — the backend
+    // TTL cannot flex because iOS depends on the same endpoint.
+    //
+    // Tests below lock the observable behaviour: fetcher mode absorbs
+    // transient closes silently, re-opens with a FRESH key (not the
+    // cached one — that's what expired), caps backoff at 30s, fires
+    // `onReconnected` after a successful reopen so the caller can replay
+    // an AudioRingBuffer, and respects `disconnect()` even when a
+    // reconnect is already queued.
+    // ────────────────────────────────────────────────────────────────────
+
+    it('auto-reconnects on reconnectable close and fires onReconnected with a fresh key', async () => {
+      vi.useFakeTimers({
+        toFake: ['setInterval', 'clearInterval', 'setTimeout', 'clearTimeout', 'performance'],
+      });
+
+      const onError = vi.fn();
+      const onReconnected = vi.fn();
+      const onStateChange = vi.fn();
+      const fetchKey = vi
+        .fn<() => Promise<string>>()
+        .mockResolvedValueOnce('jwt-1')
+        .mockResolvedValueOnce('jwt-2');
+
+      const service = new DeepgramService({
+        onInterimTranscript: vi.fn(),
+        onFinalTranscript: vi.fn(),
+        onError,
+        onReconnected,
+        onStateChange,
+      });
+      service.connect(fetchKey, 16000);
+
+      // Advance past mock-socket's 4ms handshake delay AND let the
+      // initial async fetchKey promise resolve.
+      await vi.advanceTimersByTimeAsync(10);
+      await server.connected;
+      expect(service.connectionState).toBe('connected');
+      expect(fetchKey).toHaveBeenCalledTimes(1);
+
+      // Drop a reconnectable close. jest-websocket-mock routes this to
+      // the client's onclose with the provided code. The service should
+      // NOT fire onError (fetcher mode absorbs) and SHOULD transition to
+      // 'reconnecting'.
+      server.close({ code: 1006, reason: 'drop', wasClean: false });
+      await server.closed;
+      expect(onError).not.toHaveBeenCalled();
+      expect(service.connectionState).toBe('reconnecting');
+
+      // Attempt 1 has a 1s backoff. Stand up a new fake server to
+      // accept the reconnection handshake.
+      WS.clean();
+      server = makeServer();
+      await vi.advanceTimersByTimeAsync(1_000);
+      // Drain the microtask queue so the post-setTimeout async
+      // openWithFreshKey can run. mock-socket's 4ms handshake delay
+      // then needs another tick.
+      await vi.advanceTimersByTimeAsync(10);
+      await server.connected;
+
+      // Fresh key was minted on reconnect (NOT the cached one — the
+      // cached JWT is what expired in the first place).
+      expect(fetchKey).toHaveBeenCalledTimes(2);
+      expect(service.connectionState).toBe('connected');
+      expect(onReconnected).toHaveBeenCalledTimes(1);
+    });
+
+    it('caps exponential backoff at 30s', async () => {
+      // Four consecutive failures → attempts 1..4 = 1s, 2s, 4s, 8s. A
+      // tenth failure would hit 512s un-capped; verify the cap kicks in.
+      // We can observe the cap by inspecting the scheduled timer delay
+      // via the mock timer queue's `getTimerCount` — but vitest exposes
+      // this more simply by advancing time and observing the reconnect
+      // NOT firing before the cap, and firing at the cap.
+      vi.useFakeTimers({
+        toFake: ['setInterval', 'clearInterval', 'setTimeout', 'clearTimeout', 'performance'],
+      });
+
+      const fetchKey = vi.fn<() => Promise<string>>().mockRejectedValue(new Error('backend 503'));
+      const onError = vi.fn();
+
+      const service = new DeepgramService({
+        onInterimTranscript: vi.fn(),
+        onFinalTranscript: vi.fn(),
+        onError,
+        onStateChange: vi.fn(),
+      });
+      service.connect(fetchKey, 16000);
+
+      // First fetch throws → surfaces onError (first-connect failure)
+      // and schedules attempt #2 with a 2s delay.
+      await vi.advanceTimersByTimeAsync(10);
+      expect(onError).toHaveBeenCalledTimes(1);
+      expect(fetchKey).toHaveBeenCalledTimes(1);
+
+      // Walk through attempts 2..10. Each key fetch rejects, scheduling
+      // the next with delay min(2^(n-1) * 1000, 30_000).
+      // Attempt  delay
+      //   2      2_000
+      //   3      4_000
+      //   4      8_000
+      //   5     16_000
+      //   6     30_000 (cap — would be 32_000 un-capped)
+      //   7     30_000
+      // Total walltime for attempts 2..7 = 2+4+8+16+30+30 = 90s.
+      await vi.advanceTimersByTimeAsync(90_000 + 100);
+      // 1 initial + 6 scheduled retries = 7 fetchKey calls.
+      expect(fetchKey).toHaveBeenCalledTimes(7);
+
+      // onError was only fired for the very first failure. Subsequent
+      // reconnect failures stay silent — `reconnecting` state is the
+      // UI signal per iOS parity.
+      expect(onError).toHaveBeenCalledTimes(1);
+    });
+
+    it('disconnect() cancels a pending auto-reconnect', async () => {
+      vi.useFakeTimers({
+        toFake: ['setInterval', 'clearInterval', 'setTimeout', 'clearTimeout', 'performance'],
+      });
+
+      const fetchKey = vi
+        .fn<() => Promise<string>>()
+        .mockResolvedValueOnce('jwt-1')
+        .mockResolvedValueOnce('jwt-2-should-never-be-used');
+
+      const service = new DeepgramService({
+        onInterimTranscript: vi.fn(),
+        onFinalTranscript: vi.fn(),
+        onError: vi.fn(),
+      });
+      service.connect(fetchKey, 16000);
+      await vi.advanceTimersByTimeAsync(10);
+      await server.connected;
+      expect(fetchKey).toHaveBeenCalledTimes(1);
+
+      // Kick off a reconnect by dropping the socket.
+      server.close({ code: 1006, reason: 'drop', wasClean: false });
+      await server.closed;
+      expect(service.connectionState).toBe('reconnecting');
+
+      // Stop before the 1s backoff elapses.
+      service.disconnect();
+      await vi.advanceTimersByTimeAsync(5_000);
+
+      // fetchKey was NOT called a second time — the pending reconnect
+      // was cancelled. If it had fired it would have tried to resolve
+      // against the cleaned WS.clean()'d server and leaked a socket.
+      expect(fetchKey).toHaveBeenCalledTimes(1);
+      expect(service.connectionState).toBe('disconnected');
+    });
+
+    it('static-key mode is unchanged — a reconnectable close still fires onError', async () => {
+      // Regression guard: all pre-2026-04-19 tests (and any caller that
+      // passes a raw string) must keep seeing onError on a 1006 close
+      // with no silent reconnect happening behind their back.
+      const onError = vi.fn();
+      const service = new DeepgramService({
+        onInterimTranscript: vi.fn(),
+        onFinalTranscript: vi.fn(),
+        onError,
+      });
+      service.connect('static-key', 16000);
+      await server.connected;
+      server.close({ code: 1006, reason: 'drop', wasClean: false });
+      await server.closed;
+      expect(onError).toHaveBeenCalledTimes(1);
+      expect(service.connectionState).toBe('disconnected');
+    });
+
     it('stops the KeepAlive interval on disconnect()', async () => {
       vi.useFakeTimers({
         toFake: ['setInterval', 'clearInterval', 'setTimeout', 'clearTimeout', 'performance'],
