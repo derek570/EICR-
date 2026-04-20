@@ -40,6 +40,42 @@ const COMMON_STOP_WORDS = new Set([
   'into',
 ]);
 
+// Installation-field whitelist for null-circuit wildcard resolution.
+//
+// The postcode double-ask fix (14 Chichester Rd, session EE0A697A, 2026-04-20)
+// rewrote `resolveByFields` so a question with `circuit: null` resolves against
+// ANY circuit reading for the same field name. That fix is correct ONLY for
+// install-level fields, whose readings land at circuit 0 per the Sonnet prompt
+// rule — so `{ field: postcode, circuit: null }` is semantically the same as
+// `{ field: postcode, circuit: 0 }`.
+//
+// For circuit-specific fields (e.g. `zs`, `r1_plus_r2`, `insulation_resistance`,
+// `rcd_trip_time`) a null circuit means "I heard this reading but don't know
+// which circuit it belongs to" — an orphan. If the wildcard applied to those,
+// a later unrelated `zs:4` reading would silently drop the orphan question
+// and the inspector would never be asked to assign the first reading.
+//
+// Fields NOT in this set fall through to the pre-fix strict-match behaviour
+// (which may duplicate the TTS ask for that field — the acceptable failure
+// mode). Membership is the safer side to err on.
+//
+// Scope: address/postcode/town/county (+ client_* variants) from the original
+// regression, and `ze` / `pfc` which eicr-extraction-session.js:263-275
+// confirms are supply-level fields seeded at circuit 0.
+const INSTALLATION_FIELDS = new Set([
+  'address',
+  'postcode',
+  'town',
+  'county',
+  'client_address',
+  'client_postcode',
+  'client_town',
+  'client_county',
+  'client_name',
+  'ze',
+  'pfc',
+]);
+
 export class QuestionGate {
   constructor(sendCallback, sessionId = null) {
     this.sendCallback = sendCallback; // function(questions) -- sends to iOS via WS
@@ -128,6 +164,16 @@ export class QuestionGate {
     // the old code used `q.circuit || 'unknown'` which coerced 0 → 'unknown'
     // because 0 is falsy in JS. The explicit null/undefined check below
     // resolves that latent bug too: circuit 0 now builds key `field:0`.
+    //
+    // Wildcard is GATED by INSTALLATION_FIELDS. The first cut of this fix
+    // wildcard-resolved every null-circuit question; codex review flagged
+    // (correctly) that orphan questions like `{ field: 'zs', circuit: null }`
+    // — "I heard a Zs reading but don't know which circuit" — would be
+    // silently dropped the moment any `zs:<N>` reading arrived for a
+    // DIFFERENT circuit. Restricting the wildcard to fields whose readings
+    // genuinely land at a fixed circuit (installation fields → circuit 0)
+    // keeps the postcode fix intact without suppressing legitimate
+    // circuit-disambiguation prompts.
     const resolvedFieldNames = new Set();
     for (const key of resolvedFields) {
       const idx = key.indexOf(':');
@@ -137,8 +183,14 @@ export class QuestionGate {
     this.pendingQuestions = this.pendingQuestions.filter((q) => {
       const field = q.field || 'unknown';
       if (q.circuit === null || q.circuit === undefined) {
-        // Null-circuit question: resolve iff any reading for this field landed.
-        return !resolvedFieldNames.has(field);
+        // Null-circuit question on a known install field → wildcard resolve.
+        // Non-install fields fall through to strict match (will miss because
+        // readings always carry a numeric circuit), preserving orphan-question
+        // survival for circuit-disambiguation prompts.
+        if (INSTALLATION_FIELDS.has(field)) {
+          return !resolvedFieldNames.has(field);
+        }
+        return true; // keep: strict key would be `field:` which never matches
       }
       const key = `${field}:${q.circuit}`;
       return !resolvedFields.has(key);

@@ -130,14 +130,24 @@ describe('QuestionGate', () => {
     });
 
     test('should handle questions with undefined field/circuit', () => {
+      // A field-less question ("What was that?") now SURVIVES field-keyed
+      // resolution because there's no `field` to check against. Old code
+      // coerced `q.field || 'unknown'` and matched a synthetic
+      // `unknown:unknown` key — but no real reading ever carries that key,
+      // so the coincidence test was locking in undefined behaviour.
+      // Post-2026-04-20 wildcard-guard: field-less questions aren't in
+      // INSTALLATION_FIELDS and fall through to "keep" (correct — Sonnet
+      // asked something without a field hook, we can't auto-resolve it).
       gate.enqueue([{ question: 'What was that?' }, { field: 'zs', circuit: 1 }]);
 
       gate.resolveByFields(new Set(['unknown:unknown']));
 
       jest.advanceTimersByTime(2500);
 
-      // The question with undefined field/circuit matches 'unknown:unknown'
-      expect(sendCallback).toHaveBeenCalledWith([{ field: 'zs', circuit: 1 }]);
+      expect(sendCallback).toHaveBeenCalledWith([
+        { question: 'What was that?' },
+        { field: 'zs', circuit: 1 },
+      ]);
     });
 
     test('should not remove questions for non-matching fields', () => {
@@ -195,6 +205,40 @@ describe('QuestionGate', () => {
 
       jest.advanceTimersByTime(2500);
       expect(sendCallback).not.toHaveBeenCalled();
+    });
+
+    // Regression guard for codex review finding (2026-04-20). The first cut of
+    // the null-circuit fix wildcard-resolved EVERY null-circuit question,
+    // which meant an orphan reading prompt like `{field: zs, circuit: null}`
+    // — "I heard a Zs reading but don't know which circuit" — would be
+    // silently dropped by any `zs:<N>` reading on a different circuit.
+    // Wildcard must be gated to a whitelist of install-level fields only.
+    test('null-circuit orphan on circuit-specific field is NOT wildcard-resolved', () => {
+      gate.enqueue([{ type: 'unclear', field: 'zs', circuit: null, heard_value: '0.42' }]);
+
+      // An unrelated zs:1 reading arrives — the orphan is about a DIFFERENT
+      // reading whose circuit is still unknown. It must survive so the
+      // inspector is eventually asked to assign it.
+      gate.resolveByFields(new Set(['zs:1']));
+
+      jest.advanceTimersByTime(2500);
+      expect(sendCallback).toHaveBeenCalledTimes(1);
+      expect(sendCallback.mock.calls[0][0]).toEqual([
+        { type: 'unclear', field: 'zs', circuit: null, heard_value: '0.42' },
+      ]);
+    });
+
+    test('null-circuit orphan on circuit-specific field survives even same-circuit reading', () => {
+      // Stronger guarantee: even a `zs:1` reading does not clear a null-circuit
+      // zs orphan, because the orphan is semantically "which circuit?" and
+      // cannot be answered by a reading on any specific circuit — only by an
+      // explicit user reply.
+      gate.enqueue([{ type: 'unclear', field: 'r1_plus_r2', circuit: null }]);
+
+      gate.resolveByFields(new Set(['r1_plus_r2:3']));
+
+      jest.advanceTimersByTime(2500);
+      expect(sendCallback).toHaveBeenCalledTimes(1);
     });
   });
 
