@@ -58,9 +58,11 @@ describe('filterQuestionsAgainstFilledSlots', () => {
     // Guards the "half a postcode" case — Sonnet extracts a partial value
     // AND asks about it in the same turn. stateSnapshot already reflects
     // the extraction, but resolvedFieldsThisTurn tells us this is an
-    // in-turn judgement we must respect.
+    // in-turn judgement we must respect. Uses `unclear` (a refill-style
+    // type) so this test genuinely exercises the same-turn bypass; a
+    // non-refill type like `out_of_range` would pass through anyway.
     const snapshot = { circuits: { 0: { postcode: 'RG30' } } };
-    const questions = [{ field: 'postcode', circuit: 0, type: 'clarify' }];
+    const questions = [{ field: 'postcode', circuit: 0, type: 'unclear' }];
     const resolvedThisTurn = new Set(['postcode:0']);
     const result = filterQuestionsAgainstFilledSlots(
       questions,
@@ -175,11 +177,65 @@ describe('filterQuestionsAgainstFilledSlots', () => {
   // --- Codex round-2 blocker fixes: type whitelist ---
 
   describe('type whitelist (codex round-2 blocker)', () => {
-    test('REFILL_QUESTION_TYPES contains exactly the refill types', () => {
-      // Sanity check — if Sonnet's prompt grows a new refill-style type this
-      // test forces an explicit decision about whether to add it.
+    test('REFILL_QUESTION_TYPES matches canonical Sonnet refill vocabulary', () => {
+      // Canonical schema: config/prompts/sonnet_extraction_system.md line 562
+      //   orphaned | out_of_range | unclear | tt_confirmation
+      //   | circuit_disambiguation | observation_confirmation
+      //
+      // Refill-style subset (inspector is being asked to (re-)supply a
+      // value): `unclear`, `orphaned`, `circuit_disambiguation`. The rest are
+      // warnings / confirmations / observations and must survive the filter.
+      // If Sonnet's prompt grows a new refill type this test forces an
+      // explicit decision about whether to add it.
       const asArray = Array.from(__TEST_REFILL_QUESTION_TYPES).sort();
-      expect(asArray).toEqual(['clarify', 'orphaned', 'unclear']);
+      expect(asArray).toEqual(['circuit_disambiguation', 'orphaned', 'unclear']);
+    });
+
+    test('drops circuit_disambiguation refill when slot is filled', () => {
+      // Codex round-3 blocker: previous cut used 'clarify' which is not in
+      // the Sonnet schema. Real disambiguation type is `circuit_disambiguation`
+      // and it must be suppressed when the target slot is already populated.
+      const snapshot = { circuits: { 2: { zs: 1.23 } } };
+      const questions = [
+        { field: 'zs', circuit: 2, type: 'circuit_disambiguation', heard_value: '1.23' },
+      ];
+      const result = filterQuestionsAgainstFilledSlots(
+        questions,
+        snapshot,
+        new Set(),
+        sessionId
+      );
+      expect(result).toEqual([]);
+    });
+
+    test('circuit_disambiguation survives when slot is NOT filled', () => {
+      const snapshot = { circuits: { 3: { zs: 1.23 } } };
+      const questions = [
+        { field: 'zs', circuit: 2, type: 'circuit_disambiguation', heard_value: '0.64' },
+      ];
+      const result = filterQuestionsAgainstFilledSlots(
+        questions,
+        snapshot,
+        new Set(),
+        sessionId
+      );
+      expect(result).toHaveLength(1);
+    });
+
+    test('"clarify" is NOT in the refill set (not a Sonnet schema type)', () => {
+      // `clarify` was in the round-2 cut by mistake — not in the prompt
+      // schema. Left as a pass-through regression guard: if Sonnet ever
+      // surfaces it (e.g. via the iOS-reply annotation whitelist at
+      // sonnet-stream.js:1201), we don't silently drop the question.
+      const snapshot = { circuits: { 2: { r1_r2: 0.64 } } };
+      const questions = [{ field: 'r1_r2', circuit: 2, type: 'clarify' }];
+      const result = filterQuestionsAgainstFilledSlots(
+        questions,
+        snapshot,
+        new Set(),
+        sessionId
+      );
+      expect(result).toHaveLength(1);
     });
 
     test('keeps out_of_range warnings even when slot is filled', () => {

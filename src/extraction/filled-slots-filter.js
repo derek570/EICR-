@@ -22,15 +22,27 @@ import logger from '../logger.js';
  * the inspector to CONFIRM or CORRECT an existing value rather than to
  * supply a missing one, so they must survive.
  *
- * Membership mirrors the `question.type` vocabulary in the extraction
- * system prompt (config/prompts/sonnet_extraction_system.md) and the
- * ALLOWED_QUESTION_TYPES whitelist at sonnet-stream.js line 1201. Types
- * NOT in this set default to PASS-THROUGH (safer failure mode).
+ * Canonical question-type vocabulary lives in the Sonnet schema at
+ * config/prompts/sonnet_extraction_system.md line 562:
+ *   orphaned | out_of_range | unclear | tt_confirmation
+ *   | circuit_disambiguation | observation_confirmation
+ *
+ * Refill-style ⊂ canonical: only the types where the inspector is being
+ * asked to (re-)supply a value. `out_of_range` (warning), `tt_confirmation`
+ * (confirm supply), `observation_confirmation` (observation-related) are
+ * NOT refill-style and must survive the filter. Sonnet-stream.js line ~1201
+ * has a separate ALLOWED_QUESTION_TYPES whitelist for iOS reply annotation
+ * which is superset-by-design (includes `clarify` / `observation_code` /
+ * `observation_unclear` / `voice_command`) — if any of those surface as
+ * questions_for_user types they too fall through the default-pass-through
+ * path below.
+ * Types NOT in REFILL_QUESTION_TYPES default to PASS-THROUGH (safer
+ * failure mode: an extra spoken question is better than a silent drop).
  */
 const REFILL_QUESTION_TYPES = new Set([
   'unclear', // "I couldn't quite hear that — could you repeat?"
-  'clarify', // "You said 4 but I'm not sure which circuit — circuit 4?"
   'orphaned', // "I heard a reading but don't know which circuit it was for."
+  'circuit_disambiguation', // "Was that for circuit 2 or circuit 12?"
 ]);
 
 /**
