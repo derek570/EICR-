@@ -19,6 +19,10 @@ import { needsRefinement, refineObservation } from './observation-code-lookup.js
 import { sonnetSessionStore } from './sonnet-session-store.js';
 import * as storage from '../storage.js';
 import logger from '../logger.js';
+// Stage 5 — dialog-state filledSlots pre-flight filter. Extracted to its own
+// module so it can be unit-tested without loading storage.js. Docstring in
+// ./filled-slots-filter.js.
+import { filterQuestionsAgainstFilledSlots } from './filled-slots-filter.js';
 
 // Lazy-initialised OpenAI client for observation refinement (gpt-5-search-api).
 // Kept at module scope so repeat refinements reuse the same HTTPS pool.
@@ -917,14 +921,26 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         // mirrors how extraction worked before the install-field wildcard
         // landed in 5f8a236 / 93eb9a2. Cross-turn resolution still works
         // because the next turn's readings resolve this turn's pending Qs.
-        if (result.extracted_readings && result.extracted_readings.length > 0) {
-          const resolvedFields = new Set(
-            result.extracted_readings.map((r) => `${r.field}:${r.circuit}`)
-          );
-          questionGate.resolveByFields(resolvedFields);
+        const resolvedFieldsBatch =
+          result.extracted_readings && result.extracted_readings.length > 0
+            ? new Set(result.extracted_readings.map((r) => `${r.field}:${r.circuit}`))
+            : new Set();
+        if (resolvedFieldsBatch.size > 0) {
+          questionGate.resolveByFields(resolvedFieldsBatch);
         }
         if (result.questions_for_user && result.questions_for_user.length > 0) {
-          questionGate.enqueue(result.questions_for_user);
+          // Stage 5: drop questions whose slot is already filled in the
+          // session's stateSnapshot (see filterQuestionsAgainstFilledSlots
+          // docstring for the F21934D4 reproducer and same-turn protection).
+          const filteredBatch = filterQuestionsAgainstFilledSlots(
+            result.questions_for_user,
+            session.stateSnapshot,
+            resolvedFieldsBatch,
+            sessionId
+          );
+          if (filteredBatch.length > 0) {
+            questionGate.enqueue(filteredBatch);
+          }
         }
         // Drop pending observation_* / field-less unclear questions when Sonnet
         // has just extracted an observation — resolveByFields can't do this
@@ -1297,16 +1313,25 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
       // Sonnet's same-turn question about the value it just extracted
       // (the "RG30 postcode" bug). See the batch-flush callback above for the
       // full explanation — both call sites must use the same ordering.
-      if (result.extracted_readings && result.extracted_readings.length > 0) {
-        const resolvedFields = new Set(
-          result.extracted_readings.map((r) => `${r.field}:${r.circuit}`)
-        );
-        entry.questionGate.resolveByFields(resolvedFields);
+      const resolvedFieldsSync =
+        result.extracted_readings && result.extracted_readings.length > 0
+          ? new Set(result.extracted_readings.map((r) => `${r.field}:${r.circuit}`))
+          : new Set();
+      if (resolvedFieldsSync.size > 0) {
+        entry.questionGate.resolveByFields(resolvedFieldsSync);
       }
 
-      // Handle questions (gated)
+      // Handle questions (gated) — Stage 5 pre-flight filter drops refills.
       if (result.questions_for_user && result.questions_for_user.length > 0) {
-        entry.questionGate.enqueue(result.questions_for_user);
+        const filteredSync = filterQuestionsAgainstFilledSlots(
+          result.questions_for_user,
+          entry.session.stateSnapshot,
+          resolvedFieldsSync,
+          sessionId
+        );
+        if (filteredSync.length > 0) {
+          entry.questionGate.enqueue(filteredSync);
+        }
       }
 
       // Resolve observation-only questions when Sonnet extracted an observation.
@@ -1326,7 +1351,18 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
               sessionId,
               count: reviewResult.questions_for_user.length,
             });
-            entry.questionGate.enqueue(reviewResult.questions_for_user);
+            // Stage 5: orphan review runs on accumulated state — no this-turn
+            // readings, so pass an empty resolvedFields set. Any question
+            // targeting a slot that's already filled in stateSnapshot is dropped.
+            const filteredReview = filterQuestionsAgainstFilledSlots(
+              reviewResult.questions_for_user,
+              entry.session.stateSnapshot,
+              new Set(),
+              sessionId
+            );
+            if (filteredReview.length > 0) {
+              entry.questionGate.enqueue(filteredReview);
+            }
           }
         } catch (reviewErr) {
           logger.warn('Orphaned review failed', { sessionId, error: reviewErr.message });
