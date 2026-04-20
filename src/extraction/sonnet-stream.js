@@ -767,7 +767,7 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
             ws.send(JSON.stringify({ type: 'question', question_type: questionType, ...rest }));
           }
         }
-      });
+      }, sessionId);
       // Update job state if provided (iOS may have new data since last connect)
       if (jobState) {
         existing.session.updateJobState(jobState);
@@ -805,7 +805,7 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
           ws.send(JSON.stringify({ type: 'question', question_type: questionType, ...rest }));
         }
       }
-    });
+    }, sessionId);
 
     // Set up batch flush callback — when the batch timeout fires asynchronously,
     // this delivers the extraction result to iOS the same way handleTranscript does.
@@ -866,6 +866,18 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
             buffered: entryRef.pendingExtractions.length,
           });
         }
+        // Mirror the sync-path "Extraction result" log so batched turns are
+        // visible in CloudWatch Insights. Without this, the only way to see a
+        // batched extraction was the "Turn N cost" line, which doesn't carry
+        // question/reading counts — making triage of gate-resolution bugs
+        // (like the 14 Chichester postcode double-ask) much harder.
+        logger.info('Extraction result', {
+          sessionId,
+          path: 'onBatchResult',
+          readings: (result.extracted_readings || []).length,
+          questions: (result.questions_for_user || []).length,
+          observations: Array.isArray(result.observations) ? result.observations.length : 0,
+        });
         if (result.questions_for_user && result.questions_for_user.length > 0) {
           questionGate.enqueue(result.questions_for_user);
         }
@@ -1014,7 +1026,7 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
           ws.send(JSON.stringify({ type: 'question', question_type: questionType, ...rest }));
         }
       }
-    });
+    }, clientSessionId);
 
     // Flush any extraction results that were buffered while the socket was
     // disconnected — same path as handleSessionStart's reconnect branch.

@@ -41,17 +41,63 @@ const COMMON_STOP_WORDS = new Set([
 ]);
 
 export class QuestionGate {
-  constructor(sendCallback) {
+  constructor(sendCallback, sessionId = null) {
     this.sendCallback = sendCallback; // function(questions) -- sends to iOS via WS
     this.pendingQuestions = [];
     this.gateTimer = null;
     this.GATE_DELAY_MS = 2500;
+    this.sessionId = sessionId; // for log correlation
+    // De-dupe: signatures of questions flushed within the last DEDUPE_TTL_MS
+    // window. Prevents Sonnet re-asking the same question in quick succession
+    // when a multi-turn re-extraction lands after the first flush but before
+    // the user has finished replying.
+    this.recentlyFlushedSigs = new Map(); // sig -> expiryMs
+    this.DEDUPE_TTL_MS = 15000;
+  }
+
+  // Stable signature for "same question": type+field+circuit+heard_value.
+  // Used for intra-session de-dupe so a re-emitted identical question does
+  // not produce a second TTS ask within DEDUPE_TTL_MS.
+  _questionSig(q) {
+    const type = (q.type || '').toLowerCase();
+    const field = q.field || '';
+    const circuit = q.circuit === null || q.circuit === undefined ? '' : String(q.circuit);
+    const heard = (q.heard_value || '').toLowerCase().trim();
+    return `${type}|${field}|${circuit}|${heard}`;
+  }
+
+  _pruneRecentSigs() {
+    const now = Date.now();
+    for (const [sig, expiry] of this.recentlyFlushedSigs) {
+      if (expiry <= now) this.recentlyFlushedSigs.delete(sig);
+    }
   }
 
   // Sonnet returned questions -- enqueue and start/reset timer
   enqueue(questions) {
     if (!questions || questions.length === 0) return;
-    this.pendingQuestions.push(...questions);
+    this._pruneRecentSigs();
+    const existingSigs = new Set(this.pendingQuestions.map((q) => this._questionSig(q)));
+    const fresh = [];
+    let droppedAsDupes = 0;
+    for (const q of questions) {
+      const sig = this._questionSig(q);
+      if (existingSigs.has(sig) || this.recentlyFlushedSigs.has(sig)) {
+        droppedAsDupes += 1;
+        continue;
+      }
+      existingSigs.add(sig);
+      fresh.push(q);
+    }
+    if (droppedAsDupes > 0) {
+      logger.info('Questions de-duped', {
+        sessionId: this.sessionId,
+        dropped: droppedAsDupes,
+        pendingBefore: this.pendingQuestions.length,
+      });
+    }
+    if (fresh.length === 0) return;
+    this.pendingQuestions.push(...fresh);
     this.resetTimer();
   }
 
@@ -64,10 +110,37 @@ export class QuestionGate {
 
   // Sonnet resolved some pending questions in its latest response
   resolveByFields(resolvedFields) {
-    // resolvedFields: Set of "field:circuit" strings
+    // resolvedFields: Set of "field:circuit" strings (readings always carry a
+    // specific numeric circuit — installation fields use circuit 0, physical
+    // circuits use 1..N).
+    //
+    // A pending question with circuit === null/undefined is an install-field
+    // question (Sonnet's question schema permits null circuit and it often
+    // emits that for address/postcode/town/county). Under the old strict key
+    // match `postcode:unknown` never hit `postcode:0`, so the partial reading
+    // from turn N+1 failed to clear the pending question and the 2.5s gate
+    // fired a duplicate TTS ask. Fix: null-circuit questions resolve when ANY
+    // reading for the same field name lands — safe because install fields
+    // live at circuit 0 and circuit-specific questions always carry a numeric
+    // circuit on their emission path (validated in tests).
+    //
+    // A question with q.circuit === 0 is ALSO a real installation question;
+    // the old code used `q.circuit || 'unknown'` which coerced 0 → 'unknown'
+    // because 0 is falsy in JS. The explicit null/undefined check below
+    // resolves that latent bug too: circuit 0 now builds key `field:0`.
+    const resolvedFieldNames = new Set();
+    for (const key of resolvedFields) {
+      const idx = key.indexOf(':');
+      if (idx > 0) resolvedFieldNames.add(key.slice(0, idx));
+    }
     const before = this.pendingQuestions.length;
     this.pendingQuestions = this.pendingQuestions.filter((q) => {
-      const key = `${q.field || 'unknown'}:${q.circuit || 'unknown'}`;
+      const field = q.field || 'unknown';
+      if (q.circuit === null || q.circuit === undefined) {
+        // Null-circuit question: resolve iff any reading for this field landed.
+        return !resolvedFieldNames.has(field);
+      }
+      const key = `${field}:${q.circuit}`;
       return !resolvedFields.has(key);
     });
     if (this.pendingQuestions.length < before) {
@@ -196,7 +269,18 @@ export class QuestionGate {
   flush() {
     this.gateTimer = null;
     if (this.pendingQuestions.length > 0) {
-      logger.info('Flushing questions to iOS', { count: this.pendingQuestions.length });
+      // Record signatures in the recent-flush map so an identical question
+      // re-emitted within DEDUPE_TTL_MS is suppressed in enqueue(). TTL is
+      // short enough that a legitimately-repeated ask later in the session
+      // still fires.
+      const expiry = Date.now() + this.DEDUPE_TTL_MS;
+      for (const q of this.pendingQuestions) {
+        this.recentlyFlushedSigs.set(this._questionSig(q), expiry);
+      }
+      logger.info('Flushing questions to iOS', {
+        sessionId: this.sessionId,
+        count: this.pendingQuestions.length,
+      });
       this.sendCallback(this.pendingQuestions);
       this.pendingQuestions = [];
     }
@@ -207,5 +291,6 @@ export class QuestionGate {
     if (this.gateTimer) clearTimeout(this.gateTimer);
     this.pendingQuestions = [];
     this.gateTimer = null;
+    this.recentlyFlushedSigs.clear();
   }
 }
