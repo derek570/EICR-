@@ -1,0 +1,107 @@
+#!/usr/bin/env bash
+#
+# pre-push: refuse push when the remote has commits we don't have.
+#
+# Why this exists
+# ---------------
+# On 2026-04-10 two machines (Mac mini + laptop) independently committed
+# equivalent "Phase 1-4" fixes to main without pulling first. The branches
+# diverged for 10 days and accumulated content-duplicate commits with
+# different hashes (`7e958f1` vs `6c433b3`, `658d05d` vs `66b3552`, etc.).
+# Cleanup required a force-push after verifying tree equivalence.
+#
+# Git's default non-fast-forward rejection already catches this at push time,
+# but only after you've typed your password/touched your key, and the error
+# message is terse. This hook:
+#
+#   1. Fetches the remote FIRST, so stale remote-tracking refs can't fool
+#      the check (the 2026-04-10 incident was aggravated by local refs
+#      pointing at a remote state that was 7 commits out of date).
+#   2. Refuses the push with a clear, actionable message explaining how to
+#      recover (`git pull --rebase`, inspect first, etc.).
+#   3. Detects force-pushes (local is not a descendant of remote) and blocks
+#      them too — bypass with `--no-verify` when the force is intentional,
+#      which makes destructive operations explicit rather than accidental.
+#
+# Bypass
+# ------
+# Use `git push --no-verify` to skip this hook when you are deliberately
+# performing a force-push (e.g., after verifying remote commits are
+# content-duplicates of local work).
+#
+set -euo pipefail
+
+remote="$1"
+# url="$2"  # unused
+
+zero="0000000000000000000000000000000000000000"
+exit_code=0
+
+while read -r local_ref local_sha remote_ref remote_sha; do
+    # Skip branch deletions (local SHA all zeros).
+    if [ "$local_sha" = "$zero" ]; then
+        continue
+    fi
+
+    # Only check branch refs. Tags / notes are left alone.
+    case "$remote_ref" in
+        refs/heads/*) ;;
+        *) continue ;;
+    esac
+
+    remote_branch="${remote_ref#refs/heads/}"
+
+    # Fetch latest state for this specific branch (quiet, best-effort).
+    # If fetch fails (offline, auth, etc.) we fall through to the check
+    # using whatever ref we have — better than blocking the dev entirely.
+    git fetch --quiet "$remote" "$remote_branch" 2>/dev/null || true
+
+    actual_remote_sha=$(git rev-parse --quiet --verify "refs/remotes/${remote}/${remote_branch}" 2>/dev/null || echo "")
+
+    # New branch on the remote side — nothing to protect against.
+    if [ -z "$actual_remote_sha" ] || [ "$actual_remote_sha" = "$zero" ]; then
+        continue
+    fi
+
+    # If the remote tip is an ancestor of what we're about to push, the
+    # push is a clean fast-forward — allow it.
+    if git merge-base --is-ancestor "$actual_remote_sha" "$local_sha" 2>/dev/null; then
+        continue
+    fi
+
+    # Otherwise: remote has commits we don't have, OR this is a force-push
+    # that would discard remote work.
+    behind=$(git rev-list --count "${local_sha}..${actual_remote_sha}" 2>/dev/null || echo "?")
+
+    cat >&2 <<EOF
+
+================================================================
+  PRE-PUSH BLOCKED — origin/${remote_branch} has diverged from local
+================================================================
+
+  Remote tip:  ${actual_remote_sha}
+  Local tip:   ${local_sha}
+  Remote has ${behind} commit(s) your local branch does not.
+
+  Pushing now would either:
+    - be rejected by the server (non-fast-forward), OR
+    - destroy those ${behind} remote commit(s) if you are force-pushing.
+
+  Recover safely:
+
+    git fetch origin
+    git log HEAD..origin/${remote_branch}   # inspect remote commits
+    git pull --rebase                        # if you want the remote work
+
+  If you've verified the remote commits are duplicates / intentional
+  force-push is correct, bypass this hook with:
+
+    git push --no-verify   (then use --force-with-lease, not --force)
+
+================================================================
+
+EOF
+    exit_code=1
+done
+
+exit "$exit_code"
