@@ -32,7 +32,12 @@ const DEEPGRAM_CONFIG = {
   channels: 1,
   interim_results: true,
   endpointing: 300,
-  utterance_end_ms: 2000,
+  // [TTS-TIMING] Codex-review fix (HIGH): keep in sync with the iOS-direct
+  // Deepgram config (DeepgramService.swift). Previously 2000ms here — out of
+  // step with the iOS path after the 2026-04-20 TTS-timing fix. Any web/legacy
+  // consumer of ws-recording would have carried the old latency budget and
+  // could reintroduce the TTS-over-speech race when routed through this proxy.
+  utterance_end_ms: 1200,
   vad_events: true,
 };
 
