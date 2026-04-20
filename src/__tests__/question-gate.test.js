@@ -30,7 +30,7 @@ describe('QuestionGate', () => {
       const questions = [{ field: 'zs', circuit: 1, question: 'Which circuit?' }];
       gate.enqueue(questions);
 
-      jest.advanceTimersByTime(2500);
+      jest.advanceTimersByTime(1500);
 
       expect(sendCallback).toHaveBeenCalledTimes(1);
       expect(sendCallback).toHaveBeenCalledWith(questions);
@@ -59,7 +59,7 @@ describe('QuestionGate', () => {
       jest.advanceTimersByTime(500);
       gate.enqueue([{ field: 'r1_plus_r2', circuit: 2 }]);
 
-      jest.advanceTimersByTime(2500);
+      jest.advanceTimersByTime(1500);
 
       expect(sendCallback).toHaveBeenCalledTimes(1);
       expect(sendCallback).toHaveBeenCalledWith([
@@ -70,7 +70,7 @@ describe('QuestionGate', () => {
 
     test('should clear pending questions after flush', () => {
       gate.enqueue([{ field: 'zs', circuit: 1 }]);
-      jest.advanceTimersByTime(2500);
+      jest.advanceTimersByTime(1500);
       expect(sendCallback).toHaveBeenCalledTimes(1);
 
       // After flush, no more sends even if we wait
@@ -83,18 +83,18 @@ describe('QuestionGate', () => {
     test('should reset timer when questions are pending', () => {
       gate.enqueue([{ field: 'zs', circuit: 1 }]);
 
-      // Advance 1.5s (not yet flushed)
-      jest.advanceTimersByTime(1500);
+      // Advance 1s (not yet flushed — gate is 1.5s)
+      jest.advanceTimersByTime(1000);
       expect(sendCallback).not.toHaveBeenCalled();
 
-      // New utterance resets the 2.5s timer
+      // New utterance resets the 1.5s timer
       gate.onNewUtterance();
 
-      // 2s after reset — still not flushed
-      jest.advanceTimersByTime(2000);
+      // 1s after reset — still not flushed
+      jest.advanceTimersByTime(1000);
       expect(sendCallback).not.toHaveBeenCalled();
 
-      // 2.5s total after reset — now flushed
+      // 1.5s total after reset — now flushed
       jest.advanceTimersByTime(500);
       expect(sendCallback).toHaveBeenCalledTimes(1);
     });
@@ -115,7 +115,7 @@ describe('QuestionGate', () => {
 
       gate.resolveByFields(new Set(['zs:1']));
 
-      jest.advanceTimersByTime(2500);
+      jest.advanceTimersByTime(1500);
 
       expect(sendCallback).toHaveBeenCalledWith([{ field: 'r1_plus_r2', circuit: 2 }]);
     });
@@ -142,7 +142,7 @@ describe('QuestionGate', () => {
 
       gate.resolveByFields(new Set(['unknown:unknown']));
 
-      jest.advanceTimersByTime(2500);
+      jest.advanceTimersByTime(1500);
 
       expect(sendCallback).toHaveBeenCalledWith([
         { question: 'What was that?' },
@@ -155,7 +155,7 @@ describe('QuestionGate', () => {
 
       gate.resolveByFields(new Set(['r1_plus_r2:1']));
 
-      jest.advanceTimersByTime(2500);
+      jest.advanceTimersByTime(1500);
 
       expect(sendCallback).toHaveBeenCalledWith([{ field: 'zs', circuit: 1 }]);
     });
@@ -170,7 +170,7 @@ describe('QuestionGate', () => {
 
       gate.resolveByFields(new Set(['postcode:0']));
 
-      jest.advanceTimersByTime(2500);
+      jest.advanceTimersByTime(1500);
       expect(sendCallback).not.toHaveBeenCalled();
     });
 
@@ -179,7 +179,7 @@ describe('QuestionGate', () => {
 
       gate.resolveByFields(new Set(['postcode:0']));
 
-      jest.advanceTimersByTime(2500);
+      jest.advanceTimersByTime(1500);
       expect(sendCallback).not.toHaveBeenCalled();
     });
 
@@ -191,7 +191,7 @@ describe('QuestionGate', () => {
 
       gate.resolveByFields(new Set(['zs:2']));
 
-      jest.advanceTimersByTime(2500);
+      jest.advanceTimersByTime(1500);
       expect(sendCallback).toHaveBeenCalledWith([{ field: 'zs', circuit: 1 }]);
     });
 
@@ -203,7 +203,7 @@ describe('QuestionGate', () => {
 
       gate.resolveByFields(new Set(['address:0']));
 
-      jest.advanceTimersByTime(2500);
+      jest.advanceTimersByTime(1500);
       expect(sendCallback).not.toHaveBeenCalled();
     });
 
@@ -221,7 +221,7 @@ describe('QuestionGate', () => {
       // inspector is eventually asked to assign it.
       gate.resolveByFields(new Set(['zs:1']));
 
-      jest.advanceTimersByTime(2500);
+      jest.advanceTimersByTime(1500);
       expect(sendCallback).toHaveBeenCalledTimes(1);
       expect(sendCallback.mock.calls[0][0]).toEqual([
         { type: 'unclear', field: 'zs', circuit: null, heard_value: '0.42' },
@@ -237,7 +237,7 @@ describe('QuestionGate', () => {
 
       gate.resolveByFields(new Set(['r1_plus_r2:3']));
 
-      jest.advanceTimersByTime(2500);
+      jest.advanceTimersByTime(1500);
       expect(sendCallback).toHaveBeenCalledTimes(1);
     });
 
@@ -269,7 +269,7 @@ describe('QuestionGate', () => {
         },
       ]);
 
-      jest.advanceTimersByTime(2500);
+      jest.advanceTimersByTime(1500);
 
       expect(sendCallback).toHaveBeenCalledTimes(1);
       expect(sendCallback.mock.calls[0][0]).toEqual([
@@ -300,7 +300,7 @@ describe('QuestionGate', () => {
       ]);
       gate.resolveByFields(new Set(['postcode:0']));
 
-      jest.advanceTimersByTime(2500);
+      jest.advanceTimersByTime(1500);
       expect(sendCallback).not.toHaveBeenCalled();
     });
   });
@@ -311,7 +311,7 @@ describe('QuestionGate', () => {
       gate.enqueue([q]);
       gate.enqueue([{ ...q }]); // identical signature
 
-      jest.advanceTimersByTime(2500);
+      jest.advanceTimersByTime(1500);
       expect(sendCallback).toHaveBeenCalledTimes(1);
       expect(sendCallback.mock.calls[0][0]).toHaveLength(1);
     });
@@ -319,13 +319,13 @@ describe('QuestionGate', () => {
     test('suppresses identical question re-enqueued shortly after flush', () => {
       const q = { type: 'unclear', field: 'postcode', heard_value: 'RG' };
       gate.enqueue([q]);
-      jest.advanceTimersByTime(2500);
+      jest.advanceTimersByTime(1500);
       expect(sendCallback).toHaveBeenCalledTimes(1);
 
       // Sonnet re-emits the same question 3s later (turn N+1)
       jest.advanceTimersByTime(3000);
       gate.enqueue([{ ...q }]);
-      jest.advanceTimersByTime(2500);
+      jest.advanceTimersByTime(1500);
       // Should NOT have fired a second time — dupe suppressed
       expect(sendCallback).toHaveBeenCalledTimes(1);
     });
@@ -333,21 +333,21 @@ describe('QuestionGate', () => {
     test('allows re-ask after DEDUPE_TTL_MS window expires', () => {
       const q = { type: 'unclear', field: 'postcode', heard_value: 'RG' };
       gate.enqueue([q]);
-      jest.advanceTimersByTime(2500);
+      jest.advanceTimersByTime(1500);
       expect(sendCallback).toHaveBeenCalledTimes(1);
 
       // Jump past the 15s TTL — a legitimately repeated ask should fire
       jest.advanceTimersByTime(16000);
       gate.enqueue([{ ...q }]);
-      jest.advanceTimersByTime(2500);
+      jest.advanceTimersByTime(1500);
       expect(sendCallback).toHaveBeenCalledTimes(2);
     });
 
     test('different heard_value is treated as a distinct question', () => {
       gate.enqueue([{ type: 'unclear', field: 'postcode', heard_value: 'RG' }]);
-      jest.advanceTimersByTime(2500);
+      jest.advanceTimersByTime(1500);
       gate.enqueue([{ type: 'unclear', field: 'postcode', heard_value: 'SW1' }]);
-      jest.advanceTimersByTime(2500);
+      jest.advanceTimersByTime(1500);
       expect(sendCallback).toHaveBeenCalledTimes(2);
     });
   });

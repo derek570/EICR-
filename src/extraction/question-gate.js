@@ -1,6 +1,14 @@
 // question-gate.js
-// Holds Sonnet questions for 2.5 seconds before sending to iOS,
+// Holds Sonnet questions for 1.5 seconds before sending to iOS,
 // allowing incomplete readings to be completed without interruption.
+// Shortened 2500 -> 1500 (2026-04-20, TTS-timing fix): this delay is on the
+// critical path for every question, stacking on top of Deepgram
+// utterance_end_ms (1200ms) + Sonnet turn (~3-5s) + ElevenLabs proxy
+// round-trip (~1-2s). At 2500ms the end-to-end user-stops -> TTS-plays
+// gap hit 8-12s, long enough that inspectors resumed dictating before
+// the question arrived and the `in_response_to` anchor mis-attributed
+// replies. 1500ms still covers the common "...pause... 4XW" continuation
+// pattern but cuts a full second off every turn.
 
 import logger from '../logger.js';
 
@@ -81,7 +89,7 @@ export class QuestionGate {
     this.sendCallback = sendCallback; // function(questions) -- sends to iOS via WS
     this.pendingQuestions = [];
     this.gateTimer = null;
-    this.GATE_DELAY_MS = 2500;
+    this.GATE_DELAY_MS = 1500;
     this.sessionId = sessionId; // for log correlation
     // De-dupe: signatures of questions flushed within the last DEDUPE_TTL_MS
     // window. Prevents Sonnet re-asking the same question in quick succession
