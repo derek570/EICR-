@@ -3,7 +3,10 @@
 // pre-flight filter in sonnet-stream.js. Exercises the F21934D4 reproducer
 // and the guardrails that keep same-turn and orphan questions alive.
 
-import { filterQuestionsAgainstFilledSlots } from '../extraction/filled-slots-filter.js';
+import {
+  filterQuestionsAgainstFilledSlots,
+  __TEST_REFILL_QUESTION_TYPES,
+} from '../extraction/filled-slots-filter.js';
 
 describe('filterQuestionsAgainstFilledSlots', () => {
   const sessionId = 'test-session';
@@ -167,5 +170,129 @@ describe('filterQuestionsAgainstFilledSlots', () => {
     expect(
       filterQuestionsAgainstFilledSlots(questions, snapshot, ['r1_r2:2'], sessionId)
     ).toEqual([]);
+  });
+
+  // --- Codex round-2 blocker fixes: type whitelist ---
+
+  describe('type whitelist (codex round-2 blocker)', () => {
+    test('REFILL_QUESTION_TYPES contains exactly the refill types', () => {
+      // Sanity check — if Sonnet's prompt grows a new refill-style type this
+      // test forces an explicit decision about whether to add it.
+      const asArray = Array.from(__TEST_REFILL_QUESTION_TYPES).sort();
+      expect(asArray).toEqual(['clarify', 'orphaned', 'unclear']);
+    });
+
+    test('keeps out_of_range warnings even when slot is filled', () => {
+      // out_of_range is the canonical "warning about an existing value" type.
+      // Captured Zs = 9999 ohms would trigger out_of_range; the warning must
+      // reach the inspector even though the slot is non-empty.
+      const snapshot = { circuits: { 2: { zs: 9999 } } };
+      const questions = [{ field: 'zs', circuit: 2, type: 'out_of_range', heard_value: '9999' }];
+      const result = filterQuestionsAgainstFilledSlots(
+        questions,
+        snapshot,
+        new Set(),
+        sessionId
+      );
+      expect(result).toHaveLength(1);
+      expect(result[0].type).toBe('out_of_range');
+    });
+
+    test('keeps tt_confirmation even when slot is filled', () => {
+      const snapshot = { circuits: { 0: { earthing_arrangement: 'TT' } } };
+      const questions = [
+        { field: 'earthing_arrangement', circuit: 0, type: 'tt_confirmation' },
+      ];
+      const result = filterQuestionsAgainstFilledSlots(
+        questions,
+        snapshot,
+        new Set(),
+        sessionId
+      );
+      expect(result).toHaveLength(1);
+    });
+
+    test('keeps observation_* questions even when slot is filled', () => {
+      // Observation-related questions normally carry field=null so fall
+      // through the earlier null-circuit guard. This covers the paranoid
+      // case where Sonnet emits them with a concrete field+circuit.
+      const snapshot = { circuits: { 2: { polarity: 'confirmed' } } };
+      const questions = [
+        { field: 'polarity', circuit: 2, type: 'observation_confirmation' },
+      ];
+      const result = filterQuestionsAgainstFilledSlots(
+        questions,
+        snapshot,
+        new Set(),
+        sessionId
+      );
+      expect(result).toHaveLength(1);
+    });
+
+    test('keeps voice_command even when slot is filled', () => {
+      const snapshot = { circuits: { 2: { zs: 1.23 } } };
+      const questions = [{ field: 'zs', circuit: 2, type: 'voice_command' }];
+      const result = filterQuestionsAgainstFilledSlots(
+        questions,
+        snapshot,
+        new Set(),
+        sessionId
+      );
+      expect(result).toHaveLength(1);
+    });
+
+    test('keeps unknown/novel types (safer default for prompt drift)', () => {
+      // If Sonnet's prompt grows a new question type we haven't seen yet,
+      // pass it through rather than silently dropping warnings.
+      const snapshot = { circuits: { 2: { r1_r2: 0.64 } } };
+      const questions = [{ field: 'r1_r2', circuit: 2, type: 'range_warning_v2' }];
+      const result = filterQuestionsAgainstFilledSlots(
+        questions,
+        snapshot,
+        new Set(),
+        sessionId
+      );
+      expect(result).toHaveLength(1);
+    });
+
+    test('drops orphaned refill question when slot is filled', () => {
+      const snapshot = { circuits: { 2: { r1_r2: 0.64 } } };
+      const questions = [{ field: 'r1_r2', circuit: 2, type: 'orphaned' }];
+      const result = filterQuestionsAgainstFilledSlots(
+        questions,
+        snapshot,
+        new Set(),
+        sessionId
+      );
+      expect(result).toEqual([]);
+    });
+
+    test('type matching is case-insensitive', () => {
+      // Defensive — Sonnet's prompt uses lower-case, but the value comes
+      // from JSON so tolerate capitalisation drift.
+      const snapshot = { circuits: { 2: { r1_r2: 0.64 } } };
+      const questions = [{ field: 'r1_r2', circuit: 2, type: 'UNCLEAR' }];
+      const result = filterQuestionsAgainstFilledSlots(
+        questions,
+        snapshot,
+        new Set(),
+        sessionId
+      );
+      expect(result).toEqual([]);
+    });
+
+    test('missing type → pass through (treat as warning, not refill)', () => {
+      // If Sonnet omits `type` entirely, err on the side of asking the
+      // inspector rather than suppressing.
+      const snapshot = { circuits: { 2: { r1_r2: 0.64 } } };
+      const questions = [{ field: 'r1_r2', circuit: 2 }];
+      const result = filterQuestionsAgainstFilledSlots(
+        questions,
+        snapshot,
+        new Set(),
+        sessionId
+      );
+      expect(result).toHaveLength(1);
+    });
   });
 });

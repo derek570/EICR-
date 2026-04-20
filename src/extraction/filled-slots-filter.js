@@ -10,9 +10,34 @@
 import logger from '../logger.js';
 
 /**
+ * Sonnet question types that are "refill-style" — i.e. the model is asking
+ * the inspector to (re-)supply a value. Only these are safe to suppress when
+ * the (field, circuit) slot is already populated.
+ *
+ * Codex review of the first cut (2026-04-20) flagged that a blanket drop on
+ * `field+circuit` filled would also swallow legitimate WARNING prompts about
+ * captured values — notably `out_of_range` (Sonnet flagging a suspicious
+ * reading) and observation-related questions (which already pass through
+ * because they carry field=null, but belt-and-braces). Those prompts ask
+ * the inspector to CONFIRM or CORRECT an existing value rather than to
+ * supply a missing one, so they must survive.
+ *
+ * Membership mirrors the `question.type` vocabulary in the extraction
+ * system prompt (config/prompts/sonnet_extraction_system.md) and the
+ * ALLOWED_QUESTION_TYPES whitelist at sonnet-stream.js line 1201. Types
+ * NOT in this set default to PASS-THROUGH (safer failure mode).
+ */
+const REFILL_QUESTION_TYPES = new Set([
+  'unclear', // "I couldn't quite hear that — could you repeat?"
+  'clarify', // "You said 4 but I'm not sure which circuit — circuit 4?"
+  'orphaned', // "I heard a reading but don't know which circuit it was for."
+]);
+
+/**
  * Drops questions whose (field, circuit) slot is already populated in the
- * session's stateSnapshot. Protects against Sonnet re-asking for values it
- * has already captured once the earlier turn falls out of the sliding window.
+ * session's stateSnapshot AND whose `type` is a refill-style re-ask. Protects
+ * against Sonnet re-asking for values it has already captured once the earlier
+ * turn falls out of the sliding window.
  *
  * Reproducer: session F21934D4, "R1 plus R2 for circuit 2 is 0.64 ohms"
  * extracted on turn N. On a later turn the sliding window has dropped the
@@ -24,6 +49,10 @@ import logger from '../logger.js';
  *   - Only filter questions with BOTH a concrete field and a numeric circuit.
  *     null-circuit questions are orphan-disambiguation / install-field wildcards
  *     that QuestionGate's existing install-field logic already handles safely.
+ *   - Only filter questions whose `type` is in REFILL_QUESTION_TYPES.
+ *     `out_of_range` warnings, `tt_confirmation` prompts, voice commands, and
+ *     observation-related types explicitly survive — they address a captured
+ *     value rather than asking the inspector to re-supply it.
  *   - Never drop a question whose slot was ALSO extracted THIS turn
  *     (`resolvedFieldsThisTurn`). Same-turn questions are Sonnet's in-turn
  *     judgement that the extracted value is incomplete — e.g. the "half a
@@ -60,8 +89,17 @@ export function filterQuestionsAgainstFilledSlots(
   for (const q of questions) {
     const field = q && q.field;
     const circuit = q && q.circuit;
+    const qType = q && typeof q.type === 'string' ? q.type.toLowerCase() : '';
     // Orphan/install-field questions — QuestionGate handles these.
     if (!field || circuit === null || circuit === undefined) {
+      kept.push(q);
+      continue;
+    }
+    // Only suppress refill-style types. Warnings (`out_of_range`), confirmations
+    // (`tt_confirmation`), voice commands, and observation-related types must
+    // survive because they address an already-captured value rather than asking
+    // the inspector to re-supply it. Unknown types default to pass-through.
+    if (!REFILL_QUESTION_TYPES.has(qType)) {
       kept.push(q);
       continue;
     }
@@ -82,7 +120,7 @@ export function filterQuestionsAgainstFilledSlots(
         field,
         circuit,
         filledValue: String(circuits[circuit][field]).slice(0, 40),
-        qType: (q.type || 'unknown').slice(0, 40),
+        qType: qType.slice(0, 40),
       });
       continue;
     }
@@ -90,3 +128,7 @@ export function filterQuestionsAgainstFilledSlots(
   }
   return kept;
 }
+
+// Exported for test coverage of the type whitelist — the set is small and
+// stable so duplicating it in tests would just drift out of sync.
+export const __TEST_REFILL_QUESTION_TYPES = REFILL_QUESTION_TYPES;
