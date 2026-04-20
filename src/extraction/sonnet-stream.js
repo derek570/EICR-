@@ -898,14 +898,33 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
           questions: (result.questions_for_user || []).length,
           observations: Array.isArray(result.observations) ? result.observations.length : 0,
         });
-        if (result.questions_for_user && result.questions_for_user.length > 0) {
-          questionGate.enqueue(result.questions_for_user);
-        }
+        // Order matters: resolve BEFORE enqueue.
+        //
+        // resolveByFields clears any PRIOR-turn pending questions whose field
+        // matches a reading we extracted this turn. enqueue adds THIS turn's
+        // new questions to the gate.
+        //
+        // If we enqueued first and then resolved, Sonnet's same-turn question
+        // about a reading it just extracted (e.g. "that's only half a postcode,
+        // what's the rest?" emitted alongside an extracted_readings entry for
+        // postcode) would be immediately cancelled by the install-field
+        // wildcard in resolveByFields. That's exactly what happened with the
+        // partial "RG30" postcode in session 6C475A3F — Sonnet flagged it and
+        // asked, but the gate dropped the question in the same millisecond.
+        //
+        // By resolving first, same-turn questions survive: Sonnet's in-turn
+        // judgement is trusted across all fields (not just postcode), which
+        // mirrors how extraction worked before the install-field wildcard
+        // landed in 5f8a236 / 93eb9a2. Cross-turn resolution still works
+        // because the next turn's readings resolve this turn's pending Qs.
         if (result.extracted_readings && result.extracted_readings.length > 0) {
           const resolvedFields = new Set(
             result.extracted_readings.map((r) => `${r.field}:${r.circuit}`)
           );
           questionGate.resolveByFields(resolvedFields);
+        }
+        if (result.questions_for_user && result.questions_for_user.length > 0) {
+          questionGate.enqueue(result.questions_for_user);
         }
         // Drop pending observation_* / field-less unclear questions when Sonnet
         // has just extracted an observation — resolveByFields can't do this
@@ -1272,17 +1291,22 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         });
       }
 
-      // Handle questions (gated)
-      if (result.questions_for_user && result.questions_for_user.length > 0) {
-        entry.questionGate.enqueue(result.questions_for_user);
-      }
-
-      // Resolve any pending questions based on newly extracted readings
+      // Resolve prior-turn pending questions against this-turn readings FIRST,
+      // then enqueue this turn's new questions. Swapping the order (enqueue
+      // first) would let the install-field wildcard in resolveByFields cancel
+      // Sonnet's same-turn question about the value it just extracted
+      // (the "RG30 postcode" bug). See the batch-flush callback above for the
+      // full explanation — both call sites must use the same ordering.
       if (result.extracted_readings && result.extracted_readings.length > 0) {
         const resolvedFields = new Set(
           result.extracted_readings.map((r) => `${r.field}:${r.circuit}`)
         );
         entry.questionGate.resolveByFields(resolvedFields);
+      }
+
+      // Handle questions (gated)
+      if (result.questions_for_user && result.questions_for_user.length > 0) {
+        entry.questionGate.enqueue(result.questions_for_user);
       }
 
       // Resolve observation-only questions when Sonnet extracted an observation.

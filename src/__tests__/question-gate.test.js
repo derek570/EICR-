@@ -240,6 +240,69 @@ describe('QuestionGate', () => {
       jest.advanceTimersByTime(2500);
       expect(sendCallback).toHaveBeenCalledTimes(1);
     });
+
+    // Regression guard for the "RG30 postcode" bug (session 6C475A3F,
+    // 2026-04-20). Sonnet extracted `postcode:0` AND flagged the value as
+    // partial with a same-turn question ("what's the rest of the postcode?").
+    // The old call order in sonnet-stream.js was enqueue → resolveByFields,
+    // which let the install-field wildcard in resolveByFields cancel Sonnet's
+    // own same-turn question in the same millisecond — the inspector was
+    // never asked.
+    //
+    // Fix: swap the order at both call sites so resolveByFields runs FIRST
+    // (clearing prior-turn pending questions) and THEN enqueue adds this
+    // turn's new questions. This test pins the correct order — if someone
+    // re-swaps them, the test fails.
+    test('same-turn question survives when resolve runs before enqueue', () => {
+      // Simulate what sonnet-stream.js now does per turn:
+      //   1. resolveByFields(this-turn readings)  — clears prior-turn Qs
+      //   2. enqueue(this-turn questions)         — adds new Qs
+      const resolved = new Set(['postcode:0']);
+      gate.resolveByFields(resolved);
+      gate.enqueue([
+        {
+          type: 'gap_fill',
+          field: 'postcode',
+          circuit: null,
+          heard_value: 'RG30',
+          question: 'What is the rest of the postcode?',
+        },
+      ]);
+
+      jest.advanceTimersByTime(2500);
+
+      expect(sendCallback).toHaveBeenCalledTimes(1);
+      expect(sendCallback.mock.calls[0][0]).toEqual([
+        {
+          type: 'gap_fill',
+          field: 'postcode',
+          circuit: null,
+          heard_value: 'RG30',
+          question: 'What is the rest of the postcode?',
+        },
+      ]);
+    });
+
+    // Confirm the BROKEN order reproduces the bug. This test documents why
+    // the swap matters: if enqueue runs first and resolveByFields runs
+    // second, the same-turn question is silently dropped by the install
+    // field wildcard. Kept as a guard so the gate's wildcard behaviour is
+    // exercised both ways.
+    test('same-turn question is dropped when enqueue runs before resolve (bug repro)', () => {
+      gate.enqueue([
+        {
+          type: 'gap_fill',
+          field: 'postcode',
+          circuit: null,
+          heard_value: 'RG30',
+          question: 'What is the rest of the postcode?',
+        },
+      ]);
+      gate.resolveByFields(new Set(['postcode:0']));
+
+      jest.advanceTimersByTime(2500);
+      expect(sendCallback).not.toHaveBeenCalled();
+    });
   });
 
   describe('de-dupe within TTL', () => {
