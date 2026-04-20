@@ -631,13 +631,26 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
           //   - inflight_anchored: type, questionPreview, queueDelayMs, queueDepth
           //   - inflight_anchor_missed: alertType, alertMessagePreview, pendingCount
           case 'client_diagnostic': {
-            const { type: _ignored, category, timestamp, ...payload } = msg;
+            // Strip framing fields AND any server-authoritative keys the client
+            // should never be able to set. Spreading `...payload` LAST would let
+            // a crafted client message override userId / sessionId in CloudWatch
+            // — not a current risk (iOS always writes them correctly) but an
+            // audit-integrity hazard, so drop them from the payload before
+            // merging.
+            const {
+              type: _ignored,
+              category,
+              timestamp,
+              userId: _clientUserId,
+              sessionId: _clientSessionId,
+              ...payload
+            } = msg;
             logger.info('Client diagnostic', {
-              userId,
-              sessionId: currentSessionId,
+              ...payload,
               category: category || 'unspecified',
               timestamp,
-              ...payload,
+              userId,
+              sessionId: currentSessionId,
             });
             break;
           }
