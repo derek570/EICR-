@@ -624,16 +624,23 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
           // Used by iOS to surface conditions that the multipart analytics upload
           // can't report (because the upload itself is failing). Logged at info so
           // CloudWatch Insights can query on category/payload.
-          case 'client_diagnostic':
+          //
+          // Categories currently in use:
+          //   - analytics_backlog: pendingAnalyticsUploads, lastAnalyticsError
+          //   - question_enqueued: type, field, circuit, questionPreview, queueDepth, source
+          //   - inflight_anchored: type, questionPreview, queueDelayMs, queueDepth
+          //   - inflight_anchor_missed: alertType, alertMessagePreview, pendingCount
+          case 'client_diagnostic': {
+            const { type: _ignored, category, timestamp, ...payload } = msg;
             logger.info('Client diagnostic', {
               userId,
               sessionId: currentSessionId,
-              category: msg.category || 'unspecified',
-              timestamp: msg.timestamp,
-              pendingAnalyticsUploads: msg.pendingAnalyticsUploads,
-              lastAnalyticsError: msg.lastAnalyticsError,
+              category: category || 'unspecified',
+              timestamp,
+              ...payload,
             });
             break;
+          }
 
           case 'correction':
             await handleCorrection(ws, currentSessionId, msg);
