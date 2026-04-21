@@ -156,10 +156,16 @@ export const EIC_SYSTEM_PROMPT = fssync.readFileSync(
 );
 
 export class EICRExtractionSession {
-  constructor(apiKey, sessionId, certType = 'eicr') {
+  constructor(apiKey, sessionId, certType = 'eicr', options = {}) {
     this.client = new Anthropic({ apiKey });
     this.sessionId = sessionId;
     this.certType = certType; // 'eicr' or 'eic'
+
+    // Stage 6 env-flag plumbing (STR-01). Resolved ONCE at construction time
+    // so tests and prod share the same latching behaviour (Research §Pitfall
+    // 4 — env mutation post-construction must NOT drift the mode). Plan 06
+    // consumes this on the shadow harness; Phase 1 only exposes it.
+    this.toolCallsMode = this._resolveToolCallsMode(options.toolCallsMode);
     this.systemPrompt = certType === 'eic' ? EIC_SYSTEM_PROMPT : EICR_SYSTEM_PROMPT;
     this.conversationHistory = []; // Array of { role, content } messages
     this.costTracker = new CostTracker();
@@ -205,6 +211,23 @@ export class EICRExtractionSession {
 
     // Track previous snapshot text to avoid costly cache writes when snapshot changes
     this._lastSnapshotText = null;
+  }
+
+  /**
+   * Stage 6 (STR-01): resolve the SONNET_TOOL_CALLS mode. Called ONCE from the
+   * constructor — do not invoke at runtime (Research §Pitfall 4). Accepts an
+   * explicit override (constructor options) that supersedes the env var; both
+   * channels share the same validation + fallback behaviour.
+   */
+  _resolveToolCallsMode(override) {
+    const raw = override ?? process.env.SONNET_TOOL_CALLS ?? 'off';
+    if (raw === 'off' || raw === 'shadow' || raw === 'live') return raw;
+    logger.warn('stage6.invalid_tool_calls_mode', {
+      value: raw,
+      fallback: 'off',
+      sessionId: this.sessionId,
+    });
+    return 'off';
   }
 
   // Extract text from a message content (handles both string and content block array formats)
