@@ -1,0 +1,15 @@
+{
+  "$comment": "Single source of truth for Stage 6 agentic-extraction tool enums. Values are taken verbatim from .planning-stage6-agentic/REQUIREMENTS.md STS-01..07. stage6-tool-schemas.js imports this file at module load and MUST NOT hand-roll any of these arrays.",
+  "clear_reading_reason": ["user_correction", "misheard", "wrong_circuit"],
+  "circuit_phase": ["L1", "L2", "L3", "single"],
+  "observation_code": ["C1", "C2", "C3", "FI"],
+  "delete_observation_reason": ["user_correction", "duplicate", "misheard"],
+  "ask_user_reason": [
+    "out_of_range_circuit",
+    "ambiguous_circuit",
+    "contradiction",
+    "observation_confirmation",
+    "missing_context"
+  ],
+  "expected_answer_shape": ["yes_no", "number", "free_text", "circuit_ref"]
+}
