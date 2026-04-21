@@ -18,7 +18,7 @@ import {
   NOOP_DISPATCHER,
   LOOP_CAP,
 } from '../extraction/stage6-tool-loop.js';
-import { mockClient } from './helpers/mockStream.js';
+import { mockClient, mockStream } from './helpers/mockStream.js';
 import { TOOL_SCHEMAS } from '../extraction/stage6-tool-schemas.js';
 
 // ---------------------------------------------------------------------------
@@ -470,6 +470,146 @@ describe('stage6-tool-loop', () => {
     // Real tool_use dispatched, orphan did NOT trigger a dispatch.
     expect(dispatcher).toHaveBeenCalledTimes(1);
     expect(dispatcher.mock.calls[0][0].tool_call_id).toBe('toolu_real');
+  });
+
+  test('padding: assistant tool_use id with no matching assembler record → synthetic internal_no_result tool_result (Codex STG MAJOR)', async () => {
+    // Pathological: assistant message emits tool_use block toolu_real, but
+    // the assembler's records also contains an orphan_delta that we skip
+    // AND (hypothetically) the real record is dropped. We simulate the
+    // "every record skipped" edge by constructing a round whose ONLY
+    // record-producing event is an orphan delta (no content_block_start),
+    // PLUS a content_block_start that never receives a delta or stop —
+    // so finalize() flushes it as incomplete_stream WITH its real id.
+    // The assembler therefore emits 2 records: 1 orphan (skipped) + 1
+    // incomplete_stream with toolu_real. The incomplete_stream is routed
+    // through the error branch which (given tool_call_id is present)
+    // emits a real tool_result — so this would actually answer the pair.
+    //
+    // Instead we construct the true MAJOR-case: the assistant emits a
+    // tool_use block BUT the assembler never synthesises any record that
+    // references that id (e.g. because the model emits tool_use in the
+    // assistant message via finalMessage() but the iteration feed to the
+    // assembler is somehow starved — an SDK race / mock divergence). In
+    // real code this "cannot happen" but the API will 400 if it does, so
+    // the loop must pad.
+    //
+    // We express that here by feeding the stream normal events (so the
+    // assembler has 1 valid record) AND then causing a DIFFERENT assistant
+    // tool_use id (toolu_phantom) to appear in the finalMessage() content
+    // by constructing a minimal custom stream that forks.
+    const phantomAssistantContent = [
+      { type: 'tool_use', id: 'toolu_phantom', name: 'record_reading', input: { field: 'measured_zs_ohm', circuit: 2, value: '0.51', confidence: 0.9, source_turn_id: 't' } },
+    ];
+    const customStream = {
+      async *[Symbol.asyncIterator]() {
+        // Iteration feeds the assembler ZERO tool_use records — assembler
+        // finalizes with records=[] but stop_reason='tool_use'.
+        yield { type: 'message_start', message: { id: 'm', role: 'assistant', content: [] } };
+        yield { type: 'message_delta', delta: { stop_reason: 'tool_use' } };
+        yield { type: 'message_stop' };
+      },
+      async finalMessage() {
+        // BUT finalMessage() returns a phantom tool_use id — what Anthropic
+        // "committed to" diverges from what the assembler saw.
+        return { role: 'assistant', content: phantomAssistantContent, stop_reason: 'tool_use' };
+      },
+    };
+    const endTurnStream = mockStream(endTurnRound('done'));
+    let call = 0;
+    const client = {
+      messages: {
+        stream() {
+          call += 1;
+          return call === 1 ? customStream : endTurnStream;
+        },
+      },
+    };
+    const messages = [{ role: 'user', content: 'start' }];
+    const logger = makeLogger();
+    const dispatcher = jest.fn(NOOP_DISPATCHER);
+
+    await runToolLoop({
+      client,
+      model: 'claude-sonnet-4-6',
+      system: 'sys',
+      messages,
+      tools: TOOL_SCHEMAS,
+      dispatcher,
+      ctx: baseCtx(),
+      logger,
+    });
+
+    // messages[0]=user(start), messages[1]=assistant(phantom tool_use),
+    // messages[2]=user(synthetic tool_result for toolu_phantom).
+    expect(messages[2].role).toBe('user');
+    expect(messages[2].content).toHaveLength(1);
+    expect(messages[2].content[0]).toMatchObject({
+      type: 'tool_result',
+      tool_use_id: 'toolu_phantom',
+      is_error: true,
+    });
+    const parsed = JSON.parse(messages[2].content[0].content);
+    expect(parsed).toMatchObject({
+      error: 'internal_no_result',
+      reason: 'record_missing_or_skipped',
+    });
+    // Observability: warn log emitted with outcome='internal_no_result'.
+    const warnCall = logger.warn.mock.calls.find(
+      (c) => c[0] === 'stage6.tool_call' && c[1]?.outcome === 'internal_no_result',
+    );
+    expect(warnCall).toBeDefined();
+    expect(warnCall[1].tool_call_id).toBe('toolu_phantom');
+    // Dispatcher was NOT called — the phantom had no assembler record to
+    // drive dispatch from.
+    expect(dispatcher).not.toHaveBeenCalled();
+  });
+
+  test('invariant: stop_reason=tool_use with zero assistant tool_use blocks → abort turn (Codex STG MAJOR)', async () => {
+    // Anthropic protocol violation: model said "I am about to use tools"
+    // but the assistant message contains NO tool_use blocks. Pre-fix the
+    // loop would push {role:'user', content:[]} and 400 on the next
+    // stream() invocation. Post-fix: abort cleanly with a logged error.
+    const emptyToolUseRound = {
+      async *[Symbol.asyncIterator]() {
+        yield { type: 'message_start', message: { id: 'm', role: 'assistant', content: [] } };
+        yield { type: 'message_delta', delta: { stop_reason: 'tool_use' } };
+        yield { type: 'message_stop' };
+      },
+      async finalMessage() {
+        return { role: 'assistant', content: [], stop_reason: 'tool_use' };
+      },
+    };
+    const client = {
+      messages: {
+        stream: () => emptyToolUseRound,
+      },
+    };
+    const messages = [{ role: 'user', content: 'start' }];
+    const logger = makeLogger();
+
+    const result = await runToolLoop({
+      client,
+      model: 'claude-sonnet-4-6',
+      system: 'sys',
+      messages,
+      tools: TOOL_SCHEMAS,
+      dispatcher: NOOP_DISPATCHER,
+      ctx: baseCtx(),
+      logger,
+    });
+
+    expect(result.aborted).toBe(true);
+    expect(result.rounds).toBe(1);
+    // No empty user message was pushed — assistant message is the final one.
+    expect(messages).toHaveLength(2);
+    expect(messages[1].role).toBe('assistant');
+    // Invariant violation logged for ops visibility.
+    expect(logger.error).toHaveBeenCalledWith(
+      'stage6.tool_loop_invariant',
+      expect.objectContaining({
+        reason: 'tool_use_stop_reason_with_no_tool_use_blocks',
+      }),
+    );
   });
 
   test('dispatcher error path → tool_result with is_error:true, loop continues', async () => {

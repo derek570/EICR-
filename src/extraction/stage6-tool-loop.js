@@ -77,6 +77,26 @@ export const NOOP_DISPATCHER = async (call /* , ctx */) => ({
   is_error: false,
 });
 
+/**
+ * Extract the tool_use.id set from a finalized assistant message. This is
+ * the AUTHORITATIVE set of ids Anthropic expects tool_result pairings for —
+ * the assembler's records[] can diverge (orphan_delta adds synthetic
+ * records without a matching tool_use in the assistant message;
+ * incomplete_stream uses the real id but the record may be intentionally
+ * skipped by the caller). Returns [] on malformed / empty content.
+ */
+function assistantToolUseIds(assistantMsg) {
+  const content = assistantMsg && assistantMsg.content;
+  if (!Array.isArray(content)) return [];
+  const ids = [];
+  for (const block of content) {
+    if (block && block.type === 'tool_use' && typeof block.id === 'string') {
+      ids.push(block.id);
+    }
+  }
+  return ids;
+}
+
 // ---------------------------------------------------------------------------
 // runToolLoop
 // ---------------------------------------------------------------------------
@@ -173,6 +193,7 @@ export async function runToolLoop({
     // for the Phase 8 stage6.tool_loop_cap_hit_rate CloudWatch metric.
     if (rounds >= maxRounds) {
       const abortResults = [];
+      const answeredCap = new Set();
       for (const rec of records) {
         // Skip orphan_delta error records — they have no matching tool_use.id
         // in the assistant message (the assembler synthesised the record
@@ -183,6 +204,21 @@ export async function runToolLoop({
         abortResults.push({
           type: 'tool_result',
           tool_use_id: rec.tool_call_id,
+          content: JSON.stringify({ aborted: true, reason: 'loop_cap' }),
+          is_error: true,
+        });
+        answeredCap.add(rec.tool_call_id);
+      }
+      // Pad any assistant tool_use ids the assembler did not surface
+      // (pathological cases: records loss, SDK race). The authoritative id
+      // set is the assistant message, NOT the assembler records — without
+      // padding, messages.content=[] would be malformed even in the cap-hit
+      // branch if the caller reuses messages_final for another turn.
+      for (const id of assistantToolUseIds(assistantMsg)) {
+        if (answeredCap.has(id)) continue;
+        abortResults.push({
+          type: 'tool_result',
+          tool_use_id: id,
           content: JSON.stringify({ aborted: true, reason: 'loop_cap' }),
           is_error: true,
         });
@@ -289,6 +325,53 @@ export async function runToolLoop({
         });
       }
     }
+    // Pad any unanswered assistant tool_use ids. Anthropic requires every
+    // tool_use in the prior assistant message to be paired with a
+    // tool_result in the immediately-following user message — if we skipped
+    // some record (orphan_delta above, or a pathological assembler-records-
+    // diverged-from-assistant-message case), the API would 400 on the next
+    // stream(). Authoritative id set = assistant message content (what the
+    // API committed to), NOT the assembler's records (which can synthesise
+    // or drop). Codex's Phase-1 STG re-review flagged the unpadded
+    // empty-user-content case as MAJOR @ tool-loop:292.
+    const answered = new Set(toolResults.map((r) => r.tool_use_id));
+    for (const id of assistantToolUseIds(assistantMsg)) {
+      if (answered.has(id)) continue;
+      toolResults.push({
+        type: 'tool_result',
+        tool_use_id: id,
+        content: JSON.stringify({
+          error: 'internal_no_result',
+          reason: 'record_missing_or_skipped',
+        }),
+        is_error: true,
+      });
+      logger?.warn?.('stage6.tool_call', {
+        sessionId: ctx?.sessionId,
+        turnId: ctx?.turnId,
+        tool_call_id: id,
+        duration_ms: 0,
+        outcome: 'internal_no_result',
+      });
+    }
+
+    // Invariant: we only reached this branch because stop_reason === 'tool_use'.
+    // That means the model told Anthropic "I am about to use tools." If the
+    // finalized assistant message contains NO tool_use blocks, that's an
+    // Anthropic protocol violation, not something we should paper over by
+    // pushing an empty user message (which the API would 400 on anyway).
+    // Abort the turn cleanly with a logged error so the caller can decide.
+    if (toolResults.length === 0) {
+      logger?.error?.('stage6.tool_loop_invariant', {
+        sessionId: ctx?.sessionId,
+        turnId: ctx?.turnId,
+        rounds,
+        reason: 'tool_use_stop_reason_with_no_tool_use_blocks',
+      });
+      aborted = true;
+      break;
+    }
+
     messages.push({ role: 'user', content: toolResults });
   }
 
