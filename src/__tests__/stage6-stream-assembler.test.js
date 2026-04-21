@@ -89,10 +89,17 @@ describe('stage6-stream-assembler', () => {
 
       expect(records[1].name).toBe('record_observation');
       expect(records[1].tool_call_id).toBe('toolu_01observation');
+      // Schema-valid record_observation shape per
+      // src/extraction/stage6-tool-schemas.js §recordObservation:
+      // required [code, location, text]; optional [circuit, suggested_regulation].
+      // NO description or source_turn_id on this tool (those are record_reading
+      // fields). strict:true on the API would reject either at the model call.
       expect(records[1].input).toEqual({
         code: 'C2',
-        description: 'No RCD protection on circuit 2',
-        source_turn_id: 't-inter',
+        location: 'Main distribution board',
+        text: 'Missing RCD protection on socket-outlet circuit',
+        circuit: 3,
+        suggested_regulation: '411.3.3',
       });
 
       expect(stop_reason).toBe('tool_use');

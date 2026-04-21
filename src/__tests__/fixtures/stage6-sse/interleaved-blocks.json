@@ -58,7 +58,7 @@
     "index": 1,
     "delta": {
       "type": "input_json_delta",
-      "partial_json": "\"description\":\"No RCD protection on circuit 2\","
+      "partial_json": "\"location\":\"Main distribution board\","
     }
   },
   {
@@ -74,7 +74,7 @@
     "index": 1,
     "delta": {
       "type": "input_json_delta",
-      "partial_json": "\"source_turn_id\":\"t-inter\"}"
+      "partial_json": "\"text\":\"Missing RCD protection on socket-outlet circuit\","
     }
   },
   {
@@ -83,6 +83,14 @@
     "delta": {
       "type": "input_json_delta",
       "partial_json": "\"confidence\":0.9,\"source_turn_id\":\"t-inter\"}"
+    }
+  },
+  {
+    "type": "content_block_delta",
+    "index": 1,
+    "delta": {
+      "type": "input_json_delta",
+      "partial_json": "\"circuit\":3,\"suggested_regulation\":\"411.3.3\"}"
     }
   },
   {
