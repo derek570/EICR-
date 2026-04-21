@@ -749,3 +749,134 @@ describe('STT-08 — utterance-consumption dedupe on ask_user_answered', () => {
     expect(entry.consumedAskUtterances.has('u-299')).toBe(true);
   });
 });
+
+// -----------------------------------------------------------------------------
+// Task 2 (MAJOR remediation) — user_text sanitisation on ask_user_answered
+//
+// Invariant: user_text is untrusted input that flows into BOTH CloudWatch logs
+// (stage6.ask_user row) AND the Anthropic tool_result content. It MUST be
+// bounded (length cap) and scrubbed (C0 controls stripped) before either
+// consumption. Deliberately-abusive sizes (>8192 chars) are rejected outright
+// with an error envelope; merely-long user_text is silently truncated with a
+// log flag so legitimate paste-from-notes answers aren't dropped.
+// -----------------------------------------------------------------------------
+
+describe('user_text sanitisation on ask_user_answered (Plan 03-10 Task 2)', () => {
+  test('normal user_text (< 2048) passes through unchanged to registry.resolve', async () => {
+    const ws = connect(wss, 'user-1');
+    await sendFrame(ws, {
+      type: 'session_start',
+      sessionId: 'sess-A',
+      jobState: { certificateType: 'eicr' },
+    });
+    const entry = activeSessions.get('sess-A');
+    const resolveSpy = jest.spyOn(entry.pendingAsks, 'resolve');
+    entry.pendingAsks.register('toolu_normal', {
+      contextField: 'ze',
+      contextCircuit: null,
+      resolve: () => {},
+      timer: setTimeout(() => {}, 60000),
+      askStartedAt: Date.now(),
+    });
+
+    await sendFrame(ws, {
+      type: 'ask_user_answered',
+      tool_call_id: 'toolu_normal',
+      user_text: 'clean answer',
+      consumed_utterance_id: 'u-clean',
+    });
+
+    expect(resolveSpy).toHaveBeenCalledWith('toolu_normal', {
+      answered: true,
+      user_text: 'clean answer',
+    });
+  });
+
+  test('oversized (>2048, <=8192) user_text is truncated before reaching registry + log carries sanitisation flag', async () => {
+    const ws = connect(wss, 'user-1');
+    await sendFrame(ws, {
+      type: 'session_start',
+      sessionId: 'sess-A',
+      jobState: { certificateType: 'eicr' },
+    });
+    const entry = activeSessions.get('sess-A');
+    const resolveSpy = jest.spyOn(entry.pendingAsks, 'resolve');
+    entry.pendingAsks.register('toolu_long', {
+      contextField: 'ze',
+      contextCircuit: null,
+      resolve: () => {},
+      timer: setTimeout(() => {}, 60000),
+      askStartedAt: Date.now(),
+    });
+
+    const longText = 'a'.repeat(3000);
+    await sendFrame(ws, {
+      type: 'ask_user_answered',
+      tool_call_id: 'toolu_long',
+      user_text: longText,
+      consumed_utterance_id: 'u-long',
+    });
+
+    const resolveCall = resolveSpy.mock.calls.find((c) => c[0] === 'toolu_long');
+    expect(resolveCall).toBeDefined();
+    expect(resolveCall[1].user_text.length).toBe(2048);
+    expect(resolveCall[1].user_text).toBe('a'.repeat(2048));
+  });
+
+  test('>8192 user_text is rejected: error envelope, registry.resolve NOT called, set NOT stamped', async () => {
+    const ws = connect(wss, 'user-1');
+    await sendFrame(ws, {
+      type: 'session_start',
+      sessionId: 'sess-A',
+      jobState: { certificateType: 'eicr' },
+    });
+    const entry = activeSessions.get('sess-A');
+    const resolveSpy = jest.spyOn(entry.pendingAsks, 'resolve');
+    ws._sent.length = 0;
+
+    const abusiveText = 'x'.repeat(8193);
+    await sendFrame(ws, {
+      type: 'ask_user_answered',
+      tool_call_id: 'toolu_abusive',
+      user_text: abusiveText,
+      consumed_utterance_id: 'u-abusive',
+    });
+
+    const err = ws._sent.find((m) => m.type === 'error');
+    expect(err).toBeDefined();
+    expect(err.message).toMatch(/user_text_too_long/);
+    expect(resolveSpy).not.toHaveBeenCalled();
+    // Set must NOT have been stamped — we rejected before the mark-consumed step.
+    expect(entry.consumedAskUtterances.has('u-abusive')).toBe(false);
+  });
+
+  test('control characters in user_text are stripped before reaching registry', async () => {
+    const ws = connect(wss, 'user-1');
+    await sendFrame(ws, {
+      type: 'session_start',
+      sessionId: 'sess-A',
+      jobState: { certificateType: 'eicr' },
+    });
+    const entry = activeSessions.get('sess-A');
+    const resolveSpy = jest.spyOn(entry.pendingAsks, 'resolve');
+    entry.pendingAsks.register('toolu_ctrl', {
+      contextField: 'ze',
+      contextCircuit: null,
+      resolve: () => {},
+      timer: setTimeout(() => {}, 60000),
+      askStartedAt: Date.now(),
+    });
+
+    await sendFrame(ws, {
+      type: 'ask_user_answered',
+      tool_call_id: 'toolu_ctrl',
+      user_text: 'clean\x00value\x01text',
+      consumed_utterance_id: 'u-ctrl',
+    });
+
+    expect(resolveSpy).toHaveBeenCalledWith('toolu_ctrl', {
+      answered: true,
+      user_text: 'cleanvaluetext',
+    });
+  });
+});

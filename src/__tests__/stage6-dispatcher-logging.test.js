@@ -313,4 +313,31 @@ describe('logAskUser()', () => {
       'duplicate_tool_call_id',
     ]);
   });
+
+  // Plan 03-10 Task 2 — sanitisation sub-object threaded through logAskUser.
+  // Kept narrow: the logger is still a dumb shape gate. When the caller
+  // provides a sanitisation object (because Task 2 stripped / truncated the
+  // user_text) the row must carry it verbatim so Phase 8 analysis can tell
+  // sanitised-down-from-oversized answers apart from first-shot clean ones.
+  // When the caller OMITS sanitisation (common case — clean user_text) the
+  // row must NOT carry a sanitisation:null property; omission is cheaper in
+  // CloudWatch than an explicit null across ~100 rows per session.
+  test('sanitisation sub-object present when caller provides it', () => {
+    const logger = mockLogger();
+    logAskUser(
+      logger,
+      validAskPayload({
+        sanitisation: { truncated: true, stripped: false },
+      }),
+    );
+    const row = logger.info.mock.calls[0][1];
+    expect(row.sanitisation).toEqual({ truncated: true, stripped: false });
+  });
+
+  test('sanitisation absent when caller omits it (common clean-path case)', () => {
+    const logger = mockLogger();
+    logAskUser(logger, validAskPayload());
+    const row = logger.info.mock.calls[0][1];
+    expect('sanitisation' in row).toBe(false);
+  });
 });
