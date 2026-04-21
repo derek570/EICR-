@@ -407,6 +407,53 @@ describe('createAskDispatcher — duplicate tool_call_id guard', () => {
     // Cleanup pre-seeded entry.
     clearTimeout(noopTimer);
   });
+
+  // Task 3 (STG MAJOR #3) — typed catch around pendingAsks.register.
+  //
+  // WHY: The Plan 03-05 dispatcher catches ALL throws from register() and
+  // silently treats them as duplicate_tool_call_id. That was defensible when
+  // the registry only threw one kind of error — but any future registry
+  // invariant (corrupt entry shape, capacity breach, bad timer handle) would
+  // be swallowed under the "duplicate" label, producing a log row that lies
+  // about what happened. The GREEN fix:
+  //   (1) stamps `.code = 'DUPLICATE_TOOL_CALL_ID'` on the registry's own
+  //       duplicate throw so the dispatcher can distinguish it,
+  //   (2) rewrites the catch to branch on that code — duplicate → existing
+  //       behavior; everything else → clearTimeout + rethrow so the tool
+  //       loop sees a real error instead of a misleading "duplicate".
+  //
+  // This RED test locks the SECOND branch: if register() throws a generic
+  // error, the dispatcher must NOT masquerade it as a duplicate outcome.
+  test('register() throws non-duplicate error → propagates (not silenced as duplicate)', async () => {
+    const session = makeSession('live');
+    const logger = makeLogger();
+    const pending = createPendingAsksRegistry();
+    const ws = makeWs();
+
+    // Mock register to blow up with a non-duplicate error (no .code stamp).
+    const originalRegister = pending.register;
+    pending.register = jest.fn(() => {
+      throw new TypeError('boom');
+    });
+
+    const dispatch = createAskDispatcher(session, logger, 'turn-1', pending, ws);
+
+    await expect(
+      dispatch(makeCall('toolu_unexpected'), {
+        sessionId: 'sess-1',
+        turnId: 'turn-1',
+      }),
+    ).rejects.toThrow(/boom/);
+
+    // Must NOT log a duplicate_tool_call_id row — that would be a lie.
+    expect(logger.info).not.toHaveBeenCalledWith(
+      'stage6.ask_user',
+      expect.objectContaining({ answer_outcome: 'duplicate_tool_call_id' }),
+    );
+
+    // Restore for hygiene (not strictly needed; registry is local).
+    pending.register = originalRegister;
+  });
 });
 
 // --- Group 6: askStartedAt captured pre-Promise ---------------------------
