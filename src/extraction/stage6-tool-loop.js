@@ -136,6 +136,20 @@ export async function runToolLoop({
   ctx,
   logger,
   maxRounds = LOOP_CAP,
+  /**
+   * Phase 3 addition per STA-02. Default identity; do not use this to
+   * mutate records — only to re-order. Applied once per round to the
+   * output of `assembler.finalize()` BEFORE the per-record dispatch
+   * for-loop. When omitted (default), dispatch order is identical to
+   * finalize() order and Phase 1/2 behaviour is unchanged.
+   *
+   * Hook signature: (records: Array<{tool_call_id, name, input, index, ...}>)
+   *                 => Array<same shape>
+   *
+   * If the hook throws, the loop logs `stage6.tool_loop_sort_error` and
+   * falls back to identity for that round so the turn does not crash.
+   */
+  sortRecords,
 }) {
   let rounds = 0;
   let stopReason = null;
@@ -258,8 +272,30 @@ export async function runToolLoop({
     // append one user-role message whose content is the array of tool_result
     // content blocks (one per dispatched call). Anthropic expects all of a
     // round's tool_results in a single user message.
+    //
+    // Phase 3 (Plan 03-06) STA-02 defense-in-depth: opt-in sortRecords hook.
+    // Default identity — Phase 1/2 behaviour preserved. If supplied, the hook
+    // reorders records BEFORE dispatch (e.g. createSortRecordsAsksLast moves
+    // ask_user blocks to the end so writes commit before the blocking ask).
+    // A hook throw is logged and falls back to identity for this round so
+    // the turn does not crash.
+    let sortedRecords = records;
+    if (typeof sortRecords === 'function') {
+      try {
+        const result = sortRecords(records);
+        if (Array.isArray(result)) sortedRecords = result;
+      } catch (err) {
+        logger?.error?.('stage6.tool_loop_sort_error', {
+          sessionId: ctx?.sessionId,
+          turnId: ctx?.turnId,
+          rounds,
+          error: err?.message,
+        });
+        // Fallback to identity — records was already assigned.
+      }
+    }
     const toolResults = [];
-    for (const rec of records) {
+    for (const rec of sortedRecords) {
       // Assembler error records (invalid_json, orphan_delta). For errors
       // that DO carry a tool_call_id (invalid_json from a real tool_use
       // whose inputs never parsed) we still owe Anthropic a tool_result —
