@@ -65,10 +65,20 @@ PHASE_DIR="$(cd "$PHASE_DIR" && pwd)"
 PROJECT_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 BASE_BRANCH="${STAGE6_BASE_BRANCH:-main}"
 
-# PLANNING_TREE default: iOS repo sibling of the backend repo. The Stage 6
-# planning tree lives under CertMateUnified/.planning-stage6-agentic/, not
-# under EICR_Automation/.
-DEFAULT_PLANNING_TREE="$PROJECT_ROOT/../CertMateUnified/.planning-stage6-agentic"
+# PLANNING_TREE default: the iOS app lives as a subdirectory of the backend
+# repo (CertMateUnified/ has its own git repo nested inside EICR_Automation/),
+# and the Stage 6 planning tree lives inside the iOS repo at
+# CertMateUnified/.planning-stage6-agentic/. If this script is run from the
+# backend repo root, the default below resolves it correctly. If run from
+# somewhere else, the caller sets PLANNING_TREE explicitly.
+DEFAULT_PLANNING_TREE="$PROJECT_ROOT/CertMateUnified/.planning-stage6-agentic"
+if [[ ! -d "$DEFAULT_PLANNING_TREE" ]]; then
+  # Fallback: maybe we're already inside the iOS repo, so PROJECT_ROOT
+  # itself points there.
+  if [[ -d "$PROJECT_ROOT/.planning-stage6-agentic" ]]; then
+    DEFAULT_PLANNING_TREE="$PROJECT_ROOT/.planning-stage6-agentic"
+  fi
+fi
 PLANNING_TREE="${PLANNING_TREE:-$DEFAULT_PLANNING_TREE}"
 
 # Resolve to absolute path if it exists (allows the caller to pass a

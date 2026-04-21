@@ -168,7 +168,7 @@ bundle.
 | Var | Default | Purpose |
 |---|---|---|
 | `STAGE6_BASE_BRANCH` | `main` | Git ref the phase diff is taken against. Override when reviewing a feature branch against a non-main base. |
-| `PLANNING_TREE` | `$(git rev-parse --show-toplevel)/../CertMateUnified/.planning-stage6-agentic` | Path to the planning directory that holds `PROJECT.md`, `REQUIREMENTS.md`, `ROADMAP.md`, `phases/`. Override if the planning tree moves. |
+| `PLANNING_TREE` | `$(git rev-parse --show-toplevel)/CertMateUnified/.planning-stage6-agentic` (with a fallback to `$(git rev-parse --show-toplevel)/.planning-stage6-agentic` if run from inside the iOS repo) | Path to the planning directory that holds `PROJECT.md`, `REQUIREMENTS.md`, `ROADMAP.md`, `phases/`. Override if the planning tree moves. |
 
 ## Exit codes
 
