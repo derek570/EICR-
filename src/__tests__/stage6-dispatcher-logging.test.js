@@ -15,7 +15,11 @@
  */
 
 import { jest } from '@jest/globals';
-import { logToolCall } from '../extraction/stage6-dispatcher-logger.js';
+import {
+  logToolCall,
+  logAskUser,
+  ASK_USER_ANSWER_OUTCOMES,
+} from '../extraction/stage6-dispatcher-logger.js';
 
 function mockLogger() {
   return { info: jest.fn(), warn: jest.fn(), error: jest.fn() };
@@ -119,5 +123,194 @@ describe('logToolCall()', () => {
     const row = logger.info.mock.calls[0][1];
     // The logger does NOT strip raw_text — callers must not have put it there in the first place.
     expect(row.input_summary).toEqual(summary);
+  });
+});
+
+/**
+ * Stage 6 Phase 3 Plan 03-03 — logAskUser() unit tests.
+ *
+ * WHAT: Locks the canonical `stage6.ask_user` log row shape per STO-02 + Phase 3
+ * enum expansion (6 → 12 `answer_outcome` values). Distinct log name from
+ * `stage6_tool_call` keeps the CloudWatch query plane clean for the Phase 8
+ * analyzer (STO-04) and the Phase 7 over-ask gate (STR-04).
+ *
+ * WHY the enum is 12 values (not STO-02's 6): Phase 3 resolves ROADMAP Open
+ * Question #1 by adding `shadow_mode`, `validation_error`, and the three
+ * session-termination reasons (`session_terminated`, `session_stopped`,
+ * `session_reconnected`) plus `duplicate_tool_call_id` (Pitfall 7 guard).
+ * This is expansion-for-completeness, ratified in Phase 3 REVIEW.md per STG-05.
+ *
+ * WHY truncation lives in the logger (and NOT in the dispatcher caller):
+ * Unlike `input_summary` (which is a structured dict and whose PII is a caller
+ * contract), `question` is always a raw user-facing sentence. A single place
+ * to cap length prevents CloudWatch row-size blow-up; callers should not need
+ * to know the cap. The TODO comment flags that Phase 8 STR-05 will add
+ * retention-based redaction for `user_text` at the analyzer query layer, not
+ * here.
+ */
+
+function validAskPayload(overrides = {}) {
+  return {
+    sessionId: 's1',
+    turnId: 't1',
+    tool_call_id: 'tu_ask_1',
+    question: 'What is the Ze reading?',
+    reason: 'ambiguous_reading',
+    context_field: 'Ze_ohms',
+    context_circuit: 3,
+    answer_outcome: 'answered',
+    wait_duration_ms: 1234,
+    user_text: 'zero point three five',
+    mode: 'live',
+    ...overrides,
+  };
+}
+
+describe('logAskUser()', () => {
+  test('happy path: full valid payload → logger.info called once with stage6.ask_user tag and full shape', () => {
+    const logger = mockLogger();
+    logAskUser(logger, validAskPayload());
+    expect(logger.info).toHaveBeenCalledTimes(1);
+    expect(logger.info).toHaveBeenCalledWith(
+      'stage6.ask_user',
+      expect.objectContaining({
+        sessionId: 's1',
+        turnId: 't1',
+        phase: 3,
+        mode: 'live',
+        tool_call_id: 'tu_ask_1',
+        question: 'What is the Ze reading?',
+        reason: 'ambiguous_reading',
+        context_field: 'Ze_ohms',
+        context_circuit: 3,
+        answer_outcome: 'answered',
+        wait_duration_ms: 1234,
+        user_text: 'zero point three five',
+      }),
+    );
+  });
+
+  test('happy path: answer_outcome=timeout with user_text absent → row omits user_text key', () => {
+    const logger = mockLogger();
+    const { user_text: _omitted, ...payload } = validAskPayload({ answer_outcome: 'timeout' });
+    logAskUser(logger, payload);
+    const row = logger.info.mock.calls[0][1];
+    expect(row.answer_outcome).toBe('timeout');
+    expect('user_text' in row).toBe(false);
+  });
+
+  test('happy path: answer_outcome=validation_error carries validation_error field', () => {
+    const logger = mockLogger();
+    logAskUser(
+      logger,
+      validAskPayload({ answer_outcome: 'validation_error', validation_error: 'invalid_question' }),
+    );
+    const row = logger.info.mock.calls[0][1];
+    expect(row.answer_outcome).toBe('validation_error');
+    expect(row.validation_error).toBe('invalid_question');
+  });
+
+  test('happy path: answer_outcome=shadow_mode with mode=shadow and wait_duration_ms=0', () => {
+    const logger = mockLogger();
+    logAskUser(
+      logger,
+      validAskPayload({ answer_outcome: 'shadow_mode', mode: 'shadow', wait_duration_ms: 0 }),
+    );
+    const row = logger.info.mock.calls[0][1];
+    expect(row.answer_outcome).toBe('shadow_mode');
+    expect(row.mode).toBe('shadow');
+    expect(row.wait_duration_ms).toBe(0);
+  });
+
+  test('truncation: question length 200 emitted verbatim (no marker)', () => {
+    const logger = mockLogger();
+    const q = 'a'.repeat(200);
+    logAskUser(logger, validAskPayload({ question: q }));
+    const row = logger.info.mock.calls[0][1];
+    expect(row.question).toBe(q);
+    expect(row.question.length).toBe(200);
+    expect(row.question.endsWith('…')).toBe(false);
+  });
+
+  test('truncation: question length 250 emitted as first 199 chars + "…" (total 200)', () => {
+    const logger = mockLogger();
+    const q = 'b'.repeat(250);
+    logAskUser(logger, validAskPayload({ question: q }));
+    const row = logger.info.mock.calls[0][1];
+    expect(row.question.length).toBe(200);
+    expect(row.question.endsWith('…')).toBe(true);
+    expect(row.question.slice(0, 199)).toBe('b'.repeat(199));
+  });
+
+  test('enum enforcement: unknown answer_outcome → throws invalid_answer_outcome', () => {
+    const logger = mockLogger();
+    expect(() =>
+      logAskUser(logger, validAskPayload({ answer_outcome: 'bogus_value' })),
+    ).toThrow(/invalid_answer_outcome/);
+    expect(logger.info).not.toHaveBeenCalled();
+  });
+
+  test('enum enforcement: missing answer_outcome → throws missing_required_field:answer_outcome', () => {
+    const logger = mockLogger();
+    const { answer_outcome: _omitted, ...payload } = validAskPayload();
+    expect(() => logAskUser(logger, payload)).toThrow(/missing_required_field:answer_outcome/);
+    expect(logger.info).not.toHaveBeenCalled();
+  });
+
+  test('enum enforcement: missing sessionId → throws missing_required_field:sessionId', () => {
+    const logger = mockLogger();
+    const { sessionId: _omitted, ...payload } = validAskPayload();
+    expect(() => logAskUser(logger, payload)).toThrow(/missing_required_field:sessionId/);
+    expect(logger.info).not.toHaveBeenCalled();
+  });
+
+  test('defaults: wait_duration_ms absent → emitted as 0', () => {
+    const logger = mockLogger();
+    const { wait_duration_ms: _omitted, ...payload } = validAskPayload();
+    logAskUser(logger, payload);
+    const row = logger.info.mock.calls[0][1];
+    expect(row.wait_duration_ms).toBe(0);
+  });
+
+  test('defaults: mode absent → throws (required field)', () => {
+    const logger = mockLogger();
+    const { mode: _omitted, ...payload } = validAskPayload();
+    expect(() => logAskUser(logger, payload)).toThrow(/missing_required_field:mode/);
+    expect(logger.info).not.toHaveBeenCalled();
+  });
+
+  test('phase tag: every emitted payload includes phase:3 unconditionally', () => {
+    const logger = mockLogger();
+    logAskUser(logger, validAskPayload({ answer_outcome: 'user_moved_on' }));
+    logAskUser(logger, validAskPayload({ answer_outcome: 'gated', mode: 'shadow' }));
+    expect(logger.info.mock.calls.every((call) => call[1].phase === 3)).toBe(true);
+  });
+
+  test('null context_field and null context_circuit preserved in payload', () => {
+    const logger = mockLogger();
+    logAskUser(
+      logger,
+      validAskPayload({ context_field: null, context_circuit: null }),
+    );
+    const row = logger.info.mock.calls[0][1];
+    expect(row.context_field).toBeNull();
+    expect(row.context_circuit).toBeNull();
+  });
+
+  test('ASK_USER_ANSWER_OUTCOMES exports all 12 Phase 3 values', () => {
+    expect(ASK_USER_ANSWER_OUTCOMES).toEqual([
+      'answered',
+      'timeout',
+      'user_moved_on',
+      'restrained_mode',
+      'ask_budget_exhausted',
+      'gated',
+      'shadow_mode',
+      'validation_error',
+      'session_terminated',
+      'session_stopped',
+      'session_reconnected',
+      'duplicate_tool_call_id',
+    ]);
   });
 });
