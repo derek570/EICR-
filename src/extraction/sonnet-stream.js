@@ -302,7 +302,10 @@ function createMessageRateLimiter(maxMessages, windowMs) {
   };
 }
 
-const activeSessions = new Map(); // sessionId -> { session, questionGate, ws, ... }
+// activeSessions lives in a small shared module so route handlers (keys.js)
+// and unit tests can attribute ElevenLabs TTS cost without dragging the full
+// WS-handler import graph into their context. See `active-sessions.js`.
+import { activeSessions } from './active-sessions.js';
 
 // Known valid field names that iOS can handle
 const KNOWN_FIELDS = new Set([
@@ -917,6 +920,21 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
           readings: (result.extracted_readings || []).length,
           questions: (result.questions_for_user || []).length,
           observations: Array.isArray(result.observations) ? result.observations.length : 0,
+          // Include a preview of up to the first two questions so we can trace
+          // Sonnet's wording in CloudWatch without needing the iOS debug-log
+          // upload (which is currently broken — see MEMORY.md). Paired with
+          // the QuestionGate "Flushing questions to iOS" log + the keys.js
+          // "ElevenLabs TTS success" log, this reconstructs the full
+          // Sonnet-question -> TTS-text chain per session.
+          questionsPreview: Array.isArray(result.questions_for_user)
+            ? result.questions_for_user.slice(0, 2).map((q) => ({
+                type: q.type || null,
+                field: q.field || null,
+                circuit: q.circuit === null || q.circuit === undefined ? null : q.circuit,
+                questionPreview:
+                  typeof q.question === 'string' ? q.question.slice(0, 120) : null,
+              }))
+            : [],
         });
         // Order matters: resolve BEFORE enqueue.
         //
@@ -1255,6 +1273,19 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         readings: result.extracted_readings.length,
         questions: (result.questions_for_user || []).length,
         confirmations: (result.confirmations || []).length,
+        // Sync-path parity with the onBatchResult log above: emit a preview of
+        // up to the first two questions so we can see Sonnet's exact wording
+        // in CloudWatch. Same rationale — iOS debug-log upload is broken, so
+        // server-side logs are the only reliable forensic trail today.
+        questionsPreview: Array.isArray(result.questions_for_user)
+          ? result.questions_for_user.slice(0, 2).map((q) => ({
+              type: q.type || null,
+              field: q.field || null,
+              circuit: q.circuit === null || q.circuit === undefined ? null : q.circuit,
+              questionPreview:
+                typeof q.question === 'string' ? q.question.slice(0, 120) : null,
+            }))
+          : [],
       });
 
       // Send extraction result (strip questions_for_user — they go through QuestionGate)
@@ -1484,4 +1515,7 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
   return wss;
 }
 
+// Re-export for external readers (sonnet-stream-resume.test.js, etc.) that
+// previously imported `activeSessions` from this module. The canonical
+// definition now lives in `./active-sessions.js`.
 export { activeSessions };
