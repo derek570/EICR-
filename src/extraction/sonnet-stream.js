@@ -884,11 +884,38 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
             // dedupe Set.
             if (typeof msg.consumed_utterance_id === 'string') {
               if (resolved) {
-                entry.consumedAskUtterances.add(msg.consumed_utterance_id);
-                if (entry.consumedAskUtterances.size > CONSUMED_UTTERANCE_CAP) {
-                  // Set preserves insertion order — first key is the oldest.
-                  const oldest = entry.consumedAskUtterances.values().next().value;
-                  entry.consumedAskUtterances.delete(oldest);
+                // Plan 03-11 Task 1 (STG r3 BLOCK remediation) — detect the
+                // REVERSE race: the matching transcript was already extracted
+                // as a regular user turn before this ask_user_answered frame
+                // arrived. We cannot un-extract it; the most useful action is
+                // a distinct warn log row so ops / the Phase 8 analyzer can
+                // count how often iOS routes both channels for the same
+                // utterance_id (expected rate: near-zero once Phase 4 ships
+                // the tightened iOS contract). We deliberately DO NOT add
+                // the id to consumedAskUtterances in this branch — the
+                // seenTranscriptUtterances stamp already owns it, and a
+                // redundant stamp here would (a) waste one of the 256 FIFO
+                // slots, (b) read like a legitimate "iOS routed as answer
+                // first" case in the audit log. The ask still resolves via
+                // the resolve() call above; the tool loop returns normally.
+                const alreadySeenAsTranscript =
+                  entry.seenTranscriptUtterances &&
+                  entry.seenTranscriptUtterances.has(msg.consumed_utterance_id);
+
+                if (alreadySeenAsTranscript) {
+                  logger.warn('stage6.ask_user_answered_after_transcript', {
+                    sessionId: currentSessionId,
+                    tool_call_id: msg.tool_call_id,
+                    utterance_id: msg.consumed_utterance_id,
+                    reason: 'transcript_already_extracted',
+                  });
+                } else {
+                  entry.consumedAskUtterances.add(msg.consumed_utterance_id);
+                  if (entry.consumedAskUtterances.size > CONSUMED_UTTERANCE_CAP) {
+                    // Set preserves insertion order — first key is the oldest.
+                    const oldest = entry.consumedAskUtterances.values().next().value;
+                    entry.consumedAskUtterances.delete(oldest);
+                  }
                 }
               } else {
                 logger.warn('stage6.ask_user_answered_unresolved', {
@@ -986,6 +1013,11 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
       // transcripts whose ids happen to collide.
       if (existing.consumedAskUtterances) existing.consumedAskUtterances.clear();
       else existing.consumedAskUtterances = new Set();
+      // Plan 03-11 Task 1 — reset the reverse-race ledger too. Same rationale
+      // as consumedAskUtterances: stale ids from the old ws should not bleed
+      // into dedupe decisions on the new ws.
+      if (existing.seenTranscriptUtterances) existing.seenTranscriptUtterances.clear();
+      else existing.seenTranscriptUtterances = new Set();
       // Update the ws reference and re-bind the question gate to new ws.
       // This preserves the Anthropic conversation history across reconnects.
       existing.ws = ws;
@@ -1235,6 +1267,19 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
       // extraction). Bounded at CONSUMED_UTTERANCE_CAP; oldest entries evict
       // FIFO so a long-running session doesn't leak the set.
       consumedAskUtterances: new Set(),
+      // Plan 03-11 Task 1 (STG r3 BLOCK) — companion FIFO set for the REVERSE
+      // race. The 03-10 dedupe is one-sided: it only catches the "answer
+      // first, then transcript" order. If the transcript arrives FIRST (e.g.
+      // iOS buffers the ask_user_answered behind the transcript, or the
+      // network reorders frames during a reconnect), the speech gets fully
+      // extracted as a normal turn — and then ask_user_answered arrives with
+      // no dedupe signal left to flip. This set records every transcript
+      // utterance_id the server has already processed, so the
+      // ask_user_answered handler can detect the race and emit a
+      // `stage6.ask_user_answered_after_transcript` warn log for ops.
+      // Same FIFO cap as consumedAskUtterances — the two ledgers are
+      // symmetric.
+      seenTranscriptUtterances: new Set(),
     });
 
     ws.send(
@@ -1319,6 +1364,9 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
     // drop any stale consumed-utterance ids on socket swap.
     if (entry.consumedAskUtterances) entry.consumedAskUtterances.clear();
     else entry.consumedAskUtterances = new Set();
+    // Plan 03-11 Task 1 — mirror for the reverse-race ledger.
+    if (entry.seenTranscriptUtterances) entry.seenTranscriptUtterances.clear();
+    else entry.seenTranscriptUtterances = new Set();
 
     // Rebind the socket + questionGate callback to the new WS, matching the
     // handleSessionStart reconnection branch. This preserves the Anthropic
@@ -1430,6 +1478,24 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         reason: 'answered_ask',
       });
       return;
+    }
+
+    // Plan 03-11 Task 1 (STG r3 BLOCK remediation) — record this transcript's
+    // utterance_id in the reverse-race ledger. If ask_user_answered arrives
+    // LATER referencing the same id, the ask handler uses this set to detect
+    // that extraction already happened and emit a
+    // `stage6.ask_user_answered_after_transcript` warn log. Recorded BEFORE
+    // extraction runs so even a synchronous ask_user_answered frame that
+    // interleaves between transcript receipt and harness invocation still
+    // sees the stamp. Bounded by CONSUMED_UTTERANCE_CAP / FIFO for the
+    // same reasons as consumedAskUtterances.
+    if (typeof msg.utterance_id === 'string') {
+      if (!entry.seenTranscriptUtterances) entry.seenTranscriptUtterances = new Set();
+      entry.seenTranscriptUtterances.add(msg.utterance_id);
+      if (entry.seenTranscriptUtterances.size > CONSUMED_UTTERANCE_CAP) {
+        const oldest = entry.seenTranscriptUtterances.values().next().value;
+        entry.seenTranscriptUtterances.delete(oldest);
+      }
     }
 
     entry.questionGate.onNewUtterance();

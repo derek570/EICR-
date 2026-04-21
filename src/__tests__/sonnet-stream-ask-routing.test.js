@@ -807,6 +807,142 @@ describe('STT-08 — utterance-consumption dedupe on ask_user_answered', () => {
 });
 
 // -----------------------------------------------------------------------------
+// STT-09 — Bidirectional utterance dedupe (Plan 03-11 Task 1, r3 BLOCK remediation)
+//
+// Invariant: the dedupe must be ORDER-INDEPENDENT. STT-08 covered the
+// "ask_user_answered arrives first, then transcript" path. STT-09 covers the
+// reverse race: transcript arrives FIRST (gets extracted as a normal turn),
+// then ask_user_answered with the same consumed_utterance_id arrives. The
+// server cannot un-extract the transcript half, but it MUST:
+//   (a) still resolve the ask (so the tool loop unblocks)
+//   (b) emit a warn log row `stage6.ask_user_answered_after_transcript` so
+//       ops can detect iOS protocol violations / reorderings
+//   (c) NOT stamp consumedAskUtterances a second time — the utterance id
+//       is already "spent" (we saw it as transcript). The seenTranscript
+//       ledger is the authoritative source for that branch.
+//
+// This closes the order-independence gap that Codex's 2026-04-22 review
+// surfaced as [BLOCK]: the 03-10 dedupe was one-sided.
+// -----------------------------------------------------------------------------
+
+describe('STT-09 — bidirectional utterance dedupe (transcript-then-answer race)', () => {
+  test('STT-09a transcript-then-answer: transcript extracts, ask_user_answered logs warn and resolves without double-stamp', async () => {
+    const ws = connect(wss, 'user-1');
+    await sendFrame(ws, {
+      type: 'session_start',
+      sessionId: 'sess-A',
+      jobState: { certificateType: 'eicr' },
+    });
+    const entry = activeSessions.get('sess-A');
+
+    const seeded = new Promise((resolve) => {
+      entry.pendingAsks.register('toolu_reverse', {
+        contextField: 'measured_zs_ohm',
+        contextCircuit: null,
+        resolve,
+        timer: setTimeout(() => {}, 60000),
+        askStartedAt: Date.now(),
+      });
+    });
+
+    runShadowHarnessSpy.mockClear();
+    const loggerModule = (await import('../logger.js')).default;
+    loggerModule.warn.mockClear();
+
+    // 1. Transcript arrives first (race: ask_user_answered delayed in transit).
+    //    It is NOT in consumedAskUtterances yet, so extraction proceeds.
+    //    Server records the utterance_id into seenTranscriptUtterances.
+    await sendFrame(ws, {
+      type: 'transcript',
+      text: 'Circuit 5',
+      utterance_id: 'u-reverse',
+      regexResults: [],
+    });
+    expect(runShadowHarnessSpy).toHaveBeenCalledTimes(1);
+    expect(entry.seenTranscriptUtterances).toBeDefined();
+    expect(entry.seenTranscriptUtterances.has('u-reverse')).toBe(true);
+
+    // 2. ask_user_answered now arrives. Server MUST:
+    //    - resolve the ask (so the awaiting tool-loop returns)
+    //    - emit stage6.ask_user_answered_after_transcript warn log
+    //    - NOT add u-reverse to consumedAskUtterances (transcript half
+    //      already extracted; adding here is dead weight and would mask
+    //      any future legitimate same-id transcript).
+    await sendFrame(ws, {
+      type: 'ask_user_answered',
+      tool_call_id: 'toolu_reverse',
+      user_text: 'Circuit 5',
+      consumed_utterance_id: 'u-reverse',
+    });
+
+    await expect(seeded).resolves.toMatchObject({
+      answered: true,
+      user_text: 'Circuit 5',
+    });
+
+    const raceWarnings = loggerModule.warn.mock.calls.filter(
+      (c) => c[0] === 'stage6.ask_user_answered_after_transcript'
+    );
+    expect(raceWarnings).toHaveLength(1);
+    expect(raceWarnings[0][1]).toMatchObject({
+      sessionId: 'sess-A',
+      tool_call_id: 'toolu_reverse',
+      utterance_id: 'u-reverse',
+      reason: 'transcript_already_extracted',
+    });
+
+    // consumedAskUtterances MUST NOT be stamped (the seen-transcript branch owns the id).
+    expect(entry.consumedAskUtterances.has('u-reverse')).toBe(false);
+  });
+
+  test('STT-09b transcript with utterance_id is recorded into seenTranscriptUtterances before extraction fires', async () => {
+    // The FIFO cap logic is structurally identical to consumedAskUtterances
+    // (STT-08c proves the eviction semantics with 300 ask_user_answered
+    // frames). Here we only verify the stamp itself happens on the transcript
+    // side — reproducing the cap test via transcript frames is blocked by
+    // the 60-per-minute transcript rate limiter (WS_RATE_LIMIT), which would
+    // throttle 300 messages down to ~60 and never trigger eviction.
+    const ws = connect(wss, 'user-1');
+    await sendFrame(ws, {
+      type: 'session_start',
+      sessionId: 'sess-A',
+      jobState: { certificateType: 'eicr' },
+    });
+    const entry = activeSessions.get('sess-A');
+
+    expect(entry.seenTranscriptUtterances).toBeDefined();
+    expect(entry.seenTranscriptUtterances.size).toBe(0);
+
+    await sendFrame(ws, {
+      type: 'transcript',
+      text: 'first frame',
+      utterance_id: 'u-first',
+      regexResults: [],
+    });
+    await sendFrame(ws, {
+      type: 'transcript',
+      text: 'second frame',
+      utterance_id: 'u-second',
+      regexResults: [],
+    });
+
+    expect(entry.seenTranscriptUtterances.has('u-first')).toBe(true);
+    expect(entry.seenTranscriptUtterances.has('u-second')).toBe(true);
+    expect(entry.seenTranscriptUtterances.size).toBe(2);
+
+    // Transcripts with no utterance_id must NOT stamp the set (defensive: the
+    // dedupe only works on anchored utterances, and nothing in the handler
+    // should add `undefined` to the set).
+    await sendFrame(ws, {
+      type: 'transcript',
+      text: 'no id',
+      regexResults: [],
+    });
+    expect(entry.seenTranscriptUtterances.size).toBe(2);
+  });
+});
+
+// -----------------------------------------------------------------------------
 // Task 2 (MAJOR remediation) — user_text sanitisation on ask_user_answered
 //
 // Invariant: user_text is untrusted input that flows into BOTH CloudWatch logs
