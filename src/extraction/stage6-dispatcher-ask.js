@@ -177,6 +177,16 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws) {
       // (Pitfall 7 — Anthropic SDK retry-replay guard). We catch locally,
       // clear our timer, and synchronously resolve so the outer await returns
       // without propagating a throw into the tool loop.
+      //
+      // Plan 03-10 Task 3 (STG MAJOR #3) — TYPED catch. Previously the catch
+      // was bare (`catch {}`) which swallowed ANY throw as a duplicate. That
+      // is a lie surface: any future registry invariant (corrupt entry,
+      // capacity breach, bad timer handle) would produce a log row claiming
+      // "duplicate_tool_call_id" and a matching envelope, sending humans +
+      // analyzer down the wrong investigation axis. Now we branch on the
+      // `.code = 'DUPLICATE_TOOL_CALL_ID'` stamp that the registry puts on
+      // its own throw. Anything else → clearTimeout + rethrow so the tool
+      // loop sees the real error.
       try {
         pendingAsks.register(toolCallId, {
           contextField: input.context_field,
@@ -185,14 +195,20 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws) {
           timer,
           askStartedAt,
         });
-      } catch {
+      } catch (err) {
+        if (err?.code === 'DUPLICATE_TOOL_CALL_ID') {
+          clearTimeout(timer);
+          resolve({
+            answered: false,
+            reason: 'duplicate_tool_call_id',
+            wait_duration_ms: 0,
+          });
+          return;
+        }
+        // Non-duplicate throw: this is a real bug — don't masquerade as
+        // duplicate. Clear the timer to avoid a ghost fire, then rethrow.
         clearTimeout(timer);
-        resolve({
-          answered: false,
-          reason: 'duplicate_tool_call_id',
-          wait_duration_ms: 0,
-        });
-        return;
+        throw err;
       }
 
       // (3c) Emit ask_user_started to iOS. Guarded on ws presence + OPEN

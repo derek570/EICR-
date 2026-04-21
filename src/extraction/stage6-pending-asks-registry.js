@@ -29,7 +29,15 @@ export function createPendingAsksRegistry() {
     // resolve fn and old timer. Throw instead.
     register(toolCallId, { contextField, contextCircuit, resolve, timer, askStartedAt }) {
       if (asks.has(toolCallId)) {
-        throw new Error(`duplicate_tool_call_id:${toolCallId}`);
+        // Plan 03-10 Task 3 (STG MAJOR #3) — stamp a discriminant `.code`
+        // on the duplicate throw so the dispatcher can tell our OWN
+        // invariant (Pitfall 7 retry-replay) apart from any other
+        // unexpected throw (corrupt entry shape, future capacity breach,
+        // bad timer handle, etc.). The dispatcher's typed catch relies on
+        // this code to decide "swallow + log as duplicate" vs "propagate".
+        const err = new Error(`duplicate_tool_call_id:${toolCallId}`);
+        err.code = 'DUPLICATE_TOOL_CALL_ID';
+        throw err;
       }
       asks.set(toolCallId, { resolve, timer, contextField, contextCircuit, askStartedAt });
     },
