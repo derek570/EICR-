@@ -142,6 +142,33 @@ export async function runShadowHarness(session, transcriptText, regexResults, op
 
   // --- SHADOW MODE ---------------------------------------------------------
   //
+  // Step 0 (Codex Phase-2 review BLOCK #1 round-2 fix): snapshot the mutable
+  // session surfaces BEFORE legacy runs.
+  //
+  // The round-1 fix (clone after legacy + swap dispatcher onto the clone)
+  // stopped shadow from CORRUPTING live state, but left a second bug: the
+  // clone was taken from POST-legacy state. Shadow's tool loop therefore
+  // replayed the same utterance against a state legacy had already mutated
+  // — e.g. legacy created circuit 2 → shadow's create_circuit(2) hits the
+  // "duplicate circuit_ref" validator and rejects spuriously. The resulting
+  // `stage6_divergence` row says "extra_in_legacy" or "circuit_ops_diff"
+  // when in fact both paths would have succeeded from the same starting
+  // point. That's exactly the noise STO-01 promises to NOT emit.
+  //
+  // Correct sequencing:
+  //   1. Clone pre-legacy state (this block).
+  //   2. Run legacy against live state (it mutates live).
+  //   3. Run shadow tool loop against the PRE-legacy clone.
+  //   4. Compare results.
+  //
+  // structuredClone is JSON-safe here — stateSnapshot contains only plain
+  // objects/arrays/primitives; extractedObservations is an array of plain
+  // observation records.
+  const preLegacySnapshot = structuredClone(session.stateSnapshot);
+  const preLegacyObservations = Array.isArray(session.extractedObservations)
+    ? structuredClone(session.extractedObservations)
+    : [];
+
   // Step 1: run legacy FIRST. If legacy throws, the error propagates — no
   // divergence log (no payload to compare).
   const legacy = await session.extractFromUtterance(transcriptText, regexResults, options);
@@ -162,35 +189,28 @@ export async function runShadowHarness(session, transcriptText, regexResults, op
   // cross-turn leaks.
   const perTurnWrites = createPerTurnWrites();
 
-  // Step 3b (Codex Phase-2 review BLOCK #1): isolate the shadow dispatcher
-  // from authoritative session state.
+  // Step 3b (Codex Phase-2 review BLOCK #1): build the shadow dispatcher
+  // session from the PRE-LEGACY snapshot captured in Step 0.
   //
-  // The dispatchers (stage6-dispatchers-circuit.js + -observation.js) write
-  // through `session.stateSnapshot` (via shared snapshot-mutator atoms) AND
-  // `session.extractedObservations` (via appendObservation). Legacy has
-  // ALREADY run above and mutated both of those slots for this turn. If we
-  // handed the live session to createWriteDispatcher, the tool loop would
-  // apply a SECOND set of writes on top — next turn's state snapshot would
-  // reflect legacy+shadow combined, not legacy-alone. Silent corruption of
-  // authoritative server state across turns is the exact failure mode this
-  // review finding identifies, and Phase 2's contract (`SONNET_TOOL_CALLS=
-  // shadow` is observation-only, iOS gets legacy verbatim) requires shadow
-  // to be strictly non-authoritative.
+  // Two invariants this enforces:
+  //   (a) Shadow tool loop mutations NEVER reach the live session — dispatcher
+  //       writes land on `shadowSession.*` only. `sessionId` is shared for
+  //       log correlation on stage6_divergence / stage6.tool_call join keys.
+  //   (b) Shadow sees the SAME starting state legacy did. If we built the
+  //       wrapper from `session.stateSnapshot` post-legacy, the tool loop
+  //       would replay the same utterance against mutated state and the
+  //       divergence log would report spurious rejects (e.g. create_circuit
+  //       duplicate on a circuit_ref legacy just added).
   //
-  // Fix: structured-clone the mutable surface into a plain wrapper object
-  // that shares `sessionId` with the live session (needed for log correlation)
-  // but carries its own writable copies of stateSnapshot and
-  // extractedObservations. Atom writes mutate the wrapper only; the live
-  // session is untouched. Cloning via `structuredClone` is JSON-safe here —
-  // stateSnapshot contains only plain objects/arrays/primitives (circuits
-  // keyed by ref, pending_readings / observations / validation_alerts as
-  // primitive-typed arrays). No Dates, Maps, class instances.
+  // structuredClone is JSON-safe here — stateSnapshot contains only plain
+  // objects/arrays/primitives (circuits keyed by ref, pending_readings /
+  // observations / validation_alerts as primitive-typed arrays). Deep-cloning
+  // once above AND passing those clones directly (no second clone here) keeps
+  // the cost at one clone per shadow turn.
   const shadowSession = {
     sessionId: session.sessionId,
-    stateSnapshot: structuredClone(session.stateSnapshot),
-    extractedObservations: Array.isArray(session.extractedObservations)
-      ? structuredClone(session.extractedObservations)
-      : [],
+    stateSnapshot: preLegacySnapshot,
+    extractedObservations: preLegacyObservations,
   };
   const dispatcher = createWriteDispatcher(shadowSession, log, turnId, perTurnWrites);
 
