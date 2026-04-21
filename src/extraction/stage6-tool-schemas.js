@@ -289,8 +289,9 @@ const askUser = makeTool({
     },
     context_field: {
       type: ['string', 'null'],
+      enum: [...Object.keys(fieldSchema.circuit_fields), null],
       description:
-        'Circuit field this ask is blocking on (e.g. "measured_zs_ohm"), or null if the ask is not field-scoped.',
+        'Circuit field this ask is blocking on (e.g. "measured_zs_ohm"), or null if the ask is not field-scoped. Enumerated against the SAME circuit_fields keys as record_reading.field / clear_reading.field so Phase 5 per-(context_field, context_circuit) ask budgets (STA-06) and Phase 8 analytics (STO-03) get stable keys — free-text drift (e.g. "zs" vs "measured_zs_ohm") would bypass the budget and split analytics. Strict-mode JSON Schema validates enum against the VALUE, so null must appear in both `type` and `enum` for `context_field: null`.',
     },
     context_circuit: {
       type: ['integer', 'null'],

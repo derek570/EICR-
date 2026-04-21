@@ -184,6 +184,19 @@ describe('stage6-tool-schemas', () => {
     );
   });
 
+  test('ask_user.context_field enum = circuit_fields keys + null (Codex early-review MAJOR — stable keys for STA-06 ask budget and STO-03 analytics)', () => {
+    const askUser = byName('ask_user');
+    const contextField = askUser.input_schema.properties.context_field;
+    // Must permit null (question may not be scoped to any field) and must
+    // share the SAME key-space as record_reading.field / clear_reading.field
+    // so Phase 5 per-(context_field, context_circuit) budgets key stably.
+    expect(contextField.type).toEqual(['string', 'null']);
+    expect(contextField.enum).toEqual([
+      ...Object.keys(fieldSchema.circuit_fields),
+      null,
+    ]);
+  });
+
   test('getToolByName returns the tool for a known name', () => {
     const t = getToolByName('record_reading');
     expect(t).toBeDefined();
