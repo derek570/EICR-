@@ -292,9 +292,28 @@ export async function runToolLoop({
           duration_ms,
           outcome: 'stub_ok',
         });
+        // Surface dispatcher id-threading bugs in observability. The
+        // dispatcher SHOULD echo call.tool_call_id back in res.tool_use_id,
+        // but we do not trust it — we always key the tool_result to the
+        // assembler's rec.tool_call_id (which came directly from the
+        // assistant message and is what Anthropic expects paired). If the
+        // dispatcher-returned id diverges, that's a Phase 2+ dispatcher
+        // bug worth alarming on. Codex's Phase-1 STG re-review (round 3)
+        // flagged the pre-fix `tool_use_id: res.tool_use_id` as MAJOR —
+        // a buggy dispatcher could silently unpair tool_use/tool_result
+        // and the next Anthropic call would 400.
+        if (res.tool_use_id !== rec.tool_call_id) {
+          logger?.warn?.('stage6.tool_call_id_mismatch', {
+            sessionId: ctx?.sessionId,
+            turnId: ctx?.turnId,
+            tool_call_id: rec.tool_call_id,
+            dispatcher_returned_id: res.tool_use_id,
+            tool_name: rec.name,
+          });
+        }
         toolResults.push({
           type: 'tool_result',
-          tool_use_id: res.tool_use_id,
+          tool_use_id: rec.tool_call_id,
           content: res.content,
           is_error: res.is_error,
         });

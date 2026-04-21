@@ -612,6 +612,65 @@ describe('stage6-tool-loop', () => {
     );
   });
 
+  test('rogue dispatcher returning wrong tool_use_id → tool_result keyed to rec.tool_call_id + warn log (Codex STG round-3 MAJOR)', async () => {
+    // Defence in depth: if the dispatcher ever returns an object whose
+    // tool_use_id diverges from rec.tool_call_id (buggy custom dispatcher,
+    // typo, id-rewriting middleware), Anthropic's API will 400 the next
+    // round with `tool_use_id_without_result` because the pair is broken.
+    // The loop must ignore the rogue id and key the tool_result to
+    // rec.tool_call_id — AND emit a stage6.tool_call_id_mismatch warn log
+    // so ops can find the buggy dispatcher.
+    const client = mockClient([
+      toolUseRound([
+        { id: 'toolu_real', name: 'record_reading', input: { field: 'measured_zs_ohm', circuit: 1, value: '0.43', confidence: 0.9, source_turn_id: 't1' } },
+      ]),
+      endTurnRound('ok'),
+    ]);
+    const messages = [{ role: 'user', content: 'start' }];
+    const logger = makeLogger();
+    // Rogue dispatcher: returns a DIFFERENT tool_use_id than the input's tool_call_id.
+    const dispatcher = jest.fn(async () => ({
+      tool_use_id: 'toolu_WRONG_ID',
+      content: '{"ok":true}',
+      is_error: false,
+    }));
+
+    await runToolLoop({
+      client,
+      model: 'claude-sonnet-4-6',
+      system: 'sys',
+      messages,
+      tools: TOOL_SCHEMAS,
+      dispatcher,
+      ctx: baseCtx(),
+      logger,
+    });
+
+    // tool_result is keyed to the ORIGINAL rec.tool_call_id — NOT the rogue id.
+    expect(messages[2].role).toBe('user');
+    expect(messages[2].content).toHaveLength(1);
+    expect(messages[2].content[0]).toMatchObject({
+      type: 'tool_result',
+      tool_use_id: 'toolu_real',
+      is_error: false,
+    });
+    // No tool_result block references the rogue id.
+    for (const block of messages[2].content) {
+      expect(block.tool_use_id).not.toBe('toolu_WRONG_ID');
+    }
+    // Observability: divergence warn log emitted with both ids for debugging.
+    expect(logger.warn).toHaveBeenCalledWith(
+      'stage6.tool_call_id_mismatch',
+      expect.objectContaining({
+        sessionId: 'sess-xyz',
+        turnId: 'turn-1',
+        tool_call_id: 'toolu_real',
+        dispatcher_returned_id: 'toolu_WRONG_ID',
+        tool_name: 'record_reading',
+      }),
+    );
+  });
+
   test('dispatcher error path → tool_result with is_error:true, loop continues', async () => {
     const client = mockClient([
       toolUseRound([
