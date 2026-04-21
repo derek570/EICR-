@@ -184,17 +184,18 @@ describe('stage6-tool-schemas', () => {
     );
   });
 
-  test('ask_user.context_field enum = circuit_fields keys + null (Codex early-review MAJOR — stable keys for STA-06 ask budget and STO-03 analytics)', () => {
+  test('ask_user.context_field type = string|null, NO enum constraint in Phase 1 (Codex round-3 MAJOR — Phase 2 must design the full context-key namespace)', () => {
     const askUser = byName('ask_user');
     const contextField = askUser.input_schema.properties.context_field;
-    // Must permit null (question may not be scoped to any field) and must
-    // share the SAME key-space as record_reading.field / clear_reading.field
-    // so Phase 5 per-(context_field, context_circuit) budgets key stably.
+    // STS-07 mandates `string | null`. An earlier iteration narrowed this to
+    // `Object.keys(fieldSchema.circuit_fields) | null` for Phase-5 budget
+    // stability; Codex round-3 STG flagged that narrowing as blocking Phase
+    // 2+ non-circuit asks (observation_confirmation, earthing_arrangement,
+    // board-level readings). Phase 2 Plan 02-01 MUST design the canonical
+    // context-key namespace and reinstate a strict enum then — for now we
+    // leave it open to unblock scope.
     expect(contextField.type).toEqual(['string', 'null']);
-    expect(contextField.enum).toEqual([
-      ...Object.keys(fieldSchema.circuit_fields),
-      null,
-    ]);
+    expect(contextField.enum).toBeUndefined();
   });
 
   test('getToolByName returns the tool for a known name', () => {

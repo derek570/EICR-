@@ -289,9 +289,8 @@ const askUser = makeTool({
     },
     context_field: {
       type: ['string', 'null'],
-      enum: [...Object.keys(fieldSchema.circuit_fields), null],
       description:
-        'Circuit field this ask is blocking on (e.g. "measured_zs_ohm"), or null if the ask is not field-scoped. Enumerated against the SAME circuit_fields keys as record_reading.field / clear_reading.field so Phase 5 per-(context_field, context_circuit) ask budgets (STA-06) and Phase 8 analytics (STO-03) get stable keys — free-text drift (e.g. "zs" vs "measured_zs_ohm") would bypass the budget and split analytics. Strict-mode JSON Schema validates enum against the VALUE, so null must appear in both `type` and `enum` for `context_field: null`.',
+        'Context key this ask is blocking on (e.g. "measured_zs_ohm", "earthing_arrangement", "observation_confirmation"), or null if the ask is not field-scoped. STS-07 mandates `string | null` — intentionally open-ended in Phase 1 because Phase 2+ asks need non-circuit scopes (board-level readings, earthing, observation confirmation, general missing-context) that the circuit_fields key set does not cover. An early iteration narrowed this to `Object.keys(fieldSchema.circuit_fields) | null` to stabilise Phase 5 per-(context_field, context_circuit) budget analytics; Codex round-3 STG review flagged that the narrow enum would force Phase 2 non-circuit asks to collapse to null, breaking those same analytics on the non-circuit path. PHASE 2 BLOCKER: Plan 02-01 MUST design the canonical Stage-6 context-key namespace (circuit_fields keys + board-scope keys + observation/general sentinels) and reinstate a strict enum here before non-circuit asks ship. Until then, Phase 5 analytics will bucket by raw value; budget drift is accepted in exchange for unblocked Phase 2 scope.',
     },
     context_circuit: {
       type: ['integer', 'null'],
