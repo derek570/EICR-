@@ -21,9 +21,17 @@
  *   node scripts/stage6-strict-mode-probe.js
  *
  * Exit codes:
- *   0 — valid-enum call succeeded with the expected tool_use + parsed input.
+ *   0 — valid-enum call succeeded AND invalid-enum call was rejected by the
+ *       API with a 4xx (conclusive evidence of strict enforcement).
  *   1 — hard failure (API error on valid call, missing tool_use, etc.).
  *   2 — ANTHROPIC_API_KEY not set.
+ *   3 — AMBIGUOUS: valid call succeeded but invalid call was NOT rejected by
+ *       the API. Either the model self-corrected to a valid enum (could mean
+ *       strict is enforced OR the model simply chose a valid value on its
+ *       own) or the invalid value escaped the enum entirely (strict is NOT
+ *       enforced). Review the log and investigate before proceeding. This is
+ *       an intentionally-loud failure, not a pass — Codex review flagged the
+ *       silent-pass risk as a Phase 1 MAJOR.
  *
  * Output contract (for OPEN_QUESTIONS.md Q#4):
  *   - Prints a clearly-delimited "VALID CALL RESPONSE" block containing the
@@ -171,8 +179,21 @@ async function main() {
   }
 
   // ----- Call 2: invalid enum -----
-  console.log('\n[stage6-probe] Running INVALID-enum call (diagnostic)...');
+  // The original design accepted EITHER (a) API-level rejection OR (b) model
+  // self-correction as evidence of strict-mode enforcement. Codex review
+  // (2026-04-21) flagged this as a false-pass risk: self-correction can
+  // happen even when strict:true is silently ignored by the model/SDK, in
+  // which case the gate would clear without actually proving anything.
+  //
+  // Updated contract: strict-mode enforcement means the API rejects the
+  // invalid payload. Only API rejection clears the gate. Self-correction
+  // (or any other happy-path response to an "invalid" prompt) is now
+  // logged but treated as AMBIGUOUS and exits the probe with code 3 —
+  // the reviewer must investigate rather than rubber-stamp.
+  console.log('\n[stage6-probe] Running INVALID-enum call (gate for strict enforcement)...');
   const invalidOutcome = await runInvalidCall(client, tool);
+
+  let strictEnforcementEvidence = null; // 'api_reject' | 'ambiguous_self_correct' | 'ambiguous_escape'
 
   if (invalidOutcome.ok) {
     printDelimited(
@@ -185,14 +206,24 @@ async function main() {
     if (invalidToolUse) {
       const reason = invalidToolUse.input && invalidToolUse.input.reason;
       if (tool.input_schema.properties.reason.enum.includes(reason)) {
-        console.log(
-          `[stage6-probe] INVALID call: model self-corrected to a valid enum "${reason}" (strict:true likely enforced client-side by API).`,
-        );
-      } else {
         console.warn(
-          `[stage6-probe] INVALID call: reason="${reason}" escaped the enum. Strict mode may NOT be enforced for this model/SDK.`,
+          `[stage6-probe] INVALID call: model self-corrected to a valid enum "${reason}".`,
         );
+        console.warn(
+          '[stage6-probe] AMBIGUOUS: self-correction does NOT prove API-level strict enforcement — the model may have chosen a valid value on its own, or strict:true may be silently ignored.',
+        );
+        strictEnforcementEvidence = 'ambiguous_self_correct';
+      } else {
+        console.error(
+          `[stage6-probe] INVALID call: reason="${reason}" escaped the enum. Strict mode is NOT enforced for this model/SDK — Phase 2 design assumptions are invalid.`,
+        );
+        strictEnforcementEvidence = 'ambiguous_escape';
       }
+    } else {
+      console.warn(
+        '[stage6-probe] INVALID call returned no tool_use block — unexpected. Treating as ambiguous.',
+      );
+      strictEnforcementEvidence = 'ambiguous_self_correct';
     }
   } else {
     printDelimited(
@@ -202,14 +233,29 @@ async function main() {
     console.log(
       '[stage6-probe] INVALID call rejected by API — strict:true is enforced at the API level. This is the expected outcome per REQUIREMENTS.md STS-08.',
     );
+    strictEnforcementEvidence = 'api_reject';
   }
 
   console.log('\n[stage6-probe] Probe complete.');
+  console.log(`[stage6-probe] Strict enforcement evidence: ${strictEnforcementEvidence}`);
   console.log(`[stage6-probe] Probe commit SHA: ${probeSha}`);
   console.log(
     '[stage6-probe] Paste the VALID CALL RESPONSE block and the Probe commit SHA line into\n' +
       '              .planning-stage6-agentic/phases/01-foundation/OPEN_QUESTIONS.md Q#4.',
   );
+
+  if (strictEnforcementEvidence !== 'api_reject') {
+    console.error(
+      '\n[stage6-probe] GATE DID NOT PASS: API did not reject the invalid-enum call.',
+    );
+    console.error(
+      '[stage6-probe] Self-correction or enum-escape is AMBIGUOUS evidence — Phase 1 REVIEW.md gate should NOT close on this alone.',
+    );
+    console.error(
+      '[stage6-probe] Investigate before proceeding to Phase 2. Exit 3.',
+    );
+    process.exit(3);
+  }
 }
 
 main().catch((err) => {

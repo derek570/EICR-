@@ -149,9 +149,9 @@ const createCircuit = makeTool({
     },
     phase: {
       type: ['string', 'null'],
-      enum: enumerations.circuit_phase,
+      enum: [...enumerations.circuit_phase, null],
       description:
-        'Electrical phase. L1/L2/L3 for three-phase installations, single for single-phase. Null if unknown (null is permitted by type, not by enum — strict schemas express nullability via type).',
+        'Electrical phase. L1/L2/L3 for three-phase installations, single for single-phase. Null if unknown. Strict-mode JSON Schema validates enum against the VALUE, so null must be present in both `type` and `enum` for a `phase: null` payload to pass — REQUIREMENTS STS-03 explicitly permits `phase | null`.',
     },
     rating_amps: {
       type: ['integer', 'null'],
@@ -186,9 +186,9 @@ const renameCircuit = makeTool({
     },
     phase: {
       type: ['string', 'null'],
-      enum: enumerations.circuit_phase,
+      enum: [...enumerations.circuit_phase, null],
       description:
-        'New electrical phase. Null to leave unchanged (null is permitted by type, not by enum).',
+        'New electrical phase. Null to leave unchanged. Strict-mode JSON Schema validates enum against the VALUE — null must appear in both `type` and `enum` for REQUIREMENTS STS-04 `phase | null`.',
     },
     rating_amps: {
       type: ['integer', 'null'],

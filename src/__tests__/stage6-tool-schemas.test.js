@@ -107,21 +107,54 @@ describe('stage6-tool-schemas', () => {
     );
   });
 
-  test('create_circuit.phase enum sourced from stage6-enumerations.json', () => {
+  test('create_circuit.phase enum sourced from stage6-enumerations.json + null (STS-03 permits phase | null)', () => {
     const createCircuit = byName('create_circuit');
-    expect(createCircuit.input_schema.properties.phase.enum).toEqual(
-      enumerations.circuit_phase,
-    );
+    // Under strict-mode JSON Schema, enum matches the VALUE not the type. For
+    // a nullable enum field the enum array MUST include null, else a valid
+    // `phase: null` payload (explicitly permitted by STS-03) is rejected.
+    expect(createCircuit.input_schema.properties.phase.enum).toEqual([
+      ...enumerations.circuit_phase,
+      null,
+    ]);
+    expect(createCircuit.input_schema.properties.phase.type).toEqual([
+      'string',
+      'null',
+    ]);
     // create_circuit requires only circuit_ref (STS-03)
     expect(createCircuit.input_schema.required).toEqual(['circuit_ref']);
   });
 
-  test('rename_circuit.phase enum sourced from stage6-enumerations.json', () => {
+  test('rename_circuit.phase enum sourced from stage6-enumerations.json + null (STS-04 permits phase | null)', () => {
     const renameCircuit = byName('rename_circuit');
-    expect(renameCircuit.input_schema.properties.phase.enum).toEqual(
-      enumerations.circuit_phase,
-    );
+    expect(renameCircuit.input_schema.properties.phase.enum).toEqual([
+      ...enumerations.circuit_phase,
+      null,
+    ]);
+    expect(renameCircuit.input_schema.properties.phase.type).toEqual([
+      'string',
+      'null',
+    ]);
     expect(renameCircuit.input_schema.required).toEqual(['circuit_ref']);
+  });
+
+  test('non-nullable enums (clear_reading.reason, observation_code, ask_user.reason, expected_answer_shape) do NOT include null', () => {
+    // These fields are REQUIRED per REQUIREMENTS — null is not a valid value
+    // and must not appear in the enum array.
+    expect(byName('clear_reading').input_schema.properties.reason.enum).not.toContain(
+      null,
+    );
+    expect(
+      byName('record_observation').input_schema.properties.code.enum,
+    ).not.toContain(null);
+    expect(
+      byName('delete_observation').input_schema.properties.reason.enum,
+    ).not.toContain(null);
+    expect(byName('ask_user').input_schema.properties.reason.enum).not.toContain(
+      null,
+    );
+    expect(
+      byName('ask_user').input_schema.properties.expected_answer_shape.enum,
+    ).not.toContain(null);
   });
 
   test('record_observation.code enum sourced from stage6-enumerations.json', () => {
