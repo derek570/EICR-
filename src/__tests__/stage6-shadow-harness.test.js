@@ -107,6 +107,35 @@ describe('runShadowHarness', () => {
       expect(call[1].turnId).toBe('sess-1-turn-5');
     });
 
+    test('turnId is captured BEFORE legacy increments turnCount (Codex STG MAJOR — no off-by-one)', async () => {
+      // Real EICRExtractionSession does `this.turnCount++` inside
+      // extractFromUtterance (eicr-extraction-session.js:641). Mirror that
+      // behavior here so the test actually exercises the invariant: the
+      // divergence log's turnId must describe the legacy turn that just
+      // ran, NOT the next unrun turn.
+      const logger = makeLogger();
+      const s = {
+        sessionId: 'sess-off-by-one',
+        turnCount: 0,
+        toolCallsMode: 'shadow',
+        extractFromUtterance: jest.fn(async function () {
+          // Simulate real session: increment mid-call.
+          s.turnCount += 1;
+          return { foo: 'legacy' };
+        }),
+      };
+
+      await runShadowHarness(s, 'text', [], { logger });
+
+      // Post-call: session.turnCount === 1 (legacy ran once).
+      // Correct turnId describes that SAME turn → turn-1.
+      // Pre-fix bug would have reported turn-2 (computed after await from
+      // post-increment value + 1).
+      expect(s.turnCount).toBe(1);
+      const call = logger.info.mock.calls.find((c) => c[0] === 'stage6_divergence');
+      expect(call[1].turnId).toBe('sess-off-by-one-turn-1');
+    });
+
     test('if legacy throws, rethrows and does NOT emit divergence log or drive assembler', async () => {
       const logger = makeLogger();
       const s = makeSession('shadow');

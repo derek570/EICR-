@@ -12,8 +12,8 @@
  *   'off'    — passthrough: return session.extractFromUtterance(...). Zero
  *              observable difference from the pre-stage-6 world. Default.
  *   'shadow' — run legacy FIRST (so we always have a payload to log), THEN
- *              drive createAssembler() against a canned interleaved-tool_use
- *              fixture, THEN log stage6_divergence carrying both payloads.
+ *              drive createAssembler() against canned interleaved-tool_use
+ *              events, THEN log stage6_divergence carrying both payloads.
  *              Return the LEGACY result (never the reconstructed one) so
  *              iOS behavior stays byte-identical between 'off' and 'shadow'.
  *   'live'   — throw. Live dispatch is Phase-7 territory; failing loudly
@@ -24,77 +24,32 @@
  * sonnet-stream.js on every shadow-mode turn") is only literally true if
  * something actually drives createAssembler() from the production seam
  * during Phase 1. Phase 1 has no real Anthropic tool calls to consume
- * (those land in Phase 2+), so we feed a canonical canned SSE fixture
+ * (those land in Phase 2+), so we feed canonical canned SSE events
  * through the assembler on every shadow turn. Pattern: "the pipe exists
  * and fires under load; Phase 2 just swaps what the pipe carries."
  *
  * WHY THIS SHAPE: Async function taking the session + forwarded args is
  * the smallest drop-in replacement for the call site in sonnet-stream.js
- * (~line 1245). No class, no subclassing — the session object already
+ * (~line 1248). No class, no subclassing — the session object already
  * carries all the state we need; we just fork on session.toolCallsMode.
  */
 
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-
 import logger from '../logger.js';
 import { createAssembler } from './stage6-stream-assembler.js';
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-
-/**
- * Canonical Phase-1 shadow input. Lives under __tests__/fixtures so the
- * same file is consumed by harness tests AND production shadow traffic —
- * single source of truth, zero drift. Reading from __tests__/ in prod is
- * intentional and documented in the plan: Phase 1 has nothing real to feed
- * the assembler yet; Phase 2 will replace this read with the actual
- * Anthropic event stream without changing the rest of this module.
- */
-const FIXTURE_PATH = path.resolve(
-  __dirname,
-  '../__tests__/fixtures/stage6-sse/shadow-canned-interleaved.json',
-);
-
-/** Memoised once per process — the file is immutable and ~1KB. */
-let _cachedFixture = null;
-/** Remembered failure so we don't retry the read on every turn if it's broken. */
-let _fixtureLoadFailed = false;
-
-function loadCannedFixture(log) {
-  if (_cachedFixture) return _cachedFixture;
-  if (_fixtureLoadFailed) return null;
-  try {
-    _cachedFixture = JSON.parse(fs.readFileSync(FIXTURE_PATH, 'utf8'));
-    return _cachedFixture;
-  } catch (err) {
-    // Fixture-read failure must NOT break extraction. We log once (warn)
-    // and soft-fail every subsequent call by returning null, which the
-    // divergence log will surface as an empty records payload.
-    _fixtureLoadFailed = true;
-    try {
-      log?.warn?.('stage6_shadow_fixture_load_failed', {
-        error: err?.message,
-        path: FIXTURE_PATH,
-      });
-    } catch {
-      // logger failures must also not break extraction
-    }
-    return null;
-  }
-}
+import { SHADOW_CANNED_EVENTS } from './stage6-shadow-canned.js';
 
 /**
- * Drive the stream assembler against the canned fixture and return the
+ * Drive the stream assembler against the canned events and return the
  * finalized reconstruction. Pure in-memory — zero API calls, zero cost.
+ *
+ * The events are an immutable module constant (see stage6-shadow-canned.js)
+ * so this function is purely CPU-bound, deterministic, and has no load-
+ * failure branch: if the module is missing, Node throws at service start
+ * rather than silently soft-failing on every turn.
  */
 function runAssemblerReplay(log) {
-  const events = loadCannedFixture(log);
-  if (!events) {
-    return { records: [], stop_reason: null, replay_skipped: true };
-  }
   const asm = createAssembler({ logger: log });
-  for (const ev of events) asm.handle(ev);
+  for (const ev of SHADOW_CANNED_EVENTS) asm.handle(ev);
   return asm.finalize();
 }
 
@@ -129,18 +84,26 @@ export async function runShadowHarness(session, transcriptText, regexResults, op
   }
 
   if (mode === 'shadow') {
+    // Snapshot the turn number BEFORE the await. extractFromUtterance runs
+    // `this.turnCount++` internally (eicr-extraction-session.js:641), so
+    // `(session.turnCount ?? 0) + 1` read AFTER the await would be off by
+    // one: the divergence log would carry turn-N+1 while the legacy
+    // payload describes turn-N. Phase 7's analyzer correlates legacy and
+    // tool_call rows by turnId — an off-by-one renders every row
+    // unjoinable. Codex's Phase-1 STG review flagged this as MAJOR.
+    const turnNum = (session.turnCount ?? 0) + 1;
+    const turnId = `${session.sessionId}-turn-${turnNum}`;
+
     // Run legacy FIRST. If it throws, we rethrow unchanged — no divergence
     // log (no payload to compare) and no assembler drive (no point wasting
     // cycles on the error path).
     const legacy = await session.extractFromUtterance(transcriptText, regexResults, options);
 
-    // Drive the stream assembler against the canned interleaved fixture.
+    // Drive the stream assembler against the canned interleaved events.
     // This is what makes ROADMAP Phase 1 SC #2 literally true: the
     // streaming-assembly branch is invoked from sonnet-stream.js on every
     // shadow-mode turn, not merely unit-tested in isolation.
     const toolCallReplay = runAssemblerReplay(log);
-
-    const turnId = `${session.sessionId}-turn-${(session.turnCount ?? 0) + 1}`;
 
     try {
       log.info('stage6_divergence', {
