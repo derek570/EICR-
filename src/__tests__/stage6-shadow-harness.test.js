@@ -1,170 +1,187 @@
 /**
- * Tests for stage6-shadow-harness — Phase 1 fork point that wraps the legacy
- * extractFromUtterance call and, on every shadow-mode turn, also drives the
- * Plan-03 stream assembler against a canned SSE fixture so the divergence log
- * has something to carry.
+ * Tests for stage6-shadow-harness — Phase 2 rewire (Plan 02-06).
  *
- * Coverage:
- *  - mode='off'    — pure passthrough (legacy runs, nothing else fires)
- *  - mode='shadow' — legacy runs, assembler runs, stage6_divergence emitted
- *  - mode='live'   — throws (Phase 7 territory)
- *  - turnId format and stability
- *  - legacy-throws path doesn't log or drive assembler
- *  - assembler drive runs synchronously relative to runShadowHarness resolution
- *  - fixture-read failure is soft-fail (still returns legacy)
- *  - integration smoke against a real EICRExtractionSession (Task 4)
+ * Phase 1 canned-replay tests in this file were REPLACED when the harness
+ * itself was rewired to drive runToolLoop (real tool loop, mocked Anthropic
+ * client). The original Phase 1 shape lives in git history at the tip of
+ * Phase 1 merge commit.
+ *
+ * Phase 2 contract under test:
+ *   - mode='off'    → passthrough, NO tool loop, NO divergence log
+ *   - mode='shadow' → legacy runs, tool loop runs with mocked client,
+ *                     bundler + comparator fire, one stage6_divergence row
+ *                     emitted with phase:2, bundler_phase:2.
+ *                     Legacy result is returned (iOS wire unchanged).
+ *   - mode='live'   → throws (Phase 7 guard preserved from Phase 1).
+ *   - legacy throw  → propagates, no divergence log
+ *   - tool-loop throw → caught; legacy returned; warn log emitted
+ *
+ * Full multi-round + same-turn-correction behaviour is covered by the
+ * dedicated E2E files (stage6-tool-loop-e2e.test.js, stage6-same-turn-
+ * correction.test.js). This file locks the mode-gating + error-path contract.
  */
 
 import { jest } from '@jest/globals';
 
 import { runShadowHarness } from '../extraction/stage6-shadow-harness.js';
-
-function makeSession(mode, legacyResult = { foo: 'bar' }) {
-  return {
-    sessionId: 'sess-1',
-    turnCount: 0,
-    toolCallsMode: mode,
-    extractFromUtterance: jest.fn().mockResolvedValue(legacyResult),
-  };
-}
+import { mockClient } from './helpers/mockStream.js';
 
 function makeLogger() {
   return { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() };
 }
 
-describe('runShadowHarness', () => {
+/**
+ * Single-round end_turn stream: no tool calls, terminates cleanly. This is
+ * the minimal valid tool-loop response shape — used when the test only
+ * cares that the loop RAN, not what it did.
+ */
+function endTurnStreamEvents(text = 'done') {
+  return [
+    { type: 'message_start', message: { id: 'msg_end', role: 'assistant', content: [] } },
+    { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } },
+    { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text } },
+    { type: 'content_block_stop', index: 0 },
+    { type: 'message_delta', delta: { stop_reason: 'end_turn' } },
+    { type: 'message_stop' },
+  ];
+}
+
+function makeSession(mode, legacyResult = { extracted_readings: [], observations: [], questions: [] }) {
+  return {
+    sessionId: 'sess-1',
+    turnCount: 0,
+    toolCallsMode: mode,
+    systemPrompt: 'TEST SYSTEM PROMPT',
+    client: mockClient([endTurnStreamEvents('ok')]),
+    stateSnapshot: { circuits: {}, pending_readings: [], observations: [], validation_alerts: [] },
+    extractedObservations: [],
+    extractFromUtterance: jest.fn().mockImplementation(async function () {
+      // Simulate legacy's internal turn-count increment.
+      this.turnCount = (this.turnCount ?? 0) + 1;
+      return legacyResult;
+    }),
+  };
+}
+
+describe('runShadowHarness — Phase 2', () => {
   describe("mode='off'", () => {
-    test('passthrough: legacy called once with forwarded args, no divergence log', async () => {
+    test('passthrough: legacy called once, NO divergence log, NO tool loop', async () => {
       const logger = makeLogger();
-      const s = makeSession('off');
-      const result = await runShadowHarness(s, 'transcript', [{ r: 1 }], { logger, confirmationsEnabled: true });
+      const s = makeSession('off', { foo: 'bar' });
+      const result = await runShadowHarness(s, 'transcript', [{ r: 1 }], {
+        logger,
+        confirmationsEnabled: true,
+      });
 
       expect(s.extractFromUtterance).toHaveBeenCalledTimes(1);
-      expect(s.extractFromUtterance).toHaveBeenCalledWith(
-        'transcript',
-        [{ r: 1 }],
-        expect.objectContaining({ confirmationsEnabled: true }),
-      );
       expect(result).toEqual({ foo: 'bar' });
-      expect(logger.info).not.toHaveBeenCalledWith('stage6_divergence', expect.any(Object));
+      expect(logger.info).not.toHaveBeenCalledWith('stage6_divergence', expect.anything());
+      // Shadow-off idempotency: no tool-loop API call issued.
+      expect(s.client._callCount).toBe(0);
     });
 
     test('missing toolCallsMode defaults to off (safe default)', async () => {
       const logger = makeLogger();
-      const s = { sessionId: 'sess-x', turnCount: 0, extractFromUtterance: jest.fn().mockResolvedValue({ ok: true }) };
+      const s = {
+        sessionId: 'sess-x',
+        turnCount: 0,
+        extractFromUtterance: jest.fn().mockResolvedValue({ ok: true }),
+      };
       const result = await runShadowHarness(s, 'text', [], { logger });
       expect(result).toEqual({ ok: true });
-      expect(logger.info).not.toHaveBeenCalledWith('stage6_divergence', expect.any(Object));
+      expect(logger.info).not.toHaveBeenCalledWith('stage6_divergence', expect.anything());
     });
   });
 
   describe("mode='shadow'", () => {
-    test('drives assembler against canned fixture and logs reconstructed payload', async () => {
+    test('drives real tool loop, logs stage6_divergence with phase:2 + bundler_phase:2', async () => {
       const logger = makeLogger();
-      const s = makeSession('shadow', { foo: 'legacy-payload' });
+      const s = makeSession('shadow', {
+        extracted_readings: [],
+        observations: [],
+        questions: [],
+      });
       const result = await runShadowHarness(s, 'text', [], { logger });
 
-      // Legacy result returned verbatim — iOS byte-identical behavior
-      expect(result).toEqual({ foo: 'legacy-payload' });
+      // Legacy result returned verbatim — iOS byte-identical.
+      expect(result).toEqual({ extracted_readings: [], observations: [], questions: [] });
 
-      // stage6_divergence log fired
+      // Tool loop was invoked exactly once.
+      expect(s.client._callCount).toBe(1);
+
       const call = logger.info.mock.calls.find((c) => c[0] === 'stage6_divergence');
       expect(call).toBeDefined();
       const payload = call[1];
       expect(payload).toEqual(
         expect.objectContaining({
           sessionId: 'sess-1',
-          turnId: 'sess-1-turn-1',
-          phase: 1,
+          phase: 2,
+          bundler_phase: 2,
           divergent: false,
+          reason: 'identical',
+          rounds: 1,
+          aborted: false,
+          shadow_cost_usd: null,
         }),
       );
-      expect(payload.legacy).toEqual({ foo: 'legacy-payload' });
+      // Structural: legacy_slots and tool_slots are JSON-safe (plain object /
+      // arrays), not raw Map/Set.
+      expect(typeof payload.legacy_slots.readings).toBe('object');
+      expect(Array.isArray(payload.tool_slots.observations)).toBe(true);
     });
 
-    test('reconstructed tool_call payload contains 2 records from the interleaved fixture', async () => {
+    test('turnId matches session.turnCount AFTER legacy increment', async () => {
       const logger = makeLogger();
       const s = makeSession('shadow');
-      await runShadowHarness(s, 'text', [], { logger });
-
-      const call = logger.info.mock.calls.find((c) => c[0] === 'stage6_divergence');
-      const payload = call[1];
-      expect(Array.isArray(payload.tool_call.records)).toBe(true);
-      expect(payload.tool_call.records).toHaveLength(2);
-      expect(payload.tool_call.records[0].input.circuit).toBe(1);
-      expect(payload.tool_call.records[1].input.circuit).toBe(2);
-      expect(payload.tool_call.stop_reason).toBe('tool_use');
-    });
-
-    test('turnId uses sessionId + (turnCount+1) — stable and predictable', async () => {
-      const logger = makeLogger();
-      const s = makeSession('shadow');
-      s.turnCount = 4;
+      s.turnCount = 4; // Legacy will increment to 5 during the call.
 
       await runShadowHarness(s, 'text', [], { logger });
 
+      expect(s.turnCount).toBe(5);
       const call = logger.info.mock.calls.find((c) => c[0] === 'stage6_divergence');
       expect(call[1].turnId).toBe('sess-1-turn-5');
     });
 
-    test('turnId is captured BEFORE legacy increments turnCount (Codex STG MAJOR — no off-by-one)', async () => {
-      // Real EICRExtractionSession does `this.turnCount++` inside
-      // extractFromUtterance (eicr-extraction-session.js:641). Mirror that
-      // behavior here so the test actually exercises the invariant: the
-      // divergence log's turnId must describe the legacy turn that just
-      // ran, NOT the next unrun turn.
-      const logger = makeLogger();
-      const s = {
-        sessionId: 'sess-off-by-one',
-        turnCount: 0,
-        toolCallsMode: 'shadow',
-        extractFromUtterance: jest.fn(async function () {
-          // Simulate real session: increment mid-call.
-          s.turnCount += 1;
-          return { foo: 'legacy' };
-        }),
-      };
-
-      await runShadowHarness(s, 'text', [], { logger });
-
-      // Post-call: session.turnCount === 1 (legacy ran once).
-      // Correct turnId describes that SAME turn → turn-1.
-      // Pre-fix bug would have reported turn-2 (computed after await from
-      // post-increment value + 1).
-      expect(s.turnCount).toBe(1);
-      const call = logger.info.mock.calls.find((c) => c[0] === 'stage6_divergence');
-      expect(call[1].turnId).toBe('sess-off-by-one-turn-1');
-    });
-
-    test('if legacy throws, rethrows and does NOT emit divergence log or drive assembler', async () => {
+    test('if legacy throws, rethrows and does NOT emit divergence log or run tool loop', async () => {
       const logger = makeLogger();
       const s = makeSession('shadow');
       s.extractFromUtterance.mockRejectedValueOnce(new Error('legacy fail'));
 
       await expect(runShadowHarness(s, 'text', [], { logger })).rejects.toThrow('legacy fail');
-      expect(logger.info).not.toHaveBeenCalledWith('stage6_divergence', expect.any(Object));
+      expect(logger.info).not.toHaveBeenCalledWith('stage6_divergence', expect.anything());
+      expect(s.client._callCount).toBe(0);
     });
 
-    test('call order: legacy resolves, THEN assembler drive + log fire, all before harness resolves', async () => {
+    test('tool-loop failure is CAUGHT: warn logged, legacy returned, no stage6_divergence row', async () => {
       const logger = makeLogger();
-      const order = [];
-      const s = {
-        sessionId: 'sess-1',
-        turnCount: 0,
-        toolCallsMode: 'shadow',
-        extractFromUtterance: jest.fn().mockImplementation(async () => {
-          order.push('legacy');
-          return { foo: 'bar' };
-        }),
+      // Client.messages.stream throws synchronously when called.
+      const s = makeSession('shadow', { legacy: true });
+      s.client = {
+        messages: {
+          stream() {
+            throw new Error('anthropic network blew up');
+          },
+        },
       };
-      logger.info.mockImplementation((name) => {
-        if (name === 'stage6_divergence') order.push('log');
-      });
 
-      await runShadowHarness(s, 'text', [], { logger });
-      // legacy first, then log (assembler drives between them synchronously
-      // relative to the log call — we assert the observable ordering)
-      expect(order).toEqual(['legacy', 'log']);
+      const result = await runShadowHarness(s, 'text', [], { logger });
+
+      // Legacy still returned — shadow failure never breaks production.
+      expect(result).toEqual({ legacy: true });
+
+      // warn row emitted.
+      const warnCall = logger.warn.mock.calls.find((c) => c[0] === 'stage6_shadow_error');
+      expect(warnCall).toBeDefined();
+      expect(warnCall[1]).toEqual(
+        expect.objectContaining({
+          sessionId: 'sess-1',
+          phase: 2,
+          error: 'anthropic network blew up',
+        }),
+      );
+
+      // No divergence log (comparator never ran).
+      expect(logger.info).not.toHaveBeenCalledWith('stage6_divergence', expect.anything());
     });
 
     test('logger.info failure during divergence emit does not break extraction', async () => {
@@ -172,9 +189,9 @@ describe('runShadowHarness', () => {
       logger.info.mockImplementation((name) => {
         if (name === 'stage6_divergence') throw new Error('log broken');
       });
-      const s = makeSession('shadow', { foo: 'bar' });
+      const s = makeSession('shadow', { extracted_readings: [], observations: [], questions: [] });
       const result = await runShadowHarness(s, 'text', [], { logger });
-      expect(result).toEqual({ foo: 'bar' });
+      expect(result).toEqual({ extracted_readings: [], observations: [], questions: [] });
     });
   });
 
@@ -186,44 +203,7 @@ describe('runShadowHarness', () => {
         /not implemented until Phase 7/,
       );
       expect(s.extractFromUtterance).not.toHaveBeenCalled();
+      expect(s.client._callCount).toBe(0);
     });
-  });
-});
-
-describe('integration: session + harness', () => {
-  // Phase-1 integration smoke. Does NOT construct a real EICRExtractionSession
-  // (that requires mocking @anthropic-ai/sdk via jest.unstable_mockModule
-  // which, combined with this file's static import of stage6-shadow-harness,
-  // would blow past the 40-line Jest-wiring budget set by the plan's hard
-  // quality floor). Instead we spy directly on a hand-built session object
-  // that mimics the fields Plan 05 adds (sessionId, turnCount, toolCallsMode,
-  // extractFromUtterance). This still exercises the contract that Plans
-  // 01-01, 01-03, 01-05, and 01-06 must compose.
-  test('shadow mode on a session-like instance logs divergence with correct turnId + assembler payload', async () => {
-    const logger = makeLogger();
-    const spy = jest.fn().mockResolvedValue({
-      extracted_readings: [],
-      questions_for_user: [],
-      confirmations: [],
-    });
-    const session = {
-      sessionId: 'sess-integration-42',
-      turnCount: 2,
-      toolCallsMode: 'shadow',
-      extractFromUtterance: spy,
-    };
-
-    const result = await runShadowHarness(session, 'some transcript', [], { logger });
-
-    expect(spy).toHaveBeenCalledTimes(1);
-    expect(result).toEqual({ extracted_readings: [], questions_for_user: [], confirmations: [] });
-
-    const call = logger.info.mock.calls.find((c) => c[0] === 'stage6_divergence');
-    expect(call).toBeDefined();
-    const payload = call[1];
-    expect(payload.turnId).toMatch(/^sess-integration-42-turn-3$/);
-    expect(payload.tool_call.records).toHaveLength(2);
-    expect(payload.tool_call.records[0].input.circuit).toBe(1);
-    expect(payload.tool_call.records[1].input.circuit).toBe(2);
   });
 });
