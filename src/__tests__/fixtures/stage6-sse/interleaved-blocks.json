@@ -1,0 +1,109 @@
+[
+  {
+    "type": "message_start",
+    "message": {
+      "id": "msg_01interleaved",
+      "role": "assistant",
+      "content": [],
+      "model": "claude-sonnet-4-6",
+      "stop_reason": null
+    }
+  },
+  {
+    "type": "content_block_start",
+    "index": 0,
+    "content_block": {
+      "type": "tool_use",
+      "id": "toolu_01reading",
+      "name": "record_reading",
+      "input": {}
+    }
+  },
+  {
+    "type": "content_block_start",
+    "index": 1,
+    "content_block": {
+      "type": "tool_use",
+      "id": "toolu_01observation",
+      "name": "record_observation",
+      "input": {}
+    }
+  },
+  {
+    "type": "content_block_delta",
+    "index": 0,
+    "delta": {
+      "type": "input_json_delta",
+      "partial_json": "{\"field\":\"measured_zs_ohm\","
+    }
+  },
+  {
+    "type": "content_block_delta",
+    "index": 1,
+    "delta": {
+      "type": "input_json_delta",
+      "partial_json": "{\"code\":\"C2\","
+    }
+  },
+  {
+    "type": "content_block_delta",
+    "index": 0,
+    "delta": {
+      "type": "input_json_delta",
+      "partial_json": "\"circuit\":2,"
+    }
+  },
+  {
+    "type": "content_block_delta",
+    "index": 1,
+    "delta": {
+      "type": "input_json_delta",
+      "partial_json": "\"description\":\"No RCD protection on circuit 2\","
+    }
+  },
+  {
+    "type": "content_block_delta",
+    "index": 0,
+    "delta": {
+      "type": "input_json_delta",
+      "partial_json": "\"value\":\"0.87\","
+    }
+  },
+  {
+    "type": "content_block_delta",
+    "index": 1,
+    "delta": {
+      "type": "input_json_delta",
+      "partial_json": "\"source_turn_id\":\"t-inter\"}"
+    }
+  },
+  {
+    "type": "content_block_delta",
+    "index": 0,
+    "delta": {
+      "type": "input_json_delta",
+      "partial_json": "\"confidence\":0.9,\"source_turn_id\":\"t-inter\"}"
+    }
+  },
+  {
+    "type": "content_block_stop",
+    "index": 1
+  },
+  {
+    "type": "content_block_stop",
+    "index": 0
+  },
+  {
+    "type": "message_delta",
+    "delta": {
+      "stop_reason": "tool_use",
+      "stop_sequence": null
+    },
+    "usage": {
+      "output_tokens": 89
+    }
+  },
+  {
+    "type": "message_stop"
+  }
+]
