@@ -143,6 +143,13 @@ export function createAssembler({ logger } = {}) {
       }
 
       case 'message_delta': {
+        // NOT terminal. Anthropic emits message_delta purely to carry
+        // usage/stop_reason metadata; the stream continues and message_stop
+        // is the sole terminal marker. We capture stop_reason here so
+        // finalize() can surface it, but we do NOT return the finalized
+        // payload — returning it here would make iteration-driven callers
+        // (those using `const out = asm.handle(ev)`) believe the stream has
+        // completed one event early and race ahead of message_stop.
         if (event.delta && event.delta.stop_reason) {
           stopReason = event.delta.stop_reason;
         }
@@ -150,9 +157,12 @@ export function createAssembler({ logger } = {}) {
       }
 
       case 'message_stop': {
-        // Terminal event. Return the finalized payload so callers driving the
-        // stream via `const out = asm.handle(event)` can detect completion
-        // without a separate finalize() call.
+        // Sole terminal event. Return the finalized payload so callers
+        // driving the stream via `const out = asm.handle(event)` can detect
+        // completion without a separate finalize() call. Callers that feed
+        // events in a loop without inspecting the return value should still
+        // call finalize() on stream end — handle() returning a payload is
+        // a convenience, finalize() remains the authoritative terminator.
         return finalize();
       }
 
