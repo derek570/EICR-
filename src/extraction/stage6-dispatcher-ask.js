@@ -191,6 +191,17 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws) {
         pendingAsks.register(toolCallId, {
           contextField: input.context_field,
           contextCircuit: input.context_circuit,
+          // Plan 03-11 Task 2 (STG r3 MAJOR remediation) — stash the ask's
+          // expected_answer_shape on the registry entry so classifyOvertake
+          // can short-circuit the "no regex hits → user_moved_on" fallback
+          // for yes_no / free_text asks whose replies are inherently
+          // non-regex. Without this, a "yes" or "upstairs lighting" reply
+          // arriving through the transcript channel (pre-Phase-4 iOS or
+          // bug path) is rejected as abandonment, forcing the user to
+          // restate. Keeps number / circuit_ref regex-gated — wrong
+          // numeric attribution is the harder failure mode to detect
+          // (poisons the slot map) than a re-ask.
+          expectedAnswerShape: input.expected_answer_shape,
           resolve,
           timer,
           askStartedAt,

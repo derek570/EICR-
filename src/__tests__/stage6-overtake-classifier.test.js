@@ -255,3 +255,180 @@ describe('classifyOvertake — duck-typed pendingAsks interface', () => {
     expect(verdict.toolCallId).toBe('ask_ze');
   });
 });
+
+// -----------------------------------------------------------------------------
+// STA-04c — Shape-aware no-regex branch (Plan 03-11 Task 2, r3 MAJOR remediation)
+//
+// The original Open Question #4 ruling (no regex → user_moved_on) is correct
+// for asks whose answers are numeric / circuit_ref: a bare "yes" or "thinking"
+// reply should NOT poison a numeric slot map. BUT for yes_no / free_text
+// asks the answer itself is inherently non-regex — "yes", "no", "upstairs
+// lighting" will never produce a field regex hit. The 03-10 classifier
+// rejected those legitimate answers as abandonment when they arrived
+// through the transcript channel (pre-Phase-4 iOS clients or any bug path
+// where iOS doesn't route via ask_user_answered).
+//
+// Fix: when expectedAnswerShape === 'yes_no' or 'free_text' on a pending
+// ask AND there are no regex hits, consult the shape to decide:
+//   - yes_no: treat yes/no/yeah/nope/etc. as answers
+//   - free_text: treat any non-empty trimmed text as an answer
+//   - number / circuit_ref / undefined: keep the conservative
+//     user_moved_on fallback (wrong numeric attribution >> re-ask cost)
+// -----------------------------------------------------------------------------
+
+describe('classifyOvertake — STA-04c shape-aware no-regex branch', () => {
+  test("STA-04c-yes: yes_no ask + 'yes' + no regex → answers", () => {
+    const verdict = classifyOvertake(
+      'yes',
+      [],
+      mockPending([
+        [
+          'ask_confirm',
+          {
+            contextField: 'measured_zs_ohm',
+            contextCircuit: 5,
+            expectedAnswerShape: 'yes_no',
+          },
+        ],
+      ]),
+    );
+    expect(verdict).toEqual({ kind: 'answers', toolCallId: 'ask_confirm', userText: 'yes' });
+  });
+
+  test("STA-04c-no: yes_no ask + 'no' + no regex → answers", () => {
+    const verdict = classifyOvertake(
+      'no',
+      [],
+      mockPending([
+        [
+          'ask_confirm',
+          { contextField: null, contextCircuit: null, expectedAnswerShape: 'yes_no' },
+        ],
+      ]),
+    );
+    expect(verdict.kind).toBe('answers');
+    expect(verdict.toolCallId).toBe('ask_confirm');
+  });
+
+  test("STA-04c-yes-variants: yes_no ask accepts yeah/yep/nope/correct + trailing punctuation", () => {
+    for (const text of ['yeah', 'yep.', 'Nope!', 'Correct', 'negative', '  YES  ']) {
+      const verdict = classifyOvertake(
+        text,
+        [],
+        mockPending([
+          [
+            'ask_v',
+            { contextField: null, contextCircuit: null, expectedAnswerShape: 'yes_no' },
+          ],
+        ]),
+      );
+      expect(verdict.kind).toBe('answers');
+    }
+  });
+
+  test('STA-04c-number: number ask + "yes" + no regex → user_moved_on (wrong attribution cost too high)', () => {
+    const verdict = classifyOvertake(
+      'yes',
+      [],
+      mockPending([
+        [
+          'ask_ze',
+          {
+            contextField: 'measured_zs_ohm',
+            contextCircuit: null,
+            expectedAnswerShape: 'number',
+          },
+        ],
+      ]),
+    );
+    expect(verdict.kind).toBe('user_moved_on');
+  });
+
+  test('STA-04c-free: free_text ask + "upstairs lighting" + no regex → answers', () => {
+    const verdict = classifyOvertake(
+      'upstairs lighting',
+      [],
+      mockPending([
+        [
+          'ask_desc',
+          {
+            contextField: 'circuit_designation',
+            contextCircuit: 3,
+            expectedAnswerShape: 'free_text',
+          },
+        ],
+      ]),
+    );
+    expect(verdict).toEqual({
+      kind: 'answers',
+      toolCallId: 'ask_desc',
+      userText: 'upstairs lighting',
+    });
+  });
+
+  test('STA-04c-free-empty: free_text ask + whitespace-only text + no regex → user_moved_on', () => {
+    const verdict = classifyOvertake(
+      '   ',
+      [],
+      mockPending([
+        [
+          'ask_desc',
+          { contextField: null, contextCircuit: null, expectedAnswerShape: 'free_text' },
+        ],
+      ]),
+    );
+    expect(verdict.kind).toBe('user_moved_on');
+  });
+
+  test('STA-04c-ambiguous: two pending asks (yes_no + number), "yes" → answers the yes_no, oldest matching wins', () => {
+    const verdict = classifyOvertake(
+      'yes',
+      [],
+      mockPending([
+        [
+          'ask_number',
+          {
+            contextField: 'ze',
+            contextCircuit: null,
+            expectedAnswerShape: 'number',
+          },
+        ],
+        [
+          'ask_confirm',
+          {
+            contextField: null,
+            contextCircuit: null,
+            expectedAnswerShape: 'yes_no',
+          },
+        ],
+      ]),
+    );
+    expect(verdict.kind).toBe('answers');
+    expect(verdict.toolCallId).toBe('ask_confirm');
+  });
+
+  test('STA-04c-undefined-shape: ask with no expectedAnswerShape + no regex → user_moved_on (backward compat)', () => {
+    const verdict = classifyOvertake(
+      'yes',
+      [],
+      // No expectedAnswerShape — represents pre-Plan-03-11 entries or a
+      // dispatcher bug. Fallback remains conservative.
+      mockPending([['ask_legacy', { contextField: 'ze', contextCircuit: null }]]),
+    );
+    expect(verdict.kind).toBe('user_moved_on');
+  });
+
+  test('STA-04c-yes_no-non-yes-text: yes_no ask + "maybe later" + no regex → user_moved_on (text doesn\'t match yes/no)', () => {
+    const verdict = classifyOvertake(
+      'maybe later',
+      [],
+      mockPending([
+        [
+          'ask_confirm',
+          { contextField: null, contextCircuit: null, expectedAnswerShape: 'yes_no' },
+        ],
+      ]),
+    );
+    expect(verdict.kind).toBe('user_moved_on');
+  });
+});
