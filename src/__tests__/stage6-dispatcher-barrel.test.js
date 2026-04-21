@@ -53,12 +53,48 @@ describe('barrel re-exports', () => {
     expect(WRITE_DISPATCHERS.delete_observation).toBe(observationSibling.dispatchDeleteObservation);
   });
 
-  test('every dispatcher returns a well-formed envelope when invoked with a minimal ctx', async () => {
-    const session = { sessionId: 's1' };
+  test('every dispatcher returns a well-formed envelope when invoked with valid inputs', async () => {
+    // WAVE-2 UPDATE (Plans 02-03 + 02-04 landed real impls): empty-input
+    // dispatch now hits validators and rejects. Previously NOOPs accepted
+    // `input: {}`. We preserve the intent (envelope shape is well-formed
+    // for all six tools) by supplying minimal valid inputs per tool. Under
+    // real impls, `ok:true` is produced by each dispatcher on a happy-path
+    // valid input — except delete_observation which emits the noop envelope
+    // when the observation id is unknown, which is ALSO shape-valid
+    // (is_error:false, JSON content with ok:true + noop:true).
+    const session = {
+      sessionId: 's1',
+      stateSnapshot: { circuits: { 3: { Ze_ohms: '0.35' } } },
+      extractedObservations: [],
+    };
     const logger = mockLogger();
     const ctx = { session, logger, turnId: 't1', perTurnWrites: createPerTurnWrites(), round: 1 };
+    const validInputs = {
+      record_reading: {
+        field: 'Zs_ohms',
+        circuit: 3,
+        value: '0.5',
+        confidence: 1.0,
+        source_turn_id: 't1',
+      },
+      clear_reading: { field: 'Ze_ohms', circuit: 3, reason: 'user_correction' },
+      create_circuit: { circuit_ref: 99 },
+      rename_circuit: { from_ref: 3, circuit_ref: 3 }, // rename-to-self = noop-ok
+      record_observation: { code: 'C2', text: 'x', location: 'y' },
+      delete_observation: { observation_id: '00000000-0000-4000-8000-000000000000', reason: 'user_correction' },
+    };
     for (const [name, fn] of Object.entries(WRITE_DISPATCHERS)) {
-      const res = await fn({ tool_call_id: `tu_${name}`, name, input: {} }, ctx);
+      // Fresh session per call so create_circuit(99) etc don't collide.
+      const localSession = {
+        sessionId: 's1',
+        stateSnapshot: { circuits: { 3: { Ze_ohms: '0.35' } } },
+        extractedObservations: [],
+      };
+      const localCtx = { ...ctx, session: localSession };
+      const res = await fn(
+        { tool_call_id: `tu_${name}`, name, input: validInputs[name] },
+        localCtx,
+      );
       expect(res.tool_use_id).toBe(`tu_${name}`);
       expect(res.is_error).toBe(false);
       expect(typeof res.content).toBe('string');

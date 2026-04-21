@@ -1,5 +1,5 @@
 /**
- * Stage 6 Phase 2 Plan 02-02 — Dispatcher scaffold tests.
+ * Stage 6 Phase 2 Plan 02-02 → Plan 02-03/04 — Dispatcher scaffold tests.
  *
  * WHAT: Locks the Phase 1 runToolLoop dispatcher contract for the six write
  * tools PLUS the unknown_tool path. Tests the barrel's WRITE_DISPATCHERS
@@ -12,6 +12,20 @@
  *   - The integration test at the bottom (Task 5) uses a real mockClient +
  *     runToolLoop invocation to prove the scaffold is actually compatible
  *     with Phase 1 infrastructure, not just shape-compatible on paper.
+ *
+ * WAVE-2 UPDATE (Plan 02-03 landing): the NOOP-era assertions that passed
+ * `input: {}` and expected `ok: true` have been replaced with minimal
+ * VALID inputs + stateSnapshot. The REAL-impl dispatchers (Plan 02-03 for
+ * circuits, Plan 02-04 for observations) validate their inputs — an empty
+ * input now REJECTS. The tests below assert the envelope + log-row
+ * SHAPE (not the NOOP ok:true behaviour) so the canary still covers:
+ *   - WRITE_DISPATCHERS has exactly six async functions
+ *   - createWriteDispatcher returns a valid closure with arity 2
+ *   - known-tool dispatch produces a well-formed envelope (ok:true under
+ *     valid input; this is the scaffold's end-to-end shape canary)
+ *   - unknown_tool path emits the rejection envelope + log row
+ *   - round counter increments monotonically across sequential calls
+ *   - integration test drives a 2-round loop via runToolLoop
  */
 
 import { jest } from '@jest/globals';
@@ -42,21 +56,16 @@ describe('WRITE_DISPATCHERS dispatch table', () => {
   });
 
   test('every entry is an async function', () => {
+    // WHY NO INVOCATION: after Plan 02-03/04 real-impls landed, invoking each
+    // dispatcher with `input: {}` triggers validation (record_reading ⇒
+    // circuit_not_found, create_circuit ⇒ circuit_already_exists on undefined
+    // circuit_ref, etc.) — one of which crashes on an empty stateSnapshot.
+    // We only need to prove each entry IS an async function; use constructor
+    // name so we do not accidentally exercise the validator.
     for (const [name, fn] of Object.entries(WRITE_DISPATCHERS)) {
       expect(typeof fn).toBe('function');
-      // Calling it returns a Promise (async function invariant).
-      const logger = mockLogger();
-      const p = fn(
-        { tool_call_id: `tu_${name}`, name, input: {} },
-        {
-          session: { sessionId: 's1' },
-          logger,
-          turnId: 't1',
-          perTurnWrites: createPerTurnWrites(),
-          round: 1,
-        },
-      );
-      expect(p).toBeInstanceOf(Promise);
+      expect(fn.constructor.name).toBe('AsyncFunction');
+      expect(name).toMatch(/^[a-z_]+$/);
     }
   });
 });
@@ -69,9 +78,20 @@ describe('createWriteDispatcher()', () => {
   });
 
   test('known tool: returns well-formed envelope and logs one stage6_tool_call row with outcome=ok', async () => {
+    // WAVE-2 UPDATE: supply VALID input + stateSnapshot so the real-impl
+    // dispatcher (Plan 02-03) reaches the success path. The NOOP era accepted
+    // any input; real impl validates.
     const logger = mockLogger();
-    const d = createWriteDispatcher({ sessionId: 's1' }, logger, 't1', createPerTurnWrites());
-    const result = await d({ tool_call_id: 'tu_x', name: 'record_reading', input: {} }, {});
+    const session = { sessionId: 's1', stateSnapshot: { circuits: { 3: {} } } };
+    const d = createWriteDispatcher(session, logger, 't1', createPerTurnWrites());
+    const result = await d(
+      {
+        tool_call_id: 'tu_x',
+        name: 'record_reading',
+        input: { field: 'Ze_ohms', circuit: 3, value: '0.35', confidence: 1.0, source_turn_id: 't1' },
+      },
+      {},
+    );
     expect(result.tool_use_id).toBe('tu_x');
     expect(result.is_error).toBe(false);
     expect(typeof result.content).toBe('string');
@@ -112,11 +132,38 @@ describe('createWriteDispatcher()', () => {
   });
 
   test('round counter increments monotonically across calls (STO-01)', async () => {
+    // WAVE-2 UPDATE: real-impl dispatchers validate inputs; round counter is
+    // incremented by the barrel factory BEFORE the dispatcher runs, so even
+    // validation-rejection rows must still increment monotonically. We use
+    // VALID inputs so each dispatch logs outcome:'ok' — that keeps the
+    // mock.calls array exactly three rows (one per dispatch).
     const logger = mockLogger();
-    const d = createWriteDispatcher({ sessionId: 's1' }, logger, 't1', createPerTurnWrites());
-    await d({ tool_call_id: 'tu_1', name: 'record_reading', input: {} }, {});
-    await d({ tool_call_id: 'tu_2', name: 'clear_reading', input: {} }, {});
-    await d({ tool_call_id: 'tu_3', name: 'create_circuit', input: {} }, {});
+    const session = {
+      sessionId: 's1',
+      stateSnapshot: { circuits: { 3: { Ze_ohms: '0.1' } } },
+      extractedObservations: [],
+    };
+    const d = createWriteDispatcher(session, logger, 't1', createPerTurnWrites());
+    await d(
+      {
+        tool_call_id: 'tu_1',
+        name: 'record_reading',
+        input: { field: 'Zs_ohms', circuit: 3, value: '0.5', confidence: 1.0, source_turn_id: 't1' },
+      },
+      {},
+    );
+    await d(
+      {
+        tool_call_id: 'tu_2',
+        name: 'clear_reading',
+        input: { field: 'Ze_ohms', circuit: 3, reason: 'user_correction' },
+      },
+      {},
+    );
+    await d(
+      { tool_call_id: 'tu_3', name: 'create_circuit', input: { circuit_ref: 7 } },
+      {},
+    );
     const rounds = logger.info.mock.calls.map((c) => c[1].round);
     expect(rounds).toEqual([1, 2, 3]);
   });
@@ -131,11 +178,12 @@ describe('scaffold integrates with Phase 1 runToolLoop (canary)', () => {
    * downstream.
    *
    * Two rounds:
-   *   Round 1 emits a single record_reading tool_use. Scaffold NOOP returns
-   *           {ok: true, noop_pending_impl: 'plan-02-03'}.
+   *   Round 1 emits a single record_reading tool_use with VALID input
+   *           (circuit 3 exists in stateSnapshot). Plan 02-03 real-impl
+   *           dispatcher returns {ok: true}.
    *   Round 2 ends the turn with stop_reason: 'end_turn'.
    *
-   * The loop accepts the scaffold NOOP envelope as a valid tool_result and
+   * The loop accepts the dispatcher envelope as a valid tool_result and
    * proceeds to round 2 cleanly.
    */
   test('createWriteDispatcher drives a 2-round loop and STO-01 row is emitted', async () => {
