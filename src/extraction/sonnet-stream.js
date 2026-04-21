@@ -302,7 +302,10 @@ function createMessageRateLimiter(maxMessages, windowMs) {
   };
 }
 
-const activeSessions = new Map(); // sessionId -> { session, questionGate, ws, ... }
+// activeSessions lives in a small shared module so route handlers (keys.js)
+// and unit tests can attribute ElevenLabs TTS cost without dragging the full
+// WS-handler import graph into their context. See `active-sessions.js`.
+import { activeSessions } from './active-sessions.js';
 
 // Known valid field names that iOS can handle
 const KNOWN_FIELDS = new Set([
@@ -1512,4 +1515,7 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
   return wss;
 }
 
+// Re-export for external readers (sonnet-stream-resume.test.js, etc.) that
+// previously imported `activeSessions` from this module. The canonical
+// definition now lives in `./active-sessions.js`.
 export { activeSessions };

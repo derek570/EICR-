@@ -253,3 +253,83 @@ describe('CostTracker', () => {
     });
   });
 });
+
+/**
+ * recordElevenLabsUsageForSession — helper exported from sonnet-stream.js that
+ * the `/api/proxy/elevenlabs-tts` route (keys.js) calls after a successful
+ * TTS response to attribute character count to the live session's CostTracker.
+ *
+ * Without this glue per-session ElevenLabs cost was always zero on iOS (the
+ * proxy path never populated the tracker). These tests exercise the contract
+ * directly so the attribution logic is locked in without needing supertest
+ * against the live route.
+ */
+describe('recordElevenLabsUsageForSession', () => {
+  // Loaded lazily inside each test so we can clear the module's private
+  // `activeSessions` Map between cases by re-importing with a cache bust.
+  let recordFn;
+  let activeSessions;
+
+  beforeEach(async () => {
+    // Import from the lightweight `active-sessions.js` rather than
+    // sonnet-stream.js — the latter drags storage.js which blows up in
+    // the Jest VM on `import.meta.dirname`.
+    const mod = await import('../extraction/active-sessions.js');
+    recordFn = mod.recordElevenLabsUsageForSession;
+    activeSessions = mod.activeSessions;
+    activeSessions.clear();
+  });
+
+  afterAll(() => {
+    if (activeSessions) activeSessions.clear();
+  });
+
+  test('records character count against the session CostTracker and returns true', () => {
+    const costTracker = new CostTracker();
+    activeSessions.set('sess-abc', { session: { costTracker } });
+
+    const result = recordFn('sess-abc', 120);
+
+    expect(result).toBe(true);
+    expect(costTracker.elevenLabsCharacters).toBe(120);
+    expect(costTracker.elevenLabsCost).toBeCloseTo(120 * 0.00003, 6);
+  });
+
+  test('accumulates across multiple TTS proxy calls within the same session', () => {
+    const costTracker = new CostTracker();
+    activeSessions.set('sess-acc', { session: { costTracker } });
+
+    recordFn('sess-acc', 50);
+    recordFn('sess-acc', 70);
+
+    expect(costTracker.elevenLabsCharacters).toBe(120);
+  });
+
+  test('returns false and does not throw when sessionId is unknown', () => {
+    const result = recordFn('sess-never-existed', 100);
+    expect(result).toBe(false);
+  });
+
+  test('returns false when sessionId is falsy (no attribution for null/""/undefined)', () => {
+    expect(recordFn(null, 50)).toBe(false);
+    expect(recordFn('', 50)).toBe(false);
+    expect(recordFn(undefined, 50)).toBe(false);
+  });
+
+  test('returns false when characterCount is non-positive or non-numeric', () => {
+    const costTracker = new CostTracker();
+    activeSessions.set('sess-bad-count', { session: { costTracker } });
+
+    expect(recordFn('sess-bad-count', 0)).toBe(false);
+    expect(recordFn('sess-bad-count', -5)).toBe(false);
+    expect(recordFn('sess-bad-count', '100')).toBe(false); // string not coerced
+    expect(costTracker.elevenLabsCharacters).toBe(0);
+  });
+
+  test('returns false when the session entry is malformed (no costTracker)', () => {
+    // Real failure mode: session is being torn down, costTracker cleared, but
+    // a late TTS response still arrives at the proxy.
+    activeSessions.set('sess-half-torn-down', { session: {} });
+    expect(recordFn('sess-half-torn-down', 100)).toBe(false);
+  });
+});

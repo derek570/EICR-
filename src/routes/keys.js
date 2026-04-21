@@ -268,16 +268,41 @@ router.post('/proxy/elevenlabs-tts', auth.requireAuth, async (req, res) => {
 
     res.set('Content-Type', 'audio/mpeg');
     const buffer = Buffer.from(await response.arrayBuffer());
+
+    // Attribute the TTS character count to the live session's CostTracker
+    // so per-session ElevenLabs cost is no longer zero (previously the
+    // tracker field was only populated by the web frontend's direct-cost
+    // path; iOS went through this proxy and never accumulated characters).
+    // Dynamic import keeps this route module independent of the WS handler
+    // module load order — routes are wired at Express startup, but the WS
+    // handler doesn't import cleanly at the top of every route file.
+    let trackerRecorded = false;
+    if (sessionId) {
+      try {
+        const { recordElevenLabsUsageForSession } = await import(
+          '../extraction/active-sessions.js'
+        );
+        trackerRecorded = recordElevenLabsUsageForSession(sessionId, text.length);
+      } catch (err) {
+        logger.warn('ElevenLabs cost attribution failed', {
+          sessionId,
+          error: err.message,
+        });
+      }
+    }
+
     // Record what was actually spoken + how much Sonnet-wording the
     // inspector heard. `textPreview` (first 120 chars) is sufficient to
     // pair with the QuestionGate "Flushing questions to iOS" log — we just
-    // need enough to visually match. `textLength` backs the cost-tracker
-    // integration landing in Commit 2 (ElevenLabs bills per character).
+    // need enough to visually match. `trackerRecorded` surfaces whether the
+    // CostTracker attribution landed so we can spot orphaned TTS calls
+    // (e.g. TTS after WS close) in CloudWatch.
     logger.info('ElevenLabs TTS success', {
       sessionId: sessionId || null,
       textPreview: text.slice(0, 120),
       textLength: text.length,
       bytes: buffer.length,
+      trackerRecorded,
     });
     res.send(buffer);
   } catch (error) {
