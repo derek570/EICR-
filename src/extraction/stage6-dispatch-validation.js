@@ -1,7 +1,10 @@
 /**
- * Stage 6 Phase 2 Plan 02-02 — Pure validators for the six write tools.
+ * Stage 6 Phase 2 Plan 02-02 + Phase 3 Plan 03-02 — Pure dispatch-time
+ * validators.
  *
- * WHAT: Six pure functions mapping (input, snapshot | session) → null | {code, field?}.
+ * WHAT: Seven pure functions mapping input → null | {code, field?}. Six
+ * write-tool validators (Plan 02-02) + one ask_user validator (Plan 03-02,
+ * STS-07).
  * They are pre-mutation gates: the dispatcher calls the validator first, and
  * only proceeds to state mutation + success logging if the validator returned
  * null. Rejection envelopes are logged with outcome:'rejected' by the
@@ -35,7 +38,19 @@
  * always; `dispatchDeleteObservation` (Plan 02-04) handles the absence case
  * by returning {ok:true, noop:true, reason:'observation_not_found'} with
  * is_error:false. Research §Q8.
+ *
+ * Phase 3 addition (STS-07): `validateAskUser` below. Same pure-function
+ * shape, but operates on the ask_user tool payload only — it does not consume
+ * a snapshot because ask_user has no state preconditions beyond the
+ * structural ones encoded by the schema. Failure-code namespace (bounded):
+ *   invalid_question              — missing / empty / >500 chars / non-string
+ *   invalid_reason                — not in ASK_USER_REASONS
+ *   invalid_context_field         — non-null and not in CONTEXT_FIELD_ENUM
+ *   invalid_context_circuit       — non-null and not an integer
+ *   invalid_expected_answer_shape — not in ASK_USER_ANSWER_SHAPES
  */
+
+import { CONTEXT_FIELD_ENUM } from './stage6-tool-schemas.js';
 
 /**
  * record_reading: circuit must exist.
@@ -121,5 +136,71 @@ export function validateRecordObservation(_input, _session) {
  */
 // eslint-disable-next-line no-unused-vars
 export function validateDeleteObservation(_input, _session) {
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// Phase 3 Plan 03-02 — ask_user (STS-07) runtime defensive validator.
+//
+// Why these enum consts live here (and not in stage6-tool-schemas.js):
+//   - stage6-enumerations.json is the build-time source of truth for the
+//     schema. The validator needs the SAME values as the schema, but lifting
+//     the JSON into the validator module couples two concerns (schema codegen
+//     + dispatch validation). We instead keep the lists small and local with
+//     an ASSERTION that they stay aligned — covered by the validator tests
+//     (any drift between these and config/stage6-enumerations.json shows up
+//     as a happy-path test failure because the schema would reject the value
+//     before dispatch ever ran).
+//   - If this pair of files ever diverges intentionally, the failure-code
+//     namespace already documents the breakpoint.
+// ---------------------------------------------------------------------------
+const ASK_USER_REASONS = [
+  'out_of_range_circuit',
+  'ambiguous_circuit',
+  'contradiction',
+  'observation_confirmation',
+  'missing_context',
+];
+const ASK_USER_ANSWER_SHAPES = ['yes_no', 'number', 'free_text', 'circuit_ref'];
+const MAX_QUESTION_LEN = 500;
+
+/**
+ * ask_user (STS-07): defensive runtime payload validator.
+ *
+ * Short-circuits on first failure in the order: question → reason →
+ * context_field → context_circuit → expected_answer_shape. Callers (Plan
+ * 03-05 dispatcher) rely on ordering so that a single failed field is
+ * deterministic across SDK versions.
+ *
+ * Returns null on success or {code, field?} on failure. Never throws.
+ */
+export function validateAskUser(input) {
+  if (
+    typeof input?.question !== 'string' ||
+    input.question.length === 0 ||
+    input.question.length > MAX_QUESTION_LEN
+  ) {
+    return { code: 'invalid_question', field: 'question' };
+  }
+  if (!ASK_USER_REASONS.includes(input.reason)) {
+    return { code: 'invalid_reason', field: 'reason' };
+  }
+  // context_field is nullable per the schema; only non-null values are
+  // enum-checked. CONTEXT_FIELD_ENUM itself contains null as a terminal
+  // member, but we special-case the null path so a 0 / '' / undefined does
+  // not silently sneak through an includes() check on an array that holds
+  // null.
+  if (input.context_field !== null && !CONTEXT_FIELD_ENUM.includes(input.context_field)) {
+    return { code: 'invalid_context_field', field: 'context_field' };
+  }
+  // context_circuit is nullable per the schema; only non-null values are
+  // integer-checked. Number.isInteger(null) is false so the explicit null
+  // guard is required.
+  if (input.context_circuit !== null && !Number.isInteger(input.context_circuit)) {
+    return { code: 'invalid_context_circuit', field: 'context_circuit' };
+  }
+  if (!ASK_USER_ANSWER_SHAPES.includes(input.expected_answer_shape)) {
+    return { code: 'invalid_expected_answer_shape', field: 'expected_answer_shape' };
+  }
   return null;
 }

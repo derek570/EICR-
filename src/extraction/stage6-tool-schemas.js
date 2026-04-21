@@ -45,7 +45,10 @@ const contextKeys = require('../../config/stage6-context-keys.json');
 // Deduped defensively in case a circuit_fields key ever collides with a
 // sentinel (shouldn't happen — sentinels are namespaced — but the dedupe
 // keeps the schema valid if it does).
-const CONTEXT_FIELD_ENUM = (() => {
+// Exported so Phase 3 dispatch-time validators (Plan 03-02 validateAskUser)
+// can reuse the same closed namespace rather than re-derive it — the enum
+// definition stays the single source of truth.
+export const CONTEXT_FIELD_ENUM = (() => {
   const circuitKeys = Object.keys(fieldSchema.circuit_fields).slice().sort();
   const sentinels = contextKeys.sentinels.slice().sort();
   const stringSet = new Set([...circuitKeys, ...sentinels]);
