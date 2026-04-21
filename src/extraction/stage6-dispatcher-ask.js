@@ -105,6 +105,14 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws) {
     const mode = session.toolCallsMode === 'shadow' ? 'shadow' : 'live';
     const sessionId = ctx?.sessionId ?? session.sessionId;
     const input = call.input ?? {};
+    // Plan 03-09 integration fix (Decision 03-06 #5 ratified): read id from
+    // BOTH shapes. runToolLoop dispatches with `{ tool_call_id, name, input }`
+    // (Phase 1/2 convention); the dispatcher's Plan 03-05 unit tests pass
+    // `{ id, ... }`. Both must work end-to-end. The composer in Plan 03-06
+    // already unions `call.tool_call_id ?? call.id` for its unknown_tool
+    // envelope; extending the same union to this dispatcher closes the
+    // composer→ask id-threading gap that STT-05/06/07 surfaced.
+    const toolCallId = call.tool_call_id ?? call.id;
 
     // Step 1: validation (STS-07). Runs in BOTH live and shadow — an invalid
     // payload is a bug regardless of whether we would block on it.
@@ -114,7 +122,7 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws) {
         sessionId,
         turnId,
         mode,
-        tool_call_id: call.id,
+        tool_call_id: toolCallId,
         question: typeof input.question === 'string' ? input.question : '(invalid)',
         reason: typeof input.reason === 'string' ? input.reason : 'missing_context',
         context_field: input.context_field ?? null,
@@ -124,7 +132,7 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws) {
         wait_duration_ms: 0,
       });
       return {
-        tool_use_id: call.id,
+        tool_use_id: toolCallId,
         content: JSON.stringify({
           answered: false,
           reason: 'validation_error',
@@ -140,7 +148,7 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws) {
         sessionId,
         turnId,
         mode,
-        tool_call_id: call.id,
+        tool_call_id: toolCallId,
         question: input.question,
         reason: input.reason,
         context_field: input.context_field,
@@ -149,7 +157,7 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws) {
         wait_duration_ms: 0,
       });
       return {
-        tool_use_id: call.id,
+        tool_use_id: toolCallId,
         content: JSON.stringify({ answered: false, reason: 'shadow_mode' }),
         is_error: false,
       };
@@ -162,7 +170,7 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws) {
       // strict clearTimeout → delete → resolve ordering and injects
       // wait_duration_ms.
       const timer = setTimeout(() => {
-        pendingAsks.resolve(call.id, { answered: false, reason: 'timeout' });
+        pendingAsks.resolve(toolCallId, { answered: false, reason: 'timeout' });
       }, ASK_USER_TIMEOUT_MS);
 
       // (3b) Register the deferred. register() throws on duplicate tool_call_id
@@ -170,7 +178,7 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws) {
       // clear our timer, and synchronously resolve so the outer await returns
       // without propagating a throw into the tool loop.
       try {
-        pendingAsks.register(call.id, {
+        pendingAsks.register(toolCallId, {
           contextField: input.context_field,
           contextCircuit: input.context_circuit,
           resolve,
@@ -195,7 +203,7 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws) {
           ws.send(
             JSON.stringify({
               type: 'ask_user_started',
-              tool_call_id: call.id,
+              tool_call_id: toolCallId,
               question: input.question,
               reason: input.reason,
               context_field: input.context_field,
@@ -215,7 +223,7 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws) {
       sessionId,
       turnId,
       mode,
-      tool_call_id: call.id,
+      tool_call_id: toolCallId,
       question: input.question,
       reason: input.reason,
       context_field: input.context_field,
@@ -233,7 +241,7 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws) {
       ? { answered: true, user_text: outcome.user_text }
       : { answered: false, reason: outcome.reason };
     return {
-      tool_use_id: call.id,
+      tool_use_id: toolCallId,
       content: JSON.stringify(body),
       is_error: outcome.reason === 'duplicate_tool_call_id',
     };
