@@ -164,6 +164,19 @@ describe('stage6-tool-schemas', () => {
     );
   });
 
+  test('record_observation requires all 5 STS-05 fields (Codex round-4 STG MAJOR — nullables must be required under strict:true)', () => {
+    // Under strict:true, non-required fields may be omitted entirely. A
+    // nullable field like `circuit: integer | null` or `suggested_regulation:
+    // string | null` that the dispatcher needs to interpret unambiguously
+    // MUST be required, with null as a valid value for "not applicable" —
+    // otherwise "installation-wide" (explicit null) and "model forgot"
+    // (key absent) collapse into the same undefined-key state.
+    const recordObs = byName('record_observation');
+    expect(recordObs.input_schema.required.sort()).toEqual(
+      ['code', 'location', 'text', 'circuit', 'suggested_regulation'].sort(),
+    );
+  });
+
   test('delete_observation.reason enum sourced from stage6-enumerations.json', () => {
     const deleteObs = byName('delete_observation');
     expect(deleteObs.input_schema.properties.reason.enum).toEqual(

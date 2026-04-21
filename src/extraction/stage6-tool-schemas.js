@@ -239,7 +239,14 @@ const recordObservation = makeTool({
         'BS7671 regulation reference (e.g. "411.3.1.1") if the model can reliably cite one. Null otherwise — the inspector will add it during review.',
     },
   },
-  required: ['code', 'location', 'text'],
+  // STS-05 lists all 5 fields in the strict tool shape. Under strict:true,
+  // non-required fields may be omitted — so a nullable field that the
+  // dispatcher needs to interpret unambiguously MUST be required, with null
+  // as a valid value for "not applicable". Otherwise "model forgot" and
+  // "installation-wide / no specific regulation" collapse into the same
+  // undefined-key state. Codex round-4 STG MAJOR #3 — mirror of the round-1
+  // MAJOR #4 fix applied to `phase | null` on create_circuit/rename_circuit.
+  required: ['code', 'location', 'text', 'circuit', 'suggested_regulation'],
 });
 
 // ---------------------------------------------------------------------------
