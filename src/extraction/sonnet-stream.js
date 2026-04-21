@@ -23,6 +23,9 @@ import logger from '../logger.js';
 // module so it can be unit-tested without loading storage.js. Docstring in
 // ./filled-slots-filter.js.
 import { filterQuestionsAgainstFilledSlots } from './filled-slots-filter.js';
+// Stage 6 — shadow-harness wraps extractFromUtterance so SONNET_TOOL_CALLS=shadow
+// drives the stream assembler from the seam on every turn (ROADMAP Phase 1 SC #2).
+import { runShadowHarness } from './stage6-shadow-harness.js';
 
 // Lazy-initialised OpenAI client for observation refinement (gpt-5-search-api).
 // Kept at module scope so repeat refinements reuse the same HTTPS pool.
@@ -1242,7 +1245,7 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         textPreview: transcriptText.substring(0, 80),
       });
       const regexResults = msg.regexResults || entry.lastRegexResults || [];
-      const result = await entry.session.extractFromUtterance(transcriptText, regexResults, {
+      const result = await runShadowHarness(entry.session, transcriptText, regexResults, {
         confirmationsEnabled: msg.confirmations_enabled || false,
       });
       entry.lastRegexResults = [];
