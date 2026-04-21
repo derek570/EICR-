@@ -829,42 +829,6 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
               break;
             }
 
-            // Plan 03-10 Task 1 (STG BLOCK remediation) — utterance-consumption
-            // dedupe. iOS MUST stamp the inbound ask_user_answered with the
-            // Deepgram utterance id (or other stable transcript anchor) that
-            // produced the answer. We remember that id in a per-session FIFO
-            // set so handleTranscript can suppress the same utterance if it
-            // ALSO arrives through the normal transcript channel (which
-            // happens routinely — iOS's Deepgram interim/final ordering +
-            // server routing are not strictly synchronised; both frames can
-            // cross the socket within milliseconds of each other).
-            //
-            // Cap at CONSUMED_UTTERANCE_CAP via FIFO eviction. 256 is an
-            // order of magnitude above the peak observed in a 120-minute
-            // inspection session (~100 utterances). Hard cap prevents an
-            // abusive / long-running session from leaking Set entries for
-            // the life of the activeSessions entry (up to ~5 min post-
-            // disconnect via the 300s disconnectTimer).
-            //
-            // Legacy compat: if iOS omits consumed_utterance_id (pre-Plan
-            // 03-10 clients), the ask still resolves — we just emit a
-            // warning log row so ops can see how quickly the legacy tail
-            // dies off after iOS ships the matching contract tightening.
-            if (typeof msg.consumed_utterance_id === 'string') {
-              entry.consumedAskUtterances.add(msg.consumed_utterance_id);
-              if (entry.consumedAskUtterances.size > CONSUMED_UTTERANCE_CAP) {
-                // Set preserves insertion order — the first key is the oldest.
-                const oldest = entry.consumedAskUtterances.values().next().value;
-                entry.consumedAskUtterances.delete(oldest);
-              }
-            } else {
-              logger.warn('stage6.ask_user_answered_untracked', {
-                sessionId: currentSessionId,
-                tool_call_id: msg.tool_call_id,
-                reason: 'missing_consumed_utterance_id',
-              });
-            }
-
             // Thread sanitisation flags through the resolve payload so the
             // dispatcher's logAskUser row carries them. Only emit the
             // sanitisation sub-object when at least one flag is true —
@@ -881,6 +845,67 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
               };
             }
             const resolved = entry.pendingAsks.resolve(msg.tool_call_id, resolvePayload);
+
+            // Plan 03-10 Task 1 (STG BLOCK remediation) — utterance-consumption
+            // dedupe. iOS MUST stamp the inbound ask_user_answered with the
+            // Deepgram utterance id (or other stable transcript anchor) that
+            // produced the answer. We remember that id in a per-session FIFO
+            // set so handleTranscript can suppress the same utterance if it
+            // ALSO arrives through the normal transcript channel (which
+            // happens routinely — iOS's Deepgram interim/final ordering +
+            // server routing are not strictly synchronised; both frames can
+            // cross the socket within milliseconds of each other).
+            //
+            // 2026-04-22 STG re-review BLOCK fix: the add() MUST be gated on
+            // resolved===true. An unknown / stale / duplicate tool_call_id
+            // returns resolved=false — if we still stamped the utterance id,
+            // a later legitimate transcript carrying the same id would be
+            // silently suppressed (speech dropped on the floor, zero writes,
+            // no UI surface to notice). The first 03-10 draft added the id
+            // unconditionally and introduced a strictly-worse failure mode
+            // than the original BLOCK (speech-processed-zero-times is harder
+            // to detect than speech-processed-twice). Gating on resolved
+            // restores the invariant: the dedupe Set tracks only utterances
+            // that actually satisfied a live ask.
+            //
+            // Cap at CONSUMED_UTTERANCE_CAP via FIFO eviction. 256 is an
+            // order of magnitude above the peak observed in a 120-minute
+            // inspection session (~100 utterances). Hard cap prevents an
+            // abusive / long-running session from leaking Set entries for
+            // the life of the activeSessions entry (up to ~5 min post-
+            // disconnect via the 300s disconnectTimer).
+            //
+            // Legacy compat: if iOS omits consumed_utterance_id (pre-Plan
+            // 03-10 clients), the ask still resolves — we just emit a
+            // warning log row so ops can see how quickly the legacy tail
+            // dies off after iOS ships the matching contract tightening.
+            // Unresolved + id present (stale frame) logs a distinct row so
+            // client-side bugs surface in CloudWatch without polluting the
+            // dedupe Set.
+            if (typeof msg.consumed_utterance_id === 'string') {
+              if (resolved) {
+                entry.consumedAskUtterances.add(msg.consumed_utterance_id);
+                if (entry.consumedAskUtterances.size > CONSUMED_UTTERANCE_CAP) {
+                  // Set preserves insertion order — first key is the oldest.
+                  const oldest = entry.consumedAskUtterances.values().next().value;
+                  entry.consumedAskUtterances.delete(oldest);
+                }
+              } else {
+                logger.warn('stage6.ask_user_answered_unresolved', {
+                  sessionId: currentSessionId,
+                  tool_call_id: msg.tool_call_id,
+                  utterance_id: msg.consumed_utterance_id,
+                  reason: 'unknown_or_stale_tool_call_id',
+                });
+              }
+            } else {
+              logger.warn('stage6.ask_user_answered_untracked', {
+                sessionId: currentSessionId,
+                tool_call_id: msg.tool_call_id,
+                reason: 'missing_consumed_utterance_id',
+              });
+            }
+
             logger.info('ask_user_answered received', {
               sessionId: currentSessionId,
               tool_call_id: msg.tool_call_id,

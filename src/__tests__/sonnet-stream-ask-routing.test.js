@@ -748,6 +748,62 @@ describe('STT-08 — utterance-consumption dedupe on ask_user_answered', () => {
     expect(entry.consumedAskUtterances.has('u-44')).toBe(true);
     expect(entry.consumedAskUtterances.has('u-299')).toBe(true);
   });
+
+  // STT-08d — 2026-04-22 STG re-review BLOCK remediation.
+  // The first 03-10 implementation unconditionally added
+  // `consumed_utterance_id` to the dedupe set BEFORE checking whether
+  // `pendingAsks.resolve()` actually matched a live ask. A stale /
+  // duplicate / unknown tool_call_id would therefore permanently suppress
+  // the matching transcript, silently DROPPING the inspector's speech on
+  // the floor. Codex flagged this in the re-review as a BLOCK because the
+  // original BLOCK's dedupe fix introduced a strictly-worse failure mode:
+  // the old bug was "speech processed twice", the 03-10-draft bug is
+  // "speech processed zero times", and the latter is harder to detect (no
+  // duplicate write to flag in the UI; the inspector just sees their last
+  // sentence ignored).
+  //
+  // The invariant this test locks: consumed_utterance_id is ONLY added to
+  // the session's consumedAskUtterances Set when resolve() returns true.
+  // An unknown/stale tool_call_id returns resolved=false and MUST leave
+  // the Set untouched, so a later transcript with the same utterance_id
+  // flows through the normal extraction path instead of being suppressed.
+  test('STT-08d stale tool_call_id: ask_user_answered with unknown id → set NOT updated, subsequent transcript NOT suppressed', async () => {
+    const ws = connect(wss, 'user-1');
+    await sendFrame(ws, {
+      type: 'session_start',
+      sessionId: 'sess-A',
+      jobState: { certificateType: 'eicr' },
+    });
+    const entry = activeSessions.get('sess-A');
+
+    runShadowHarnessSpy.mockClear();
+
+    // No ask is registered for tool_call_id 'toolu_stale'. This models:
+    //   (a) client retry replay after the original ask already timed out
+    //   (b) reconnect race where iOS resends after server already rejected
+    //   (c) developer error on the client
+    // resolve() will return false; the utterance_id MUST NOT be recorded.
+    await sendFrame(ws, {
+      type: 'ask_user_answered',
+      tool_call_id: 'toolu_stale',
+      user_text: 'Circuit 5',
+      consumed_utterance_id: 'u-stale',
+    });
+
+    expect(entry.consumedAskUtterances.has('u-stale')).toBe(false);
+    expect(entry.consumedAskUtterances.size).toBe(0);
+
+    // Now send the real transcript. Because u-stale was NOT recorded as
+    // consumed, the shadow harness MUST be invoked — the inspector's
+    // speech reaches extraction despite the earlier bogus answer frame.
+    await sendFrame(ws, {
+      type: 'transcript',
+      text: 'Circuit 5',
+      utterance_id: 'u-stale',
+      regexResults: [],
+    });
+    expect(runShadowHarnessSpy).toHaveBeenCalled();
+  });
 });
 
 // -----------------------------------------------------------------------------
