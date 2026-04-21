@@ -26,6 +26,15 @@ import { filterQuestionsAgainstFilledSlots } from './filled-slots-filter.js';
 // Stage 6 — shadow-harness wraps extractFromUtterance so SONNET_TOOL_CALLS=shadow
 // drives the stream assembler from the seam on every turn (ROADMAP Phase 1 SC #2).
 import { runShadowHarness } from './stage6-shadow-harness.js';
+// Stage 6 Phase 3 — per-session blocking-ask plumbing. Plan 03-08 threads the
+// per-session PendingAsksRegistry through every call-site of runShadowHarness
+// (via `options.pendingAsks` + `options.ws`) and routes inbound iOS
+// `ask_user_answered` replies to registry.resolve. The overtake classifier
+// fires in handleTranscript BEFORE shadow-harness dispatch so an unrelated
+// utterance drains stale asks (rejectAll 'user_moved_on') rather than
+// poisoning the slot map.
+import { createPendingAsksRegistry } from './stage6-pending-asks-registry.js';
+import { classifyOvertake } from './stage6-overtake-classifier.js';
 
 // Lazy-initialised OpenAI client for observation refinement (gpt-5-search-api).
 // Kept at module scope so repeat refinements reuse the same HTTPS pool.
@@ -753,6 +762,46 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
             });
             break;
 
+          // Stage 6 Phase 3 Plan 03-08 — iOS reply to a blocking ask_user.
+          // Routes straight to the per-session PendingAsksRegistry created in
+          // handleSessionStart. The registry (stage6-pending-asks-registry.js)
+          // enforces Codex STG #3 strict ordering inside resolve():
+          //   clearTimeout(timer) → Map.delete(id) → user resolve({...})
+          // so a same-millisecond timeout cannot double-resolve. An unknown
+          // tool_call_id silently returns resolved:false — this is the
+          // reconnect / replay race (iOS answers twice after a dropped
+          // socket). Emitting an error envelope would break legitimate
+          // at-least-once clients; we only error on MALFORMED payloads.
+          case 'ask_user_answered': {
+            if (!currentSessionId || !activeSessions.has(currentSessionId)) {
+              // No session = no registry to answer against. Silent drop is
+              // correct here — the registry for this session either never
+              // existed (mis-sequenced client) or was swept by a termination
+              // path that already rejected the ask.
+              break;
+            }
+            const entry = activeSessions.get(currentSessionId);
+            if (typeof msg.tool_call_id !== 'string' || typeof msg.user_text !== 'string') {
+              ws.send(
+                JSON.stringify({
+                  type: 'error',
+                  message: 'ask_user_answered requires tool_call_id + user_text',
+                })
+              );
+              break;
+            }
+            const resolved = entry.pendingAsks.resolve(msg.tool_call_id, {
+              answered: true,
+              user_text: msg.user_text,
+            });
+            logger.info('ask_user_answered received', {
+              sessionId: currentSessionId,
+              tool_call_id: msg.tool_call_id,
+              resolved,
+            });
+            break;
+          }
+
           default:
             ws.send(
               JSON.stringify({ type: 'error', message: `Unknown message type: ${msg.type}` })
@@ -782,6 +831,15 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         // memory from abandoned sessions.
         entry.disconnectTimer = setTimeout(() => {
           logger.info('Session timed out, cleaning up', { sessionId: currentSessionId });
+          // Stage 6 Phase 3 Plan 03-08 (Codex STG #3): release any in-flight
+          // blocking ask_user Promises BEFORE the registry becomes unreachable
+          // via activeSessions.delete. A post-delete ask resolution would be
+          // a leak — the awaiting dispatcher would hang for the tool-loop's
+          // full timeout (20s per STA-03) even though the session is gone.
+          // rejectAll('session_terminated') wakes every pending ask with
+          // {answered:false, reason:'session_terminated', wait_duration_ms}
+          // so Sonnet can still terminate the turn gracefully.
+          entry.pendingAsks.rejectAll('session_terminated');
           entry.questionGate.destroy();
           activeSessions.delete(currentSessionId);
         }, 300000);
@@ -800,6 +858,13 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         clearTimeout(existing.disconnectTimer);
         existing.disconnectTimer = null;
       }
+      // Stage 6 Phase 3 Plan 03-08: release stale asks BEFORE re-binding the
+      // socket. Any ask registered against the OLD ws would have its reply
+      // routed through that (now orphaned) socket's inbound handler — which
+      // has already fired `close`. Resolving with reason:'session_reconnected'
+      // lets the awaiting dispatcher return a clean "user reconnected without
+      // answering" outcome so Sonnet re-asks (or abandons) on the next turn.
+      existing.pendingAsks.rejectAll('session_reconnected');
       // Update the ws reference and re-bind the question gate to new ws.
       // This preserves the Anthropic conversation history across reconnects.
       existing.ws = ws;
@@ -934,8 +999,7 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
                 type: q.type || null,
                 field: q.field || null,
                 circuit: q.circuit === null || q.circuit === undefined ? null : q.circuit,
-                questionPreview:
-                  typeof q.question === 'string' ? q.question.slice(0, 120) : null,
+                questionPreview: typeof q.question === 'string' ? q.question.slice(0, 120) : null,
               }))
             : [],
         });
@@ -1036,6 +1100,13 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
       // these, and refineObservationsAsync checks it before each search call.
       recentlyRefinedIds: new Map(),
       rehydrateSessionId,
+      // Stage 6 Phase 3 Plan 03-08 — per-session blocking-ask registry.
+      // Lifetime === activeSessions entry lifetime; NOT recreated per turn.
+      // Owned exclusively by the dispatcher (creates/registers) + the
+      // classifier/inbound-router (resolves) + the termination paths
+      // (rejectAll). stage6-pending-asks-registry.js enforces Codex STG #3
+      // strict ordering inside every resolution path.
+      pendingAsks: createPendingAsksRegistry(),
     });
 
     ws.send(
@@ -1105,6 +1176,17 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
       clearTimeout(entry.disconnectTimer);
       entry.disconnectTimer = null;
     }
+
+    // Stage 6 Phase 3 Plan 03-08 (Rule-3 extension): Wave 4c.5 rehydrate is
+    // structurally the same as handleSessionStart's reconnect branch — a new
+    // ws replaces an old one on an existing activeSessions entry. Applying
+    // the same rejectAll('session_reconnected') here keeps the invariant
+    // "any ws-rebind drains stale asks" universal across the TWO reconnect
+    // surfaces (plan only enumerates handleSessionStart's; this path was
+    // introduced after the plan's Research phase). Deferring to Plan 03-08's
+    // decision log as a deviation (Rule 3 — keeps the Promise-lifecycle
+    // invariant tight).
+    entry.pendingAsks.rejectAll('session_reconnected');
 
     // Rebind the socket + questionGate callback to the new WS, matching the
     // handleSessionStart reconnection branch. This preserves the Anthropic
@@ -1263,8 +1345,57 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         textPreview: transcriptText.substring(0, 80),
       });
       const regexResults = msg.regexResults || entry.lastRegexResults || [];
+
+      // Stage 6 Phase 3 Plan 03-08 — overtake detection BEFORE shadow-harness
+      // dispatch. When there ARE pending blocking asks, classifyOvertake
+      // (stage6-overtake-classifier.js, STA-04) reads the utterance's regex
+      // hits against the registry and returns one of three verdicts:
+      //
+      //   'answers'       → the utterance contains a (field, circuit) that
+      //                     matches a pending ask's context. We resolve that
+      //                     specific ask with the new transcript as its
+      //                     user_text, then STILL fall through to the shadow
+      //                     harness so Sonnet's turn continues (it may emit
+      //                     more writes / ask further questions).
+      //   'user_moved_on' → the utterance carries regex hits that do NOT
+      //                     match any pending ask, OR has no regex hits at
+      //                     all (Open Question #4 fail-safe). We rejectAll
+      //                     to drain stale asks so the dispatcher returns
+      //                     `{answered:false, reason:'user_moved_on'}` and
+      //                     Sonnet decides whether to re-ask next turn.
+      //   'no_pending_asks' → empty registry; no-op.
+      //
+      // We short-circuit the classifier call when the registry is empty so
+      // the hot path (most turns) pays zero cost. The classifier itself is
+      // pure — safe to call every turn — but the guard keeps the CloudWatch
+      // noise floor clean.
+      if (entry.pendingAsks.size > 0) {
+        const verdict = classifyOvertake(transcriptText, regexResults, entry.pendingAsks);
+        if (verdict.kind === 'answers') {
+          entry.pendingAsks.resolve(verdict.toolCallId, {
+            answered: true,
+            user_text: verdict.userText,
+          });
+          // fall through — shadow harness continues the turn.
+        } else if (verdict.kind === 'user_moved_on') {
+          entry.pendingAsks.rejectAll('user_moved_on');
+          // fall through — new transcript becomes the fresh user message.
+        }
+        // 'no_pending_asks' can't happen here (guarded by size>0) but the
+        // classifier still returns it in defensive contexts — safe to ignore.
+      }
+
       const result = await runShadowHarness(entry.session, transcriptText, regexResults, {
         confirmationsEnabled: msg.confirmations_enabled || false,
+        // Stage 6 Phase 3 Plan 03-08: activate Plan 03-07's dispatcher
+        // composition. When these are present the harness wires
+        // createAskDispatcher alongside createWriteDispatcher and threads
+        // createSortRecordsAsksLast() into runToolLoop so STA-02 ("writes
+        // before asks") ordering fires at the dispatcher boundary.
+        // Identity preservation is load-bearing: the dispatcher registers
+        // into the SAME registry this routing layer resolves against.
+        pendingAsks: entry.pendingAsks,
+        ws,
       });
       entry.lastRegexResults = [];
 
@@ -1285,8 +1416,7 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
               type: q.type || null,
               field: q.field || null,
               circuit: q.circuit === null || q.circuit === undefined ? null : q.circuit,
-              questionPreview:
-                typeof q.question === 'string' ? q.question.slice(0, 120) : null,
+              questionPreview: typeof q.question === 'string' ? q.question.slice(0, 120) : null,
             }))
           : [],
       });
@@ -1453,6 +1583,15 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
   async function handleSessionStop(ws, sessionId) {
     if (!sessionId || !activeSessions.has(sessionId)) return;
     const entry = activeSessions.get(sessionId);
+
+    // Stage 6 Phase 3 Plan 03-08 (Codex STG #3): release blocking asks BEFORE
+    // the existing stop-path cleanup. Placed here (not near the
+    // activeSessions.delete at the end of this function) so ANY intermediate
+    // await below — flushUtteranceBuffer, storage.uploadJson, the cost_summary
+    // S3 upload — runs with the asks already rejected. Otherwise a pending
+    // ask could outlive an S3 network hiccup by several seconds, and a
+    // now-orphaned dispatcher would keep the tool-loop alive past session_ack.
+    entry.pendingAsks.rejectAll('session_stopped');
 
     // Flush any buffered utterances before stopping so no readings are lost
     const flushResult = await entry.session.flushUtteranceBuffer();

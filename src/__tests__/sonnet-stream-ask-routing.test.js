@@ -150,10 +150,6 @@ async function sendFrame(ws, frame) {
   await ws._emit('message', Buffer.from(JSON.stringify(frame)));
 }
 
-function lastAck(ws) {
-  return [...ws._sent].reverse().find((m) => m.type === 'session_ack');
-}
-
 // ── Fixtures ─────────────────────────────────────────────────────────────────
 
 const getKey = async () => 'fake-anthropic-key';
