@@ -588,3 +588,164 @@ describe('Group E — runShadowHarness receives identity-preserved pendingAsks +
     expect(options.ws).toBe(ws);
   });
 });
+
+// -----------------------------------------------------------------------------
+// STT-08 — Utterance-consumption dedupe (Plan 03-10 Task 1, BLOCK remediation)
+//
+// Invariant: the utterance iOS routed as an answer to a pending ask MUST NOT
+// ALSO flow through handleTranscript as a normal user-turn transcript. Without
+// server-side dedupe, the same speech would be extracted twice — once via the
+// ask flow (tool_result body) and once via the normal extraction path. The
+// anchoring must be server-enforced, not iOS-trust-based, because iOS could
+// buffer the transcript and the ask_user_answered independently and the
+// network could reorder / duplicate frames during reconnects.
+// -----------------------------------------------------------------------------
+
+describe('STT-08 — utterance-consumption dedupe on ask_user_answered', () => {
+  test('STT-08a double-frame: ask_user_answered with consumed_utterance_id then transcript with same id → transcript suppressed', async () => {
+    const ws = connect(wss, 'user-1');
+    await sendFrame(ws, {
+      type: 'session_start',
+      sessionId: 'sess-A',
+      jobState: { certificateType: 'eicr' },
+    });
+    const entry = activeSessions.get('sess-A');
+
+    // Seed an ask so ask_user_answered has a real entry to resolve (the
+    // registry is strict — resolve() returns false on unknown ids).
+    entry.pendingAsks.register('toolu_dedupe', {
+      contextField: 'measured_zs_ohm',
+      contextCircuit: null,
+      resolve: () => {},
+      timer: setTimeout(() => {}, 60000),
+      askStartedAt: Date.now(),
+    });
+
+    runShadowHarnessSpy.mockClear();
+
+    // 1. iOS routes the utterance as an ask answer, carrying its utterance id.
+    await sendFrame(ws, {
+      type: 'ask_user_answered',
+      tool_call_id: 'toolu_dedupe',
+      user_text: 'Circuit 5',
+      consumed_utterance_id: 'u-1',
+    });
+
+    // 2. The SAME Deepgram utterance then arrives as a transcript — iOS's
+    // Deepgram routing is not always strictly ordered and we might get the
+    // final transcript frame after the ask_user_answered frame. Server MUST
+    // detect the double and suppress extraction.
+    await sendFrame(ws, {
+      type: 'transcript',
+      text: 'Circuit 5',
+      utterance_id: 'u-1',
+      regexResults: [],
+    });
+
+    // Shadow harness must NOT have been invoked for the suppressed transcript.
+    expect(runShadowHarnessSpy).not.toHaveBeenCalled();
+
+    // Suppression log row emitted.
+    const loggerModule = (await import('../logger.js')).default;
+    const suppressed = loggerModule.info.mock.calls.filter(
+      (c) => c[0] === 'stage6.transcript_suppressed'
+    );
+    expect(suppressed).toHaveLength(1);
+    expect(suppressed[0][1]).toMatchObject({
+      sessionId: 'sess-A',
+      utterance_id: 'u-1',
+      reason: 'answered_ask',
+    });
+  });
+
+  test('STT-08b legacy compat: ask_user_answered without consumed_utterance_id → ask still resolves, warning logged, subsequent transcript NOT suppressed', async () => {
+    const ws = connect(wss, 'user-1');
+    await sendFrame(ws, {
+      type: 'session_start',
+      sessionId: 'sess-A',
+      jobState: { certificateType: 'eicr' },
+    });
+    const entry = activeSessions.get('sess-A');
+
+    const seeded = new Promise((resolve) => {
+      entry.pendingAsks.register('toolu_legacy', {
+        contextField: 'ze',
+        contextCircuit: null,
+        resolve,
+        timer: setTimeout(() => {}, 60000),
+        askStartedAt: Date.now(),
+      });
+    });
+
+    runShadowHarnessSpy.mockClear();
+    const loggerModule = (await import('../logger.js')).default;
+    loggerModule.warn.mockClear();
+
+    // Legacy iOS: no consumed_utterance_id — ask still resolves.
+    await sendFrame(ws, {
+      type: 'ask_user_answered',
+      tool_call_id: 'toolu_legacy',
+      user_text: 'whatever',
+    });
+    await expect(seeded).resolves.toMatchObject({
+      answered: true,
+      user_text: 'whatever',
+    });
+
+    // Warning log row flagging the missing field.
+    const untrackedWarnings = loggerModule.warn.mock.calls.filter(
+      (c) => c[0] === 'stage6.ask_user_answered_untracked'
+    );
+    expect(untrackedWarnings).toHaveLength(1);
+
+    // A subsequent transcript with some utterance_id is NOT suppressed — the
+    // dedupe can't fire for an answer that never registered an id.
+    await sendFrame(ws, {
+      type: 'transcript',
+      text: 'another sentence',
+      utterance_id: 'u-unrelated',
+      regexResults: [],
+    });
+    expect(runShadowHarnessSpy).toHaveBeenCalled();
+  });
+
+  test('STT-08c FIFO bound: 300 asks with distinct utterance_ids → set size capped at 256, oldest evict FIFO', async () => {
+    const ws = connect(wss, 'user-1');
+    await sendFrame(ws, {
+      type: 'session_start',
+      sessionId: 'sess-A',
+      jobState: { certificateType: 'eicr' },
+    });
+    const entry = activeSessions.get('sess-A');
+
+    // Register 300 distinct asks and answer each with a unique utterance_id.
+    // FIFO cap must hold at 256 — oldest IDs evict as new ones arrive.
+    for (let i = 0; i < 300; i += 1) {
+      const id = `toolu_${i}`;
+      entry.pendingAsks.register(id, {
+        contextField: null,
+        contextCircuit: null,
+        resolve: () => {},
+        timer: setTimeout(() => {}, 60000),
+        askStartedAt: Date.now(),
+      });
+      // eslint-disable-next-line no-await-in-loop
+      await sendFrame(ws, {
+        type: 'ask_user_answered',
+        tool_call_id: id,
+        user_text: 'x',
+        consumed_utterance_id: `u-${i}`,
+      });
+    }
+
+    // Set exposed on the activeSessions entry (Plan 03-10 Task 1).
+    expect(entry.consumedAskUtterances).toBeDefined();
+    expect(entry.consumedAskUtterances.size).toBeLessThanOrEqual(256);
+
+    // Oldest IDs (0..43) must have evicted; newest IDs (44..299) retained.
+    expect(entry.consumedAskUtterances.has('u-0')).toBe(false);
+    expect(entry.consumedAskUtterances.has('u-43')).toBe(false);
+    expect(entry.consumedAskUtterances.has('u-44')).toBe(true);
+    expect(entry.consumedAskUtterances.has('u-299')).toBe(true);
+  });
+});
