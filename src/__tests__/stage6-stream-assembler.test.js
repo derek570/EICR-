@@ -220,6 +220,59 @@ describe('stage6-stream-assembler', () => {
       expect(finalReturn.stop_reason).toBe('tool_use');
     });
 
+    it('finalize() flushes still-open blocks as incomplete_stream error records (Codex STG BLOCK — no orphan tool_use_ids)', () => {
+      // Simulate a truncated stream: two tool_use blocks open, one completes
+      // via content_block_stop, the other never does (network drop, provider
+      // abort, etc.). Without the finalize()-flush, the second block's
+      // tool_call_id would vanish from records, and the tool-loop's next
+      // round would push assistant(tool_use=id_B) -> user([]) because there
+      // is no tool_result pairing id_B. Anthropic rejects that with a 400.
+      const log = { warn: jest.fn() };
+      const asm = createAssembler({ logger: log });
+      asm.handle({ type: 'message_start', message: { id: 'm1', role: 'assistant', content: [], model: 'claude-sonnet-4-6', stop_reason: null } });
+      asm.handle({ type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'toolu_A', name: 'record_reading', input: {} } });
+      asm.handle({ type: 'content_block_start', index: 1, content_block: { type: 'tool_use', id: 'toolu_B', name: 'record_reading', input: {} } });
+      asm.handle({ type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: '{"field":"measured_zs_ohm","circuit":1,"value":"0.43","confidence":0.95,"source_turn_id":"t"}' } });
+      asm.handle({ type: 'content_block_delta', index: 1, delta: { type: 'input_json_delta', partial_json: '{"field":"measured_zs_ohm","circuit":2,' } }); // truncated mid-JSON
+      asm.handle({ type: 'content_block_stop', index: 0 });
+      // NO content_block_stop for index 1 — simulates mid-stream truncation.
+      const { records, stop_reason } = asm.finalize();
+
+      expect(records).toHaveLength(2);
+      // Index 0 finished cleanly.
+      expect(records[0].index).toBe(0);
+      expect(records[0].tool_call_id).toBe('toolu_A');
+      expect(records[0].input).toEqual({ field: 'measured_zs_ohm', circuit: 1, value: '0.43', confidence: 0.95, source_turn_id: 't' });
+      expect(records[0].error).toBeUndefined();
+      // Index 1 was flushed as an incomplete_stream error record with its
+      // real tool_call_id preserved so the loop can emit a synthetic
+      // tool_result keyed to toolu_B.
+      expect(records[1].index).toBe(1);
+      expect(records[1].tool_call_id).toBe('toolu_B');
+      expect(records[1].name).toBe('record_reading');
+      expect(records[1].error).toBe('incomplete_stream');
+      expect(records[1].raw_partial).toBe('{"field":"measured_zs_ohm","circuit":2,');
+      // stop_reason remains null — no message_delta ever arrived.
+      expect(stop_reason).toBeNull();
+    });
+
+    it('finalize() is idempotent when called twice (no double-flush of still-open blocks)', () => {
+      // Defensive: the shadow harness pattern is `for (ev of events) asm.handle(ev); asm.finalize()`.
+      // If the event stream includes message_stop, handle() internally calls
+      // finalize() which flushes open blocks and clears the map. The caller's
+      // subsequent finalize() must not re-flush (would produce dupes) and
+      // must still return the same records.
+      const asm = createAssembler();
+      asm.handle({ type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'toolu_X', name: 'record_reading', input: {} } });
+      asm.handle({ type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: '{"partial":' } });
+      const first = asm.finalize();
+      const second = asm.finalize();
+      expect(first.records).toHaveLength(1);
+      expect(first.records[0].error).toBe('incomplete_stream');
+      expect(second.records).toHaveLength(1);
+      expect(second.records[0].tool_call_id).toBe('toolu_X');
+    });
+
     it('ignores content_block_start.input placeholder {}', () => {
       // content_block_start carries input:{} as a typed placeholder. The
       // assembler must NOT read it as the tool's actual input; the real

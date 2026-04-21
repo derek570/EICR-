@@ -174,6 +174,30 @@ export function createAssembler({ logger } = {}) {
   }
 
   function finalize() {
+    // Flush any still-open blocks as `incomplete_stream` error records BEFORE
+    // sorting. Without this, a stream truncated after message_delta (network
+    // drop, provider-side abort) would have its assistant message containing
+    // `tool_use.id` entries that never got a matching content_block_stop —
+    // those ids would have NO record here, so the tool-loop's next round
+    // would push an `assistant(tool_use=id_X) -> user([])` pair with no
+    // tool_result for id_X, which Anthropic's API rejects with a 400 on
+    // `tool_use_id_without_result`. Codex's Phase-1 STG re-review flagged
+    // this as BLOCK @ assembler:176. Emitting an error record with the real
+    // tool_call_id lets the caller (stage6-tool-loop.js's error branch at
+    // line ~211) emit a synthetic error tool_result for each orphaned id
+    // and keep the turn conversation well-formed. We record raw_partial so
+    // Phase 7's analyzer can see how far the stream got before truncation.
+    for (const [index, state] of assemblers.entries()) {
+      completed.push({
+        index,
+        tool_call_id: state.id,
+        name: state.name,
+        error: 'incomplete_stream',
+        raw_partial: state.partialJson,
+      });
+    }
+    assemblers.clear();
+
     // Return in index-ascending order for stable dispatch and stable
     // comparison in divergence logs. content_block_stop order can differ
     // from index order when blocks interleave (see interleaved-blocks
