@@ -227,13 +227,43 @@ async function main() {
     }
   } else {
     printDelimited(
-      'INVALID CALL API ERROR (expected under strict enforcement)',
+      'INVALID CALL API ERROR (classifying...)',
       invalidOutcome.error,
     );
-    console.log(
-      '[stage6-probe] INVALID call rejected by API — strict:true is enforced at the API level. This is the expected outcome per REQUIREMENTS.md STS-08.',
-    );
-    strictEnforcementEvidence = 'api_reject';
+    // Codex round-4 STG MAJOR: we previously treated EVERY thrown error as
+    // `api_reject`. That silently passed the gate on 401/403/429/5xx and
+    // any transport failure — a revoked API key or a flaky network would
+    // "prove" strict-mode enforcement without ever reaching a live model.
+    //
+    // Only a specific schema-validation rejection is real evidence. Anthropic
+    // surfaces these as HTTP 400 with `err.type === 'invalid_request_error'`
+    // and messages referencing the enum constraint. Everything else is
+    // ambiguous (auth/quota/transport/server) and must exit 3.
+    const err = invalidOutcome.error;
+    const is400 = err.status === 400;
+    const isInvalidReq = err.type === 'invalid_request_error';
+    const msg = typeof err.message === 'string' ? err.message.toLowerCase() : '';
+    const schemaSignalRe = /(enum|does not match|is not one of|not allowed|schema)/;
+    const hasSchemaSignal = schemaSignalRe.test(msg);
+
+    if (is400 && (isInvalidReq || hasSchemaSignal)) {
+      console.log(
+        '[stage6-probe] INVALID call rejected by API with 400/invalid_request_error — strict:true is enforced at the API level. This is the expected outcome per REQUIREMENTS.md STS-08.',
+      );
+      strictEnforcementEvidence = 'api_reject';
+    } else {
+      // Auth (401/403), rate-limit (429), server (5xx), transport, or a
+      // non-schema 400 (e.g. model overloaded, context too long). Any of
+      // these could occur even when the invalid enum would have been
+      // happily accepted — the probe has not actually tested strict mode.
+      console.error(
+        `[stage6-probe] AMBIGUOUS: error status=${err.status} type=${err.type} — not a schema-validation 400.`,
+      );
+      console.error(
+        '[stage6-probe] This is NOT evidence of strict-mode enforcement. Auth/quota/transport/server errors all land here.',
+      );
+      strictEnforcementEvidence = 'ambiguous_api_error';
+    }
   }
 
   console.log('\n[stage6-probe] Probe complete.');
