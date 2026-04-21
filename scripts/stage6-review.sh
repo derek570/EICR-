@@ -264,12 +264,15 @@ PROMPT
       git -C "$repo" diff "$BASE_BRANCH" || true
       echo '~~~'
     else
-      echo "_Base branch \`$BASE_BRANCH\` is not reachable from $repo._"
-      echo "_Falling back to diff against the merge-base of the current branch._"
-      echo ""
-      echo '~~~diff'
-      git -C "$repo" diff HEAD~5..HEAD 2>/dev/null || echo "(no recent diff available)"
-      echo '~~~'
+      # FAIL HARD — a silent HEAD~5..HEAD fallback previously (Codex round-3
+      # MINOR) let the reviewer see a tiny slice of recent commits instead of
+      # the actual phase diff, producing a confidently-wrong review. The only
+      # safe behaviour is to abort so the operator fixes the base branch
+      # (fetch it, or set STAGE6_BASE_BRANCH to a reachable ref).
+      echo "[stage6-review] base branch '$BASE_BRANCH' is not reachable in $repo" >&2
+      echo "[stage6-review]   — fetch it (git -C $repo fetch origin $BASE_BRANCH)" >&2
+      echo "[stage6-review]   — or set STAGE6_BASE_BRANCH to a locally reachable ref" >&2
+      exit 4
     fi
     echo ""
   done
