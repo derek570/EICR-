@@ -20,6 +20,8 @@ import {
   createWriteDispatcher,
 } from '../extraction/stage6-dispatchers.js';
 import { createPerTurnWrites } from '../extraction/stage6-per-turn-writes.js';
+import { runToolLoop } from '../extraction/stage6-tool-loop.js';
+import { mockClient } from './helpers/mockStream.js';
 
 function mockLogger() {
   return { info: jest.fn(), warn: jest.fn(), error: jest.fn() };
@@ -117,5 +119,83 @@ describe('createWriteDispatcher()', () => {
     await d({ tool_call_id: 'tu_3', name: 'create_circuit', input: {} }, {});
     const rounds = logger.info.mock.calls.map((c) => c[1].round);
     expect(rounds).toEqual([1, 2, 3]);
+  });
+});
+
+describe('scaffold integrates with Phase 1 runToolLoop (canary)', () => {
+  /**
+   * INTEGRATION (scaffold-level): proves createWriteDispatcher is usable as
+   * runToolLoop's dispatcher arg. Locks Phase 1 contract compatibility BEFORE
+   * Plans 02-03/04/06 land. If this test breaks, the scaffold envelope shape
+   * has diverged from what Phase 1's loop expects and the fix is here — not
+   * downstream.
+   *
+   * Two rounds:
+   *   Round 1 emits a single record_reading tool_use. Scaffold NOOP returns
+   *           {ok: true, noop_pending_impl: 'plan-02-03'}.
+   *   Round 2 ends the turn with stop_reason: 'end_turn'.
+   *
+   * The loop accepts the scaffold NOOP envelope as a valid tool_result and
+   * proceeds to round 2 cleanly.
+   */
+  test('createWriteDispatcher drives a 2-round loop and STO-01 row is emitted', async () => {
+    const events1 = [
+      {
+        type: 'content_block_start',
+        index: 0,
+        content_block: { type: 'tool_use', id: 'tu_a', name: 'record_reading' },
+      },
+      {
+        type: 'content_block_delta',
+        index: 0,
+        delta: {
+          type: 'input_json_delta',
+          partial_json:
+            '{"field":"Ze_ohms","circuit":3,"value":"0.35","confidence":1.0,"source_turn_id":"t1"}',
+        },
+      },
+      { type: 'content_block_stop', index: 0 },
+      { type: 'message_delta', delta: { stop_reason: 'tool_use' } },
+      { type: 'message_stop' },
+    ];
+    const events2 = [
+      { type: 'message_delta', delta: { stop_reason: 'end_turn' } },
+      { type: 'message_stop' },
+    ];
+
+    const client = mockClient([events1, events2]);
+    const logger = mockLogger();
+    const session = {
+      sessionId: 's1',
+      stateSnapshot: { circuits: { 3: {} } },
+      extractedObservations: [],
+    };
+    const dispatcher = createWriteDispatcher(session, logger, 'turn-1', createPerTurnWrites());
+
+    const result = await runToolLoop({
+      client,
+      model: 'claude-sonnet-4-6',
+      system: 'test',
+      messages: [{ role: 'user', content: 'hello' }],
+      tools: [],
+      dispatcher,
+      ctx: { sessionId: 's1', turnId: 'turn-1' },
+      logger,
+    });
+
+    expect(result.rounds).toBe(2);
+    expect(result.stop_reason).toBe('end_turn');
+    // STO-01: exactly one 'stage6_tool_call' row from the scaffold NOOP.
+    const scaffoldRows = logger.info.mock.calls.filter(
+      (c) => c[0] === 'stage6_tool_call',
+    );
+    expect(scaffoldRows.length).toBe(1);
+    expect(scaffoldRows[0][1]).toMatchObject({
+      tool: 'record_reading',
+      outcome: 'ok',
+      is_error: false,
+      phase: 2,
+      tool_use_id: 'tu_a',
+    });
   });
 });
