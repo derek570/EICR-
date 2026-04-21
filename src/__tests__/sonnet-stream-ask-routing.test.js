@@ -874,9 +874,15 @@ describe('user_text sanitisation on ask_user_answered (Plan 03-10 Task 2)', () =
       consumed_utterance_id: 'u-ctrl',
     });
 
+    // GREEN contract: resolve payload carries a `sanitisation` sub-object when
+    // sanitiseUserText() either stripped controls or truncated. Locking the
+    // presence of `{truncated:false, stripped:true}` here — not just the clean
+    // text — is the whole point of Task 2: downstream consumers (dispatcher
+    // log row, Phase 8 analyzer) need to SEE that a sanitisation pass ran.
     expect(resolveSpy).toHaveBeenCalledWith('toolu_ctrl', {
       answered: true,
       user_text: 'cleanvaluetext',
+      sanitisation: { truncated: false, stripped: true },
     });
   });
 });

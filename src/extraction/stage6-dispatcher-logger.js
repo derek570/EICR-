@@ -173,6 +173,11 @@ export function logAskUser(logger, payload) {
   };
   if (payload.user_text !== undefined) row.user_text = payload.user_text;
   if (payload.validation_error !== undefined) row.validation_error = payload.validation_error;
+  // Plan 03-10 Task 2 — sanitisation sub-object {truncated, stripped}
+  // forwarded verbatim when the caller sets it. Kept dumb (single source of
+  // truth on the sanitiser semantics is in stage6-sanitise-user-text.js;
+  // this helper is still a pass-through shape gate, per module docstring).
+  if (payload.sanitisation !== undefined) row.sanitisation = payload.sanitisation;
 
   logger.info('stage6.ask_user', row);
 }

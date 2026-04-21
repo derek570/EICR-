@@ -232,6 +232,11 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws) {
       wait_duration_ms: outcome.wait_duration_ms ?? 0,
     };
     if (outcome.user_text !== undefined) logPayload.user_text = outcome.user_text;
+    // Plan 03-10 Task 2 — Task 2 of the STG remediation threads a
+    // `sanitisation: {truncated, stripped}` sub-object through the resolve
+    // payload when sanitiseUserText() stripped controls or truncated the
+    // answer. Forward it verbatim; absence is the common clean-path case.
+    if (outcome.sanitisation !== undefined) logPayload.sanitisation = outcome.sanitisation;
     logAskUser(logger, logPayload);
 
     // Step 6: return tool_result envelope. Body is a JSON string per the

@@ -35,6 +35,11 @@ import { runShadowHarness } from './stage6-shadow-harness.js';
 // poisoning the slot map.
 import { createPendingAsksRegistry } from './stage6-pending-asks-registry.js';
 import { classifyOvertake } from './stage6-overtake-classifier.js';
+// Plan 03-10 Task 2 — bound + scrub user_text before it touches CloudWatch
+// logs OR the Anthropic tool_result body. Pure function; throws on abusive
+// sizes (>8192 chars) so the caller can send an error envelope back to iOS
+// instead of smuggling the abuse downstream.
+import { sanitiseUserText } from './stage6-sanitise-user-text.js';
 
 // Lazy-initialised OpenAI client for observation refinement (gpt-5-search-api).
 // Kept at module scope so repeat refinements reuse the same HTTPS pool.
@@ -798,6 +803,32 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
               break;
             }
 
+            // Plan 03-10 Task 2 (STG MAJOR remediation) — sanitise user_text
+            // BEFORE anything downstream can see it. Runs BEFORE the Task 1
+            // mark-consumed step so a rejection on abusive size doesn't
+            // permanently suppress a utterance_id (would cause legitimate
+            // future transcripts with the same id to be dropped). Also runs
+            // BEFORE the resolve so the dispatcher's tool_result body
+            // carries the cleaned text to Anthropic.
+            let sanitised;
+            try {
+              sanitised = sanitiseUserText(msg.user_text);
+            } catch (sanErr) {
+              logger.warn('stage6.user_text_rejected', {
+                sessionId: currentSessionId,
+                tool_call_id: msg.tool_call_id,
+                code: sanErr.code || 'sanitisation_error',
+                message: sanErr.message,
+              });
+              ws.send(
+                JSON.stringify({
+                  type: 'error',
+                  message: `ask_user_answered rejected: ${sanErr.message}`,
+                })
+              );
+              break;
+            }
+
             // Plan 03-10 Task 1 (STG BLOCK remediation) — utterance-consumption
             // dedupe. iOS MUST stamp the inbound ask_user_answered with the
             // Deepgram utterance id (or other stable transcript anchor) that
@@ -834,14 +865,28 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
               });
             }
 
-            const resolved = entry.pendingAsks.resolve(msg.tool_call_id, {
+            // Thread sanitisation flags through the resolve payload so the
+            // dispatcher's logAskUser row carries them. Only emit the
+            // sanitisation sub-object when at least one flag is true —
+            // the common clean-path case (100% of current inspector speech)
+            // keeps the log row noise-free.
+            const resolvePayload = {
               answered: true,
-              user_text: msg.user_text,
-            });
+              user_text: sanitised.text,
+            };
+            if (sanitised.truncated || sanitised.stripped) {
+              resolvePayload.sanitisation = {
+                truncated: sanitised.truncated,
+                stripped: sanitised.stripped,
+              };
+            }
+            const resolved = entry.pendingAsks.resolve(msg.tool_call_id, resolvePayload);
             logger.info('ask_user_answered received', {
               sessionId: currentSessionId,
               tool_call_id: msg.tool_call_id,
               resolved,
+              sanitised_truncated: sanitised.truncated,
+              sanitised_stripped: sanitised.stripped,
             });
             break;
           }
