@@ -223,6 +223,25 @@ export async function runToolLoop({
           is_error: true,
         });
       }
+      // Invariant (Codex round-4 STG MAJOR): symmetrical to the normal-branch
+      // guard at line ~383. If we hit the loop cap with stop_reason='tool_use'
+      // but no real tool_use ids to answer (records has only orphan_delta
+      // skips AND the assistant message surfaced zero tool_use blocks), the
+      // model has emitted a protocol violation. Pushing `content: []` here
+      // would malform the conversation history — the next Anthropic call
+      // would 400 with tool_use_id_without_result or api_error. Abort cleanly
+      // without pushing a user message so messages_final terminates on the
+      // assistant turn (already pushed above at line 179).
+      if (abortResults.length === 0) {
+        logger?.error?.('stage6.tool_loop_invariant', {
+          sessionId: ctx?.sessionId,
+          turnId: ctx?.turnId,
+          rounds,
+          reason: 'tool_use_stop_reason_with_no_tool_use_blocks_at_cap',
+        });
+        aborted = true;
+        break;
+      }
       messages.push({ role: 'user', content: abortResults });
       aborted = true;
       logger?.warn?.('tool_loop_cap_hit', {

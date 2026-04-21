@@ -612,6 +612,90 @@ describe('stage6-tool-loop', () => {
     );
   });
 
+  test('cap-hit invariant: stop_reason=tool_use at LOOP_CAP with zero real tool ids → abort (no empty user-content push) (Codex STG round-4 MAJOR)', async () => {
+    // Symmetry bug with the round-2 normal-branch invariant fix: when the
+    // cap-hit branch runs but neither `records` (all orphan_delta, skipped)
+    // nor `assistantToolUseIds(assistantMsg)` surfaces a real id, the
+    // pre-fix code would `messages.push({role:'user', content:[]})`,
+    // malforming the conversation history. Any caller reusing messages_final
+    // would 400 on the next stream() call. Post-fix: abort cleanly, no push.
+    //
+    // Construct 7 real tool_use rounds + an 8th round that presents
+    // stop_reason=tool_use with zero real tool_use blocks (assembler sees
+    // nothing, finalMessage() echoes empty content).
+    const rounds = [];
+    for (let i = 1; i <= 7; i += 1) {
+      rounds.push(
+        toolUseRound([
+          {
+            id: `toolu_r${i}`,
+            name: 'record_reading',
+            input: { field: 'measured_zs_ohm', circuit: i, value: '0.0', confidence: 0.9, source_turn_id: `t${i}` },
+          },
+        ]),
+      );
+    }
+    const emptyRound8 = {
+      async *[Symbol.asyncIterator]() {
+        yield { type: 'message_start', message: { id: 'm8', role: 'assistant', content: [] } };
+        yield { type: 'message_delta', delta: { stop_reason: 'tool_use' } };
+        yield { type: 'message_stop' };
+      },
+      async finalMessage() {
+        return { role: 'assistant', content: [], stop_reason: 'tool_use' };
+      },
+    };
+    let call = 0;
+    const client = {
+      messages: {
+        stream() {
+          call += 1;
+          if (call <= 7) return mockStream(rounds[call - 1]);
+          return emptyRound8;
+        },
+      },
+    };
+    const messages = [{ role: 'user', content: 'start' }];
+    const logger = makeLogger();
+    const dispatcher = jest.fn(NOOP_DISPATCHER);
+
+    const result = await runToolLoop({
+      client,
+      model: 'claude-sonnet-4-6',
+      system: 'sys',
+      messages,
+      tools: TOOL_SCHEMAS,
+      dispatcher,
+      ctx: baseCtx(),
+      logger,
+    });
+
+    expect(result.aborted).toBe(true);
+    expect(result.rounds).toBe(8);
+    // CRITICAL: the last message in history is the round-8 assistant message
+    // (pushed at line 179 before the cap-hit branch runs). NO user message
+    // with empty content was pushed — content:[] would malform history.
+    const lastMsg = messages[messages.length - 1];
+    expect(lastMsg.role).toBe('assistant');
+    expect(lastMsg.content).toEqual([]);
+    // No user message with empty content anywhere in the tail.
+    for (const m of messages) {
+      if (m.role === 'user' && Array.isArray(m.content)) {
+        expect(m.content.length).toBeGreaterThan(0);
+      }
+    }
+    // Invariant violation logged with the cap-specific reason string.
+    expect(logger.error).toHaveBeenCalledWith(
+      'stage6.tool_loop_invariant',
+      expect.objectContaining({
+        reason: 'tool_use_stop_reason_with_no_tool_use_blocks_at_cap',
+        rounds: 8,
+      }),
+    );
+    // Dispatcher called 7× (rounds 1–7 normal), NOT called on round 8 (cap).
+    expect(dispatcher).toHaveBeenCalledTimes(7);
+  });
+
   test('rogue dispatcher returning wrong tool_use_id → tool_result keyed to rec.tool_call_id + warn log (Codex STG round-3 MAJOR)', async () => {
     // Defence in depth: if the dispatcher ever returns an object whose
     // tool_use_id diverges from rec.tool_call_id (buggy custom dispatcher,
