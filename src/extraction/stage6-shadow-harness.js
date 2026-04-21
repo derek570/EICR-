@@ -161,7 +161,38 @@ export async function runShadowHarness(session, transcriptText, regexResults, op
   // session (Pitfall #2). New instance per call structurally prevents
   // cross-turn leaks.
   const perTurnWrites = createPerTurnWrites();
-  const dispatcher = createWriteDispatcher(session, log, turnId, perTurnWrites);
+
+  // Step 3b (Codex Phase-2 review BLOCK #1): isolate the shadow dispatcher
+  // from authoritative session state.
+  //
+  // The dispatchers (stage6-dispatchers-circuit.js + -observation.js) write
+  // through `session.stateSnapshot` (via shared snapshot-mutator atoms) AND
+  // `session.extractedObservations` (via appendObservation). Legacy has
+  // ALREADY run above and mutated both of those slots for this turn. If we
+  // handed the live session to createWriteDispatcher, the tool loop would
+  // apply a SECOND set of writes on top — next turn's state snapshot would
+  // reflect legacy+shadow combined, not legacy-alone. Silent corruption of
+  // authoritative server state across turns is the exact failure mode this
+  // review finding identifies, and Phase 2's contract (`SONNET_TOOL_CALLS=
+  // shadow` is observation-only, iOS gets legacy verbatim) requires shadow
+  // to be strictly non-authoritative.
+  //
+  // Fix: structured-clone the mutable surface into a plain wrapper object
+  // that shares `sessionId` with the live session (needed for log correlation)
+  // but carries its own writable copies of stateSnapshot and
+  // extractedObservations. Atom writes mutate the wrapper only; the live
+  // session is untouched. Cloning via `structuredClone` is JSON-safe here —
+  // stateSnapshot contains only plain objects/arrays/primitives (circuits
+  // keyed by ref, pending_readings / observations / validation_alerts as
+  // primitive-typed arrays). No Dates, Maps, class instances.
+  const shadowSession = {
+    sessionId: session.sessionId,
+    stateSnapshot: structuredClone(session.stateSnapshot),
+    extractedObservations: Array.isArray(session.extractedObservations)
+      ? structuredClone(session.extractedObservations)
+      : [],
+  };
+  const dispatcher = createWriteDispatcher(shadowSession, log, turnId, perTurnWrites);
 
   // Step 4: drive the real tool loop. Any thrown error is CAUGHT so shadow
   // failure NEVER breaks production — legacy return value is authoritative.

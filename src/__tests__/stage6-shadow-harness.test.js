@@ -184,6 +184,52 @@ describe('runShadowHarness — Phase 2', () => {
       expect(logger.info).not.toHaveBeenCalledWith('stage6_divergence', expect.anything());
     });
 
+    test('shadow tool loop does NOT mutate live session.stateSnapshot (Codex BLOCK #1)', async () => {
+      // Phase-2 Codex review BLOCK #1: if shadow handed the live session to
+      // createWriteDispatcher, legacy + shadow would both write to
+      // stateSnapshot — next-turn state reflects 2x writes. The fix clones
+      // stateSnapshot + extractedObservations into a shadow wrapper before
+      // passing to the dispatcher. This test locks the invariant: after a
+      // successful shadow tool call, the live session's snapshot and
+      // observations array are byte-identical to their pre-shadow state.
+      const logger = makeLogger();
+      const s = makeSession('shadow', { extracted_readings: [], observations: [], questions: [] });
+      // Seed the live session with a known circuit so record_reading can
+      // target it without tripping the dispatcher's existence validator.
+      s.stateSnapshot.circuits[1] = { circuit_ref: 1, designation: 'Ring 1' };
+      const snapshotBefore = JSON.stringify(s.stateSnapshot);
+      const observationsBefore = JSON.stringify(s.extractedObservations);
+
+      // Tool-use stream: Sonnet calls record_reading(field=measured_zs_ohm,
+      // circuit=1, value=0.32) then end_turns on the next round.
+      const toolUseEvents = [
+        { type: 'message_start', message: { id: 'msg_tool', role: 'assistant', content: [] } },
+        {
+          type: 'content_block_start',
+          index: 0,
+          content_block: { type: 'tool_use', id: 'tu_1', name: 'record_reading', input: {} },
+        },
+        {
+          type: 'content_block_delta',
+          index: 0,
+          delta: {
+            type: 'input_json_delta',
+            partial_json: '{"field":"measured_zs_ohm","circuit":1,"value":0.32}',
+          },
+        },
+        { type: 'content_block_stop', index: 0 },
+        { type: 'message_delta', delta: { stop_reason: 'tool_use' } },
+        { type: 'message_stop' },
+      ];
+      s.client = mockClient([toolUseEvents, endTurnStreamEvents('done')]);
+
+      await runShadowHarness(s, 'Ze on circuit one is 0.32', [], { logger });
+
+      // Live session untouched: snapshot and observations bit-identical.
+      expect(JSON.stringify(s.stateSnapshot)).toBe(snapshotBefore);
+      expect(JSON.stringify(s.extractedObservations)).toBe(observationsBefore);
+    });
+
     test('logger.info failure during divergence emit does not break extraction', async () => {
       const logger = makeLogger();
       logger.info.mockImplementation((name) => {

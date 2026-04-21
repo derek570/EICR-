@@ -196,12 +196,16 @@ describe('Stage 6 Phase 2 — STT-03 multi-round integration', () => {
     expect(payload.divergent).toBe(false);
     expect(payload.reason).toBe('identical');
 
-    // 7. Session stateSnapshot mutations happened (dispatchers actually ran):
-    //    circuit 2 now exists; circuit 1 has volts = '230'.
-    expect(s.stateSnapshot.circuits[2]).toBeDefined();
-    expect(s.stateSnapshot.circuits[1].volts).toBe('230');
-    expect(s.extractedObservations).toHaveLength(1);
-    expect(s.extractedObservations[0]).toMatchObject({ code: 'C2', text: 'RCD type AC' });
+    // 7. Codex Phase-2 review BLOCK #1 fix: shadow dispatchers run against an
+    //    ISOLATED shadow session wrapper, NOT the live session. The live
+    //    session's stateSnapshot + extractedObservations must be untouched —
+    //    legacy is the only authoritative writer during Phase 2. Evidence that
+    //    the dispatchers actually ran comes from (a) _callCount === 3 above,
+    //    (b) the tool_slots projection observed in step 5, and (c) the
+    //    divergence comparator's reason === 'identical'.
+    expect(s.stateSnapshot.circuits[2]).toBeUndefined();
+    expect(s.stateSnapshot.circuits[1].volts).toBeUndefined();
+    expect(s.extractedObservations).toEqual([]);
   });
 
   test('SHADOW-OFF IDEMPOTENCY (success criterion #6): mode=off triggers ZERO mockAnthropic.stream calls', async () => {
