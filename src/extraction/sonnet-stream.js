@@ -731,6 +731,22 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
             currentSessionId = null;
             break;
 
+          // [voice-quality-sprint Stage 4] iOS barge-in telemetry. When the
+          // on-device VAD cancels TTS mid-playback (inspector interrupted a
+          // question), iOS sends this as analytics so we can tune the
+          // probability/frames threshold from CloudWatch. There's no
+          // server-side action required — the cancellation already happened
+          // locally — but we MUST accept the message, otherwise the default
+          // case below returns an error that iOS surfaces as a red banner
+          // (exactly the bug Stage 4 shipped to TestFlight Build 272).
+          case 'tts_cancelled_by_user':
+            logger.info('Client TTS cancelled by user (barge-in)', {
+              sessionId: currentSessionId,
+              reason: msg.reason,
+              vadProbability: msg.vad_probability,
+            });
+            break;
+
           default:
             ws.send(
               JSON.stringify({ type: 'error', message: `Unknown message type: ${msg.type}` })
