@@ -292,6 +292,13 @@ const WS_RATE_LIMIT = {
   windowMs: 60_000, // 1-minute window
 };
 
+// Plan 03-10 Task 1 — FIFO cap on the per-session consumedAskUtterances set.
+// Picked one order of magnitude above the peak utterance count observed in a
+// full 120-minute EICR inspection (~100 utterances) so normal sessions NEVER
+// trigger eviction; abusive / long-running sessions still bound memory.
+// Exported for test overrides.
+export const CONSUMED_UTTERANCE_CAP = 256;
+
 /**
  * Sliding-window rate limiter. Returns an object with a check() method
  * that returns true if the message is allowed, false if rate-limited.
@@ -790,6 +797,43 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
               );
               break;
             }
+
+            // Plan 03-10 Task 1 (STG BLOCK remediation) — utterance-consumption
+            // dedupe. iOS MUST stamp the inbound ask_user_answered with the
+            // Deepgram utterance id (or other stable transcript anchor) that
+            // produced the answer. We remember that id in a per-session FIFO
+            // set so handleTranscript can suppress the same utterance if it
+            // ALSO arrives through the normal transcript channel (which
+            // happens routinely — iOS's Deepgram interim/final ordering +
+            // server routing are not strictly synchronised; both frames can
+            // cross the socket within milliseconds of each other).
+            //
+            // Cap at CONSUMED_UTTERANCE_CAP via FIFO eviction. 256 is an
+            // order of magnitude above the peak observed in a 120-minute
+            // inspection session (~100 utterances). Hard cap prevents an
+            // abusive / long-running session from leaking Set entries for
+            // the life of the activeSessions entry (up to ~5 min post-
+            // disconnect via the 300s disconnectTimer).
+            //
+            // Legacy compat: if iOS omits consumed_utterance_id (pre-Plan
+            // 03-10 clients), the ask still resolves — we just emit a
+            // warning log row so ops can see how quickly the legacy tail
+            // dies off after iOS ships the matching contract tightening.
+            if (typeof msg.consumed_utterance_id === 'string') {
+              entry.consumedAskUtterances.add(msg.consumed_utterance_id);
+              if (entry.consumedAskUtterances.size > CONSUMED_UTTERANCE_CAP) {
+                // Set preserves insertion order — the first key is the oldest.
+                const oldest = entry.consumedAskUtterances.values().next().value;
+                entry.consumedAskUtterances.delete(oldest);
+              }
+            } else {
+              logger.warn('stage6.ask_user_answered_untracked', {
+                sessionId: currentSessionId,
+                tool_call_id: msg.tool_call_id,
+                reason: 'missing_consumed_utterance_id',
+              });
+            }
+
             const resolved = entry.pendingAsks.resolve(msg.tool_call_id, {
               answered: true,
               user_text: msg.user_text,
@@ -865,6 +909,13 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
       // lets the awaiting dispatcher return a clean "user reconnected without
       // answering" outcome so Sonnet re-asks (or abandons) on the next turn.
       existing.pendingAsks.rejectAll('session_reconnected');
+      // Plan 03-10 Task 1 — reconnect resets the consumedAskUtterances set.
+      // Any utterance routed through the OLD ws is irrelevant to dedupe on
+      // the NEW ws (the iOS client may retransmit unfinished state or start
+      // fresh). Keeping stale ids would falsely suppress legitimate new
+      // transcripts whose ids happen to collide.
+      if (existing.consumedAskUtterances) existing.consumedAskUtterances.clear();
+      else existing.consumedAskUtterances = new Set();
       // Update the ws reference and re-bind the question gate to new ws.
       // This preserves the Anthropic conversation history across reconnects.
       existing.ws = ws;
@@ -1107,6 +1158,13 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
       // (rejectAll). stage6-pending-asks-registry.js enforces Codex STG #3
       // strict ordering inside every resolution path.
       pendingAsks: createPendingAsksRegistry(),
+      // Plan 03-10 Task 1 — FIFO set of Deepgram utterance ids that iOS has
+      // already routed as ask_user_answered payloads. handleTranscript checks
+      // this BEFORE invoking runShadowHarness so the same utterance doesn't
+      // get extracted twice (once via ask tool_result, once via normal
+      // extraction). Bounded at CONSUMED_UTTERANCE_CAP; oldest entries evict
+      // FIFO so a long-running session doesn't leak the set.
+      consumedAskUtterances: new Set(),
     });
 
     ws.send(
@@ -1187,6 +1245,10 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
     // decision log as a deviation (Rule 3 — keeps the Promise-lifecycle
     // invariant tight).
     entry.pendingAsks.rejectAll('session_reconnected');
+    // Plan 03-10 Task 1 — mirror the handleSessionStart reconnect branch:
+    // drop any stale consumed-utterance ids on socket swap.
+    if (entry.consumedAskUtterances) entry.consumedAskUtterances.clear();
+    else entry.consumedAskUtterances = new Set();
 
     // Rebind the socket + questionGate callback to the new WS, matching the
     // handleSessionStart reconnection branch. This preserves the Anthropic
@@ -1277,6 +1339,29 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
     }
 
     const entry = activeSessions.get(sessionId);
+
+    // Plan 03-10 Task 1 (STG BLOCK remediation) — utterance-consumption
+    // dedupe. If this transcript carries a utterance_id that iOS already
+    // routed as an ask_user_answered payload, drop it silently. Sonnet
+    // already received the answer through the ask tool_result body; running
+    // extraction over the same speech would produce duplicate readings /
+    // observations and double-charge the Anthropic turn. Guard placed BEFORE
+    // questionGate.onNewUtterance() + isExtracting gating because those
+    // side-effects (rate counter + queue slot) must not fire for a
+    // suppressed utterance either.
+    if (
+      typeof msg.utterance_id === 'string' &&
+      entry.consumedAskUtterances &&
+      entry.consumedAskUtterances.has(msg.utterance_id)
+    ) {
+      logger.info('stage6.transcript_suppressed', {
+        sessionId,
+        utterance_id: msg.utterance_id,
+        reason: 'answered_ask',
+      });
+      return;
+    }
+
     entry.questionGate.onNewUtterance();
 
     // If already extracting, queue this transcript individually
