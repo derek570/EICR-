@@ -337,9 +337,23 @@ export class QuestionGate {
       for (const q of this.pendingQuestions) {
         this.recentlyFlushedSigs.set(this._questionSig(q), expiry);
       }
+      // Log full question payload (type/field/circuit/question-text/heard_value)
+      // so CloudWatch can reconstruct *exactly* what Sonnet asked per session,
+      // pairing with the ElevenLabs TTS success log (keys.js) to see the full
+      // Sonnet-question -> TTS-text chain. Previously this log only carried
+      // `count`, so when the inspector reported "it asked something weird" we
+      // had no record of the question wording on the server side (iOS
+      // debug-log upload is still broken — see MEMORY.md).
       logger.info('Flushing questions to iOS', {
         sessionId: this.sessionId,
         count: this.pendingQuestions.length,
+        questions: this.pendingQuestions.map((q) => ({
+          type: q.type || null,
+          field: q.field || null,
+          circuit: q.circuit === null || q.circuit === undefined ? null : q.circuit,
+          question: typeof q.question === 'string' ? q.question.slice(0, 200) : null,
+          heard_value: q.heard_value || null,
+        })),
       });
       this.sendCallback(this.pendingQuestions);
       this.pendingQuestions = [];
