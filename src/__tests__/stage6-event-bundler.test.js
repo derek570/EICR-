@@ -80,6 +80,39 @@ describe('bundleToolCallsIntoResult — Reading Map projection', () => {
     ]);
   });
 
+  test('numeric circuit (integer from tool schema) round-trips as integer, not string', () => {
+    // Codex Phase-2 review MAJOR #2 fix: the Map key is `${field}::${input.circuit}`
+    // so integer circuit_refs get coerced to numeric strings at write time.
+    // The bundler must parse the suffix back to an integer when it round-trips
+    // cleanly so the wire shape matches legacy (`extracted_readings[].circuit`
+    // is typed as integer at eicr-extraction-session.js:992).
+    const readings = new Map([
+      ['measured_zs_ohm::1', { value: 0.32, confidence: 0.98 }],
+      ['measured_zs_ohm::0', { value: 0.28, confidence: 1.0 }], // supply
+      ['measured_zs_ohm::-1', { value: 0.41, confidence: 0.9 }], // unassigned
+    ]);
+    const r = bundleToolCallsIntoResult(makePerTurnWrites({ readings }), { questions: [] });
+    expect(r.extracted_readings).toHaveLength(3);
+    expect(r.extracted_readings[0].circuit).toBe(1);
+    expect(typeof r.extracted_readings[0].circuit).toBe('number');
+    expect(r.extracted_readings[1].circuit).toBe(0);
+    expect(r.extracted_readings[2].circuit).toBe(-1);
+  });
+
+  test('non-integer circuit string (future-proof) stays as string', () => {
+    // Today the tool schema declares circuit as `integer`, but a future schema
+    // that allows lettered refs (e.g. "C1", "MCB-A") must still round-trip
+    // losslessly. The parse-guard requires a clean integer round-trip, so
+    // non-numeric tails stay string.
+    const readings = new Map([
+      ['volts::C1', { value: 230, confidence: 1.0 }],
+      ['volts::MCB-A', { value: 232, confidence: 1.0 }],
+    ]);
+    const r = bundleToolCallsIntoResult(makePerTurnWrites({ readings }), { questions: [] });
+    expect(r.extracted_readings[0].circuit).toBe('C1');
+    expect(r.extracted_readings[1].circuit).toBe('MCB-A');
+  });
+
   test('same-turn correction: dispatcher-overwritten Map entry yields verbatim confidence (NOT overwritten to 1.0)', () => {
     // Dispatcher collapsed two writes for volts::C1 into one entry with the LATEST value + confidence.
     const readings = new Map([

@@ -51,11 +51,28 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape) {
   //    Confidence is passed VERBATIM (dispatcher already applied ?? 1.0).
   //    Map.entries() preserves insertion order — STT-09 same-turn correction
   //    survives because the dispatcher overwrote the Map entry before we see it.
+  //
+  //    Codex Phase-2 review MAJOR #2 fix: the Map key is built via template
+  //    literal (`${field}::${input.circuit}`) which coerces the original
+  //    integer circuit_ref to a string. Legacy `extracted_readings[].circuit`
+  //    is typed as integer at `eicr-extraction-session.js:992` (`circuit === -1`)
+  //    and the STS-01..04 tool schemas all declare `circuit` / `circuit_ref`
+  //    as `integer` (stage6-tool-schemas.js). Emitting a string here would
+  //    make the slot comparator see a legitimate divergence whenever both
+  //    paths record the same reading, and Phase 7's wire projection would
+  //    drift from legacy. Parse the suffix back to an integer when it round-
+  //    trips cleanly; fall back to the raw string otherwise (future-proof
+  //    against a non-integer circuit_ref the schema doesn't currently allow).
   const extracted_readings = [];
   for (const [key, entry] of perTurnWrites.readings) {
     const sep = key.indexOf('::');
     const field = sep >= 0 ? key.slice(0, sep) : key;
-    const circuit = sep >= 0 ? key.slice(sep + 2) : '';
+    const circuitStr = sep >= 0 ? key.slice(sep + 2) : '';
+    const circuitInt = Number(circuitStr);
+    const circuit =
+      circuitStr !== '' && Number.isInteger(circuitInt) && String(circuitInt) === circuitStr
+        ? circuitInt
+        : circuitStr;
     extracted_readings.push({
       field,
       circuit,

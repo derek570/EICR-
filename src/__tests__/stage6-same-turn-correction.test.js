@@ -219,7 +219,9 @@ describe('Stage 6 Phase 2 — STT-09 same-turn correction', () => {
     expect(bundled.extracted_readings).toHaveLength(1);
     expect(bundled.extracted_readings[0]).toMatchObject({
       field: 'amps',
-      circuit: '1',
+      // Codex Phase-2 review MAJOR #2 fix: bundler now round-trips integer
+      // circuit_refs back to Number (was a string side-effect of the Map key).
+      circuit: 1,
       value: '10',
       source: 'tool_call',
     });
