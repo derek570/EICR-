@@ -62,7 +62,12 @@
 
 import logger from '../logger.js';
 import { runToolLoop } from './stage6-tool-loop.js';
-import { createWriteDispatcher } from './stage6-dispatchers.js';
+import {
+  createWriteDispatcher,
+  createToolDispatcher,
+  createSortRecordsAsksLast,
+} from './stage6-dispatchers.js';
+import { createAskDispatcher } from './stage6-dispatcher-ask.js';
 import { createPerTurnWrites } from './stage6-per-turn-writes.js';
 import { bundleToolCallsIntoResult, BUNDLER_PHASE } from './stage6-event-bundler.js';
 import { compareSlots } from './stage6-slot-comparator.js';
@@ -211,8 +216,43 @@ export async function runShadowHarness(session, transcriptText, regexResults, op
     sessionId: session.sessionId,
     stateSnapshot: preLegacySnapshot,
     extractedObservations: preLegacyObservations,
+    // Phase 3 Plan 03-05: createAskDispatcher branches on
+    // session.toolCallsMode to pick the shadow-mode short-circuit path
+    // (non-blocking, non-registering, non-ws-emitting) vs the live path.
+    // Shadow harness is shadow-only (live mode throws above), so we pin
+    // toolCallsMode='shadow' on the clone. Forwarding the live session
+    // here would be fine today but couples the ask dispatcher's mode
+    // branch to a field the clone was not meant to carry semantically.
+    toolCallsMode: 'shadow',
   };
-  const dispatcher = createWriteDispatcher(shadowSession, log, turnId, perTurnWrites);
+
+  // Phase 3 Plan 03-07: optional ask composition.
+  //
+  // `pendingAsks` + `ws` are SESSION-SCOPED resources owned by sonnet-stream.js
+  // (Plan 03-08). The harness is stateless wrt those — it does NOT create,
+  // destroy, or rejectAll. It only (a) reads `pendingAsks` to decide whether
+  // to compose the ask dispatcher in the first place, and (b) threads both
+  // objects into `createAskDispatcher` which will register/resolve entries
+  // per-call.
+  //
+  // Fallback: when a caller (e.g. any Phase 2 call-site during the Plan
+  // 03-08 rollout window) does NOT pass pendingAsks, the harness reverts to
+  // Phase 2 shape — write-only dispatcher, identity sortRecords. This
+  // preserves every existing Phase 2 shadow run unchanged until Plan 03-08
+  // lands the per-session registry in sonnet-stream.js.
+  const pendingAsks = options.pendingAsks ?? null;
+  const ws = options.ws ?? null;
+  const writes = createWriteDispatcher(shadowSession, log, turnId, perTurnWrites);
+  let dispatcher;
+  let sortRecords;
+  if (pendingAsks) {
+    const asks = createAskDispatcher(shadowSession, log, turnId, pendingAsks, ws);
+    dispatcher = createToolDispatcher(writes, asks);
+    sortRecords = createSortRecordsAsksLast();
+  } else {
+    dispatcher = writes;
+    sortRecords = undefined; // runToolLoop treats undefined as identity.
+  }
 
   // Step 4: drive the real tool loop. Any thrown error is CAUGHT so shadow
   // failure NEVER breaks production — legacy return value is authoritative.
@@ -239,6 +279,13 @@ export async function runShadowHarness(session, transcriptText, regexResults, op
       dispatcher,
       ctx: { sessionId: session.sessionId, turnId },
       logger: log,
+      // Phase 3 Plan 03-07: pass sortRecords when ask composition is active.
+      // Undefined falls back to runToolLoop's identity default (Phase 2
+      // behaviour). When a composer is present, createSortRecordsAsksLast()
+      // moves any Sonnet-emitted ask_user blocks to the END of the round so
+      // write tools land BEFORE the blocking ask stalls dispatch — STA-02
+      // defense-in-depth per Plan 03-06.
+      sortRecords,
     });
   } catch (err) {
     try {
