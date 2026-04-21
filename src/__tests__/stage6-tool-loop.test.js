@@ -158,8 +158,11 @@ describe('stage6-tool-loop', () => {
       tool_call_id: 'toolu_1',
       name: 'record_reading',
     });
-    // Messages were extended: user(start) + assistant(tool_use) + user(tool_result) = 3
-    expect(messages).toHaveLength(3);
+    // Messages were extended: user(start) + assistant(tool_use) +
+    // user(tool_result) + assistant(end_turn text) = 4. The final-round
+    // assistant message is pushed even on end_turn (Codex STG MAJOR fix —
+    // multi-turn callers need the model's final reply in messages_final).
+    expect(messages).toHaveLength(4);
     expect(messages[1].role).toBe('assistant');
     expect(messages[1].content.some((b) => b.type === 'tool_use' && b.id === 'toolu_1')).toBe(true);
     expect(messages[2].role).toBe('user');
@@ -169,6 +172,34 @@ describe('stage6-tool-loop', () => {
       tool_use_id: 'toolu_1',
       is_error: false,
     });
+    // Round-2 end_turn assistant message present (the model's final text reply).
+    expect(messages[3].role).toBe('assistant');
+  });
+
+  test('end_turn assistant message persisted to messages_final (Codex STG MAJOR — no dropped final turn)', async () => {
+    // Single-round end_turn: pre-fix behavior broke out of the loop before
+    // pushing stream.finalMessage(), so messages_final lost the model's
+    // only reply. Any caller building multi-turn history would lose context.
+    const client = mockClient([endTurnRound('final reply text')]);
+    const messages = [{ role: 'user', content: 'hello' }];
+    const dispatcher = jest.fn(NOOP_DISPATCHER);
+
+    await runToolLoop({
+      client,
+      model: 'claude-sonnet-4-6',
+      system: 'sys',
+      messages,
+      tools: TOOL_SCHEMAS,
+      dispatcher,
+      ctx: baseCtx(),
+      logger: makeLogger(),
+    });
+
+    expect(messages).toHaveLength(2);
+    expect(messages[1].role).toBe('assistant');
+    // mockStream's finalMessage echoes the content blocks it saw — end_turn
+    // round carries a single text block.
+    expect(messages[1].content[0]).toMatchObject({ type: 'text' });
   });
 
   test('three tool_use blocks in one response → 3 dispatches + 3 tool_results in order', async () => {
@@ -368,6 +399,77 @@ describe('stage6-tool-loop', () => {
       'tool_loop_cap_hit',
       expect.objectContaining({ rounds: 8, pending_tool_uses: 3 }),
     );
+  });
+
+  test('orphan_delta error record (tool_call_id=null) is SKIPPED — no synthetic "unknown" tool_result (Codex STG BLOCK)', async () => {
+    // Construct a round that produces a MIX of real tool_use + orphan_delta.
+    // Pre-fix bug: the normal-branch error path used `rec.tool_call_id ??
+    // "unknown"`, emitting a tool_result referencing a nonexistent tool_use
+    // — Anthropic rejects the next round with tool_use_id_without_result.
+    // Fix: skip orphan records entirely (they have no matching tool_use).
+    const roundWithOrphan = [
+      { type: 'message_start', message: { id: 'msg_orphan', role: 'assistant', content: [] } },
+      // Real tool_use at index 0.
+      {
+        type: 'content_block_start',
+        index: 0,
+        content_block: { type: 'tool_use', id: 'toolu_real', name: 'record_reading', input: {} },
+      },
+      {
+        type: 'content_block_delta',
+        index: 0,
+        delta: {
+          type: 'input_json_delta',
+          partial_json: JSON.stringify({
+            field: 'measured_zs_ohm',
+            circuit: 1,
+            value: '0.43',
+            confidence: 0.9,
+            source_turn_id: 't1',
+          }),
+        },
+      },
+      { type: 'content_block_stop', index: 0 },
+      // Orphan delta at index 99 — NO preceding content_block_start. Assembler
+      // emits {tool_call_id: null, error: 'orphan_delta'}.
+      {
+        type: 'content_block_delta',
+        index: 99,
+        delta: { type: 'input_json_delta', partial_json: '{"oops":true}' },
+      },
+      { type: 'message_delta', delta: { stop_reason: 'tool_use' } },
+      { type: 'message_stop' },
+    ];
+    const client = mockClient([roundWithOrphan, endTurnRound('done')]);
+    const messages = [{ role: 'user', content: 'start' }];
+    const logger = makeLogger();
+    const dispatcher = jest.fn(NOOP_DISPATCHER);
+
+    await runToolLoop({
+      client,
+      model: 'claude-sonnet-4-6',
+      system: 'sys',
+      messages,
+      tools: TOOL_SCHEMAS,
+      dispatcher,
+      ctx: baseCtx(),
+      logger,
+    });
+
+    // The user tool_result message is messages[2] (after user(start) +
+    // assistant(round-1)). It must contain EXACTLY ONE tool_result — the
+    // real tool_use's result — NOT a second "unknown"-id entry for the
+    // orphan.
+    expect(messages[2].role).toBe('user');
+    expect(messages[2].content).toHaveLength(1);
+    expect(messages[2].content[0].tool_use_id).toBe('toolu_real');
+    // No tool_result references the sentinel string 'unknown'.
+    for (const block of messages[2].content) {
+      expect(block.tool_use_id).not.toBe('unknown');
+    }
+    // Real tool_use dispatched, orphan did NOT trigger a dispatch.
+    expect(dispatcher).toHaveBeenCalledTimes(1);
+    expect(dispatcher.mock.calls[0][0].tool_call_id).toBe('toolu_real');
   });
 
   test('dispatcher error path → tool_result with is_error:true, loop continues', async () => {

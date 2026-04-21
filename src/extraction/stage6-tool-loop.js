@@ -145,18 +145,22 @@ export async function runToolLoop({
     const { records, stop_reason } = asm.finalize();
     stopReason = stop_reason;
 
-    // Happy-path terminator: model said end_turn (or null / unknown — treat
-    // anything other than tool_use as "we are done"). No assistant message
-    // push needed — the caller will start a fresh user turn next time.
-    if (stop_reason !== 'tool_use') break;
-
-    // Push the assistant message FIRST. This is the tool_use-before-
-    // tool_result ordering invariant (Research §Pitfall 3). Holds on every
-    // round INCLUDING the cap-hit round — the synthetic tool_result(s) below
-    // still require the referenced tool_use(s) to be present in the prior
-    // assistant message or Anthropic's API would 400 on the next invocation.
+    // Push the assistant message on EVERY round — tool_use AND end_turn.
+    // On tool_use rounds this is the tool_use-before-tool_result ordering
+    // invariant (Research §Pitfall 3) — the synthetic or real tool_result(s)
+    // below require the referenced tool_use(s) to be present in the prior
+    // assistant message or Anthropic's API would 400 on the next
+    // invocation. On end_turn rounds the assistant message carries the
+    // model's final text reply; dropping it (pre-fix behavior: break before
+    // push) meant messages_final lost the model's last turn and any caller
+    // building multi-turn history from it would lose context for the next
+    // user turn. Codex's Phase-1 STG review flagged this as MAJOR.
     const assistantMsg = await stream.finalMessage();
     messages.push({ role: 'assistant', content: assistantMsg.content });
+
+    // Happy-path terminator: model said end_turn (or null / unknown — treat
+    // anything other than tool_use as "we are done").
+    if (stop_reason !== 'tool_use') break;
 
     // CAP-HIT BRANCH (STD-10 verbatim).
     // At this point `rounds` has just been incremented to maxRounds (e.g. 8).
@@ -201,14 +205,22 @@ export async function runToolLoop({
     // round's tool_results in a single user message.
     const toolResults = [];
     for (const rec of records) {
-      // Assembler error records (invalid_json, orphan_delta) — we still owe
-      // Anthropic a tool_result for any rec.tool_call_id that IS set, else
-      // the next invocation fails. Encode the assembler error rather than
-      // dispatching (the input is unusable).
+      // Assembler error records (invalid_json, orphan_delta). For errors
+      // that DO carry a tool_call_id (invalid_json from a real tool_use
+      // whose inputs never parsed) we still owe Anthropic a tool_result —
+      // encoding the assembler error satisfies that obligation. For errors
+      // that DON'T carry a tool_call_id (orphan_delta from a content_block_
+      // delta with no preceding content_block_start) there is no matching
+      // tool_use in the assistant message, so emitting a tool_result with
+      // a synthetic "unknown" id would reference nothing — Anthropic would
+      // reject the next round with tool_use_id_without_result. Skip those
+      // silently, mirroring the cap-hit branch at line ~178. Codex's
+      // Phase-1 STG review flagged the old `?? 'unknown'` fallback as BLOCK.
       if (rec.error) {
+        if (!rec.tool_call_id) continue;
         toolResults.push({
           type: 'tool_result',
-          tool_use_id: rec.tool_call_id ?? 'unknown',
+          tool_use_id: rec.tool_call_id,
           content: JSON.stringify({ error: rec.error, raw_partial: rec.raw_partial }),
           is_error: true,
         });
