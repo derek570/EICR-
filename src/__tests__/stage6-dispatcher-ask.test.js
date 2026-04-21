@@ -204,7 +204,7 @@ describe('createAskDispatcher — live happy path', () => {
       const call = makeCall('toolu_h1', {
         question: 'Which circuit were you referring to?',
         reason: 'ambiguous_circuit',
-        context_field: 'designation',
+        context_field: 'circuit_designation',
         context_circuit: 3,
         expected_answer_shape: 'circuit_ref',
       });
@@ -222,7 +222,7 @@ describe('createAskDispatcher — live happy path', () => {
         tool_call_id: 'toolu_h1',
         question: 'Which circuit were you referring to?',
         reason: 'ambiguous_circuit',
-        context_field: 'designation',
+        context_field: 'circuit_designation',
         context_circuit: 3,
         expected_answer_shape: 'circuit_ref',
       });
@@ -379,8 +379,7 @@ describe('createAskDispatcher — duplicate tool_call_id guard', () => {
     const pending = createPendingAsksRegistry();
 
     // Pre-seed an entry under the same id so register() throws.
-    // eslint-disable-next-line @typescript-eslint/no-empty-function
-    const noopTimer = setTimeout(() => {}, 1_000_000);
+    const noopTimer = setTimeout(() => undefined, 1_000_000);
     pending.register('toolu_dup', {
       contextField: null,
       contextCircuit: null,
