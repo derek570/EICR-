@@ -8,6 +8,10 @@ import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import Anthropic from '@anthropic-ai/sdk';
 import { CostTracker } from './cost-tracker.js';
+import {
+  applyReadingToSnapshot,
+  clearReadingInSnapshot,
+} from './stage6-snapshot-mutators.js';
 import { lookupPostcode } from '../postcode_lookup.js';
 import logger from '../logger.js';
 
@@ -972,7 +976,15 @@ export class EICRExtractionSession {
   updateStateSnapshot(result) {
     if (!result) return;
 
-    // Process extracted readings
+    // Process extracted readings.
+    //
+    // Plan 02-01 Task 4: the per-circuit-field write is now delegated to
+    // applyReadingToSnapshot from stage6-snapshot-mutators.js. Both the
+    // legacy path here AND Phase 2 tool-call dispatchers mutate the
+    // snapshot through the shared atom — drift between them is impossible
+    // without editing both sides. Session-level bookkeeping (pending_readings,
+    // recentCircuitOrder) stays inline because it is not part of the atom
+    // contract.
     if (result.extracted_readings && result.extracted_readings.length > 0) {
       for (const reading of result.extracted_readings) {
         const circuit = reading.circuit;
@@ -985,11 +997,12 @@ export class EICRExtractionSession {
             unit: reading.unit || null,
           });
         } else {
-          // Circuit-level (or supply at circuit 0) reading
-          if (!this.stateSnapshot.circuits[circuit]) {
-            this.stateSnapshot.circuits[circuit] = {};
-          }
-          this.stateSnapshot.circuits[circuit][field] = reading.value;
+          // Circuit-level (or supply at circuit 0) reading — shared atom.
+          applyReadingToSnapshot(this.stateSnapshot, {
+            circuit,
+            field,
+            value: reading.value,
+          });
           // Track recency for snapshot windowing (circuit 0 excluded — always shown)
           if (circuit !== 0) {
             const idx = this.recentCircuitOrder.indexOf(circuit);
@@ -1004,15 +1017,20 @@ export class EICRExtractionSession {
       }
     }
 
-    // Process field clears
+    // Process field clears — delegated to clearReadingInSnapshot. Shared
+    // atom handles missing circuit / missing field noops.
     if (result.field_clears && result.field_clears.length > 0) {
       for (const clear of result.field_clears) {
-        if (clear.circuit != null && this.stateSnapshot.circuits[clear.circuit]) {
-          delete this.stateSnapshot.circuits[clear.circuit][clear.field];
+        if (clear.circuit != null) {
+          clearReadingInSnapshot(this.stateSnapshot, {
+            circuit: clear.circuit,
+            field: clear.field,
+          });
         }
       }
     }
 
+    // Legacy inline path — Phase 2 dispatcher uses stage6-snapshot-mutators.appendObservation directly (different dedup semantics).
     // Accumulate observations (dedup by text match)
     if (result.observations && result.observations.length > 0) {
       for (const obs of result.observations) {
@@ -1022,6 +1040,8 @@ export class EICRExtractionSession {
         }
       }
     }
+
+    // Legacy inline path — validation_alerts is NOT a Phase 2 tool; this branch stays untouched.
 
     // Accumulate validation alerts (dedup by JSON equality)
     if (result.validation_alerts && result.validation_alerts.length > 0) {
