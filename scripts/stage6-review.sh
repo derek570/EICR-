@@ -65,6 +65,17 @@ PHASE_DIR="$(cd "$PHASE_DIR" && pwd)"
 PROJECT_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 BASE_BRANCH="${STAGE6_BASE_BRANCH:-main}"
 
+# Stage 6 straddles two git repos: the backend (EICR_Automation/) and the iOS
+# app (CertMateUnified/, nested inside the backend as its own repo). The
+# planning tree + any iOS protocol/harness work lives in the iOS repo, but
+# `git rev-parse --show-toplevel` from the *backend* cwd only sees the outer
+# repo, so the bundle was silently dropping every iOS-side change. Detect the
+# repo that actually owns $PHASE_DIR and, if it differs from PROJECT_ROOT,
+# emit its diff alongside the backend's. Codex needs both halves to review a
+# phase that touches both repos (Phase 6 iOS protocol, the planning tree
+# itself in every phase, etc.).
+PHASE_REPO_ROOT="$(git -C "$PHASE_DIR" rev-parse --show-toplevel 2>/dev/null || true)"
+
 # PLANNING_TREE default: the iOS app lives as a subdirectory of the backend
 # repo (CertMateUnified/ has its own git repo nested inside EICR_Automation/),
 # and the Stage 6 planning tree lives inside the iOS repo at
@@ -141,9 +152,13 @@ PROMPT
   echo ""
   echo "- Phase dir: \`$PHASE_DIR\`"
   echo "- Planning tree: \`$PLANNING_TREE\`"
-  echo "- Project root: \`$PROJECT_ROOT\`"
+  echo "- Project root (backend): \`$PROJECT_ROOT\`"
+  echo "- Backend HEAD: \`$(git -C "$PROJECT_ROOT" rev-parse --short HEAD 2>/dev/null || echo 'unknown')\`"
+  if [[ -n "$PHASE_REPO_ROOT" && "$PHASE_REPO_ROOT" != "$PROJECT_ROOT" ]]; then
+    echo "- Phase repo: \`$PHASE_REPO_ROOT\`"
+    echo "- Phase repo HEAD: \`$(git -C "$PHASE_REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo 'unknown')\`"
+  fi
   echo "- Base branch: \`$BASE_BRANCH\`"
-  echo "- Current HEAD: \`$(git -C "$PROJECT_ROOT" rev-parse --short HEAD 2>/dev/null || echo 'unknown')\`"
   echo "- Generated: \`$(date -u +"%Y-%m-%dT%H:%M:%SZ")\`"
   echo ""
 
@@ -176,25 +191,43 @@ PROMPT
     echo ""
   fi
 
-  echo "## Phase diff against \`$BASE_BRANCH\`"
-  echo ""
-  if git -C "$PROJECT_ROOT" rev-parse --verify "$BASE_BRANCH" >/dev/null 2>&1; then
-    echo '```'
-    echo "# git diff $BASE_BRANCH --stat"
-    git -C "$PROJECT_ROOT" diff "$BASE_BRANCH" --stat || true
-    echo '```'
-    echo ""
-    echo '```diff'
-    git -C "$PROJECT_ROOT" diff "$BASE_BRANCH" || true
-    echo '```'
-  else
-    echo "_Base branch \`$BASE_BRANCH\` is not reachable from $PROJECT_ROOT._"
-    echo "_Falling back to diff against the merge-base of the current branch._"
-    echo ""
-    echo '```diff'
-    git -C "$PROJECT_ROOT" diff HEAD~5..HEAD 2>/dev/null || echo "(no recent diff available)"
-    echo '```'
+  # Emit a diff for each distinct git repo Stage 6 touches. PROJECT_ROOT is
+  # always emitted (backend). If PHASE_DIR lives in a different git repo
+  # (typically the nested iOS repo at CertMateUnified/), emit its diff too.
+  # Deduplicates if they happen to be the same path.
+  diff_repos=("$PROJECT_ROOT")
+  if [[ -n "$PHASE_REPO_ROOT" && "$PHASE_REPO_ROOT" != "$PROJECT_ROOT" ]]; then
+    diff_repos+=("$PHASE_REPO_ROOT")
   fi
+
+  for repo in "${diff_repos[@]}"; do
+    repo_label="$repo"
+    if [[ "$repo" == "$PROJECT_ROOT" ]]; then
+      repo_label="$repo (backend)"
+    elif [[ "$repo" == "$PHASE_REPO_ROOT" ]]; then
+      repo_label="$repo (phase repo — e.g. iOS app)"
+    fi
+    echo "## Phase diff against \`$BASE_BRANCH\` — \`$repo_label\`"
+    echo ""
+    if git -C "$repo" rev-parse --verify "$BASE_BRANCH" >/dev/null 2>&1; then
+      echo '```'
+      echo "# git -C $repo diff $BASE_BRANCH --stat"
+      git -C "$repo" diff "$BASE_BRANCH" --stat || true
+      echo '```'
+      echo ""
+      echo '```diff'
+      git -C "$repo" diff "$BASE_BRANCH" || true
+      echo '```'
+    else
+      echo "_Base branch \`$BASE_BRANCH\` is not reachable from $repo._"
+      echo "_Falling back to diff against the merge-base of the current branch._"
+      echo ""
+      echo '```diff'
+      git -C "$repo" diff HEAD~5..HEAD 2>/dev/null || echo "(no recent diff available)"
+      echo '```'
+    fi
+    echo ""
+  done
 } > "$BUNDLE"
 
 BUNDLE_BYTES="$(wc -c < "$BUNDLE" | tr -d ' ')"
