@@ -234,7 +234,10 @@ describe('createAskDispatcher — live happy path', () => {
       const res = await p;
 
       expect(res.is_error).toBe(false);
-      expect(JSON.parse(res.content)).toEqual({ answered: true, user_text: 'Circuit 5' });
+      expect(JSON.parse(res.content)).toEqual({
+        answered: true,
+        untrusted_user_text: 'Circuit 5',
+      });
       expect(pending.size).toBe(0);
       expect(logger.info).toHaveBeenCalledWith(
         'stage6.ask_user',
@@ -298,7 +301,7 @@ describe('createAskDispatcher — live happy path', () => {
 
       const res = await p;
       expect(res.is_error).toBe(false);
-      expect(JSON.parse(res.content)).toEqual({ answered: true, user_text: 'yes' });
+      expect(JSON.parse(res.content)).toEqual({ answered: true, untrusted_user_text: 'yes' });
     } finally {
       jest.useRealTimers();
     }
