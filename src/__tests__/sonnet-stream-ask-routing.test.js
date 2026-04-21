@@ -488,7 +488,13 @@ describe('Group D — handleTranscript invokes classifyOvertake only when asks p
     expect(options.ws).toBe(ws);
   });
 
-  test('answers verdict → registry.resolve called, harness still runs', async () => {
+  test('answers verdict → registry.resolve called; shadow harness SKIPPED (Plan 03-11 Task 3 BLOCK fix)', async () => {
+    // Plan 03-11 Task 3 (STG r4 BLOCK): when the classifier returns
+    // 'answers', the tool_result body from the ask dispatcher is the
+    // single Sonnet-visible channel for this utterance. Running the
+    // shadow harness on the same transcript would double-expose — Sonnet
+    // would receive the reply as tool_result AND as a fresh user turn.
+    // The contract changed from fall-through to early-return.
     const ws = connect(wss, 'user-1');
     await sendFrame(ws, {
       type: 'session_start',
@@ -514,6 +520,8 @@ describe('Group D — handleTranscript invokes classifyOvertake only when asks p
       userText: 'Circuit 5 ze is 0.25',
     }));
 
+    runShadowHarnessSpy.mockClear();
+
     await sendFrame(ws, {
       type: 'transcript',
       text: 'Circuit 5 ze is 0.25',
@@ -525,8 +533,8 @@ describe('Group D — handleTranscript invokes classifyOvertake only when asks p
       answered: true,
       user_text: 'Circuit 5 ze is 0.25',
     });
-    // Shadow harness STILL invoked (fall-through semantics).
-    expect(runShadowHarnessSpy).toHaveBeenCalled();
+    // Task 3: shadow harness MUST NOT be invoked for an answers verdict.
+    expect(runShadowHarnessSpy).not.toHaveBeenCalled();
   });
 
   test('user_moved_on verdict → registry.rejectAll called, harness still runs', async () => {

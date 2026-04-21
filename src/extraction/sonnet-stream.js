@@ -1575,29 +1575,94 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
       //   'answers'       → the utterance contains a (field, circuit) that
       //                     matches a pending ask's context. We resolve that
       //                     specific ask with the new transcript as its
-      //                     user_text, then STILL fall through to the shadow
-      //                     harness so Sonnet's turn continues (it may emit
-      //                     more writes / ask further questions).
+      //                     user_text. Plan 03-11 Task 3 (STG r4 BLOCK):
+      //                     we then RETURN — skip the shadow harness —
+      //                     because the tool_result flowing through the
+      //                     ask dispatcher already carries the speech to
+      //                     Sonnet. Running runShadowHarness on the same
+      //                     utterance would double-expose: Sonnet would
+      //                     see the reply once as tool_result and once as
+      //                     a fresh user turn, producing duplicate writes
+      //                     or spurious follow-up asks.
       //   'user_moved_on' → the utterance carries regex hits that do NOT
       //                     match any pending ask, OR has no regex hits at
       //                     all (Open Question #4 fail-safe). We rejectAll
       //                     to drain stale asks so the dispatcher returns
       //                     `{answered:false, reason:'user_moved_on'}` and
       //                     Sonnet decides whether to re-ask next turn.
+      //                     We FALL THROUGH here — the new utterance IS a
+      //                     fresh user message (user changed topic), so
+      //                     the shadow harness should process it.
       //   'no_pending_asks' → empty registry; no-op.
       //
       // We short-circuit the classifier call when the registry is empty so
       // the hot path (most turns) pays zero cost. The classifier itself is
       // pure — safe to call every turn — but the guard keeps the CloudWatch
       // noise floor clean.
+      //
+      // Plan 03-11 Task 3 — MAJOR remediation: classify against the RAW
+      // `msg.text`, NOT the `[In response to TTS question]`-annotated
+      // `transcriptText`. The annotation is only for Sonnet's turn context;
+      // the classifier's shape-aware no-regex branch compares against a
+      // yes/no vocabulary (STA-04c) and against "non-empty trimmed text"
+      // for free_text asks. Prefixing "[In response to ...]" would turn a
+      // plain "yes" into a multi-word string that fails the yes/no match
+      // and turn an empty free_text answer into a non-empty one. Using
+      // raw msg.text keeps the classifier's shape branch doing what it's
+      // tested to do.
       if (entry.pendingAsks.size > 0) {
-        const verdict = classifyOvertake(transcriptText, regexResults, entry.pendingAsks);
+        const verdict = classifyOvertake(msg.text, regexResults, entry.pendingAsks);
         if (verdict.kind === 'answers') {
-          entry.pendingAsks.resolve(verdict.toolCallId, {
+          // Plan 03-11 Task 3 — MAJOR remediation: sanitise verdict.userText
+          // before resolve(). Without this, a transcript-routed ask answer
+          // bypasses the cap + C0/DEL strip that the ask_user_answered
+          // handler applies (sonnet-stream.js:815), and the unsanitised
+          // text flows verbatim into both the `stage6.ask_user` log row
+          // AND the dispatcher's tool_result body — defeating the hygiene
+          // guarantee Plan 03-10 Task 2 added for the explicit-answer
+          // channel. Mirror that handler's structure: try → on throw log
+          // `stage6.user_text_rejected` + resolve with `{answered:false,
+          // reason:'validation_error'}` so the awaiting dispatcher returns
+          // a normal error envelope to Sonnet.
+          let sanitised;
+          try {
+            sanitised = sanitiseUserText(verdict.userText);
+          } catch (sanErr) {
+            logger.warn('stage6.user_text_rejected', {
+              sessionId,
+              tool_call_id: verdict.toolCallId,
+              source: 'transcript_overtake',
+              code: sanErr.code || 'sanitisation_error',
+              message: sanErr.message,
+            });
+            entry.pendingAsks.resolve(verdict.toolCallId, {
+              answered: false,
+              reason: 'validation_error',
+            });
+            // Outer try/finally (line ~1783) handles clearTimeout +
+            // isExtracting=false on return — no explicit cleanup needed.
+            return;
+          }
+
+          const resolvePayload = {
             answered: true,
-            user_text: verdict.userText,
-          });
-          // fall through — shadow harness continues the turn.
+            user_text: sanitised.text,
+          };
+          if (sanitised.truncated || sanitised.stripped) {
+            resolvePayload.sanitisation = {
+              truncated: sanitised.truncated,
+              stripped: sanitised.stripped,
+            };
+          }
+          entry.pendingAsks.resolve(verdict.toolCallId, resolvePayload);
+
+          // Plan 03-11 Task 3 — BLOCK remediation: return early. The
+          // dispatcher's tool_result is the sole Sonnet-visible channel
+          // for this utterance; do NOT also feed it into runShadowHarness.
+          // The `finally` at the outer try/finally handles watchdog cleanup
+          // + isExtracting reset on return, so no cleanup needed here
+          // beyond early return.
+          return;
         } else if (verdict.kind === 'user_moved_on') {
           entry.pendingAsks.rejectAll('user_moved_on');
           // fall through — new transcript becomes the fresh user message.
