@@ -34,6 +34,12 @@ const enumerations = JSON.parse(
     'utf8',
   ),
 );
+const contextKeys = JSON.parse(
+  fs.readFileSync(
+    path.join(repoRoot, 'config', 'stage6-context-keys.json'),
+    'utf8',
+  ),
+);
 
 const { TOOL_SCHEMAS, getToolByName } = await import(
   '../extraction/stage6-tool-schemas.js'
@@ -134,7 +140,11 @@ describe('stage6-tool-schemas', () => {
       'string',
       'null',
     ]);
-    expect(renameCircuit.input_schema.required).toEqual(['circuit_ref']);
+    // Plan 02-01 adds `from_ref` to the required list — without it the tool
+    // is semantically identical to create_circuit. See Plan 02-01 §Q7.
+    expect(renameCircuit.input_schema.required.sort()).toEqual(
+      ['circuit_ref', 'from_ref'].sort(),
+    );
   });
 
   test('non-nullable enums (clear_reading.reason, observation_code, ask_user.reason, expected_answer_shape) do NOT include null', () => {
@@ -197,18 +207,109 @@ describe('stage6-tool-schemas', () => {
     );
   });
 
-  test('ask_user.context_field type = string|null, NO enum constraint in Phase 1 (Codex round-3 MAJOR — Phase 2 must design the full context-key namespace)', () => {
+  test('ask_user.context_field enum is codegenned from circuit_fields + sentinels + null (Plan 02-01 closes Phase 1 carryover)', () => {
     const askUser = byName('ask_user');
     const contextField = askUser.input_schema.properties.context_field;
-    // STS-07 mandates `string | null`. An earlier iteration narrowed this to
-    // `Object.keys(fieldSchema.circuit_fields) | null` for Phase-5 budget
-    // stability; Codex round-3 STG flagged that narrowing as blocking Phase
-    // 2+ non-circuit asks (observation_confirmation, earthing_arrangement,
-    // board-level readings). Phase 2 Plan 02-01 MUST design the canonical
-    // context-key namespace and reinstate a strict enum then — for now we
-    // leave it open to unblock scope.
     expect(contextField.type).toEqual(['string', 'null']);
-    expect(contextField.enum).toBeUndefined();
+    expect(Array.isArray(contextField.enum)).toBe(true);
+
+    const circuitFieldKeys = Object.keys(fieldSchema.circuit_fields);
+    const expectedEntries = [
+      ...circuitFieldKeys,
+      ...contextKeys.sentinels,
+      null,
+    ];
+
+    // Length is (circuit_fields count) + sentinels + 1 (null). Plan 02-01
+    // cardinality invariant — guards against drift either way.
+    expect(contextField.enum).toHaveLength(expectedEntries.length);
+
+    // Every circuit_fields key appears in the enum.
+    for (const key of circuitFieldKeys) {
+      expect(contextField.enum).toContain(key);
+    }
+    // Both sentinels appear verbatim.
+    for (const sentinel of contextKeys.sentinels) {
+      expect(contextField.enum).toContain(sentinel);
+    }
+    // null is a valid enum value so the schema's type:['string','null'] is
+    // honoured under strict:true JSON Schema (enum matches VALUE not type).
+    expect(contextField.enum).toContain(null);
+  });
+
+  test('ask_user.context_field — no hand-rolled sentinel literals in schema module (Plan 02-01 single-source-of-truth guard)', () => {
+    // Guard against a future edit that re-inlines the sentinel literals into
+    // stage6-tool-schemas.js rather than sourcing them from
+    // config/stage6-context-keys.json. The raw file MUST NOT contain an
+    // `enum: ['observation_clarify'` literal.
+    const src = fs.readFileSync(
+      path.join(repoRoot, 'src', 'extraction', 'stage6-tool-schemas.js'),
+      'utf8',
+    );
+    expect(src).not.toMatch(/enum:\s*\[\s*['"]observation_clarify['"]/);
+  });
+
+  test('PHASE 2 BLOCKER comment is removed from stage6-tool-schemas.js (Plan 02-01 closes the carryover)', () => {
+    const src = fs.readFileSync(
+      path.join(repoRoot, 'src', 'extraction', 'stage6-tool-schemas.js'),
+      'utf8',
+    );
+    expect(src).not.toMatch(/PHASE 2 BLOCKER/);
+  });
+
+  test('rename_circuit requires from_ref and circuit_ref (Plan 02-01 — without from_ref the tool cannot actually rename)', () => {
+    const rename = byName('rename_circuit');
+    // Required list is exactly [from_ref, circuit_ref]. Length assertion
+    // catches any future drift that adds unintended required keys.
+    expect(rename.input_schema.required).toHaveLength(2);
+    expect(rename.input_schema.required.sort()).toEqual(
+      ['circuit_ref', 'from_ref'].sort(),
+    );
+    // from_ref schema shape — integer, minimum 1, described.
+    const fromRef = rename.input_schema.properties.from_ref;
+    expect(fromRef).toBeDefined();
+    expect(fromRef.type).toBe('integer');
+    expect(fromRef.minimum).toBe(1);
+    expect(typeof fromRef.description).toBe('string');
+    expect(fromRef.description.length).toBeGreaterThan(10);
+  });
+
+  test('create_circuit.required === [circuit_ref] — guards against rename=create regression (Plan 02-01 symmetry audit)', () => {
+    const create = byName('create_circuit');
+    // create_circuit is semantically distinct: it accepts only circuit_ref
+    // as required. If rename_circuit and create_circuit share identical
+    // required lists, dispatchers cannot disambiguate — this test locks the
+    // distinction in.
+    expect(create.input_schema.required).toEqual(['circuit_ref']);
+    // from_ref must NOT exist on create_circuit.
+    expect(create.input_schema.properties.from_ref).toBeUndefined();
+  });
+
+  test('Plan 02-01 required-list audit: all six write tools match REQUIREMENTS.md STS-01..06 literally', () => {
+    // STS-01 record_reading
+    expect(byName('record_reading').input_schema.required.sort()).toEqual(
+      ['circuit', 'confidence', 'field', 'source_turn_id', 'value'].sort(),
+    );
+    // STS-02 clear_reading
+    expect(byName('clear_reading').input_schema.required.sort()).toEqual(
+      ['circuit', 'field', 'reason'].sort(),
+    );
+    // STS-03 create_circuit
+    expect(byName('create_circuit').input_schema.required).toEqual([
+      'circuit_ref',
+    ]);
+    // STS-04 rename_circuit — Plan 02-01 adds from_ref
+    expect(byName('rename_circuit').input_schema.required.sort()).toEqual(
+      ['circuit_ref', 'from_ref'].sort(),
+    );
+    // STS-05 record_observation (Phase 1 round-4 MAJOR #3 — re-asserted)
+    expect(byName('record_observation').input_schema.required.sort()).toEqual(
+      ['circuit', 'code', 'location', 'suggested_regulation', 'text'].sort(),
+    );
+    // STS-06 delete_observation
+    expect(byName('delete_observation').input_schema.required.sort()).toEqual(
+      ['observation_id', 'reason'].sort(),
+    );
   });
 
   test('getToolByName returns the tool for a known name', () => {

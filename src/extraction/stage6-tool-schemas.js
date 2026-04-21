@@ -36,6 +36,21 @@ const require = createRequire(import.meta.url);
 const fieldSchema = require('../../config/field_schema.json');
 // eslint-disable-next-line import/no-unresolved -- JSON is co-located config.
 const enumerations = require('../../config/stage6-enumerations.json');
+// eslint-disable-next-line import/no-unresolved -- JSON is co-located config.
+const contextKeys = require('../../config/stage6-context-keys.json');
+
+// Deterministic enum for ask_user.context_field (Plan 02-01 closes Phase 1
+// carryover). Sorted so test snapshots and log buckets are stable across
+// runs. Concat order: circuit_fields keys → non-circuit sentinels → null.
+// Deduped defensively in case a circuit_fields key ever collides with a
+// sentinel (shouldn't happen — sentinels are namespaced — but the dedupe
+// keeps the schema valid if it does).
+const CONTEXT_FIELD_ENUM = (() => {
+  const circuitKeys = Object.keys(fieldSchema.circuit_fields).slice().sort();
+  const sentinels = contextKeys.sentinels.slice().sort();
+  const stringSet = new Set([...circuitKeys, ...sentinels]);
+  return [...stringSet, null];
+})();
 
 /**
  * Build an Anthropic tool definition. Centralising the shape guarantees every
@@ -167,18 +182,26 @@ const createCircuit = makeTool({
 
 // ---------------------------------------------------------------------------
 // STS-04: rename_circuit
-// Update designation or electrical properties of an existing circuit.
-// Schema is byte-identical to create_circuit (see Open Q#3 — the tools
-// are semantically distinguished by dispatcher validation, not by shape).
+// Rekey an existing circuit bucket from `from_ref` to `circuit_ref`, and/or
+// update the circuit's metadata. Plan 02-01 made `from_ref` required: without
+// it the tool is structurally identical to create_circuit and dispatchers
+// cannot disambiguate "create new" from "rename existing" (research §Q7).
 // ---------------------------------------------------------------------------
 const renameCircuit = makeTool({
   name: 'rename_circuit',
   description:
-    'Update designation or electrical properties of an existing circuit. Use when the inspector restates a circuit\'s description or electrical spec. Dispatcher (Phase 2) rejects non-existent circuit_ref with a validation_error.',
+    "Rekey an existing circuit bucket and/or update its metadata. Supply `from_ref` (the existing circuit_ref) and `circuit_ref` (the new key). If only meta is changing, from_ref === circuit_ref is a valid idempotent call. Dispatcher rejects missing from_ref or target-already-exists with a validation_error.",
   properties: {
+    from_ref: {
+      type: 'integer',
+      minimum: 1,
+      description:
+        'The existing circuit_ref to rename from. Must already exist in stateSnapshot.circuits.',
+    },
     circuit_ref: {
       type: 'integer',
-      description: 'Circuit reference number of the existing circuit to update.',
+      description:
+        'The NEW circuit_ref after rename. If from_ref === circuit_ref, only meta is updated.',
     },
     designation: {
       type: ['string', 'null'],
@@ -200,7 +223,7 @@ const renameCircuit = makeTool({
         'New live conductor cross-sectional area in mm^2. Null to leave unchanged.',
     },
   },
-  required: ['circuit_ref'],
+  required: ['from_ref', 'circuit_ref'],
 });
 
 // ---------------------------------------------------------------------------
@@ -296,8 +319,9 @@ const askUser = makeTool({
     },
     context_field: {
       type: ['string', 'null'],
+      enum: CONTEXT_FIELD_ENUM,
       description:
-        'Context key this ask is blocking on (e.g. "measured_zs_ohm", "earthing_arrangement", "observation_confirmation"), or null if the ask is not field-scoped. STS-07 mandates `string | null` — intentionally open-ended in Phase 1 because Phase 2+ asks need non-circuit scopes (board-level readings, earthing, observation confirmation, general missing-context) that the circuit_fields key set does not cover. An early iteration narrowed this to `Object.keys(fieldSchema.circuit_fields) | null` to stabilise Phase 5 per-(context_field, context_circuit) budget analytics; Codex round-3 STG review flagged that the narrow enum would force Phase 2 non-circuit asks to collapse to null, breaking those same analytics on the non-circuit path. PHASE 2 BLOCKER: Plan 02-01 MUST design the canonical Stage-6 context-key namespace (circuit_fields keys + board-scope keys + observation/general sentinels) and reinstate a strict enum here before non-circuit asks ship. Until then, Phase 5 analytics will bucket by raw value; budget drift is accepted in exchange for unblocked Phase 2 scope.',
+        'Closed namespace. Either a circuit_fields key (sourced from config/field_schema.json — e.g. "measured_zs_ohm", "circuit_designation") for field-scoped asks, or the sentinel "observation_clarify" for asks about a pending observation, or the sentinel "none" (equivalently null) for scope-less asks. The enum is codegenned from config/field_schema.json + config/stage6-context-keys.json at module load — do not hand-roll. Phase 5 ask-budget analytics bucket by this key + context_circuit; the closed enum keeps bucket cardinality bounded.',
     },
     context_circuit: {
       type: ['integer', 'null'],
