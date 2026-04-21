@@ -29,6 +29,7 @@ import {
   validateRenameCircuit,
   validateRecordObservation,
   validateDeleteObservation,
+  validateAskUser,
 } from '../extraction/stage6-dispatch-validation.js';
 
 describe('validateRecordReading', () => {
@@ -124,5 +125,123 @@ describe('validateDeleteObservation (BLOCK-2 contract: always-valid)', () => {
   });
   test('session.extractedObservations missing entirely → still null (validator never throws)', () => {
     expect(validateDeleteObservation({ observation_id: 'whatever', reason: 'duplicate' }, {})).toBeNull();
+  });
+});
+
+/**
+ * Stage 6 Phase 3 Plan 03-02 — validateAskUser (STS-07 runtime defence).
+ *
+ * The schema (strict:true) is the primary guard; this validator is belt-and-
+ * braces for payload shape drift between the SDK, the dispatcher entry, and
+ * the pending-asks registry. Mirrors the Phase 2 validator shape:
+ *   (input) → null | { code, field? }
+ *
+ * First-failure-wins: validator short-circuits on the first problem it finds,
+ * in the order question → reason → context_field → context_circuit →
+ * expected_answer_shape. Plan 03-05's dispatcher logs the resulting
+ * {code, field?} as answer_outcome='validation_error' and short-circuits with
+ * a validation_error tool_result (no mutation, no prompt to the user).
+ *
+ * Failure-code namespace (must stay bounded — Phase 8 analyzer groups by
+ * code; keep the set closed):
+ *   invalid_question             — missing / empty / >500 chars / non-string
+ *   invalid_reason               — not in ASK_USER_REASONS
+ *   invalid_context_field        — non-null and not in CONTEXT_FIELD_ENUM
+ *   invalid_context_circuit      — non-null and not an integer
+ *   invalid_expected_answer_shape — not in ASK_USER_ANSWER_SHAPES
+ */
+describe('validateAskUser', () => {
+  const validInput = () => ({
+    question: 'Which circuit do you mean — 3 or 4?',
+    reason: 'ambiguous_circuit',
+    context_field: 'observation_clarify',
+    context_circuit: 3,
+    expected_answer_shape: 'circuit_ref',
+  });
+
+  describe('happy path', () => {
+    test('fully populated valid input → null', () => {
+      expect(validateAskUser(validInput())).toBeNull();
+    });
+    test('context_field=null AND context_circuit=null → null (schema allows)', () => {
+      const input = { ...validInput(), context_field: null, context_circuit: null };
+      expect(validateAskUser(input)).toBeNull();
+    });
+    test('question length exactly 500 chars → null (boundary)', () => {
+      const input = { ...validInput(), question: 'a'.repeat(500) };
+      expect(validateAskUser(input)).toBeNull();
+    });
+  });
+
+  describe('invalid_question', () => {
+    test('missing question field → {code:invalid_question, field:question}', () => {
+      const input = { ...validInput() };
+      delete input.question;
+      expect(validateAskUser(input)).toEqual({ code: 'invalid_question', field: 'question' });
+    });
+    test('empty string question → {code:invalid_question, field:question}', () => {
+      const input = { ...validInput(), question: '' };
+      expect(validateAskUser(input)).toEqual({ code: 'invalid_question', field: 'question' });
+    });
+    test('question 501 chars → {code:invalid_question, field:question} (boundary)', () => {
+      const input = { ...validInput(), question: 'a'.repeat(501) };
+      expect(validateAskUser(input)).toEqual({ code: 'invalid_question', field: 'question' });
+    });
+  });
+
+  describe('invalid_reason', () => {
+    test('unknown reason value → {code:invalid_reason, field:reason}', () => {
+      const input = { ...validInput(), reason: 'because_i_said_so' };
+      expect(validateAskUser(input)).toEqual({ code: 'invalid_reason', field: 'reason' });
+    });
+    test('missing reason field → {code:invalid_reason, field:reason}', () => {
+      const input = { ...validInput() };
+      delete input.reason;
+      expect(validateAskUser(input)).toEqual({ code: 'invalid_reason', field: 'reason' });
+    });
+  });
+
+  describe('invalid_context_field', () => {
+    test('non-null context_field not in CONTEXT_FIELD_ENUM → {code:invalid_context_field, field:context_field}', () => {
+      const input = { ...validInput(), context_field: 'not_a_real_field_key' };
+      expect(validateAskUser(input)).toEqual({
+        code: 'invalid_context_field',
+        field: 'context_field',
+      });
+    });
+    test('context_field = 123 (non-string, non-null) → {code:invalid_context_field}', () => {
+      const input = { ...validInput(), context_field: 123 };
+      expect(validateAskUser(input)).toEqual({
+        code: 'invalid_context_field',
+        field: 'context_field',
+      });
+    });
+  });
+
+  describe('invalid_context_circuit', () => {
+    test('context_circuit = 1.5 (non-integer) → {code:invalid_context_circuit, field:context_circuit}', () => {
+      const input = { ...validInput(), context_circuit: 1.5 };
+      expect(validateAskUser(input)).toEqual({
+        code: 'invalid_context_circuit',
+        field: 'context_circuit',
+      });
+    });
+  });
+
+  describe('invalid_expected_answer_shape', () => {
+    test('unknown shape → {code:invalid_expected_answer_shape, field:expected_answer_shape}', () => {
+      const input = { ...validInput(), expected_answer_shape: 'essay' };
+      expect(validateAskUser(input)).toEqual({
+        code: 'invalid_expected_answer_shape',
+        field: 'expected_answer_shape',
+      });
+    });
+  });
+
+  describe('first-failure-wins short-circuit', () => {
+    test('invalid question AND invalid reason → returns question failure first', () => {
+      const input = { ...validInput(), question: '', reason: 'because_i_said_so' };
+      expect(validateAskUser(input)).toEqual({ code: 'invalid_question', field: 'question' });
+    });
   });
 });
