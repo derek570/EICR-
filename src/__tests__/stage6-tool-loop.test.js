@@ -755,6 +755,172 @@ describe('stage6-tool-loop', () => {
     );
   });
 
+  // -------------------------------------------------------------------------
+  // Plan 03-06 — sortRecords hook (Phase 3 STA-02 defense-in-depth).
+  // The hook is additive + opt-in. Default is identity — Phase 1/2 tests
+  // above run without supplying `sortRecords` and must remain green.
+  // -------------------------------------------------------------------------
+
+  describe('sortRecords hook (Phase 3)', () => {
+    test('omitted → dispatch order equals assembler.finalize() order (identity default)', async () => {
+      const client = mockClient([
+        toolUseRound([
+          { id: 'toolu_0', name: 'record_reading', input: { field: 'measured_zs_ohm', circuit: 1, value: '0.1', confidence: 0.9, source_turn_id: 't1' } },
+          { id: 'toolu_1', name: 'record_reading', input: { field: 'measured_zs_ohm', circuit: 2, value: '0.2', confidence: 0.9, source_turn_id: 't1' } },
+          { id: 'toolu_2', name: 'record_reading', input: { field: 'measured_zs_ohm', circuit: 3, value: '0.3', confidence: 0.9, source_turn_id: 't1' } },
+        ]),
+        endTurnRound('done'),
+      ]);
+      const messages = [{ role: 'user', content: 'start' }];
+      const seen = [];
+      const dispatcher = jest.fn(async (call) => {
+        seen.push(call.tool_call_id);
+        return { tool_use_id: call.tool_call_id, content: '{"ok":true}', is_error: false };
+      });
+
+      await runToolLoop({
+        client,
+        model: 'claude-sonnet-4-6',
+        system: 'sys',
+        messages,
+        tools: TOOL_SCHEMAS,
+        dispatcher,
+        ctx: baseCtx(),
+        logger: makeLogger(),
+        // sortRecords omitted → default identity
+      });
+
+      expect(seen).toEqual(['toolu_0', 'toolu_1', 'toolu_2']);
+    });
+
+    test('provided (reverse) → dispatch order follows hook output', async () => {
+      const client = mockClient([
+        toolUseRound([
+          { id: 'toolu_0', name: 'record_reading', input: { field: 'measured_zs_ohm', circuit: 1, value: '0.1', confidence: 0.9, source_turn_id: 't1' } },
+          { id: 'toolu_1', name: 'record_reading', input: { field: 'measured_zs_ohm', circuit: 2, value: '0.2', confidence: 0.9, source_turn_id: 't1' } },
+          { id: 'toolu_2', name: 'record_reading', input: { field: 'measured_zs_ohm', circuit: 3, value: '0.3', confidence: 0.9, source_turn_id: 't1' } },
+        ]),
+        endTurnRound('done'),
+      ]);
+      const messages = [{ role: 'user', content: 'start' }];
+      const seen = [];
+      const dispatcher = jest.fn(async (call) => {
+        seen.push(call.tool_call_id);
+        return { tool_use_id: call.tool_call_id, content: '{"ok":true}', is_error: false };
+      });
+      const sortRecords = jest.fn((records) => [...records].reverse());
+
+      await runToolLoop({
+        client,
+        model: 'claude-sonnet-4-6',
+        system: 'sys',
+        messages,
+        tools: TOOL_SCHEMAS,
+        dispatcher,
+        ctx: baseCtx(),
+        logger: makeLogger(),
+        sortRecords,
+      });
+
+      expect(seen).toEqual(['toolu_2', 'toolu_1', 'toolu_0']);
+    });
+
+    test('called exactly once per round with the full record array', async () => {
+      const client = mockClient([
+        toolUseRound([
+          { id: 'toolu_a', name: 'record_reading', input: { field: 'measured_zs_ohm', circuit: 1, value: '0.1', confidence: 0.9, source_turn_id: 't1' } },
+          { id: 'toolu_b', name: 'record_reading', input: { field: 'measured_zs_ohm', circuit: 2, value: '0.2', confidence: 0.9, source_turn_id: 't1' } },
+        ]),
+        endTurnRound('ok'),
+      ]);
+      const messages = [{ role: 'user', content: 'start' }];
+      const sortRecords = jest.fn((records) => records);
+
+      await runToolLoop({
+        client,
+        model: 'claude-sonnet-4-6',
+        system: 'sys',
+        messages,
+        tools: TOOL_SCHEMAS,
+        dispatcher: NOOP_DISPATCHER,
+        ctx: baseCtx(),
+        logger: makeLogger(),
+        sortRecords,
+      });
+
+      // One tool_use round → hook called exactly once.
+      expect(sortRecords).toHaveBeenCalledTimes(1);
+      // Received the FULL record array (not per-record).
+      const arg = sortRecords.mock.calls[0][0];
+      expect(Array.isArray(arg)).toBe(true);
+      expect(arg).toHaveLength(2);
+      expect(arg[0].tool_call_id).toBe('toolu_a');
+      expect(arg[1].tool_call_id).toBe('toolu_b');
+    });
+
+    test('called once per round across a multi-round turn (N tool_use rounds → N hook invocations)', async () => {
+      const client = mockClient([
+        toolUseRound([{ id: 'toolu_r1', name: 'record_reading', input: { field: 'measured_zs_ohm', circuit: 1, value: '0.1', confidence: 0.9, source_turn_id: 't1' } }]),
+        toolUseRound([{ id: 'toolu_r2', name: 'record_reading', input: { field: 'measured_zs_ohm', circuit: 2, value: '0.2', confidence: 0.9, source_turn_id: 't2' } }]),
+        endTurnRound('done'),
+      ]);
+      const messages = [{ role: 'user', content: 'start' }];
+      const sortRecords = jest.fn((records) => records);
+
+      await runToolLoop({
+        client,
+        model: 'claude-sonnet-4-6',
+        system: 'sys',
+        messages,
+        tools: TOOL_SCHEMAS,
+        dispatcher: NOOP_DISPATCHER,
+        ctx: baseCtx(),
+        logger: makeLogger(),
+        sortRecords,
+      });
+
+      // Two tool_use rounds → two hook calls. The final end_turn round has
+      // no records to dispatch, so the hook is NOT invoked for it.
+      expect(sortRecords).toHaveBeenCalledTimes(2);
+    });
+
+    test('hook throws → surfaces as dispatcher_error for each owed tool_use (loop does NOT crash)', async () => {
+      // If sortRecords throws, the loop must still honour the Anthropic
+      // invariant that every assistant tool_use gets a matching tool_result
+      // — otherwise the next stream() would 400. The existing error envelope
+      // shape (dispatcher_error with is_error:true) is reused.
+      const client = mockClient([
+        toolUseRound([
+          { id: 'toolu_throw', name: 'record_reading', input: { field: 'measured_zs_ohm', circuit: 1, value: '0.1', confidence: 0.9, source_turn_id: 't1' } },
+        ]),
+        endTurnRound('ok'),
+      ]);
+      const messages = [{ role: 'user', content: 'start' }];
+      const logger = makeLogger();
+      const sortRecords = () => {
+        throw new Error('sort_failed');
+      };
+
+      const result = await runToolLoop({
+        client,
+        model: 'claude-sonnet-4-6',
+        system: 'sys',
+        messages,
+        tools: TOOL_SCHEMAS,
+        dispatcher: NOOP_DISPATCHER,
+        ctx: baseCtx(),
+        logger,
+        sortRecords,
+      });
+
+      // Loop did not crash.
+      expect(result.rounds).toBeGreaterThanOrEqual(1);
+      // An error was logged against the loop.
+      const errorLogged = logger.error.mock.calls.some(([tag]) => tag === 'stage6.tool_call' || tag === 'stage6.tool_loop_invariant' || tag === 'stage6.tool_loop_sort_error');
+      expect(errorLogged).toBe(true);
+    });
+  });
+
   test('dispatcher error path → tool_result with is_error:true, loop continues', async () => {
     const client = mockClient([
       toolUseRound([
