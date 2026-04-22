@@ -1899,15 +1899,6 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         // classifier still returns it in defensive contexts — safe to ignore.
       }
 
-      // Plan 03-12 r13 Codex MAJOR — stamp seenTranscriptUtterances
-      // immediately before the single yield in this function (the
-      // runShadowHarness await below). Any ask_user_answered frame that
-      // arrives while the harness is mid-flight MUST see this stamp and
-      // downgrade to transcript_already_extracted. Stamping earlier
-      // (top-of-handler) was wrong because the user_moved_on / validation
-      // defer paths would stamp an utterance that was only queued.
-      stampSeenTranscript();
-
       const result = await runShadowHarness(entry.session, transcriptText, regexResults, {
         confirmationsEnabled: msg.confirmations_enabled || false,
         // Stage 6 Phase 3 Plan 03-08: activate Plan 03-07's dispatcher
@@ -1920,6 +1911,29 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         pendingAsks: entry.pendingAsks,
         ws,
       });
+
+      // Plan 03-12 r14 Codex MAJOR — stamp seenTranscriptUtterances ONLY
+      // AFTER runShadowHarness resolves successfully. The earlier r13
+      // placement was immediately BEFORE the await, which meant a harness
+      // failure (Sonnet 5xx, network drop, tool-loop timeout, any thrown
+      // exception inside runShadowHarness) would leave the utterance_id
+      // stamped even though extraction never completed. A later
+      // ask_user_answered carrying `consumed_utterance_id = <that id>`
+      // would then be downgraded to transcript_already_extracted by the
+      // dedupe guard at ~L859 — the user's answer would be silently lost
+      // even though no transcript was ever processed.
+      //
+      // The original r13 rationale ("stamp before await to cover
+      // synchronous races during the yield") was incorrect: any
+      // ask_user_answered arriving during the yield is for a tool_use in
+      // the CURRENT tool loop that runShadowHarness is awaiting, which
+      // resolves through the dispatcher's ask Promise (not through the
+      // seenTranscriptUtterances dedupe path). The dedupe path only
+      // fires for ASYNC-ARRIVING frames that reference a prior utterance
+      // by consumed_utterance_id — a LATER arrival, not a concurrent
+      // one — so post-success placement is the correct semantic.
+      stampSeenTranscript();
+
       entry.lastRegexResults = [];
 
       // Validate and auto-correct field names before sending to iOS

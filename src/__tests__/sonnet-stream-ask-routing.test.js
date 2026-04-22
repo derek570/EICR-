@@ -1803,6 +1803,51 @@ describe('Plan 03-12 STT-16 — r13 Codex remediation (user_moved_on defer hygie
     expect(lastCall[2]).toEqual(seededRegex);
   });
 
+  test('STT-16e: runShadowHarness throws → seenTranscriptUtterances NOT stamped (r14 Codex MAJOR fix)', async () => {
+    // Codex r14 MAJOR: stamping BEFORE the await meant a harness failure
+    // would leave a false stamp, and a later ask_user_answered carrying
+    // consumed_utterance_id=<that id> would be wrongly downgraded to
+    // transcript_already_extracted — user's answer silently lost even
+    // though no extraction ever completed.
+    //
+    // Post-r14: stamp is placed AFTER the await succeeds. Harness throws
+    // → stamp never fires → seenTranscriptUtterances does NOT include
+    // this utterance_id → a later ask_user_answered with that
+    // consumed_utterance_id follows the normal path (not downgraded).
+    const ws = connect(wss, 'user-1');
+    await sendFrame(ws, {
+      type: 'session_start',
+      sessionId: 'sess-r14',
+      jobState: { certificateType: 'eicr' },
+    });
+    const entry = activeSessions.get('sess-r14');
+
+    // Force the harness to throw on the NEXT call. The outer catch in
+    // handleTranscript swallows it into an 'error' frame to the client;
+    // we just want the stamp path to not fire.
+    runShadowHarnessSpy.mockImplementationOnce(async () => {
+      throw new Error('simulated Sonnet 5xx / tool-loop timeout');
+    });
+
+    await sendFrame(ws, {
+      type: 'transcript',
+      utterance_id: 'utt-r14-fail',
+      text: 'Circuit 5 ze is 0.25',
+      regexResults: [{ field: 'ze', circuit: 5 }],
+    });
+
+    // GREEN contract: stamp was NOT placed because harness failed.
+    // A later ask_user_answered with consumed_utterance_id='utt-r14-fail'
+    // would therefore NOT be downgraded — the user's answer is preserved.
+    expect(
+      entry.seenTranscriptUtterances.has('utt-r14-fail'),
+    ).toBe(false);
+    // Error path was taken — an error frame was sent to the client.
+    const errorFrames = ws._sent.filter((f) => f.type === 'error');
+    expect(errorFrames.length).toBeGreaterThanOrEqual(1);
+    expect(errorFrames[0].message).toMatch(/Extraction failed/);
+  });
+
   test('STT-16d: questionGate.onNewUtterance ticks ONCE per utterance despite defer+drain (MINOR)', async () => {
     const ws = connect(wss, 'user-1');
     await sendFrame(ws, {
