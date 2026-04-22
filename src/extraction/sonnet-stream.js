@@ -803,63 +803,38 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
               break;
             }
 
-            // Plan 03-10 Task 2 (STG MAJOR remediation) — sanitise user_text
-            // BEFORE anything downstream can see it. Runs BEFORE the Task 1
-            // mark-consumed step so a rejection on abusive size doesn't
-            // permanently suppress a utterance_id (would cause legitimate
-            // future transcripts with the same id to be dropped). Also runs
-            // BEFORE the resolve so the dispatcher's tool_result body
-            // carries the cleaned text to Anthropic.
-            let sanitised;
-            try {
-              sanitised = sanitiseUserText(msg.user_text);
-            } catch (sanErr) {
-              logger.warn('stage6.user_text_rejected', {
-                sessionId: currentSessionId,
-                tool_call_id: msg.tool_call_id,
-                code: sanErr.code || 'sanitisation_error',
-                message: sanErr.message,
-              });
-              ws.send(
-                JSON.stringify({
-                  type: 'error',
-                  message: `ask_user_answered rejected: ${sanErr.message}`,
-                })
-              );
-              break;
-            }
-
-            // Plan 03-12 r6 BLOCK remediation — detect the REVERSE race
-            // BEFORE calling resolve(). Previously we always resolved with
-            // the user_text payload, then checked seenTranscriptUtterances
-            // only to decide whether to stamp consumedAskUtterances. That
-            // meant: when the transcript had ALREADY been extracted as a
-            // user turn via the shadow harness, Sonnet received the same
-            // speech TWICE — once as a user turn, once as a tool_result
-            // body — and would plausibly duplicate-write. The r3 warn log
-            // noted the anomaly but did nothing to prevent it.
+            // Plan 03-12 r8 MAJOR remediation — detect the REVERSE race
+            // BEFORE sanitisation. r6 added the reverse-race guard but ran
+            // it AFTER sanitiseUserText. If the duplicate answer frame
+            // carried oversized (>8192 chars) or otherwise malformed text,
+            // sanitisation threw, the server sent a hard error envelope,
+            // and the ask was left pending until timeout — even though
+            // the transcript half had already been extracted by the shadow
+            // harness. The inspector perceives "TTS re-asks the question
+            // I already answered" because the tool loop doesn't unblock
+            // until the 60s timeout fires.
             //
-            // New ordering: compute alreadySeenAsTranscript first, then
-            // branch on it:
-            //   - Already seen: resolve with {answered:false, reason:
-            //     'transcript_already_extracted'}. Sonnet's tool loop
-            //     sees a non-answer, so it either re-asks (fine, the
-            //     shadow-harness turn delivered the information) or
-            //     moves on; the user_text is NOT sent a second time.
-            //     Still emit the warn log for the audit trail.
-            //   - Not seen: resolve with the sanitised answer payload
-            //     (original behaviour) and stamp consumedAskUtterances
-            //     with FIFO eviction.
+            // Fix: compute alreadySeenAsTranscript FIRST. If already seen,
+            // resolve with {answered:false, reason:'transcript_already_extracted'}
+            // immediately — skip sanitisation entirely because the text is
+            // NOT going to be forwarded to Sonnet (the reason-only payload
+            // omits user_text). Bypassing sanitisation is safe here: the
+            // text never leaves this function, and the already-extracted
+            // transcript half went through its own (different) pipeline.
             //
-            // Unresolved / missing-id diagnostics preserved from the r3
-            // version — they fire once resolve() is done and are
-            // orthogonal to the reverse-race fix.
+            // If not seen, run sanitisation as before. A throw aborts with
+            // the hard-error envelope — the caller's contract violation
+            // must surface, and the ask remains pending until genuine
+            // answer or timeout (acceptable: no prior extraction has
+            // happened, so the question is still live).
             const alreadySeenAsTranscript =
               typeof msg.consumed_utterance_id === 'string' &&
               entry.seenTranscriptUtterances &&
               entry.seenTranscriptUtterances.has(msg.consumed_utterance_id);
 
             let resolvePayload;
+            let sanitised = null;
+
             if (alreadySeenAsTranscript) {
               resolvePayload = {
                 answered: false,
@@ -872,6 +847,27 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
                 reason: 'transcript_already_extracted',
               });
             } else {
+              // Plan 03-10 Task 2 (STG MAJOR remediation) — sanitise
+              // user_text before resolve/mark-consumed. Only runs in the
+              // not-seen branch; see r8 block comment above for rationale.
+              try {
+                sanitised = sanitiseUserText(msg.user_text);
+              } catch (sanErr) {
+                logger.warn('stage6.user_text_rejected', {
+                  sessionId: currentSessionId,
+                  tool_call_id: msg.tool_call_id,
+                  code: sanErr.code || 'sanitisation_error',
+                  message: sanErr.message,
+                });
+                ws.send(
+                  JSON.stringify({
+                    type: 'error',
+                    message: `ask_user_answered rejected: ${sanErr.message}`,
+                  })
+                );
+                break;
+              }
+
               // Thread sanitisation flags through the resolve payload so the
               // dispatcher's logAskUser row carries them. Only emit the
               // sanitisation sub-object when at least one flag is true —
@@ -947,8 +943,14 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
               sessionId: currentSessionId,
               tool_call_id: msg.tool_call_id,
               resolved,
-              sanitised_truncated: sanitised.truncated,
-              sanitised_stripped: sanitised.stripped,
+              // r8: sanitised is null on the reverse-race (already-seen)
+              // branch because we skip sanitisation there. Absent flags on
+              // that row are correct — there was no sanitisation pass to
+              // record. Collapse to false on the seen branch rather than
+              // null so the CloudWatch schema stays boolean-typed.
+              sanitised_truncated: sanitised ? sanitised.truncated : false,
+              sanitised_stripped: sanitised ? sanitised.stripped : false,
+              already_seen_as_transcript: alreadySeenAsTranscript || false,
             });
             break;
           }

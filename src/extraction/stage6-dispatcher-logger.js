@@ -86,15 +86,26 @@ export function logToolCall(logger, row) {
  * force every CloudWatch consumer to filter by an `event_type` discriminator
  * and complicate Insights queries. Two names → two clean query planes.
  *
- * WHY the 12-value enum (not STO-02's original 6): Phase 3 ROADMAP Open
- * Question #1 resolved to expand the enum to cover every lifecycle
+ * WHY the 13-value enum (was 12 pre-r8, 6 pre-Phase 3): Phase 3 ROADMAP
+ * Open Question #1 resolved to expand the enum to cover every lifecycle
  * end-state surfaced by the Phase 3 dispatcher + session-termination flows.
  * Per STG-05 ("weakening requires sign-off"), this is expansion not
- * weakening — every value in STO-02's original 6 is preserved; 6 new values
+ * weakening — every value in STO-02's original 6 is preserved; 7 new values
  * cover states STO-02 did not enumerate (shadow mode, validator rejection,
  * ws.on('close') grace timeout, explicit handleSessionStop, reconnect
- * branch in handleSessionStart, and the Pitfall 7 duplicate-tool_call_id
- * guard). Ratified in Phase 3 REVIEW.md.
+ * branch in handleSessionStart, the Pitfall 7 duplicate-tool_call_id guard,
+ * and Plan 03-12 r6 reverse-race transcript_already_extracted).
+ * Ratified in Phase 3 REVIEW.md.
+ *
+ * Plan 03-12 r8 BLOCK remediation: added `transcript_already_extracted`.
+ * sonnet-stream.js ask_user_answered handler now resolves duplicate frames
+ * (where the matching transcript was already extracted as a user turn via
+ * the shadow harness) with `{answered:false, reason:'transcript_already_extracted'}`.
+ * dispatchAskUser forwards `outcome.reason` verbatim into answer_outcome
+ * for logging — without the enum addition, the dispatcher's shape-gate
+ * throws `invalid_answer_outcome:transcript_already_extracted` and the
+ * tool_result envelope is never returned, leaking the ask into the
+ * dispatcher's catch path.
  */
 export const ASK_USER_ANSWER_OUTCOMES = [
   // STO-02 original 6 (Phase 5 will emit restrained_mode / ask_budget_exhausted / gated — reserved now)
@@ -111,6 +122,8 @@ export const ASK_USER_ANSWER_OUTCOMES = [
   'session_stopped',
   'session_reconnected',
   'duplicate_tool_call_id',
+  // Plan 03-12 r8 expansion (1): reverse-race path resolves with this reason
+  'transcript_already_extracted',
 ];
 
 const ASK_USER_QUESTION_LOG_MAX = 200;

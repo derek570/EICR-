@@ -1245,6 +1245,82 @@ describe('Plan 03-12 STT-12 — reverse-race must not re-expose transcript as to
 });
 
 // -----------------------------------------------------------------------------
+// STT-14 — Plan 03-12 r8 MAJOR remediation.
+//
+// The r6 reverse-race guard ran AFTER sanitiseUserText. If the duplicate
+// answer frame carried oversized or malformed text, sanitisation threw
+// first; the server sent a hard-error envelope and the pending ask was
+// left to time out, even though the matching transcript had already been
+// extracted by the shadow harness. The inspector perceives "TTS re-asks
+// the question I already answered" because the tool loop stays blocked
+// until timeout (~60s).
+//
+// Fix: compute alreadySeenAsTranscript BEFORE calling sanitiseUserText.
+// In the seen branch, resolve immediately with {answered:false,
+// reason:'transcript_already_extracted'} — sanitisation is skipped since
+// the text will NOT be forwarded to Sonnet. The ask unblocks on the
+// current event-loop tick instead of waiting 60s.
+// -----------------------------------------------------------------------------
+
+describe('Plan 03-12 STT-14 — reverse-race check runs BEFORE sanitisation', () => {
+  test('oversized user_text on a reverse-race frame still cleanly resolves as transcript_already_extracted (not hard-error)', async () => {
+    const ws = connect(wss, 'user-1');
+    await sendFrame(ws, {
+      type: 'session_start',
+      sessionId: 'sess-reverse-sanitise',
+      jobState: { certificateType: 'eicr' },
+    });
+    const entry = activeSessions.get('sess-reverse-sanitise');
+    expect(entry.pendingAsks).toBeDefined();
+
+    // Seed the reverse-race state.
+    if (!entry.seenTranscriptUtterances) entry.seenTranscriptUtterances = new Set();
+    entry.seenTranscriptUtterances.add('u-race-14');
+
+    let resolvedPayload;
+    entry.pendingAsks.register('toolu_race14', {
+      contextField: null,
+      contextCircuit: null,
+      resolve: (payload) => {
+        resolvedPayload = payload;
+      },
+      timer: setTimeout(() => {}, 60000),
+      askStartedAt: Date.now(),
+    });
+
+    // Clear sent-messages ledger so we can detect new error envelopes
+    // introduced by this specific frame. The r6 path would emit a
+    // hard-error envelope on sanitisation throw BEFORE the reverse-race
+    // check; r8 short-circuits first and must NOT emit.
+    ws._sent.length = 0;
+
+    // Oversized user_text — far above the sanitiser's hard-reject cap (8192).
+    // On the r6 ordering this would throw in sanitiseUserText BEFORE the
+    // alreadySeenAsTranscript check, producing an error envelope and leaving
+    // the ask pending. On the r8 ordering the seen check fires first and
+    // the ask resolves cleanly.
+    const oversized = 'x'.repeat(9000);
+    await sendFrame(ws, {
+      type: 'ask_user_answered',
+      tool_call_id: 'toolu_race14',
+      user_text: oversized,
+      consumed_utterance_id: 'u-race-14',
+    });
+
+    // Clean resolve — ask unblocked on the reverse-race reason.
+    expect(resolvedPayload).toMatchObject({
+      answered: false,
+      reason: 'transcript_already_extracted',
+    });
+    expect(resolvedPayload.user_text).toBeUndefined();
+
+    // No error envelope emitted by this frame.
+    const errEnvelope = ws._sent.find((m) => m.type === 'error');
+    expect(errEnvelope).toBeUndefined();
+  });
+});
+
+// -----------------------------------------------------------------------------
 // STT-13 — Plan 03-12 r7 MAJOR remediation.
 //
 // handleTranscript's answers-verdict branch previously IGNORED the boolean

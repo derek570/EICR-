@@ -297,7 +297,7 @@ describe('logAskUser()', () => {
     expect(row.context_circuit).toBeNull();
   });
 
-  test('ASK_USER_ANSWER_OUTCOMES exports all 12 Phase 3 values', () => {
+  test('ASK_USER_ANSWER_OUTCOMES exports all 13 Phase 3 values (12 original + transcript_already_extracted from r8)', () => {
     expect(ASK_USER_ANSWER_OUTCOMES).toEqual([
       'answered',
       'timeout',
@@ -311,6 +311,10 @@ describe('logAskUser()', () => {
       'session_stopped',
       'session_reconnected',
       'duplicate_tool_call_id',
+      // Plan 03-12 r8 BLOCK remediation: reverse-race reason must be a
+      // recognised answer_outcome so dispatchAskUser's log call doesn't
+      // throw invalid_answer_outcome on the reverse-race path.
+      'transcript_already_extracted',
     ]);
   });
 
