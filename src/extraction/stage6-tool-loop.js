@@ -291,7 +291,18 @@ export async function runToolLoop({
           rounds,
           error: err?.message,
         });
-        // Fallback to identity — records was already assigned.
+        // r15 MAJOR#1 remediation — emergency STA-02 fallback. Identity
+        // order could dispatch ask_user BEFORE writes in the same round,
+        // violating the writes-before-asks invariant at its enforcement
+        // point. If the hook throws, synthesise the minimum guarantee it
+        // was meant to provide: move ask_user records to the tail,
+        // preserving relative order of each partition. Pure, allocation-
+        // light, no external deps — matches createSortRecordsAsksLast's
+        // contract closely enough to preserve STA-02 defensively.
+        sortedRecords = [
+          ...records.filter((r) => r?.name !== 'ask_user'),
+          ...records.filter((r) => r?.name === 'ask_user'),
+        ];
       }
     }
     const toolResults = [];

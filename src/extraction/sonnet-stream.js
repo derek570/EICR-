@@ -304,6 +304,19 @@ const WS_RATE_LIMIT = {
 // Exported for test overrides.
 export const CONSUMED_UTTERANCE_CAP = 256;
 
+// r15 MAJOR#2 remediation — legacy clients that omit consumed_utterance_id
+// from ask_user_answered cannot register a per-utterance dedupe anchor.
+// When such a frame resolves an ask, the server sets
+// entry.legacyAskAnchorUntil = Date.now() + LEGACY_ASK_ANCHOR_WINDOW_MS, and
+// handleTranscript treats any transcript arriving inside that window as
+// already-consumed (i.e. the iOS-to-server race's winning transcript).
+//
+// Picked 1500 ms: well above the observed iOS→server routing skew (<400 ms
+// p99 in production traces) but short enough that a fresh post-ask
+// utterance is not falsely suppressed. STA-01 (one in-flight turn) caps
+// concurrent windows to one per session, so the window cannot telescope.
+export const LEGACY_ASK_ANCHOR_WINDOW_MS = 1500;
+
 /**
  * Sliding-window rate limiter. Returns an object with a check() method
  * that returns true if the message is allowed, false if rate-limited.
@@ -959,10 +972,31 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
                 });
               }
             } else {
-              logger.warn('stage6.ask_user_answered_untracked', {
+              // r15 MAJOR#2 remediation — the legacy compat path (ask
+              // resolves without consumed_utterance_id) had no dedupe
+              // anchor, so a transcript arriving shortly after could
+              // double-process the same utterance. Mitigations:
+              //   (1) promote to error-level + distinct event name so
+              //       CloudWatch alarms catch any occurrence. All live
+              //       iOS clients stamp consumed_utterance_id post-
+              //       Plan 03-10, so any hit here is client regression.
+              //   (2) set a 1500 ms blanket suppression window
+              //       (LEGACY_ASK_ANCHOR_WINDOW_MS). handleTranscript
+              //       treats this as an implicit "already consumed"
+              //       anchor for transcripts arriving inside the
+              //       window when they carry no utterance_id match in
+              //       consumedAskUtterances. Bounded to one-ask-at-a-
+              //       time by STA-01 (one in-flight turn), so the
+              //       window cannot telescope.
+              if (resolved) {
+                entry.legacyAskAnchorUntil = Date.now() + LEGACY_ASK_ANCHOR_WINDOW_MS;
+              }
+              logger.error('stage6.ask_user_answered_legacy_no_anchor', {
                 sessionId: currentSessionId,
                 tool_call_id: msg.tool_call_id,
+                resolved,
                 reason: 'missing_consumed_utterance_id',
+                anchor_window_ms: resolved ? LEGACY_ASK_ANCHOR_WINDOW_MS : 0,
               });
             }
 
@@ -1057,6 +1091,10 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
       // into dedupe decisions on the new ws.
       if (existing.seenTranscriptUtterances) existing.seenTranscriptUtterances.clear();
       else existing.seenTranscriptUtterances = new Set();
+      // r15 MAJOR#2 — clear any stale legacy-anchor window on reconnect.
+      // A window carried across a reconnect could falsely suppress the
+      // first transcript on the new ws.
+      existing.legacyAskAnchorUntil = 0;
       // Update the ws reference and re-bind the question gate to new ws.
       // This preserves the Anthropic conversation history across reconnects.
       existing.ws = ws;
@@ -1319,6 +1357,11 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
       // Same FIFO cap as consumedAskUtterances — the two ledgers are
       // symmetric.
       seenTranscriptUtterances: new Set(),
+      // r15 MAJOR#2 — timestamp (ms) until which transcripts are treated
+      // as the answer for a legacy-client ask resolved without a
+      // consumed_utterance_id. 0 = no active window. handleTranscript
+      // clears on first match (one-shot).
+      legacyAskAnchorUntil: 0,
     });
 
     ws.send(
@@ -1406,6 +1449,8 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
     // Plan 03-11 Task 1 — mirror for the reverse-race ledger.
     if (entry.seenTranscriptUtterances) entry.seenTranscriptUtterances.clear();
     else entry.seenTranscriptUtterances = new Set();
+    // r15 MAJOR#2 — clear the anchor-free window on session_resume too.
+    entry.legacyAskAnchorUntil = 0;
 
     // Rebind the socket + questionGate callback to the new WS, matching the
     // handleSessionStart reconnection branch. This preserves the Anthropic
@@ -1534,6 +1579,32 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         sessionId,
         utterance_id: msg.utterance_id,
         reason: 'answered_ask',
+      });
+      return;
+    }
+
+    // r15 MAJOR#2 remediation — anchor-free fallback window. When a
+    // legacy iOS client resolves an ask without consumed_utterance_id,
+    // the ask_user_answered branch at ~L961 stamps
+    // entry.legacyAskAnchorUntil = Date.now() + LEGACY_ASK_ANCHOR_WINDOW_MS.
+    // Any transcript whose arrival falls inside that window is treated
+    // as the answering utterance and suppressed — belt-and-braces for
+    // the identified double-processing race. The window is auto-cleared
+    // on first match (one-shot) so a post-window late transcript flows
+    // through normal extraction. This path is gated on ENTIRE transcript
+    // (not just utterance_id presence) because legacy clients may omit
+    // utterance_id on the transcript frame too.
+    if (
+      typeof entry.legacyAskAnchorUntil === 'number' &&
+      Date.now() < entry.legacyAskAnchorUntil
+    ) {
+      const untilTs = entry.legacyAskAnchorUntil;
+      entry.legacyAskAnchorUntil = 0;
+      logger.warn('stage6.transcript_suppressed_legacy_window', {
+        sessionId,
+        utterance_id: typeof msg.utterance_id === 'string' ? msg.utterance_id : null,
+        window_remaining_ms: untilTs - Date.now(),
+        reason: 'legacy_ask_no_anchor',
       });
       return;
     }

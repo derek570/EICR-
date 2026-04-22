@@ -919,6 +919,58 @@ describe('stage6-tool-loop', () => {
       const errorLogged = logger.error.mock.calls.some(([tag]) => tag === 'stage6.tool_call' || tag === 'stage6.tool_loop_invariant' || tag === 'stage6.tool_loop_sort_error');
       expect(errorLogged).toBe(true);
     });
+
+    // Plan 03-12 r15 MAJOR#1 — when the sortRecords hook throws, the loop
+    // must NOT fall back to identity order (that could dispatch ask_user
+    // BEFORE writes in the same round, violating STA-02 at its
+    // enforcement point). Instead, it must synthesise the minimum
+    // guarantee the hook was meant to provide: move ask_user records to
+    // the tail of the dispatch array, preserving each partition's
+    // relative order. Pure, allocation-light, no external deps — matches
+    // createSortRecordsAsksLast's contract closely enough to preserve
+    // STA-02 defensively under hook-failure conditions.
+    test('hook throws → emergency STA-02 fallback moves ask_user to tail (r15 MAJOR#1)', async () => {
+      const client = mockClient([
+        toolUseRound([
+          { id: 'toolu_ask', name: 'ask_user', input: { question: 'Which circuit did you mean — 3 or 4?', reason: 'ambiguous_circuit', expected_answer_shape: 'circuit_ref' } },
+          { id: 'toolu_r1', name: 'record_reading', input: { field: 'measured_zs_ohm', circuit: 1, value: '0.1', confidence: 0.9, source_turn_id: 't1' } },
+          { id: 'toolu_r2', name: 'record_reading', input: { field: 'measured_zs_ohm', circuit: 2, value: '0.2', confidence: 0.9, source_turn_id: 't1' } },
+        ]),
+        endTurnRound('done'),
+      ]);
+      const messages = [{ role: 'user', content: 'start' }];
+      const seen = [];
+      const dispatcher = jest.fn(async (call) => {
+        seen.push(call.tool_call_id);
+        return { tool_use_id: call.tool_call_id, content: '{"ok":true}', is_error: false };
+      });
+      const sortRecords = () => {
+        throw new Error('sort_failed_for_r15_major_1');
+      };
+      const logger = makeLogger();
+
+      await runToolLoop({
+        client,
+        model: 'claude-sonnet-4-6',
+        system: 'sys',
+        messages,
+        tools: TOOL_SCHEMAS,
+        dispatcher,
+        ctx: baseCtx(),
+        logger,
+        sortRecords,
+      });
+
+      // Writes dispatched before the ask — STA-02 preserved despite the
+      // hook throw. Relative order within each partition is the
+      // assembler's original order (toolu_r1 before toolu_r2).
+      expect(seen).toEqual(['toolu_r1', 'toolu_r2', 'toolu_ask']);
+      // The error is still logged so CloudWatch alarms can fire.
+      const errorLogged = logger.error.mock.calls.some(
+        ([tag]) => tag === 'stage6.tool_loop_sort_error',
+      );
+      expect(errorLogged).toBe(true);
+    });
   });
 
   test('dispatcher error path → tool_result with is_error:true, loop continues', async () => {

@@ -723,7 +723,7 @@ describe('STT-08 — utterance-consumption dedupe on ask_user_answered', () => {
     });
   });
 
-  test('STT-08b legacy compat: ask_user_answered without consumed_utterance_id → ask still resolves, warning logged, subsequent transcript NOT suppressed', async () => {
+  test('STT-08b legacy compat (r15 MAJOR#2): ask_user_answered without consumed_utterance_id → ask still resolves, error logged, anchor-free window suppresses next in-window transcript', async () => {
     const ws = connect(wss, 'user-1');
     await sendFrame(ws, {
       type: 'session_start',
@@ -745,6 +745,7 @@ describe('STT-08 — utterance-consumption dedupe on ask_user_answered', () => {
     runShadowHarnessSpy.mockClear();
     const loggerModule = (await import('../logger.js')).default;
     loggerModule.warn.mockClear();
+    loggerModule.error.mockClear();
 
     // Legacy iOS: no consumed_utterance_id — ask still resolves.
     await sendFrame(ws, {
@@ -757,18 +758,67 @@ describe('STT-08 — utterance-consumption dedupe on ask_user_answered', () => {
       user_text: 'whatever',
     });
 
-    // Warning log row flagging the missing field.
-    const untrackedWarnings = loggerModule.warn.mock.calls.filter(
-      (c) => c[0] === 'stage6.ask_user_answered_untracked'
+    // r15 MAJOR#2 — error-level log row flagging the missing anchor
+    // with the distinct event name so CloudWatch can alarm.
+    const legacyErrors = loggerModule.error.mock.calls.filter(
+      (c) => c[0] === 'stage6.ask_user_answered_legacy_no_anchor'
     );
-    expect(untrackedWarnings).toHaveLength(1);
+    expect(legacyErrors).toHaveLength(1);
+    expect(legacyErrors[0][1]).toMatchObject({
+      tool_call_id: 'toolu_legacy',
+      resolved: true,
+      reason: 'missing_consumed_utterance_id',
+    });
+    expect(legacyErrors[0][1].anchor_window_ms).toBeGreaterThan(0);
 
-    // A subsequent transcript with some utterance_id is NOT suppressed — the
-    // dedupe can't fire for an answer that never registered an id.
+    // r15 MAJOR#2 — the fallback window is now armed. A transcript
+    // arriving inside the window is treated as the answering utterance
+    // and suppressed (belt-and-braces for the identified double-
+    // processing race when no utterance anchor was available).
+    expect(entry.legacyAskAnchorUntil).toBeGreaterThan(Date.now());
     await sendFrame(ws, {
       type: 'transcript',
       text: 'another sentence',
       utterance_id: 'u-unrelated',
+      regexResults: [],
+    });
+    expect(runShadowHarnessSpy).not.toHaveBeenCalled();
+    // Window is one-shot: cleared on first suppression.
+    expect(entry.legacyAskAnchorUntil).toBe(0);
+  });
+
+  test('STT-08b2 legacy compat (r15 MAJOR#2): transcript arriving AFTER window closes flows through normal extraction', async () => {
+    const ws = connect(wss, 'user-1');
+    await sendFrame(ws, {
+      type: 'session_start',
+      sessionId: 'sess-A',
+      jobState: { certificateType: 'eicr' },
+    });
+    const entry = activeSessions.get('sess-A');
+
+    entry.pendingAsks.register('toolu_legacy_2', {
+      contextField: null,
+      contextCircuit: null,
+      resolve: () => {},
+      timer: setTimeout(() => {}, 60000),
+      askStartedAt: Date.now(),
+    });
+
+    runShadowHarnessSpy.mockClear();
+
+    await sendFrame(ws, {
+      type: 'ask_user_answered',
+      tool_call_id: 'toolu_legacy_2',
+      user_text: 'x',
+    });
+    // Force-expire the window: simulate the transcript arriving after
+    // LEGACY_ASK_ANCHOR_WINDOW_MS elapsed without touching jest timers.
+    entry.legacyAskAnchorUntil = Date.now() - 1;
+
+    await sendFrame(ws, {
+      type: 'transcript',
+      text: 'totally different sentence',
+      utterance_id: 'u-post-window',
       regexResults: [],
     });
     expect(runShadowHarnessSpy).toHaveBeenCalled();
