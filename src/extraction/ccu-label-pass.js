@@ -271,6 +271,15 @@ export async function readSlotLabels(slotCrops, opts = {}) {
     return { labels: [], usage: { inputTokens: 0, outputTokens: 0 }, batchCount: 0 };
   }
 
+  // Confidence threshold: opts > env > default 0.5
+  let threshold = 0.5;
+  if (typeof opts.labelConfidenceMin === 'number') {
+    threshold = opts.labelConfidenceMin;
+  } else {
+    const envVal = parseFloat(process.env.CCU_LABEL_CONFIDENCE_MIN);
+    if (Number.isFinite(envVal)) threshold = envVal;
+  }
+
   const anthropic = opts.anthropicClient || (await getAnthropicClient());
   const model = opts.model || CCU_LABEL_MODEL;
 
@@ -346,13 +355,19 @@ export async function readSlotLabels(slotCrops, opts = {}) {
         typeof vlmItem.label === 'string' && vlmItem.label.trim().length > 0
           ? vlmItem.label.trim()
           : null;
-      const label = normaliseLabel(rawLabel);
+      const confidence = typeof vlmItem.confidence === 'number' ? vlmItem.confidence : 0;
+      // Apply confidence gate: null out the label when confidence is below
+      // the threshold so low-confidence guesses don't propagate as hallucinations.
+      // rawLabel is kept intact so debug/review tooling can still inspect what
+      // the VLM thought it saw.
+      const normalisedLabel = normaliseLabel(rawLabel);
+      const label = confidence >= threshold ? normalisedLabel : null;
 
       resultsBySlotIndex.set(crop.slotIndex, {
         slotIndex: crop.slotIndex,
         label,
         rawLabel,
-        confidence: typeof vlmItem.confidence === 'number' ? vlmItem.confidence : 0,
+        confidence,
       });
     }
   }

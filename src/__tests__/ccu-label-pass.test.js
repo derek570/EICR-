@@ -345,6 +345,96 @@ describe('readSlotLabels', () => {
     expect(labels[1].label).toBeNull();
     expect(labels[1].confidence).toBe(0);
   });
+
+  // ---------------------------------------------------------------------------
+  // Confidence gating
+  // ---------------------------------------------------------------------------
+
+  test('confidence gating: label with confidence=0.9 passes through unchanged', async () => {
+    const anthropic = mockAnthropic(
+      textResponse(
+        JSON.stringify([{ slot_index: 0, label: 'Sockets', confidence: 0.9 }])
+      )
+    );
+    const slotCrops = [
+      { slotIndex: 0, buffer: Buffer.from([0xff]), bbox: { x: 0, y: 0, w: 10, h: 10 } },
+    ];
+    const { labels } = await readSlotLabels(slotCrops, { anthropicClient: anthropic });
+    expect(labels[0].label).toBe('Sockets');
+    expect(labels[0].rawLabel).toBe('Sockets');
+    expect(labels[0].confidence).toBe(0.9);
+  });
+
+  test('confidence gating: label with confidence=0.3 is nulled out but rawLabel is preserved', async () => {
+    const anthropic = mockAnthropic(
+      textResponse(
+        JSON.stringify([{ slot_index: 0, label: 'Sockets', confidence: 0.3 }])
+      )
+    );
+    const slotCrops = [
+      { slotIndex: 0, buffer: Buffer.from([0xff]), bbox: { x: 0, y: 0, w: 10, h: 10 } },
+    ];
+    const { labels } = await readSlotLabels(slotCrops, { anthropicClient: anthropic });
+    expect(labels[0].label).toBeNull();
+    expect(labels[0].rawLabel).toBe('Sockets');
+    expect(labels[0].confidence).toBe(0.3);
+  });
+
+  test('confidence gating: label at exactly the threshold (0.5) is kept (>= semantics)', async () => {
+    const anthropic = mockAnthropic(
+      textResponse(
+        JSON.stringify([{ slot_index: 0, label: 'Lights', confidence: 0.5 }])
+      )
+    );
+    const slotCrops = [
+      { slotIndex: 0, buffer: Buffer.from([0xff]), bbox: { x: 0, y: 0, w: 10, h: 10 } },
+    ];
+    const { labels } = await readSlotLabels(slotCrops, { anthropicClient: anthropic });
+    expect(labels[0].label).toBe('Lights');
+    expect(labels[0].confidence).toBe(0.5);
+  });
+
+  test('confidence gating: opts.labelConfidenceMin=0.8 overrides default; 0.6-confidence label is nulled', async () => {
+    const anthropic = mockAnthropic(
+      textResponse(
+        JSON.stringify([{ slot_index: 0, label: 'Cooker', confidence: 0.6 }])
+      )
+    );
+    const slotCrops = [
+      { slotIndex: 0, buffer: Buffer.from([0xff]), bbox: { x: 0, y: 0, w: 10, h: 10 } },
+    ];
+    const { labels } = await readSlotLabels(slotCrops, {
+      anthropicClient: anthropic,
+      labelConfidenceMin: 0.8,
+    });
+    expect(labels[0].label).toBeNull();
+    expect(labels[0].rawLabel).toBe('Cooker');
+    expect(labels[0].confidence).toBe(0.6);
+  });
+
+  test('confidence gating: process.env.CCU_LABEL_CONFIDENCE_MIN overrides default 0.5', async () => {
+    // 0.65-confidence label: passes with default (0.5) but should be nulled with env threshold (0.7)
+    const anthropic = mockAnthropic(
+      textResponse(
+        JSON.stringify([{ slot_index: 0, label: 'Shower', confidence: 0.65 }])
+      )
+    );
+    const slotCrops = [
+      { slotIndex: 0, buffer: Buffer.from([0xff]), bbox: { x: 0, y: 0, w: 10, h: 10 } },
+    ];
+
+    process.env.CCU_LABEL_CONFIDENCE_MIN = '0.7';
+    let labels;
+    try {
+      ({ labels } = await readSlotLabels(slotCrops, { anthropicClient: anthropic }));
+    } finally {
+      delete process.env.CCU_LABEL_CONFIDENCE_MIN;
+    }
+
+    expect(labels[0].label).toBeNull();
+    expect(labels[0].rawLabel).toBe('Shower');
+    expect(labels[0].confidence).toBe(0.65);
+  });
 });
 
 // ---------------------------------------------------------------------------
