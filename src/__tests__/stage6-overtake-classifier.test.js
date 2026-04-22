@@ -326,6 +326,23 @@ describe('classifyOvertake — STA-04c shape-aware no-regex branch', () => {
     }
   });
 
+  // Plan 03-12 r11 MINOR remediation — multi-word yes/no variants.
+  test("STA-04c-multi-word-yes-no: 'not really' / 'of course' / 'no way' match (r11 MINOR fix)", () => {
+    for (const text of ['not really', 'not really.', 'Of course!', 'no way', 'NO WAY']) {
+      const verdict = classifyOvertake(
+        text,
+        [],
+        mockPending([
+          [
+            'ask_mw',
+            { contextField: null, contextCircuit: null, expectedAnswerShape: 'yes_no' },
+          ],
+        ]),
+      );
+      expect(verdict.kind).toBe('answers');
+    }
+  });
+
   test('STA-04c-number: number ask + "yes" + no regex → user_moved_on (wrong attribution cost too high)', () => {
     const verdict = classifyOvertake(
       'yes',

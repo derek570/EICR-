@@ -803,6 +803,33 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
               break;
             }
 
+            // Plan 03-12 r11 BLOCK remediation — late-stop race guard for
+            // ask_user_answered, mirroring the handleTranscript guard at
+            // STT-10a (~line 1484). handleSessionStop sets
+            // `entry.isStopping=true` BEFORE its first rejectAll pass and
+            // then awaits flushUtteranceBuffer + S3 uploads + session_ack
+            // before finally deleting the activeSessions entry. During
+            // that window an ask_user_answered frame (iOS sent its reply
+            // right as the inspector tapped Stop) can still find the
+            // session present and call pendingAsks.resolve() — unblocking
+            // the tool loop AFTER stop began. The blocked tool loop then
+            // kicks off a fresh Sonnet turn / registers fresh tool_use
+            // blocks past teardown, exactly the class of race that
+            // STT-10a closed on the transcript channel.
+            //
+            // Fix: early-return if isStopping. No error envelope — the
+            // client already requested stop, and the pending ask will be
+            // (or was) resolved as session_stopped by the rejectAll
+            // sweep. Silent drop is the intended semantics, matching
+            // the transcript-drop behaviour at STT-10a.
+            if (entry.isStopping) {
+              logger.info('stage6.ask_user_answered_dropped_during_stop', {
+                sessionId: currentSessionId,
+                tool_call_id: msg.tool_call_id,
+              });
+              break;
+            }
+
             // Plan 03-12 r8 MAJOR remediation — detect the REVERSE race
             // BEFORE sanitisation. r6 added the reverse-race guard but ran
             // it AFTER sanitiseUserText. If the duplicate answer frame

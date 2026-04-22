@@ -289,6 +289,48 @@ describe('Group B — inbound ask_user_answered routing', () => {
     expect(ws._sent.find((m) => m.type === 'error')).toBeUndefined();
   });
 
+  // Plan 03-12 r11 BLOCK remediation — late-stop race guard.
+  // handleSessionStop sets entry.isStopping=true before rejectAll. An
+  // ask_user_answered frame arriving during the stop sweep must NOT
+  // resolve the ask and unblock the tool loop past teardown.
+  test('r11: ask_user_answered dropped when entry.isStopping=true (no resolve, no error)', async () => {
+    const ws = connect(wss, 'user-1');
+    await sendFrame(ws, {
+      type: 'session_start',
+      sessionId: 'sess-A',
+      jobState: { certificateType: 'eicr' },
+    });
+    const entry = activeSessions.get('sess-A');
+    const resolveSpy = jest.spyOn(entry.pendingAsks, 'resolve');
+
+    // Seed an ask so a normal answer WOULD have something to resolve.
+    entry.pendingAsks.register('toolu_stop_race', {
+      contextField: 'ze',
+      contextCircuit: null,
+      resolve: () => {},
+      timer: setTimeout(() => {}, 60000),
+      askStartedAt: Date.now(),
+    });
+
+    // Flip the stop flag without actually running stop (to isolate the guard).
+    entry.isStopping = true;
+    ws._sent.length = 0;
+
+    await sendFrame(ws, {
+      type: 'ask_user_answered',
+      tool_call_id: 'toolu_stop_race',
+      user_text: 'Some answer that arrived during stop',
+    });
+
+    // resolve() MUST NOT have been called — the guard short-circuited.
+    expect(resolveSpy).not.toHaveBeenCalled();
+    // No error envelope — this is silent drop semantics (mirrors the
+    // transcript-drop behaviour at STT-10a).
+    expect(ws._sent.find((m) => m.type === 'error')).toBeUndefined();
+
+    resolveSpy.mockRestore();
+  });
+
   test('unknown tool_call_id is a no-op — no error emitted', async () => {
     const ws = connect(wss, 'user-1');
     await sendFrame(ws, {

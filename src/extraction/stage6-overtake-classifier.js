@@ -64,6 +64,16 @@
 // English inspection domain, and a config lookup would buy nothing except
 // another hot-reload surface. Add variants here if the inspector pool
 // grows regional dialect coverage.
+// Plan 03-12 r11 MINOR remediation — restore multi-word variants that
+// were dropped from the planned vocabulary. "not really" is the canonical
+// example surfaced by r11 review: an inspector replying "not really" to
+// "Is this circuit still in service?" falls through the user_moved_on
+// branch today because no single-word token matches, and the next turn
+// forces a re-ask. Also adding "of course" (yes-sided) + "no way"
+// (no-sided) which were in the Plan 03-11 Task 2 research notes but
+// never landed. normaliseForYesNo() preserves internal whitespace — it
+// only trims leading/trailing whitespace + punctuation — so multi-word
+// phrases remain as literal Set keys.
 const YES_NO_VOCABULARY = new Set([
   'yes',
   'yeah',
@@ -72,12 +82,15 @@ const YES_NO_VOCABULARY = new Set([
   'affirmative',
   'correct',
   'confirmed',
+  'of course',
   'no',
   'nope',
   'nah',
   'negative',
   'incorrect',
   'wrong',
+  'not really',
+  'no way',
 ]);
 
 function normaliseForYesNo(text) {

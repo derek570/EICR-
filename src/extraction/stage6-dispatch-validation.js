@@ -175,9 +175,20 @@ const MAX_QUESTION_LEN = 500;
  * Returns null on success or {code, field?} on failure. Never throws.
  */
 export function validateAskUser(input) {
+  // Plan 03-12 r11 MAJOR remediation — reject whitespace-only question.
+  // Prior check used `input.question.length === 0` only, so "   " (pure
+  // whitespace), a bare tab, or a line feed would pass validation, reach
+  // the dispatcher, and produce blank/garbage TTS prompts on iOS. The
+  // schema contract is "non-empty question"; trimming before length
+  // check enforces the INTENT of the contract, not its accidental
+  // byte-level reading. The upper bound still checks the un-trimmed
+  // length — a 4097-char string with 4096 chars of trailing whitespace
+  // is still oversized by the schema cap, and the dispatcher's analyzer
+  // would break if we accepted it. Two different length semantics for
+  // two different failure modes.
   if (
     typeof input?.question !== 'string' ||
-    input.question.length === 0 ||
+    input.question.trim().length === 0 ||
     input.question.length > MAX_QUESTION_LEN
   ) {
     return { code: 'invalid_question', field: 'question' };

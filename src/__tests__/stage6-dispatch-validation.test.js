@@ -187,6 +187,19 @@ describe('validateAskUser', () => {
       const input = { ...validInput(), question: 'a'.repeat(501) };
       expect(validateAskUser(input)).toEqual({ code: 'invalid_question', field: 'question' });
     });
+    // Plan 03-12 r11 MAJOR remediation — whitespace-only question rejected.
+    test('whitespace-only question (spaces) → invalid_question (r11 MAJOR fix)', () => {
+      const input = { ...validInput(), question: '   ' };
+      expect(validateAskUser(input)).toEqual({ code: 'invalid_question', field: 'question' });
+    });
+    test('whitespace-only question (tab + newline) → invalid_question', () => {
+      const input = { ...validInput(), question: '\t\n\r  ' };
+      expect(validateAskUser(input)).toEqual({ code: 'invalid_question', field: 'question' });
+    });
+    test('question with leading/trailing whitespace but real content → ACCEPTED (trim-only-for-empty-check)', () => {
+      const input = { ...validInput(), question: '  Is the circuit energised?  ' };
+      expect(validateAskUser(input)).toBeNull();
+    });
   });
 
   describe('invalid_reason', () => {
