@@ -739,6 +739,25 @@ export async function extractCcuRewireable(imageBuffer) {
     slots = classified.slots;
     stage3Usage = classified.usage;
     stage3BatchCount = classified.batchCount;
+
+    // Force-tag the main-switch slot. Stage 3's classifier enum is
+    // {rewireable, cartridge, blank} — no main_switch option, so when the main
+    // switch sits at a band edge (e.g. pull-out switch-fuse integrated with the
+    // carrier row) the VLM usually misreads it as "blank" or "rewireable". We
+    // know from Stage 2 which slot it is; override the classification directly.
+    // Downstream merger rules `cls === 'main_switch' || cls === 'spd' → skip`
+    // then naturally exclude it from circuit numbering.
+    if (
+      Array.isArray(slots) &&
+      typeof stage2.mainSwitchSlotIndex === 'number' &&
+      slots[stage2.mainSwitchSlotIndex]
+    ) {
+      const msSlot = slots[stage2.mainSwitchSlotIndex];
+      msSlot.classification = 'main_switch';
+      msSlot.bodyColour = null;
+      msSlot.ratingAmps = null;
+      msSlot.bsEn = null;
+    }
   } catch (err) {
     stage3Error = err && err.message ? err.message : String(err);
   }
