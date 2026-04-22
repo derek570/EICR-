@@ -1244,6 +1244,86 @@ describe('Plan 03-12 STT-12 — reverse-race must not re-expose transcript as to
   });
 });
 
+// -----------------------------------------------------------------------------
+// STT-13 — Plan 03-12 r7 MAJOR remediation.
+//
+// handleTranscript's answers-verdict branch previously IGNORED the boolean
+// returned by entry.pendingAsks.resolve(...) and always early-returned. When
+// the classifier produced an `answers` verdict but the matching pending ask
+// had been resolved by a concurrent timeout or ask_user_answered frame in
+// the same event-loop tick, resolve() was a no-op (returned false), but
+// the transcript was still dropped — no dispatcher tool_result was sent,
+// runShadowHarness was skipped. The inspector's speech disappeared silently.
+//
+// Fix: capture the resolve() return; on false, log
+// stage6.transcript_overtake_stale_resolve and FALL THROUGH to
+// runShadowHarness so the utterance reaches Sonnet as a normal user turn.
+// This matches the Open Question #4 principle (wrong attribution costlier
+// than a second re-ask).
+//
+// Test seeds a "phantom" tool_call_id into the classifier verdict — the id
+// is NOT registered in pendingAsks, so resolve() returns false exactly the
+// way a real timeout/answer race would.
+// -----------------------------------------------------------------------------
+
+describe('Plan 03-12 STT-13 — answers-verdict with stale tool_call_id falls through to harness', () => {
+  test('resolve() returns false → warn log + runShadowHarness still invoked (no silent drop)', async () => {
+    const ws = connect(wss, 'user-1');
+    await sendFrame(ws, {
+      type: 'session_start',
+      sessionId: 'sess-stale-answer',
+      jobState: { certificateType: 'eicr' },
+    });
+    const entry = activeSessions.get('sess-stale-answer');
+
+    // Register a real ask so pendingAsks.size > 0 (triggers classifyOvertake).
+    // The classifier mock will then return a verdict pointing to a DIFFERENT
+    // (unregistered) tool_call_id, simulating the race where the original
+    // ask was resolved/timed out between classifier call-site and the
+    // resolve() call below.
+    entry.pendingAsks.register('toolu_real', {
+      contextField: 'ze',
+      contextCircuit: null,
+      resolve: () => {},
+      timer: setTimeout(() => {}, 60000),
+      askStartedAt: Date.now(),
+    });
+
+    runShadowHarnessSpy.mockClear();
+    const loggerModule = (await import('../logger.js')).default;
+    loggerModule.warn.mockClear();
+
+    classifyOvertakeSpy.mockImplementationOnce(() => ({
+      kind: 'answers',
+      toolCallId: 'toolu_phantom',
+      userText: 'ze is 0.31',
+    }));
+
+    await sendFrame(ws, {
+      type: 'transcript',
+      text: 'ze is 0.31',
+      regexResults: [],
+    });
+
+    // Stale-resolve warn log fired, naming the answer source.
+    const staleWarnings = loggerModule.warn.mock.calls.filter(
+      (c) => c[0] === 'stage6.transcript_overtake_stale_resolve'
+    );
+    expect(staleWarnings.length).toBeGreaterThanOrEqual(1);
+    expect(staleWarnings[0][1]).toMatchObject({
+      sessionId: 'sess-stale-answer',
+      tool_call_id: 'toolu_phantom',
+      source: 'transcript_overtake_answer',
+      reason: 'tool_call_id_already_resolved',
+    });
+
+    // Fall-through invariant: the harness still processes the transcript as
+    // a normal user turn. Previously this was NOT called — the r3 code
+    // early-returned after the no-op resolve(), dropping the speech.
+    expect(runShadowHarnessSpy).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('Plan 03-12 STT-11 — lastRegexResults cleared on classifier early-return', () => {
   test('answers-verdict early return clears pre-seeded entry.lastRegexResults', async () => {
     const ws = connect(wss, 'user-1');

@@ -1653,10 +1653,12 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
           // `stage6.user_text_rejected` + resolve with `{answered:false,
           // reason:'validation_error'}` so the awaiting dispatcher returns
           // a normal error envelope to Sonnet.
-          let sanitised;
+          let sanitised = null;
+          let sanitisationFailed = false;
           try {
             sanitised = sanitiseUserText(verdict.userText);
           } catch (sanErr) {
+            sanitisationFailed = true;
             logger.warn('stage6.user_text_rejected', {
               sessionId,
               tool_call_id: verdict.toolCallId,
@@ -1664,50 +1666,108 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
               code: sanErr.code || 'sanitisation_error',
               message: sanErr.message,
             });
-            entry.pendingAsks.resolve(verdict.toolCallId, {
+            const resolvedValidationError = entry.pendingAsks.resolve(verdict.toolCallId, {
               answered: false,
               reason: 'validation_error',
             });
-            // Plan 03-12 STT-11 (STG r5 MAJOR remediation) — clear
-            // lastRegexResults here too. The normal-path reset at line
-            // 1686 is skipped on early-return; without this line, any
-            // non-empty entry.lastRegexResults (future populator, test
-            // seed, manual debug) would leak into the next transcript's
-            // `msg.regexResults ?? entry.lastRegexResults` fallback.
-            entry.lastRegexResults = [];
-            // Outer try/finally (line ~1783) handles clearTimeout +
-            // isExtracting=false on return — no explicit cleanup needed.
-            return;
+            if (!resolvedValidationError) {
+              // Plan 03-12 r7 MAJOR remediation — resolve() returns false
+              // when the tool_call_id is unknown (already resolved by
+              // timeout, by an earlier ask_user_answered, or never
+              // registered). The verdict.toolCallId came from classifier
+              // iteration over the CURRENT pendingAsks snapshot, so the
+              // common cause here is an interleaved timeout/answer landing
+              // in the same event-loop tick. Falling through lets the
+              // utterance reach runShadowHarness as a normal user turn —
+              // strictly safer than silently dropping speech on a race
+              // we didn't actually win. Log for the audit trail.
+              //
+              // NOTE: sanitisation still failed for this text, so even on
+              // fall-through runShadowHarness will process the raw
+              // transcriptText (which is a different code path — the
+              // harness's downstream Sonnet call sanitises/normalises via
+              // its own pipeline). The validation_error resolve above
+              // was a no-op (tool_call_id already gone), so no channel
+              // received the bad text as an ask answer.
+              logger.warn('stage6.transcript_overtake_stale_resolve', {
+                sessionId,
+                tool_call_id: verdict.toolCallId,
+                source: 'transcript_overtake_validation_error',
+                reason: 'tool_call_id_already_resolved',
+              });
+              // Deliberately NOT clearing entry.lastRegexResults here —
+              // runShadowHarness may want the regex context on this turn,
+              // and the normal post-harness reset downstream handles it.
+            } else {
+              // Plan 03-12 STT-11 (STG r5 MAJOR remediation) — clear
+              // lastRegexResults here too. The normal-path reset at line
+              // 1686 is skipped on early-return; without this line, any
+              // non-empty entry.lastRegexResults (future populator, test
+              // seed, manual debug) would leak into the next transcript's
+              // `msg.regexResults ?? entry.lastRegexResults` fallback.
+              entry.lastRegexResults = [];
+              // Outer try/finally (line ~1783) handles clearTimeout +
+              // isExtracting=false on return — no explicit cleanup needed.
+              return;
+            }
           }
 
-          const resolvePayload = {
-            answered: true,
-            user_text: sanitised.text,
-          };
-          if (sanitised.truncated || sanitised.stripped) {
-            resolvePayload.sanitisation = {
-              truncated: sanitised.truncated,
-              stripped: sanitised.stripped,
+          if (!sanitisationFailed) {
+            const resolvePayload = {
+              answered: true,
+              user_text: sanitised.text,
             };
+            if (sanitised.truncated || sanitised.stripped) {
+              resolvePayload.sanitisation = {
+                truncated: sanitised.truncated,
+                stripped: sanitised.stripped,
+              };
+            }
+            const resolvedAnswer = entry.pendingAsks.resolve(verdict.toolCallId, resolvePayload);
+
+            if (!resolvedAnswer) {
+              // Plan 03-12 r7 MAJOR remediation — stale resolve on the
+              // answers path. Same rationale as the validation_error
+              // branch above: verdict.toolCallId was live at classifier
+              // call-site but got resolved by a concurrent timeout /
+              // ask_user_answered in the same event-loop tick. The
+              // original r3 code unconditionally early-returned here,
+              // which meant the transcript was dropped into a void —
+              // no dispatcher tool_result body was sent (resolve() noop'd),
+              // and runShadowHarness was skipped. Net: speech silently
+              // disappeared on a race the server didn't win.
+              //
+              // Fix: log the race, fall through to runShadowHarness. The
+              // utterance then reaches Sonnet as a normal user turn, which
+              // is the strictly-safe attribution (Open Question #4: wrong
+              // attribution is costlier than a second re-ask). Do NOT
+              // reset lastRegexResults here — the harness is about to
+              // use it; the normal post-harness reset handles cleanup.
+              logger.warn('stage6.transcript_overtake_stale_resolve', {
+                sessionId,
+                tool_call_id: verdict.toolCallId,
+                source: 'transcript_overtake_answer',
+                reason: 'tool_call_id_already_resolved',
+              });
+            } else {
+              // Plan 03-12 STT-11 (STG r5 MAJOR remediation) — clear
+              // lastRegexResults on the answers early-return too. Same
+              // rationale as the validation_error branch above: the normal
+              // reset at line 1686 sits AFTER runShadowHarness, which this
+              // return skips. Defensive against any future populator of
+              // entry.lastRegexResults that would otherwise bleed stale
+              // hits into the next transcript's fallback.
+              entry.lastRegexResults = [];
+
+              // Plan 03-11 Task 3 — BLOCK remediation: return early. The
+              // dispatcher's tool_result is the sole Sonnet-visible channel
+              // for this utterance; do NOT also feed it into runShadowHarness.
+              // The `finally` at the outer try/finally handles watchdog cleanup
+              // + isExtracting reset on return, so no cleanup needed here
+              // beyond early return.
+              return;
+            }
           }
-          entry.pendingAsks.resolve(verdict.toolCallId, resolvePayload);
-
-          // Plan 03-12 STT-11 (STG r5 MAJOR remediation) — clear
-          // lastRegexResults on the answers early-return too. Same
-          // rationale as the validation_error branch above: the normal
-          // reset at line 1686 sits AFTER runShadowHarness, which this
-          // return skips. Defensive against any future populator of
-          // entry.lastRegexResults that would otherwise bleed stale
-          // hits into the next transcript's fallback.
-          entry.lastRegexResults = [];
-
-          // Plan 03-11 Task 3 — BLOCK remediation: return early. The
-          // dispatcher's tool_result is the sole Sonnet-visible channel
-          // for this utterance; do NOT also feed it into runShadowHarness.
-          // The `finally` at the outer try/finally handles watchdog cleanup
-          // + isExtracting reset on return, so no cleanup needed here
-          // beyond early return.
-          return;
         } else if (verdict.kind === 'user_moved_on') {
           entry.pendingAsks.rejectAll('user_moved_on');
           // fall through — new transcript becomes the fresh user message.
