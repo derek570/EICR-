@@ -944,6 +944,140 @@ describe('STT-08 — utterance-consumption dedupe on ask_user_answered', () => {
     expect(entry.recentAskAnswers).toHaveLength(0);
   });
 
+  // Plan 03-12 r17 BLOCK — the isExtracting pendingTranscripts queue
+  // must preserve the ORIGINAL message shape so drain re-entry can
+  // re-consult dedupe (utterance_id) and TTS context (in_response_to).
+  // Prior shape dropped everything except text+regexResults.
+  test('STT-08b6 (r17 BLOCK): pendingTranscripts queue preserves utterance_id + in_response_to on replay', async () => {
+    const ws = connect(wss, 'user-1');
+    await sendFrame(ws, {
+      type: 'session_start',
+      sessionId: 'sess-A',
+      jobState: { certificateType: 'eicr' },
+    });
+    const entry = activeSessions.get('sess-A');
+
+    // Force isExtracting=true to exercise the queue branch. The
+    // queued payload is what we assert on — we don't replay it here
+    // (the drain path is covered by STT-16b/c). This test is
+    // specifically the SHAPE-preservation property.
+    entry.isExtracting = true;
+
+    await sendFrame(ws, {
+      type: 'transcript',
+      text: 'code two',
+      utterance_id: 'u-queued',
+      in_response_to: {
+        type: 'observation_code',
+        question: 'What code for this observation?',
+      },
+      confirmations_enabled: true,
+      regexResults: [{ field: 'X', value: 'y' }],
+    });
+
+    expect(entry.pendingTranscripts).toHaveLength(1);
+    const queued = entry.pendingTranscripts[0];
+    // Must preserve every field the dedupe + context paths need.
+    expect(queued.text).toBe('code two');
+    expect(queued.utterance_id).toBe('u-queued');
+    expect(queued.in_response_to).toEqual({
+      type: 'observation_code',
+      question: 'What code for this observation?',
+    });
+    expect(queued.confirmations_enabled).toBe(true);
+    expect(queued.regexResults).toEqual([{ field: 'X', value: 'y' }]);
+  });
+
+  // Plan 03-12 r17 MAJOR — `consumed_utterance_id` MUST be either
+  // absent (legacy path) OR a non-empty string (anchored path). A
+  // present-but-malformed value (number, object, null, empty string)
+  // is a protocol bug; it must WARN loudly rather than silently
+  // falling through to the legacy path.
+  test('STT-08b7 (r17 MAJOR): malformed consumed_utterance_id (number) warns and falls back to legacy path', async () => {
+    const ws = connect(wss, 'user-1');
+    await sendFrame(ws, {
+      type: 'session_start',
+      sessionId: 'sess-A',
+      jobState: { certificateType: 'eicr' },
+    });
+    const entry = activeSessions.get('sess-A');
+
+    entry.pendingAsks.register('toolu_malformed', {
+      contextField: null,
+      contextCircuit: null,
+      resolve: () => {},
+      timer: setTimeout(() => {}, 60000),
+      askStartedAt: Date.now(),
+    });
+
+    const loggerModule = (await import('../logger.js')).default;
+    loggerModule.warn.mockClear();
+    loggerModule.error.mockClear();
+
+    await sendFrame(ws, {
+      type: 'ask_user_answered',
+      tool_call_id: 'toolu_malformed',
+      consumed_utterance_id: 12345, // malformed — should be string
+      user_text: 'six',
+    });
+
+    const malformedWarnings = loggerModule.warn.mock.calls.filter(
+      (c) => c[0] === 'stage6.ask_user_answered_malformed_anchor',
+    );
+    expect(malformedWarnings).toHaveLength(1);
+    expect(malformedWarnings[0][1]).toMatchObject({
+      tool_call_id: 'toolu_malformed',
+      consumed_utterance_id_type: 'number',
+      reason: 'consumed_utterance_id_present_but_not_nonempty_string',
+    });
+    // Falls through to legacy path: error log + content-anchor push.
+    const legacyErrors = loggerModule.error.mock.calls.filter(
+      (c) => c[0] === 'stage6.ask_user_answered_legacy_no_anchor',
+    );
+    expect(legacyErrors).toHaveLength(1);
+    expect(entry.recentAskAnswers).toHaveLength(1);
+    // NOT added to consumedAskUtterances (malformed can't anchor).
+    expect(entry.consumedAskUtterances.size).toBe(0);
+  });
+
+  test('STT-08b8 (r17 MAJOR): empty-string consumed_utterance_id also triggers malformed-anchor warn', async () => {
+    const ws = connect(wss, 'user-1');
+    await sendFrame(ws, {
+      type: 'session_start',
+      sessionId: 'sess-A',
+      jobState: { certificateType: 'eicr' },
+    });
+    const entry = activeSessions.get('sess-A');
+
+    entry.pendingAsks.register('toolu_empty', {
+      contextField: null,
+      contextCircuit: null,
+      resolve: () => {},
+      timer: setTimeout(() => {}, 60000),
+      askStartedAt: Date.now(),
+    });
+
+    const loggerModule = (await import('../logger.js')).default;
+    loggerModule.warn.mockClear();
+    loggerModule.error.mockClear();
+
+    await sendFrame(ws, {
+      type: 'ask_user_answered',
+      tool_call_id: 'toolu_empty',
+      consumed_utterance_id: '',
+      user_text: 'seven',
+    });
+
+    const malformedWarnings = loggerModule.warn.mock.calls.filter(
+      (c) => c[0] === 'stage6.ask_user_answered_malformed_anchor',
+    );
+    expect(malformedWarnings).toHaveLength(1);
+    expect(malformedWarnings[0][1].consumed_utterance_id_type).toBe('string');
+    // Still resolves via legacy path + content anchor.
+    expect(entry.recentAskAnswers).toHaveLength(1);
+    expect(entry.consumedAskUtterances.size).toBe(0);
+  });
+
   test('STT-08c FIFO bound: 300 asks with distinct utterance_ids → set size capped at 256, oldest evict FIFO', async () => {
     const ws = connect(wss, 'user-1');
     await sendFrame(ws, {

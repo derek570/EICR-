@@ -990,7 +990,30 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
             // warning log row. Unresolved + id present (stale frame) logs
             // a distinct row so client-side bugs surface in CloudWatch
             // without polluting the dedupe Set.
-            if (typeof msg.consumed_utterance_id === 'string') {
+            // r17 MAJOR remediation — narrow the dedupe-path trichotomy:
+            //   (a) consumed_utterance_id is a non-empty string → anchored
+            //       path (fast-path Set registration).
+            //   (b) consumed_utterance_id is ABSENT (undefined) → legacy
+            //       path (error log + content-anchor fallback).
+            //   (c) consumed_utterance_id is PRESENT but not a non-empty
+            //       string (number, object, null, empty string) → PROTOCOL
+            //       ERROR. Warn loudly and fall through to the legacy path
+            //       rather than silently treating as "untracked" (which
+            //       hides shape bugs in the client).
+            const hasAnchor =
+              typeof msg.consumed_utterance_id === 'string' &&
+              msg.consumed_utterance_id.length > 0;
+            const hasMalformedAnchor =
+              !hasAnchor && msg.consumed_utterance_id !== undefined;
+            if (hasMalformedAnchor) {
+              logger.warn('stage6.ask_user_answered_malformed_anchor', {
+                sessionId: currentSessionId,
+                tool_call_id: msg.tool_call_id,
+                consumed_utterance_id_type: typeof msg.consumed_utterance_id,
+                reason: 'consumed_utterance_id_present_but_not_nonempty_string',
+              });
+            }
+            if (hasAnchor) {
               if (resolved && !alreadySeenAsTranscript) {
                 entry.consumedAskUtterances.add(msg.consumed_utterance_id);
                 if (entry.consumedAskUtterances.size > CONSUMED_UTTERANCE_CAP) {
@@ -1715,9 +1738,24 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
       entry.questionGate.onNewUtterance();
     }
 
-    // If already extracting, queue this transcript individually
+    // If already extracting, queue this transcript individually.
+    //
+    // r17 BLOCK remediation — preserve the full original message shape
+    // (utterance_id, in_response_to, confirmations_enabled, regex
+    // results) on the queued payload. The previous shape dropped
+    // everything except text+regexResults, which meant:
+    //   * drain re-entry couldn't consult consumedAskUtterances or
+    //     seenTranscriptUtterances (utterance_id gone)
+    //   * r16 content-anchor path still worked (uses msg.text) but
+    //     the fast-path Set lookup silently missed on replay
+    //   * in_response_to TTS-question context was lost on replay, so
+    //     Sonnet re-interpreted "yes"/"code 2" style replies without
+    //     the preceding prompt
+    // Spread the full msg so the replay re-runs handleTranscript with
+    // the original metadata; the regexResults || lastRegexResults
+    // fallback is re-applied inside that re-entry.
     if (entry.isExtracting) {
-      entry.pendingTranscripts.push({ text: msg.text, regexResults: msg.regexResults });
+      entry.pendingTranscripts.push({ ...msg });
       return;
     }
 
