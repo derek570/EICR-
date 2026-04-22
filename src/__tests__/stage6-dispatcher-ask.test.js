@@ -499,3 +499,74 @@ describe('createAskDispatcher — exports', () => {
     expect(ASK_USER_TIMEOUT_MS).toBe(20000);
   });
 });
+
+// --- Group 8: r10 outer try/catch — dispatcher_error log on executor throw
+//
+// Plan 03-12 r10 MAJOR remediation. A non-duplicate throw from register()
+// (or any other unexpected failure inside the Promise executor) used to
+// propagate out of `await new Promise(...)` with ZERO stage6.ask_user row
+// emitted — analyzer lost the breadcrumb for the ask attempt entirely.
+// The new outer try/catch emits one row with answer_outcome='dispatcher_error'
+// before rethrowing. These tests lock that contract.
+
+describe('createAskDispatcher — r10 outer try/catch emits dispatcher_error row', () => {
+  test('non-duplicate register() throw produces ONE stage6.ask_user row with answer_outcome=dispatcher_error, then rethrows', async () => {
+    const session = makeSession('live');
+    const logger = makeLogger();
+    const pending = createPendingAsksRegistry();
+    const ws = makeWs();
+
+    // Force register() to throw a NON-duplicate error (no .code stamp).
+    const boom = new Error('register_invariant_broke');
+    pending.register = () => {
+      throw boom;
+    };
+
+    const dispatch = createAskDispatcher(session, logger, 'turn-1', pending, ws);
+
+    await expect(
+      dispatch(makeCall('toolu_e1'), { sessionId: 'sess-1', turnId: 'turn-1' }),
+    ).rejects.toBe(boom);
+
+    const errCalls = logger.info.mock.calls.filter(
+      (c) => c[0] === 'stage6.ask_user' && c[1].answer_outcome === 'dispatcher_error',
+    );
+    expect(errCalls).toHaveLength(1);
+    const row = errCalls[0][1];
+    expect(row.tool_call_id).toBe('toolu_e1');
+    expect(row.mode).toBe('live');
+    expect(row.dispatcher_error).toBe('register_invariant_broke');
+    expect(row.wait_duration_ms).toBeGreaterThanOrEqual(0);
+  });
+
+  test('duplicate_tool_call_id does NOT route through the outer catch (stays as normal duplicate outcome)', async () => {
+    const session = makeSession('live');
+    const logger = makeLogger();
+    const pending = createPendingAsksRegistry();
+
+    const dupErr = new Error('duplicate_tool_call_id:toolu_dup');
+    dupErr.code = 'DUPLICATE_TOOL_CALL_ID';
+    pending.register = () => {
+      throw dupErr;
+    };
+
+    const dispatch = createAskDispatcher(session, logger, 'turn-1', pending, makeWs());
+    const res = await dispatch(makeCall('toolu_dup'), {
+      sessionId: 'sess-1',
+      turnId: 'turn-1',
+    });
+
+    // Normal (non-error-path) duplicate outcome.
+    expect(res.is_error).toBe(true);
+    expect(JSON.parse(res.content)).toEqual({
+      answered: false,
+      reason: 'duplicate_tool_call_id',
+    });
+
+    // The single row uses answer_outcome='duplicate_tool_call_id', NOT
+    // 'dispatcher_error' — the outer catch must not swallow this path.
+    const rows = logger.info.mock.calls.filter((c) => c[0] === 'stage6.ask_user');
+    expect(rows).toHaveLength(1);
+    expect(rows[0][1].answer_outcome).toBe('duplicate_tool_call_id');
+  });
+});

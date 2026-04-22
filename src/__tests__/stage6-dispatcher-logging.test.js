@@ -297,7 +297,7 @@ describe('logAskUser()', () => {
     expect(row.context_circuit).toBeNull();
   });
 
-  test('ASK_USER_ANSWER_OUTCOMES exports all 13 Phase 3 values (12 original + transcript_already_extracted from r8)', () => {
+  test('ASK_USER_ANSWER_OUTCOMES exports all 14 Phase 3 values (r10 added dispatcher_error)', () => {
     expect(ASK_USER_ANSWER_OUTCOMES).toEqual([
       'answered',
       'timeout',
@@ -315,6 +315,9 @@ describe('logAskUser()', () => {
       // recognised answer_outcome so dispatchAskUser's log call doesn't
       // throw invalid_answer_outcome on the reverse-race path.
       'transcript_already_extracted',
+      // Plan 03-12 r10 MAJOR remediation: outer try/catch in dispatchAskUser
+      // emits this when the live-path Promise setup/await throws unexpectedly.
+      'dispatcher_error',
     ]);
   });
 

@@ -98,16 +98,39 @@ export function createPendingAsksRegistry() {
     // Session-termination sweep (Plan 03-08 reasons: session_terminated /
     // session_stopped / session_reconnected / test_teardown). Same strict
     // ordering as resolve(). Idempotent — second call is a no-op.
+    //
+    // Plan 03-12 r10 MAJOR remediation — snapshot + clear BEFORE invoking
+    // user resolvers. The prior shape invoked entry.resolve() inline during
+    // Map iteration and only `asks.clear()`-ed afterwards. A synchronous
+    // resolver (or anything the resolver wakes up that re-enters the
+    // registry — e.g. a dispatcher that inspects pendingAsks.size or calls
+    // findByContext/entries during teardown) could then observe stale
+    // entries whose resolve fn had already fired. Worse, the registry is
+    // still mid-iteration, so a re-entrant rejectAll or resolve would
+    // either double-fire or miss entries depending on mutation order.
+    //
+    // Fix: take a snapshot, clear the Map + timers first (same strict
+    // ordering as resolve()), THEN invoke resolvers. Any re-entry now
+    // sees an empty registry — the second rejectAll is the documented
+    // no-op, any resolve() returns false (unknown id).
     rejectAll(reason) {
+      const snapshot = [];
       for (const [, entry] of asks) {
-        clearTimeout(entry.timer);
+        snapshot.push(entry);
+        clearTimeout(entry.timer); // 1 — stop timers firing into cleared entries
+      }
+      asks.clear(); // 2 — make re-entrant reads see an empty registry
+      const now = Date.now();
+      for (const entry of snapshot) {
+        // 3 — wake awaiting dispatchers. A throw here must NOT leave the
+        // registry inconsistent (it's already cleared), so we let the
+        // throw propagate and document that resolvers should be pure.
         entry.resolve({
           answered: false,
           reason,
-          wait_duration_ms: Date.now() - entry.askStartedAt,
+          wait_duration_ms: now - entry.askStartedAt,
         });
       }
-      asks.clear();
     },
 
     get size() {

@@ -245,6 +245,46 @@ describe('createPendingAsksRegistry — rejectAll', () => {
     expect(reg.size).toBe(0);
     expect(r1).toHaveBeenCalledTimes(1);
   });
+
+  // Plan 03-12 r10 MAJOR remediation — rejectAll must snapshot + clear the
+  // internal Map BEFORE invoking user resolvers. Previously it iterated the
+  // Map live and only .clear()-ed after the loop, so a synchronous resolver
+  // (or anything it synchronously woke up that re-entered the registry)
+  // could observe stale entries. This test proves the new ordering: a
+  // resolver that reads `reg.size` and calls `reg.resolve(otherId)` sees
+  // an empty registry for both calls.
+  test('r10: resolvers observe EMPTY registry on rejectAll (snapshot-before-clear)', () => {
+    const reg = createPendingAsksRegistry();
+    const observations = { call_1: null, call_2: null };
+    const reentrantResolveReturn = { call_1: null, call_2: null };
+    const r1 = jest.fn(() => {
+      observations.call_1 = reg.size;
+      // Re-enter: try to resolve the OTHER id that rejectAll is still
+      // processing. Old code would return true (stale entry still present);
+      // new code returns false (Map already cleared).
+      reentrantResolveReturn.call_1 = reg.resolve('call_2', { answered: false, reason: 'x' });
+    });
+    const r2 = jest.fn(() => {
+      observations.call_2 = reg.size;
+      reentrantResolveReturn.call_2 = reg.resolve('call_1', { answered: false, reason: 'x' });
+    });
+
+    reg.register('call_1', makeEntry({ resolve: r1 }));
+    reg.register('call_2', makeEntry({ resolve: r2 }));
+
+    reg.rejectAll('session_terminated');
+
+    // Both resolvers fired exactly once (not double-fired by re-entry).
+    expect(r1).toHaveBeenCalledTimes(1);
+    expect(r2).toHaveBeenCalledTimes(1);
+    // Both resolvers saw an empty registry during their synchronous body.
+    expect(observations.call_1).toBe(0);
+    expect(observations.call_2).toBe(0);
+    // Re-entrant resolves returned false (unknown id) — proves the Map was
+    // already cleared when the first resolver fired.
+    expect(reentrantResolveReturn.call_1).toBe(false);
+    expect(reentrantResolveReturn.call_2).toBe(false);
+  });
 });
 
 // -----------------------------------------------------------------------------

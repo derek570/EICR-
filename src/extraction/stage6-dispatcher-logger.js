@@ -86,7 +86,7 @@ export function logToolCall(logger, row) {
  * force every CloudWatch consumer to filter by an `event_type` discriminator
  * and complicate Insights queries. Two names → two clean query planes.
  *
- * WHY the 13-value enum (was 12 pre-r8, 6 pre-Phase 3): Phase 3 ROADMAP
+ * WHY the 14-value enum (was 13 pre-r10, 12 pre-r8, 6 pre-Phase 3): Phase 3 ROADMAP
  * Open Question #1 resolved to expand the enum to cover every lifecycle
  * end-state surfaced by the Phase 3 dispatcher + session-termination flows.
  * Per STG-05 ("weakening requires sign-off"), this is expansion not
@@ -106,6 +106,17 @@ export function logToolCall(logger, row) {
  * throws `invalid_answer_outcome:transcript_already_extracted` and the
  * tool_result envelope is never returned, leaking the ask into the
  * dispatcher's catch path.
+ *
+ * Plan 03-12 r10 MAJOR remediation: added `dispatcher_error`. The dispatcher's
+ * new outer try/catch (stage6-dispatcher-ask.js step-3 wrapper) emits exactly
+ * one STO-02 row with answer_outcome='dispatcher_error' when the live-path
+ * Promise setup/await throws unexpectedly (e.g. a resolver threw, register()
+ * broke an invariant, a runtime env quirk tore down the Promise). Without
+ * this enum addition, the new outer catch would itself crash on the shape-
+ * gate (`invalid_answer_outcome:dispatcher_error`) — re-throwing from INSIDE
+ * an error-path — and swallow both the original bug AND the logger throw,
+ * leaving the session with no STO-02 breadcrumb at all. The enum must stay
+ * in lockstep with every answer_outcome the dispatcher can emit.
  */
 export const ASK_USER_ANSWER_OUTCOMES = [
   // STO-02 original 6 (Phase 5 will emit restrained_mode / ask_budget_exhausted / gated — reserved now)
@@ -124,6 +135,9 @@ export const ASK_USER_ANSWER_OUTCOMES = [
   'duplicate_tool_call_id',
   // Plan 03-12 r8 expansion (1): reverse-race path resolves with this reason
   'transcript_already_extracted',
+  // Plan 03-12 r10 expansion (1): outer try/catch in dispatchAskUser emits
+  // this when the live-path Promise setup/await throws unexpectedly.
+  'dispatcher_error',
 ];
 
 const ASK_USER_QUESTION_LOG_MAX = 200;
@@ -191,6 +205,11 @@ export function logAskUser(logger, payload) {
   // truth on the sanitiser semantics is in stage6-sanitise-user-text.js;
   // this helper is still a pass-through shape gate, per module docstring).
   if (payload.sanitisation !== undefined) row.sanitisation = payload.sanitisation;
+  // Plan 03-12 r10 — forward dispatcher_error diagnostic string when the
+  // outer try/catch in dispatchAskUser logged this row. Kept optional so
+  // the common happy path does not carry a null field. Caller owns the
+  // string (err.code || err.message || String(err) convention).
+  if (payload.dispatcher_error !== undefined) row.dispatcher_error = payload.dispatcher_error;
 
   logger.info('stage6.ask_user', row);
 }

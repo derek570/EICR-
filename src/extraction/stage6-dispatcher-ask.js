@@ -164,8 +164,22 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws) {
     }
 
     // Step 3–4: live path — register + emit + await.
+    //
+    // Plan 03-12 r10 MAJOR remediation — wrap the Promise setup/await in
+    // an outer try/catch that emits a dedicated STO-02 log row on any
+    // unexpected throw BEFORE rethrowing. Previously a real bug inside
+    // the executor (a non-duplicate register error, a resolver that
+    // threw synchronously, etc.) escaped with NO `stage6.ask_user` row —
+    // the tool loop would then report a generic dispatcher failure and
+    // the analyzer's per-ask audit would have no breadcrumb at all. This
+    // outer catch guarantees one log row per call even on the ghost-error
+    // path, matching the STO-02 invariant (exactly one row per ask_user
+    // dispatch). We keep the throw propagating so runToolLoop can still
+    // produce its own error envelope — the log is additive.
     const askStartedAt = Date.now();
-    const outcome = await new Promise((resolve) => {
+    let outcome;
+    try {
+      outcome = await new Promise((resolve) => {
       // (3a) 20s timeout self-resolves via registry.resolve, which enforces
       // strict clearTimeout → delete → resolve ordering and injects
       // wait_duration_ms.
@@ -243,6 +257,35 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws) {
         }
       }
     });
+    } catch (err) {
+      // Unexpected — the executor above handles the two legitimate live-path
+      // exits (duplicate_tool_call_id → synchronous resolve, real throw →
+      // clearTimeout + rethrow). Anything hitting this outer catch is a
+      // genuine bug (a resolver threw, register() broke an invariant, the
+      // Promise constructor itself threw on a runtime env quirk, etc.).
+      // Emit exactly one STO-02 row with answer_outcome='dispatcher_error'
+      // so the analyzer sees the ask attempt; then rethrow so runToolLoop
+      // produces a proper tool-loop error envelope. Best-effort — if the
+      // logger itself throws we let both errors propagate unchanged.
+      try {
+        logAskUser(logger, {
+          sessionId,
+          turnId,
+          mode,
+          tool_call_id: toolCallId,
+          question: typeof input.question === 'string' ? input.question : '(unknown)',
+          reason: typeof input.reason === 'string' ? input.reason : 'missing_context',
+          context_field: input.context_field ?? null,
+          context_circuit: input.context_circuit ?? null,
+          answer_outcome: 'dispatcher_error',
+          dispatcher_error: err?.code || err?.message || String(err),
+          wait_duration_ms: Date.now() - askStartedAt,
+        });
+      } catch {
+        // Swallow logger failures here — the primary error takes priority.
+      }
+      throw err;
+    }
 
     // Step 5: log final outcome.
     const answerOutcome = outcome.answered ? 'answered' : outcome.reason;
