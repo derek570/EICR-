@@ -15,7 +15,7 @@ import { WebSocketServer } from 'ws';
 import Anthropic from '@anthropic-ai/sdk';
 import { EICRExtractionSession } from './eicr-extraction-session.js';
 import { QuestionGate } from './question-gate.js';
-import { needsRefinement, refineObservation } from './observation-code-lookup.js';
+import { needsRefinement, refineObservation, VALID_CODES as VALID_OBS_CODES } from './observation-code-lookup.js';
 import { sonnetSessionStore } from './sonnet-session-store.js';
 import * as storage from '../storage.js';
 import logger from '../logger.js';
@@ -608,6 +608,37 @@ function validateAndCorrectFields(result, sessionId) {
         logger.info('Wiring type normalised', { sessionId, from: reading.value, to: normalised });
         reading.value = normalised;
       }
+    }
+  }
+  // 2026-04-22 (Issue #3): coerce invalid observation codes to a safe default
+  // BEFORE the extraction result is sent to iOS. Previously Sonnet sometimes
+  // emitted "NC" (Not Compliant — non-BPG4), iOS silently dropped the row
+  // via ObservationCode(rawValue:) guard, and the inspector never saw the
+  // observation. refineObservationsAsync would have corrected the code ~2s
+  // later via `observation_update`, but by then iOS had no row to patch.
+  //
+  // We default to C3 (improvement recommendation — least severe, won't
+  // cause a misleading "immediate danger" or "potentially dangerous" flag
+  // if the refinement later disagrees). The async refinement still runs and
+  // upgrades the code to the correct value via observation_update, which
+  // iOS now also handles on id-miss (see DeepgramRecordingViewModel fix
+  // 78e72ca). Net effect: the observation is always visible, code is
+  // always valid, and the right classification arrives shortly after.
+  if (Array.isArray(result.observations)) {
+    for (const obs of result.observations) {
+      if (!obs || typeof obs !== 'object') continue;
+      const raw = (obs.code || '').toString().toUpperCase().trim();
+      if (raw && VALID_OBS_CODES.has(raw)) {
+        obs.code = raw;
+        continue;
+      }
+      logger.warn('Observation code coerced', {
+        sessionId,
+        from: obs.code || '(empty)',
+        to: 'C3',
+        textPreview: (obs.observation_text || obs.description || '').slice(0, 80),
+      });
+      obs.code = 'C3';
     }
   }
   return result;
