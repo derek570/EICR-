@@ -18,7 +18,7 @@
 /**
  * Factory. Call once per session. Returns an object owning a
  * Map<tool_call_id, entry> via closure. Entry shape:
- *   { resolve, timer, contextField, contextCircuit, askStartedAt }
+ *   { resolve, timer, contextField, contextCircuit, expectedAnswerShape, askStartedAt }
  */
 export function createPendingAsksRegistry() {
   const asks = new Map();
@@ -27,7 +27,25 @@ export function createPendingAsksRegistry() {
     // Anthropic-SDK retry-replay guard (Pitfall 7): a replayed tool_use id
     // MUST NOT overwrite the in-flight entry — that would orphan the old
     // resolve fn and old timer. Throw instead.
-    register(toolCallId, { contextField, contextCircuit, resolve, timer, askStartedAt }) {
+    //
+    // Plan 03-12 r9 MAJOR remediation — `expectedAnswerShape` MUST be stored
+    // on the entry (was silently dropped by the earlier destructure
+    // {contextField, contextCircuit, resolve, timer, askStartedAt}). The
+    // classifier at stage6-overtake-classifier.js:135 reads
+    // `entry.expectedAnswerShape` to decide whether to fire the yes_no
+    // no-regex short-circuit. Without it the shape branch could NEVER
+    // match, so "yes" / "no" answers routed through the transcript channel
+    // (pre-Phase-4 iOS or any legacy path) fell through to user_moved_on
+    // and forced a re-ask every time. Restoring the field makes STA-04c
+    // reachable in production.
+    register(toolCallId, {
+      contextField,
+      contextCircuit,
+      expectedAnswerShape,
+      resolve,
+      timer,
+      askStartedAt,
+    }) {
       if (asks.has(toolCallId)) {
         // Plan 03-10 Task 3 (STG MAJOR #3) — stamp a discriminant `.code`
         // on the duplicate throw so the dispatcher can tell our OWN
@@ -39,7 +57,14 @@ export function createPendingAsksRegistry() {
         err.code = 'DUPLICATE_TOOL_CALL_ID';
         throw err;
       }
-      asks.set(toolCallId, { resolve, timer, contextField, contextCircuit, askStartedAt });
+      asks.set(toolCallId, {
+        resolve,
+        timer,
+        contextField,
+        contextCircuit,
+        expectedAnswerShape,
+        askStartedAt,
+      });
     },
 
     // Strict ordering (Codex STG #3):

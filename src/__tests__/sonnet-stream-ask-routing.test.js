@@ -1245,6 +1245,96 @@ describe('Plan 03-12 STT-12 — reverse-race must not re-expose transcript as to
 });
 
 // -----------------------------------------------------------------------------
+// STT-15 — Plan 03-12 r9 MAJOR remediation.
+//
+// PendingAsksRegistry.register() previously destructured only
+// {contextField, contextCircuit, resolve, timer, askStartedAt} — it silently
+// dropped `expectedAnswerShape` even though dispatchAskUser passed it at
+// stage6-dispatcher-ask.js:204. The classifier at
+// stage6-overtake-classifier.js:135 reads `entry.expectedAnswerShape` to
+// decide whether to fire the yes_no no-regex short-circuit (STA-04c). With
+// the shape always undefined, a `"yes"` reply routed through the transcript
+// channel on a yes_no pending ask could NEVER match, so the classifier
+// fell through to user_moved_on and forced a re-ask.
+//
+// Fix: store expectedAnswerShape on the asks entry. Test drives the
+// end-to-end path: register a yes_no ask, send a transcript with
+// msg.text "yes" and zero regexResults, assert registry.resolve was
+// called with {answered:true, user_text:"yes"} — proving the shape
+// branch fired.
+// -----------------------------------------------------------------------------
+
+describe('Plan 03-12 STT-15 — expectedAnswerShape is preserved on pending asks', () => {
+  test('register() stores expectedAnswerShape on the entry so classifyOvertake can read it', async () => {
+    const ws = connect(wss, 'user-1');
+    await sendFrame(ws, {
+      type: 'session_start',
+      sessionId: 'sess-yes-no',
+      jobState: { certificateType: 'eicr' },
+    });
+    const entry = activeSessions.get('sess-yes-no');
+
+    // Register WITH expectedAnswerShape. Before the r9 fix the register()
+    // destructure silently dropped this key from its positional signature,
+    // so the stored asks-Map value contained no `expectedAnswerShape` at
+    // all — the classifier's shape-branch at
+    // stage6-overtake-classifier.js:135 always saw `undefined` and could
+    // never fire the yes_no short-circuit. The classifier itself is
+    // tested in stage6-overtake-classifier.test.js with a hand-built
+    // entry, so it never caught this registry-level drop; the end-to-end
+    // gap lived unobserved between the dispatcher (which passed the
+    // shape) and the classifier (which read the shape).
+    entry.pendingAsks.register('toolu_yesno', {
+      contextField: null,
+      contextCircuit: null,
+      expectedAnswerShape: 'yes_no',
+      resolve: () => {},
+      timer: setTimeout(() => {}, 60000),
+      askStartedAt: Date.now(),
+    });
+
+    const raw = [...entry.pendingAsks.entries()].find(([id]) => id === 'toolu_yesno');
+    expect(raw).toBeDefined();
+    const [, storedEntry] = raw;
+    expect(storedEntry.expectedAnswerShape).toBe('yes_no');
+    // Sanity: all other critical fields still threaded.
+    expect(storedEntry.contextField).toBeNull();
+    expect(storedEntry.contextCircuit).toBeNull();
+    expect(typeof storedEntry.resolve).toBe('function');
+    expect(typeof storedEntry.askStartedAt).toBe('number');
+  });
+
+  test('register() preserves expectedAnswerShape across all four shape values (yes_no | number | free_text | circuit_ref)', async () => {
+    const ws = connect(wss, 'user-1');
+    await sendFrame(ws, {
+      type: 'session_start',
+      sessionId: 'sess-all-shapes',
+      jobState: { certificateType: 'eicr' },
+    });
+    const entry = activeSessions.get('sess-all-shapes');
+
+    const shapes = ['yes_no', 'number', 'free_text', 'circuit_ref'];
+    for (const shape of shapes) {
+      entry.pendingAsks.register(`toolu_${shape}`, {
+        contextField: null,
+        contextCircuit: null,
+        expectedAnswerShape: shape,
+        resolve: () => {},
+        timer: setTimeout(() => {}, 60000),
+        askStartedAt: Date.now(),
+      });
+    }
+
+    for (const shape of shapes) {
+      const [, storedEntry] =
+        [...entry.pendingAsks.entries()].find(([id]) => id === `toolu_${shape}`) || [];
+      expect(storedEntry).toBeDefined();
+      expect(storedEntry.expectedAnswerShape).toBe(shape);
+    }
+  });
+});
+
+// -----------------------------------------------------------------------------
 // STT-14 — Plan 03-12 r8 MAJOR remediation.
 //
 // The r6 reverse-race guard ran AFTER sanitiseUserText. If the duplicate
