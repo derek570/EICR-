@@ -1538,25 +1538,44 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
       return;
     }
 
-    // Plan 03-11 Task 1 (STG r3 BLOCK remediation) — record this transcript's
-    // utterance_id in the reverse-race ledger. If ask_user_answered arrives
-    // LATER referencing the same id, the ask handler uses this set to detect
-    // that extraction already happened and emit a
-    // `stage6.ask_user_answered_after_transcript` warn log. Recorded BEFORE
-    // extraction runs so even a synchronous ask_user_answered frame that
-    // interleaves between transcript receipt and harness invocation still
-    // sees the stamp. Bounded by CONSUMED_UTTERANCE_CAP / FIFO for the
-    // same reasons as consumedAskUtterances.
-    if (typeof msg.utterance_id === 'string') {
+    // Plan 03-11 Task 1 (STG r3 BLOCK) / Plan 03-12 r13 Codex MAJOR —
+    // stamping of seenTranscriptUtterances happens at the point where this
+    // transcript is ACTUALLY committed to extraction (or ask-resolution),
+    // not at top-of-handler. Placing the stamp earlier meant deferred
+    // paths (user_moved_on defer at ~L1848, the isExtracting queue at
+    // ~L1562) would falsely tell the ask_user_answered handler
+    // "transcript already extracted" for an utterance that was only
+    // QUEUED. The helper below is invoked from the two commit points:
+    //   (a) answers-verdict success — after registry.resolve(), before
+    //       the early-return at ~L1797. The ask channel carried the
+    //       transcript's text to Sonnet as tool_result; any later
+    //       ask_user_answered for this utterance_id MUST downgrade.
+    //   (b) the fall-through path, immediately before the runShadowHarness
+    //       `await` at ~L1854. That stamp lives before the single yield
+    //       point in this function, so a synchronous ask_user_answered
+    //       frame interleaving across the yield still sees the stamp.
+    // Bounded by CONSUMED_UTTERANCE_CAP / FIFO for the same reasons as
+    // consumedAskUtterances.
+    const stampSeenTranscript = () => {
+      if (typeof msg.utterance_id !== 'string') return;
       if (!entry.seenTranscriptUtterances) entry.seenTranscriptUtterances = new Set();
       entry.seenTranscriptUtterances.add(msg.utterance_id);
       if (entry.seenTranscriptUtterances.size > CONSUMED_UTTERANCE_CAP) {
         const oldest = entry.seenTranscriptUtterances.values().next().value;
         entry.seenTranscriptUtterances.delete(oldest);
       }
-    }
+    };
 
-    entry.questionGate.onNewUtterance();
+    // Plan 03-12 r13 Codex MINOR — suppress questionGate.onNewUtterance()
+    // on the drained re-entry of a deferred user_moved_on transcript.
+    // Without this, the same utterance ticks the gate twice (once on
+    // first entry before the defer, once on drain re-entry), which
+    // inflates the gate's rolling-window counters and can erroneously
+    // trip rate limits. The drain sets msg._drainedRetry=true on the
+    // queued payload; first-entry callers never set it.
+    if (!msg._drainedRetry) {
+      entry.questionGate.onNewUtterance();
+    }
 
     // If already extracting, queue this transcript individually
     if (entry.isExtracting) {
@@ -1788,6 +1807,14 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
               // hits into the next transcript's fallback.
               entry.lastRegexResults = [];
 
+              // Plan 03-12 r13 Codex MAJOR — stamp seenTranscriptUtterances
+              // HERE, now that we've committed the transcript text to the
+              // ask channel via registry.resolve(). Any subsequent
+              // ask_user_answered for this utterance_id must downgrade to
+              // transcript_already_extracted (handled by the dedupe guard
+              // in the ask_user_answered switch case at ~L859).
+              stampSeenTranscript();
+
               // Plan 03-11 Task 3 — BLOCK remediation: return early. The
               // dispatcher's tool_result is the sole Sonnet-visible channel
               // for this utterance; do NOT also feed it into runShadowHarness.
@@ -1839,9 +1866,28 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
           // deliberately NOT cleared — the queued re-entry will use
           // the same regex hits that led to this user_moved_on verdict.
           entry.pendingAsks.rejectAll('user_moved_on');
+          // Plan 03-12 r13 Codex MAJOR#2 — push the RESOLVED `regexResults`
+          // (not raw `msg.regexResults`), so the drained retry uses the
+          // exact parse context the verdict was based on. Relying on the
+          // `msg.regexResults || entry.lastRegexResults || []` fallback at
+          // re-entry would drift if another code path mutated
+          // entry.lastRegexResults between defer and drain.
+          //
+          // Plan 03-12 r13 Codex MAJOR#1 — carry `utterance_id` so the
+          // pre-harness stamp on the drained retry still fires; without
+          // this, a late ask_user_answered targeting the re-entered
+          // transcript's utterance would NOT be downgraded to
+          // transcript_already_extracted even though we did run the
+          // harness on it.
+          //
+          // Plan 03-12 r13 Codex MINOR — mark `_drainedRetry=true` so the
+          // re-entry skips questionGate.onNewUtterance() (otherwise the
+          // same utterance would tick the gate twice).
           entry.pendingTranscripts.push({
             text: msg.text,
-            regexResults: msg.regexResults,
+            regexResults,
+            utterance_id: msg.utterance_id,
+            _drainedRetry: true,
           });
           logger.info('stage6.transcript_deferred_after_user_moved_on', {
             sessionId,
@@ -1852,6 +1898,15 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         // 'no_pending_asks' can't happen here (guarded by size>0) but the
         // classifier still returns it in defensive contexts — safe to ignore.
       }
+
+      // Plan 03-12 r13 Codex MAJOR — stamp seenTranscriptUtterances
+      // immediately before the single yield in this function (the
+      // runShadowHarness await below). Any ask_user_answered frame that
+      // arrives while the harness is mid-flight MUST see this stamp and
+      // downgrade to transcript_already_extracted. Stamping earlier
+      // (top-of-handler) was wrong because the user_moved_on / validation
+      // defer paths would stamp an utterance that was only queued.
+      stampSeenTranscript();
 
       const result = await runShadowHarness(entry.session, transcriptText, regexResults, {
         confirmationsEnabled: msg.confirmations_enabled || false,
