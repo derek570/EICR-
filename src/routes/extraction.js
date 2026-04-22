@@ -1349,12 +1349,31 @@ questionsForInspector: return EMPTY array [] unless RCD type could not be determ
         // analysis.label_pass_error. Stage 3 data is preserved, merger
         // emits circuits with label: null for Stage-4-failed slots; UI
         // prompts the inspector to fill those in.
+        //
+        // COORDINATE-SPACE NOTE (Codex P1 2026-04-22): the modern geometric
+        // pipeline returns slotCentersX + moduleWidth in the 0-1000 NORMALISED
+        // space used by its Stage 1 prompt (rail_left/right also 0-1000).
+        // The rewireable pipeline converts slotCentersX + carrierPitch to
+        // PIXEL space in Stage 2 (normToPx). extractSlotLabels() /
+        // cropSlotLabelZone() require slotCentersX and slotPitchPx in PIXEL
+        // space. For modern we must convert; for rewireable we pass through.
+        // Detect which pipeline we have via the presence of `carrierPitch`
+        // (rewireable) vs only `moduleWidth` (modern).
+        const isRewireablePipelineResult =
+          typeof geometricResult.carrierPitch === 'number';
+        const imageWidthForConvert = geometricResult.imageWidth || 0;
+        const convertNormToPx = (v) =>
+          typeof v === 'number' && imageWidthForConvert > 0
+            ? Math.round((v / 1000) * imageWidthForConvert)
+            : null;
+
         const labelGeom = {
-          slotCentersX: geometricResult.slotCentersX,
-          slotPitchPx:
-            geometricResult.moduleWidth ??
-            geometricResult.carrierPitch ??
-            null,
+          slotCentersX: isRewireablePipelineResult
+            ? geometricResult.slotCentersX
+            : (geometricResult.slotCentersX || []).map((v) => convertNormToPx(v)),
+          slotPitchPx: isRewireablePipelineResult
+            ? geometricResult.carrierPitch
+            : convertNormToPx(geometricResult.moduleWidth),
           panelTopNorm:
             geometricResult.panelBounds?.top ??
             geometricResult.medianRails?.rail_top ??
@@ -1422,8 +1441,24 @@ questionsForInspector: return EMPTY array [] unless RCD type could not be determ
         // Single-shot is NOT consulted — its circuits[] stay in analysis only
         // as historical context until the merger overwrites them here, at
         // which point the primary-source swap is complete.
+        //
+        // NUMBERING NOTE (Codex P1 2026-04-22): when a rewireable board has
+        // the main switch INLINE with the carrier row (Stage 1's
+        // `mainSwitchSide === 'none'`), the classifier / single-shot's
+        // `main_switch_position` also report 'none'. But Stage 2 independently
+        // identifies whether the inline main switch occupies the LEFT or
+        // RIGHT edge slot via `mainSwitchOffset` ('left-edge' | 'right-edge').
+        // Use that as the first fallback so BS 7671 main-switch-outward
+        // numbering still works on inline boards.
+        const offsetSide =
+          geometricResult.mainSwitchOffset === 'right-edge'
+            ? 'right'
+            : geometricResult.mainSwitchOffset === 'left-edge'
+              ? 'left'
+              : null;
         const mainSwitchSide =
-          geometricResult.mainSwitchSide ||
+          (geometricResult.mainSwitchSide !== 'none' && geometricResult.mainSwitchSide) ||
+          offsetSide ||
           boardClassification?.mainSwitchPosition ||
           analysis.main_switch_position ||
           'none';
@@ -1436,6 +1471,19 @@ questionsForInspector: return EMPTY array [] unless RCD type could not be determ
         if (mergedCircuits && mergedCircuits.length > 0) {
           analysis.circuits = mergedCircuits;
           extractionSource = 'geometric-merged';
+
+          // POST-MERGE ENRICHMENT (Codex P2 2026-04-22): applyBsEnFallback,
+          // normaliseCircuitLabels and (conditionally) lookupMissingRcdTypes
+          // ran upstream against the single-shot circuits[] that we've just
+          // replaced. Re-apply the cheap local enrichers so any gaps the
+          // Stage 3 classifier left are filled by the same lookup tables
+          // that single-shot relied on. We DO NOT re-invoke
+          // lookupMissingRcdTypes here — Stage 3's per-slot classifier is
+          // the authority for rcd_type via direct waveform reading; running
+          // the web-search lookup again would burn VLM spend on top of
+          // already-classified slots.
+          analysis = applyBsEnFallback(analysis);
+          analysis = normaliseCircuitLabels(analysis);
         }
       }
 
