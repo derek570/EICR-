@@ -35,6 +35,8 @@ let extractCcuRewireable;
 let cropCarrierSlot;
 let classifyCarriers;
 let BODY_COLOUR_TO_AMPS;
+let prepareRewireableGeometry;
+let classifyRewireableSlots;
 
 beforeAll(async () => {
   const mod = await import('../extraction/ccu-geometric-rewireable.js');
@@ -44,6 +46,8 @@ beforeAll(async () => {
   cropCarrierSlot = mod.cropCarrierSlot;
   classifyCarriers = mod.classifyCarriers;
   BODY_COLOUR_TO_AMPS = mod.BODY_COLOUR_TO_AMPS;
+  prepareRewireableGeometry = mod.prepareRewireableGeometry;
+  classifyRewireableSlots = mod.classifyRewireableSlots;
 });
 
 async function makeFakeJpeg(width = 1000, height = 600) {
@@ -1163,5 +1167,164 @@ describe('extractCcuRewireable', () => {
     const result = await extractCcuRewireable(buf);
     expect(result.lowConfidence).toBe(true);
     expect(result.slots).toHaveLength(3);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// prepareRewireableGeometry + classifyRewireableSlots (Stage 3 / Stage 4 split)
+// ---------------------------------------------------------------------------
+
+describe('prepareRewireableGeometry', () => {
+  test('returns Stage 1 + Stage 2 output shape (no Stage 3)', async () => {
+    // 250px-wide image keeps carrier_count=4 inside the expected-range
+    // window [2,7] so no Stage 2 retry fires (5 + 1 = 6 VLM calls total).
+    const buf = await makeFakeJpeg(250, 600);
+
+    for (let i = 0; i < 5; i++) {
+      mockCreate.mockResolvedValueOnce(
+        fakeVlmResponse({
+          panel_top: 300 + i,
+          panel_bottom: 600 + i,
+          panel_left: 100 + i,
+          panel_right: 900 + i,
+          main_switch_side: 'right',
+        })
+      );
+    }
+    mockCreate.mockResolvedValueOnce(
+      fakeVlmResponse({ carrier_count: 4, main_switch_offset: 'right-edge' })
+    );
+
+    const prepared = await prepareRewireableGeometry(buf);
+
+    expect(prepared.carrierCount).toBe(4);
+    expect(prepared.slotCentersX).toHaveLength(4);
+    expect(prepared.carrierPitchPx).toBeGreaterThan(0);
+    expect(prepared.mainSwitchSide).toBe('right');
+    expect(prepared.mainSwitchOffset).toBe('right-edge');
+    expect(prepared.mainSwitchSlotIndex).toBe(3);
+    expect(prepared.panelBounds).toEqual({
+      top: 302,
+      bottom: 602,
+      left: 102,
+      right: 902,
+    });
+    expect(prepared.stageOutputs.stage1).toBeDefined();
+    expect(prepared.stageOutputs.stage2).toBeDefined();
+    expect(prepared.stageOutputs.stage3).toBeUndefined();
+    // 5 Stage 1 + 1 Stage 2 = 6 VLM calls total (no Stage 3).
+    expect(mockCreate).toHaveBeenCalledTimes(6);
+  });
+
+  test('propagates Stage 1 failures (no Stage 2)', async () => {
+    const buf = await makeFakeJpeg();
+    mockCreate.mockRejectedValueOnce(new Error('VLM boom'));
+    await expect(prepareRewireableGeometry(buf)).rejects.toThrow(/VLM boom/);
+  });
+});
+
+describe('classifyRewireableSlots', () => {
+  async function buildPreparedGeometry({ mainSwitchOffset = 'none' } = {}) {
+    const buf = await makeFakeJpeg(250, 600);
+    for (let i = 0; i < 5; i++) {
+      mockCreate.mockResolvedValueOnce(
+        fakeVlmResponse({
+          panel_top: 300,
+          panel_bottom: 600,
+          panel_left: 100,
+          panel_right: 900,
+          main_switch_side: 'none',
+        })
+      );
+    }
+    mockCreate.mockResolvedValueOnce(
+      fakeVlmResponse({ carrier_count: 4, main_switch_offset: mainSwitchOffset })
+    );
+    const prepared = await prepareRewireableGeometry(buf);
+    return { buf, prepared };
+  }
+
+  test('returns Stage 3 output given prepared geometry', async () => {
+    const { buf, prepared } = await buildPreparedGeometry();
+
+    mockCreate.mockResolvedValueOnce(
+      fakeVlmResponse([
+        { slot_index: 0, classification: 'rewireable', bodyColour: 'red', confidence: 0.9 },
+        { slot_index: 1, classification: 'rewireable', bodyColour: 'blue', confidence: 0.85 },
+        { slot_index: 2, classification: 'rewireable', bodyColour: 'white', confidence: 0.85 },
+        { slot_index: 3, classification: 'blank', confidence: 0.95 },
+      ])
+    );
+
+    const classified = await classifyRewireableSlots(buf, prepared);
+
+    expect(classified.slots).toHaveLength(4);
+    expect(classified.slots[0].bodyColour).toBe('red');
+    expect(classified.slots[0].ratingAmps).toBe(30);
+    expect(classified.slots[1].ratingAmps).toBe(15);
+    expect(classified.slots[2].ratingAmps).toBe(5);
+    expect(classified.slots[3].classification).toBe('blank');
+    expect(classified.stage3Error).toBeNull();
+    expect(classified.lowConfidence).toBe(false);
+    expect(classified.timings.stage3Ms).toBeGreaterThanOrEqual(0);
+    expect(classified.stageOutputs.stage3.batchCount).toBe(1);
+  });
+
+  test('force-tags main-switch slot when mainSwitchSlotIndex set', async () => {
+    const { buf, prepared } = await buildPreparedGeometry({
+      mainSwitchOffset: 'right-edge',
+    });
+
+    expect(prepared.mainSwitchSlotIndex).toBe(3);
+
+    // VLM returns blank at the main-switch slot — classifyRewireableSlots must
+    // override it to 'main_switch' so the merger correctly skips it.
+    mockCreate.mockResolvedValueOnce(
+      fakeVlmResponse([
+        { slot_index: 0, classification: 'rewireable', bodyColour: 'red', confidence: 0.9 },
+        { slot_index: 1, classification: 'rewireable', bodyColour: 'blue', confidence: 0.85 },
+        { slot_index: 2, classification: 'rewireable', bodyColour: 'white', confidence: 0.85 },
+        { slot_index: 3, classification: 'blank', confidence: 0.95 },
+      ])
+    );
+
+    const classified = await classifyRewireableSlots(buf, prepared);
+    expect(classified.slots[3].classification).toBe('main_switch');
+    expect(classified.slots[3].ratingAmps).toBeNull();
+  });
+
+  test('soft-fails when Stage 3 VLM returns garbage', async () => {
+    const { buf, prepared } = await buildPreparedGeometry();
+
+    mockCreate.mockResolvedValueOnce({
+      content: [{ type: 'text', text: 'definitely not json' }],
+      usage: { input_tokens: 10, output_tokens: 5 },
+    });
+
+    const classified = await classifyRewireableSlots(buf, prepared);
+    expect(classified.slots).toBeNull();
+    expect(classified.stage3Error).toEqual(expect.stringMatching(/classifyCarriers/));
+  });
+
+  test('raises lowConfidence=true when any slot scores below STAGE3_LOW_CONF_THRESHOLD', async () => {
+    const { buf, prepared } = await buildPreparedGeometry();
+
+    mockCreate.mockResolvedValueOnce(
+      fakeVlmResponse([
+        { slot_index: 0, classification: 'rewireable', bodyColour: 'red', confidence: 0.9 },
+        { slot_index: 1, classification: 'rewireable', bodyColour: 'blue', confidence: 0.4 }, // below 0.6
+        { slot_index: 2, classification: 'rewireable', bodyColour: 'white', confidence: 0.9 },
+        { slot_index: 3, classification: 'blank', confidence: 0.95 },
+      ])
+    );
+
+    const classified = await classifyRewireableSlots(buf, prepared);
+    expect(classified.lowConfidence).toBe(true);
+  });
+
+  test('throws when preparedGeom is invalid', async () => {
+    const buf = await makeFakeJpeg();
+    await expect(classifyRewireableSlots(buf, null)).rejects.toThrow(/slotCentersX/);
+    await expect(classifyRewireableSlots(buf, {})).rejects.toThrow(/slotCentersX/);
   });
 });

@@ -829,22 +829,37 @@ export async function classifyCarriers(_imageBuffer, slotCrops, opts = {}) {
 }
 
 // ---------------------------------------------------------------------------
-// Orchestrator
+// Prepare / Classify split
 // ---------------------------------------------------------------------------
 
 /**
- * Run the full three-stage rewireable extraction pipeline.
+ * Prepare the rewireable pipeline geometry — runs Stage 1 (panel bbox) and
+ * Stage 2 (carrier count + slot centres) sequentially. Exposed so the route
+ * handler can dispatch Stage 3 (`classifyRewireableSlots`) and Stage 4
+ * (`extractSlotLabels`) in parallel once geometry is available.
  *
- * Returns the same outer shape as `extractCcuGeometric` so the route handler can
- * swap between them on the `board_technology` enum without branching on schema.
- * Stages 1/2 throw on failure. Stage 3 is soft-fail: on any error, `slots` is
- * null and `stage3Error` carries the message — Stage 1/2 output is preserved.
+ * Throws on VLM/key failure. Stage 3 soft-fail lives in the classifier half.
  *
  * @param {Buffer} imageBuffer
- * @returns {Promise<object>}
+ * @returns {Promise<{
+ *   medianPanel: object,
+ *   panelBounds: {top:number,bottom:number,left:number,right:number},
+ *   mainSwitchSide: 'left'|'right'|'none',
+ *   lowConfidence: boolean,
+ *   carrierCount: number,
+ *   slotCentersX: number[],
+ *   carrierPitchPx: number,
+ *   mainSwitchOffset: 'none'|'left-edge'|'right-edge',
+ *   mainSwitchSlotIndex: number|null,
+ *   imageWidth: number,
+ *   imageHeight: number,
+ *   stageOutputs: { stage1: object, stage2: object },
+ *   timings: { stage1Ms: number, stage2Ms: number },
+ *   usage: { inputTokens: number, outputTokens: number }
+ * }>}
  * @throws on any Stage 1 or Stage 2 VLM failure, or missing ANTHROPIC_API_KEY.
  */
-export async function extractCcuRewireable(imageBuffer) {
+export async function prepareRewireableGeometry(imageBuffer) {
   const t0 = Date.now();
   const stage1 = await getPanelGeometry(imageBuffer);
   const stage1Ms = Date.now() - t0;
@@ -856,75 +871,6 @@ export async function extractCcuRewireable(imageBuffer) {
   });
   const stage2Ms = Date.now() - t1;
 
-  // Stage 3 — per-slot classification. SOFT-FAIL: errors surfaced on stage3Error,
-  // slots set to null, Stages 1/2 still returned so geometry is usable.
-  let slots = null;
-  let stage3Error = null;
-  let stage3Usage = { inputTokens: 0, outputTokens: 0 };
-  let stage3Ms = 0;
-  let stage3BatchCount = 0;
-  const t2 = Date.now();
-  try {
-    const slotCrops = [];
-    for (let i = 0; i < stage2.slotCentersX.length; i++) {
-      const crop = await cropCarrierSlot(imageBuffer, i, {
-        slotCentersX: stage2.slotCentersX,
-        carrierPitchPx: stage2.carrierPitchPx,
-        panelTopNorm: stage1.medianPanel.panel_top,
-        panelBottomNorm: stage1.medianPanel.panel_bottom,
-        imageWidth: stage1.imageWidth,
-        imageHeight: stage1.imageHeight,
-      });
-      slotCrops.push({ slotIndex: i, buffer: crop.buffer, bbox: crop.bbox });
-    }
-
-    const classified = await classifyCarriers(imageBuffer, slotCrops);
-    slots = classified.slots;
-    stage3Usage = classified.usage;
-    stage3BatchCount = classified.batchCount;
-
-    // Force-tag the main-switch slot. Stage 3's classifier enum is
-    // {rewireable, cartridge, blank} — no main_switch option, so when the main
-    // switch sits at a band edge (e.g. pull-out switch-fuse integrated with the
-    // carrier row) the VLM usually misreads it as "blank" or "rewireable". We
-    // know from Stage 2 which slot it is; override the classification directly.
-    // Downstream merger rules `cls === 'main_switch' || cls === 'spd' → skip`
-    // then naturally exclude it from circuit numbering.
-    if (
-      Array.isArray(slots) &&
-      typeof stage2.mainSwitchSlotIndex === 'number' &&
-      slots[stage2.mainSwitchSlotIndex]
-    ) {
-      const msSlot = slots[stage2.mainSwitchSlotIndex];
-      msSlot.classification = 'main_switch';
-      msSlot.bodyColour = null;
-      msSlot.ratingAmps = null;
-      msSlot.bsEn = null;
-    }
-  } catch (err) {
-    stage3Error = err && err.message ? err.message : String(err);
-  }
-  stage3Ms = Date.now() - t2;
-
-  // Overall lowConfidence: stage1 SD-triggered OR any classified slot below
-  // the stage3 confidence floor. Stage3 soft-fail does not itself raise this
-  // flag — stage3Error is sufficient signal for that path.
-  const stage3LowConf =
-    Array.isArray(slots) &&
-    slots.some(
-      (s) => typeof s.confidence === 'number' && s.confidence < STAGE3_LOW_CONF_THRESHOLD
-    );
-  const lowConfidence = stage1.lowConfidence || stage3LowConf;
-
-  const totalUsage = {
-    inputTokens:
-      stage1.usage.inputTokens + stage2.usage.inputTokens + stage3Usage.inputTokens,
-    outputTokens:
-      stage1.usage.outputTokens + stage2.usage.outputTokens + stage3Usage.outputTokens,
-  };
-
-  // `panelBounds` uses the top-level field names documented in the sprint plan
-  // (top/bottom/left/right) rather than the internal panel_* naming.
   const panelBounds = {
     top: stage1.medianPanel.panel_top,
     bottom: stage1.medianPanel.panel_bottom,
@@ -932,22 +878,23 @@ export async function extractCcuRewireable(imageBuffer) {
     right: stage1.medianPanel.panel_right,
   };
 
+  const usage = {
+    inputTokens: stage1.usage.inputTokens + stage2.usage.inputTokens,
+    outputTokens: stage1.usage.outputTokens + stage2.usage.outputTokens,
+  };
+
   return {
-    schemaVersion: 'ccu-rewireable-v1',
+    medianPanel: stage1.medianPanel,
     panelBounds,
+    mainSwitchSide: stage1.mainSwitchSide,
+    lowConfidence: stage1.lowConfidence,
     carrierCount: stage2.carrierCount,
     slotCentersX: stage2.slotCentersX,
-    carrierPitch: stage2.carrierPitchPx,
-    mainSwitchSide: stage1.mainSwitchSide,
+    carrierPitchPx: stage2.carrierPitchPx,
     mainSwitchOffset: stage2.mainSwitchOffset,
     mainSwitchSlotIndex: stage2.mainSwitchSlotIndex,
-    slots,
-    lowConfidence,
-    stage3Error,
     imageWidth: stage1.imageWidth,
     imageHeight: stage1.imageHeight,
-    timings: { stage1Ms, stage2Ms, stage3Ms, totalMs: stage1Ms + stage2Ms + stage3Ms },
-    usage: totalUsage,
     stageOutputs: {
       stage1: {
         panels: stage1.panels,
@@ -966,6 +913,103 @@ export async function extractCcuRewireable(imageBuffer) {
         mainSwitchSlotIndex: stage2.mainSwitchSlotIndex,
         usage: stage2.usage,
       },
+    },
+    timings: { stage1Ms, stage2Ms },
+    usage,
+  };
+}
+
+/**
+ * Classify rewireable pipeline slots — runs Stage 3 (per-slot crop + VLM
+ * classify + body-colour → amps fill-in) given a geometry object from
+ * `prepareRewireableGeometry`. Includes the main-switch force-tag step so
+ * that an inline main switch at a band edge is correctly excluded from
+ * downstream circuit numbering even when Stage 3's classifier enum
+ * ({rewireable, cartridge, blank}) cannot reach 'main_switch'.
+ *
+ * Soft-fail: any Stage 3 error is returned on `stage3Error`, `slots` is null.
+ * `lowConfidence` combines Stage 1 SD flag with any per-slot confidence below
+ * the STAGE3_LOW_CONF_THRESHOLD floor.
+ *
+ * @param {Buffer} imageBuffer
+ * @param {object} preparedGeom  Output of `prepareRewireableGeometry`.
+ * @returns {Promise<{
+ *   slots: Array|null,
+ *   stage3Error: string|null,
+ *   lowConfidence: boolean,
+ *   timings: { stage3Ms: number },
+ *   usage: { inputTokens: number, outputTokens: number },
+ *   stageOutputs: { stage3: object }
+ * }>}
+ */
+export async function classifyRewireableSlots(imageBuffer, preparedGeom) {
+  if (!preparedGeom || !Array.isArray(preparedGeom.slotCentersX)) {
+    throw new Error('classifyRewireableSlots: preparedGeom.slotCentersX must be an array');
+  }
+
+  let slots = null;
+  let stage3Error = null;
+  let stage3Usage = { inputTokens: 0, outputTokens: 0 };
+  let stage3BatchCount = 0;
+  const t2 = Date.now();
+  try {
+    const slotCrops = [];
+    for (let i = 0; i < preparedGeom.slotCentersX.length; i++) {
+      const crop = await cropCarrierSlot(imageBuffer, i, {
+        slotCentersX: preparedGeom.slotCentersX,
+        carrierPitchPx: preparedGeom.carrierPitchPx,
+        panelTopNorm: preparedGeom.medianPanel.panel_top,
+        panelBottomNorm: preparedGeom.medianPanel.panel_bottom,
+        imageWidth: preparedGeom.imageWidth,
+        imageHeight: preparedGeom.imageHeight,
+      });
+      slotCrops.push({ slotIndex: i, buffer: crop.buffer, bbox: crop.bbox });
+    }
+
+    const classified = await classifyCarriers(imageBuffer, slotCrops);
+    slots = classified.slots;
+    stage3Usage = classified.usage;
+    stage3BatchCount = classified.batchCount;
+
+    // Force-tag the main-switch slot. Stage 3's classifier enum is
+    // {rewireable, cartridge, blank} — no main_switch option, so when the main
+    // switch sits at a band edge (e.g. pull-out switch-fuse integrated with the
+    // carrier row) the VLM usually misreads it as "blank" or "rewireable". We
+    // know from Stage 2 which slot it is; override the classification directly.
+    // Downstream merger rules `cls === 'main_switch' || cls === 'spd' → skip`
+    // then naturally exclude it from circuit numbering.
+    if (
+      Array.isArray(slots) &&
+      typeof preparedGeom.mainSwitchSlotIndex === 'number' &&
+      slots[preparedGeom.mainSwitchSlotIndex]
+    ) {
+      const msSlot = slots[preparedGeom.mainSwitchSlotIndex];
+      msSlot.classification = 'main_switch';
+      msSlot.bodyColour = null;
+      msSlot.ratingAmps = null;
+      msSlot.bsEn = null;
+    }
+  } catch (err) {
+    stage3Error = err && err.message ? err.message : String(err);
+  }
+  const stage3Ms = Date.now() - t2;
+
+  // Stage3 lowConfidence: any classified slot below floor. Stage3 soft-fail
+  // does not itself raise this flag — stage3Error is sufficient signal.
+  // Stage 1's SD flag is combined by the wrapper / caller.
+  const stage3LowConf =
+    Array.isArray(slots) &&
+    slots.some(
+      (s) => typeof s.confidence === 'number' && s.confidence < STAGE3_LOW_CONF_THRESHOLD
+    );
+
+  return {
+    slots,
+    stage3Error,
+    lowConfidence: stage3LowConf,
+    timings: { stage3Ms },
+    usage: stage3Usage,
+    stageOutputs: {
       stage3: {
         slots,
         error: stage3Error,
@@ -973,6 +1017,70 @@ export async function extractCcuRewireable(imageBuffer) {
         batchSize: CCU_REWIREABLE_STAGE3_BATCH_SIZE,
         usage: stage3Usage,
       },
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Orchestrator
+// ---------------------------------------------------------------------------
+
+/**
+ * Run the full three-stage rewireable extraction pipeline.
+ *
+ * THIN WRAPPER around `prepareRewireableGeometry` + `classifyRewireableSlots`.
+ * Kept for backward compatibility — the route handler dispatches the two
+ * halves separately so Stage 3 and Stage 4 (label pass) can run in parallel.
+ *
+ * Returns the same outer shape as `extractCcuGeometric` so the route handler
+ * can swap between them on the `board_technology` enum without branching on
+ * schema. Stages 1/2 throw on failure. Stage 3 is soft-fail: on any error,
+ * `slots` is null and `stage3Error` carries the message — Stage 1/2 output
+ * is preserved.
+ *
+ * @param {Buffer} imageBuffer
+ * @returns {Promise<object>}
+ * @throws on any Stage 1 or Stage 2 VLM failure, or missing ANTHROPIC_API_KEY.
+ */
+export async function extractCcuRewireable(imageBuffer) {
+  const prepared = await prepareRewireableGeometry(imageBuffer);
+  const classified = await classifyRewireableSlots(imageBuffer, prepared);
+
+  const totalUsage = {
+    inputTokens: prepared.usage.inputTokens + classified.usage.inputTokens,
+    outputTokens: prepared.usage.outputTokens + classified.usage.outputTokens,
+  };
+
+  // Overall lowConfidence: stage1 SD-triggered OR any classified slot below
+  // the stage3 confidence floor (delivered by classifyRewireableSlots).
+  const lowConfidence =
+    prepared.stageOutputs.stage1.lowConfidence || classified.lowConfidence;
+
+  return {
+    schemaVersion: 'ccu-rewireable-v1',
+    panelBounds: prepared.panelBounds,
+    carrierCount: prepared.carrierCount,
+    slotCentersX: prepared.slotCentersX,
+    carrierPitch: prepared.carrierPitchPx,
+    mainSwitchSide: prepared.mainSwitchSide,
+    mainSwitchOffset: prepared.mainSwitchOffset,
+    mainSwitchSlotIndex: prepared.mainSwitchSlotIndex,
+    slots: classified.slots,
+    lowConfidence,
+    stage3Error: classified.stage3Error,
+    imageWidth: prepared.imageWidth,
+    imageHeight: prepared.imageHeight,
+    timings: {
+      stage1Ms: prepared.timings.stage1Ms,
+      stage2Ms: prepared.timings.stage2Ms,
+      stage3Ms: classified.timings.stage3Ms,
+      totalMs: prepared.timings.stage1Ms + prepared.timings.stage2Ms + classified.timings.stage3Ms,
+    },
+    usage: totalUsage,
+    stageOutputs: {
+      stage1: prepared.stageOutputs.stage1,
+      stage2: prepared.stageOutputs.stage2,
+      stage3: classified.stageOutputs.stage3,
     },
   };
 }

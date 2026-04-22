@@ -611,17 +611,40 @@ export async function classifySlots(_imageBuffer, slotCrops, opts = {}) {
 }
 
 // ---------------------------------------------------------------------------
-// Orchestrator
+// Prepare / Classify split
 // ---------------------------------------------------------------------------
 
 /**
- * Run the full two-stage geometric extraction pipeline.
+ * Prepare the modern pipeline geometry — runs Stage 1 (rail bbox) and Stage 2
+ * (module count + slot centres) sequentially. Exposed so the route handler can
+ * kick off Stage 3 (`classifyModernSlots`) and Stage 4 (`extractSlotLabels`)
+ * in parallel once geometry is ready — the Stage 3/4 serialisation was worth
+ * ~10-15s per extraction on wide boards.
+ *
+ * Pure pair-of-VLM-calls pipeline: throws on VLM/key failure, the caller gets
+ * a usable geometry object or an exception. No Stage 3 soft-fail semantics
+ * live here (that belongs to the classifier half).
  *
  * @param {Buffer} imageBuffer
- * @returns {Promise<object>} Combined result with stage1, stage2 and top-level convenience fields.
+ * @returns {Promise<{
+ *   medianRails: object,
+ *   moduleCount: number,
+ *   vlmCount: number,
+ *   disagreement: boolean,
+ *   lowConfidence: boolean,
+ *   slotCentersX: number[],
+ *   moduleWidth: number,
+ *   mainSwitchWidth: number,
+ *   mainSwitchCenterX: number|null,
+ *   imageWidth: number,
+ *   imageHeight: number,
+ *   stageOutputs: { stage1: object, stage2: object },
+ *   timings: { stage1Ms: number, stage2Ms: number },
+ *   usage: { inputTokens: number, outputTokens: number }
+ * }>}
  * @throws on any VLM failure or missing key (no fallback — caller decides).
  */
-export async function extractCcuGeometric(imageBuffer) {
+export async function prepareModernGeometry(imageBuffer) {
   const t0 = Date.now();
   const stage1 = await getRailGeometry(imageBuffer);
   const stage1Ms = Date.now() - t0;
@@ -630,25 +653,84 @@ export async function extractCcuGeometric(imageBuffer) {
   const stage2 = await getModuleCount(imageBuffer, stage1.medianRails);
   const stage2Ms = Date.now() - t1;
 
-  // Stage 3 — per-slot classification. SOFT-FAIL: any error is captured on
-  // stage3Error and slots is set to null. Stages 1/2 output is still returned
-  // so the caller can render rail + module-count UI without blocking on Stage 3.
+  const usage = {
+    inputTokens: stage1.usage.inputTokens + stage2.usage.inputTokens,
+    outputTokens: stage1.usage.outputTokens + stage2.usage.outputTokens,
+  };
+
+  return {
+    medianRails: stage1.medianRails,
+    moduleCount: stage2.geometricCount,
+    vlmCount: stage2.vlmCount,
+    disagreement: stage2.disagreement,
+    lowConfidence: stage1.lowConfidence,
+    slotCentersX: stage2.slotCentersX,
+    moduleWidth: stage2.moduleWidth,
+    mainSwitchWidth: stage2.mainSwitchWidth,
+    mainSwitchCenterX: stage2.mainSwitchCenterX,
+    imageWidth: stage1.imageWidth,
+    imageHeight: stage1.imageHeight,
+    stageOutputs: {
+      stage1: {
+        rails: stage1.rails,
+        medianRails: stage1.medianRails,
+        sdPct: stage1.sdPct,
+        lowConfidence: stage1.lowConfidence,
+        usage: stage1.usage,
+      },
+      stage2: {
+        geometricCount: stage2.geometricCount,
+        vlmCount: stage2.vlmCount,
+        slotCentersX: stage2.slotCentersX,
+        mainSwitchCenterX: stage2.mainSwitchCenterX,
+        mainSwitchWidth: stage2.mainSwitchWidth,
+        moduleWidth: stage2.moduleWidth,
+        disagreement: stage2.disagreement,
+        usage: stage2.usage,
+      },
+    },
+    timings: { stage1Ms, stage2Ms },
+    usage,
+  };
+}
+
+/**
+ * Classify modern pipeline slots — runs Stage 3 (per-slot crop + VLM classify
+ * + device-face lookup gap-fill) given a geometry object from
+ * `prepareModernGeometry`. Soft-fail: any error is returned on `stage3Error`,
+ * `slots` is null. Mirrors the Stage 3 block inside the old orchestrator
+ * verbatim so behaviour stays identical.
+ *
+ * @param {Buffer} imageBuffer
+ * @param {object} preparedGeom  Output of `prepareModernGeometry`.
+ * @returns {Promise<{
+ *   slots: Array|null,
+ *   stage3Error: string|null,
+ *   timings: { stage3Ms: number },
+ *   usage: { inputTokens: number, outputTokens: number },
+ *   stageOutputs: { stage3: object }
+ * }>}
+ */
+export async function classifyModernSlots(imageBuffer, preparedGeom) {
+  if (!preparedGeom || !Array.isArray(preparedGeom.slotCentersX)) {
+    throw new Error('classifyModernSlots: preparedGeom.slotCentersX must be an array');
+  }
+
   let slots = null;
   let stage3Error = null;
   let stage3Usage = { inputTokens: 0, outputTokens: 0 };
-  let stage3Ms = 0;
   let stage3BatchCount = 0;
   const t2 = Date.now();
   try {
     const slotCrops = [];
-    for (let i = 0; i < stage2.slotCentersX.length; i++) {
+    for (let i = 0; i < preparedGeom.slotCentersX.length; i++) {
       const crop = await cropSlot(imageBuffer, i, {
-        slotCentersX: stage2.slotCentersX,
-        moduleWidth: stage2.moduleWidth,
-        railTop: stage1.medianRails.rail_top,
-        railBottom: stage1.medianRails.rail_bottom,
-        imageWidth: stage1.imageWidth,
-        imageHeight: stage1.imageHeight,
+        slotCentersX: preparedGeom.slotCentersX,
+        moduleWidth: preparedGeom.moduleWidth,
+        railTop: preparedGeom.medianRails.rail_top,
+        railBottom: preparedGeom.medianRails.rail_bottom,
+        imageWidth: preparedGeom.imageWidth,
+        imageHeight: preparedGeom.imageHeight,
       });
       slotCrops.push({ slotIndex: i, buffer: crop.buffer, bbox: crop.bbox });
     }
@@ -670,48 +752,14 @@ export async function extractCcuGeometric(imageBuffer) {
   } catch (err) {
     stage3Error = err && err.message ? err.message : String(err);
   }
-  stage3Ms = Date.now() - t2;
-
-  const totalUsage = {
-    inputTokens: stage1.usage.inputTokens + stage2.usage.inputTokens + stage3Usage.inputTokens,
-    outputTokens: stage1.usage.outputTokens + stage2.usage.outputTokens + stage3Usage.outputTokens,
-  };
+  const stage3Ms = Date.now() - t2;
 
   return {
-    schemaVersion: 'ccu-geometric-v1',
-    medianRails: stage1.medianRails,
-    moduleCount: stage2.geometricCount,
-    vlmCount: stage2.vlmCount,
-    slotCentersX: stage2.slotCentersX,
-    moduleWidth: stage2.moduleWidth,
-    mainSwitchCenterX: stage2.mainSwitchCenterX,
-    mainSwitchWidth: stage2.mainSwitchWidth,
-    lowConfidence: stage1.lowConfidence,
-    disagreement: stage2.disagreement,
-    imageWidth: stage1.imageWidth,
-    imageHeight: stage1.imageHeight,
     slots,
     stage3Error,
-    timings: { stage1Ms, stage2Ms, stage3Ms, totalMs: stage1Ms + stage2Ms + stage3Ms },
-    usage: totalUsage,
+    timings: { stage3Ms },
+    usage: stage3Usage,
     stageOutputs: {
-      stage1: {
-        rails: stage1.rails,
-        medianRails: stage1.medianRails,
-        sdPct: stage1.sdPct,
-        lowConfidence: stage1.lowConfidence,
-        usage: stage1.usage,
-      },
-      stage2: {
-        geometricCount: stage2.geometricCount,
-        vlmCount: stage2.vlmCount,
-        slotCentersX: stage2.slotCentersX,
-        mainSwitchCenterX: stage2.mainSwitchCenterX,
-        mainSwitchWidth: stage2.mainSwitchWidth,
-        moduleWidth: stage2.moduleWidth,
-        disagreement: stage2.disagreement,
-        usage: stage2.usage,
-      },
       stage3: {
         slots,
         error: stage3Error,
@@ -719,6 +767,66 @@ export async function extractCcuGeometric(imageBuffer) {
         batchSize: CCU_STAGE3_BATCH_SIZE,
         usage: stage3Usage,
       },
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Orchestrator
+// ---------------------------------------------------------------------------
+
+/**
+ * Run the full three-stage geometric extraction pipeline.
+ *
+ * THIN WRAPPER around `prepareModernGeometry` + `classifyModernSlots` — kept
+ * for backward compatibility with the non-route-handler callers (tests, any
+ * batch re-analysis scripts). The route handler no longer calls this —
+ * instead it awaits `prepareModernGeometry` and dispatches Stage 3 +
+ * Stage 4 (label pass) in parallel via `Promise.all`.
+ *
+ * Result shape IS IDENTICAL to the pre-split implementation — the split-
+ * function tests exercise the halves, the existing orchestrator tests
+ * exercise the wrapper verbatim.
+ *
+ * @param {Buffer} imageBuffer
+ * @returns {Promise<object>} Combined result with stage1, stage2, stage3 and top-level convenience fields.
+ * @throws on any Stage 1/2 VLM failure or missing key (Stage 3 is still soft-fail inside classifyModernSlots).
+ */
+export async function extractCcuGeometric(imageBuffer) {
+  const prepared = await prepareModernGeometry(imageBuffer);
+  const classified = await classifyModernSlots(imageBuffer, prepared);
+
+  const totalUsage = {
+    inputTokens: prepared.usage.inputTokens + classified.usage.inputTokens,
+    outputTokens: prepared.usage.outputTokens + classified.usage.outputTokens,
+  };
+
+  return {
+    schemaVersion: 'ccu-geometric-v1',
+    medianRails: prepared.medianRails,
+    moduleCount: prepared.moduleCount,
+    vlmCount: prepared.vlmCount,
+    slotCentersX: prepared.slotCentersX,
+    moduleWidth: prepared.moduleWidth,
+    mainSwitchCenterX: prepared.mainSwitchCenterX,
+    mainSwitchWidth: prepared.mainSwitchWidth,
+    lowConfidence: prepared.lowConfidence,
+    disagreement: prepared.disagreement,
+    imageWidth: prepared.imageWidth,
+    imageHeight: prepared.imageHeight,
+    slots: classified.slots,
+    stage3Error: classified.stage3Error,
+    timings: {
+      stage1Ms: prepared.timings.stage1Ms,
+      stage2Ms: prepared.timings.stage2Ms,
+      stage3Ms: classified.timings.stage3Ms,
+      totalMs: prepared.timings.stage1Ms + prepared.timings.stage2Ms + classified.timings.stage3Ms,
+    },
+    usage: totalUsage,
+    stageOutputs: {
+      stage1: prepared.stageOutputs.stage1,
+      stage2: prepared.stageOutputs.stage2,
+      stage3: classified.stageOutputs.stage3,
     },
   };
 }
