@@ -150,6 +150,7 @@ CIRCUIT FIELDS (per circuit):
 - ring_continuity_rn: ring end-to-end Rn in ohms
 - r2: standalone R2 earth continuity reading in ohms (radial circuits). For RING circuits, use ring_continuity_r2 instead.
 - ring_continuity_r2: ring circuit end-to-end R2/CPC resistance in ohms. Only for ring/socket circuits. "Earths" on a ring = this field.
+- DISCONTINUOUS READINGS (open-circuit continuity): if the inspector says a continuity reading is "discontinuous", "open circuit", "open loop", "broken", "infinity", or "OL" (multimeter display), emit the LITERAL character "∞" (U+221E, INFINITY) as the `value` for that continuity field — NOT a number, NOT a string like "DISC" or "OL". Applies to r1_plus_r2, r2, ring_continuity_r1, ring_continuity_rn, ring_continuity_r2. Example: "ring R2 is discontinuous on circuit 5" → [{circuit: 5, field: "ring_continuity_r2", value: "∞"}]. (EIC is for NEW installations — a discontinuous reading should very rarely occur; if it does, it almost certainly indicates a construction defect that must be remediated before the EIC can be issued. Do NOT auto-classify in code; if the reading is genuine, surface it to the inspector and let them decide whether to abandon the certificate or correct and retest.)
 - rcd_trip_time: RCD trip time in ms
 - rcd_rating_a: RCD rating in mA (typically 30)
 - polarity: "correct" or "reversed" or "OK"
