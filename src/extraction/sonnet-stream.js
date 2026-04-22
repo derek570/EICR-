@@ -902,10 +902,49 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
             // must surface, and the ask remains pending until genuine
             // answer or timeout (acceptable: no prior extraction has
             // happened, so the question is still live).
-            const alreadySeenAsTranscript =
+            const anchoredAsTranscript =
               typeof msg.consumed_utterance_id === 'string' &&
               entry.seenTranscriptUtterances &&
               entry.seenTranscriptUtterances.has(msg.consumed_utterance_id);
+
+            // r18 MAJOR#2 — content-anchor reverse-race check. When the
+            // answer omits consumed_utterance_id (legacy clients) or
+            // sends a malformed value, the fast-path Set lookup above
+            // cannot fire. A separate content ledger
+            // (entry.recentTranscripts) stamps the normalised text of
+            // every extracted transcript with a short TTL; if the
+            // sanitisable user_text matches (normalised equality), the
+            // same utterance was already extracted through the
+            // transcript channel and must NOT be re-exposed to Sonnet
+            // via this ask's tool_result. Evict expired entries first
+            // so stale ledger rows can't produce false positives after
+            // a long pause. Match rule is equality on the normaliser
+            // output (lowercase / strip non-alphanumerics / collapse
+            // whitespace), NOT substring — mirrors the r16 design
+            // rationale (short "three" vs "move to three").
+            let alreadySeenByContent = false;
+            let matchedContentEntry = null;
+            if (!anchoredAsTranscript && typeof msg.user_text === 'string') {
+              if (Array.isArray(entry.recentTranscripts) && entry.recentTranscripts.length > 0) {
+                const nowTs = Date.now();
+                entry.recentTranscripts = entry.recentTranscripts.filter(
+                  (t) => t.expiresAt > nowTs,
+                );
+                if (entry.recentTranscripts.length > 0) {
+                  const normalisedAnswer = normaliseForAskMatch(msg.user_text);
+                  if (normalisedAnswer.length > 0) {
+                    const matchIdx = entry.recentTranscripts.findIndex(
+                      (t) => t.normalisedText === normalisedAnswer,
+                    );
+                    if (matchIdx >= 0) {
+                      matchedContentEntry = entry.recentTranscripts.splice(matchIdx, 1)[0];
+                      alreadySeenByContent = true;
+                    }
+                  }
+                }
+              }
+            }
+            const alreadySeenAsTranscript = anchoredAsTranscript || alreadySeenByContent;
 
             let resolvePayload;
             let sanitised = null;
@@ -918,7 +957,11 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
               logger.warn('stage6.ask_user_answered_after_transcript', {
                 sessionId: currentSessionId,
                 tool_call_id: msg.tool_call_id,
-                utterance_id: msg.consumed_utterance_id,
+                utterance_id: msg.consumed_utterance_id || null,
+                match_source: anchoredAsTranscript ? 'utterance_id' : 'content_anchor',
+                matched_utterance_id: matchedContentEntry
+                  ? matchedContentEntry.utteranceId
+                  : null,
                 reason: 'transcript_already_extracted',
               });
             } else {
@@ -1167,6 +1210,9 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
       // Stale anchors could falsely suppress the first legitimate
       // transcript on the new ws.
       existing.recentAskAnswers = [];
+      // r18 MAJOR#2 — clear reverse content ledger on reconnect for
+      // the same reason.
+      existing.recentTranscripts = [];
       // Update the ws reference and re-bind the question gate to new ws.
       // This preserves the Anthropic conversation history across reconnects.
       existing.ws = ws;
@@ -1437,6 +1483,18 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
       // blind spots: legacy clients (no consumed_utterance_id) and
       // mixed-mode clients (answer-id set, transcript-id omitted).
       recentAskAnswers: [],
+      // r18 MAJOR#2 — mirror of recentAskAnswers for the REVERSE
+      // direction. Every stamped transcript (stampSeenTranscript) also
+      // pushes its normalised text into this FIFO list. The
+      // ask_user_answered handler consults it whenever the answer
+      // arrives WITHOUT a consumed_utterance_id anchor (legacy or
+      // malformed clients); a content-equality hit means the same
+      // speech was already extracted through the transcript channel,
+      // so the ask must resolve with {answered:false,
+      // reason:'transcript_already_extracted'} rather than re-exposing
+      // it to Sonnet as a tool_result. Same TTL + CAP as the forward
+      // direction for symmetry.
+      recentTranscripts: [],
     });
 
     ws.send(
@@ -1526,6 +1584,8 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
     else entry.seenTranscriptUtterances = new Set();
     // r16 MAJOR#1 + #2 — clear the content-anchor list on session_resume.
     entry.recentAskAnswers = [];
+    // r18 MAJOR#2 — clear reverse content ledger on session_resume.
+    entry.recentTranscripts = [];
 
     // Rebind the socket + questionGate callback to the new WS, matching the
     // handleSessionStart reconnection branch. This preserves the Anthropic
@@ -1718,12 +1778,40 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
     // Bounded by CONSUMED_UTTERANCE_CAP / FIFO for the same reasons as
     // consumedAskUtterances.
     const stampSeenTranscript = () => {
-      if (typeof msg.utterance_id !== 'string') return;
-      if (!entry.seenTranscriptUtterances) entry.seenTranscriptUtterances = new Set();
-      entry.seenTranscriptUtterances.add(msg.utterance_id);
-      if (entry.seenTranscriptUtterances.size > CONSUMED_UTTERANCE_CAP) {
-        const oldest = entry.seenTranscriptUtterances.values().next().value;
-        entry.seenTranscriptUtterances.delete(oldest);
+      // Fast-path Set (anchored on utterance_id).
+      if (typeof msg.utterance_id === 'string') {
+        if (!entry.seenTranscriptUtterances) entry.seenTranscriptUtterances = new Set();
+        entry.seenTranscriptUtterances.add(msg.utterance_id);
+        if (entry.seenTranscriptUtterances.size > CONSUMED_UTTERANCE_CAP) {
+          const oldest = entry.seenTranscriptUtterances.values().next().value;
+          entry.seenTranscriptUtterances.delete(oldest);
+        }
+      }
+
+      // r18 MAJOR#2 — content-anchor push. Every transcript committed to
+      // extraction (answers-verdict success OR fall-through to shadow
+      // harness) pushes its normalised text into entry.recentTranscripts
+      // so a LEGACY ask_user_answered (no consumed_utterance_id) arriving
+      // AFTER the transcript has already been extracted can detect the
+      // reverse race by content equality and resolve with
+      // {answered:false, reason:'transcript_already_extracted'} instead
+      // of double-exposing the same speech to Sonnet. Always push —
+      // unlike the Set, we don't need a valid utterance_id; the whole
+      // point of this ledger is to cover utterance_id-less clients on
+      // BOTH sides. TTL + CAP bound memory under STA-01.
+      if (typeof msg.text === 'string') {
+        const normalised = normaliseForAskMatch(msg.text);
+        if (normalised.length > 0) {
+          if (!Array.isArray(entry.recentTranscripts)) entry.recentTranscripts = [];
+          entry.recentTranscripts.push({
+            normalisedText: normalised,
+            expiresAt: Date.now() + RECENT_ASK_ANSWER_TTL_MS,
+            utteranceId: typeof msg.utterance_id === 'string' ? msg.utterance_id : null,
+          });
+          while (entry.recentTranscripts.length > RECENT_ASK_ANSWER_CAP) {
+            entry.recentTranscripts.shift();
+          }
+        }
       }
     };
 
@@ -2059,10 +2147,19 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
           // Plan 03-12 r13 Codex MINOR — mark `_drainedRetry=true` so the
           // re-entry skips questionGate.onNewUtterance() (otherwise the
           // same utterance would tick the gate twice).
+          //
+          // r18 MAJOR#1 remediation — spread the full original `msg` so
+          // the drained retry replays handleTranscript with its original
+          // shape: `in_response_to`, `confirmations_enabled`, and any
+          // other metadata the server added at ingress. The prior shape
+          // only carried `{text, regexResults, utterance_id}`; on replay
+          // the retry lost TTS-question context so Sonnet re-interpreted
+          // short replies ("yes", "code 2") without the preceding prompt.
+          // Mirrors the r17 BLOCK fix applied to the `isExtracting` queue
+          // at line ~1758.
           entry.pendingTranscripts.push({
-            text: msg.text,
+            ...msg,
             regexResults,
-            utterance_id: msg.utterance_id,
             _drainedRetry: true,
           });
           logger.info('stage6.transcript_deferred_after_user_moved_on', {
