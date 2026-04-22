@@ -723,7 +723,7 @@ describe('STT-08 — utterance-consumption dedupe on ask_user_answered', () => {
     });
   });
 
-  test('STT-08b legacy compat (r15 MAJOR#2): ask_user_answered without consumed_utterance_id → ask still resolves, error logged, anchor-free window suppresses next in-window transcript', async () => {
+  test('STT-08b legacy compat (r16 MAJOR#1): ask_user_answered without consumed_utterance_id → ask still resolves, error logged, content-anchor pushed', async () => {
     const ws = connect(wss, 'user-1');
     await sendFrame(ws, {
       type: 'session_start',
@@ -758,8 +758,8 @@ describe('STT-08 — utterance-consumption dedupe on ask_user_answered', () => {
       user_text: 'whatever',
     });
 
-    // r15 MAJOR#2 — error-level log row flagging the missing anchor
-    // with the distinct event name so CloudWatch can alarm.
+    // r16 — error-level log row flagging the missing anchor with the
+    // distinct event name so CloudWatch can alarm.
     const legacyErrors = loggerModule.error.mock.calls.filter(
       (c) => c[0] === 'stage6.ask_user_answered_legacy_no_anchor'
     );
@@ -769,25 +769,19 @@ describe('STT-08 — utterance-consumption dedupe on ask_user_answered', () => {
       resolved: true,
       reason: 'missing_consumed_utterance_id',
     });
-    expect(legacyErrors[0][1].anchor_window_ms).toBeGreaterThan(0);
+    expect(legacyErrors[0][1].content_anchor_ttl_ms).toBeGreaterThan(0);
 
-    // r15 MAJOR#2 — the fallback window is now armed. A transcript
-    // arriving inside the window is treated as the answering utterance
-    // and suppressed (belt-and-braces for the identified double-
-    // processing race when no utterance anchor was available).
-    expect(entry.legacyAskAnchorUntil).toBeGreaterThan(Date.now());
-    await sendFrame(ws, {
-      type: 'transcript',
-      text: 'another sentence',
-      utterance_id: 'u-unrelated',
-      regexResults: [],
+    // r16 MAJOR#1 — content anchor pushed on the legacy path too. A
+    // transcript whose normalised text EQUALS the anchor is suppressed;
+    // unrelated text (no match) flows through normally.
+    expect(entry.recentAskAnswers).toHaveLength(1);
+    expect(entry.recentAskAnswers[0]).toMatchObject({
+      normalisedText: 'whatever',
+      toolCallId: 'toolu_legacy',
     });
-    expect(runShadowHarnessSpy).not.toHaveBeenCalled();
-    // Window is one-shot: cleared on first suppression.
-    expect(entry.legacyAskAnchorUntil).toBe(0);
   });
 
-  test('STT-08b2 legacy compat (r15 MAJOR#2): transcript arriving AFTER window closes flows through normal extraction', async () => {
+  test('STT-08b2 legacy compat (r16 MAJOR#1): matching transcript text suppressed via content-anchor; unrelated text flows through', async () => {
     const ws = connect(wss, 'user-1');
     await sendFrame(ws, {
       type: 'session_start',
@@ -806,22 +800,148 @@ describe('STT-08 — utterance-consumption dedupe on ask_user_answered', () => {
 
     runShadowHarnessSpy.mockClear();
 
+    // Legacy answer — pushes 'three' as content anchor.
     await sendFrame(ws, {
       type: 'ask_user_answered',
       tool_call_id: 'toolu_legacy_2',
-      user_text: 'x',
+      user_text: 'three',
     });
-    // Force-expire the window: simulate the transcript arriving after
-    // LEGACY_ASK_ANCHOR_WINDOW_MS elapsed without touching jest timers.
-    entry.legacyAskAnchorUntil = Date.now() - 1;
+    expect(entry.recentAskAnswers).toHaveLength(1);
+
+    // Unrelated transcript — 'move to three' is NOT normalised-equal
+    // to 'three' (substring != equality), so the content-anchor does
+    // NOT match and this transcript flows through normally. This is
+    // the regression guard against blanket time-window suppression
+    // that Codex r16 MAJOR#1 flagged.
+    await sendFrame(ws, {
+      type: 'transcript',
+      text: 'move to three',
+      utterance_id: 'u-unrelated',
+      regexResults: [],
+    });
+    expect(runShadowHarnessSpy).toHaveBeenCalledTimes(1);
+    // Anchor is NOT consumed by the non-match.
+    expect(entry.recentAskAnswers).toHaveLength(1);
+  });
+
+  test('STT-08b3 (r16 MAJOR#1): exact-normalised-match transcript IS suppressed and anchor removed (one-shot)', async () => {
+    const ws = connect(wss, 'user-1');
+    await sendFrame(ws, {
+      type: 'session_start',
+      sessionId: 'sess-A',
+      jobState: { certificateType: 'eicr' },
+    });
+    const entry = activeSessions.get('sess-A');
+
+    entry.pendingAsks.register('toolu_match', {
+      contextField: null,
+      contextCircuit: null,
+      resolve: () => {},
+      timer: setTimeout(() => {}, 60000),
+      askStartedAt: Date.now(),
+    });
+
+    runShadowHarnessSpy.mockClear();
+
+    await sendFrame(ws, {
+      type: 'ask_user_answered',
+      tool_call_id: 'toolu_match',
+      user_text: 'yes',
+    });
+    expect(entry.recentAskAnswers).toHaveLength(1);
+
+    // Transcript text normalises to same token ("Yes." → "yes") →
+    // suppressed, anchor consumed.
+    await sendFrame(ws, {
+      type: 'transcript',
+      text: 'Yes.',
+      utterance_id: 'u-match',
+      regexResults: [],
+    });
+    expect(runShadowHarnessSpy).not.toHaveBeenCalled();
+    expect(entry.recentAskAnswers).toHaveLength(0);
+  });
+
+  test('STT-08b4 (r16 MAJOR#2): transcript without utterance_id still matched via content-anchor (covers anchored-ask + anchorless-transcript mixed mode)', async () => {
+    const ws = connect(wss, 'user-1');
+    await sendFrame(ws, {
+      type: 'session_start',
+      sessionId: 'sess-A',
+      jobState: { certificateType: 'eicr' },
+    });
+    const entry = activeSessions.get('sess-A');
+
+    entry.pendingAsks.register('toolu_mixed', {
+      contextField: null,
+      contextCircuit: null,
+      resolve: () => {},
+      timer: setTimeout(() => {}, 60000),
+      askStartedAt: Date.now(),
+    });
+
+    runShadowHarnessSpy.mockClear();
+
+    // Normal (anchored) answer — stamps consumedAskUtterances AND
+    // pushes content anchor.
+    await sendFrame(ws, {
+      type: 'ask_user_answered',
+      tool_call_id: 'toolu_mixed',
+      consumed_utterance_id: 'u-anchored',
+      user_text: 'four',
+    });
+    expect(entry.consumedAskUtterances.has('u-anchored')).toBe(true);
+    expect(entry.recentAskAnswers).toHaveLength(1);
+
+    // Mixed-mode transcript: no utterance_id, so Set lookup misses.
+    // Content-anchor match catches it instead.
+    await sendFrame(ws, {
+      type: 'transcript',
+      text: 'four',
+      // utterance_id deliberately omitted
+      regexResults: [],
+    });
+    expect(runShadowHarnessSpy).not.toHaveBeenCalled();
+    expect(entry.recentAskAnswers).toHaveLength(0);
+  });
+
+  test('STT-08b5 (r16): expired content-anchor is evicted and subsequent match transcript flows through', async () => {
+    const ws = connect(wss, 'user-1');
+    await sendFrame(ws, {
+      type: 'session_start',
+      sessionId: 'sess-A',
+      jobState: { certificateType: 'eicr' },
+    });
+    const entry = activeSessions.get('sess-A');
+
+    entry.pendingAsks.register('toolu_expire', {
+      contextField: null,
+      contextCircuit: null,
+      resolve: () => {},
+      timer: setTimeout(() => {}, 60000),
+      askStartedAt: Date.now(),
+    });
+
+    runShadowHarnessSpy.mockClear();
+
+    await sendFrame(ws, {
+      type: 'ask_user_answered',
+      tool_call_id: 'toolu_expire',
+      user_text: 'five',
+    });
+    expect(entry.recentAskAnswers).toHaveLength(1);
+
+    // Force-expire the anchor without touching timers.
+    entry.recentAskAnswers[0].expiresAt = Date.now() - 1;
 
     await sendFrame(ws, {
       type: 'transcript',
-      text: 'totally different sentence',
-      utterance_id: 'u-post-window',
+      text: 'five',
+      utterance_id: 'u-late',
       regexResults: [],
     });
-    expect(runShadowHarnessSpy).toHaveBeenCalled();
+    // Expired anchor was evicted → text no longer matches → flows through.
+    expect(runShadowHarnessSpy).toHaveBeenCalledTimes(1);
+    expect(entry.recentAskAnswers).toHaveLength(0);
   });
 
   test('STT-08c FIFO bound: 300 asks with distinct utterance_ids → set size capped at 256, oldest evict FIFO', async () => {

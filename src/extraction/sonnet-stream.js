@@ -304,18 +304,53 @@ const WS_RATE_LIMIT = {
 // Exported for test overrides.
 export const CONSUMED_UTTERANCE_CAP = 256;
 
-// r15 MAJOR#2 remediation — legacy clients that omit consumed_utterance_id
-// from ask_user_answered cannot register a per-utterance dedupe anchor.
-// When such a frame resolves an ask, the server sets
-// entry.legacyAskAnchorUntil = Date.now() + LEGACY_ASK_ANCHOR_WINDOW_MS, and
-// handleTranscript treats any transcript arriving inside that window as
-// already-consumed (i.e. the iOS-to-server race's winning transcript).
+// r16 MAJOR#1 + #2 remediation — content-matched fallback dedupe.
 //
-// Picked 1500 ms: well above the observed iOS→server routing skew (<400 ms
-// p99 in production traces) but short enough that a fresh post-ask
-// utterance is not falsely suppressed. STA-01 (one in-flight turn) caps
-// concurrent windows to one per session, so the window cannot telescope.
-export const LEGACY_ASK_ANCHOR_WINDOW_MS = 1500;
+// consumedAskUtterances is the fast path: utterance_id on both the ask
+// answer AND the transcript. It fails in two cases Codex flagged:
+//   MAJOR#1 — legacy clients omit consumed_utterance_id on the ANSWER
+//             side, so no anchor is registered.
+//   MAJOR#2 — clients that stamp consumed_utterance_id on the answer but
+//             OMIT utterance_id on the paired transcript frame cannot
+//             match the Set lookup (which is keyed on transcript's
+//             utterance_id).
+//
+// Shared mitigation: every RESOLVED ask_user_answered also pushes a
+// content anchor — the sanitised answer text + an expiry — to
+// entry.recentAskAnswers. handleTranscript consults the list AFTER the
+// fast-path Set miss; if any non-expired entry's normalised text equals
+// the normalised transcript text, suppress + remove that entry (one-shot
+// per answer). STA-01 (one in-flight turn) and the short TTL bound list
+// size; CAP provides hard belt-and-braces limit.
+//
+// Match rule is normalised equality, NOT substring/overlap. "move to
+// three" would substring-match an ask answer of "three" but is clearly
+// a DIFFERENT utterance — suppressing it would lose genuine speech.
+// Normalisation: lowercase + strip non-alphanumerics + collapse
+// whitespace. This tolerates trailing punctuation and casing without
+// admitting unrelated utterances.
+//
+// TTL 1500 ms — above observed iOS→server routing skew (<400 ms p99)
+// but short enough that a fresh post-ask utterance that happens to
+// repeat the answer text is not falsely suppressed. CAP 8 — more than
+// one active content anchor at a time implies a burst of anchorless
+// answers, which shouldn't happen under STA-01.
+export const RECENT_ASK_ANSWER_TTL_MS = 1500;
+export const RECENT_ASK_ANSWER_CAP = 8;
+
+/**
+ * Normalise a freeform utterance for equality-based dedupe.
+ * Lowercase, strip non-alphanumerics, collapse internal whitespace,
+ * trim. Pure — no allocations beyond the returned string.
+ */
+export function normaliseForAskMatch(text) {
+  if (typeof text !== 'string') return '';
+  return text
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
 
 /**
  * Sliding-window rate limiter. Returns an object with a check() method
@@ -972,32 +1007,46 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
                 });
               }
             } else {
-              // r15 MAJOR#2 remediation — the legacy compat path (ask
-              // resolves without consumed_utterance_id) had no dedupe
-              // anchor, so a transcript arriving shortly after could
-              // double-process the same utterance. Mitigations:
-              //   (1) promote to error-level + distinct event name so
-              //       CloudWatch alarms catch any occurrence. All live
-              //       iOS clients stamp consumed_utterance_id post-
-              //       Plan 03-10, so any hit here is client regression.
-              //   (2) set a 1500 ms blanket suppression window
-              //       (LEGACY_ASK_ANCHOR_WINDOW_MS). handleTranscript
-              //       treats this as an implicit "already consumed"
-              //       anchor for transcripts arriving inside the
-              //       window when they carry no utterance_id match in
-              //       consumedAskUtterances. Bounded to one-ask-at-a-
-              //       time by STA-01 (one in-flight turn), so the
-              //       window cannot telescope.
-              if (resolved) {
-                entry.legacyAskAnchorUntil = Date.now() + LEGACY_ASK_ANCHOR_WINDOW_MS;
-              }
+              // r15 MAJOR#2 → r16 MAJOR#1 remediation — legacy compat
+              // clients that omit consumed_utterance_id cannot register
+              // a fast-path anchor. Error-level log (distinct event
+              // name) surfaces the regression in CloudWatch. Content
+              // anchor pushed below covers the dedupe itself.
               logger.error('stage6.ask_user_answered_legacy_no_anchor', {
                 sessionId: currentSessionId,
                 tool_call_id: msg.tool_call_id,
                 resolved,
                 reason: 'missing_consumed_utterance_id',
-                anchor_window_ms: resolved ? LEGACY_ASK_ANCHOR_WINDOW_MS : 0,
+                content_anchor_ttl_ms: resolved ? RECENT_ASK_ANSWER_TTL_MS : 0,
               });
+            }
+
+            // r16 MAJOR#1 + #2 remediation — content-anchor push. Every
+            // resolved ask_user_answered (anchored OR legacy) pushes
+            // the sanitised answer text into entry.recentAskAnswers.
+            // handleTranscript consults this list AFTER the fast-path
+            // Set miss; normalised-equality match suppresses + removes
+            // the entry (one-shot). This catches:
+            //   - legacy clients (no consumed_utterance_id at all)
+            //   - mixed-mode clients where the ask stamps an id but
+            //     the paired transcript frame omits utterance_id
+            // Skip when alreadySeenAsTranscript — the transcript was
+            // already extracted, no race left to defend against.
+            if (resolved && !alreadySeenAsTranscript) {
+              const anchorText = sanitised ? sanitised.text : resolvePayload.user_text;
+              const normalised = normaliseForAskMatch(anchorText);
+              if (normalised.length > 0) {
+                if (!entry.recentAskAnswers) entry.recentAskAnswers = [];
+                entry.recentAskAnswers.push({
+                  normalisedText: normalised,
+                  expiresAt: Date.now() + RECENT_ASK_ANSWER_TTL_MS,
+                  toolCallId: msg.tool_call_id,
+                });
+                // FIFO cap (hard ceiling under pathological bursts).
+                while (entry.recentAskAnswers.length > RECENT_ASK_ANSWER_CAP) {
+                  entry.recentAskAnswers.shift();
+                }
+              }
             }
 
             logger.info('ask_user_answered received', {
@@ -1091,10 +1140,10 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
       // into dedupe decisions on the new ws.
       if (existing.seenTranscriptUtterances) existing.seenTranscriptUtterances.clear();
       else existing.seenTranscriptUtterances = new Set();
-      // r15 MAJOR#2 — clear any stale legacy-anchor window on reconnect.
-      // A window carried across a reconnect could falsely suppress the
-      // first transcript on the new ws.
-      existing.legacyAskAnchorUntil = 0;
+      // r16 MAJOR#1 + #2 — clear the content-anchor list on reconnect.
+      // Stale anchors could falsely suppress the first legitimate
+      // transcript on the new ws.
+      existing.recentAskAnswers = [];
       // Update the ws reference and re-bind the question gate to new ws.
       // This preserves the Anthropic conversation history across reconnects.
       existing.ws = ws;
@@ -1357,11 +1406,14 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
       // Same FIFO cap as consumedAskUtterances — the two ledgers are
       // symmetric.
       seenTranscriptUtterances: new Set(),
-      // r15 MAJOR#2 — timestamp (ms) until which transcripts are treated
-      // as the answer for a legacy-client ask resolved without a
-      // consumed_utterance_id. 0 = no active window. handleTranscript
-      // clears on first match (one-shot).
-      legacyAskAnchorUntil: 0,
+      // r16 MAJOR#1 + #2 — content-match fallback dedupe. FIFO list of
+      // {normalisedText, expiresAt, toolCallId} pushed on every
+      // resolved ask_user_answered. handleTranscript evicts expired
+      // and removes any entry whose normalised text equals the
+      // transcript's (one-shot per answer). Covers the fast-path Set's
+      // blind spots: legacy clients (no consumed_utterance_id) and
+      // mixed-mode clients (answer-id set, transcript-id omitted).
+      recentAskAnswers: [],
     });
 
     ws.send(
@@ -1449,8 +1501,8 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
     // Plan 03-11 Task 1 — mirror for the reverse-race ledger.
     if (entry.seenTranscriptUtterances) entry.seenTranscriptUtterances.clear();
     else entry.seenTranscriptUtterances = new Set();
-    // r15 MAJOR#2 — clear the anchor-free window on session_resume too.
-    entry.legacyAskAnchorUntil = 0;
+    // r16 MAJOR#1 + #2 — clear the content-anchor list on session_resume.
+    entry.recentAskAnswers = [];
 
     // Rebind the socket + questionGate callback to the new WS, matching the
     // handleSessionStart reconnection branch. This preserves the Anthropic
@@ -1583,30 +1635,45 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
       return;
     }
 
-    // r15 MAJOR#2 remediation — anchor-free fallback window. When a
-    // legacy iOS client resolves an ask without consumed_utterance_id,
-    // the ask_user_answered branch at ~L961 stamps
-    // entry.legacyAskAnchorUntil = Date.now() + LEGACY_ASK_ANCHOR_WINDOW_MS.
-    // Any transcript whose arrival falls inside that window is treated
-    // as the answering utterance and suppressed — belt-and-braces for
-    // the identified double-processing race. The window is auto-cleared
-    // on first match (one-shot) so a post-window late transcript flows
-    // through normal extraction. This path is gated on ENTIRE transcript
-    // (not just utterance_id presence) because legacy clients may omit
-    // utterance_id on the transcript frame too.
-    if (
-      typeof entry.legacyAskAnchorUntil === 'number' &&
-      Date.now() < entry.legacyAskAnchorUntil
-    ) {
-      const untilTs = entry.legacyAskAnchorUntil;
-      entry.legacyAskAnchorUntil = 0;
-      logger.warn('stage6.transcript_suppressed_legacy_window', {
-        sessionId,
-        utterance_id: typeof msg.utterance_id === 'string' ? msg.utterance_id : null,
-        window_remaining_ms: untilTs - Date.now(),
-        reason: 'legacy_ask_no_anchor',
-      });
-      return;
+    // r16 MAJOR#1 + #2 remediation — content-anchor fallback dedupe.
+    // Catches two cases the fast-path consumedAskUtterances Set cannot:
+    //   MAJOR#1 — legacy client with no consumed_utterance_id on the
+    //             answer side means no Set entry to match against.
+    //   MAJOR#2 — mixed-mode client stamps consumed_utterance_id on the
+    //             answer but omits utterance_id on the paired
+    //             transcript, so the Set lookup (keyed on transcript's
+    //             id) fails.
+    // Both collapse into: is there a recent ASK ANSWER whose normalised
+    // text equals this transcript's normalised text? If yes, this
+    // transcript IS the answering utterance → suppress and remove the
+    // matched anchor (one-shot). Expired anchors are evicted first.
+    // Normalised equality (not substring/overlap) avoids false-positive
+    // suppression of unrelated speech that happens to contain the
+    // answer text as a substring (e.g. "move to three" vs ask-answer
+    // "three").
+    if (Array.isArray(entry.recentAskAnswers) && entry.recentAskAnswers.length > 0) {
+      const nowTs = Date.now();
+      // Evict expired in-place.
+      entry.recentAskAnswers = entry.recentAskAnswers.filter((a) => a.expiresAt > nowTs);
+      if (entry.recentAskAnswers.length > 0) {
+        const normalisedMsg = normaliseForAskMatch(msg.text);
+        if (normalisedMsg.length > 0) {
+          const matchIdx = entry.recentAskAnswers.findIndex(
+            (a) => a.normalisedText === normalisedMsg,
+          );
+          if (matchIdx >= 0) {
+            const matched = entry.recentAskAnswers.splice(matchIdx, 1)[0];
+            logger.warn('stage6.transcript_suppressed_content_anchor', {
+              sessionId,
+              utterance_id: typeof msg.utterance_id === 'string' ? msg.utterance_id : null,
+              matched_tool_call_id: matched.toolCallId,
+              ttl_remaining_ms: matched.expiresAt - nowTs,
+              reason: 'content_anchor_match',
+            });
+            return;
+          }
+        }
+      }
     }
 
     // Plan 03-11 Task 1 (STG r3 BLOCK) / Plan 03-12 r13 Codex MAJOR —
