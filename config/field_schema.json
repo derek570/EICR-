@@ -99,9 +99,9 @@
     "ocpd_type": {
       "label": "OCPD Type",
       "type": "select",
-      "options": ["B", "C", "D", "gG", "gM", "aM", "N/A"],
+      "options": ["B", "C", "D", "gG", "gM", "aM", "HRC", "Rew", "N/A"],
       "description": "Overcurrent protective device type",
-      "ai_guidance": "MCB type. 'B' for domestic (general loads), 'C' for inductive loads (motors), 'D' for high inrush. gG/gM for fuses.",
+      "ai_guidance": "MCB curve: 'B' (domestic, general loads), 'C' (inductive loads, motors), 'D' (high inrush). Cartridge fuses: 'gG'/'gM'/'aM' (industrial), 'HRC' (domestic HBC cartridge — BS 1361). Rewireable: 'Rew' (semi-enclosed fuse wire — BS 3036, colour-coded carriers).",
       "pdf_column": "Type",
       "group": "OCPD",
       "default": "B"
