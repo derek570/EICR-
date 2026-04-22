@@ -1906,7 +1906,34 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         sessionId,
         textPreview: transcriptText.substring(0, 80),
       });
-      const regexResults = msg.regexResults || entry.lastRegexResults || [];
+      // r20 MAJOR remediation — normalise/validate regexResults ONCE at
+      // ingress so both classifyOvertake() and runShadowHarness() see
+      // the SAME sanitised array. The classifier previously guarded
+      // itself with `Array.isArray(x) ? x : []` but the extractor
+      // received `msg.regexResults` verbatim; a malformed client
+      // payload (null, object, string, number) would make the two
+      // paths reason over DIFFERENT data for the same utterance,
+      // breaking the ask-vs-overtake verdict's ability to predict
+      // what the extractor will see.
+      //
+      // Rule: accept arrays only; otherwise coerce to [] and warn.
+      // The `|| entry.lastRegexResults || []` fallback stays for the
+      // post-defer drain case where iOS doesn't resend regex hits on
+      // the drained retry — but `lastRegexResults` is server-owned
+      // and already array-typed.
+      let regexResults;
+      if (Array.isArray(msg.regexResults)) {
+        regexResults = msg.regexResults;
+      } else if (msg.regexResults !== undefined && msg.regexResults !== null) {
+        logger.warn('stage6.transcript_regex_results_invalid', {
+          sessionId,
+          received_type: typeof msg.regexResults,
+          reason: 'regexResults_must_be_array_or_absent',
+        });
+        regexResults = Array.isArray(entry.lastRegexResults) ? entry.lastRegexResults : [];
+      } else {
+        regexResults = Array.isArray(entry.lastRegexResults) ? entry.lastRegexResults : [];
+      }
 
       // Stage 6 Phase 3 Plan 03-08 — overtake detection BEFORE shadow-harness
       // dispatch. When there ARE pending blocking asks, classifyOvertake
