@@ -140,6 +140,12 @@ export const ASK_USER_ANSWER_OUTCOMES = [
   'dispatcher_error',
 ];
 
+// Plan 03-12 r19 MINOR remediation — closed enum for the `mode` field.
+// STR-04 + Phase 8 observability queries split logs by mode; a typo at
+// any caller ('Shadow' / 'production' / 'ghost') would silently corrupt
+// the split with zero loud surface. Validate at the emit site.
+export const ASK_USER_MODES = ['shadow', 'live'];
+
 const ASK_USER_QUESTION_LOG_MAX = 200;
 
 function truncateQuestion(text, max) {
@@ -183,6 +189,12 @@ export function logAskUser(logger, payload) {
   }
   if (!ASK_USER_ANSWER_OUTCOMES.includes(payload.answer_outcome)) {
     throw new Error(`invalid_answer_outcome:${payload.answer_outcome}`);
+  }
+  // r19 MINOR — mode must be one of the closed enum values. Parallels
+  // the answer_outcome gate above so both splits used by STR-04 and
+  // Phase 8 analysis are typo-hardened.
+  if (!ASK_USER_MODES.includes(payload.mode)) {
+    throw new Error(`invalid_mode:${payload.mode}`);
   }
 
   const row = {

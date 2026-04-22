@@ -2395,7 +2395,21 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
       if (entry.pendingTranscripts.length > 0) {
         const next = entry.pendingTranscripts.shift();
         if (next && next.text && next.text.trim()) {
-          await handleTranscript(ws, sessionId, next);
+          // r19 MAJOR remediation — refetch the CURRENT ws from
+          // activeSessions rather than replaying with the outer `ws`
+          // parameter captured when this turn started. If the client
+          // reconnected (or session_resume rebind happened) while the
+          // turn was extracting, `ws` points to the now-dead socket
+          // but `entry.ws` has been rebound to the live socket.
+          // Replaying against the dead socket would send follow-up
+          // ask_user_started / error frames into a closed connection;
+          // the ask would register but never reach the iOS client.
+          // Prefer the live entry reference; fall back to captured
+          // `ws` only if the entry disappeared between the isExtracting
+          // flip and the drain (session stopped / timed out mid-turn).
+          const liveEntry = activeSessions.get(sessionId);
+          const targetWs = liveEntry && liveEntry.ws ? liveEntry.ws : ws;
+          await handleTranscript(targetWs, sessionId, next);
         }
       }
     }

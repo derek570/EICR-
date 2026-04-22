@@ -279,6 +279,34 @@ describe('logAskUser()', () => {
     expect(logger.info).not.toHaveBeenCalled();
   });
 
+  // Plan 03-12 r19 MINOR — a mode typo must throw rather than silently
+  // emit a corrupt CloudWatch row. Mirrors the answer_outcome gate.
+  test('validation: mode not in ASK_USER_MODES → throws invalid_mode:<value>', () => {
+    const logger = mockLogger();
+    expect(() =>
+      logAskUser(logger, validAskPayload({ mode: 'ghost' })),
+    ).toThrow(/invalid_mode:ghost/);
+    expect(logger.info).not.toHaveBeenCalled();
+  });
+
+  test('validation: mode casing typo ("Shadow") still throws', () => {
+    const logger = mockLogger();
+    expect(() =>
+      logAskUser(logger, validAskPayload({ mode: 'Shadow' })),
+    ).toThrow(/invalid_mode:Shadow/);
+  });
+
+  test('validation: both accepted modes (shadow + live) pass gate', () => {
+    const logger = mockLogger();
+    expect(() =>
+      logAskUser(logger, validAskPayload({ mode: 'shadow', answer_outcome: 'shadow_mode' })),
+    ).not.toThrow();
+    expect(() =>
+      logAskUser(logger, validAskPayload({ mode: 'live' })),
+    ).not.toThrow();
+    expect(logger.info).toHaveBeenCalledTimes(2);
+  });
+
   test('phase tag: every emitted payload includes phase:3 unconditionally', () => {
     const logger = mockLogger();
     logAskUser(logger, validAskPayload({ answer_outcome: 'user_moved_on' }));
