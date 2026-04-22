@@ -122,8 +122,9 @@ const BS_EN_LOOKUP = {
   ISOLATOR: '60947-3',
   gG: '60269-2',
   HRC: '60269-2',
-  REWIREABLE: '3036',
-  CARTRIDGE: '1361',
+  REW: 'BS 3036',
+  REWIREABLE: 'BS 3036',
+  CARTRIDGE: 'BS 1361',
 };
 
 /**
@@ -747,25 +748,61 @@ router.post('/analyze-ccu', auth.requireAuth, upload.single('photo'), async (req
 
     const prompt = `You are an expert UK electrician extracting devices from a consumer unit photo for an EICR certificate. Follow these 4 steps IN ORDER. Return ONLY valid JSON.
 
-## STEP 1: FIND MAIN SWITCH
+## STEP 1: FIND MAIN SWITCH AND CLASSIFY BOARD
 
+### 1a. Main switch
 Look for the device labelled "MAIN SWITCH" on the board (printed text on the board cover, or on the device itself). It is typically the largest device, often 2 modules wide.
 CRITICAL — Confirm it is NOT an RCD/RCCB: the main switch has NO test button, NO "30mA" or sensitivity marking, and NO "RCD"/"RCCB" text on it. Do NOT identify the main switch by toggle colour — RCDs also have red/orange toggles and WILL be misidentified if you rely on colour alone.
-Record: rating (amps), type (Isolator/Switch Disconnector/RCD/RCCB), poles (DP/TP/TPN/4P), BS/EN number, voltage if visible. Note its position on the board (left/right).
+Record: rating (amps), type (Isolator/Switch Disconnector/Switch-Fuse/Rotary Isolator/RCD/RCCB), poles (DP/TP/TPN/4P), BS/EN number, voltage if visible. Note its position on the board (left/right).
 Identify board manufacturer and model if visible (e.g. "Hager", "MK", "Wylex").
 
-Also check for an SPD module (status indicator window, no toggle, 2-3 modules wide). If present: set spd_present=true and extract type/rating/BS EN/short circuit kA. If absent: spd_present=false. Do NOT copy main switch data into SPD fields — they are completely different components.
+On older rewireable-fuse boards the main switch is often a **pull-out switch-fuse** (Wylex-style, integrated with neutral bar) or a **rotary isolator** (MEM). Rating typically 60A/80A/100A. BS/EN is often BS 5419 (legacy) or BS EN 60947-3; set null if not printed. Use main_switch_type "Switch-Fuse" or "Rotary Isolator" accordingly.
+
+### 1b. Board technology
+Classify the board's overcurrent-protection technology. Set board_technology to exactly one of:
+- **"modern"** — toggle-style MCBs / RCBOs on DIN rail, ~18mm modules each. Any board with even one MCB/RCBO is NOT rewireable.
+- **"rewireable_fuse"** — every protective device is a **pull-out fuse carrier** (no toggles). Carriers are typically colour-coded on the body or the fuse-shield tab. Commonly Wylex (bakelite or plastic), MEM, Crabtree, Bill, Ashley. Devices to the protection standard BS 3036 (semi-enclosed rewireable fuse wire).
+- **"cartridge_fuse"** — pull-out carriers that contain a cylindrical HBC cartridge (not rewireable fuse wire). Standard BS 1361 or BS 88-2/88-3.
+- **"mixed"** — combination (e.g. rewireable carriers plus a retrofitted 30mA RCD main switch, or a board where some ways are MCBs and some are fuse carriers).
+
+If unsure between rewireable and cartridge, look at the carrier contents: visible twisted fuse wire = rewireable (BS 3036), cylindrical ceramic/metal cartridge = BS 1361/88-2. If a carrier is closed and you cannot tell, prefer rewireable_fuse for classic domestic Wylex/MEM boards and add a question for the inspector.
+
+### 1c. SPD
+Also check for an SPD module (status indicator window, no toggle, 2-3 modules wide). If present: set spd_present=true and extract type/rating/BS EN/short circuit kA. If absent: spd_present=false. Do NOT copy main switch data into SPD fields — they are completely different components. Rewireable-fuse boards almost never have an SPD.
 
 ## STEP 2: SEQUENTIAL DEVICE SCAN
 
 Starting from the device immediately next to the main switch, scan outward one device at a time. For split boards (main switch in middle), scan non-RCD side first, then RCD side. Number circuits sequentially — circuit 1 is nearest the main switch, incrementing outward. Skip standalone RCDs when numbering — they are NOT circuits. Ignore printed circuit numbers on the board (often wrong).
 
+Use the classification rules that match the board_technology from Step 1b.
+
+### 2a. MODERN BOARDS (board_technology = "modern")
 For each position, classify as exactly ONE of:
 - **MCB**: Single-width (18mm), has toggle lever, NO test button. Record type curve (B/C/D) and amp rating from device face.
 - **RCBO**: Double-width (36mm), has BOTH toggle lever AND test button, plus RCD waveform symbol. Record curve, rating, RCD type (count waveform lines: 1=AC, 2=A, 3=B; S or F if letter-marked), and sensitivity (mA). Set is_rcbo=true, rcd_protected=true.
 - **RCD/RCCB**: Double-width, has test button, has sensitivity marking (e.g. 30mA), but NO type curve letter (B/C/D). This is NOT a circuit — do NOT number it. Store its RCD type + sensitivity; apply them to ALL subsequent circuits until the next RCD is encountered.
 - **Blank/Spare**: Flat cover plate, no toggle lever, no device behind it. Record as label:"Spare", ocpd_type:null, ocpd_rating_a:null. NEVER fabricate device data for empty slots.
 - **Spare MCB**: Real MCB with toggle + rating but no label. Record with label:"Spare" and real ocpd_type/rating from the device face.
+
+### 2b. REWIREABLE / CARTRIDGE FUSE BOARDS (board_technology = "rewireable_fuse" | "cartridge_fuse")
+There are NO toggles, NO curve letters, and NO test buttons on the circuit devices. Each way is a pull-out fuse carrier. Classify each position as exactly ONE of:
+- **Fuse carrier (rewireable, BS 3036)** — body or shield tab is COLOUR-CODED. This is the primary signal for the amp rating:
+  - **White = 5A** (typical: lighting)
+  - **Blue = 15A** (typical: immersion heater, old radial)
+  - **Yellow = 20A** (typical: radial)
+  - **Red = 30A** (typical: ring final, legacy cooker)
+  - **Green = 45A** (typical: cooker, shower)
+  If a rating is also printed on the carrier face or carrier tab, it must match the colour. If they disagree, set ocpd_rating_a=null and raise a question for the inspector. Set ocpd_type="Rew", ocpd_bs_en="BS 3036", ocpd_breaking_capacity_ka=null (rewireable fuses have no kA rating).
+- **Fuse carrier (HBC cartridge, BS 1361 / BS 88-2)** — carrier holds a cylindrical ceramic cartridge; face usually stamped with the rating (e.g. 30A, 45A) and often a BS 1361 or BS 88 mark. Set ocpd_type="HRC", ocpd_bs_en="BS 1361" (domestic) or "BS 88-2" (commercial) as appropriate, ocpd_breaking_capacity_ka from device face or null.
+- **Blank/Spare way** — empty carrier socket with no carrier fitted, or blank cover. Record as label:"Spare", ocpd_type:null, ocpd_rating_a:null, ocpd_bs_en:null.
+- **Spare fuse** — fitted carrier with a valid colour/rating but no circuit label. Record with label:"Spare" and real ocpd_type/ocpd_rating_a.
+
+For every circuit on a rewireable or cartridge board, set is_rcbo=false. Set rcd_protected=false and rcd_type=null UNLESS an upstream RCD is clearly visible (e.g. a retrofitted 30mA RCD main switch or an RCD banked ahead of a group of ways); in that case apply the upstream RCD's type and sensitivity to the circuits it protects, same as the modern-board rule.
+
+Do NOT assign a curve letter (B/C/D) to any rewireable or cartridge fuse — ocpd_type is "Rew" or "HRC", never B/C/D.
+
+### 2c. MIXED BOARDS (board_technology = "mixed")
+Apply 2a rules to positions that are MCBs/RCBOs and 2b rules to positions that are fuse carriers. Classify each position on its own merits.
 
 ### B6 vs B16 WARNING
 On many MCBs (especially Legrand) the gap between "B" and "6" mimics "B16". Count digits: single "6"=B6 (6A, typical for lighting/smoke), two digits "16"=B16 (16A, typical for sockets). If you read B16 on a lighting or smoke alarm circuit, it is almost certainly B6 — re-examine.
@@ -796,10 +833,11 @@ Return ONLY valid JSON matching this exact schema:
 {
   "board_manufacturer": "string or null",
   "board_model": "string or null",
+  "board_technology": "modern|rewireable_fuse|cartridge_fuse|mixed",
   "main_switch_rating": "string — amps",
   "main_switch_position": "left or right",
   "main_switch_bs_en": "string or null",
-  "main_switch_type": "Isolator|Switch Disconnector|RCD|RCCB or null",
+  "main_switch_type": "Isolator|Switch Disconnector|Switch-Fuse|Rotary Isolator|RCD|RCCB or null",
   "main_switch_poles": "DP|TP|TPN|4P",
   "main_switch_current": "string — amps",
   "main_switch_voltage": "string or null",
@@ -819,10 +857,10 @@ Return ONLY valid JSON matching this exact schema:
     {
       "circuit_number": 1,
       "label": "Kitchen Sockets or null",
-      "ocpd_type": "B|C|D or null (null ONLY for blank positions with no physical device)",
+      "ocpd_type": "B|C|D|Rew|HRC or null (null ONLY for blank positions with no physical device)",
       "ocpd_rating_a": "32 or null",
-      "ocpd_bs_en": "60898-1 or null",
-      "ocpd_breaking_capacity_ka": "6 or null",
+      "ocpd_bs_en": "60898-1|61009-1|BS 3036|BS 1361|BS 88-2 or null",
+      "ocpd_breaking_capacity_ka": "6 or null (null for rewireable fuses — they have no kA rating)",
       "is_rcbo": false,
       "rcd_protected": true,
       "rcd_type": "AC|A|B|F|S or null",
@@ -832,7 +870,7 @@ Return ONLY valid JSON matching this exact schema:
   ]
 }
 
-Device type mapping: RCBO→is_rcbo:true, rcd_protected:true, rcd_type from device waveform; MCB behind standalone RCD→is_rcbo:false, rcd_protected:true, rcd_type/sensitivity from upstream RCD; plain MCB (no RCD upstream)→is_rcbo:false, rcd_protected:false, rcd_type:null; blank→all ocpd fields null.
+Device type mapping: RCBO→is_rcbo:true, rcd_protected:true, rcd_type from device waveform; MCB behind standalone RCD→is_rcbo:false, rcd_protected:true, rcd_type/sensitivity from upstream RCD; plain MCB (no RCD upstream)→is_rcbo:false, rcd_protected:false, rcd_type:null; rewireable/cartridge fuse (no upstream RCD)→is_rcbo:false, rcd_protected:false, rcd_type:null, ocpd_type "Rew" or "HRC"; rewireable/cartridge fuse behind retrofitted RCD→is_rcbo:false, rcd_protected:true, rcd_type/sensitivity from upstream RCD; blank→all ocpd fields null.
 
 Confidence: overall 0.0-1.0, image_quality clear/partially_readable/poor, uncertain_fields lists guessed/looked-up field paths, message notes reading difficulties and lookups.
 
