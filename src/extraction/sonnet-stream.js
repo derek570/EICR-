@@ -1798,8 +1798,56 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
             }
           }
         } else if (verdict.kind === 'user_moved_on') {
+          // Plan 03-12 r12 BLOCK remediation — serialise against the prior
+          // turn.
+          //
+          // rejectAll('user_moved_on') wakes any dispatcher Promise(s)
+          // suspended on pendingAsks.register with
+          // {answered:false, reason:'user_moved_on'}. Falling straight
+          // through to runShadowHarness here would kick off a SECOND
+          // concurrent turn on `entry.session` while the prior turn's
+          // tool loop was still unwinding the ask_user tool_result + any
+          // remaining writes. STA-01 requires one in-flight turn per
+          // session, and Anthropic's messages-create will reject
+          // interleaved tool_use/tool_result blocks across concurrent
+          // streams against the same conversation — best case the server
+          // 400s the second request; worst case they race on
+          // entry.session.messages and poison the transcript.
+          //
+          // The isExtracting gate at the top of handleTranscript would
+          // normally serialise these, BUT it only holds if the prior
+          // turn is still mid-await. Two paths can sneak a resolvable
+          // ask into pendingAsks past isExtracting=false:
+          //   (a) the 30s watchdog force-reset at line 1570 flipped
+          //       isExtracting=false while the prior runToolLoop was
+          //       still mid-await on its ask Promise, and
+          //   (b) a reconnect/termination path left an orphan entry in
+          //       pendingAsks that rejectAll must still drain.
+          // In (a) the old tool loop resumes when we reject, and in (b)
+          // there is no resumer but we still want strict serialisation
+          // for consistency with (a) and so the analyzer sees exactly
+          // one turn per transcript.
+          //
+          // Fix: queue the transcript and early-return. The outer
+          // finally clears isExtracting=false and then drains
+          // pendingTranscripts (drain sits INSIDE finally so every
+          // early-return path feeds it — see the comment on the
+          // finally block near L2028). Re-entry happens with this
+          // transcript on the next tick, by which point any awakened
+          // dispatcher has fully emitted its user_moved_on tool_result
+          // and the prior turn has completed. `lastRegexResults` is
+          // deliberately NOT cleared — the queued re-entry will use
+          // the same regex hits that led to this user_moved_on verdict.
           entry.pendingAsks.rejectAll('user_moved_on');
-          // fall through — new transcript becomes the fresh user message.
+          entry.pendingTranscripts.push({
+            text: msg.text,
+            regexResults: msg.regexResults,
+          });
+          logger.info('stage6.transcript_deferred_after_user_moved_on', {
+            sessionId,
+            pending_transcripts_depth: entry.pendingTranscripts.length,
+          });
+          return;
         }
         // 'no_pending_asks' can't happen here (guarded by size>0) but the
         // classifier still returns it in defensive contexts — safe to ignore.
@@ -1982,13 +2030,31 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
     } finally {
       clearTimeout(extractionWatchdog);
       entry.isExtracting = false;
-    }
 
-    // Process next queued transcript (one at a time)
-    if (entry.pendingTranscripts.length > 0) {
-      const next = entry.pendingTranscripts.shift();
-      if (next && next.text && next.text.trim()) {
-        await handleTranscript(ws, sessionId, next);
+      // Plan 03-12 r12 BLOCK remediation — drain MUST sit inside finally.
+      //
+      // Earlier code placed the drain AFTER the try/catch/finally, which
+      // meant every early-return from inside the try (answers-path at
+      // ~L1797, validation-error early-return at ~L1740, user_moved_on
+      // deferral at ~L1848) bypassed the drain: the return triggered
+      // finally (isExtracting=false) and then exited the function, never
+      // reaching the post-finally drain block. The user_moved_on branch
+      // relies on the drain re-entering with the just-queued transcript
+      // — without it, rejectAll fires, the transcript sits in
+      // pendingTranscripts forever, and runShadowHarness is never invoked
+      // for that utterance (silent speech loss).
+      //
+      // Moving the drain inside finally ensures the same post-turn
+      // behaviour on every exit path: the outer turn ends, isExtracting
+      // flips false, then any queued transcript re-enters. This also
+      // retroactively fixes the answers-path leak (any transcript queued
+      // while the prior turn was isExtracting would previously be
+      // orphaned on an answers verdict since that path also early-returns).
+      if (entry.pendingTranscripts.length > 0) {
+        const next = entry.pendingTranscripts.shift();
+        if (next && next.text && next.text.trim()) {
+          await handleTranscript(ws, sessionId, next);
+        }
       }
     }
   }

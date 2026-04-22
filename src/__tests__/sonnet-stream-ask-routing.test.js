@@ -579,7 +579,7 @@ describe('Group D — handleTranscript invokes classifyOvertake only when asks p
     expect(runShadowHarnessSpy).not.toHaveBeenCalled();
   });
 
-  test('user_moved_on verdict → registry.rejectAll called, harness still runs', async () => {
+  test('user_moved_on verdict → registry.rejectAll called, transcript DEFERRED then drained → harness still runs (r12 BLOCK fix)', async () => {
     const ws = connect(wss, 'user-1');
     await sendFrame(ws, {
       type: 'session_start',
@@ -598,6 +598,10 @@ describe('Group D — handleTranscript invokes classifyOvertake only when asks p
     });
     const rejectAllSpy = jest.spyOn(entry.pendingAsks, 'rejectAll');
 
+    // First classifier call returns user_moved_on (triggering r12 defer).
+    // Second call (from drain-re-entry) falls through to the default
+    // {kind:'no_pending_asks'} mock — rejectAll cleared the registry so
+    // that's what the real classifier would return anyway.
     classifyOvertakeSpy.mockImplementationOnce(() => ({ kind: 'user_moved_on' }));
 
     await sendFrame(ws, {
@@ -606,9 +610,20 @@ describe('Group D — handleTranscript invokes classifyOvertake only when asks p
       regexResults: [{ field: 'pfc', circuit: 3 }],
     });
 
+    // Plan 03-12 r12 BLOCK remediation — the user_moved_on branch now
+    // defers the transcript to pendingTranscripts and early-returns,
+    // THEN the drain at the bottom of handleTranscript re-enters with
+    // the same transcript. classifier runs once (on first entry, with
+    // the pending ask) — on the drain re-entry, pendingAsks is empty
+    // (rejectAll cleared it) so the `if (size > 0)` gate skips the
+    // classifier entirely. rejectAll called exactly once, harness
+    // runs exactly once (on the drain re-entry).
     expect(classifyOvertakeSpy).toHaveBeenCalledTimes(1);
     expect(rejectAllSpy).toHaveBeenCalledWith('user_moved_on');
-    expect(runShadowHarnessSpy).toHaveBeenCalled();
+    expect(rejectAllSpy).toHaveBeenCalledTimes(1);
+    expect(runShadowHarnessSpy).toHaveBeenCalledTimes(1);
+    // Drain should have emptied pendingTranscripts.
+    expect(entry.pendingTranscripts).toHaveLength(0);
   });
 });
 
