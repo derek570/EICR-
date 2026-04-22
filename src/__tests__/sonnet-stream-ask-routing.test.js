@@ -829,8 +829,14 @@ describe('STT-08 — utterance-consumption dedupe on ask_user_answered', () => {
 //       is already "spent" (we saw it as transcript). The seenTranscript
 //       ledger is the authoritative source for that branch.
 //
-// This closes the order-independence gap that Codex's 2026-04-22 review
-// surfaced as [BLOCK]: the 03-10 dedupe was one-sided.
+// Plan 03-12 r6 BLOCK refinement: the resolve() payload in this branch
+// is NOT the sanitised user_text — it is `{answered:false, reason:
+// 'transcript_already_extracted'}`. The r3 draft resolved with user_text
+// and relied on the tool-result body carrying the same speech a second
+// time (after the shadow-harness turn had already delivered it), which
+// surfaced the speech to Sonnet twice and could provoke duplicate writes.
+// STT-12 covers the new non-answer contract directly; STT-09a is updated
+// here to assert the same post-r6 payload so the two tests agree.
 // -----------------------------------------------------------------------------
 
 describe('STT-09 — bidirectional utterance dedupe (transcript-then-answer race)', () => {
@@ -870,8 +876,12 @@ describe('STT-09 — bidirectional utterance dedupe (transcript-then-answer race
     expect(entry.seenTranscriptUtterances).toBeDefined();
     expect(entry.seenTranscriptUtterances.has('u-reverse')).toBe(true);
 
-    // 2. ask_user_answered now arrives. Server MUST:
-    //    - resolve the ask (so the awaiting tool-loop returns)
+    // 2. ask_user_answered now arrives. Server MUST (r6 semantics):
+    //    - resolve the ask (so the awaiting tool-loop returns) — but with
+    //      a NON-ANSWER payload `{answered:false, reason:'transcript_already_extracted'}`.
+    //      The sanitised user_text is NOT threaded through, preventing Sonnet
+    //      from seeing the speech a second time (once as a user turn via the
+    //      shadow harness, once as tool_result body).
     //    - emit stage6.ask_user_answered_after_transcript warn log
     //    - NOT add u-reverse to consumedAskUtterances (transcript half
     //      already extracted; adding here is dead weight and would mask
@@ -883,10 +893,12 @@ describe('STT-09 — bidirectional utterance dedupe (transcript-then-answer race
       consumed_utterance_id: 'u-reverse',
     });
 
-    await expect(seeded).resolves.toMatchObject({
-      answered: true,
-      user_text: 'Circuit 5',
+    const resolved = await seeded;
+    expect(resolved).toMatchObject({
+      answered: false,
+      reason: 'transcript_already_extracted',
     });
+    expect(resolved.user_text).toBeUndefined();
 
     const raceWarnings = loggerModule.warn.mock.calls.filter(
       (c) => c[0] === 'stage6.ask_user_answered_after_transcript'
@@ -1179,6 +1191,56 @@ describe('Plan 03-12 STT-10 — handleSessionStop late-transcript race', () => {
     expect(lateAskResolve).toMatchObject({ answered: false, reason: 'session_stopped' });
     // Session fully torn down.
     expect(activeSessions.has('sess-sweep')).toBe(false);
+  });
+});
+
+describe('Plan 03-12 STT-12 — reverse-race must not re-expose transcript as tool_result', () => {
+  test('ask_user_answered whose utterance_id was already stamped as seen-transcript resolves with transcript_already_extracted, NOT the user_text', async () => {
+    const ws = connect(wss, 'user-1');
+    await sendFrame(ws, {
+      type: 'session_start',
+      sessionId: 'sess-reverse-race',
+      jobState: { certificateType: 'eicr' },
+    });
+    const entry = activeSessions.get('sess-reverse-race');
+    expect(entry.pendingAsks).toBeDefined();
+
+    // Seed the reverse-race state: the transcript handler already stamped
+    // this utterance_id (meaning the shadow harness consumed the speech as
+    // a user turn → Sonnet already saw it). The matching
+    // ask_user_answered frame arrives LATER. Delivering the text back as
+    // tool_result would re-expose the same speech to Sonnet.
+    if (!entry.seenTranscriptUtterances) entry.seenTranscriptUtterances = new Set();
+    entry.seenTranscriptUtterances.add('u-race-1');
+
+    // Register a pending ask to resolve against.
+    let resolved;
+    entry.pendingAsks.register('toolu_race', {
+      contextField: 'circuit_designation',
+      contextCircuit: null,
+      resolve: (payload) => {
+        resolved = payload;
+      },
+      timer: setTimeout(() => {}, 60000),
+      askStartedAt: Date.now(),
+    });
+
+    await sendFrame(ws, {
+      type: 'ask_user_answered',
+      tool_call_id: 'toolu_race',
+      user_text: 'upstairs lighting',
+      consumed_utterance_id: 'u-race-1',
+    });
+
+    // GREEN contract: the resolve payload is a non-answer with reason
+    // 'transcript_already_extracted'. The user_text must NOT flow through
+    // because Sonnet already received the speech via the transcript path.
+    expect(resolved).toMatchObject({
+      answered: false,
+      reason: 'transcript_already_extracted',
+    });
+    // Must NOT carry user_text.
+    expect(resolved.user_text).toBeUndefined();
   });
 });
 

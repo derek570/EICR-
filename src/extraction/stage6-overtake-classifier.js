@@ -30,14 +30,26 @@
  *
  * Plan 03-11 Task 2 refinement (STG r3 MAJOR): number / circuit_ref asks
  * still fall through to user_moved_on on no-regex (same rationale — wrong
- * numeric attribution is the harder failure mode to detect). But yes_no and
- * free_text asks are *inherently* non-regex: the answer to "Is this reading
- * above 1 ohm?" ("yes") or "What's the designation?" ("upstairs lighting")
- * will never produce a field regex hit. Without shape-awareness the
- * classifier would reject every such answer flowing through the transcript
- * channel (pre-Phase-4 iOS or the legacy path), forcing the inspector to
- * restate. Shape-aware short-circuit closes that gap while keeping the
- * conservative default wherever false-attribution cost is high.
+ * numeric attribution is the harder failure mode to detect). But yes_no
+ * asks are *inherently* non-regex: the answer to "Is this reading above 1
+ * ohm?" ("yes") will never produce a field regex hit. Without shape-
+ * awareness the classifier would reject every such answer flowing through
+ * the transcript channel (pre-Phase-4 iOS or the legacy path), forcing
+ * the inspector to restate. Shape-aware short-circuit closes that gap
+ * while keeping the conservative default wherever false-attribution cost
+ * is high.
+ *
+ * Plan 03-12 STG r6 MAJOR revision: the earlier free_text branch (which
+ * accepted any non-empty trimmed text as an answer) is REMOVED. That
+ * heuristic misclassified filler speech — "hold on a second", "let me
+ * check", "hmm" — as answers to any pending free_text ask, corrupting
+ * the ask flow. No-regex speech against a free_text ask now falls
+ * through to user_moved_on (conservative default). Phase 4's iOS
+ * contract routes free_text answers via the direct ask_user_answered
+ * channel with consumed_utterance_id — the transcript-overtake path
+ * is not the authoritative route for free_text. Only yes_no retains
+ * the shape-aware short-circuit because its vocabulary is bounded
+ * (see YES_NO_VOCABULARY below) and false-positives are near-impossible.
  *
  * Duck-typed pendingAsks: the parameter only needs .size and .entries().
  * Both the real PendingAsksRegistry (Plan 03-01) and a plain Map work —
@@ -111,21 +123,17 @@ export function classifyOvertake(newText, regexResults, pendingAsks) {
     }
   }
 
-  // 3. No regex hits — Plan 03-11 Task 2 shape-aware branch. Walk pending
-  //    asks in insertion order (oldest first), matching on expectedAnswerShape.
-  //    The first ask whose shape fits the text wins. number / circuit_ref /
-  //    undefined shapes never match here — they fall through to the
-  //    conservative user_moved_on default, preserving the Open Question #4
-  //    ruling for asks where false attribution is expensive.
+  // 3. No regex hits — Plan 03-11 Task 2 shape-aware branch, narrowed by
+  //    Plan 03-12 r6 to yes_no only. Walk pending asks in insertion order
+  //    (oldest first). The first pending yes_no ask whose text matches the
+  //    YES_NO_VOCABULARY wins. number / circuit_ref / free_text / undefined
+  //    shapes never match here — they fall through to the conservative
+  //    user_moved_on default, preserving the Open Question #4 ruling for
+  //    asks where false attribution is expensive.
   const yesNoNormalised = normaliseForYesNo(newText);
-  const freeTextNormalised = typeof newText === 'string' ? newText.trim() : '';
   for (const [id, entry] of pendingAsks.entries()) {
     if (entry.expectedAnswerShape === 'yes_no') {
       if (YES_NO_VOCABULARY.has(yesNoNormalised)) {
-        return { kind: 'answers', toolCallId: id, userText: newText };
-      }
-    } else if (entry.expectedAnswerShape === 'free_text') {
-      if (freeTextNormalised.length > 0) {
         return { kind: 'answers', toolCallId: id, userText: newText };
       }
     }

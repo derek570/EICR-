@@ -344,7 +344,16 @@ describe('classifyOvertake — STA-04c shape-aware no-regex branch', () => {
     expect(verdict.kind).toBe('user_moved_on');
   });
 
-  test('STA-04c-free: free_text ask + "upstairs lighting" + no regex → answers', () => {
+  // STA-04c-free (r6 revision): The r3 MAJOR fix added a free_text branch
+  // that accepted any non-empty trimmed text as an answer. r6 MAJOR flagged
+  // this as too permissive — "hold on a second" / "let me check" / "hmm"
+  // would all classify as answers to a pending free_text ask. Per Plan
+  // 03-12 r6 addendum: REMOVED the free_text shape-aware branch. No-regex
+  // speech against a free_text ask now falls through to user_moved_on
+  // (conservative default). Phase 4's iOS client will route free_text
+  // answers via the direct ask_user_answered channel with
+  // consumed_utterance_id, which is the authoritative path.
+  test('STA-04c-free-removed: free_text ask + "upstairs lighting" + no regex → user_moved_on (r6 revision)', () => {
     const verdict = classifyOvertake(
       'upstairs lighting',
       [],
@@ -359,14 +368,32 @@ describe('classifyOvertake — STA-04c shape-aware no-regex branch', () => {
         ],
       ]),
     );
-    expect(verdict).toEqual({
-      kind: 'answers',
-      toolCallId: 'ask_desc',
-      userText: 'upstairs lighting',
-    });
+    // Was `answers` pre-r6. Now `user_moved_on` — free_text must come through
+    // the direct ask_user_answered channel, not transcript overtake.
+    expect(verdict.kind).toBe('user_moved_on');
   });
 
-  test('STA-04c-free-empty: free_text ask + whitespace-only text + no regex → user_moved_on', () => {
+  test('STA-04c-free-filler: free_text ask + "hold on a second" + no regex → user_moved_on (was the r6 bug)', () => {
+    const verdict = classifyOvertake(
+      'hold on a second',
+      [],
+      mockPending([
+        [
+          'ask_desc',
+          {
+            contextField: 'circuit_designation',
+            contextCircuit: null,
+            expectedAnswerShape: 'free_text',
+          },
+        ],
+      ]),
+    );
+    // Filler speech must never satisfy a free_text ask via overtake — rejectAll
+    // and let Sonnet re-ask. This is the exact case r6 flagged.
+    expect(verdict.kind).toBe('user_moved_on');
+  });
+
+  test('STA-04c-free-empty: free_text ask + whitespace-only text + no regex → user_moved_on (unchanged)', () => {
     const verdict = classifyOvertake(
       '   ',
       [],

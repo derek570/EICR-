@@ -829,21 +829,66 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
               break;
             }
 
-            // Thread sanitisation flags through the resolve payload so the
-            // dispatcher's logAskUser row carries them. Only emit the
-            // sanitisation sub-object when at least one flag is true —
-            // the common clean-path case (100% of current inspector speech)
-            // keeps the log row noise-free.
-            const resolvePayload = {
-              answered: true,
-              user_text: sanitised.text,
-            };
-            if (sanitised.truncated || sanitised.stripped) {
-              resolvePayload.sanitisation = {
-                truncated: sanitised.truncated,
-                stripped: sanitised.stripped,
+            // Plan 03-12 r6 BLOCK remediation — detect the REVERSE race
+            // BEFORE calling resolve(). Previously we always resolved with
+            // the user_text payload, then checked seenTranscriptUtterances
+            // only to decide whether to stamp consumedAskUtterances. That
+            // meant: when the transcript had ALREADY been extracted as a
+            // user turn via the shadow harness, Sonnet received the same
+            // speech TWICE — once as a user turn, once as a tool_result
+            // body — and would plausibly duplicate-write. The r3 warn log
+            // noted the anomaly but did nothing to prevent it.
+            //
+            // New ordering: compute alreadySeenAsTranscript first, then
+            // branch on it:
+            //   - Already seen: resolve with {answered:false, reason:
+            //     'transcript_already_extracted'}. Sonnet's tool loop
+            //     sees a non-answer, so it either re-asks (fine, the
+            //     shadow-harness turn delivered the information) or
+            //     moves on; the user_text is NOT sent a second time.
+            //     Still emit the warn log for the audit trail.
+            //   - Not seen: resolve with the sanitised answer payload
+            //     (original behaviour) and stamp consumedAskUtterances
+            //     with FIFO eviction.
+            //
+            // Unresolved / missing-id diagnostics preserved from the r3
+            // version — they fire once resolve() is done and are
+            // orthogonal to the reverse-race fix.
+            const alreadySeenAsTranscript =
+              typeof msg.consumed_utterance_id === 'string' &&
+              entry.seenTranscriptUtterances &&
+              entry.seenTranscriptUtterances.has(msg.consumed_utterance_id);
+
+            let resolvePayload;
+            if (alreadySeenAsTranscript) {
+              resolvePayload = {
+                answered: false,
+                reason: 'transcript_already_extracted',
               };
+              logger.warn('stage6.ask_user_answered_after_transcript', {
+                sessionId: currentSessionId,
+                tool_call_id: msg.tool_call_id,
+                utterance_id: msg.consumed_utterance_id,
+                reason: 'transcript_already_extracted',
+              });
+            } else {
+              // Thread sanitisation flags through the resolve payload so the
+              // dispatcher's logAskUser row carries them. Only emit the
+              // sanitisation sub-object when at least one flag is true —
+              // the common clean-path case (100% of current inspector speech)
+              // keeps the log row noise-free.
+              resolvePayload = {
+                answered: true,
+                user_text: sanitised.text,
+              };
+              if (sanitised.truncated || sanitised.stripped) {
+                resolvePayload.sanitisation = {
+                  truncated: sanitised.truncated,
+                  stripped: sanitised.stripped,
+                };
+              }
             }
+
             const resolved = entry.pendingAsks.resolve(msg.tool_call_id, resolvePayload);
 
             // Plan 03-10 Task 1 (STG BLOCK remediation) — utterance-consumption
@@ -856,68 +901,33 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
             // server routing are not strictly synchronised; both frames can
             // cross the socket within milliseconds of each other).
             //
-            // 2026-04-22 STG re-review BLOCK fix: the add() MUST be gated on
-            // resolved===true. An unknown / stale / duplicate tool_call_id
-            // returns resolved=false — if we still stamped the utterance id,
-            // a later legitimate transcript carrying the same id would be
-            // silently suppressed (speech dropped on the floor, zero writes,
-            // no UI surface to notice). The first 03-10 draft added the id
-            // unconditionally and introduced a strictly-worse failure mode
-            // than the original BLOCK (speech-processed-zero-times is harder
-            // to detect than speech-processed-twice). Gating on resolved
-            // restores the invariant: the dedupe Set tracks only utterances
-            // that actually satisfied a live ask.
+            // The add() is gated on resolved===true AND !alreadySeenAsTranscript.
+            // Gating on resolved: an unknown / stale / duplicate tool_call_id
+            // returns resolved=false; stamping would silently suppress a later
+            // legitimate transcript carrying the same id. Gating on
+            // !alreadySeenAsTranscript: in that branch the seenTranscriptUtterances
+            // stamp already owns the id, and a redundant stamp would waste a
+            // FIFO slot and read like a clean "iOS routed as answer first" case
+            // in the audit log.
             //
             // Cap at CONSUMED_UTTERANCE_CAP via FIFO eviction. 256 is an
             // order of magnitude above the peak observed in a 120-minute
-            // inspection session (~100 utterances). Hard cap prevents an
-            // abusive / long-running session from leaking Set entries for
-            // the life of the activeSessions entry (up to ~5 min post-
-            // disconnect via the 300s disconnectTimer).
+            // inspection session (~100 utterances).
             //
             // Legacy compat: if iOS omits consumed_utterance_id (pre-Plan
             // 03-10 clients), the ask still resolves — we just emit a
-            // warning log row so ops can see how quickly the legacy tail
-            // dies off after iOS ships the matching contract tightening.
-            // Unresolved + id present (stale frame) logs a distinct row so
-            // client-side bugs surface in CloudWatch without polluting the
-            // dedupe Set.
+            // warning log row. Unresolved + id present (stale frame) logs
+            // a distinct row so client-side bugs surface in CloudWatch
+            // without polluting the dedupe Set.
             if (typeof msg.consumed_utterance_id === 'string') {
-              if (resolved) {
-                // Plan 03-11 Task 1 (STG r3 BLOCK remediation) — detect the
-                // REVERSE race: the matching transcript was already extracted
-                // as a regular user turn before this ask_user_answered frame
-                // arrived. We cannot un-extract it; the most useful action is
-                // a distinct warn log row so ops / the Phase 8 analyzer can
-                // count how often iOS routes both channels for the same
-                // utterance_id (expected rate: near-zero once Phase 4 ships
-                // the tightened iOS contract). We deliberately DO NOT add
-                // the id to consumedAskUtterances in this branch — the
-                // seenTranscriptUtterances stamp already owns it, and a
-                // redundant stamp here would (a) waste one of the 256 FIFO
-                // slots, (b) read like a legitimate "iOS routed as answer
-                // first" case in the audit log. The ask still resolves via
-                // the resolve() call above; the tool loop returns normally.
-                const alreadySeenAsTranscript =
-                  entry.seenTranscriptUtterances &&
-                  entry.seenTranscriptUtterances.has(msg.consumed_utterance_id);
-
-                if (alreadySeenAsTranscript) {
-                  logger.warn('stage6.ask_user_answered_after_transcript', {
-                    sessionId: currentSessionId,
-                    tool_call_id: msg.tool_call_id,
-                    utterance_id: msg.consumed_utterance_id,
-                    reason: 'transcript_already_extracted',
-                  });
-                } else {
-                  entry.consumedAskUtterances.add(msg.consumed_utterance_id);
-                  if (entry.consumedAskUtterances.size > CONSUMED_UTTERANCE_CAP) {
-                    // Set preserves insertion order — first key is the oldest.
-                    const oldest = entry.consumedAskUtterances.values().next().value;
-                    entry.consumedAskUtterances.delete(oldest);
-                  }
+              if (resolved && !alreadySeenAsTranscript) {
+                entry.consumedAskUtterances.add(msg.consumed_utterance_id);
+                if (entry.consumedAskUtterances.size > CONSUMED_UTTERANCE_CAP) {
+                  // Set preserves insertion order — first key is the oldest.
+                  const oldest = entry.consumedAskUtterances.values().next().value;
+                  entry.consumedAskUtterances.delete(oldest);
                 }
-              } else {
+              } else if (!resolved) {
                 logger.warn('stage6.ask_user_answered_unresolved', {
                   sessionId: currentSessionId,
                   tool_call_id: msg.tool_call_id,
