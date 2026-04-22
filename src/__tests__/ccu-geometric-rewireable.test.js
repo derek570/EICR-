@@ -1,0 +1,896 @@
+/**
+ * Unit tests for src/extraction/ccu-geometric-rewireable.js — Stream 1.
+ *
+ * Anthropic SDK is mocked at module level (matches ccu-geometric.test.js style).
+ * Tests cover:
+ *   - Stage 1 per-coordinate median + main_switch_side majority vote
+ *   - Stage 1 lowConfidence SD threshold (5% of 0-1000 scale)
+ *   - Stage 2 slot centre computation given panel bounds + carrier count
+ *   - Stage 2 main_switch_offset → mainSwitchSlotIndex
+ *   - Stage 3 batches 4 crops per message
+ *   - Stage 3 body-colour → rating fill-in (white=5, blue=15, yellow=20, red=30, green=45)
+ *   - Stage 3 matches VLM responses by slot_index even when returned out of order
+ *   - Stage 3 soft-fail returns Stage 1/2 output
+ *   - extractCcuRewireable combined shape + schemaVersion
+ *   - Throws on missing ANTHROPIC_API_KEY
+ */
+
+import { jest } from '@jest/globals';
+import sharp from 'sharp';
+
+const mockCreate = jest.fn();
+
+jest.unstable_mockModule('@anthropic-ai/sdk', () => ({
+  default: jest.fn(() => ({
+    messages: { create: mockCreate },
+  })),
+}));
+
+// Imported lazily AFTER the mock is registered.
+let getPanelGeometry;
+let getCarrierCount;
+let extractCcuRewireable;
+let cropCarrierSlot;
+let classifyCarriers;
+let BODY_COLOUR_TO_AMPS;
+
+beforeAll(async () => {
+  const mod = await import('../extraction/ccu-geometric-rewireable.js');
+  getPanelGeometry = mod.getPanelGeometry;
+  getCarrierCount = mod.getCarrierCount;
+  extractCcuRewireable = mod.extractCcuRewireable;
+  cropCarrierSlot = mod.cropCarrierSlot;
+  classifyCarriers = mod.classifyCarriers;
+  BODY_COLOUR_TO_AMPS = mod.BODY_COLOUR_TO_AMPS;
+});
+
+async function makeFakeJpeg(width = 1000, height = 600) {
+  return await sharp({
+    create: {
+      width,
+      height,
+      channels: 3,
+      background: { r: 180, g: 180, b: 180 },
+    },
+  })
+    .jpeg()
+    .toBuffer();
+}
+
+function fakeVlmResponse(obj, { inputTokens = 100, outputTokens = 40 } = {}) {
+  return {
+    content: [{ type: 'text', text: JSON.stringify(obj) }],
+    usage: { input_tokens: inputTokens, output_tokens: outputTokens },
+  };
+}
+
+beforeEach(() => {
+  mockCreate.mockReset();
+  process.env.ANTHROPIC_API_KEY = 'test-key-fixture';
+});
+
+// ---------------------------------------------------------------------------
+// getPanelGeometry
+// ---------------------------------------------------------------------------
+
+describe('getPanelGeometry', () => {
+  test('computes per-coordinate median across 3 samples + majority-votes main_switch_side', async () => {
+    const buf = await makeFakeJpeg(1200, 800);
+
+    mockCreate
+      .mockResolvedValueOnce(
+        fakeVlmResponse({
+          panel_top: 300,
+          panel_bottom: 600,
+          panel_left: 100,
+          panel_right: 900,
+          main_switch_side: 'right',
+        })
+      )
+      .mockResolvedValueOnce(
+        fakeVlmResponse({
+          panel_top: 310,
+          panel_bottom: 610,
+          panel_left: 110,
+          panel_right: 910,
+          main_switch_side: 'right',
+        })
+      )
+      .mockResolvedValueOnce(
+        fakeVlmResponse({
+          panel_top: 320,
+          panel_bottom: 620,
+          panel_left: 120,
+          panel_right: 920,
+          main_switch_side: 'none',
+        })
+      );
+
+    const result = await getPanelGeometry(buf);
+
+    expect(result.panels).toHaveLength(3);
+    expect(result.medianPanel).toEqual({
+      panel_top: 310,
+      panel_bottom: 610,
+      panel_left: 110,
+      panel_right: 910,
+    });
+    // 2 × "right" vs 1 × "none" → "right"
+    expect(result.mainSwitchSide).toBe('right');
+    expect(result.imageWidth).toBe(1200);
+    expect(result.imageHeight).toBe(800);
+    expect(result.usage.inputTokens).toBe(300);
+    expect(result.usage.outputTokens).toBe(120);
+  });
+
+  test('lowConfidence=false when per-coordinate SD is under 5% of 0-1000 scale', async () => {
+    const buf = await makeFakeJpeg();
+
+    // Very tight clustering (SD ~4 on 0-1000 → 0.4%).
+    mockCreate
+      .mockResolvedValueOnce(
+        fakeVlmResponse({
+          panel_top: 300,
+          panel_bottom: 600,
+          panel_left: 100,
+          panel_right: 900,
+          main_switch_side: 'none',
+        })
+      )
+      .mockResolvedValueOnce(
+        fakeVlmResponse({
+          panel_top: 304,
+          panel_bottom: 604,
+          panel_left: 104,
+          panel_right: 904,
+          main_switch_side: 'none',
+        })
+      )
+      .mockResolvedValueOnce(
+        fakeVlmResponse({
+          panel_top: 298,
+          panel_bottom: 598,
+          panel_left: 98,
+          panel_right: 898,
+          main_switch_side: 'none',
+        })
+      );
+
+    const result = await getPanelGeometry(buf);
+    expect(result.lowConfidence).toBe(false);
+    for (const v of Object.values(result.sdPct)) {
+      expect(v).toBeLessThan(5);
+    }
+  });
+
+  test('lowConfidence=true when any coordinate SD exceeds 5% of 0-1000 scale', async () => {
+    const buf = await makeFakeJpeg();
+
+    // panel_left wildly disagrees (10, 500, 990) → SD ~400 → 40%.
+    mockCreate
+      .mockResolvedValueOnce(
+        fakeVlmResponse({
+          panel_top: 300,
+          panel_bottom: 600,
+          panel_left: 10,
+          panel_right: 900,
+          main_switch_side: 'right',
+        })
+      )
+      .mockResolvedValueOnce(
+        fakeVlmResponse({
+          panel_top: 305,
+          panel_bottom: 605,
+          panel_left: 500,
+          panel_right: 905,
+          main_switch_side: 'right',
+        })
+      )
+      .mockResolvedValueOnce(
+        fakeVlmResponse({
+          panel_top: 295,
+          panel_bottom: 595,
+          panel_left: 990,
+          panel_right: 895,
+          main_switch_side: 'right',
+        })
+      );
+
+    const result = await getPanelGeometry(buf);
+    expect(result.lowConfidence).toBe(true);
+    expect(result.sdPct.panel_left).toBeGreaterThan(5);
+  });
+
+  test('coerces unexpected main_switch_side values to "none"', async () => {
+    const buf = await makeFakeJpeg();
+    mockCreate
+      .mockResolvedValueOnce(
+        fakeVlmResponse({
+          panel_top: 300,
+          panel_bottom: 600,
+          panel_left: 100,
+          panel_right: 900,
+          main_switch_side: 'middle', // invalid
+        })
+      )
+      .mockResolvedValueOnce(
+        fakeVlmResponse({
+          panel_top: 300,
+          panel_bottom: 600,
+          panel_left: 100,
+          panel_right: 900,
+          // omitted
+        })
+      )
+      .mockResolvedValueOnce(
+        fakeVlmResponse({
+          panel_top: 300,
+          panel_bottom: 600,
+          panel_left: 100,
+          panel_right: 900,
+          main_switch_side: 'none',
+        })
+      );
+
+    const result = await getPanelGeometry(buf);
+    expect(result.mainSwitchSide).toBe('none');
+    expect(result.panels.every((p) => p.main_switch_side === 'none')).toBe(true);
+  });
+
+  test('throws when ANTHROPIC_API_KEY is missing', async () => {
+    delete process.env.ANTHROPIC_API_KEY;
+    const buf = await makeFakeJpeg();
+    await expect(getPanelGeometry(buf)).rejects.toThrow(/ANTHROPIC_API_KEY/);
+  });
+
+  test('throws when VLM omits required panel_* fields', async () => {
+    const buf = await makeFakeJpeg();
+    mockCreate
+      .mockResolvedValueOnce(fakeVlmResponse({ panel_top: 300, panel_bottom: 600 }))
+      .mockResolvedValueOnce(
+        fakeVlmResponse({
+          panel_top: 300,
+          panel_bottom: 600,
+          panel_left: 100,
+          panel_right: 900,
+          main_switch_side: 'none',
+        })
+      )
+      .mockResolvedValueOnce(
+        fakeVlmResponse({
+          panel_top: 300,
+          panel_bottom: 600,
+          panel_left: 100,
+          panel_right: 900,
+          main_switch_side: 'none',
+        })
+      );
+    await expect(getPanelGeometry(buf)).rejects.toThrow(/panel_\*/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// getCarrierCount
+// ---------------------------------------------------------------------------
+
+describe('getCarrierCount', () => {
+  const medianPanel = {
+    panel_top: 300,
+    panel_bottom: 600,
+    panel_left: 100,
+    panel_right: 900,
+  };
+  const imageDims = { imageWidth: 1000, imageHeight: 600 };
+
+  test('computes equal-pitch slot centre X coords across the panel', async () => {
+    const buf = await makeFakeJpeg();
+    // 8 carriers over a 0-1000 panel width of 800 → pitch = 100 norm = 100px (1000px image)
+    // First centre: panel_left(100) + 100*0.5 = 150 → 150px
+    mockCreate.mockResolvedValueOnce(
+      fakeVlmResponse({ carrier_count: 8, main_switch_offset: 'none' })
+    );
+    const result = await getCarrierCount(buf, medianPanel, imageDims);
+
+    expect(result.carrierCount).toBe(8);
+    expect(result.slotCentersX).toHaveLength(8);
+    expect(result.slotCentersX[0]).toBe(150);
+    expect(result.slotCentersX[7]).toBe(850);
+    expect(result.carrierPitchPx).toBeCloseTo(100);
+    expect(result.mainSwitchOffset).toBe('none');
+    expect(result.mainSwitchSlotIndex).toBeNull();
+  });
+
+  test('main_switch_offset="right-edge" sets mainSwitchSlotIndex to last slot', async () => {
+    const buf = await makeFakeJpeg();
+    mockCreate.mockResolvedValueOnce(
+      fakeVlmResponse({ carrier_count: 7, main_switch_offset: 'right-edge' })
+    );
+    const result = await getCarrierCount(buf, medianPanel, imageDims);
+    expect(result.carrierCount).toBe(7);
+    expect(result.mainSwitchOffset).toBe('right-edge');
+    expect(result.mainSwitchSlotIndex).toBe(6);
+  });
+
+  test('main_switch_offset="left-edge" sets mainSwitchSlotIndex to 0', async () => {
+    const buf = await makeFakeJpeg();
+    mockCreate.mockResolvedValueOnce(
+      fakeVlmResponse({ carrier_count: 6, main_switch_offset: 'left-edge' })
+    );
+    const result = await getCarrierCount(buf, medianPanel, imageDims);
+    expect(result.mainSwitchSlotIndex).toBe(0);
+  });
+
+  test('throws when carrier_count is non-positive', async () => {
+    const buf = await makeFakeJpeg();
+    mockCreate.mockResolvedValueOnce(
+      fakeVlmResponse({ carrier_count: 0, main_switch_offset: 'none' })
+    );
+    await expect(getCarrierCount(buf, medianPanel, imageDims)).rejects.toThrow(
+      /carrier_count/
+    );
+  });
+
+  test('throws when panel_right <= panel_left', async () => {
+    const buf = await makeFakeJpeg();
+    await expect(
+      getCarrierCount(
+        buf,
+        { panel_top: 300, panel_bottom: 600, panel_left: 900, panel_right: 100 },
+        imageDims
+      )
+    ).rejects.toThrow(/panel_right/);
+  });
+
+  test('throws when imageDims.imageWidth is missing', async () => {
+    const buf = await makeFakeJpeg();
+    await expect(getCarrierCount(buf, medianPanel, { imageWidth: 0 })).rejects.toThrow(
+      /imageWidth/
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// cropCarrierSlot
+// ---------------------------------------------------------------------------
+
+describe('cropCarrierSlot', () => {
+  const baseGeom = {
+    slotCentersX: [150, 250, 350, 450, 550, 650],
+    carrierPitchPx: 100,
+    panelTopNorm: 300,
+    panelBottomNorm: 600,
+    imageWidth: 1000,
+    imageHeight: 800,
+  };
+
+  test('returns a buffer and a pixel bbox for a middle slot', async () => {
+    const buf = await makeFakeJpeg(1000, 800);
+    const result = await cropCarrierSlot(buf, 2, baseGeom);
+
+    expect(Buffer.isBuffer(result.buffer)).toBe(true);
+    expect(result.buffer.length).toBeGreaterThan(100);
+    // halfWidthPx = carrierPitchPx (100)
+    // centerXPx = 350 → leftPx = 250 → x=250
+    expect(result.bbox.x).toBe(250);
+    expect(result.bbox.w).toBeGreaterThan(0);
+    expect(result.bbox.h).toBeGreaterThan(0);
+    const meta = await sharp(result.buffer).metadata();
+    expect(meta.width).toBeGreaterThan(0);
+  });
+
+  test('clamps bbox to image bounds on the left edge', async () => {
+    const buf = await makeFakeJpeg(1000, 800);
+    const geom = { ...baseGeom, slotCentersX: [50, 150, 250], carrierPitchPx: 100 };
+    const result = await cropCarrierSlot(buf, 0, geom);
+    // leftPx = 50 - 100 = -50 → clamped to 0
+    expect(result.bbox.x).toBe(0);
+    expect(result.bbox.w).toBeGreaterThan(0);
+  });
+
+  test('clamps bbox to image bounds on the right edge', async () => {
+    const buf = await makeFakeJpeg(1000, 800);
+    const geom = { ...baseGeom, slotCentersX: [850, 950], carrierPitchPx: 100 };
+    const result = await cropCarrierSlot(buf, 1, geom);
+    // rightPx = 950 + 100 = 1050 → clamped to 1000
+    expect(result.bbox.x + result.bbox.w).toBeLessThanOrEqual(1000);
+  });
+
+  test('throws on out-of-range slotIndex', async () => {
+    const buf = await makeFakeJpeg();
+    await expect(cropCarrierSlot(buf, 10, baseGeom)).rejects.toThrow(/out of range/);
+    await expect(cropCarrierSlot(buf, -1, baseGeom)).rejects.toThrow(/out of range/);
+  });
+
+  test('throws on missing or invalid geometry fields', async () => {
+    const buf = await makeFakeJpeg();
+    await expect(
+      cropCarrierSlot(buf, 0, { ...baseGeom, slotCentersX: [] })
+    ).rejects.toThrow(/non-empty/);
+    await expect(
+      cropCarrierSlot(buf, 0, { ...baseGeom, carrierPitchPx: 0 })
+    ).rejects.toThrow(/carrierPitchPx/);
+    await expect(
+      cropCarrierSlot(buf, 0, { ...baseGeom, panelTopNorm: 600, panelBottomNorm: 300 })
+    ).rejects.toThrow(/panelTopNorm|panelBottomNorm/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// classifyCarriers
+// ---------------------------------------------------------------------------
+
+describe('classifyCarriers', () => {
+  async function makeSlotCrops(n, widthPx = 100) {
+    const crops = [];
+    for (let i = 0; i < n; i++) {
+      const buffer = await sharp({
+        create: {
+          width: widthPx,
+          height: 200,
+          channels: 3,
+          background: { r: 255, g: 255, b: 255 },
+        },
+      })
+        .jpeg()
+        .toBuffer();
+      crops.push({
+        slotIndex: i,
+        buffer,
+        bbox: { x: i * widthPx, y: 300, w: widthPx, h: 300 },
+      });
+    }
+    return crops;
+  }
+
+  test('batches 4 crops per Anthropic message (batchSize = 4)', async () => {
+    const buf = await makeFakeJpeg();
+    const slotCrops = await makeSlotCrops(4);
+
+    mockCreate.mockResolvedValueOnce(
+      fakeVlmResponse([
+        {
+          slot_index: 0,
+          classification: 'rewireable',
+          bodyColour: 'red',
+          ratingAmps: null,
+          bsEn: 'BS 3036',
+          confidence: 0.9,
+        },
+        {
+          slot_index: 1,
+          classification: 'rewireable',
+          bodyColour: 'blue',
+          ratingAmps: null,
+          bsEn: 'BS 3036',
+          confidence: 0.85,
+        },
+        {
+          slot_index: 2,
+          classification: 'rewireable',
+          bodyColour: 'white',
+          ratingAmps: null,
+          bsEn: 'BS 3036',
+          confidence: 0.8,
+        },
+        {
+          slot_index: 3,
+          classification: 'blank',
+          bodyColour: null,
+          ratingAmps: null,
+          bsEn: null,
+          confidence: 0.95,
+        },
+      ])
+    );
+
+    const result = await classifyCarriers(buf, slotCrops);
+
+    expect(result.batchCount).toBe(1);
+    expect(mockCreate).toHaveBeenCalledTimes(1);
+    const callArgs = mockCreate.mock.calls[0][0];
+    const content = callArgs.messages[0].content;
+    const imageBlocks = content.filter((b) => b.type === 'image');
+    const textBlocks = content.filter((b) => b.type === 'text');
+    expect(imageBlocks).toHaveLength(4);
+    expect(textBlocks).toHaveLength(1);
+
+    expect(result.slots).toHaveLength(4);
+    expect(result.slots[0].classification).toBe('rewireable');
+    expect(result.slots[3].classification).toBe('blank');
+    for (const s of result.slots) {
+      expect(s.crop.bbox).toBeDefined();
+      expect(typeof s.crop.base64).toBe('string');
+    }
+  });
+
+  test('splits > BATCH_SIZE crops into multiple messages', async () => {
+    const buf = await makeFakeJpeg();
+    const slotCrops = await makeSlotCrops(6); // 4 + 2
+
+    mockCreate
+      .mockResolvedValueOnce(
+        fakeVlmResponse([
+          { slot_index: 0, classification: 'rewireable', bodyColour: 'red', confidence: 0.9 },
+          { slot_index: 1, classification: 'rewireable', bodyColour: 'blue', confidence: 0.9 },
+          { slot_index: 2, classification: 'rewireable', bodyColour: 'white', confidence: 0.9 },
+          { slot_index: 3, classification: 'rewireable', bodyColour: 'red', confidence: 0.9 },
+        ])
+      )
+      .mockResolvedValueOnce(
+        fakeVlmResponse([
+          { slot_index: 4, classification: 'rewireable', bodyColour: 'red', confidence: 0.9 },
+          { slot_index: 5, classification: 'blank', bodyColour: null, confidence: 0.95 },
+        ])
+      );
+
+    const result = await classifyCarriers(buf, slotCrops);
+
+    expect(result.batchCount).toBe(2);
+    expect(mockCreate).toHaveBeenCalledTimes(2);
+    expect(
+      mockCreate.mock.calls[0][0].messages[0].content.filter((b) => b.type === 'image')
+    ).toHaveLength(4);
+    expect(
+      mockCreate.mock.calls[1][0].messages[0].content.filter((b) => b.type === 'image')
+    ).toHaveLength(2);
+
+    expect(result.slots).toHaveLength(6);
+    expect(result.slots[5].classification).toBe('blank');
+  });
+
+  test('fills ratingAmps from bodyColour when VLM omits rating (white=5A, blue=15A, yellow=20A, red=30A, green=45A)', async () => {
+    const buf = await makeFakeJpeg();
+    // 5 slots → 2 batches (4 + 1) at BATCH_SIZE = 4
+    const slotCrops = await makeSlotCrops(5);
+
+    mockCreate
+      .mockResolvedValueOnce(
+        fakeVlmResponse([
+          { slot_index: 0, classification: 'rewireable', bodyColour: 'white', confidence: 0.9 },
+          { slot_index: 1, classification: 'rewireable', bodyColour: 'blue', confidence: 0.9 },
+          { slot_index: 2, classification: 'rewireable', bodyColour: 'yellow', confidence: 0.9 },
+          { slot_index: 3, classification: 'rewireable', bodyColour: 'red', confidence: 0.9 },
+        ])
+      )
+      .mockResolvedValueOnce(
+        fakeVlmResponse([
+          { slot_index: 4, classification: 'rewireable', bodyColour: 'green', confidence: 0.9 },
+        ])
+      );
+
+    const result = await classifyCarriers(buf, slotCrops);
+
+    expect(result.slots[0].ratingAmps).toBe(5);
+    expect(result.slots[1].ratingAmps).toBe(15);
+    expect(result.slots[2].ratingAmps).toBe(20);
+    expect(result.slots[3].ratingAmps).toBe(30);
+    expect(result.slots[4].ratingAmps).toBe(45);
+  });
+
+  test('does NOT overwrite VLM-returned ratingAmps with colour-derived value', async () => {
+    const buf = await makeFakeJpeg();
+    const slotCrops = await makeSlotCrops(1);
+
+    // Cartridge with explicitly stamped rating — VLM returns 32, which is not a
+    // BS 3036 colour-code value. We must keep the VLM value, not coerce to a
+    // colour-derived rating.
+    mockCreate.mockResolvedValueOnce(
+      fakeVlmResponse([
+        {
+          slot_index: 0,
+          classification: 'cartridge',
+          bodyColour: 'red',
+          ratingAmps: 32,
+          bsEn: 'BS 1361',
+          confidence: 0.9,
+        },
+      ])
+    );
+
+    const result = await classifyCarriers(buf, slotCrops);
+    expect(result.slots[0].ratingAmps).toBe(32);
+    expect(result.slots[0].classification).toBe('cartridge');
+    expect(result.slots[0].bsEn).toBe('BS 1361');
+  });
+
+  test('matches VLM responses by slot_index even when returned out of order', async () => {
+    const buf = await makeFakeJpeg();
+    const slotCrops = await makeSlotCrops(4);
+
+    // Reverse response order
+    mockCreate.mockResolvedValueOnce(
+      fakeVlmResponse([
+        { slot_index: 3, classification: 'blank', bodyColour: null, confidence: 0.9 },
+        { slot_index: 2, classification: 'rewireable', bodyColour: 'red', confidence: 0.9 },
+        { slot_index: 1, classification: 'rewireable', bodyColour: 'blue', confidence: 0.9 },
+        { slot_index: 0, classification: 'rewireable', bodyColour: 'white', confidence: 0.9 },
+      ])
+    );
+
+    const result = await classifyCarriers(buf, slotCrops);
+
+    expect(result.slots[0].classification).toBe('rewireable');
+    expect(result.slots[0].bodyColour).toBe('white');
+    expect(result.slots[0].ratingAmps).toBe(5);
+
+    expect(result.slots[1].bodyColour).toBe('blue');
+    expect(result.slots[1].ratingAmps).toBe(15);
+
+    expect(result.slots[2].bodyColour).toBe('red');
+    expect(result.slots[2].ratingAmps).toBe(30);
+
+    expect(result.slots[3].classification).toBe('blank');
+    expect(result.slots[3].bodyColour).toBeNull();
+    expect(result.slots[3].ratingAmps).toBeNull();
+  });
+
+  test('parses fenced ```json array response', async () => {
+    const buf = await makeFakeJpeg();
+    const slotCrops = await makeSlotCrops(2);
+
+    mockCreate.mockResolvedValueOnce({
+      content: [
+        {
+          type: 'text',
+          text: 'Sure!\n```json\n[{"slot_index":0,"classification":"rewireable","bodyColour":"red","confidence":0.9},{"slot_index":1,"classification":"blank","bodyColour":null,"confidence":0.9}]\n```',
+        },
+      ],
+      usage: { input_tokens: 50, output_tokens: 20 },
+    });
+
+    const result = await classifyCarriers(buf, slotCrops);
+    expect(result.slots).toHaveLength(2);
+    expect(result.slots[0].classification).toBe('rewireable');
+    expect(result.slots[0].ratingAmps).toBe(30);
+    expect(result.slots[1].classification).toBe('blank');
+  });
+
+  test('throws when VLM returns non-array JSON', async () => {
+    const buf = await makeFakeJpeg();
+    const slotCrops = await makeSlotCrops(2);
+
+    mockCreate.mockResolvedValueOnce({
+      content: [{ type: 'text', text: '{"not":"an array"}' }],
+      usage: { input_tokens: 10, output_tokens: 5 },
+    });
+
+    await expect(classifyCarriers(buf, slotCrops)).rejects.toThrow(/classifyCarriers/);
+  });
+
+  test('returns empty result when slotCrops is empty (no VLM calls)', async () => {
+    const buf = await makeFakeJpeg();
+    const result = await classifyCarriers(buf, []);
+    expect(result.slots).toEqual([]);
+    expect(result.batchCount).toBe(0);
+    expect(mockCreate).not.toHaveBeenCalled();
+  });
+
+  test('fills in defaults when VLM omits optional fields', async () => {
+    const buf = await makeFakeJpeg();
+    const slotCrops = await makeSlotCrops(1);
+
+    mockCreate.mockResolvedValueOnce(
+      fakeVlmResponse([{ slot_index: 0, classification: 'rewireable' }])
+    );
+
+    const result = await classifyCarriers(buf, slotCrops);
+    expect(result.slots[0].classification).toBe('rewireable');
+    expect(result.slots[0].bodyColour).toBeNull();
+    expect(result.slots[0].ratingAmps).toBeNull();
+    expect(result.slots[0].bsEn).toBeNull();
+    expect(result.slots[0].confidence).toBe(0);
+  });
+
+  test('exports BODY_COLOUR_TO_AMPS mapping with BS 3036 codes', () => {
+    expect(BODY_COLOUR_TO_AMPS).toEqual({
+      white: 5,
+      blue: 15,
+      yellow: 20,
+      red: 30,
+      green: 45,
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// extractCcuRewireable (orchestrator)
+// ---------------------------------------------------------------------------
+
+describe('extractCcuRewireable', () => {
+  // Helper: Stage 3 VLM response for N carrier slots.
+  const stage3Response = (slotIndices) =>
+    fakeVlmResponse(
+      slotIndices.map((i) => ({
+        slot_index: i,
+        classification: 'rewireable',
+        bodyColour: i % 2 === 0 ? 'red' : 'white',
+        ratingAmps: null,
+        bsEn: 'BS 3036',
+        confidence: 0.85,
+      }))
+    );
+
+  test('returns combined stage1 + stage2 + stage3 result with stageOutputs + ccu-rewireable-v1 schema', async () => {
+    const buf = await makeFakeJpeg();
+
+    mockCreate
+      // Stage 1 — 3 rail samples
+      .mockResolvedValueOnce(
+        fakeVlmResponse({
+          panel_top: 300,
+          panel_bottom: 600,
+          panel_left: 100,
+          panel_right: 900,
+          main_switch_side: 'right',
+        })
+      )
+      .mockResolvedValueOnce(
+        fakeVlmResponse({
+          panel_top: 310,
+          panel_bottom: 610,
+          panel_left: 110,
+          panel_right: 910,
+          main_switch_side: 'right',
+        })
+      )
+      .mockResolvedValueOnce(
+        fakeVlmResponse({
+          panel_top: 320,
+          panel_bottom: 620,
+          panel_left: 120,
+          panel_right: 920,
+          main_switch_side: 'right',
+        })
+      )
+      // Stage 2 — carrier count
+      .mockResolvedValueOnce(
+        fakeVlmResponse({ carrier_count: 4, main_switch_offset: 'none' })
+      )
+      // Stage 3 — 1 batch of 4
+      .mockResolvedValueOnce(stage3Response([0, 1, 2, 3]));
+
+    const result = await extractCcuRewireable(buf);
+
+    expect(result.schemaVersion).toBe('ccu-rewireable-v1');
+    expect(result.panelBounds).toEqual({
+      top: 310,
+      bottom: 610,
+      left: 110,
+      right: 910,
+    });
+    expect(result.carrierCount).toBe(4);
+    expect(result.mainSwitchSide).toBe('right');
+    expect(result.mainSwitchOffset).toBe('none');
+    expect(result.mainSwitchSlotIndex).toBeNull();
+    expect(result.slotCentersX).toHaveLength(4);
+    expect(result.carrierPitch).toBeGreaterThan(0);
+    expect(result.lowConfidence).toBe(false);
+    expect(result.stage3Error).toBeNull();
+
+    expect(result.slots).toHaveLength(4);
+    expect(result.slots[0].classification).toBe('rewireable');
+    expect(result.slots[0].bodyColour).toBe('red');
+    expect(result.slots[0].ratingAmps).toBe(30); // colour-derived
+    expect(result.slots[1].bodyColour).toBe('white');
+    expect(result.slots[1].ratingAmps).toBe(5);
+    expect(typeof result.slots[0].crop.base64).toBe('string');
+
+    expect(result.stageOutputs.stage1.panels).toHaveLength(3);
+    expect(result.stageOutputs.stage2.carrierCount).toBe(4);
+    expect(result.stageOutputs.stage3.batchCount).toBe(1);
+    expect(result.stageOutputs.stage3.batchSize).toBe(4);
+    expect(result.timings.stage3Ms).toBeGreaterThanOrEqual(0);
+
+    // Usage summed across all VLM calls.
+    expect(result.usage.inputTokens).toBe(5 * 100);
+    expect(result.usage.outputTokens).toBe(5 * 40);
+  });
+
+  test('propagates Stage 1 errors without running Stage 2 or Stage 3', async () => {
+    const buf = await makeFakeJpeg();
+    mockCreate.mockRejectedValueOnce(new Error('VLM boom'));
+    await expect(extractCcuRewireable(buf)).rejects.toThrow(/VLM boom/);
+  });
+
+  test('soft-fails on Stage 3 error: slots=null, stage3Error set, Stage 1/2 preserved', async () => {
+    const buf = await makeFakeJpeg();
+
+    mockCreate
+      .mockResolvedValueOnce(
+        fakeVlmResponse({
+          panel_top: 300,
+          panel_bottom: 600,
+          panel_left: 100,
+          panel_right: 900,
+          main_switch_side: 'right',
+        })
+      )
+      .mockResolvedValueOnce(
+        fakeVlmResponse({
+          panel_top: 310,
+          panel_bottom: 610,
+          panel_left: 110,
+          panel_right: 910,
+          main_switch_side: 'right',
+        })
+      )
+      .mockResolvedValueOnce(
+        fakeVlmResponse({
+          panel_top: 320,
+          panel_bottom: 620,
+          panel_left: 120,
+          panel_right: 920,
+          main_switch_side: 'right',
+        })
+      )
+      .mockResolvedValueOnce(
+        fakeVlmResponse({ carrier_count: 4, main_switch_offset: 'right-edge' })
+      )
+      // Stage 3 returns garbage → soft-fail.
+      .mockResolvedValueOnce({
+        content: [{ type: 'text', text: 'this is not json at all' }],
+        usage: { input_tokens: 10, output_tokens: 5 },
+      });
+
+    const result = await extractCcuRewireable(buf);
+
+    // Stages 1 and 2 preserved
+    expect(result.carrierCount).toBe(4);
+    expect(result.slotCentersX).toHaveLength(4);
+    expect(result.mainSwitchOffset).toBe('right-edge');
+    expect(result.mainSwitchSlotIndex).toBe(3);
+    expect(result.mainSwitchSide).toBe('right');
+
+    // Stage 3 soft-failed
+    expect(result.slots).toBeNull();
+    expect(result.stage3Error).toEqual(expect.stringMatching(/classifyCarriers/));
+  });
+
+  test('flags lowConfidence=true when any Stage 3 slot has confidence < 0.6', async () => {
+    const buf = await makeFakeJpeg();
+
+    mockCreate
+      .mockResolvedValueOnce(
+        fakeVlmResponse({
+          panel_top: 300,
+          panel_bottom: 600,
+          panel_left: 100,
+          panel_right: 900,
+          main_switch_side: 'none',
+        })
+      )
+      .mockResolvedValueOnce(
+        fakeVlmResponse({
+          panel_top: 300,
+          panel_bottom: 600,
+          panel_left: 100,
+          panel_right: 900,
+          main_switch_side: 'none',
+        })
+      )
+      .mockResolvedValueOnce(
+        fakeVlmResponse({
+          panel_top: 300,
+          panel_bottom: 600,
+          panel_left: 100,
+          panel_right: 900,
+          main_switch_side: 'none',
+        })
+      )
+      .mockResolvedValueOnce(
+        fakeVlmResponse({ carrier_count: 3, main_switch_offset: 'none' })
+      )
+      // One slot has confidence 0.4 — should trigger lowConfidence
+      .mockResolvedValueOnce(
+        fakeVlmResponse([
+          { slot_index: 0, classification: 'rewireable', bodyColour: 'red', confidence: 0.9 },
+          { slot_index: 1, classification: 'rewireable', bodyColour: 'blue', confidence: 0.4 },
+          { slot_index: 2, classification: 'rewireable', bodyColour: 'white', confidence: 0.9 },
+        ])
+      );
+
+    const result = await extractCcuRewireable(buf);
+    expect(result.lowConfidence).toBe(true);
+    expect(result.slots).toHaveLength(3);
+  });
+});
