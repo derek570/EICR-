@@ -3,10 +3,12 @@
  *
  * Anthropic SDK is mocked at module level (matches ccu-geometric.test.js style).
  * Tests cover:
- *   - Stage 1 per-coordinate median + main_switch_side majority vote
+ *   - Stage 1 per-coordinate median + main_switch_side majority vote (5 samples)
  *   - Stage 1 lowConfidence SD threshold (5% of 0-1000 scale)
  *   - Stage 2 slot centre computation given panel bounds + carrier count
  *   - Stage 2 main_switch_offset → mainSwitchSlotIndex
+ *   - Stage 2 sanity-check retry: in-range → single call, out-of-range → retry,
+ *     retry value wins (decision logged)
  *   - Stage 3 batches 4 crops per message
  *   - Stage 3 body-colour → rating fill-in (white=5, blue=15, yellow=20, red=30, green=45)
  *   - Stage 3 matches VLM responses by slot_index even when returned out of order
@@ -74,9 +76,14 @@ beforeEach(() => {
 // ---------------------------------------------------------------------------
 
 describe('getPanelGeometry', () => {
-  test('computes per-coordinate median across 3 samples + majority-votes main_switch_side', async () => {
+  test('computes per-coordinate median across 5 samples + majority-votes main_switch_side', async () => {
     const buf = await makeFakeJpeg(1200, 800);
 
+    // 5 samples — odd-count median is the middle sorted value per coordinate.
+    // panel_top sorted: 300,305,310,315,320 → median 310
+    // panel_bottom sorted: 600,605,610,615,620 → median 610
+    // panel_left sorted: 100,105,110,115,120 → median 110
+    // panel_right sorted: 900,905,910,915,920 → median 910
     mockCreate
       .mockResolvedValueOnce(
         fakeVlmResponse({
@@ -89,10 +96,28 @@ describe('getPanelGeometry', () => {
       )
       .mockResolvedValueOnce(
         fakeVlmResponse({
+          panel_top: 305,
+          panel_bottom: 605,
+          panel_left: 105,
+          panel_right: 905,
+          main_switch_side: 'right',
+        })
+      )
+      .mockResolvedValueOnce(
+        fakeVlmResponse({
           panel_top: 310,
           panel_bottom: 610,
           panel_left: 110,
           panel_right: 910,
+          main_switch_side: 'right',
+        })
+      )
+      .mockResolvedValueOnce(
+        fakeVlmResponse({
+          panel_top: 315,
+          panel_bottom: 615,
+          panel_left: 115,
+          panel_right: 915,
           main_switch_side: 'right',
         })
       )
@@ -108,25 +133,25 @@ describe('getPanelGeometry', () => {
 
     const result = await getPanelGeometry(buf);
 
-    expect(result.panels).toHaveLength(3);
+    expect(result.panels).toHaveLength(5);
     expect(result.medianPanel).toEqual({
       panel_top: 310,
       panel_bottom: 610,
       panel_left: 110,
       panel_right: 910,
     });
-    // 2 × "right" vs 1 × "none" → "right"
+    // 4 × "right" vs 1 × "none" → "right"
     expect(result.mainSwitchSide).toBe('right');
     expect(result.imageWidth).toBe(1200);
     expect(result.imageHeight).toBe(800);
-    expect(result.usage.inputTokens).toBe(300);
-    expect(result.usage.outputTokens).toBe(120);
+    expect(result.usage.inputTokens).toBe(500);
+    expect(result.usage.outputTokens).toBe(200);
   });
 
   test('lowConfidence=false when per-coordinate SD is under 5% of 0-1000 scale', async () => {
     const buf = await makeFakeJpeg();
 
-    // Very tight clustering (SD ~4 on 0-1000 → 0.4%).
+    // 5 samples, very tight clustering (SD ~3-4 on 0-1000 → < 1%).
     mockCreate
       .mockResolvedValueOnce(
         fakeVlmResponse({
@@ -154,6 +179,24 @@ describe('getPanelGeometry', () => {
           panel_right: 898,
           main_switch_side: 'none',
         })
+      )
+      .mockResolvedValueOnce(
+        fakeVlmResponse({
+          panel_top: 302,
+          panel_bottom: 602,
+          panel_left: 102,
+          panel_right: 902,
+          main_switch_side: 'none',
+        })
+      )
+      .mockResolvedValueOnce(
+        fakeVlmResponse({
+          panel_top: 301,
+          panel_bottom: 601,
+          panel_left: 101,
+          panel_right: 901,
+          main_switch_side: 'none',
+        })
       );
 
     const result = await getPanelGeometry(buf);
@@ -166,7 +209,8 @@ describe('getPanelGeometry', () => {
   test('lowConfidence=true when any coordinate SD exceeds 5% of 0-1000 scale', async () => {
     const buf = await makeFakeJpeg();
 
-    // panel_left wildly disagrees (10, 500, 990) → SD ~400 → 40%.
+    // panel_left wildly disagrees across 5 samples (10, 500, 990, 50, 800)
+    // → SD well above 5% of 1000.
     mockCreate
       .mockResolvedValueOnce(
         fakeVlmResponse({
@@ -192,6 +236,24 @@ describe('getPanelGeometry', () => {
           panel_bottom: 595,
           panel_left: 990,
           panel_right: 895,
+          main_switch_side: 'right',
+        })
+      )
+      .mockResolvedValueOnce(
+        fakeVlmResponse({
+          panel_top: 300,
+          panel_bottom: 600,
+          panel_left: 50,
+          panel_right: 900,
+          main_switch_side: 'right',
+        })
+      )
+      .mockResolvedValueOnce(
+        fakeVlmResponse({
+          panel_top: 300,
+          panel_bottom: 600,
+          panel_left: 800,
+          panel_right: 900,
           main_switch_side: 'right',
         })
       );
@@ -230,6 +292,24 @@ describe('getPanelGeometry', () => {
           panel_right: 900,
           main_switch_side: 'none',
         })
+      )
+      .mockResolvedValueOnce(
+        fakeVlmResponse({
+          panel_top: 300,
+          panel_bottom: 600,
+          panel_left: 100,
+          panel_right: 900,
+          main_switch_side: 'upwards', // invalid
+        })
+      )
+      .mockResolvedValueOnce(
+        fakeVlmResponse({
+          panel_top: 300,
+          panel_bottom: 600,
+          panel_left: 100,
+          panel_right: 900,
+          main_switch_side: 'none',
+        })
       );
 
     const result = await getPanelGeometry(buf);
@@ -245,18 +325,15 @@ describe('getPanelGeometry', () => {
 
   test('throws when VLM omits required panel_* fields', async () => {
     const buf = await makeFakeJpeg();
-    mockCreate
-      .mockResolvedValueOnce(fakeVlmResponse({ panel_top: 300, panel_bottom: 600 }))
-      .mockResolvedValueOnce(
-        fakeVlmResponse({
-          panel_top: 300,
-          panel_bottom: 600,
-          panel_left: 100,
-          panel_right: 900,
-          main_switch_side: 'none',
-        })
-      )
-      .mockResolvedValueOnce(
+    mockCreate.mockResolvedValueOnce(
+      fakeVlmResponse({ panel_top: 300, panel_bottom: 600 })
+    );
+    // 4 additional successful responses — Stage 1 awaits Promise.all(5), so even
+    // if one sample throws, the other 4 resolvers still need mock responses
+    // available or they hang / throw a different error. Keep the failure mode
+    // unambiguous by making every other sample well-formed.
+    for (let i = 0; i < 4; i++) {
+      mockCreate.mockResolvedValueOnce(
         fakeVlmResponse({
           panel_top: 300,
           panel_bottom: 600,
@@ -265,6 +342,7 @@ describe('getPanelGeometry', () => {
           main_switch_side: 'none',
         })
       );
+    }
     await expect(getPanelGeometry(buf)).rejects.toThrow(/panel_\*/);
   });
 });
@@ -280,12 +358,19 @@ describe('getCarrierCount', () => {
     panel_left: 100,
     panel_right: 900,
   };
-  const imageDims = { imageWidth: 1000, imageHeight: 600 };
+  // imageWidth = 500 chosen so panelWidthPx = (800/1000)*500 = 400
+  // → expectedMin = floor(400/90) = 4, expectedMax = ceil(400/30) = 14
+  // — allows 6/7/8 carrier counts below to run in single-pass (no retry fired)
+  // while keeping the retry tests later in this suite free to choose extreme
+  // counts that fall OUTSIDE [4,14].
+  const imageDims = { imageWidth: 500, imageHeight: 600 };
 
   test('computes equal-pitch slot centre X coords across the panel', async () => {
     const buf = await makeFakeJpeg();
-    // 8 carriers over a 0-1000 panel width of 800 → pitch = 100 norm = 100px (1000px image)
-    // First centre: panel_left(100) + 100*0.5 = 150 → 150px
+    // 8 carriers over a 0-1000 panel width of 800 → pitch = 100 norm
+    // On a 500px-wide image: pitchPx = (100/1000)*500 = 50
+    // First centre norm = panel_left(100) + 100*0.5 = 150 → 150/1000 * 500 = 75px
+    // Last centre norm  = panel_left(100) + 100*7.5 = 850 → 850/1000 * 500 = 425px
     mockCreate.mockResolvedValueOnce(
       fakeVlmResponse({ carrier_count: 8, main_switch_offset: 'none' })
     );
@@ -293,11 +378,14 @@ describe('getCarrierCount', () => {
 
     expect(result.carrierCount).toBe(8);
     expect(result.slotCentersX).toHaveLength(8);
-    expect(result.slotCentersX[0]).toBe(150);
-    expect(result.slotCentersX[7]).toBe(850);
-    expect(result.carrierPitchPx).toBeCloseTo(100);
+    expect(result.slotCentersX[0]).toBe(75);
+    expect(result.slotCentersX[7]).toBe(425);
+    expect(result.carrierPitchPx).toBeCloseTo(50);
     expect(result.mainSwitchOffset).toBe('none');
     expect(result.mainSwitchSlotIndex).toBeNull();
+    // In-range count → no retry fires.
+    expect(result.retry).toBeNull();
+    expect(mockCreate).toHaveBeenCalledTimes(1);
   });
 
   test('main_switch_offset="right-edge" sets mainSwitchSlotIndex to last slot', async () => {
@@ -346,6 +434,160 @@ describe('getCarrierCount', () => {
     await expect(getCarrierCount(buf, medianPanel, { imageWidth: 0 })).rejects.toThrow(
       /imageWidth/
     );
+  });
+
+  // -------------------------------------------------------------------------
+  // Sanity-check retry — Stage 2 improvement: if first VLM carrier_count falls
+  // outside the panel-width-derived expected range [floor(W/90), ceil(W/30)],
+  // a SECOND VLM call is made with a strengthened recount prompt. Retry value
+  // wins (decision logged via console.log).
+  // -------------------------------------------------------------------------
+  describe('sanity-check retry', () => {
+    // Quiet the branch-decision logger during these tests so Jest output stays
+    // focused on assertions.
+    let logSpy;
+    beforeEach(() => {
+      // eslint-disable-next-line no-console
+      logSpy = jest.spyOn(console, 'log').mockImplementation(() => {});
+    });
+    afterEach(() => {
+      logSpy.mockRestore();
+    });
+
+    test('first count in expected range → single VLM call, retry=null', async () => {
+      const buf = await makeFakeJpeg();
+      // imageWidth=500, panelWidthPx=400 → range [4, 14]. 8 is in range.
+      mockCreate.mockResolvedValueOnce(
+        fakeVlmResponse({ carrier_count: 8, main_switch_offset: 'none' })
+      );
+
+      const result = await getCarrierCount(buf, medianPanel, imageDims);
+
+      expect(mockCreate).toHaveBeenCalledTimes(1);
+      expect(result.retry).toBeNull();
+      expect(result.carrierCount).toBe(8);
+    });
+
+    test('first count out of range (too low) → retry fires, second count wins', async () => {
+      const buf = await makeFakeJpeg();
+      // imageWidth=500, panelWidthPx=400 → range [4, 14]. 2 is BELOW the min.
+      mockCreate
+        .mockResolvedValueOnce(
+          fakeVlmResponse({ carrier_count: 2, main_switch_offset: 'none' })
+        )
+        // Retry: a more plausible answer within the expected range.
+        .mockResolvedValueOnce(
+          fakeVlmResponse({ carrier_count: 6, main_switch_offset: 'none' })
+        );
+
+      const result = await getCarrierCount(buf, medianPanel, imageDims);
+
+      expect(mockCreate).toHaveBeenCalledTimes(2);
+      // Retry wins.
+      expect(result.carrierCount).toBe(6);
+      expect(result.retry).toMatchObject({
+        fired: true,
+        firstCount: 2,
+        secondCount: 6,
+        expectedMin: 4,
+        expectedMax: 14,
+        panelWidthPx: 400,
+        secondInRange: true,
+      });
+      // Branch decision logged.
+      expect(logSpy).toHaveBeenCalledWith(
+        expect.stringMatching(/retry fired.*first=2.*second=6/)
+      );
+      // Usage summed across both calls (2 × 100 input, 2 × 40 output from fakeVlmResponse defaults).
+      expect(result.usage.inputTokens).toBe(200);
+      expect(result.usage.outputTokens).toBe(80);
+    });
+
+    test('first count out of range (too high) → retry fires, second count wins', async () => {
+      const buf = await makeFakeJpeg();
+      // 30 is ABOVE expectedMax (14).
+      mockCreate
+        .mockResolvedValueOnce(
+          fakeVlmResponse({ carrier_count: 30, main_switch_offset: 'none' })
+        )
+        .mockResolvedValueOnce(
+          fakeVlmResponse({ carrier_count: 10, main_switch_offset: 'none' })
+        );
+
+      const result = await getCarrierCount(buf, medianPanel, imageDims);
+
+      expect(mockCreate).toHaveBeenCalledTimes(2);
+      expect(result.carrierCount).toBe(10);
+      expect(result.retry.fired).toBe(true);
+      expect(result.retry.firstCount).toBe(30);
+      expect(result.retry.secondCount).toBe(10);
+      expect(result.retry.secondInRange).toBe(true);
+    });
+
+    test('both counts disagree + retry still out-of-range → retry value still wins, flagged secondInRange=false', async () => {
+      const buf = await makeFakeJpeg();
+      // First call: 30 (too high). Retry: 2 (too low). Retry wins because it
+      // had the benefit of the strengthened recount prompt; secondInRange
+      // marks the result as still suspect so callers can escalate.
+      mockCreate
+        .mockResolvedValueOnce(
+          fakeVlmResponse({ carrier_count: 30, main_switch_offset: 'none' })
+        )
+        .mockResolvedValueOnce(
+          fakeVlmResponse({ carrier_count: 2, main_switch_offset: 'none' })
+        );
+
+      const result = await getCarrierCount(buf, medianPanel, imageDims);
+
+      expect(mockCreate).toHaveBeenCalledTimes(2);
+      expect(result.carrierCount).toBe(2);
+      expect(result.retry).toMatchObject({
+        fired: true,
+        firstCount: 30,
+        secondCount: 2,
+        secondInRange: false,
+      });
+    });
+
+    test('retry call receives a strengthened prompt mentioning the first count + expected range', async () => {
+      const buf = await makeFakeJpeg();
+      mockCreate
+        .mockResolvedValueOnce(
+          fakeVlmResponse({ carrier_count: 25, main_switch_offset: 'none' })
+        )
+        .mockResolvedValueOnce(
+          fakeVlmResponse({ carrier_count: 8, main_switch_offset: 'none' })
+        );
+
+      await getCarrierCount(buf, medianPanel, imageDims);
+
+      const firstCallPrompt = mockCreate.mock.calls[0][0].messages[0].content.find(
+        (b) => b.type === 'text'
+      ).text;
+      const secondCallPrompt = mockCreate.mock.calls[1][0].messages[0].content.find(
+        (b) => b.type === 'text'
+      ).text;
+
+      // First call has the baseline prompt — no recount language.
+      expect(firstCallPrompt).not.toMatch(/RECOUNT/);
+      // Retry call must flag the previous-count context and the expected range.
+      expect(secondCallPrompt).toMatch(/RECOUNT/);
+      expect(secondCallPrompt).toContain('25');
+      expect(secondCallPrompt).toMatch(/between 4 and 14/);
+    });
+
+    test('in-range branch logs "single-pass" decision', async () => {
+      const buf = await makeFakeJpeg();
+      mockCreate.mockResolvedValueOnce(
+        fakeVlmResponse({ carrier_count: 7, main_switch_offset: 'none' })
+      );
+
+      await getCarrierCount(buf, medianPanel, imageDims);
+
+      expect(logSpy).toHaveBeenCalledWith(
+        expect.stringMatching(/single-pass.*count=7.*\[4,14\]/)
+      );
+    });
   });
 });
 
@@ -711,16 +953,29 @@ describe('extractCcuRewireable', () => {
     );
 
   test('returns combined stage1 + stage2 + stage3 result with stageOutputs + ccu-rewireable-v1 schema', async () => {
-    const buf = await makeFakeJpeg();
+    // 250px-wide image so panelWidthPx = (800/1000)*250 = 200 →
+    // expectedMin=floor(200/90)=2, expectedMax=ceil(200/30)=7. carrier_count=4
+    // sits in range, so no Stage 2 retry fires and the VLM call count is the
+    // "pure" 5 (stage1) + 1 (stage2) + 1 (stage3) = 7 we assert on.
+    const buf = await makeFakeJpeg(250, 600);
 
     mockCreate
-      // Stage 1 — 3 rail samples
+      // Stage 1 — 5 panel samples (bumped from 3 for reliability)
       .mockResolvedValueOnce(
         fakeVlmResponse({
           panel_top: 300,
           panel_bottom: 600,
           panel_left: 100,
           panel_right: 900,
+          main_switch_side: 'right',
+        })
+      )
+      .mockResolvedValueOnce(
+        fakeVlmResponse({
+          panel_top: 305,
+          panel_bottom: 605,
+          panel_left: 105,
+          panel_right: 905,
           main_switch_side: 'right',
         })
       )
@@ -735,6 +990,15 @@ describe('extractCcuRewireable', () => {
       )
       .mockResolvedValueOnce(
         fakeVlmResponse({
+          panel_top: 315,
+          panel_bottom: 615,
+          panel_left: 115,
+          panel_right: 915,
+          main_switch_side: 'right',
+        })
+      )
+      .mockResolvedValueOnce(
+        fakeVlmResponse({
           panel_top: 320,
           panel_bottom: 620,
           panel_left: 120,
@@ -742,7 +1006,7 @@ describe('extractCcuRewireable', () => {
           main_switch_side: 'right',
         })
       )
-      // Stage 2 — carrier count
+      // Stage 2 — carrier count (in range, no retry)
       .mockResolvedValueOnce(
         fakeVlmResponse({ carrier_count: 4, main_switch_offset: 'none' })
       )
@@ -775,15 +1039,15 @@ describe('extractCcuRewireable', () => {
     expect(result.slots[1].ratingAmps).toBe(5);
     expect(typeof result.slots[0].crop.base64).toBe('string');
 
-    expect(result.stageOutputs.stage1.panels).toHaveLength(3);
+    expect(result.stageOutputs.stage1.panels).toHaveLength(5);
     expect(result.stageOutputs.stage2.carrierCount).toBe(4);
     expect(result.stageOutputs.stage3.batchCount).toBe(1);
     expect(result.stageOutputs.stage3.batchSize).toBe(4);
     expect(result.timings.stage3Ms).toBeGreaterThanOrEqual(0);
 
-    // Usage summed across all VLM calls.
-    expect(result.usage.inputTokens).toBe(5 * 100);
-    expect(result.usage.outputTokens).toBe(5 * 40);
+    // Usage summed across all VLM calls. 5 stage1 + 1 stage2 + 1 stage3 = 7 calls.
+    expect(result.usage.inputTokens).toBe(7 * 100);
+    expect(result.usage.outputTokens).toBe(7 * 40);
   });
 
   test('propagates Stage 1 errors without running Stage 2 or Stage 3', async () => {
@@ -793,7 +1057,9 @@ describe('extractCcuRewireable', () => {
   });
 
   test('soft-fails on Stage 3 error: slots=null, stage3Error set, Stage 1/2 preserved', async () => {
-    const buf = await makeFakeJpeg();
+    // Narrow 250px image keeps carrier_count=4 inside the expected-count range
+    // so the Stage 2 retry path doesn't fire (which would consume an extra mock).
+    const buf = await makeFakeJpeg(250, 600);
 
     mockCreate
       .mockResolvedValueOnce(
@@ -807,10 +1073,28 @@ describe('extractCcuRewireable', () => {
       )
       .mockResolvedValueOnce(
         fakeVlmResponse({
+          panel_top: 305,
+          panel_bottom: 605,
+          panel_left: 105,
+          panel_right: 905,
+          main_switch_side: 'right',
+        })
+      )
+      .mockResolvedValueOnce(
+        fakeVlmResponse({
           panel_top: 310,
           panel_bottom: 610,
           panel_left: 110,
           panel_right: 910,
+          main_switch_side: 'right',
+        })
+      )
+      .mockResolvedValueOnce(
+        fakeVlmResponse({
+          panel_top: 315,
+          panel_bottom: 615,
+          panel_left: 115,
+          panel_right: 915,
           main_switch_side: 'right',
         })
       )
@@ -847,36 +1131,23 @@ describe('extractCcuRewireable', () => {
   });
 
   test('flags lowConfidence=true when any Stage 3 slot has confidence < 0.6', async () => {
-    const buf = await makeFakeJpeg();
+    // Narrow 250px image keeps carrier_count=3 within the expected-count
+    // window (range [2,7] at panelWidthPx=200) — avoids retry path.
+    const buf = await makeFakeJpeg(250, 600);
 
+    // 5 identical Stage 1 samples.
+    for (let i = 0; i < 5; i++) {
+      mockCreate.mockResolvedValueOnce(
+        fakeVlmResponse({
+          panel_top: 300,
+          panel_bottom: 600,
+          panel_left: 100,
+          panel_right: 900,
+          main_switch_side: 'none',
+        })
+      );
+    }
     mockCreate
-      .mockResolvedValueOnce(
-        fakeVlmResponse({
-          panel_top: 300,
-          panel_bottom: 600,
-          panel_left: 100,
-          panel_right: 900,
-          main_switch_side: 'none',
-        })
-      )
-      .mockResolvedValueOnce(
-        fakeVlmResponse({
-          panel_top: 300,
-          panel_bottom: 600,
-          panel_left: 100,
-          panel_right: 900,
-          main_switch_side: 'none',
-        })
-      )
-      .mockResolvedValueOnce(
-        fakeVlmResponse({
-          panel_top: 300,
-          panel_bottom: 600,
-          panel_left: 100,
-          panel_right: 900,
-          main_switch_side: 'none',
-        })
-      )
       .mockResolvedValueOnce(
         fakeVlmResponse({ carrier_count: 3, main_switch_offset: 'none' })
       )

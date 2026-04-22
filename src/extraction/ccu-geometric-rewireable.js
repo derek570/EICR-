@@ -7,10 +7,14 @@
  * comparable from the caller's perspective.
  *
  *   Stage 1 (getPanelGeometry): carrier-bank (panel) bbox on 0-1000 grid + main
- *                               switch side. Median of 3 samples with SD check.
+ *                               switch side. Median of 5 samples with SD check.
  *   Stage 2 (getCarrierCount):  carrier count + main-switch-edge offset. Equal-pitch
  *                               slot centre X coords derived from panel bounds,
  *                               excluding the main-switch slot if it sits at a band edge.
+ *                               Sanity-checks the VLM count against panel width
+ *                               (expected pitch 30–90 px); on out-of-range counts
+ *                               a retry call is made with a strengthened recount
+ *                               prompt and the retry value wins.
  *   Stage 3 (classifyCarriers): per-slot crop-and-zoom classification, batched 4 crops
  *                               per VLM call. Body-colour → rating lookup applied
  *                               locally (Wylex white=5A, blue=15A, yellow=20A,
@@ -90,10 +94,32 @@ Additionally classify the main switch location:
 - "none" = the main switch is integrated into the carrier row at the same pitch as the carriers, or it is not visible in the photo.
 Normalise to 0-1000 (top-left origin). Output strictly:
 {"panel_top": <int>, "panel_bottom": <int>, "panel_left": <int>, "panel_right": <int>, "main_switch_side": "left"|"right"|"none"}`,
+
+  // Variation 4 — emphasise "inner rectangle where carriers sit"
+  `You are inspecting a UK rewireable consumer unit. Find the INNER RECTANGLE within the enclosure where the pull-out fuse CARRIERS sit side-by-side.
+Think of it as the "socket plate" region — the moulded bakelite or plastic panel with rows of cut-outs into which each carrier slots. Every carrier body (with its red pull-tab) sits inside this rectangle. Everything outside this rectangle — the metal case surround, the cover lip, the neutral / earth bar strips, the incoming cable glands, any printed labels — must be EXCLUDED from the box.
+Then determine the position of the main switch relative to the carrier row:
+- "left" if a discrete main switch / switch-fuse isolator sits OUTSIDE the carrier row to its left
+- "right" if it sits OUTSIDE the carrier row to its right
+- "none" if it shares the carrier row at the same pitch OR is not visible
+Coordinates are normalised to 0-1000 (origin at top-left). Respond JSON only:
+{"panel_top": <int>, "panel_bottom": <int>, "panel_left": <int>, "panel_right": <int>, "main_switch_side": "left"|"right"|"none"}`,
+
+  // Variation 5 — emphasise "ignore the metal enclosure and labels"
+  `Given this UK rewireable consumer-unit photograph, locate the bank of pull-out fuse carriers.
+IGNORE EVERYTHING ELSE: the steel / metal outer enclosure, any screws, any printed stickers or labels (e.g. circuit schedules, manufacturer badges), the neutral bar, the earth bar, the incoming mains tails, any plastic cover flap. Do NOT include any of those in your bounding box.
+Return only the tightest rectangle that hugs the fuse-carrier bodies themselves — from the top of the bodies (or the base of the red pull-tabs if flush) down to the bottom of the bodies, from the outer edge of the leftmost carrier to the outer edge of the rightmost carrier.
+Also say where the MAIN SWITCH is:
+- "left" = sits to the LEFT of the carriers as a separate unit
+- "right" = sits to the RIGHT of the carriers as a separate unit
+- "none" = integrated into the carrier row (same pitch) or not visible
+All coordinates on 0-1000 scale, top-left origin. JSON only:
+{"panel_top": <int>, "panel_bottom": <int>, "panel_left": <int>, "panel_right": <int>, "main_switch_side": "left"|"right"|"none"}`,
 ];
 
 const CARRIER_COUNT_PROMPT = (
-  panel
+  panel,
+  { retryContext = null } = {}
 ) => `This is a UK rewireable consumer unit. The carrier-bank bounding box on a 0-1000 scale is:
 - panel_top: ${panel.panel_top}
 - panel_bottom: ${panel.panel_bottom}
@@ -107,7 +133,11 @@ Also report whether one of the slots at the LEFT or RIGHT edge of the panel is o
 - "left-edge" = the LEFTMOST position is the main switch, not a fuse carrier.
 - "right-edge" = the RIGHTMOST position is the main switch, not a fuse carrier.
 
-Return the TOTAL number of positions (carriers + any main switch at the edge) as carrier_count. A 6-way board with main switch at the right edge has carrier_count = 7 and main_switch_offset = "right-edge". A 6-way board with a separate main switch below or to the side of the carrier bank has carrier_count = 6 and main_switch_offset = "none".
+Return the TOTAL number of positions (carriers + any main switch at the edge) as carrier_count. A 6-way board with main switch at the right edge has carrier_count = 7 and main_switch_offset = "right-edge". A 6-way board with a separate main switch below or to the side of the carrier bank has carrier_count = 6 and main_switch_offset = "none".${
+    retryContext
+      ? `\n\nIMPORTANT RECOUNT: we previously estimated this board has ${retryContext.previousCount} positions, but that value is outside the expected range given the panel width. From the panel geometry we measured the expected number of slots is between ${retryContext.expectedMin} and ${retryContext.expectedMax} (based on a typical rewireable carrier pitch of 30–90 px on a ${retryContext.panelWidthPx}-px-wide panel). Please recount carefully — walk left-to-right across the panel band and count every distinct carrier or main-switch slot separated by a visible gap or join between mouldings. Do NOT just echo the previous count; look again at the image.`
+      : ''
+  }
 
 Respond with JSON only:
 {"carrier_count": <int>, "main_switch_offset": "none"|"left-edge"|"right-edge"}`;
@@ -130,6 +160,17 @@ For rewireable and cartridge carriers, read:
 - ratingAmps        — if cartridge, read the printed rating directly from the cartridge face (5/15/20/30/45/60/80/100). If rewireable, you MAY leave ratingAmps null and we will derive it from bodyColour via the Wylex code: white=5A, blue=15A, yellow=20A, red=30A, green=45A.
 - bsEn              — "BS 3036" for rewireable, "BS 1361" for cartridge domestic, "BS 88-2" for cartridge commercial. Null if not printed and you cannot determine from style.
 - confidence        — your self-assessed 0.0-1.0 confidence in the classification.
+
+COLOUR DISAMBIGUATION — READ THIS BEFORE YOU COMMIT TO A COLOUR:
+These carriers are often 30+ years old, caked with dust, and photographed under tungsten / sodium / fluorescent site lighting that skews colour balance. Two pairs are especially easy to confuse — use these tie-breakers before answering.
+
+- Blue (15A) vs red (30A):
+  A faded or dirt-covered BLUE carrier body can photograph with a reddish / magenta cast under warm indoor lighting. If the body is a CLEAR PURE RED that matches the hue of the red pull-tab above it, say "red". If the body has ANY BLUE TINT AT ALL — even a dull, desaturated, grey-blue or slightly violet tint — say "blue". When in doubt between these two, default to "blue": blue is by far the more common rating on domestic rewireable boards (lighting-circuit 15A is historically the most-used carrier).
+
+- White (5A) vs yellow (20A):
+  White bakelite yellows with age — a 30-year-old "white" 5A carrier can look cream, ivory, or distinctly yellow-tinted. If the body LACKS any strong yellow / orange / mustard pigment relative to a true yellow (20A) carrier sitting nearby on the same board, say "white". A true yellow carrier will be a saturated, pigmented yellow — not a pale cream. When only one type is present and you cannot comparison-check, default to "white" unless the body is obviously saturated yellow.
+
+REPEATING THE EARLIER WARNING so it stays front of mind: a carrier body that is legitimately the same RED as its pull-tab is a genuine 30A carrier — do NOT second-guess a clearly red body just because it matches the pull-tab hue. The pull-tab rule ("red tab is a handle, not a rating") only cautions against assuming a WHITE/BLUE/YELLOW/GREEN body is red because of the tab.
 
 For blanks: bodyColour, ratingAmps, bsEn may be null. Still return confidence.
 
@@ -263,7 +304,10 @@ function normToPx(value, dimension) {
 /**
  * Stage 1: Extract carrier-bank panel bounding box + main switch side.
  *
- * Runs 3 VLM samples with wording variations, takes the per-coordinate median,
+ * Runs 5 VLM samples with wording variations (bumped from 3 after a field
+ * test where three consecutive runs against the same Wylex photo returned
+ * carrierCount values of 7, 7, 6 — the extra samples stabilise the median
+ * panel bounds that Stage 2 divides by), takes the per-coordinate median,
  * majority-votes main_switch_side, and flags lowConfidence if any SD > 5% of
  * the normalised 0-1000 scale.
  *
@@ -356,6 +400,41 @@ export async function getPanelGeometry(imageBuffer) {
 // ---------------------------------------------------------------------------
 
 /**
+ * Compute the expected min/max carrier count from the panel width + image dimensions.
+ *
+ * Wylex-family rewireable carriers sit on a ~18mm pitch across a ~400mm-wide board,
+ * so on a 1000px-wide photo a carrier pitch of ~55px is typical. We allow a 30–90px
+ * pitch range (≈ 3x tolerance either side) so that a photo taken close up or far
+ * away still passes the sanity check. The resulting count window is:
+ *
+ *   expectedMin = floor(panelWidthPx / 90)   // fewest slots that fit at wide pitch
+ *   expectedMax = ceil(panelWidthPx / 30)    // most slots that fit at tight pitch
+ *
+ * Any first-pass carrier_count outside this window triggers a Stage-2 retry.
+ * @private
+ */
+function expectedCarrierCountRange(panelWidthPx) {
+  return {
+    expectedMin: Math.max(1, Math.floor(panelWidthPx / 90)),
+    expectedMax: Math.max(1, Math.ceil(panelWidthPx / 30)),
+  };
+}
+
+function parseCarrierCountSample(sample) {
+  const { carrier_count, main_switch_offset } = sample.parsed;
+  if (typeof carrier_count !== 'number' || carrier_count <= 0) {
+    throw new Error('getCarrierCount: VLM returned invalid carrier_count');
+  }
+  const offset =
+    main_switch_offset === 'left-edge' ||
+    main_switch_offset === 'right-edge' ||
+    main_switch_offset === 'none'
+      ? main_switch_offset
+      : 'none';
+  return { carrierCount: Math.round(carrier_count), offset };
+}
+
+/**
  * Stage 2: Count carriers and compute equal-pitched slot centre X coordinates.
  *
  * Returns slotCentersX in PIXEL coordinate space (so downstream crop code does
@@ -365,10 +444,19 @@ export async function getPanelGeometry(imageBuffer) {
  * the panel band), but we flag it via `mainSwitchSlotIndex` so the caller /
  * Stage 3 can classify that slot as a main switch rather than a carrier.
  *
+ * Reliability: after the first VLM call we sanity-check `carrier_count` against
+ * the panel width (expected pitch 30–90 px → derived min/max). If the count is
+ * outside that window we make a SECOND call with a strengthened prompt asking
+ * the VLM to recount. If both counts land in-range we keep the SECOND count
+ * (two chances, latest wins) — if the second is still out-of-range we still
+ * prefer it over the first, on the reasoning that the retry prompt gave the
+ * VLM explicit expected-range context the first call didn't have. The decision
+ * is logged so operators can spot recurring retry cases in production.
+ *
  * @param {Buffer} imageBuffer
  * @param {{panel_top:number, panel_bottom:number, panel_left:number, panel_right:number}} medianPanel
  * @param {{imageWidth:number, imageHeight:number}} imageDims
- * @returns {Promise<{carrierCount:number, slotCentersX:number[], carrierPitchPx:number, mainSwitchOffset: 'none'|'left-edge'|'right-edge', mainSwitchSlotIndex: number|null, usage: object}>}
+ * @returns {Promise<{carrierCount:number, slotCentersX:number[], carrierPitchPx:number, mainSwitchOffset: 'none'|'left-edge'|'right-edge', mainSwitchSlotIndex: number|null, retry: object|null, usage: object}>}
  * @throws if ANTHROPIC_API_KEY missing or VLM call fails or inputs invalid.
  */
 export async function getCarrierCount(imageBuffer, medianPanel, imageDims) {
@@ -398,21 +486,75 @@ export async function getCarrierCount(imageBuffer, medianPanel, imageDims) {
   const anthropic = await getAnthropicClient();
   const base64 = imageBuffer.toString('base64');
 
-  const sample = await callVlm(anthropic, base64, CARRIER_COUNT_PROMPT(medianPanel));
-  const { carrier_count, main_switch_offset } = sample.parsed;
-
-  if (typeof carrier_count !== 'number' || carrier_count <= 0) {
-    throw new Error('getCarrierCount: VLM returned invalid carrier_count');
-  }
-  const carrierCount = Math.round(carrier_count);
-  const offset =
-    main_switch_offset === 'left-edge' ||
-    main_switch_offset === 'right-edge' ||
-    main_switch_offset === 'none'
-      ? main_switch_offset
-      : 'none';
-
   const panelWidthNorm = medianPanel.panel_right - medianPanel.panel_left;
+  const panelWidthPx = Math.round((panelWidthNorm / 1000) * imageDims.imageWidth);
+  const { expectedMin, expectedMax } = expectedCarrierCountRange(panelWidthPx);
+
+  // First pass.
+  const firstSample = await callVlm(anthropic, base64, CARRIER_COUNT_PROMPT(medianPanel));
+  const first = parseCarrierCountSample(firstSample);
+
+  const usage = {
+    inputTokens: firstSample.inputTokens,
+    outputTokens: firstSample.outputTokens,
+  };
+
+  let chosenCount = first.carrierCount;
+  let chosenOffset = first.offset;
+  let retry = null;
+
+  const inRange = (n) => n >= expectedMin && n <= expectedMax;
+
+  if (!inRange(first.carrierCount)) {
+    // Second pass — retry with strengthened prompt. If the retry itself throws we
+    // propagate (same policy as the first call); we deliberately do NOT swallow a
+    // retry failure because it would leave the operator blind to the VLM flakiness
+    // the retry exists to catch.
+    const secondSample = await callVlm(
+      anthropic,
+      base64,
+      CARRIER_COUNT_PROMPT(medianPanel, {
+        retryContext: {
+          previousCount: first.carrierCount,
+          expectedMin,
+          expectedMax,
+          panelWidthPx,
+        },
+      })
+    );
+    const second = parseCarrierCountSample(secondSample);
+
+    usage.inputTokens += secondSample.inputTokens;
+    usage.outputTokens += secondSample.outputTokens;
+
+    // Retry wins — the retry prompt had explicit expected-range context that the
+    // first call did not, so even if the second value is also out-of-range it is
+    // the better-informed answer. Log the branch so prod ops can audit.
+    chosenCount = second.carrierCount;
+    chosenOffset = second.offset;
+    retry = {
+      fired: true,
+      firstCount: first.carrierCount,
+      secondCount: second.carrierCount,
+      expectedMin,
+      expectedMax,
+      panelWidthPx,
+      secondInRange: inRange(second.carrierCount),
+    };
+    // eslint-disable-next-line no-console
+    console.log(
+      `[ccu-rewireable] getCarrierCount: retry fired (first=${first.carrierCount} out of range [${expectedMin},${expectedMax}], second=${second.carrierCount}, panelWidthPx=${panelWidthPx})`
+    );
+  } else {
+    // eslint-disable-next-line no-console
+    console.log(
+      `[ccu-rewireable] getCarrierCount: single-pass (count=${first.carrierCount} in range [${expectedMin},${expectedMax}], panelWidthPx=${panelWidthPx})`
+    );
+  }
+
+  const carrierCount = chosenCount;
+  const offset = chosenOffset;
+
   const pitchNorm = panelWidthNorm / carrierCount;
 
   // Equal-pitch centre coordinates in 0-1000 normalised space, then converted
@@ -437,10 +579,8 @@ export async function getCarrierCount(imageBuffer, medianPanel, imageDims) {
     pitchNorm,
     mainSwitchOffset: offset,
     mainSwitchSlotIndex,
-    usage: {
-      inputTokens: sample.inputTokens,
-      outputTokens: sample.outputTokens,
-    },
+    retry,
+    usage,
   };
 }
 
@@ -527,8 +667,11 @@ export async function cropCarrierSlot(imageBuffer, slotIndex, geom) {
 
   const buffer = await sharp(imageBuffer)
     .extract({ left: leftPx, top: topPx, width: wPx, height: hPx })
-    // Upscale for VLM legibility — same 1024px-wide convention as modern pipeline.
-    .resize({ width: 1024, withoutEnlargement: false })
+    // Upscale for VLM legibility. Bumped 1024→1536 after a field test where one
+    // of three runs on a Wylex board misread a blue (15A) carrier as red (30A);
+    // the extra resolution preserves colour detail on faded BS 3036 bodies where
+    // the hue is already borderline under site lighting.
+    .resize({ width: 1536, withoutEnlargement: false })
     .jpeg({ quality: 90 })
     .toBuffer();
 
