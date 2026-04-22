@@ -1086,3 +1086,178 @@ describe('user_text sanitisation on ask_user_answered (Plan 03-10 Task 2)', () =
     });
   });
 });
+
+// -----------------------------------------------------------------------------
+// Plan 03-12 STG r5 remediation
+//   STT-10 — late-stop race guard (Codex r5 BLOCK)
+//   STT-11 — lastRegexResults reset on classifier early-returns (Codex r5 MAJOR)
+// -----------------------------------------------------------------------------
+
+describe('Plan 03-12 STT-10 — handleSessionStop late-transcript race', () => {
+  test('STT-10a — post-stop transcript is silently dropped (isStopping guard)', async () => {
+    const ws = connect(wss, 'user-1');
+    await sendFrame(ws, {
+      type: 'session_start',
+      sessionId: 'sess-stop-race',
+      jobState: { certificateType: 'eicr' },
+    });
+    const entry = activeSessions.get('sess-stop-race');
+    expect(entry).toBeDefined();
+
+    // Start the stop flow. We don't await it here — we want to interleave a
+    // transcript frame during the stop's teardown awaits (S3 upload etc) and
+    // assert the transcript handler bails on the isStopping guard.
+    const stopPromise = sendFrame(ws, { type: 'session_stop' });
+
+    // Immediately queue a transcript. Even if the stop already finished and
+    // deleted the session, the existing `activeSessions.has` guard covers
+    // that case — this test specifically exercises the window where the
+    // entry still exists but isStopping=true.
+    runShadowHarnessSpy.mockClear();
+    await sendFrame(ws, {
+      type: 'transcript',
+      text: 'late utterance during stop',
+      regexResults: [],
+    });
+
+    await stopPromise;
+
+    // Core assertion: the transcript must NOT reach the shadow harness.
+    // Either the isStopping guard bailed (preferred), or activeSessions
+    // was already clean (acceptable fallback — also prevents the harness).
+    expect(runShadowHarnessSpy).not.toHaveBeenCalled();
+  });
+
+  test('STT-10b — final rejectAll sweep fires before activeSessions.delete', async () => {
+    const ws = connect(wss, 'user-1');
+    await sendFrame(ws, {
+      type: 'session_start',
+      sessionId: 'sess-sweep',
+      jobState: { certificateType: 'eicr' },
+    });
+    const entry = activeSessions.get('sess-sweep');
+    expect(entry.pendingAsks).toBeDefined();
+
+    // Capture rejectAll ordering AND simulate a late-registered ask that
+    // slips into the registry DURING the teardown awaits — after the
+    // first rejectAll pass but before the final sweep. The belt-and-
+    // suspenders contract: the final rejectAll must still drain it.
+    const rejectOrder = [];
+    const originalRejectAll = entry.pendingAsks.rejectAll.bind(entry.pendingAsks);
+    let lateAskResolve;
+    let registered = false;
+    entry.pendingAsks.rejectAll = jest.fn((reason) => {
+      rejectOrder.push({ reason, entryPresent: activeSessions.has('sess-sweep') });
+      // On the FIRST rejectAll call (at top of handleSessionStop), register
+      // a fresh ask to simulate the in-flight-handler race. register() is
+      // safe to call — we control the entry. On subsequent calls just pass
+      // through.
+      if (!registered) {
+        registered = true;
+        entry.pendingAsks.register('toolu_late_race', {
+          contextField: 'ze',
+          contextCircuit: null,
+          resolve: (payload) => {
+            lateAskResolve = payload;
+          },
+          timer: setTimeout(() => {}, 60000),
+          askStartedAt: Date.now(),
+        });
+      }
+      return originalRejectAll(reason);
+    });
+
+    await sendFrame(ws, { type: 'session_stop' });
+
+    // Belt-and-suspenders: rejectAll called TWICE with session_stopped.
+    const sessionStoppedCalls = rejectOrder.filter((r) => r.reason === 'session_stopped');
+    expect(sessionStoppedCalls.length).toBeGreaterThanOrEqual(2);
+    // Both must fire while entry is still in activeSessions.
+    sessionStoppedCalls.forEach((c) => expect(c.entryPresent).toBe(true));
+    // The late-registered ask must have been resolved as session_stopped.
+    // `toMatchObject` tolerates registry-internal extras like wait_duration_ms.
+    expect(lateAskResolve).toMatchObject({ answered: false, reason: 'session_stopped' });
+    // Session fully torn down.
+    expect(activeSessions.has('sess-sweep')).toBe(false);
+  });
+});
+
+describe('Plan 03-12 STT-11 — lastRegexResults cleared on classifier early-return', () => {
+  test('answers-verdict early return clears pre-seeded entry.lastRegexResults', async () => {
+    const ws = connect(wss, 'user-1');
+    await sendFrame(ws, {
+      type: 'session_start',
+      sessionId: 'sess-stale-regex',
+      jobState: { certificateType: 'eicr' },
+    });
+    const entry = activeSessions.get('sess-stale-regex');
+
+    // Manually seed lastRegexResults to a non-empty value. Production code
+    // doesn't currently populate this (only line 1686 resets to []), but
+    // the fallback at `msg.regexResults ?? entry.lastRegexResults` is live;
+    // any future caller writing here must not leak stale hits across the
+    // answers-verdict early return. Defense in depth.
+    entry.lastRegexResults = [{ field: 'ze', circuit: 5, stale: true }];
+
+    entry.pendingAsks.register('toolu_ze_c5', {
+      contextField: 'ze',
+      contextCircuit: 5,
+      resolve: () => {},
+      timer: setTimeout(() => {}, 60000),
+      askStartedAt: Date.now(),
+    });
+    classifyOvertakeSpy.mockImplementationOnce(() => ({
+      kind: 'answers',
+      toolCallId: 'toolu_ze_c5',
+      userText: 'Circuit 5 ze is 0.25',
+    }));
+
+    await sendFrame(ws, {
+      type: 'transcript',
+      text: 'Circuit 5 ze is 0.25',
+      regexResults: [{ field: 'ze', circuit: 5 }],
+    });
+
+    // GREEN contract: the answers-verdict early return path resets
+    // entry.lastRegexResults to [] before returning.
+    expect(entry.lastRegexResults).toEqual([]);
+  });
+
+  test('validation-error early return clears pre-seeded entry.lastRegexResults', async () => {
+    const ws = connect(wss, 'user-1');
+    await sendFrame(ws, {
+      type: 'session_start',
+      sessionId: 'sess-valerr-regex',
+      jobState: { certificateType: 'eicr' },
+    });
+    const entry = activeSessions.get('sess-valerr-regex');
+    entry.lastRegexResults = [{ field: 'pfc', circuit: 3, stale: true }];
+
+    entry.pendingAsks.register('toolu_val_err', {
+      contextField: 'pfc',
+      contextCircuit: 3,
+      resolve: () => {},
+      timer: setTimeout(() => {}, 60000),
+      askStartedAt: Date.now(),
+    });
+
+    // Classifier returns answers with a pathological userText that the
+    // sanitiser will reject (length > HARD_REJECT_USER_TEXT_LEN = 8192).
+    const monster = 'x'.repeat(8200);
+    classifyOvertakeSpy.mockImplementationOnce(() => ({
+      kind: 'answers',
+      toolCallId: 'toolu_val_err',
+      userText: monster,
+    }));
+
+    await sendFrame(ws, {
+      type: 'transcript',
+      text: monster,
+      regexResults: [{ field: 'pfc', circuit: 3 }],
+    });
+
+    // Validation-error branch is also an early return — it too must clear
+    // lastRegexResults before returning.
+    expect(entry.lastRegexResults).toEqual([]);
+  });
+});

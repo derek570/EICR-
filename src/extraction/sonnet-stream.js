@@ -1458,6 +1458,25 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
 
     const entry = activeSessions.get(sessionId);
 
+    // Plan 03-12 STT-10a (STG r5 BLOCK remediation) — late-stop race guard.
+    // handleSessionStop sets entry.isStopping=true before its first rejectAll
+    // pass, then awaits flushUtteranceBuffer + S3 uploads + session_ack emit
+    // before finally deleting the activeSessions entry. During that window,
+    // transcript frames that slip through the pipe can still find the session
+    // present (activeSessions.has === true), run the shadow harness, and
+    // register fresh ask_user tool calls via the dispatcher — orphaning the
+    // ask past session teardown. Early-returning here prevents that class of
+    // race. We don't emit an error envelope: the iOS client has already
+    // asked to stop, and a "No active session" notice would just confuse
+    // the UX. Silent drop is the intended semantics.
+    if (entry.isStopping) {
+      logger.info('stage6.transcript_dropped_during_stop', {
+        sessionId,
+        hasText: typeof msg.text === 'string' && msg.text.trim().length > 0,
+      });
+      return;
+    }
+
     // Plan 03-10 Task 1 (STG BLOCK remediation) — utterance-consumption
     // dedupe. If this transcript carries a utterance_id that iOS already
     // routed as an ask_user_answered payload, drop it silently. Sonnet
@@ -1639,6 +1658,13 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
               answered: false,
               reason: 'validation_error',
             });
+            // Plan 03-12 STT-11 (STG r5 MAJOR remediation) — clear
+            // lastRegexResults here too. The normal-path reset at line
+            // 1686 is skipped on early-return; without this line, any
+            // non-empty entry.lastRegexResults (future populator, test
+            // seed, manual debug) would leak into the next transcript's
+            // `msg.regexResults ?? entry.lastRegexResults` fallback.
+            entry.lastRegexResults = [];
             // Outer try/finally (line ~1783) handles clearTimeout +
             // isExtracting=false on return — no explicit cleanup needed.
             return;
@@ -1655,6 +1681,15 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
             };
           }
           entry.pendingAsks.resolve(verdict.toolCallId, resolvePayload);
+
+          // Plan 03-12 STT-11 (STG r5 MAJOR remediation) — clear
+          // lastRegexResults on the answers early-return too. Same
+          // rationale as the validation_error branch above: the normal
+          // reset at line 1686 sits AFTER runShadowHarness, which this
+          // return skips. Defensive against any future populator of
+          // entry.lastRegexResults that would otherwise bleed stale
+          // hits into the next transcript's fallback.
+          entry.lastRegexResults = [];
 
           // Plan 03-11 Task 3 — BLOCK remediation: return early. The
           // dispatcher's tool_result is the sole Sonnet-visible channel
@@ -1870,6 +1905,14 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
     if (!sessionId || !activeSessions.has(sessionId)) return;
     const entry = activeSessions.get(sessionId);
 
+    // Plan 03-12 STT-10a (STG r5 BLOCK remediation) — flip the isStopping
+    // flag BEFORE any rejectAll / flush / S3 awaits. Combined with the
+    // handleTranscript guard at its entry, this ensures any subsequent
+    // transcript arriving during teardown is silently dropped (no harness,
+    // no dispatcher, no register). Set synchronously so the very next
+    // event-loop tick sees it — before any `await` below yields.
+    entry.isStopping = true;
+
     // Stage 6 Phase 3 Plan 03-08 (Codex STG #3): release blocking asks BEFORE
     // the existing stop-path cleanup. Placed here (not near the
     // activeSessions.delete at the end of this function) so ANY intermediate
@@ -1936,6 +1979,21 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
     if (entry.rehydrateSessionId) {
       sonnetSessionStore.remove(entry.rehydrateSessionId);
     }
+
+    // Plan 03-12 STT-10b (STG r5 BLOCK remediation) — belt-and-suspenders
+    // final rejectAll pass. The entry-point rejectAll at line 1880 drains
+    // every ask known at the moment stop began; the isStopping guard on
+    // handleTranscript prevents NEW harness runs from registering fresh
+    // asks during teardown. But a transcript handler that started BEFORE
+    // stop began and is already past the isStopping check (e.g. paused
+    // awaiting Anthropic API) can still resume and register into the
+    // registry during the awaits above. Sweeping a second time here
+    // guarantees any such late-registered ask resolves as session_stopped
+    // rather than hanging as an orphan. Cheap (O(pendingAsks.size)), runs
+    // while the entry is still in activeSessions — callers awaiting the
+    // ask Promise receive the rejection before session_ack emit.
+    entry.pendingAsks.rejectAll('session_stopped');
+
     activeSessions.delete(sessionId);
     logger.info('Session stopped', { sessionId });
   }
