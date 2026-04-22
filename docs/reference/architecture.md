@@ -93,6 +93,33 @@ Current models used by the backend processing pipeline:
 
 **Note:** For recording, iOS fetches API keys from `GET /api/keys` and connects directly to Deepgram. Sonnet extraction runs server-side via WebSocket. For batch processing and CCU photo analysis, the backend calls AI APIs directly.
 
+## CCU Photo Extraction Pipeline
+
+`POST /api/analyze-ccu` (route: `src/routes/extraction.js`) runs a per-slot crop-and-classify VLM pipeline as the primary source of `circuits[]`, with the single-shot VLM prompt running in parallel as the authoritative source for labels and board-level metadata.
+
+Sequence:
+
+1. **Board-technology classifier** — one small VLM call (`claude-sonnet-4-6`, ~200 max tokens, ~3 s). Returns `{board_technology, main_switch_position}`. Routes the rest of the pipeline. Cost: ~$0.01. Source: `classifyBoardTechnology` in `src/routes/extraction.js`.
+2. **Geometric pipeline** — three-stage per-slot extraction, dispatched based on classifier result:
+   - **Modern** (MCB/RCBO boards): `src/extraction/ccu-geometric.js` — Stage 1 finds DIN-rail bbox (3 parallel VLM samples, median); Stage 2 derives module count from main-switch pitch; Stage 3 crops each slot and classifies (`mcb|rcbo|rcd|main_switch|spd|blank|unknown`) in batches of 4 crops per VLM call.
+   - **Rewireable fuse** (BS 3036): `src/extraction/ccu-geometric-rewireable.js` — Stage 1 finds the carrier-bank panel bbox (no DIN rail); Stage 2 counts the carrier slots within that bank; Stage 3 classifies each crop as `rewireable|cartridge|blank`, reads the carrier body colour, and applies the BS 3036 colour code (white=5A, blue=15A, yellow=20A, red=30A, green=45A).
+   - **Cartridge fuse / mixed** — routed to the rewireable pipeline; Stage 3 tags BS 1361 / BS 88-2 carriers as `cartridge` and reads the printed rating directly.
+3. **Single-shot prompt** — the pre-existing ~11k-char 4-step-methodology prompt runs in parallel with Step 2. It is the authoritative source for circuit **labels**, main switch, SPD, board manufacturer/model, confidence message, and `questionsForInspector`.
+4. **Merge** — `slotsToCircuits` in `extraction.js` builds `circuits[]` from the Stage 3 slot classifications: circuit 1 is nearest the main switch (BS 7671), labels are pasted in from single-shot by circuit number, and any slot with confidence < 0.7 (or `classification: "unknown"`) falls back to the single-shot value at that position.
+5. **Post-processing** — `applyBsEnFallback`, `normaliseCircuitLabels`, `lookupMissingRcdTypes` (web-search for RCD waveform type via `gpt-5-search-api` when Stage 3 missed it and the board manufacturer is known), main-switch default fills.
+6. **Response shape** includes `circuits[]` (primary), `slots[]` (per-slot classifications + base64 crops for iOS tap-to-correct UI), `geometric` (panel/rail geometry), `extraction_source: "geometric-merged" | "single-shot"`, plus the pre-existing fields.
+
+| Pipeline Step | Model | Cost |
+|---|---|---|
+| Classifier | `claude-sonnet-4-6` | ~$0.01 |
+| Geometric Stage 1 (rails/panel) | `claude-sonnet-4-6` ×3 | ~$0.02 |
+| Geometric Stage 2 (count) | `claude-sonnet-4-6` | ~$0.01 |
+| Geometric Stage 3 (classify N slots) | `claude-sonnet-4-6` ×ceil(N/4) | ~$0.02-0.03 |
+| Single-shot prompt | `claude-sonnet-4-6` | ~$0.03 |
+| **Total per extraction** | | **~$0.08–0.09** |
+
+**Kill switch**: `CCU_GEOMETRIC_V1=false` on the task-def disables the per-slot path entirely — single-shot runs alone (pre-sprint behaviour). Default (env var unset or set to anything other than `false`) is **ON**. Flip the flag at the task-def to roll back without redeploying.
+
 ## AWS Configuration
 
 | Resource | Value |
