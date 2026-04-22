@@ -689,7 +689,7 @@ router.post('/recording/sonnet-extract', auth.requireAuth, async (req, res) => {
  * @param {string} model — model id (e.g. claude-sonnet-4-6)
  * @returns {Promise<{boardTechnology:string, mainSwitchPosition:string, confidence:number, usage:{inputTokens:number,outputTokens:number}}>}
  */
-async function classifyBoardTechnology(base64, anthropic, model) {
+export async function classifyBoardTechnology(base64, anthropic, model) {
   const prompt = `Look at this UK fuseboard photo. Return ONLY a JSON object:
 {"board_technology": "modern" | "rewireable_fuse" | "cartridge_fuse" | "mixed", "main_switch_position": "left" | "right" | "none", "confidence": 0.0-1.0}
 
@@ -767,7 +767,7 @@ Return ONLY the JSON object.`;
  *
  * @returns {Array|null} circuits array, or null if slots is empty/invalid.
  */
-function slotsToCircuits({
+export function slotsToCircuits({
   slots,
   mainSwitchSide,
   singleShotCircuits,
@@ -856,7 +856,7 @@ function slotsToCircuits({
  * Translate one high-confidence slot classification into an EICR-schema circuit row.
  * Device fields come from the slot; label comes from single-shot later.
  */
-function buildCircuitFromSlot(slot, circuit_number, upstreamRcd) {
+export function buildCircuitFromSlot(slot, circuit_number, upstreamRcd) {
   const cls = (slot.classification || '').toLowerCase();
   const ratingAmps = slot.ratingAmps;
 
