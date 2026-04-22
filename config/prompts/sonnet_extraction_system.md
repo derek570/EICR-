@@ -50,8 +50,8 @@ CIRCUIT ROUTING RULES:
 - "live to live"/"light to live" = insulation_resistance_l_l, NOT insulation_resistance_l_e.
 - cable_size = LIVE conductor mm2 (not earth). "lives 2.5, earths 1.5" -> cable_size=2.5.
 - "type B 32" = ocpd_type B + ocpd_rating 32. ocpd_type = B/C/D (MCB/RCBO type).
-- "wiring type A"/"cable type A" = wiring_type (A-G). NOT ocpd_type.
-- "ref method C"/"wiring method C" = ref_method (A-G). NOT ocpd_type.
+- "wiring type A"/"cable type A" = wiring_type (A-H + O, IET model EICR key). NOT ocpd_type.
+- "ref method C"/"wiring method C" = ref_method (A-G, or 100-103 for buried). NOT ocpd_type.
 - PFC (prospective fault current): normalise to kA (e.g., "1.2 kA" or "1200 amps" -> 1.2). "nought 88" = 0.88 kA (NOT 88). Range 0.1-20 kA.
 - Insulation resistance: ">200" or ">999" are valid (meter reads off-scale). Always include > prefix for off-scale readings.
 - "LIM" (limitation): A valid value for ANY test field. Means the reading could not be obtained or the meter is at its limit. Deepgram may transcribe as "lim", "limb", "limitation", "limited", "Lynn", or "Lym". Always normalise to "LIM" (uppercase). Extract with the appropriate field and circuit like any other reading. Do NOT treat as incomplete or unclear -- it is a deliberate, meaningful result.
@@ -153,8 +153,18 @@ CIRCUIT FIELDS (per circuit):
 - rcd_bs_en: BS EN standard number for the RCD (e.g., "61008" for standalone RCD/RCCB, "61009" for RCBO). Extract when stated.
 - cable_size: live conductor mm2 (e.g., "2.5", "4.0", "6.0", "10.0")
 - cable_size_earth: earth conductor mm2 (e.g., "1.5", "2.5")
-- wiring_type: BS 7671 wiring type LETTER CODE only: "A" (sheathed/T&E), "B" (single in conduit), "C" (single in trunking), "D" (SWA/armoured). If the inspector says a cable description like "Twin & Earth" or "T&E", return "A". If "SWA" or "armoured", return "D". Always return a single letter, never a description. NOT the reference method -- that is ref_method.
-- ref_method: BS7671 installation reference method code (e.g., "A", "B", "C", "100", "101", "102", "103"). NOT the cable/wiring type -- that is wiring_type. "Method C" or "ref method C" = ref_method.
+- wiring_type: IET model EICR Schedule of Test Results key (9 codes). Return a SINGLE letter only, never a description:
+  - "A" = PVC/PVC T&E (flat twin-and-earth, including XLPE T&E)
+  - "B" = PVC in metallic conduit (steel conduit)
+  - "C" = PVC in non-metallic conduit (plastic/PVC conduit)
+  - "D" = PVC in metallic trunking (steel trunking)
+  - "E" = PVC in non-metallic trunking (plastic/PVC trunking)
+  - "F" = PVC/SWA (PVC-insulated armoured cable)
+  - "G" = XLPE/SWA (XLPE-insulated armoured cable)
+  - "H" = MICC / mineral-insulated (pyro, Pyrotenax, MIMS)
+  - "O" = Other (FP200 fire-rated LSF, flex, SY/YY/CY control cables, anything else)
+  Map spoken descriptions: "twin & earth"/"T&E"/"T+E" → A; "metallic conduit"/"steel conduit" → B; "plastic conduit" → C; "metallic trunking" → D; "plastic trunking" → E; "PVC SWA"/"SWA"/"armoured" → F; "XLPE SWA"/"XLPE/SWA" → G; "MICC"/"mineral"/"mineral insulated"/"pyro"/"MIMS" → H; "FP200"/"fire rated"/"flex"/"SY"/"YY" → O. NOT the reference method — that is ref_method.
+- ref_method: BS 7671 Appendix 4 installation reference method. A–G are in-air methods; 100–103 are buried-cable methods (garden feeds, outbuildings, EV-charger trenches). Return a single token: "A", "B", "C", "D", "E", "F", "G", "100", "101", "102", or "103". NOT the cable/wiring type — that is wiring_type. "Method C" or "ref method C" = ref_method.
 - circuit_description: what the circuit supplies (e.g., "Kitchen Sockets", "Upstairs Lighting")
 - zs: earth fault loop impedance in ohms
 - insulation_resistance_l_l: line-line in megohms
