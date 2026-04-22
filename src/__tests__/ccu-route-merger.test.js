@@ -270,89 +270,104 @@ describe('slotsToCircuits', () => {
     expect(circuits[0].ocpd_bs_en).toBe('BS 1361');
   });
 
-  test('9. low-confidence slot falls back to singleShotCircuits for device fields', () => {
-    const singleShotCircuits = [
-      makeSSCircuit(1, { label: 'Cooker', ocpd_type: 'C', ocpd_rating_a: '40' }),
-    ];
+  test('9. low-confidence slot emits slot-derived fields + low_confidence=true (no single-shot fallback)', () => {
+    // ARCHITECTURE NOTE: Single-shot fallback was removed on 2026-04-22 per
+    // Derek's architectural guidance: single-shot is inherently unreliable on
+    // whole-board classification, so overwriting a low-confidence slot reading
+    // with a single-shot value replaces uncertainty with equal-or-worse
+    // uncertainty. The new behaviour: emit the slot's own reading and set
+    // low_confidence so UI surfaces it to the inspector.
     const slots = [
-      // confidence 0.5 < default threshold 0.7
-      makeSlot({ classification: 'mcb', tripCurve: 'B', ratingAmps: 32, confidence: 0.5 }),
+      makeSlot({
+        classification: 'mcb',
+        tripCurve: 'B',
+        ratingAmps: 32,
+        confidence: 0.5,
+        label: 'Lights',
+      }),
     ];
 
-    const circuits = slotsToCircuits({ slots, mainSwitchSide: 'left', singleShotCircuits });
+    const circuits = slotsToCircuits({ slots, mainSwitchSide: 'left' });
 
     expect(circuits).toHaveLength(1);
-    // Should use single-shot data for device fields
-    expect(circuits[0].ocpd_type).toBe('C');
-    expect(circuits[0].ocpd_rating_a).toBe('40');
-    expect(circuits[0].label).toBe('Cooker');
     expect(circuits[0].circuit_number).toBe(1);
+    // Device fields still come from the slot's own reading — just marked
+    // uncertain.
+    expect(circuits[0].ocpd_type).toBe('B');
+    expect(circuits[0].ocpd_rating_a).toBe('32');
+    expect(circuits[0].label).toBe('Lights');
+    expect(circuits[0].low_confidence).toBe(true);
   });
 
-  test('10. low-confidence slot with NO single-shot fallback → empty circuit shell', () => {
+  test('10. low-confidence slot with no Stage-4 label → null label + low_confidence=true', () => {
     const slots = [
       makeSlot({ classification: 'mcb', tripCurve: 'B', ratingAmps: 32, confidence: 0.5 }),
     ];
 
-    const circuits = slotsToCircuits({ slots, mainSwitchSide: 'left', singleShotCircuits: [] });
+    const circuits = slotsToCircuits({ slots, mainSwitchSide: 'left' });
 
     expect(circuits).toHaveLength(1);
     expect(circuits[0].circuit_number).toBe(1);
     expect(circuits[0].label).toBeNull();
-    expect(circuits[0].ocpd_type).toBeNull();
-    expect(circuits[0].ocpd_rating_a).toBeNull();
-    expect(circuits[0].ocpd_bs_en).toBeNull();
-    expect(circuits[0].ocpd_breaking_capacity_ka).toBeNull();
-    expect(circuits[0].is_rcbo).toBe(false);
-    expect(circuits[0].rcd_protected).toBe(false);
-    expect(circuits[0].rcd_type).toBeNull();
-    expect(circuits[0].rcd_rating_ma).toBeNull();
-    expect(circuits[0].rcd_bs_en).toBeNull();
+    // Slot's own reading is preserved, not nulled — UI flags via low_confidence.
+    expect(circuits[0].ocpd_type).toBe('B');
+    expect(circuits[0].ocpd_rating_a).toBe('32');
+    expect(circuits[0].low_confidence).toBe(true);
   });
 
-  test('11. label from single-shot; string "null" treated as missing and emits null', () => {
-    const singleShotCircuits = [
-      makeSSCircuit(1, { label: 'null' }), // string "null" → should be treated as missing
-      makeSSCircuit(2, { label: 'Kitchen' }),
-    ];
+  test('11. label comes from slot.label (Stage 4 per-slot pass); blank or null slot label emits null', () => {
+    // Stage 4 attaches label onto slot.label before the merger runs.
     const slots = [
-      makeSlot({ classification: 'mcb', tripCurve: 'B', ratingAmps: 32, confidence: 0.9 }),
-      makeSlot({ classification: 'mcb', tripCurve: 'B', ratingAmps: 16, confidence: 0.9 }),
+      makeSlot({
+        classification: 'mcb',
+        tripCurve: 'B',
+        ratingAmps: 32,
+        confidence: 0.9,
+        label: null,
+      }),
+      makeSlot({
+        classification: 'mcb',
+        tripCurve: 'B',
+        ratingAmps: 16,
+        confidence: 0.9,
+        label: 'Kitchen',
+      }),
+      makeSlot({
+        classification: 'mcb',
+        tripCurve: 'B',
+        ratingAmps: 16,
+        confidence: 0.9,
+        label: '   ', // empty/whitespace-only → null
+      }),
     ];
 
-    const circuits = slotsToCircuits({ slots, mainSwitchSide: 'left', singleShotCircuits });
+    const circuits = slotsToCircuits({ slots, mainSwitchSide: 'left' });
 
-    // circuit 1: label="null" → should emit null label (not overwritten with "null")
     expect(circuits[0].label).toBeNull();
-    // circuit 2: label="Kitchen" → should be preserved
     expect(circuits[1].label).toBe('Kitchen');
+    expect(circuits[2].label).toBeNull();
   });
 
-  test('12. minSlotConfidence=0.5 accepts a slot with confidence 0.6 that default threshold would reject', () => {
-    const singleShotCircuits = [
-      makeSSCircuit(1, { label: 'Lights', ocpd_type: 'C', ocpd_rating_a: '6' }),
-    ];
+  test('12. minSlotConfidence parameter: default 0.7 marks conf=0.6 as low_confidence; 0.5 accepts it', () => {
     const slots = [
       makeSlot({ classification: 'mcb', tripCurve: 'B', ratingAmps: 32, confidence: 0.6 }),
     ];
 
-    // Default threshold 0.7 → this would fall back to single-shot
-    const withDefault = slotsToCircuits({
-      slots,
-      mainSwitchSide: 'left',
-      singleShotCircuits,
-    });
-    expect(withDefault[0].ocpd_type).toBe('C'); // fallback to single-shot
+    // Default threshold 0.7 → slot is below threshold, marked low_confidence.
+    const withDefault = slotsToCircuits({ slots, mainSwitchSide: 'left' });
+    expect(withDefault[0].ocpd_type).toBe('B'); // slot data preserved
+    expect(withDefault[0].low_confidence).toBe(true);
 
-    // With lowered threshold 0.5 → slot is accepted, reads B/32 from slot
+    // Lowered threshold 0.5 → slot is accepted as confident; low_confidence flag
+    // is not set (undefined when the branch is skipped).
     const withLow = slotsToCircuits({
       slots,
       mainSwitchSide: 'left',
-      singleShotCircuits,
       minSlotConfidence: 0.5,
     });
     expect(withLow[0].ocpd_type).toBe('B');
     expect(withLow[0].ocpd_rating_a).toBe('32');
+    expect(withLow[0].low_confidence).toBeUndefined();
   });
 });
 

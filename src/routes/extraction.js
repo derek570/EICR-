@@ -16,6 +16,7 @@ import sharp from 'sharp';
 import { createFileFilter, IMAGE_MIMES, handleUploadError } from '../utils/upload.js';
 import { extractCcuGeometric } from '../extraction/ccu-geometric.js';
 import { extractCcuRewireable } from '../extraction/ccu-geometric-rewireable.js';
+import { extractSlotLabels } from '../extraction/ccu-label-pass.js';
 
 const router = Router();
 
@@ -747,30 +748,34 @@ Return ONLY the JSON object.`;
 /**
  * Build an EICR-schema `circuits[]` array from per-slot VLM classifications.
  *
- * Per-slot classifications give us reliable device identification (what is in
- * each position on the board) but NO label text — labels always come from the
- * single-shot prompt, which reads the circuit-schedule card or stickers on the
- * board cover. We therefore merge: slot data drives `ocpd_*` / `rcd_*` /
- * `is_rcbo` on each circuit, and single-shot labels are pasted in by circuit
- * number.
+ * Per-slot is the sole source of truth for circuit-level data:
+ *   - Device fields (ocpd_*, rcd_*, is_rcbo) come from Stage 3 classification.
+ *   - Labels come from Stage 4 (`slot.label`) — a separate per-crop label-
+ *     reading pass that looks at a wider-Y crop around each slot. Stage 4
+ *     uses the crop-and-classify principle instead of forcing the single-
+ *     shot LLM to reason about the whole board at once, which is inherently
+ *     unreliable (confirmed 2026-04-22 on a Wylex rewireable — single-shot
+ *     mislabeled the Shower carrier even after count was right).
+ *   - Single-shot is NOT consulted here. Its output remains the source of
+ *     board-level metadata (main switch, SPD, board manufacturer, overall
+ *     confidence, questionsForInspector) only — anything that genuinely
+ *     requires whole-board context.
  *
- * Circuit numbering follows the BS 7671 convention encoded in the existing
- * prompt: circuit 1 is the device nearest the main switch, numbering OUTWARD.
- * When `mainSwitchSide === 'right'` we therefore iterate the physical-order
- * slot array in reverse.
+ * Low-confidence or "unknown" slots are emitted with the slot's best-effort
+ * reading and a `low_confidence: true` marker. UI consumers surface that as
+ * "confirm this row" rather than silently overwriting with an equally-
+ * unreliable whole-board guess. The paired `slots[]` entry on the response
+ * carries the numeric confidence score for fine-grained reliability UI.
  *
- * Per-slot confidence gating: if a slot's classification confidence is below
- * `minSlotConfidence` (or its classification is "unknown"), we fall back to
- * the single-shot value for that circuit position rather than emit a
- * low-confidence Stage-3 reading. This keeps Stage 3's output as the primary
- * source without regressing on individual slots where the VLM was uncertain.
+ * Circuit numbering follows BS 7671: circuit 1 is the device nearest the
+ * main switch, numbering OUTWARD. When `mainSwitchSide === 'right'` we
+ * iterate the physical-order slot array in reverse.
  *
  * @returns {Array|null} circuits array, or null if slots is empty/invalid.
  */
 export function slotsToCircuits({
   slots,
   mainSwitchSide,
-  singleShotCircuits,
   minSlotConfidence = 0.7,
 }) {
   if (!Array.isArray(slots) || slots.length === 0) return null;
@@ -798,14 +803,15 @@ export function slotsToCircuits({
       continue;
     }
 
-    const fallback = (singleShotCircuits || []).find((c) => c.circuit_number === circuitNumber);
     const confident = (slot.confidence ?? 0) >= minSlotConfidence;
+    const slotLabel =
+      slot.label != null && String(slot.label).trim().length > 0 ? slot.label : null;
 
     let circuit;
     if (cls === 'blank') {
       circuit = {
         circuit_number: circuitNumber,
-        label: fallback?.label && fallback.label !== 'null' ? fallback.label : 'Spare',
+        label: slotLabel || 'Spare',
         ocpd_type: null,
         ocpd_rating_a: null,
         ocpd_bs_en: null,
@@ -817,32 +823,16 @@ export function slotsToCircuits({
         rcd_bs_en: null,
       };
     } else if (cls === 'unknown' || !confident) {
-      // Low-confidence slot — prefer single-shot's reading at this position.
-      circuit = fallback
-        ? { ...fallback, circuit_number: circuitNumber }
-        : {
-            circuit_number: circuitNumber,
-            label: null,
-            ocpd_type: null,
-            ocpd_rating_a: null,
-            ocpd_bs_en: null,
-            ocpd_breaking_capacity_ka: null,
-            is_rcbo: false,
-            rcd_protected: false,
-            rcd_type: null,
-            rcd_rating_ma: null,
-            rcd_bs_en: null,
-          };
-      // Still cascade upstream RCD even on low-confidence slots.
-      if (upstreamRcd && !circuit.is_rcbo) {
-        circuit.rcd_protected = true;
-        if (!circuit.rcd_type) circuit.rcd_type = upstreamRcd.type;
-        if (!circuit.rcd_rating_ma) circuit.rcd_rating_ma = upstreamRcd.sensitivity;
-        if (!circuit.rcd_bs_en) circuit.rcd_bs_en = '61008';
-      }
+      // Low-confidence / unknown slot: emit the slot's best reading and mark
+      // low_confidence. DO NOT fall back to single-shot — we moved away from
+      // that because single-shot is the unreliable whole-board reasoner we're
+      // replacing. UI surfaces low_confidence so the inspector verifies.
+      circuit = buildCircuitFromSlot(slot, circuitNumber, upstreamRcd);
+      circuit.label = slotLabel;
+      circuit.low_confidence = true;
     } else {
       circuit = buildCircuitFromSlot(slot, circuitNumber, upstreamRcd);
-      if (fallback?.label && fallback.label !== 'null') circuit.label = fallback.label;
+      circuit.label = slotLabel;
     }
 
     circuits.push(circuit);
@@ -854,7 +844,8 @@ export function slotsToCircuits({
 
 /**
  * Translate one high-confidence slot classification into an EICR-schema circuit row.
- * Device fields come from the slot; label comes from single-shot later.
+ * Device fields come from the slot; label is added separately by the caller
+ * from the Stage 4 per-slot label pass (`slot.label`).
  */
 export function buildCircuitFromSlot(slot, circuit_number, upstreamRcd) {
   const cls = (slot.classification || '').toLowerCase();
@@ -1348,8 +1339,89 @@ questionsForInspector: return EMPTY array [] unless RCD type could not be determ
       if (Array.isArray(geometricResult.slots) && geometricResult.slots.length > 0) {
         analysis.slots = geometricResult.slots;
 
-        // Merge: slot classifications become the PRIMARY circuits[] source.
-        // Prefer the classifier's main-switch side; fall back to single-shot's.
+        // Stage 4: per-slot label reading. Separate VLM pass that crops a
+        // wider-Y region around each slot (includes above/below label zones)
+        // and reads the circuit designation. Replaces the previous approach
+        // of pulling labels from the single-shot whole-board prompt — same
+        // crop-and-send principle as Stage 3, scaled to label reading.
+        //
+        // Soft-fail: any Stage 4 error leaves slot.label null and tags
+        // analysis.label_pass_error. Stage 3 data is preserved, merger
+        // emits circuits with label: null for Stage-4-failed slots; UI
+        // prompts the inspector to fill those in.
+        const labelGeom = {
+          slotCentersX: geometricResult.slotCentersX,
+          slotPitchPx:
+            geometricResult.moduleWidth ??
+            geometricResult.carrierPitch ??
+            null,
+          panelTopNorm:
+            geometricResult.panelBounds?.top ??
+            geometricResult.medianRails?.rail_top ??
+            null,
+          panelBottomNorm:
+            geometricResult.panelBounds?.bottom ??
+            geometricResult.medianRails?.rail_bottom ??
+            null,
+          imageWidth: geometricResult.imageWidth,
+          imageHeight: geometricResult.imageHeight,
+          slotsForSkipHint: geometricResult.slots,
+        };
+
+        let labelPassResult = null;
+        const labelGeomValid =
+          Number.isFinite(labelGeom.slotPitchPx) &&
+          Number.isFinite(labelGeom.panelTopNorm) &&
+          Number.isFinite(labelGeom.panelBottomNorm);
+
+        if (labelGeomValid) {
+          try {
+            labelPassResult = await extractSlotLabels(imageBytes, labelGeom);
+            // Attach labels onto the slots[] array by slotIndex so iOS and
+            // slotsToCircuits both see them.
+            const labelBySlotIndex = new Map(
+              (labelPassResult.labels || []).map((l) => [l.slotIndex, l])
+            );
+            analysis.slots = geometricResult.slots.map((slot) => {
+              const lab = labelBySlotIndex.get(slot.slotIndex);
+              return lab
+                ? {
+                    ...slot,
+                    label: lab.label ?? null,
+                    labelRaw: lab.rawLabel ?? null,
+                    labelConfidence: lab.confidence,
+                  }
+                : slot;
+            });
+            logger.info('CCU stage4 label pass complete', {
+              userId: req.user.id,
+              labelCount: labelPassResult.labels?.length ?? 0,
+              labelsRead: (labelPassResult.labels || []).filter((l) => l.label != null).length,
+              skippedSlots: labelPassResult.skippedSlotIndices?.length ?? 0,
+              vlmMs: labelPassResult.timings?.vlmMs,
+              tokensIn: labelPassResult.usage?.inputTokens,
+              tokensOut: labelPassResult.usage?.outputTokens,
+            });
+          } catch (err) {
+            logger.warn('CCU stage4 label pass failed (non-fatal)', {
+              userId: req.user.id,
+              error: err.message,
+            });
+            analysis.label_pass_error = err.message;
+          }
+        } else {
+          logger.warn('CCU stage4 label pass skipped — insufficient geometry', {
+            userId: req.user.id,
+            hasSlotPitch: Number.isFinite(labelGeom.slotPitchPx),
+            hasPanelTop: Number.isFinite(labelGeom.panelTopNorm),
+            hasPanelBottom: Number.isFinite(labelGeom.panelBottomNorm),
+          });
+        }
+
+        // Merger: slot classifications + Stage 4 labels → circuits[].
+        // Single-shot is NOT consulted — its circuits[] stay in analysis only
+        // as historical context until the merger overwrites them here, at
+        // which point the primary-source swap is complete.
         const mainSwitchSide =
           geometricResult.mainSwitchSide ||
           boardClassification?.mainSwitchPosition ||
@@ -1357,9 +1429,8 @@ questionsForInspector: return EMPTY array [] unless RCD type could not be determ
           'none';
 
         const mergedCircuits = slotsToCircuits({
-          slots: geometricResult.slots,
+          slots: analysis.slots,
           mainSwitchSide,
-          singleShotCircuits: analysis.circuits,
         });
 
         if (mergedCircuits && mergedCircuits.length > 0) {
