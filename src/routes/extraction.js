@@ -15,6 +15,7 @@ import logger from '../logger.js';
 import sharp from 'sharp';
 import { createFileFilter, IMAGE_MIMES, handleUploadError } from '../utils/upload.js';
 import { extractCcuGeometric } from '../extraction/ccu-geometric.js';
+import { extractCcuRewireable } from '../extraction/ccu-geometric-rewireable.js';
 
 const router = Router();
 
@@ -674,6 +675,234 @@ router.post('/recording/sonnet-extract', auth.requireAuth, async (req, res) => {
 });
 
 /**
+ * Small, fast VLM call that returns only board_technology + main_switch_position.
+ *
+ * Purpose: route the subsequent per-slot geometric pipeline (modern vs rewireable).
+ * Running this in parallel to the big single-shot prompt keeps total latency flat
+ * — the classifier returns in ~3s and lets us kick off the correct geometric
+ * extractor while single-shot is still running. Single-shot is the authoritative
+ * source of board_technology in the final response; this cheap call is ONLY used
+ * for geometric pipeline routing and is discarded afterwards.
+ *
+ * @param {string} base64 — base64-encoded JPEG
+ * @param {object} anthropic — Anthropic client
+ * @param {string} model — model id (e.g. claude-sonnet-4-6)
+ * @returns {Promise<{boardTechnology:string, mainSwitchPosition:string, confidence:number, usage:{inputTokens:number,outputTokens:number}}>}
+ */
+async function classifyBoardTechnology(base64, anthropic, model) {
+  const prompt = `Look at this UK fuseboard photo. Return ONLY a JSON object:
+{"board_technology": "modern" | "rewireable_fuse" | "cartridge_fuse" | "mixed", "main_switch_position": "left" | "right" | "none", "confidence": 0.0-1.0}
+
+Definitions:
+- "modern" — MCBs/RCBOs on DIN rail with toggle levers. ANY board with at least one toggle-style MCB showing a trip-curve letter (B/C/D) IS modern.
+- "rewireable_fuse" — pull-out fuse carriers with semi-enclosed fuse wire (BS 3036). Wylex/MEM/Crabtree/Bill/Ashley. Carrier BODIES are colour-coded (white/blue/yellow/red/green) — the red "push to remove" tab at the top of every Wylex carrier is NOT a rating indicator. No toggles, no curve letters, no test buttons on circuit devices.
+- "cartridge_fuse" — pull-out carriers that contain a cylindrical ceramic HBC cartridge (BS 1361 / BS 88). No rewireable fuse wire visible; cartridge face usually stamped with amp rating.
+- "mixed" — combination (rewireable carriers plus a retrofitted 30mA RCD main switch, or some MCBs and some fuse carriers on the same panel).
+
+main_switch_position: which side of the circuit devices the main isolator / pull-out switch-fuse sits — "left", "right", or "none" (if inline with the circuit row with no clear handedness).
+
+Return ONLY the JSON object.`;
+
+  const response = await anthropic.messages.create({
+    model,
+    max_tokens: 200,
+    messages: [
+      {
+        role: 'user',
+        content: [
+          { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: base64 } },
+          { type: 'text', text: prompt },
+        ],
+      },
+    ],
+  });
+
+  const textBlocks = (response.content || []).filter((b) => b.type === 'text');
+  let raw = textBlocks
+    .map((b) => b.text)
+    .join('')
+    .trim();
+
+  const fenceMatch = raw.match(/```json\s*([\s\S]*?)```/);
+  if (fenceMatch) {
+    raw = fenceMatch[1].trim();
+  } else {
+    const first = raw.indexOf('{');
+    const last = raw.lastIndexOf('}');
+    if (first !== -1 && last > first) raw = raw.slice(first, last + 1);
+  }
+
+  const parsed = JSON.parse(raw);
+  return {
+    boardTechnology: parsed.board_technology || 'modern',
+    mainSwitchPosition: parsed.main_switch_position || 'none',
+    confidence: typeof parsed.confidence === 'number' ? parsed.confidence : 0,
+    usage: {
+      inputTokens: response.usage?.input_tokens || 0,
+      outputTokens: response.usage?.output_tokens || 0,
+    },
+  };
+}
+
+/**
+ * Build an EICR-schema `circuits[]` array from per-slot VLM classifications.
+ *
+ * Per-slot classifications give us reliable device identification (what is in
+ * each position on the board) but NO label text — labels always come from the
+ * single-shot prompt, which reads the circuit-schedule card or stickers on the
+ * board cover. We therefore merge: slot data drives `ocpd_*` / `rcd_*` /
+ * `is_rcbo` on each circuit, and single-shot labels are pasted in by circuit
+ * number.
+ *
+ * Circuit numbering follows the BS 7671 convention encoded in the existing
+ * prompt: circuit 1 is the device nearest the main switch, numbering OUTWARD.
+ * When `mainSwitchSide === 'right'` we therefore iterate the physical-order
+ * slot array in reverse.
+ *
+ * Per-slot confidence gating: if a slot's classification confidence is below
+ * `minSlotConfidence` (or its classification is "unknown"), we fall back to
+ * the single-shot value for that circuit position rather than emit a
+ * low-confidence Stage-3 reading. This keeps Stage 3's output as the primary
+ * source without regressing on individual slots where the VLM was uncertain.
+ *
+ * @returns {Array|null} circuits array, or null if slots is empty/invalid.
+ */
+function slotsToCircuits({
+  slots,
+  mainSwitchSide,
+  singleShotCircuits,
+  minSlotConfidence = 0.7,
+}) {
+  if (!Array.isArray(slots) || slots.length === 0) return null;
+
+  const scanOrder = mainSwitchSide === 'right' ? [...slots].reverse() : [...slots];
+  const circuits = [];
+  let circuitNumber = 1;
+  let upstreamRcd = null;
+
+  for (const slot of scanOrder) {
+    const cls = (slot.classification || '').toLowerCase();
+
+    if (cls === 'main_switch' || cls === 'spd') continue;
+
+    if (cls === 'rcd') {
+      // Standalone RCD — not a circuit, but its type/sensitivity cascade to the
+      // circuits it protects (all subsequent non-RCBO circuits until the next RCD).
+      upstreamRcd = {
+        type: slot.rcdWaveformType || null,
+        sensitivity:
+          slot.sensitivity != null && slot.sensitivity !== ''
+            ? String(slot.sensitivity)
+            : null,
+      };
+      continue;
+    }
+
+    const fallback = (singleShotCircuits || []).find((c) => c.circuit_number === circuitNumber);
+    const confident = (slot.confidence ?? 0) >= minSlotConfidence;
+
+    let circuit;
+    if (cls === 'blank') {
+      circuit = {
+        circuit_number: circuitNumber,
+        label: fallback?.label && fallback.label !== 'null' ? fallback.label : 'Spare',
+        ocpd_type: null,
+        ocpd_rating_a: null,
+        ocpd_bs_en: null,
+        ocpd_breaking_capacity_ka: null,
+        is_rcbo: false,
+        rcd_protected: false,
+        rcd_type: null,
+        rcd_rating_ma: null,
+        rcd_bs_en: null,
+      };
+    } else if (cls === 'unknown' || !confident) {
+      // Low-confidence slot — prefer single-shot's reading at this position.
+      circuit = fallback
+        ? { ...fallback, circuit_number: circuitNumber }
+        : {
+            circuit_number: circuitNumber,
+            label: null,
+            ocpd_type: null,
+            ocpd_rating_a: null,
+            ocpd_bs_en: null,
+            ocpd_breaking_capacity_ka: null,
+            is_rcbo: false,
+            rcd_protected: false,
+            rcd_type: null,
+            rcd_rating_ma: null,
+            rcd_bs_en: null,
+          };
+      // Still cascade upstream RCD even on low-confidence slots.
+      if (upstreamRcd && !circuit.is_rcbo) {
+        circuit.rcd_protected = true;
+        if (!circuit.rcd_type) circuit.rcd_type = upstreamRcd.type;
+        if (!circuit.rcd_rating_ma) circuit.rcd_rating_ma = upstreamRcd.sensitivity;
+        if (!circuit.rcd_bs_en) circuit.rcd_bs_en = '61008';
+      }
+    } else {
+      circuit = buildCircuitFromSlot(slot, circuitNumber, upstreamRcd);
+      if (fallback?.label && fallback.label !== 'null') circuit.label = fallback.label;
+    }
+
+    circuits.push(circuit);
+    circuitNumber++;
+  }
+
+  return circuits;
+}
+
+/**
+ * Translate one high-confidence slot classification into an EICR-schema circuit row.
+ * Device fields come from the slot; label comes from single-shot later.
+ */
+function buildCircuitFromSlot(slot, circuit_number, upstreamRcd) {
+  const cls = (slot.classification || '').toLowerCase();
+  const ratingAmps = slot.ratingAmps;
+
+  let ocpd_type = null;
+  let ocpd_bs_en = slot.bsEn || null;
+  let ocpd_breaking_capacity_ka = null;
+
+  if (cls === 'mcb' || cls === 'rcbo') {
+    ocpd_type = slot.tripCurve || null;
+    if (!ocpd_bs_en) ocpd_bs_en = cls === 'rcbo' ? '61009-1' : '60898-1';
+    ocpd_breaking_capacity_ka = '6';
+  } else if (cls === 'rewireable') {
+    ocpd_type = 'Rew';
+    if (!ocpd_bs_en) ocpd_bs_en = 'BS 3036';
+    // rewireable fuses have no kA rating — leave null
+  } else if (cls === 'cartridge') {
+    ocpd_type = 'HRC';
+    if (!ocpd_bs_en) ocpd_bs_en = 'BS 1361';
+  }
+
+  const is_rcbo = cls === 'rcbo';
+  const rcd_protected = is_rcbo || !!upstreamRcd;
+  const rcd_type = is_rcbo ? slot.rcdWaveformType || null : upstreamRcd?.type || null;
+  const rcd_rating_ma = is_rcbo
+    ? slot.sensitivity != null && slot.sensitivity !== ''
+      ? String(slot.sensitivity)
+      : null
+    : upstreamRcd?.sensitivity || null;
+  const rcd_bs_en = is_rcbo ? '61009' : upstreamRcd ? '61008' : null;
+
+  return {
+    circuit_number,
+    label: null,
+    ocpd_type,
+    ocpd_rating_a: ratingAmps != null && ratingAmps !== '' ? String(ratingAmps) : null,
+    ocpd_bs_en,
+    ocpd_breaking_capacity_ka,
+    is_rcbo,
+    rcd_protected,
+    rcd_type,
+    rcd_rating_ma,
+    rcd_bs_en,
+  };
+}
+
+/**
  * Analyze a consumer unit (fuseboard) photo using GPT Vision
  * POST /api/analyze-ccu
  */
@@ -726,25 +955,63 @@ router.post('/analyze-ccu', auth.requireAuth, upload.single('photo'), async (req
 
     const base64 = Buffer.from(imageBytes).toString('base64');
 
-    // Phase B (plan 2026-04-16 §8): CCU_GEOMETRIC_V1 feature flag.
-    // When enabled, kick off the two-stage geometric extractor in parallel
-    // with the existing single-call VLM extraction. The geometric pipeline
-    // gives us rail bounds + module width + slot centres, which we attach
-    // to the response under `geometric` so downstream consumers (iOS overlay,
-    // analyzer, Phase C mapper) can use it. Zero regression when unset:
-    // nothing runs, nothing is attached. On any throw we fall through
-    // silently to the existing extractor — the main response must never
-    // be blocked by the experimental path.
-    const geometricEnabled = process.env.CCU_GEOMETRIC_V1 === 'true';
-    const geometricPromise = geometricEnabled
-      ? extractCcuGeometric(imageBytes).catch((err) => {
-          logger.warn('CCU geometric extraction failed (non-fatal)', {
-            userId: req.user.id,
-            error: err.message,
-          });
-          return null;
-        })
-      : Promise.resolve(null);
+    // Per-slot primary pipeline (sprint 2026-04-22):
+    //   1. Run the cheap board_technology classifier immediately (returns in ~3s).
+    //   2. Kick off the matching geometric pipeline the moment the classifier
+    //      returns — modern -> extractCcuGeometric, rewireable/cartridge/mixed ->
+    //      extractCcuRewireable. "mixed" uses the rewireable path because that
+    //      module also handles retrofitted RCD main switches.
+    //   3. The single-shot VLM prompt runs in parallel (kicked off below) and
+    //      remains the authoritative source for LABELS, main switch, SPD,
+    //      board manufacturer/model, confidence message, and questionsForInspector.
+    //      Slot classifications OVERWRITE the single-shot circuits[] array
+    //      (ocpd_* / rcd_* / is_rcbo fields) when their confidence >= threshold;
+    //      low-confidence or "unknown" slots fall back to single-shot per-position.
+    //
+    // Kill switch: CCU_GEOMETRIC_V1=false in the task-def disables the whole
+    // per-slot path and falls back to pure single-shot, preserving the pre-sprint
+    // behaviour. Default (env unset or "true") is per-slot ON.
+    const perSlotEnabled = process.env.CCU_GEOMETRIC_V1 !== 'false';
+
+    let boardClassification = null;
+    let geometricPromise = Promise.resolve(null);
+
+    if (perSlotEnabled) {
+      try {
+        const classifierAnthropic = new (await import('@anthropic-ai/sdk')).default({
+          apiKey: anthropicKey,
+        });
+        boardClassification = await classifyBoardTechnology(base64, classifierAnthropic, model);
+        logger.info('CCU board_technology classifier', {
+          userId: req.user.id,
+          boardTechnology: boardClassification.boardTechnology,
+          mainSwitchPosition: boardClassification.mainSwitchPosition,
+          confidence: boardClassification.confidence,
+        });
+      } catch (err) {
+        logger.warn('CCU board_technology classifier failed — defaulting to modern path', {
+          userId: req.user.id,
+          error: err.message,
+        });
+        boardClassification = null;
+      }
+
+      const chooseRewireable =
+        boardClassification?.boardTechnology === 'rewireable_fuse' ||
+        boardClassification?.boardTechnology === 'cartridge_fuse' ||
+        boardClassification?.boardTechnology === 'mixed';
+
+      geometricPromise = (
+        chooseRewireable ? extractCcuRewireable(imageBytes) : extractCcuGeometric(imageBytes)
+      ).catch((err) => {
+        logger.warn('CCU geometric extraction failed (non-fatal)', {
+          userId: req.user.id,
+          path: chooseRewireable ? 'rewireable' : 'modern',
+          error: err.message,
+        });
+        return null;
+      });
+    }
 
     const prompt = `You are an expert UK electrician extracting devices from a consumer unit photo for an EICR certificate. Follow these 4 steps IN ORDER. Return ONLY valid JSON.
 
@@ -1045,47 +1312,89 @@ questionsForInspector: return EMPTY array [] unless RCD type could not be determ
       costUsd: analysis.gptVisionCost.cost_usd,
     });
 
-    // Phase B: await the geometric extractor (parallel) and attach its
-    // output to the response. We do this BEFORE res.json so iOS sees it
-    // on the same call, but AFTER the main extraction so geometric
-    // failure/slowness can't delay the user-visible circuit list.
-    // The Anthropic call above typically runs ~15-30s; Stage 1+2
-    // combined ~25-40s, so a short additional wait is expected when
-    // the flag is on. If geometric finishes first this is a no-op await.
+    // Sprint 2026-04-22: await the geometric extractor (parallel to single-shot),
+    // attach its geometry + slots[] to the response, and — when Stage 3 succeeded
+    // with usable slots — merge those slot classifications into analysis.circuits[].
+    // The merge uses slotsToCircuits(): slot data drives ocpd_* / rcd_* / is_rcbo
+    // per position; single-shot labels are pasted in by circuit number; any slot
+    // below confidence threshold falls back to the single-shot value at that
+    // position, so per-slot reliability gains never regress an individual row.
     const geometricResult = await geometricPromise;
+    let extractionSource = 'single-shot';
+
     if (geometricResult) {
+      // Attach geometry — shape varies slightly by pipeline.
+      // The modern pipeline returns medianRails (DIN rail); the rewireable
+      // pipeline returns panelBounds (carrier-bank rectangle). Both populate
+      // slotCentersX so iOS overlay code can render regardless of source.
       analysis.geometric = {
         schemaVersion: geometricResult.schemaVersion,
-        moduleCount: geometricResult.moduleCount,
-        vlmCount: geometricResult.vlmCount,
-        disagreement: geometricResult.disagreement,
+        moduleCount: geometricResult.moduleCount ?? geometricResult.carrierCount ?? null,
+        vlmCount: geometricResult.vlmCount ?? null,
+        disagreement: geometricResult.disagreement ?? null,
         lowConfidence: geometricResult.lowConfidence,
-        medianRails: geometricResult.medianRails,
+        medianRails: geometricResult.medianRails ?? null,
+        panelBounds: geometricResult.panelBounds ?? null,
         slotCentersX: geometricResult.slotCentersX,
-        moduleWidth: geometricResult.moduleWidth,
-        mainSwitchWidth: geometricResult.mainSwitchWidth,
-        mainSwitchCenterX: geometricResult.mainSwitchCenterX,
+        moduleWidth: geometricResult.moduleWidth ?? geometricResult.carrierPitch ?? null,
+        mainSwitchWidth: geometricResult.mainSwitchWidth ?? null,
+        mainSwitchCenterX: geometricResult.mainSwitchCenterX ?? null,
+        mainSwitchSide: geometricResult.mainSwitchSide ?? null,
         imageWidth: geometricResult.imageWidth,
         imageHeight: geometricResult.imageHeight,
       };
+
+      // Expose per-slot classifications to iOS (LiveFillState.slotCrops).
+      if (Array.isArray(geometricResult.slots) && geometricResult.slots.length > 0) {
+        analysis.slots = geometricResult.slots;
+
+        // Merge: slot classifications become the PRIMARY circuits[] source.
+        // Prefer the classifier's main-switch side; fall back to single-shot's.
+        const mainSwitchSide =
+          geometricResult.mainSwitchSide ||
+          boardClassification?.mainSwitchPosition ||
+          analysis.main_switch_position ||
+          'none';
+
+        const mergedCircuits = slotsToCircuits({
+          slots: geometricResult.slots,
+          mainSwitchSide,
+          singleShotCircuits: analysis.circuits,
+        });
+
+        if (mergedCircuits && mergedCircuits.length > 0) {
+          analysis.circuits = mergedCircuits;
+          extractionSource = 'geometric-merged';
+        }
+      }
+
       logger.info('CCU geometric extraction attached', {
         userId: req.user.id,
-        moduleCount: geometricResult.moduleCount,
-        vlmCount: geometricResult.vlmCount,
-        disagreement: geometricResult.disagreement,
+        moduleOrCarrierCount: analysis.geometric.moduleCount,
+        slotCount: geometricResult.slots?.length ?? 0,
         lowConfidence: geometricResult.lowConfidence,
-        stage1Ms: geometricResult.timings?.stage1Ms,
-        stage2Ms: geometricResult.timings?.stage2Ms,
+        stage3Error: geometricResult.stage3Error ?? null,
+        extractionSource,
       });
     }
+
+    analysis.extraction_source = extractionSource;
+    analysis.board_classification = boardClassification
+      ? {
+          board_technology: boardClassification.boardTechnology,
+          main_switch_position: boardClassification.mainSwitchPosition,
+          confidence: boardClassification.confidence,
+        }
+      : null;
 
     const totalElapsedMs = Date.now() - endpointStartMs;
     logger.info('CCU extraction total timing', {
       userId: req.user.id,
       totalElapsedMs,
       totalElapsedSec: (totalElapsedMs / 1000).toFixed(1),
-      geometricEnabled,
+      perSlotEnabled,
       geometricSuccess: Boolean(geometricResult),
+      extractionSource,
     });
 
     res.json(analysis);
