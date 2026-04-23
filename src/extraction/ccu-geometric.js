@@ -85,51 +85,71 @@ Respond with JSON only:
 // (CCU_STAGE3_BATCH_SIZE); the VLM must return exactly N objects in the same order.
 // We send the slot_index explicitly so the VLM can echo it back and we can verify
 // alignment rather than trusting positional order alone.
+//
+// Schema note (2026-04-23, Derek design review): the prompt now asks for an
+// explicit `content` discriminator + `extends` signal on top of the existing
+// classification. Vision models tend to pattern-match half-visible RCDs to the
+// median residential MCB ("B32") when forced to classify — the completeness
+// signal gives them a legitimate way to say "this is partial, merge me with a
+// neighbour" rather than hallucinating a confident wrong answer. Downstream
+// merger (Phase 4) reconciles `extends` across adjacent slots to dedupe
+// multi-module devices back into single certificate circuits.
 const SLOT_CLASSIFY_PROMPT = (
   slotIndices
 ) => `You are looking at ${slotIndices.length} cropped image${slotIndices.length === 1 ? '' : 's'} taken from a UK consumer unit (fuseboard). Each crop is centred on a single DIN rail module position (slot).
 
 The slot indices, in order of the images you are seeing, are: [${slotIndices.join(', ')}].
 
-For EACH crop, classify the device occupying that slot. Valid classifications:
-- "mcb"          — single Miniature Circuit Breaker (BS EN 60898-1), has a trip curve letter (B/C/D) before amp rating, e.g. "B32"
-- "rcbo"         — combined RCD + MCB (BS EN 61009-1), has both a trip curve + amp rating AND a test button with mA sensitivity (e.g. "30mA")
-- "rcd"          — Residual Current Device (BS EN 61008), has a test button and mA sensitivity but NO trip curve letter
-- "main_switch"  — 2-module-wide isolator with NO test button, NO trip curve, NO mA marking, typically labelled "Main Switch" or "100A"
-- "spd"          — Surge Protection Device, usually has plug-in cartridges or coloured status windows
-- "blank"        — unused/empty slot with a blanking plate
-- "unknown"      — cannot determine
+For EACH crop, report THREE things:
 
-For MCBs and RCBOs, read:
-- manufacturer      — brand stamped on the face (e.g. "Hager", "MK", "Wylex", "MEM", "Crabtree", "Eaton", "Schneider", "BG", "Fusebox", "Contactum"). null if illegible.
-- model             — product family if printed (e.g. "Memera 2000", "Design 10"). null if not shown.
+1. CONTENT (what is in this crop):
+   - "device"  — a complete electrical device centred in this crop, fully contained within the crop edges
+   - "blank"   — a 1-module blanking plate (intentional plastic filler in an unused slot)
+   - "empty"   — exposed DIN rail with no device and no blanking plate (UNSAFE — exposed live parts are a safety defect; reporting empty triggers a C2/C3 observation)
+   - "partial" — part of a WIDER device whose body extends BEYOND this crop. Signs: body touches a crop edge, a rating label is cut off mid-number, a test button is visible but the matching rating label is not, or the device toggle is at the edge rather than centred. PREFER "partial" over guessing at a classification you're not sure about.
+
+2. EXTENDS (if content is "device" or "partial", does the body continue beyond the crop edges?):
+   - "none"   — fully contained in this crop
+   - "left"   — body continues past the LEFT edge
+   - "right"  — body continues past the RIGHT edge
+   - "both"   — body extends past BOTH edges (very wide device, we see only its middle)
+
+3. CLASSIFICATION (device type):
+   - "mcb"          — single MCB (BS EN 60898-1), trip curve letter + amp rating (e.g. "B32")
+   - "rcbo"         — combined RCD + MCB (BS EN 61009-1), test button + trip curve + amp rating
+   - "rcd"          — RCD (BS EN 61008-1), test button + mA rating, NO trip curve
+   - "main_switch"  — 2-module isolator, no test button, no trip curve, no mA rating, typically "100A" or "Main Switch"
+   - "spd"          — Surge Protection Device (cartridges / status windows)
+   - "blank"        — blanking plate (use when content="blank")
+   - "empty"        — exposed rail (use when content="empty")
+   - "unknown"      — cannot determine (use when content="partial" and you can't make a best guess)
+
+   When content="partial", report classification as your BEST GUESS based on visible features:
+     — test button visible but rating label cut → "rcd" or "rcbo" (best guess)
+     — toggle + curve letter visible but rest cut → "mcb"
+     — too ambiguous → "unknown"
+
+For MCBs and RCBOs:
+- manufacturer      — brand stamped on the face ("Hager", "MK", "Wylex", "MEM", "Crabtree", "Eaton", "Schneider", "BG", "Fusebox", "Contactum"). null if illegible.
+- model             — product family if printed ("Memera 2000", "Design 10"). null if not shown.
 - ratingAmps        — integer amp rating (6, 10, 16, 20, 25, 32, 40, 50, 63, 80, 100). null if unreadable.
-- poles             — 1, 2, 3 or 4 if you can read/count them. Return null if unsure — DO NOT guess. Stage 4 fills defaults from the device-face lookup table.
-- tripCurve         — "B", "C" or "D". Two common printing conventions on UK MCBs:
-                      (a) Curve letter IMMEDIATELY BEFORE the amp rating, e.g. "B32", "C20", "D10".
-                      (b) Curve letter as a SUFFIX after the rating, separated by "-" or space,
-                          e.g. Wylex NSB32-C, PSB32-C, MEM Memera "32C", "32 C". Treat the suffix
-                          letter as the curve letter in these cases — it identifies the device
-                          family, not the trip class.
-                      If the device model printed on the face ends in "-B" / "-C" / "-D" after the
-                      amp rating (common on Wylex NH series: NSB16, NSB32-C, PSB32-C; MEM Memera
-                      MMB/MMC series), report that letter as the trip curve even though it is not
-                      in the leading position. If neither leading nor trailing pattern is visible,
-                      return null. MCB/RCBO only.
-- confidence        — your self-assessed 0.0-1.0 confidence in the classification.
+                      **ANTI-HALLUCINATION RULE**: if content="partial" and the rating number is not FULLY visible in this crop (any digit cut off by the crop edge), you MUST return null. Do not complete "3" to "32" or "16" to "160" — if the whole number isn't visible, it's null. The merger will get the real rating from the adjacent crop that IS fully centred on this device.
+- poles             — 1, 2, 3, or 4 if you can count them. null if unsure. Stage 4 fills defaults.
+- tripCurve         — "B", "C" or "D". Same partial rule: if the letter is at a crop edge / cut off, return null. UK MCBs print the curve letter either immediately BEFORE the rating ("B32") or as a SUFFIX after it ("NSB32-C" on Wylex NH series, "32C" on MEM Memera MMB/MMC series). Both are valid — treat the suffix letter as the trip curve. If neither leading nor trailing pattern is fully visible, return null.
+- confidence        — your self-assessed 0.0-1.0 confidence in the overall classification. Lower this when content="partial" — a partial crop classification should never score above 0.7.
 
-For RCDs and RCBOs, additionally read:
-- sensitivity       — mA sensitivity printed on the device face ("30", "100", "300", "500"). Integer mA. null if unreadable.
-- rcdWaveformType   — "AC" (sine wave symbol), "A" (sine + pulse symbol), "F" (A + composite), or "B" (all waveforms incl. DC). null if the waveform symbol is not visible or unclear.
+For RCDs and RCBOs additionally:
+- sensitivity       — mA sensitivity ("30", "100", "300", "500"). Integer mA. null if unreadable. Same anti-hallucination rule: if the mA number is cut off, null.
+- rcdWaveformType   — "AC", "A", "F", or "B". null if the waveform symbol is not visible or unclear.
 
-For all devices, if you can read it:
-- bsEn              — the BS EN standard number printed on the face (e.g. "BS EN 60898-1", "BS EN 61009-1", "BS EN 61008-1"). null if not visible.
+For all devices:
+- bsEn              — BS EN standard number printed on the face ("BS EN 60898-1", "BS EN 61009-1", "BS EN 61008-1"). null if not visible.
 
-For blanks, SPDs and main switches: manufacturer / model / ratingAmps / tripCurve / sensitivity / rcdWaveformType / bsEn may be null. Still return poles (1 for blank/SPD if single-module, 2 for main_switch — null if unsure) and confidence.
+For blanks, SPDs, empties, and main switches: manufacturer / model / ratingAmps / tripCurve / sensitivity / rcdWaveformType / bsEn may all be null. Still return poles (1 for blank/SPD if single-module, 2 for main_switch — null if unsure) and confidence.
 
 Return ONLY a JSON array, one object per crop, in the SAME ORDER as the images you received. Echo back slot_index to prove alignment:
 [
-  {"slot_index": <int>, "classification": "<string>", "manufacturer": <string|null>, "model": <string|null>, "ratingAmps": <int|null>, "poles": <int|null>, "tripCurve": <string|null>, "sensitivity": <int|null>, "rcdWaveformType": <string|null>, "bsEn": <string|null>, "confidence": <float>},
+  {"slot_index": <int>, "content": "<string>", "extends": "<string>", "classification": "<string>", "manufacturer": <string|null>, "model": <string|null>, "ratingAmps": <int|null>, "poles": <int|null>, "tripCurve": <string|null>, "sensitivity": <int|null>, "rcdWaveformType": <string|null>, "bsEn": <string|null>, "confidence": <float>},
   ...
 ]`;
 
@@ -872,9 +892,27 @@ export async function classifySlots(_imageBuffer, slotCrops, opts = {}) {
     for (let i = 0; i < batch.length; i++) {
       const crop = batch[i];
       const vlmItem = arr.find((x) => x && x.slot_index === crop.slotIndex) || arr[i] || {};
+      // Validate the new content/extends fields (2026-04-23 schema). Older
+      // VLM responses (or responses where the model ignored the new fields)
+      // won't include them — fall back to defaults that preserve the old
+      // behaviour: content inferred from classification, extends="none".
+      const rawContent = typeof vlmItem.content === 'string' ? vlmItem.content : null;
+      const content = ['device', 'blank', 'empty', 'partial'].includes(rawContent)
+        ? rawContent
+        : vlmItem.classification === 'blank'
+          ? 'blank'
+          : vlmItem.classification === 'empty'
+            ? 'empty'
+            : 'device';
+      const rawExtends = typeof vlmItem.extends === 'string' ? vlmItem.extends : null;
+      const extendsSide = ['none', 'left', 'right', 'both'].includes(rawExtends)
+        ? rawExtends
+        : 'none';
       resultsBySlotIndex.set(crop.slotIndex, {
         slotIndex: crop.slotIndex,
-        classification: vlmItem.classification || 'unknown',
+        content,
+        extends: extendsSide,
+        classification: vlmItem.classification || (content === 'empty' ? 'empty' : 'unknown'),
         manufacturer: vlmItem.manufacturer ?? null,
         model: vlmItem.model ?? null,
         ratingAmps:
@@ -895,11 +933,14 @@ export async function classifySlots(_imageBuffer, slotCrops, opts = {}) {
     }
   }
 
-  // Preserve input order.
+  // Preserve input order. Fallback defaults mirror the 2026-04-23 schema —
+  // content/extends included so downstream merger never encounters undefined.
   const slots = slotCrops.map(
     (c) =>
       resultsBySlotIndex.get(c.slotIndex) || {
         slotIndex: c.slotIndex,
+        content: 'device',
+        extends: 'none',
         classification: 'unknown',
         manufacturer: null,
         model: null,

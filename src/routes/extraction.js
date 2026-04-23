@@ -899,8 +899,35 @@ export function slotsToCircuits({
 
   for (const slot of scanOrder) {
     const cls = (slot.classification || '').toLowerCase();
+    const content = typeof slot.content === 'string' ? slot.content : 'device';
+    const extendsSide = typeof slot.extends === 'string' ? slot.extends : 'none';
 
     if (cls === 'main_switch' || cls === 'spd') continue;
+
+    // Exposed DIN rail (no device, no blanking plate). This is a safety
+    // defect — live parts potentially accessible, IP4X violation. Emit as
+    // a Spare row labelled "Exposed rail" with low_confidence=true so the
+    // inspector's iOS editor flags it for a C2/C3 observation. Schema
+    // added 2026-04-23 with the new content discriminator.
+    if (content === 'empty' || cls === 'empty') {
+      circuits.push({
+        circuit_number: circuitNumber,
+        label: 'Exposed rail (no device, no blank)',
+        ocpd_type: null,
+        ocpd_rating_a: null,
+        ocpd_bs_en: null,
+        ocpd_breaking_capacity_ka: null,
+        is_rcbo: false,
+        rcd_protected: false,
+        rcd_type: null,
+        rcd_rating_ma: null,
+        rcd_bs_en: null,
+        low_confidence: true,
+        is_exposed_rail: true,
+      });
+      circuitNumber++;
+      continue;
+    }
 
     if (cls === 'rcd') {
       // Standalone RCD — two roles:
@@ -982,7 +1009,16 @@ export function slotsToCircuits({
       continue;
     }
 
-    const confident = (slot.confidence ?? 0) >= minSlotConfidence;
+    // Partial crops (VLM saw only part of a wider device) are hallucination
+    // hazards — the model can pattern-match a half-RCD to "B32 MCB" with
+    // confidence. Force low_confidence on any content="partial" slot so the
+    // inspector verifies, and tag `is_partial_crop` for UI awareness (iOS
+    // can surface a specific "this crop was clipped" message). The merger
+    // still emits the slot's best reading — we don't drop it, because if
+    // the neighbour wasn't classified we'd lose the circuit entirely.
+    const isPartial = content === 'partial';
+    const confident =
+      !isPartial && (slot.confidence ?? 0) >= minSlotConfidence;
     const slotLabel =
       slot.label != null && String(slot.label).trim().length > 0 ? slot.label : null;
 
@@ -1002,13 +1038,18 @@ export function slotsToCircuits({
         rcd_bs_en: null,
       };
     } else if (cls === 'unknown' || !confident) {
-      // Low-confidence / unknown slot: emit the slot's best reading and mark
-      // low_confidence. DO NOT fall back to single-shot — we moved away from
-      // that because single-shot is the unreliable whole-board reasoner we're
-      // replacing. UI surfaces low_confidence so the inspector verifies.
+      // Low-confidence / unknown / partial slot: emit the slot's best
+      // reading and mark low_confidence. DO NOT fall back to single-shot —
+      // we moved away from that because single-shot is the unreliable
+      // whole-board reasoner we're replacing. UI surfaces low_confidence
+      // so the inspector verifies.
       circuit = buildCircuitFromSlot(slot, circuitNumber, upstreamRcd);
       circuit.label = slotLabel;
       circuit.low_confidence = true;
+      if (isPartial) {
+        circuit.is_partial_crop = true;
+        circuit.extends_side = extendsSide;
+      }
     } else {
       circuit = buildCircuitFromSlot(slot, circuitNumber, upstreamRcd);
       circuit.label = slotLabel;
