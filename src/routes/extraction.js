@@ -953,11 +953,16 @@ export function slotsToCircuits({
         };
       } else {
         upstreamRcd = nextUpstreamRcd;
-        const rcdLabel =
-          slot.label != null && String(slot.label).trim().length > 0 ? slot.label : 'RCD';
+        // The RCD's schedule row ALWAYS carries the label "RCD". Stage 4's
+        // label-pass reads the handwritten strip above/below each slot,
+        // which reliably picks up bleed-in labels from neighbouring MCBs
+        // (the RCD strip section itself has no handwriting — the strip
+        // header already labels it as "RCD protected"). Defaulting to
+        // slot.label would leak "Sockets" / "Kitchen Sockets" etc. into
+        // the RCD row on every real-world board.
         circuits.push({
           circuit_number: null,
-          label: rcdLabel,
+          label: 'RCD',
           is_rcd_device: true,
           ocpd_type: null,
           ocpd_rating_a:
