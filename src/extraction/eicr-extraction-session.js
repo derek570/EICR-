@@ -159,6 +159,17 @@ export const EIC_SYSTEM_PROMPT = fssync.readFileSync(
   'utf8'
 );
 
+// Stage 6 Phase 4 (STQ-03, STS-09): cert-type-agnostic agentic prompt used
+// whenever SONNET_TOOL_CALLS != 'off'. The legacy EICR/EIC cert-specific
+// prompts stay untouched for the `off` rollback path so STR-01 is clean.
+// Cert-specific detail (cable types, OCPD defaults, NICEIC phrasing) flows
+// into the session via the circuit schedule + cached state snapshot — the
+// prompt itself stays compact and cert-agnostic so cache reuse is maximal.
+export const EICR_AGENTIC_SYSTEM_PROMPT = fssync.readFileSync(
+  path.join(__dirname, '..', '..', 'config', 'prompts', 'sonnet_agentic_system.md'),
+  'utf8'
+);
+
 export class EICRExtractionSession {
   constructor(apiKey, sessionId, certType = 'eicr', options = {}) {
     this.client = new Anthropic({ apiKey });
@@ -170,7 +181,18 @@ export class EICRExtractionSession {
     // 4 — env mutation post-construction must NOT drift the mode). Plan 06
     // consumes this on the shadow harness; Phase 1 only exposes it.
     this.toolCallsMode = this._resolveToolCallsMode(options.toolCallsMode);
-    this.systemPrompt = certType === 'eic' ? EIC_SYSTEM_PROMPT : EICR_SYSTEM_PROMPT;
+    // Stage 6 Phase 4: mode-gated prompt selection.
+    //   off         → legacy cert-specific prompt (STR-01 rollback path).
+    //   shadow/live → cert-agnostic agentic prompt; cert-specific facts
+    //                 flow in via the cached state snapshot (jobState +
+    //                 circuitSchedule), so we don't fork the prompt by
+    //                 cert type. Keeps cache reuse high across EIC/EICR.
+    this.systemPrompt =
+      this.toolCallsMode === 'off'
+        ? certType === 'eic'
+          ? EIC_SYSTEM_PROMPT
+          : EICR_SYSTEM_PROMPT
+        : EICR_AGENTIC_SYSTEM_PROMPT;
     this.conversationHistory = []; // Array of { role, content } messages
     this.costTracker = new CostTracker();
     this.extractedReadingsCount = 0;
@@ -345,36 +367,37 @@ export class EICRExtractionSession {
   async _sendCacheKeepalive() {
     if (!this.isActive) return;
     try {
-      // Include snapshot in keepalive so it gets cached during pauses
-      const snapshot = this.buildStateSnapshotMessage();
+      // Stage 6 Phase 4: mode-gated — off keeps the legacy messages-array
+      // snapshot injection (byte-identical to today); shadow/live let the
+      // snapshot ride in the cached system array via buildSystemBlocks() so
+      // the keepalive refreshes the same cache surface as the next real turn.
       const messages = [];
-      if (snapshot) {
-        messages.push(
-          {
-            role: 'user',
-            content: [
-              { type: 'text', text: snapshot, cache_control: { type: 'ephemeral', ttl: '5m' } },
-            ],
-          },
-          { role: 'assistant', content: [{ type: 'text', text: '{"acknowledged": true}' }] }
-        );
+      if (this.toolCallsMode === 'off') {
+        const snapshot = this.buildStateSnapshotMessage();
+        if (snapshot) {
+          messages.push(
+            {
+              role: 'user',
+              content: [
+                { type: 'text', text: snapshot, cache_control: { type: 'ephemeral', ttl: '5m' } },
+              ],
+            },
+            { role: 'assistant', content: [{ type: 'text', text: '{"acknowledged": true}' }] }
+          );
+        }
       }
       messages.push({ role: 'user', content: [{ type: 'text', text: '[keepalive]' }] });
 
       const response = await this.client.messages.create({
         model: 'claude-sonnet-4-6',
         max_tokens: 1,
-        system: [
-          {
-            type: 'text',
-            text: this.systemPrompt,
-            cache_control: { type: 'ephemeral', ttl: '5m' },
-          },
-        ],
+        system: this.buildSystemBlocks(),
         messages,
       });
       this.costTracker.addSonnetUsage(response.usage);
-      logger.info(`Session ${this.sessionId} Cache keepalive sent (snapshot=${!!snapshot})`);
+      logger.info(
+        `Session ${this.sessionId} Cache keepalive sent (mode=${this.toolCallsMode}, systemBlocks=${this.buildSystemBlocks().length})`
+      );
     } catch (error) {
       logger.warn(`Session ${this.sessionId} Cache keepalive failed: ${error.message}`);
     }
@@ -807,15 +830,12 @@ export class EICRExtractionSession {
     maxTokens = 1280,
     options = {}
   ) {
-    const system = systemPrompt
-      ? systemPrompt
-      : [
-          {
-            type: 'text',
-            text: this.systemPrompt,
-            cache_control: { type: 'ephemeral', ttl: '5m' },
-          },
-        ];
+    // Stage 6 Phase 4 (STQ-03): when no explicit systemPrompt override is
+    // provided, build the mode-gated system array via buildSystemBlocks() so
+    // non-off modes get the two-block [agentic prompt, state snapshot] layout
+    // and off stays single-block. All extractFromUtterance / review callers
+    // go through this path.
+    const system = systemPrompt ? systemPrompt : this.buildSystemBlocks();
 
     // Build request params. Tools + tool_choice are included only when the
     // caller opts in, so keepalive / non-extraction calls stay cheap.
@@ -902,27 +922,82 @@ export class EICRExtractionSession {
         parts.push(`POSTCODE LOOKUP: "${postcodeLookup.postcode}" → not found (invalid postcode)`);
       }
     }
-    // Only include circuit schedule on first message and after job state updates
-    if (this.circuitSchedule && !this.circuitScheduleIncluded) {
-      parts.push(
-        `CIRCUIT SCHEDULE (confirmed values -- do NOT question these):\n${this.circuitSchedule}`
-      );
-      this.circuitScheduleIncluded = true;
-    }
-    if (this.askedQuestions.length > 0) {
-      parts.push(`Already asked (skip): ${this.askedQuestions.join('; ')}`);
-    }
-    if (this.extractedObservations.length > 0) {
-      parts.push(
-        `Observations already created (do NOT re-extract): ${this.extractedObservations.map((o) => o.text.substring(0, 60)).join('; ')}`
-      );
+    // Stage 6 Phase 4 (STQ-03): circuit schedule, asked-questions digest, and
+    // already-created-observations list live in the CACHED SYSTEM PREFIX in
+    // non-off modes (see buildSystemBlocks / buildStateSnapshotMessage), so we
+    // skip re-injecting them into the per-turn user message. Off mode keeps
+    // the legacy messages-array injection byte-identical for STR-01 rollback.
+    if (this.toolCallsMode === 'off') {
+      // Only include circuit schedule on first message and after job state updates
+      if (this.circuitSchedule && !this.circuitScheduleIncluded) {
+        parts.push(
+          `CIRCUIT SCHEDULE (confirmed values -- do NOT question these):\n${this.circuitSchedule}`
+        );
+        this.circuitScheduleIncluded = true;
+      }
+      if (this.askedQuestions.length > 0) {
+        parts.push(`Already asked (skip): ${this.askedQuestions.join('; ')}`);
+      }
+      if (this.extractedObservations.length > 0) {
+        parts.push(
+          `Observations already created (do NOT re-extract): ${this.extractedObservations.map((o) => o.text.substring(0, 60)).join('; ')}`
+        );
+      }
     }
     return parts.join('\n\n');
   }
 
   /**
+   * Stage 6 Phase 4 (STQ-03): build the system block array for the API call.
+   * Mode-gated:
+   *   - off: single-block array with the base system prompt + cache_control
+   *     ephemeral 5m. Callers continue to inject the snapshot into the messages
+   *     array (see buildMessageWindow off-mode branch) so the off path stays
+   *     byte-identical to pre-Phase-4.
+   *   - shadow/live: two-block array — [base agentic prompt, state snapshot],
+   *     both cache_control ephemeral 5m. When the snapshot is empty (no
+   *     circuits, no schedule, no observations) the array COLLAPSES to one
+   *     element — we never emit a two-block array with an empty-string second
+   *     block because Anthropic's cache key includes all blocks, so that would
+   *     cache-miss every call with no snapshot yet.
+   *
+   * Cost model: cache writes are 1.25x input-token cost; cache reads are 0.1x.
+   * A typical turn carries a small-delta snapshot — the write amortises across
+   * the next 5 minutes of turns (reads at 0.1x), so moving the snapshot into
+   * the cached prefix is a net win vs re-sending it uncached each turn.
+   */
+  buildSystemBlocks() {
+    const base = {
+      type: 'text',
+      text: this.systemPrompt,
+      cache_control: { type: 'ephemeral', ttl: '5m' },
+    };
+    if (this.toolCallsMode === 'off') return [base];
+    const snapshot = this.buildStateSnapshotMessage();
+    if (!snapshot) return [base];
+    return [
+      base,
+      {
+        type: 'text',
+        text: snapshot,
+        cache_control: { type: 'ephemeral', ttl: '5m' },
+      },
+    ];
+  }
+
+  /**
    * Build the sliding window of messages to send to the API.
-   * Returns: [stateSnapshot, ack, ...lastNExchanges] or just [...lastNExchanges]
+   *
+   * Mode-gated (Stage 6 Phase 4 / STQ-03):
+   *   - off: legacy layout — snapshot lives in the messages array as a
+   *     user/assistant pair before the sliding-window slice. Byte-identical to
+   *     pre-Phase-4 so the STR-01 rollback is clean.
+   *   - shadow/live: snapshot lives in the cached system prefix (see
+   *     buildSystemBlocks), so the window returns ONLY the
+   *     conversationHistory slice. circuitScheduleIncluded is force-true to
+   *     stop buildUserMessage re-emitting the schedule per turn — the schedule
+   *     is already in the cached prefix alongside the snapshot.
+   *
    * Full conversation history remains in this.conversationHistory for storage.
    */
   buildMessageWindow() {
@@ -930,40 +1005,51 @@ export class EICRExtractionSession {
     const maxMessages = SLIDING_WINDOW_SIZE * 2; // each exchange = user + assistant
     const startIdx = Math.max(0, this.conversationHistory.length - maxMessages);
 
-    // If circuit schedule was included in a message now outside the window, reset flag
-    // so buildUserMessage re-includes it in the next user message
-    if (this.circuitSchedule && this.circuitScheduleIncluded && startIdx > 0) {
-      this.circuitScheduleIncluded = false;
-    }
-
-    // Add state snapshot if we have extracted data or circuit schedule.
-    // The snapshot now includes the circuit schedule (designations, supply info)
-    // so Sonnet retains full context even when older messages drop from the window.
-    const snapshot = this.buildStateSnapshotMessage();
-    if (snapshot) {
-      // Only add cache_control when snapshot is unchanged (e.g. after pause/resume).
-      // Changed snapshots would be cache WRITEs at 1.25x cost — worse than uncached input.
-      const snapshotBlock = { type: 'text', text: snapshot };
-      if (snapshot === this._lastSnapshotText) {
-        snapshotBlock.cache_control = { type: 'ephemeral', ttl: '5m' };
+    if (this.toolCallsMode === 'off') {
+      // Legacy path — preserved byte-identically for STR-01 rollback.
+      if (this.circuitSchedule && this.circuitScheduleIncluded && startIdx > 0) {
+        this.circuitScheduleIncluded = false;
       }
-      this._lastSnapshotText = snapshot;
 
-      window.push(
-        { role: 'user', content: [snapshotBlock] },
-        { role: 'assistant', content: [{ type: 'text', text: '{"acknowledged": true}' }] }
+      const snapshot = this.buildStateSnapshotMessage();
+      if (snapshot) {
+        const snapshotBlock = { type: 'text', text: snapshot };
+        if (snapshot === this._lastSnapshotText) {
+          snapshotBlock.cache_control = { type: 'ephemeral', ttl: '5m' };
+        }
+        this._lastSnapshotText = snapshot;
+
+        window.push(
+          { role: 'user', content: [snapshotBlock] },
+          { role: 'assistant', content: [{ type: 'text', text: '{"acknowledged": true}' }] }
+        );
+        if (this.circuitSchedule) {
+          this.circuitScheduleIncluded = true;
+        }
+      }
+
+      window.push(...this.conversationHistory.slice(startIdx));
+
+      logger.info(
+        `Session ${this.sessionId} Window: ${window.length} msgs sent (${this.conversationHistory.length} stored, snapshot=${!!snapshot})`
       );
-      // Mark circuit schedule as included so buildUserMessage doesn't duplicate it
-      if (this.circuitSchedule) {
-        this.circuitScheduleIncluded = true;
-      }
+
+      return window;
     }
 
-    // Add last N exchanges from conversation history
+    // Non-off (shadow/live): snapshot rides in the cached prefix via
+    // buildSystemBlocks(). The messages array carries ONLY the sliding-window
+    // exchanges. Track the snapshot text for logging/diagnostics but don't
+    // inject it here. Force circuitScheduleIncluded=true so buildUserMessage
+    // doesn't re-emit it per turn (cached prefix already carries it).
+    this._lastSnapshotText = this.buildStateSnapshotMessage();
+    if (this.circuitSchedule) {
+      this.circuitScheduleIncluded = true;
+    }
     window.push(...this.conversationHistory.slice(startIdx));
 
     logger.info(
-      `Session ${this.sessionId} Window: ${window.length} msgs sent (${this.conversationHistory.length} stored, snapshot=${!!snapshot})`
+      `Session ${this.sessionId} Window (${this.toolCallsMode}): ${window.length} msgs sent (${this.conversationHistory.length} stored, snapshot in cached prefix=${!!this._lastSnapshotText})`
     );
 
     return window;
