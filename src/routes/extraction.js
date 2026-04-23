@@ -904,6 +904,38 @@ export function slotsToCircuits({
 
     if (cls === 'main_switch' || cls === 'spd') continue;
 
+    // Neighbour reconciliation: if this slot is PARTIAL and extends to the
+    // left (or both sides), the rightmost portion of the previous device
+    // is bleeding into this crop. Skip the slot only when the previous
+    // emitted row is a compatible device AND this partial slot adds no
+    // new information. "Compatible" = same classification family. "No new
+    // info" = the partial slot has null rating and null sensitivity, so
+    // emitting it would just duplicate the neighbour as a low_confidence
+    // row. The existing RCD-pair dedupe handles the rcd case explicitly
+    // (via _rcdPairOpen); this covers non-rcd wide devices (2-module MCBs
+    // on three-phase installs, 4-module combined isolator+RCD units, etc.)
+    // that the new 2026-04-23 extends signal now surfaces reliably.
+    //
+    // If the partial slot has useful data (rating/sensitivity), KEEP it —
+    // the inspector will see two low_confidence rows and can merge them
+    // themselves. Better to have the data twice than drop a real reading.
+    if (
+      content === 'partial' &&
+      (extendsSide === 'left' || extendsSide === 'both') &&
+      circuits.length > 0
+    ) {
+      const last = circuits[circuits.length - 1];
+      const lastCls =
+        last?.ocpd_type === 'RCBO' ? 'rcbo' : last?.is_rcd_device ? 'rcd' : cls;
+      const partialAddsNothing =
+        slot.ratingAmps == null && slot.sensitivity == null;
+      if (lastCls === cls && partialAddsNothing) {
+        // The previous row already represents this physical device; this
+        // crop just saw its rightmost portion. Drop silently.
+        continue;
+      }
+    }
+
     // Exposed DIN rail (no device, no blanking plate). This is a safety
     // defect — live parts potentially accessible, IP4X violation. Emit as
     // a Spare row labelled "Exposed rail" with low_confidence=true so the
@@ -1053,6 +1085,13 @@ export function slotsToCircuits({
     } else {
       circuit = buildCircuitFromSlot(slot, circuitNumber, upstreamRcd);
       circuit.label = slotLabel;
+    }
+
+    // OCR cross-check rejected the rating — mark low_confidence so the
+    // inspector verifies. Rating is already null from the parser.
+    if (slot.ratingHallucinationDetected) {
+      circuit.low_confidence = true;
+      circuit.rating_hallucination_detected = true;
     }
 
     circuits.push(circuit);

@@ -134,6 +134,7 @@ For MCBs and RCBOs:
 - model             — product family if printed ("Memera 2000", "Design 10"). null if not shown.
 - ratingAmps        — integer amp rating (6, 10, 16, 20, 25, 32, 40, 50, 63, 80, 100). null if unreadable.
                       **ANTI-HALLUCINATION RULE**: if content="partial" and the rating number is not FULLY visible in this crop (any digit cut off by the crop edge), you MUST return null. Do not complete "3" to "32" or "16" to "160" — if the whole number isn't visible, it's null. The merger will get the real rating from the adjacent crop that IS fully centred on this device.
+- rating_text       — the EXACT visible text on the device that indicates the rating (e.g. "B32", "C20", "32A", "NSB32-C", "32"). Transcribe what you literally see; do not paraphrase. If you reported a non-null ratingAmps, rating_text MUST contain the digits of that rating exactly as printed. If no rating text is legibly visible in this crop, rating_text AND ratingAmps MUST BOTH be null. The backend cross-checks these against each other to catch hallucinated ratings.
 - poles             — 1, 2, 3, or 4 if you can count them. null if unsure. Stage 4 fills defaults.
 - tripCurve         — "B", "C" or "D". Same partial rule: if the letter is at a crop edge / cut off, return null. UK MCBs print the curve letter either immediately BEFORE the rating ("B32") or as a SUFFIX after it ("NSB32-C" on Wylex NH series, "32C" on MEM Memera MMB/MMC series). Both are valid — treat the suffix letter as the trip curve. If neither leading nor trailing pattern is fully visible, return null.
 - confidence        — your self-assessed 0.0-1.0 confidence in the overall classification. Lower this when content="partial" — a partial crop classification should never score above 0.7.
@@ -149,7 +150,7 @@ For blanks, SPDs, empties, and main switches: manufacturer / model / ratingAmps 
 
 Return ONLY a JSON array, one object per crop, in the SAME ORDER as the images you received. Echo back slot_index to prove alignment:
 [
-  {"slot_index": <int>, "content": "<string>", "extends": "<string>", "classification": "<string>", "manufacturer": <string|null>, "model": <string|null>, "ratingAmps": <int|null>, "poles": <int|null>, "tripCurve": <string|null>, "sensitivity": <int|null>, "rcdWaveformType": <string|null>, "bsEn": <string|null>, "confidence": <float>},
+  {"slot_index": <int>, "content": "<string>", "extends": "<string>", "classification": "<string>", "manufacturer": <string|null>, "model": <string|null>, "ratingAmps": <int|null>, "rating_text": <string|null>, "poles": <int|null>, "tripCurve": <string|null>, "sensitivity": <int|null>, "rcdWaveformType": <string|null>, "bsEn": <string|null>, "confidence": <float>},
   ...
 ]`;
 
@@ -908,6 +909,39 @@ export async function classifySlots(_imageBuffer, slotCrops, opts = {}) {
       const extendsSide = ['none', 'left', 'right', 'both'].includes(rawExtends)
         ? rawExtends
         : 'none';
+
+      // OCR cross-check on ratings. Hallucinated ratings have no textual
+      // evidence in the pixels — a half-RCD crop confidently "reading"
+      // B32 won't have "32" anywhere in the transcribed rating_text.
+      // When disagreement is detected, null out the rating rather than
+      // silently accepting a fabricated number. Only applies when BOTH
+      // rating_text and ratingAmps are provided and the text is a string;
+      // older VLM responses without rating_text pass through unaffected.
+      //
+      // Strict check: does rating_text contain the digit sequence of
+      // ratingAmps? Tolerant to whitespace and adjacent characters
+      // (rating_text="B32" contains "32"; rating_text="C 40" contains
+      // "40"; rating_text="32 A" contains "32"). Handles the Wylex
+      // suffix-curve convention ("NSB32-C", "PSB32-C") which the prompt
+      // explicitly supports.
+      let ratingAmps =
+        typeof vlmItem.ratingAmps === 'number'
+          ? vlmItem.ratingAmps
+          : (vlmItem.ratingAmps ?? null);
+      let ratingHallucinationDetected = false;
+      if (ratingAmps != null && typeof vlmItem.rating_text === 'string') {
+        const textDigits = vlmItem.rating_text.replace(/\D+/g, ' ');
+        const ratingDigits = String(ratingAmps);
+        const tokens = textDigits.split(/\s+/).filter(Boolean);
+        const anyTokenMatches = tokens.some((tok) => tok === ratingDigits);
+        if (!anyTokenMatches) {
+          // Rating text doesn't contain the claimed rating — this is the
+          // classic half-RCD-as-B32 hallucination. Reject the rating.
+          ratingAmps = null;
+          ratingHallucinationDetected = true;
+        }
+      }
+
       resultsBySlotIndex.set(crop.slotIndex, {
         slotIndex: crop.slotIndex,
         content,
@@ -915,10 +949,9 @@ export async function classifySlots(_imageBuffer, slotCrops, opts = {}) {
         classification: vlmItem.classification || (content === 'empty' ? 'empty' : 'unknown'),
         manufacturer: vlmItem.manufacturer ?? null,
         model: vlmItem.model ?? null,
-        ratingAmps:
-          typeof vlmItem.ratingAmps === 'number'
-            ? vlmItem.ratingAmps
-            : (vlmItem.ratingAmps ?? null),
+        ratingAmps,
+        ratingText: typeof vlmItem.rating_text === 'string' ? vlmItem.rating_text : null,
+        ratingHallucinationDetected,
         poles: typeof vlmItem.poles === 'number' ? vlmItem.poles : null,
         tripCurve: vlmItem.tripCurve ?? null,
         sensitivity: typeof vlmItem.sensitivity === 'number' ? vlmItem.sensitivity : null,
@@ -934,7 +967,8 @@ export async function classifySlots(_imageBuffer, slotCrops, opts = {}) {
   }
 
   // Preserve input order. Fallback defaults mirror the 2026-04-23 schema —
-  // content/extends included so downstream merger never encounters undefined.
+  // content/extends/ratingText included so downstream merger never
+  // encounters undefined.
   const slots = slotCrops.map(
     (c) =>
       resultsBySlotIndex.get(c.slotIndex) || {
@@ -945,6 +979,8 @@ export async function classifySlots(_imageBuffer, slotCrops, opts = {}) {
         manufacturer: null,
         model: null,
         ratingAmps: null,
+        ratingText: null,
+        ratingHallucinationDetected: false,
         poles: null,
         tripCurve: null,
         sensitivity: null,
