@@ -904,37 +904,35 @@ export function slotsToCircuits({
 
     if (cls === 'main_switch' || cls === 'spd') continue;
 
-    // Neighbour reconciliation: if this slot is PARTIAL and extends to the
-    // left (or both sides), the rightmost portion of the previous device
-    // is bleeding into this crop. Skip the slot only when the previous
-    // emitted row is a compatible device AND this partial slot adds no
-    // new information. "Compatible" = same classification family. "No new
-    // info" = the partial slot has null rating and null sensitivity, so
-    // emitting it would just duplicate the neighbour as a low_confidence
-    // row. The existing RCD-pair dedupe handles the rcd case explicitly
-    // (via _rcdPairOpen); this covers non-rcd wide devices (2-module MCBs
-    // on three-phase installs, 4-module combined isolator+RCD units, etc.)
-    // that the new 2026-04-23 extends signal now surfaces reliably.
+    // Neighbour reconciliation for partial-crop RCD slots.
     //
-    // If the partial slot has useful data (rating/sensitivity), KEEP it —
-    // the inspector will see two low_confidence rows and can merge them
-    // themselves. Better to have the data twice than drop a real reading.
-    if (
-      content === 'partial' &&
-      (extendsSide === 'left' || extendsSide === 'both') &&
-      circuits.length > 0
-    ) {
-      const last = circuits[circuits.length - 1];
-      const lastCls =
-        last?.ocpd_type === 'RCBO' ? 'rcbo' : last?.is_rcd_device ? 'rcd' : cls;
-      const partialAddsNothing =
-        slot.ratingAmps == null && slot.sensitivity == null;
-      if (lastCls === cls && partialAddsNothing) {
-        // The previous row already represents this physical device; this
-        // crop just saw its rightmost portion. Drop silently.
-        continue;
-      }
-    }
+    // Original intent: catch slots where a 2-module RCD's second half is
+    // classified as content="partial" with extends pointing at the
+    // already-emitted row, drop it silently instead of emitting a phantom
+    // low-confidence duplicate.
+    //
+    // Codex review 2026-04-23 flagged two correctness traps in my earlier
+    // version of this guard:
+    //   1. Scan direction: `circuits[circuits.length - 1]` is the physical-
+    //      left neighbour only when scanOrder is left-to-right. On right-
+    //      handed boards scanOrder is reversed, so extends="left" (physical
+    //      left) points at the NEXT slot not the previous one.
+    //   2. "Previous row's family" couldn't be reliably derived from the
+    //      emitted circuit's fields (ocpd_type stores trip curve, not
+    //      device family), so the match check was unsafe for non-RCD rows.
+    //
+    // Both concerns are satisfied by restricting to cls="rcd": the existing
+    // RCD-pair dedupe below (via _rcdPairOpen) already merges the second
+    // 'rcd' slot into the first by MERGING readings (better than dropping),
+    // regardless of scan direction. So anything we'd have dropped here
+    // would be cleanly handled one branch down, and non-rcd cases never
+    // needed this guard in the first place (MCBs / RCBOs are 1-module in
+    // UK domestic; main_switch / spd are skipped above; empty / blank are
+    // handled elsewhere). No standalone partial-dedupe needed.
+    //
+    // Keeping content + extendsSide in scope so the downstream "low
+    // confidence / partial" branch can still flag partial slots for the
+    // inspector's UI.
 
     // Exposed DIN rail (no device, no blanking plate). This is a safety
     // defect — live parts potentially accessible, IP4X violation. Emit as

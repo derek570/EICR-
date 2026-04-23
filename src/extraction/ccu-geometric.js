@@ -517,6 +517,8 @@ export async function getModuleCount(imageBuffer, medianRails, imageDimensions =
   // returns nonsense values.
   let effectiveRailLeft = medianRails.rail_left;
   let effectiveRailRight = medianRails.rail_right;
+  let populatedLeftTightened = false;
+  let populatedRightTightened = false;
   if (
     typeof populated_area_start_x === 'number' &&
     Number.isFinite(populated_area_start_x) &&
@@ -524,6 +526,7 @@ export async function getModuleCount(imageBuffer, medianRails, imageDimensions =
     populated_area_start_x < medianRails.rail_right
   ) {
     effectiveRailLeft = populated_area_start_x;
+    populatedLeftTightened = true;
   }
   if (
     typeof populated_area_end_x === 'number' &&
@@ -532,6 +535,7 @@ export async function getModuleCount(imageBuffer, medianRails, imageDimensions =
     populated_area_end_x > effectiveRailLeft
   ) {
     effectiveRailRight = populated_area_end_x;
+    populatedRightTightened = true;
   }
 
   // --- Clamp rail span to exclude the main switch bbox ---------------------
@@ -627,15 +631,45 @@ export async function getModuleCount(imageBuffer, medianRails, imageDimensions =
   // main_switch_width/2 value is still returned as moduleWidthFromMainSwitch
   // for cross-check / diagnostic purposes.
   //
-  // ONLY refine when we trust the bank edges. If we truncated the count
-  // from geometric→VLM, the non-main-switch-side edge is already known to
-  // be loose (that's why truncation was needed) — stretching the refined
-  // pitch across that loose span would place slots on ground we wanted to
-  // exclude. In that case, keep the original main-switch-derived pitch and
-  // let the existing "tile from the main-switch-opposite end" logic drop
-  // modules from the fuzzy far side. Same reasoning for cases where
-  // populated_area bounds weren't provided and the rail was never tightened.
-  if (geometricCount > 0 && !truncatedFromDisagreement) {
+  // Gating (Codex 2026-04-23 P1):
+  //
+  //   Refinement is ONLY safe when BOTH ends of the bank are trustworthy.
+  //   The main-switch clamp tightens the main-switch-side edge; we also
+  //   need the OPPOSITE edge to be tight. Two sources of tightness on that
+  //   side:
+  //     - populated_area_start_x / populated_area_end_x from the VLM (the
+  //       end opposite the main switch): tightened iff the relevant
+  //       populated bound was provided AND inside the raw rail bbox.
+  //     - For boards where the main switch is absent or mainSwitchCenterX
+  //       is null (inline mains, rewireable): fall back to requiring
+  //       BOTH populated bounds to have tightened.
+  //
+  //   If the opposite end is still at the raw rail_left / rail_right
+  //   (typical when iOS ROI has horizontal slack and the VLM didn't
+  //   provide populated_area bounds), the refined pitch would stretch
+  //   across that slack and shift far-end slots — reintroducing the same
+  //   phantom slots the sprint is trying to eliminate. Keep main-switch
+  //   pitch in that case.
+  //
+  //   Also never refine when truncation fired — that explicitly distrusts
+  //   the non-main-switch-side edge.
+  const oppositeEndTightened =
+    mainSwitchSide === 'right'
+      ? populatedLeftTightened
+      : mainSwitchSide === 'left'
+        ? populatedRightTightened
+        : populatedLeftTightened && populatedRightTightened;
+  if (
+    geometricCount > 0 &&
+    !truncatedFromDisagreement &&
+    mainSwitchSide !== null &&
+    oppositeEndTightened
+  ) {
+    moduleWidth = railWidth / geometricCount;
+  } else if (geometricCount > 0 && !truncatedFromDisagreement && mainSwitchSide === null && populatedLeftTightened && populatedRightTightened) {
+    // Inline / mains-less fallback: if both populated bounds were provided
+    // AND main switch wasn't localised, both ends are VLM-tightened and
+    // refinement is safe.
     moduleWidth = railWidth / geometricCount;
   }
 
