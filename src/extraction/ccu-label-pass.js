@@ -193,10 +193,25 @@ export async function cropSlotLabelZone(imageBuffer, slotIndex, geom) {
   const panelBottomPx = normToPx(panelBottomNorm, imageHeight);
   const panelHeightPx = panelBottomPx - panelTopPx;
 
-  // Horizontal: 2× pitch wide (±1 pitch either side of the slot centre).
-  // Same as Stage 3, so labels sitting directly above/below the specific slot
-  // are captured without pulling in a full neighbour slot's label.
-  const halfWidthPx = slotPitchPx;
+  // Horizontal: 1.2× pitch wide (±0.6 pitch either side of the slot centre).
+  // Previously 2× pitch, but on boards with dense position-numbered label
+  // strips (Wylex NHRS, most modern DIN boards) the 2× crop spanned two
+  // adjacent position numbers + handwritten labels, and the VLM routinely
+  // picked up the neighbour's label as "the central label". Observed on
+  // 2026-04-23 Wylex NHRS12SL harness run 3: slot 11's label crop showed
+  // position "3" ("1st Floor") AND position "2" ("Ground Floor"); VLM
+  // chose "1st Floor" for slot 11 when it belonged to slot 12.
+  //
+  // 1.2× still allows some drift tolerance for labels that aren't perfectly
+  // centred under their slot. Don't go below 1× (= tight per-slot) because
+  // handwriting regularly drifts 10-15% sideways; tolerance below that
+  // loses labels entirely when the flap is misaligned.
+  //
+  // WHY NOT DEDUPE NEIGHBOUR LABELS INSTEAD: Derek flagged that multiple
+  // adjacent identical circuits (e.g. three "Sockets" rows, two "Lighting"
+  // rows) are real and legitimate — dedupe would discard them. Narrowing
+  // the crop is the safer fix.
+  const halfWidthPx = slotPitchPx * 0.6;
 
   // Vertical: extend UP AND DOWN by 600% of panelHeight. A lot more than
   // feels natural, but necessary — circuit labels on UK CCUs live on a

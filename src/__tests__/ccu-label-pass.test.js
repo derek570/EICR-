@@ -133,8 +133,8 @@ describe('cropSlotLabelZone', () => {
     expect(buffer.length).toBeGreaterThan(0);
     expect(bbox.w).toBeGreaterThan(0);
     expect(bbox.h).toBeGreaterThan(0);
-    // Slot 2 centre is 500; ±pitch=200 → x: 300..700
-    expect(bbox.x).toBe(300);
+    // Slot 2 centre is 500; halfWidth = pitch * 0.6 = 120 → x: 380..620
+    expect(bbox.x).toBe(380);
     expect(bbox.x + bbox.w).toBeLessThanOrEqual(1000);
   });
 
@@ -157,7 +157,7 @@ describe('cropSlotLabelZone', () => {
     const img = await makeJpeg(1000, 1000);
     const geom = makeGeom({ slotCentersX: [50, 300, 500, 700, 900] });
     const { bbox } = await cropSlotLabelZone(img, 0, geom);
-    // slot 0 centre is 50, half-width is pitch (200) → x would be -150 → clamped to 0
+    // slot 0 centre is 50, half-width = pitch * 0.6 = 120 → x would be -70 → clamped to 0
     expect(bbox.x).toBe(0);
     expect(bbox.x + bbox.w).toBeLessThanOrEqual(1000);
   });
