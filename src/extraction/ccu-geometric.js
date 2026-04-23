@@ -1045,12 +1045,99 @@ export async function prepareModernGeometry(imageBuffer, options = {}) {
   }
   const stage1Ms = Date.now() - t0;
 
+  // --- Stage 2 prep: crop to the rail ROI when available ------------------
+  // When iOS sent a railRoiHint, Stage 1 already has the rail bbox — passing
+  // the full photo to Stage 2 forces the VLM to reason over ceiling / wiring
+  // / enclosure / meter / floor to find the main switch. Cropping to the
+  // rail area (with a small padding margin so device labels above/below the
+  // rail stay visible) gives the VLM a much simpler task — just the MCB row.
+  // Derek 2026-04-23: "makes the job far more simple". Stage 2's output
+  // coords are in the CROP's 0-1000 space; we translate them back to
+  // original-image 0-1000 below so downstream Stage 3 still works on the
+  // original imageBuffer. When there's no ROI hint, we pass the full image
+  // unchanged (Stage 1 used the VLM path and its bounds may be fuzzy).
+  let stage2Image = imageBuffer;
+  let stage2Rails = stage1.medianRails;
+  let stage2Width = stage1.imageWidth;
+  let stage2Height = stage1.imageHeight;
+  let cropTransform = null;
+
+  if (options.railRoiHint && stage1.imageWidth > 0 && stage1.imageHeight > 0) {
+    const PAD_X = 0.08; // 8% horizontal padding (room for main-switch body + label strip edges)
+    const PAD_Y = 0.25; // 25% vertical padding (labels sit above/below the rail; need to stay in frame)
+    const railLeftPx = (stage1.medianRails.rail_left / 1000) * stage1.imageWidth;
+    const railRightPx = (stage1.medianRails.rail_right / 1000) * stage1.imageWidth;
+    const railTopPx = (stage1.medianRails.rail_top / 1000) * stage1.imageHeight;
+    const railBottomPx = (stage1.medianRails.rail_bottom / 1000) * stage1.imageHeight;
+    const railWidthPx = Math.max(1, railRightPx - railLeftPx);
+    const railHeightPx = Math.max(1, railBottomPx - railTopPx);
+
+    const cropX0 = Math.max(0, Math.round(railLeftPx - PAD_X * railWidthPx));
+    const cropY0 = Math.max(0, Math.round(railTopPx - PAD_Y * railHeightPx));
+    const cropX1 = Math.min(stage1.imageWidth, Math.round(railRightPx + PAD_X * railWidthPx));
+    const cropY1 = Math.min(stage1.imageHeight, Math.round(railBottomPx + PAD_Y * railHeightPx));
+    const cropW = cropX1 - cropX0;
+    const cropH = cropY1 - cropY0;
+
+    // Sharp refuses zero / negative crops; if the ROI was too small after
+    // clamping, fall back to the full image.
+    if (cropW > 16 && cropH > 16) {
+      stage2Image = await sharp(imageBuffer)
+        .extract({ left: cropX0, top: cropY0, width: cropW, height: cropH })
+        .toBuffer();
+      stage2Rails = {
+        rail_left: Math.round(((railLeftPx - cropX0) / cropW) * 1000),
+        rail_right: Math.round(((railRightPx - cropX0) / cropW) * 1000),
+        rail_top: Math.round(((railTopPx - cropY0) / cropH) * 1000),
+        rail_bottom: Math.round(((railBottomPx - cropY0) / cropH) * 1000),
+      };
+      stage2Width = cropW;
+      stage2Height = cropH;
+      cropTransform = { cropX0, cropY0, cropW, cropH };
+    }
+  }
+
   const t1 = Date.now();
-  const stage2 = await getModuleCount(imageBuffer, stage1.medianRails, {
-    imageWidth: stage1.imageWidth,
-    imageHeight: stage1.imageHeight,
+  const stage2 = await getModuleCount(stage2Image, stage2Rails, {
+    imageWidth: stage2Width,
+    imageHeight: stage2Height,
   });
   const stage2Ms = Date.now() - t1;
+
+  // --- Translate Stage 2 X-axis outputs back to original image coords ----
+  // All coordinate fields Stage 2 returns are in its input image's 0-1000
+  // scale; when we cropped, that's the crop's scale. Downstream Stage 3
+  // (classifyModernSlots → cropSlot) operates on the ORIGINAL imageBuffer
+  // using stage2.slotCentersX / moduleWidth etc., so these must be in the
+  // original-image scale. Translate each X coord via:
+  //     orig_norm = (cropX0 + (stage2_norm / 1000) * cropW) / origWidth * 1000
+  // Width-scale values (moduleWidth, mainSwitchWidth) scale by (cropW / origWidth).
+  // Y-axis values are left alone if we cropped vertically too; Stage 3 uses
+  // stage1.medianRails.rail_top / rail_bottom (still in original coords)
+  // for vertical crop bounds, so Stage 2's Y outputs aren't read downstream.
+  if (cropTransform) {
+    const { cropX0, cropW } = cropTransform;
+    const origWidth = stage1.imageWidth;
+    const scale = cropW / origWidth;
+    const translateX = (c) =>
+      typeof c === 'number' && Number.isFinite(c)
+        ? ((cropX0 + (c / 1000) * cropW) / origWidth) * 1000
+        : c;
+    const scaleWidth = (w) =>
+      typeof w === 'number' && Number.isFinite(w) ? w * scale : w;
+
+    stage2.mainSwitchCenterX = translateX(stage2.mainSwitchCenterX);
+    stage2.populatedAreaStartX = translateX(stage2.populatedAreaStartX);
+    stage2.populatedAreaEndX = translateX(stage2.populatedAreaEndX);
+    stage2.effectiveRailLeft = translateX(stage2.effectiveRailLeft);
+    stage2.effectiveRailRight = translateX(stage2.effectiveRailRight);
+    stage2.mainSwitchWidth = scaleWidth(stage2.mainSwitchWidth);
+    stage2.moduleWidth = scaleWidth(stage2.moduleWidth);
+    stage2.moduleWidthFromMainSwitch = scaleWidth(stage2.moduleWidthFromMainSwitch);
+    if (Array.isArray(stage2.slotCentersX)) {
+      stage2.slotCentersX = stage2.slotCentersX.map(translateX);
+    }
+  }
 
   const usage = {
     inputTokens: stage1.usage.inputTokens + stage2.usage.inputTokens,
