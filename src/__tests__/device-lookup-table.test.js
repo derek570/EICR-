@@ -168,4 +168,107 @@ describe('applyDeviceLookup', () => {
     expect(slot.bsEn).toBeNull();
     expect(out).not.toBe(slot);
   });
+
+  // ---- Trip-curve lookup coverage --------------------------------------
+  // Added 2026-04-23 after Wylex PSB32-C (C-curve) was being reported as
+  // B-curve because Stage 3 couldn't read the "-C" suffix on the toggle-
+  // obscured device face. The VLM's reading is authoritative; lookup only
+  // fills when tripCurve is null.
+
+  it('fills tripCurve from Wylex NSB prefix → B', () => {
+    const slot = {
+      classification: 'mcb',
+      manufacturer: 'Wylex',
+      model: 'NSB32',
+      tripCurve: null,
+      rcdWaveformType: null,
+      bsEn: null,
+      ratingAmps: 32,
+      poles: 1,
+      confidence: 0.9,
+    };
+    const out = applyDeviceLookup(slot);
+    expect(out.tripCurve).toBe('B');
+    expect(out.bsEn).toBe('BS EN 60898-1');
+  });
+
+  it('fills tripCurve from Wylex NHXC prefix → C', () => {
+    const slot = {
+      classification: 'mcb',
+      manufacturer: 'Wylex',
+      model: 'NHXC32',
+      tripCurve: null,
+      rcdWaveformType: null,
+      bsEn: null,
+      ratingAmps: 32,
+      poles: 1,
+      confidence: 0.9,
+    };
+    const out = applyDeviceLookup(slot);
+    expect(out.tripCurve).toBe('C');
+  });
+
+  it('fills tripCurve from trailing -C suffix (Wylex PSB32-C)', () => {
+    const slot = {
+      classification: 'mcb',
+      manufacturer: 'Wylex',
+      model: 'PSB32-C',
+      tripCurve: null,
+      rcdWaveformType: null,
+      bsEn: null,
+      ratingAmps: 32,
+      poles: 1,
+      confidence: 0.85,
+    };
+    const out = applyDeviceLookup(slot);
+    expect(out.tripCurve).toBe('C');
+    // PSB has no prefix curve in the table, so the suffix is the only source.
+    expect(out.bsEn).toBe('BS EN 60898-1');
+  });
+
+  it('does not overwrite VLM-confirmed tripCurve', () => {
+    const slot = {
+      classification: 'mcb',
+      manufacturer: 'Wylex',
+      model: 'NSB32',
+      tripCurve: 'C', // VLM insists C despite NSB prefix implying B
+      ratingAmps: 32,
+      poles: 1,
+      confidence: 0.95,
+    };
+    const out = applyDeviceLookup(slot);
+    expect(out.tripCurve).toBe('C');
+  });
+
+  it('prefers the trailing -C suffix over the prefix curve letter', () => {
+    // Hypothetical NHXB32-C: prefix "nhxb" implies B, but explicit -C
+    // suffix should override. (Real-world: bias toward the more specific
+    // signal, since model suffixes are engraved per-SKU.)
+    const slot = {
+      classification: 'mcb',
+      manufacturer: 'Wylex',
+      model: 'NHXB32-C',
+      tripCurve: null,
+      ratingAmps: 32,
+      poles: 1,
+      confidence: 0.85,
+    };
+    const out = applyDeviceLookup(slot);
+    expect(out.tripCurve).toBe('C');
+  });
+
+  it('regex fallback works even when manufacturer lookup fails', () => {
+    // Unknown manufacturer, but the model string has a clean "-C" suffix.
+    const slot = {
+      classification: 'mcb',
+      manufacturer: 'UnknownBrand',
+      model: 'XYZ32-D',
+      tripCurve: null,
+      ratingAmps: 32,
+      poles: 1,
+      confidence: 0.7,
+    };
+    const out = applyDeviceLookup(slot);
+    expect(out.tripCurve).toBe('D');
+  });
 });

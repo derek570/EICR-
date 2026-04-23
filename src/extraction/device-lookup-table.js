@@ -74,17 +74,65 @@ const TABLE = [
     spec: { rcdWaveformType: 'AC', bsEn: 'BS EN 61009-1', defaults: { poles: 2 } },
   },
 
-  // Wylex — NH MCBs
+  // Wylex — NH series MCBs. Curve letter is encoded AT THE END of the NHX
+  // series prefix: NHXB* = B-curve, NHXC* = C-curve, NHXD* = D-curve. The
+  // more-specific prefix wins (longest-match in lookupDevice) so these
+  // override the bare "nh" fallback below.
   {
     manufacturerPattern: /^wylex$/,
-    modelPrefix: 'nh',
+    modelPrefix: 'nhxb',
+    spec: { rcdWaveformType: null, bsEn: 'BS EN 60898-1', tripCurve: 'B', defaults: { poles: 1 } },
+  },
+  {
+    manufacturerPattern: /^wylex$/,
+    modelPrefix: 'nhxc',
+    spec: { rcdWaveformType: null, bsEn: 'BS EN 60898-1', tripCurve: 'C', defaults: { poles: 1 } },
+  },
+  {
+    manufacturerPattern: /^wylex$/,
+    modelPrefix: 'nhxd',
+    spec: { rcdWaveformType: null, bsEn: 'BS EN 60898-1', tripCurve: 'D', defaults: { poles: 1 } },
+  },
+  // Wylex — NSB/NSC series (N-series, Single-pole, curve letter in third
+  // position). NSB06/NSB16/NSB32 = B-curve 6/16/32A; NSC* = C-curve.
+  {
+    manufacturerPattern: /^wylex$/,
+    modelPrefix: 'nsb',
+    spec: { rcdWaveformType: null, bsEn: 'BS EN 60898-1', tripCurve: 'B', defaults: { poles: 1 } },
+  },
+  {
+    manufacturerPattern: /^wylex$/,
+    modelPrefix: 'nsc',
+    spec: { rcdWaveformType: null, bsEn: 'BS EN 60898-1', tripCurve: 'C', defaults: { poles: 1 } },
+  },
+  // Wylex — PSB / PSC older P-series. Curve letter is sometimes at the
+  // END with a hyphen (PSB32-C = C-curve) rather than built into the
+  // prefix. The lookup table's `tripCurve` is `null` here; the
+  // deriveTripCurveFromModel() regex fallback in applyDeviceLookup will
+  // pick up "-B" / "-C" / "-D" suffix at the end of the full model string.
+  {
+    manufacturerPattern: /^wylex$/,
+    modelPrefix: 'psb',
     spec: { rcdWaveformType: null, bsEn: 'BS EN 60898-1', defaults: { poles: 1 } },
   },
-  // Wylex — NHXS RCBOs (Type A from 2019)
+  {
+    manufacturerPattern: /^wylex$/,
+    modelPrefix: 'psc',
+    spec: { rcdWaveformType: null, bsEn: 'BS EN 60898-1', tripCurve: 'C', defaults: { poles: 1 } },
+  },
+  // Wylex — NHXS RCBOs (Type A from 2019). `nhxs` is longer than `nh`
+  // so it wins even if someone reads the model as just "NHXS".
   {
     manufacturerPattern: /^wylex$/,
     modelPrefix: 'nhxs',
     spec: { rcdWaveformType: 'A', bsEn: 'BS EN 61009-1', defaults: { poles: 2 } },
+  },
+  // Wylex — generic NH MCB fallback (old standalone-curve-unknown models).
+  // Keep at the end so longer prefixes win.
+  {
+    manufacturerPattern: /^wylex$/,
+    modelPrefix: 'nh',
+    spec: { rcdWaveformType: null, bsEn: 'BS EN 60898-1', defaults: { poles: 1 } },
   },
   // Wylex — WRS RCDs
   {
@@ -221,8 +269,28 @@ export function lookupDevice(manufacturer, model) {
 export function applyDeviceLookup(slot) {
   if (!slot || typeof slot !== 'object') return slot;
   const spec = lookupDevice(slot.manufacturer, slot.model);
-  if (!spec)
-    return { ...slot, rcdWaveformType: slot.rcdWaveformType ?? null, bsEn: slot.bsEn ?? null };
+
+  // Trip curve can come from two sources, applied in order:
+  //   1. `spec.tripCurve` set on the matched TABLE entry (model PREFIX encodes
+  //      the curve: NSB→B, NHXC→C, etc.)
+  //   2. `deriveTripCurveFromModel(slot.model)` — regex match on the FULL
+  //      model string for a `-B` / `-C` / `-D` suffix (e.g. "PSB32-C").
+  // The VLM's own reading (slot.tripCurve) is authoritative — only fill when
+  // Stage 3 returned null.
+  const curveFromSpec = spec?.tripCurve ?? null;
+  const curveFromModel = deriveTripCurveFromModel(slot.model);
+
+  if (!spec) {
+    const out = {
+      ...slot,
+      rcdWaveformType: slot.rcdWaveformType ?? null,
+      bsEn: slot.bsEn ?? null,
+    };
+    if (out.tripCurve == null && curveFromModel != null) {
+      out.tripCurve = curveFromModel;
+    }
+    return out;
+  }
 
   const out = { ...slot };
   if (out.rcdWaveformType == null) out.rcdWaveformType = spec.rcdWaveformType;
@@ -235,7 +303,40 @@ export function applyDeviceLookup(slot) {
   if (out.poles == null && spec.defaults && typeof spec.defaults.poles === 'number') {
     out.poles = spec.defaults.poles;
   }
+  if (out.tripCurve == null) {
+    // Prefer the full-model regex match over the prefix-based spec. An
+    // explicit trailing "-C" suffix (e.g. "NHXB32-C" if such a variant
+    // shipped) is more specific than the prefix letter and should win.
+    out.tripCurve = curveFromModel ?? curveFromSpec;
+  }
   return out;
+}
+
+/**
+ * Extract the trip-curve letter from a device model string by regex. Handles
+ * the common "curve letter as suffix" convention on UK MCBs:
+ *
+ *   PSB32-C       → C
+ *   PSC32-B       → B (prefer the explicit suffix over the "PSC" prefix)
+ *   Memera MM32D  → D
+ *   NSB32-C       → C (overrides the "NSB → B" prefix implication)
+ *
+ * Returns one of 'B' | 'C' | 'D' | null. Case-insensitive.
+ *
+ * Used by applyDeviceLookup as a fallback when the TABLE entry doesn't
+ * encode the curve in its prefix. Callers should NEVER overwrite a VLM-
+ * confirmed `slot.tripCurve`.
+ *
+ * @param {string|null|undefined} model
+ * @returns {'B'|'C'|'D'|null}
+ */
+export function deriveTripCurveFromModel(model) {
+  if (typeof model !== 'string' || model.trim().length === 0) return null;
+  const m = model.trim();
+  // Trailing "-B" / " B" / "B" after a digit, at end of string.
+  const suffix = m.match(/(\d)[\s\-_]?([BCD])\s*$/i);
+  if (suffix) return suffix[2].toUpperCase();
+  return null;
 }
 
 // Exported for tests only.
