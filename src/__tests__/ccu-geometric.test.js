@@ -799,6 +799,112 @@ describe('prepareModernGeometry', () => {
     mockCreate.mockRejectedValueOnce(new Error('VLM boom'));
     await expect(prepareModernGeometry(buf)).rejects.toThrow(/VLM boom/);
   });
+
+  test('railRoiHint option: bypasses Stage 1 VLM entirely, uses ROI as medianRails', async () => {
+    const buf = await makeFakeJpeg();
+    // Only Stage 2 VLM call should fire — no rail-detection samples.
+    mockCreate.mockResolvedValueOnce(
+      fakeVlmResponse({
+        main_switch_center_x: 1000,
+        main_switch_width: 400,
+        module_count_direct: 4,
+      })
+    );
+
+    const prepared = await prepareModernGeometry(buf, {
+      railRoiHint: { x: 0.05, y: 0.4, w: 0.9, h: 0.2 },
+    });
+
+    // medianRails converted from ROI: 0-1 → 0-1000 scale.
+    expect(prepared.medianRails).toEqual({
+      rail_top: 400,
+      rail_bottom: 600,
+      rail_left: 50,
+      rail_right: 950,
+    });
+    expect(prepared.stage1Source).toBe('roi-hint');
+    // Exactly ONE VLM call happened (Stage 2 module count), not 4 (Stage 1 × 3 + Stage 2).
+    expect(mockCreate).toHaveBeenCalledTimes(1);
+    // Stage 1 contribution to usage is zero.
+    expect(prepared.stageOutputs.stage1.usage.inputTokens).toBe(0);
+    expect(prepared.stageOutputs.stage1.usage.outputTokens).toBe(0);
+    // Stage 1 never trips lowConfidence on ROI path (user framed it).
+    expect(prepared.stageOutputs.stage1.lowConfidence).toBe(false);
+  });
+
+  test('railRoiHint accepts x_min/y_min/x_max/y_max form too', async () => {
+    const buf = await makeFakeJpeg();
+    mockCreate.mockResolvedValueOnce(
+      fakeVlmResponse({
+        main_switch_center_x: 1000,
+        main_switch_width: 400,
+        module_count_direct: 4,
+      })
+    );
+
+    const prepared = await prepareModernGeometry(buf, {
+      railRoiHint: { x_min: 0.1, y_min: 0.3, x_max: 0.9, y_max: 0.7 },
+    });
+
+    expect(prepared.medianRails).toEqual({
+      rail_top: 300,
+      rail_bottom: 700,
+      rail_left: 100,
+      rail_right: 900,
+    });
+    expect(prepared.stage1Source).toBe('roi-hint');
+  });
+
+  test('railRoiHint clamps out-of-range values to [0, 1]', async () => {
+    const buf = await makeFakeJpeg();
+    mockCreate.mockResolvedValueOnce(
+      fakeVlmResponse({
+        main_switch_center_x: 1000,
+        main_switch_width: 400,
+        module_count_direct: 4,
+      })
+    );
+
+    const prepared = await prepareModernGeometry(buf, {
+      railRoiHint: { x: -0.1, y: 0.4, w: 1.5, h: 0.2 }, // x<0 and x+w>1 both clamp
+    });
+
+    expect(prepared.medianRails.rail_left).toBe(0);
+    expect(prepared.medianRails.rail_right).toBe(1000);
+  });
+
+  test('railRoiHint with collapsed/invalid area throws', async () => {
+    const buf = await makeFakeJpeg();
+    // Stage 1 ROI path throws BEFORE any Stage 2 VLM call, so no mock needed.
+    await expect(
+      prepareModernGeometry(buf, { railRoiHint: { x: 0.5, y: 0.5, w: 0, h: 0 } })
+    ).rejects.toThrow(/zero area/);
+  });
+
+  test('no railRoiHint → behaves identically to before (Stage 1 × 3 + Stage 2 × 1)', async () => {
+    const buf = await makeFakeJpeg();
+    mockCreate
+      .mockResolvedValueOnce(
+        fakeVlmResponse({ rail_top: 400, rail_bottom: 600, rail_left: 100, rail_right: 900 })
+      )
+      .mockResolvedValueOnce(
+        fakeVlmResponse({ rail_top: 400, rail_bottom: 600, rail_left: 100, rail_right: 900 })
+      )
+      .mockResolvedValueOnce(
+        fakeVlmResponse({ rail_top: 400, rail_bottom: 600, rail_left: 100, rail_right: 900 })
+      )
+      .mockResolvedValueOnce(
+        fakeVlmResponse({
+          main_switch_center_x: 1000,
+          main_switch_width: 400,
+          module_count_direct: 4,
+        })
+      );
+
+    const prepared = await prepareModernGeometry(buf);
+    expect(prepared.stage1Source).toBe('vlm');
+    expect(mockCreate).toHaveBeenCalledTimes(4);
+  });
 });
 
 describe('classifyModernSlots', () => {

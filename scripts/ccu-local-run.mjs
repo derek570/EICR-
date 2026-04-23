@@ -71,9 +71,21 @@ stageCosts.stage1b = {
 console.log(`  board_technology=${boardClass.boardTechnology}  mainSwitch=${boardClass.mainSwitchPosition}  conf=${boardClass.confidence}  (${(t1bMs/1000).toFixed(1)}s)`);
 
 // --- Stage 1 + Stage 2 --------------------------------------------------
+// Optional: pass `--roi x,y,w,h` to simulate the iOS framing-box hint and
+// verify the Stage 1 bypass path locally. Values are 0-1 normalised image
+// coords (top-left + size). Without the flag, the VLM rail-detection path
+// runs as before.
+let railRoiHint = null;
+const roiFlag = process.argv.find((a) => a.startsWith('--roi='));
+if (roiFlag) {
+  const [x, y, w, h] = roiFlag.slice('--roi='.length).split(',').map(Number);
+  railRoiHint = { x, y, w, h };
+  console.log(`[harness] using ROI hint: ${JSON.stringify(railRoiHint)}`);
+}
+
 console.log('\n[harness] running Stage 1 + Stage 2 (prepareModernGeometry)…');
 const t0 = Date.now();
-const prepared = await prepareModernGeometry(imageBuffer);
+const prepared = await prepareModernGeometry(imageBuffer, { railRoiHint });
 const prepMs = Date.now() - t0;
 stageCosts.stage1_2 = {
   tokensIn: prepared.usage.inputTokens,

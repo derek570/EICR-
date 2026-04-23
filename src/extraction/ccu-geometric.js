@@ -214,6 +214,89 @@ async function callVlm(anthropic, base64, prompt) {
 }
 
 // ---------------------------------------------------------------------------
+// Stage 1 alternate — Build rail geometry from an ROI hint (iOS framing box)
+// ---------------------------------------------------------------------------
+
+/**
+ * Build a Stage-1-shaped result from a user-provided rail ROI hint. When the
+ * iOS capture view shows an alignment rectangle and the inspector fits the
+ * MCB row inside it, iOS passes the rectangle's normalised image-coord bounds
+ * as `rail_roi` on the upload. Using that as ground truth skips the three
+ * VLM rail-detection calls entirely — deterministic, free, and 17 seconds
+ * off the wall clock.
+ *
+ * Accepts ROI as either {x, y, w, h} (top-left + size) or {x_min, y_min,
+ * x_max, y_max} — both in 0-1 normalised coordinates relative to the full
+ * captured image. Returns a shape identical to `getRailGeometry` so callers
+ * don't branch on source.
+ *
+ * @param {Buffer} imageBuffer
+ * @param {{x?:number, y?:number, w?:number, h?:number, x_min?:number, y_min?:number, x_max?:number, y_max?:number}} roi
+ * @returns {{rails:Array, medianRails:object, sdPct:object, lowConfidence:false, usage:{inputTokens:0, outputTokens:0}, imageWidth:number, imageHeight:number}}
+ */
+async function stage1FromRoiHint(imageBuffer, roi) {
+  if (!roi || typeof roi !== 'object') {
+    throw new Error('stage1FromRoiHint: roi must be an object');
+  }
+
+  // Normalise either {x,y,w,h} or {x_min,y_min,x_max,y_max} to edges.
+  let xMin, yMin, xMax, yMax;
+  if (
+    typeof roi.x === 'number' &&
+    typeof roi.y === 'number' &&
+    typeof roi.w === 'number' &&
+    typeof roi.h === 'number'
+  ) {
+    xMin = roi.x;
+    yMin = roi.y;
+    xMax = roi.x + roi.w;
+    yMax = roi.y + roi.h;
+  } else if (
+    typeof roi.x_min === 'number' &&
+    typeof roi.y_min === 'number' &&
+    typeof roi.x_max === 'number' &&
+    typeof roi.y_max === 'number'
+  ) {
+    xMin = roi.x_min;
+    yMin = roi.y_min;
+    xMax = roi.x_max;
+    yMax = roi.y_max;
+  } else {
+    throw new Error('stage1FromRoiHint: roi must have {x,y,w,h} or {x_min,y_min,x_max,y_max}');
+  }
+
+  // Clamp to [0,1] so callers cannot push slots outside the image.
+  const clamp01 = (v) => Math.max(0, Math.min(1, v));
+  xMin = clamp01(xMin);
+  yMin = clamp01(yMin);
+  xMax = clamp01(xMax);
+  yMax = clamp01(yMax);
+  if (xMax <= xMin || yMax <= yMin) {
+    throw new Error('stage1FromRoiHint: roi collapsed to zero area after clamping');
+  }
+
+  // Convert to the 0-1000 scale Stage 1/2 operate on.
+  const medianRails = {
+    rail_top: Math.round(yMin * 1000),
+    rail_bottom: Math.round(yMax * 1000),
+    rail_left: Math.round(xMin * 1000),
+    rail_right: Math.round(xMax * 1000),
+  };
+
+  const meta = await sharp(imageBuffer).metadata();
+
+  return {
+    rails: [medianRails], // single "sample" — the user's box
+    medianRails,
+    sdPct: { rail_top: 0, rail_bottom: 0, rail_left: 0, rail_right: 0 },
+    lowConfidence: false,
+    usage: { inputTokens: 0, outputTokens: 0 },
+    imageWidth: meta.width || 1000,
+    imageHeight: meta.height || 1000,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Stage 1 — Rail geometry (median of 3)
 // ---------------------------------------------------------------------------
 
@@ -748,9 +831,21 @@ export async function classifySlots(_imageBuffer, slotCrops, opts = {}) {
  * }>}
  * @throws on any VLM failure or missing key (no fallback — caller decides).
  */
-export async function prepareModernGeometry(imageBuffer) {
+export async function prepareModernGeometry(imageBuffer, options = {}) {
   const t0 = Date.now();
-  const stage1 = await getRailGeometry(imageBuffer);
+  let stage1;
+  let stage1Source = 'vlm';
+  if (options.railRoiHint) {
+    // iOS sent a framing-box hint from the camera overlay. Use it directly
+    // as the rail bbox and skip the 3-sample VLM rail-detection pass. The
+    // hint is {x, y, w, h} in 0-1 normalised coords; convert to the 0-1000
+    // Stage 1 scale, keep the same result shape so downstream stages are
+    // oblivious to the source. Zero-token cost; saves ~$0.03 and ~17s.
+    stage1 = await stage1FromRoiHint(imageBuffer, options.railRoiHint);
+    stage1Source = 'roi-hint';
+  } else {
+    stage1 = await getRailGeometry(imageBuffer);
+  }
   const stage1Ms = Date.now() - t0;
 
   const t1 = Date.now();
@@ -783,6 +878,7 @@ export async function prepareModernGeometry(imageBuffer) {
     disagreement: stage2.disagreement,
     truncatedFromDisagreement: !!stage2.truncatedFromDisagreement,
     lowConfidence,
+    stage1Source, // 'vlm' | 'roi-hint' — lets caller log the skip
     slotCentersX: stage2.slotCentersX,
     moduleWidth: stage2.moduleWidth,
     mainSwitchWidth: stage2.mainSwitchWidth,

@@ -1107,10 +1107,42 @@ router.post('/analyze-ccu', auth.requireAuth, upload.single('photo'), async (req
 
     const model = (process.env.CCU_MODEL || 'claude-sonnet-4-6').trim();
 
+    // Parse the optional rail_roi hint from iOS. Shipped with the 2026-04-23
+    // camera-overlay feature: iOS shows a framing rectangle on the capture
+    // view, the inspector fits the MCB row into it, and sends the rectangle
+    // coords as normalised (0-1) image-space ROI. Backend uses it as the
+    // Stage 1 rail bbox directly — skipping the 3-sample VLM rail-detection
+    // pass saves ~$0.03 and ~17s per extraction.
+    //
+    // Parse defensively: multipart fields are always strings; bad JSON or a
+    // non-object must NOT fail the whole request (older iOS builds don't
+    // send this field, and any malformed value should silently fall back
+    // to the VLM rail-detection path).
+    let railRoiHint = null;
+    if (typeof req.body?.rail_roi === 'string' && req.body.rail_roi.trim().length > 0) {
+      try {
+        const parsed = JSON.parse(req.body.rail_roi);
+        if (parsed && typeof parsed === 'object') {
+          railRoiHint = parsed;
+          logger.info('CCU rail_roi hint received', {
+            userId: req.user.id,
+            roi: railRoiHint,
+          });
+        }
+      } catch (err) {
+        logger.warn('CCU rail_roi hint invalid JSON (ignored)', {
+          userId: req.user.id,
+          err: err.message,
+          raw: String(req.body.rail_roi).slice(0, 200),
+        });
+      }
+    }
+
     logger.info('CCU photo analysis requested', {
       userId: req.user.id,
       fileSize: req.file.size,
       model,
+      railRoiHint: !!railRoiHint,
     });
 
     // Resize image if base64 would exceed Anthropic's 5MB limit (~3.75MB raw)
@@ -1360,7 +1392,7 @@ questionsForInspector: return EMPTY array [] unless RCD type could not be determ
       try {
         prepared = chooseRewireable
           ? await prepareRewireableGeometry(imageBytes)
-          : await prepareModernGeometry(imageBytes);
+          : await prepareModernGeometry(imageBytes, { railRoiHint });
       } catch (err) {
         logger.warn('CCU geometric prepare failed (non-fatal)', {
           userId: req.user.id,
