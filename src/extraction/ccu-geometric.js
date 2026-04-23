@@ -399,7 +399,17 @@ export async function getModuleCount(imageBuffer, medianRails) {
   if (railWidth <= 0) {
     throw new Error('getModuleCount: effective rail width collapsed to zero after main-switch clamp');
   }
-  let geometricCount = Math.round(railWidth / moduleWidth);
+  // Use Math.floor so every generated slot's bbox (centre ± moduleWidth/2)
+  // sits fully inside the effective rail. Math.round could push the last
+  // slot's right edge past effectiveRailRight when railWidth > N·moduleWidth
+  // + moduleWidth/2 (≈40% of the time in practice), which then causes Stage 3
+  // to hallucinate a main_switch on the phantom slot because its crop
+  // extends 2.2× moduleWidth beyond the centre and reaches the real main
+  // switch face. Observed on Wylex NHRS12SL 2026-04-23 harness run 3: Stage
+  // 2 returned 16 slots but the last two (810, 860) had crops reaching into
+  // the main-switch bbox; Stage 3 tagged 14 as main_switch and 15 as blank,
+  // merger pushed "Spare" phantom onto the schedule as circuit 1.
+  let geometricCount = Math.floor(railWidth / moduleWidth);
 
   const vlmCount = Math.round(module_count_direct);
 
@@ -521,10 +531,13 @@ export async function cropSlot(imageBuffer, slotIndex, geom) {
   const railCenterYNorm = (railTop + railBottom) / 2;
 
   // Crop width = 2.2 × moduleWidth so 2-module devices (RCDs, 2P MCBs, isolators)
-  // are fully captured regardless of which of their two slot centres we anchor to.
-  // Previous 1.2× bisected 2-module devices straight down the middle. VLM prompt
-  // already says "identify the device centred in this crop" + echoes slot_index,
-  // so the small bleed into neighbours is acceptable.
+  // are fully captured regardless of which of their two slot centres we anchor
+  // to. Narrower crops (tried 1.6× on 2026-04-23 harness run 4) caused Stage
+  // 3 to miss RCD classification on the second module (confidence collapsed
+  // from 0.9 to 0.4 because the test button / waveform symbol fell outside
+  // the crop), net worse than the marginal gain from less neighbour bleed.
+  // VLM prompt already says "identify the device centred in this crop" +
+  // echoes slot_index, so a small amount of neighbour bleed is acceptable.
   const halfWidthNorm = moduleWidth * 0.5 * 2.2;
   // 30% V padding applied relative to rail height (labels live just above/below the rail)
   const halfHeightNorm = (railHeightNorm / 2) * 1.3;
@@ -545,6 +558,11 @@ export async function cropSlot(imageBuffer, slotIndex, geom) {
   const buffer = await sharp(imageBuffer)
     .extract({ left: xPx, top: yPx, width: wPx, height: hPx })
     // Upscale to ~1024px wide for VLM legibility (matches v3 POC).
+    // Tried 2048 on 2026-04-23 to help the VLM read Wylex PSB32-C's small
+    // "-C" suffix — regressed: Stage 3 confidence dropped from 0.95 to
+    // 0.82 on clear devices and labels from the strip-channel (above/below
+    // the rail) bled into the device classification output as raw text.
+    // Turns out 1024 is already at the resolution sweet spot for this VLM.
     .resize({ width: 1024, withoutEnlargement: false })
     .jpeg({ quality: 90 })
     .toBuffer();
@@ -747,7 +765,16 @@ export async function prepareModernGeometry(imageBuffer) {
   // Roll the Stage 2 truncation signal into top-level lowConfidence so the
   // route handler can surface it (and iOS can render the existing lowConf
   // banner / amber state) without needing a second flag.
-  const lowConfidence = stage1.lowConfidence || !!stage2.truncatedFromDisagreement;
+  // lowConfidence fires when: Stage 1 samples diverged (SD threshold),
+  // Stage 2 truncated geometric → VLM (big overcount that we fixed), OR
+  // geometric/VLM disagreed by 2+ modules with VLM higher (we floor-counted
+  // and undercount is suspected). The last case used to be silent — only
+  // truncation lit lowConfidence — but a 2-module delta in either direction
+  // means rail geometry is shaky and the inspector should double-check.
+  const lowConfidence =
+    stage1.lowConfidence ||
+    !!stage2.truncatedFromDisagreement ||
+    Math.abs(stage2.geometricCount - stage2.vlmCount) >= 2;
 
   return {
     medianRails: stage1.medianRails,

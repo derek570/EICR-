@@ -317,17 +317,18 @@ describe('getModuleCount', () => {
   test('rounds non-integer geometric counts', async () => {
     const buf = await makeFakeJpeg();
     // Right-side MS at 870/60 → msLeft=840; effectiveWidth=740; moduleWidth=30
-    // → 740/30 = 24.666 → 25. VLM agrees.
+    // → 740/30 = 24.666 → floor()=24 (prevents phantom slot overlapping the
+    // main switch bbox). VLM agrees.
     mockCreate.mockResolvedValueOnce(
       fakeVlmResponse({
         main_switch_center_x: 870,
         main_switch_width: 60,
-        module_count_direct: 25,
+        module_count_direct: 24,
       })
     );
 
     const result = await getModuleCount(buf, medianRails);
-    expect(result.geometricCount).toBe(25);
+    expect(result.geometricCount).toBe(24);
     expect(result.disagreement).toBe(false);
     expect(result.truncatedFromDisagreement).toBe(false);
   });
