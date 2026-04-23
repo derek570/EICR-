@@ -197,61 +197,139 @@ describe('getModuleCount', () => {
     rail_right: 900,
   };
 
-  test('geometricCount = round(rail_width / (main_switch_width/2))', async () => {
+  test('right-side main switch clamps rail_right to exclude its bbox', async () => {
     const buf = await makeFakeJpeg();
 
-    // rail_width = 800; main_switch_width=80 → module_width=40 → count=20
+    // rail = [100, 900], main switch centred at 820 width 80 → msLeft=780.
+    // effectiveRailRight = 780 → width 680, moduleWidth=40 → count=17.
     mockCreate.mockResolvedValueOnce(
       fakeVlmResponse({
-        main_switch_center_x: 140,
+        main_switch_center_x: 820,
+        main_switch_width: 80,
+        module_count_direct: 17,
+      })
+    );
+
+    const result = await getModuleCount(buf, medianRails);
+    expect(result.mainSwitchSide).toBe('right');
+    expect(result.geometricCount).toBe(17);
+    expect(result.vlmCount).toBe(17);
+    expect(result.disagreement).toBe(false);
+    expect(result.truncatedFromDisagreement).toBe(false);
+    expect(result.slotCentersX).toHaveLength(17);
+    // Right-side clamp: tile from the left end of the rail.
+    expect(result.slotCentersX[0]).toBeCloseTo(120);
+    // Last slot still leaves a gap before the main switch (msLeft=780,
+    // last centre = 100 + 40 * 16.5 = 760 → centre+moduleWidth/2 = 780).
+    expect(result.slotCentersX.at(-1)).toBeCloseTo(760);
+    expect(result.moduleWidth).toBe(40);
+  });
+
+  test('left-side main switch clamps rail_left to exclude its bbox', async () => {
+    const buf = await makeFakeJpeg();
+
+    // rail = [100, 900], main switch at left: centreX=180, width=80 → msRight=220.
+    // effectiveRailLeft=220 → width=680, moduleWidth=40 → count=17.
+    mockCreate.mockResolvedValueOnce(
+      fakeVlmResponse({
+        main_switch_center_x: 180,
+        main_switch_width: 80,
+        module_count_direct: 17,
+      })
+    );
+
+    const result = await getModuleCount(buf, medianRails);
+    expect(result.mainSwitchSide).toBe('left');
+    expect(result.geometricCount).toBe(17);
+    expect(result.slotCentersX).toHaveLength(17);
+    // Left-side clamp: first module sits just to the right of the main switch.
+    // Tiling runs right-to-left then reversed, so slotCentersX[0] is the
+    // leftmost module centre = effectiveLeft + moduleWidth*0.5 = 240.
+    expect(result.slotCentersX[0]).toBeCloseTo(240);
+    expect(result.slotCentersX.at(-1)).toBeCloseTo(880);
+  });
+
+  test('no clamp when main switch centre falls outside rail bbox', async () => {
+    const buf = await makeFakeJpeg();
+
+    // rail_width = 800; main switch is on a SEPARATE segment (centre past rail_right).
+    // Clamp is a no-op: full width used.
+    mockCreate.mockResolvedValueOnce(
+      fakeVlmResponse({
+        main_switch_center_x: 960,
         main_switch_width: 80,
         module_count_direct: 20,
       })
     );
 
     const result = await getModuleCount(buf, medianRails);
+    expect(result.mainSwitchSide).toBeNull();
     expect(result.geometricCount).toBe(20);
-    expect(result.vlmCount).toBe(20);
-    expect(result.disagreement).toBe(false);
     expect(result.slotCentersX).toHaveLength(20);
-    // First slot centre: rail_left + moduleWidth*0.5 = 100 + 20 = 120
     expect(result.slotCentersX[0]).toBeCloseTo(120);
-    // Last slot centre: rail_left + moduleWidth*(count - 0.5) = 100 + 40*19.5 = 880
-    expect(result.slotCentersX[19]).toBeCloseTo(880);
-    expect(result.moduleWidth).toBe(40);
+    expect(result.slotCentersX.at(-1)).toBeCloseTo(880);
   });
 
-  test('disagreement=true when |geometric - vlm| >= 1', async () => {
+  test('disagreement=true when |geometric - vlm| >= 1 (single-module drift kept)', async () => {
     const buf = await makeFakeJpeg();
-    // Geometric = 20 but VLM insists it's 18.
+    // Right-side MS at 820/80 → clamp to 780, width 680, moduleWidth 40 → count 17.
+    // VLM insists 18 — within the 1-module fencepost tolerance, kept as-is.
     mockCreate.mockResolvedValueOnce(
       fakeVlmResponse({
-        main_switch_center_x: 140,
+        main_switch_center_x: 820,
         main_switch_width: 80,
         module_count_direct: 18,
       })
     );
 
     const result = await getModuleCount(buf, medianRails);
-    expect(result.geometricCount).toBe(20);
+    expect(result.geometricCount).toBe(17);
     expect(result.vlmCount).toBe(18);
     expect(result.disagreement).toBe(true);
+    expect(result.truncatedFromDisagreement).toBe(false);
   });
 
-  test('rounds non-integer geometric counts', async () => {
+  test('truncates geometric → VLM when |geo − vlm| ≥ 2 post-clamp', async () => {
     const buf = await makeFakeJpeg();
-    // rail_width = 800; main_switch_width=70 → module_width=35 → 800/35 = 22.857 → 23
+    // Right-side MS: post-clamp geometric count = 17 but VLM insists 12.
+    // Clamp did its job on the main-switch end; remaining 5-module gap means
+    // rail_left estimate is off. Truncate geometric down to VLM's 12 and
+    // flag truncatedFromDisagreement.
     mockCreate.mockResolvedValueOnce(
       fakeVlmResponse({
-        main_switch_center_x: 150,
-        main_switch_width: 70,
-        module_count_direct: 23,
+        main_switch_center_x: 820,
+        main_switch_width: 80,
+        module_count_direct: 12,
       })
     );
 
     const result = await getModuleCount(buf, medianRails);
-    expect(result.geometricCount).toBe(23);
+    expect(result.vlmCount).toBe(12);
+    expect(result.geometricCount).toBe(12);
+    expect(result.slotCentersX).toHaveLength(12);
+    expect(result.truncatedFromDisagreement).toBe(true);
+    // With mainSwitchSide='right', tiling runs from the left, so the 12
+    // slots span the FAR-FROM-main-switch end: centres [120, 160, …, 560].
+    expect(result.slotCentersX[0]).toBeCloseTo(120);
+    expect(result.slotCentersX.at(-1)).toBeCloseTo(560);
+  });
+
+  test('rounds non-integer geometric counts', async () => {
+    const buf = await makeFakeJpeg();
+    // Right-side MS at 870/60 → msLeft=840; effectiveWidth=740; moduleWidth=30
+    // → 740/30 = 24.666 → 25. VLM agrees.
+    mockCreate.mockResolvedValueOnce(
+      fakeVlmResponse({
+        main_switch_center_x: 870,
+        main_switch_width: 60,
+        module_count_direct: 25,
+      })
+    );
+
+    const result = await getModuleCount(buf, medianRails);
+    expect(result.geometricCount).toBe(25);
     expect(result.disagreement).toBe(false);
+    expect(result.truncatedFromDisagreement).toBe(false);
   });
 
   test('throws when main_switch_width is invalid', async () => {
@@ -325,7 +403,7 @@ describe('extractCcuGeometric', () => {
       // main_switch_width=400 on 0-1000 → moduleWidth=200 → count=round(800/200)=4
       .mockResolvedValueOnce(
         fakeVlmResponse({
-          main_switch_center_x: 310,
+          main_switch_center_x: 1000,  // outside rail bbox — no clamp
           main_switch_width: 400,
           module_count_direct: 4,
         })
@@ -384,7 +462,7 @@ describe('extractCcuGeometric', () => {
       )
       .mockResolvedValueOnce(
         fakeVlmResponse({
-          main_switch_center_x: 310,
+          main_switch_center_x: 1000,  // outside rail bbox — no clamp
           main_switch_width: 400,
           module_count_direct: 4,
         })
@@ -685,7 +763,7 @@ describe('prepareModernGeometry', () => {
       )
       .mockResolvedValueOnce(
         fakeVlmResponse({
-          main_switch_center_x: 310,
+          main_switch_center_x: 1000,  // outside rail bbox — no clamp
           main_switch_width: 400,
           module_count_direct: 4,
         })
@@ -737,7 +815,7 @@ describe('classifyModernSlots', () => {
       )
       .mockResolvedValueOnce(
         fakeVlmResponse({
-          main_switch_center_x: 310,
+          main_switch_center_x: 1000,  // outside rail bbox — no clamp
           main_switch_width: 400,
           module_count_direct: 4,
         })
@@ -814,7 +892,7 @@ describe('prepare + classify → extractCcuGeometric equivalence', () => {
       )
       .mockResolvedValueOnce(
         fakeVlmResponse({
-          main_switch_center_x: 300,
+          main_switch_center_x: 1000,  // outside rail bbox — no clamp
           main_switch_width: 400,
           module_count_direct: 4,
         })
@@ -839,7 +917,7 @@ describe('prepare + classify → extractCcuGeometric equivalence', () => {
       )
       .mockResolvedValueOnce(
         fakeVlmResponse({
-          main_switch_center_x: 300,
+          main_switch_center_x: 1000,  // outside rail bbox — no clamp
           main_switch_width: 400,
           module_count_direct: 4,
         })

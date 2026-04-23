@@ -335,20 +335,94 @@ export async function getModuleCount(imageBuffer, medianRails) {
     throw new Error('getModuleCount: VLM returned invalid module_count_direct');
   }
 
-  const railWidth = medianRails.rail_right - medianRails.rail_left;
-  if (railWidth <= 0) {
+  const rawRailWidth = medianRails.rail_right - medianRails.rail_left;
+  if (rawRailWidth <= 0) {
     throw new Error('getModuleCount: rail_right must be greater than rail_left');
   }
 
   const moduleWidth = main_switch_width / 2; // main switch is always 2 modules wide
-  const geometricCount = Math.round(railWidth / moduleWidth);
 
-  const slotCentersX = [];
-  for (let i = 0; i < geometricCount; i++) {
-    slotCentersX.push(medianRails.rail_left + moduleWidth * (i + 0.5));
+  // --- Clamp rail span to exclude the main switch bbox ---------------------
+  // Stage 1's VLM often returns `rail_right` at the physical end of the DIN
+  // rail, which includes the main-switch region on right-handed boards (or
+  // `rail_left` at the start of the rail including the main switch on left-
+  // handed boards). Without this clamp, Stage 2 tiles the main-switch zone
+  // into phantom module slots — on a Wylex NHRS12SL that meant 18 slots for
+  // a ~12-module board, which then passed through Stage 3 as 2-4 "unknown"
+  // / "blank" phantoms sitting inside the isolator.
+  //
+  // Skip the clamp when mainSwitchCenterX is null (inline-mains rewireable
+  // boards — the Codex P1 fix handles those via mainSwitchOffset upstream),
+  // or when the main switch already sits outside the rail bbox (no-op).
+  let effectiveRailLeft = medianRails.rail_left;
+  let effectiveRailRight = medianRails.rail_right;
+  let mainSwitchSide = null;
+  // Only clamp when the main-switch centre is physically INSIDE the rail bbox
+  // returned by Stage 1. If the VLM places it outside (e.g. separate rail
+  // segment, or Stage 1 already excluded the main-switch zone), trust that
+  // and leave the rail span alone.
+  const msCentreInsideRail =
+    typeof main_switch_center_x === 'number' &&
+    Number.isFinite(main_switch_center_x) &&
+    main_switch_center_x >= medianRails.rail_left &&
+    main_switch_center_x <= medianRails.rail_right;
+
+  if (msCentreInsideRail) {
+    const msHalf = main_switch_width / 2;
+    const msLeft = main_switch_center_x - msHalf;
+    const msRight = main_switch_center_x + msHalf;
+    const railMid = (medianRails.rail_left + medianRails.rail_right) / 2;
+    if (main_switch_center_x > railMid) {
+      mainSwitchSide = 'right';
+      if (msLeft > medianRails.rail_left) {
+        effectiveRailRight = msLeft;
+      }
+    } else {
+      mainSwitchSide = 'left';
+      if (msRight < medianRails.rail_right) {
+        effectiveRailLeft = msRight;
+      }
+    }
   }
 
+  const railWidth = effectiveRailRight - effectiveRailLeft;
+  if (railWidth <= 0) {
+    throw new Error('getModuleCount: effective rail width collapsed to zero after main-switch clamp');
+  }
+  let geometricCount = Math.round(railWidth / moduleWidth);
+
   const vlmCount = Math.round(module_count_direct);
+
+  // --- Disagreement gate ---------------------------------------------------
+  // After the clamp, if geometric and VLM counts still differ by >= 2, the
+  // rail edges are still fuzzy (typically the far-from-main-switch end —
+  // that's the only remaining unclamped edge). Truncate to the VLM count by
+  // dropping modules from the end NEAREST the main switch, which is the
+  // fuzziest region even post-clamp (main_switch_width is a VLM estimate,
+  // not a measurement). A 1-module drift is ignored — that can be genuine
+  // fence-post rounding.
+  let truncatedFromDisagreement = false;
+  if (vlmCount > 0 && geometricCount - vlmCount >= 2) {
+    geometricCount = vlmCount;
+    truncatedFromDisagreement = true;
+  }
+
+  const slotCentersX = [];
+  if (mainSwitchSide === 'right' || mainSwitchSide === null) {
+    // Tile from the far-from-main-switch end (left), so if we ever truncate
+    // further we lose the modules nearest the main switch (fuzziest region).
+    for (let i = 0; i < geometricCount; i++) {
+      slotCentersX.push(effectiveRailLeft + moduleWidth * (i + 0.5));
+    }
+  } else {
+    // mainSwitchSide === 'left' — tile from the right edge backwards so the
+    // nearest-to-main-switch modules are the last to be generated.
+    for (let i = 0; i < geometricCount; i++) {
+      slotCentersX.push(effectiveRailRight - moduleWidth * (i + 0.5));
+    }
+    slotCentersX.reverse(); // keep physical left-to-right ordering for callers
+  }
+
   const disagreement = Math.abs(geometricCount - vlmCount) >= 1;
 
   return {
@@ -356,6 +430,8 @@ export async function getModuleCount(imageBuffer, medianRails) {
     vlmCount,
     slotCentersX,
     disagreement,
+    truncatedFromDisagreement,
+    mainSwitchSide,
     mainSwitchCenterX: typeof main_switch_center_x === 'number' ? main_switch_center_x : null,
     mainSwitchWidth: main_switch_width,
     moduleWidth,
@@ -658,16 +734,23 @@ export async function prepareModernGeometry(imageBuffer) {
     outputTokens: stage1.usage.outputTokens + stage2.usage.outputTokens,
   };
 
+  // Roll the Stage 2 truncation signal into top-level lowConfidence so the
+  // route handler can surface it (and iOS can render the existing lowConf
+  // banner / amber state) without needing a second flag.
+  const lowConfidence = stage1.lowConfidence || !!stage2.truncatedFromDisagreement;
+
   return {
     medianRails: stage1.medianRails,
     moduleCount: stage2.geometricCount,
     vlmCount: stage2.vlmCount,
     disagreement: stage2.disagreement,
-    lowConfidence: stage1.lowConfidence,
+    truncatedFromDisagreement: !!stage2.truncatedFromDisagreement,
+    lowConfidence,
     slotCentersX: stage2.slotCentersX,
     moduleWidth: stage2.moduleWidth,
     mainSwitchWidth: stage2.mainSwitchWidth,
     mainSwitchCenterX: stage2.mainSwitchCenterX,
+    mainSwitchSide: stage2.mainSwitchSide ?? null,
     imageWidth: stage1.imageWidth,
     imageHeight: stage1.imageHeight,
     stageOutputs: {
@@ -684,8 +767,10 @@ export async function prepareModernGeometry(imageBuffer) {
         slotCentersX: stage2.slotCentersX,
         mainSwitchCenterX: stage2.mainSwitchCenterX,
         mainSwitchWidth: stage2.mainSwitchWidth,
+        mainSwitchSide: stage2.mainSwitchSide ?? null,
         moduleWidth: stage2.moduleWidth,
         disagreement: stage2.disagreement,
+        truncatedFromDisagreement: !!stage2.truncatedFromDisagreement,
         usage: stage2.usage,
       },
     },
@@ -810,8 +895,10 @@ export async function extractCcuGeometric(imageBuffer) {
     moduleWidth: prepared.moduleWidth,
     mainSwitchCenterX: prepared.mainSwitchCenterX,
     mainSwitchWidth: prepared.mainSwitchWidth,
+    mainSwitchSide: prepared.mainSwitchSide ?? null,
     lowConfidence: prepared.lowConfidence,
     disagreement: prepared.disagreement,
+    truncatedFromDisagreement: !!prepared.truncatedFromDisagreement,
     imageWidth: prepared.imageWidth,
     imageHeight: prepared.imageHeight,
     slots: classified.slots,
