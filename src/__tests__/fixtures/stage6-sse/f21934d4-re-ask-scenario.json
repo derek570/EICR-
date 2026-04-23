@@ -1,0 +1,92 @@
+{
+  "_doc": "F21934D4 replay fixture — Phase 4 SC #4 exit check. See src/__tests__/stage6-f21934d4-replay.test.js for the full origin narrative and per-assertion justification. Purpose: codify the exact production reproducer scenario that motivated filled-slots-filter and that Phase 4 (agentic prompt + cached-prefix snapshot + gated questions_for_user deletion) is intended to eliminate at source rather than suppress downstream.",
+  "_origin_ref": "src/extraction/filled-slots-filter.js lines 54-58 — production session F21934D4: inspector said 'R1 plus R2 for circuit 2 is 0.64 ohms' on turn N. Legacy sliding-window capped at SLIDING_WINDOW_SIZE=6 pairs, so by turn N+7 the exchange had rolled out of the model's effective window. On a later turn whose transcript did NOT re-supply r1_r2, the legacy prompt (which lived alongside the stateSnapshot injected as a USER message) emitted { field: 'r1_r2', circuit: 2, type: 'unclear' } in questions_for_user, which reached QuestionGate and fired TTS re-asking for a value already on the form.",
+  "_proof_of_fix": "Plan 04-02 moved the stateSnapshot into the CACHED PREFIX (system-prompt cache_control:'ephemeral' block) so it is visible on every turn regardless of sliding-window rotation. Plan 04-01 added STQ-05 restraint text instructing the model to not re-ask filled slots. Plan 04-03 deleted the questions_for_user JSON emission on the tool-call branch so any residual legacy prompt survival cannot leak into the gate. Together these three changes make the scenario below return zero ask_user tool calls — SC #4.",
+  "_why_simulated_not_live": "This fixture drives a deterministic, offline, sub-second replay. We are NOT measuring real-model shadow divergence (that is Plan 04-05's golden-session job). We are locking DISPATCH behaviour: given a well-behaved model response to the F21934D4 transcript under the new prompt + cached prefix, our tool-call path delivers zero ask_user registrations, zero ws ask_user_started emissions, zero questions_for_user JSON bypass logs, and a correctly-updated stateSnapshot. If Plan 04-05 later surfaces that the REAL model still emits ask_user on this transcript, that is a prompt tuning issue (Phase 5/6) tracked separately — it would not invalidate the dispatch-level lock this fixture provides.",
+  "pre_turn_state": {
+    "_doc": "Seeded session state representing the POST-turn-N world — i.e. after the inspector said 'R1 plus R2 for circuit 2 is 0.64 ohms' AND several other turns recorded readings for other circuits. This is what the cached-prefix snapshot (Plan 04-02) looks like on turn N+K. Under legacy path this exchange would have been dropped from the sliding window; under cached-prefix path it is always visible.",
+    "snapshot": {
+      "circuits": {
+        "1": {
+          "circuit_ref": 1,
+          "circuit_designation": "Ring final (downstairs sockets)",
+          "zs": 0.42
+        },
+        "2": {
+          "circuit_ref": 2,
+          "circuit_designation": "Ring final (kitchen)",
+          "r1_r2": 0.64
+        },
+        "3": {
+          "circuit_ref": 3,
+          "circuit_designation": "Lighting (downstairs)"
+        }
+      },
+      "pending_readings": [],
+      "observations": [],
+      "validation_alerts": []
+    },
+    "askedQuestions": [],
+    "extractedObservations": []
+  },
+  "transcript": "Circuit three, insulation live to live greater than two hundred.",
+  "_transcript_doc": "Deliberately chosen to exercise a DIFFERENT (field, circuit) pair than the one at risk of re-ask. The inspector is giving an insulation reading for circuit 3; they are NOT re-supplying r1_r2 for circuit 2 and NOT referencing r1_r2 at all. Under legacy behaviour this was the exact transcript-shape that produced the F21934D4 re-ask: the model, having lost the turn-N exchange from its window, saw the pending_readings list empty for r1_r2 circuit 2 and emitted an 'unclear' question. Under the new prompt the cached-prefix snapshot shows r1_r2=0.64 for circuit 2 every turn, STQ-05 instructs the model not to re-ask filled slots, so the correct response is: record the insulation reading for circuit 3, end turn, no ask_user.",
+  "sse_events_well_behaved": [
+    {
+      "_comment": "Round 1 of the tool loop — model emits a SINGLE record_reading tool_use for the insulation reading. No ask_user. No questions_for_user. This is the shape the new prompt should produce given the cached-prefix snapshot + STQ-05 restraint.",
+      "type": "message_start",
+      "message": { "id": "msg_f21934d4_round1", "role": "assistant", "content": [] }
+    },
+    {
+      "type": "content_block_start",
+      "index": 0,
+      "content_block": {
+        "type": "tool_use",
+        "id": "toolu_f21934d4_ins",
+        "name": "record_reading",
+        "input": {}
+      }
+    },
+    {
+      "type": "content_block_delta",
+      "index": 0,
+      "delta": {
+        "type": "input_json_delta",
+        "partial_json": "{\"field\":\"insulation_resistance_l_l\",\"circuit\":3,\"value\":\">200\",\"confidence\":0.95,\"source_turn_id\":\"t-later\"}"
+      }
+    },
+    { "type": "content_block_stop", "index": 0 },
+    { "type": "message_delta", "delta": { "stop_reason": "tool_use" } },
+    { "type": "message_stop" }
+  ],
+  "sse_events_well_behaved_round2": [
+    {
+      "_comment": "Round 2 — after the tool_result for round 1 is appended, the model acknowledges with a short text block and ends the turn. Crucially: NO ask_user tool_use and NO questions_for_user JSON. The new prompt does not mention questions_for_user at all (Plan 04-03), so even if the model were tempted to re-ask, there is no surface for it to do so on the tool-call branch.",
+      "type": "message_start",
+      "message": { "id": "msg_f21934d4_round2", "role": "assistant", "content": [] }
+    },
+    {
+      "type": "content_block_start",
+      "index": 0,
+      "content_block": { "type": "text", "text": "" }
+    },
+    {
+      "type": "content_block_delta",
+      "index": 0,
+      "delta": { "type": "text_delta", "text": "Recorded insulation resistance for circuit 3." }
+    },
+    { "type": "content_block_stop", "index": 0 },
+    { "type": "message_delta", "delta": { "stop_reason": "end_turn" } },
+    { "type": "message_stop" }
+  ],
+  "sse_events_misbehaving_legacy_questions_for_user": [
+    {
+      "_comment": "LEGACY reproducer — what Sonnet emitted in the REAL F21934D4 production session before Plan 04-01/02/03. Shape matches the legacy questions_for_user schema (field + circuit + type + question + heard_value). Scenario A in the test file feeds this directly to filterQuestionsAgainstFilledSlots and asserts the pre-Phase-4 safety net (filled-slots-filter) correctly drops it. This locks the Phase 5 baseline: even if the prompt path somehow regressed, the filter still catches this exact shape.",
+      "field": "r1_r2",
+      "circuit": 2,
+      "type": "unclear",
+      "question": "Was that R1 plus R2 for circuit 2?",
+      "heard_value": "0.64"
+    }
+  ]
+}
