@@ -230,11 +230,16 @@ export async function cropSlotLabelZone(imageBuffer, slotIndex, geom) {
   const wPx = Math.max(1, rightPx - leftPx);
   const hPx = Math.max(1, bottomPx - topPx);
 
+  // Upscale to 1024 on the short edge for VLM legibility (matches Stage 3).
+  // Cap the long edge at 7800 px because Anthropic rejects images with any
+  // dimension > 8000 px (BadRequestError). The tall ±6× crop can exceed
+  // that when upscaled: a 154×1300 crop → 1024×8646 would be rejected. Cap
+  // both dims via fit:'inside' so the tall crop stays under the limit; if
+  // that means the width comes in under 1024, the VLM still does fine on
+  // the small labels once the rail is near image top/bottom.
   const buffer = await sharp(imageBuffer)
     .extract({ left: leftPx, top: topPx, width: wPx, height: hPx })
-    // Upscale to 1024 wide for VLM legibility (matches modern/rewireable Stage 3
-    // crop resize). Labels are often small — the extra resolution matters.
-    .resize({ width: 1024, withoutEnlargement: false })
+    .resize({ width: 1024, height: 7800, fit: 'inside', withoutEnlargement: false })
     .jpeg({ quality: 90 })
     .toBuffer();
 
