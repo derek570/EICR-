@@ -65,13 +65,21 @@ const MODULE_COUNT_PROMPT = (
 
 Find the MAIN SWITCH on this board. It is typically the largest device on the rail — two modules wide (~36mm in reality). It has no test button and no sensitivity marking ("30mA" etc.). It is NOT an RCD.
 
+Also identify the horizontal bounds of the POPULATED AREA on the rail. "Populated" includes:
+- devices (MCBs, RCBOs, RCDs, main switches)
+- blanking plates (1-module plastic covers that fill unused slots)
+- empty slots in the middle of the rail that have devices or blanks further left/right — do NOT stop at middle gaps, split-load RCD boards and RCBO boards with removed circuits are common
+Only stop at the true ends of the populated area: the far-left edge of the leftmost element, and the far-right edge of the rightmost element. Exclude any exposed DIN rail past the last element at either end.
+
 Report:
 1. The x-coordinate of the main switch's CENTRE on the 0-1000 scale (main_switch_center_x).
 2. The TOTAL width of the main switch on the 0-1000 scale (main_switch_width).
 3. A direct count of how many module positions fit on the rail between rail_left and rail_right (module_count_direct). A module is an 18mm-wide slot — a single MCB is 1 module, an RCBO or RCD or main switch is 2 modules, blanks count as 1 module each.
+4. The x-coordinate of the far-LEFT edge of the populated area on the 0-1000 scale (populated_area_start_x). Leftmost device or blanking plate.
+5. The x-coordinate of the far-RIGHT edge of the populated area on the 0-1000 scale (populated_area_end_x). Rightmost device or blanking plate. Skip middle gaps — if there's a gap in the middle with more devices or blanks further right, continue past the gap to the true end.
 
 Respond with JSON only:
-{"main_switch_center_x": <int>, "main_switch_width": <int>, "module_count_direct": <int>}`;
+{"main_switch_center_x": <int>, "main_switch_width": <int>, "module_count_direct": <int>, "populated_area_start_x": <int>, "populated_area_end_x": <int>}`;
 
 // Stage 3 — classify the device in each crop. Each message contains N crops
 // (CCU_STAGE3_BATCH_SIZE); the VLM must return exactly N objects in the same order.
@@ -403,7 +411,7 @@ export async function getRailGeometry(imageBuffer) {
  * @returns {Promise<{geometricCount:number, vlmCount:number, slotCentersX:number[], disagreement:boolean, mainSwitchCenterX:number, mainSwitchWidth:number, usage:object}>}
  * @throws if ANTHROPIC_API_KEY missing or VLM call fails.
  */
-export async function getModuleCount(imageBuffer, medianRails) {
+export async function getModuleCount(imageBuffer, medianRails, imageDimensions = {}) {
   if (!Buffer.isBuffer(imageBuffer)) {
     throw new Error('getModuleCount: imageBuffer must be a Buffer');
   }
@@ -419,7 +427,13 @@ export async function getModuleCount(imageBuffer, medianRails) {
   const base64 = imageBuffer.toString('base64');
 
   const sample = await callVlm(anthropic, base64, MODULE_COUNT_PROMPT(medianRails));
-  const { main_switch_center_x, main_switch_width, module_count_direct } = sample.parsed;
+  const {
+    main_switch_center_x,
+    main_switch_width,
+    module_count_direct,
+    populated_area_start_x,
+    populated_area_end_x,
+  } = sample.parsed;
 
   if (typeof main_switch_width !== 'number' || main_switch_width <= 0) {
     throw new Error('getModuleCount: VLM returned invalid main_switch_width');
@@ -433,7 +447,71 @@ export async function getModuleCount(imageBuffer, medianRails) {
     throw new Error('getModuleCount: rail_right must be greater than rail_left');
   }
 
-  const moduleWidth = main_switch_width / 2; // main switch is always 2 modules wide
+  // Pitch estimate #1: main-switch width ÷ 2. By BS 7671 convention every UK
+  // domestic main switch is a 2-module double-pole isolator (~36mm), so this
+  // gives pitch directly. Will be refined from the bank/count quotient once
+  // the rail span is clamped and count is locked in.
+  let moduleWidth = main_switch_width / 2;
+  const moduleWidthFromMainSwitch = moduleWidth;
+
+  // Pitch estimate #2 (diagnostic): MCB body height. UK domestic MCB bodies
+  // converge at ~82.5mm across Hager / Crabtree / Wylex / Schneider / MK /
+  // Chint (±5%), and module pitch is a hard DIN standard at 17.5mm. So
+  // (17.5 / 82.5) × rail-height-in-pixels → pitch in pixels. This is
+  // independent of main_switch_width and lets us flag when the two
+  // estimates disagree — usually a sign the inspector framed rails outside
+  // the MCB body edges, or the board uses non-standard gear. Not a hard
+  // gate this session; logged as pitchCrossCheck in the return value.
+  const { imageWidth, imageHeight } = imageDimensions || {};
+  let pitchCrossCheck = null;
+  if (Number.isFinite(imageWidth) && imageWidth > 0 &&
+      Number.isFinite(imageHeight) && imageHeight > 0 &&
+      typeof medianRails.rail_top === 'number' &&
+      typeof medianRails.rail_bottom === 'number' &&
+      medianRails.rail_bottom > medianRails.rail_top) {
+    const railHeightPx = ((medianRails.rail_bottom - medianRails.rail_top) / 1000) * imageHeight;
+    const moduleWidthPxFromMs = (moduleWidthFromMainSwitch / 1000) * imageWidth;
+    const moduleWidthPxFromHeight = 17.5 * (railHeightPx / 82.5);
+    const denom = Math.max(moduleWidthPxFromMs, moduleWidthPxFromHeight, 1);
+    const disagreementPct = Math.round(
+      (Math.abs(moduleWidthPxFromMs - moduleWidthPxFromHeight) / denom) * 100
+    );
+    pitchCrossCheck = {
+      fromMainSwitchPx: Math.round(moduleWidthPxFromMs),
+      fromMcbHeightPx: Math.round(moduleWidthPxFromHeight),
+      disagreementPct,
+    };
+  }
+
+  // --- Clamp rail span to the populated area -------------------------------
+  // When iOS sends a railRoiHint, the inspector may leave horizontal slack
+  // on the left/right of the MCB row (the rails overlay only constrains the
+  // VERTICAL axis — top/bottom of MCBs to the two bars). Without clamping,
+  // effectiveRailLeft/Right would still reflect the ROI edges and the
+  // refined-pitch step below would compute an artificially wide pitch,
+  // inflating every slot crop. Use the VLM's populated_area bounds (which
+  // correctly skip middle gaps for split-load / RCBO-removed boards) to
+  // tighten the rail span before the main-switch clamp applies. Both bounds
+  // are optional — fall back to medianRails verbatim if the VLM omits or
+  // returns nonsense values.
+  let effectiveRailLeft = medianRails.rail_left;
+  let effectiveRailRight = medianRails.rail_right;
+  if (
+    typeof populated_area_start_x === 'number' &&
+    Number.isFinite(populated_area_start_x) &&
+    populated_area_start_x > medianRails.rail_left &&
+    populated_area_start_x < medianRails.rail_right
+  ) {
+    effectiveRailLeft = populated_area_start_x;
+  }
+  if (
+    typeof populated_area_end_x === 'number' &&
+    Number.isFinite(populated_area_end_x) &&
+    populated_area_end_x < medianRails.rail_right &&
+    populated_area_end_x > effectiveRailLeft
+  ) {
+    effectiveRailRight = populated_area_end_x;
+  }
 
   // --- Clamp rail span to exclude the main switch bbox ---------------------
   // Stage 1's VLM often returns `rail_right` at the physical end of the DIN
@@ -446,33 +524,37 @@ export async function getModuleCount(imageBuffer, medianRails) {
   //
   // Skip the clamp when mainSwitchCenterX is null (inline-mains rewireable
   // boards — the Codex P1 fix handles those via mainSwitchOffset upstream),
-  // or when the main switch already sits outside the rail bbox (no-op).
-  let effectiveRailLeft = medianRails.rail_left;
-  let effectiveRailRight = medianRails.rail_right;
+  // or when the main switch already sits outside the populated bounds.
+  //
+  // effectiveRailLeft / effectiveRailRight were initialised above with
+  // medianRails.rail_left / rail_right and already narrowed by the
+  // populated-area clamp. The main-switch clamp narrows them further on the
+  // side the main switch sits on.
   let mainSwitchSide = null;
-  // Only clamp when the main-switch centre is physically INSIDE the rail bbox
-  // returned by Stage 1. If the VLM places it outside (e.g. separate rail
-  // segment, or Stage 1 already excluded the main-switch zone), trust that
-  // and leave the rail span alone.
+  // Only clamp when the main-switch centre is physically INSIDE the current
+  // effective rail bounds. If the VLM places it outside (e.g. separate rail
+  // segment, Stage 1 already excluded the main-switch zone, or the
+  // populated-area clamp narrowed past it), trust that and leave the span
+  // alone.
   const msCentreInsideRail =
     typeof main_switch_center_x === 'number' &&
     Number.isFinite(main_switch_center_x) &&
-    main_switch_center_x >= medianRails.rail_left &&
-    main_switch_center_x <= medianRails.rail_right;
+    main_switch_center_x >= effectiveRailLeft &&
+    main_switch_center_x <= effectiveRailRight;
 
   if (msCentreInsideRail) {
     const msHalf = main_switch_width / 2;
     const msLeft = main_switch_center_x - msHalf;
     const msRight = main_switch_center_x + msHalf;
-    const railMid = (medianRails.rail_left + medianRails.rail_right) / 2;
+    const railMid = (effectiveRailLeft + effectiveRailRight) / 2;
     if (main_switch_center_x > railMid) {
       mainSwitchSide = 'right';
-      if (msLeft > medianRails.rail_left) {
+      if (msLeft > effectiveRailLeft) {
         effectiveRailRight = msLeft;
       }
     } else {
       mainSwitchSide = 'left';
-      if (msRight < medianRails.rail_right) {
+      if (msRight < effectiveRailRight) {
         effectiveRailLeft = msRight;
       }
     }
@@ -510,6 +592,32 @@ export async function getModuleCount(imageBuffer, medianRails) {
     truncatedFromDisagreement = true;
   }
 
+  // --- Refine pitch from bank-width / count --------------------------------
+  // Previously moduleWidth stayed at main_switch_width/2 for slot tiling,
+  // which meant slot positions were extrapolated from ONE anchor (the
+  // main-switch side) and the far slot could drift by up to half a module
+  // relative to the real bank edge. Derek, 2026-04-23: "if the main-switch
+  // measurement is half a millimetre off, 15 MCBs later we're 7.5mm out".
+  //
+  // Fix: once count is locked in, recompute moduleWidth from the clamped
+  // bank width. This pins slot 0 at half a pitch from the left edge AND
+  // the last slot at half a pitch from the right edge — a two-anchor
+  // calibration whose error doesn't compound. The original
+  // main_switch_width/2 value is still returned as moduleWidthFromMainSwitch
+  // for cross-check / diagnostic purposes.
+  //
+  // ONLY refine when we trust the bank edges. If we truncated the count
+  // from geometric→VLM, the non-main-switch-side edge is already known to
+  // be loose (that's why truncation was needed) — stretching the refined
+  // pitch across that loose span would place slots on ground we wanted to
+  // exclude. In that case, keep the original main-switch-derived pitch and
+  // let the existing "tile from the main-switch-opposite end" logic drop
+  // modules from the fuzzy far side. Same reasoning for cases where
+  // populated_area bounds weren't provided and the rail was never tightened.
+  if (geometricCount > 0 && !truncatedFromDisagreement) {
+    moduleWidth = railWidth / geometricCount;
+  }
+
   const slotCentersX = [];
   if (mainSwitchSide === 'right' || mainSwitchSide === null) {
     // Tile from the far-from-main-switch end (left), so if we ever truncate
@@ -538,6 +646,18 @@ export async function getModuleCount(imageBuffer, medianRails) {
     mainSwitchCenterX: typeof main_switch_center_x === 'number' ? main_switch_center_x : null,
     mainSwitchWidth: main_switch_width,
     moduleWidth,
+    moduleWidthFromMainSwitch,
+    effectiveRailLeft,
+    effectiveRailRight,
+    populatedAreaStartX:
+      typeof populated_area_start_x === 'number' && Number.isFinite(populated_area_start_x)
+        ? populated_area_start_x
+        : null,
+    populatedAreaEndX:
+      typeof populated_area_end_x === 'number' && Number.isFinite(populated_area_end_x)
+        ? populated_area_end_x
+        : null,
+    pitchCrossCheck,
     usage: {
       inputTokens: sample.inputTokens,
       outputTokens: sample.outputTokens,
@@ -849,7 +969,10 @@ export async function prepareModernGeometry(imageBuffer, options = {}) {
   const stage1Ms = Date.now() - t0;
 
   const t1 = Date.now();
-  const stage2 = await getModuleCount(imageBuffer, stage1.medianRails);
+  const stage2 = await getModuleCount(imageBuffer, stage1.medianRails, {
+    imageWidth: stage1.imageWidth,
+    imageHeight: stage1.imageHeight,
+  });
   const stage2Ms = Date.now() - t1;
 
   const usage = {
@@ -902,6 +1025,12 @@ export async function prepareModernGeometry(imageBuffer, options = {}) {
         mainSwitchWidth: stage2.mainSwitchWidth,
         mainSwitchSide: stage2.mainSwitchSide ?? null,
         moduleWidth: stage2.moduleWidth,
+        moduleWidthFromMainSwitch: stage2.moduleWidthFromMainSwitch,
+        effectiveRailLeft: stage2.effectiveRailLeft,
+        effectiveRailRight: stage2.effectiveRailRight,
+        populatedAreaStartX: stage2.populatedAreaStartX,
+        populatedAreaEndX: stage2.populatedAreaEndX,
+        pitchCrossCheck: stage2.pitchCrossCheck,
         disagreement: stage2.disagreement,
         truncatedFromDisagreement: !!stage2.truncatedFromDisagreement,
         usage: stage2.usage,
