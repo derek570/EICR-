@@ -97,7 +97,17 @@ For MCBs and RCBOs, read:
 - model             — product family if printed (e.g. "Memera 2000", "Design 10"). null if not shown.
 - ratingAmps        — integer amp rating (6, 10, 16, 20, 25, 32, 40, 50, 63, 80, 100). null if unreadable.
 - poles             — 1, 2, 3 or 4 if you can read/count them. Return null if unsure — DO NOT guess. Stage 4 fills defaults from the device-face lookup table.
-- tripCurve         — "B", "C" or "D" — the curve letter printed directly before the amp rating (e.g. the "B" in "B32"). null if not visible. MCB/RCBO only.
+- tripCurve         — "B", "C" or "D". Two common printing conventions on UK MCBs:
+                      (a) Curve letter IMMEDIATELY BEFORE the amp rating, e.g. "B32", "C20", "D10".
+                      (b) Curve letter as a SUFFIX after the rating, separated by "-" or space,
+                          e.g. Wylex NSB32-C, PSB32-C, MEM Memera "32C", "32 C". Treat the suffix
+                          letter as the curve letter in these cases — it identifies the device
+                          family, not the trip class.
+                      If the device model printed on the face ends in "-B" / "-C" / "-D" after the
+                      amp rating (common on Wylex NH series: NSB16, NSB32-C, PSB32-C; MEM Memera
+                      MMB/MMC series), report that letter as the trip curve even though it is not
+                      in the leading position. If neither leading nor trailing pattern is visible,
+                      return null. MCB/RCBO only.
 - confidence        — your self-assessed 0.0-1.0 confidence in the classification.
 
 For RCDs and RCBOs, additionally read:
