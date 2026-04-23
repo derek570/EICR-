@@ -538,6 +538,36 @@ describe('slotsToCircuits', () => {
     expect(circuits[2].label).toBeNull();
   });
 
+  test('11b. blank-label semantics: empty labels on MCBs stay null; empty labels on blank slots become "Spare"', () => {
+    // Locks in Derek's 2026-04-23 rule:
+    //   - MCB/RCBO slot + no readable label → circuit emits label=null
+    //     (don't invent "Spare" for a device-occupied slot; inspector may
+    //     not have labelled it yet)
+    //   - Blank slot + no readable label → circuit emits "Spare"
+    //   - Blank slot + handwritten label (e.g. "Future Cooker") → keep it
+    const slots = [
+      // MCB with no label — stays null, must NOT default to "Spare".
+      makeSlot({
+        classification: 'mcb',
+        tripCurve: 'B',
+        ratingAmps: 32,
+        confidence: 0.9,
+        label: null,
+      }),
+      // Blank slot with no label — "Spare".
+      makeSlot({ classification: 'blank', confidence: 0.95, label: null }),
+      // Blank slot with a handwritten label — kept.
+      makeSlot({ classification: 'blank', confidence: 0.95, label: 'Future Heating' }),
+    ];
+
+    const circuits = slotsToCircuits({ slots, mainSwitchSide: 'left' });
+
+    expect(circuits).toHaveLength(3);
+    expect(circuits[0].label).toBeNull(); // MCB + no label → null
+    expect(circuits[1].label).toBe('Spare'); // blank + no label → Spare
+    expect(circuits[2].label).toBe('Future Heating'); // blank + label → kept
+  });
+
   test('12. minSlotConfidence parameter: default 0.7 marks conf=0.6 as low_confidence; 0.5 accepts it', () => {
     const slots = [
       makeSlot({ classification: 'mcb', tripCurve: 'B', ratingAmps: 32, confidence: 0.6 }),
