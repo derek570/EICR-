@@ -61,6 +61,41 @@ async function getOpenAIClient() {
 }
 
 /**
+ * Stage 6 Phase 4 Plan 04-03 — STQ-04 / STB-03.
+ *
+ * Returns true when the legacy `questions_for_user` consumption path should
+ * run for this session. On the tool-call branch (`shadow` / `live`) Sonnet
+ * emits questions via the `ask_user` tool call and the JSON
+ * `questions_for_user` field is not supposed to be generated at all (Plan
+ * 04-01's new prompt omits the field). This helper is the server-side
+ * defence-in-depth: even if a faulty prompt version caused Sonnet to emit
+ * `questions_for_user` in non-off mode, sonnet-stream.js refuses to forward
+ * it. Every read site (logger preview, filterQuestionsAgainstFilledSlots,
+ * questionGate.enqueue, reviewForOrphanedValues branch) is wrapped in this
+ * guard.
+ */
+function consumeLegacyQuestionsForUser(entry) {
+  return entry?.session?.toolCallsMode === 'off';
+}
+
+/**
+ * One-shot per-session bypass log — fires exactly the first time a
+ * non-empty `questions_for_user` payload is seen on the tool-call branch.
+ * Subsequent turns for the same session are silent so a prompt regression
+ * does not flood CloudWatch with per-turn duplicates; a single row is
+ * enough to diagnose the leak and the deploy that introduced it.
+ */
+function logBypassOnce(entry, sessionId, pathLabel) {
+  if (!entry || entry.loggedQuestionsForUserBypass) return;
+  entry.loggedQuestionsForUserBypass = true;
+  logger.info('questions_for_user bypassed (tool-call path)', {
+    sessionId,
+    path: pathLabel,
+    toolCallsMode: entry.session?.toolCallsMode,
+  });
+}
+
+/**
  * Fire-and-forget observation refinement. For each observation in the result
  * that needs refinement (missing code/regulation/low confidence), call
  * `gpt-5-search-api` and emit an `observation_update` message to iOS. Runs
@@ -1361,11 +1396,23 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         // batched extraction was the "Turn N cost" line, which doesn't carry
         // question/reading counts — making triage of gate-resolution bugs
         // (like the 14 Chichester postcode double-ask) much harder.
+        //
+        // Plan 04-03 STQ-04: questions count + preview only populated on the
+        // legacy off branch. On the tool-call branch Sonnet emits questions
+        // via ask_user tool calls, not questions_for_user, so counting them
+        // here would give a misleading 0 and a log-reader hunting a
+        // gate-resolution bug would waste time on the wrong signal.
+        const bypassOnBatch =
+          !consumeLegacyQuestionsForUser(entryRef) &&
+          Array.isArray(result.questions_for_user) &&
+          result.questions_for_user.length > 0;
         logger.info('Extraction result', {
           sessionId,
           path: 'onBatchResult',
           readings: (result.extracted_readings || []).length,
-          questions: (result.questions_for_user || []).length,
+          questions: consumeLegacyQuestionsForUser(entryRef)
+            ? (result.questions_for_user || []).length
+            : 0,
           observations: Array.isArray(result.observations) ? result.observations.length : 0,
           // Include a preview of up to the first two questions so we can trace
           // Sonnet's wording in CloudWatch without needing the iOS debug-log
@@ -1373,15 +1420,18 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
           // the QuestionGate "Flushing questions to iOS" log + the keys.js
           // "ElevenLabs TTS success" log, this reconstructs the full
           // Sonnet-question -> TTS-text chain per session.
-          questionsPreview: Array.isArray(result.questions_for_user)
-            ? result.questions_for_user.slice(0, 2).map((q) => ({
-                type: q.type || null,
-                field: q.field || null,
-                circuit: q.circuit === null || q.circuit === undefined ? null : q.circuit,
-                questionPreview: typeof q.question === 'string' ? q.question.slice(0, 120) : null,
-              }))
-            : [],
+          questionsPreview:
+            consumeLegacyQuestionsForUser(entryRef) && Array.isArray(result.questions_for_user)
+              ? result.questions_for_user.slice(0, 2).map((q) => ({
+                  type: q.type || null,
+                  field: q.field || null,
+                  circuit: q.circuit === null || q.circuit === undefined ? null : q.circuit,
+                  questionPreview:
+                    typeof q.question === 'string' ? q.question.slice(0, 120) : null,
+                }))
+              : [],
         });
+        if (bypassOnBatch) logBypassOnce(entryRef, sessionId, 'onBatchResult');
         // Order matters: resolve BEFORE enqueue.
         //
         // resolveByFields clears any PRIOR-turn pending questions whose field
@@ -1408,7 +1458,17 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         if (resolvedFieldsBatch.size > 0) {
           questionGate.resolveByFields(resolvedFieldsBatch);
         }
-        if (result.questions_for_user && result.questions_for_user.length > 0) {
+        // Plan 04-03 STQ-04: mode-gated legacy ingestion. On the tool-call
+        // branch (shadow/live) Sonnet emits questions via ask_user tool calls,
+        // not this JSON field; even if a prompt regression caused it to slip
+        // through, the server refuses to filter/enqueue/forward it. The
+        // one-shot bypass log inside logBypassOnce surfaces any such leak in
+        // CloudWatch exactly once per session.
+        if (
+          consumeLegacyQuestionsForUser(entryRef) &&
+          result.questions_for_user &&
+          result.questions_for_user.length > 0
+        ) {
           // Stage 5: drop questions whose slot is already filled in the
           // session's stateSnapshot (see filterQuestionsAgainstFilledSlots
           // docstring for the F21934D4 reproducer and same-turn protection).
@@ -1421,6 +1481,12 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
           if (filteredBatch.length > 0) {
             questionGate.enqueue(filteredBatch);
           }
+        } else if (
+          !consumeLegacyQuestionsForUser(entryRef) &&
+          Array.isArray(result.questions_for_user) &&
+          result.questions_for_user.length > 0
+        ) {
+          logBypassOnce(entryRef, sessionId, 'onBatchResult');
         }
         // Drop pending observation_* / field-less unclear questions when Sonnet
         // has just extracted an observation — resolveByFields can't do this
@@ -2270,24 +2336,37 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
       // Validate and auto-correct field names before sending to iOS
       validateAndCorrectFields(result, sessionId);
 
+      // Plan 04-03 STQ-04: same mode gate as the onBatchResult log above.
+      // Non-off modes receive questions via ask_user tool calls — counting
+      // the legacy JSON field here would misrepresent the actual ask count
+      // at the ElevenLabs TTS boundary and send a prompt-regression diagnosis
+      // down the wrong path.
+      const bypassOnSync =
+        !consumeLegacyQuestionsForUser(entry) &&
+        Array.isArray(result.questions_for_user) &&
+        result.questions_for_user.length > 0;
       logger.info('Extraction result', {
         sessionId,
         readings: result.extracted_readings.length,
-        questions: (result.questions_for_user || []).length,
+        questions: consumeLegacyQuestionsForUser(entry)
+          ? (result.questions_for_user || []).length
+          : 0,
         confirmations: (result.confirmations || []).length,
         // Sync-path parity with the onBatchResult log above: emit a preview of
         // up to the first two questions so we can see Sonnet's exact wording
         // in CloudWatch. Same rationale — iOS debug-log upload is broken, so
         // server-side logs are the only reliable forensic trail today.
-        questionsPreview: Array.isArray(result.questions_for_user)
-          ? result.questions_for_user.slice(0, 2).map((q) => ({
-              type: q.type || null,
-              field: q.field || null,
-              circuit: q.circuit === null || q.circuit === undefined ? null : q.circuit,
-              questionPreview: typeof q.question === 'string' ? q.question.slice(0, 120) : null,
-            }))
-          : [],
+        questionsPreview:
+          consumeLegacyQuestionsForUser(entry) && Array.isArray(result.questions_for_user)
+            ? result.questions_for_user.slice(0, 2).map((q) => ({
+                type: q.type || null,
+                field: q.field || null,
+                circuit: q.circuit === null || q.circuit === undefined ? null : q.circuit,
+                questionPreview: typeof q.question === 'string' ? q.question.slice(0, 120) : null,
+              }))
+            : [],
       });
+      if (bypassOnSync) logBypassOnce(entry, sessionId, 'handleTranscript');
 
       // Send extraction result (strip questions_for_user — they go through QuestionGate)
       // Rename extracted_readings → readings to match the web client interface
@@ -2370,7 +2449,15 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
       }
 
       // Handle questions (gated) — Stage 5 pre-flight filter drops refills.
-      if (result.questions_for_user && result.questions_for_user.length > 0) {
+      // Plan 04-03 STQ-04: only on the legacy off branch. The tool-call
+      // branch's ask_user tool call is the canonical ask channel; the JSON
+      // field should not exist on non-off modes and, if it somehow does, it
+      // must not reach QuestionGate or ElevenLabs TTS.
+      if (
+        consumeLegacyQuestionsForUser(entry) &&
+        result.questions_for_user &&
+        result.questions_for_user.length > 0
+      ) {
         const filteredSync = filterQuestionsAgainstFilledSlots(
           result.questions_for_user,
           entry.session.stateSnapshot,
@@ -2380,6 +2467,12 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         if (filteredSync.length > 0) {
           entry.questionGate.enqueue(filteredSync);
         }
+      } else if (
+        !consumeLegacyQuestionsForUser(entry) &&
+        Array.isArray(result.questions_for_user) &&
+        result.questions_for_user.length > 0
+      ) {
+        logBypassOnce(entry, sessionId, 'handleTranscript');
       }
 
       // Resolve observation-only questions when Sonnet extracted an observation.
@@ -2391,7 +2484,19 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
       }
 
       // Periodic orphaned value review — every 10 extraction turns
-      if (entry.session.turnCount > 0 && entry.session.turnCount % 10 === 0) {
+      //
+      // Plan 04-03 STQ-04: orphan review only runs the legacy enqueue path
+      // on off mode. reviewForOrphanedValues itself is a Sonnet call — cheap
+      // to skip on the tool-call branch entirely (no questions_for_user to
+      // consume means nothing to review FOR), so we short-circuit before the
+      // network call. If a future plan wires orphan review into the tool-call
+      // pipeline it will need its own ask_user-shaped path and this guard
+      // gets revisited.
+      if (
+        consumeLegacyQuestionsForUser(entry) &&
+        entry.session.turnCount > 0 &&
+        entry.session.turnCount % 10 === 0
+      ) {
         try {
           const reviewResult = await entry.session.reviewForOrphanedValues();
           if (reviewResult?.questions_for_user?.length > 0) {
