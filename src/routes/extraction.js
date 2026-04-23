@@ -903,15 +903,77 @@ export function slotsToCircuits({
     if (cls === 'main_switch' || cls === 'spd') continue;
 
     if (cls === 'rcd') {
-      // Standalone RCD — not a circuit, but its type/sensitivity cascade to the
-      // circuits it protects (all subsequent non-RCBO circuits until the next RCD).
-      upstreamRcd = {
+      // Standalone RCD — two roles:
+      //   1. Cascade its type/sensitivity to the circuits it protects
+      //      (all subsequent non-RCBO circuits until the next RCD).
+      //   2. Emit an own-row in the schedule so TradeCert's Schedule of Test
+      //      Results shows the RCD's BS EN + rating/sensitivity alongside the
+      //      MCBs it protects. `is_rcd_device: true` flags this row; it has
+      //      no circuit_number. iOS decoders treat rows where is_rcd_device
+      //      is truthy as a non-circuit schedule entry.
+      //
+      // DEDUPE: an RCD is ALWAYS 2 modules wide on UK boards (BS EN 61008-1),
+      // so Stage 3 classifies two consecutive slots as "rcd" for the same
+      // physical device. Only the FIRST slot of the pair emits a schedule
+      // row; subsequent adjacent 'rcd' slots refresh the cascade (in case
+      // the device face was only readable on the second slot) but do not
+      // produce duplicate rows. If a non-rcd slot sits between two rcd
+      // slots we treat them as two genuinely separate RCDs and emit two
+      // rows — rare in practice but matches what the inspector sees.
+      const nextUpstreamRcd = {
         type: slot.rcdWaveformType || null,
         sensitivity:
           slot.sensitivity != null && slot.sensitivity !== ''
             ? String(slot.sensitivity)
             : null,
       };
+
+      const lastPushed = circuits[circuits.length - 1];
+      const lastWasThisRcdPair =
+        lastPushed?.is_rcd_device && lastPushed?._rcdPairOpen === true;
+
+      if (lastWasThisRcdPair) {
+        // Second slot of the same physical RCD — gap-fill any field the
+        // first slot's VLM read couldn't recover (face-skew can leave one
+        // module's reading stronger than the other) and close the pair.
+        if (!lastPushed.ocpd_rating_a && slot.ratingAmps != null) {
+          lastPushed.ocpd_rating_a = String(slot.ratingAmps);
+        }
+        if (!lastPushed.rcd_type && nextUpstreamRcd.type) {
+          lastPushed.rcd_type = nextUpstreamRcd.type;
+        }
+        if (!lastPushed.rcd_rating_ma && nextUpstreamRcd.sensitivity) {
+          lastPushed.rcd_rating_ma = nextUpstreamRcd.sensitivity;
+        }
+        delete lastPushed._rcdPairOpen;
+        // Refresh cascade with the merged best-available values.
+        upstreamRcd = {
+          type: lastPushed.rcd_type || null,
+          sensitivity: lastPushed.rcd_rating_ma || null,
+        };
+      } else {
+        upstreamRcd = nextUpstreamRcd;
+        const rcdLabel =
+          slot.label != null && String(slot.label).trim().length > 0 ? slot.label : 'RCD';
+        circuits.push({
+          circuit_number: null,
+          label: rcdLabel,
+          is_rcd_device: true,
+          ocpd_type: null,
+          ocpd_rating_a:
+            slot.ratingAmps != null && slot.ratingAmps !== '' ? String(slot.ratingAmps) : null,
+          ocpd_bs_en: slot.bsEn || 'BS EN 61008-1',
+          ocpd_breaking_capacity_ka: null,
+          is_rcbo: false,
+          rcd_protected: false,
+          rcd_type: upstreamRcd.type,
+          rcd_rating_ma: upstreamRcd.sensitivity,
+          rcd_bs_en: slot.bsEn || 'BS EN 61008-1',
+          // Internal marker stripped below; used only to merge the immediate
+          // next 'rcd' slot into this row.
+          _rcdPairOpen: true,
+        });
+      }
       continue;
     }
 
@@ -949,6 +1011,13 @@ export function slotsToCircuits({
 
     circuits.push(circuit);
     circuitNumber++;
+  }
+
+  // Strip any lingering `_rcdPairOpen` flag (the RCD was the last slot, so
+  // the pair was never closed by a matching second module — still a valid
+  // row, just internal book-keeping we don't want to leak to iOS).
+  for (const c of circuits) {
+    if (c._rcdPairOpen !== undefined) delete c._rcdPairOpen;
   }
 
   return circuits;

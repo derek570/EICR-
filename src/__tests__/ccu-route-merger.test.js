@@ -262,36 +262,148 @@ describe('slotsToCircuits', () => {
     expect(circuits[3].ocpd_rating_a).toBe('100');
   });
 
-  test('4. standalone RCD cascades rcd_* fields to subsequent MCBs', () => {
+  test('4. standalone RCD emits an own-row AND cascades rcd_* fields to subsequent MCBs', () => {
     const slots = [
       makeSlot({ classification: 'mcb', tripCurve: 'B', ratingAmps: 32, confidence: 0.9 }),
-      makeSlot({ classification: 'rcd', rcdWaveformType: 'AC', sensitivity: 30, confidence: 0.9 }),
+      makeSlot({
+        classification: 'rcd',
+        rcdWaveformType: 'AC',
+        sensitivity: 30,
+        ratingAmps: 80,
+        bsEn: 'BS EN 61008-1',
+        confidence: 0.9,
+      }),
       makeSlot({ classification: 'mcb', tripCurve: 'B', ratingAmps: 16, confidence: 0.9 }),
       makeSlot({ classification: 'mcb', tripCurve: 'B', ratingAmps: 6, confidence: 0.9 }),
     ];
 
     const circuits = slotsToCircuits({ slots, mainSwitchSide: 'left', singleShotCircuits: [] });
 
-    // RCD slot itself is NOT a circuit — only 3 circuit rows
-    expect(circuits).toHaveLength(3);
+    // 3 MCB rows + 1 RCD own-row = 4 entries total
+    expect(circuits).toHaveLength(4);
 
     // MCB before the RCD (circuit 1) — NOT rcd_protected
     expect(circuits[0].circuit_number).toBe(1);
     expect(circuits[0].rcd_protected).toBe(false);
     expect(circuits[0].rcd_bs_en).toBeNull();
+    expect(circuits[0].is_rcd_device).toBeUndefined();
 
-    // MCBs after the RCD (circuits 2 and 3) — ARE rcd_protected
-    expect(circuits[1].circuit_number).toBe(2);
-    expect(circuits[1].rcd_protected).toBe(true);
+    // RCD own-row — no circuit_number, BS EN 61008-1, 80A 30mA AC
+    expect(circuits[1].is_rcd_device).toBe(true);
+    expect(circuits[1].circuit_number).toBeNull();
+    expect(circuits[1].ocpd_rating_a).toBe('80');
     expect(circuits[1].rcd_type).toBe('AC');
     expect(circuits[1].rcd_rating_ma).toBe('30');
-    expect(circuits[1].rcd_bs_en).toBe('61008');
+    expect(circuits[1].rcd_bs_en).toBe('BS EN 61008-1');
 
-    expect(circuits[2].circuit_number).toBe(3);
+    // MCBs after the RCD (circuits 2 and 3) — ARE rcd_protected
+    expect(circuits[2].circuit_number).toBe(2);
     expect(circuits[2].rcd_protected).toBe(true);
     expect(circuits[2].rcd_type).toBe('AC');
     expect(circuits[2].rcd_rating_ma).toBe('30');
     expect(circuits[2].rcd_bs_en).toBe('61008');
+
+    expect(circuits[3].circuit_number).toBe(3);
+    expect(circuits[3].rcd_protected).toBe(true);
+    expect(circuits[3].rcd_type).toBe('AC');
+    expect(circuits[3].rcd_rating_ma).toBe('30');
+    expect(circuits[3].rcd_bs_en).toBe('61008');
+  });
+
+  test('4b. two adjacent rcd slots (one 2-module physical device) collapse to ONE row', () => {
+    // An RCD is always 2 modules wide on UK boards — Stage 3 classifies both
+    // module-halves as "rcd". The merger must emit a single schedule row for
+    // the pair, not two.
+    const slots = [
+      makeSlot({ classification: 'mcb', tripCurve: 'B', ratingAmps: 32, confidence: 0.9 }),
+      // First rcd slot — strong face read (rating, bsEn).
+      makeSlot({
+        classification: 'rcd',
+        rcdWaveformType: 'AC',
+        sensitivity: 30,
+        ratingAmps: 80,
+        bsEn: 'BS EN 61008-1',
+        confidence: 0.9,
+      }),
+      // Second rcd slot — weaker read, BUT carries rcdWaveformType which the
+      // first slot missed. Gap-fill from here should win over the first
+      // slot's null.
+      makeSlot({
+        classification: 'rcd',
+        rcdWaveformType: null, // still null here
+        sensitivity: null,
+        ratingAmps: null,
+        confidence: 0.8,
+      }),
+      makeSlot({ classification: 'mcb', tripCurve: 'B', ratingAmps: 16, confidence: 0.9 }),
+    ];
+
+    const circuits = slotsToCircuits({ slots, mainSwitchSide: 'left' });
+
+    // 2 MCBs + 1 collapsed RCD row = 3 entries
+    expect(circuits).toHaveLength(3);
+    // _rcdPairOpen must not leak to callers.
+    expect(circuits[1]._rcdPairOpen).toBeUndefined();
+    // Circuit numbers don't jump — RCD row is unnumbered.
+    expect(circuits[0].circuit_number).toBe(1);
+    expect(circuits[1].is_rcd_device).toBe(true);
+    expect(circuits[1].circuit_number).toBeNull();
+    expect(circuits[2].circuit_number).toBe(2);
+    // The downstream MCB still gets the cascaded RCD protection.
+    expect(circuits[2].rcd_protected).toBe(true);
+    expect(circuits[2].rcd_type).toBe('AC');
+  });
+
+  test('4c. two rcd slots separated by a non-rcd slot emit TWO rcd rows', () => {
+    // Paranoia case: two genuinely separate physical RCDs with an MCB between
+    // them. Must NOT collapse — even though both are "rcd", they are
+    // different devices.
+    const slots = [
+      makeSlot({
+        classification: 'rcd',
+        rcdWaveformType: 'AC',
+        sensitivity: 30,
+        ratingAmps: 63,
+        confidence: 0.9,
+      }),
+      makeSlot({
+        classification: 'rcd',
+        rcdWaveformType: 'AC',
+        sensitivity: 30,
+        ratingAmps: 63,
+        confidence: 0.9,
+      }),
+      makeSlot({ classification: 'mcb', tripCurve: 'B', ratingAmps: 32, confidence: 0.9 }),
+      // A genuinely second RCD after an MCB — not part of the first pair.
+      makeSlot({
+        classification: 'rcd',
+        rcdWaveformType: 'A',
+        sensitivity: 30,
+        ratingAmps: 80,
+        confidence: 0.9,
+      }),
+      makeSlot({
+        classification: 'rcd',
+        rcdWaveformType: 'A',
+        sensitivity: 30,
+        ratingAmps: 80,
+        confidence: 0.9,
+      }),
+      makeSlot({ classification: 'mcb', tripCurve: 'B', ratingAmps: 16, confidence: 0.9 }),
+    ];
+
+    const circuits = slotsToCircuits({ slots, mainSwitchSide: 'left' });
+
+    // 2 RCDs + 2 MCBs = 4 rows (each RCD is a 2-module dedupe → 1 row each).
+    expect(circuits).toHaveLength(4);
+    expect(circuits[0].is_rcd_device).toBe(true);
+    expect(circuits[0].rcd_type).toBe('AC');
+    expect(circuits[1].circuit_number).toBe(1);
+    expect(circuits[1].rcd_type).toBe('AC');
+    expect(circuits[2].is_rcd_device).toBe(true);
+    expect(circuits[2].rcd_type).toBe('A'); // different RCD, different waveform
+    expect(circuits[3].circuit_number).toBe(2);
+    expect(circuits[3].rcd_type).toBe('A');
   });
 
   test('5. main_switch slot is skipped entirely', () => {
