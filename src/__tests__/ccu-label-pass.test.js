@@ -138,17 +138,19 @@ describe('cropSlotLabelZone', () => {
     expect(bbox.x + bbox.w).toBeLessThanOrEqual(1000);
   });
 
-  test('vertical extent widens to include label zones (up 80%, down 40%)', async () => {
-    const img = await makeJpeg(1000, 1000);
+  test('vertical extent widens symmetrically to reach flap above OR below rail (±600%)', async () => {
     const geom = makeGeom({
-      panelTopNorm: 400, // 400px
-      panelBottomNorm: 600, // 600px → panel height 200px
-      imageHeight: 1000,
+      panelTopNorm: 400,
+      panelBottomNorm: 600, // panel height 200 norm → 400px on a 2000-tall image
+      imageHeight: 2000,
     });
-    const { bbox } = await cropSlotLabelZone(img, 2, geom);
-    // top = 400 - 0.8*200 = 240; bottom = 600 + 0.4*200 = 680
-    expect(bbox.y).toBe(240);
-    expect(bbox.y + bbox.h).toBe(680);
+    const bigImg = await makeJpeg(1000, 2000);
+    const { bbox } = await cropSlotLabelZone(bigImg, 2, geom);
+    // Panel in pixel coords: top=400*2000/1000=800, bottom=1200, height=400.
+    // top = 800 - 6.0*400 = -1600 → clamp to 0.
+    // bottom = 1200 + 6.0*400 = 3600 → clamp to 2000.
+    expect(bbox.y).toBe(0);
+    expect(bbox.y + bbox.h).toBe(2000);
   });
 
   test('clamps bbox to image bounds when slot near left edge', async () => {
@@ -168,7 +170,7 @@ describe('cropSlotLabelZone', () => {
       imageHeight: 1000,
     });
     const { bbox } = await cropSlotLabelZone(img, 2, geom);
-    // up = 100 - 0.8*200 = -60 → clamped to 0
+    // up = 100 - 6.0*200 = -1100 → clamped to 0
     expect(bbox.y).toBe(0);
     expect(bbox.y + bbox.h).toBeLessThanOrEqual(1000);
   });

@@ -198,13 +198,32 @@ export async function cropSlotLabelZone(imageBuffer, slotIndex, geom) {
   // are captured without pulling in a full neighbour slot's label.
   const halfWidthPx = slotPitchPx;
 
-  // Vertical: extend UP by 80% of panel height (captures paper stickers on
-  // the cover above the carrier row, handwritten labels on the frame, and
-  // typical 10mm strip-label channels above modern DIN rails) and DOWN by
-  // 40% (below-rail strip labels and inside-door label strips). Clamped to
-  // image bounds.
-  const topPx = Math.max(0, Math.round(panelTopPx - panelHeightPx * 0.8));
-  const bottomPx = Math.min(imageHeight, Math.round(panelBottomPx + panelHeightPx * 0.4));
+  // Vertical: extend UP AND DOWN by 600% of panelHeight. A lot more than
+  // feels natural, but necessary — circuit labels on UK CCUs live on a
+  // hinged cover FLAP that can sit EITHER side of the DIN rail depending
+  // on the board's layout:
+  //
+  //   - Below rail (most common today): Wylex NHRS, Hager Design 10,
+  //     Schneider EasyPact. The flap folds DOWN from below rail_bottom
+  //     and the labels sit 3-6× panelHeight below the rail.
+  //   - Above rail (older / inverted mount): Crabtree RE5, MEM Memera,
+  //     some MK Sentry boards, and any board installed "upside-down"
+  //     (cable entry at top, rail near bottom of enclosure). Labels sit
+  //     3-6× panelHeight above the rail.
+  //
+  // The 2026-04-23 Wylex NHRS12SL reproducer (user 82b54893…) logged
+  // labelsRead=0 for four consecutive extractions because the previous
+  // 0.8× up / 0.4× down stretch stopped ~90 px short of the flap. The
+  // crops just contained the rail + white enclosure, so the VLM
+  // legitimately had nothing to read.
+  //
+  // Overshooting into empty enclosure / shelf / joists is cheap — the
+  // VLM ignores whitespace and the prompt already tells it to pick the
+  // ONE label for the central device. Undershooting the flap is fatal.
+  // Clamped to image bounds for short photos where one side is out of
+  // frame.
+  const topPx = Math.max(0, Math.round(panelTopPx - panelHeightPx * 6.0));
+  const bottomPx = Math.min(imageHeight, Math.round(panelBottomPx + panelHeightPx * 6.0));
 
   const leftPx = Math.max(0, Math.round(centerXPx - halfWidthPx));
   const rightPx = Math.min(imageWidth, Math.round(centerXPx + halfWidthPx));
