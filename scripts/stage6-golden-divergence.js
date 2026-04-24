@@ -762,48 +762,92 @@ export async function runToolCallPath(fx) {
   if (fx.pre_turn_state && fx.pre_turn_state.snapshot) {
     session.stateSnapshot = structuredClone(fx.pre_turn_state.snapshot);
 
-    // Plan 04-13 r7-#2 (MAJOR) / Plan 04-14 r8-#3 (MINOR) — seed
-    // session.recentCircuitOrder so the builder's compaction logic at
-    // eicr-extraction-session.js:1212 doesn't collapse every seeded
-    // circuit into "N earlier circuits (...) stored server-side".
-    // Without a seed, filled-slot VALUES never reach the model-facing
-    // snapshot — for F21934D4 specifically that hid the r1_r2_ohm=0.64
-    // prefill (the entire point of the fixture).
+    // Plan 04-13 r7-#2 (MAJOR) / Plan 04-14 r8-#3 (MINOR) /
+    // Plan 04-15 r9-#3 (MINOR) — seed session.recentCircuitOrder
+    // so the builder's compaction logic at
+    // eicr-extraction-session.js:1212 doesn't collapse every
+    // seeded circuit into "N earlier circuits (...) stored
+    // server-side". Without a seed, filled-slot VALUES never reach
+    // the model-facing snapshot — for F21934D4 specifically that
+    // hid the r1_r2_ohm=0.64 prefill (the entire point of the
+    // fixture).
     //
-    // r8-#3 adds a fixture-declared override path. Production's
-    // recentCircuitOrder is CHRONOLOGICAL (each record_reading moves
-    // the circuit to the END of the array, so .slice(-3) returns the
-    // three most-recently-edited). The fallback below is NUMERIC
-    // ASCENDING — coincides with chronology for fixtures with
-    // <=SNAPSHOT_RECENT_CIRCUITS seeded circuits (all fit in the
-    // detailed window regardless of order), but diverges for fixtures
-    // with >3 seeded circuits where the implied chronology isn't
-    // numeric. Fixtures that need precise control (>3 circuits with
-    // meaningful readings) should declare pre_turn_state.
-    // recentCircuitOrder as an array of circuit numbers in the order
-    // they were edited (oldest first, most-recent last).
+    // r8-#3 added a fixture-declared override path. Production's
+    // recentCircuitOrder is CHRONOLOGICAL (each record_reading
+    // moves the circuit to the END of the array, so .slice(-3)
+    // returns the three most-recently-edited). The fallback below
+    // is NUMERIC ASCENDING — coincides with chronology for
+    // fixtures with <=SNAPSHOT_RECENT_CIRCUITS seeded circuits
+    // (all fit in the detailed window regardless of order), but
+    // diverges for fixtures with >3 seeded circuits where the
+    // implied chronology isn't numeric.
     //
-    // Filter rules (BOTH paths):
-    //   - Non-integer values dropped.
-    //   - Circuit 0 (supply) dropped — the builder shows supply via a
-    //     separate always-visible block; including 0 would steal a
-    //     detailed-view slot. Matches production's updateStateSnapshot
-    //     guard at eicr-extraction-session.js:1093 (`if (circuit !==
-    //     0)`).
+    // r9-#3 hardens the fixture-declared path's normalisation to
+    // match what production would produce. Production's
+    // splice+push idiom at updateStateSnapshot line 1186-1188
+    // guarantees:
+    //   (a) No duplicates (splice removes the prior slot before
+    //       push appends).
+    //   (b) Only circuits the session knows about (you can only
+    //       record_reading on a circuit after create_circuit has
+    //       seeded it into stateSnapshot.circuits).
+    //   (c) Circuit 0 (supply) is never pushed — line 1093 guards
+    //       with `if (circuit !== 0)`.
+    //
+    // The harness normalises fixture input the same way so
+    // pathological declarations (duplicates, unknown refs,
+    // circuit-0 leaks, non-integers) can't silently corrupt the
+    // test's model inputs.
+    //
+    // Filter rules (fixture-declared path):
+    //   - Non-integer values dropped (defensive for JSON-authored
+    //     fixtures that might include strings or nulls).
+    //   - Negative values dropped (circuits are non-negative by
+    //     schema; negatives are corrupt fixture input).
+    //   - Circuit 0 (supply) dropped — production-invariant match.
+    //   - Unknown refs (not seeded in stateSnapshot.circuits)
+    //     dropped — production could not reach this state.
+    //   - Duplicates deduped, FIRST occurrence wins (preserves the
+    //     fixture author's intended ordering position; "last
+    //     occurrence wins" would silently move a duplicated
+    //     circuit to the most-recent end which isn't what a
+    //     fixture author typing `[1, 2, 1, 3]` likely meant).
+    //   - If normalisation empties the array (pathological
+    //     declaration where every entry fails a filter), fall back
+    //     to numeric ascending of seeded circuits — same as the
+    //     no-declared-order path. Keeps the harness
+    //     deterministic; a silent empty array would collapse all
+    //     circuits into older-summary which masks the fixture bug.
     const declaredOrder = fx.pre_turn_state.recentCircuitOrder;
+    const seededKeys = new Set(
+      Object.keys(session.stateSnapshot.circuits ?? {})
+        .map(Number)
+        .filter((n) => Number.isInteger(n) && n !== 0),
+    );
     if (Array.isArray(declaredOrder)) {
-      session.recentCircuitOrder = declaredOrder
-        .map(Number)
-        .filter((n) => Number.isInteger(n) && n !== 0);
+      const seen = new Set();
+      const normalised = [];
+      for (const raw of declaredOrder) {
+        const n = Number(raw);
+        if (!Number.isInteger(n)) continue;
+        if (n <= 0) continue; // drops 0 (supply) + any negatives
+        if (!seededKeys.has(n)) continue; // drops unknown refs
+        if (seen.has(n)) continue; // dedupe, first-wins
+        seen.add(n);
+        normalised.push(n);
+      }
+      if (normalised.length > 0) {
+        session.recentCircuitOrder = normalised;
+      } else {
+        // Pathological declaration — fall back to numeric
+        // ascending so the harness stays deterministic.
+        session.recentCircuitOrder = [...seededKeys].sort((a, b) => a - b);
+      }
     } else {
-      // Fallback: numeric ascending. NOT strictly chronological, but
-      // sufficient for the 6 current fixtures (all have <=3 seeded
-      // circuits or 4 with no meaningful chronology).
-      const seededCircuits = Object.keys(session.stateSnapshot.circuits ?? {})
-        .map(Number)
-        .filter((n) => Number.isInteger(n) && n !== 0)
-        .sort((a, b) => a - b);
-      session.recentCircuitOrder = seededCircuits;
+      // No declared order → numeric ascending of seeded circuits.
+      // Sufficient for the 6 current fixtures (all have <=3
+      // seeded circuits or 4 with no meaningful chronology).
+      session.recentCircuitOrder = [...seededKeys].sort((a, b) => a - b);
     }
   }
   if (Array.isArray(fx.pre_turn_state?.extractedObservations)) {
