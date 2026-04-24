@@ -1564,19 +1564,33 @@ export class EICRExtractionSession {
     if (result.extracted_readings && result.extracted_readings.length > 0) {
       for (const reading of result.extracted_readings) {
         const circuit = reading.circuit;
-        const field = reading.field;
+        // Plan 04-22 r16-#2 — canonicalise field name AT WRITE TIME so
+        // pending_readings entries and the dedup filter both speak the
+        // canonical schema vocabulary. Same lookup applied at the
+        // serialise-time guard (buildStateSnapshotMessage's wrappedPending
+        // mapper) for defence in depth — write-time covers normal
+        // ingestion, serialise-time covers any future direct-mutation
+        // path that skips this loop. Idempotent: a reading already
+        // emitted with a canonical field passes through unchanged.
+        // Same map (LEGACY_TO_CANONICAL_CIRCUIT_KEYS) used by r13-#2's
+        // circuit-bucket rename + r14-#3's hydration normalisation —
+        // single source of truth.
+        const canonicalField = LEGACY_TO_CANONICAL_CIRCUIT_KEYS[reading.field] ?? reading.field;
         if (circuit === -1) {
           // Unassigned reading — track as pending
           this.stateSnapshot.pending_readings.push({
-            field,
+            field: canonicalField,
             value: reading.value,
             unit: reading.unit || null,
           });
         } else {
           // Circuit-level (or supply at circuit 0) reading — shared atom.
+          // Pass canonical field through to the shared atom too, so the
+          // mutator's downstream WRAP_POLICY / FIELD_ID_MAP lookups speak
+          // the same vocabulary as everything else post-r13-#2.
           applyReadingToSnapshot(this.stateSnapshot, {
             circuit,
-            field,
+            field: canonicalField,
             value: reading.value,
           });
           // Track recency for snapshot windowing (circuit 0 excluded — always shown)
@@ -1585,9 +1599,13 @@ export class EICRExtractionSession {
             if (idx !== -1) this.recentCircuitOrder.splice(idx, 1);
             this.recentCircuitOrder.push(circuit);
           }
-          // Resolve any pending readings that match this field+value
+          // Resolve any pending readings that match this field+value.
+          // Filter on the canonical field name so a write that was
+          // canonicalised at-ingestion still resolves a pending entry
+          // whose original field arrived legacy (also now canonical
+          // post-r16-#2 write-time guard).
           this.stateSnapshot.pending_readings = this.stateSnapshot.pending_readings.filter(
-            (p) => !(p.field === field && p.value === reading.value)
+            (p) => !(p.field === canonicalField && p.value === reading.value)
           );
         }
       }
@@ -1864,8 +1882,22 @@ export class EICRExtractionSession {
       // Plan 04-15 r9-#2 — wrapped in ALL modes. r8-#2's off-mode
       // branch deleted per security trade-off.
       if (hasPending) {
+        // Plan 04-22 r16-#2 — serialise-time defence-in-depth canonicalisation.
+        // Write-time guard (extractData's pending-push branch) covers
+        // normal ingestion via Sonnet's `extracted_readings` reply.
+        // This second pass catches any pre-existing pending entry that
+        // arrives via a different code path (test direct mutation, a
+        // future REST endpoint that hydrates a pending list, manual
+        // injection during debugging). `field` is a canonical enum
+        // name post-canonicalisation — it serialises BARE (no
+        // USER_TEXT wrap), matching the WRAP_POLICY classification of
+        // `server_canonical` for closed-enum schema fields. `value`
+        // and `unit` remain user-derived per r8-#1 and stay wrapped.
         const wrappedPending = this.stateSnapshot.pending_readings.map((p) => {
           const wrapped = { ...p };
+          if (typeof p.field === 'string') {
+            wrapped.field = LEGACY_TO_CANONICAL_CIRCUIT_KEYS[p.field] ?? p.field;
+          }
           if (typeof p.value === 'string') {
             wrapped.value = wrapSnapshotUserTextInline(p.value);
           }

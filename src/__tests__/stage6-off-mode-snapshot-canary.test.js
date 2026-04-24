@@ -196,7 +196,12 @@ describe('Plan 04-15 r9-#2 — off-mode snapshot SECURITY CANARY (framing-presen
       ``,
       `EXTRACTED (field IDs per system prompt — do NOT re-emit identical values, but DO output corrections with DIFFERENT values):`,
       `1:{"1":"<<<USER_TEXT>>>kitchen sockets<<<END_USER_TEXT>>>","22":0.35}`,
-      `pending:[{"field":"zs","value":"<<<USER_TEXT>>>1.23<<<END_USER_TEXT>>>","unit":"<<<USER_TEXT>>>ohm<<<END_USER_TEXT>>>"}]`,
+      // Plan 04-22 r16-#2 — pending_readings[].field canonicalised
+      // at WRITE + SERIALISE time. seedInputA still drops the
+      // legacy 'zs' alias into the pending list (testing the
+      // serialise-time defence-in-depth path); the canary expects
+      // the canonical 'measured_zs_ohm' on the way out.
+      `pending:[{"field":"measured_zs_ohm","value":"<<<USER_TEXT>>>1.23<<<END_USER_TEXT>>>","unit":"<<<USER_TEXT>>>ohm<<<END_USER_TEXT>>>"}]`,
       ``,
       `OBSERVATIONS ALREADY RECORDED (1 total, do NOT re-extract):`,
       `1. <<<USER_TEXT>>>loose neutral in kitchen<<<END_USER_TEXT>>>`,
@@ -410,7 +415,11 @@ describe('Plan 04-15 r9-#2 — off-mode snapshot SECURITY CANARY (framing-presen
       '',
       'EXTRACTED (field IDs per system prompt — do NOT re-emit identical values, but DO output corrections with DIFFERENT values):',
       '1:{"1":"kitchen sockets","22":0.35}',
-      'pending:[{"field":"zs","value":"1.23","unit":"ohm"}]',
+      // Plan 04-22 r16-#2 — canonicalised on serialise (defence-in-depth).
+      // Stripping USER_TEXT markers from the post-r16 shape yields the
+      // pre-r7 content shape WITH canonical field names; the rename is
+      // orthogonal to the user-text framing the r9-2e guard locks.
+      'pending:[{"field":"measured_zs_ohm","value":"1.23","unit":"ohm"}]',
       '',
       'OBSERVATIONS ALREADY RECORDED (1 total, do NOT re-extract):',
       '1. loose neutral in kitchen',
