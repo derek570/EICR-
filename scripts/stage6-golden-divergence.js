@@ -730,6 +730,36 @@ export async function runToolCallPath(fx) {
   // structuredClone safety in other session methods.
   if (fx.pre_turn_state && fx.pre_turn_state.snapshot) {
     session.stateSnapshot = structuredClone(fx.pre_turn_state.snapshot);
+
+    // Plan 04-13 r7-#2 (MAJOR) — derive session.recentCircuitOrder
+    // from the seeded snapshot's circuit keys. Without this, the
+    // builder's compaction logic at eicr-extraction-session.js:1212
+    // sees `recentCircuitOrder=[]` and collapses every seeded circuit
+    // into the "N earlier circuits (...) stored server-side" summary
+    // line — filled-slot VALUES never reach the model-facing snapshot.
+    // For F21934D4 specifically, that meant the r1_r2_ohm=0.64
+    // prefill (the entire point of the fixture) was invisible to
+    // Sonnet in the captured replay, so SC #4 was sampling a
+    // different prompt state than production ever reaches.
+    //
+    // Derivation rules (mirroring production's updateStateSnapshot
+    // semantic at line 1093 of eicr-extraction-session.js):
+    //   - Exclude circuit 0 (supply) — the builder shows supply
+    //     through a separate always-visible block; including 0 here
+    //     would steal a slot from the SNAPSHOT_RECENT_CIRCUITS=3
+    //     recency window.
+    //   - Preserve ascending numeric order — represents the
+    //     historical order readings would have landed during a real
+    //     session (which in the fixture context is implied rather
+    //     than recorded).
+    //   - The builder's `.slice(-SNAPSHOT_RECENT_CIRCUITS)` honours
+    //     this — for N <= 3 everything is detailed; for N > 3 the
+    //     earliest circuits correctly roll into the summary.
+    const seededCircuits = Object.keys(session.stateSnapshot.circuits ?? {})
+      .map(Number)
+      .filter((n) => Number.isInteger(n) && n !== 0)
+      .sort((a, b) => a - b);
+    session.recentCircuitOrder = seededCircuits;
   }
   if (Array.isArray(fx.pre_turn_state?.extractedObservations)) {
     session.extractedObservations = [...fx.pre_turn_state.extractedObservations];

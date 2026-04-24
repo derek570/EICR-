@@ -2644,8 +2644,10 @@ describe('Group r7-2 — Plan 04-13 r7-#2: runToolCallPath seeds recentCircuitOr
     // non-supply circuits ([2,3,4]) are detailed. Circuit 1 compacts
     // into the summary ("1 earlier circuits (1) stored server-side").
     expect(snapshotText).toMatch(/1 earlier circuits \(1\) stored server-side/);
-    // Readings for the detailed circuits (2,3,4) must appear.
-    expect(snapshotText).toContain('0.80');
+    // Readings for the detailed circuits (2,3,4) must appear. Note:
+    // JSON.stringify drops trailing zeros on numeric values, so 0.80
+    // serialises as 0.8 in the compact block.
+    expect(snapshotText).toContain('0.8');
     expect(snapshotText).toContain('0.95');
     expect(snapshotText).toContain('1.1');
     // Reading for the compacted circuit (1) must NOT appear verbatim.
