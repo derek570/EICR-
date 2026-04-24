@@ -38,6 +38,7 @@
  */
 
 import { jest } from '@jest/globals';
+import fssync from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -46,6 +47,7 @@ import {
   computeDivergence,
   runDirectory,
 } from '../../scripts/stage6-golden-divergence.js';
+import { TOOL_SCHEMAS, CONTEXT_FIELD_ENUM } from '../extraction/stage6-tool-schemas.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -438,4 +440,182 @@ describe('Phase 4 SC #6 — golden-session divergence gate', () => {
     expect(f21.divergence.diverged).toBe(false);
     expect(f21.divergence.call_divergence).toBe(0);
   });
+});
+
+// ---------------------------------------------------------------------------
+// Group G — Plan 04-07 r1 — fixture-level schema validation.
+//
+// WHY THIS GROUP EXISTS: Codex STG r1 (2026-04-23) flagged a single
+// invalid `clear_reading.reason: "correction"` in sample-02. Cross-
+// check expanded the audit: every golden fixture AND the F21934D4
+// fixture used the same field-name aliases as the broken prompt
+// (zs, polarity, insulation_resistance_l_l, insulation_resistance_l_e).
+// Under strict:true schemas those calls would be rejected by the
+// Anthropic API — but the fixtures are deterministic replays, so
+// dispatcher tests passed regardless.
+//
+// THIS GROUP is the backstop that prevents future fixtures from
+// silently re-introducing the same regression. It walks every
+// content_block_start tool_use in every fixture's tool-call SSE
+// stream, accumulates its input JSON across content_block_delta
+// events, parses, and validates:
+//   - record_reading.field + clear_reading.field in circuit_fields enum
+//   - clear_reading.reason in enum (user_correction/misheard/wrong_circuit)
+//   - delete_observation.reason in enum (user_correction/duplicate/misheard)
+//   - record_observation.code in enum (C1/C2/C3/FI)
+//   - ask_user.context_field in CONTEXT_FIELD_ENUM
+//   - ask_user.reason in enum (out_of_range_circuit/...)
+//   - ask_user.expected_answer_shape in enum (yes_no/...)
+//
+// Enums are derived from TOOL_SCHEMAS at test-time — so a future
+// phase that widens an enum auto-extends this audit, same as the
+// prompt field-name audit in stage6-agentic-prompt.test.js Group 8.
+// ---------------------------------------------------------------------------
+
+describe('Group G — Plan 04-07 r1: fixture-level schema validation (Codex MAJOR #2)', () => {
+  // Build enum lookups once per suite. TOOL_SCHEMAS is the single source
+  // of truth; we extract every enum from its properties.
+  function enumsFromToolSchemas() {
+    const out = {};
+    for (const tool of TOOL_SCHEMAS) {
+      for (const [propName, propSchema] of Object.entries(tool.input_schema.properties)) {
+        if (Array.isArray(propSchema.enum)) {
+          // Filter nulls out (they're not string values we're checking
+          // in fixture input JSON — nullable props accept a real null
+          // literal, not a quoted "null" string).
+          out[`${tool.name}.${propName}`] = new Set(propSchema.enum.filter((v) => v !== null));
+        }
+      }
+    }
+    return out;
+  }
+
+  const toolEnums = enumsFromToolSchemas();
+
+  /**
+   * Assemble the `input` JSON object for a single tool_use block from a
+   * stream of SSE events. Mirrors what the Anthropic SDK does internally
+   * when feeding input_json_delta chunks. Returns {name, input} or null
+   * if the block wasn't a tool_use.
+   */
+  function assembleToolUses(events) {
+    const out = [];
+    let current = null;
+    for (const ev of events) {
+      if (ev.type === 'content_block_start') {
+        if (ev.content_block?.type === 'tool_use') {
+          current = { name: ev.content_block.name, index: ev.index, partial: '' };
+        } else {
+          current = null;
+        }
+      } else if (
+        ev.type === 'content_block_delta' &&
+        current !== null &&
+        ev.index === current.index &&
+        ev.delta?.type === 'input_json_delta'
+      ) {
+        current.partial += ev.delta.partial_json ?? '';
+      } else if (ev.type === 'content_block_stop' && current !== null && ev.index === current.index) {
+        try {
+          out.push({ name: current.name, input: JSON.parse(current.partial || '{}') });
+        } catch {
+          out.push({ name: current.name, input: null, parse_error: true });
+        }
+        current = null;
+      }
+    }
+    return out;
+  }
+
+  /**
+   * Find the tool-call SSE events in a fixture. Accepts both Variant A
+   * (sse_events_tool_call) and Variant B (sse_events_well_behaved) naming
+   * conventions. Returns an array of [streamName, events] tuples so we
+   * can validate round-2 streams too — but in practice tool_use blocks
+   * only appear in round 1 for the deterministic fixtures.
+   */
+  function pickToolCallStreams(fixture) {
+    const streams = [];
+    for (const key of [
+      'sse_events_tool_call',
+      'sse_events_tool_call_round2',
+      'sse_events_well_behaved',
+      'sse_events_well_behaved_round2',
+    ]) {
+      if (Array.isArray(fixture[key])) streams.push([key, fixture[key]]);
+    }
+    return streams;
+  }
+
+  /**
+   * Validate a single tool_use input against the tool's strict-mode enum
+   * properties. Returns an array of human-readable mismatch strings
+   * (empty = valid).
+   */
+  function validateToolInput(toolName, input) {
+    if (!input || typeof input !== 'object') return [];
+    const mismatches = [];
+    const tool = TOOL_SCHEMAS.find((t) => t.name === toolName);
+    if (!tool) {
+      mismatches.push(`unknown tool: ${toolName}`);
+      return mismatches;
+    }
+    for (const [propName, propSchema] of Object.entries(tool.input_schema.properties)) {
+      if (!Object.prototype.hasOwnProperty.call(input, propName)) continue;
+      const value = input[propName];
+      // Null on a nullable type is always OK at this level; strict schema
+      // already enforces correctness.
+      if (value === null) continue;
+      if (Array.isArray(propSchema.enum)) {
+        const allowed = new Set(propSchema.enum);
+        if (!allowed.has(value)) {
+          mismatches.push(`${toolName}.${propName}="${value}" not in enum [${[...allowed].join(',')}]`);
+        }
+      }
+    }
+    return mismatches;
+  }
+
+  // Collect every fixture under test. FIXTURE_DIR + F21934D4_PATH.
+  function listFixtures() {
+    const out = [];
+    for (const name of fssync.readdirSync(FIXTURE_DIR).sort()) {
+      if (!name.endsWith('.json')) continue;
+      out.push(path.join(FIXTURE_DIR, name));
+    }
+    out.push(F21934D4_PATH);
+    return out;
+  }
+
+  test('toolEnums surface looks right (sanity — defends against test-harness regression)', () => {
+    // If TOOL_SCHEMAS ever re-shapes we want this guard to fire before
+    // the audit tests produce a confusing "every fixture valid" false
+    // positive. Check the enums we actually audit below are non-empty.
+    expect(toolEnums['record_reading.field']?.has('measured_zs_ohm')).toBe(true);
+    expect(toolEnums['clear_reading.field']?.has('measured_zs_ohm')).toBe(true);
+    expect(toolEnums['clear_reading.reason']?.has('user_correction')).toBe(true);
+    expect(toolEnums['record_observation.code']?.has('C2')).toBe(true);
+    expect(toolEnums['ask_user.expected_answer_shape']?.has('yes_no')).toBe(true);
+  });
+
+  for (const fixturePath of listFixtures()) {
+    const fname = path.basename(fixturePath);
+    test(`${fname} — all tool-call tool_use inputs pass strict-enum validation`, () => {
+      const fx = JSON.parse(fssync.readFileSync(fixturePath, 'utf8'));
+      const streams = pickToolCallStreams(fx);
+      const allMismatches = [];
+      for (const [streamName, events] of streams) {
+        const tuses = assembleToolUses(events);
+        for (const { name, input, parse_error } of tuses) {
+          if (parse_error) {
+            allMismatches.push(`${streamName}: ${name} input JSON failed to parse`);
+            continue;
+          }
+          const mm = validateToolInput(name, input);
+          for (const m of mm) allMismatches.push(`${streamName}: ${m}`);
+        }
+      }
+      expect(allMismatches).toEqual([]);
+    });
+  }
 });
