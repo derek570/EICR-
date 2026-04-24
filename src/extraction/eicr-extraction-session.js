@@ -1310,24 +1310,34 @@ export class EICRExtractionSession {
 
     const parts = [];
 
-    // Plan 04-14 r8-#2 — FRAMING GATE. The r7 TRUST BOUNDARY
-    // preamble and the USER_TEXT marker wraps (schedule,
-    // observations, extractedObservations, circuit designations,
-    // supply fields, pending readings) are non-off-only. Off-mode
-    // snapshot must stay byte-identical to pre-Phase-4 per SC #7
-    // (STR-01 rollback). Sanitisation (C0 strip + length cap) still
-    // runs in all modes below — that's a safety fix, not a shape
-    // change, so preserving it in off-mode is correct.
+    // Plan 04-15 r9-#2 — FRAMING IS UNIVERSAL. Pre-r9 state had a
+    // `const includeFraming = this.toolCallsMode !== 'off'` gate
+    // here (added by Plan 04-14 r8-#2) that preserved SC #7
+    // byte-identical off-mode rollback. Codex r9 rejected that
+    // trade-off: the gate silently re-exposed the r7 SECURITY
+    // BLOCK (`b3a448a`) prompt-injection surface on every rollback
+    // — user-derived spans landed as authoritative SYSTEM-channel
+    // text in off-mode, the exact attack r7 was authored to close.
     //
-    // Why this gate matters: this is the SECOND time a remediation
-    // has leaked non-off-only content to off-mode. Plan 04-08 r2
-    // added ASKED/EXTRACTED digests un-gated (Codex r4 caught, Plan
-    // 04-10 r4-#1 gated them). Plan 04-13 r7 added preamble + wraps
-    // un-gated (Codex r8 caught, this line gates them). The
-    // stage6-off-mode-snapshot-canary.test.js file installs a
-    // PERMANENT byte-identical tripwire so a third occurrence fires
-    // at CI.
-    const includeFraming = this.toolCallsMode !== 'off';
+    // SC #7 was reinterpreted from "byte-identical to pre-Phase-4"
+    // to "functionally equivalent with additive security framing"
+    // so that rollback preserves prior BEHAVIOUR (same extractions,
+    // same question gating, same observation dedup) without
+    // preserving a known-bad security posture. See Plan 04-15
+    // `.planning-stage6-agentic/phases/04-prompt-migration/04-15-stg-remediation-r9-PLAN.md`
+    // for the full rationale and the r9-#2 commit body for the
+    // policy-change cross-reference trail.
+    //
+    // The `includeDigests = this.toolCallsMode !== 'off'` gate
+    // (line ~1294) is a DIFFERENT non-off-only feature (Plan 04-08
+    // r2 anti-re-ask digest + id-tracked obs digest). That gate
+    // remains — it's a duplication-avoidance fix, not a security
+    // regression, because off-mode already emits the same
+    // information via `buildUserMessage`.
+    //
+    // The `stage6-off-mode-snapshot-canary.test.js` file installs
+    // a permanent regression guard (r9-2d) that fires at CI if
+    // anyone tries to re-introduce a framing gate here.
 
     // Plan 04-13 r7-#1 [SECURITY BLOCK] — prepend TRUST BOUNDARY
     // preamble as the FIRST entry so every user-derived span that
@@ -1336,10 +1346,8 @@ export class EICRExtractionSession {
     // user-content surface is populated). When the snapshot is null
     // (pre-gate), no preamble lands — caller never sees an orphan.
     //
-    // Plan 04-14 r8-#2 gate: non-off only.
-    if (includeFraming) {
-      parts.push(SNAPSHOT_TRUST_BOUNDARY_PREAMBLE);
-    }
+    // Plan 04-15 r9-#2 — emitted in ALL modes (including off).
+    parts.push(SNAPSHOT_TRUST_BOUNDARY_PREAMBLE);
 
     // Include circuit schedule so Sonnet knows circuit designations, supply info,
     // and hardware details even after early messages drop from the sliding window.
@@ -1351,12 +1359,10 @@ export class EICRExtractionSession {
     // length cap) and wrap in <<<USER_TEXT>>>...<<<END_USER_TEXT>>>
     // markers so the model knows the block is quoted data.
     //
-    // Plan 04-14 r8-#2 gate: sanitise always; wrap non-off only.
+    // Plan 04-15 r9-#2 — wrapped in ALL modes.
     if (hasSchedule) {
       const sanitisedSchedule = sanitiseSnapshotField(this.circuitSchedule);
-      const scheduleContent = includeFraming
-        ? wrapSnapshotUserText(sanitisedSchedule)
-        : sanitisedSchedule;
+      const scheduleContent = wrapSnapshotUserText(sanitisedSchedule);
       parts.push(
         `CIRCUIT SCHEDULE (confirmed values — do NOT question these):\n${scheduleContent}`
       );
@@ -1381,22 +1387,16 @@ export class EICRExtractionSession {
       // and wrapping them would break JSON shape (`"volts":"<<<...>>>230<<<...>>>"`
       // vs `"volts":230`).
       //
-      // Plan 04-14 r8-#2 gate: in off-mode, keep the pre-r7 shape
-      // (raw string values, no wrap) so SC #7 byte-identical
-      // rollback holds.
+      // Plan 04-15 r9-#2 — wrapped in ALL modes (r8-#2's off-mode
+      // branch deleted per security trade-off).
       const supplyData = this.stateSnapshot.circuits[0];
       if (supplyData && Object.keys(supplyData).length > 0) {
-        if (includeFraming) {
-          const wrappedSupply = {};
-          for (const [field, value] of Object.entries(supplyData)) {
-            wrappedSupply[field] =
-              typeof value === 'string' ? wrapSnapshotUserTextInline(value) : value;
-          }
-          lines.push(`0:${JSON.stringify(wrappedSupply)}`);
-        } else {
-          // Off-mode: emit the raw object verbatim. Pre-Phase-4 shape.
-          lines.push(`0:${JSON.stringify(supplyData)}`);
+        const wrappedSupply = {};
+        for (const [field, value] of Object.entries(supplyData)) {
+          wrappedSupply[field] =
+            typeof value === 'string' ? wrapSnapshotUserTextInline(value) : value;
         }
+        lines.push(`0:${JSON.stringify(wrappedSupply)}`);
       }
 
       // Split non-supply circuits into recent (detailed) and older (summary)
@@ -1432,24 +1432,19 @@ export class EICRExtractionSession {
       // attacker embedding the close marker verbatim cannot
       // terminate the region early.
       //
-      // Plan 04-14 r8-#2 gate: off-mode keeps the pre-r7 shape
-      // (raw string values, no wrap). Pre-Phase-4 snapshot had no
-      // framing because there was no security model for it; SC #7
-      // locks that shape invariant for rollback.
+      // Plan 04-15 r9-#2 — wrapped in ALL modes. r8-#2's off-mode
+      // branch (raw string values without wraps) was deleted
+      // because it silently re-exposed the r7 injection surface
+      // on rollback. SC #7 reinterpreted for security; framing
+      // uniform across modes.
       for (const num of recentNums) {
         const fields = this.stateSnapshot.circuits[num];
         if (!fields) continue;
         const compact = {};
         for (const [field, value] of Object.entries(fields)) {
           const id = FIELD_ID_MAP[field];
-          let cleanedValue;
-          if (typeof value === 'string') {
-            cleanedValue = includeFraming
-              ? wrapSnapshotUserTextInline(value)
-              : value;
-          } else {
-            cleanedValue = value;
-          }
+          const cleanedValue =
+            typeof value === 'string' ? wrapSnapshotUserTextInline(value) : value;
           compact[id != null ? id : field] = cleanedValue;
         }
         lines.push(`${num}:${JSON.stringify(compact)}`);
@@ -1465,25 +1460,20 @@ export class EICRExtractionSession {
       // `field` is a canonical name drawn from our schema, not user
       // input, so it stays unwrapped.
       //
-      // Plan 04-14 r8-#2 gate: off-mode keeps the raw shape —
-      // `pending:[{"field":"...","value":"...","unit":"..."}]`
-      // — per SC #7.
+      // Plan 04-15 r9-#2 — wrapped in ALL modes. r8-#2's off-mode
+      // branch deleted per security trade-off.
       if (hasPending) {
-        if (includeFraming) {
-          const wrappedPending = this.stateSnapshot.pending_readings.map((p) => {
-            const wrapped = { ...p };
-            if (typeof p.value === 'string') {
-              wrapped.value = wrapSnapshotUserTextInline(p.value);
-            }
-            if (typeof p.unit === 'string') {
-              wrapped.unit = wrapSnapshotUserTextInline(p.unit);
-            }
-            return wrapped;
-          });
-          lines.push(`pending:${JSON.stringify(wrappedPending)}`);
-        } else {
-          lines.push(`pending:${JSON.stringify(this.stateSnapshot.pending_readings)}`);
-        }
+        const wrappedPending = this.stateSnapshot.pending_readings.map((p) => {
+          const wrapped = { ...p };
+          if (typeof p.value === 'string') {
+            wrapped.value = wrapSnapshotUserTextInline(p.value);
+          }
+          if (typeof p.unit === 'string') {
+            wrapped.unit = wrapSnapshotUserTextInline(p.unit);
+          }
+          return wrapped;
+        });
+        lines.push(`pending:${JSON.stringify(wrappedPending)}`);
       }
 
       if (hasAlerts) {
@@ -1504,15 +1494,13 @@ export class EICRExtractionSession {
     // boundaries. Enumeration number ("1.") stays OUTSIDE the marker
     // because it's harness-generated metadata, not user content.
     //
-    // Plan 04-14 r8-#2 gate: off-mode emits the pre-r7 shape —
-    // `1. <raw obs text>` with no markers. Sanitisation still runs
-    // (C0 strip + length cap) because that's a hygiene fix, not a
-    // shape change.
+    // Plan 04-15 r9-#2 — wrapped in ALL modes. r8-#2's off-mode
+    // unwrapped branch deleted per security trade-off.
     if (hasObs) {
       const condensed = this.stateSnapshot.observations.map((o, i) => {
         const short = o.length > 50 ? o.substring(0, 50) + '...' : o;
         const sanitised = sanitiseSnapshotField(short);
-        const content = includeFraming ? wrapSnapshotUserText(sanitised) : sanitised;
+        const content = wrapSnapshotUserText(sanitised);
         return `${i + 1}. ${content}`;
       });
       parts.push(

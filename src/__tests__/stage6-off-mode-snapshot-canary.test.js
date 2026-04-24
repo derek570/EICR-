@@ -269,9 +269,13 @@ describe('Plan 04-15 r9-#2 — off-mode snapshot SECURITY CANARY (framing-presen
     const closeCount = (snapshot.match(/<<<END_USER_TEXT>>>/g) || []).length;
     // Input A has 5 user-derived spans: schedule, designation,
     // pending value, pending unit, observation. Each gets an open
-    // + close pair.
-    expect(openCount).toBe(5);
-    expect(closeCount).toBe(5);
+    // + close pair. The preamble ALSO contains 2 literal example
+    // occurrences of each marker tag (the teaching examples at
+    // bullets 1 and 4 of SNAPSHOT_TRUST_BOUNDARY_PREAMBLE) — so
+    // the grand total is 7 of each. If the preamble wording
+    // changes in future, update this count accordingly.
+    expect(openCount).toBe(7);
+    expect(closeCount).toBe(7);
   });
 
   test('r9-2e CONTENT-EQUIVALENCE GUARD — stripping USER_TEXT markers from off-mode canary yields pre-r7 content shape', () => {
