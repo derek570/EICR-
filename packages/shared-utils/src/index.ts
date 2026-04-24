@@ -27,3 +27,5 @@ export type {
   VoiceCommandJob,
   VoiceCommandCircuit,
 } from './voice-commands';
+export { matchCircuits, similarityScore, normaliseLabel } from './circuit-matcher';
+export type { CircuitMatch, MatcherNewCircuit, MatcherExistingCircuit } from './circuit-matcher';
