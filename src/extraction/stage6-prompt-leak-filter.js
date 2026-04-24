@@ -693,46 +693,79 @@ export function checkForPromptLeak(text, opts = {}) {
 
   const lower = text.toLowerCase();
 
-  // Plan 04-32 r25-#2 — 3-family MARKER_STRINGS split so the
-  // wrapper-scaffolding proximity detector can fire BEFORE the
-  // bare-identifier markers.
+  // Plan 04-33 r26-#3 — 4-family priority table for MARKER_STRINGS.
   //
-  // WHY: the original Family 1 iterated MARKER_STRINGS in full,
-  // which includes `user-text-bare` / `end-user-text-bare`. An
-  // input like `<<<USER_TEXT` matched the bare marker first and
-  // returned before Family 1b `hasWrapperScaffolding` ran — the
-  // proximity detector was effectively DEAD CODE on every input
-  // that contained the identifier substring. The loose r24-#2
-  // test matchers accepted either reason, so the drift was
-  // invisible.
+  // Extends the r25-#2 3-family split (composite wrappers /
+  // proximity / residual) with a new Priority 1 family containing
+  // the SHARPEST named markers (trust-boundary,
+  // snapshot-trust-boundary, system-channel, user-channel). The
+  // composite wrapper family drops to Priority 2.
   //
-  // Fix — split MARKER_STRINGS iteration into three ordered
-  // families:
+  // WHY: a mixed payload like `"TRUST BOUNDARY <<<USER_TEXT>>>"`
+  // used to surface as `marker:user-text-open` because Family 1a
+  // (composite wrappers) fired before the residual Family 1c that
+  // would match trust-boundary. But trust-boundary names an actual
+  // prompt section heading; the composite wrapper is generic
+  // framing syntax. The filter's reason field should carry the
+  // most-specific signal for analyzer routing and downstream
+  // security review.
   //
-  //   1a. Composite wrapper MARKER_STRINGS only (`user-text-open`,
-  //       `user-text-close`). These are sharpest-telemetry
-  //       matches for full `<<<USER_TEXT>>>` / `<<<END_USER_TEXT>>>`
-  //       wrappers and MUST win over the proximity detector.
+  // Priority table:
   //
-  //   1b. `hasWrapperScaffolding(lower)` proximity detector.
-  //       Fires when `<<<` / `>>>` sits within 20 chars of
-  //       `USER_TEXT` / `END_USER_TEXT`. Outranks bare-id
-  //       markers — the proximity signal is sharper telemetry.
+  //   1. SHARP markers       — named section / channel identifiers
+  //      (Priority 1)          (trust-boundary, snapshot-trust-
+  //                            boundary, system-channel,
+  //                            user-channel). Sharpest telemetry:
+  //                            literal prompt section names.
   //
-  //   1c. Residual MARKER_STRINGS — every entry not handled by
-  //       1a. Includes `trust-boundary`, channel markers, and
-  //       the bare `user-text-bare` / `end-user-text-bare`
-  //       identifiers. Fires for inputs that reference the
-  //       identifier by name without triple-angle proximity.
+  //   2. Composite wrappers  — full `<<<USER_TEXT>>>` /
+  //      (Priority 2)          `<<<END_USER_TEXT>>>` literals.
+  //                            Sharper than scaffolding proximity
+  //                            (full wrapper vs partial), less
+  //                            sharp than named sections.
   //
-  // COMPOSITE_WRAPPER_IDS keeps MARKER_STRINGS as a single source
-  // of truth (no data duplication). A future addition of another
-  // composite-wrapper literal adds its ID to the Set and a new
-  // MARKER_STRINGS entry; no other code changes needed.
+  //   3. Proximity scaffolding — `<<<` / `>>>` within 20 chars of
+  //      (Priority 3)            USER_TEXT / END_USER_TEXT. Locates
+  //                              the wrapper syntax in context.
+  //
+  //   4. Residual MARKER_STRINGS — bare `user-text-bare` /
+  //      (Priority 4)              `end-user-text-bare` (weakest
+  //                                signal — identifier name alone
+  //                                in prose).
+  //
+  // Two Sets partition MARKER_STRINGS into priority families.
+  // SHARP_MARKER_IDS + COMPOSITE_WRAPPER_IDS MUST be disjoint;
+  // MARKER_STRINGS entries not in either Set fall into the
+  // residual family. MARKER_STRINGS declaration order drives
+  // longest-match-wins WITHIN each family (pre-existing
+  // invariant — END_USER_TEXT before USER_TEXT in the residual
+  // block stays intact).
+  //
+  // Future extensions: adding a new SHARP marker means appending
+  // an entry to MARKER_STRINGS + adding its ID to
+  // SHARP_MARKER_IDS. No other code changes needed. Similarly
+  // for composite wrappers via COMPOSITE_WRAPPER_IDS.
+  const SHARP_MARKER_IDS = new Set([
+    'trust-boundary',
+    'snapshot-trust-boundary',
+    'system-channel',
+    'user-channel',
+  ]);
   const COMPOSITE_WRAPPER_IDS = new Set(['user-text-open', 'user-text-close']);
 
-  // Family 1a — composite wrapper markers only (sharpest telemetry
-  // on full `<<<USER_TEXT>>>` / `<<<END_USER_TEXT>>>` payloads).
+  // Family 1a — SHARP markers (Priority 1). Named prompt section
+  // / channel identifiers — sharpest telemetry.
+  for (const marker of MARKER_STRINGS) {
+    if (!SHARP_MARKER_IDS.has(marker.id)) continue;
+    if (lower.includes(marker.value.toLowerCase())) {
+      return makeUnsafe(field, `marker:${marker.id}`);
+    }
+  }
+
+  // Family 1b — composite wrapper markers (Priority 2). Full
+  // `<<<USER_TEXT>>>` / `<<<END_USER_TEXT>>>` payloads. Formerly
+  // Family 1a under r25-#2; demoted to 1b under r26-#3 so sharper
+  // SHARP markers win on mixed payloads.
   for (const marker of MARKER_STRINGS) {
     if (!COMPOSITE_WRAPPER_IDS.has(marker.id)) continue;
     if (lower.includes(marker.value.toLowerCase())) {
@@ -740,23 +773,24 @@ export function checkForPromptLeak(text, opts = {}) {
     }
   }
 
-  // Family 1b — Plan 04-31 r24-#2 wrapper-scaffolding proximity
-  // detector. Now runs BEFORE bare-id markers (Plan 04-32 r25-#2)
-  // so proximity-triggered payloads surface as sharper
-  // `wrapper-scaffolding-{left,right}` IDs rather than the weaker
-  // bare-id marker that previously won due to iteration order.
+  // Family 1c — Plan 04-31 r24-#2 wrapper-scaffolding proximity
+  // detector (Priority 3). Formerly Family 1b under r25-#2;
+  // unchanged ordering relative to composite + residual families.
   const scaffolding = hasWrapperScaffolding(lower);
   if (scaffolding) {
     return makeUnsafe(field, `marker:${scaffolding.id}`);
   }
 
-  // Family 1c — residual MARKER_STRINGS (every non-composite-wrapper
-  // entry). Includes `trust-boundary`, `snapshot-trust-boundary`,
-  // `system-channel`, `user-channel`, and bare
-  // `end-user-text-bare` / `user-text-bare`. Fires for inputs that
-  // reference the identifier by name WITHOUT triple-angle proximity
-  // (proximity inputs already captured by 1b above).
+  // Family 1d — residual MARKER_STRINGS (Priority 4). Every entry
+  // not in SHARP_MARKER_IDS or COMPOSITE_WRAPPER_IDS. Currently:
+  //   - end-user-text-bare
+  //   - user-text-bare
+  // Fires for inputs that reference the wrapper identifier by
+  // name without triple-angle proximity. Longest-match-wins via
+  // MARKER_STRINGS declaration order (END_USER_TEXT listed
+  // before USER_TEXT).
   for (const marker of MARKER_STRINGS) {
+    if (SHARP_MARKER_IDS.has(marker.id)) continue;
     if (COMPOSITE_WRAPPER_IDS.has(marker.id)) continue;
     if (lower.includes(marker.value.toLowerCase())) {
       return makeUnsafe(field, `marker:${marker.id}`);
