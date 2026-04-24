@@ -1467,3 +1467,189 @@ describe('Plan 04-20 r14-#2 — validation_alerts.severity allowlist (defence-in
     warnSpy.mockRestore();
   });
 });
+
+/**
+ * Plan 04-20 r14-#3 — hydration normalisation for pre-existing legacy keys.
+ *
+ * Codex r14 flagged that r13-#2's canonical-key rename only fires on
+ * NEW reads via `_seedStateFromJobState`. Any pre-existing
+ * `stateSnapshot.circuits` populated directly (external hydration,
+ * restored persisted state, a future REST endpoint that takes a
+ * pre-built snapshot) still carries legacy keys and misses the
+ * canonical path — FIELD_ID_MAP handling, WRAP_POLICY classification,
+ * and strict-tool `record_reading.field` enum all diverge from the
+ * legacy-keyed bucket.
+ *
+ * r14-#3 closes the gap with a one-time normalisation pass wired at
+ * `start()` (the session's hydration entry point) AFTER
+ * `_seedStateFromJobState`. The pass walks every circuit bucket and
+ * renames any of the 10 legacy aliases (the same list r13-#2 canonicalised
+ * in the seed path) to their canonical schema names. Idempotent —
+ * running against already-canonical state is a no-op. Canonical-wins
+ * on mixed legacy+canonical buckets.
+ *
+ * Six tests:
+ *   r14-3a — legacy polarity + zs on pre-existing bucket canonicalise
+ *            after start().
+ *   r14-3b — mixed legacy + canonical → canonical value wins, legacy
+ *            dropped.
+ *   r14-3c — clean canonical state → no-op / idempotent.
+ *   r14-3d — all 10 legacy aliases canonicalise in one pass.
+ *   r14-3e — idempotent: running the normalisation twice is a no-op.
+ *   r14-3f — end-to-end: normalisation + buildSystemBlocks produces
+ *            canonical FIELD_ID_MAP compact id (not legacy key).
+ */
+describe('Plan 04-20 r14-#3 — hydration normalisation for pre-existing legacy keys', () => {
+  beforeEach(() => mockCreate.mockReset());
+
+  test('r14-3a — start() canonicalises pre-existing legacy polarity + zs keys', () => {
+    // Direct-assign a bucket with legacy keys BEFORE start() runs.
+    // Mirrors a restored-persisted-session shape: the session was
+    // persisted pre-r13-#2 (legacy vocabulary) and rehydrated after
+    // the rename shipped. Without normalisation the bucket stays
+    // legacy-keyed forever.
+    const session = new EICRExtractionSession('k', 'sess-r14-3a', 'eicr', {
+      toolCallsMode: 'shadow',
+    });
+    session.stateSnapshot.circuits[1] = { polarity: 'proved', zs: 0.35 };
+    session.start(); // hydration — should canonicalise.
+
+    const bucket = session.stateSnapshot.circuits[1];
+    expect(bucket).toHaveProperty('polarity_confirmed', 'proved');
+    expect(bucket).toHaveProperty('measured_zs_ohm', 0.35);
+    expect(bucket).not.toHaveProperty('polarity');
+    expect(bucket).not.toHaveProperty('zs');
+  });
+
+  test('r14-3b — mixed legacy + canonical → canonical value wins, legacy dropped', () => {
+    // If both keys are present, canonical is authoritative (matches
+    // r13-#2's contract that canonical is the source of truth). The
+    // legacy key is discarded rather than overwriting the canonical
+    // value.
+    const session = new EICRExtractionSession('k', 'sess-r14-3b', 'eicr', {
+      toolCallsMode: 'shadow',
+    });
+    session.stateSnapshot.circuits[1] = {
+      polarity: 'legacy-value',
+      polarity_confirmed: 'canonical-value',
+    };
+    session.start();
+
+    const bucket = session.stateSnapshot.circuits[1];
+    expect(bucket).toHaveProperty('polarity_confirmed', 'canonical-value');
+    expect(bucket).not.toHaveProperty('polarity');
+  });
+
+  test('r14-3c — clean canonical state → no-op / idempotent', () => {
+    // Already-canonical buckets must be byte-identical pre- and
+    // post-start(). This is the live-seed path (post r13-#2) — no
+    // legacy keys present → normalisation is a no-op.
+    const session = new EICRExtractionSession('k', 'sess-r14-3c', 'eicr', {
+      toolCallsMode: 'shadow',
+    });
+    session.stateSnapshot.circuits[1] = { polarity_confirmed: 'OK', measured_zs_ohm: 0.42 };
+    const before = { ...session.stateSnapshot.circuits[1] };
+    session.start();
+
+    const bucket = session.stateSnapshot.circuits[1];
+    expect(bucket).toEqual(before);
+  });
+
+  test('r14-3d — all 10 legacy aliases canonicalise in one pass', () => {
+    // All 10 aliases from r13-#2's list, present simultaneously on
+    // one circuit. Post-start() the bucket must carry ONLY canonical
+    // keys — none of the 10 legacy names leaked through.
+    const session = new EICRExtractionSession('k', 'sess-r14-3d', 'eicr', {
+      toolCallsMode: 'shadow',
+    });
+    session.stateSnapshot.circuits[1] = {
+      zs: 0.42,
+      r1_r2: 0.64,
+      r2: 0.12,
+      insulation_resistance_l_e: 999,
+      insulation_resistance_l_l: 999,
+      ring_continuity_r1: 0.7,
+      ring_continuity_rn: 0.7,
+      ring_continuity_r2: 1.1,
+      rcd_trip_time: 35,
+      polarity: 'OK',
+    };
+    session.start();
+
+    const bucket = session.stateSnapshot.circuits[1];
+
+    // Canonical keys present with values preserved.
+    expect(bucket).toHaveProperty('measured_zs_ohm', 0.42);
+    expect(bucket).toHaveProperty('r1_r2_ohm', 0.64);
+    expect(bucket).toHaveProperty('r2_ohm', 0.12);
+    expect(bucket).toHaveProperty('ir_live_earth_mohm', 999);
+    expect(bucket).toHaveProperty('ir_live_live_mohm', 999);
+    expect(bucket).toHaveProperty('ring_r1_ohm', 0.7);
+    expect(bucket).toHaveProperty('ring_rn_ohm', 0.7);
+    expect(bucket).toHaveProperty('ring_r2_ohm', 1.1);
+    expect(bucket).toHaveProperty('rcd_time_ms', 35);
+    expect(bucket).toHaveProperty('polarity_confirmed', 'OK');
+
+    // None of the 10 legacy aliases leaked through.
+    expect(bucket).not.toHaveProperty('zs');
+    expect(bucket).not.toHaveProperty('r1_r2');
+    expect(bucket).not.toHaveProperty('r2');
+    expect(bucket).not.toHaveProperty('insulation_resistance_l_e');
+    expect(bucket).not.toHaveProperty('insulation_resistance_l_l');
+    expect(bucket).not.toHaveProperty('ring_continuity_r1');
+    expect(bucket).not.toHaveProperty('ring_continuity_rn');
+    expect(bucket).not.toHaveProperty('ring_continuity_r2');
+    expect(bucket).not.toHaveProperty('rcd_trip_time');
+    expect(bucket).not.toHaveProperty('polarity');
+  });
+
+  test('r14-3e — idempotent: running the normalisation twice is a no-op', () => {
+    // First pass canonicalises; second pass should be deeply equal
+    // to the first-pass snapshot. Locks the idempotency contract —
+    // any future edit that (e.g.) appends a suffix on each pass
+    // would fail at CI.
+    const session = new EICRExtractionSession('k', 'sess-r14-3e', 'eicr', {
+      toolCallsMode: 'shadow',
+    });
+    session.stateSnapshot.circuits[1] = { polarity: 'OK', zs: 0.35 };
+    session.start(); // first pass.
+
+    const afterFirst = JSON.parse(JSON.stringify(session.stateSnapshot.circuits));
+
+    // Second pass via the method directly (start() is idempotent in
+    // its own way, but we isolate the normalisation pass here).
+    session._normaliseCircuitKeysToCanonical();
+    const afterSecond = JSON.parse(JSON.stringify(session.stateSnapshot.circuits));
+
+    expect(afterSecond).toEqual(afterFirst);
+  });
+
+  test('r14-3f — end-to-end: normalised bucket carries canonical FIELD_ID_MAP compact id', () => {
+    // Proves the canonical FIELD_ID_MAP handling fires for
+    // externally-populated snapshots once normalisation has
+    // canonicalised the keys. Without r14-#3, a legacy-keyed bucket
+    // would serialise with the full legacy key name (no compact id
+    // lookup hit) — this test locks that the compact id shows up.
+    const session = new EICRExtractionSession('k', 'sess-r14-3f', 'eicr', {
+      toolCallsMode: 'shadow',
+    });
+    session.stateSnapshot.circuits[1] = { polarity: 'OK' };
+    session.recentCircuitOrder = [1];
+    session.start();
+
+    const blocks = session.buildSystemBlocks();
+    const snapshotText = blocks[1].text;
+
+    const extractedBlockMatch = snapshotText.match(/EXTRACTED \(field IDs[\s\S]*$/);
+    expect(extractedBlockMatch).not.toBeNull();
+    const extractedBlock = extractedBlockMatch[0];
+
+    // Value lands on compact id 26 (polarity_confirmed after
+    // canonicalisation → FIELD_ID_MAP[polarity_confirmed] = 26).
+    expect(extractedBlock).toMatch(/"26"\s*:\s*"OK"/);
+    // And stays BARE — polarity_confirmed is server_canonical.
+    expect(extractedBlock).not.toMatch(/"26"\s*:\s*"<<<USER_TEXT>>>OK<<<END_USER_TEXT>>>"/);
+    // Legacy key name does NOT leak as an object key.
+    expect(extractedBlock).not.toMatch(/"polarity"\s*:/);
+  });
+});
