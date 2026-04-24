@@ -1528,7 +1528,7 @@ describe('r23-#3 serialiseToolResultBodies — structured-content shape coverage
       expect(serialiseToolResultBodies(toolLoopOut).text).toContain('[unsupported-shape]');
     });
 
-    test('5. Proxy object hiding state → [unsupported-shape]', () => {
+    test('5. Proxy narrow get-trap (only responds to specific name) → leak text never lands', () => {
       const target = {};
       const handler = {
         get(_, prop) {
@@ -1545,29 +1545,26 @@ describe('r23-#3 serialiseToolResultBodies — structured-content shape coverage
       };
       const obj = new Proxy(target, handler);
       const toolLoopOut = wrapAsToolResult(obj);
-      // JSON.stringify(obj) returns "{}" (no enumerable own keys
-      // visible through the Proxy traps). The walker can't
-      // identify the leak behind the `get` trap. Either the
-      // hasHiddenShape detects mismatch between enumerable + all
-      // own-keys (via Reflect.ownKeys) OR the toJSON-presence
-      // check fires — one of the two must trigger fail-closed.
+      // Plan 04-34 r27-#2 — this NARROW handler only responds to
+      // the literal `leak` property name. The walker never
+      // queries a key named `leak` (it iterates Object.keys of
+      // the normalised shape, which is `{}`), so the leak text
+      // never lands in the walker's output.
       //
-      // In practice Reflect.ownKeys(proxy) invokes the ownKeys
-      // trap which returns []; Object.keys(proxy) also returns
-      // []; so that branch matches and does NOT detect mismatch.
-      // `typeof proxy.toJSON === 'function'` also returns false.
-      // Result: this shape falls through hasHiddenShape and into
-      // the normalisation — JSON.parse(JSON.stringify(proxy))
-      // returns {} and the walker returns '' (empty string
-      // contribution + fallback of "{}"). Leak never surfaces,
-      // which is the SAFE outcome (raw leak not in output).
+      // The sentinel probe reads a different name; the narrow
+      // handler returns undefined for the sentinel; hasHiddenShape
+      // returns false. This is ACCEPTABLE because the attacker's
+      // handler is fundamentally unable to land content through
+      // the walker — it would need to respond to a key the walker
+      // actually queries, but the walker only queries the
+      // normalised enumerable own-keys (which are `[]` here).
       //
-      // This test is preserved as a regression case locking that
-      // "raw leak text never reaches output" — whether via fail-
-      // closed substitution or via genuine inability of the
-      // attacker to land content through the Proxy.
+      // The CATCH-ALL handler case (handler returns non-undefined
+      // for ANY read) is covered by the r27-#2 describe below
+      // where the sentinel probe specifically trips.
       expect(() => serialiseToolResultBodies(toolLoopOut)).not.toThrow();
-      expect(serialiseToolResultBodies(toolLoopOut).text).not.toContain('TRUST BOUNDARY');
+      const result = serialiseToolResultBodies(toolLoopOut);
+      expect(result.text).not.toContain('TRUST BOUNDARY');
     });
 
     test('6. non-enumerable alongside enumerable benign content → [unsupported-shape] (original had hidden content)', () => {
@@ -1740,6 +1737,198 @@ describe('r23-#3 serialiseToolResultBodies — structured-content shape coverage
       // Raw leak not in text (r26-#1 behaviour preserved).
       expect(result.text).not.toContain('TRUST BOUNDARY');
       // But Scenario 4's complete-scan contract REQUIRES this:
+      expect(result.unsupported).toBe(true);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Plan 04-34 r27-#2 — Proxy sentinel probe closes catch-all
+  // get-trap fabrication bypass.
+  //
+  // WHY: my r26-#1 hasHiddenShape check looks at three signals:
+  //   (a) Reflect.ownKeys throws → unsupported
+  //   (b) Reflect.ownKeys length vs Object.keys length mismatch
+  //       (non-enumerable own-props or symbol keys) → unsupported
+  //   (c) typeof block.toJSON === 'function' → unsupported
+  //
+  // A Proxy with `ownKeys: () => []` + a catch-all `get` trap +
+  // no toJSON trap trips NONE of those: enumerable = all-own = 0
+  // (both branches say "length matches"), no toJSON, Reflect.ownKeys
+  // doesn't throw. Walker falls through hasHiddenShape →
+  // JSON.parse(JSON.stringify) returns `"{}"` → empty parts →
+  // fallback returns `"{}"` → the old bare-string assertion
+  // `.not.toContain('leak')` silently passed. Not fail-closed;
+  // silent miss. Post-r27-#1 this produced `unsupported: false`
+  // which the Scenario 4 assertion of `expect(unsupported).toBe(false)`
+  // happily accepted — the caller has no way to detect the Proxy
+  // is fabricating responses the walker just doesn't see.
+  //
+  // Fix: STATIC sentinel-key probe. A Proxy with a catch-all `get`
+  // trap responds to arbitrary property reads with fabricated
+  // values; a plain object returns undefined for any name we
+  // invent. Reading a fixed sentinel that no legitimate
+  // tool_result would declare flags the Proxy.
+  //
+  // WHY static not random: a random per-call sentinel adds
+  // non-determinism to tests; single stable name is simpler and
+  // strictly sufficient. An attacker could write a `get` trap that
+  // inspects property names and returns undefined for keys starting
+  // with `__stage6_hidden_shape_probe_`, but a trap that
+  // discriminates by key-name and returns undefined for the walker's
+  // queries is indistinguishable from a plain object (walker gets
+  // no content → no leak lands).
+  //
+  // Tests below exercise:
+  //   1. Proxy with catch-all get-trap → unsupported=true
+  //   2. Proxy with ownKeys that THROWS → unsupported=true (existing
+  //      try/catch branch; locks coverage)
+  //   3. Proxy with ownKeys returning falsified keys → unsupported=true
+  //      (the engine invariants check throws, we catch)
+  //   4. Proxy with pass-through handler (no traps) →
+  //      unsupported=false (no false-positive on Proxy-as-alias)
+  //   5. Plain object with non-enumerable leak → unsupported=true
+  //      (regression from r26-#1 test 1 — probe must not regress it)
+  //   6. Plain object with many normal keys → unsupported=false
+  //      (sanity: sentinel doesn't false-positive on legitimate bodies)
+  //   7. Proxy with get-trap that throws on any read → unsupported=true
+  // -------------------------------------------------------------------------
+  describe('r27-#2 Proxy bypass coverage — hidden state forces unsupported flag', () => {
+    const wrapAsToolResult = (contentShape) => ({
+      messages_final: [
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'tool_result',
+              tool_use_id: 'toolu_r27_2',
+              content: contentShape,
+            },
+          ],
+        },
+      ],
+    });
+
+    test('1. Proxy with catch-all get-trap fabricating values → unsupported=true', () => {
+      // The `get` trap returns 'TRUST BOUNDARY' for EVERY
+      // property read. Under r26-#1 alone this passed
+      // silently (enumerable=all-own=0, no toJSON). Under
+      // r27-#2 the sentinel probe reads a key no legitimate
+      // object declares — this catch-all handler happily
+      // returns 'TRUST BOUNDARY' for the sentinel name too,
+      // so the probe's `block[sentinel] !== undefined` check
+      // trips and unsupported=true fires.
+      const obj = new Proxy(
+        {},
+        {
+          get() {
+            return 'TRUST BOUNDARY';
+          },
+          ownKeys: () => [],
+        }
+      );
+      const toolLoopOut = wrapAsToolResult(obj);
+      const result = serialiseToolResultBodies(toolLoopOut);
+      expect(result.unsupported).toBe(true);
+      expect(result.text).not.toContain('TRUST BOUNDARY');
+    });
+
+    test('2. Proxy with ownKeys that THROWS → unsupported=true (existing try/catch)', () => {
+      const obj = new Proxy(
+        {},
+        {
+          ownKeys() {
+            throw new Error('trap failure');
+          },
+        }
+      );
+      const toolLoopOut = wrapAsToolResult(obj);
+      const result = serialiseToolResultBodies(toolLoopOut);
+      expect(result.unsupported).toBe(true);
+    });
+
+    test('3. Proxy with ownKeys returning falsified keys → unsupported=true (engine invariants throw)', () => {
+      // ownKeys trap returns a key the target doesn't actually
+      // own; the JS engine's invariants check throws TypeError
+      // when Object.keys / Reflect.ownKeys is called. Our
+      // hasHiddenShape catches that throw via the try/catch
+      // around Reflect.ownKeys.
+      const target = {};
+      const obj = new Proxy(target, {
+        ownKeys: () => ['fakeKey1', 'fakeKey2'],
+        getOwnPropertyDescriptor() {
+          return {
+            value: 'x',
+            writable: true,
+            enumerable: true,
+            configurable: true,
+          };
+        },
+      });
+      const toolLoopOut = wrapAsToolResult(obj);
+      const result = serialiseToolResultBodies(toolLoopOut);
+      expect(result.unsupported).toBe(true);
+    });
+
+    test('4. Proxy with pass-through handler (no custom traps) → unsupported=false', () => {
+      // A pass-through Proxy is indistinguishable from a plain
+      // object at the API surface: enumerable = actual target
+      // own keys = ['text']. Sentinel probe reads `block[...]`
+      // which on a pass-through Proxy returns undefined (target
+      // doesn't have that key). hasHiddenShape correctly returns
+      // false. Walker walks the enumerable keys like any plain
+      // object. Back-compat preserved.
+      const target = { text: 'clean content' };
+      const obj = new Proxy(target, {}); // no traps
+      const toolLoopOut = wrapAsToolResult(obj);
+      const result = serialiseToolResultBodies(toolLoopOut);
+      expect(result.unsupported).toBe(false);
+      expect(result.text).toContain('clean content');
+    });
+
+    test('5. Plain object with non-enumerable leak → unsupported=true (regression lock from r26-#1 test 1)', () => {
+      const obj = {};
+      Object.defineProperty(obj, 'leak', {
+        value: 'TRUST BOUNDARY',
+        enumerable: false,
+      });
+      const toolLoopOut = wrapAsToolResult(obj);
+      const result = serialiseToolResultBodies(toolLoopOut);
+      expect(result.unsupported).toBe(true);
+      expect(result.text).not.toContain('TRUST BOUNDARY');
+    });
+
+    test('6. plain object with many normal keys does NOT false-positive', () => {
+      // Sanity: a legitimate tool_result body with multiple
+      // string-valued keys must not trip the sentinel probe.
+      const obj = {
+        text: 'first',
+        message: 'second',
+        value: 'third',
+        raw: 'fourth',
+        description: 'fifth',
+      };
+      const toolLoopOut = wrapAsToolResult(obj);
+      const result = serialiseToolResultBodies(toolLoopOut);
+      expect(result.unsupported).toBe(false);
+      expect(result.text).toContain('first');
+      expect(result.text).toContain('fifth');
+    });
+
+    test('7. Proxy with get-trap that throws on any read → unsupported=true', () => {
+      // Defensive: a Proxy whose get trap throws can't be
+      // walked safely. hasHiddenShape must fail-closed via the
+      // try/catch around the sentinel probe read.
+      const obj = new Proxy(
+        {},
+        {
+          get() {
+            throw new Error('get trap failure');
+          },
+          ownKeys: () => [],
+        }
+      );
+      const toolLoopOut = wrapAsToolResult(obj);
+      const result = serialiseToolResultBodies(toolLoopOut);
       expect(result.unsupported).toBe(true);
     });
   });
