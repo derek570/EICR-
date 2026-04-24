@@ -15,7 +15,7 @@ import { SectionCard } from '@/components/ui/section-card';
  * standard N/A strings so inspectors aren't retyping the same answer on
  * every unremarkable certificate.
  *
- * Data shape: `job.design.departures_from_bs7671` + `departure_details`
+ * Data shape: `job.design_construction.departures_from_bs7671` + `departure_details`
  * strings. Snake_case to match the backend JobFormData persistence.
  */
 
@@ -27,15 +27,18 @@ type DesignShape = {
 export default function DesignPage() {
   const { job, certificateType, updateJob } = useJobContext();
   // Memo-wrap the `?? {}` fallback so the identity stays stable across
-  // renders when `job.design` doesn't change. Without the memo, `data`
+  // renders when `job.design_construction` doesn't change. Without the memo, `data`
   // is a fresh object on every render, which makes the useCallback below
   // rebuild `patch` on every render and defeats the memoisation entirely
   // (flagged by react-hooks/exhaustive-deps).
-  const data = React.useMemo<DesignShape>(() => (job.design ?? {}) as DesignShape, [job.design]);
+  const data = React.useMemo<DesignShape>(
+    () => (job.design_construction ?? {}) as DesignShape,
+    [job.design_construction]
+  );
 
   const patch = React.useCallback(
     (next: Partial<DesignShape>) => {
-      updateJob({ design: { ...data, ...next } });
+      updateJob({ design_construction: { ...data, ...next } });
     },
     [data, updateJob]
   );

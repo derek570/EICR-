@@ -224,16 +224,27 @@ export interface Paginated<T> {
  * schemas tighten these up when the relevant phase lands.
  */
 export interface JobDetail extends Job {
-  // Mirror fields of the list-view Job, plus every tab's data bag:
-  installation?: Record<string, unknown>;
-  extent?: Record<string, unknown>;
-  supply?: Record<string, unknown>;
-  board?: Record<string, unknown>;
+  // Section buckets — names and nesting match the backend wire shape
+  // emitted by `GET /api/job/:userId/:jobId` (see `src/routes/jobs.js:575-592`
+  // and `packages/shared-types/src/job.ts` `JobDetail`). iOS is aligned
+  // with the backend by construction; PWA pre-Wave-B used drifted
+  // single-word aliases (`installation`, `supply`, `board`, …) which
+  // zod silently stripped, so every tab was reading an empty bucket
+  // even though the server returned real data. Inner field shapes stay
+  // `Record<string, unknown>` for now — per-field typing lives in
+  // `@certmate/shared-types` and will be tightened one tab at a time.
+  installation_details?: Record<string, unknown>;
+  supply_characteristics?: Record<string, unknown>;
+  /** Primary / single-board summary. Always present on the wire. */
+  board_info?: Record<string, unknown>;
+  /** Optional multi-board array; each entry nests its own `board_info`. */
+  boards?: Record<string, unknown>[];
   circuits?: CircuitRow[];
   observations?: ObservationRow[];
-  inspection?: Record<string, unknown>;
-  design?: Record<string, unknown>;
-  inspector?: InspectorInfo;
+  inspection_schedule?: Record<string, unknown>;
+  extent_and_type?: Record<string, unknown>;
+  design_construction?: Record<string, unknown>;
+  inspector_id?: string;
   // CCU analysis output — populated once a consumer-unit photo is uploaded.
   // `ccu_analysis` is the most-recent flat copy (kept for legacy debug
   // panels and single-board jobs); `ccu_analysis_by_board` is the per-

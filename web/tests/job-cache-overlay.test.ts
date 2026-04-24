@@ -44,7 +44,7 @@ const BASE_JOB: JobDetail = {
   status: 'pending',
   created_at: '2026-04-18T00:00:00Z',
   certificate_type: 'EICR',
-  installation: { postcode: 'SW1A 1AA' },
+  installation_details: { postcode: 'SW1A 1AA' },
 };
 
 beforeEach(async () => {
@@ -78,7 +78,7 @@ describe('Wave 5 D7 · getCachedJobWithOverlay', () => {
     // Queued patch wins on the touched field.
     expect(result?.address).toBe('2 New Road');
     // Server fields untouched by the patch survive.
-    expect(result?.installation).toEqual({ postcode: 'SW1A 1AA' });
+    expect(result?.installation_details).toEqual({ postcode: 'SW1A 1AA' });
     expect(result?.certificate_type).toBe('EICR');
   });
 
