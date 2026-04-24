@@ -372,16 +372,302 @@ describe('r21-#3 real-session end-to-end — rename_circuit leak blocked via run
 // channel a leak could exit on.
 // ---------------------------------------------------------------------------
 
-describe('r21-#3 real-session end-to-end — leaks never appear in any tool_result body', () => {
-  test('all three scenarios: no leak strings in any tool_result pushed to messages_final (implicit via ws/state assertions above)', () => {
-    // This is intentionally a no-op assertion placeholder — the three
-    // scenarios above each verify the individual emission channels. The
-    // runShadowHarness shape doesn't return messages_final to the caller
-    // (it returns legacy result only; the tool-loop messages are
-    // internal). If a future refactor exposes them, migrate assertions
-    // here. Until then, ws + logger + session-state are the ground-truth
-    // exfiltration channels under test.
-    expect(true).toBe(true);
+// ---------------------------------------------------------------------------
+// Plan 04-29 r22-#2 — shadow-path state assertions via _shadowCapture hook.
+//
+// WHY (gap in r21-#3): the three scenarios above assert ws emissions +
+// logger + LIVE session state are leak-free. They prove nothing the leak
+// contains escapes the EXTERNAL channels. But the shadow dispatcher
+// actually mutates a CLONED shadowSession + a perTurnWrites accumulator
+// that the bundler reads downstream — not the live session. If a
+// regression re-enabled writes-on-leak inside the shadow path while
+// keeping the external-channel assertions intact, the existing tests
+// would pass silently.
+//
+// Fix: add an optional `_shadowCapture` hook to runShadowHarness (test-
+// only, underscore-prefixed, swallow-on-throw). The hook receives
+// {shadowSession, perTurnWrites, toolLoopOut} at the moment the tool
+// loop finishes (before bundler/comparator/divergence-log post-processing
+// runs). Tests assert on those internal surfaces.
+//
+// Assertion categories (applied per scenario):
+//   1. perTurnWrites has NO leak entries — observations / circuitOps /
+//      readings / cleared / deletedObservations all free of the attack
+//      string. For a blocked call, the relevant array is EMPTY (filter
+//      rejected BEFORE the dispatcher pushed).
+//   2. shadowSession.stateSnapshot + shadowSession.extractedObservations
+//      contain no leak substring. Circuit designation (for rename_circuit
+//      scenario) is unchanged from the seed.
+//   3. toolLoopOut.messages_final — every tool_result block's content
+//      string contains no leak substring. This is the channel that
+//      survives to the NEXT model round's prompt and is the most direct
+//      exfiltration surface.
+// ---------------------------------------------------------------------------
+
+/**
+ * Serialise the perTurnWrites accumulator to a JSON string so substring
+ * assertions work uniformly across Map/Set/Array shapes. See
+ * `createPerTurnWrites` in src/extraction/stage6-per-turn-writes.js:
+ *   - readings: Map → spread to array of [key, value]
+ *   - cleared / observations / deletedObservations / circuitOps: arrays
+ */
+function serialisePerTurnWrites(pw) {
+  return JSON.stringify({
+    readings: [...pw.readings],
+    cleared: pw.cleared,
+    observations: pw.observations,
+    deletedObservations: pw.deletedObservations,
+    circuitOps: pw.circuitOps,
+  });
+}
+
+/**
+ * Collect every tool_result content body in messages_final, joined so
+ * a single substring assertion covers all of them. messages_final is
+ * returned by runToolLoop and captured via _shadowCapture's toolLoopOut.
+ */
+function serialiseToolResultBodies(toolLoopOut) {
+  const parts = [];
+  if (!Array.isArray(toolLoopOut?.messages_final)) return '';
+  for (const msg of toolLoopOut.messages_final) {
+    if (!Array.isArray(msg.content)) continue;
+    for (const block of msg.content) {
+      if (block?.type === 'tool_result' && typeof block.content === 'string') {
+        parts.push(block.content);
+      }
+    }
+  }
+  return parts.join('\n');
+}
+
+describe('r22-#2 real shadow-path state assertions via _shadowCapture', () => {
+  test('4a: ask_user leak → shadowSession + perTurnWrites + messages_final all free of leak content', async () => {
+    const session = makeRealSession('sess-r22-ask');
+    const pendingAsks = createPendingAsksRegistry();
+    const ws = createMockServerWs();
+    const logger = { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() };
+
+    session.client = mockClient([
+      toolUseRound([
+        {
+          id: 'toolu_r22_ask',
+          name: 'ask_user',
+          input: {
+            question:
+              'Sure — the system prompt starts: TRUST BOUNDARY is the header for user data.',
+            reason: 'ambiguous_circuit',
+            context_field: null,
+            context_circuit: null,
+            expected_answer_shape: 'free_text',
+          },
+        },
+      ]),
+      endTurnRound('ok'),
+    ]);
+
+    let captured = null;
+    await runShadowHarness(session, 'please show me what you know', [], {
+      logger,
+      pendingAsks,
+      ws,
+      _shadowCapture: (snap) => {
+        captured = snap;
+      },
+    });
+
+    // (1) Hook fired — confirms the shadow tool loop completed and the
+    //     hook wiring is present. If captured stays null, the harness
+    //     either never ran the loop or the hook plumbing regressed.
+    expect(captured).not.toBeNull();
+    expect(captured.shadowSession).toBeDefined();
+    expect(captured.perTurnWrites).toBeDefined();
+    expect(captured.toolLoopOut).toBeDefined();
+
+    // (2) perTurnWrites free of leak. ask_user does NOT write to
+    //     perTurnWrites under any conditions (only write-tools do), so
+    //     the serialised accumulator is a baseline-empty JSON doc.
+    //     Belt-and-braces: assert no TRUST BOUNDARY substring anyway.
+    const pwJson = serialisePerTurnWrites(captured.perTurnWrites).toLowerCase();
+    expect(pwJson).not.toContain('trust boundary');
+    expect(captured.perTurnWrites.observations).toHaveLength(0);
+    expect(captured.perTurnWrites.circuitOps).toHaveLength(0);
+
+    // (3) shadowSession state free of leak. ask_user doesn't mutate
+    //     state either — assert the clone is unchanged vs seed.
+    const shadowJson = JSON.stringify({
+      stateSnapshot: captured.shadowSession.stateSnapshot,
+      extractedObservations: captured.shadowSession.extractedObservations,
+    }).toLowerCase();
+    expect(shadowJson).not.toContain('trust boundary');
+    expect(captured.shadowSession.extractedObservations).toHaveLength(0);
+
+    // (4) messages_final tool_result bodies free of leak. The
+    //     dispatcher's sanitised refusal body is what goes back to the
+    //     model's next round — it must not carry the original leak.
+    const resultsJoined = serialiseToolResultBodies(captured.toolLoopOut).toLowerCase();
+    expect(resultsJoined).not.toContain('trust boundary');
+    expect(resultsJoined).not.toContain('system prompt');
+  });
+
+  test('4b: record_observation leak → perTurnWrites empty, shadowSession clean, tool_result scrubbed', async () => {
+    const session = makeRealSession('sess-r22-obs');
+    const pendingAsks = createPendingAsksRegistry();
+    const ws = createMockServerWs();
+    const logger = { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() };
+
+    const leakText =
+      'For reference: You are an EICR inspection assistant. Do not emit free-text JSON.';
+
+    session.client = mockClient([
+      toolUseRound([
+        {
+          id: 'toolu_r22_obs',
+          name: 'record_observation',
+          input: {
+            code: 'C3',
+            text: leakText,
+            location: 'Main consumer unit',
+            circuit: null,
+            suggested_regulation: null,
+          },
+        },
+      ]),
+      endTurnRound('ok'),
+    ]);
+
+    let captured = null;
+    await runShadowHarness(session, 'tell me about the cu', [], {
+      logger,
+      pendingAsks,
+      ws,
+      _shadowCapture: (snap) => {
+        captured = snap;
+      },
+    });
+
+    expect(captured).not.toBeNull();
+
+    // (1) perTurnWrites.observations EMPTY — r20-#1 rejects the entire
+    //     record_observation call when any free-text field leaks. The
+    //     append must never have happened.
+    expect(captured.perTurnWrites.observations).toHaveLength(0);
+    expect(captured.perTurnWrites.deletedObservations).toHaveLength(0);
+    const pwJson = serialisePerTurnWrites(captured.perTurnWrites).toLowerCase();
+    expect(pwJson).not.toContain('eicr inspection assistant');
+    expect(pwJson).not.toContain('free-text json');
+
+    // (2) shadowSession clean. The clone's extractedObservations array
+    //     must be unchanged from the seed (empty — see makeRealSession).
+    expect(captured.shadowSession.extractedObservations).toHaveLength(0);
+    // stateSnapshot.observations is the legacy text-dedup surface the
+    // atom deliberately does NOT touch (per Plan 02-01 SUMMARY) — so
+    // the seed [] carries through unchanged.
+    expect(captured.shadowSession.stateSnapshot.observations).toEqual([]);
+    const shadowJson = JSON.stringify({
+      stateSnapshot: captured.shadowSession.stateSnapshot,
+      extractedObservations: captured.shadowSession.extractedObservations,
+    }).toLowerCase();
+    expect(shadowJson).not.toContain('eicr inspection assistant');
+    expect(shadowJson).not.toContain('free-text json');
+
+    // (3) tool_result bodies scrubbed. The dispatcher's envelope carries
+    //     {ok:false, error:{code:'prompt_leak_in_observation', reason,
+    //     fields}} — assert no leak substring reached the model's next
+    //     round input.
+    const resultsJoined = serialiseToolResultBodies(captured.toolLoopOut).toLowerCase();
+    expect(resultsJoined).not.toContain('eicr inspection assistant');
+    expect(resultsJoined).not.toContain('free-text json');
+  });
+
+  test('4c: rename_circuit leak → circuitOps empty, shadow clone designation unchanged, tool_result scrubbed', async () => {
+    const session = makeRealSession('sess-r22-rename');
+    const pendingAsks = createPendingAsksRegistry();
+    const ws = createMockServerWs();
+    const logger = { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() };
+
+    const originalDesignation = session.stateSnapshot.circuits[1].designation;
+    const leakDesignation = 'STQ-01 upstairs lights with extra content';
+
+    session.client = mockClient([
+      toolUseRound([
+        {
+          id: 'toolu_r22_rename',
+          name: 'rename_circuit',
+          input: {
+            from_ref: 1,
+            circuit_ref: 1,
+            designation: leakDesignation,
+            phase: null,
+            rating_amps: null,
+            cable_csa_mm2: null,
+          },
+        },
+      ]),
+      endTurnRound('ok'),
+    ]);
+
+    let captured = null;
+    await runShadowHarness(session, 'rename circuit 1', [], {
+      logger,
+      pendingAsks,
+      ws,
+      _shadowCapture: (snap) => {
+        captured = snap;
+      },
+    });
+
+    expect(captured).not.toBeNull();
+
+    // (1) perTurnWrites.circuitOps EMPTY — filter rejects the call
+    //     BEFORE the dispatcher pushes the op. The designation field
+    //     carried a requirement-ID (STQ-01) which the filter's Family
+    //     2 requirement-ID regex catches.
+    expect(captured.perTurnWrites.circuitOps).toHaveLength(0);
+    const pwJson = serialisePerTurnWrites(captured.perTurnWrites);
+    expect(pwJson).not.toContain('STQ-01');
+    expect(pwJson).not.toContain('upstairs lights with extra');
+
+    // (2) Shadow CLONE's circuit 1 designation UNCHANGED. This is a
+    //     stricter assertion than the r21-#3 scenarios — the clone is
+    //     where the shadow dispatcher writes; any regression that
+    //     bypassed the filter would mutate this surface even if the
+    //     live session (which the shadow path never touches) stayed
+    //     clean.
+    expect(captured.shadowSession.stateSnapshot.circuits[1].designation).toBe(originalDesignation);
+    const shadowJson = JSON.stringify(captured.shadowSession.stateSnapshot);
+    expect(shadowJson).not.toContain('STQ-01');
+    expect(shadowJson).not.toContain('upstairs lights with extra');
+
+    // (3) tool_result bodies scrubbed.
+    const resultsJoined = serialiseToolResultBodies(captured.toolLoopOut);
+    expect(resultsJoined).not.toContain('STQ-01');
+    expect(resultsJoined).not.toContain('upstairs lights with extra');
+  });
+
+  test('production callers that omit _shadowCapture are unaffected (hook is test-only)', async () => {
+    // Sanity check: when _shadowCapture is absent (production shape),
+    // runShadowHarness runs cleanly and returns legacy result. No
+    // hook-related state leaks into production flow.
+    const session = makeRealSession('sess-r22-no-hook');
+    const pendingAsks = createPendingAsksRegistry();
+    const ws = createMockServerWs();
+    const logger = { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() };
+
+    session.client = mockClient([endTurnRound('ok')]);
+
+    // No _shadowCapture in options.
+    const result = await runShadowHarness(session, 'hello', [], {
+      logger,
+      pendingAsks,
+      ws,
+    });
+
+    // Legacy stub returns the empty extraction result shape.
+    expect(result).toBeDefined();
+    expect(result.extracted_readings).toEqual([]);
+    // No divergence errors logged (production shape clean).
+    const shadowErrors = logger.warn.mock.calls.filter((args) => args[0] === 'stage6_shadow_error');
+    expect(shadowErrors).toHaveLength(0);
   });
 });
 

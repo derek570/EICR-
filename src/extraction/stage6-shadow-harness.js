@@ -322,6 +322,34 @@ export async function runShadowHarness(session, transcriptText, regexResults, op
       // defense-in-depth per Plan 03-06.
       sortRecords,
     });
+
+    // Plan 04-29 r22-#2 — test-only shadow-path capture hook.
+    //
+    // WHY: r22-#2 re-review flagged that the r21-#3 end-to-end tests only
+    // assert on ws emissions + logger + live-session state (the surface
+    // channels). None of them inspect the internal shadow path — the
+    // `shadowSession` clone (where the shadow dispatcher actually writes)
+    // nor the `perTurnWrites` accumulator (where bundler would later read
+    // leak content from, if the filter ever failed). A regression that
+    // re-enabled writes-on-leak inside the shadow dispatcher while keeping
+    // live-side surfaces unchanged would pass the existing tests silently.
+    //
+    // The hook fires AFTER the tool loop finishes, capturing the moment
+    // before bundler/divergence post-processing runs. Production callers
+    // never pass `_shadowCapture` — the underscore prefix flags this as
+    // test-only (mirrors the Node convention for private-by-naming).
+    //
+    // Swallow-on-throw: a test-hook failure must NEVER break production
+    // extraction. Any error in the hook is silently discarded — the shadow
+    // harness continues to Step 5 (bundler) → Step 6 (comparator) → Step 7
+    // (divergence log) → Step 8 (legacy return) unchanged.
+    if (typeof options._shadowCapture === 'function') {
+      try {
+        options._shadowCapture({ shadowSession, perTurnWrites, toolLoopOut });
+      } catch {
+        // swallow — hook errors never propagate
+      }
+    }
   } catch (err) {
     try {
       log.warn?.('stage6_shadow_error', {
