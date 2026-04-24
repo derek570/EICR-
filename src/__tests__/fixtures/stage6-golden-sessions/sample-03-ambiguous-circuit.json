@@ -1,0 +1,122 @@
+{
+  "_doc": "STQ-02 category (3) — ambiguous circuit (post-ask-resolved). Inspector says 'Circuit six Zs nought point three two.' but the schedule only has circuits 1-4. In production this triggers ask_user('out_of_range_circuit') which blocks the dispatcher until the inspector confirms via tool_result. For DETERMINISM — the golden-divergence harness uses only the write dispatcher (no ask registry, no ws fan-out), see scripts/stage6-golden-divergence.js runToolCallPath — this fixture captures the POST-RESOLVED state: the inspector has confirmed 'Upstairs sockets', so both paths emit create_circuit(6,'Upstairs sockets') followed by record_reading(6,zs,'0.32'). The ask_user round-trip itself is locked by Phase 3's dispatcher-ask tests; duplicating it here would add a cross-cutting registry dependency that is explicitly out of scope for SC #6.",
+  "_deviation_from_production": "Live session would see one ADDITIONAL round where ask_user fires and blocks on a tool_result. This fixture elides that to a single create_circuit+record_reading sequence so both paths are SSE-deterministic. The shape under test is the final slot outcome, which is identical either way.",
+  "_requirement": "STT-11 + STQ-02 category 3 + STS-03 (create_circuit dispatcher) + STS-01 (record_reading dispatcher).",
+  "_fixture_shape": "dual-SSE",
+  "pre_turn_state": {
+    "_doc": "Schedule has circuits 1-4 only. Circuit 6 does NOT exist — this is what production would have triggered an ask_user on; in this fixture both paths jump directly to the create+record sequence.",
+    "snapshot": {
+      "circuits": {
+        "1": { "circuit_ref": 1, "circuit_designation": "Ring final (downstairs sockets)" },
+        "2": { "circuit_ref": 2, "circuit_designation": "Ring final (kitchen)" },
+        "3": { "circuit_ref": 3, "circuit_designation": "Lighting (downstairs)" },
+        "4": { "circuit_ref": 4, "circuit_designation": "Lighting (upstairs)" }
+      },
+      "pending_readings": [],
+      "observations": [],
+      "validation_alerts": []
+    },
+    "askedQuestions": [],
+    "extractedObservations": []
+  },
+  "transcript": "Circuit six, Zs nought point three two.",
+  "sse_events_legacy": [
+    {
+      "_comment": "Legacy post-resolution — record_extraction emits both a circuit_updates[create(6)] and extracted_readings[(6,zs,0.32)].",
+      "type": "message_start",
+      "message": { "id": "msg_s03_legacy", "role": "assistant", "content": [] }
+    },
+    {
+      "type": "content_block_start",
+      "index": 0,
+      "content_block": {
+        "type": "tool_use",
+        "id": "toolu_s03_legacy",
+        "name": "record_extraction",
+        "input": {}
+      }
+    },
+    {
+      "type": "content_block_delta",
+      "index": 0,
+      "delta": {
+        "type": "input_json_delta",
+        "partial_json": "{\"extracted_readings\":[{\"circuit\":6,\"field\":\"zs\",\"value\":\"0.32\",\"confidence\":0.9}],\"field_clears\":[],\"circuit_updates\":[{\"action\":\"create\",\"circuit_ref\":6,\"designation\":\"Upstairs sockets\"}],\"observations\":[],\"questions_for_user\":[]}"
+      }
+    },
+    { "type": "content_block_stop", "index": 0 },
+    { "type": "message_delta", "delta": { "stop_reason": "tool_use" } },
+    { "type": "message_stop" }
+  ],
+  "sse_events_tool_call": [
+    {
+      "_comment": "Round 1 — two tool_use blocks: create_circuit(6) then record_reading(6,zs). Dispatcher requires the circuit to exist on the snapshot before record_reading runs; stage6-dispatchers-circuit.js dispatchCreateCircuit mutates session.stateSnapshot.circuits[circuit_ref] synchronously, so the second dispatcher sees the new circuit in the same round.",
+      "type": "message_start",
+      "message": { "id": "msg_s03_tc_r1", "role": "assistant", "content": [] }
+    },
+    {
+      "type": "content_block_start",
+      "index": 0,
+      "content_block": {
+        "type": "tool_use",
+        "id": "toolu_s03_tc_create",
+        "name": "create_circuit",
+        "input": {}
+      }
+    },
+    {
+      "type": "content_block_delta",
+      "index": 0,
+      "delta": {
+        "type": "input_json_delta",
+        "partial_json": "{\"circuit_ref\":6,\"designation\":\"Upstairs sockets\"}"
+      }
+    },
+    { "type": "content_block_stop", "index": 0 },
+    {
+      "type": "content_block_start",
+      "index": 1,
+      "content_block": {
+        "type": "tool_use",
+        "id": "toolu_s03_tc_record",
+        "name": "record_reading",
+        "input": {}
+      }
+    },
+    {
+      "type": "content_block_delta",
+      "index": 1,
+      "delta": {
+        "type": "input_json_delta",
+        "partial_json": "{\"field\":\"zs\",\"circuit\":6,\"value\":\"0.32\",\"confidence\":0.9,\"source_turn_id\":\"t3\"}"
+      }
+    },
+    { "type": "content_block_stop", "index": 1 },
+    { "type": "message_delta", "delta": { "stop_reason": "tool_use" } },
+    { "type": "message_stop" }
+  ],
+  "sse_events_tool_call_round2": [
+    {
+      "type": "message_start",
+      "message": { "id": "msg_s03_tc_r2", "role": "assistant", "content": [] }
+    },
+    {
+      "type": "content_block_start",
+      "index": 0,
+      "content_block": { "type": "text", "text": "" }
+    },
+    {
+      "type": "content_block_delta",
+      "index": 0,
+      "delta": { "type": "text_delta", "text": "Created circuit 6 and recorded Zs." }
+    },
+    { "type": "content_block_stop", "index": 0 },
+    { "type": "message_delta", "delta": { "stop_reason": "end_turn" } },
+    { "type": "message_stop" }
+  ],
+  "expected_slot_writes": {
+    "circuits": {
+      "6": { "zs": "0.32", "circuit_designation": "Upstairs sockets" }
+    }
+  }
+}

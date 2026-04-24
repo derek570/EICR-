@@ -1,0 +1,163 @@
+{
+  "_doc": "STQ-02 category (4) — batched readings in a single turn. Inspector says 'Circuit two Zs nought point four insulation greater than two hundred both ways polarity correct.' Four readings belong to the same circuit (2) in one utterance. Legacy emits a record_extraction with extracted_readings.length=4; tool-call emits four record_reading tool_use blocks in one round. Both converge on circuits[2].{zs,insulation_resistance_l_l,insulation_resistance_l_e,polarity}.",
+  "_requirement": "STT-11 + STS-01 (record_reading) — confirms dispatcher handles multiple parallel tool_uses in a single round without cross-talk on perTurnWrites.readings Map (keys are (field::circuit) so four distinct fields on circuit 2 are four distinct keys).",
+  "_fixture_shape": "dual-SSE",
+  "_polarity_note": "polarity is stored as the string 'correct' — lowercased by normaliseExtractionResult, so legacy's 'CORRECT' or 'Correct' would also converge here. The fixture uses 'correct' to avoid noise.",
+  "pre_turn_state": {
+    "snapshot": {
+      "circuits": {
+        "2": {
+          "circuit_ref": 2,
+          "circuit_designation": "Ring final (kitchen)"
+        }
+      },
+      "pending_readings": [],
+      "observations": [],
+      "validation_alerts": []
+    },
+    "askedQuestions": [],
+    "extractedObservations": []
+  },
+  "transcript": "Circuit two, Zs nought point four, insulation greater than two hundred both ways, polarity correct.",
+  "sse_events_legacy": [
+    {
+      "type": "message_start",
+      "message": { "id": "msg_s04_legacy", "role": "assistant", "content": [] }
+    },
+    {
+      "type": "content_block_start",
+      "index": 0,
+      "content_block": {
+        "type": "tool_use",
+        "id": "toolu_s04_legacy",
+        "name": "record_extraction",
+        "input": {}
+      }
+    },
+    {
+      "type": "content_block_delta",
+      "index": 0,
+      "delta": {
+        "type": "input_json_delta",
+        "partial_json": "{\"extracted_readings\":[{\"circuit\":2,\"field\":\"zs\",\"value\":\"0.4\",\"confidence\":0.95},{\"circuit\":2,\"field\":\"insulation_resistance_l_l\",\"value\":\">200\",\"confidence\":0.92},{\"circuit\":2,\"field\":\"insulation_resistance_l_e\",\"value\":\">200\",\"confidence\":0.92},{\"circuit\":2,\"field\":\"polarity\",\"value\":\"correct\",\"confidence\":0.9}],\"field_clears\":[],\"circuit_updates\":[],\"observations\":[],\"questions_for_user\":[]}"
+      }
+    },
+    { "type": "content_block_stop", "index": 0 },
+    { "type": "message_delta", "delta": { "stop_reason": "tool_use" } },
+    { "type": "message_stop" }
+  ],
+  "sse_events_tool_call": [
+    {
+      "_comment": "Round 1 — four record_reading tool_use blocks in a single response. Each hits the dispatcher independently; the perTurnWrites Map is keyed (field::circuit) so the four distinct fields never collide.",
+      "type": "message_start",
+      "message": { "id": "msg_s04_tc_r1", "role": "assistant", "content": [] }
+    },
+    {
+      "type": "content_block_start",
+      "index": 0,
+      "content_block": {
+        "type": "tool_use",
+        "id": "toolu_s04_tc_zs",
+        "name": "record_reading",
+        "input": {}
+      }
+    },
+    {
+      "type": "content_block_delta",
+      "index": 0,
+      "delta": {
+        "type": "input_json_delta",
+        "partial_json": "{\"field\":\"zs\",\"circuit\":2,\"value\":\"0.4\",\"confidence\":0.95,\"source_turn_id\":\"t4\"}"
+      }
+    },
+    { "type": "content_block_stop", "index": 0 },
+    {
+      "type": "content_block_start",
+      "index": 1,
+      "content_block": {
+        "type": "tool_use",
+        "id": "toolu_s04_tc_insll",
+        "name": "record_reading",
+        "input": {}
+      }
+    },
+    {
+      "type": "content_block_delta",
+      "index": 1,
+      "delta": {
+        "type": "input_json_delta",
+        "partial_json": "{\"field\":\"insulation_resistance_l_l\",\"circuit\":2,\"value\":\">200\",\"confidence\":0.92,\"source_turn_id\":\"t4\"}"
+      }
+    },
+    { "type": "content_block_stop", "index": 1 },
+    {
+      "type": "content_block_start",
+      "index": 2,
+      "content_block": {
+        "type": "tool_use",
+        "id": "toolu_s04_tc_insle",
+        "name": "record_reading",
+        "input": {}
+      }
+    },
+    {
+      "type": "content_block_delta",
+      "index": 2,
+      "delta": {
+        "type": "input_json_delta",
+        "partial_json": "{\"field\":\"insulation_resistance_l_e\",\"circuit\":2,\"value\":\">200\",\"confidence\":0.92,\"source_turn_id\":\"t4\"}"
+      }
+    },
+    { "type": "content_block_stop", "index": 2 },
+    {
+      "type": "content_block_start",
+      "index": 3,
+      "content_block": {
+        "type": "tool_use",
+        "id": "toolu_s04_tc_pol",
+        "name": "record_reading",
+        "input": {}
+      }
+    },
+    {
+      "type": "content_block_delta",
+      "index": 3,
+      "delta": {
+        "type": "input_json_delta",
+        "partial_json": "{\"field\":\"polarity\",\"circuit\":2,\"value\":\"correct\",\"confidence\":0.9,\"source_turn_id\":\"t4\"}"
+      }
+    },
+    { "type": "content_block_stop", "index": 3 },
+    { "type": "message_delta", "delta": { "stop_reason": "tool_use" } },
+    { "type": "message_stop" }
+  ],
+  "sse_events_tool_call_round2": [
+    {
+      "type": "message_start",
+      "message": { "id": "msg_s04_tc_r2", "role": "assistant", "content": [] }
+    },
+    {
+      "type": "content_block_start",
+      "index": 0,
+      "content_block": { "type": "text", "text": "" }
+    },
+    {
+      "type": "content_block_delta",
+      "index": 0,
+      "delta": { "type": "text_delta", "text": "Recorded four readings for circuit 2." }
+    },
+    { "type": "content_block_stop", "index": 0 },
+    { "type": "message_delta", "delta": { "stop_reason": "end_turn" } },
+    { "type": "message_stop" }
+  ],
+  "expected_slot_writes": {
+    "circuits": {
+      "2": {
+        "zs": "0.4",
+        "insulation_resistance_l_l": ">200",
+        "insulation_resistance_l_e": ">200",
+        "polarity": "correct"
+      }
+    }
+  }
+}

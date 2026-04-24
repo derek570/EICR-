@@ -178,10 +178,19 @@ function normaliseCircuitOp(c) {
   const rawAction = c.action ?? c.op ?? '';
   const action = String(rawAction).toLowerCase();
   const circuit_ref = c.circuit_ref ?? c.circuit;
-  const designation =
-    typeof c.designation === 'string' && c.designation.trim().length > 0
-      ? c.designation.trim()
-      : null;
+  // Designation can live at the top level (legacy record_extraction emits it
+  // flat — see src/__tests__/fixtures/stage6-golden-sessions/sample-03) OR
+  // nested inside `meta` (bundler emits {op, circuit_ref, meta:{designation,
+  // phase, rating_amps, cable_csa_mm2}} — see stage6-event-bundler.js).
+  // Accept both so normalisation converges on the same canonical key.
+  const rawDesignation =
+    (typeof c.designation === 'string' && c.designation.trim().length > 0
+      ? c.designation
+      : null) ??
+    (c.meta && typeof c.meta.designation === 'string' && c.meta.designation.trim().length > 0
+      ? c.meta.designation
+      : null);
+  const designation = rawDesignation ? String(rawDesignation).trim() : null;
   return { action, circuit_ref, designation };
 }
 

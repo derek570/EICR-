@@ -1,0 +1,121 @@
+{
+  "_doc": "STQ-02 category (2) — same-turn correction (clear + rewrite). Inspector, having previously recorded Zs=0.35 on circuit 3, now says 'Actually Zs on circuit three is nought point seven one.' Legacy path emits record_extraction with field_clears for (3,zs) AND extracted_readings[(3,zs,0.71)] in one response. Tool-call path emits clear_reading(3,zs) followed by record_reading(3,zs,'0.71') in the same round. Both converge on circuits[3].zs = '0.71'.",
+  "_requirement": "STT-11 + STT-09 (same-turn correction — last-write-wins on the perTurnWrites Map; see stage6-per-turn-writes.js SHAPE LOCK comment).",
+  "_fixture_shape": "dual-SSE",
+  "_normalisation_note": "Legacy emits field_clears; bundler emits cleared_readings. normaliseExtractionResult collapses both into `clears` so both paths compare on the same slot. The correction (new value) lives in the readings slot.",
+  "pre_turn_state": {
+    "snapshot": {
+      "circuits": {
+        "3": {
+          "circuit_ref": 3,
+          "circuit_designation": "Lighting (downstairs)",
+          "zs": "0.35"
+        }
+      },
+      "pending_readings": [],
+      "observations": [],
+      "validation_alerts": []
+    },
+    "askedQuestions": [],
+    "extractedObservations": []
+  },
+  "transcript": "Actually Zs on circuit three is nought point seven one.",
+  "sse_events_legacy": [
+    {
+      "type": "message_start",
+      "message": { "id": "msg_s02_legacy", "role": "assistant", "content": [] }
+    },
+    {
+      "type": "content_block_start",
+      "index": 0,
+      "content_block": {
+        "type": "tool_use",
+        "id": "toolu_s02_legacy",
+        "name": "record_extraction",
+        "input": {}
+      }
+    },
+    {
+      "type": "content_block_delta",
+      "index": 0,
+      "delta": {
+        "type": "input_json_delta",
+        "partial_json": "{\"extracted_readings\":[{\"circuit\":3,\"field\":\"zs\",\"value\":\"0.71\",\"confidence\":0.95}],\"field_clears\":[{\"circuit\":3,\"field\":\"zs\",\"reason\":\"correction\"}],\"circuit_updates\":[],\"observations\":[],\"questions_for_user\":[]}"
+      }
+    },
+    { "type": "content_block_stop", "index": 0 },
+    { "type": "message_delta", "delta": { "stop_reason": "tool_use" } },
+    { "type": "message_stop" }
+  ],
+  "sse_events_tool_call": [
+    {
+      "_comment": "Round 1 — two tool_use blocks in one response: clear_reading then record_reading. STT-09 same-turn correction: the order matters only in so far as both write to the same Map key on perTurnWrites; last-write-wins means the final value in the bundled output is '0.71'.",
+      "type": "message_start",
+      "message": { "id": "msg_s02_tc_r1", "role": "assistant", "content": [] }
+    },
+    {
+      "type": "content_block_start",
+      "index": 0,
+      "content_block": {
+        "type": "tool_use",
+        "id": "toolu_s02_tc_clear",
+        "name": "clear_reading",
+        "input": {}
+      }
+    },
+    {
+      "type": "content_block_delta",
+      "index": 0,
+      "delta": {
+        "type": "input_json_delta",
+        "partial_json": "{\"field\":\"zs\",\"circuit\":3,\"reason\":\"correction\"}"
+      }
+    },
+    { "type": "content_block_stop", "index": 0 },
+    {
+      "type": "content_block_start",
+      "index": 1,
+      "content_block": {
+        "type": "tool_use",
+        "id": "toolu_s02_tc_record",
+        "name": "record_reading",
+        "input": {}
+      }
+    },
+    {
+      "type": "content_block_delta",
+      "index": 1,
+      "delta": {
+        "type": "input_json_delta",
+        "partial_json": "{\"field\":\"zs\",\"circuit\":3,\"value\":\"0.71\",\"confidence\":0.95,\"source_turn_id\":\"t2\"}"
+      }
+    },
+    { "type": "content_block_stop", "index": 1 },
+    { "type": "message_delta", "delta": { "stop_reason": "tool_use" } },
+    { "type": "message_stop" }
+  ],
+  "sse_events_tool_call_round2": [
+    {
+      "type": "message_start",
+      "message": { "id": "msg_s02_tc_r2", "role": "assistant", "content": [] }
+    },
+    {
+      "type": "content_block_start",
+      "index": 0,
+      "content_block": { "type": "text", "text": "" }
+    },
+    {
+      "type": "content_block_delta",
+      "index": 0,
+      "delta": { "type": "text_delta", "text": "Updated Zs for circuit 3." }
+    },
+    { "type": "content_block_stop", "index": 0 },
+    { "type": "message_delta", "delta": { "stop_reason": "end_turn" } },
+    { "type": "message_stop" }
+  ],
+  "expected_slot_writes": {
+    "circuits": {
+      "3": { "zs": "0.71" }
+    }
+  }
+}
