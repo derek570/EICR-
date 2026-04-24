@@ -1670,7 +1670,7 @@ describe('Plan 04-20 r14-#3 — hydration normalisation for pre-existing legacy 
 });
 
 /**
- * Plan 04-23 r17-#1 — pending_readings[] hydration normalisation + dedup.
+ * Plan 04-23 r17-#1 — pending_readings[] hydration normalisation.
  *
  * Codex r17 (re-review after r16 close) flagged that r16-#2's
  * canonicalisation is two-point (write-time at extractData +
@@ -1685,11 +1685,11 @@ describe('Plan 04-20 r14-#3 — hydration normalisation for pre-existing legacy 
  *     arrive via `extracted_readings` — hydrated entries bypass it.
  *   - The serialise-time canonicalisation rewrites the SERIALISED
  *     form but does not mutate `this.stateSnapshot.pending_readings`
- *     in place, so the dedup filter in updateStateSnapshot (which
- *     matches against the IN-MEMORY `.field`) still compares
- *     against the legacy name. A legacy entry survives alongside a
- *     new canonical entry after a reading lands → stale pending
- *     state in the cached prefix.
+ *     in place, so the resolution filter in updateStateSnapshot
+ *     (which matches against the IN-MEMORY `.field + .value`) still
+ *     compares against the legacy name. A legacy entry survives
+ *     alongside a new canonical entry after a reading lands →
+ *     stale pending state in the cached prefix.
  *
  * The r17-#1 fix:
  *   (a) Extend `_normaliseCircuitKeysToCanonical` to walk
@@ -1698,23 +1698,43 @@ describe('Plan 04-20 r14-#3 — hydration normalisation for pre-existing legacy 
  *       `LEGACY_TO_CANONICAL_CIRCUIT_KEYS[entry.field] ?? entry.field`.
  *       Single source of truth — same map used by every other
  *       canonicalisation site since r13-#2.
- *   (b) Dedup pass. After canonicalisation, rightmost-wins dedup on
- *       `(circuit, field)` keys — matches the r16-#2 write-time
- *       dedup filter semantics at eicr-extraction-session.js:1657.
- *       If hydration merged two entries whose `.field` collided
- *       post-canonicalisation (one legacy, one canonical), the
- *       later (rightmost) entry wins and the earlier is dropped.
- *   (c) Idempotent. Already-canonical entries pass through as
- *       no-op; dedup on a no-duplicate array is a no-op walk.
+ *   (b) Idempotent. Already-canonical entries pass through as
+ *       no-op.
  *
- * Five tests:
+ * **Plan 04-25 r19-#1 — real production shape correction.**
+ * Codex r19 flagged that every test in this describe block (plus
+ * the r18-#1 / r18-#2 blocks below) seeded pending_readings with
+ * a fictional `{circuit, field, value, unit}` shape. Production
+ * write at `eicr-extraction-session.js:1747` pushes
+ * `{field, value, unit}` — NO `.circuit` key. Every subsequent
+ * consumer (resolution filter at `:1773`, length check at `:1827`,
+ * serialise-time `.map()` at `:2062`, hydration Leg 2 at `:964`)
+ * reads `.field`/`.value`/`.unit` — never `.circuit`. The old
+ * `(circuit, field)` dedup / "rightmost-wins" rationale baked
+ * into the r17-1b removal comment + the r18-#1 invariant story
+ * was moot: there is no circuit-scope identity on
+ * pending_readings entries. The real invariant is simply:
+ *
+ *   - Write-time pushes freely; duplicates on `.field` with
+ *     different `.value` are allowed.
+ *   - Hydration canonicalises `.field` in place; preserves every
+ *     entry intact. No dedup.
+ *   - Resolution filter drops entries matching `(field, value)`
+ *     on circuit-level writes.
+ *
+ * Every seed in this describe block (and the r18-#1 / r18-#2
+ * blocks below) has been rewritten to the real
+ * `{field, value, unit}` shape. r19-1x (in the r18-#1 block
+ * below) locks the real shape end-to-end via the `updateStateSnapshot`
+ * write path.
+ *
+ * Tests:
  *   r17-1a — hydration: legacy `field: "zs"` → canonical `measured_zs_ohm`.
- *   r17-1b — hydration + dedup: legacy + canonical collision → later wins.
  *   r17-1c — hydration: idempotent (two direct calls deep-equal).
- *   r17-1d — hydration: all 14 aliases in LEGACY_TO_CANONICAL_CIRCUIT_KEYS covered.
+ *   r17-1d — hydration: all aliases in LEGACY_TO_CANONICAL_CIRCUIT_KEYS covered (map-derived; see r19-#2 for hardening).
  *   r17-1e — hydration: no-op for canonical-only input (byte-identical array).
  */
-describe('Plan 04-23 r17-#1 — pending_readings hydration normalisation + dedup', () => {
+describe('Plan 04-23 r17-#1 — pending_readings hydration normalisation', () => {
   beforeEach(() => mockCreate.mockReset());
 
   test('r17-1a — hydration: pre-existing legacy `field: "zs"` in pending_readings is canonicalised on start()', () => {
@@ -1723,12 +1743,14 @@ describe('Plan 04-23 r17-#1 — pending_readings hydration normalisation + dedup
     // shape: the session was persisted pre-r13-#2 (legacy vocabulary)
     // and rehydrated after the rename shipped. Without the r17-#1
     // extension the entry stays legacy-keyed forever.
+    //
+    // Plan 04-25 r19-#1 — seed uses real production shape
+    // `{field, value, unit}` (no `.circuit` key). See r19-1x below
+    // for the end-to-end shape lock.
     const session = new EICRExtractionSession('k', 'sess-r17-1a', 'eicr', {
       toolCallsMode: 'shadow',
     });
-    session.stateSnapshot.pending_readings = [
-      { circuit: 1, field: 'zs', value: '0.35', unit: 'ohm' },
-    ];
+    session.stateSnapshot.pending_readings = [{ field: 'zs', value: '0.35', unit: 'ohm' }];
     session.start(); // hydration pass runs here.
 
     expect(session.stateSnapshot.pending_readings).toHaveLength(1);
@@ -1738,27 +1760,28 @@ describe('Plan 04-23 r17-#1 — pending_readings hydration normalisation + dedup
     expect(entry.unit).toBe('ohm');
   });
 
-  // r17-1b removed at r18-#1 — the original test codified the WRONG
-  // invariant. It asserted rightmost-wins dedup on (circuit, field),
-  // but the write-time path at updateStateSnapshot:1725 pushes every
-  // unassigned (circuit=-1) reading unconditionally with no
-  // (circuit, field) uniqueness check. Two pending entries for the
-  // same (circuit, field) with DIFFERENT values can legitimately
-  // coexist until a circuit-level reading resolves one. See the
-  // r18-#1 describe block below for the corrected tests (r18-1a /
-  // r18-1b) that align hydration semantics with the write-time
-  // invariant (canonicalise only — preserve duplicates).
+  // r17-1b removed at r18-#1 — the original test codified an
+  // invariant (`(circuit, field)` rightmost-wins dedup) that is
+  // itself fictional. Plan 04-25 r19-#1 confirmed via grep audit
+  // that pending_readings entries have no `.circuit` field at all
+  // (real production shape: `{field, value, unit}` only, see
+  // eicr-extraction-session.js:1747). The real invariant is
+  // "preserve every entry; canonicalise `.field` in place;
+  // duplicates on `.field` allowed (resolution filter at :1773
+  // matches on `.field + .value`)". See r18-1a / r18-1b below
+  // for the corrected tests + r19-1x for the real-shape end-to-end
+  // lock.
 
   test('r17-1c — hydration: idempotent — two direct calls are deep-equal', () => {
     // Lock idempotency — any future edit that (e.g.) appends a
     // suffix on each pass would fail at CI. Mirrors r14-3e's pattern
     // for the circuits-bucket loop.
+    //
+    // Plan 04-25 r19-#1 — seed uses real production shape.
     const session = new EICRExtractionSession('k', 'sess-r17-1c', 'eicr', {
       toolCallsMode: 'shadow',
     });
-    session.stateSnapshot.pending_readings = [
-      { circuit: 2, field: 'polarity', value: 'OK', unit: null },
-    ];
+    session.stateSnapshot.pending_readings = [{ field: 'polarity', value: 'OK', unit: null }];
     session.start(); // first pass via hydration.
 
     const afterFirst = JSON.parse(JSON.stringify(session.stateSnapshot.pending_readings));
@@ -1776,22 +1799,19 @@ describe('Plan 04-23 r17-#1 — pending_readings hydration normalisation + dedup
     // count. Any future alias addition to the map auto-extends this
     // test's coverage with zero test-code changes.
     //
-    // Previously this test hardcoded 14 entries; r17-#2 added 2
-    // aliases (cable_size, cable_size_earth) but the test was not
-    // updated — the 2 new aliases were NOT exercised on the
-    // pending_readings hydration path. Codex r18 flagged this as
-    // MINOR. The map-derived refactor below closes the gap and
-    // prevents recurrence. Explicit regression cases for the 2
-    // cable-size aliases are added below as defence in depth
-    // (r18-2a, r18-2b).
+    // NOTE: r19-#2 replaces this map-derived shape with a
+    // hardcoded EXPECTED_REQUIRED_ALIASES + superset assertion —
+    // the derived form above is tautological against map contraction
+    // (removing an alias shrinks the expectation alongside it).
+    // See the follow-up test commit for the r19-#2 hardening.
+    //
+    // Plan 04-25 r19-#1 — seeds use real production shape
+    // `{field, value, unit}` (no `.circuit` key).
     const session = new EICRExtractionSession('k', 'sess-r17-1d', 'eicr', {
       toolCallsMode: 'shadow',
     });
     const legacyKeys = Object.keys(LEGACY_TO_CANONICAL_CIRCUIT_KEYS);
-    // Seed distinct circuit numbers so the write-time invariant
-    // preservation (r18-#1) doesn't merge any entries at read-time.
-    session.stateSnapshot.pending_readings = legacyKeys.map((legacy, i) => ({
-      circuit: i + 1,
+    session.stateSnapshot.pending_readings = legacyKeys.map((legacy) => ({
       field: legacy,
       value: '1',
       unit: null,
@@ -1799,24 +1819,26 @@ describe('Plan 04-23 r17-#1 — pending_readings hydration normalisation + dedup
     session.start();
 
     expect(session.stateSnapshot.pending_readings).toHaveLength(legacyKeys.length);
-    for (const entry of session.stateSnapshot.pending_readings) {
-      const legacyAtIndex = legacyKeys[entry.circuit - 1];
+    session.stateSnapshot.pending_readings.forEach((entry, i) => {
+      const legacyAtIndex = legacyKeys[i];
       const expectedCanonical = LEGACY_TO_CANONICAL_CIRCUIT_KEYS[legacyAtIndex];
       expect(entry.field).toBe(expectedCanonical);
       // Negative: no legacy key survives.
       expect(legacyKeys).not.toContain(entry.field);
-    }
+    });
   });
 
   test('r17-1e — hydration: no-op for canonical-only pending_readings (deep-equal before/after)', () => {
     // Clean canonical input must be byte-identical post-hydration.
     // Proves the pass is pure overhead on post-r13-#2 writes.
+    //
+    // Plan 04-25 r19-#1 — seeds use real production shape.
     const session = new EICRExtractionSession('k', 'sess-r17-1e', 'eicr', {
       toolCallsMode: 'shadow',
     });
     session.stateSnapshot.pending_readings = [
-      { circuit: 1, field: 'measured_zs_ohm', value: '0.35', unit: 'ohm' },
-      { circuit: 2, field: 'r1_r2_ohm', value: '0.47', unit: 'ohm' },
+      { field: 'measured_zs_ohm', value: '0.35', unit: 'ohm' },
+      { field: 'r1_r2_ohm', value: '0.47', unit: 'ohm' },
     ];
     const before = JSON.parse(JSON.stringify(session.stateSnapshot.pending_readings));
     session.start();
@@ -1827,64 +1849,66 @@ describe('Plan 04-23 r17-#1 — pending_readings hydration normalisation + dedup
 });
 
 /**
- * Plan 04-24 r18-#1 — hydration dedup invariant alignment with write path.
+ * Plan 04-24 r18-#1 — hydration preserves duplicate-`.field` entries (write-time invariant alignment).
  *
  * Codex r18 (re-review after r17 close, 2026-04-24) flagged that
  * the `_normaliseCircuitKeysToCanonical` dedup pass landed at
- * r17-#1 is stricter than the write-time invariant:
+ * r17-#1 was stricter than the write-time invariant. The original
+ * r17-1b test codified a `(circuit, field)` dedup invariant.
  *
- *   Write-time at `updateStateSnapshot`:1725 pushes every
- *   unassigned (circuit=-1) reading unconditionally. There is no
- *   pre-push filter on `(circuit, field)`. The only filter is at
- *   :1751 — a RESOLUTION filter on circuit !== -1 writes that
- *   drops ALL pending entries matching `(field, value)`. That's a
- *   pending-to-assigned transition, not a push-time uniqueness
- *   guard.
+ * **Plan 04-25 r19-#1 — real production shape correction.** Codex
+ * r19 flagged that the r18-#1 invariant story itself was moot:
+ * pending_readings entries carry `{field, value, unit}` only — no
+ * `.circuit` key. The real invariant is purely about `.field`:
  *
- * So two pending entries for the same `(circuit, field)` with
- * DIFFERENT values can legitimately coexist — e.g. Sonnet emits
- * two unassigned readings for the same field with different values
+ *   - Write-time at `updateStateSnapshot:1747` pushes
+ *     `{field, value, unit}` unconditionally — no uniqueness check
+ *     on `.field` at push time.
+ *   - The resolution filter at `:1773` runs on circuit !== -1
+ *     writes and drops ALL pending entries matching
+ *     `(.field, .value)`. That's a pending-to-assigned transition,
+ *     not a push-time uniqueness guard.
+ *   - Serialise-time `.map()` at `:2062` reads `.field`, `.value`,
+ *     `.unit` — no uniqueness assumption.
+ *
+ * So two pending entries with the same `.field` but DIFFERENT
+ * `.value` can legitimately coexist — e.g. Sonnet emits two
+ * unassigned readings for the same field with different values
  * before either is assigned; both survive until their respective
  * circuit-level readings arrive to resolve them.
  *
- * My r17-#1 hydration dedup on `(circuit, field)` with
- * rightmost-wins would silently destroy the earlier legitimate
- * entry. The fix: remove the dedup from hydration. Canonicalise
- * only.
- *
- * **Investigation confirmed (2026-04-24):** grep of
- * `pending_readings.push` and `pending_readings.splice` found
- * exactly ONE write-time push (line 1725, no uniqueness check) and
- * ONE filter (line 1751, value-based resolution). Serialise-time
- * `.map()` at :2040 iterates without uniqueness assumption; no
- * downstream code assumes uniqueness on `(circuit, field)`.
- * **Option B chosen: duplicates allowed at write → remove
- * hydration dedup.**
+ * The r18-#1 fix removed the r17-#1 dedup. r19-#1 is a test-
+ * harness correction: every seed in this block + the r18-#2 block
+ * now uses the real `{field, value, unit}` shape, and r19-1x
+ * below locks the shape end-to-end via the real
+ * `updateStateSnapshot` write path.
  *
  * Tests:
- *   r18-1a — hydration preserves duplicate-by-(circuit,field) entries when values differ.
- *   r18-1b — hydration preserves legacy+canonical pair for same (circuit,field) when values differ.
- *
- * Replaces the r17-1b test that codified the wrong invariant (see
- * the removed-r17-1b comment in the r17-#1 describe block).
+ *   r18-1a — hydration preserves two entries for same `.field` when values differ.
+ *   r18-1b — hydration preserves legacy+canonical pair for same `.field` when values differ.
+ *   r19-1x — end-to-end: updateStateSnapshot push lands {field, value, unit} only (no `.circuit`).
  */
-describe('Plan 04-24 r18-#1 — hydration preserves write-time invariant: duplicate (circuit, field) allowed', () => {
+describe('Plan 04-24 r18-#1 — hydration preserves write-time invariant: duplicate `.field` allowed', () => {
   beforeEach(() => mockCreate.mockReset());
 
-  test('r18-1a — hydration preserves two entries for same (circuit, field) when values differ', () => {
+  test('r18-1a — hydration preserves two entries for same `.field` when values differ', () => {
     // Mirrors a live scenario: Sonnet emits two unassigned readings
-    // for `zs` on the same circuit with different values (e.g.
-    // inspector re-reads the meter). Both should survive hydration
-    // — the write-time path pushes unconditionally, and downstream
-    // resolution (on a circuit-level write) matches on (field,
-    // value) to drop the matching entry. Hydration dedup would
-    // silently destroy one of them.
+    // for `zs` with different values (e.g. inspector re-reads the
+    // meter). Both should survive hydration — the write-time path
+    // pushes unconditionally, and downstream resolution (on a
+    // circuit-level write) matches on `(.field, .value)` to drop the
+    // matching entry. Hydration dedup would silently destroy one.
+    //
+    // Plan 04-25 r19-#1 — seeds use real production shape
+    // `{field, value, unit}` (no `.circuit` key). Production
+    // pending_readings entries have no circuit-scope identity; the
+    // real invariant is about `.field` alone.
     const session = new EICRExtractionSession('k', 'sess-r18-1a', 'eicr', {
       toolCallsMode: 'shadow',
     });
     session.stateSnapshot.pending_readings = [
-      { circuit: 1, field: 'zs', value: '0.35', unit: 'ohm' },
-      { circuit: 1, field: 'zs', value: '0.42', unit: 'ohm' },
+      { field: 'zs', value: '0.35', unit: 'ohm' },
+      { field: 'zs', value: '0.42', unit: 'ohm' },
     ];
     session.start(); // hydration pass runs here.
 
@@ -1898,18 +1922,20 @@ describe('Plan 04-24 r18-#1 — hydration preserves write-time invariant: duplic
     expect(session.stateSnapshot.pending_readings[1].value).toBe('0.42');
   });
 
-  test('r18-1b — hydration preserves legacy+canonical pair for same (circuit, field) when values differ', () => {
+  test('r18-1b — hydration preserves legacy+canonical pair for same `.field` when values differ', () => {
     // Hydrated persisted state: one legacy-vocab entry (pre-r13-#2)
-    // and one canonical entry (post-r13-#2), same (circuit, field)
+    // and one canonical entry (post-r13-#2), same `.field`
     // post-canonicalisation, DIFFERENT values. Both are legitimate
     // — write-time would have pushed both unconditionally. Neither
     // should be discarded by hydration.
+    //
+    // Plan 04-25 r19-#1 — seeds use real production shape.
     const session = new EICRExtractionSession('k', 'sess-r18-1b', 'eicr', {
       toolCallsMode: 'shadow',
     });
     session.stateSnapshot.pending_readings = [
-      { circuit: 1, field: 'zs', value: '0.35', unit: 'ohm' }, // legacy vocab
-      { circuit: 1, field: 'measured_zs_ohm', value: '0.42', unit: 'ohm' }, // canonical
+      { field: 'zs', value: '0.35', unit: 'ohm' }, // legacy vocab
+      { field: 'measured_zs_ohm', value: '0.42', unit: 'ohm' }, // canonical
     ];
     session.start();
 
@@ -1922,6 +1948,38 @@ describe('Plan 04-24 r18-#1 — hydration preserves write-time invariant: duplic
     expect(session.stateSnapshot.pending_readings[0].value).toBe('0.35');
     expect(session.stateSnapshot.pending_readings[1].value).toBe('0.42');
   });
+
+  test('r19-1x — end-to-end: pending_readings pushed via updateStateSnapshot carry {field, value, unit} only (no circuit)', () => {
+    // Plan 04-25 r19-#1 — real-shape end-to-end lock. Exercises
+    // the REAL write path (`updateStateSnapshot` with a
+    // `circuit === -1` reading) and captures the emitted
+    // `pending_readings` entry shape. Pins the contract that
+    // prevented r17/r18 from noticing the fictional test shape.
+    //
+    // This is the canonical source of truth for "what shape does a
+    // pending_readings entry have?" — if future refactors change
+    // the shape (e.g., add a `.circuit` key for multi-circuit
+    // lookup), this test fails first. Update any test seed
+    // accordingly, NOT the other way around.
+    const session = new EICRExtractionSession('k', 'sess-r19-1x', 'eicr', {
+      toolCallsMode: 'shadow',
+    });
+    // Unassigned reading (circuit: -1) → pushed to pending_readings
+    // via the real write path at updateStateSnapshot:1747.
+    session.updateStateSnapshot({
+      extracted_readings: [{ circuit: -1, field: 'zs', value: '0.35', unit: 'ohm' }],
+    });
+    expect(session.stateSnapshot.pending_readings).toHaveLength(1);
+    const entry = session.stateSnapshot.pending_readings[0];
+    // Real production shape: 3 own-property keys only.
+    expect(Object.keys(entry).sort()).toEqual(['field', 'unit', 'value']);
+    // Specifically: NO `.circuit` key.
+    expect(Object.prototype.hasOwnProperty.call(entry, 'circuit')).toBe(false);
+    // Canonicalised at write-time (r16-#2: `zs` → `measured_zs_ohm`).
+    expect(entry.field).toBe('measured_zs_ohm');
+    expect(entry.value).toBe('0.35');
+    expect(entry.unit).toBe('ohm');
+  });
 });
 
 /**
@@ -1932,23 +1990,15 @@ describe('Plan 04-24 r18-#1 — hydration preserves write-time invariant: duplic
  * previously hardcoded 14 entries + literal legacy names. When
  * r17-#2 added `cable_size` + `cable_size_earth` to
  * LEGACY_TO_CANONICAL_CIRCUIT_KEYS, those 2 new aliases were NOT
- * exercised on the pending_readings hydration surface — the test
- * was out of sync with the map.
+ * exercised on the pending_readings hydration surface.
  *
- * The r18-#2 fix has two legs:
- *   1. Refactor r17-1d to derive its expectation from the imported
- *      LEGACY_TO_CANONICAL_CIRCUIT_KEYS map (done above) — any
- *      future alias addition auto-extends coverage with zero
- *      test-code changes.
- *   2. Add explicit regression cases for cable_size +
- *      cable_size_earth as defence in depth. Future contributors
- *      reading this file should see the 2 new aliases exercised
- *      by name.
+ * The r18-#2 fix was the r17-1d refactor + these 2 explicit
+ * regression cases. Plan 04-25 r19-#2 hardened the r17-1d
+ * refactor against tautological drift (see EXPECTED_REQUIRED_ALIASES
+ * at top of file + r17-1d in the r17-#1 describe block).
  *
- * The explicit cases below (r18-2a, r18-2b) codify the
- * pending_readings hydration path for the 2 cable-size aliases
- * specifically. They would fail if either alias were removed from
- * the map, catching a partial-revert of r17-#2.
+ * Plan 04-25 r19-#1 — seeds below use real production shape
+ * `{field, value, unit}` (no `.circuit` key).
  */
 describe('Plan 04-24 r18-#2 — pending_readings hydration: explicit cable_size / cable_size_earth aliases', () => {
   beforeEach(() => mockCreate.mockReset());
@@ -1959,12 +2009,12 @@ describe('Plan 04-24 r18-#2 — pending_readings hydration: explicit cable_size 
     // r17-#2 map extension + r17-#1 hydration leg this entry
     // would stay legacy-keyed on the cached prefix. Canonical name
     // verified against config/field_schema.json:52 (live_csa_mm2).
+    //
+    // Plan 04-25 r19-#1 — seed uses real production shape.
     const session = new EICRExtractionSession('k', 'sess-r18-2a', 'eicr', {
       toolCallsMode: 'shadow',
     });
-    session.stateSnapshot.pending_readings = [
-      { circuit: 1, field: 'cable_size', value: '2.5', unit: 'mm2' },
-    ];
+    session.stateSnapshot.pending_readings = [{ field: 'cable_size', value: '2.5', unit: 'mm2' }];
     session.start();
 
     expect(session.stateSnapshot.pending_readings).toHaveLength(1);
@@ -1979,11 +2029,13 @@ describe('Plan 04-24 r18-#2 — pending_readings hydration: explicit cable_size 
   test('r18-2b — hydration: legacy `cable_size_earth` → canonical `cpc_csa_mm2` on pending_readings path', () => {
     // Canonical name verified against config/field_schema.json:67
     // (cpc_csa_mm2, CPC = Circuit Protective Conductor).
+    //
+    // Plan 04-25 r19-#1 — seed uses real production shape.
     const session = new EICRExtractionSession('k', 'sess-r18-2b', 'eicr', {
       toolCallsMode: 'shadow',
     });
     session.stateSnapshot.pending_readings = [
-      { circuit: 1, field: 'cable_size_earth', value: '1.5', unit: 'mm2' },
+      { field: 'cable_size_earth', value: '1.5', unit: 'mm2' },
     ];
     session.start();
 
