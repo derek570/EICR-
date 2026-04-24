@@ -206,14 +206,22 @@ function normaliseObservation(o) {
 }
 
 /**
- * Compute section-level divergence between two canonical result shapes.
+ * Compute SECTION-level divergence between two canonical result shapes —
+ * the OLD (pre-r2) metric. Flags a section as "divergent" if ANY item
+ * within it differs. Returns reasons.length / 4 as the section fraction.
  *
- * @returns {{diverged: boolean, call_divergence: number, reasons: string[]}}
- *   `call_divergence` is the fraction of the four slot sections
- *   (readings, clears, circuit_ops, observations) that differ. 0.0 on
- *   exact match; 1.0 on total mismatch.
+ * WHY KEEP THIS: the section-level metric is a useful diagnostic — "the
+ * clears section and the observations section both diverged" is a
+ * structural signal that a wrong reading in a single section isn't. But
+ * it is NOT the metric the SC #6 / STT-11 gate uses — that's
+ * `computeCallLevelDivergence` below.
+ *
+ * Plan 04-08 r2-#2 renamed the output field `call_divergence` →
+ * `section_divergence` so the field name matches its semantics.
+ *
+ * @returns {{diverged: boolean, section_divergence: number, reasons: string[]}}
  */
-export function computeDivergence(legacyNorm, toolCallNorm) {
+export function computeSectionDivergence(legacyNorm, toolCallNorm) {
   const sections = ['readings', 'clears', 'circuit_ops', 'observations'];
   const reasons = [];
   for (const s of sections) {
@@ -221,11 +229,105 @@ export function computeDivergence(legacyNorm, toolCallNorm) {
     const b = JSON.stringify(toolCallNorm?.[s] ?? []);
     if (a !== b) reasons.push(s);
   }
-  const call_divergence = reasons.length / sections.length;
+  const section_divergence = reasons.length / sections.length;
   return {
     diverged: reasons.length > 0,
-    call_divergence,
+    section_divergence,
     reasons,
+  };
+}
+
+/**
+ * Compute CALL-LEVEL divergence — the real per-write accuracy metric
+ * introduced by Plan 04-08 r2-#2. Counts individual write-level mismatches
+ * across all four slot sections. Under the new metric, 1 wrong reading in
+ * 20 → 1/20 = 0.05 (not 0.25 as the old section fraction would imply).
+ *
+ * Methodology: for each section independently, canonicalise order (already
+ * done by normaliseExtractionResult), then count
+ *   mismatches = count of indices where a[i] !== b[i]
+ *   missing    = |len(a) - len(b)|  (shorter-side gap counts as diverged)
+ * total        = max(len(a), len(b)) per section, summed across all
+ * sections.
+ * rate         = sum(mismatches + missing) / max(1, total)
+ *
+ * WHY count missing: an extraction that DROPS one of five readings is
+ * 1/5 divergent against the reference, not 0/5. Treating missing as
+ * non-divergent would mask the exact failure mode the gate is designed
+ * to catch (tool-call path losing a reading that legacy captured).
+ *
+ * @returns {{rate: number, total: number, divergent: number, reasons: string[]}}
+ */
+export function computeCallLevelDivergence(legacyNorm, toolCallNorm) {
+  const sections = ['readings', 'clears', 'circuit_ops', 'observations'];
+  let total = 0;
+  let divergent = 0;
+  const reasons = [];
+  for (const s of sections) {
+    const a = Array.isArray(legacyNorm?.[s]) ? legacyNorm[s] : [];
+    const b = Array.isArray(toolCallNorm?.[s]) ? toolCallNorm[s] : [];
+    const len = Math.max(a.length, b.length);
+    total += len;
+    for (let i = 0; i < len; i += 1) {
+      if (i >= a.length) {
+        divergent += 1;
+        reasons.push(`${s}[${i}]: missing in legacy (tool=${JSON.stringify(b[i])})`);
+        continue;
+      }
+      if (i >= b.length) {
+        divergent += 1;
+        reasons.push(`${s}[${i}]: missing in tool-call (legacy=${JSON.stringify(a[i])})`);
+        continue;
+      }
+      if (JSON.stringify(a[i]) !== JSON.stringify(b[i])) {
+        divergent += 1;
+        reasons.push(
+          `${s}[${i}]: mismatch (legacy=${JSON.stringify(a[i])} vs tool=${JSON.stringify(b[i])})`,
+        );
+      }
+    }
+  }
+  const rate = total === 0 ? 0 : divergent / total;
+  return { rate, total, divergent, reasons };
+}
+
+/**
+ * Back-compat surface — combines BOTH section-level and call-level
+ * divergence into one result object. Existing callers (tests, CLI
+ * digest) that only read `diverged` / `reasons` keep working; new
+ * callers that need the precise metric read `section_divergence` or
+ * `call_divergence` directly.
+ *
+ * WHY `diverged` = OR of both: if section_divergence fires (anything
+ * non-zero) the call-level metric MUST also fire (at least 1 write
+ * differs); conversely if call_divergence fires section MUST too.
+ * The OR is belt-and-braces against a future refactor where the two
+ * metrics might briefly desync (e.g. rounding at the section boundary).
+ *
+ * @returns {{
+ *   diverged: boolean,
+ *   section_divergence: number,
+ *   call_divergence: number,
+ *   reasons: string[],          // section-level reasons (back-compat)
+ *   section_reasons: string[],
+ *   call_reasons: string[]
+ * }}
+ */
+export function computeDivergence(legacyNorm, toolCallNorm) {
+  const sec = computeSectionDivergence(legacyNorm, toolCallNorm);
+  const call = computeCallLevelDivergence(legacyNorm, toolCallNorm);
+  const diverged = sec.section_divergence > 0 || call.rate > 0;
+  return {
+    diverged,
+    section_divergence: sec.section_divergence,
+    call_divergence: call.rate,
+    // Write-count breakdown so runDirectory can aggregate call_divergence_rate
+    // weighted by write count rather than averaging per-session rates.
+    call_total: call.total,
+    call_divergent_count: call.divergent,
+    reasons: sec.reasons, // back-compat: existing callers read `reasons`.
+    section_reasons: sec.reasons,
+    call_reasons: call.reasons,
   };
 }
 
@@ -551,18 +653,46 @@ export async function runDirectory(dir, options = {}) {
   const total = sessions.length;
   const divergedCount = sessions.filter((s) => s.divergence.diverged).length;
   const session_divergence_rate = total === 0 ? 0 : divergedCount / total;
-  const call_divergence_rate =
+
+  // Plan 04-08 r2-#2: split section vs call rates.
+  //
+  // section_divergence_rate — average of per-session section fractions
+  // (the OLD metric kept as a diagnostic; a session where 4/4 sections
+  // diverge is signal a section-level-zero rate would hide).
+  //
+  // call_divergence_rate — weighted by WRITE count across all sessions,
+  // not averaged across sessions. A session with 20 writes of which 1
+  // is wrong contributes 1/20 = 0.05 to the aggregate, NOT 0.25 (the
+  // section fraction the pre-r2 metric would have reported) or 0.5 (a
+  // naive average of per-session rates would wrongly weight a 2-write
+  // session the same as a 20-write one). This is the real per-call
+  // accuracy gate.
+  const section_divergence_rate =
     total === 0
       ? 0
-      : sessions.reduce((a, s) => a + s.divergence.call_divergence, 0) / total;
+      : sessions.reduce((a, s) => a + (s.divergence.section_divergence ?? 0), 0) / total;
+
+  let callTotal = 0;
+  let callDivergent = 0;
+  for (const s of sessions) {
+    callTotal += s.divergence.call_total ?? 0;
+    callDivergent += s.divergence.call_divergent_count ?? 0;
+  }
+  const call_divergence_rate = callTotal === 0 ? 0 : callDivergent / callTotal;
+
   const breached =
-    session_divergence_rate > threshold || call_divergence_rate > threshold;
+    session_divergence_rate > threshold ||
+    section_divergence_rate > threshold ||
+    call_divergence_rate > threshold;
 
   return {
     total,
     threshold,
     session_divergence_rate,
+    section_divergence_rate,
     call_divergence_rate,
+    call_total_writes: callTotal,
+    call_divergent_writes: callDivergent,
     breached,
     sessions,
   };
@@ -610,7 +740,10 @@ if (invokedAsScript) {
         total: report.total,
         threshold: report.threshold,
         session_divergence_rate: report.session_divergence_rate,
+        section_divergence_rate: report.section_divergence_rate,
         call_divergence_rate: report.call_divergence_rate,
+        call_total_writes: report.call_total_writes,
+        call_divergent_writes: report.call_divergent_writes,
         breached: report.breached,
         first_10_divergent_samples: report.sessions
           .filter((s) => s.divergence.diverged)
@@ -618,11 +751,13 @@ if (invokedAsScript) {
           .map((s) => ({
             fixture: s.fixture,
             reasons: s.divergence.reasons,
+            section_divergence: s.divergence.section_divergence,
             call_divergence: s.divergence.call_divergence,
           })),
         sessions: report.sessions.map((s) => ({
           fixture: s.fixture,
           diverged: s.divergence.diverged,
+          section_divergence: s.divergence.section_divergence,
           call_divergence: s.divergence.call_divergence,
           reasons: s.divergence.reasons,
         })),
@@ -631,7 +766,9 @@ if (invokedAsScript) {
       if (report.breached) {
         console.error(
           `divergence exceeds threshold ${report.threshold}: ` +
-            `session=${report.session_divergence_rate} call=${report.call_divergence_rate}`,
+            `session=${report.session_divergence_rate} ` +
+            `section=${report.section_divergence_rate} ` +
+            `call=${report.call_divergence_rate}`,
         );
         process.exit(1);
       }
