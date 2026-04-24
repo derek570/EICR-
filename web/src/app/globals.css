@@ -453,3 +453,102 @@ body {
     transition: none;
   }
 }
+
+/* =============================================================================
+ * Staggered section entrance (Phase 9 — iOS `cmStaggeredEntrance` port)
+ *
+ * iOS applies a small per-index fade-up when a tab mounts so the
+ * content feels like it "arrives" rather than snapping in whole. The
+ * web port keys off a `--cm-stagger-index` custom property set inline
+ * on each `.cm-stagger-in` child, so the caller is free to use either
+ * an explicit index or `--cm-stagger-index: N` from CSS counters.
+ *
+ * The animation is small on purpose (180ms, 6px rise) — the same
+ * shape as `cm-live-section-in` so the two effects are visually
+ * coherent when they overlap (e.g. during a live-fill mount).
+ *
+ * Honour prefers-reduced-motion — the global reducer (above) already
+ * collapses the duration, but we also null out the transform so the
+ * final state doesn't leave cards drifted 6px below their rest
+ * position while the animation is suppressed.
+ * ============================================================================= */
+@keyframes cm-stagger-fade-slide-up {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.cm-stagger-in {
+  opacity: 0;
+  transform: translateY(6px);
+  animation: cm-stagger-fade-slide-up 300ms ease-out both;
+  animation-delay: calc(var(--cm-stagger-index, 0) * 40ms);
+}
+@media (prefers-reduced-motion: reduce) {
+  .cm-stagger-in {
+    animation: none;
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/*
+ * `.cm-stagger-children` — applies the stagger automatically to each
+ * direct child using `:nth-child` so callers don't need to thread an
+ * index prop through every SectionCard. Cascades up to 12 children;
+ * any beyond that land together on the 12-step delay (~480ms) so the
+ * tail of long lists doesn't drag. Honours reduced-motion via the
+ * nested rule.
+ */
+.cm-stagger-children > * {
+  opacity: 0;
+  transform: translateY(6px);
+  animation: cm-stagger-fade-slide-up 300ms ease-out both;
+}
+.cm-stagger-children > *:nth-child(1) {
+  animation-delay: 0ms;
+}
+.cm-stagger-children > *:nth-child(2) {
+  animation-delay: 40ms;
+}
+.cm-stagger-children > *:nth-child(3) {
+  animation-delay: 80ms;
+}
+.cm-stagger-children > *:nth-child(4) {
+  animation-delay: 120ms;
+}
+.cm-stagger-children > *:nth-child(5) {
+  animation-delay: 160ms;
+}
+.cm-stagger-children > *:nth-child(6) {
+  animation-delay: 200ms;
+}
+.cm-stagger-children > *:nth-child(7) {
+  animation-delay: 240ms;
+}
+.cm-stagger-children > *:nth-child(8) {
+  animation-delay: 280ms;
+}
+.cm-stagger-children > *:nth-child(9) {
+  animation-delay: 320ms;
+}
+.cm-stagger-children > *:nth-child(10) {
+  animation-delay: 360ms;
+}
+.cm-stagger-children > *:nth-child(11) {
+  animation-delay: 400ms;
+}
+.cm-stagger-children > *:nth-child(n + 12) {
+  animation-delay: 440ms;
+}
+@media (prefers-reduced-motion: reduce) {
+  .cm-stagger-children > * {
+    animation: none;
+    opacity: 1;
+    transform: none;
+  }
+}
