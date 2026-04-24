@@ -73,6 +73,61 @@ jest.unstable_mockModule('@anthropic-ai/sdk', () => ({
 const { EICRExtractionSession, LEGACY_TO_CANONICAL_CIRCUIT_KEYS } =
   await import('../extraction/eicr-extraction-session.js');
 
+/**
+ * Plan 04-25 r19-#2 — FIXED alias→canonical table. Hardcoded to
+ * prevent the tautological map-derived coverage gap in r18-#2's
+ * r17-1d refactor.
+ *
+ * Context: r18-#2 rewrote r17-1d to derive its expected alias set
+ * FROM `LEGACY_TO_CANONICAL_CIRCUIT_KEYS` (via `Object.keys(...)`).
+ * That auto-extends coverage for new aliases (good) but also
+ * auto-shrinks coverage for removals (bad — if someone deletes
+ * `zs` from the map, the derived expectation drops too and the
+ * test still passes). The test no longer verifies REQUIRED
+ * coverage.
+ *
+ * Contract: the map under test is asserted to be a SUPERSET of
+ * this table via `r17-1d`'s `toHaveProperty` loop. New aliases
+ * can be added to the map without editing this constant (a
+ * secondary test, `r17-1d-secondary`, catches un-covered
+ * additions via an auto-extending loop); REMOVALS break
+ * `r17-1d`'s superset check.
+ *
+ * Contents verified against
+ * `src/extraction/eicr-extraction-session.js:463-495`. Canonical
+ * names verified against `config/field_schema.json`. Grouping
+ * below mirrors the chronological order those aliases landed in
+ * the canonical map:
+ *
+ *   - r13-#2: 10 reading-schema aliases.
+ *   - r16-#3: 4 non-reading-schema aliases.
+ *   - r17-#2: 2 cable-size aliases.
+ *
+ * Total: 16 required aliases. Any contraction below 16 (or any
+ * rename of an entry's canonical) breaks the superset assertion.
+ */
+const EXPECTED_REQUIRED_ALIASES = {
+  // r13-#2 — the 10 reading-schema aliases.
+  zs: 'measured_zs_ohm',
+  r1_r2: 'r1_r2_ohm',
+  r2: 'r2_ohm',
+  insulation_resistance_l_e: 'ir_live_earth_mohm',
+  insulation_resistance_l_l: 'ir_live_live_mohm',
+  ring_continuity_r1: 'ring_r1_ohm',
+  ring_continuity_rn: 'ring_rn_ohm',
+  ring_continuity_r2: 'ring_r2_ohm',
+  rcd_trip_time: 'rcd_time_ms',
+  polarity: 'polarity_confirmed',
+  // r16-#3 — 4 non-reading-schema aliases.
+  ocpd_rating: 'ocpd_rating_a',
+  ocpd_breaking_capacity: 'ocpd_breaking_capacity_ka',
+  ir_test_voltage: 'ir_test_voltage_v',
+  max_disconnect_time: 'max_disconnect_time_s',
+  // r17-#2 — 2 cable-size aliases.
+  cable_size: 'live_csa_mm2',
+  cable_size_earth: 'cpc_csa_mm2',
+};
+
 describe('Plan 04-13 r7-#1 [SECURITY BLOCK] — cached-prefix TRUST BOUNDARY framing', () => {
   beforeEach(() => mockCreate.mockReset());
 
@@ -1731,7 +1786,8 @@ describe('Plan 04-20 r14-#3 — hydration normalisation for pre-existing legacy 
  * Tests:
  *   r17-1a — hydration: legacy `field: "zs"` → canonical `measured_zs_ohm`.
  *   r17-1c — hydration: idempotent (two direct calls deep-equal).
- *   r17-1d — hydration: all aliases in LEGACY_TO_CANONICAL_CIRCUIT_KEYS covered (map-derived; see r19-#2 for hardening).
+ *   r17-1d — hydration: every EXPECTED_REQUIRED_ALIASES entry canonicalises (map-must-be-superset; r19-#2 hardening).
+ *   r17-1d-secondary — hydration: every LEGACY_TO_CANONICAL_CIRCUIT_KEYS entry canonicalises (auto-extending; r19-#2 defence-in-depth).
  *   r17-1e — hydration: no-op for canonical-only input (byte-identical array).
  */
 describe('Plan 04-23 r17-#1 — pending_readings hydration normalisation', () => {
@@ -1792,22 +1848,72 @@ describe('Plan 04-23 r17-#1 — pending_readings hydration normalisation', () =>
     expect(afterFirst[0].field).toBe('polarity_confirmed');
   });
 
-  test('r17-1d — hydration: every LEGACY_TO_CANONICAL_CIRCUIT_KEYS alias canonicalises in one pass (map-derived)', () => {
-    // Plan 04-24 r18-#2 — map-derived expectation. The test now
-    // iterates the imported LEGACY_TO_CANONICAL_CIRCUIT_KEYS rather
-    // than hardcoding a literal list of legacy keys + a hardcoded
-    // count. Any future alias addition to the map auto-extends this
-    // test's coverage with zero test-code changes.
+  test('r17-1d — hydration: every EXPECTED_REQUIRED_ALIASES entry canonicalises (map-must-be-superset)', () => {
+    // Plan 04-25 r19-#2 — negation-proof against map contraction.
+    // Previously (r18-#2) this test used
+    // `Object.keys(LEGACY_TO_CANONICAL_CIRCUIT_KEYS)` as its
+    // expectation source — a tautology that shrinks alongside any
+    // map removal. Now: the hardcoded EXPECTED_REQUIRED_ALIASES
+    // table (defined at top of file) pins the required set; the
+    // map under test must be a SUPERSET (new aliases allowed
+    // without test edits, but removals break the test).
     //
-    // NOTE: r19-#2 replaces this map-derived shape with a
-    // hardcoded EXPECTED_REQUIRED_ALIASES + superset assertion —
-    // the derived form above is tautological against map contraction
-    // (removing an alias shrinks the expectation alongside it).
-    // See the follow-up test commit for the r19-#2 hardening.
+    // Negation proof: if someone deletes `zs: 'measured_zs_ohm'`
+    // from LEGACY_TO_CANONICAL_CIRCUIT_KEYS, the superset loop
+    // below fires a `toHaveProperty(...)` failure for `zs` and
+    // the test fails. The pre-r19-#2 derived form would have
+    // silently shrunk its expectation to 15 entries and still
+    // passed.
     //
     // Plan 04-25 r19-#1 — seeds use real production shape
     // `{field, value, unit}` (no `.circuit` key).
+    //
+    // First: superset check — every required alias exists in the
+    // map with the correct canonical. If an alias is removed from
+    // LEGACY_TO_CANONICAL_CIRCUIT_KEYS, this fails loud.
+    for (const [legacy, canonical] of Object.entries(EXPECTED_REQUIRED_ALIASES)) {
+      expect(LEGACY_TO_CANONICAL_CIRCUIT_KEYS).toHaveProperty(legacy, canonical);
+    }
+
+    // Second: end-to-end hydration — seed one pending reading per
+    // required alias, assert each canonicalises correctly.
     const session = new EICRExtractionSession('k', 'sess-r17-1d', 'eicr', {
+      toolCallsMode: 'shadow',
+    });
+    const legacyKeys = Object.keys(EXPECTED_REQUIRED_ALIASES);
+    session.stateSnapshot.pending_readings = legacyKeys.map((legacy) => ({
+      field: legacy,
+      value: '1',
+      unit: null,
+    }));
+    session.start();
+
+    expect(session.stateSnapshot.pending_readings).toHaveLength(legacyKeys.length);
+
+    // Hydration preserves insertion order; iterate by index and
+    // assert each entry's canonicalised field matches the
+    // EXPECTED_REQUIRED_ALIASES canonical for the original seed
+    // position.
+    session.stateSnapshot.pending_readings.forEach((entry, i) => {
+      const legacyAtIndex = legacyKeys[i];
+      const expectedCanonical = EXPECTED_REQUIRED_ALIASES[legacyAtIndex];
+      expect(entry.field).toBe(expectedCanonical);
+      // Negative: no legacy key survives.
+      expect(legacyKeys).not.toContain(entry.field);
+    });
+  });
+
+  test('r17-1d-secondary — hydration: every LEGACY_TO_CANONICAL_CIRCUIT_KEYS entry canonicalises (auto-extending)', () => {
+    // Plan 04-25 r19-#2 — defence-in-depth companion to r17-1d.
+    // Iterates the ACTUAL map so any alias added to
+    // LEGACY_TO_CANONICAL_CIRCUIT_KEYS automatically gets
+    // hydration coverage. EXPECTED_REQUIRED_ALIASES in r17-1d
+    // pins the required minimum (catches removals); THIS test
+    // catches coverage gaps for new additions not yet promoted
+    // to the required set.
+    //
+    // Plan 04-25 r19-#1 — seeds use real production shape.
+    const session = new EICRExtractionSession('k', 'sess-r17-1d-sec', 'eicr', {
       toolCallsMode: 'shadow',
     });
     const legacyKeys = Object.keys(LEGACY_TO_CANONICAL_CIRCUIT_KEYS);
@@ -1823,8 +1929,6 @@ describe('Plan 04-23 r17-#1 — pending_readings hydration normalisation', () =>
       const legacyAtIndex = legacyKeys[i];
       const expectedCanonical = LEGACY_TO_CANONICAL_CIRCUIT_KEYS[legacyAtIndex];
       expect(entry.field).toBe(expectedCanonical);
-      // Negative: no legacy key survives.
-      expect(legacyKeys).not.toContain(entry.field);
     });
   });
 
