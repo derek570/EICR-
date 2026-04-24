@@ -195,16 +195,31 @@ const LENGTH_CEILING = {
  * length-ceiling test fixtures AND legitimate monotonic content
  * like solid ASCII dashes in a separator.
  */
-const BASE64_RE = /[A-Za-z0-9+/=]{40,}/;
-const HEX_RE = /[0-9a-fA-F]{40,}/;
+// Plan 04-28 r21-#2 — GLOBAL flag required for `matchAll()`. The r20-#3
+// implementation used `text.match()` without `g`, which returns only
+// the FIRST match. Attackers can prepend a benign 40+ char low-
+// diversity chunk (e.g. 50 "a"s: 1 distinct char, fails the 10-distinct
+// threshold) then, after a break char, append the real 40-char
+// base64/hex leak. First match's distinct count fails → filter
+// returns safe:true → real leak never checked. Iterating ALL matches
+// closes the bypass: if ANY chunk clears the distinct threshold,
+// flag.
+const BASE64_RE = /[A-Za-z0-9+/=]{40,}/g;
+const HEX_RE = /[0-9a-fA-F]{40,}/g;
 const MIN_ENTROPY_DISTINCT_CHARS = 10;
 
 function hasHighEntropyChunk(text, re) {
-  const match = text.match(re);
-  if (!match) return false;
-  const chunk = match[0];
-  const distinct = new Set(chunk).size;
-  return distinct >= MIN_ENTROPY_DISTINCT_CHARS;
+  // matchAll requires the `g` flag — guard in-file; constants above
+  // carry it. This iteration is O(N) where N is the number of 40+
+  // char matches in the input, typically 0 or 1 on real inspection
+  // speech. Each match incurs a Set construction over the chunk +
+  // size check — cheap.
+  for (const match of text.matchAll(re)) {
+    const chunk = match[0];
+    const distinct = new Set(chunk).size;
+    if (distinct >= MIN_ENTROPY_DISTINCT_CHARS) return true;
+  }
+  return false;
 }
 
 /**
