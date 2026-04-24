@@ -897,29 +897,39 @@ export class EICRExtractionSession {
    * canonicalises pending_readings in place.
    *
    * Plan 04-24 r18-#1 — write-time invariant alignment. Codex r18
-   * flagged that the r17-#1 dedup-on-`(circuit, field)` pass was
-   * STRICTER than the write-time invariant. Investigation confirmed
-   * (grep audit of `pending_readings.push` / `.splice` on 2026-04-24):
+   * flagged that the r17-#1 dedup pass was STRICTER than the
+   * write-time invariant. r18-#1 removed the dedup; canonicalise
+   * only.
    *
-   *   - Write-time at `updateStateSnapshot`:1725 pushes every
-   *     unassigned (circuit=-1) reading UNCONDITIONALLY. No
-   *     (circuit, field) uniqueness filter before the push.
-   *   - The only filter (:1751) runs on circuit !== -1 writes and
-   *     matches on `(field, value)` — that's a pending-to-assigned
-   *     RESOLUTION filter, not a push-time uniqueness guard.
-   *   - Serialise-time `.map()` at :2040 and the `.length > 0`
-   *     check at :1805 iterate without uniqueness assumption. No
-   *     downstream code assumes uniqueness on `(circuit, field)`.
+   * **Plan 04-25 r19-#1 — real pending_readings shape.** Codex r19
+   * (grep audit on 2026-04-24) confirmed that the r17-#1 / r18-#1
+   * "(circuit, field)" invariant story was itself fictional:
    *
-   * Therefore multiple pending entries for the same `(circuit, field)`
-   * with DIFFERENT values can legitimately coexist — e.g. two
-   * unassigned readings for the same field arrive from Sonnet before
-   * either is resolved. The hydration pass MUST preserve this
-   * invariant. r18-#1 removes the r17-#1 dedup; canonicalise only.
+   *   - Write-time at `updateStateSnapshot`:1747 pushes
+   *     `{field, value, unit}` — NO `.circuit` key. Every
+   *     unassigned (circuit === -1) reading lands with this
+   *     3-property shape.
+   *   - The resolution filter at `:1773` matches on
+   *     `(.field, .value)` on circuit !== -1 writes — that's a
+   *     pending-to-assigned RESOLUTION filter, not a push-time
+   *     uniqueness guard. Reads `.field` + `.value`; never
+   *     `.circuit`.
+   *   - Serialise-time `.map()` at `:2062` reads `.field`/`.value`/
+   *     `.unit`. Spreads `...p` so a fictional stray `.circuit`
+   *     would be preserved, but write never plants one.
+   *   - `.length` check at `:1827` reads `.length` only.
+   *
+   * So the real invariant is purely about `.field`: duplicates on
+   * `.field` with different `.value` legitimately coexist — e.g.
+   * two unassigned readings for the same field arrive from Sonnet
+   * before either is resolved. Hydration must preserve every entry
+   * intact; canonicalise `.field` in place only.
    *
    * See the symmetric comment at the write site
-   * (`updateStateSnapshot`:1725) for the push-time contract this
-   * hydration pass mirrors.
+   * (`updateStateSnapshot`:1747) for the push-time contract this
+   * hydration pass mirrors, and `r19-1x` in
+   * `stage6-cached-prefix-trust-boundary.test.js` for the
+   * end-to-end shape lock.
    */
   _normaliseCircuitKeysToCanonical() {
     // Leg 1 — circuits buckets (r14-#3).
@@ -944,23 +954,28 @@ export class EICRExtractionSession {
       }
     }
 
-    // Leg 2 — pending_readings[] (r17-#1, r18-#1).
+    // Leg 2 — pending_readings[] (r17-#1, r18-#1, r19-#1).
     //
     // Canonicalise each entry's `.field` via the same map that
     // drives the circuits loop. NO dedup pass — r18-#1 removed the
-    // r17-#1 rightmost-wins dedup because it was stricter than the
-    // write-time invariant:
+    // r17-#1 rightmost-wins dedup; r19-#1 confirmed the real shape:
     //
-    //   Write-time (`updateStateSnapshot`:1725) pushes every
-    //   unassigned reading unconditionally; two entries for the
-    //   same (circuit, field) with DIFFERENT values legitimately
-    //   coexist until resolution at :1751 (which matches on
-    //   (field, value), not (circuit, field)).
+    //   pending_readings entries are `{field, value, unit}` —
+    //   NO `.circuit` key (grep audit 2026-04-24 against write
+    //   site at `updateStateSnapshot`:1747). The only uniqueness
+    //   contract is resolution-time (filter at :1773 matches on
+    //   `(.field, .value)` on circuit-level writes). Push-time
+    //   (:1747) is unconditional; two entries with same `.field`
+    //   and different `.value` legitimately coexist until one is
+    //   resolved.
     //
-    // Hydration must preserve this — dedup would silently discard
-    // a legitimate pending reading. Canonicalisation is in-place
-    // and idempotent; the `.field` rename does not change the
-    // entry's identity for any downstream consumer.
+    // Hydration must preserve every entry — dedup would silently
+    // discard a legitimate pending reading. Canonicalisation is
+    // in-place and idempotent; the `.field` rename does not change
+    // the entry's identity for any downstream consumer.
+    //
+    // See `r19-1x` in `stage6-cached-prefix-trust-boundary.test.js`
+    // for the end-to-end shape lock on the real production shape.
     const pending = this.stateSnapshot?.pending_readings;
     if (Array.isArray(pending) && pending.length > 0) {
       for (const entry of pending) {
@@ -1731,19 +1746,34 @@ export class EICRExtractionSession {
         if (circuit === -1) {
           // Unassigned reading — track as pending.
           //
-          // Plan 04-24 r18-#1 — push-time INVARIANT: no
-          // (circuit, field) uniqueness check. Multiple pending
-          // entries for the same field are allowed; they
-          // legitimately carry different candidate values until
-          // one is resolved by a circuit-level write (filter
-          // below at line ~1755 matches on (field, value) to drop
-          // the resolved entry). The hydration pass
-          // (`_normaliseCircuitKeysToCanonical`, "Leg 2") MUST
-          // NOT dedup on (circuit, field) — doing so would
-          // silently discard a legitimate pending reading and
-          // violate this push-time contract. See the symmetric
-          // comment at that method for the hydration-time
-          // contract this push mirrors.
+          // Plan 04-25 r19-#1 — real production shape. The entry
+          // below is the AUTHORITATIVE shape for
+          // `pending_readings[]`: `{field, value, unit}`. NO
+          // `.circuit` key. Every downstream consumer reads
+          // these 3 properties only:
+          //
+          //   - Resolution filter at line ~:1773 matches on
+          //     `(.field, .value)` on circuit-level writes (drops
+          //     the pending entry when a reading lands that
+          //     matches). No `.circuit` read.
+          //   - `.length` check at line ~:1827.
+          //   - Serialise-time `.map()` at line ~:2062 reads
+          //     `.field`/`.value`/`.unit`.
+          //   - Hydration Leg 2 at `_normaliseCircuitKeysToCanonical`
+          //     canonicalises `.field` in place.
+          //
+          // Push-time invariant (r18-#1, r19-#1): no uniqueness
+          // check on `.field`. Multiple pending entries with the
+          // same `.field` and different `.value` legitimately
+          // coexist — each resolved independently when a
+          // circuit-level reading matches. The hydration pass
+          // MUST preserve every entry intact; dedup would
+          // silently discard a legitimate pending reading. See
+          // the symmetric comment at
+          // `_normaliseCircuitKeysToCanonical` for the hydration
+          // contract this push mirrors, and `r19-1x` in
+          // `stage6-cached-prefix-trust-boundary.test.js` for
+          // the end-to-end shape lock.
           this.stateSnapshot.pending_readings.push({
             field: canonicalField,
             value: reading.value,
