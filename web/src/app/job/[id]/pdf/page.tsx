@@ -63,15 +63,17 @@ import { cn } from '@/lib/utils';
  */
 
 type PdfJobShape = {
-  installation?: Record<string, unknown>;
-  supply?: Record<string, unknown>;
-  board?: { boards?: unknown[] } & Record<string, unknown>;
+  // Keys match the backend wire shape (see `src/routes/jobs.js:575-592`).
+  installation_details?: Record<string, unknown> | null;
+  supply_characteristics?: Record<string, unknown> | null;
+  board_info?: Record<string, unknown>;
+  boards?: unknown[] | null;
   circuits?: unknown[];
   observations?: unknown[];
-  inspector_id?: string;
-  authorised_by_id?: string;
-  designer_id?: string;
-  constructor_id?: string;
+  inspector_id?: string | null;
+  authorised_by_id?: string | null;
+  designer_id?: string | null;
+  constructor_id?: string | null;
 };
 
 export default function PdfPage() {
@@ -428,7 +430,7 @@ function SecondaryActionButton({
 
 function computeWarnings(data: PdfJobShape, isEIC: boolean): string[] {
   const w: string[] = [];
-  const inst = (data.installation ?? {}) as Record<string, unknown>;
+  const inst = (data.installation_details ?? {}) as Record<string, unknown>;
   if (!str(inst.address_line1) && !str(inst.address)) {
     w.push('Installation address not set');
   }
@@ -436,8 +438,15 @@ function computeWarnings(data: PdfJobShape, isEIC: boolean): string[] {
     w.push('Inspection date not set');
   }
 
-  const boards = data.board?.boards ?? [];
-  if (!Array.isArray(boards) || boards.length === 0) {
+  // Either a populated top-level `boards` array OR a populated
+  // `board_info` summary counts as "at least one board configured" —
+  // matches the backend's dual-field pattern for single- vs multi-
+  // board jobs (see BoardPage.persistBoards for the write side).
+  const boards = data.boards ?? [];
+  const boardInfo = data.board_info ?? {};
+  const hasBoards =
+    (Array.isArray(boards) && boards.length > 0) || Object.keys(boardInfo).length > 0;
+  if (!hasBoards) {
     w.push('No boards added (Board tab)');
   }
 
