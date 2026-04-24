@@ -358,3 +358,84 @@ describe('runDirectory — threshold breach', () => {
     expect(syntheticReport.breached).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Group F — SC #6 lock + full integration surface
+// ---------------------------------------------------------------------------
+// This group is the Phase 4 SC #6 gate. It runs the canonical 5 + F21934D4
+// set in one call and asserts the ≤10% divergence budget at the highest
+// level. If the prompt + cached-prefix + tool-call stack ever drifts
+// enough for ANY fixture to diverge, this assertion trips and the
+// stage6-agentic branch is blocked from merging. That's the intended
+// behaviour — DO NOT lower the threshold to paper over drift; fix the
+// underlying cause.
+
+describe('Phase 4 SC #6 — golden-session divergence gate', () => {
+  test('combined 5 goldens + F21934D4 ≤ 10% threshold (SC #6 lock)', async () => {
+    const report = await runDirectory(FIXTURE_DIR, {
+      threshold: 0.10,
+      extraFixtures: [F21934D4_PATH],
+    });
+
+    // Shape: the report exposes a stable contract that Phase 5 + Phase 7
+    // build on. Lock every top-level field so a future refactor that
+    // drops one surfaces as a test failure rather than a silent analyzer
+    // break.
+    expect(report).toEqual(
+      expect.objectContaining({
+        total: 6,
+        threshold: 0.10,
+        session_divergence_rate: expect.any(Number),
+        call_divergence_rate: expect.any(Number),
+        breached: expect.any(Boolean),
+        sessions: expect.any(Array),
+      }),
+    );
+
+    // The gate: both aggregate rates must sit at or below threshold. Plan
+    // 04-05 establishes 0% as the expected baseline on deterministic
+    // fixtures — any movement off 0% on these 6 is a bug, not drift.
+    expect(report.session_divergence_rate).toBeLessThanOrEqual(0.10);
+    expect(report.call_divergence_rate).toBeLessThanOrEqual(0.10);
+    expect(report.breached).toBe(false);
+
+    // Every session records its per-fixture divergence verdict with the
+    // full {diverged, call_divergence, reasons} surface. Phase 5 uses the
+    // `reasons` field to triage new fixtures; Phase 7 consumes the
+    // call_divergence fraction for the STR-03 aggregate.
+    for (const s of report.sessions) {
+      expect(s).toHaveProperty('fixture');
+      expect(s).toHaveProperty('divergence.diverged');
+      expect(s).toHaveProperty('divergence.call_divergence');
+      expect(s).toHaveProperty('divergence.reasons');
+      expect(Array.isArray(s.divergence.reasons)).toBe(true);
+    }
+  });
+
+  test('each of the 5 Plan-04-05 fixtures normalises to non-empty slot writes', async () => {
+    // Sanity: if a fixture mis-parses and produces empty slots, both paths
+    // would converge on empty (0% divergence) but the gate would be
+    // vacuous. Lock that every fixture actually writes at least one
+    // reading (the minimum coverage bar for an STQ-02 scenario).
+    const report = await runDirectory(FIXTURE_DIR);
+    for (const s of report.sessions) {
+      expect(s.legacyNorm.readings.length + s.toolCallNorm.readings.length).toBeGreaterThan(0);
+    }
+  });
+
+  test('F21934D4 cross-plan fixture exercises the tool-call-only Variant B path', async () => {
+    // Lock that the Variant B branch in runFixture (legacy-from-tool-call
+    // fallback when sse_events_legacy is absent) keeps the F21934D4
+    // fixture at 0% divergence. If Plan 04-04 ever rewrites the F21934D4
+    // fixture to add sse_events_legacy, this test still passes (Variant A
+    // would take over) — but the cross-plan contract around 0% holds
+    // either way.
+    const report = await runDirectory(FIXTURE_DIR, {
+      extraFixtures: [F21934D4_PATH],
+    });
+    const f21 = report.sessions.find((s) => /f21934d4/i.test(s.fixture));
+    expect(f21).toBeDefined();
+    expect(f21.divergence.diverged).toBe(false);
+    expect(f21.divergence.call_divergence).toBe(0);
+  });
+});
