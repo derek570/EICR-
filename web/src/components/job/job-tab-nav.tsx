@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import {
+  AlertTriangle,
   Boxes,
   ClipboardCheck,
   DraftingCompass,
@@ -15,21 +16,29 @@ import {
   Zap,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { useJobContext } from '@/lib/job-context';
 
 /**
- * Job tab navigation — horizontal strip (always), iOS-style.
+ * Job tab navigation — horizontal strip, iOS-style.
  *
  * Each tab renders as an icon-over-label cell with an optional small status
  * dot (green=complete, amber=warning) anchored to the top-right of the icon.
  * Active tab shows a blue label + a thin underline beneath it; inactive tabs
  * keep a muted gray label with the brand-coloured icon.
  *
- * The tab set is *unified* for EICR + EIC per iOS: Observations is NOT a
- * tab (it lives behind the Obs button in the floating action bar), and the
- * final tab is "Staff" not "Inspector". Extent & Design are always shown
- * — the backend permits them on EICR too and iOS keeps them visible.
+ * Tab set is cert-type-gated to mirror iOS
+ * `CertMateUnified/Sources/Views/JobDetail/JobDetailView.swift:313-357`:
+ *   EICR: Overview, Installation, Supply, Board, Circuits, Observations,
+ *         Inspection, Staff, PDF
+ *   EIC : Overview, Installation, Supply, Board, Circuits, Inspection,
+ *         Extent, Design, Staff, PDF
  *
- * Reference: memory/ios_design_parity.md §"Tab set (unified)".
+ * The prior unified set — shared between cert types — was a Wave 5 regression
+ * (Observations hidden behind a FAB button that was never built; Extent +
+ * Design shown on EICR where iOS hides them). Phase 1 of the Wave A parity
+ * audit catalogued this as P0; the restoration here closes Phase 1 gaps
+ * #1, #3, #4, and #8 (the `certificateType` prop gap is solved by reading
+ * it off `useJobContext()` so no prop drilling is needed).
  */
 
 type TabStatus = 'complete' | 'warning' | undefined;
@@ -46,36 +55,79 @@ type Tab = {
   status?: TabStatus;
 };
 
-const UNIFIED_TABS: Tab[] = [
-  { slug: '', label: 'Overview', Icon: LayoutDashboard },
-  { slug: '/installation', label: 'Installation', Icon: Settings2, status: 'complete' },
-  { slug: '/supply', label: 'Supply', Icon: Zap, status: 'complete' },
-  { slug: '/board', label: 'Board', Icon: Boxes, status: 'complete' },
-  { slug: '/circuits', label: 'Circuits', Icon: List, status: 'warning' },
-  { slug: '/inspection', label: 'Inspection', Icon: ClipboardCheck },
-  { slug: '/extent', label: 'Extent', Icon: Ruler },
-  { slug: '/design', label: 'Design', Icon: DraftingCompass },
-  { slug: '/staff', label: 'Staff', Icon: UserCheck },
-  { slug: '/pdf', label: 'PDF', Icon: FileText },
+const OVERVIEW_TAB: Tab = { slug: '', label: 'Overview', Icon: LayoutDashboard };
+const INSTALLATION_TAB: Tab = {
+  slug: '/installation',
+  label: 'Installation',
+  Icon: Settings2,
+  status: 'complete',
+};
+const SUPPLY_TAB: Tab = {
+  slug: '/supply',
+  label: 'Supply',
+  Icon: Zap,
+  status: 'complete',
+};
+const BOARD_TAB: Tab = {
+  slug: '/board',
+  label: 'Board',
+  Icon: Boxes,
+  status: 'complete',
+};
+const CIRCUITS_TAB: Tab = {
+  slug: '/circuits',
+  label: 'Circuits',
+  Icon: List,
+  status: 'warning',
+};
+const OBSERVATIONS_TAB: Tab = {
+  slug: '/observations',
+  label: 'Observations',
+  Icon: AlertTriangle,
+};
+const INSPECTION_TAB: Tab = { slug: '/inspection', label: 'Inspection', Icon: ClipboardCheck };
+const EXTENT_TAB: Tab = { slug: '/extent', label: 'Extent', Icon: Ruler };
+const DESIGN_TAB: Tab = { slug: '/design', label: 'Design', Icon: DraftingCompass };
+const STAFF_TAB: Tab = { slug: '/staff', label: 'Staff', Icon: UserCheck };
+const PDF_TAB: Tab = { slug: '/pdf', label: 'PDF', Icon: FileText };
+
+const EICR_TABS: Tab[] = [
+  OVERVIEW_TAB,
+  INSTALLATION_TAB,
+  SUPPLY_TAB,
+  BOARD_TAB,
+  CIRCUITS_TAB,
+  OBSERVATIONS_TAB,
+  INSPECTION_TAB,
+  STAFF_TAB,
+  PDF_TAB,
 ];
 
-/**
- * The `certificateType` prop was retained through Wave 4 as dead API
- * surface after the tab set was unified for EICR + EIC. Wave 5 drops
- * it — no consumer reads it, and the ESLint `no-unused-vars` warning
- * was the last blocker on the lint-zero acceptance gate. Call sites
- * update to stop passing it.
- */
+const EIC_TABS: Tab[] = [
+  OVERVIEW_TAB,
+  INSTALLATION_TAB,
+  SUPPLY_TAB,
+  BOARD_TAB,
+  CIRCUITS_TAB,
+  INSPECTION_TAB,
+  EXTENT_TAB,
+  DESIGN_TAB,
+  STAFF_TAB,
+  PDF_TAB,
+];
+
 export function JobTabNav({ jobId }: { jobId: string }) {
   const pathname = usePathname();
+  const { certificateType } = useJobContext();
   const base = `/job/${jobId}`;
+  const tabs = certificateType === 'EIC' ? EIC_TABS : EICR_TABS;
 
   return (
     <nav
       aria-label="Job sections"
       className="flex w-full gap-0 overflow-x-auto border-b border-[var(--color-border-subtle)] bg-[var(--color-surface-0)] px-2 scrollbar-hide"
     >
-      {UNIFIED_TABS.map((tab) => {
+      {tabs.map((tab) => {
         const href = `${base}${tab.slug}`;
         const isActive =
           tab.slug === ''
