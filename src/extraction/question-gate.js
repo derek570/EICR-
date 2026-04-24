@@ -12,6 +12,21 @@
 
 import logger from '../logger.js';
 
+// Stage 6 Phase 5 Plan 05-01 — single-source-of-truth for the question debounce.
+// Used both by QuestionGate.GATE_DELAY_MS (instance property below, line ~92)
+// and by stage6-ask-gate-wrapper.js's createAskGateWrapper default delay so
+// the new tool-call gate inherits the production tuning automatically. If
+// the TTS-timing trade-off ever moves again (history: 2500ms → 1500ms in
+// commit b606e21, 2026-04-20 — see ROADMAP §Phase 5 SC #1 for the stale
+// 2500 reference) both surfaces follow in lockstep.
+//
+// Why exported as a module-level constant rather than a class static: the
+// wrapper imports this BEFORE constructing any QuestionGate instance, and
+// keeping the value at module scope avoids a circular dependency on the
+// class shape during Jest module init (the wrapper is purely
+// composition-over-the-class — never instantiates QuestionGate).
+export const QUESTION_GATE_DELAY_MS = 1500;
+
 // Phase D: stop-word list used when comparing a question's `heard_value`
 // against newly-extracted observation text. These tokens would otherwise
 // false-match almost anything (e.g. "the kitchen" and "the bathroom" share
@@ -89,7 +104,7 @@ export class QuestionGate {
     this.sendCallback = sendCallback; // function(questions) -- sends to iOS via WS
     this.pendingQuestions = [];
     this.gateTimer = null;
-    this.GATE_DELAY_MS = 1500;
+    this.GATE_DELAY_MS = QUESTION_GATE_DELAY_MS;
     this.sessionId = sessionId; // for log correlation
     // De-dupe: signatures of questions flushed within the last DEDUPE_TTL_MS
     // window. Prevents Sonnet re-asking the same question in quick succession
