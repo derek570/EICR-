@@ -430,6 +430,15 @@ const WRAP_POLICY = {
  * NEW reads — the canonical contract was DEPENDENT on the specific
  * seed codepath rather than being an invariant of the snapshot
  * shape. r14-#3 closes the gap with post-hydration normalisation.
+ *
+ * Plan 04-23 r17-#1 extended the hydration pass to walk BOTH circuits
+ * buckets AND `stateSnapshot.pending_readings[]` — the r14-#3
+ * implementation only visited circuits, so hydrated pending entries
+ * with legacy `.field` names survived forever (their in-memory
+ * keys disagreed with the r16-#2 write-time dedup filter that
+ * matches against canonical names). Same map drives both legs —
+ * adding an entry here still extends coverage automatically across
+ * circuits + pending_readings + the WRAP_POLICY default classification.
  */
 const LEGACY_TO_CANONICAL_CIRCUIT_KEYS = {
   zs: 'measured_zs_ohm',
@@ -831,42 +840,103 @@ export class EICRExtractionSession {
   }
 
   /**
-   * Plan 04-20 r14-#3 — canonicalise any legacy circuit-field keys in
-   * `stateSnapshot.circuits`. Idempotent: running against already-canonical
-   * state is a no-op. Canonical-wins on mixed legacy+canonical buckets
-   * (legacy is dropped whether or not the canonical key already exists —
-   * canonical is authoritative).
+   * Plan 04-20 r14-#3 + Plan 04-23 r17-#1 — canonicalise any legacy
+   * circuit-field keys in `stateSnapshot.circuits` AND legacy field
+   * names in `stateSnapshot.pending_readings[]`. Idempotent: running
+   * against already-canonical state is a no-op. Canonical-wins on
+   * mixed legacy+canonical buckets (legacy is dropped whether or not
+   * the canonical key already exists — canonical is authoritative).
    *
    * Wired from `start()` AFTER `_seedStateFromJobState` so that:
    *   (a) live seeds (iOS → canonical via r13-#2) stay byte-identical —
    *       no legacy keys present → no-op for every bucket.
-   *   (b) pre-existing circuits (direct assignment in tests, restored
-   *       persisted state, future REST hydration) get normalised before
-   *       any serialisation or dispatcher read.
+   *   (b) pre-existing circuits + pending_readings (direct assignment
+   *       in tests, restored persisted state, future REST hydration)
+   *       get normalised before any serialisation or dispatcher read.
    *
    * The canonical rename map `LEGACY_TO_CANONICAL_CIRCUIT_KEYS` mirrors
-   * the 10 aliases r13-#2 canonicalised in the seed path — single source
-   * of truth for "what legacy vocabulary needs converting".
+   * the aliases r13-#2 canonicalised in the seed path (+ r16-#3
+   * extensions + r17-#2 extensions) — single source of truth for "what
+   * legacy vocabulary needs converting".
+   *
+   * Plan 04-23 r17-#1 — pending_readings leg. Codex r17 flagged that
+   * the r14-#3 pass walked ONLY circuits buckets, not pending_readings.
+   * r16-#2's two-point canonicalisation (write-time + serialise-time)
+   * does not help the in-memory dedup filter at
+   * `updateStateSnapshot`:1657 — that filter matches against the
+   * in-memory `.field`, so a hydrated legacy entry + a new canonical
+   * entry with the same value both survived. The r17-#1 extension
+   * canonicalises pending_readings in place AND dedups on
+   * (circuit, field) with rightmost-wins semantics matching the
+   * write-time filter (later entries are more recent).
    */
   _normaliseCircuitKeysToCanonical() {
+    // Leg 1 — circuits buckets (r14-#3).
     const circuits = this.stateSnapshot?.circuits;
-    if (!circuits) return;
-    for (const circuitId of Object.keys(circuits)) {
-      const bucket = circuits[circuitId];
-      if (!bucket || typeof bucket !== 'object') continue;
-      for (const [legacy, canonical] of Object.entries(LEGACY_TO_CANONICAL_CIRCUIT_KEYS)) {
-        if (!(legacy in bucket)) continue;
-        if (!(canonical in bucket)) {
-          bucket[canonical] = bucket[legacy];
+    if (circuits) {
+      for (const circuitId of Object.keys(circuits)) {
+        const bucket = circuits[circuitId];
+        if (!bucket || typeof bucket !== 'object') continue;
+        for (const [legacy, canonical] of Object.entries(LEGACY_TO_CANONICAL_CIRCUIT_KEYS)) {
+          if (!(legacy in bucket)) continue;
+          if (!(canonical in bucket)) {
+            bucket[canonical] = bucket[legacy];
+          }
+          // Canonical-wins: drop legacy whether or not canonical was
+          // already present. Prevents duplicate keys in the serialised
+          // JSON + WRAP_POLICY mis-classification (legacy `polarity`
+          // would otherwise fall through to the `user_derived` fail-safe
+          // default and get wrapped as user-derived text, contradicting
+          // r11-#2's TRUSTWORTHY marker for server-authored state).
+          delete bucket[legacy];
         }
-        // Canonical-wins: drop legacy whether or not canonical was
-        // already present. Prevents duplicate keys in the serialised
-        // JSON + WRAP_POLICY mis-classification (legacy `polarity`
-        // would otherwise fall through to the `user_derived` fail-safe
-        // default and get wrapped as user-derived text, contradicting
-        // r11-#2's TRUSTWORTHY marker for server-authored state).
-        delete bucket[legacy];
       }
+    }
+
+    // Leg 2 — pending_readings[] (r17-#1).
+    //
+    // Two-step: (a) canonicalise each entry's `.field` via the same
+    // map that drives the circuits loop; (b) rightmost-wins dedup on
+    // (circuit, field) keys so a hydrated legacy + canonical
+    // collision converges on a single entry with the later value.
+    //
+    // Matches the r16-#2 write-time filter semantics at
+    // updateStateSnapshot:1657 where the filter drops EARLIER
+    // matches on the (field, value) pair. Here we generalise to
+    // (circuit, field) because the hydration path can carry the
+    // same field against the same circuit with different values
+    // (e.g. a mid-record persisted snapshot).
+    const pending = this.stateSnapshot?.pending_readings;
+    if (Array.isArray(pending) && pending.length > 0) {
+      // (a) Canonicalise in place.
+      for (const entry of pending) {
+        if (entry && typeof entry === 'object' && typeof entry.field === 'string') {
+          const canonical = LEGACY_TO_CANONICAL_CIRCUIT_KEYS[entry.field];
+          if (canonical) entry.field = canonical;
+        }
+      }
+
+      // (b) Rightmost-wins dedup. Walk right to left; the first time
+      // we see a (circuit, field) key (= the rightmost occurrence)
+      // we keep the entry; subsequent leftward occurrences are
+      // dropped. Non-object / non-string-field entries skip the
+      // dedup key (fall through keeping their position) — malformed
+      // input is not silently merged.
+      const seenKeys = new Set();
+      const keptReversed = [];
+      for (let i = pending.length - 1; i >= 0; i--) {
+        const entry = pending[i];
+        if (!entry || typeof entry !== 'object' || typeof entry.field !== 'string') {
+          keptReversed.push(entry);
+          continue;
+        }
+        const circuitKey = entry.circuit == null ? '_' : String(entry.circuit);
+        const key = `${circuitKey}::${entry.field}`;
+        if (seenKeys.has(key)) continue; // earlier occurrence — drop.
+        seenKeys.add(key);
+        keptReversed.push(entry);
+      }
+      this.stateSnapshot.pending_readings = keptReversed.reverse();
     }
   }
 
