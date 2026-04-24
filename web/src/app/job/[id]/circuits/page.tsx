@@ -26,6 +26,8 @@ import {
 } from '@certmate/shared-utils';
 import { api } from '@/lib/api-client';
 import { useJobContext } from '@/lib/job-context';
+import { useCurrentUser } from '@/lib/use-current-user';
+import { useUserDefaults } from '@/hooks/use-user-defaults';
 import { ApiError } from '@/lib/types';
 import { applyCcuAnalysisToJob } from '@/lib/recording/apply-ccu-analysis';
 import { applyDocumentExtractionToJob } from '@/lib/recording/apply-document-extraction';
@@ -109,6 +111,15 @@ function readInitialView(): CircuitView {
 
 export default function CircuitsPage() {
   const { job, updateJob } = useJobContext();
+  // Phase 6 — thread user-scoped circuit-field defaults into
+  // `applyDefaultsToCircuits`. iOS reads these from `DefaultsService`;
+  // the web hook hydrates from IDB cache first (instant paint offline)
+  // then from the backend. When `user.id` is undefined (logged-out /
+  // still loading), `defaults` is an empty map and apply-defaults
+  // falls back to the schema-only path — identical to iOS when the
+  // inspector hasn't configured any user defaults yet.
+  const { user } = useCurrentUser();
+  const { defaults: userDefaults } = useUserDefaults(user?.id);
   const [expandedId, setExpandedId] = React.useState<string | null>(null);
   const [actionHint, setActionHint] = React.useState<string | null>(null);
   const [ccuBusy, setCcuBusy] = React.useState(false);
@@ -212,7 +223,9 @@ export default function CircuitsPage() {
    */
   const handleApplyDefaults = () => {
     const visibleIds = new Set(boardScoped.map((c) => c.id));
-    const { circuits: updatedVisible, summary } = applyDefaultsToCircuits(boardScoped);
+    const { circuits: updatedVisible, summary } = applyDefaultsToCircuits(boardScoped, {
+      userDefaults: userDefaults as Partial<Record<keyof Circuit, string>>,
+    });
     if (summary.filledFields === 0) {
       setActionHint('Apply Defaults — nothing to fill (all fields already set).');
       return;
