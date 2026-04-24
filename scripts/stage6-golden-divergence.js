@@ -147,11 +147,42 @@ export function normaliseExtractionResult(result) {
   const circuit_ops = (Array.isArray(src.circuit_updates) ? src.circuit_updates : [])
     .map((c) => normaliseCircuitOp(c))
     .filter(Boolean)
+    // Plan 04-13 r7-#3: widen the sort to cover the FULL canonical
+    // tuple. Mirrors the Plan 04-11 r5-#2 fix for observations:
+    // normaliseCircuitOp post-r5-#3 emits
+    // {action, circuit_ref, from_ref, designation, phase, rating_amps,
+    // cable_csa_mm2}, but the sort was still keyed on (action,
+    // circuit_ref) only. Two ops with identical primary tuple but
+    // differing metadata compared equal under the old sort → output
+    // order matched INPUT order, so callers doing deep-equal canonical
+    // comparisons would see false positives/negatives driven by
+    // emission order alone. Full-tuple sort makes the comparator
+    // order-invariant across input permutations.
+    //
+    // Ordering convention (nullable-last via compareNullableString /
+    // compareNullableScalar, matching r5-#2):
+    //   - circuit_ref: string/number tolerant, numbers compared
+    //     numerically when both are numbers (rare — fixtures tend to
+    //     use strings), string-compare otherwise.
+    //   - from_ref / designation / phase: string, case-preserving,
+    //     null sorts last.
+    //   - rating_amps / cable_csa_mm2: numeric, null sorts last.
     .sort((a, b) => {
       if (a.action !== b.action) return a.action.localeCompare(b.action);
-      const ac = String(a.circuit_ref ?? '');
-      const bc = String(b.circuit_ref ?? '');
-      return ac.localeCompare(bc);
+      const refCmp = compareNullableString(
+        a.circuit_ref == null ? null : String(a.circuit_ref),
+        b.circuit_ref == null ? null : String(b.circuit_ref),
+      );
+      if (refCmp !== 0) return refCmp;
+      const fromCmp = compareNullableString(a.from_ref, b.from_ref);
+      if (fromCmp !== 0) return fromCmp;
+      const desCmp = compareNullableString(a.designation, b.designation);
+      if (desCmp !== 0) return desCmp;
+      const phaCmp = compareNullableString(a.phase, b.phase);
+      if (phaCmp !== 0) return phaCmp;
+      const ratCmp = compareNullableScalar(a.rating_amps, b.rating_amps);
+      if (ratCmp !== 0) return ratCmp;
+      return compareNullableScalar(a.cable_csa_mm2, b.cable_csa_mm2);
     });
 
   const observations = (Array.isArray(src.observations) ? src.observations : [])
