@@ -351,4 +351,172 @@ describe('filterQuestionsAgainstFilledSlots', () => {
       expect(result).toHaveLength(1);
     });
   });
+
+  // --- (A) heard_value cross-reference — session 0952EC64 repro ---
+  //
+  // The null-field / circuit=-1 questions slip past the slot check but can
+  // be caught by searching the whole snapshot for the heard value. The
+  // three 0.13 questions in that session all match this pattern.
+
+  describe('heard_value cross-reference across snapshot (session 0952EC64)', () => {
+    test('drops null-field unclear question whose heard_value is stored elsewhere', () => {
+      // Q2 from the repro: Sonnet confused about 0.13, asks "Did you say
+      // 0.13 for a specific field or circuit?" while circuit.4.r1_plus_r2
+      // is already 0.13.
+      const snapshot = { circuits: { 4: { r1_plus_r2: 0.13 } } };
+      const questions = [
+        { type: 'unclear', field: null, circuit: -1, heard_value: '0.13' },
+      ];
+      const result = filterQuestionsAgainstFilledSlots(
+        questions,
+        snapshot,
+        new Set(),
+        sessionId
+      );
+      expect(result).toEqual([]);
+    });
+
+    test('drops circuit_disambiguation with sentinel circuit=-1 when value is stored', () => {
+      // Q4 from the repro — different type, same heard_value.
+      const snapshot = { circuits: { 4: { r1_plus_r2: 0.13 } } };
+      const questions = [
+        {
+          type: 'circuit_disambiguation',
+          field: 'r1_plus_r2',
+          circuit: -1,
+          heard_value: '0.13',
+        },
+      ];
+      const result = filterQuestionsAgainstFilledSlots(
+        questions,
+        snapshot,
+        new Set(),
+        sessionId
+      );
+      expect(result).toEqual([]);
+    });
+
+    test('normalises numeric forms: "0.130" heard_value matches 0.13 stored', () => {
+      // Value normalisation shared with QuestionGate — "0.130", "0.13",
+      // " 0.13 ohms" all collapse to the same canonical string.
+      const snapshot = { circuits: { 4: { r1_plus_r2: 0.13 } } };
+      const questions = [
+        { type: 'unclear', field: null, circuit: -1, heard_value: '0.130' },
+      ];
+      const result = filterQuestionsAgainstFilledSlots(
+        questions,
+        snapshot,
+        new Set(),
+        sessionId
+      );
+      expect(result).toEqual([]);
+    });
+
+    test('keeps question when heard_value is stored but same (field,circuit) was just resolved this turn', () => {
+      // Protects the same-turn "half a postcode" case for the heard_value
+      // path: Sonnet extracted a value this turn AND is asking a follow-up.
+      // The stored-location entry must be ignored if it's in thisTurn.
+      const snapshot = { circuits: { 4: { r1_plus_r2: 0.13 } } };
+      const questions = [
+        {
+          type: 'unclear',
+          field: 'r1_plus_r2',
+          circuit: -1,
+          heard_value: '0.13',
+        },
+      ];
+      const resolvedThisTurn = new Set(['r1_plus_r2:4']);
+      const result = filterQuestionsAgainstFilledSlots(
+        questions,
+        snapshot,
+        resolvedThisTurn,
+        sessionId
+      );
+      expect(result).toHaveLength(1);
+    });
+
+    test('keeps null-field question when heard_value is NOT stored anywhere', () => {
+      const snapshot = { circuits: { 4: { r1_plus_r2: 0.13 } } };
+      const questions = [
+        { type: 'unclear', field: null, circuit: -1, heard_value: '0.99' },
+      ];
+      const result = filterQuestionsAgainstFilledSlots(
+        questions,
+        snapshot,
+        new Set(),
+        sessionId
+      );
+      expect(result).toHaveLength(1);
+    });
+
+    test('keeps out_of_range warning even when heard_value is stored (non-refill type)', () => {
+      // Inspector said 9999 ohms, stored, warning arrives. Must survive.
+      const snapshot = { circuits: { 2: { zs: 9999 } } };
+      const questions = [
+        { type: 'out_of_range', field: 'zs', circuit: 2, heard_value: '9999' },
+      ];
+      const result = filterQuestionsAgainstFilledSlots(
+        questions,
+        snapshot,
+        new Set(),
+        sessionId
+      );
+      expect(result).toHaveLength(1);
+    });
+
+    test('keeps null-field question with no heard_value (filter can\'t help)', () => {
+      // Nothing to cross-reference on; falls through to existing orphan
+      // pass-through path. QuestionGate deals with it.
+      const snapshot = { circuits: { 4: { r1_plus_r2: 0.13 } } };
+      const questions = [
+        { type: 'unclear', field: null, circuit: -1, heard_value: null },
+      ];
+      const result = filterQuestionsAgainstFilledSlots(
+        questions,
+        snapshot,
+        new Set(),
+        sessionId
+      );
+      expect(result).toHaveLength(1);
+    });
+
+    test('preserves ">200" semantic prefix (not the same as "200")', () => {
+      // Upper-bounded IR reading. ">200" is a >-flagged reading, not a
+      // numeric 200; must NOT match.
+      const snapshot = { circuits: { 1: { insulation_resistance_l_e: 200 } } };
+      const questions = [
+        { type: 'unclear', field: null, circuit: -1, heard_value: '>200' },
+      ];
+      const result = filterQuestionsAgainstFilledSlots(
+        questions,
+        snapshot,
+        new Set(),
+        sessionId
+      );
+      expect(result).toHaveLength(1);
+    });
+
+    test('matches across different circuits (the "don\'t know where it goes" case)', () => {
+      // heard_value=0.13 on a question with circuit=-1 should match
+      // regardless of which circuit stores 0.13 — the point is that the
+      // value is already somewhere on the form.
+      const snapshot = {
+        circuits: {
+          1: { r1_plus_r2: 0.5 },
+          2: { zs: 0.13 }, // match here
+          4: { r1_plus_r2: 0.7 },
+        },
+      };
+      const questions = [
+        { type: 'orphaned', field: null, circuit: -1, heard_value: '0.13' },
+      ];
+      const result = filterQuestionsAgainstFilledSlots(
+        questions,
+        snapshot,
+        new Set(),
+        sessionId
+      );
+      expect(result).toEqual([]);
+    });
+  });
 });
