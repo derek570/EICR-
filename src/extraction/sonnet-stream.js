@@ -750,6 +750,16 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
             });
             break;
 
+          // Client app-level heartbeat — no-op on the server. The mere arrival
+          // of the message is what we want: it refreshes the AWS ALB idle_timeout
+          // (WebSocket PING frames alone did not — ALB tracks data-frame activity,
+          // not control frames), keeping the sonnet session alive through doze
+          // silences so the 5-min Anthropic prompt cache stays warm and the
+          // client doesn't reconnect-storm when the user resumes. Not logged
+          // per-message — would spam CloudWatch at one line every 25s.
+          case 'heartbeat':
+            break;
+
           default:
             ws.send(
               JSON.stringify({ type: 'error', message: `Unknown message type: ${msg.type}` })
