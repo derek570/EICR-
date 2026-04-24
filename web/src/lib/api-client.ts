@@ -818,4 +818,52 @@ export const api = {
   adminListCompanies(): Promise<CompanyLite[]> {
     return request<CompanyLite[]>('/api/admin/users/companies/list', {}, CompanyLiteListSchema);
   },
+
+  // ----------------------------------------------------------------
+  // PDF generation (Phase 2 parity)
+  // ----------------------------------------------------------------
+
+  /**
+   * Generate the final EICR/EIC PDF for a job. The backend
+   * (`src/routes/pdf.js:22`) collects the persisted job documents,
+   * pipes them through the Python ReportLab + Playwright renderer, and
+   * returns raw PDF bytes with:
+   *   - `Content-Type: application/pdf`
+   *   - `Content-Disposition: attachment; filename="EICR_<jobId>.pdf"`
+   *
+   * This cannot go through the typed `request()` helper because that
+   * path assumes a JSON (or empty) response body. We need the raw
+   * bytes as a `Blob` so the caller can hand them to an `<iframe>` /
+   * `navigator.share` / anchor-download without a round-trip through
+   * base64. Pattern mirrors `fetchPhotoBlob` above for the same
+   * reason.
+   *
+   * 500 responses use the backend's standard `{error: string}` JSON
+   * envelope — surface the message on `ApiError.message` so the PDF
+   * tab can render it in a red SectionCard. 403 is only possible when
+   * `userId` doesn't match the bearer token's subject; the PDF tab
+   * always sources `userId` from `getUser().id` so this only fires on
+   * a stale / swapped session — treat it as "please sign in again"
+   * via the existing ApiError.status check upstream.
+   *
+   * The backend budgets ~30s for render; we don't impose a client-side
+   * timeout because the default `fetch` has no timeout and the AWS
+   * ALB will 504 at 60s if the backend hangs. Callers can show the
+   * "generating…" overlay for the whole flight without worrying about
+   * a spurious abort.
+   */
+  async generatePdf(userId: string, jobId: string): Promise<Blob> {
+    const token = getToken();
+    const headers = new Headers();
+    if (token) headers.set('Authorization', `Bearer ${token}`);
+    const res = await fetch(
+      `${API_BASE_URL}/api/job/${encodeURIComponent(userId)}/${encodeURIComponent(jobId)}/generate-pdf`,
+      { method: 'POST', headers, credentials: 'include' }
+    );
+    if (!res.ok) {
+      const { message, body } = await parseErrorBody(res);
+      throw new ApiError(res.status, message, body);
+    }
+    return res.blob();
+  },
 };
