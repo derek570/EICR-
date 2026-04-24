@@ -1052,3 +1052,219 @@ describe('Group H — Plan 04-07 r1: runFixture oracle path (Codex MAJOR #3)', (
     expect(raw.expected_slot_writes).toBeDefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Group I — Plan 04-08 r2-#3: runFixture triple-comparison oracle path.
+//
+// WHY THIS GROUP EXISTS: Codex r2-#3 flagged that when sse_events_legacy
+// IS present, runFixture uses that as the legacy side and IGNORES any
+// expected_slot_writes oracle the fixture ships. Legacy + tool-call
+// could both be wrong the same way and pass 0% divergence because the
+// oracle is never consulted. r1's oracle path only catches the
+// Variant-B (tool-only) case.
+//
+// Fix: extend runFixture so the oracle ALWAYS runs when present, and
+// the fixture "passes" only if all applicable pairwise comparisons
+// agree. Four shapes, per the r2 plan:
+//   (A) legacy + tool + oracle → triple-compare (the critical case).
+//   (B) tool + oracle only → oracle path (r1 behaviour, unchanged).
+//   (C) legacy + tool (no oracle) → legacy-vs-tool only + warning
+//       breadcrumb encouraging oracle addition.
+//   (D) neither tool+oracle nor legacy+tool → throw (r1 behaviour).
+//
+// The triple-compare surfaces three divergence rates in the result:
+//   - legacy_vs_tool (the OLD metric, kept for backward-compat).
+//   - tool_vs_oracle (NEW — catches "tool-call silently wrong").
+//   - legacy_vs_oracle (NEW — catches "legacy drift from contract").
+// Any non-zero fires `diverged=true`.
+// ---------------------------------------------------------------------------
+
+describe('Group I — Plan 04-08 r2-#3: triple-comparison oracle path', () => {
+  const tmp = fssync.mkdtempSync(
+    path.join(fssync.realpathSync.native ? fssync.realpathSync.native('/tmp') : '/tmp', 'goldenY-'),
+  );
+
+  function writeFixture(name, body) {
+    const p = path.join(tmp, name);
+    fssync.writeFileSync(p, JSON.stringify(body, null, 2));
+    return p;
+  }
+
+  // Shared fixture-body factory. Takes optional `oracle` + `legacyValue`
+  // + `toolValue` to construct matching / mismatching variants for the
+  // three-way comparison tests.
+  function fixtureBody({ legacyValue, toolValue, oracleValue }) {
+    const base = {
+      _doc: 'r2-#3 triple-comparison test fixture',
+      pre_turn_state: {
+        snapshot: { circuits: {}, pending_readings: [], observations: [], validation_alerts: [] },
+        askedQuestions: [],
+        extractedObservations: [],
+      },
+      transcript: 'Zs on circuit three is nought point three five.',
+    };
+
+    if (legacyValue !== undefined) {
+      base.sse_events_legacy = [
+        { type: 'message_start', message: { id: 'msg_legacy', role: 'assistant', content: [] } },
+        {
+          type: 'content_block_start',
+          index: 0,
+          content_block: { type: 'tool_use', id: 'toolu_legacy', name: 'record_extraction', input: {} },
+        },
+        {
+          type: 'content_block_delta',
+          index: 0,
+          delta: {
+            type: 'input_json_delta',
+            partial_json: JSON.stringify({
+              extracted_readings: [
+                { circuit: 3, field: 'measured_zs_ohm', value: legacyValue },
+              ],
+              field_clears: [],
+              circuit_updates: [],
+              observations: [],
+              validation_alerts: [],
+              questions_for_user: [],
+              confirmations: [],
+            }),
+          },
+        },
+        { type: 'content_block_stop', index: 0 },
+        { type: 'message_delta', delta: { stop_reason: 'tool_use' } },
+        { type: 'message_stop' },
+      ];
+    }
+
+    if (toolValue !== undefined) {
+      base.sse_events_tool_call = [
+        { type: 'message_start', message: { id: 'msg_tool', role: 'assistant', content: [] } },
+        {
+          type: 'content_block_start',
+          index: 0,
+          content_block: { type: 'tool_use', id: 'toolu_tool', name: 'record_reading', input: {} },
+        },
+        {
+          type: 'content_block_delta',
+          index: 0,
+          delta: {
+            type: 'input_json_delta',
+            partial_json: JSON.stringify({
+              field: 'measured_zs_ohm',
+              circuit: 3,
+              value: toolValue,
+              confidence: 0.95,
+              source_turn_id: 't1',
+            }),
+          },
+        },
+        { type: 'content_block_stop', index: 0 },
+        { type: 'message_delta', delta: { stop_reason: 'tool_use' } },
+        { type: 'message_stop' },
+      ];
+    }
+
+    if (oracleValue !== undefined) {
+      base.expected_slot_writes = {
+        circuits: { 3: { measured_zs_ohm: oracleValue } },
+      };
+    }
+
+    return base;
+  }
+
+  test('r2-3a triple-compare PASS: legacy + tool + oracle all agree → diverged=false, all pairwise rates 0', async () => {
+    const p = writeFixture(
+      'triple-agree.json',
+      fixtureBody({ legacyValue: '0.35', toolValue: '0.35', oracleValue: '0.35' }),
+    );
+    const result = await runFixture(p);
+    expect(result).toBeDefined();
+    expect(result.divergence.diverged).toBe(false);
+    expect(result.divergence.call_divergence).toBe(0);
+    // New r2-#3 fields on the divergence object: pairwise rates.
+    expect(result.divergence).toHaveProperty('legacy_vs_tool_divergence');
+    expect(result.divergence).toHaveProperty('tool_vs_oracle_divergence');
+    expect(result.divergence).toHaveProperty('legacy_vs_oracle_divergence');
+    expect(result.divergence.legacy_vs_tool_divergence).toBe(0);
+    expect(result.divergence.tool_vs_oracle_divergence).toBe(0);
+    expect(result.divergence.legacy_vs_oracle_divergence).toBe(0);
+  });
+
+  test('r2-3b SYNTHETIC DISAGREEMENT: legacy + tool agree WITH EACH OTHER but disagree with oracle → diverged=true surfaced by oracle comparisons', async () => {
+    // This is the critical test that proves the oracle blocks the
+    // "both wrong the same way" failure mode r2-#3 calls out.
+    // legacy emits "0.71" and tool emits "0.71" — they agree with each
+    // other (legacy_vs_tool rate = 0) — but the oracle says the correct
+    // value is "0.35", so BOTH oracle comparisons must fire.
+    const p = writeFixture(
+      'triple-both-wrong-same-way.json',
+      fixtureBody({ legacyValue: '0.71', toolValue: '0.71', oracleValue: '0.35' }),
+    );
+    const result = await runFixture(p);
+    expect(result).toBeDefined();
+    // The critical assertion: legacy and tool AGREE with each other.
+    expect(result.divergence.legacy_vs_tool_divergence).toBe(0);
+    // But both fail against the oracle.
+    expect(result.divergence.tool_vs_oracle_divergence).toBeGreaterThan(0);
+    expect(result.divergence.legacy_vs_oracle_divergence).toBeGreaterThan(0);
+    // The OR of all three — diverged must fire because the oracle
+    // comparisons are non-zero even though legacy-vs-tool is zero.
+    expect(result.divergence.diverged).toBe(true);
+  });
+
+  test('r2-3c legacy + tool WITHOUT oracle → diverged=false (agree) + warning breadcrumb', async () => {
+    // Existing r1 Variant A behaviour preserved — agreement on legacy
+    // + tool reports 0 divergence — but the result should carry a
+    // warning that no oracle was consulted.
+    const p = writeFixture(
+      'legacy-tool-no-oracle.json',
+      fixtureBody({ legacyValue: '0.35', toolValue: '0.35' /* no oracleValue */ }),
+    );
+    const result = await runFixture(p);
+    expect(result).toBeDefined();
+    expect(result.divergence.diverged).toBe(false);
+    expect(result.divergence.legacy_vs_tool_divergence).toBe(0);
+    // Oracle rates absent (no oracle to compare against).
+    expect(result.divergence.tool_vs_oracle_divergence).toBeNull();
+    expect(result.divergence.legacy_vs_oracle_divergence).toBeNull();
+    // Warning breadcrumb on the result so the orchestrator / CI can
+    // surface "this fixture would be strengthened by an oracle".
+    expect(Array.isArray(result.warnings)).toBe(true);
+    expect(result.warnings.some((w) => /oracle/i.test(w))).toBe(true);
+  });
+
+  test('r2-3d triple-compare with tool disagreeing from BOTH legacy + oracle → all three non-zero', async () => {
+    // Tool diverges from legacy (which matches oracle) — standard
+    // "dispatcher bug" signature. All three pairwise comparisons
+    // should surface: legacy_vs_tool > 0, tool_vs_oracle > 0,
+    // legacy_vs_oracle = 0 (legacy + oracle agree).
+    const p = writeFixture(
+      'triple-tool-only-wrong.json',
+      fixtureBody({ legacyValue: '0.35', toolValue: '0.99', oracleValue: '0.35' }),
+    );
+    const result = await runFixture(p);
+    expect(result).toBeDefined();
+    expect(result.divergence.diverged).toBe(true);
+    expect(result.divergence.legacy_vs_tool_divergence).toBeGreaterThan(0);
+    expect(result.divergence.tool_vs_oracle_divergence).toBeGreaterThan(0);
+    expect(result.divergence.legacy_vs_oracle_divergence).toBe(0);
+  });
+
+  test('r2-3e runDirectory on the real 5 goldens + F21934D4 — triple-compare clean on every fixture', async () => {
+    // After r2-#3, every fixture with sse_events_legacy + tool_call +
+    // expected_slot_writes should produce three-way clean (all three
+    // pairwise rates = 0). This locks the claim that the oracle is
+    // consulted on the 5 Variant-A goldens, not just the F21934D4
+    // Variant-B fixture. If any golden's oracle disagrees with its
+    // hand-crafted SSE, this test surfaces the fixture bug BEFORE
+    // r2 is declared done.
+    const report = await runDirectory(FIXTURE_DIR, { extraFixtures: [F21934D4_PATH] });
+    for (const s of report.sessions) {
+      expect(s.divergence.legacy_vs_tool_divergence).toBe(0);
+      // tool_vs_oracle must be present (every fixture in the set has
+      // an oracle) and 0.
+      expect(s.divergence.tool_vs_oracle_divergence).toBe(0);
+    }
+  });
+});
