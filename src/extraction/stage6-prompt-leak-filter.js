@@ -166,6 +166,124 @@ const LENGTH_CEILING = {
 };
 
 /**
+ * Plan 04-29 r22-#1 — positive regulation-shape allowlist.
+ *
+ * WHY: the r21-#1 `observation_regulation` field class added a
+ * 60-char length ceiling but NO positive shape validation. A
+ * 50-char English paraphrase of the prompt like "The system says
+ * sockets must be GFCI protected" passes every existing detector:
+ *   - no markers / requirement-IDs / structural phrases
+ *   - no example markers adjacent to tool keywords
+ *   - no reversed markers
+ *   - no base64/hex entropy chunks
+ *   - low-alpha guard deliberately NOT applied to this field
+ *     (real regulation refs are numeric-heavy — "411.3.3" is 0%
+ *     alpha, applying a 0.4/0.6 bar would destroy real content)
+ *   - 46 chars < 60-char ceiling
+ *
+ * The content is genuinely anomalous for a `suggested_regulation`
+ * field — real regulation references have highly constrained
+ * shapes. A positive allowlist of known shapes rejects narrative
+ * English while accepting every legitimate reference an inspector
+ * might dictate.
+ *
+ * Shape inventory (from grepping config/prompts/ + src/__tests__/):
+ *   1. Bare numeric sections:
+ *        "132.15", "411.3.3", "522.6.201", "411.3.1.1"
+ *        "722.411.4.1" (4 components), "534.4.4.5" (4 components)
+ *        "701.411.3.3" (4 components, still a real ref)
+ *   2. "Regulation <num>":
+ *        "Regulation 522.6.201", "Regulation 411.3.3"
+ *   3. "Reg <num>" (common dictation shorthand):
+ *        "Reg 411.3.3"
+ *   4. Bare BS series:
+ *        "BS 7671", "BS 3871", "BS 3036", "BS 1361"
+ *   5. BS hyphen-section series:
+ *        "BS 88-2", "BS 88-3"
+ *   6. "BS <num> <numeric section>":
+ *        "BS 7671 643.3.2", "BS 7671 411.3.3"
+ *   7. "BS <num> <modifier> <section>":
+ *        modifier in {Table, Part, Section, Chapter, Annex,
+ *        Appendix, Figure, Regulation}
+ *        "BS 7671 Table 41.1", "BS 7671 Appendix 4",
+ *        "BS 7671 Section 706", "BS 7671 Part 6"
+ *   8. BS EN series (with up to 3 hyphenated section numbers):
+ *        "BS EN 61008-1", "BS EN 60898-1", "BS EN 60335-2-73",
+ *        "BS EN 61558-2-5", "BS EN 61643-11"
+ *   9. IET / HSE guidance:
+ *        "IET Guidance", "IET Guidance Note 3",
+ *        "IET Guidance Note 3.2", "HSE Guidance Note 5"
+ *
+ * WHY anchored patterns (`^...$`): the field holds a pure
+ * reference, not a sentence. A narrative like "Regulation 411.3.3
+ * is breached by..." belongs in `observation_text`, not
+ * `suggested_regulation`. Anchoring enforces the schema.
+ *
+ * WHY gate fires LAST in the detector chain: when content fails
+ * BOTH the shape check AND an existing detector (marker, phrase,
+ * entropy, length-ceiling), the earlier detector's telemetry is
+ * sharper. An over-length alpha run should emit `length-
+ * suspicious:…`, not the coarser `non-regulation-shape`. The gate
+ * sits immediately before the final `safe:true` return so it only
+ * fires when nothing else would have caught the content.
+ *
+ * FP guard: 26 real regulation references in Task 2 RED corpus,
+ * plus the 10 existing Group 9 samples = 36 unique real refs.
+ * All accept under the 9 patterns below.
+ */
+const REGULATION_SHAPE_PATTERNS = [
+  // Bare numeric: 132.15, 411.3.3, 701.411.3.3, 522.6.201a.
+  // Up to 5 dot-separated numeric components, optional single
+  // trailing lowercase letter (legacy variant suffix).
+  /^\d{1,4}(\.\d{1,3}){1,4}[a-z]?$/,
+
+  // "Regulation <numeric>" or "Reg <numeric>".
+  /^Reg(ulation)?\s+\d{1,4}(\.\d{1,3}){0,4}[a-z]?$/i,
+
+  // Bare BS series: "BS 7671", "BS 3871", "BS 3036".
+  /^BS\s+\d{1,5}$/i,
+
+  // BS hyphen series: "BS 88-2", "BS 88-3".
+  /^BS\s+\d{1,5}(-\d{1,3}){1,3}$/i,
+
+  // "BS <num> <modifier> <section>". Modifier set covers every
+  // BS 7671 subdivision keyword seen in prompts + tests; section
+  // is numeric (with up to 3 dot components) or a single uppercase
+  // letter (e.g. "Annex A").
+  /^BS\s+\d{1,5}\s+(Table|Part|Section|Chapter|Annex|Appendix|Figure|Regulation)\s+(\d{1,4}(\.\d{1,3}){0,3}|[A-Z])$/i,
+
+  // "BS <num> <numeric section>": "BS 7671 522.6.201".
+  /^BS\s+\d{1,5}\s+\d{1,4}(\.\d{1,3}){0,4}[a-z]?$/i,
+
+  // BS EN series: "BS EN 61008-1", "BS EN 60335-2-73".
+  /^BS\s+EN\s+\d{1,5}(-\d{1,3}){0,3}$/i,
+
+  // IET / HSE Guidance (+ optional "Note <num>").
+  /^IET\s+Guidance(\s+Note(\s+\d{1,3}(\.\d{1,3}){0,2})?)?$/i,
+  /^HSE\s+Guidance(\s+Note(\s+\d{1,3}(\.\d{1,3}){0,2})?)?$/i,
+];
+
+/**
+ * Returns true if `text` matches at least one
+ * REGULATION_SHAPE_PATTERNS entry, OR if `text` is empty/whitespace-
+ * only (a null regulation reference is legitimate — the tool schema
+ * explicitly allows `suggested_regulation: null` when the model
+ * can't reliably cite one).
+ *
+ * @param {string} text
+ * @returns {boolean}
+ */
+function looksLikeRegulationRef(text) {
+  if (typeof text !== 'string') return true;
+  const trimmed = text.trim();
+  if (trimmed.length === 0) return true;
+  for (const re of REGULATION_SHAPE_PATTERNS) {
+    if (re.test(trimmed)) return true;
+  }
+  return false;
+}
+
+/**
  * Plan 04-27 r20-#3 — high-entropy substring detection.
  *
  * Regex captures contiguous base64 or hex blobs of at least 40
@@ -388,6 +506,23 @@ export function checkForPromptLeak(text, opts = {}) {
   const ceiling = LENGTH_CEILING[field];
   if (ceiling && text.length > ceiling) {
     return makeUnsafe(field, `length-suspicious:${text.length}>${ceiling}`);
+  }
+
+  // Family 9 — r22-#1 positive shape gate for observation_regulation.
+  //
+  // Placed LAST in the chain so sharper telemetry from earlier
+  // families (marker / requirement-id / phrase / example / reversed
+  // / entropy / low-alpha / length) takes precedence. When a
+  // regulation-field value falls through every other check, the
+  // shape gate rejects any non-regulation-shaped content —
+  // narrative English paraphrases of the prompt that would
+  // otherwise slip past the 60-char ceiling.
+  //
+  // Empty / whitespace-only text is explicitly safe (the tool
+  // schema allows `suggested_regulation: null`; an empty string is
+  // the JSON-serialised form of that null for some code paths).
+  if (field === 'observation_regulation' && !looksLikeRegulationRef(text)) {
+    return makeUnsafe(field, 'non-regulation-shape');
   }
 
   return { safe: true };

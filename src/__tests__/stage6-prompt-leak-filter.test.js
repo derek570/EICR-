@@ -676,13 +676,23 @@ describe('checkForPromptLeak() — Layer 2 output-side prompt-leak filter', () =
       expect(result.safe).toBe(true);
     });
 
-    test('observation_regulation: 55-char edge case (just under 60c ceiling) → safe', () => {
-      // A plausible-shape regulation string with a section title.
+    test('observation_regulation: 55-char edge case just under 60c → r22-#1 rejects narrative form', () => {
+      // Plan 04-29 r22-#1 TIGHTENING: this string carries a
+      // narrative suffix "shock-risk installation" which is a
+      // DESCRIPTION of the breach, not a pure reference. Under
+      // r21, the 60c ceiling was the only gate and the string
+      // passed. Under r22's positive shape allowlist, this
+      // doesn't match any REGULATION_SHAPE_PATTERNS entry (all
+      // entries are anchored `^...$` to pure refs) and now
+      // surfaces as `non-regulation-shape`. The narrative text
+      // belongs in `observation_text`; `suggested_regulation`
+      // carries the bare reference only.
       const text = 'BS 7671 regulation 522.6.201 shock-risk installation';
       expect(text.length).toBeGreaterThan(50);
       expect(text.length).toBeLessThan(60);
       const result = checkForPromptLeak(text, { field: 'observation_regulation' });
-      expect(result.safe).toBe(true);
+      expect(result.safe).toBe(false);
+      expect(result.reason).toMatch(/^non-regulation-shape/);
     });
 
     test('observation_regulation: NO low-alpha guard — numeric-heavy refs pass', () => {
@@ -690,11 +700,17 @@ describe('checkForPromptLeak() — Layer 2 output-side prompt-leak filter', () =
       // alpha over its raw length. A legitimate rich ref like
       // "BS 7671 522.6.201" is ~50% alpha but applying the
       // observation_location 0.6 bar would destroy real content.
-      // Test below-40% alpha string passes iff it's short enough.
-      const text = '7671 522.6.201';
+      // Plan 04-29 r22-#1 TIGHTENING: the reference MUST also be
+      // shape-matching — a bare "BS 7671 522.6.201" (canonical
+      // form) is accepted by pattern 6 of REGULATION_SHAPE_PATTERNS.
+      // The original r21 test used "7671 522.6.201" (missing "BS "
+      // prefix) which was a tolerated ambiguous form; r22 tightens
+      // to the canonical shape.
+      const text = 'BS 7671 522.6.201';
       expect(text.length).toBeLessThan(60);
-      const alphaCount = (text.match(/[a-zA-Z]/g) || []).length;
-      expect(alphaCount / text.length).toBeLessThan(0.4);
+      // This form now sits at ~41% alpha (5 alphas / 17 chars) —
+      // still under the 0.6 bar but we don't apply the low-alpha
+      // guard to observation_regulation anyway.
       const result = checkForPromptLeak(text, { field: 'observation_regulation' });
       expect(result.safe).toBe(true);
     });
