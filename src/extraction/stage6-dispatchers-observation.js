@@ -52,7 +52,7 @@ import {
   validateDeleteObservation,
 } from './stage6-dispatch-validation.js';
 import { logToolCall } from './stage6-dispatcher-logger.js';
-import { checkForPromptLeak } from './stage6-prompt-leak-filter.js';
+import { checkForPromptLeak, hashPayload } from './stage6-prompt-leak-filter.js';
 
 function envelope(tool_use_id, body, is_error) {
   return { tool_use_id, content: JSON.stringify(body), is_error };
@@ -139,17 +139,27 @@ export async function dispatchRecordObservation(call, ctx) {
   if (offendingLeaks.length > 0) {
     const offendingFieldNames = offendingLeaks.map((entry) => entry.field);
     const primary = offendingLeaks[0];
+    // r20-#2 redacted telemetry: filter_reason + fields[] +
+    // offending_field_lengths{} + per-field hashes. No content
+    // substrings. The first offender's reason is the canonical
+    // `filter_reason` — the analyzer can still cross-correlate
+    // per-field reasons via the offending_field_hashes map.
+    const offendingFieldHashes = offendingLeaks.reduce((acc, entry) => {
+      acc[entry.field] = hashPayload(input[entry.field]);
+      return acc;
+    }, {});
     logger.warn('stage6.prompt_leak_blocked', {
       tool: 'record_observation',
       tool_call_id: call.tool_call_id,
       sessionId: session.sessionId,
       turnId,
-      reason: primary.reason,
+      filter_reason: primary.reason,
       fields: offendingFieldNames,
       offending_field_lengths: offendingLeaks.reduce((acc, entry) => {
         acc[entry.field] = entry.length;
         return acc;
       }, {}),
+      offending_field_hashes: offendingFieldHashes,
     });
     logToolCall(logger, {
       ...baseLogRow,

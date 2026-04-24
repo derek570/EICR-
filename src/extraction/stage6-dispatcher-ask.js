@@ -94,7 +94,7 @@
 
 import { validateAskUser } from './stage6-dispatch-validation.js';
 import { logAskUser } from './stage6-dispatcher-logger.js';
-import { checkForPromptLeak } from './stage6-prompt-leak-filter.js';
+import { checkForPromptLeak, hashPayload } from './stage6-prompt-leak-filter.js';
 
 /**
  * STA-03 — exported so test override and Phase 5 tuning have a single knob.
@@ -164,13 +164,20 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws) {
     // precedence.
     const leak = checkForPromptLeak(input.question, { field: 'question' });
     if (!leak.safe) {
+      // Plan 04-27 r20-#2: redacted telemetry — the log carries a
+      // hash + length of the blocked payload, NEVER any substring.
+      // The raw `input.question` content would otherwise land in
+      // CloudWatch, defeating the defence.
+      const rawQuestion = typeof input.question === 'string' ? input.question : '';
       logger.warn('stage6.prompt_leak_blocked', {
         tool: 'ask_user',
         tool_call_id: toolCallId,
         sessionId,
         turnId,
-        reason: leak.reason,
-        sanitised_sample: typeof input.question === 'string' ? input.question.slice(0, 80) : '',
+        filter_reason: leak.reason,
+        field: 'question',
+        length: rawQuestion.length,
+        hash: hashPayload(rawQuestion),
       });
       logAskUser(logger, {
         sessionId,

@@ -58,7 +58,7 @@ import {
   validateRenameCircuit,
 } from './stage6-dispatch-validation.js';
 import { logToolCall } from './stage6-dispatcher-logger.js';
-import { checkForPromptLeak } from './stage6-prompt-leak-filter.js';
+import { checkForPromptLeak, hashPayload } from './stage6-prompt-leak-filter.js';
 
 /**
  * Format a dispatcher return envelope. `content` is JSON-stringified here so
@@ -253,13 +253,16 @@ export async function dispatchCreateCircuit(call, ctx) {
   if (typeof input.designation === 'string' && input.designation.length > 0) {
     const desLeak = checkForPromptLeak(input.designation, { field: 'designation' });
     if (!desLeak.safe) {
+      // r20-#2 redacted telemetry.
       logger.warn('stage6.prompt_leak_blocked', {
         tool: 'create_circuit',
         tool_call_id: call.tool_call_id,
         sessionId: session.sessionId,
         turnId,
-        reason: desLeak.reason,
-        sanitised_sample: input.designation.slice(0, 80),
+        filter_reason: desLeak.reason,
+        field: 'designation',
+        length: input.designation.length,
+        hash: hashPayload(input.designation),
       });
       logToolCall(logger, {
         sessionId: session.sessionId,
@@ -363,13 +366,16 @@ export async function dispatchRenameCircuit(call, ctx) {
   if (typeof input.designation === 'string' && input.designation.length > 0) {
     const desLeak = checkForPromptLeak(input.designation, { field: 'designation' });
     if (!desLeak.safe) {
+      // r20-#2 redacted telemetry.
       logger.warn('stage6.prompt_leak_blocked', {
         tool: 'rename_circuit',
         tool_call_id: call.tool_call_id,
         sessionId: session.sessionId,
         turnId,
-        reason: desLeak.reason,
-        sanitised_sample: input.designation.slice(0, 80),
+        filter_reason: desLeak.reason,
+        field: 'designation',
+        length: input.designation.length,
+        hash: hashPayload(input.designation),
       });
       logToolCall(logger, {
         sessionId: session.sessionId,

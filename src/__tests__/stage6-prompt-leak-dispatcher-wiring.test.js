@@ -148,8 +148,9 @@ describe('Layer 2 wiring — ask_user.question', () => {
         tool_call_id: 'toolu_leak_1',
       })
     );
-    expect(typeof blockedRow[1].reason).toBe('string');
-    expect(blockedRow[1].reason).toMatch(/^marker:/);
+    // r20-#2: telemetry shape switched `reason` → `filter_reason`.
+    expect(typeof blockedRow[1].filter_reason).toBe('string');
+    expect(blockedRow[1].filter_reason).toMatch(/^marker:/);
 
     // Also: an ask_user log row with answer_outcome='prompt_leak_blocked'
     // (so the Phase 8 analyzer sees the ask was attempted).

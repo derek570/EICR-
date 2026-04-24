@@ -1,3 +1,5 @@
+import crypto from 'node:crypto';
+
 /**
  * Stage 6 Phase 4 Plan 04-26 — Layer 2 output-side prompt-leak filter.
  *
@@ -62,14 +64,19 @@
  * Exact-match banned markers (case-insensitive substring).
  * Must mirror the banned-literals enumeration in the prompt's
  * CONFIDENTIALITY section.
+ *
+ * r20-#2: each entry carries a STABLE ID tag that goes into
+ * `filter_reason` on the blocked log row. The raw marker string
+ * is NEVER logged — only the tag is — so CloudWatch never sees
+ * the actual banned content.
  */
 const MARKER_STRINGS = [
-  'TRUST BOUNDARY',
-  'SNAPSHOT TRUST BOUNDARY',
-  '<<<USER_TEXT>>>',
-  '<<<END_USER_TEXT>>>',
-  'SYSTEM_CHANNEL',
-  'USER_CHANNEL',
+  { id: 'trust-boundary', value: 'TRUST BOUNDARY' },
+  { id: 'snapshot-trust-boundary', value: 'SNAPSHOT TRUST BOUNDARY' },
+  { id: 'user-text-open', value: '<<<USER_TEXT>>>' },
+  { id: 'user-text-close', value: '<<<END_USER_TEXT>>>' },
+  { id: 'system-channel', value: 'SYSTEM_CHANNEL' },
+  { id: 'user-channel', value: 'USER_CHANNEL' },
 ];
 
 /**
@@ -96,13 +103,17 @@ const REQUIREMENT_PATTERNS = [
  * Structural prompt phrases — exact or near-exact sentence
  * fragments from the prompt's own voice. Case-insensitive
  * substring match.
+ *
+ * r20-#2: stable IDs so the filter_reason log field never
+ * carries the prompt's own wording. The phrase values stay
+ * inline for matching; only the ID goes into telemetry.
  */
 const STRUCTURAL_PHRASES = [
-  'You are an EICR inspection assistant',
-  'You have 7 tools',
-  'Do not emit free-text JSON',
-  'Prefer silent writes',
-  'Corrections are writes',
+  { id: 'assistant-intro', value: 'You are an EICR inspection assistant' },
+  { id: 'seven-tools', value: 'You have 7 tools' },
+  { id: 'no-free-text-json', value: 'Do not emit free-text JSON' },
+  { id: 'silent-writes', value: 'Prefer silent writes' },
+  { id: 'corrections-are-writes', value: 'Corrections are writes' },
 ];
 
 /**
@@ -160,24 +171,27 @@ export function checkForPromptLeak(text, opts = {}) {
 
   const lower = text.toLowerCase();
 
-  // Family 1 — marker strings.
+  // Family 1 — marker strings (stable IDs in filter_reason, r20-#2).
   for (const marker of MARKER_STRINGS) {
-    if (lower.includes(marker.toLowerCase())) {
-      return makeUnsafe(field, `marker:${marker}`);
+    if (lower.includes(marker.value.toLowerCase())) {
+      return makeUnsafe(field, `marker:${marker.id}`);
     }
   }
 
-  // Family 2 — requirement IDs.
+  // Family 2 — requirement IDs. The regex source (e.g. `STQ-0\d`) is
+  // structural metadata identifying WHICH requirement namespace was
+  // matched; it's not user-supplied content. Kept as-is for analyzer
+  // routing.
   for (const re of REQUIREMENT_PATTERNS) {
     if (re.test(text)) {
       return makeUnsafe(field, `req-id:${re.source}`);
     }
   }
 
-  // Family 3 — structural phrases.
+  // Family 3 — structural phrases (stable IDs in filter_reason, r20-#2).
   for (const phrase of STRUCTURAL_PHRASES) {
-    if (lower.includes(phrase.toLowerCase())) {
-      return makeUnsafe(field, `phrase:${phrase}`);
+    if (lower.includes(phrase.value.toLowerCase())) {
+      return makeUnsafe(field, `phrase:${phrase.id}`);
     }
   }
 
@@ -219,4 +233,38 @@ function makeUnsafe(field, reason) {
     reason,
     sanitised,
   };
+}
+
+/**
+ * Plan 04-27 r20-#2 — structured-telemetry hash helper.
+ *
+ * Returns the first 16 hex chars of SHA-256 over the input string.
+ * Used by every prompt_leak_blocked emission to correlate repeated
+ * leak attempts in logs WITHOUT ever exposing a substring of the
+ * blocked content.
+ *
+ * WHY SHA-256:
+ *   - Cryptographic stability: same payload → same hash, always. The
+ *     analyzer can count repeated attack payloads across sessions
+ *     without reading any content.
+ *   - Collision resistance: different payloads → different hashes.
+ *   - Non-reversible: an ops engineer reading the log cannot
+ *     reconstruct the prompt disclosure that triggered the block.
+ *
+ * WHY 16 hex chars (64 bits):
+ *   - Enough uniqueness for correlation (no practical collisions
+ *     across a session log volume).
+ *   - Short enough not to dominate the log row size.
+ *
+ * Defensive shape: returns `null` for non-strings / empty strings so
+ * callers don't have to guard — the filter never throws on unexpected
+ * input.
+ *
+ * @param {any} text
+ * @returns {string|null} 16-char lowercase hex, or null if input is
+ *                        not a non-empty string.
+ */
+export function hashPayload(text) {
+  if (typeof text !== 'string' || text.length === 0) return null;
+  return crypto.createHash('sha256').update(text).digest('hex').slice(0, 16);
 }
