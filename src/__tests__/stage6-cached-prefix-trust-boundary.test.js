@@ -2174,6 +2174,173 @@ describe('Plan 04-22 r16-#3 — FIELD_ID_MAP canonical completion (4 remaining k
 });
 
 /**
+ * Plan 04-23 r17-#2 — FIELD_ID_MAP canonical completion (final 2 keys).
+ *
+ * Codex r17 (re-review after r16 close) flagged that r16-#3 renamed
+ * 4 of the 6 remaining legacy FIELD_ID_MAP keys (ocpd_rating,
+ * ocpd_breaking_capacity, ir_test_voltage, max_disconnect_time) but
+ * deferred `cable_size` + `cable_size_earth` with a "not in drift
+ * report" rationale. Codex r17 disagrees — `config/field_schema.json`
+ * exposes canonical names `live_csa_mm2` (line 52) + `cpc_csa_mm2`
+ * (line 67); any hydrated state from a future producer path drifts
+ * the same way the other 4 did. r16-#3's deferral rationale was the
+ * exact rationale r15-#2 rejected for the other 4 — applying it to
+ * these 2 re-opens the same hole.
+ *
+ * The r17-#2 fix:
+ *   (a) Rename the 2 FIELD_ID_MAP keys to canonical. Compact ids
+ *       (5, 6) stay identical so on-wire snapshot layout is byte-
+ *       compatible — anything consuming id 5 still finds the live
+ *       CSA value at id 5 regardless of which alias the producer
+ *       wrote it under.
+ *   (b) Extend LEGACY_TO_CANONICAL_CIRCUIT_KEYS with the 2 new
+ *       legacy→canonical entries. Hydration normalisation
+ *       (_normaliseCircuitKeysToCanonical) picks them up
+ *       automatically via the shared map iteration (same pattern
+ *       r14-#3 + r16-#3 used).
+ *   (c) Extend WRAP_POLICY with the 2 canonical entries as
+ *       server_canonical (numeric mm² values, not user-derived).
+ *
+ * Canonical names verified against `config/field_schema.json`:
+ *   - live_csa_mm2 (line 52) — Live conductor CSA in mm² (closed set:
+ *     1.0 / 1.5 / 2.5 / 4.0 / 6.0 / 10.0 / 16.0 typical domestic).
+ *   - cpc_csa_mm2 (line 67) — Circuit protective conductor CSA in
+ *     mm² (closed set: usually a pair-match to live CSA per
+ *     BS 7671 Table 54.7).
+ *
+ * Six tests:
+ *   r17-2a — hydration: legacy `cable_size` → canonical `live_csa_mm2`.
+ *   r17-2b — hydration: legacy `cable_size_earth` → canonical `cpc_csa_mm2`.
+ *   r17-2c — mixed legacy + canonical → canonical value wins, legacy dropped.
+ *   r17-2d — canonical compact id: seed canonical `live_csa_mm2` → snapshot
+ *            emits compact id 5 (unchanged from pre-r17).
+ *   r17-2e — canonical compact id: `cpc_csa_mm2` → compact id 6 (unchanged).
+ *   r17-2f — multi-key end-to-end: both legacy aliases on one circuit
+ *            hydrate to canonical with zero leakage (parallel to r16-3f).
+ */
+describe('Plan 04-23 r17-#2 — FIELD_ID_MAP canonical completion (cable_size + cable_size_earth)', () => {
+  beforeEach(() => mockCreate.mockReset());
+
+  test('r17-2a — hydration: pre-existing legacy `cable_size` lands on canonical `live_csa_mm2`', () => {
+    // Drives _normaliseCircuitKeysToCanonical via start(). Mirrors
+    // r16-3a/b/c/d pattern for the 2 r17-#2 additions to
+    // LEGACY_TO_CANONICAL_CIRCUIT_KEYS. Canonical name from
+    // config/field_schema.json:52.
+    const session = new EICRExtractionSession('k', 'sess-r17-2a', 'eicr', {
+      toolCallsMode: 'shadow',
+    });
+    session.stateSnapshot.circuits[1] = { cable_size: 2.5 };
+    session.start();
+
+    const bucket = session.stateSnapshot.circuits[1];
+    expect(bucket).toHaveProperty('live_csa_mm2', 2.5);
+    expect(bucket).not.toHaveProperty('cable_size');
+  });
+
+  test('r17-2b — hydration: pre-existing legacy `cable_size_earth` lands on canonical `cpc_csa_mm2`', () => {
+    // Canonical name from config/field_schema.json:67.
+    const session = new EICRExtractionSession('k', 'sess-r17-2b', 'eicr', {
+      toolCallsMode: 'shadow',
+    });
+    session.stateSnapshot.circuits[1] = { cable_size_earth: 1.5 };
+    session.start();
+
+    const bucket = session.stateSnapshot.circuits[1];
+    expect(bucket).toHaveProperty('cpc_csa_mm2', 1.5);
+    expect(bucket).not.toHaveProperty('cable_size_earth');
+  });
+
+  test('r17-2c — mixed legacy + canonical → canonical value wins, legacy dropped', () => {
+    // If both keys are present, canonical is authoritative (matches
+    // r13-#2's contract that canonical is the source of truth). The
+    // legacy key is discarded rather than overwriting the canonical
+    // value. Parallel to r14-3b.
+    const session = new EICRExtractionSession('k', 'sess-r17-2c', 'eicr', {
+      toolCallsMode: 'shadow',
+    });
+    session.stateSnapshot.circuits[1] = {
+      cable_size: 'legacy-value',
+      live_csa_mm2: 'canonical-value',
+    };
+    session.start();
+
+    const bucket = session.stateSnapshot.circuits[1];
+    expect(bucket).toHaveProperty('live_csa_mm2', 'canonical-value');
+    expect(bucket).not.toHaveProperty('cable_size');
+  });
+
+  test('r17-2d — canonical compact id: seed canonical `live_csa_mm2` → snapshot emits compact id 5 (unchanged from pre-r17)', () => {
+    // Locks that the FIELD_ID_MAP rename PRESERVED compact id 5.
+    // On-wire snapshot bytes for id 5 must stay identical so any
+    // existing fixture / golden-divergence test that asserts on
+    // id 5 continues to pass. Mirrors r16-3e pattern.
+    const session = new EICRExtractionSession('k', 'sess-r17-2d', 'eicr', {
+      toolCallsMode: 'shadow',
+    });
+    session.stateSnapshot.circuits[1] = { live_csa_mm2: 2.5 };
+    session.recentCircuitOrder = [1];
+    session.start();
+
+    const blocks = session.buildSystemBlocks();
+    const snapshotText = blocks[1].text;
+    const extractedBlockMatch = snapshotText.match(/EXTRACTED \(field IDs[\s\S]*$/);
+    expect(extractedBlockMatch).not.toBeNull();
+    const extractedBlock = extractedBlockMatch[0];
+
+    // Compact id 5 carries the canonical cable-size value.
+    expect(extractedBlock).toMatch(/"5"\s*:\s*2\.5/);
+    // Canonical + legacy key names do NOT leak as object keys
+    // (compacted serialisation uses ids, not names).
+    expect(extractedBlock).not.toMatch(/"live_csa_mm2"\s*:/);
+    expect(extractedBlock).not.toMatch(/"cable_size"\s*:/);
+  });
+
+  test('r17-2e — canonical compact id: seed canonical `cpc_csa_mm2` → snapshot emits compact id 6 (unchanged from pre-r17)', () => {
+    // Parallel to r17-2d for the earth/CPC cable size. Compact id 6
+    // preserved across the rename.
+    const session = new EICRExtractionSession('k', 'sess-r17-2e', 'eicr', {
+      toolCallsMode: 'shadow',
+    });
+    session.stateSnapshot.circuits[1] = { cpc_csa_mm2: 1.5 };
+    session.recentCircuitOrder = [1];
+    session.start();
+
+    const blocks = session.buildSystemBlocks();
+    const snapshotText = blocks[1].text;
+    const extractedBlockMatch = snapshotText.match(/EXTRACTED \(field IDs[\s\S]*$/);
+    expect(extractedBlockMatch).not.toBeNull();
+    const extractedBlock = extractedBlockMatch[0];
+
+    expect(extractedBlock).toMatch(/"6"\s*:\s*1\.5/);
+    expect(extractedBlock).not.toMatch(/"cpc_csa_mm2"\s*:/);
+    expect(extractedBlock).not.toMatch(/"cable_size_earth"\s*:/);
+  });
+
+  test('r17-2f — multi-key end-to-end: both legacy aliases on one circuit hydrate to canonical with zero leakage', () => {
+    // Mirrors r16-3f pattern for the 2 r17-#2 additions. Drives the
+    // simultaneous-presence branch of _normaliseCircuitKeysToCanonical.
+    const session = new EICRExtractionSession('k', 'sess-r17-2f', 'eicr', {
+      toolCallsMode: 'shadow',
+    });
+    session.stateSnapshot.circuits[1] = {
+      cable_size: 2.5,
+      cable_size_earth: 1.5,
+    };
+    session.start();
+
+    const bucket = session.stateSnapshot.circuits[1];
+
+    // Canonical keys present with values preserved.
+    expect(bucket).toHaveProperty('live_csa_mm2', 2.5);
+    expect(bucket).toHaveProperty('cpc_csa_mm2', 1.5);
+
+    // None of the 2 legacy aliases leaked through.
+    expect(bucket).not.toHaveProperty('cable_size');
+    expect(bucket).not.toHaveProperty('cable_size_earth');
+  });
+});
+
+/**
  * Plan 04-22 r16-#4 — validation_alert unknown-value log calls:
  * sanitise BEFORE interpolate + per-session dedupe.
  *
