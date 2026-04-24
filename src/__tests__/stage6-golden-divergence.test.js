@@ -3844,11 +3844,24 @@ describe('Group r13-1 — Plan 04-19 r13-#1: runToolCallPath fails fast on parti
     expect(session.recentCircuitOrder).toEqual([1, 2, 3, 4, 5]);
   });
 
-  test('r13-1c — >SNAPSHOT_RECENT_CIRCUITS seeded + PARTIAL declared + _force_numeric_recency: true bypasses guard', async () => {
-    // Same escape hatch semantics as r12-2c (empty case). Uniform
-    // "one escape hatch, numeric fallback for whatever isn't
-    // declared" — a test fixture that deliberately wants the
-    // pathological fallback just sets the flag.
+  test('r13-1c — >SNAPSHOT_RECENT_CIRCUITS seeded + PARTIAL declared + _force_numeric_recency: true forces numeric fallback', async () => {
+    // Plan 04-20 r14-#1 [MAJOR] — the pre-r14 impl bypassed the
+    // guard arms but then consumed the non-empty declaration
+    // verbatim, so a flag-bearing fixture with `[5]` ended up at
+    // `session.recentCircuitOrder = [5]` — NOT the numeric
+    // ascending fallback the flag name + error text promise. r14
+    // flips the contract to match the documented semantics:
+    // `_force_numeric_recency: true` ALWAYS yields numeric
+    // ascending, ignoring any declaration (empty, partial, full).
+    //
+    // r12-2c (empty + flag → numeric ascending) is preserved; the
+    // empty-declaration case was already correct because the
+    // post-normalisation fallback routed empty through the same
+    // numeric branch. The partial case is what r14-#1 corrects.
+    //
+    // This test + r14-1a (non-monotonic partial + flag) together
+    // lock the full contract — flag ⇒ numeric, regardless of
+    // declaration shape.
     const syntheticFx = {
       pre_turn_state: {
         snapshot: {
@@ -3873,16 +3886,8 @@ describe('Group r13-1 — Plan 04-19 r13-#1: runToolCallPath fails fast on parti
       sse_events_tool_call_round2: sample01ToolCallEventsR2(),
     };
     const { session } = await runToolCallPath(syntheticFx);
-    // Escape hatch bypasses the r13-#1 coverage guard. With flag
-    // set + non-empty declared order, the declared order is
-    // honoured verbatim (it normalises to [5] non-empty; the
-    // else-branch numeric fallback is NOT triggered). Matches
-    // r12-2c semantics: the hatch only swaps to numeric fallback
-    // when the normalised declared order is empty; for a
-    // non-empty partial declaration it honours the declared
-    // positions. This is the documented contract — the flag
-    // bypasses the GUARD, not the normalisation.
-    expect(session.recentCircuitOrder).toEqual([5]);
+    // r14-#1: flag ⇒ numeric ascending of ALL seeded circuits.
+    expect(session.recentCircuitOrder).toEqual([1, 2, 3, 4, 5]);
   });
 
   test('r13-1d — safe-by-size (seededKeys == SNAPSHOT_RECENT_CIRCUITS) + partial declared order: guard does NOT fire', async () => {
@@ -3915,5 +3920,83 @@ describe('Group r13-1 — Plan 04-19 r13-#1: runToolCallPath fails fast on parti
     // Declared order used verbatim — r8-3 path. r13-#1's coverage
     // guard is size-gated and does not affect this case.
     expect(session.recentCircuitOrder).toEqual([3]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Plan 04-20 r14-#1 [MAJOR] — `_force_numeric_recency` flag semantics
+// alignment.
+//
+// Pre-r14 the flag bypassed the r12-#2 empty-check + r13-#1
+// coverage-check guard arms but left the downstream declaration
+// normalisation unchanged. A flag-bearing fixture with a
+// NON-EMPTY partial declaration (e.g. `[5]` on a 5-circuit seed)
+// still had its declaration honoured verbatim — `session.recentCircuitOrder`
+// ended up as `[5]`, NOT the numeric-ascending fallback the flag
+// name + error text promise. r13-1c (now flipped) was locking
+// that wrong contract.
+//
+// r14-#1 aligns the impl with the DOCUMENTED semantics:
+// `_force_numeric_recency: true` ALWAYS yields numeric ascending
+// of seeded circuits, regardless of declaration shape (empty,
+// partial, full, ordered, unordered). r12-2c's empty-case
+// contract is preserved byte-for-byte.
+//
+// This group pins the alignment against a non-monotonic partial
+// declaration `[5, 3, 1]` — the strongest "ordered declaration
+// that would silently diverge from numeric" shape.
+// ---------------------------------------------------------------------------
+
+describe('Group r14-1 — Plan 04-20 r14-#1: _force_numeric_recency truly forces numeric fallback', () => {
+  function sample01ToolCallEvents() {
+    return JSON.parse(fssync.readFileSync(path.join(FIXTURE_DIR, 'sample-01-routine.json'), 'utf8'))
+      .sse_events_tool_call;
+  }
+  function sample01ToolCallEventsR2() {
+    return JSON.parse(fssync.readFileSync(path.join(FIXTURE_DIR, 'sample-01-routine.json'), 'utf8'))
+      .sse_events_tool_call_round2;
+  }
+
+  test('r14-1a — non-monotonic partial declaration `[5, 3, 1]` + flag → numeric ascending of ALL seeded circuits', async () => {
+    // The test that exposes the pre-r14 contract drift cleanly:
+    // declaration is deliberately reverse-order partial. With the
+    // pre-r14 impl, flag would bypass the guard but
+    // `runToolCallPath`'s downstream normalisation would dedup +
+    // splice+push the declared `[5, 3, 1]` into
+    // `session.recentCircuitOrder = [5, 3, 1]`. Post-r14 the flag
+    // short-circuits BEFORE the declaration is read, and the
+    // numeric-ascending fallback fires unconditionally.
+    //
+    // Why non-monotonic? A monotonic partial like `[1, 2, 3]`
+    // would numerically-equal the fallback and hide a broken
+    // impl. `[5, 3, 1]` deliberately diverges from numeric so
+    // the flag's behaviour is observable.
+    const syntheticFx = {
+      pre_turn_state: {
+        snapshot: {
+          circuits: {
+            1: { circuit_ref: 1, circuit_designation: 'Ring 1' },
+            2: { circuit_ref: 2, circuit_designation: 'Ring 2' },
+            3: { circuit_ref: 3, circuit_designation: 'Lights' },
+            4: { circuit_ref: 4, circuit_designation: 'Cooker' },
+            5: { circuit_ref: 5, circuit_designation: 'Shower' },
+          },
+          pending_readings: [],
+          observations: [],
+          validation_alerts: [],
+        },
+        recentCircuitOrder: [5, 3, 1], // non-monotonic partial
+        _force_numeric_recency: true, // escape hatch — overrides declaration
+        askedQuestions: [],
+        extractedObservations: [],
+      },
+      transcript: 'test',
+      sse_events_tool_call: sample01ToolCallEvents(),
+      sse_events_tool_call_round2: sample01ToolCallEventsR2(),
+    };
+    const { session } = await runToolCallPath(syntheticFx);
+    // Flag ⇒ numeric ascending of all seeded circuits. Declaration
+    // `[5, 3, 1]` is IGNORED, not used as seed-order for dedupe.
+    expect(session.recentCircuitOrder).toEqual([1, 2, 3, 4, 5]);
   });
 });
