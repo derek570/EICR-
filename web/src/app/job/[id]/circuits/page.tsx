@@ -147,6 +147,12 @@ export default function CircuitsPage() {
   const [docError, setDocError] = React.useState<string | null>(null);
   const docInputRef = React.useRef<HTMLInputElement>(null);
   const [confirmDeleteAllOpen, setConfirmDeleteAllOpen] = React.useState(false);
+  // Per-circuit delete confirmation — iOS surfaces a tap-confirm on the
+  // row trash button (CircuitsTab.swift:L220-L235). Without a guard, a
+  // mis-tap on the tight row action wipes the circuit and any linked
+  // observations without warning. Ledger row "Per-circuit trash guard"
+  // flipped to match in Phase 9.
+  const [pendingDeleteCircuitId, setPendingDeleteCircuitId] = React.useState<string | null>(null);
   const [calcMenuOpen, setCalcMenuOpen] = React.useState(false);
   const calcMenuRef = React.useRef<HTMLDivElement>(null);
   const [view, setView] = React.useState<CircuitView>('cards');
@@ -224,10 +230,19 @@ export default function CircuitsPage() {
     setExpandedId(c.id);
   };
 
-  const removeCircuit = (id: string) => {
+  /** Queue a per-circuit delete through ConfirmDialog (Phase 9). */
+  const requestDeleteCircuit = (id: string) => setPendingDeleteCircuitId(id);
+  const cancelPendingDelete = () => setPendingDeleteCircuitId(null);
+  const confirmPendingDelete = () => {
+    const id = pendingDeleteCircuitId;
+    if (!id) return;
     persist(circuits.filter((c) => c.id !== id));
     if (expandedId === id) setExpandedId(null);
+    setPendingDeleteCircuitId(null);
   };
+  const pendingDeleteCircuit = pendingDeleteCircuitId
+    ? (circuits.find((c) => c.id === pendingDeleteCircuitId) ?? null)
+    : null;
 
   const reverse = () => persist([...circuits].reverse());
 
@@ -683,7 +698,7 @@ export default function CircuitsPage() {
             <CircuitsStickyTable
               circuits={visible}
               onPatch={patchCircuitTable}
-              onRemove={removeCircuit}
+              onRemove={requestDeleteCircuit}
             />
           ) : (
             visible.map((c) => (
@@ -693,7 +708,7 @@ export default function CircuitsPage() {
                 expanded={expandedId === c.id}
                 onToggle={() => setExpandedId((p) => (p === c.id ? null : c.id))}
                 onPatch={(patch) => patchCircuit(c.id, patch)}
-                onRemove={() => removeCircuit(c.id)}
+                onRemove={() => requestDeleteCircuit(c.id)}
               />
             ))
           )}
@@ -814,6 +829,39 @@ export default function CircuitsPage() {
         confirmLabel="Delete all"
         destructive
         onConfirm={handleConfirmDeleteAll}
+      />
+
+      {/*
+       * Per-circuit delete confirmation (Phase 9). The trash button on
+       * each row / card is a high-risk tap target — a single mis-tap
+       * would silently wipe a circuit plus any observations linked via
+       * `schedule_item`. Routing through ConfirmDialog matches the
+       * bulk-delete and observations-delete patterns and closes the
+       * ledger gap for cross-cutting destructive guards.
+       */}
+      <ConfirmDialog
+        open={pendingDeleteCircuitId !== null}
+        onOpenChange={(open) => {
+          if (!open) cancelPendingDelete();
+        }}
+        title="Delete this circuit?"
+        description={
+          pendingDeleteCircuit ? (
+            <>
+              Remove circuit{' '}
+              <strong>
+                {pendingDeleteCircuit.circuit_ref ||
+                  pendingDeleteCircuit.circuit_designation ||
+                  'this row'}
+              </strong>
+              ? Any readings recorded for it will be lost. This cannot be undone.
+            </>
+          ) : undefined
+        }
+        confirmLabel="Delete"
+        confirmLabelBusy="Deleting…"
+        destructive
+        onConfirm={confirmPendingDelete}
       />
     </div>
   );
