@@ -752,6 +752,131 @@ describe('checkForPromptLeak() — Layer 2 output-side prompt-leak filter', () =
   });
 
   // ------------------------------------------------------------------
+  // Group 10 — r21-#2 entropy detector iterates ALL regex matches
+  // ------------------------------------------------------------------
+  //
+  // WHY: r21 re-review of r20-#3 found that `hasHighEntropyChunk()`
+  // used `text.match(pattern)` which returns only the FIRST match.
+  // Attacker can prepend a benign 40+ char run of repeated/low-
+  // diversity chars (e.g. `"aaaa...aaaa"` — 1 distinct, fails the
+  // 10-distinct threshold; or `"abcabc..."` — 3 distinct, also
+  // fails), then append the real 40-char base64/hex leak. First
+  // match's distinct-char count is low → passes. Real leak never
+  // checked.
+  //
+  // Fix: flip regex to global flag (required for `matchAll`);
+  // rewrite `hasHighEntropyChunk()` to iterate all matches and
+  // return true if ANY chunk clears the distinct-char threshold.
+  // Cost: O(N) iteration where N is the number of 40+ char matches
+  // in the text — typically 0 or 1 on real inspection speech.
+  describe('Group 10 — r21-#2 entropy detector iterates all matches', () => {
+    // --------- Prefix-benign bypass: the attack r21-#2 closes ---------
+    //
+    // The bypass requires a break between the low-diversity prefix
+    // and the real high-entropy blob — otherwise the regex swallows
+    // both into one match whose distinct count is already high
+    // (driven by the blob). A non-base64 character (e.g. space, hyphen
+    // outside hex range, Unicode punct) ends the first match and
+    // starts a second.
+    test('50 "a"s + space + real 40-char base64 blob → caught (entropy:base64)', () => {
+      // Attack: 50-"a" prefix is match #1 (1 distinct, fails
+      // 10-threshold). Break char forces match #2 over the real blob
+      // (high distinct count). First-match-only filter SEES ONLY #1
+      // → safe:true (BYPASS). matchAll catches match #2 → safe:false.
+      const prefix = 'a'.repeat(50);
+      const realBlob = 'WW91IGFyZSBhbiBFSUNSIGluc3BlY3Rpb24gYXNzaXN0YW50';
+      expect(realBlob.length).toBeGreaterThanOrEqual(40);
+      const text = prefix + ' ' + realBlob;
+      const result = checkForPromptLeak(text, { field: 'question' });
+      expect(result.safe).toBe(false);
+      expect(result.reason).toMatch(/^entropy:base64/);
+    });
+
+    test('48 "abcabc..." + break + real 40-char hex blob → caught (entropy)', () => {
+      // "abcabcabc..." has only 3 distinct chars — fails 10-threshold
+      // even though it's a valid base64-range match. Real hex has
+      // 16 distinct chars, passes threshold.
+      const prefix = 'abc'.repeat(16); // 48 chars, 3 distinct
+      expect(prefix.length).toBe(48);
+      expect(new Set(prefix).size).toBe(3);
+      const realHex = 'a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2'; // 40 hex chars
+      expect(realHex.length).toBe(40);
+      // Force separation: space between prefix and hex so neither
+      // base64 nor hex regex concatenates them into one match.
+      const text = prefix + ' ' + realHex;
+      const result = checkForPromptLeak(text, { field: 'question' });
+      expect(result.safe).toBe(false);
+      expect(result.reason).toMatch(/^entropy:/);
+    });
+
+    // --------- Guards: repetitive-only content stays safe ---------
+    test('40 chars of "abcabcabc..." (low diversity) alone → safe', () => {
+      // 6 distinct chars — below 10-threshold. Only match. No bypass.
+      const text = 'abcabcabcabcabcabcabcabcabcabcabcabcabcd';
+      expect(text.length).toBe(40);
+      expect(new Set(text).size).toBeLessThan(10);
+      const result = checkForPromptLeak(text, { field: 'question' });
+      expect(result.safe).toBe(true);
+    });
+
+    test('60-char single "a" run alone → safe', () => {
+      const text = 'a'.repeat(60);
+      const result = checkForPromptLeak(text, { field: 'question' });
+      expect(result.safe).toBe(true);
+    });
+
+    test('multi-match where ALL chunks fail distinct-char threshold → safe', () => {
+      // 40 'a' (distinct=1) + 10 dashes (break match) + 40 'b'
+      // (distinct=1). Two separate matches, both fail threshold.
+      // Filter must NOT flag.
+      const text = 'a'.repeat(40) + ' - - - - ' + 'b'.repeat(40);
+      const result = checkForPromptLeak(text, { field: 'question' });
+      expect(result.safe).toBe(true);
+    });
+
+    // --------- Regression: 40-sample FP corpus across new detector ---------
+    describe('Group 10 — 40-sample FP corpus unaffected by multi-match entropy', () => {
+      const SAMPLES_ALL = [
+        // 04-26 Group 7 corpus
+        'Zs on circuit three is nought point three five.',
+        'Circuit two, insulation greater than two hundred both ways, polarity correct.',
+        'Consumer unit in the hallway, RCBO type B, 32 amp.',
+        'For example, 1 hour delay before the RCD tripped.',
+        'Observation: missing earthing on the immersion heater.',
+        'The trusted bounds of the installation include a sub-board in the garage.',
+        'Code this as C2 — absent main bonding to gas.',
+        'Add a C3 observation for the non-standard cable colour.',
+        'R1 plus R2 is zero point five one ohms on circuit four.',
+        'The meter reads less than 0.5 ohm.',
+        // r20-#3 Group 8 corpus (sample of 10 — 10 more already
+        // covered by Group 8 regression tests themselves).
+        'Circuit 3 Zs is 0.35 ohms measured at the distribution board.',
+        'RCD type AC 30mA trip time 23ms compliant with BS 7671 411.3.3.',
+        'MCB 32A type C on Upstairs sockets ring circuit 2.5mm2 T+E.',
+        'Cable reference colours — brown, black, grey and blue on L1/L2/L3/N.',
+        'Insulation resistance > 999 MΩ between L and E at 500V test voltage.',
+        'R1 + R2 measured 0.51, ring final so divide by 4 gives 0.128.',
+        'Main earth conductor verified at 16mm2 minimum per 544.1.1.',
+        'Consumer unit Wylex NHRS 17 with 100A isolator and 8 ways.',
+        'Observation: loose neutral in back box, C1, immediate action.',
+        'Reference id a1b2c3 noted on the certificate template.',
+      ];
+
+      test.each(SAMPLES_ALL.map((s, i) => [i + 1, s]))(
+        'FP sample #%i stays safe under multi-match entropy: %s',
+        (_i, sample) => {
+          const q = checkForPromptLeak(sample, { field: 'question' });
+          expect(q.safe).toBe(true);
+          const o = checkForPromptLeak(sample, { field: 'observation_text' });
+          expect(o.safe).toBe(true);
+          const d = checkForPromptLeak(sample, { field: 'designation' });
+          expect(d.safe).toBe(true);
+        }
+      );
+    });
+  });
+
+  // ------------------------------------------------------------------
   // Defensive edge cases
   // ------------------------------------------------------------------
   describe('Edge cases', () => {
