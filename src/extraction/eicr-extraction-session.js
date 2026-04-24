@@ -386,6 +386,40 @@ const WRAP_POLICY = {
 };
 
 /**
+ * Plan 04-20 r14-#3 — legacy-to-canonical circuit-key rename map.
+ *
+ * Mirrors the 10 aliases r13-#2 canonicalised in the LIVE seed path
+ * (`_seedStateFromJobState`). This map drives a one-time normalisation
+ * pass (`_normaliseCircuitKeysToCanonical`) wired at `start()` so that
+ * any pre-existing `stateSnapshot.circuits` bucket with legacy keys
+ * (direct assignment in tests, restored persisted state, a future
+ * REST endpoint that takes a pre-built snapshot) converges on
+ * canonical vocabulary BEFORE any serialisation or dispatcher read.
+ *
+ * Idempotent: running the pass twice is a no-op. Canonical-wins on
+ * mixed legacy+canonical buckets (the legacy key is discarded rather
+ * than overwriting the canonical value) — matches r13-#2's intent
+ * that canonical is the authoritative source.
+ *
+ * Codex r14 (2026-04-30) flagged that r13-#2's rename only fires on
+ * NEW reads — the canonical contract was DEPENDENT on the specific
+ * seed codepath rather than being an invariant of the snapshot
+ * shape. r14-#3 closes the gap with post-hydration normalisation.
+ */
+const LEGACY_TO_CANONICAL_CIRCUIT_KEYS = {
+  zs: 'measured_zs_ohm',
+  r1_r2: 'r1_r2_ohm',
+  r2: 'r2_ohm',
+  insulation_resistance_l_e: 'ir_live_earth_mohm',
+  insulation_resistance_l_l: 'ir_live_live_mohm',
+  ring_continuity_r1: 'ring_r1_ohm',
+  ring_continuity_rn: 'ring_rn_ohm',
+  ring_continuity_r2: 'ring_r2_ohm',
+  rcd_trip_time: 'rcd_time_ms',
+  polarity: 'polarity_confirmed',
+};
+
+/**
  * Plan 04-19 r13-#3 — known canonical `type` values for validation_alerts.
  * Sourced from `config/prompts/sonnet_extraction_system.md` instructions
  * (lines 482-483: `myth_rejected`, `nc_only`) + prior Codex review
@@ -670,6 +704,15 @@ export class EICRExtractionSession {
       // confirmation dedup (Bug D) can catch duplicates for pre-existing values.
       this._seedStateFromJobState(jobState);
     }
+    // Plan 04-20 r14-#3 — canonicalise any legacy circuit-field keys
+    // present in `stateSnapshot.circuits` at hydration. The live seed
+    // path above already produces canonical output (r13-#2) so this
+    // is a no-op for live seeds; it exists to normalise pre-existing
+    // buckets populated via direct assignment, restored persisted
+    // state, or a future REST hydration endpoint. Wiring here makes
+    // the canonical contract an INVARIANT of the snapshot shape
+    // rather than DEPENDENT on the specific producer codepath.
+    this._normaliseCircuitKeysToCanonical();
     this._resetCacheKeepalive();
     logger.info(`Session ${this.sessionId} Started`);
   }
@@ -734,6 +777,46 @@ export class EICRExtractionSession {
       logger.info(
         `Session ${this.sessionId} Seeded stateSnapshot with ${seeded} circuits from jobState`
       );
+    }
+  }
+
+  /**
+   * Plan 04-20 r14-#3 — canonicalise any legacy circuit-field keys in
+   * `stateSnapshot.circuits`. Idempotent: running against already-canonical
+   * state is a no-op. Canonical-wins on mixed legacy+canonical buckets
+   * (legacy is dropped whether or not the canonical key already exists —
+   * canonical is authoritative).
+   *
+   * Wired from `start()` AFTER `_seedStateFromJobState` so that:
+   *   (a) live seeds (iOS → canonical via r13-#2) stay byte-identical —
+   *       no legacy keys present → no-op for every bucket.
+   *   (b) pre-existing circuits (direct assignment in tests, restored
+   *       persisted state, future REST hydration) get normalised before
+   *       any serialisation or dispatcher read.
+   *
+   * The canonical rename map `LEGACY_TO_CANONICAL_CIRCUIT_KEYS` mirrors
+   * the 10 aliases r13-#2 canonicalised in the seed path — single source
+   * of truth for "what legacy vocabulary needs converting".
+   */
+  _normaliseCircuitKeysToCanonical() {
+    const circuits = this.stateSnapshot?.circuits;
+    if (!circuits) return;
+    for (const circuitId of Object.keys(circuits)) {
+      const bucket = circuits[circuitId];
+      if (!bucket || typeof bucket !== 'object') continue;
+      for (const [legacy, canonical] of Object.entries(LEGACY_TO_CANONICAL_CIRCUIT_KEYS)) {
+        if (!(legacy in bucket)) continue;
+        if (!(canonical in bucket)) {
+          bucket[canonical] = bucket[legacy];
+        }
+        // Canonical-wins: drop legacy whether or not canonical was
+        // already present. Prevents duplicate keys in the serialised
+        // JSON + WRAP_POLICY mis-classification (legacy `polarity`
+        // would otherwise fall through to the `user_derived` fail-safe
+        // default and get wrapped as user-derived text, contradicting
+        // r11-#2's TRUSTWORTHY marker for server-authored state).
+        delete bucket[legacy];
+      }
     }
   }
 
