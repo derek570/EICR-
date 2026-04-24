@@ -7,6 +7,7 @@ import { useJobContext } from '@/lib/job-context';
 import type { ObservationRow } from '@/lib/types';
 import { getUser } from '@/lib/auth';
 import { SectionCard } from '@/components/ui/section-card';
+import { HeroHeader } from '@/components/ui/hero-header';
 import { ConfirmDialog } from '@/components/ui/confirm-dialog';
 import { ObservationPhoto } from '@/components/observations/observation-photo';
 import { ObservationSheet } from '@/components/observations/observation-sheet';
@@ -124,40 +125,16 @@ export default function ObservationsPage() {
 
   return (
     <div
-      className="mx-auto flex w-full flex-col gap-5 px-4 py-6 md:px-8 md:py-8"
+      className="cm-stagger-children mx-auto flex w-full flex-col gap-5 px-4 py-6 md:px-8 md:py-8"
       style={{ maxWidth: '960px' }}
     >
-      <div
-        className="relative flex items-center justify-between overflow-hidden rounded-[var(--radius-xl)] px-5 py-5 md:px-6 md:py-6"
-        style={{
-          background:
-            'linear-gradient(135deg, var(--color-brand-blue) 0%, var(--color-brand-green) 100%)',
-        }}
-      >
-        <div className="flex flex-1 flex-col gap-2">
-          <p className="text-[11px] uppercase tracking-[0.14em] text-white/75">{certificateType}</p>
-          <h2 className="text-[22px] font-bold text-white md:text-[26px]">Observations</h2>
-          <p className="text-[13px] text-white/85">Defects, recommendations &amp; notes</p>
-          {observations.length > 0 ? (
-            <div className="mt-1 flex flex-wrap items-center gap-2">
-              <CountBadge label="Total" count={observations.length} colour="white" />
-              {counts.C1 > 0 ? (
-                <CountBadge label="C1" count={counts.C1} colour={CODE_COLOUR.C1} />
-              ) : null}
-              {counts.C2 > 0 ? (
-                <CountBadge label="C2" count={counts.C2} colour={CODE_COLOUR.C2} />
-              ) : null}
-              {counts.C3 > 0 ? (
-                <CountBadge label="C3" count={counts.C3} colour={CODE_COLOUR.C3} />
-              ) : null}
-              {counts.FI > 0 ? (
-                <CountBadge label="FI" count={counts.FI} colour={CODE_COLOUR.FI} />
-              ) : null}
-            </div>
-          ) : null}
-        </div>
-        <div className="flex flex-col items-end gap-2">
-          <AlertTriangle className="h-10 w-10 text-white/30" strokeWidth={2} aria-hidden />
+      <HeroHeader
+        eyebrow={certificateType}
+        title="Observations"
+        subtitle="Defects, recommendations & notes"
+        accent="test-results"
+        icon={<AlertTriangle className="h-10 w-10" strokeWidth={2} aria-hidden />}
+        action={
           <button
             type="button"
             onClick={openAdd}
@@ -166,8 +143,26 @@ export default function ObservationsPage() {
             <Plus className="h-3.5 w-3.5" aria-hidden />
             Add
           </button>
-        </div>
-      </div>
+        }
+      >
+        {observations.length > 0 ? (
+          <div className="mt-1 flex flex-wrap items-center gap-2">
+            <CountBadge label="Total" count={observations.length} colour="white" />
+            {counts.C1 > 0 ? (
+              <CountBadge label="C1" count={counts.C1} colour={CODE_COLOUR.C1} />
+            ) : null}
+            {counts.C2 > 0 ? (
+              <CountBadge label="C2" count={counts.C2} colour={CODE_COLOUR.C2} />
+            ) : null}
+            {counts.C3 > 0 ? (
+              <CountBadge label="C3" count={counts.C3} colour={CODE_COLOUR.C3} />
+            ) : null}
+            {counts.FI > 0 ? (
+              <CountBadge label="FI" count={counts.FI} colour={CODE_COLOUR.FI} />
+            ) : null}
+          </div>
+        ) : null}
+      </HeroHeader>
 
       {observations.length === 0 ? (
         <SectionCard accent="blue" icon={AlertTriangle} title="No observations">

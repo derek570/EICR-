@@ -14,6 +14,7 @@ import {
   XOctagon,
 } from 'lucide-react';
 import { useJobContext } from '@/lib/job-context';
+import { HeroHeader } from '@/components/ui/hero-header';
 import { SectionCard } from '@/components/ui/section-card';
 import { ConfirmDialog } from '@/components/ui/confirm-dialog';
 import { PdfPreview } from '@/components/job/pdf-preview';
@@ -165,7 +166,7 @@ export default function PdfPage() {
 
   return (
     <div
-      className="mx-auto flex w-full flex-col gap-5 px-4 py-6 md:px-8 md:py-8"
+      className="cm-stagger-children mx-auto flex w-full flex-col gap-5 px-4 py-6 md:px-8 md:py-8"
       style={{ maxWidth: '960px' }}
     >
       <HeroBanner certificateType={certificateType} hasPdf={hasPdf} isGenerating={isGenerating} />
@@ -315,30 +316,20 @@ function HeroBanner({
   const statusLabel = isGenerating ? 'Generating…' : hasPdf ? 'PDF generated' : 'Not yet generated';
 
   return (
-    <div
-      className="cm-hero relative flex items-center justify-between overflow-hidden rounded-[var(--radius-xl)] px-5 py-5 md:px-6 md:py-6"
-      style={
-        {
-          background:
-            'linear-gradient(135deg, var(--color-brand-blue) 0%, var(--color-brand-green) 100%)',
-          '--hero-accent': 'var(--color-brand-green)',
-        } as React.CSSProperties
-      }
+    <HeroHeader
+      eyebrow={certificateType}
+      title="PDF Certificate"
+      subtitle="Generate, preview & share"
+      accent="test-results"
+      icon={<FileText className="h-10 w-10" strokeWidth={2} aria-hidden />}
     >
-      <span aria-hidden className="cm-hero-glow" />
-      <div className="relative flex flex-col gap-2">
-        <p className="text-[11px] uppercase tracking-[0.14em] text-white/75">{certificateType}</p>
-        <h2 className="text-[22px] font-bold text-white md:text-[26px]">PDF Certificate</h2>
-        <p className="text-[13px] text-white/85">Generate, preview &amp; share</p>
-        <div className="mt-1 flex items-center gap-2">
-          <StatusDot hasPdf={hasPdf} />
-          <span className="text-[11px] font-medium uppercase tracking-[0.12em] text-white/85">
-            {statusLabel}
-          </span>
-        </div>
+      <div className="mt-1 flex items-center gap-2">
+        <StatusDot hasPdf={hasPdf} />
+        <span className="text-[11px] font-medium uppercase tracking-[0.12em] text-white/85">
+          {statusLabel}
+        </span>
       </div>
-      <FileText className="relative h-10 w-10 text-white/30" strokeWidth={2} aria-hidden />
-    </div>
+    </HeroHeader>
   );
 }
 

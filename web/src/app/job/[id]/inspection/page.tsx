@@ -14,6 +14,7 @@ import {
   Wrench,
 } from 'lucide-react';
 import { useJobContext } from '@/lib/job-context';
+import { HeroHeader } from '@/components/ui/hero-header';
 import { SectionCard } from '@/components/ui/section-card';
 import { ConfirmDialog } from '@/components/ui/confirm-dialog';
 import { ObservationSheet } from '@/components/observations/observation-sheet';
@@ -303,25 +304,16 @@ export default function InspectionPage() {
 
   return (
     <div
-      className="mx-auto flex w-full flex-col gap-5 px-4 py-6 md:px-8 md:py-8"
+      className="cm-stagger-children mx-auto flex w-full flex-col gap-5 px-4 py-6 md:px-8 md:py-8"
       style={{ maxWidth: '960px' }}
     >
-      <div
-        className="relative flex items-center justify-between overflow-hidden rounded-[var(--radius-xl)] px-5 py-5 md:px-6 md:py-6"
-        style={{
-          background:
-            'linear-gradient(135deg, var(--color-brand-blue) 0%, var(--color-brand-green) 100%)',
-        }}
-      >
-        <div className="flex flex-col gap-1">
-          <p className="text-[11px] uppercase tracking-[0.14em] text-white/75">{certificateType}</p>
-          <h2 className="text-[22px] font-bold text-white md:text-[26px]">Inspection Schedule</h2>
-          <p className="text-[13px] text-white/85">
-            {isEIC ? 'Design, construction & verification' : 'Periodic inspection & testing'}
-          </p>
-        </div>
-        <ClipboardCheck className="h-10 w-10 text-white/30" strokeWidth={2} aria-hidden />
-      </div>
+      <HeroHeader
+        eyebrow={certificateType}
+        title="Inspection Schedule"
+        subtitle={isEIC ? 'Design, construction & verification' : 'Periodic inspection & testing'}
+        accent="schedule"
+        icon={<ClipboardCheck className="h-10 w-10" strokeWidth={2} aria-hidden />}
+      />
 
       {!isEIC ? (
         <SectionCard accent="blue" icon={SlidersHorizontal} title="Schedule Options">
