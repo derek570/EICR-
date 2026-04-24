@@ -1701,8 +1701,57 @@ export class EICRExtractionSession {
         lines.push(`pending:${JSON.stringify(wrappedPending)}`);
       }
 
+      // Plan 04-18 r12-#3 — validation_alerts objects have shape
+      // `{type, severity, message, ...}` per the model's
+      // extraction tool schema (config/prompts/sonnet_extraction_system.md:578-580).
+      // Investigation:
+      //   - `type`     is a model-generated tag (e.g. "myth_rejected",
+      //                 "value_out_of_range"); tag-shaped cardinality;
+      //                 classified as server_canonical.
+      //   - `severity` is a closed enum info|warning|critical;
+      //                 server_canonical.
+      //   - `message`  is MODEL-GENERATED FREE TEXT that can
+      //                 legitimately reflect user-derived substring
+      //                 (designations, observation phrases, values)
+      //                 because the system prompt instructs the model
+      //                 to write explanatory messages referencing
+      //                 specific circuits/values/observations.
+      //                 Classified as user_derived — sanitise + wrap.
+      //
+      // Pre-r12 the raw JSON.stringify emission leaked the `message`
+      // carrier into the authoritative system-channel JSON unwrapped,
+      // reopening the cached-prefix injection surface r7 / r8 / r9
+      // closed for designations, pending values, and observations.
+      // r12-#3 routes the alerts through a per-field transform that
+      // uses the same WRAP_POLICY semantics:
+      //   - `message` → wrapSnapshotUserTextInline (sanitise + wrap).
+      //   - everything else string-valued → sanitiseSnapshotField
+      //     (sanitise-only as a fail-safe; type/severity strings
+      //     flow through unchanged).
+      //   - non-strings (numbers, booleans, arrays, objects) pass
+      //     through unchanged.
+      //
+      // The fail-safe choice for non-`message` string fields is
+      // sanitise-ONLY (not wrap) because the known shape today is
+      // `{type, severity, message}` and both non-message fields are
+      // server-canonical. If a future schema extension adds a new
+      // user-derived alert field, classify it explicitly alongside
+      // `message` here.
       if (hasAlerts) {
-        lines.push(`alerts:${JSON.stringify(this.stateSnapshot.validation_alerts)}`);
+        const wrappedAlerts = this.stateSnapshot.validation_alerts.map((alert) => {
+          const out = {};
+          for (const [key, value] of Object.entries(alert)) {
+            if (key === 'message' && typeof value === 'string') {
+              out[key] = wrapSnapshotUserTextInline(value);
+            } else if (typeof value === 'string') {
+              out[key] = sanitiseSnapshotField(value);
+            } else {
+              out[key] = value;
+            }
+          }
+          return out;
+        });
+        lines.push(`alerts:${JSON.stringify(wrappedAlerts)}`);
       }
 
       parts.push(
