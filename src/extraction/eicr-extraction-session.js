@@ -1154,8 +1154,22 @@ export class EICRExtractionSession {
     const hasObs = this.stateSnapshot.observations.length > 0;
     const hasAlerts = this.stateSnapshot.validation_alerts.length > 0;
     const hasSchedule = !!this.circuitSchedule;
+    // Stage 6 Plan 04-08 r2-#1 — re-home anti-re-ask + dedup digests into
+    // the cached prefix. Before r2 these lived in buildUserMessage but were
+    // suppressed in non-off modes by Plan 04-02's refactor without being
+    // routed elsewhere, so shadow/live lost both backstops.
+    const hasAsked = this.askedQuestions && this.askedQuestions.length > 0;
+    const hasExtractedObs = this.extractedObservations && this.extractedObservations.length > 0;
 
-    if (!hasCircuits && !hasPending && !hasObs && !hasAlerts && !hasSchedule) {
+    if (
+      !hasCircuits &&
+      !hasPending &&
+      !hasObs &&
+      !hasAlerts &&
+      !hasSchedule &&
+      !hasAsked &&
+      !hasExtractedObs
+    ) {
       return null;
     }
 
@@ -1232,6 +1246,33 @@ export class EICRExtractionSession {
       });
       parts.push(
         `OBSERVATIONS ALREADY RECORDED (${this.stateSnapshot.observations.length} total, do NOT re-extract):\n${condensed.join('\n')}`
+      );
+    }
+
+    // Stage 6 Plan 04-08 r2-#1 — anti-re-ask digest lives in the cached
+    // prefix (non-off only — off keeps the legacy per-turn injection in
+    // buildUserMessage). Matches legacy off-mode wording so the model sees
+    // the same constraint on both branches.
+    if (hasAsked) {
+      parts.push(
+        `ASKED QUESTIONS (already answered or deferred — do NOT re-ask): ${this.askedQuestions.join('; ')}`
+      );
+    }
+
+    // Stage 6 Plan 04-08 r2-#1 — id-tracked observations dedup digest.
+    // Sourced from this.extractedObservations (populated by the code-aware
+    // overlap dedup at line 744), NOT stateSnapshot.observations (the raw
+    // text list in OBSERVATIONS ALREADY RECORDED above). Both are surfaced
+    // because they carry different information — the raw-text block is the
+    // full set; the id-tracked block encodes the IDs that the update/delete
+    // path reuses. Truncate each text to 60 chars to match the existing
+    // buildUserMessage truncation (legacy used substring(0,60)).
+    if (hasExtractedObs) {
+      const list = this.extractedObservations
+        .map((o) => (o.text.length > 60 ? o.text.substring(0, 60) : o.text))
+        .join('; ');
+      parts.push(
+        `EXTRACTED OBSERVATIONS (ID-tracked — already emitted, do NOT re-extract): ${list}`
       );
     }
 
