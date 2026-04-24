@@ -2992,3 +2992,191 @@ describe('Group r8-3 — Plan 04-14 r8-#3: runToolCallPath honours fixture-decla
     expect(snapshotText).toContain('0.8'); // 0.80 → 0.8 per JSON stringify
   });
 });
+
+// ---------------------------------------------------------------------------
+// Group r9-3 — Plan 04-15 r9-#3 MINOR: normalise fixture-declared
+// recentCircuitOrder with dedupe + membership validation +
+// pathological-empty fallback.
+//
+// Codex r9 MINOR #3: scripts/stage6-golden-divergence.js:793-807 —
+// r8-#3 added a fixture-declared recentCircuitOrder path but the
+// normalisation was minimal (integer + circuit-0 filter only). Three
+// gaps:
+//   (a) No dedupe — fixture `[1, 2, 1, 3]` would emit circuit 1
+//       twice in the detailed view.
+//   (b) No membership validation — fixture `[1, 99, 2]` where only
+//       circuits 1/2 are seeded would pretend 99 is "most recent".
+//   (c) No pathological-empty fallback — fixture `[0]` (all
+//       filtered out) would leave an empty array and silently
+//       collapse all circuits into the older-summary block.
+//
+// Production normalises chronologically by construction
+// (updateStateSnapshot's splice + push idiom at
+// eicr-extraction-session.js:1186-1188 produces dedup by design —
+// each circuit appears exactly once). Fixture inputs are user-authored
+// JSON, so the harness should normalise them the same way production
+// would.
+//
+// Fix (r9-#3 GREEN): expand the normalisation block:
+//   - Dedupe preserving first occurrence.
+//   - Filter to circuits that actually exist in the seeded snapshot.
+//   - Filter out circuit 0 (supply) + non-integer + negative refs.
+//   - If the normalised array is empty after filters, fall back to
+//     numeric ascending (same as no-declared-order path) for a
+//     deterministic harness state.
+//
+// Three tests lock the behaviour:
+//   r9-3a — duplicated refs → deduped, first occurrence preserved.
+//   r9-3b — unknown refs → filtered out.
+//   r9-3c — fully-invalid declared order → fallback to numeric
+//           ascending of seeded circuits.
+// ---------------------------------------------------------------------------
+
+describe('Group r9-3 — Plan 04-15 r9-#3: runToolCallPath normalises fixture-declared recentCircuitOrder', () => {
+  function sample01ToolCallEvents() {
+    return JSON.parse(
+      fssync.readFileSync(path.join(FIXTURE_DIR, 'sample-01-routine.json'), 'utf8'),
+    ).sse_events_tool_call;
+  }
+  function sample01ToolCallEventsR2() {
+    return JSON.parse(
+      fssync.readFileSync(path.join(FIXTURE_DIR, 'sample-01-routine.json'), 'utf8'),
+    ).sse_events_tool_call_round2;
+  }
+
+  test('r9-3a — duplicated refs in declared order are deduped (seeded array has no duplicates)', async () => {
+    // Fixture declares `[1, 2, 1, 3]` — the second occurrence of 1
+    // must be dropped so the normalised order is `[1, 2, 3]`.
+    // Production never emits duplicates (splice-then-push removes
+    // the prior slot before pushing), so the harness must match.
+    //
+    // The direct-observation check is on the SEEDED session's
+    // `recentCircuitOrder` array — it must contain no duplicates.
+    // Inspecting the snapshot text alone is insufficient because
+    // `.slice(-SNAPSHOT_RECENT_CIRCUITS=3)` can incidentally hide a
+    // duplicate when the array is short enough for the last 3 to
+    // be unique (e.g. `[1, 2, 1, 3]` → `.slice(-3) = [2, 1, 3]` by
+    // chance). Asserting the seeded array directly proves the
+    // normalisation ran.
+    const syntheticFx = {
+      pre_turn_state: {
+        snapshot: {
+          circuits: {
+            1: { circuit_ref: 1, circuit_designation: 'Ring 1', measured_zs_ohm: 0.11 },
+            2: { circuit_ref: 2, circuit_designation: 'Ring 2', measured_zs_ohm: 0.22 },
+            3: { circuit_ref: 3, circuit_designation: 'Lights', measured_zs_ohm: 0.33 },
+          },
+          pending_readings: [],
+          observations: [],
+          validation_alerts: [],
+        },
+        recentCircuitOrder: [1, 2, 1, 3],
+        askedQuestions: [],
+        extractedObservations: [],
+      },
+      transcript: 'test',
+      sse_events_tool_call: sample01ToolCallEvents(),
+      sse_events_tool_call_round2: sample01ToolCallEventsR2(),
+    };
+    const { session } = await runToolCallPath(syntheticFx);
+    // Direct assertion: the seeded recentCircuitOrder has no
+    // duplicates. First-occurrence-wins semantic: `[1, 2, 1, 3]`
+    // normalises to `[1, 2, 3]`, NOT `[2, 1, 3]` (which would be
+    // "last occurrence wins").
+    expect(session.recentCircuitOrder).toEqual([1, 2, 3]);
+  });
+
+  test('r9-3b — unknown refs in declared order are filtered out of seeded array', async () => {
+    // Fixture declares `[1, 99, 2]` but only circuits 1 + 2 are
+    // seeded. The unknown ref 99 must be filtered out so the
+    // normalised order is `[1, 2]`. Without this filter the builder
+    // would iterate over 99, hit the `if (!fields) continue` guard
+    // silently, and the harness would pretend a nonexistent circuit
+    // is "most recent" — confusing for test debugging, especially
+    // when the array is >3 entries and 99 eats a detailed slot.
+    //
+    // The direct-observation check is on the SEEDED session's
+    // `recentCircuitOrder`. The snapshot-text check (99 absent) is
+    // also correct but can pass incidentally when the continue
+    // guard fires silently. Seeded-array inspection proves
+    // normalisation actually dropped 99.
+    const syntheticFx = {
+      pre_turn_state: {
+        snapshot: {
+          circuits: {
+            1: { circuit_ref: 1, circuit_designation: 'Ring', measured_zs_ohm: 0.45 },
+            2: { circuit_ref: 2, circuit_designation: 'Lights', measured_zs_ohm: 0.80 },
+          },
+          pending_readings: [],
+          observations: [],
+          validation_alerts: [],
+        },
+        recentCircuitOrder: [1, 99, 2],
+        askedQuestions: [],
+        extractedObservations: [],
+      },
+      transcript: 'test',
+      sse_events_tool_call: sample01ToolCallEvents(),
+      sse_events_tool_call_round2: sample01ToolCallEventsR2(),
+    };
+    const { session, client } = await runToolCallPath(syntheticFx);
+    // Direct: 99 filtered out of the seeded array.
+    expect(session.recentCircuitOrder).toEqual([1, 2]);
+    // Indirect: 99 does not leak into the captured snapshot text
+    // either (belt-and-braces).
+    const snapshotText = client._calls[0].system[1].text;
+    expect(snapshotText).not.toMatch(/\b99\b/);
+  });
+
+  test('r9-3c — pathological declared order (all filtered): falls back to numeric ascending of seeded circuits', async () => {
+    // Fixture declares `[0, -1, "x", null]` — every entry fails a
+    // filter (0 is supply, -1 is negative, "x" is non-integer, null
+    // is non-integer). The normalised array is empty. Falling back
+    // to numeric ascending of seeded circuits preserves a
+    // deterministic harness state; without the fallback, the
+    // builder would emit NO detailed lines and collapse all seeded
+    // circuits into an "N earlier circuits" summary — a silent
+    // corruption of the test input.
+    //
+    // Observable effect: detailed lines for circuits 1, 2, 3 appear
+    // in ascending numeric order (matching the no-declared-order
+    // fallback of r8-3c).
+    const syntheticFx = {
+      pre_turn_state: {
+        snapshot: {
+          circuits: {
+            1: { circuit_ref: 1, circuit_designation: 'Ring 1', measured_zs_ohm: 0.11 },
+            2: { circuit_ref: 2, circuit_designation: 'Ring 2', measured_zs_ohm: 0.22 },
+            3: { circuit_ref: 3, circuit_designation: 'Lights', measured_zs_ohm: 0.33 },
+          },
+          pending_readings: [],
+          observations: [],
+          validation_alerts: [],
+        },
+        // All entries invalid after the r9-#3 filters.
+        recentCircuitOrder: [0, -1, 'x', null],
+        askedQuestions: [],
+        extractedObservations: [],
+      },
+      transcript: 'test',
+      sse_events_tool_call: sample01ToolCallEvents(),
+      sse_events_tool_call_round2: sample01ToolCallEventsR2(),
+    };
+    const { client } = await runToolCallPath(syntheticFx);
+    const snapshotText = client._calls[0].system[1].text;
+    // All three circuits detailed (no summary line — fallback to
+    // numeric ascending placed them all in the detailed window).
+    expect(snapshotText).not.toMatch(/earlier circuits/);
+    // Detailed lines appear in numeric ascending order.
+    const extractedSection = snapshotText.match(/EXTRACTED \(field IDs[^]*$/)[0];
+    const posForCircuit = (n) =>
+      extractedSection.indexOf(`\n${n}:{`);
+    expect(posForCircuit(1)).toBeLessThan(posForCircuit(2));
+    expect(posForCircuit(2)).toBeLessThan(posForCircuit(3));
+    // All three circuits' readings are present (proves none fell
+    // into an empty "earlier circuits" bucket).
+    expect(snapshotText).toContain('0.11');
+    expect(snapshotText).toContain('0.22');
+    expect(snapshotText).toContain('0.33');
+  });
+});

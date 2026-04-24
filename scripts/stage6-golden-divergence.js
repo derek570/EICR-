@@ -870,8 +870,16 @@ export async function runToolCallPath(fx) {
   // The SECOND argument is the legacy result whose `questions` slot gets
   // passed through. Phase 4 tool-call branch deletes questions_for_user
   // (Plan 04-03), so questions is always []. We pass an empty shape.
+  //
+  // Plan 04-15 r9-#3 — also return the `session` reference so tests
+  // can inspect post-normalisation state (notably
+  // session.recentCircuitOrder) directly. The mockClient captures
+  // prompt-text-side behaviour; the session reference captures the
+  // state side. Both are needed because e.g. the `.slice(-N)` in
+  // buildStateSnapshotMessage can hide duplicates or unknown refs
+  // when the declared array happens to be ≤N entries.
   const bundled = bundleToolCallsIntoResult(perTurnWrites, { questions: [] });
-  return { bundled, client: session.client };
+  return { bundled, client: session.client, session };
 }
 
 /**
