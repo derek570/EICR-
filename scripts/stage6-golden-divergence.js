@@ -867,25 +867,72 @@ export async function runToolCallPath(fx) {
     // the constant value so the author can act on it without digging
     // into the harness source.
     //
-    // The guard sits in the no-declaration `else` branch. Fixtures
-    // that DO declare recentCircuitOrder have opted into chronology
-    // explicitly, so the guard does not apply — that path flows into
-    // the `if (Array.isArray(declaredOrder))` block below.
-    if (!Array.isArray(declaredOrder) && seededKeys.size > SNAPSHOT_RECENT_CIRCUITS) {
-      const seededList = [...seededKeys].sort((a, b) => a - b).join(', ');
-      throw new Error(
-        `golden-divergence: fixture seeds ${seededKeys.size} non-supply ` +
-          `circuits (${seededList}) but does not declare ` +
-          `\`pre_turn_state.recentCircuitOrder\`. The detailed-view ` +
-          `window is SNAPSHOT_RECENT_CIRCUITS=${SNAPSHOT_RECENT_CIRCUITS}, ` +
-          `so numeric fallback may silently diverge from production ` +
-          `chronology. Add an explicit recentCircuitOrder array to ` +
-          `the fixture declaring the chronological order the inspector ` +
-          `dictated these circuits (most recent at the end). For ` +
-          `pathological test cases (empty-chronology intent), declare ` +
-          `an empty array \`[]\` which will trigger the pathological ` +
-          `fallback deliberately.`,
-      );
+    // Plan 04-18 r12-#2 [MAJOR] — the original r11-#1 guard gate keyed
+    // off `!Array.isArray(declaredOrder)`, which let a fixture bypass
+    // by declaring `recentCircuitOrder: []` (empty array IS an array;
+    // the guard did not fire; normalisation produced empty; the
+    // pathological-fallback else branch below assigned numeric
+    // ascending silently). r12-#2 tightens the check — the guard now
+    // computes the POST-normalisation order preemptively and fires
+    // when the result would be empty (covers both "no declaration"
+    // and "declared degenerately empty" cases uniformly).
+    //
+    // The `_force_numeric_recency: true` escape hatch on
+    // pre_turn_state is the EXPLICIT opt-in for test fixtures that
+    // deliberately exercise the pathological numeric fallback (e.g.
+    // the r12-2c test case). Fixtures with seededKeys <=
+    // SNAPSHOT_RECENT_CIRCUITS don't need the flag because the
+    // guard only fires when seededKeys exceed the window — r9-3c's
+    // 3-circuit pathological fixture passes unchanged.
+    const forceNumeric = fx.pre_turn_state?._force_numeric_recency === true;
+
+    if (!forceNumeric && seededKeys.size > SNAPSHOT_RECENT_CIRCUITS) {
+      // Compute the post-normalisation order preemptively so we can
+      // detect the empty-normalisation case before falling through to
+      // the branch below. This duplicates the normalisation logic —
+      // the duplication is deliberate, the guard needs to know the
+      // RESULT of normalisation to decide whether to throw without
+      // hoisting the normalisation out of its if-branch (which would
+      // change observable control flow for non-guard-fire cases).
+      const preview = [];
+      if (Array.isArray(declaredOrder)) {
+        for (const raw of declaredOrder) {
+          const n = Number(raw);
+          if (!Number.isInteger(n)) continue;
+          if (n <= 0) continue; // drops 0 (supply) + any negatives
+          if (!seededKeys.has(n)) continue; // drops unknown refs
+          // Last-occurrence-wins dedupe, mirrors the branch below +
+          // production's splice+push idiom.
+          const idx = preview.indexOf(n);
+          if (idx !== -1) preview.splice(idx, 1);
+          preview.push(n);
+        }
+      }
+
+      if (preview.length === 0) {
+        const seededList = [...seededKeys].sort((a, b) => a - b).join(', ');
+        // Preserve the r11-#1 "does not declare" phrasing for the
+        // no-declaration case so r11-1a's assertion chain still
+        // matches; append the "normalises to empty" wording in the
+        // degenerate-declaration case r12-#2 closes.
+        const declaredShape = Array.isArray(declaredOrder)
+          ? `declared as \`${JSON.stringify(declaredOrder)}\` which normalises to empty`
+          : `does not declare \`pre_turn_state.recentCircuitOrder\``;
+        throw new Error(
+          `golden-divergence: fixture seeds ${seededKeys.size} non-supply ` +
+            `circuits (${seededList}) and ${declaredShape}. The ` +
+            `detailed-view window is SNAPSHOT_RECENT_CIRCUITS=` +
+            `${SNAPSHOT_RECENT_CIRCUITS}, so a numeric-ascending ` +
+            `fallback may silently diverge from production chronology. ` +
+            `Either (a) declare a non-empty recentCircuitOrder array ` +
+            `listing the chronological order the inspector dictated ` +
+            `these circuits (most recent at the end), or (b) for test ` +
+            `fixtures that deliberately need the pathological ` +
+            `numeric-fallback behaviour, set ` +
+            `\`pre_turn_state._force_numeric_recency: true\` to bypass ` +
+            `this guard explicitly.`,
+        );
+      }
     }
 
     if (Array.isArray(declaredOrder)) {
