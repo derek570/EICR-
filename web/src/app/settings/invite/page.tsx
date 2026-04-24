@@ -48,6 +48,15 @@ export default function InviteEmployeePage() {
     }
     if (!isCompanyAdmin(user)) {
       router.replace('/settings');
+      return;
+    }
+    // System admins without a company assignment can pass the role
+    // gate but can't submit against any company_id — bounce them out
+    // rather than render a form that always fails. A real multi-
+    // company picker for unassigned system admins is out-of-scope
+    // for Phase 6; the dashboard path for that is /settings/admin.
+    if (!user.company_id) {
+      router.replace('/settings');
     }
   }, [user, userLoading, router]);
 

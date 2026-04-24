@@ -114,12 +114,14 @@ async function resetIDB() {
   }
 }
 
-async function readCachedDefaults(): Promise<Record<string, string> | null> {
+async function readCachedDefaults(
+  userId: string = 'user-1'
+): Promise<Record<string, string> | null> {
   const db = await openDB();
   const tx = db.transaction(STORE_APP_SETTINGS, 'readonly');
   const store = tx.objectStore(STORE_APP_SETTINGS);
   return new Promise((resolve) => {
-    const req = store.get('user-defaults');
+    const req = store.get(`user-defaults:${userId}`);
     req.onsuccess = () => {
       const row = req.result as { value?: { defaults: Record<string, string> } } | undefined;
       resolve(row?.value?.defaults ?? null);

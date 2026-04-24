@@ -223,8 +223,16 @@ export default function CircuitsPage() {
    */
   const handleApplyDefaults = () => {
     const visibleIds = new Set(boardScoped.map((c) => c.id));
+    // Strip scoped/cable-type keys (e.g. `lighting.live_csa_mm2`) before
+    // passing to the generic applier — otherwise the helper would write
+    // those dotted strings as if they were Circuit field names. Cable
+    // size defaults are applied by a separate per-circuit-type flow.
+    const flatDefaults: Record<string, string> = {};
+    for (const [k, v] of Object.entries(userDefaults)) {
+      if (!k.includes('.')) flatDefaults[k] = v;
+    }
     const { circuits: updatedVisible, summary } = applyDefaultsToCircuits(boardScoped, {
-      userDefaults: userDefaults as Partial<Record<keyof Circuit, string>>,
+      userDefaults: flatDefaults as Partial<Record<keyof Circuit, string>>,
     });
     if (summary.filledFields === 0) {
       setActionHint('Apply Defaults — nothing to fill (all fields already set).');

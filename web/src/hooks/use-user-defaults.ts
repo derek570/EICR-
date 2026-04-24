@@ -37,11 +37,14 @@ import { openDB, isSupported, wrapRequest, wrapTransaction } from '@/lib/pwa/job
 export type UserDefaults = Record<string, string>;
 
 const STORE_APP_SETTINGS = 'app-settings';
-const KEY_USER_DEFAULTS = 'user-defaults';
+// Per-user cache keys so shared-device installs don't collide. When
+// inspector B logs in, their defaults land in a separate row and the
+// next time inspector A opens Settings offline, `readCachedDefaults(A)`
+// still resolves A's map instead of returning null.
+const keyForUser = (userId: string) => `user-defaults:${userId}`;
 
 interface SettingsRow {
   key: string;
-  /** Cached map keyed by userId so device-shared installs don't collide. */
   value: { userId: string; defaults: UserDefaults } | null;
 }
 
@@ -51,8 +54,8 @@ async function readCachedDefaults(userId: string): Promise<UserDefaults | null> 
     const db = await openDB();
     const tx = db.transaction(STORE_APP_SETTINGS, 'readonly');
     const store = tx.objectStore(STORE_APP_SETTINGS);
-    const row = (await wrapRequest(store.get(KEY_USER_DEFAULTS))) as SettingsRow | null;
-    if (!row || !row.value || row.value.userId !== userId) return null;
+    const row = (await wrapRequest(store.get(keyForUser(userId)))) as SettingsRow | null;
+    if (!row || !row.value) return null;
     return row.value.defaults;
   } catch (err) {
     console.warn('[use-user-defaults] readCachedDefaults failed', err);
@@ -67,7 +70,7 @@ async function writeCachedDefaults(userId: string, defaults: UserDefaults): Prom
     const tx = db.transaction(STORE_APP_SETTINGS, 'readwrite');
     const store = tx.objectStore(STORE_APP_SETTINGS);
     const row: SettingsRow = {
-      key: KEY_USER_DEFAULTS,
+      key: keyForUser(userId),
       value: { userId, defaults },
     };
     store.put(row);
