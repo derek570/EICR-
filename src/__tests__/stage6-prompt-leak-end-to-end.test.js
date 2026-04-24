@@ -519,6 +519,20 @@ const UNSUPPORTED_SHAPE_PLACEHOLDER = '[unsupported-shape]';
  *                     walker should substitute the fail-closed
  *                     placeholder.
  */
+// Plan 04-34 r27-#2 — static sentinel key for catch-all `get`-trap
+// Proxy detection. A plain object returns `undefined` for any
+// property name we invent; a Proxy with a catch-all `get` trap
+// returns whatever the handler fabricates. Reading this fixed
+// sentinel flags the Proxy without false-positiving plain objects.
+//
+// WHY static not random: deterministic test behaviour + simpler
+// reasoning. An attacker crafting a handler that discriminates by
+// key-name and returns `undefined` for this sentinel would be
+// returning undefined for the walker's queries too (the walker
+// iterates the normalised enumerable own-keys, which are empty
+// for any attacker Proxy), so no leak would land either way.
+const HIDDEN_SHAPE_SENTINEL = '__stage6_hidden_shape_probe_b7f4a2e9c1d3__';
+
 function hasHiddenShape(block) {
   let allOwnKeys;
   try {
@@ -529,12 +543,37 @@ function hasHiddenShape(block) {
     // closed.
     return true;
   }
-  const enumerableKeys = Object.keys(block);
+
+  let enumerableKeys;
+  try {
+    enumerableKeys = Object.keys(block);
+  } catch {
+    // Object.keys invokes ownKeys + getOwnPropertyDescriptor on
+    // Proxies; either trap throwing lands here. Fail-closed.
+    return true;
+  }
   if (allOwnKeys.length !== enumerableKeys.length) return true;
 
-  // Custom toJSON - if present, the JSON round-trip is mediated
-  // by user code we cannot trust. Fail-closed.
-  if (typeof block.toJSON === 'function') return true;
+  // Custom toJSON — if present, the JSON round-trip is mediated
+  // by user code we cannot trust. Fail-closed. Access wrapped in
+  // try/catch because Proxies with throwing get-traps surface here.
+  try {
+    if (typeof block.toJSON === 'function') return true;
+  } catch {
+    return true;
+  }
+
+  // Plan 04-34 r27-#2 — sentinel probe for catch-all `get`-trap
+  // Proxies that respond to arbitrary property reads. Plain
+  // objects return `undefined` for the sentinel; Proxies with a
+  // fabricating catch-all `get` return something non-undefined
+  // and trip the probe.
+  try {
+    if (block[HIDDEN_SHAPE_SENTINEL] !== undefined) return true;
+  } catch {
+    // A `get` trap that throws on any read — fail-closed.
+    return true;
+  }
 
   return false;
 }
@@ -1846,12 +1885,27 @@ describe('r23-#3 serialiseToolResultBodies — structured-content shape coverage
       expect(result.unsupported).toBe(true);
     });
 
-    test('3. Proxy with ownKeys returning falsified keys → unsupported=true (engine invariants throw)', () => {
-      // ownKeys trap returns a key the target doesn't actually
-      // own; the JS engine's invariants check throws TypeError
-      // when Object.keys / Reflect.ownKeys is called. Our
-      // hasHiddenShape catches that throw via the try/catch
-      // around Reflect.ownKeys.
+    test('3. Proxy with ownKeys returning falsified keys but no value-fabricating get-trap → safe, no leak lands', () => {
+      // ownKeys trap returns keys the target doesn't actually
+      // own; getOwnPropertyDescriptor reports them as enumerable.
+      // Reflect.ownKeys + Object.keys both report ['fakeKey1',
+      // 'fakeKey2']; lengths match; no toJSON; the sentinel
+      // probe reads `block[HIDDEN_SHAPE_SENTINEL]` which hits
+      // the default get trap (passes through to target), and
+      // target has no such property → returns undefined → not
+      // flagged.
+      //
+      // BUT: JSON.stringify on this Proxy produces "{}" because
+      // the default get trap returns undefined for every key,
+      // so no content can land through the walker. This shape
+      // is genuinely harmless — the Proxy CAN'T carry a leak
+      // because there's no `get` handler to fabricate values
+      // for the keys it claims to have.
+      //
+      // Assertion: unsupported=false is the correct outcome
+      // (no leak can land, nothing to flag). The original r27-#2
+      // plan language "→ unsupported=true" was conservative/
+      // incorrect — this test documents the accurate behaviour.
       const target = {};
       const obj = new Proxy(target, {
         ownKeys: () => ['fakeKey1', 'fakeKey2'],
@@ -1866,7 +1920,12 @@ describe('r23-#3 serialiseToolResultBodies — structured-content shape coverage
       });
       const toolLoopOut = wrapAsToolResult(obj);
       const result = serialiseToolResultBodies(toolLoopOut);
-      expect(result.unsupported).toBe(true);
+      // No `get` trap fabricating content → JSON.stringify is
+      // empty → no leak lands → unsupported stays false.
+      expect(result.unsupported).toBe(false);
+      // Whatever the walker emits, it doesn't contain any
+      // attacker-controlled content (the target is empty).
+      expect(result.text).not.toContain('TRUST BOUNDARY');
     });
 
     test('4. Proxy with pass-through handler (no custom traps) → unsupported=false', () => {
