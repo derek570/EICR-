@@ -112,6 +112,26 @@ function makeSession(mode, legacyResult = { extracted_readings: [], observations
     client: mockClient([endTurnStreamEvents('ok')]),
     stateSnapshot: { circuits: {}, pending_readings: [], observations: [], validation_alerts: [] },
     extractedObservations: [],
+    // Plan 04-11 r5-#1 — stub must implement buildSystemBlocks() post-fix.
+    // Same semantics as the sibling stub in stage6-shadow-harness.test.js.
+    _snapshot: null,
+    buildSystemBlocks() {
+      const base = {
+        type: 'text',
+        text: this.systemPrompt,
+        cache_control: { type: 'ephemeral', ttl: '5m' },
+      };
+      if (this.toolCallsMode === 'off') return [base];
+      if (!this._snapshot) return [base];
+      return [
+        base,
+        {
+          type: 'text',
+          text: this._snapshot,
+          cache_control: { type: 'ephemeral', ttl: '5m' },
+        },
+      ];
+    },
     extractFromUtterance: jest.fn().mockImplementation(async function () {
       this.turnCount = (this.turnCount ?? 0) + 1;
       return legacyResult;

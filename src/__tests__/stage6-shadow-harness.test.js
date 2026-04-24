@@ -55,6 +55,31 @@ function makeSession(mode, legacyResult = { extracted_readings: [], observations
     client: mockClient([endTurnStreamEvents('ok')]),
     stateSnapshot: { circuits: {}, pending_readings: [], observations: [], validation_alerts: [] },
     extractedObservations: [],
+    // Plan 04-11 r5-#1 — stubs now implement buildSystemBlocks() so the
+    // harness can call it uniformly. Shape mirrors EICRExtractionSession's
+    // real method: 1 block in off-mode (or when snapshot is empty);
+    // 2 blocks in non-off mode when `_snapshot` is set on the stub.
+    // The `_snapshot` opt-in lets tests drive the two-block path without
+    // standing up a real session for the simple mode-gating assertions
+    // this suite owns.
+    _snapshot: null,
+    buildSystemBlocks() {
+      const base = {
+        type: 'text',
+        text: this.systemPrompt,
+        cache_control: { type: 'ephemeral', ttl: '5m' },
+      };
+      if (this.toolCallsMode === 'off') return [base];
+      if (!this._snapshot) return [base];
+      return [
+        base,
+        {
+          type: 'text',
+          text: this._snapshot,
+          cache_control: { type: 'ephemeral', ttl: '5m' },
+        },
+      ];
+    },
     extractFromUtterance: jest.fn().mockImplementation(async function () {
       // Simulate legacy's internal turn-count increment.
       this.turnCount = (this.turnCount ?? 0) + 1;
@@ -250,6 +275,107 @@ describe('runShadowHarness — Phase 2', () => {
       );
       expect(s.extractFromUtterance).not.toHaveBeenCalled();
       expect(s.client._callCount).toBe(0);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Group r5-1 — Plan 04-11 r5-#1: harness uses session.buildSystemBlocks().
+//
+// Codex r5 MAJOR #1: runShadowHarness was hand-rolling a single-block
+// system array (`[{type:'text', text: session.systemPrompt, ...}]`)
+// instead of calling `session.buildSystemBlocks()`. In non-off modes the
+// real session's buildSystemBlocks() returns a TWO-block array (base
+// prompt + cached snapshot) per STQ-03 / Plan 04-02. The harness was
+// dropping the snapshot, so Phase 7's STR-03 divergence gate would
+// measure "shadow-without-snapshot vs live-with-snapshot" — contaminated
+// baseline.
+//
+// Fix: delegate to `session.buildSystemBlocks()`. Shadow now mirrors
+// whatever the session would ship on the real path.
+//
+// These tests capture the Anthropic request via mockClient._calls and
+// assert:
+//   r5-1a: system IS what buildSystemBlocks returns (one block when
+//          stub has no snapshot; two blocks when stub has a snapshot).
+//   r5-1b: system[1] carries the stub's snapshot text — pre-fix this
+//          block is absent because the harness hard-coded a single block.
+//   r5-1c: system[0].text is the stub's base prompt on every call —
+//          locks that the base prompt is still block 0 after the refactor.
+// ---------------------------------------------------------------------------
+
+describe('Group r5-1 — Plan 04-11 r5-#1: harness uses session.buildSystemBlocks()', () => {
+  test('r5-1a — shadow request system length matches buildSystemBlocks() output', async () => {
+    const logger = makeLogger();
+
+    // Variant 1: no snapshot → buildSystemBlocks returns 1 block.
+    const s1 = makeSession('shadow', {
+      extracted_readings: [],
+      observations: [],
+      questions: [],
+    });
+    // _snapshot null by default → buildSystemBlocks returns 1 block.
+    await runShadowHarness(s1, 'text', [], { logger });
+    const req1 = s1.client._calls[0];
+    expect(Array.isArray(req1.system)).toBe(true);
+    expect(req1.system).toHaveLength(1);
+
+    // Variant 2: snapshot present → buildSystemBlocks returns 2 blocks.
+    const s2 = makeSession('shadow', {
+      extracted_readings: [],
+      observations: [],
+      questions: [],
+    });
+    s2._snapshot = 'CIRCUITS\n- 1 Ring 32A\n';
+    await runShadowHarness(s2, 'text', [], { logger });
+    const req2 = s2.client._calls[0];
+    expect(Array.isArray(req2.system)).toBe(true);
+    // Pre-fix: this is 1 (harness hard-codes single block).
+    // Post-fix: this is 2 because buildSystemBlocks() returns prompt +
+    // snapshot when the stub's _snapshot is non-empty.
+    expect(req2.system).toHaveLength(2);
+  });
+
+  test('r5-1b — when snapshot is present, system[1] carries snapshot text', async () => {
+    const logger = makeLogger();
+    const s = makeSession('shadow', {
+      extracted_readings: [],
+      observations: [],
+      questions: [],
+    });
+    const snapshotText = 'TEST-SNAPSHOT-MARKER-r5-1b\nCIRCUITS\n- 1 Ring 32A\n';
+    s._snapshot = snapshotText;
+
+    await runShadowHarness(s, 'text', [], { logger });
+
+    const req = s.client._calls[0];
+    // Pre-fix: system[1] is undefined (harness single-block).
+    // Post-fix: system[1] is the snapshot block with text + cache_control.
+    expect(req.system[1]).toBeDefined();
+    expect(req.system[1]).toMatchObject({
+      type: 'text',
+      cache_control: { type: 'ephemeral', ttl: '5m' },
+    });
+    expect(req.system[1].text).toBe(snapshotText);
+  });
+
+  test('r5-1c — system[0] is the session base prompt with ephemeral cache_control', async () => {
+    const logger = makeLogger();
+    const s = makeSession('shadow', {
+      extracted_readings: [],
+      observations: [],
+      questions: [],
+    });
+    s._snapshot = 'some snapshot content';
+    s.systemPrompt = 'BASE-PROMPT-MARKER-r5-1c';
+
+    await runShadowHarness(s, 'text', [], { logger });
+
+    const req = s.client._calls[0];
+    expect(req.system[0]).toMatchObject({
+      type: 'text',
+      text: 'BASE-PROMPT-MARKER-r5-1c',
+      cache_control: { type: 'ephemeral', ttl: '5m' },
     });
   });
 });
