@@ -827,30 +827,15 @@ export const api = {
    * Generate the final EICR/EIC PDF for a job. The backend
    * (`src/routes/pdf.js:22`) collects the persisted job documents,
    * pipes them through the Python ReportLab + Playwright renderer, and
-   * returns raw PDF bytes with:
-   *   - `Content-Type: application/pdf`
-   *   - `Content-Disposition: attachment; filename="EICR_<jobId>.pdf"`
+   * returns raw PDF bytes with `Content-Type: application/pdf`.
    *
    * This cannot go through the typed `request()` helper because that
    * path assumes a JSON (or empty) response body. We need the raw
    * bytes as a `Blob` so the caller can hand them to an `<iframe>` /
    * `navigator.share` / anchor-download without a round-trip through
    * base64. Pattern mirrors `fetchPhotoBlob` above for the same
-   * reason.
-   *
-   * 500 responses use the backend's standard `{error: string}` JSON
-   * envelope — surface the message on `ApiError.message` so the PDF
-   * tab can render it in a red SectionCard. 403 is only possible when
-   * `userId` doesn't match the bearer token's subject; the PDF tab
-   * always sources `userId` from `getUser().id` so this only fires on
-   * a stale / swapped session — treat it as "please sign in again"
-   * via the existing ApiError.status check upstream.
-   *
-   * The backend budgets ~30s for render; we don't impose a client-side
-   * timeout because the default `fetch` has no timeout and the AWS
-   * ALB will 504 at 60s if the backend hangs. Callers can show the
-   * "generating…" overlay for the whole flight without worrying about
-   * a spurious abort.
+   * reason. 500 responses use the `{error: string}` JSON envelope
+   * surfaced on `ApiError.message`.
    */
   async generatePdf(userId: string, jobId: string): Promise<Blob> {
     const token = getToken();
@@ -865,5 +850,26 @@ export const api = {
       throw new ApiError(res.status, message, body);
     }
     return res.blob();
+  },
+
+  /**
+   * Look up a UK postcode via the backend postcodes.io proxy.
+   * Returns `null` on 404 (postcode not found) so the Installation
+   * tab can silently swallow bad user input. Other non-2xx throw.
+   * Endpoint: `GET /api/postcode/:postcode` (src/routes/postcode.js).
+   */
+  async lookupPostcode(
+    postcode: string
+  ): Promise<{ postcode: string; town: string; county: string } | null> {
+    try {
+      return await request<{ postcode: string; town: string; county: string }>(
+        `/api/postcode/${encodeURIComponent(postcode)}`
+      );
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 404) {
+        return null;
+      }
+      throw err;
+    }
   },
 };

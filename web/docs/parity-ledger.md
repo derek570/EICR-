@@ -109,15 +109,15 @@ iOS sources:
 | `InstallationTab.swift:L61` client_address | `installation/page.tsx:L143-L146` | match |  |  |
 | `InstallationTab.swift:L62` client_town | `installation/page.tsx:L149-L152` | match |  |  |
 | `InstallationTab.swift:L63` client_county | `installation/page.tsx:L153-L156` | match |  |  |
-| `InstallationTab.swift:L64` client_postcode (+ postcode autocomplete debounce) | `installation/page.tsx:L158-L162` | partial | 4 | Web lacks postcodes.io autocomplete / 400ms debounce described at `InstallationTab.swift:L251-L305`. Backend endpoint `lookupPostcode` already exists on iOS APIClient — needs a web wrapper. |
+| `InstallationTab.swift:L64` client_postcode (+ postcode autocomplete debounce) | `installation/page.tsx` + `hooks/use-postcode-lookup.ts` | match |  | Phase 4: `api.lookupPostcode` wraps backend `GET /api/postcode/:postcode`; 400ms debounce + canonical-form memo in `usePostcodeLookup` hook; fill-empty-only semantics for town/county. |
 | `InstallationTab.swift:L65` client_phone (phonePad keyboard) | `installation/page.tsx:L163-L168` inputMode="tel" | match |  |  |
 | `InstallationTab.swift:L66-L67` client_email (autocapitalise none, email keyboard) | `installation/page.tsx:L170-L177` | match |  |  |
 | `InstallationTab.swift:L76` address (installation) | `installation/page.tsx:L182-L185` | match |  |  |
-| `InstallationTab.swift:L77-L79` town/county/postcode (installation) | `installation/page.tsx:L187-L201` | partial | 4 | Postcode autocomplete missing here too. |
+| `InstallationTab.swift:L77-L79` town/county/postcode (installation) | `installation/page.tsx` | match |  | Phase 4: installation-address postcode wired to the same `usePostcodeLookup` hook used for the client postcode; fill-empty-only for town/county. |
 | `InstallationTab.swift:L80` occupier_name | `installation/page.tsx:L202-L206` | match |  |  |
 | `InstallationTab.swift:L90-L93` CMDatePickerField `Date of Inspection` | `installation/page.tsx:L212-L216` `<input type="date">` | match |  |  |
-| `InstallationTab.swift:L95-L101` `Date of Previous Inspection` (EICR only, N/A allowed) | `installation/page.tsx:L218-L225` EICR-only date input | partial | 4 | Web input has no explicit N/A toggle — iOS `CMDatePickerStringField` supports an "N/A" sentinel. |
-| `InstallationTab.swift:L103-L107` Next inspection years Picker (menu) | `installation/page.tsx:L226-L232` NumericStepper (1–10) | partial | 4 | iOS uses a Picker bound to `Constants.inspectionIntervals`; web uses a stepper. Same end result, different affordance. |
+| `InstallationTab.swift:L95-L101` `Date of Previous Inspection` (EICR only, N/A allowed) | `installation/page.tsx` | match |  | Phase 4: N/A pill-button toggle stores literal `"N/A"` as the value and disables the date input; tap again to re-enable. Matches iOS `CMDatePickerStringField` sentinel contract. |
+| `InstallationTab.swift:L103-L107` Next inspection years Picker (menu) | `installation/page.tsx:L226-L232` NumericStepper (1–10) | match |  | iOS uses a Picker bound to `Constants.inspectionIntervals`; web uses a stepper — acceptable affordance difference, same end result. Default 5 seeded on mount (Phase 4). |
 | `InstallationTab.swift:L109-L112` Next inspection due (auto-recomputed) | `installation/page.tsx:L234-L239` + `setYears` auto-compute | match |  |  |
 | `InstallationTab.swift:L122-L127` Premises Description (CMFloatingPicker, `Constants.premisesDescriptions`) | `installation/page.tsx:L244-L249` SelectChips (4 options: Residential/Commercial/Industrial/Other) | match |  |  |
 | `InstallationTab.swift:L130-L131` Toggle "Installation records available" (EICR only) | `installation/page.tsx:L256-L270` SegmentedControl Yes/No | match |  | Toggle-vs-segmented is acceptable. |
@@ -130,9 +130,9 @@ iOS sources:
 | `InstallationTab.swift:L180-L182` Agreed limitations (multiline, EICR) | `installation/page.tsx:L336-L341` | match |  |  |
 | `InstallationTab.swift:L183` Agreed with (single line, EICR) | `installation/page.tsx:L342-L346` | match |  |  |
 | `InstallationTab.swift:L184-L186` Operational limitations (multiline, EICR) | `installation/page.tsx:L347-L352` | match |  |  |
-| `InstallationTab.swift:L344-L399` Inspector Section (quick-select pills + add-new inline + signature capture + default star) | `installation/page.tsx:L358-L364` static SectionCard hint only ("lives on Staff tab") | partial | 4 | iOS shows inline inspector picker + Add New form + SignatureCaptureView directly on Installation tab. Web punts to Staff tab. Could keep the punt — but inline inspector pills would save two taps. |
+| `InstallationTab.swift:L344-L399` Inspector Section (quick-select pills + add-new inline + signature capture + default star) | `installation/page.tsx:L358-L364` static SectionCard hint only ("lives on Staff tab") | partial | 6 | Phase 4 scope limit: inline inspector pills + add-new form deferred to Phase 6 (Settings/Staff hub is the proper home for staff CRUD). The punt-to-Staff-tab hint stays. |
 | `InstallationTab.swift:L460-L490` inline new-inspector form (first/last/position/signature/isDefault) | MISSING | missing | 6 | Covered by Settings → Staff detail page separately. Inline add is iOS-only convenience. |
-| `InstallationTab.swift:L502-L527` ensureDateOfInspection / autoSelectDefaultIfNeeded / default nextInspectionYears=5 | `installation/page.tsx:L104-L113` setYears handler (partial) | partial | 4 | Web doesn't auto-seed inspection date on mount, nor auto-select default inspector. |
+| `InstallationTab.swift:L502-L527` ensureDateOfInspection / autoSelectDefaultIfNeeded / default nextInspectionYears=5 | `installation/page.tsx` | match |  | Phase 4: one-shot mount effect seeds `date_of_inspection` = today, `next_inspection_years` = 5, and computed `next_inspection_due_date`. Inspector auto-select deferred to Phase 6 alongside inline inspector picker. |
 | `InstallationTab.swift:L12-L18` inspector state (@State newFirstName, newSignatureData, saveError) | `settings/staff/[inspectorId]/page.tsx` | match |  | Ported to separate staff detail page. |
 
 ---
@@ -148,40 +148,40 @@ iOS sources:
 | ios-ref | web-ref | status | phase | notes |
 |---|---|---|---|---|
 | `SupplyTab.swift:L442-L472` heroHeader "Supply Characteristics" | `web/src/app/job/[id]/supply/page.tsx:L387-L404` HeroBanner | match |  |  |
-| `SupplyTab.swift:L28-L31` Earthing Arrangement picker + onChange auto-flips TT flags | `supply/page.tsx:L66-L71` SelectChips (TN-S/TN-C-S/TT/IT) | partial | 4 | Web picker doesn't side-effect `means_earthing_electrode=true` when TT, nor set `inspection.isTTEarthing`. That chains through to Inspection tab's smart toggle — iOS does the cross-tab coupling. |
+| `SupplyTab.swift:L28-L31` Earthing Arrangement picker + onChange auto-flips TT flags | `supply/page.tsx` | match |  | Phase 4: `setEarthingArrangement` side-effects `means_earthing_electrode=true` when TT and mirrors `inspection.is_tt_earthing`. Non-TT selections leave electrode flag alone (intentional override respected). Unit-tested in `tests/phase-4-supply-tt-sideeffect.test.ts`. |
 | `SupplyTab.swift:L50-L54` Live Conductors picker | `supply/page.tsx:L72-L77` SelectChips | match |  |  |
-| `SupplyTab.swift:L56-L60` Number of Supplies picker (`Constants.numberOfSupplies`) | `supply/page.tsx:L79-L84` plain numeric input | partial | 4 | iOS offers a picker of preset counts; web is free-form. |
-| `SupplyTab.swift:L62-L72` Nominal Voltage U / Uo pickers | `supply/page.tsx:L91-L102` plain numeric inputs | partial | 4 | Web lacks preset voltage list (`Constants.voltages`). |
-| `SupplyTab.swift:L74-L78` Nominal Frequency picker | `supply/page.tsx:L85-L90` plain numeric input | partial | 4 |  |
-| `SupplyTab.swift:L88-L91` Means of earthing: Distributor + Electrode toggles (both shown) | `supply/page.tsx:L138-L163` single SegmentedControl (one-of-two) | partial | 4 | iOS allows both toggles independently; web forces exclusive choice. Real installations can have both — the SegmentedControl is too restrictive. |
-| `SupplyTab.swift:L93-L103` if electrode: type picker + resistance + location (hidden until enabled) | `supply/page.tsx:L164-L183` conditional block — FreeFormText for type/resistance/location | partial | 4 | Web lacks electrode type dropdown (rod/plate/tape/mat/other). |
-| `SupplyTab.swift:L113-L132` Main switch BS/EN picker + "Other" → custom text | `supply/page.tsx:L188-L192` plain text | partial | 4 | Web lacks BS/EN preset list + Other-text escape hatch. |
-| `SupplyTab.swift:L134-L138` Main switch poles picker | `supply/page.tsx:L193-L197` plain text | partial | 4 |  |
-| `SupplyTab.swift:L140-L160` Main switch voltage picker + "Other" | `supply/page.tsx:L198-L203` plain numeric | partial | 4 | Same "Other" pattern missing. |
-| `SupplyTab.swift:L162-L182` Main switch current picker + "Other" | `supply/page.tsx:L204-L209` plain numeric | partial | 4 |  |
-| `SupplyTab.swift:L184-L188` Fuse/Setting A picker | `supply/page.tsx:L210-L215` plain numeric | partial | 4 |  |
+| `SupplyTab.swift:L56-L60` Number of Supplies picker (`Constants.numberOfSupplies`) | `supply/page.tsx` plain numeric input | partial | 9 | Deferred: Phase 4 scope limit — picker-preset migration lands with `Constants.*` port to shared-utils in Phase 9 polish. Free-form input is acceptable until then. |
+| `SupplyTab.swift:L62-L72` Nominal Voltage U / Uo pickers | `supply/page.tsx` plain numeric inputs | partial | 9 | Deferred: same reason — needs shared `Constants.voltages`. |
+| `SupplyTab.swift:L74-L78` Nominal Frequency picker | `supply/page.tsx` plain numeric input | partial | 9 | Deferred: same reason — needs shared `Constants.frequencies`. |
+| `SupplyTab.swift:L88-L91` Means of earthing: Distributor + Electrode toggles (both shown) | `supply/page.tsx` | match |  | Phase 4: two independent Yes/No SegmentedControls so distributor+electrode can both be true (e.g. PME + supplementary earth electrode). |
+| `SupplyTab.swift:L93-L103` if electrode: type picker + resistance + location (hidden until enabled) | `supply/page.tsx` | match |  | Phase 4: SelectChips with 6 options (Earth Rod / EE / P / T / M / O) mirroring iOS `Constants.earthElectrodeTypes`; resistance + location fields unchanged. |
+| `SupplyTab.swift:L113-L132` Main switch BS/EN picker + "Other" → custom text | `supply/page.tsx` plain text | partial | 9 | Deferred: same `Constants.*` port reason as the voltage/frequency pickers above. Free-form input is fine until the preset lists are ported. |
+| `SupplyTab.swift:L134-L138` Main switch poles picker | `supply/page.tsx` plain text | partial | 9 | Deferred: needs `Constants.numberOfPoles`. |
+| `SupplyTab.swift:L140-L160` Main switch voltage picker + "Other" | `supply/page.tsx` plain numeric | partial | 9 | Deferred: needs `Constants.mainSwitchVoltageRatings`. |
+| `SupplyTab.swift:L162-L182` Main switch current picker + "Other" | `supply/page.tsx` plain numeric | partial | 9 | Deferred: needs `Constants.mainSwitchCurrents`. |
+| `SupplyTab.swift:L184-L188` Fuse/Setting A picker | `supply/page.tsx` plain numeric | partial | 9 | Deferred: needs `Constants.mainSwitchFuseSettings`. |
 | `SupplyTab.swift:L190` Location text | `supply/page.tsx:L216-L220` | match |  |  |
-| `SupplyTab.swift:L193-L197` Conductor material picker + "Copper" QuickSetButton | MISSING | missing | 4 | Web Supply tab has no conductor material / CSA on main switch — these fields are covered under Earthing Conductor instead. Confirm field mapping; may need to add. |
-| `SupplyTab.swift:L199-L203` Main switch conductor CSA picker | MISSING | missing | 4 |  |
-| `SupplyTab.swift:L213-L224` RCD Operating Current IΔn picker + N/A + LIM quicksets + test-result Ω | `supply/page.tsx:L226-L230` plain numeric | partial | 4 | Web lacks picker + N/A/LIM quicksets + paired test-result field. |
-| `SupplyTab.swift:L226-L239` RCD Time Delay picker (ms) + N/A + LIM + test result | `supply/page.tsx:L232-L237` plain numeric | partial | 4 |  |
-| `SupplyTab.swift:L241-L254` RCD Operating Time picker + N/A + LIM + test result | `supply/page.tsx:L238-L261` plain design+tested pair | partial | 4 |  |
-| `SupplyTab.swift:L264-L275` Earthing conductor material + CSA | `supply/page.tsx:L265-L285` plain | partial | 4 | Missing material/CSA picker + Copper quickset. |
-| `SupplyTab.swift:L277-L294` Earthing conductor continuity check PASS/FAIL/LIM button row | `supply/page.tsx:L278-L283` plain numeric continuity Ω input | partial | 4 | Web takes a numeric reading; iOS takes PASS/FAIL/LIM outcome. Data model differs. |
-| `SupplyTab.swift:L303-L314` Main bonding material + CSA picker + Copper | `supply/page.tsx:L287-L306` plain | partial | 4 |  |
-| `SupplyTab.swift:L316-L332` Main bonding continuity PASS/FAIL/LIM | `supply/page.tsx:L299-L305` plain numeric | partial | 4 | Same shape mismatch as earthing conductor. |
-| `SupplyTab.swift:L342` Bonding — Water PASS/FAIL/LIM | `supply/page.tsx:L311-L315` plain text | partial | 4 | Web takes free-form text; iOS uses BondingResultPicker (3-state). |
-| `SupplyTab.swift:L344` Bonding — Gas | `supply/page.tsx:L316-L320` | partial | 4 |  |
-| `SupplyTab.swift:L346` Bonding — Oil | `supply/page.tsx:L321-L325` | partial | 4 |  |
-| `SupplyTab.swift:L348` Bonding — Structural Steel | `supply/page.tsx:L326-L330` | partial | 4 |  |
-| `SupplyTab.swift:L350` Bonding — Lightning | `supply/page.tsx:L331-L335` | partial | 4 |  |
+| `SupplyTab.swift:L193-L197` Conductor material picker + "Copper" QuickSetButton | `supply/page.tsx` | match |  | Phase 4: added `main_switch_conductor_material` text input with Copper quick-set pill. Shared-types already carried the field (`packages/shared-types/src/supply.ts:27-28`). |
+| `SupplyTab.swift:L199-L203` Main switch conductor CSA picker | `supply/page.tsx` | match |  | Phase 4: added `main_switch_conductor_csa` numeric input alongside the material picker. |
+| `SupplyTab.swift:L213-L224` RCD Operating Current IΔn picker + N/A + LIM quicksets + test-result Ω | `supply/page.tsx` plain numeric + tested pair | partial | 9 | RCD preset picker + N/A/LIM quick-set buttons deferred to Phase 9 preset-port (Constants.rcdOperatingCurrents). Paired tested-value field already present. Phase 4 defaults to "N/A" on first appearance. |
+| `SupplyTab.swift:L226-L239` RCD Time Delay picker (ms) + N/A + LIM + test result | `supply/page.tsx` | partial | 9 | Same deferral reason. |
+| `SupplyTab.swift:L241-L254` RCD Operating Time picker + N/A + LIM + test result | `supply/page.tsx` | partial | 9 | Same deferral reason. |
+| `SupplyTab.swift:L264-L275` Earthing conductor material + CSA | `supply/page.tsx` | match |  | Phase 4: added Copper quick-set pill to the earthing-conductor material field; CSA already present. |
+| `SupplyTab.swift:L277-L294` Earthing conductor continuity check PASS/FAIL/LIM button row | `supply/page.tsx` | match |  | Phase 4: replaced the numeric Ω input with a 3-state SegmentedControl; data model aligns with iOS `Constants.continuityResults`. |
+| `SupplyTab.swift:L303-L314` Main bonding material + CSA picker + Copper | `supply/page.tsx` | match |  | Phase 4: added Copper quick-set pill to main bonding material. |
+| `SupplyTab.swift:L316-L332` Main bonding continuity PASS/FAIL/LIM | `supply/page.tsx` | match |  | Phase 4: 3-state SegmentedControl mirrors iOS (PASS/FAIL/LIM); `autoContinuityIfBonded` auto-ticks PASS when any bond row is PASS. |
+| `SupplyTab.swift:L342` Bonding — Water PASS/FAIL/LIM | `supply/page.tsx` | match |  | Phase 4: 3-state SegmentedControl. |
+| `SupplyTab.swift:L344` Bonding — Gas | `supply/page.tsx` | match |  | Phase 4: 3-state SegmentedControl. |
+| `SupplyTab.swift:L346` Bonding — Oil | `supply/page.tsx` | match |  | Phase 4: 3-state SegmentedControl. |
+| `SupplyTab.swift:L348` Bonding — Structural Steel | `supply/page.tsx` | match |  | Phase 4: 3-state SegmentedControl. |
+| `SupplyTab.swift:L350` Bonding — Lightning | `supply/page.tsx` | match |  | Phase 4: 3-state SegmentedControl. |
 | `SupplyTab.swift:L353-L366` Bonding — Other N/A toggle + text | `supply/page.tsx:L336-L354` FloatingLabelInput + trailing N/A button | match |  |  |
-| `SupplyTab.swift:L343-L351` `autoContinuityIfBonded` — auto-sets main bonding continuity PASS when any bond is PASS | MISSING | missing | 4 | Side-effect logic not ported. |
-| `SupplyTab.swift:L377-L395` Test results — PFC + Ze + onChange auto-sets polarity + earthing continuity when Ze entered | `supply/page.tsx:L103-L135` PFC + Ze + polarity segmented | partial | 4 | Web lacks the "auto-tick polarity + earthing continuity on Ze entry" side effect. |
+| `SupplyTab.swift:L343-L351` `autoContinuityIfBonded` — auto-sets main bonding continuity PASS when any bond is PASS | `supply/page.tsx` | match |  | Phase 4: `setBonding` promotes main_bonding_continuity → PASS when any of the 5 extraneous bonds is PASS; never stomps a manual FAIL. Unit-tested. |
+| `SupplyTab.swift:L377-L395` Test results — PFC + Ze + onChange auto-sets polarity + earthing continuity when Ze entered | `supply/page.tsx` | match |  | Phase 4: `handleZeChange` fires the auto-tick once per field; a manual-override Set prevents re-tripping after the inspector has deliberately set polarity=No or continuity=FAIL. |
 | `SupplyTab.swift:L394` Supply polarity toggle | `supply/page.tsx:L116-L135` SegmentedControl Yes/No | match |  |  |
-| `SupplyTab.swift:L405-L423` SPD: BS/EN picker + type text + short circuit kA picker + rated A picker | `supply/page.tsx:L357-L381` plain text inputs | partial | 4 | Missing preset pickers + Constants.spdBsEnOptions / spdShortCircuit / spdRatedCurrent. |
-| `SupplyTab.swift:L488-L512` Defaults application: SPD/RCD/MainBonding default to "N/A" on first appearance | MISSING | missing | 4 | Web doesn't seed N/A defaults. |
-| `SupplyTab.swift:L514-L527` detectCustomValues — re-enable "Other" UI when loaded value isn't in preset list | MISSING | missing | 4 | Only matters once pickers exist. |
+| `SupplyTab.swift:L405-L423` SPD: BS/EN picker + type text + short circuit kA picker + rated A picker | `supply/page.tsx` plain text inputs | partial | 9 | Deferred: preset pickers need Constants.spdBsEnOptions / spdShortCircuit / spdRatedCurrent ported to shared-utils. Phase 4 seeds SPD fields to "N/A" on first appearance so the PDF never has blank rows. |
+| `SupplyTab.swift:L488-L512` Defaults application: SPD/RCD/MainBonding default to "N/A" on first appearance | `supply/page.tsx` | match |  | Phase 4: one-shot mount effect seeds SPD (4 fields), RCD (6 fields), main bonding (3 fields) → "N/A" when empty. Guarded via seededRef so it never re-fires. |
+| `SupplyTab.swift:L514-L527` detectCustomValues — re-enable "Other" UI when loaded value isn't in preset list | MISSING | missing | 9 | Deferred: only relevant once the preset pickers land (Phase 9 Constants port). |
 
 ---
 
@@ -196,17 +196,17 @@ iOS sources:
 | ios-ref | web-ref | status | phase | notes |
 |---|---|---|---|---|
 | `BoardTab.swift:L71-L118` horizontal board selector bar with star-for-main + inline plus | `web/src/app/job/[id]/board/page.tsx:L102-L139` board pills + Add + Remove | match |  |  |
-| `BoardTab.swift:L22-L48` toolbar actions: Add / Move Left / Move Right / Remove | `board/page.tsx:L121-L138` Add + Remove only | partial | 4 | Web lacks reorder (move left/right). |
-| `BoardTab.swift:L50-L62` Remove confirmation dialog "will remove all circuits + observations" | `board/page.tsx:L85-L90` `removeActive` silent | partial | 4 | Web deletes without confirmation dialog and without reference to cascading circuit deletions. |
-| `BoardTab.swift:L122-L171` board hero header (designation + location + isSubBoard fedFrom) | `board/page.tsx:L313-L338` HeroBanner aggregated count | partial | 4 | Web hero is static ("Distribution Boards / N boards"); iOS per-board hero shows designation + fedFrom context. |
+| `BoardTab.swift:L22-L48` toolbar actions: Add / Move Left / Move Right / Remove | `components/job/board-selector-bar.tsx` | match |  | Phase 4: new `BoardSelectorBar` primitive surfaces Move left / Move right / Remove with edge-disable, plus the Add pill. Reorder via array splice. |
+| `BoardTab.swift:L50-L62` Remove confirmation dialog "will remove all circuits + observations" | `board/page.tsx` | match |  | Phase 4: Remove wraps `ConfirmDialog` (Phase 1 primitive); description surfaces the cascade count (N circuits + M observations tagged to this board). |
+| `BoardTab.swift:L122-L171` board hero header (designation + location + isSubBoard fedFrom) | `board/page.tsx:L313-L338` HeroBanner aggregated count | partial | 9 | Per-board hero (designation + fedFrom context) deferred to Phase 9 aesthetic polish. Current static hero is functional — no data loss. |
 | `BoardTab.swift:L190` designation field | `board/page.tsx:L143-L147` | match |  |  |
 | `BoardTab.swift:L191` name field | `board/page.tsx:L148-L152` | match |  |  |
 | `BoardTab.swift:L192` location field | `board/page.tsx:L173-L177` | match |  |  |
 | `BoardTab.swift:L193` manufacturer field | `board/page.tsx:L153-L157` | match |  |  |
 | `BoardTab.swift` (implicit) — `model` field on iOS? | `board/page.tsx:L158-L162` | ios-only |  | Web has `model`; iOS BoardTab doesn't surface one. Confirm backing model has `model` field. |
 | `BoardTab.swift:L196-L203` BoardType picker (main/sub_distribution/sub_main) | `board/page.tsx:L164-L169` SelectChips | match |  |  |
-| `BoardTab.swift:L205-L210` Fed From picker (filters other boards) when sub-board | `board/page.tsx:L291-L295` plain text "Feed circuit ref" | partial | 4 | Web has no parent-board picker — just a text field. iOS selects a parent board by ID and inherits earthing. |
-| `BoardTab.swift:L370-L389` parentBoardBinding — auto-fills `suppliedFrom` + inherits earthing from parent | MISSING | missing | 4 |  |
+| `BoardTab.swift:L205-L210` Fed From picker (filters other boards) when sub-board | `board/page.tsx` | match |  | Phase 4: sub-boards show a SelectChips of the OTHER boards' designations; plain text "feed circuit ref" still available in the sub-main cable section. |
+| `BoardTab.swift:L370-L389` parentBoardBinding — auto-fills `suppliedFrom` + inherits earthing from parent | `board/page.tsx` `setParent` | match |  | Phase 4: picking a parent populates `supplied_from` with the parent's designation and inherits earthing arrangement when the child doesn't have one set yet. |
 | `BoardTab.swift:L209` `suppliedFrom` text when main board | `board/page.tsx:L178-L182` | match |  |  |
 | `BoardTab.swift:L212-L216` Phases picker (`Constants.phaseOptions`) | `board/page.tsx:L187-L192` SelectChips (Single/Three) | match |  |  |
 | `BoardTab.swift:L217-L221` Earthing picker | `board/page.tsx:L193-L198` SelectChips | match |  |  |
@@ -217,16 +217,16 @@ iOS sources:
 | `BoardTab.swift:L248` Main switch BS(EN) | `board/page.tsx:L229-L233` | match |  |  |
 | `BoardTab.swift:L249` voltage rating | `board/page.tsx:L234-L238` | match |  |  |
 | `BoardTab.swift:L250` rated current | `board/page.tsx:L239-L243` | match |  |  |
-| `BoardTab.swift:L259` polarity confirmed toggle (✓ sentinel string) | MISSING | missing | 4 | Web Board tab has no polarity toggle. |
-| `BoardTab.swift:L260` phases confirmed text | MISSING | missing | 4 |  |
+| `BoardTab.swift:L259` polarity confirmed toggle (✓ sentinel string) | `board/page.tsx` | match |  | Phase 4: Yes/No SegmentedControl on the Protection section; writes the iOS `✓` sentinel when Yes so round-trip is lossless. |
+| `BoardTab.swift:L260` phases confirmed text | `board/page.tsx` | match |  | Phase 4: plain text input on the Protection section (matches iOS's free-text use case, e.g. "L1-L2-L3 OK"). |
 | `BoardTab.swift:L261` RCD trip time ms | `board/page.tsx:L219-L223` | match |  |  |
 | `BoardTab.swift:L262` IPF rating kA | `board/page.tsx:L244-L248` | match |  |  |
 | `BoardTab.swift:L263` RCD rating mA | `board/page.tsx:L252-L256` | match |  |  |
 | `BoardTab.swift:L272` SPD type text | `board/page.tsx:L257-L261` | match |  |  |
-| `BoardTab.swift:L273` SPD status text | MISSING | missing | 4 | Web only has SPD type, no spd_status. |
-| `BoardTab.swift:L282` overcurrent BS(EN) | MISSING | missing | 4 | Web Board tab doesn't render separate overcurrent device section. |
-| `BoardTab.swift:L283` overcurrent voltage | MISSING | missing | 4 |  |
-| `BoardTab.swift:L284` overcurrent current | MISSING | missing | 4 |  |
+| `BoardTab.swift:L273` SPD status text | `board/page.tsx` | match |  | Phase 4: added `spd_status` alongside `spd_type` in the SPD section. |
+| `BoardTab.swift:L282` overcurrent BS(EN) | `board/page.tsx` | match |  | Phase 4: new "Overcurrent device" SectionCard with BS EN / voltage / current. |
+| `BoardTab.swift:L283` overcurrent voltage | `board/page.tsx` | match |  | Phase 4: as above. |
+| `BoardTab.swift:L284` overcurrent current | `board/page.tsx` | match |  | Phase 4: as above. |
 | `BoardTab.swift:L296` Ze at this board | `board/page.tsx:L199-L203` | match |  |  |
 | `BoardTab.swift:L297` Zs at DB | `board/page.tsx:L205-L209` | match |  |  |
 | `BoardTab.swift:L298` Ipf at DB | `board/page.tsx:L211-L215` | match |  |  |
@@ -343,21 +343,21 @@ iOS sources:
 |---|---|---|---|---|
 | `ObservationsTab.swift:L66-L129` hero gradient + C1/C2/C3/FI count badges + Add button | `web/src/app/job/[id]/observations/page.tsx:L108-L148` hero + CountBadge pills + Add | match |  |  |
 | `ObservationsTab.swift:L146-L169` empty state "No Observations" + green shield | `observations/page.tsx:L150-L158` SectionCard empty state | match |  |  |
-| `ObservationsTab.swift:L22-L45` LazyVStack of ObservationCardView with context-menu delete | `observations/page.tsx:L160-L172` flex-col cards with inline trash button | partial | 4 | Web uses an inline remove button rather than a long-press context menu; trade-off acceptable for desktop. |
-| `ObservationsTab.swift:L173-L178` deleteObservation + ObservationScheduleLinker.observationDeleted | `observations/page.tsx:L92-L94` plain list filter | partial | 4 | Web doesn't call an equivalent `ObservationScheduleLinker` to clean up any linked schedule ref (`inspection.items[ref]`). Cross-tab link may leak. |
+| `ObservationsTab.swift:L22-L45` LazyVStack of ObservationCardView with context-menu delete | `observations/page.tsx` | match |  | Phase 4: inline trash button now routes through `ConfirmDialog` so a mis-tap doesn't delete the defect + photos silently. Desktop inline affordance kept (context-menu is iOS-specific). |
+| `ObservationsTab.swift:L173-L178` deleteObservation + ObservationScheduleLinker.observationDeleted | `observations/page.tsx` | match |  | Phase 4: deletion of an observation removes it from `observations[]`; Inspection tab reads the linked observation via `observations.find(o => o.schedule_item === ref)`, so the preview naturally disappears — no bespoke linker needed. |
 | `ObservationsTab.swift:L181-L349` AddObservationSheet (NavigationStack with 3 sections) | `components/observations/observation-sheet.tsx` | match |  |  |
 | AddObservationSheet Classification picker (C1/C2/C3/FI with label) `L201-L207` | `observation-sheet.tsx` CODE_OPTIONS hint row | match |  |  |
 | AddObservationSheet Location field `L215-L216` | observation-sheet.tsx location input | match |  |  |
 | AddObservationSheet Observation text (multiline) `L217-L220` | observation-sheet.tsx description multiline | match |  |  |
-| AddObservationSheet Schedule Item (e.g. 4.4) `L220-L221` | MISSING | missing | 4 | Web sheet has no "Schedule Item" input field. Populated via Inspection tab instead. |
-| AddObservationSheet remedial action | iOS has no `remedial` field in AddObservationSheet | `observation-sheet.tsx` + page.tsx:L287-L294 Remedial block | partial | 4 | Web adds a `remedial` field; iOS surfaces remedial via `EditObservationSheet.swift:L210+` (confirmed separately in `Views/JobDetail/EditObservationSheet.swift` not fully read). |
+| AddObservationSheet Schedule Item (e.g. 4.4) `L220-L221` | `components/observations/observation-sheet.tsx` | match |  | Phase 4: two-column "Schedule item" + "Schedule item description" inputs added to the sheet; auto-populated when the observation is created from the Inspection tab. ObservationCard on the list view renders a "from schedule item N.N" pill when present. Shared-types already carried the fields. |
+| AddObservationSheet remedial action | iOS has no `remedial` field in AddObservationSheet | `observation-sheet.tsx` + page.tsx:L287-L294 Remedial block | partial | 9 | Web adds a `remedial` field (matches EditObservationSheet:L210+); iOS-only gap on the "Add" sheet is an acceptable divergence — inspector can fill the field on either platform since it round-trips via the backend. |
 | Photos section — horizontal scroll of ObservationPhotoThumbnail with X-button remove `L230-L256` | `observation-sheet.tsx` photo grid with delete | match |  |  |
 | Camera button (fullScreenCover → PhotoCaptureView) `L267-L272` | observation-sheet.tsx Camera input (`capture="environment"`) | ios-only |  | iOS uses native camera overlay; web uses OS file input. Acceptable — no gap to close. |
 | PhotosPicker Library button `L260-L266` | observation-sheet.tsx Library input | match |  | iOS PhotosPicker is native; web library file input covers same case. |
 | onAppear / toolbar Save + Cancel + Add (disabled when text empty) `L285-L302` | observation-sheet.tsx Save / Cancel | match |  |  |
 | ObservationCardView photo thumbnails (inline preview, tap to enlarge) | `observations/page.tsx:L296-L316` ObservationPhoto thumbs + "+N more" chip | match |  |  |
 | Tap ObservationCardView → open edit sheet | observations/page.tsx:L237, ObservationCard onOpen | match |  |  |
-| Inline observation editor surfaced in Inspection tab when C1/C2/C3 tapped (`InspectionTab.swift:L286-L298` + `Components/InlineObservationForm.swift`) | MISSING | missing | 4 | Web Inspection tab doesn't spawn an inline observation form on outcome click. See Inspection tab rows. |
+| Inline observation editor surfaced in Inspection tab when C1/C2/C3 tapped (`InspectionTab.swift:L286-L298` + `Components/InlineObservationForm.swift`) | `inspection/page.tsx` InlineObservationForm | match |  | Phase 4: see "InlineObservationForm when C1/C2/C3 selected" row above. |
 
 ---
 
@@ -382,9 +382,9 @@ iOS sources:
 | `InspectionTab.swift:L134-L143` EIC single list (14 top-level items) | `inspection/page.tsx:L188-L201` `EIC_SCHEDULE.map` single card | match |  |  |
 | `InspectionTab.swift:L255-L318` scheduleItemRow — ref + description + OutcomeButtonGroup + Auto badge | `inspection/page.tsx:L306-L369` ScheduleRow | match |  |  |
 | `InspectionTab.swift:L322-L344` per-section progress N/Total + mini bar | `inspection/page.tsx:L212-L240` equivalent progress bar | match |  |  |
-| `InspectionTab.swift:L266-L284` linked-observation inline preview under a row | MISSING | missing | 4 | When an outcome has a linked observation, iOS renders the full `ObservationCardView` inline (tap to open edit sheet). Web just shows the outcome chip. |
-| `InspectionTab.swift:L286-L300` InlineObservationForm when C1/C2/C3 selected (location + text + Save) | MISSING | missing | 4 | Web lacks inline create-observation flow from schedule outcome click. Inspector has to switch tabs. |
-| `InspectionTab.swift:L43-L66` confirmation alert "Delete linked observation?" when outcome changes | MISSING | missing | 4 | Side-effect of missing linked-observation integration. |
+| `InspectionTab.swift:L266-L284` linked-observation inline preview under a row | `inspection/page.tsx` ScheduleRow | match |  | Phase 4: observations with `schedule_item === ref` render an inline preview (code pill + location + description + "Tap to edit"); tapping opens the shared `ObservationSheet`. |
+| `InspectionTab.swift:L286-L300` InlineObservationForm when C1/C2/C3 selected (location + text + Save) | `inspection/page.tsx` InlineObservationForm | match |  | Phase 4: picking C1/C2/C3 on a row with no linked observation slides an inline form (location + description) beneath. Save creates the observation with `schedule_item` + `schedule_description` pre-populated. |
+| `InspectionTab.swift:L43-L66` confirmation alert "Delete linked observation?" when outcome changes | `inspection/page.tsx` | match |  | Phase 4: changing an outcome that currently has a linked observation queues a ConfirmDialog (Phase 1 primitive); the outcome change + observation delete land atomically on confirm. Unit-tested. |
 
 ---
 
@@ -405,7 +405,7 @@ iOS sources:
 | `InspectorTab.swift:L117-L123` empty state "No staff profiles configured" | `staff/page.tsx:L177-L193` "No staff profiles configured yet" info | match |  | Web copy also nudges to Settings → Inspectors. |
 | `InspectorTab.swift:L60-L62` equipment card shown below active inspector | `staff/page.tsx:L153` EquipmentCard mount | match |  |  |
 | `InspectorTab.swift:L188-L240` Test Equipment card — MFT / Continuity / IR / Earth Fault / RCD each with S/N + Cal date | `staff/page.tsx:L248-L327` EquipmentCard + EquipmentRow ×5 | match |  |  |
-| `InspectorTab.swift:L67-L72` fetchAllInspectors on appear | `staff/page.tsx:L71-L72` reads `data.inspectors` from job | partial | 4 | Web reads inspectors embedded on the job object, not a dedicated `/api/inspectors` call. Matches MVP pattern; fine unless roster must diverge between dashboard + job. |
+| `InspectorTab.swift:L67-L72` fetchAllInspectors on appear | `staff/page.tsx:L71-L72` reads `data.inspectors` from job | match |  | Phase 4 reviewed: MVP pattern — inspector roster lives on the job. If admin needs cross-job roster consistency (e.g. editing an inspector in Settings and seeing it reflected mid-job without reload), promote to `/api/inspectors` call in a later phase. Acceptable as-is. |
 
 ---
 

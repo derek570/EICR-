@@ -2,11 +2,12 @@
 
 import * as React from 'react';
 import { useParams } from 'next/navigation';
-import { AlertTriangle, ImageIcon, MapPin, Plus, Trash2 } from 'lucide-react';
+import { AlertTriangle, ClipboardList, ImageIcon, MapPin, Plus, Trash2 } from 'lucide-react';
 import { useJobContext } from '@/lib/job-context';
 import type { ObservationRow } from '@/lib/types';
 import { getUser } from '@/lib/auth';
 import { SectionCard } from '@/components/ui/section-card';
+import { ConfirmDialog } from '@/components/ui/confirm-dialog';
 import { ObservationPhoto } from '@/components/observations/observation-photo';
 import { ObservationSheet } from '@/components/observations/observation-sheet';
 import { cn } from '@/lib/utils';
@@ -89,8 +90,29 @@ export default function ObservationsPage() {
     closeSheet();
   };
 
-  const removeAt = (id: string) => {
-    updateJob({ observations: observations.filter((o) => o.id !== id) });
+  /**
+   * Trash bin icon wraps this — but we queue the delete through a
+   * ConfirmDialog (Phase 1 primitive) since a mis-tap would lose the
+   * defect and any uploaded photos. Mirrors iOS context-menu delete at
+   * ObservationsTab.swift:L22-L45 which has a native confirmation.
+   *
+   * Additionally clears any Inspection schedule item back-reference
+   * via the schedule_item column on the observation. iOS does this in
+   * `ObservationScheduleLinker.observationDeleted`
+   * (ObservationsTab.swift:L173-L178) — the reference is one-way
+   * (observation → schedule ref), so on the web side the observation
+   * being gone is enough to clear the Inspection tab's inline preview,
+   * which reads through `observations.find(o => o.schedule_item === ref)`.
+   * No extra cross-tab wiring needed.
+   */
+  const [pendingDeleteId, setPendingDeleteId] = React.useState<string | null>(null);
+  const pendingDelete = pendingDeleteId
+    ? (observations.find((o) => o.id === pendingDeleteId) ?? null)
+    : null;
+  const confirmDelete = () => {
+    if (!pendingDeleteId) return;
+    updateJob({ observations: observations.filter((o) => o.id !== pendingDeleteId) });
+    setPendingDeleteId(null);
   };
 
   const editing =
@@ -165,7 +187,7 @@ export default function ObservationsPage() {
               userId={userId}
               jobId={jobId}
               onOpen={() => openEdit(obs.id)}
-              onRemove={() => removeAt(obs.id)}
+              onRemove={() => setPendingDeleteId(obs.id)}
             />
           ))}
         </div>
@@ -179,6 +201,31 @@ export default function ObservationsPage() {
           onCancel={closeSheet}
         />
       ) : null}
+
+      <ConfirmDialog
+        open={pendingDelete !== null}
+        onOpenChange={(next) => {
+          if (!next) setPendingDeleteId(null);
+        }}
+        title="Delete observation?"
+        description={
+          pendingDelete ? (
+            <>
+              {pendingDelete.code ? `${pendingDelete.code} · ` : null}
+              {pendingDelete.description?.slice(0, 120) || 'No description'}
+              {pendingDelete.schedule_item
+                ? ` (linked to schedule item ${pendingDelete.schedule_item})`
+                : ''}
+              . This cannot be undone.
+            </>
+          ) : (
+            'This cannot be undone.'
+          )
+        }
+        confirmLabel="Delete"
+        destructive
+        onConfirm={confirmDelete}
+      />
     </div>
   );
 }
@@ -254,9 +301,20 @@ function ObservationCard({
             {code ?? '—'}
           </span>
           <div className="flex flex-col gap-0.5">
-            <span className="text-[11px] font-medium uppercase tracking-[0.06em] text-[var(--color-text-tertiary)]">
-              {subtitle}
-            </span>
+            <div className="flex flex-wrap items-center gap-1">
+              <span className="text-[11px] font-medium uppercase tracking-[0.06em] text-[var(--color-text-tertiary)]">
+                {subtitle}
+              </span>
+              {obs.schedule_item ? (
+                <span
+                  className="inline-flex items-center gap-1 rounded-full bg-[var(--color-brand-blue)]/15 px-1.5 py-0.5 text-[10px] font-semibold text-[var(--color-brand-blue)]"
+                  title={obs.schedule_description ?? undefined}
+                >
+                  <ClipboardList className="h-2.5 w-2.5" aria-hidden />
+                  from schedule item {obs.schedule_item}
+                </span>
+              ) : null}
+            </div>
             {obs.location ? (
               <span className="inline-flex items-center gap-1 text-[12px] text-[var(--color-text-secondary)]">
                 <MapPin className="h-3 w-3" aria-hidden />

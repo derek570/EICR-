@@ -267,6 +267,20 @@ export interface ObservationRow {
    * so a job round-trips losslessly between clients.
    */
   photos?: string[];
+  /**
+   * Optional back-reference to the BS 7671 Appendix 6 schedule item the
+   * observation was raised from (e.g. "4.4"). When present, the
+   * Inspection tab renders an inline preview under the matching row —
+   * and a later outcome change can offer to unlink/delete the observation.
+   * iOS counterpart: `Observation.scheduleItem` on the Swift model.
+   */
+  schedule_item?: string;
+  /**
+   * Human-readable schedule item description captured at observation-
+   * creation time, so the observation card still makes sense if the
+   * referenced schedule item is later renumbered in a BS 7671 update.
+   */
+  schedule_description?: string;
 }
 
 export interface InspectorInfo {
