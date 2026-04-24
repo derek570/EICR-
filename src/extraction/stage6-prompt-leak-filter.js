@@ -211,6 +211,9 @@ const LENGTH_CEILING = {
  * Plan 04-29 r22-#1 — positive regulation-shape allowlist.
  * Plan 04-30 r23-#1 — extended with 10th bare-modifier shape +
  * composite-splitter helper.
+ * Plan 04-31 r24-#1 — split into FULLY_QUALIFIED_PATTERNS (9,
+ * standalone-valid) + BARE_MODIFIER_PATTERNS (1, non-first-only
+ * inside composites).
  *
  * WHY: the r21-#1 `observation_regulation` field class added a
  * 60-char length ceiling but NO positive shape validation. A
@@ -232,41 +235,48 @@ const LENGTH_CEILING = {
  * might dictate.
  *
  * Shape inventory (from grepping config/prompts/ + src/__tests__/):
- *   1. Bare numeric sections:
- *        "132.15", "411.3.3", "522.6.201", "411.3.1.1"
- *        "722.411.4.1" (4 components), "534.4.4.5" (4 components)
- *        "701.411.3.3" (4 components, still a real ref)
- *   2. "Regulation <num>":
- *        "Regulation 522.6.201", "Regulation 411.3.3"
- *   3. "Reg <num>" (common dictation shorthand):
- *        "Reg 411.3.3"
- *   4. Bare BS series:
- *        "BS 7671", "BS 3871", "BS 3036", "BS 1361"
- *   5. BS hyphen-section series:
- *        "BS 88-2", "BS 88-3"
- *   6. "BS <num> <numeric section>":
- *        "BS 7671 643.3.2", "BS 7671 411.3.3"
- *   7. "BS <num> <modifier> <section>":
- *        modifier in {Table, Part, Section, Chapter, Annex,
- *        Appendix, Figure, Regulation}
- *        "BS 7671 Table 41.1", "BS 7671 Appendix 4",
- *        "BS 7671 Section 706", "BS 7671 Part 6"
- *   8. BS EN series (with up to 3 hyphenated section numbers):
- *        "BS EN 61008-1", "BS EN 60898-1", "BS EN 60335-2-73",
- *        "BS EN 61558-2-5", "BS EN 61643-11"
- *   9. IET / HSE guidance:
- *        "IET Guidance", "IET Guidance Note 3",
- *        "IET Guidance Note 3.2", "HSE Guidance Note 5"
- *  10. Bare "<Modifier> <section>" (r23-#1): "Table 41.1",
- *        "Appendix 4", "Part 6", "Section 706", "Annex A".
- *        Needed by composites like "BS 7671 411.3.3, Table 41.1"
- *        where the BS-number is stated once in the first token
- *        and subsequent tokens reference sub-sections of the same
- *        standard.
+ *   FULLY_QUALIFIED (each standalone-valid — establishes a standard):
+ *     1. Bare numeric sections:
+ *          "132.15", "411.3.3", "522.6.201", "411.3.1.1"
+ *          "722.411.4.1" (4 components), "534.4.4.5" (4 components)
+ *          "701.411.3.3" (4 components, still a real ref)
+ *        (BS 7671 is the implicit standard for bare numeric refs
+ *        in UK electrical inspection context.)
+ *     2. "Regulation <num>":
+ *          "Regulation 522.6.201", "Regulation 411.3.3"
+ *     3. "Reg <num>" (common dictation shorthand):
+ *          "Reg 411.3.3"
+ *     4. Bare BS series:
+ *          "BS 7671", "BS 3871", "BS 3036", "BS 1361"
+ *     5. BS hyphen-section series:
+ *          "BS 88-2", "BS 88-3"
+ *     6. "BS <num> <modifier> <section>":
+ *          modifier in {Table, Part, Section, Chapter, Annex,
+ *          Appendix, Figure, Regulation}
+ *          "BS 7671 Table 41.1", "BS 7671 Appendix 4",
+ *          "BS 7671 Section 706", "BS 7671 Part 6"
+ *     7. "BS <num> <numeric section>":
+ *          "BS 7671 643.3.2", "BS 7671 411.3.3"
+ *     8. BS EN series (with up to 3 hyphenated section numbers):
+ *          "BS EN 61008-1", "BS EN 60898-1", "BS EN 60335-2-73",
+ *          "BS EN 61558-2-5", "BS EN 61643-11"
+ *     9. IET / HSE guidance:
+ *          "IET Guidance", "IET Guidance Note 3",
+ *          "IET Guidance Note 3.2", "HSE Guidance Note 5"
  *
- * Composite forms (r23-#1): real electricians routinely cite
- * multiple regulations in a single `suggested_regulation` value,
- * joined by a separator:
+ *   BARE_MODIFIER (Plan 04-31 r24-#1 — NOT standalone-valid;
+ *   only valid as a NON-FIRST token inside a composite, scoped
+ *   to the preceding fully-qualified token's standard):
+ *    10. Bare "<Modifier> <section>": "Table 41.1", "Appendix 4",
+ *          "Part 6", "Section 706", "Annex A".
+ *          Standalone "Table 41.1" is ambiguous ("Table 41.1 of
+ *          which standard?") and rejects. Only accepts when a
+ *          preceding fully-qualified token has already named the
+ *          standard in the same composite.
+ *
+ * Composite forms (r23-#1 + r24-#1): real electricians routinely
+ * cite multiple regulations in a single `suggested_regulation`
+ * value, joined by a separator:
  *   - slash:      "411.3.3 / 522.6.201"
  *   - comma:      "BS 7671 411.3.3, Table 41.1"
  *   - semicolon:  "BS 7671; 411.3.3"
@@ -274,13 +284,17 @@ const LENGTH_CEILING = {
  *
  * The composite-splitter (`looksLikeCompositeRegulationRef`) runs
  * AFTER the single-ref fast path, so a string that matches a
- * single pattern never triggers the splitter (telemetry stays
- * sharp — a single ref is not classified as composite). Empty
- * tokens (from leading / trailing / doubled separators) are
- * skipped — they represent dictation artefacts, not failed
- * references. The splitter accepts iff at least one non-empty
- * token exists AND every non-empty token matches at least one
- * REGULATION_SHAPE_PATTERNS entry.
+ * single fully-qualified pattern never triggers the splitter
+ * (telemetry stays sharp — a single ref is not classified as
+ * composite). r24-#1 contract: the FIRST non-empty token in a
+ * composite MUST match FULLY_QUALIFIED_PATTERNS (establishes the
+ * standard); SUBSEQUENT tokens may match FULLY_QUALIFIED or
+ * BARE_MODIFIER (scoped to the preceding fully-qualified token).
+ *
+ * Empty tokens (from leading / trailing / doubled separators)
+ * are handled by `looksLikeCompositeRegulationRef` — r24-#2
+ * tightens this to REJECT malformed input (see Task 3 in the
+ * r24 plan).
  *
  * WHY anchored patterns (`^...$`) on the per-token check: the
  * field holds a pure reference, not a sentence. A narrative like
@@ -297,21 +311,26 @@ const LENGTH_CEILING = {
  * sits immediately before the final `safe:true` return so it only
  * fires when nothing else would have caught the content.
  *
- * FP guard (r22-#1 + r23-#1): 26 single refs in r22-#1 RED +
- * 10 Group 9 samples + 8 composite forms in r23-#1 RED = 44
- * unique real refs. All accept under the 10 patterns + composite
- * splitter below.
+ * FP guard (r22-#1 + r23-#1 + r24-#1): 26 single refs in r22-#1
+ * RED + 10 Group 9 samples + 8 composite forms in r23-#1 RED +
+ * 4 bare-modifier-non-first composites in r24-#1 RED = 48 unique
+ * real refs. All accept under the 9-pattern FULLY_QUALIFIED set +
+ * 1-pattern BARE_MODIFIER set + composite splitter below.
  */
-const REGULATION_SHAPE_PATTERNS = [
+const FULLY_QUALIFIED_PATTERNS = [
   // Bare numeric: 132.15, 411.3.3, 701.411.3.3, 522.6.201a.
   // Up to 5 dot-separated numeric components, optional single
   // trailing lowercase letter (legacy variant suffix).
+  // Fully qualified by UK-electrical convention — BS 7671 is the
+  // implicit standard for bare numeric refs.
   /^\d{1,4}(\.\d{1,3}){1,4}[a-z]?$/,
 
-  // "Regulation <numeric>" or "Reg <numeric>".
+  // "Regulation <numeric>" or "Reg <numeric>". Fully qualified by
+  // convention — "Regulation" without a standard name means BS 7671.
   /^Reg(ulation)?\s+\d{1,4}(\.\d{1,3}){0,4}[a-z]?$/i,
 
-  // Bare BS series: "BS 7671", "BS 3871", "BS 3036".
+  // Bare BS series: "BS 7671", "BS 3871", "BS 3036". Names the
+  // standard directly.
   /^BS\s+\d{1,5}$/i,
 
   // BS hyphen series: "BS 88-2", "BS 88-3".
@@ -332,13 +351,32 @@ const REGULATION_SHAPE_PATTERNS = [
   // IET / HSE Guidance (+ optional "Note <num>").
   /^IET\s+Guidance(\s+Note(\s+\d{1,3}(\.\d{1,3}){0,2})?)?$/i,
   /^HSE\s+Guidance(\s+Note(\s+\d{1,3}(\.\d{1,3}){0,2})?)?$/i,
+];
 
-  // Plan 04-30 r23-#1 — bare modifier-section form without BS
-  // prefix: "Table 41.1", "Appendix 4", "Part 6", "Section 706",
-  // "Annex A", "Regulation 522.6.201" (already covered by pattern
-  // 2 but this alternate shape accepts any modifier keyword).
-  // Required by composite refs like "BS 7671 411.3.3, Table 41.1"
-  // where the second token is a bare modifier.
+/**
+ * Plan 04-31 r24-#1 — bare modifier-section patterns.
+ *
+ * These are NOT standalone-valid regulation references — a bare
+ * "Table 41.1" or "Appendix 4" in isolation doesn't establish a
+ * standard (Table 41.1 of WHICH document?). They are valid ONLY
+ * as non-first tokens in a composite reference where the
+ * preceding fully-qualified token has named the standard.
+ *
+ * Example accepts: "BS 7671 411.3.3, Table 41.1" (fully-qualified
+ * first + bare modifier second). Example rejects: "Table 41.1"
+ * alone (standalone), "Table 41.1, BS 7671 411.3.3" (bare first).
+ *
+ * WHY kept as a separate array: the pattern itself is identical
+ * to the r23-#1 10th shape. Splitting it out from
+ * FULLY_QUALIFIED_PATTERNS is the r24-#1 contract — the single-
+ * ref fast path in `looksLikeRegulationRef` iterates only
+ * FULLY_QUALIFIED. The composite splitter in
+ * `looksLikeCompositeRegulationRef` iterates BOTH arrays for
+ * non-first tokens. Keeping the sets as separate arrays is the
+ * clearest way to encode the standalone-vs-composite-only
+ * distinction.
+ */
+const BARE_MODIFIER_PATTERNS = [
   /^(Table|Part|Section|Chapter|Annex|Appendix|Figure|Regulation|Reg)\s+(\d{1,4}(\.\d{1,3}){0,3}|[A-Z])$/i,
 ];
 
@@ -367,32 +405,61 @@ const COMPOSITE_SEPARATOR_RE = /\s*(?:\/|,|;|\s+and\s+)\s*/i;
 
 /**
  * Plan 04-30 r23-#1 — split-and-validate for composite regulation
- * references. Returns true iff:
+ * references.
+ * Plan 04-31 r24-#1 — first-non-empty-token MUST be fully qualified;
+ * subsequent tokens may be fully-qualified OR bare-modifier.
+ *
+ * Returns true iff:
  *   1. the input contains at least one separator (so a single-ref
  *      value never trips this path — the single-ref fast path
  *      above already returned for those), AND
  *   2. at least one non-empty token exists (so a pure-separator
  *      string doesn't accept), AND
- *   3. every non-empty trimmed token matches at least one
- *      REGULATION_SHAPE_PATTERNS entry.
+ *   3. the FIRST non-empty trimmed token matches at least one
+ *      FULLY_QUALIFIED_PATTERNS entry (establishes a standard),
+ *      AND
+ *   4. every SUBSEQUENT non-empty trimmed token matches either
+ *      FULLY_QUALIFIED_PATTERNS or BARE_MODIFIER_PATTERNS.
+ *
+ * r24-#1 rationale: a bare modifier like "Table 41.1" is NOT a
+ * regulation reference standalone — it doesn't name a standard.
+ * It's only meaningful scoped to a preceding fully-qualified
+ * token that did name the standard ("BS 7671 411.3.3, Table
+ * 41.1"). Enforcing first-token-fully-qualified closes the
+ * r23-#1 gap where standalone "Table 41.1" accepted as a
+ * regulation reference.
  *
  * Empty tokens (from leading / trailing / doubled separators) are
- * skipped rather than failed — dictation artefacts like "411.3.3,"
- * and "411.3.3,,522.6.201" should accept.
+ * currently skipped rather than failed — dictation artefacts.
+ * r24-#2 (Task 3 in the r24 plan) tightens this to REJECT;
+ * until that lands the current skip semantics are preserved.
  */
 function looksLikeCompositeRegulationRef(text) {
   if (!COMPOSITE_SEPARATOR_RE.test(text)) return false;
   const tokens = text.split(COMPOSITE_SEPARATOR_RE);
+  let firstNonEmptyIdx = -1;
   let nonEmpty = 0;
-  for (const tok of tokens) {
-    const trimmed = tok.trim();
-    if (trimmed.length === 0) continue; // skip artefact
+  for (let i = 0; i < tokens.length; i++) {
+    const trimmed = tokens[i].trim();
+    if (trimmed.length === 0) continue; // skip artefact (r24-#2 tightens this)
     nonEmpty++;
+    if (firstNonEmptyIdx === -1) firstNonEmptyIdx = i;
+    const isFirstNonEmpty = i === firstNonEmptyIdx;
     let matched = false;
-    for (const re of REGULATION_SHAPE_PATTERNS) {
+    // First non-empty token: must be fully qualified.
+    for (const re of FULLY_QUALIFIED_PATTERNS) {
       if (re.test(trimmed)) {
         matched = true;
         break;
+      }
+    }
+    // Subsequent tokens: fully qualified OR bare modifier.
+    if (!matched && !isFirstNonEmpty) {
+      for (const re of BARE_MODIFIER_PATTERNS) {
+        if (re.test(trimmed)) {
+          matched = true;
+          break;
+        }
       }
     }
     if (!matched) return false;
@@ -402,10 +469,17 @@ function looksLikeCompositeRegulationRef(text) {
 
 /**
  * Returns true if `text` matches at least one
- * REGULATION_SHAPE_PATTERNS entry, OR if `text` is empty/whitespace-
- * only (a null regulation reference is legitimate — the tool schema
- * explicitly allows `suggested_regulation: null` when the model
- * can't reliably cite one).
+ * FULLY_QUALIFIED_PATTERNS entry, OR if `text` is a valid
+ * composite (first-token-fully-qualified + subsequent tokens
+ * fully-qualified-or-bare-modifier), OR if `text` is
+ * empty/whitespace-only (a null regulation reference is
+ * legitimate — the tool schema explicitly allows
+ * `suggested_regulation: null` when the model can't reliably
+ * cite one).
+ *
+ * r24-#1 contract: bare modifier forms ("Table 41.1", "Part 6",
+ * "Appendix 4") are NOT standalone-valid. The single-ref fast
+ * path iterates FULLY_QUALIFIED_PATTERNS only.
  *
  * @param {string} text
  * @returns {boolean}
@@ -414,16 +488,15 @@ function looksLikeRegulationRef(text) {
   if (typeof text !== 'string') return true;
   const trimmed = text.trim();
   if (trimmed.length === 0) return true;
-  // Single-ref fast path: if the entire value matches one of the
-  // 10 shape patterns, accept without invoking the splitter.
-  // Keeps telemetry sharp — single refs are classified as
-  // single-ref matches, not composite matches.
-  for (const re of REGULATION_SHAPE_PATTERNS) {
+  // Single-ref fast path: only FULLY_QUALIFIED patterns accepted
+  // standalone (r24-#1). Keeps telemetry sharp — bare modifier
+  // forms must be part of a composite to accept.
+  for (const re of FULLY_QUALIFIED_PATTERNS) {
     if (re.test(trimmed)) return true;
   }
-  // Plan 04-30 r23-#1 — composite path. Activates only when a
-  // separator is present AND every non-empty token individually
-  // matches a REGULATION_SHAPE_PATTERNS entry.
+  // Plan 04-30 r23-#1 + r24-#1 — composite path. Activates only
+  // when a separator is present AND first-token is fully qualified
+  // AND every subsequent non-empty token is valid.
   if (looksLikeCompositeRegulationRef(trimmed)) return true;
   return false;
 }
