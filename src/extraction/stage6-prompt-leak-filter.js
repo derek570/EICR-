@@ -120,12 +120,17 @@ const TOOL_KEYWORD_RE =
 const EXAMPLE_HEADER_RE = /\bExample\s+[1-9]:/i;
 
 /**
- * Per-field length ceilings. Question > 500 chars or
- * observation_text > 1000 chars are flagged as suspicious.
+ * Per-field length ceilings. Question > 500 chars, observation_text >
+ * 1000 chars, designation > 120 chars are flagged as suspicious.
+ * Real designations are short ("Upstairs sockets" — ~16 chars);
+ * anything above 120 is either a dump-style attack or a user
+ * dictating the WHOLE sentence as a circuit name — both warrant a
+ * reject (and the model retries with a short, real name).
  */
 const LENGTH_CEILING = {
   question: 500,
   observation_text: 1000,
+  designation: 120,
 };
 
 /**
