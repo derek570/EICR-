@@ -52,7 +52,7 @@
       "index": 0,
       "delta": {
         "type": "input_json_delta",
-        "partial_json": "{\"field\":\"insulation_resistance_l_l\",\"circuit\":3,\"value\":\">200\",\"confidence\":0.95,\"source_turn_id\":\"t-later\"}"
+        "partial_json": "{\"field\":\"ir_live_live_mohm\",\"circuit\":3,\"value\":\">200\",\"confidence\":0.95,\"source_turn_id\":\"t-later\"}"
       }
     },
     { "type": "content_block_stop", "index": 0 },

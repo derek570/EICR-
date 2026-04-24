@@ -1,5 +1,5 @@
 {
-  "_doc": "STQ-02 category (1) — routine single-reading capture. Inspector says 'Circuit three Zs nought point three five.' Both paths converge on circuits[3].zs = '0.35'. The legacy fixture ships as a single record_extraction tool_use whose input matches the pre-Phase-4 extractFromUtterance result shape; the tool-call fixture ships as a single record_reading tool_use followed by end_turn. After normaliseExtractionResult both reduce to the same {readings:[{circuit:3,field:'zs',value:'0.35'}]} canonical shape — 0% divergence.",
+  "_doc": "STQ-02 category (1) — routine single-reading capture. Inspector says 'Circuit three Zs nought point three five.' Both paths converge on circuits[3].measured_zs_ohm = '0.35'. The legacy fixture ships as a single record_extraction tool_use whose input matches the pre-Phase-4 extractFromUtterance result shape; the tool-call fixture ships as a single record_reading tool_use followed by end_turn. After normaliseExtractionResult both reduce to the same {readings:[{circuit:3,field:'measured_zs_ohm',value:'0.35'}]} canonical shape — 0% divergence. Field name uses the canonical enum from config/field_schema.json circuit_fields (Plan 04-07 r1 audit fix — strict:true tool schemas reject `zs` aliases).",
   "_requirement": "STT-11 golden-session subset entry. Phase 4 SC #6 gate — ≤10% divergence on the 5-fixture deterministic baseline.",
   "_fixture_shape": "dual-SSE (sse_events_legacy + sse_events_tool_call + sse_events_tool_call_round2)",
   "pre_turn_state": {
@@ -40,7 +40,7 @@
       "index": 0,
       "delta": {
         "type": "input_json_delta",
-        "partial_json": "{\"extracted_readings\":[{\"circuit\":3,\"field\":\"zs\",\"value\":\"0.35\",\"confidence\":0.95}],\"field_clears\":[],\"circuit_updates\":[],\"observations\":[],\"questions_for_user\":[]}"
+        "partial_json": "{\"extracted_readings\":[{\"circuit\":3,\"field\":\"measured_zs_ohm\",\"value\":\"0.35\",\"confidence\":0.95}],\"field_clears\":[],\"circuit_updates\":[],\"observations\":[],\"questions_for_user\":[]}"
       }
     },
     { "type": "content_block_stop", "index": 0 },
@@ -68,7 +68,7 @@
       "index": 0,
       "delta": {
         "type": "input_json_delta",
-        "partial_json": "{\"field\":\"zs\",\"circuit\":3,\"value\":\"0.35\",\"confidence\":0.95,\"source_turn_id\":\"t1\"}"
+        "partial_json": "{\"field\":\"measured_zs_ohm\",\"circuit\":3,\"value\":\"0.35\",\"confidence\":0.95,\"source_turn_id\":\"t1\"}"
       }
     },
     { "type": "content_block_stop", "index": 0 },
@@ -97,7 +97,7 @@
   ],
   "expected_slot_writes": {
     "circuits": {
-      "3": { "zs": "0.35" }
+      "3": { "measured_zs_ohm": "0.35" }
     }
   }
 }

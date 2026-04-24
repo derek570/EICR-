@@ -1,5 +1,5 @@
 {
-  "_doc": "STQ-02 category (4) — batched readings in a single turn. Inspector says 'Circuit two Zs nought point four insulation greater than two hundred both ways polarity correct.' Four readings belong to the same circuit (2) in one utterance. Legacy emits a record_extraction with extracted_readings.length=4; tool-call emits four record_reading tool_use blocks in one round. Both converge on circuits[2].{zs,insulation_resistance_l_l,insulation_resistance_l_e,polarity}.",
+  "_doc": "STQ-02 category (4) — batched readings in a single turn. Inspector says 'Circuit two Zs nought point four insulation greater than two hundred both ways polarity correct.' Four readings belong to the same circuit (2) in one utterance. Legacy emits a record_extraction with extracted_readings.length=4; tool-call emits four record_reading tool_use blocks in one round. Both converge on circuits[2].{measured_zs_ohm,ir_live_live_mohm,ir_live_earth_mohm,polarity_confirmed}. Field names use the canonical enum from config/field_schema.json circuit_fields (Plan 04-07 r1 audit fix).",
   "_requirement": "STT-11 + STS-01 (record_reading) — confirms dispatcher handles multiple parallel tool_uses in a single round without cross-talk on perTurnWrites.readings Map (keys are (field::circuit) so four distinct fields on circuit 2 are four distinct keys).",
   "_fixture_shape": "dual-SSE",
   "_polarity_note": "polarity is stored as the string 'correct' — lowercased by normaliseExtractionResult, so legacy's 'CORRECT' or 'Correct' would also converge here. The fixture uses 'correct' to avoid noise.",
@@ -39,7 +39,7 @@
       "index": 0,
       "delta": {
         "type": "input_json_delta",
-        "partial_json": "{\"extracted_readings\":[{\"circuit\":2,\"field\":\"zs\",\"value\":\"0.4\",\"confidence\":0.95},{\"circuit\":2,\"field\":\"insulation_resistance_l_l\",\"value\":\">200\",\"confidence\":0.92},{\"circuit\":2,\"field\":\"insulation_resistance_l_e\",\"value\":\">200\",\"confidence\":0.92},{\"circuit\":2,\"field\":\"polarity\",\"value\":\"correct\",\"confidence\":0.9}],\"field_clears\":[],\"circuit_updates\":[],\"observations\":[],\"questions_for_user\":[]}"
+        "partial_json": "{\"extracted_readings\":[{\"circuit\":2,\"field\":\"measured_zs_ohm\",\"value\":\"0.4\",\"confidence\":0.95},{\"circuit\":2,\"field\":\"ir_live_live_mohm\",\"value\":\">200\",\"confidence\":0.92},{\"circuit\":2,\"field\":\"ir_live_earth_mohm\",\"value\":\">200\",\"confidence\":0.92},{\"circuit\":2,\"field\":\"polarity_confirmed\",\"value\":\"correct\",\"confidence\":0.9}],\"field_clears\":[],\"circuit_updates\":[],\"observations\":[],\"questions_for_user\":[]}"
       }
     },
     { "type": "content_block_stop", "index": 0 },
@@ -67,7 +67,7 @@
       "index": 0,
       "delta": {
         "type": "input_json_delta",
-        "partial_json": "{\"field\":\"zs\",\"circuit\":2,\"value\":\"0.4\",\"confidence\":0.95,\"source_turn_id\":\"t4\"}"
+        "partial_json": "{\"field\":\"measured_zs_ohm\",\"circuit\":2,\"value\":\"0.4\",\"confidence\":0.95,\"source_turn_id\":\"t4\"}"
       }
     },
     { "type": "content_block_stop", "index": 0 },
@@ -86,7 +86,7 @@
       "index": 1,
       "delta": {
         "type": "input_json_delta",
-        "partial_json": "{\"field\":\"insulation_resistance_l_l\",\"circuit\":2,\"value\":\">200\",\"confidence\":0.92,\"source_turn_id\":\"t4\"}"
+        "partial_json": "{\"field\":\"ir_live_live_mohm\",\"circuit\":2,\"value\":\">200\",\"confidence\":0.92,\"source_turn_id\":\"t4\"}"
       }
     },
     { "type": "content_block_stop", "index": 1 },
@@ -105,7 +105,7 @@
       "index": 2,
       "delta": {
         "type": "input_json_delta",
-        "partial_json": "{\"field\":\"insulation_resistance_l_e\",\"circuit\":2,\"value\":\">200\",\"confidence\":0.92,\"source_turn_id\":\"t4\"}"
+        "partial_json": "{\"field\":\"ir_live_earth_mohm\",\"circuit\":2,\"value\":\">200\",\"confidence\":0.92,\"source_turn_id\":\"t4\"}"
       }
     },
     { "type": "content_block_stop", "index": 2 },
@@ -124,7 +124,7 @@
       "index": 3,
       "delta": {
         "type": "input_json_delta",
-        "partial_json": "{\"field\":\"polarity\",\"circuit\":2,\"value\":\"correct\",\"confidence\":0.9,\"source_turn_id\":\"t4\"}"
+        "partial_json": "{\"field\":\"polarity_confirmed\",\"circuit\":2,\"value\":\"correct\",\"confidence\":0.9,\"source_turn_id\":\"t4\"}"
       }
     },
     { "type": "content_block_stop", "index": 3 },
@@ -153,10 +153,10 @@
   "expected_slot_writes": {
     "circuits": {
       "2": {
-        "zs": "0.4",
-        "insulation_resistance_l_l": ">200",
-        "insulation_resistance_l_e": ">200",
-        "polarity": "correct"
+        "measured_zs_ohm": "0.4",
+        "ir_live_live_mohm": ">200",
+        "ir_live_earth_mohm": ">200",
+        "polarity_confirmed": "correct"
       }
     }
   }

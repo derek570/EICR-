@@ -1,5 +1,5 @@
 {
-  "_doc": "STQ-02 refill-guard variant (different field-combo from Plan 04-04's F21934D4 to avoid duplicate coverage). Inspector moves on: 'Move on to circuit three, Zs nought point two five.' — supply-level Ze (circuit 1, 0.32) is already on the snapshot from an earlier turn, and neither path should re-emit / re-ask it. Legacy emits record_extraction with only the new circuit 3 zs reading; tool-call emits only record_reading(3,zs,'0.25'). Both converge on circuits[3].zs='0.25' while circuit 1's ze remains untouched. Because the normaliser only looks at the EXTRACTION RESULT (not the final snapshot), 'circuit 1 ze unchanged' is visible as the absence of a (1,ze) reading in either output — NOT as a positive slot equal to '0.32'.",
+  "_doc": "STQ-02 refill-guard variant (different field-combo from Plan 04-04's F21934D4 to avoid duplicate coverage). Inspector moves on: 'Move on to circuit three, Zs nought point two five.' — supply-level Ze (circuit 1, 0.32) is already on the snapshot from an earlier turn, and neither path should re-emit / re-ask it. Legacy emits record_extraction with only the new circuit 3 measured_zs_ohm reading; tool-call emits only record_reading(3,measured_zs_ohm,'0.25'). Both converge on circuits[3].measured_zs_ohm='0.25' while circuit 1's ze remains untouched. Because the normaliser only looks at the EXTRACTION RESULT (not the final snapshot), 'circuit 1 ze unchanged' is visible as the absence of a (1,ze) reading in either output — NOT as a positive slot equal to '0.32'. Field name uses canonical enum (Plan 04-07 r1 audit fix).",
   "_why_distinct_from_F21934D4": "F21934D4 locks the r1_r2-on-circuit-2 pre-fill scenario (STA-02 / STQ-05 — the specific pair that triggered the production re-ask). sample-05 here locks Ze-on-circuit-1 as a supply-level-value pre-fill. Different field, different circuit, same RESTRAINT principle. Covering both shapes proves the guard is not field-specific.",
   "_requirement": "STT-11 + STQ-05 (restraint — do not re-emit filled slots). STT-11 golden-session subset entry.",
   "_fixture_shape": "dual-SSE",
@@ -45,7 +45,7 @@
       "index": 0,
       "delta": {
         "type": "input_json_delta",
-        "partial_json": "{\"extracted_readings\":[{\"circuit\":3,\"field\":\"zs\",\"value\":\"0.25\",\"confidence\":0.95}],\"field_clears\":[],\"circuit_updates\":[],\"observations\":[],\"questions_for_user\":[]}"
+        "partial_json": "{\"extracted_readings\":[{\"circuit\":3,\"field\":\"measured_zs_ohm\",\"value\":\"0.25\",\"confidence\":0.95}],\"field_clears\":[],\"circuit_updates\":[],\"observations\":[],\"questions_for_user\":[]}"
       }
     },
     { "type": "content_block_stop", "index": 0 },
@@ -73,7 +73,7 @@
       "index": 0,
       "delta": {
         "type": "input_json_delta",
-        "partial_json": "{\"field\":\"zs\",\"circuit\":3,\"value\":\"0.25\",\"confidence\":0.95,\"source_turn_id\":\"t5\"}"
+        "partial_json": "{\"field\":\"measured_zs_ohm\",\"circuit\":3,\"value\":\"0.25\",\"confidence\":0.95,\"source_turn_id\":\"t5\"}"
       }
     },
     { "type": "content_block_stop", "index": 0 },
@@ -102,7 +102,7 @@
   "expected_slot_writes": {
     "_doc": "Circuit 1 ze is UNCHANGED — expected_slot_writes describes only what the turn wrote, not the full post-turn snapshot. The RESTRAINT signal is the ABSENCE of (1,ze) in both paths' extracted_readings.",
     "circuits": {
-      "3": { "zs": "0.25" }
+      "3": { "measured_zs_ohm": "0.25" }
     }
   }
 }

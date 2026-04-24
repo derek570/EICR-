@@ -41,7 +41,7 @@
       "index": 0,
       "delta": {
         "type": "input_json_delta",
-        "partial_json": "{\"extracted_readings\":[{\"circuit\":6,\"field\":\"zs\",\"value\":\"0.32\",\"confidence\":0.9}],\"field_clears\":[],\"circuit_updates\":[{\"action\":\"create\",\"circuit_ref\":6,\"designation\":\"Upstairs sockets\"}],\"observations\":[],\"questions_for_user\":[]}"
+        "partial_json": "{\"extracted_readings\":[{\"circuit\":6,\"field\":\"measured_zs_ohm\",\"value\":\"0.32\",\"confidence\":0.9}],\"field_clears\":[],\"circuit_updates\":[{\"action\":\"create\",\"circuit_ref\":6,\"designation\":\"Upstairs sockets\"}],\"observations\":[],\"questions_for_user\":[]}"
       }
     },
     { "type": "content_block_stop", "index": 0 },
@@ -88,7 +88,7 @@
       "index": 1,
       "delta": {
         "type": "input_json_delta",
-        "partial_json": "{\"field\":\"zs\",\"circuit\":6,\"value\":\"0.32\",\"confidence\":0.9,\"source_turn_id\":\"t3\"}"
+        "partial_json": "{\"field\":\"measured_zs_ohm\",\"circuit\":6,\"value\":\"0.32\",\"confidence\":0.9,\"source_turn_id\":\"t3\"}"
       }
     },
     { "type": "content_block_stop", "index": 1 },
@@ -116,7 +116,7 @@
   ],
   "expected_slot_writes": {
     "circuits": {
-      "6": { "zs": "0.32", "circuit_designation": "Upstairs sockets" }
+      "6": { "measured_zs_ohm": "0.32", "circuit_designation": "Upstairs sockets" }
     }
   }
 }
