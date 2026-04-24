@@ -2471,3 +2471,296 @@ describe('Group r6-1 — Plan 04-12 r6-#1 BLOCK: call-count union aggregation ac
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// Group r7-2 — Plan 04-13 r7-#2 MAJOR: runToolCallPath seeds
+// recentCircuitOrder from the fixture snapshot so buildStateSnapshotMessage
+// exposes every pre-seeded circuit's filled slots to the model.
+//
+// Codex r7 MAJOR #2: `scripts/stage6-golden-divergence.js` seeds
+// `session.stateSnapshot = structuredClone(fx.pre_turn_state.snapshot)`
+// but never seeds `session.recentCircuitOrder`. buildStateSnapshotMessage
+// (eicr-extraction-session.js:1212) keeps only the LAST
+// SNAPSHOT_RECENT_CIRCUITS=3 entries from recentCircuitOrder in detail
+// and compacts everything else into a "N earlier circuits (1,2,3)
+// stored server-side" summary. Consequence: a fixture like F21934D4
+// that seeds 3 circuits with filled slots (including r1_r2_ohm=0.64 on
+// circuit 2) has ALL its circuits collapse into the summary — the
+// cached-prefix snapshot the harness transmits to Sonnet omits the
+// filled-slot values entirely. SC #4 ("F21934D4 zero re-asks on the
+// new prompt + tool-call path") passes only because the current test
+// transcript happens to avoid the r1_r2/zs slots; any future fixture
+// that references those slots would measure a DIFFERENT prompt state
+// than production ever reaches.
+//
+// Fix (r7-#2 GREEN): derive `recentCircuitOrder` from the seeded
+// snapshot's circuit keys (non-supply, ascending numeric). Mirrors
+// what production would have produced via updateStateSnapshot pushes
+// as each reading landed historically.
+//
+// Why OPTION A (harness auto-derives) and NOT OPTION B
+// (fixtures declare order):
+//   - Zero-fixture-edit path — existing fixtures + future authors
+//     do not need to remember to seed this field.
+//   - Robust to authors: the snapshot already implies the order via
+//     which circuits are filled; deriving it removes a footgun.
+//
+// Four tests lock the fix:
+//   r7-2a — F21934D4's r1_r2_ohm=0.64 is visible in captured system[1]
+//           text (not in the "earlier circuits" summary).
+//   r7-2b — captured snapshot does NOT contain "earlier circuits (1,2,3)".
+//   r7-2c — back-compat — for >SNAPSHOT_RECENT_CIRCUITS circuits, the
+//           derivation truncates to the last N (by ascending number).
+//   r7-2d — circuit 0 (supply) is NOT added to recentCircuitOrder
+//           (supply block is separate).
+// ---------------------------------------------------------------------------
+
+describe('Group r7-2 — Plan 04-13 r7-#2: runToolCallPath seeds recentCircuitOrder from fixture snapshot', () => {
+  // Helper — load a canned tool-call events block from sample-01 so each
+  // fixture below has a valid SSE stream for the tool loop.
+  function sample01ToolCallEvents() {
+    return JSON.parse(
+      fssync.readFileSync(path.join(FIXTURE_DIR, 'sample-01-routine.json'), 'utf8'),
+    ).sse_events_tool_call;
+  }
+  function sample01ToolCallEventsR2() {
+    return JSON.parse(
+      fssync.readFileSync(path.join(FIXTURE_DIR, 'sample-01-routine.json'), 'utf8'),
+    ).sse_events_tool_call_round2;
+  }
+
+  test('r7-2a — F21934D4 captured system[1].text contains r1_r2_ohm (not collapsed to earlier-circuits summary)', async () => {
+    // Load the real F21934D4 fixture (post-r6-#3 canonicalisation).
+    // Its pre_turn_state.snapshot has 3 circuits: circuit 1
+    // (measured_zs_ohm=0.42), circuit 2 (r1_r2_ohm=0.64), circuit 3
+    // (designation only). Without the r7-#2 seed, buildStateSnapshotMessage
+    // would see recentCircuitOrder=[] and push ALL three into the older-
+    // circuits summary → filled slots become invisible. With the seed,
+    // they stay in the detailed recent section.
+    const fx = JSON.parse(fssync.readFileSync(F21934D4_PATH, 'utf8'));
+    const { client } = await runToolCallPath(fx);
+    expect(client._calls.length).toBeGreaterThan(0);
+    const firstRequest = client._calls[0];
+    // system[1] is the cached-prefix snapshot block (system[0] is the
+    // agentic prompt). Both present because pre_turn_state is non-empty.
+    expect(Array.isArray(firstRequest.system)).toBe(true);
+    expect(firstRequest.system.length).toBe(2);
+    const snapshotText = firstRequest.system[1].text;
+    // Filled slot for circuit 2 must be visible. FIELD_ID_MAP at
+    // eicr-extraction-session.js:52-81 does NOT map r1_r2_ohm
+    // (canonical key is not in the compact map), so it serialises
+    // as the literal string `r1_r2_ohm`.
+    expect(snapshotText).toContain('r1_r2_ohm');
+    // And the value must be preserved.
+    expect(snapshotText).toContain('0.64');
+  });
+
+  test('r7-2b — F21934D4 snapshot has NO collapsed "earlier circuits" summary (all 3 expanded in detail)', async () => {
+    const fx = JSON.parse(fssync.readFileSync(F21934D4_PATH, 'utf8'));
+    const { client } = await runToolCallPath(fx);
+    const snapshotText = client._calls[0].system[1].text;
+    // With 3 circuits seeded (all non-supply), SNAPSHOT_RECENT_CIRCUITS=3
+    // means ALL three should fit in the detailed section. The collapsed
+    // summary line appears only when circuits > N. Pre-r7 (no seed):
+    // recentCircuitOrder=[] → allNonSupply.filter(n => !recent.includes(n))
+    // includes all three → summary line emitted. Post-r7: recentCircuitOrder
+    // carries [1,2,3] → summary line not emitted.
+    expect(snapshotText).not.toMatch(/earlier circuits/);
+  });
+
+  test('r7-2c — back-compat: >SNAPSHOT_RECENT_CIRCUITS seeded circuits → only last N expanded in detail', async () => {
+    // Synthetic fixture with 5 pre-seeded circuits (1..5). SNAPSHOT_RECENT_CIRCUITS
+    // is 3 (eicr-extraction-session.js:47). The harness-derived
+    // recentCircuitOrder should be [1,2,3,4,5]; the builder's
+    // `.slice(-3)` keeps [3,4,5] detailed and pushes [1,2] to the
+    // summary. This proves the seed respects the compaction semantic
+    // rather than blindly exposing all circuits.
+    const syntheticFx = {
+      pre_turn_state: {
+        snapshot: {
+          circuits: {
+            1: { circuit_ref: 1, circuit_designation: 'Ring 1' },
+            2: { circuit_ref: 2, circuit_designation: 'Ring 2', measured_zs_ohm: 0.22 },
+            3: { circuit_ref: 3, circuit_designation: 'Lighting 1' },
+            4: { circuit_ref: 4, circuit_designation: 'Lighting 2' },
+            5: { circuit_ref: 5, circuit_designation: 'Shower', measured_zs_ohm: 0.55 },
+          },
+          pending_readings: [],
+          observations: [],
+          validation_alerts: [],
+        },
+        askedQuestions: [],
+        extractedObservations: [],
+      },
+      transcript: 'test',
+      sse_events_tool_call: sample01ToolCallEvents(),
+      sse_events_tool_call_round2: sample01ToolCallEventsR2(),
+    };
+    const { client } = await runToolCallPath(syntheticFx);
+    const snapshotText = client._calls[0].system[1].text;
+    // Circuits 1 & 2 collapsed (oldest two). Circuits 3, 4, 5 detailed.
+    expect(snapshotText).toMatch(/2 earlier circuits \(1,2\) stored server-side/);
+    // Detailed recent: circuit 5 with its reading (0.55) must appear.
+    expect(snapshotText).toContain('0.55');
+    // Collapsed: circuit 2 reading (0.22) must NOT appear (it's rolled
+    // into the summary, server-side).
+    expect(snapshotText).not.toContain('0.22');
+  });
+
+  test('r7-2d — circuit 0 (supply) NOT added to recentCircuitOrder', async () => {
+    // The builder treats circuit 0 as a separate always-visible supply
+    // block (eicr-extraction-session.js:1297-1300). recentCircuitOrder
+    // explicitly EXCLUDES circuit 0 (updateStateSnapshot line 1093
+    // guards with `if (circuit !== 0)`). The harness seed must mirror
+    // that convention — otherwise supply fields would occupy one of the
+    // three recent slots.
+    const syntheticFx = {
+      pre_turn_state: {
+        snapshot: {
+          circuits: {
+            0: { ze: '0.32', pfc: '1500' }, // supply
+            1: { circuit_ref: 1, circuit_designation: 'Ring', measured_zs_ohm: 0.45 },
+            2: { circuit_ref: 2, circuit_designation: 'Lights', measured_zs_ohm: 0.80 },
+            3: { circuit_ref: 3, circuit_designation: 'Cooker', measured_zs_ohm: 0.95 },
+            4: { circuit_ref: 4, circuit_designation: 'Shower', measured_zs_ohm: 1.10 },
+          },
+          pending_readings: [],
+          observations: [],
+          validation_alerts: [],
+        },
+        askedQuestions: [],
+        extractedObservations: [],
+      },
+      transcript: 'test',
+      sse_events_tool_call: sample01ToolCallEvents(),
+      sse_events_tool_call_round2: sample01ToolCallEventsR2(),
+    };
+    const { client } = await runToolCallPath(syntheticFx);
+    const snapshotText = client._calls[0].system[1].text;
+    // Supply block shown with FULL field names (eicr-extraction-session.js:1299
+    // — line uses `${JSON.stringify(supplyData)}`).
+    expect(snapshotText).toMatch(/0:\{.*ze.*0\.32/);
+    // recentCircuitOrder derivation excludes circuit 0 → the last 3
+    // non-supply circuits ([2,3,4]) are detailed. Circuit 1 compacts
+    // into the summary ("1 earlier circuits (1) stored server-side").
+    expect(snapshotText).toMatch(/1 earlier circuits \(1\) stored server-side/);
+    // Readings for the detailed circuits (2,3,4) must appear.
+    expect(snapshotText).toContain('0.80');
+    expect(snapshotText).toContain('0.95');
+    expect(snapshotText).toContain('1.1');
+    // Reading for the compacted circuit (1) must NOT appear verbatim.
+    expect(snapshotText).not.toContain('0.45');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Group r7-3 — Plan 04-13 r7-#3 MINOR: circuit_ops sort uses the full
+// canonical tuple (action, circuit_ref, from_ref, designation, phase,
+// rating_amps, cable_csa_mm2).
+//
+// Codex r7 MINOR #3: scripts/stage6-golden-divergence.js:146 — r5-#3
+// widened `normaliseCircuitOp` to canonicalise phase / rating_amps /
+// cable_csa_mm2 alongside designation + from_ref, but the sort key at
+// line 150-155 was still only (action, circuit_ref). Two ops with the
+// same primary tuple but differing metadata compared as equal in sort
+// — final order became input-order dependent, so identical logical
+// shapes would fail canonical-equality checks when emitted in
+// different orders.
+//
+// Fix (r7-#3 GREEN): sort on the full tuple using nullable comparators
+// (same pattern as r5-#2 for observations — compareNullableString for
+// string fields, compareNullableScalar for numeric fields).
+//
+// Four tests lock the widened sort:
+//   r7-3a — two ops identical on (action, circuit_ref) but differing
+//           on phase → deterministic order regardless of input order.
+//   r7-3b — ops differing only on rating_amps → ascending numeric.
+//   r7-3c — ops differing only on cable_csa_mm2 → ascending numeric.
+//   r7-3d — back-compat — ops differing on (action, circuit_ref) are
+//           unaffected by the new tie-breakers.
+// ---------------------------------------------------------------------------
+
+describe('Group r7-3 — Plan 04-13 r7-#3: circuit_ops sort uses full canonical tuple', () => {
+  // Helper to build a legacy-shaped input with a given circuit_updates
+  // array, then normalise and return just the circuit_ops slice.
+  function norm(circuitUpdates) {
+    return normaliseExtractionResult({
+      extracted_readings: [],
+      field_clears: [],
+      observations: [],
+      circuit_updates: circuitUpdates,
+    }).circuit_ops;
+  }
+
+  test('r7-3a — ops identical on (action, circuit_ref) sort deterministically by phase', () => {
+    // Two ops with same action=create, same circuit_ref=4, differing
+    // phase. Pre-fix: output order matches input order (both orderings
+    // return the input verbatim). Post-fix: output is the same
+    // regardless of input order, keyed on phase alphabetical.
+    const forward = norm([
+      { action: 'create', circuit_ref: 4, phase: 'L3' },
+      { action: 'create', circuit_ref: 4, phase: 'L1' },
+    ]);
+    const reverse = norm([
+      { action: 'create', circuit_ref: 4, phase: 'L1' },
+      { action: 'create', circuit_ref: 4, phase: 'L3' },
+    ]);
+    // Both orderings must produce the same sorted output.
+    expect(forward).toEqual(reverse);
+    // Specifically, L1 sorts before L3 alphabetically.
+    expect(forward[0].phase).toBe('L1');
+    expect(forward[1].phase).toBe('L3');
+  });
+
+  test('r7-3b — ops differing only on rating_amps sort numerically ascending', () => {
+    const forward = norm([
+      { action: 'create', circuit_ref: 4, rating_amps: 32 },
+      { action: 'create', circuit_ref: 4, rating_amps: 6 },
+      { action: 'create', circuit_ref: 4, rating_amps: 16 },
+    ]);
+    const reverse = norm([
+      { action: 'create', circuit_ref: 4, rating_amps: 16 },
+      { action: 'create', circuit_ref: 4, rating_amps: 6 },
+      { action: 'create', circuit_ref: 4, rating_amps: 32 },
+    ]);
+    expect(forward).toEqual(reverse);
+    expect(forward.map((o) => o.rating_amps)).toEqual([6, 16, 32]);
+  });
+
+  test('r7-3c — ops differing only on cable_csa_mm2 sort numerically ascending', () => {
+    const forward = norm([
+      { action: 'create', circuit_ref: 4, cable_csa_mm2: 10 },
+      { action: 'create', circuit_ref: 4, cable_csa_mm2: 1.5 },
+      { action: 'create', circuit_ref: 4, cable_csa_mm2: 2.5 },
+    ]);
+    const reverse = norm([
+      { action: 'create', circuit_ref: 4, cable_csa_mm2: 2.5 },
+      { action: 'create', circuit_ref: 4, cable_csa_mm2: 10 },
+      { action: 'create', circuit_ref: 4, cable_csa_mm2: 1.5 },
+    ]);
+    expect(forward).toEqual(reverse);
+    expect(forward.map((o) => o.cable_csa_mm2)).toEqual([1.5, 2.5, 10]);
+  });
+
+  test('r7-3d — back-compat: ops differing on (action, circuit_ref) retain primary ordering', () => {
+    // Regression guard: the widened tie-breakers MUST NOT alter the
+    // primary sort on (action, circuit_ref). Two ops differing on
+    // action: 'create' sorts before 'rename' alphabetically. Two ops
+    // same action but differing circuit_ref: numeric/string ascending.
+    const ops = norm([
+      { action: 'rename', circuit_ref: 3, from_ref: 2, phase: 'L2' },
+      { action: 'create', circuit_ref: 5, phase: 'L1' },
+      { action: 'create', circuit_ref: 4, phase: 'L1' },
+    ]);
+    // Expected ordering:
+    //   1. create, circuit_ref=4 (create < rename; 4 < 5)
+    //   2. create, circuit_ref=5
+    //   3. rename, circuit_ref=3
+    expect(ops[0].action).toBe('create');
+    expect(String(ops[0].circuit_ref)).toBe('4');
+    expect(ops[1].action).toBe('create');
+    expect(String(ops[1].circuit_ref)).toBe('5');
+    expect(ops[2].action).toBe('rename');
+    expect(String(ops[2].circuit_ref)).toBe('3');
+  });
+});
