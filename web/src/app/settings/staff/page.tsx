@@ -10,6 +10,7 @@ import type { InspectorProfile } from '@/lib/types';
 import { Button } from '@/components/ui/button';
 import { ConfirmDialog } from '@/components/ui/confirm-dialog';
 import { IconButton } from '@/components/ui/icon-button';
+import { SkeletonRow } from '@/components/ui/skeleton-row';
 
 /**
  * Staff members list. Ports iOS `InspectorListView.swift`:
@@ -71,10 +72,25 @@ export default function StaffListPage() {
   }
 
   if (!user || inspectors === null) {
+    // Phase 9: skeleton rows instead of a centred spinner so the page
+    // layout doesn't jump when data arrives — the roster lands in the
+    // same slot the placeholder occupied.
     return (
-      <div className="flex h-[60vh] items-center justify-center text-[var(--color-text-secondary)]">
-        Loading…
-      </div>
+      <main className="mx-auto flex w-full max-w-3xl flex-col gap-5 px-4 py-6">
+        <div className="flex items-center justify-between">
+          <h1 className="text-[22px] font-bold text-[var(--color-text-primary)]">Staff</h1>
+        </div>
+        <div className="flex flex-col gap-2">
+          {Array.from({ length: 3 }).map((_, i) => (
+            <div
+              key={i}
+              className="rounded-[var(--radius-lg)] border border-[var(--color-border-subtle)] bg-[var(--color-surface-2)] p-3"
+            >
+              <SkeletonRow lines={2} />
+            </div>
+          ))}
+        </div>
+      </main>
     );
   }
 
