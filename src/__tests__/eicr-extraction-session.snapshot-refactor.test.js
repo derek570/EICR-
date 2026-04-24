@@ -315,6 +315,116 @@ describe('Plan 04-02 — buildUserMessage per-turn minimalism in non-off mode', 
   });
 });
 
+// ---------------------------------------------------------------------------
+// Plan 04-08 (r2-#1) — cached-prefix digest regression.
+//
+// WHY THIS GROUP EXISTS: Codex r2 (2026-04-23) found that Plan 04-02's
+// buildUserMessage refactor suppresses the `Already asked` + `Observations
+// already created` digests in non-off modes but does NOT re-home them into
+// the cached prefix (buildStateSnapshotMessage / buildSystemBlocks). Shadow
+// + live lost two existing anti-re-ask / dedup guards that off-mode still
+// enjoys. These are the backstops that tell Sonnet (a) don't re-ask
+// field:circuit pairs you've already asked about, (b) don't re-emit
+// observations you've already produced (server-side dedup still runs, but
+// the model wastes tokens and the UI sees spurious churn).
+//
+// Fix: extend buildStateSnapshotMessage to include two new optional
+// sections populated from this.askedQuestions + this.extractedObservations
+// when non-empty. Cache-control semantics unchanged.
+// ---------------------------------------------------------------------------
+
+describe('Plan 04-08 r2-#1 — cached-prefix digest regression', () => {
+  test("r2-1a: non-off buildSystemBlocks() INCLUDES 'ASKED QUESTIONS' when askedQuestions non-empty", () => {
+    const s = new EICRExtractionSession('k', 's', 'eicr', { toolCallsMode: 'shadow' });
+    s.askedQuestions = ['measured_zs_ohm:1', 'r1_r2_ohm:2', 'polarity_confirmed:3'];
+    const blocks = s.buildSystemBlocks();
+    // Snapshot block is index 1 when non-empty; must exist because
+    // askedQuestions alone should make buildStateSnapshotMessage
+    // return non-null.
+    expect(blocks).toHaveLength(2);
+    expect(blocks[1].text).toContain('ASKED QUESTIONS');
+    expect(blocks[1].text).toContain('measured_zs_ohm:1');
+    expect(blocks[1].text).toContain('r1_r2_ohm:2');
+    expect(blocks[1].text).toContain('polarity_confirmed:3');
+  });
+
+  test("r2-1b: non-off buildSystemBlocks() INCLUDES 'EXTRACTED OBSERVATIONS' when extractedObservations non-empty", () => {
+    const s = new EICRExtractionSession('k', 's', 'eicr', { toolCallsMode: 'shadow' });
+    s.extractedObservations = [
+      { id: 'id-a', text: 'missing earth bond at kitchen', code: 'C2' },
+      { id: 'id-b', text: 'loose neutral in upstairs consumer unit', code: 'C2' },
+    ];
+    const blocks = s.buildSystemBlocks();
+    expect(blocks).toHaveLength(2);
+    expect(blocks[1].text).toContain('EXTRACTED OBSERVATIONS');
+    // Truncated-to-60 text from buildUserMessage parity
+    expect(blocks[1].text).toContain('missing earth bond at kitchen');
+    expect(blocks[1].text).toContain('loose neutral in upstairs consumer unit');
+  });
+
+  test("r2-1c: combined — snapshot includes schedule + extracted + observations + asked + extractedObs in order", () => {
+    const s = new EICRExtractionSession('k', 's', 'eicr', { toolCallsMode: 'shadow' });
+    s.circuitSchedule = '  Circuit 1: Kitchen Sockets []';
+    s.updateStateSnapshot({
+      extracted_readings: [{ circuit: 1, field: 'measured_zs_ohm', value: '0.35' }],
+      observations: [{ observation_text: 'scorched neutral busbar', code: 'C2' }],
+    });
+    s.askedQuestions = ['polarity_confirmed:1'];
+    s.extractedObservations = [{ id: 'id-x', text: 'cover damaged on mcb', code: 'C3' }];
+    const blocks = s.buildSystemBlocks();
+    expect(blocks).toHaveLength(2);
+    const text = blocks[1].text;
+    // Ordering contract — cache key sensitivity.
+    const iSched = text.indexOf('CIRCUIT SCHEDULE');
+    const iExtracted = text.indexOf('EXTRACTED (field IDs');
+    const iObs = text.indexOf('OBSERVATIONS ALREADY RECORDED');
+    const iAsked = text.indexOf('ASKED QUESTIONS');
+    const iExtractedObs = text.indexOf('EXTRACTED OBSERVATIONS');
+    expect(iSched).toBeGreaterThanOrEqual(0);
+    expect(iExtracted).toBeGreaterThan(iSched);
+    expect(iObs).toBeGreaterThan(iExtracted);
+    expect(iAsked).toBeGreaterThan(iObs);
+    expect(iExtractedObs).toBeGreaterThan(iAsked);
+  });
+
+  test("r2-1d: off-mode buildUserMessage output is byte-identical to pre-r2 behaviour", () => {
+    // Locks the STR-01 rollback invariant — adding the digests into the
+    // cached prefix on non-off MUST NOT disturb the off-mode per-turn
+    // injection of those same digests in buildUserMessage.
+    const s = new EICRExtractionSession('k', 's', 'eicr', { toolCallsMode: 'off' });
+    s.circuitSchedule = 'Circuit 1: Kitchen Sockets []';
+    s.askedQuestions = ['measured_zs_ohm:1', 'r1_r2_ohm:2'];
+    s.extractedObservations = [{ id: 'id-a', text: 'missing earth bond at kitchen', code: 'C2' }];
+    const msg = s.buildUserMessage('new utterance');
+    const expected = [
+      'NEW utterance: new utterance',
+      'CIRCUIT SCHEDULE (confirmed values -- do NOT question these):\nCircuit 1: Kitchen Sockets []',
+      'Already asked (skip): measured_zs_ohm:1; r1_r2_ohm:2',
+      'Observations already created (do NOT re-extract): missing earth bond at kitchen',
+    ].join('\n\n');
+    expect(msg).toBe(expected);
+  });
+
+  test("r2-1e: non-off — session with only askedQuestions + no readings/schedule returns non-null snapshot containing just ASKED QUESTIONS", () => {
+    // Before r2, buildStateSnapshotMessage returned null when circuits +
+    // pending + obs + alerts + schedule were all empty — even though
+    // askedQuestions was non-empty. Fix: widen the non-null gate to include
+    // askedQuestions / extractedObservations.
+    const s = new EICRExtractionSession('k', 's', 'eicr', { toolCallsMode: 'shadow' });
+    s.askedQuestions = ['measured_zs_ohm:1'];
+    const blocks = s.buildSystemBlocks();
+    expect(blocks).toHaveLength(2);
+    const text = blocks[1].text;
+    expect(text).toContain('ASKED QUESTIONS');
+    expect(text).toContain('measured_zs_ohm:1');
+    // Sanity: nothing else was included because nothing else was set.
+    expect(text).not.toContain('CIRCUIT SCHEDULE');
+    expect(text).not.toContain('EXTRACTED (field IDs');
+    expect(text).not.toContain('OBSERVATIONS ALREADY RECORDED');
+    expect(text).not.toContain('EXTRACTED OBSERVATIONS');
+  });
+});
+
 describe('Plan 04-02 — legacy off-mode regression guard (Group 6)', () => {
   beforeEach(() => mockCreate.mockReset());
 
