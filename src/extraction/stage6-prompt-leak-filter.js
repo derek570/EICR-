@@ -753,10 +753,39 @@ export function checkForPromptLeak(text, opts = {}) {
   ]);
   const COMPOSITE_WRAPPER_IDS = new Set(['user-text-open', 'user-text-close']);
 
+  // Plan 04-34 r27-#3 — longest-first iteration within each
+  // priority family. Declaration order put `trust-boundary`
+  // (14 chars) BEFORE `snapshot-trust-boundary` (23 chars);
+  // first-match-wins therefore surfaced the SHORTER substring
+  // (`trust-boundary`) for a payload like `"SNAPSHOT TRUST
+  // BOUNDARY"` — telemetry degraded to the generic reason.
+  //
+  // Sorting each priority family longest-first (by
+  // `marker.value.length` descending) makes declaration order
+  // functionally irrelevant for correctness. A future
+  // MARKER_STRINGS entry with a longer value automatically
+  // takes precedence without requiring its declaration to move.
+  //
+  // WHY build arrays inside the function: MARKER_STRINGS is
+  // 8 entries so the sort cost per call is negligible (< 50ns).
+  // Could be lifted to module-top-level constants as a micro-
+  // optimisation but the in-function form keeps the three
+  // priority loops visually co-located with their Sets.
+  const sharpMarkersByLength = MARKER_STRINGS.filter((m) => SHARP_MARKER_IDS.has(m.id)).sort(
+    (a, b) => b.value.length - a.value.length
+  );
+  const compositeMarkersByLength = MARKER_STRINGS.filter((m) =>
+    COMPOSITE_WRAPPER_IDS.has(m.id)
+  ).sort((a, b) => b.value.length - a.value.length);
+  const residualMarkersByLength = MARKER_STRINGS.filter(
+    (m) => !SHARP_MARKER_IDS.has(m.id) && !COMPOSITE_WRAPPER_IDS.has(m.id)
+  ).sort((a, b) => b.value.length - a.value.length);
+
   // Family 1a — SHARP markers (Priority 1). Named prompt section
-  // / channel identifiers — sharpest telemetry.
-  for (const marker of MARKER_STRINGS) {
-    if (!SHARP_MARKER_IDS.has(marker.id)) continue;
+  // / channel identifiers — sharpest telemetry. Iterated
+  // longest-first so `snapshot-trust-boundary` beats
+  // `trust-boundary` on overlapping inputs.
+  for (const marker of sharpMarkersByLength) {
     if (lower.includes(marker.value.toLowerCase())) {
       return makeUnsafe(field, `marker:${marker.id}`);
     }
@@ -765,9 +794,10 @@ export function checkForPromptLeak(text, opts = {}) {
   // Family 1b — composite wrapper markers (Priority 2). Full
   // `<<<USER_TEXT>>>` / `<<<END_USER_TEXT>>>` payloads. Formerly
   // Family 1a under r25-#2; demoted to 1b under r26-#3 so sharper
-  // SHARP markers win on mixed payloads.
-  for (const marker of MARKER_STRINGS) {
-    if (!COMPOSITE_WRAPPER_IDS.has(marker.id)) continue;
+  // SHARP markers win on mixed payloads. Iterated longest-first
+  // (r27-#3) so `user-text-close` (19 chars) beats
+  // `user-text-open` (15 chars) on payloads containing both.
+  for (const marker of compositeMarkersByLength) {
     if (lower.includes(marker.value.toLowerCase())) {
       return makeUnsafe(field, `marker:${marker.id}`);
     }
@@ -783,15 +813,13 @@ export function checkForPromptLeak(text, opts = {}) {
 
   // Family 1d — residual MARKER_STRINGS (Priority 4). Every entry
   // not in SHARP_MARKER_IDS or COMPOSITE_WRAPPER_IDS. Currently:
-  //   - end-user-text-bare
-  //   - user-text-bare
-  // Fires for inputs that reference the wrapper identifier by
-  // name without triple-angle proximity. Longest-match-wins via
-  // MARKER_STRINGS declaration order (END_USER_TEXT listed
-  // before USER_TEXT).
-  for (const marker of MARKER_STRINGS) {
-    if (SHARP_MARKER_IDS.has(marker.id)) continue;
-    if (COMPOSITE_WRAPPER_IDS.has(marker.id)) continue;
+  //   - end-user-text-bare (13 chars)
+  //   - user-text-bare (9 chars)
+  // Iterated longest-first (r27-#3) so `end-user-text-bare`
+  // wins on payloads containing both. Declaration order was
+  // already longest-first; the sort locks the invariant under
+  // runtime rather than under a comment.
+  for (const marker of residualMarkersByLength) {
     if (lower.includes(marker.value.toLowerCase())) {
       return makeUnsafe(field, `marker:${marker.id}`);
     }
