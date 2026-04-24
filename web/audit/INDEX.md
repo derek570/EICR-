@@ -5,6 +5,37 @@ Rollup of gaps surfaced by the eight-phase parity audit (Wave A, 2026-04-24). Ea
 Audit methodology & prompt templates: `~/.claude/plans/we-ve-just-finished-a-enumerated-hellman.md`.
 Guiding rule: **iOS is canon. Divergence is a bug unless explicitly documented** (`~/.claude/projects/-Users-derekbeckley-Developer-EICR-Automation/memory/feedback_ios_is_canon_for_parity.md`).
 
+## Wave B — fix progress (branch `pwa-parity-fixes`, worktree at `../EICR_Automation_parity`)
+
+| # | Domain | Status | Commit(s) |
+|---|--------|--------|-----------|
+| B0 | Branch + env setup | ✅ | `61d7d76` (audit docs on branch) |
+| B1 | Data-shape P0s — bucket rename + flag/enum review | ✅ partial | `2314566`, `28556f9` (codex fixes) |
+| B2 | Tab / nav structural P0s (Observations tab, Extent/Design EIC-only) | ✅ | `86dac39` |
+| B3a | PDF wire-up (was stage6-only stub; main had it wired; bucket cleanup) | ✅ | `f8ab898` |
+| B3b | Change Password page | ⏳ pending |
+| B3c | Defaults area port | ⏳ pending |
+| B3d | CCU three-mode + review sheet | ⏳ on main already; audit against main needed |
+| B4 | Deepgram + Recording config | ⏳ pending |
+| B5 | Recording UI parity | ⏳ pending |
+| B6 | Dashboard + Settings gap closure | ⏳ pending |
+| B7 | Shared-tab content gaps (inner-field drift, CircuitRow, observations, outcomes) | ⏳ pending |
+| B8 | Cert-gated tabs + Staff remaining | ⏳ pending |
+| B9 | P1 sweeps | ⏳ pending |
+| B10 | P2 hygiene + final handoff | ⏳ pending |
+
+### Notes from the run so far
+1. **The audit was run against `stage6-agentic-extraction`, which diverged from main in two directions.** Some gaps (Phase 5 Gap #5.5 PDF stubs, Phase 8 Gap #1 CCU three-mode, much of Phase 3 action-rail) are stage6-only regressions and **already resolved on main**. Each phase needs a "what's actually current on main" cross-check before the fix agent wastes effort.
+2. **Outcome enum drift (Phase 4 Gap #9 / Gap #10) NOT yet fixed in B1.** The `ScheduleOutcome` type still includes `'✓' / '✗' / 'FI'` which iOS can't decode. This is a P0 data-corruption item and lands in B7 or a dedicated B1 follow-up.
+3. **Inspection-schedule flag casing** (Phase 4 Gap #11 — `mark_section_7_na` vs `mark_section7_na`) is still snake_case on PWA pending backend-contract verification. The shared-types say camelCase; PWA doesn't. Needs a grep-and-rename pass on the inspection page.
+4. **InspectorProfile shape** (Phase 5 Gap #5.3, Phase 7 P0-7B-1) — backend audit confirms single `name` field (not `firstName` + `lastName`) and NO equipment fields server-side. PWA's local 10-equipment-field extension is client-only and must stay client-only. The audit's "split-name" gap is wrong; the "3-way shape drift" gap is real and still open.
+5. **Collision hazard**: the `stage6-agentic-extraction` branch is actively being committed to by a parallel Claude session. A worktree at `../EICR_Automation_parity` isolates the parity work so the two don't fight over `git checkout`. Don't reuse the main repo checkout for parity fixes.
+
+### Codex review findings closed so far
+- B1: nullable schema regression, single-board data-loss path, LiveFill prefix mismatch (all fixed in `28556f9`). Fourth finding (Overview board read vs Board write) deferred to B7's inner-field pass because the Overview already reads from a pre-existing drifted bucket that B7 will rationalize wholesale.
+- B2: no findings.
+- B3a: no separate review (tiny bucket-rename follow-up).
+
 ## Phase status — ALL DONE
 
 | Phase | Scope | Report | Gaps (P0 / P1 / P2) |
