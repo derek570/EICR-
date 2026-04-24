@@ -126,7 +126,13 @@ export function OfflineBanner() {
       role="status"
       aria-live="polite"
       aria-label={label}
-      className="md:hidden flex w-full items-center justify-center gap-2 border-b border-[var(--color-status-processing)]/40 bg-[var(--color-status-processing)]/15 px-3 py-2 text-[12px] font-semibold text-[var(--color-status-processing)]"
+      // `sticky top-0` keeps the banner visible once an inspector
+      // scrolls down a long job page — the AppShell header ends at
+      // top-0 on mobile (the header pill is hidden below md), so
+      // pinning the banner here puts it exactly where the pill used
+      // to live. z-30 keeps it above job-tab content without
+      // fighting the Radix overlays (z-50+).
+      className="sticky top-0 z-30 md:hidden flex w-full items-center justify-center gap-2 border-b border-[var(--color-status-processing)]/40 bg-[var(--color-status-processing)]/15 px-3 py-2 text-[12px] font-semibold text-[var(--color-status-processing)] backdrop-blur-sm"
     >
       <WifiOff className="h-3.5 w-3.5" strokeWidth={2.25} aria-hidden />
       <span>
