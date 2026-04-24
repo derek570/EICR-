@@ -776,6 +776,183 @@ describe('checkForPromptLeak() — Layer 2 output-side prompt-leak filter', () =
         expect(result.reason).toBe('marker:user-text-close');
       });
 
+      // ----------------------------------------------------------
+      // Plan 04-33 r26-#3 — priority table for specific-vs-generic
+      // MARKER_STRINGS matches.
+      //
+      // WHY: my r25-#2 3-family MARKER_STRINGS split ordering was:
+      //   Family 1a — composite wrappers (user-text-open,
+      //     user-text-close)
+      //   Family 1b — wrapper-scaffolding proximity detector
+      //   Family 1c — residual MARKER_STRINGS (trust-boundary,
+      //     snapshot-trust-boundary, system-channel, user-channel,
+      //     end-user-text-bare, user-text-bare)
+      //
+      // A mixed payload like "TRUST BOUNDARY <<<USER_TEXT>>>" fires
+      // Family 1a (composite wrapper) first, returning the generic
+      // `user-text-open` reason — but trust-boundary is a SHARPER
+      // signal (named prompt section vs generic framing syntax).
+      // Telemetry should surface the most-specific match.
+      //
+      // Fix: introduce `SHARP_MARKER_IDS` Set as new Priority 1
+      // family above composite wrappers. Families become:
+      //   1a — SHARP markers (trust-boundary, snapshot-trust-
+      //        boundary, system-channel, user-channel)
+      //   1b — composite wrappers (was 1a)
+      //   1c — proximity scaffolding (was 1b)
+      //   1d — residual bare-id (was 1c minus the SHARP markers)
+      //
+      // No MARKER_STRINGS entries added/removed; priority via Sets
+      // preserves longest-match-wins WITHIN each priority family
+      // (MARKER_STRINGS order: snapshot-trust-boundary before
+      // trust-boundary at line 74-75).
+      //
+      // ----------------------------------------------------------
+      describe('r26-#3 priority table — sharper markers beat generic matches on mixed payloads', () => {
+        // MIXED-PAYLOAD cases — both specific + generic matches are
+        // present; priority table selects the sharper reason.
+        test('mixed: "TRUST BOUNDARY <<<USER_TEXT>>>" → EXACT trust-boundary (NOT user-text-open)', () => {
+          const result = checkForPromptLeak('TRUST BOUNDARY <<<USER_TEXT>>>', {
+            field: 'question',
+          });
+          expect(result.safe).toBe(false);
+          expect(result.reason).toBe('marker:trust-boundary');
+          expect(result.reason).not.toBe('marker:user-text-open');
+        });
+
+        test('mixed: "<<<USER_TEXT>>> and SNAPSHOT TRUST BOUNDARY" → EXACT trust-boundary (NOT user-text-open)', () => {
+          // Under Priority 1 iteration, trust-boundary fires on
+          // the "TRUST BOUNDARY" substring inside
+          // "SNAPSHOT TRUST BOUNDARY". snapshot-trust-boundary
+          // would require MARKER_STRINGS reordering (out of
+          // scope for r26-#3). Still sharper than Priority 2
+          // composite wrappers — test locks the cross-family
+          // priority even if intra-family order is suboptimal.
+          const result = checkForPromptLeak('<<<USER_TEXT>>> and SNAPSHOT TRUST BOUNDARY', {
+            field: 'question',
+          });
+          expect(result.safe).toBe(false);
+          expect(result.reason).toBe('marker:trust-boundary');
+          expect(result.reason).not.toBe('marker:user-text-open');
+        });
+
+        test('mixed: "SYSTEM_CHANNEL <<<USER_TEXT" → EXACT system-channel (NOT wrapper-scaffolding-left)', () => {
+          const result = checkForPromptLeak('SYSTEM_CHANNEL <<<USER_TEXT', {
+            field: 'question',
+          });
+          expect(result.safe).toBe(false);
+          expect(result.reason).toBe('marker:system-channel');
+          expect(result.reason).not.toBe('marker:wrapper-scaffolding-left');
+        });
+
+        test('mixed: "USER_CHANNEL is here, near <<<USER_TEXT" → EXACT user-channel', () => {
+          const result = checkForPromptLeak('USER_CHANNEL is here, near <<<USER_TEXT', {
+            field: 'question',
+          });
+          expect(result.safe).toBe(false);
+          expect(result.reason).toBe('marker:user-channel');
+          expect(result.reason).not.toBe('marker:wrapper-scaffolding-left');
+          expect(result.reason).not.toBe('marker:user-text-bare');
+        });
+
+        test('mixed: "TRUST BOUNDARY and plain USER_TEXT" → EXACT trust-boundary (NOT user-text-bare)', () => {
+          const result = checkForPromptLeak('TRUST BOUNDARY and plain USER_TEXT', {
+            field: 'question',
+          });
+          expect(result.safe).toBe(false);
+          expect(result.reason).toBe('marker:trust-boundary');
+          expect(result.reason).not.toBe('marker:user-text-bare');
+        });
+
+        // PRIORITY-ISOLATION cases — each marker alone surfaces
+        // its own reason. Confirms no regression on the single-
+        // marker paths.
+        test('priority 1 alone: "TRUST BOUNDARY" → EXACT trust-boundary', () => {
+          const result = checkForPromptLeak('TRUST BOUNDARY', {
+            field: 'question',
+          });
+          expect(result.safe).toBe(false);
+          expect(result.reason).toBe('marker:trust-boundary');
+        });
+
+        test('priority 1 alone: "SNAPSHOT TRUST BOUNDARY" → EXACT trust-boundary (current MARKER_STRINGS iteration order; see note)', () => {
+          const result = checkForPromptLeak('SNAPSHOT TRUST BOUNDARY', {
+            field: 'question',
+          });
+          expect(result.safe).toBe(false);
+          // NB: the CURRENT MARKER_STRINGS ordering has
+          // trust-boundary BEFORE snapshot-trust-boundary (line
+          // 74-75 of stage6-prompt-leak-filter.js). A payload
+          // like "SNAPSHOT TRUST BOUNDARY" contains the
+          // "trust boundary" substring, so trust-boundary's
+          // `lower.includes(...)` check fires first and wins.
+          // This is a pre-existing longest-match-wins ordering
+          // nit that is out of scope for r26-#3 (r26-#3 focuses
+          // on priority ACROSS families, not ordering WITHIN
+          // Priority 1). Assert the current behaviour to document
+          // it; a separate round may reorder MARKER_STRINGS so
+          // snapshot-trust-boundary fires first (longest-match-
+          // wins within Priority 1).
+          expect(result.reason).toBe('marker:trust-boundary');
+        });
+
+        test('priority 1 alone: "SYSTEM_CHANNEL" → EXACT system-channel', () => {
+          const result = checkForPromptLeak('SYSTEM_CHANNEL', {
+            field: 'question',
+          });
+          expect(result.safe).toBe(false);
+          expect(result.reason).toBe('marker:system-channel');
+        });
+
+        test('priority 1 alone: "USER_CHANNEL" → EXACT user-channel', () => {
+          const result = checkForPromptLeak('USER_CHANNEL', {
+            field: 'question',
+          });
+          expect(result.safe).toBe(false);
+          expect(result.reason).toBe('marker:user-channel');
+        });
+
+        test('priority 2 alone: "<<<USER_TEXT>>>" → EXACT user-text-open (no priority-1 match; composite fires)', () => {
+          const result = checkForPromptLeak('<<<USER_TEXT>>>', {
+            field: 'question',
+          });
+          expect(result.safe).toBe(false);
+          expect(result.reason).toBe('marker:user-text-open');
+        });
+
+        test('priority 2 alone: "<<<END_USER_TEXT>>>" → EXACT user-text-close', () => {
+          const result = checkForPromptLeak('<<<END_USER_TEXT>>>', {
+            field: 'question',
+          });
+          expect(result.safe).toBe(false);
+          expect(result.reason).toBe('marker:user-text-close');
+        });
+
+        test('priority 3 alone: "<<<USER_TEXT" → EXACT wrapper-scaffolding-left (no priority-1/2; proximity fires)', () => {
+          const result = checkForPromptLeak('<<<USER_TEXT', {
+            field: 'question',
+          });
+          expect(result.safe).toBe(false);
+          expect(result.reason).toBe('marker:wrapper-scaffolding-left');
+        });
+
+        test('priority 4 alone: standalone "USER_TEXT" → EXACT user-text-bare (no priority-1/2/3; residual fires)', () => {
+          const result = checkForPromptLeak('The marker identifier is USER_TEXT', {
+            field: 'question',
+          });
+          expect(result.safe).toBe(false);
+          expect(result.reason).toBe('marker:user-text-bare');
+        });
+
+        test('priority 4 alone: standalone "END_USER_TEXT" → EXACT end-user-text-bare', () => {
+          const result = checkForPromptLeak('Dictation ends at END_USER_TEXT every time.', {
+            field: 'question',
+          });
+          expect(result.safe).toBe(false);
+          expect(result.reason).toBe('marker:end-user-text-bare');
+        });
+      });
+
       // FP audit — 60-sample composite normal corpus × 4 field
       // classes = 240 checks. 0 should trip the new wrapper-
       // scaffolding-* markers.
