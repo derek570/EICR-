@@ -707,6 +707,18 @@ export class EICRExtractionSession {
 
     // Track previous snapshot text to avoid costly cache writes when snapshot changes
     this._lastSnapshotText = null;
+
+    // Plan 04-22 r16-#4 — per-session dedupe set for unknown
+    // validation_alert type/severity warn() calls. Without this,
+    // a single drift event surfaces on every snapshot rebuild
+    // (one per Sonnet turn ≈ once per utterance) → CloudWatch
+    // log flood. Dedupe keys are prefixed with `type:` vs
+    // `severity:` so the same string drifting in both fields
+    // produces TWO log entries (each is operationally distinct).
+    // Lifetime: per-instance — second session with the same
+    // bad value warns independently. GC'd with the session
+    // instance.
+    this._loggedUnknownValidationAlerts = new Set();
   }
 
   /**
@@ -2007,9 +2019,22 @@ export class EICRExtractionSession {
               if (VALIDATION_ALERT_KNOWN_TYPES.has(value)) {
                 out[key] = sanitiseSnapshotField(value);
               } else {
-                logger.warn?.(
-                  `Session ${this.sessionId} validation_alert_unknown_type: received unknown alert type "${value}" — wrapping defensively`
-                );
+                // Plan 04-22 r16-#4 — sanitise BEFORE log + per-
+                // session dedupe + structured-log shape. Mirrors the
+                // line-683 stage6.invalid_tool_calls_mode pattern.
+                // Sanitisation strips C0 controls (no log injection
+                // via embedded \n / \r) and caps length. Dedupe key
+                // prefixed with `type:` so a string drifting in both
+                // type AND severity (r16-4e edge case) surfaces twice.
+                const sanitisedValue = sanitiseSnapshotField(value);
+                const dedupeKey = `type:${sanitisedValue}`;
+                if (!this._loggedUnknownValidationAlerts.has(dedupeKey)) {
+                  this._loggedUnknownValidationAlerts.add(dedupeKey);
+                  logger.warn?.('stage6.validation_alert_unknown_type', {
+                    sessionId: this.sessionId,
+                    value: sanitisedValue,
+                  });
+                }
                 out[key] = wrapSnapshotUserTextInline(value);
               }
             } else if (key === 'severity' && typeof value === 'string') {
@@ -2023,9 +2048,21 @@ export class EICRExtractionSession {
               if (VALIDATION_ALERT_KNOWN_SEVERITIES.has(value)) {
                 out[key] = sanitiseSnapshotField(value);
               } else {
-                logger.warn?.(
-                  `Session ${this.sessionId} validation_alert_unknown_severity: received unknown alert severity "${value}" — wrapping defensively`
-                );
+                // Plan 04-22 r16-#4 — same sanitise + dedupe + structured-
+                // log treatment as the unknown-type branch above. Distinct
+                // dedupe prefix (`severity:`) so a string drifting in both
+                // type and severity surfaces twice (each is operationally
+                // distinct — type drift = prompt-author-side issue,
+                // severity drift = model-hallucination signal).
+                const sanitisedValue = sanitiseSnapshotField(value);
+                const dedupeKey = `severity:${sanitisedValue}`;
+                if (!this._loggedUnknownValidationAlerts.has(dedupeKey)) {
+                  this._loggedUnknownValidationAlerts.add(dedupeKey);
+                  logger.warn?.('stage6.validation_alert_unknown_severity', {
+                    sessionId: this.sessionId,
+                    value: sanitisedValue,
+                  });
+                }
                 out[key] = wrapSnapshotUserTextInline(value);
               }
             } else if (typeof value === 'string') {

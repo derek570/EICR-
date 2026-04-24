@@ -1245,6 +1245,14 @@ describe('Plan 04-19 r13-#3 — validation_alerts.type allowlist (defence-in-dep
     // instance the session uses. `logger.warn` is optional-chained
     // at the call site (logger.warn?.(...)) so the spy must
     // install a function before the snapshot builds.
+    //
+    // Plan 04-22 r16-#4 — matcher updated from `call.map(String).join(' ')`
+    // to a JSON.stringify-aware form so meta-object args (the new
+    // structured-log shape: `[eventName, {sessionId, value}]`)
+    // are inspected, not stringified to "[object Object]". The
+    // r13-3e contract is unchanged: the warn must surface the
+    // unknown-type signal AND the unknown value; the matcher just
+    // looks at both args properly now.
     const loggerModule = await import('../logger.js');
     const warnSpy = jest.spyOn(loggerModule.default, 'warn');
 
@@ -1264,7 +1272,7 @@ describe('Plan 04-19 r13-#3 — validation_alerts.type allowlist (defence-in-dep
     // At least one warn call must mention the unknown-type signal
     // AND the unknown value.
     const matchedCalls = warnSpy.mock.calls.filter((call) => {
-      const arg = call.map(String).join(' ');
+      const arg = call.map((a) => (typeof a === 'string' ? a : JSON.stringify(a))).join(' ');
       return arg.includes('validation_alert_unknown_type') && arg.includes('mystery_tag');
     });
     expect(matchedCalls.length).toBeGreaterThan(0);
@@ -1440,6 +1448,12 @@ describe('Plan 04-20 r14-#2 — validation_alerts.severity allowlist (defence-in
   test('r14-2e — UNKNOWN severity triggers `validation_alert_unknown_severity` warning log', async () => {
     // Same spy pattern as r13-3e. The warning surfaces drift/attack
     // signals at ingestion so operators can investigate.
+    //
+    // Plan 04-22 r16-#4 — matcher updated alongside r13-3e for the
+    // structured-log shape. Same rationale: meta-object args must
+    // be JSON.stringify'd to be searchable, otherwise they
+    // serialise to "[object Object]" and the value substring is
+    // never found.
     const loggerModule = await import('../logger.js');
     const warnSpy = jest.spyOn(loggerModule.default, 'warn');
 
@@ -1459,7 +1473,7 @@ describe('Plan 04-20 r14-#2 — validation_alerts.severity allowlist (defence-in
     // At least one warn call must mention the unknown-severity signal
     // AND the unknown value.
     const matchedCalls = warnSpy.mock.calls.filter((call) => {
-      const arg = call.map(String).join(' ');
+      const arg = call.map((a) => (typeof a === 'string' ? a : JSON.stringify(a))).join(' ');
       return arg.includes('validation_alert_unknown_severity') && arg.includes('mystery_level');
     });
     expect(matchedCalls.length).toBeGreaterThan(0);
