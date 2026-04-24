@@ -80,16 +80,21 @@ export const JobListSchema = z.array(JobSchema);
  * server returned the data.
  */
 export const JobDetailSchema = JobSchema.extend({
-  installation_details: z.record(z.string(), z.unknown()).optional(),
-  supply_characteristics: z.record(z.string(), z.unknown()).optional(),
+  // Backend emits these as `null` when the bucket isn't populated yet
+  // (src/routes/jobs.js:585-591); schemas must accept null or the first
+  // job load on a blank-slate job fails validation and the UI never
+  // paints. `board_info` is the sole exception — the backend always
+  // defaults it to `{}` so it's present on every response.
+  installation_details: z.record(z.string(), z.unknown()).nullable().optional(),
+  supply_characteristics: z.record(z.string(), z.unknown()).nullable().optional(),
   board_info: z.record(z.string(), z.unknown()).optional(),
-  boards: z.array(z.record(z.string(), z.unknown())).optional(),
+  boards: z.array(z.record(z.string(), z.unknown())).nullable().optional(),
   circuits: z.array(CircuitRowSchema).optional(),
   observations: z.array(ObservationRowSchema).optional(),
-  inspection_schedule: z.record(z.string(), z.unknown()).optional(),
-  extent_and_type: z.record(z.string(), z.unknown()).optional(),
-  design_construction: z.record(z.string(), z.unknown()).optional(),
-  inspector_id: z.string().optional(),
+  inspection_schedule: z.record(z.string(), z.unknown()).nullable().optional(),
+  extent_and_type: z.record(z.string(), z.unknown()).nullable().optional(),
+  design_construction: z.record(z.string(), z.unknown()).nullable().optional(),
+  inspector_id: z.string().nullable().optional(),
   // CCU analysis — most-recent flat copy + per-board map. See the
   // `ccu_analysis_by_board` comment on `JobDetail` for the multi-board
   // scoping decision (P0-3).

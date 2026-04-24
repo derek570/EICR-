@@ -80,15 +80,32 @@ function newBoard(designation = 'DB1'): BoardRecord {
 export default function BoardPage() {
   const { job, certificateType, updateJob } = useJobContext();
   // `job.boards` is the canonical top-level array (backend wire key — see
-  // `src/routes/jobs.js:575-592`). Memo-wrap so `boards` has a stable
-  // identity unless the underlying job state actually changed — needed by
-  // the selected-id guard effect below, and keeps downstream filters from
-  // re-running.
+  // `src/routes/jobs.js:575-592`). The backend emits `boards: null` for
+  // single-board jobs while keeping the real data in `board_info`, so we
+  // synthesize a single row from `board_info` when `boards` is empty.
+  // Without this fallback, single-board jobs lose their board data on
+  // first edit (the synth blank DB1 would overwrite the populated
+  // board_info silently).
   const existingBoards = (job.boards ?? []) as BoardRecord[];
-  const boards: BoardRecord[] = React.useMemo(
-    () => (existingBoards.length > 0 ? existingBoards : [newBoard()]),
-    [existingBoards]
-  );
+  const boardInfo = (job.board_info ?? {}) as Record<string, unknown>;
+  const boards: BoardRecord[] = React.useMemo(() => {
+    if (existingBoards.length > 0) return existingBoards;
+    const id = (globalThis.crypto?.randomUUID?.() ?? `board-${Date.now()}`).toString();
+    const designation = (boardInfo.designation as string | undefined) ?? 'DB1';
+    // Hoist every key on board_info into the synthesized row so the
+    // user sees their existing board data, not an empty form. The
+    // `id` and `designation` stay top-level so the selector pill
+    // renders the same whether the board came from `boards[0]` or a
+    // synthesised-from-board_info row.
+    return [
+      {
+        ...(boardInfo as BoardRecord),
+        id,
+        designation,
+        board_type: (boardInfo.board_type as BoardRecord['board_type']) ?? 'main',
+      },
+    ];
+  }, [existingBoards, boardInfo]);
 
   const [activeId, setActiveId] = React.useState(boards[0].id);
   const active = boards.find((b) => b.id === activeId) ?? boards[0];
@@ -103,7 +120,21 @@ export default function BoardPage() {
   }, [boards, activeId]);
 
   const persistBoards = (next: BoardRecord[]) => {
-    updateJob({ boards: next });
+    // When there's exactly one board, keep `board_info` in sync as a
+    // single-board summary — matches the backend's dual-field pattern
+    // (boards null / board_info populated for single-board jobs) and
+    // keeps any consumer reading `board_info` (e.g. the Overview hero
+    // strip) from going stale after a Board-tab edit. For multi-board
+    // jobs, board_info is best-effort primary-board summary; we mirror
+    // the first (main) board so it stays meaningful.
+    const primary = next[0];
+    const boardInfoSummary = primary ? { ...primary } : {};
+    // Drop the synthetic `id` + `board_type` fields before writing to
+    // board_info — those are PWA-client identifiers, not part of the
+    // BoardInfo wire shape.
+    delete (boardInfoSummary as Record<string, unknown>).id;
+    delete (boardInfoSummary as Record<string, unknown>).board_type;
+    updateJob({ boards: next, board_info: boardInfoSummary });
   };
 
   const patchActive = (patch: Partial<BoardRecord>) => {
@@ -168,8 +199,14 @@ export default function BoardPage() {
     const remainingObservations = (
       (job.observations ?? []) as unknown as Array<Record<string, unknown>>
     ).filter((o) => o.board_id !== removedId);
+    // Mirror the primary board to board_info (see persistBoards above).
+    const primary = remaining[0];
+    const boardInfoSummary = primary ? { ...primary } : {};
+    delete (boardInfoSummary as Record<string, unknown>).id;
+    delete (boardInfoSummary as Record<string, unknown>).board_type;
     updateJob({
       boards: remaining,
+      board_info: boardInfoSummary,
       circuits: remainingCircuits as unknown as typeof job.circuits,
       observations: remainingObservations as unknown as typeof job.observations,
     });

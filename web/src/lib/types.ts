@@ -233,18 +233,21 @@ export interface JobDetail extends Job {
   // even though the server returned real data. Inner field shapes stay
   // `Record<string, unknown>` for now — per-field typing lives in
   // `@certmate/shared-types` and will be tightened one tab at a time.
-  installation_details?: Record<string, unknown>;
-  supply_characteristics?: Record<string, unknown>;
-  /** Primary / single-board summary. Always present on the wire. */
+  // All nullable buckets match backend GET shape (src/routes/jobs.js:
+  // 585-591): `null` when unpopulated, object/array when populated.
+  // Consumers must handle `null` the same as `undefined` on read.
+  installation_details?: Record<string, unknown> | null;
+  supply_characteristics?: Record<string, unknown> | null;
+  /** Primary / single-board summary. Always present on the wire ({}  if empty). */
   board_info?: Record<string, unknown>;
   /** Optional multi-board array; each entry nests its own `board_info`. */
-  boards?: Record<string, unknown>[];
+  boards?: Record<string, unknown>[] | null;
   circuits?: CircuitRow[];
   observations?: ObservationRow[];
-  inspection_schedule?: Record<string, unknown>;
-  extent_and_type?: Record<string, unknown>;
-  design_construction?: Record<string, unknown>;
-  inspector_id?: string;
+  inspection_schedule?: Record<string, unknown> | null;
+  extent_and_type?: Record<string, unknown> | null;
+  design_construction?: Record<string, unknown> | null;
+  inspector_id?: string | null;
   // CCU analysis output — populated once a consumer-unit photo is uploaded.
   // `ccu_analysis` is the most-recent flat copy (kept for legacy debug
   // panels and single-board jobs); `ccu_analysis_by_board` is the per-
