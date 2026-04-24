@@ -67,7 +67,7 @@ iOS sources:
 | `Views/Dashboard/JobRowView.swift` (status pill, coloured stripe, cert type, address, last modified) | `components/dashboard/job-row.tsx` | match |  | Web row exists and has pendingSync chip extra. |
 | `Views/Dashboard/DefaultsModal.swift:L37` preset picker reusing `Constants.circuitFieldOrder` for per-field defaults | Defaults now persist globally; no per-job picker modal | match | 6 | Phase 6 simplifies the iOS "pick-a-preset-per-job" modal to a single user-scoped defaults blob saved on `/settings/defaults/*`. Multi-preset CRUD deferred (see DefaultValuesView row). |
 | `Views/Dashboard/InspectorModal.swift` (quick inspector picker from dashboard) | MISSING (by design) | partial | 9 | Phase 9 defer: web deliberately routes all inspector switching through Settings → Staff + the per-job Staff tab. The iOS dashboard modal exists because iOS lacks a persistent tab for per-job staff; web has one, so an extra modal on the dashboard would be redundant. Closed as an intentional platform divergence. |
-| `Views/Create/CreateCertificateSheet.swift` PresetPickerSheet (shown after new-job create) | MISSING (defer — needs multi-preset Defaults) | partial | 9 | Phase 9 defer: only meaningful once multi-preset Defaults lands. Web's current user-scoped defaults blob is single-preset; until the backend grows a `/api/defaults/presets` collection + a named-preset CRUD UI, there's no picker data to surface. Raise separately as a Defaults feature enhancement. |
+| `Views/Create/CreateCertificateSheet.swift` PresetPickerSheet (shown after new-job create) | MISSING (defer — needs multi-preset Defaults) | partial | 9 | Phase 9 defer: only meaningful once multi-preset Defaults lands. Web's current user-scoped defaults blob is single-preset. Needs a backend endpoint (`/api/defaults/presets` collection + named-preset CRUD) before the PWA picker UI can be wired. **Tracked as a todo in `obsidian-vault/active/todos-certmate.md`** under "Multi-preset Defaults backend endpoint". |
 
 ---
 
@@ -595,8 +595,8 @@ iOS sources:
 | `AdminEditUserView.swift:L25-L30` Reset Password flow (new password input + API call) | covered by web page | match |  |  |
 | `AdminEditUserView.swift:L32-L33` Deactivate/Reactivate confirm | covered by web page | match |  |  |
 | `AdminEditUserView.swift:L33` Unlock confirm (after failed login lockouts) | covered by web page | match |  |  |
-| `AdminQueueView.swift:L1-L451` admin queue (pending jobs / retry / failures) | MISSING (defer — requires backend endpoint) | backend | 9 | Phase 9 defer: requires the backend `/api/admin/queue` endpoint + a failure-replay mutation; neither exists yet. Status flipped from `missing` to `backend` so the ledger reflects the actual unblock path — build the API first, then port the UI. Raise separately. |
-| `AdminStatsView.swift:L1-L305` admin stats dashboard (totals / charts / breakdowns) | `web/src/app/settings/company/dashboard/page.tsx` stats tab (partial) | partial | 6 | Web has Company stats but not **system-wide** admin stats. Required endpoint `/api/admin/stats`. |
+| `AdminQueueView.swift:L1-L451` admin queue (pending jobs / retry / failures) | MISSING (PWA wire-up follow-up) | partial | 9 | Ledger-fix 2026-04-24: the backend endpoints already exist — `GET /api/admin/queue/status` and `GET /api/admin/queue/health` in `src/admin_api.js:59,72`. iOS calls these via `APIClient.adminGetHealth()` at `APIClient.swift:551`. The PWA just needs a page that hits them. Reclassified from `backend` (blocking on backend) to `partial` (PWA-only wire-up). Failure-replay mutation (iOS "retry failed job" button) is a separate, smaller concern — can start with read-only view. |
+| `AdminStatsView.swift:L1-L305` admin stats dashboard (totals / charts / breakdowns) | `web/src/app/settings/company/dashboard/page.tsx` stats tab (company-only) | partial | 9 | Ledger-fix 2026-04-24: backend endpoint `GET /api/admin/stats` already exists (`src/admin_api.js:85`); iOS consumes it via `APIClient.adminGetStats()` at `APIClient.swift:547`. PWA just needs a system-wide admin stats page that calls it (company stats page covers the company-scoped case). Pure PWA follow-up. |
 | `CompanyDashboardView.swift:L1-L583` Jobs / Team / Stats tabs + invite employee dialog | `web/src/app/settings/company/dashboard/page.tsx:L1-L671` | match |  |  |
 | `InviteEmployeeView.swift:L1-L248` invite form (name/email/auto-gen password surfaced once) | Merged into Company Dashboard Team tab in web | match |  |  |
 
@@ -692,30 +692,32 @@ iOS sources:
 
 ## Phase 9 — Cross-cutting polish summary
 
-Final state (as of 2026-04-24):
+Final state (as of 2026-04-24, post ledger-fix):
 
 | status | count |
 |---|---|
 | `match` | 285 |
-| `partial` (intentional defer — see per-row notes) | 66 |
+| `partial` (intentional defer — see per-row notes) | 67 |
 | `ios-only` (intentional platform divergence) | 16 |
-| `backend` (unblocks when backend ships endpoint) | 1 |
+| `backend` (unblocks when backend ships endpoint) | 0 |
 | `missing` | 0 |
+
+Note: the prior count showed 1 `backend` and 66 `partial`. The ledger-fix commit on 2026-04-24 re-classified `AdminQueueView` from `backend` → `partial` after confirming the backend endpoints already exist (`src/admin_api.js:59,72,85`). `AdminStatsView` kept its `partial` status but the blocking note was corrected. No work was lost — two `partial` rows are now pure PWA wire-ups, and one `partial` row (`PresetPickerSheet`) is the only remaining defer that genuinely needs a new backend endpoint (tracked in `obsidian-vault/active/todos-certmate.md`).
 
 Phase 9 flipped ~32 rows into terminal states:
 
 - **Closed to `match`:** staggered section entrance (CSS utility ported), data-arrival flash (audited across every tab + new-in-phase voice/CCU paths), offline banner (breakpoint-driven twin shape), universal destructive confirmation (10 handlers audited — all through `ConfirmDialog`), reduce-motion respect (global + per-feature rules), data-arrival flash regression check.
 - **Closed to `ios-only`:** AudioImport (test affordance), inline-inspector-add inside Installation (Settings → Staff is the single source of truth).
-- **Closed to `backend`:** AdminQueueView — requires `/api/admin/queue` before any UI work.
+- ~~**Closed to `backend`:** AdminQueueView — requires `/api/admin/queue` before any UI work.~~ **Corrected 2026-04-24 (ledger-fix):** the backend endpoints (`/api/admin/queue/status`, `/api/admin/queue/health`, `/api/admin/stats`) already exist and are consumed by iOS. Reclassified to `partial` (PWA wire-up follow-up, no backend work needed). Final backend count is now **0** on main.
 - **Closed to `partial` with explicit defer:** Supply preset pickers (bundle — needs `Constants.*` port to `@certmate/shared-utils`), CCU pending-extractions queue (needs IDB blob store), RecordingOverlay Defaults buttons (intentional web UX — Settings route over inline), transcript keyword flash (cosmetic, no user demand), haptic feedback (Vibration API best-effort only; iOS Safari has no API), TypingText (paired with tour TTS — both silent on web for now), LiveFillView pickers (overlay is read-only on web by design), Terms & Legal surfaces (handled at signup), ChangePassword FocusState (native Tab suffices).
 
 Seven rows deferred beyond Phase 9 — all marked `partial` or `backend` and raised as separate follow-ups:
 
-1. Multi-preset Defaults CRUD (needs backend `/api/defaults/presets` shape).
+1. Multi-preset Defaults CRUD — **needs backend `/api/defaults/presets` shape (todo in `obsidian-vault/active/todos-certmate.md`)**. Only genuine backend dependency left.
 2. Supply preset pickers bundle (`Constants.*` port to shared-utils, ~9 pickers).
 3. CCU pending-extractions queue (IDB blob store + extraction-replay worker).
-4. Admin queue (`AdminQueueView`) — backend endpoint first.
-5. Admin stats system-wide dashboard (`/api/admin/stats`).
+4. ~~Admin queue (`AdminQueueView`) — backend endpoint first.~~ **Corrected:** endpoints exist (`/api/admin/queue/status`, `/api/admin/queue/health`). Pure PWA wire-up follow-up.
+5. ~~Admin stats system-wide dashboard (`/api/admin/stats`).~~ **Corrected:** endpoint exists. Pure PWA wire-up follow-up.
 6. Transcript keyword-highlight flash (cosmetic).
 7. Geometric CCU slot-crop tap-to-correct (requires geometric extraction pipeline).
 
