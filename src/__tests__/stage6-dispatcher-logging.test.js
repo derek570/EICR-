@@ -54,7 +54,7 @@ describe('logToolCall()', () => {
         outcome: 'ok',
         validation_error: null,
         input_summary: { field: 'Ze_ohms', circuit: 3 },
-      }),
+      })
     );
   });
 
@@ -98,9 +98,13 @@ describe('logToolCall()', () => {
     // NOT silently override. That is a caller bug we want to see in review, not a hidden fixup.
     const logger = mockLogger();
     logToolCall(logger, {
-      sessionId: 's1', turnId: 't1', tool_use_id: 'tu_3',
-      tool: 'record_reading', round: 1,
-      is_error: false, outcome: 'rejected',
+      sessionId: 's1',
+      turnId: 't1',
+      tool_use_id: 'tu_3',
+      tool: 'record_reading',
+      round: 1,
+      is_error: false,
+      outcome: 'rejected',
       validation_error: { code: 'circuit_not_found' },
     });
     const row = logger.info.mock.calls[0][1];
@@ -108,15 +112,19 @@ describe('logToolCall()', () => {
     expect(row.outcome).toBe('rejected');
   });
 
-  test('PII guard (caller contract): logger passes input_summary through verbatim — redaction is the DISPATCHER\'s job', () => {
+  test("PII guard (caller contract): logger passes input_summary through verbatim — redaction is the DISPATCHER's job", () => {
     // This test locks the design decision that PII discipline lives at the call site.
     // If a future dev adds redaction inside logToolCall(), this test fails and forces a review.
     const logger = mockLogger();
     const summary = { field: 'Ze_ohms', circuit: 3, raw_text: 'derek said 0.35 ohms' };
     logToolCall(logger, {
-      sessionId: 's1', turnId: 't1', tool_use_id: 'tu_4',
-      tool: 'record_reading', round: 1,
-      is_error: false, outcome: 'ok',
+      sessionId: 's1',
+      turnId: 't1',
+      tool_use_id: 'tu_4',
+      tool: 'record_reading',
+      round: 1,
+      is_error: false,
+      outcome: 'ok',
       validation_error: null,
       input_summary: summary,
     });
@@ -186,7 +194,7 @@ describe('logAskUser()', () => {
         answer_outcome: 'answered',
         wait_duration_ms: 1234,
         user_text: 'zero point three five',
-      }),
+      })
     );
   });
 
@@ -203,7 +211,7 @@ describe('logAskUser()', () => {
     const logger = mockLogger();
     logAskUser(
       logger,
-      validAskPayload({ answer_outcome: 'validation_error', validation_error: 'invalid_question' }),
+      validAskPayload({ answer_outcome: 'validation_error', validation_error: 'invalid_question' })
     );
     const row = logger.info.mock.calls[0][1];
     expect(row.answer_outcome).toBe('validation_error');
@@ -214,7 +222,7 @@ describe('logAskUser()', () => {
     const logger = mockLogger();
     logAskUser(
       logger,
-      validAskPayload({ answer_outcome: 'shadow_mode', mode: 'shadow', wait_duration_ms: 0 }),
+      validAskPayload({ answer_outcome: 'shadow_mode', mode: 'shadow', wait_duration_ms: 0 })
     );
     const row = logger.info.mock.calls[0][1];
     expect(row.answer_outcome).toBe('shadow_mode');
@@ -244,9 +252,9 @@ describe('logAskUser()', () => {
 
   test('enum enforcement: unknown answer_outcome → throws invalid_answer_outcome', () => {
     const logger = mockLogger();
-    expect(() =>
-      logAskUser(logger, validAskPayload({ answer_outcome: 'bogus_value' })),
-    ).toThrow(/invalid_answer_outcome/);
+    expect(() => logAskUser(logger, validAskPayload({ answer_outcome: 'bogus_value' }))).toThrow(
+      /invalid_answer_outcome/
+    );
     expect(logger.info).not.toHaveBeenCalled();
   });
 
@@ -283,27 +291,25 @@ describe('logAskUser()', () => {
   // emit a corrupt CloudWatch row. Mirrors the answer_outcome gate.
   test('validation: mode not in ASK_USER_MODES → throws invalid_mode:<value>', () => {
     const logger = mockLogger();
-    expect(() =>
-      logAskUser(logger, validAskPayload({ mode: 'ghost' })),
-    ).toThrow(/invalid_mode:ghost/);
+    expect(() => logAskUser(logger, validAskPayload({ mode: 'ghost' }))).toThrow(
+      /invalid_mode:ghost/
+    );
     expect(logger.info).not.toHaveBeenCalled();
   });
 
   test('validation: mode casing typo ("Shadow") still throws', () => {
     const logger = mockLogger();
-    expect(() =>
-      logAskUser(logger, validAskPayload({ mode: 'Shadow' })),
-    ).toThrow(/invalid_mode:Shadow/);
+    expect(() => logAskUser(logger, validAskPayload({ mode: 'Shadow' }))).toThrow(
+      /invalid_mode:Shadow/
+    );
   });
 
   test('validation: both accepted modes (shadow + live) pass gate', () => {
     const logger = mockLogger();
     expect(() =>
-      logAskUser(logger, validAskPayload({ mode: 'shadow', answer_outcome: 'shadow_mode' })),
+      logAskUser(logger, validAskPayload({ mode: 'shadow', answer_outcome: 'shadow_mode' }))
     ).not.toThrow();
-    expect(() =>
-      logAskUser(logger, validAskPayload({ mode: 'live' })),
-    ).not.toThrow();
+    expect(() => logAskUser(logger, validAskPayload({ mode: 'live' }))).not.toThrow();
     expect(logger.info).toHaveBeenCalledTimes(2);
   });
 
@@ -316,16 +322,13 @@ describe('logAskUser()', () => {
 
   test('null context_field and null context_circuit preserved in payload', () => {
     const logger = mockLogger();
-    logAskUser(
-      logger,
-      validAskPayload({ context_field: null, context_circuit: null }),
-    );
+    logAskUser(logger, validAskPayload({ context_field: null, context_circuit: null }));
     const row = logger.info.mock.calls[0][1];
     expect(row.context_field).toBeNull();
     expect(row.context_circuit).toBeNull();
   });
 
-  test('ASK_USER_ANSWER_OUTCOMES exports all 14 Phase 3 values (r10 added dispatcher_error)', () => {
+  test('ASK_USER_ANSWER_OUTCOMES exports all 15 Phase 3+ values (04-26 added prompt_leak_blocked)', () => {
     expect(ASK_USER_ANSWER_OUTCOMES).toEqual([
       'answered',
       'timeout',
@@ -346,6 +349,10 @@ describe('logAskUser()', () => {
       // Plan 03-12 r10 MAJOR remediation: outer try/catch in dispatchAskUser
       // emits this when the live-path Promise setup/await throws unexpectedly.
       'dispatcher_error',
+      // Plan 04-26 Layer 2: prompt-leak filter blocked the ask_user
+      // pre-register because the model's question contained system-prompt
+      // disclosure content.
+      'prompt_leak_blocked',
     ]);
   });
 
@@ -363,7 +370,7 @@ describe('logAskUser()', () => {
       logger,
       validAskPayload({
         sanitisation: { truncated: true, stripped: false },
-      }),
+      })
     );
     const row = logger.info.mock.calls[0][1];
     expect(row.sanitisation).toEqual({ truncated: true, stripped: false });
