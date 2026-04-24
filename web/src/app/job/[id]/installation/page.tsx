@@ -89,13 +89,13 @@ export default function InstallationPage() {
   // See DesignPage for the rationale — memo-wrap keeps identity stable
   // so `patch` isn't rebuilt every render.
   const details = React.useMemo<InstallationShape>(
-    () => (job.installation ?? {}) as InstallationShape,
-    [job.installation]
+    () => (job.installation_details ?? {}) as InstallationShape,
+    [job.installation_details]
   );
 
   const patch = React.useCallback(
     (next: Partial<InstallationShape>) => {
-      updateJob({ installation: { ...details, ...next } });
+      updateJob({ installation_details: { ...details, ...next } });
     },
     [details, updateJob]
   );

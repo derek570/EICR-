@@ -69,17 +69,26 @@ export const JobListSchema = z.array(JobSchema);
  * own files and evolve independently. The adapter boundary only
  * enforces the envelope — individual tabs validate their own fields
  * at render time.
+ *
+ * Keys match the backend wire shape emitted by `GET /api/job/:userId/:jobId`
+ * (`src/routes/jobs.js:575-592`) and the canonical shared-types
+ * JobDetailSchema (`packages/shared-types/src/schemas.ts:65-77`). iOS
+ * uses these exact names; Wave 5 on the PWA replaced them with
+ * drifted single-word aliases (`installation`, `supply`, `board`, …)
+ * which zod's default strip-mode silently dropped, so every tab was
+ * reading an empty bucket even though the server returned the data.
  */
 export const JobDetailSchema = JobSchema.extend({
-  installation: z.record(z.string(), z.unknown()).optional(),
-  extent: z.record(z.string(), z.unknown()).optional(),
-  supply: z.record(z.string(), z.unknown()).optional(),
-  board: z.record(z.string(), z.unknown()).optional(),
+  installation_details: z.record(z.string(), z.unknown()).optional(),
+  supply_characteristics: z.record(z.string(), z.unknown()).optional(),
+  board_info: z.record(z.string(), z.unknown()).optional(),
+  boards: z.array(z.record(z.string(), z.unknown())).optional(),
   circuits: z.array(CircuitRowSchema).optional(),
   observations: z.array(ObservationRowSchema).optional(),
-  inspection: z.record(z.string(), z.unknown()).optional(),
-  design: z.record(z.string(), z.unknown()).optional(),
-  inspector: InspectorInfoSchema.optional(),
+  inspection_schedule: z.record(z.string(), z.unknown()).optional(),
+  extent_and_type: z.record(z.string(), z.unknown()).optional(),
+  design_construction: z.record(z.string(), z.unknown()).optional(),
+  inspector_id: z.string().optional(),
   // CCU analysis — most-recent flat copy + per-board map. See the
   // `ccu_analysis_by_board` comment on `JobDetail` for the multi-board
   // scoping decision (P0-3).

@@ -90,8 +90,8 @@ export default function CircuitsPage() {
   const docInputRef = React.useRef<HTMLInputElement>(null);
 
   const circuits = (job.circuits ?? []) as unknown as Circuit[];
-  const boards = ((job.board as { boards?: { id: string; designation?: string }[] } | undefined)
-    ?.boards ?? []) as { id: string; designation?: string }[];
+  // Read boards from the canonical top-level `job.boards` (backend wire key).
+  const boards = (job.boards ?? []) as { id: string; designation?: string }[];
   const [selectedBoardId, setSelectedBoardId] = React.useState<string | null>(
     boards[0]?.id ?? null
   );
@@ -152,8 +152,8 @@ export default function CircuitsPage() {
       updateJob(patch);
       // If we just synthesised a board, surface it as the active one
       // so the new circuits are visible under the selector.
-      const patchedBoards = (patch.board as { boards?: { id: string }[] } | undefined)?.boards;
-      if (!selectedBoardId && patchedBoards && patchedBoards.length > 0) {
+      const patchedBoards = (patch.boards ?? []) as { id: string }[];
+      if (!selectedBoardId && patchedBoards.length > 0) {
         setSelectedBoardId(patchedBoards[0].id);
       }
       const added = analysis.circuits?.length ?? 0;
@@ -202,8 +202,8 @@ export default function CircuitsPage() {
       updateJob(patch);
       // If the extractor just synthesised a board, surface it as the
       // active one so the new circuits land under a visible selector.
-      const patchedBoards = (patch.board as { boards?: { id: string }[] } | undefined)?.boards;
-      if (!selectedBoardId && patchedBoards && patchedBoards.length > 0) {
+      const patchedBoards = (patch.boards ?? []) as { id: string }[];
+      if (!selectedBoardId && patchedBoards.length > 0) {
         setSelectedBoardId(patchedBoards[0].id);
       }
       const bits: string[] = [];

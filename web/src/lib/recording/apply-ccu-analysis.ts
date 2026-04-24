@@ -82,17 +82,18 @@ function normaliseRcdType(raw: string | null | undefined): string | undefined {
   return cleaned;
 }
 
-/** Build the board patch — merges into an existing board row
+/** Build the boards-array patch — merges into an existing board row
  *  (matched by `boardId`) or creates one if the job has no boards
- *  yet. Never clobbers non-empty values. */
+ *  yet. Never clobbers non-empty values. Returns the updated boards
+ *  array (backend canonical `job.boards`) plus the resolved boardId. */
 function buildBoardPatch(
   job: JobDetail,
   analysis: CCUAnalysis,
   targetBoardId: string | null
-): { board: Record<string, unknown>; boardId: string } {
+): { boards: Record<string, unknown>[]; boardId: string } {
   type BoardRecord = Record<string, unknown> & { id: string };
-  const boardState = (job.board as { boards?: BoardRecord[] } | undefined) ?? {};
-  const boards: BoardRecord[] = boardState.boards ? [...boardState.boards] : [];
+  const existingBoards = (job.boards ?? []) as BoardRecord[];
+  const boards: BoardRecord[] = [...existingBoards];
 
   // Resolve which board row we're patching. If none exist, synthesise a main board.
   let idx = targetBoardId ? boards.findIndex((b) => b.id === targetBoardId) : 0;
@@ -159,16 +160,16 @@ function buildBoardPatch(
   boards[idx] = next;
 
   return {
-    board: { ...boardState, boards },
+    boards,
     boardId: next.id,
   };
 }
 
 /** Build the supply patch — merges the `spd_*` supply-section
  *  fallbacks (which the backend auto-derives from the main switch in
- *  routes/extraction.js:961-974) into `job.supply`. */
+ *  routes/extraction.js:961-974) into `job.supply_characteristics`. */
 function buildSupplyPatch(job: JobDetail, analysis: CCUAnalysis): Record<string, unknown> | null {
-  const existing = (job.supply as Record<string, unknown> | undefined) ?? {};
+  const existing = (job.supply_characteristics as Record<string, unknown> | undefined) ?? {};
   const next: Record<string, unknown> = { ...existing };
   let changed = false;
 
@@ -353,11 +354,11 @@ export function applyCcuAnalysisToJob(
 ): CcuApplyResult {
   const patch: Partial<JobDetail> = {};
 
-  const { board, boardId } = buildBoardPatch(job, analysis, options.targetBoardId ?? null);
-  patch.board = board;
+  const { boards, boardId } = buildBoardPatch(job, analysis, options.targetBoardId ?? null);
+  patch.boards = boards;
 
   const supply = buildSupplyPatch(job, analysis);
-  if (supply) patch.supply = supply;
+  if (supply) patch.supply_characteristics = supply;
 
   const circuits = buildCircuitsPatch(job, analysis, boardId);
   if (circuits) patch.circuits = circuits;

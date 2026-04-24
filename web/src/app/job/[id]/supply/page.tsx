@@ -43,11 +43,14 @@ export default function SupplyPage() {
   const { job, certificateType, updateJob } = useJobContext();
   // See DesignPage for the rationale — memo-wrap keeps identity stable
   // so `patch` isn't rebuilt every render.
-  const supply = React.useMemo<SupplyShape>(() => (job.supply ?? {}) as SupplyShape, [job.supply]);
+  const supply = React.useMemo<SupplyShape>(
+    () => (job.supply_characteristics ?? {}) as SupplyShape,
+    [job.supply_characteristics]
+  );
 
   const patch = React.useCallback(
     (next: SupplyShape) => {
-      updateJob({ supply: { ...supply, ...next } });
+      updateJob({ supply_characteristics: { ...supply, ...next } });
     },
     [supply, updateJob]
   );

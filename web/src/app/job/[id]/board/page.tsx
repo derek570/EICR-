@@ -11,11 +11,13 @@ import { SelectChips } from '@/components/ui/select-chips';
  * Board tab — mirrors iOS `BoardTab.swift` + `BoardInfo.swift`.
  *
  * iOS supports multiple boards per job (main + sub-distribution); the web
- * stores the list in `job.board.boards`. We default to a single synthesized
- * main board if the array is empty so inspectors can start filling straight
- * away. Adding / removing boards is a Phase 3a feature — the full parent /
- * sub-main hierarchy editing lands with Phase 3b (Circuits) because that's
- * when the feed-circuit reference actually matters.
+ * stores the list in `job.boards` (backend wire key — see
+ * `src/routes/jobs.js:575-592` + `packages/shared-types/src/job.ts`
+ * `JobDetail.boards`). We default to a single synthesized main board if the
+ * array is empty so inspectors can start filling straight away. Adding /
+ * removing boards is a Phase 3a feature — the full parent / sub-main
+ * hierarchy editing lands with Phase 3b (Circuits) because that's when the
+ * feed-circuit reference actually matters.
  *
  * Fields mapped 1-1 with `BoardInfo` (snake_case keys):
  *   designation, name, location, manufacturer, phases, earthing_arrangement,
@@ -26,10 +28,6 @@ import { SelectChips } from '@/components/ui/select-chips';
 type BoardRecord = Record<string, string | undefined> & {
   id: string;
   board_type?: 'main' | 'sub_distribution' | 'sub_main';
-};
-
-type BoardShape = {
-  boards?: BoardRecord[];
 };
 
 const BOARD_TYPE_OPTIONS = [
@@ -60,15 +58,17 @@ function newBoard(designation = 'DB1'): BoardRecord {
 
 export default function BoardPage() {
   const { job, certificateType, updateJob } = useJobContext();
-  const boardState = (job.board ?? {}) as BoardShape;
-  const boards =
-    boardState.boards && boardState.boards.length > 0 ? boardState.boards : [newBoard()];
+  // `job.boards` is the canonical top-level array (backend wire key).
+  // Fall back to a single synthesized main board so the form renders on
+  // a brand-new job before the inspector has added anything.
+  const existingBoards = (job.boards ?? []) as BoardRecord[];
+  const boards = existingBoards.length > 0 ? existingBoards : [newBoard()];
 
   const [activeId, setActiveId] = React.useState(boards[0].id);
   const active = boards.find((b) => b.id === activeId) ?? boards[0];
 
   const persistBoards = (next: BoardRecord[]) => {
-    updateJob({ board: { ...boardState, boards: next } });
+    updateJob({ boards: next });
   };
 
   const patchActive = (patch: Partial<BoardRecord>) => {

@@ -15,7 +15,7 @@ import { SelectChips } from '@/components/ui/select-chips';
  * the Constants.installationTypes enum lifted from iOS verbatim so the
  * eventual PDF mapping matches.
  *
- * Data shape: `job.extent: Record<string, unknown>` — we keep the string
+ * Data shape: `job.extent_and_type: Record<string, unknown>` — we keep the string
  * values we care about typed, leave the record permissive so future fields
  * pass through without schema changes.
  */
@@ -37,12 +37,15 @@ export default function ExtentPage() {
   const { job, certificateType, updateJob } = useJobContext();
   // See DesignPage for the rationale — memo-wrap keeps identity stable
   // so `patch` isn't rebuilt every render.
-  const data = React.useMemo<ExtentShape>(() => (job.extent ?? {}) as ExtentShape, [job.extent]);
+  const data = React.useMemo<ExtentShape>(
+    () => (job.extent_and_type ?? {}) as ExtentShape,
+    [job.extent_and_type]
+  );
   const isEIC = certificateType === 'EIC';
 
   const patch = React.useCallback(
     (next: Partial<ExtentShape>) => {
-      updateJob({ extent: { ...data, ...next } });
+      updateJob({ extent_and_type: { ...data, ...next } });
     },
     [data, updateJob]
   );
