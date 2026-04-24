@@ -762,35 +762,49 @@ export async function runToolCallPath(fx) {
   if (fx.pre_turn_state && fx.pre_turn_state.snapshot) {
     session.stateSnapshot = structuredClone(fx.pre_turn_state.snapshot);
 
-    // Plan 04-13 r7-#2 (MAJOR) — derive session.recentCircuitOrder
-    // from the seeded snapshot's circuit keys. Without this, the
-    // builder's compaction logic at eicr-extraction-session.js:1212
-    // sees `recentCircuitOrder=[]` and collapses every seeded circuit
-    // into the "N earlier circuits (...) stored server-side" summary
-    // line — filled-slot VALUES never reach the model-facing snapshot.
-    // For F21934D4 specifically, that meant the r1_r2_ohm=0.64
-    // prefill (the entire point of the fixture) was invisible to
-    // Sonnet in the captured replay, so SC #4 was sampling a
-    // different prompt state than production ever reaches.
+    // Plan 04-13 r7-#2 (MAJOR) / Plan 04-14 r8-#3 (MINOR) — seed
+    // session.recentCircuitOrder so the builder's compaction logic at
+    // eicr-extraction-session.js:1212 doesn't collapse every seeded
+    // circuit into "N earlier circuits (...) stored server-side".
+    // Without a seed, filled-slot VALUES never reach the model-facing
+    // snapshot — for F21934D4 specifically that hid the r1_r2_ohm=0.64
+    // prefill (the entire point of the fixture).
     //
-    // Derivation rules (mirroring production's updateStateSnapshot
-    // semantic at line 1093 of eicr-extraction-session.js):
-    //   - Exclude circuit 0 (supply) — the builder shows supply
-    //     through a separate always-visible block; including 0 here
-    //     would steal a slot from the SNAPSHOT_RECENT_CIRCUITS=3
-    //     recency window.
-    //   - Preserve ascending numeric order — represents the
-    //     historical order readings would have landed during a real
-    //     session (which in the fixture context is implied rather
-    //     than recorded).
-    //   - The builder's `.slice(-SNAPSHOT_RECENT_CIRCUITS)` honours
-    //     this — for N <= 3 everything is detailed; for N > 3 the
-    //     earliest circuits correctly roll into the summary.
-    const seededCircuits = Object.keys(session.stateSnapshot.circuits ?? {})
-      .map(Number)
-      .filter((n) => Number.isInteger(n) && n !== 0)
-      .sort((a, b) => a - b);
-    session.recentCircuitOrder = seededCircuits;
+    // r8-#3 adds a fixture-declared override path. Production's
+    // recentCircuitOrder is CHRONOLOGICAL (each record_reading moves
+    // the circuit to the END of the array, so .slice(-3) returns the
+    // three most-recently-edited). The fallback below is NUMERIC
+    // ASCENDING — coincides with chronology for fixtures with
+    // <=SNAPSHOT_RECENT_CIRCUITS seeded circuits (all fit in the
+    // detailed window regardless of order), but diverges for fixtures
+    // with >3 seeded circuits where the implied chronology isn't
+    // numeric. Fixtures that need precise control (>3 circuits with
+    // meaningful readings) should declare pre_turn_state.
+    // recentCircuitOrder as an array of circuit numbers in the order
+    // they were edited (oldest first, most-recent last).
+    //
+    // Filter rules (BOTH paths):
+    //   - Non-integer values dropped.
+    //   - Circuit 0 (supply) dropped — the builder shows supply via a
+    //     separate always-visible block; including 0 would steal a
+    //     detailed-view slot. Matches production's updateStateSnapshot
+    //     guard at eicr-extraction-session.js:1093 (`if (circuit !==
+    //     0)`).
+    const declaredOrder = fx.pre_turn_state.recentCircuitOrder;
+    if (Array.isArray(declaredOrder)) {
+      session.recentCircuitOrder = declaredOrder
+        .map(Number)
+        .filter((n) => Number.isInteger(n) && n !== 0);
+    } else {
+      // Fallback: numeric ascending. NOT strictly chronological, but
+      // sufficient for the 6 current fixtures (all have <=3 seeded
+      // circuits or 4 with no meaningful chronology).
+      const seededCircuits = Object.keys(session.stateSnapshot.circuits ?? {})
+        .map(Number)
+        .filter((n) => Number.isInteger(n) && n !== 0)
+        .sort((a, b) => a - b);
+      session.recentCircuitOrder = seededCircuits;
+    }
   }
   if (Array.isArray(fx.pre_turn_state?.extractedObservations)) {
     session.extractedObservations = [...fx.pre_turn_state.extractedObservations];
