@@ -157,8 +157,23 @@ export default function BoardPage() {
 
   const confirmRemove = () => {
     if (boards.length <= 1) return;
-    const remaining = boards.filter((b) => b.id !== active.id);
-    persistBoards(remaining);
+    const removedId = active.id;
+    const remaining = boards.filter((b) => b.id !== removedId);
+    // Cascade-delete circuits + observations tagged to this board.
+    // The confirm copy promises both will be removed; persisting only
+    // the boards array leaves orphan rows that stay saved + exported
+    // even though the Circuits tab filters them out of view.
+    const remainingCircuits = (
+      (job.circuits ?? []) as unknown as Array<Record<string, unknown>>
+    ).filter((c) => c.board_id !== removedId);
+    const remainingObservations = (
+      (job.observations ?? []) as unknown as Array<Record<string, unknown>>
+    ).filter((o) => o.board_id !== removedId);
+    updateJob({
+      board: { ...boardState, boards: remaining },
+      circuits: remainingCircuits as unknown as typeof job.circuits,
+      observations: remainingObservations as unknown as typeof job.observations,
+    });
     setActiveId(remaining[0].id);
     setRemoveConfirmOpen(false);
   };

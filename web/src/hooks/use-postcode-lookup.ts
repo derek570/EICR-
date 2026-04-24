@@ -104,10 +104,17 @@ export function usePostcodeLookup({
   const onChange = React.useCallback(
     (raw: string) => {
       const normalised = normalisePostcode(raw);
+      // Always cancel any in-flight debounce FIRST — if the user
+      // corrupts a previously-valid postcode, a queued lookup must not
+      // still fire 400ms later and overwrite the field they just
+      // cleared.
+      if (timerRef.current) {
+        clearTimeout(timerRef.current);
+        timerRef.current = null;
+      }
       if (!normalised) return;
       if (normalised === lastLookedUpRef.current) return;
 
-      if (timerRef.current) clearTimeout(timerRef.current);
       timerRef.current = setTimeout(() => {
         void (async () => {
           try {

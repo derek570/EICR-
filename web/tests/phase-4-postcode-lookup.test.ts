@@ -172,4 +172,32 @@ describe('usePostcodeLookup', () => {
     expect(onResolved).not.toHaveBeenCalled();
     vi.useRealTimers();
   });
+
+  it('cancels a pending lookup when the input is corrupted mid-debounce', async () => {
+    // Regression guard for the Phase 4 post-codex fix: if the user
+    // types a valid postcode, then backspaces it into an invalid form
+    // before the debounce window elapses, the stale lookup must NOT
+    // fire — otherwise it would repopulate town/county from the old
+    // postcode even though the field now shows different text.
+    vi.useFakeTimers();
+    const onResolved = vi.fn();
+    const lookup = vi.fn().mockResolvedValue({
+      postcode: 'SW1A 1AA',
+      town: 'London',
+      county: 'Greater London',
+    });
+
+    mounted = mountHook({ onResolved, lookup, delay: 50 });
+    mounted.trigger('sw1a 1aa');
+    // Before the debounce elapses, user backspaces into invalid.
+    mounted.trigger('sw1a 1');
+    await act(async () => {
+      vi.advanceTimersByTime(80);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(lookup).not.toHaveBeenCalled();
+    expect(onResolved).not.toHaveBeenCalled();
+    vi.useRealTimers();
+  });
 });
