@@ -820,20 +820,20 @@ describe('checkForPromptLeak() — Layer 2 output-side prompt-leak filter', () =
           expect(result.reason).not.toBe('marker:user-text-open');
         });
 
-        test('mixed: "<<<USER_TEXT>>> and SNAPSHOT TRUST BOUNDARY" → EXACT trust-boundary (NOT user-text-open)', () => {
-          // Under Priority 1 iteration, trust-boundary fires on
-          // the "TRUST BOUNDARY" substring inside
-          // "SNAPSHOT TRUST BOUNDARY". snapshot-trust-boundary
-          // would require MARKER_STRINGS reordering (out of
-          // scope for r26-#3). Still sharper than Priority 2
-          // composite wrappers — test locks the cross-family
-          // priority even if intra-family order is suboptimal.
+        test('mixed: "<<<USER_TEXT>>> and SNAPSHOT TRUST BOUNDARY" → EXACT snapshot-trust-boundary (Plan 04-34 r27-#3 longest-first)', () => {
+          // Plan 04-34 r27-#3: longest-first sort within Priority
+          // 1 + cross-family priority (Priority 1 beats Priority
+          // 2) — snapshot-trust-boundary wins on the mixed
+          // payload. Previously (r26-#3) the shorter
+          // trust-boundary substring won first-match within
+          // Priority 1. r27-#3 closes that.
           const result = checkForPromptLeak('<<<USER_TEXT>>> and SNAPSHOT TRUST BOUNDARY', {
             field: 'question',
           });
           expect(result.safe).toBe(false);
-          expect(result.reason).toBe('marker:trust-boundary');
+          expect(result.reason).toBe('marker:snapshot-trust-boundary');
           expect(result.reason).not.toBe('marker:user-text-open');
+          expect(result.reason).not.toBe('marker:trust-boundary');
         });
 
         test('mixed: "SYSTEM_CHANNEL <<<USER_TEXT" → EXACT system-channel (NOT wrapper-scaffolding-left)', () => {
@@ -875,25 +875,19 @@ describe('checkForPromptLeak() — Layer 2 output-side prompt-leak filter', () =
           expect(result.reason).toBe('marker:trust-boundary');
         });
 
-        test('priority 1 alone: "SNAPSHOT TRUST BOUNDARY" → EXACT trust-boundary (current MARKER_STRINGS iteration order; see note)', () => {
+        test('priority 1 alone: "SNAPSHOT TRUST BOUNDARY" → EXACT snapshot-trust-boundary (Plan 04-34 r27-#3 longest-first)', () => {
           const result = checkForPromptLeak('SNAPSHOT TRUST BOUNDARY', {
             field: 'question',
           });
           expect(result.safe).toBe(false);
-          // NB: the CURRENT MARKER_STRINGS ordering has
-          // trust-boundary BEFORE snapshot-trust-boundary (line
-          // 74-75 of stage6-prompt-leak-filter.js). A payload
-          // like "SNAPSHOT TRUST BOUNDARY" contains the
-          // "trust boundary" substring, so trust-boundary's
-          // `lower.includes(...)` check fires first and wins.
-          // This is a pre-existing longest-match-wins ordering
-          // nit that is out of scope for r26-#3 (r26-#3 focuses
-          // on priority ACROSS families, not ordering WITHIN
-          // Priority 1). Assert the current behaviour to document
-          // it; a separate round may reorder MARKER_STRINGS so
-          // snapshot-trust-boundary fires first (longest-match-
-          // wins within Priority 1).
-          expect(result.reason).toBe('marker:trust-boundary');
+          // Plan 04-34 r27-#3: longest-first sort within Priority 1
+          // makes snapshot-trust-boundary (length 23) beat
+          // trust-boundary (length 14) on the "SNAPSHOT TRUST
+          // BOUNDARY" input. Previously (under r26-#3 declaration-
+          // order iteration) the shorter substring won —
+          // documented in the prior assertion and flagged as out-
+          // of-scope. r27-#3 closes it.
+          expect(result.reason).toBe('marker:snapshot-trust-boundary');
         });
 
         test('priority 1 alone: "SYSTEM_CHANNEL" → EXACT system-channel', () => {
@@ -950,6 +944,133 @@ describe('checkForPromptLeak() — Layer 2 output-side prompt-leak filter', () =
           });
           expect(result.safe).toBe(false);
           expect(result.reason).toBe('marker:end-user-text-bare');
+        });
+      });
+
+      // -------------------------------------------------------------------
+      // Plan 04-34 r27-#3 — longest-first priority within each
+      // MARKER_STRINGS family.
+      //
+      // WHY: my r26-#3 priority table iterates MARKER_STRINGS in
+      // declaration order within Priority 1 SHARP. Declaration
+      // order lists `trust-boundary` (14 chars) BEFORE
+      // `snapshot-trust-boundary` (23 chars). A payload
+      // `"SNAPSHOT TRUST BOUNDARY"` contains `"TRUST BOUNDARY"`
+      // as a substring, so first-match-wins surfaces the
+      // shorter, less-specific reason `marker:trust-boundary`.
+      // Telemetry is degraded — downstream security review /
+      // analyzer routing sees the generic reason when the
+      // specific named-section marker should win.
+      //
+      // Fix: longest-first sort within each priority family.
+      // Declaration order becomes irrelevant for correctness —
+      // a new MARKER_STRINGS entry added later with a longer
+      // value automatically takes precedence without requiring
+      // the declaration to be moved.
+      //
+      // Tests below exercise:
+      //   1. SNAPSHOT TRUST BOUNDARY alone → snapshot-trust-boundary
+      //      [FAILS pre-fix — current behaviour surfaces trust-boundary]
+      //   2. TRUST BOUNDARY alone → trust-boundary (regression)
+      //   3. Substring context with surrounding text → still
+      //      surfaces snapshot-trust-boundary (inner match)
+      //   4. Mixed payload with composite wrapper → Priority 1
+      //      snapshot-trust-boundary still wins (inter-family
+      //      ordering preserved)
+      //   5. SYSTEM_CHANNEL / USER_CHANNEL — no substring conflict
+      //      with other SHARP markers, unaffected.
+      //   6. Residual family regression: END_USER_TEXT alone →
+      //      end-user-text-bare (longest-wins within residual).
+      //   7. Residual family: standalone USER_TEXT → user-text-bare.
+      //   8. Inspection of priority order: composite ordering
+      //      within Priority 2 (user-text-close 19 chars beats
+      //      user-text-open 15 chars on overlap, but those two
+      //      are not substrings of each other, so declaration
+      //      order vs length-sort produces identical behaviour —
+      //      test documents the invariant).
+      // -------------------------------------------------------------------
+      describe('r27-#3 longest-first priority within each MARKER_STRINGS family', () => {
+        test('1. "SNAPSHOT TRUST BOUNDARY" alone → EXACT snapshot-trust-boundary (NOT trust-boundary)', () => {
+          const result = checkForPromptLeak('SNAPSHOT TRUST BOUNDARY', {
+            field: 'question',
+          });
+          expect(result.safe).toBe(false);
+          expect(result.reason).toBe('marker:snapshot-trust-boundary');
+          expect(result.reason).not.toBe('marker:trust-boundary');
+        });
+
+        test('2. "TRUST BOUNDARY" standalone → EXACT trust-boundary (regression — no superstring in input)', () => {
+          const result = checkForPromptLeak('TRUST BOUNDARY', {
+            field: 'question',
+          });
+          expect(result.safe).toBe(false);
+          expect(result.reason).toBe('marker:trust-boundary');
+        });
+
+        test('3. substring context "prefix SNAPSHOT TRUST BOUNDARY suffix" → EXACT snapshot-trust-boundary', () => {
+          const result = checkForPromptLeak('prefix SNAPSHOT TRUST BOUNDARY suffix', {
+            field: 'question',
+          });
+          expect(result.safe).toBe(false);
+          expect(result.reason).toBe('marker:snapshot-trust-boundary');
+          expect(result.reason).not.toBe('marker:trust-boundary');
+        });
+
+        test('4. mixed cross-family "SNAPSHOT TRUST BOUNDARY <<<USER_TEXT>>>" → EXACT snapshot-trust-boundary (Priority 1 longest-first beats Priority 2)', () => {
+          const result = checkForPromptLeak('SNAPSHOT TRUST BOUNDARY <<<USER_TEXT>>>', {
+            field: 'question',
+          });
+          expect(result.safe).toBe(false);
+          expect(result.reason).toBe('marker:snapshot-trust-boundary');
+          expect(result.reason).not.toBe('marker:trust-boundary');
+          expect(result.reason).not.toBe('marker:user-text-open');
+        });
+
+        test('5a. SYSTEM_CHANNEL alone → EXACT system-channel (no substring conflict in Priority 1)', () => {
+          const result = checkForPromptLeak('SYSTEM_CHANNEL is here', {
+            field: 'question',
+          });
+          expect(result.safe).toBe(false);
+          expect(result.reason).toBe('marker:system-channel');
+        });
+
+        test('5b. USER_CHANNEL alone → EXACT user-channel (no substring conflict in Priority 1)', () => {
+          const result = checkForPromptLeak('USER_CHANNEL variant', {
+            field: 'question',
+          });
+          expect(result.safe).toBe(false);
+          expect(result.reason).toBe('marker:user-channel');
+        });
+
+        test('6. residual family regression: "END_USER_TEXT" alone → EXACT end-user-text-bare (longest-first preserved in residual)', () => {
+          const result = checkForPromptLeak('The token is END_USER_TEXT in the prompt', {
+            field: 'question',
+          });
+          expect(result.safe).toBe(false);
+          expect(result.reason).toBe('marker:end-user-text-bare');
+          expect(result.reason).not.toBe('marker:user-text-bare');
+        });
+
+        test('7. residual family: "USER_TEXT" alone (no END_ prefix) → EXACT user-text-bare', () => {
+          const result = checkForPromptLeak('The token is USER_TEXT here', {
+            field: 'question',
+          });
+          expect(result.safe).toBe(false);
+          expect(result.reason).toBe('marker:user-text-bare');
+        });
+
+        test('8. composite family: "<<<END_USER_TEXT>>> AND <<<USER_TEXT>>>" → EXACT user-text-close (longest-first within Priority 2)', () => {
+          // Declaration order puts user-text-open (15 chars)
+          // before user-text-close (19 chars). Longest-first
+          // sort puts user-text-close first. On this input both
+          // substrings are present; longest-first makes
+          // user-text-close win.
+          const result = checkForPromptLeak('<<<END_USER_TEXT>>> AND <<<USER_TEXT>>>', {
+            field: 'question',
+          });
+          expect(result.safe).toBe(false);
+          expect(result.reason).toBe('marker:user-text-close');
+          expect(result.reason).not.toBe('marker:user-text-open');
         });
       });
 
