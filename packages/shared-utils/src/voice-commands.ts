@@ -25,22 +25,22 @@
  *   - query_summary — depends on a job-wide summariser that iOS builds
  *     from a non-trivial traversal.
  *
- * The module is PURE. It reads the VoiceCommandJob snapshot, returns a partial
- * VoiceCommandJob patch + a spoken response string. The caller (recording
+ * The module is PURE. It reads the JobDetail snapshot, returns a partial
+ * JobDetail patch + a spoken response string. The caller (recording
  * context) wires the patch into `updateJob()` and the response into the
  * TTS helper.
  */
 
 // We use local structural types rather than pulling from @certmate/shared-types
-// because the iOS-oriented shared-types `VoiceCommandJob` uses nested sections
+// because the iOS-oriented shared-types `JobDetail` uses nested sections
 // (`installation_details`, `supply_characteristics`) while the web client
-// stores them flat on the VoiceCommandJob (`installation`, `supply`). The voice
+// stores them flat on the JobDetail (`installation`, `supply`). The voice
 // command executor is consumed by the web recording context, so the flat
 // shape is the right abstraction here.
 
-/** Structural subset of the web's VoiceCommandCircuit — only the keys the voice
+/** Structural subset of the web's CircuitRow — only the keys the voice
  *  command executor touches. Accepts `unknown` values so callers can pass
- *  their wider VoiceCommandCircuit in without a cast. */
+ *  their wider CircuitRow in without a cast. */
 export interface VoiceCommandCircuit {
   id?: string;
   circuit_ref?: string;
@@ -49,7 +49,7 @@ export interface VoiceCommandCircuit {
   [key: string]: unknown;
 }
 
-/** Structural subset of the web's VoiceCommandJob — section bags are
+/** Structural subset of the web's JobDetail — section bags are
  *  permissive so any app-specific extensions pass through unchanged. */
 export interface VoiceCommandJob {
   circuits?: VoiceCommandCircuit[];
