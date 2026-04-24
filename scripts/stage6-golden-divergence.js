@@ -933,6 +933,50 @@ export async function runToolCallPath(fx) {
             `this guard explicitly.`,
         );
       }
+
+      // Plan 04-19 r13-#1 [MAJOR] — PARTIAL declared order coverage
+      // check. r12-#2's empty-normalisation check passes for a
+      // declaration like `[5]` on a 5-circuit fixture (non-empty,
+      // length 1 > 0) but the OTHER 4 circuits get silently handed
+      // to the numeric-ascending summary-view ordering. The detail
+      // view shows circuit 5; the summary view iterates
+      // stateSnapshot.circuits object keys in JS integer-ascending
+      // order (ECMAScript spec for numeric keys), guessing a
+      // chronology for the omitted positions that may silently
+      // diverge from production.
+      //
+      // r13-#1 closes the gap: require the declared order to cover
+      // EVERY seeded non-supply circuit when seededKeys exceeds
+      // SNAPSHOT_RECENT_CIRCUITS. The `_force_numeric_recency`
+      // escape hatch bypasses this check identically to the way
+      // it bypasses the empty check above (uniform "one escape
+      // hatch, numeric fallback for the rest" semantics — the
+      // forceNumeric branch short-circuits before reaching either
+      // guard arm).
+      if (preview.length < seededKeys.size) {
+        const declaredSet = new Set(preview);
+        const missing = [...seededKeys]
+          .filter((n) => !declaredSet.has(n))
+          .sort((a, b) => a - b);
+        const seededList = [...seededKeys].sort((a, b) => a - b).join(', ');
+        throw new Error(
+          `golden-divergence: fixture seeds ${seededKeys.size} non-supply ` +
+            `circuits (${seededList}) and declares ` +
+            `\`recentCircuitOrder\` as \`${JSON.stringify(declaredOrder)}\` ` +
+            `which normalises to ${preview.length} circuit(s), ` +
+            `missing ${missing.join(', ')}. The detailed-view window ` +
+            `is SNAPSHOT_RECENT_CIRCUITS=${SNAPSHOT_RECENT_CIRCUITS}; ` +
+            `partial declarations hand the omitted circuits to a ` +
+            `numeric-ascending summary-view guess that may silently ` +
+            `diverge from production chronology. Either (a) declare ` +
+            `the FULL chronological order covering all ` +
+            `${seededKeys.size} seeded circuits (most recent at the ` +
+            `end), or (b) for test fixtures that deliberately need ` +
+            `the pathological numeric-fallback behaviour, set ` +
+            `\`pre_turn_state._force_numeric_recency: true\` to bypass ` +
+            `this guard explicitly.`,
+        );
+      }
     }
 
     if (Array.isArray(declaredOrder)) {
