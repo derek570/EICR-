@@ -152,6 +152,8 @@ export function ObservationSheet({
       description: draft.description?.trim() || undefined,
       location: draft.location?.trim() || undefined,
       remedial: draft.remedial?.trim() || undefined,
+      schedule_item: draft.schedule_item?.trim() || undefined,
+      schedule_description: draft.schedule_description?.trim() || undefined,
     };
     onSave(cleaned);
   };
@@ -237,6 +239,50 @@ export function ObservationSheet({
                 placeholder="e.g. Kitchen RCBO way 4"
                 className="h-11 rounded-[var(--radius-md)] border border-[var(--color-border-default)] bg-[var(--color-surface-1)] px-3 text-[14px] text-[var(--color-text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--color-brand-blue)]"
               />
+            </section>
+
+            {/*
+              Optional schedule linkage — iOS EditObservationSheet at
+              L220-L221 surfaces these as plain text fields. When the
+              observation is created from the Inspection tab they
+              auto-populate; when created fresh they stay blank. Keeping
+              them editable on web means the inspector can manually
+              associate an observation with a schedule item after the
+              fact (e.g. if Sonnet tagged the wrong ref).
+            */}
+            <section className="flex flex-col gap-2 md:grid md:grid-cols-[120px_1fr] md:gap-3">
+              <div className="flex flex-col gap-1.5">
+                <label
+                  htmlFor="obs-schedule-item"
+                  className="text-[11px] font-medium uppercase tracking-[0.08em] text-[var(--color-text-tertiary)]"
+                >
+                  Schedule item
+                </label>
+                <input
+                  id="obs-schedule-item"
+                  type="text"
+                  value={draft.schedule_item ?? ''}
+                  onChange={(e) => patch({ schedule_item: e.target.value })}
+                  placeholder="e.g. 4.4"
+                  className="h-11 rounded-[var(--radius-md)] border border-[var(--color-border-default)] bg-[var(--color-surface-1)] px-3 text-[14px] text-[var(--color-text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--color-brand-blue)]"
+                />
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <label
+                  htmlFor="obs-schedule-description"
+                  className="text-[11px] font-medium uppercase tracking-[0.08em] text-[var(--color-text-tertiary)]"
+                >
+                  Schedule item description
+                </label>
+                <input
+                  id="obs-schedule-description"
+                  type="text"
+                  value={draft.schedule_description ?? ''}
+                  onChange={(e) => patch({ schedule_description: e.target.value })}
+                  placeholder="Auto-filled from inspection tab when linked."
+                  className="h-11 rounded-[var(--radius-md)] border border-[var(--color-border-default)] bg-[var(--color-surface-1)] px-3 text-[14px] text-[var(--color-text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--color-brand-blue)]"
+                />
+              </div>
             </section>
 
             {/* Description */}
