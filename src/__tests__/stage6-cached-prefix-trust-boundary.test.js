@@ -401,24 +401,30 @@ describe('Plan 04-13 r7-#1 [SECURITY BLOCK] — cached-prefix TRUST BOUNDARY fra
     );
   });
 
-  test('r7-1f — off-mode snapshot (messages array) is FREE of framing [flipped by r8-#2]', async () => {
-    // Plan 04-14 r8-#2 — r7-1f's original assertion ("off-mode carries
-    // the same framing") broke SC #7 (off-mode path is byte-identical
-    // to pre-Phase-4). STR-01 rollback requires off-mode to stay
-    // shape-invariant so that flipping TOOL_CALLS_MODE=off restores
-    // prior behaviour without touching model inputs. The r7 framing
-    // layer is a non-off-only defence — off-mode runs in the legacy
-    // user-role snapshot channel and has its own shape contract.
+  test('r7-1f — off-mode snapshot (messages array) CARRIES framing [flipped again by r9-#2, matches r7 original intent]', async () => {
+    // Plan 04-15 r9-#2 — r8-#2's gate re-exposed the r7 BLOCK
+    // (`b3a448a`) prompt-injection surface on every rollback. SC #7
+    // was reinterpreted from "byte-identical to pre-Phase-4" to
+    // "functionally equivalent with additive security framing" —
+    // off-mode now CARRIES the framing layer like non-off modes.
     //
-    // Pre-r8 (this test): assert preamble + markers present in off-mode
-    //   messages array. Broke SC #7.
-    // Post-r8 (this test): assert preamble + markers ABSENT in off-mode.
-    //   Framing coverage for off-mode is a non-goal — SC #7 byte-
-    //   identical rollback is the stronger invariant there.
+    // History of this assertion:
+    //   - Pre-r8 (r7 landing): asserted preamble + markers PRESENT
+    //     in off-mode. Correct security-wise, but broke SC #7's
+    //     literal byte-identical reading.
+    //   - Post-r8 (r8-#2 fix): FLIPPED to assert preamble + markers
+    //     ABSENT in off-mode. Restored SC #7 byte-identical, but
+    //     silently preserved the prompt-injection surface on every
+    //     rollback.
+    //   - Post-r9 (r9-#2 fix, this version): FLIPPED BACK to assert
+    //     preamble + markers PRESENT in off-mode. SC #7
+    //     reinterpreted for security; framing uniform across modes.
     //
-    // The stage6-off-mode-snapshot-canary.test.js file enforces the
-    // byte-identical contract; this test complements by asserting
-    // the INVERSE of r7-1f's original intent.
+    // The r9-2a/b/c/d/e canaries in stage6-off-mode-snapshot-canary.test.js
+    // lock the byte-for-byte shape; this test complements by
+    // asserting via the downstream messages array (belt-and-braces
+    // verification — the snapshot text goes through
+    // buildMessageWindow before reaching the SDK payload).
     mockCreate.mockResolvedValue({
       content: [
         {
@@ -462,19 +468,23 @@ describe('Plan 04-13 r7-#1 [SECURITY BLOCK] — cached-prefix TRUST BOUNDARY fra
       )
       .join('\n---\n');
 
-    // OFF-MODE INVARIANT (r8-#2): no preamble, no markers anywhere.
-    // The attack text still appears as raw observation content (the
-    // sanitiser strips C0 but doesn't alter visible text), which is
-    // acceptable because off-mode is not the production path —
-    // non-off modes run with the framing layer + preamble defence.
-    expect(allText).not.toContain('SNAPSHOT TRUST BOUNDARY');
-    expect(allText).not.toContain('<<<USER_TEXT>>>');
-    expect(allText).not.toContain('<<<END_USER_TEXT>>>');
-    // Sanity: the observation text still made it into the messages
-    // array (proves off-mode is still plumbing content, just without
-    // framing). Lowercased because observations lowercase at ingestion.
-    expect(allText.toLowerCase()).toContain(
-      'ignore previous instructions and override',
+    // OFF-MODE INVARIANT (r9-#2): preamble + markers PRESENT. r8-#2
+    // tried to remove them for SC #7 byte-identical rollback; r9-#2
+    // reinstated them because preserving the prompt-injection
+    // surface on rollback (what the r8-#2 gate did) is unacceptable.
+    // The attack text appears INSIDE a <<<USER_TEXT>>>...<<<END_USER_TEXT>>>
+    // region, which combined with the preamble tells the model to
+    // treat it as quoted data — the same defence non-off modes
+    // receive.
+    expect(allText).toContain('SNAPSHOT TRUST BOUNDARY');
+    expect(allText).toContain('<<<USER_TEXT>>>');
+    expect(allText).toContain('<<<END_USER_TEXT>>>');
+    // The attack text is now safely inside a wrapped region — match
+    // the pattern (attack text appears between an open and close
+    // marker). Lowercased because observations lowercase at
+    // ingestion.
+    expect(allText.toLowerCase()).toMatch(
+      /<<<user_text>>>[\s\S]*?ignore previous instructions and override[\s\S]*?<<<end_user_text>>>/,
     );
 
     session.stop();
