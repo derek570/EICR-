@@ -44,6 +44,15 @@ import { classifyOvertake } from './stage6-overtake-classifier.js';
 // sizes (>8192 chars) so the caller can send an error envelope back to iOS
 // instead of smuggling the abuse downstream.
 import { sanitiseUserText } from './stage6-sanitise-user-text.js';
+// Stage 6 Phase 5 Plan 05-04 — restrained-mode rolling-5-turn-window state
+// machine + lifecycle log row emitter. STA-05: ≥3 ask_user calls in any
+// rolling 5-turn window → 60s lockout (auto-released by wall-clock timer)
+// + one-shot client_diagnostic emission to iOS. Per-session instance lives
+// on the activeSessions entry; destroyed on the same 3 termination paths
+// that drain pendingAsks. Reconnect deliberately PRESERVES the state to
+// prevent "hang up + reconnect" abuse of the kill-switch.
+import { createRestrainedMode } from './stage6-restrained-mode.js';
+import { logRestrainedMode } from './stage6-dispatcher-logger.js';
 
 // Lazy-initialised OpenAI client for observation refinement (gpt-5-search-api).
 // Kept at module scope so repeat refinements reuse the same HTTPS pool.
@@ -1245,6 +1254,13 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
           // {answered:false, reason:'session_terminated', wait_duration_ms}
           // so Sonnet can still terminate the turn gracefully.
           entry.pendingAsks.rejectAll('session_terminated');
+          // Plan 05-04 — cancel the rolling-window release timer + clear
+          // the askTurns array so the activeSessions entry is fully
+          // garbage-collectible after the .delete() below. Optional-
+          // chained because handleSessionStart's reconnect path may
+          // run BEFORE this timer fires (Open Question #2: reconnect
+          // PRESERVES restrained-mode state by not destroying it here).
+          entry.restrainedMode?.destroy();
           entry.questionGate.destroy();
           activeSessions.delete(currentSessionId);
         }, 300000);
@@ -1561,6 +1577,69 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
       // (rejectAll). stage6-pending-asks-registry.js enforces Codex STG #3
       // strict ordering inside every resolution path.
       pendingAsks: createPendingAsksRegistry(),
+      // Stage 6 Phase 5 Plan 05-04 — restrained-mode rolling-5-turn-window
+      // state machine (STA-05). The wrapper (Plan 05-01) calls
+      // restrainedMode.recordAsk(turnId) AFTER each non-short-circuited ask;
+      // when ≥3 asks accumulate within any rolling 5-turn window, the
+      // onActivate callback fires ONCE per activation cycle:
+      //   1. Sends `client_diagnostic` to iOS so the app can suppress
+      //      further question TTS during the 60s lockout window. Reuses
+      //      the existing `client_diagnostic` envelope (Phase 6 owns the
+      //      iOS decoder; Swift already ignores unknown categories per r8
+      //      UnknownMessageTypeGuard discipline) — no new message type.
+      //   2. Emits one `stage6.restrained_mode` log row with event:
+      //      'activated' for Phase 8 dashboards (STO-03 metric).
+      // Auto-release after 60s via setTimeout fires onRelease, which
+      // logs the matching event:'released' row. Reconnect PRESERVES the
+      // state (handleSessionStart at ~L1255 is deliberately untouched so
+      // a hang-up-and-reconnect can't reset the kill-switch).
+      // turnId is null at the entry-callback site because the
+      // activeSessions entry constructor doesn't close over a runtime
+      // turn — Phase 8 queries join by sessionId + emittedAt timestamp
+      // to find the trigger turnId from the preceding stage6.ask_user
+      // row. Documented in 05-04-PLAN.md §Risks.
+      restrainedMode: createRestrainedMode({
+        windowTurns: 5,
+        triggerCount: 3,
+        releaseMs: 60000,
+        onActivate: () => {
+          if (ws && ws.readyState === ws.OPEN) {
+            try {
+              ws.send(
+                JSON.stringify({
+                  type: 'client_diagnostic',
+                  category: 'restrained_mode_triggered',
+                  sessionId,
+                  emittedAt: new Date().toISOString(),
+                  window_asks: 3,
+                })
+              );
+            } catch {
+              // ws.send() failure during onActivate must NEVER tear down
+              // the extraction. The state machine has already flipped
+              // to active and the log row below still fires; iOS missing
+              // one client_diagnostic is degraded but acceptable.
+            }
+          }
+          logRestrainedMode(logger, {
+            sessionId,
+            turnId: null,
+            event: 'activated',
+            triggerAskCount: 3,
+            windowTurns: 5,
+            releaseMs: 60000,
+          });
+        },
+        onRelease: () => {
+          logRestrainedMode(logger, {
+            sessionId,
+            turnId: null,
+            event: 'released',
+            windowTurns: 5,
+            releaseMs: 60000,
+          });
+        },
+      }),
       // Plan 03-10 Task 1 — FIFO set of Deepgram utterance ids that iOS has
       // already routed as ask_user_answered payloads. handleTranscript checks
       // this BEFORE invoking runShadowHarness so the same utterance doesn't
@@ -2315,6 +2394,16 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         // Identity preservation is load-bearing: the dispatcher registers
         // into the SAME registry this routing layer resolves against.
         pendingAsks: entry.pendingAsks,
+        // Stage 6 Phase 5 Plan 05-04 — pass the restrained-mode state
+        // machine through to the wrapper layer (Plan 05-01) which will
+        // call restrainedMode.recordAsk(turnId) AFTER each non-short-
+        // circuited ask, AND short-circuit asks at the boundary when
+        // restrainedMode.isActive() returns true. Optional-chained read
+        // here so a future activeSessions entry without the field
+        // (e.g. legacy resume path) still constructs valid options
+        // (the wrapper's composition guard is the truth source for
+        // when the state machine fires).
+        restrainedMode: entry.restrainedMode,
         ws,
       });
 
@@ -2686,6 +2775,17 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
     // while the entry is still in activeSessions — callers awaiting the
     // ask Promise receive the rejection before session_ack emit.
     entry.pendingAsks.rejectAll('session_stopped');
+    // Plan 05-04 — destroy the restrained-mode state machine BEFORE
+    // activeSessions.delete so the pending 60s release timer can't fire
+    // after the entry is unreachable (which would log a phantom
+    // event:'released' row for a session that no longer exists). Optional-
+    // chained for forward-compat with reconnect/resume paths that may
+    // re-create the entry without a restrainedMode key. NOT placed at the
+    // entry-point rejectAll (L2695) because we want the rolling window to
+    // stay live during the flushUtteranceBuffer + S3 awaits above — if a
+    // straggler ask arrives via a paused transcript handler, the wrapper
+    // should still see isActive() truthfully.
+    entry.restrainedMode?.destroy();
 
     activeSessions.delete(sessionId);
     logger.info('Session stopped', { sessionId });
