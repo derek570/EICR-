@@ -493,8 +493,12 @@ describe("STT-04 Scenario B' — Real EICRExtractionSession SC #4 exit check (r3
     // 5. At-risk slot (circuits[2].r1_r2) preserved at 0.64.
     expect(session.stateSnapshot.circuits['2'].r1_r2).toBe(0.64);
 
-    // 6. Turn's new reading landed on live snapshot.
-    expect(session.stateSnapshot.circuits['3'].insulation_resistance_l_l).toBe('>200');
+    // 6. Turn's new reading landed on live snapshot under the CANONICAL
+    //    field key. Plan 04-10 r4-#3 rename — `ir_live_live_mohm`
+    //    matches the tool-call fixture (sse_events_well_behaved) and
+    //    the oracle (expected_slot_writes), so live + shadow now
+    //    converge on the same (field, circuit) tuple.
+    expect(session.stateSnapshot.circuits['3'].ir_live_live_mohm).toBe('>200');
 
     // 7. Two model invocations (tool_use round + end_turn round).
     expect(session.client._callCount).toBe(2);
@@ -502,5 +506,46 @@ describe("STT-04 Scenario B' — Real EICRExtractionSession SC #4 exit check (r3
     // 8. BONUS — zero stage6.ask_user log rows.
     const askUserLogs = logger.info.mock.calls.filter((c) => c[0] === 'stage6.ask_user');
     expect(askUserLogs).toHaveLength(0);
+
+    // ─────────────────────────────────────────────────────────────────────
+    // NEW r4-#3 ASSERTIONS — live/shadow field-name convergence.
+    // ─────────────────────────────────────────────────────────────────────
+    //
+    // Codex r4 MAJOR #3: "Scenario B' field-name drift — the live-side
+    // stub writes `insulation_resistance_l_l` while the tool-call fixture
+    // writes `ir_live_live_mohm`. Zero-ask_user assertions pass even when
+    // live/shadow disagree on the actual field key." The pre-r4 test had
+    // no assertion linking the two writes, so a future dispatcher drift
+    // on the canonical field name would go unnoticed.
+    //
+    // Fix: (a) canonicalise the live stub to `ir_live_live_mohm` (done
+    // in the extractFromUtterance mock above), and (b) add a positive
+    // assertion that the canonical field made it to the live snapshot,
+    // AND a negative assertion that the legacy alias is NOT present
+    // (no drift leak from a future partial refactor).
+
+    // 9. Canonical field present on the live snapshot (post-r4 stub
+    //    writes `ir_live_live_mohm` — same name the tool-call fixture
+    //    uses, same name the oracle uses).
+    expect(session.stateSnapshot.circuits['3']).toHaveProperty('ir_live_live_mohm', '>200');
+
+    // 10. Legacy alias MUST NOT appear on the live snapshot — catches
+    //     the drift where a future stub regression (or a partial revert
+    //     of this r4-#3 fix) re-introduces the legacy field name
+    //     alongside or instead of the canonical one.
+    expect(session.stateSnapshot.circuits['3']).not.toHaveProperty('insulation_resistance_l_l');
+
+    // 11. The tool-call fixture's sole record_reading carries field
+    //     `ir_live_live_mohm` (see fixture.sse_events_well_behaved[2]
+    //     partial_json). Assert it matches the stub's field — same
+    //     (field, circuit, value) on both sides. Static check against
+    //     the fixture text so a future fixture edit that silently
+    //     renames the field is caught.
+    const toolCallField = JSON.parse(
+      fixture.sse_events_well_behaved.find(
+        (ev) => ev.type === 'content_block_delta' && ev.delta?.type === 'input_json_delta',
+      ).delta.partial_json,
+    ).field;
+    expect(toolCallField).toBe('ir_live_live_mohm');
   });
 });
