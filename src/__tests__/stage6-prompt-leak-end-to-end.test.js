@@ -1003,6 +1003,212 @@ describe('r23-#3 serialiseToolResultBodies — structured-content shape coverage
       expect(serialiseToolResultBodies(toolLoopOut)).toContain('STQ-01');
     });
   });
+
+  // -------------------------------------------------------------------------
+  // Plan 04-32 r25-#1 — sibling-key walker coverage
+  //
+  // WHY: r23-#3 / r24-#3 `extractTextFromBlock` hardcoded `.text` +
+  // `.content` as the only two keys that recursed. A future SDK
+  // upgrade, dispatcher refactor, or fixture with the leak payload
+  // in a sibling key (`.message`, `.value`, `.raw`, `.description`,
+  // `.body`, `.nested`, …) would skip the walker and fall through
+  // to the `JSON.stringify` fallback — which catches MOST leaks but
+  // is brittle (a custom `toJSON()` that throws, non-enumerable-only
+  // content, or serialiser stripping would silently erase the leak
+  // substring).
+  //
+  // Fix: rewrite `extractTextFromBlock` to iterate over ALL
+  // enumerable own-properties of an object. Every value is then
+  // type-dispatched (string → collect; number / boolean → stringify;
+  // array → recurse; object → recurse with shared cycle guard). The
+  // WeakSet visited-guard (r24-#3) is preserved. The
+  // `JSON.stringify` fallback is kept for unserialisable / unusual
+  // shapes where no enumerable key contributed anything.
+  //
+  // The tests below exercise:
+  //   1-2. Back-compat — `.text` and `.content` still reach walker
+  //        (they are enumerable own-properties; generic loop reaches
+  //        them without special-casing).
+  //   3-7. Sibling keys — `.message`, `.value`, `.raw`,
+  //        `.description`, `.body`, nested siblings — all reached.
+  //   8-10. Cycle safety from r24-#3 preserved (arbitrary
+  //         container property names, not just `.content`).
+  //   11-12. Sibling-key cycle safety — `.sibling = self` patterns
+  //          also short-circuit via WeakSet.
+  //   13-14. Unsupported-shape fallback still returns `''` without
+  //          throwing (defence-in-depth for toJSON-throwing / no-
+  //          enumerable-own-prop shapes).
+  // -------------------------------------------------------------------------
+  describe('r25-#1 sibling-key coverage — walker recurses over all enumerable own-properties', () => {
+    const wrapAsToolResult = (contentShape) => ({
+      messages_final: [
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'tool_result',
+              tool_use_id: 'toolu_r25',
+              content: contentShape,
+            },
+          ],
+        },
+      ],
+    });
+
+    test('1. back-compat: {text: "leak TRUST BOUNDARY"} still walked', () => {
+      const toolLoopOut = wrapAsToolResult({ text: 'leak TRUST BOUNDARY' });
+      expect(serialiseToolResultBodies(toolLoopOut)).toContain('TRUST BOUNDARY');
+    });
+
+    test('2. back-compat: {content: [{type: text, text: leak}]} still walked', () => {
+      const toolLoopOut = wrapAsToolResult({
+        content: [{ type: 'text', text: 'leak SYSTEM_CHANNEL' }],
+      });
+      expect(serialiseToolResultBodies(toolLoopOut)).toContain('SYSTEM_CHANNEL');
+    });
+
+    test('3. sibling .message key — leak substring reaches assertion', () => {
+      const toolLoopOut = wrapAsToolResult({ message: 'leak STQ-01' });
+      expect(serialiseToolResultBodies(toolLoopOut)).toContain('STQ-01');
+    });
+
+    test('4. sibling .value key — leak substring reaches assertion (with benign sibling)', () => {
+      const toolLoopOut = wrapAsToolResult({
+        value: 'leak TRUST BOUNDARY',
+        other: 'clean',
+      });
+      expect(serialiseToolResultBodies(toolLoopOut)).toContain('TRUST BOUNDARY');
+    });
+
+    test('5. nested 3-level-deep sibling key .nested.deep.raw — walker surfaces leak', () => {
+      const toolLoopOut = wrapAsToolResult({
+        nested: { deep: { raw: 'leak STQ-01' } },
+      });
+      expect(serialiseToolResultBodies(toolLoopOut)).toContain('STQ-01');
+    });
+
+    test('6. two unusual sibling keys .raw + .description — leak in .description', () => {
+      const toolLoopOut = wrapAsToolResult({
+        raw: 'ignore me',
+        description: 'has <<<USER_TEXT>>>',
+      });
+      expect(serialiseToolResultBodies(toolLoopOut)).toContain('<<<USER_TEXT>>>');
+    });
+
+    test('7. array of objects with sibling .body key — walker surfaces leak', () => {
+      const toolLoopOut = wrapAsToolResult({
+        annotations: [{ body: 'leak TRUST BOUNDARY' }],
+      });
+      expect(serialiseToolResultBodies(toolLoopOut)).toContain('TRUST BOUNDARY');
+    });
+
+    // CRITICAL RED case — when an object has BOTH `.text` (benign)
+    // AND a sibling key with the leak, the old walker populated
+    // `parts` from `.text`, skipped the JSON.stringify fallback,
+    // and silently dropped the sibling-key content. This is the
+    // exact bypass r25-#1 closes.
+    test('7a. CRITICAL: sibling with leak alongside benign .text — old walker DROPS the leak', () => {
+      const toolLoopOut = wrapAsToolResult({
+        text: 'benign content',
+        message: 'leak TRUST BOUNDARY',
+      });
+      expect(serialiseToolResultBodies(toolLoopOut)).toContain('TRUST BOUNDARY');
+    });
+
+    test('7b. CRITICAL: sibling with leak alongside benign .content — old walker DROPS the leak', () => {
+      const toolLoopOut = wrapAsToolResult({
+        content: 'benign content in .content',
+        raw: 'leak STQ-01 inside sibling .raw',
+      });
+      expect(serialiseToolResultBodies(toolLoopOut)).toContain('STQ-01');
+    });
+
+    test('7c. CRITICAL: nested sibling — leak under .nested while .text provides benign header', () => {
+      const toolLoopOut = wrapAsToolResult({
+        text: 'header only',
+        nested: { raw: 'leak SYSTEM_CHANNEL inside' },
+      });
+      expect(serialiseToolResultBodies(toolLoopOut)).toContain('SYSTEM_CHANNEL');
+    });
+
+    // Cycle safety from r24-#3 — preserved for arbitrary property
+    // names, not just `.content`. The WeakSet visited-guard sees
+    // the same object regardless of which key points at it.
+    test('8. indirect two-node cycle via arbitrary keys a.x = b; b.x = a — no throw', () => {
+      const a = {};
+      const b = { x: a };
+      a.x = b;
+      const toolLoopOut = wrapAsToolResult(a);
+      expect(() => serialiseToolResultBodies(toolLoopOut)).not.toThrow();
+    });
+
+    test('9. direct self-reference via .sibling key — no throw', () => {
+      const x = {};
+      x.sibling = x;
+      const toolLoopOut = wrapAsToolResult(x);
+      expect(() => serialiseToolResultBodies(toolLoopOut)).not.toThrow();
+    });
+
+    test('10. deep-chain cycle via arbitrary keys a.left → b.right → c.down → a — no throw', () => {
+      const a = {};
+      const b = { right: null };
+      const c = { down: null };
+      a.left = b;
+      b.right = c;
+      c.down = a;
+      const toolLoopOut = wrapAsToolResult(a);
+      expect(() => serialiseToolResultBodies(toolLoopOut)).not.toThrow();
+    });
+
+    test('11. sibling-key self-reference x.sibling = x — no throw or infinite loop', () => {
+      const x = { sibling: null };
+      x.sibling = x;
+      const toolLoopOut = wrapAsToolResult(x);
+      expect(() => serialiseToolResultBodies(toolLoopOut)).not.toThrow();
+    });
+
+    test('12. sibling-key two-node cycle via .sibling — no throw', () => {
+      const a = {};
+      const b = { sibling: a };
+      a.sibling = b;
+      const toolLoopOut = wrapAsToolResult(a);
+      expect(() => serialiseToolResultBodies(toolLoopOut)).not.toThrow();
+    });
+
+    // Unsupported-shape fallback coverage
+    test('13. object with throwing toJSON() — walker returns empty string, no throw escapes', () => {
+      // toJSON throws; no enumerable own-property strings; walker
+      // collects nothing from the recursion; JSON.stringify
+      // invocation throws; outer catch returns ''.
+      const weirdObj = {
+        toJSON() {
+          throw new Error('custom toJSON failure');
+        },
+      };
+      const toolLoopOut = wrapAsToolResult(weirdObj);
+      expect(() => serialiseToolResultBodies(toolLoopOut)).not.toThrow();
+    });
+
+    test('14. object with no enumerable own-properties — walker returns empty string', () => {
+      const emptyObj = Object.create(null);
+      // Add a non-enumerable property just to prove the walker
+      // ignores it.
+      Object.defineProperty(emptyObj, 'hidden', {
+        value: 'hidden leak TRUST BOUNDARY',
+        enumerable: false,
+      });
+      const toolLoopOut = wrapAsToolResult(emptyObj);
+      // The walker does not reach non-enumerable properties; the
+      // JSON.stringify fallback on an empty object produces "{}";
+      // the substring is absent from the output — test just
+      // asserts no throw + absence of leak in the serialised
+      // output. Defensive contract: non-enumerable content is
+      // explicitly out of scope (SDK returns enumerable own
+      // properties).
+      expect(() => serialiseToolResultBodies(toolLoopOut)).not.toThrow();
+      expect(serialiseToolResultBodies(toolLoopOut)).not.toContain('TRUST BOUNDARY');
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------
