@@ -254,98 +254,123 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
    *  `recording/deepgram-service.ts` connect() docblock for the full
    *  rationale (shared backend with iOS is why the fix is client-side,
    *  not a TTL bump). */
-  const openDeepgram = React.useCallback(async (sourceSampleRate: number) => {
-    const sessionId = sessionIdRef.current;
-    const service = new DeepgramService({
-      onStateChange: setDeepgramState,
-      onInterimTranscript: (text) => {
-        setInterim(text);
-      },
-      onFinalTranscript: (text, confidence) => {
-        setInterim('');
-        setTranscript((prev) => {
-          const next: TranscriptUtterance[] = [
-            ...prev,
-            {
-              id: `u_${Date.now()}_${prev.length + 1}`,
-              text,
-              confidence,
-              final: true,
-              timestamp: Date.now(),
-            },
-          ];
-          return next.length > 10 ? next.slice(next.length - 10) : next;
-        });
-        // Client-side voice command dispatch (Phase 8). Attempt the MVP
-        // parser; when it matches, apply the patch, speak the response
-        // synchronously, and SKIP forwarding to Sonnet — otherwise
-        // Sonnet would produce a second, conflicting extraction from
-        // the same transcript. Anything the parser doesn't recognise
-        // continues to the server-side extraction path.
-        const command = parseVoiceCommand(text);
-        if (command) {
-          const outcome = applyVoiceCommand(command, jobRef.current as unknown as VoiceCommandJob);
-          if (outcome.patch) {
-            updateJobRef.current(outcome.patch);
+  const openDeepgram = React.useCallback(
+    async (sourceSampleRate: number) => {
+      const sessionId = sessionIdRef.current;
+      const service = new DeepgramService({
+        onStateChange: setDeepgramState,
+        onInterimTranscript: (text) => {
+          setInterim(text);
+        },
+        onFinalTranscript: (text, confidence) => {
+          setInterim('');
+          setTranscript((prev) => {
+            const next: TranscriptUtterance[] = [
+              ...prev,
+              {
+                id: `u_${Date.now()}_${prev.length + 1}`,
+                text,
+                confidence,
+                final: true,
+                timestamp: Date.now(),
+              },
+            ];
+            return next.length > 10 ? next.slice(next.length - 10) : next;
+          });
+          // Client-side voice command dispatch (Phase 8). Attempt the MVP
+          // parser; when it matches, apply the patch, speak the response
+          // synchronously, and SKIP forwarding to Sonnet — otherwise
+          // Sonnet would produce a second, conflicting extraction from
+          // the same transcript. Anything the parser doesn't recognise
+          // continues to the server-side extraction path.
+          const command = parseVoiceCommand(text);
+          if (command) {
+            const outcome = applyVoiceCommand(
+              command,
+              jobRef.current as unknown as VoiceCommandJob
+            );
+            if (outcome.patch) {
+              updateJobRef.current(outcome.patch);
+              // Mirror the patch into jobRef.current synchronously so a
+              // second rapid-fire voice command sees the updated state.
+              // Without this, the useEffect-driven `jobRef.current = job`
+              // only lands on the next render and two consecutive updates
+              // against the same top-level section (e.g. "set ze 0.35"
+              // then "set pfc 1.5" both patch `supply`) would overwrite
+              // each other because the second applyVoiceCommand reads a
+              // stale section snapshot. The patch already contains full
+              // section replacements, so a shallow merge is correct.
+              jobRef.current = {
+                ...jobRef.current,
+                ...(outcome.patch as Partial<typeof jobRef.current>),
+              };
+              // Feed the live-fill flash so voice-driven edits animate
+              // the same as Sonnet-driven ones. Empty-list calls are a
+              // no-op, so guarding is unnecessary.
+              if (outcome.changedKeys && outcome.changedKeys.length > 0) {
+                liveFill.markUpdated(outcome.changedKeys);
+              }
+            }
+            if (outcome.response) {
+              speak(outcome.response);
+            }
+            sleepManagerRef.current?.onSpeechActivity();
+            return;
           }
-          if (outcome.response) {
-            speak(outcome.response);
-          }
+          // Fire the final utterance at the Sonnet session so server-side
+          // multi-turn extraction can fill form fields. No-op if the WS
+          // isn't open — the Sonnet client queues pre-connect messages.
+          sonnetRef.current?.sendTranscript(text);
+          // Each dispatched transcript is one outstanding Sonnet turn
+          // until an extraction / question frame arrives to clear it.
+          setProcessingCount((n) => n + 1);
+          // Reset the SleepManager's no-final-transcript timer. Interim
+          // partials deliberately don't — iOS does the same so the mic's
+          // AGC can't self-feed and keep the doze timer permanently armed.
           sleepManagerRef.current?.onSpeechActivity();
-          return;
+        },
+        onReconnected: () => {
+          // Socket just reopened after an auto-reconnect. Replay the
+          // ring buffer so words spoken during the backoff gap aren't
+          // lost — mirrors the iOS wake path. drain() returns undefined
+          // if the buffer is empty or unavailable, in which case the
+          // live sample loop picks up on its own.
+          const replay = ringBufferRef.current?.drain();
+          if (replay && replay.length > 0) {
+            deepgramRef.current?.sendInt16PCM(replay);
+          }
+        },
+        onError: (err) => {
+          // Only surface in the UI if we're not already closing down — a
+          // normal CloseStream can race with `stop()` and emit a spurious
+          // error that would otherwise flip the overlay red. In fetcher
+          // mode onError fires only for terminal failures (first-connect
+          // key fetch fail) — transient close codes are absorbed by the
+          // service's auto-reconnect and don't bubble here at all.
+          if (deepgramRef.current) {
+            setErrorMessage(err.message);
+          }
+        },
+      });
+      // Bind the ref BEFORE starting the async connect so a concurrent
+      // stop()/teardownDeepgram can call service.disconnect() and abort
+      // the in-flight key fetch via `shouldReconnect=false`.
+      deepgramRef.current = service;
+      service.connect(async () => {
+        // Per-attempt guard: if stop() rotated the session while we were
+        // waiting for backoff + key fetch, bail so the service aborts
+        // reconnection cleanly (throw flows into openWithFreshKey's
+        // catch → suppressed reconnect reschedule, and disconnect() has
+        // already flipped shouldReconnect=false to short-circuit).
+        if (sessionIdRef.current !== sessionId) {
+          throw new Error('recording session rotated — aborting key fetch');
         }
-        // Fire the final utterance at the Sonnet session so server-side
-        // multi-turn extraction can fill form fields. No-op if the WS
-        // isn't open — the Sonnet client queues pre-connect messages.
-        sonnetRef.current?.sendTranscript(text);
-        // Each dispatched transcript is one outstanding Sonnet turn
-        // until an extraction / question frame arrives to clear it.
-        setProcessingCount((n) => n + 1);
-        // Reset the SleepManager's no-final-transcript timer. Interim
-        // partials deliberately don't — iOS does the same so the mic's
-        // AGC can't self-feed and keep the doze timer permanently armed.
-        sleepManagerRef.current?.onSpeechActivity();
-      },
-      onReconnected: () => {
-        // Socket just reopened after an auto-reconnect. Replay the
-        // ring buffer so words spoken during the backoff gap aren't
-        // lost — mirrors the iOS wake path. drain() returns undefined
-        // if the buffer is empty or unavailable, in which case the
-        // live sample loop picks up on its own.
-        const replay = ringBufferRef.current?.drain();
-        if (replay && replay.length > 0) {
-          deepgramRef.current?.sendInt16PCM(replay);
-        }
-      },
-      onError: (err) => {
-        // Only surface in the UI if we're not already closing down — a
-        // normal CloseStream can race with `stop()` and emit a spurious
-        // error that would otherwise flip the overlay red. In fetcher
-        // mode onError fires only for terminal failures (first-connect
-        // key fetch fail) — transient close codes are absorbed by the
-        // service's auto-reconnect and don't bubble here at all.
-        if (deepgramRef.current) {
-          setErrorMessage(err.message);
-        }
-      },
-    });
-    // Bind the ref BEFORE starting the async connect so a concurrent
-    // stop()/teardownDeepgram can call service.disconnect() and abort
-    // the in-flight key fetch via `shouldReconnect=false`.
-    deepgramRef.current = service;
-    service.connect(async () => {
-      // Per-attempt guard: if stop() rotated the session while we were
-      // waiting for backoff + key fetch, bail so the service aborts
-      // reconnection cleanly (throw flows into openWithFreshKey's
-      // catch → suppressed reconnect reschedule, and disconnect() has
-      // already flipped shouldReconnect=false to short-circuit).
-      if (sessionIdRef.current !== sessionId) {
-        throw new Error('recording session rotated — aborting key fetch');
-      }
-      const { key } = await api.deepgramKey(sessionIdRef.current);
-      return key;
-    }, sourceSampleRate);
-  }, []);
+        const { key } = await api.deepgramKey(sessionIdRef.current);
+        return key;
+      }, sourceSampleRate);
+    },
+    [liveFill]
+  );
 
   /** Apply a structured Sonnet extraction to the active JobDetail.
    *  Kept in a stable callback so the Sonnet WS callbacks don't rebind
@@ -416,6 +441,14 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         // A question frame also closes the turn that produced it — same
         // accounting as the extraction branch above.
         setProcessingCount((n) => Math.max(0, n - 1));
+        // Orphaned-reading questions also roll into the pending-readings
+        // counter: Sonnet sometimes reports an unassigned value via a
+        // question frame (question_type === 'orphaned') rather than a
+        // validation_alerts entry, and the banner would stay at 0 while
+        // the UI simultaneously showed an orphaned-reading question.
+        if (isNew && q.question_type === 'orphaned') {
+          setPendingReadings((n) => n + 1);
+        }
         // Speak only newly-appearing questions. Re-asks are suppressed
         // by the dedup above, matching iOS where the AlertCardView
         // doesn't re-announce a queued question.

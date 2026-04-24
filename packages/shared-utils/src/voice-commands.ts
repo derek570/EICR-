@@ -91,6 +91,10 @@ export interface VoiceCommandOutcome {
   patch?: Record<string, unknown>;
   /** Natural-language response to speak back to the inspector. */
   response: string;
+  /** Snake-case keys the patch actually changed. Callers feed these
+   *  into the live-fill flash registry so voice-driven edits animate
+   *  the same as Sonnet-driven ones. Empty / omitted for queries. */
+  changedKeys?: string[];
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -381,6 +385,7 @@ function applyUpdateField(
     return {
       patch: { circuits: next },
       response: `Set ${label} to ${command.value} on circuit ${command.circuit}.`,
+      changedKeys: [resolved.circuitField as string],
     };
   }
 
@@ -395,6 +400,7 @@ function applyUpdateField(
     return {
       patch,
       response: `Set ${label} to ${command.value}.`,
+      changedKeys: [field],
     };
   }
 
@@ -426,6 +432,7 @@ function applyReorderCircuits(
   return {
     patch: { circuits: renumbered },
     response: `Moved circuit ${command.from} to position ${command.to}.`,
+    changedKeys: ['circuits'],
   };
 }
 
