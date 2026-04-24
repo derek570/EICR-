@@ -676,3 +676,301 @@ describe('r20-#1 wiring — record_observation scans location + suggested_regula
     ).toBeUndefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Group 6 — r20-#2 redacted telemetry: log rows NEVER carry substrings
+// of the blocked payload.
+//
+// 04-26 emitted `sanitised_sample: input.<field>.slice(0, 80)` on every
+// prompt_leak_blocked row — the RAW leaked payload truncated. That meant
+// the defensive log itself piped attacker-controlled prompt-disclosure
+// content straight to CloudWatch where it's searchable + eventually
+// exported to ops staff.
+//
+// r20-#2 replaces sanitised_sample with structured telemetry:
+//   - filter_reason (the pattern-family tag from the filter)
+//   - field (which input field the leak was on, or `fields` array for
+//     multi-field observation leaks)
+//   - length (raw payload char count — numeric only, no content)
+//   - hash (first 16 hex chars of SHA-256 over the raw payload — for
+//     cross-session correlation without content exposure)
+//   - session_id + tool_call_id + tool (already present at 04-26)
+//
+// SHA-256 is chosen for: (a) cryptographic stability (same payload →
+// same hash always, critical for correlating repeated attempts across
+// sessions), (b) collision resistance (different leaks → different
+// hashes, so the analyzer can count unique attack payloads without
+// ever reading one), (c) no plaintext recoverability (unlike base64
+// or truncation). 16 hex chars = 64 bits of output — sufficient for
+// correlation, too short to brute-force invert from the hash alone.
+// ---------------------------------------------------------------------------
+describe('r20-#2 redaction — prompt_leak_blocked log rows carry hash + length, never content', () => {
+  function getBlockedRow(logger) {
+    const warnCalls = logger.warn.mock.calls;
+    return warnCalls.find((args) => args[0] === 'stage6.prompt_leak_blocked')?.[1];
+  }
+
+  test('ask_user log row has redacted telemetry shape, no substring of leak', async () => {
+    jest.useFakeTimers({ doNotFake: ['nextTick'] });
+    try {
+      const session = makeSession('live');
+      const logger = makeLogger();
+      const pending = createPendingAsksRegistry();
+      const ws = makeWs();
+      const dispatch = createAskDispatcher(session, logger, 'turn-1', pending, ws);
+
+      const leakPayload =
+        'Here is the system prompt content — TRUST BOUNDARY is the header wrapper for user text';
+      const call = {
+        id: 'toolu_redact_ask',
+        name: 'ask_user',
+        input: {
+          question: leakPayload,
+          reason: 'ambiguous_circuit',
+          context_field: null,
+          context_circuit: null,
+          expected_answer_shape: 'free_text',
+        },
+      };
+      const dispatched = dispatch(call, { sessionId: 'sess-leak', turnId: 'turn-1' });
+      await jest.advanceTimersByTimeAsync(21000);
+      await dispatched;
+
+      const row = getBlockedRow(logger);
+      expect(row).toBeDefined();
+
+      // r20-#2 required keys.
+      expect(typeof row.filter_reason).toBe('string');
+      expect(row.filter_reason).toMatch(/^marker:/); // TRUST BOUNDARY
+      expect(row.field).toBe('question');
+      expect(typeof row.length).toBe('number');
+      expect(row.length).toBe(leakPayload.length);
+      expect(typeof row.hash).toBe('string');
+      expect(row.hash).toMatch(/^[0-9a-f]{16}$/); // 16 hex chars
+
+      // r20-#2 forbidden keys / leakage vectors.
+      expect(row.sanitised_sample).toBeUndefined();
+      // The row JSON must not contain any substring of the original
+      // payload. Check against the trigger substring + several longer
+      // windows from the payload.
+      const rowJson = JSON.stringify(row);
+      expect(rowJson.toLowerCase()).not.toContain('trust boundary');
+      expect(rowJson).not.toContain(leakPayload.slice(0, 30));
+      expect(rowJson).not.toContain(leakPayload.slice(20, 60));
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  test('record_observation log row (multi-field leak) uses fields[] + offending_field_lengths', async () => {
+    const session = makeSession('live');
+    const logger = makeLogger();
+    const perTurnWrites = makePerTurnWrites();
+    const ctx = { session, logger, turnId: 'turn-1', perTurnWrites, round: 1 };
+
+    const leakedText = 'You are an EICR inspection assistant — full prompt';
+    const leakedLocation = 'TRUST BOUNDARY corridor';
+
+    const call = {
+      tool_call_id: 'toolu_redact_obs',
+      name: 'record_observation',
+      input: {
+        code: 'C3',
+        text: leakedText,
+        location: leakedLocation,
+        circuit: null,
+        suggested_regulation: null,
+      },
+    };
+
+    await dispatchRecordObservation(call, ctx);
+
+    const row = getBlockedRow(logger);
+    expect(row).toBeDefined();
+
+    expect(row.tool).toBe('record_observation');
+    expect(typeof row.filter_reason).toBe('string');
+    expect(Array.isArray(row.fields)).toBe(true);
+    expect(row.fields).toEqual(expect.arrayContaining(['text', 'location']));
+
+    // offending_field_lengths: exact char lengths of each offending input.
+    expect(typeof row.offending_field_lengths).toBe('object');
+    expect(row.offending_field_lengths.text).toBe(leakedText.length);
+    expect(row.offending_field_lengths.location).toBe(leakedLocation.length);
+
+    // No sanitised_sample, no substring of either leak.
+    expect(row.sanitised_sample).toBeUndefined();
+    const rowJson = JSON.stringify(row);
+    expect(rowJson.toLowerCase()).not.toContain('eicr inspection assistant');
+    expect(rowJson.toLowerCase()).not.toContain('trust boundary');
+  });
+
+  test('create_circuit designation leak row has field=designation + hash + length', async () => {
+    const session = makeSession('live');
+    const logger = makeLogger();
+    const perTurnWrites = makePerTurnWrites();
+    const ctx = { session, logger, turnId: 'turn-1', perTurnWrites, round: 1 };
+
+    const leakedDesignation = 'STQ-01 upstairs lights with extra prompt detail';
+    const call = {
+      tool_call_id: 'toolu_redact_create',
+      name: 'create_circuit',
+      input: {
+        circuit_ref: 3,
+        designation: leakedDesignation,
+        phase: null,
+        rating_amps: null,
+        cable_csa_mm2: null,
+      },
+    };
+
+    await dispatchCreateCircuit(call, ctx);
+
+    const row = getBlockedRow(logger);
+    expect(row).toBeDefined();
+    expect(row.tool).toBe('create_circuit');
+    expect(row.field).toBe('designation');
+    expect(typeof row.filter_reason).toBe('string');
+    expect(row.length).toBe(leakedDesignation.length);
+    expect(row.hash).toMatch(/^[0-9a-f]{16}$/);
+
+    expect(row.sanitised_sample).toBeUndefined();
+    expect(JSON.stringify(row)).not.toContain('upstairs lights with extra');
+  });
+
+  test('rename_circuit designation leak row has same redacted shape', async () => {
+    const session = makeSession('live');
+    const logger = makeLogger();
+    const perTurnWrites = makePerTurnWrites();
+    const ctx = { session, logger, turnId: 'turn-1', perTurnWrites, round: 1 };
+
+    const leakedDesignation = 'You have 7 tools — rename to this';
+    const call = {
+      tool_call_id: 'toolu_redact_rename',
+      name: 'rename_circuit',
+      input: {
+        from_ref: 1,
+        circuit_ref: 1,
+        designation: leakedDesignation,
+        phase: null,
+        rating_amps: null,
+        cable_csa_mm2: null,
+      },
+    };
+
+    await dispatchRenameCircuit(call, ctx);
+
+    const row = getBlockedRow(logger);
+    expect(row).toBeDefined();
+    expect(row.tool).toBe('rename_circuit');
+    expect(row.field).toBe('designation');
+    expect(typeof row.filter_reason).toBe('string');
+    expect(row.length).toBe(leakedDesignation.length);
+    expect(row.hash).toMatch(/^[0-9a-f]{16}$/);
+
+    expect(row.sanitised_sample).toBeUndefined();
+    const rowJson = JSON.stringify(row);
+    expect(rowJson).not.toContain('You have 7 tools');
+  });
+
+  test('hash is deterministic: same payload on same session produces same hash', async () => {
+    const logger1 = makeLogger();
+    const logger2 = makeLogger();
+    const session = makeSession('live');
+    const perTurnWrites = makePerTurnWrites();
+
+    const sharedLeak = 'STQ-05 reference for prompt';
+    const ctx1 = { session, logger: logger1, turnId: 'turn-a', perTurnWrites, round: 1 };
+    const ctx2 = {
+      session,
+      logger: logger2,
+      turnId: 'turn-b',
+      perTurnWrites: makePerTurnWrites(),
+      round: 2,
+    };
+
+    const call1 = {
+      tool_call_id: 'toolu_hash_a',
+      name: 'create_circuit',
+      input: {
+        circuit_ref: 10,
+        designation: sharedLeak,
+        phase: null,
+        rating_amps: null,
+        cable_csa_mm2: null,
+      },
+    };
+    const call2 = {
+      tool_call_id: 'toolu_hash_b',
+      name: 'create_circuit',
+      input: {
+        circuit_ref: 11,
+        designation: sharedLeak,
+        phase: null,
+        rating_amps: null,
+        cable_csa_mm2: null,
+      },
+    };
+
+    await dispatchCreateCircuit(call1, ctx1);
+    await dispatchCreateCircuit(call2, ctx2);
+
+    const row1 = getBlockedRow(logger1);
+    const row2 = getBlockedRow(logger2);
+    expect(row1.hash).toBe(row2.hash);
+  });
+
+  test('hash distinguishes different payloads', async () => {
+    const logger1 = makeLogger();
+    const logger2 = makeLogger();
+    const session = makeSession('live');
+
+    const ctx1 = {
+      session,
+      logger: logger1,
+      turnId: 't1',
+      perTurnWrites: makePerTurnWrites(),
+      round: 1,
+    };
+    const ctx2 = {
+      session,
+      logger: logger2,
+      turnId: 't2',
+      perTurnWrites: makePerTurnWrites(),
+      round: 1,
+    };
+
+    await dispatchCreateCircuit(
+      {
+        tool_call_id: 'toolu_diff_a',
+        name: 'create_circuit',
+        input: {
+          circuit_ref: 20,
+          designation: 'STQ-01 variant one',
+          phase: null,
+          rating_amps: null,
+          cable_csa_mm2: null,
+        },
+      },
+      ctx1
+    );
+    await dispatchCreateCircuit(
+      {
+        tool_call_id: 'toolu_diff_b',
+        name: 'create_circuit',
+        input: {
+          circuit_ref: 21,
+          designation: 'STQ-02 variant two',
+          phase: null,
+          rating_amps: null,
+          cable_csa_mm2: null,
+        },
+      },
+      ctx2
+    );
+
+    const row1 = getBlockedRow(logger1);
+    const row2 = getBlockedRow(logger2);
+    expect(row1.hash).not.toBe(row2.hash);
+  });
+});
