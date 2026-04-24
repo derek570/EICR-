@@ -245,6 +245,71 @@ describe('checkForPromptLeak() — Layer 2 output-side prompt-leak filter', () =
           }
           expect(falsePositives).toEqual([]);
         });
+
+        // -------------------------------------------------------
+        // r24-#4 — tightened FP audit: assert `safe === true`
+        // across every sample × every field class APPROPRIATE
+        // for that sample (240 field-class-appropriate checks).
+        //
+        // WHY tightened: the narrow audit above only checks
+        // "none of the 4 new bare-marker reasons fire". If a
+        // DIFFERENT detector family regressed (because r24-#1 /
+        // r24-#2 tightened the contract, or because any future
+        // patch introduced a new family), the narrow test would
+        // still pass while missing a real regression. The
+        // tightened audit surfaces the specific sample + field +
+        // detector reason in the failure message so the root
+        // cause is apparent without a debugger.
+        //
+        // WHY field-class-appropriate iteration: running a
+        // 30-char location label through the 60c
+        // observation_regulation ceiling would trip
+        // `length-suspicious` (correctly — a location label
+        // isn't a regulation reference). Cross-class field
+        // mismatches are out-of-schema, not FP. The audit maps
+        // each sample subgroup to the field classes that
+        // sub-group is CURATED FOR:
+        //
+        //   GROUP_7_SAMPLES (general inspector speech):
+        //     question, observation_text
+        //   GROUP_9_LOCATION (location labels):
+        //     observation_location
+        //   GROUP_9_REGULATION (regulation refs):
+        //     observation_regulation
+        //   GROUP_9_NORMAL (normal inspection prose):
+        //     question, observation_text
+        //
+        // Total: 20×2 + 10×1 + 10×1 + 10×2 = 80 curated checks.
+        // Each check asserts safe:true. Cross-class-inappropriate
+        // combinations (e.g., a general utterance run through
+        // observation_regulation's 60c ceiling + positive-shape
+        // gate) are NOT in this audit — they legitimately reject
+        // by contract.
+        // -------------------------------------------------------
+        test('r24-#4: field-class-appropriate corpus audit — every sample × its curated field class returns safe:true', () => {
+          const CHECKS = [
+            { samples: GROUP_7_SAMPLES, fields: ['question', 'observation_text'] },
+            { samples: GROUP_9_LOCATION, fields: ['observation_location'] },
+            { samples: GROUP_9_REGULATION, fields: ['observation_regulation'] },
+            { samples: GROUP_9_NORMAL, fields: ['question', 'observation_text'] },
+          ];
+          const failures = [];
+          for (const { samples, fields } of CHECKS) {
+            for (const field of fields) {
+              for (const sample of samples) {
+                const result = checkForPromptLeak(sample, { field });
+                if (!result.safe) {
+                  failures.push({
+                    field,
+                    sample: sample.slice(0, 60),
+                    reason: result.reason,
+                  });
+                }
+              }
+            }
+          }
+          expect(failures).toEqual([]);
+        });
       });
     });
 
