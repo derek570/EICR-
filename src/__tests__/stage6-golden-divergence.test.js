@@ -143,6 +143,12 @@ describe('normaliseExtractionResult — STR-02 canonicalisation', () => {
   });
 
   test('canonicalises circuit_updates: action lowercase, designation trimmed, circuit_ref from either field', () => {
+    // Plan 04-11 r5-#3 widens normaliseCircuitOp's output surface to
+    // the full create/rename schema (designation + phase + rating_amps
+    // + cable_csa_mm2 + from_ref). Inputs without those fields
+    // canonicalise to nulls — locks that absence normalises to a
+    // deterministic shape rather than `undefined` leaking into the
+    // comparator.
     const result = {
       circuit_updates: [
         { op: 'CREATE', circuit_ref: 5, designation: 'Upstairs sockets' },
@@ -151,8 +157,24 @@ describe('normaliseExtractionResult — STR-02 canonicalisation', () => {
     };
     const norm = normaliseExtractionResult(result);
     expect(norm.circuit_ops).toEqual([
-      { action: 'create', circuit_ref: 5, designation: 'Upstairs sockets' },
-      { action: 'rename', circuit_ref: 3, designation: 'Lighting downstairs' },
+      {
+        action: 'create',
+        circuit_ref: 5,
+        from_ref: null,
+        designation: 'Upstairs sockets',
+        phase: null,
+        rating_amps: null,
+        cable_csa_mm2: null,
+      },
+      {
+        action: 'rename',
+        circuit_ref: 3,
+        from_ref: null,
+        designation: 'Lighting downstairs',
+        phase: null,
+        rating_amps: null,
+        cable_csa_mm2: null,
+      },
     ]);
   });
 

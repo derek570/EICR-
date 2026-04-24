@@ -236,20 +236,70 @@ function normaliseCircuitOp(c) {
   const rawAction = c.action ?? c.op ?? '';
   const action = String(rawAction).toLowerCase();
   const circuit_ref = c.circuit_ref ?? c.circuit;
-  // Designation can live at the top level (legacy record_extraction emits it
-  // flat — see src/__tests__/fixtures/stage6-golden-sessions/sample-03) OR
-  // nested inside `meta` (bundler emits {op, circuit_ref, meta:{designation,
-  // phase, rating_amps, cable_csa_mm2}} — see stage6-event-bundler.js).
-  // Accept both so normalisation converges on the same canonical key.
-  const rawDesignation =
-    (typeof c.designation === 'string' && c.designation.trim().length > 0
-      ? c.designation
-      : null) ??
-    (c.meta && typeof c.meta.designation === 'string' && c.meta.designation.trim().length > 0
-      ? c.meta.designation
-      : null);
-  const designation = rawDesignation ? String(rawDesignation).trim() : null;
-  return { action, circuit_ref, designation };
+  // Rename ops carry `from_ref` (schema-required — stage6-tool-schemas.js
+  // :198-203). Bundler puts this flat at the top level
+  // (stage6-dispatchers-circuit.js:366-376). Legacy record_extraction
+  // hasn't historically emitted rename but if a future shape lands it
+  // nested under meta, accept either. Null for non-rename ops.
+  const from_ref = c.from_ref ?? (c.meta && c.meta.from_ref) ?? null;
+
+  // Plan 04-11 r5-#3: widen the canonical field set to match the full
+  // create_circuit / rename_circuit schema (stage6-tool-schemas.js
+  // :149-230). Pre-r5 only `designation` was canonicalised; phase,
+  // rating_amps, cable_csa_mm2 were silently dropped, so two ops
+  // agreeing on (action, circuit_ref, designation) but disagreeing on
+  // any of the three compared EQUAL — a real gap in the divergence
+  // gate.
+  //
+  // Layout tolerance: legacy record_extraction emits fields flat at the
+  // top level of each circuit_updates entry (sample-03 fixture style);
+  // the tool-call bundler nests them under `meta` per Plan 02-05
+  // (stage6-event-bundler.js:40). The helper `metaValue` accepts both
+  // and produces the canonical value.
+  const designation = normaliseDesignationField(c);
+  const phase = normalisePhaseField(c);
+  const rating_amps = normaliseIntegerField(c, 'rating_amps');
+  const cable_csa_mm2 = normaliseNumberField(c, 'cable_csa_mm2');
+
+  return { action, circuit_ref, from_ref, designation, phase, rating_amps, cable_csa_mm2 };
+}
+
+/**
+ * Plan 04-11 r5-#3 helper — pull a field from either the flat top-level
+ * position (`c[key]`) or the nested `meta` position (`c.meta[key]`).
+ * Returns undefined if neither is set — callers convert to null per
+ * field-specific null semantics.
+ */
+function metaValue(c, key) {
+  if (c[key] !== undefined) return c[key];
+  if (c.meta && c.meta[key] !== undefined) return c.meta[key];
+  return undefined;
+}
+
+function normaliseDesignationField(c) {
+  const raw = metaValue(c, 'designation');
+  if (typeof raw === 'string' && raw.trim().length > 0) return raw.trim();
+  return null;
+}
+
+function normalisePhaseField(c) {
+  const raw = metaValue(c, 'phase');
+  if (typeof raw === 'string' && raw.trim().length > 0) return raw.trim();
+  return null;
+}
+
+function normaliseIntegerField(c, key) {
+  const raw = metaValue(c, key);
+  if (raw === null || raw === undefined) return null;
+  const n = typeof raw === 'number' ? raw : Number(raw);
+  return Number.isInteger(n) ? n : null;
+}
+
+function normaliseNumberField(c, key) {
+  const raw = metaValue(c, key);
+  if (raw === null || raw === undefined) return null;
+  const n = typeof raw === 'number' ? raw : Number(raw);
+  return Number.isFinite(n) ? n : null;
 }
 
 function normaliseObservation(o) {
@@ -714,6 +764,22 @@ function projectToEndState(norm) {
   };
 }
 
+// Plan 04-11 r5-#3: recognised oracle-side fields that describe a
+// circuit's IDENTITY/META (create/rename inputs on the tool-call schema)
+// rather than a per-circuit READING. These route into circuit_updates
+// with their corresponding tool-schema key; anything else flows to
+// extracted_readings as pre-r5.
+//
+// Mapping matches stage6-tool-schemas.js:149-230 (create_circuit +
+// rename_circuit) and stage6-event-bundler.js:40 (circuit_updates
+// output shape nested under `meta`).
+const ORACLE_CIRCUIT_SHAPE_FIELDS = {
+  circuit_designation: 'designation',
+  circuit_phase: 'phase',
+  circuit_rating_amps: 'rating_amps',
+  circuit_cable_csa_mm2: 'cable_csa_mm2',
+};
+
 export function expectedSlotWritesToLegacyShape(oracle) {
   const out = { extracted_readings: [], circuit_updates: [] };
   if (!oracle || typeof oracle !== 'object') return out;
@@ -725,20 +791,38 @@ export function expectedSlotWritesToLegacyShape(oracle) {
     // comparator uses integer ordering rather than string ordering.
     // Keeps parity with fixture snapshots that key circuits by integer.
     const circuit = /^-?\d+$/.test(circuitKey) ? Number(circuitKey) : circuitKey;
+
+    // Plan 04-11 r5-#3: accumulate circuit-shape fields into a single
+    // per-circuit `meta` bucket instead of one circuit_updates entry
+    // per field. That matches what the tool-call bundler emits (one
+    // create_circuit call → one circuit_updates entry with a
+    // fully-populated meta). Unset fields default to null to mirror
+    // the bundler's null-padding at stage6-dispatchers-circuit.js
+    // :256-262.
+    let circuitMeta = null;
     for (const [field, value] of Object.entries(bucket)) {
-      // Route circuit-shape fields into circuit_updates; everything else
-      // stays as a reading. circuit_ref is a pure shape field (no write
-      // semantics) so skip it too.
-      if (field === 'circuit_ref') continue;
-      if (field === 'circuit_designation') {
-        out.circuit_updates.push({
-          action: 'create',
-          circuit_ref: circuit,
-          designation: value,
-        });
+      if (field === 'circuit_ref') continue; // pure shape field; skip
+      if (ORACLE_CIRCUIT_SHAPE_FIELDS[field]) {
+        if (circuitMeta === null) {
+          circuitMeta = {
+            designation: null,
+            phase: null,
+            rating_amps: null,
+            cable_csa_mm2: null,
+          };
+        }
+        const canonicalKey = ORACLE_CIRCUIT_SHAPE_FIELDS[field];
+        circuitMeta[canonicalKey] = value;
         continue;
       }
       out.extracted_readings.push({ circuit, field, value });
+    }
+    if (circuitMeta !== null) {
+      out.circuit_updates.push({
+        action: 'create',
+        circuit_ref: circuit,
+        meta: circuitMeta,
+      });
     }
   }
   return out;
