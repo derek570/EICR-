@@ -46,45 +46,17 @@ const DEFAULT_STATE: TourState = {
 };
 
 /**
- * Ensure the `app-settings` object store exists on the shared DB.
- *
- * We piggy-back on `openDB()` from job-cache and upgrade in-place when
- * the store is missing. This avoids the DB_VERSION churn of formally
- * registering a v3 upgrade — the helper is idempotent and the miss
- * path only runs once per browser.
- *
- * Side-note: IDB won't let us create a new object store outside an
- * `onupgradeneeded` transaction. When the store is missing we close
- * the cached handle, bump the DB via `indexedDB.open(name, prev+1)`
- * manually, and install the store inside that upgrade. The job-cache
- * `dbPromise` module state is not ours to touch, so we do this through
- * a dedicated bump path in a private helper.
+ * Resolve the shared DB handle. The `app-settings` store is created
+ * by the job-cache v3 upgrade, so `openDB()` returning is sufficient —
+ * no sneak-upgrade that would invalidate the module-level dbPromise
+ * used by job-cache / outbox for the rest of the tab.
  */
 async function ensureSettingsStore(): Promise<IDBDatabase | null> {
   if (!isSupported()) return null;
   try {
-    const db = await openDB();
-    if (db.objectStoreNames.contains(STORE_SETTINGS)) return db;
-    // The store is missing — close the handle and reopen at a higher
-    // version to trigger `onupgradeneeded`. We stay within the same
-    // DB name so existing stores (jobs-list / job-detail / outbox) are
-    // preserved.
-    db.close();
-    const nextVersion = db.version + 1;
-    return await new Promise<IDBDatabase>((resolve, reject) => {
-      const req = indexedDB.open(db.name, nextVersion);
-      req.onupgradeneeded = () => {
-        const upgraded = req.result;
-        if (!upgraded.objectStoreNames.contains(STORE_SETTINGS)) {
-          upgraded.createObjectStore(STORE_SETTINGS, { keyPath: 'key' });
-        }
-      };
-      req.onsuccess = () => resolve(req.result);
-      req.onerror = () => reject(req.error ?? new Error('IDB open failed'));
-      req.onblocked = () => reject(new Error('IDB upgrade blocked by another tab'));
-    });
+    return await openDB();
   } catch (err) {
-    console.warn('[tour-state] ensureSettingsStore failed', err);
+    console.warn('[tour-state] openDB failed', err);
     return null;
   }
 }

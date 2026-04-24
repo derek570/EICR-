@@ -78,6 +78,10 @@ export default function AlertsPage() {
     };
   }, [router]);
 
+  const handleDeleted = React.useCallback((deletedId: string) => {
+    setJobs((prev) => (prev ? prev.filter((j) => j.id !== deletedId) : prev));
+  }, []);
+
   const buckets = React.useMemo(() => bucketJobs(jobs ?? []), [jobs]);
 
   const total =
@@ -121,6 +125,7 @@ export default function AlertsPage() {
               variant="destructive"
               jobs={buckets.needsAttention}
               defaultOpen
+              onDeleted={handleDeleted}
             />
           ) : null}
           {buckets.inProgress.length > 0 ? (
@@ -130,6 +135,7 @@ export default function AlertsPage() {
               variant="warn"
               jobs={buckets.inProgress}
               defaultOpen
+              onDeleted={handleDeleted}
             />
           ) : null}
           {buckets.recentlyCompleted.length > 0 ? (
@@ -139,6 +145,7 @@ export default function AlertsPage() {
               variant="success"
               jobs={buckets.recentlyCompleted}
               defaultOpen={false}
+              onDeleted={handleDeleted}
             />
           ) : null}
         </>
@@ -169,12 +176,14 @@ function AlertSection({
   variant,
   jobs,
   defaultOpen,
+  onDeleted,
 }: {
   title: string;
   icon: LucideIcon;
   variant: Variant;
   jobs: Job[];
   defaultOpen: boolean;
+  onDeleted: (id: string) => void;
 }) {
   const [open, setOpen] = React.useState(defaultOpen);
   const accent = VARIANT_ACCENT[variant];
@@ -226,7 +235,7 @@ function AlertSection({
       {open ? (
         <div className="mt-3 flex flex-col gap-2">
           {jobs.map((job) => (
-            <JobRow key={job.id} job={job} />
+            <JobRow key={job.id} job={job} onDeleted={onDeleted} />
           ))}
         </div>
       ) : null}

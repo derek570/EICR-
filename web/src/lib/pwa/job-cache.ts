@@ -54,10 +54,16 @@ import type { Job, JobDetail } from '@/lib/types';
  *                  the schema drift surface area for zero benefit.
  */
 export const DB_NAME = 'certmate-cache';
-export const DB_VERSION = 2;
+// v3: add `app-settings` store (tour state + future settings rows).
+// See tour/state.ts — the store is shared so we have ONE authoritative
+// upgrade path rather than consumers sneak-upgrading through db.close()
+// + manual reopen (that would invalidate this module's cached handle
+// and break outbox / job cache for the rest of the tab).
+export const DB_VERSION = 3;
 const STORE_JOBS_LIST = 'jobs-list';
 const STORE_JOB_DETAIL = 'job-detail';
 export const STORE_OUTBOX = 'outbox';
+export const STORE_APP_SETTINGS = 'app-settings';
 export const OUTBOX_INDEX_BY_USER = 'by-user';
 
 interface CachedJobsList {
@@ -119,6 +125,11 @@ export function openDB(): Promise<IDBDatabase> {
         if (!store.indexNames.contains(OUTBOX_INDEX_BY_USER)) {
           store.createIndex(OUTBOX_INDEX_BY_USER, 'userId', { unique: false });
         }
+      }
+      // v3 — app-settings. `key`-keyed so we can add sibling settings
+      // rows (tour state, theme, etc.) without another schema bump.
+      if (!db.objectStoreNames.contains(STORE_APP_SETTINGS)) {
+        db.createObjectStore(STORE_APP_SETTINGS, { keyPath: 'key' });
       }
       // Silence the unused-parameter lint without weakening the type:
       // the event object is often useful for debugging upgrade paths.

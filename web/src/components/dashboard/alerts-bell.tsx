@@ -41,32 +41,44 @@ export function AlertsBell({ dataTour }: { dataTour?: string } = {}) {
     const user = getUser();
     if (!user) return;
     let cancelled = false;
-    let networkLanded = false;
 
-    // Cache-first. Same pattern as the dashboard — so the badge is
-    // correct on offline navigation / cold-boot.
+    const fetchJobs = () => {
+      void api
+        .jobs(user.id)
+        .then((list) => {
+          if (cancelled) return;
+          setJobs(list);
+        })
+        .catch(() => {
+          // Swallow — the header-chrome bell can't surface its own
+          // error, and the dashboard / alerts page will render the
+          // banner if this request is failing on them too.
+        });
+    };
+
+    // Cache-first paint so the badge is correct on offline nav /
+    // cold-boot before the network lands.
     void getCachedJobs(user.id).then((cached) => {
-      if (cancelled || networkLanded) return;
-      if (cached) {
-        setJobs((prev) => prev ?? cached);
-      }
+      if (cancelled) return;
+      if (cached) setJobs((prev) => prev ?? cached);
     });
 
-    void api
-      .jobs(user.id)
-      .then((list) => {
-        if (cancelled) return;
-        networkLanded = true;
-        setJobs(list);
-      })
-      .catch(() => {
-        // Swallow — the header-chrome bell can't surface its own
-        // error, and the dashboard / alerts page will render the
-        // banner if this request is failing on them too.
-      });
+    fetchJobs();
+
+    // Refetch on focus + visibility changes so in-session deletes on
+    // other surfaces (dashboard / alerts page) propagate to the badge
+    // without needing a full shell remount.
+    const onFocus = () => fetchJobs();
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') fetchJobs();
+    };
+    window.addEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', onVisibility);
 
     return () => {
       cancelled = true;
+      window.removeEventListener('focus', onFocus);
+      document.removeEventListener('visibilitychange', onVisibility);
     };
   }, []);
 
