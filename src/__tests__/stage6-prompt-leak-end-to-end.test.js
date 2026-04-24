@@ -426,6 +426,8 @@ function serialisePerTurnWrites(pw) {
  * serialisation.
  * Plan 04-31 r24-#3 — WeakSet cycle guard prevents infinite
  * recursion on cyclic object graphs.
+ * Plan 04-32 r25-#1 — walk EVERY enumerable own-property, not
+ * just `.text` and `.content`.
  *
  * Anthropic SDK tool_result blocks may carry content in several
  * shapes:
@@ -434,10 +436,13 @@ function serialisePerTurnWrites(pw) {
  *     captured directly.
  *   - Array of blocks: each block may have `.text` (simple text
  *     block), `.content` (nested), or other keys.
- *   - Object with `.content`: single wrapper block, recurse.
+ *   - Object with arbitrary keys: any enumerable own-property may
+ *     carry leak-shaped content. The walker recurses over every
+ *     key via Object.keys + type-dispatches each value.
  *   - Other (primitive, unexpected shape): JSON.stringify as a
- *     defence-in-depth fallback so a leak embedded in a truly
- *     unexpected shape still surfaces to the assertion.
+ *     defence-in-depth fallback so a leak embedded in a shape
+ *     that contributed no text (non-enumerable-only / empty
+ *     enumerable set) still surfaces to the assertion.
  *
  * WHY shape-aware: r23-#3 noted that the r22-#2 string-only
  * implementation would silently skip structured content. A future
@@ -454,15 +459,32 @@ function serialisePerTurnWrites(pw) {
  * already-walked object. WeakSet accepts only objects (primitives
  * can't cycle) and doesn't retain references — no lifetime leak.
  *
+ * r25-#1 walk-every-key: the r24-#3 implementation still
+ * hardcoded `.text` + `.content` as the two property names whose
+ * values were walked. When BOTH were empty, the JSON.stringify
+ * fallback serialised the whole object and sibling-key leaks
+ * surfaced naturally. But when `.text` OR `.content` carried
+ * benign content, parts.length > 0 and the fallback was SKIPPED
+ * — a leak in any sibling key (`.message`, `.value`, `.raw`,
+ * `.description`, nested) was silently dropped. The rewrite
+ * iterates every enumerable own-property via Object.keys, so
+ * `.text` + `.content` are still reached naturally but sibling
+ * keys are equally walked. The JSON.stringify fallback is kept
+ * for the empty-enumerable-set / non-enumerable-only case
+ * (defence-in-depth for toJSON / unusual shapes).
+ *
  * Optional `visited` parameter: default `new WeakSet()` per call
  * preserves back-compat signature (`extractTextFromBlock(block)`
  * still works). Recursive calls thread the shared visited set so
- * every node in a sub-tree is tracked against the same set.
+ * every node in a sub-tree is tracked against the same set. The
+ * guard applies to objects reached via ANY property path (not
+ * just `.content`) — sibling-key cycles (`x.sibling = x`) now
+ * short-circuit identically to `.content` cycles.
  *
  * JSON.stringify catch: WeakSet prevents the walker's infinite
- * recursion but JSON.stringify itself throws TypeError on cycles.
- * The catch wraps that — primitive return '' keeps the helper a
- * non-throw site.
+ * recursion but JSON.stringify itself throws TypeError on cycles
+ * or on objects whose `toJSON()` method throws. The catch wraps
+ * that — primitive return '' keeps the helper a non-throw site.
  *
  * Null / undefined short-circuit to '' so callers never get a
  * throw on odd fixtures.
@@ -473,34 +495,56 @@ function extractTextFromBlock(block, visited = new WeakSet()) {
   if (typeof block === 'number' || typeof block === 'boolean') {
     return String(block);
   }
-  // Object or array shape — cycle check before recursing.
-  if (typeof block === 'object') {
-    if (visited.has(block)) return '';
-    visited.add(block);
-  }
+  if (typeof block !== 'object') return '';
+
+  // Cycle check — WeakSet visited-guard covers both arrays and
+  // objects regardless of which property path reaches them.
+  if (visited.has(block)) return '';
+  visited.add(block);
+
   if (Array.isArray(block)) {
     return block
       .map((item) => extractTextFromBlock(item, visited))
       .filter(Boolean)
       .join('\n');
   }
-  // Object shape: walk .text, .content, fall back to JSON.
+
+  // Plan 04-32 r25-#1 — walk EVERY enumerable own-property, not
+  // just `.text` and `.content`. The r24-#3 implementation
+  // hardcoded those two property names, so a structured
+  // tool_result body with the leak payload in a sibling key
+  // (`.message`, `.value`, `.raw`, `.description`, nested) would
+  // only surface the leak IF `.text` and `.content` were both
+  // empty (triggering the JSON.stringify fallback). When either
+  // was populated with benign content, parts.length > 0 and the
+  // fallback was skipped — the sibling leak was silently
+  // dropped.
+  //
+  // The rewrite: iterate Object.keys(block). Each value is
+  // type-dispatched via the same recursive entry point (string →
+  // collect; number/boolean → stringify; array → recurse;
+  // object → recurse with shared WeakSet). .text and .content
+  // are still reached — they are enumerable own-properties by
+  // construction — but no longer special-cased.
   const parts = [];
-  if (typeof block.text === 'string') parts.push(block.text);
-  if (block.content !== undefined && block.content !== block.text) {
-    parts.push(extractTextFromBlock(block.content, visited));
+  for (const key of Object.keys(block)) {
+    const extracted = extractTextFromBlock(block[key], visited);
+    if (extracted) parts.push(extracted);
   }
-  if (parts.length === 0) {
-    // Unknown shape — stringify so a leak embedded in unexpected
-    // keys still reaches the substring assertion. JSON.stringify
-    // throws on cycles; catch keeps the helper non-throw.
-    try {
-      return JSON.stringify(block);
-    } catch {
-      return '';
-    }
+
+  if (parts.length > 0) return parts.join('\n');
+
+  // Unserialisable / empty / non-enumerable-only shape —
+  // JSON.stringify fallback preserved as defence-in-depth. The
+  // catch keeps the helper non-throw on `toJSON()` exceptions or
+  // any residual cycle the WeakSet missed (none expected:
+  // WeakSet covers every visited object, but the catch keeps the
+  // contract of never escaping an exception).
+  try {
+    return JSON.stringify(block);
+  } catch {
+    return '';
   }
-  return parts.filter(Boolean).join('\n');
 }
 
 /**
