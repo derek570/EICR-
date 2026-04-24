@@ -66,18 +66,26 @@
  *   r3-#3 assertions (new — prompt / payload / cached-prefix structure):
  *     A. mockClient._calls is a non-empty array (stream() invoked at
  *        least once during the turn).
- *     B. request.system is an array, first block is a {type:'text', ...}
- *        block. runShadowHarness wraps session.systemPrompt into a single
- *        cached block (stage6-shadow-harness.js:265).
+ *     B. request.system is an array whose shape MATCHES
+ *        session.buildSystemBlocks() output. Plan 04-11 r5-#1 replaced
+ *        the harness's hand-rolled single-block construction with a
+ *        delegation to session.buildSystemBlocks(). With the F21934D4
+ *        snapshot seed (non-empty circuits), buildSystemBlocks returns
+ *        2 blocks — so the captured request also has 2 blocks now. Pre-
+ *        r5-#1 this was 1 block because the harness was dropping the
+ *        cached snapshot. See stage6-shadow-harness.js Step 4 comment.
  *     C. request.system[0].text contains 'TRUST BOUNDARY' — the
  *        uniquely-identifying header at line 3 of the real agentic
  *        prompt. A regression in prompt loading (file deleted, renamed,
  *        or module-level readFileSync removed) fires this assertion.
  *     D. session.buildSystemBlocks() returns the two-block cached-prefix
  *        structure (prompt + snapshot) with cache_control:{type:'ephemeral',
- *        ttl:'5m'} on BOTH blocks. Exercises the main callWithRetry path
- *        that runShadowHarness doesn't use (harness deliberately uses a
- *        single block — see stage6-shadow-harness.js:265 comment).
+ *        ttl:'5m'} on BOTH blocks. After r5-#1 this assertion is
+ *        partially redundant with assertion B (both now exercise the same
+ *        code path), but kept as a structural contract lock on the
+ *        session's direct buildSystemBlocks surface so callers that don't
+ *        go through the harness (eicr-extraction-session.js:394,838) still
+ *        have their shape pinned here.
  *
  *   Preserved assertions 1-8 (from pre-r3 Scenario B):
  *     1. pendingAsks.size === 0 throughout — no ask was ever registered.
@@ -452,17 +460,35 @@ describe("STT-04 Scenario B' — Real EICRExtractionSession SC #4 exit check (r3
     expect(Array.isArray(session.client._calls)).toBe(true);
     expect(session.client._calls.length).toBeGreaterThan(0);
 
-    // r3-#3-B. `request.system` is an ARRAY (cached-prefix shape —
-    // runShadowHarness wraps session.systemPrompt in a single-block
-    // array at stage6-shadow-harness.js:265). Pre-r3 the fake session's
-    // hand-rolled string literal would flow through unchanged; the
-    // array assertion still held because the harness did the wrapping.
-    // The NEW thing r3-#3 locks is the CONTENT of system[0].text —
-    // see r3-#3-C below.
+    // r3-#3-B. `request.system` is an ARRAY whose shape mirrors
+    // session.buildSystemBlocks(). Plan 04-11 r5-#1 replaced the harness'
+    // hand-rolled single-block construction with a delegation call to
+    // session.buildSystemBlocks() — so the captured request now carries
+    // whatever buildSystemBlocks returns. With the F21934D4 snapshot seed
+    // (non-empty circuits via fixture.pre_turn_state.snapshot), the
+    // session's snapshot is non-empty on this turn and buildSystemBlocks
+    // returns 2 blocks (base prompt + state snapshot). Pre-r5-#1 this
+    // was always 1 block because the harness dropped the snapshot — a
+    // latent Phase 7 STR-03 contamination that r5-#1 closed.
     const firstRequest = session.client._calls[0];
     expect(Array.isArray(firstRequest.system)).toBe(true);
-    expect(firstRequest.system.length).toBeGreaterThan(0);
+    expect(firstRequest.system).toHaveLength(2);
     expect(firstRequest.system[0]).toHaveProperty('type', 'text');
+    expect(firstRequest.system[1]).toHaveProperty('type', 'text');
+    // Both blocks MUST carry cache_control:{type:'ephemeral', ttl:'5m'}
+    // per Plan 04-02 STQ-03 (moved snapshot into the cached prefix). The
+    // pre-r5 harness used a bare {type:'ephemeral'} with no ttl, which
+    // put shadow and live on different cache keys even for the base
+    // prompt block. After r5-#1 the harness uses the session's builder,
+    // so both blocks share the same 5m TTL as the live path.
+    expect(firstRequest.system[0].cache_control).toEqual({
+      type: 'ephemeral',
+      ttl: '5m',
+    });
+    expect(firstRequest.system[1].cache_control).toEqual({
+      type: 'ephemeral',
+      ttl: '5m',
+    });
 
     // r3-#3-C. system[0].text carries real content from
     // sonnet_agentic_system.md — verified by the unique marker

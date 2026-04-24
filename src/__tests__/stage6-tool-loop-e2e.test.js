@@ -99,6 +99,22 @@ function makeSession(streamResponses, legacyResult, mode = 'shadow') {
       validation_alerts: [],
     },
     extractedObservations: [],
+    // Plan 04-11 r5-#1 — runShadowHarness now calls session.buildSystemBlocks()
+    // instead of hand-rolling a single-block array. Hand-rolled session
+    // stubs must implement this method. Shape mirrors the real
+    // EICRExtractionSession.buildSystemBlocks: 1 block off-mode (or when
+    // the state snapshot is empty), 2 blocks non-off with a non-empty
+    // snapshot. The e2e tests don't exercise the snapshot path, so 1
+    // block is fine here.
+    buildSystemBlocks() {
+      return [
+        {
+          type: 'text',
+          text: this.systemPrompt,
+          cache_control: { type: 'ephemeral', ttl: '5m' },
+        },
+      ];
+    },
     extractFromUtterance: jest.fn().mockImplementation(async function () {
       this.turnCount = (this.turnCount ?? 0) + 1;
       return legacyResult;

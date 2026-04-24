@@ -53,10 +53,14 @@
  * NOTE on cache_control: runToolLoop forwards `system` opaquely to
  * client.messages.stream({system, ...}). Anthropic's prompt-caching
  * contract requires `system` as an array-of-blocks when cache_control is
- * applied. The legacy path uses the array form at eicr-extraction-session.js
- * :370,815 with cache_control ephemeral. This harness mirrors that shape so
- * shadow mode shares the legacy cache key and does NOT double-bill the
- * system prompt.
+ * applied. Plan 04-11 r5-#1 — the harness now delegates to
+ * session.buildSystemBlocks() so shadow mode mirrors EXACTLY the same
+ * two-block cached-prefix shape the live path ships (base prompt +
+ * cached snapshot, both {type:'ephemeral', ttl:'5m'}). This keeps shadow
+ * and live on the same cache key AND ensures shadow carries the cached
+ * snapshot Phase 4 STQ-03 introduced — without which Phase 7 STR-03
+ * divergence would be measuring "shadow-no-snapshot vs live-with-snapshot"
+ * (contaminated baseline).
  * ---------------------------------------------------------------------------
  */
 
@@ -258,17 +262,26 @@ export async function runShadowHarness(session, transcriptText, regexResults, op
   // failure NEVER breaks production — legacy return value is authoritative.
   let toolLoopOut;
   try {
-    // System block uses array-of-blocks form to match legacy's prompt-cache
-    // shape (eicr-extraction-session.js:370,815 with cache_control:ephemeral).
-    // This keeps shadow mode on the same cache key as legacy and avoids
-    // doubling system-prompt billing per turn.
-    const systemBlocks = [
-      {
-        type: 'text',
-        text: session.systemPrompt,
-        cache_control: { type: 'ephemeral' },
-      },
-    ];
+    // Plan 04-11 r5-#1 — delegate to session.buildSystemBlocks() so the
+    // harness mirrors EXACTLY what the real (non-shadow) path would ship:
+    //   - off mode: 1 block [base prompt].
+    //   - non-off mode: 1 block when the state snapshot is empty, 2 blocks
+    //     when non-empty ([base prompt, state snapshot]). BOTH blocks carry
+    //     cache_control:{type:'ephemeral', ttl:'5m'} per Plan 04-02 STQ-03.
+    //
+    // Pre-r5 the harness hand-rolled a single-block array with a bare
+    // cache_control:{type:'ephemeral'} (no ttl). Two bugs:
+    //   1. Dropped the cached snapshot entirely — Phase 7 STR-03 would
+    //      measure "shadow-no-snapshot vs live-with-snapshot" and mis-
+    //      attribute model drift to dispatch drift.
+    //   2. Cache-control didn't match the live path's {type:'ephemeral',
+    //      ttl:'5m'}, so shadow and live used different cache keys even
+    //      for the base prompt block.
+    //
+    // After r5, both surfaces share the same buildSystemBlocks() method —
+    // shadow differs from live ONLY on dispatch semantics (tool-call vs
+    // prose-JSON parse), never on prompt shape.
+    const systemBlocks = session.buildSystemBlocks();
 
     toolLoopOut = await runToolLoop({
       client: session.client,
