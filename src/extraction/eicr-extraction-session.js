@@ -1158,8 +1158,18 @@ export class EICRExtractionSession {
     // the cached prefix. Before r2 these lived in buildUserMessage but were
     // suppressed in non-off modes by Plan 04-02's refactor without being
     // routed elsewhere, so shadow/live lost both backstops.
-    const hasAsked = this.askedQuestions && this.askedQuestions.length > 0;
-    const hasExtractedObs = this.extractedObservations && this.extractedObservations.length > 0;
+    //
+    // Stage 6 Plan 04-10 r4-#1 — GATE the r2 digests behind non-off. In
+    // off-mode the same information is already emitted by buildUserMessage
+    // (line 938-945) AND buildMessageWindow pushes this snapshot into the
+    // messages array, so emitting the r2 sections here causes off-mode to
+    // transmit each digest TWICE per turn and breaks SC #7 byte-identical
+    // rollback. The gate restores pre-r2 semantics for off-mode while
+    // preserving the r2-era non-off behaviour (both digests in cached prefix).
+    const includeDigests = this.toolCallsMode !== 'off';
+    const hasAsked = includeDigests && this.askedQuestions && this.askedQuestions.length > 0;
+    const hasExtractedObs =
+      includeDigests && this.extractedObservations && this.extractedObservations.length > 0;
 
     if (
       !hasCircuits &&
