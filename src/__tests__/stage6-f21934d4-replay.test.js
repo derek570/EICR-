@@ -46,14 +46,40 @@
  *   removes the prompt-level cause — defence-in-depth stays green until
  *   Phase 7 retires the filter.
  *
- * Scenario B — NEW PROMPT + CACHED PREFIX + TOOL-CALL DISPATCH (SC #4).
- *   Runs the full runShadowHarness → runToolLoop stack with a mocked
- *   Anthropic client replaying the fixture's "well-behaved" SSE stream.
- *   The stream contains ONLY a record_reading tool_use for the unrelated
- *   circuit-3 insulation reading the inspector actually gave — no ask_user,
- *   no questions_for_user JSON, clean end_turn. Seven assertions verify
- *   the full dispatch surface:
+ * Scenario B' — REAL SESSION + NEW PROMPT + CACHED PREFIX + TOOL-CALL
+ *   DISPATCH (SC #4). Plan 04-09 r3-#3 refactor.
  *
+ *   Constructs a REAL EICRExtractionSession (toolCallsMode='shadow', dummy
+ *   apiKey). The constructor reads sonnet_agentic_system.md from disk at
+ *   module load, so session.systemPrompt carries the real Plan 04-01 prompt.
+ *   session.client is then overwritten with mockClient so no Anthropic
+ *   network call fires, but the REAL request payload reaches the mock.
+ *
+ *   Pre-r3 this scenario used a hand-rolled session double with a
+ *   placeholder systemPrompt string literal — regressions in prompt
+ *   loading OR in buildSystemBlocks() would pass silently.
+ *
+ *   Runs the full runShadowHarness → runToolLoop stack with the fixture's
+ *   "well-behaved" two-round SSE stream (round 1 record_reading tool_use
+ *   for circuit-3 insulation, round 2 end_turn text).
+ *
+ *   r3-#3 assertions (new — prompt / payload / cached-prefix structure):
+ *     A. mockClient._calls is a non-empty array (stream() invoked at
+ *        least once during the turn).
+ *     B. request.system is an array, first block is a {type:'text', ...}
+ *        block. runShadowHarness wraps session.systemPrompt into a single
+ *        cached block (stage6-shadow-harness.js:265).
+ *     C. request.system[0].text contains 'TRUST BOUNDARY' — the
+ *        uniquely-identifying header at line 3 of the real agentic
+ *        prompt. A regression in prompt loading (file deleted, renamed,
+ *        or module-level readFileSync removed) fires this assertion.
+ *     D. session.buildSystemBlocks() returns the two-block cached-prefix
+ *        structure (prompt + snapshot) with cache_control:{type:'ephemeral',
+ *        ttl:'5m'} on BOTH blocks. Exercises the main callWithRetry path
+ *        that runShadowHarness doesn't use (harness deliberately uses a
+ *        single block — see stage6-shadow-harness.js:265 comment).
+ *
+ *   Preserved assertions 1-8 (from pre-r3 Scenario B):
  *     1. pendingAsks.size === 0 throughout — no ask was ever registered.
  *     2. Zero ws.send calls carry {type:'ask_user_started'} — iOS never
  *        saw an ask prompt.
@@ -61,22 +87,11 @@
  *     4. session.loggedQuestionsForUserBypass falsy — the bypass log did
  *        not fire because the model did not emit legacy JSON.
  *     5. session.stateSnapshot.circuits[2].r1_r2 === 0.64 — the at-risk
- *        slot is preserved unchanged on the live session (legacy mutated
- *        only circuit 3; the shadow clone is deep-cloned per BLOCK #1).
+ *        slot is preserved unchanged on the live session.
  *     6. session.stateSnapshot.circuits[3].insulation_resistance_l_l
- *        === '>200' — the legacy path applied the new reading from this
- *        turn (simulates the real production flow).
- *     7. session.client._callCount === 2 — two-round tool loop executed
- *        as designed (round 1 record_reading → round 2 end_turn after
- *        tool_result injection).
- *
- *   Bonus eighth assertion: zero `stage6.ask_user` log rows were emitted
- *   across the whole turn. This is the definitive ask-dispatch audit —
- *   the ask dispatcher (`createAskDispatcher`) logs exactly one row per
- *   invocation (live OR shadow-short-circuit), so count==0 proves the
- *   dispatcher was never called. This is stronger than pendingAsks.size
- *   alone because shadow mode would short-circuit without registering,
- *   leaving pendingAsks empty even if an ask_user were emitted.
+ *        === '>200' — the turn's new reading landed on the live snapshot.
+ *     7. session.client._callCount === 2 — two-round tool loop executed.
+ *     8. zero `stage6.ask_user` log rows were emitted across the turn.
  *
  * ═════════════════════════════════════════════════════════════════════════════
  * WHY THIS IS A "SIMULATION" OF SHADOW MODE, NOT A REAL SHADOW RUN
@@ -278,145 +293,20 @@ describe('STT-04 Scenario A — Legacy prompt path (filled-slots-filter baseline
 });
 
 // ---------------------------------------------------------------------------
-// Scenario B — SC #4 exit check: new prompt + cached prefix + tool-call path.
-// ---------------------------------------------------------------------------
+// LEGACY Scenario B removed by Plan 04-09 r3-#3 (GREEN commit).
 //
-// This is the Phase 4 exit gate. Eight assertions cover the full dispatch
-// surface from tool loop → ask dispatcher → pending-asks registry → ws
-// emission → state snapshot mutation → log audit.
+// The old Scenario B used a hand-rolled session double with a placeholder
+// systemPrompt string literal, which meant regressions in prompt loading
+// (Plan 04-01) and buildSystemBlocks() (Plan 04-02) would pass silently.
+// Replaced by Scenario B' below (real EICRExtractionSession + captured
+// request payload + prompt-marker assertion + buildSystemBlocks shape).
+//
+// The secondary "composed dispatcher does not synthesise ask_user" test
+// that lived under old Scenario B is also removed — Scenario B' covers
+// the same surface via the `stage6.ask_user` log-count audit (assertion
+// 8), and the "no synthesis" invariant is the subject of Plan 03-06's
+// dedicated test suite, not a Phase 4 SC #4 concern.
 // ---------------------------------------------------------------------------
-
-describe('STT-04 Scenario B — New prompt + cached prefix + tool-call path (SC #4 exit check)', () => {
-  test('F21934D4 transcript produces ZERO ask_user on the tool-call branch', async () => {
-    // Arrange: seeded session, fresh pending-asks registry, spy ws.
-    const session = makeSessionWithSeededSnapshot('shadow', fixture.pre_turn_state.snapshot);
-    const pendingAsks = createPendingAsksRegistry();
-    const wsStub = {
-      OPEN: 1,
-      readyState: 1,
-      sent: [],
-      send(msg) {
-        // Mirror the shape the ask dispatcher uses: ws.send(JSON.stringify({...}))
-        // Capture parsed so assertions can filter on .type.
-        this.sent.push(typeof msg === 'string' ? JSON.parse(msg) : msg);
-      },
-    };
-    const logger = makeLogger();
-
-    // Mock Anthropic with the two canned rounds from the fixture:
-    //   Round 1 — record_reading tool_use for circuit-3 insulation.
-    //   Round 2 — text block + end_turn (model acknowledges after tool_result).
-    session.client = mockClient([
-      fixture.sse_events_well_behaved,
-      fixture.sse_events_well_behaved_round2,
-    ]);
-
-    // PRE-assert: registry is empty at start (sanity — we have a fresh instance).
-    expect(pendingAsks.size).toBe(0);
-
-    // Act: drive the shadow harness. Any throw fails the test.
-    await runShadowHarness(session, fixture.transcript, [], {
-      logger,
-      pendingAsks,
-      ws: wsStub,
-    });
-
-    // ─────────────────────────────────────────────────────────────────────
-    // The SEVEN SC #4 assertions (+ bonus 8th log audit).
-    // Numbering matches the plan's Task-2 behaviour block and the per-failure
-    // diagnostic table in the file header.
-    // ─────────────────────────────────────────────────────────────────────
-
-    // 1. pendingAsks.size === 0 — no ask was ever registered on the registry.
-    //    In shadow mode the ask dispatcher short-circuits and never calls
-    //    register(), so this holds whether or not the model emitted ask_user.
-    //    (The stronger guarantee is assertion 8 below.)
-    expect(pendingAsks.size).toBe(0);
-
-    // 2. Zero ws.send calls of type 'ask_user_started'. The shadow-mode
-    //    ask dispatcher deliberately skips the ws emit even if invoked, so
-    //    this is tight: any 'ask_user_started' on wsStub.sent would mean
-    //    the dispatcher took the LIVE path, i.e. toolCallsMode leaked.
-    const askStartedMessages = wsStub.sent.filter((m) => m && m.type === 'ask_user_started');
-    expect(askStartedMessages).toHaveLength(0);
-
-    // 3. runShadowHarness completed without throwing. Already implied by
-    //    reaching this assertion block, but re-assert explicitly so the
-    //    failure narrative is unambiguous if an earlier assertion changes.
-    //    (The await above would have rejected if the tool loop threw.)
-    expect(session.client._callCount).toBeGreaterThan(0);
-
-    // 4. The bypass log for questions_for_user never fired. The new prompt
-    //    doesn't mention questions_for_user at all (Plan 04-01), and Plan
-    //    04-03 gates any stray emission — so the flag stays at its initial
-    //    `false` value set in makeSessionWithSeededSnapshot.
-    expect(session.loggedQuestionsForUserBypass).toBeFalsy();
-
-    // 5. The at-risk slot (the one that re-asked in F21934D4) is still
-    //    populated with its original value on the LIVE session. Shadow
-    //    mode clones stateSnapshot before dispatch (Codex BLOCK #1) so
-    //    the shadow tool loop's record_reading for circuit 3 does NOT
-    //    bleed through, and legacy didn't touch circuit 2. r1_r2 = 0.64
-    //    verbatim.
-    expect(session.stateSnapshot.circuits['2'].r1_r2).toBe(0.64);
-
-    // 6. The reading the inspector actually gave this turn landed on the
-    //    LIVE snapshot. In the real pipeline this is the legacy extraction
-    //    writing through extractFromUtterance; the mock above simulates
-    //    that mutation. Proves the test session isn't in some degenerate
-    //    pre-turn state — the turn ran to completion.
-    expect(session.stateSnapshot.circuits['3'].insulation_resistance_l_l).toBe('>200');
-
-    // 7. Two model invocations: one tool_use round + one end_turn round.
-    //    The tool loop must round-trip the tool_result to the model for the
-    //    turn to be considered complete. mockClient counts .stream() calls.
-    expect(session.client._callCount).toBe(2);
-
-    // 8. BONUS — zero stage6.ask_user log rows. This is the definitive
-    //    ask-dispatch audit: the ask dispatcher logs exactly one row per
-    //    invocation (both live and shadow-short-circuit paths — see
-    //    stage6-dispatcher-ask.js:146-163). Count === 0 proves the
-    //    dispatcher was never called, which proves the model's fixture
-    //    response contained zero ask_user tool_use blocks.
-    const askUserLogs = logger.info.mock.calls.filter((c) => c[0] === 'stage6.ask_user');
-    expect(askUserLogs).toHaveLength(0);
-  });
-
-  // Complementary micro-test: run the harness WITH the shadow-mode ask
-  // dispatcher composed in but WITHOUT emitting ask_user. Confirms the
-  // composed dispatcher path does not invent asks of its own — an
-  // invariant that Plan 03-06 pins and that this plan inherits.
-  test('composed dispatcher (writes + asks) does not synthesise ask_user when model did not', async () => {
-    const session = makeSessionWithSeededSnapshot('shadow', fixture.pre_turn_state.snapshot);
-    const pendingAsks = createPendingAsksRegistry();
-    const wsStub = {
-      OPEN: 1,
-      readyState: 1,
-      sent: [],
-      send(m) {
-        this.sent.push(typeof m === 'string' ? JSON.parse(m) : m);
-      },
-    };
-    const logger = makeLogger();
-
-    session.client = mockClient([
-      fixture.sse_events_well_behaved,
-      fixture.sse_events_well_behaved_round2,
-    ]);
-
-    await runShadowHarness(session, fixture.transcript, [], { logger, pendingAsks, ws: wsStub });
-
-    // stage6_divergence row IS emitted (harness-level log); stage6.ask_user
-    // row is NOT. The divergence row proves the harness DID compose and
-    // drive the full pipeline, so the ask_user=0 result is not an artefact
-    // of the harness short-circuiting before reaching the ask surface.
-    const divergenceLogs = logger.info.mock.calls.filter((c) => c[0] === 'stage6_divergence');
-    expect(divergenceLogs).toHaveLength(1);
-
-    const askUserLogs = logger.info.mock.calls.filter((c) => c[0] === 'stage6.ask_user');
-    expect(askUserLogs).toHaveLength(0);
-  });
-});
 
 // ---------------------------------------------------------------------------
 // Scenario B' — Plan 04-09 r3-#3: real-session SC #4 exit check.

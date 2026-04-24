@@ -93,9 +93,20 @@ export function mockStream(events) {
 
 export function mockClient(streamResponses) {
   let callCount = 0;
+  // Plan 04-09 r3-#3: record stream() request args so tests can assert
+  // the actual Anthropic request payload shape (system blocks / tools /
+  // messages). Additive — pre-r3 consumers that never touch `_calls`
+  // keep working. First use-site is stage6-f21934d4-replay.test.js
+  // Scenario B', which asserts the real session's system blocks reach
+  // the client unchanged (verifies sonnet_agentic_system.md was loaded
+  // from disk — the Phase 4 SC #4 backstop that was previously
+  // unprovable because Scenario B used a fake session with a placeholder
+  // systemPrompt string).
+  const calls = [];
   return {
     messages: {
-      stream(/* args ignored in mock */) {
+      stream(args) {
+        calls.push(args);
         const events = streamResponses[callCount] ?? [];
         callCount += 1;
         return mockStream(events);
@@ -104,6 +115,12 @@ export function mockClient(streamResponses) {
     // Expose for test assertions: how many times was .stream() called?
     get _callCount() {
       return callCount;
+    },
+    // Plan 04-09 r3-#3: array of stream() args, one per invocation.
+    // Reference (not copy) — tests that mutate entries will corrupt
+    // subsequent assertions; treat as read-only.
+    get _calls() {
+      return calls;
     },
   };
 }
