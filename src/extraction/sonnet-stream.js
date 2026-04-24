@@ -15,7 +15,11 @@ import { WebSocketServer } from 'ws';
 import Anthropic from '@anthropic-ai/sdk';
 import { EICRExtractionSession } from './eicr-extraction-session.js';
 import { QuestionGate } from './question-gate.js';
-import { needsRefinement, refineObservation, VALID_CODES as VALID_OBS_CODES } from './observation-code-lookup.js';
+import {
+  needsRefinement,
+  refineObservation,
+  VALID_CODES as VALID_OBS_CODES,
+} from './observation-code-lookup.js';
 import { sonnetSessionStore } from './sonnet-session-store.js';
 import * as storage from '../storage.js';
 import logger from '../logger.js';
@@ -888,6 +892,16 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
             });
             break;
 
+          // Client app-level heartbeat — no-op on the server. The mere arrival
+          // of the message is what we want: it refreshes the AWS ALB idle_timeout
+          // (WebSocket PING frames alone did not — ALB tracks data-frame activity,
+          // not control frames), keeping the sonnet session alive through doze
+          // silences so the 5-min Anthropic prompt cache stays warm and the
+          // client doesn't reconnect-storm when the user resumes. Not logged
+          // per-message — would spam CloudWatch at one line every 25s.
+          case 'heartbeat':
+            break;
+
           // Stage 6 Phase 3 Plan 03-08 — iOS reply to a blocking ask_user.
           // Routes straight to the per-session PendingAsksRegistry created in
           // handleSessionStart. The registry (stage6-pending-asks-registry.js)
@@ -994,13 +1008,13 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
               if (Array.isArray(entry.recentTranscripts) && entry.recentTranscripts.length > 0) {
                 const nowTs = Date.now();
                 entry.recentTranscripts = entry.recentTranscripts.filter(
-                  (t) => t.expiresAt > nowTs,
+                  (t) => t.expiresAt > nowTs
                 );
                 if (entry.recentTranscripts.length > 0) {
                   const normalisedAnswer = normaliseForAskMatch(msg.user_text);
                   if (normalisedAnswer.length > 0) {
                     const matchIdx = entry.recentTranscripts.findIndex(
-                      (t) => t.normalisedText === normalisedAnswer,
+                      (t) => t.normalisedText === normalisedAnswer
                     );
                     if (matchIdx >= 0) {
                       matchedContentEntry = entry.recentTranscripts.splice(matchIdx, 1)[0];
@@ -1025,9 +1039,7 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
                 tool_call_id: msg.tool_call_id,
                 utterance_id: msg.consumed_utterance_id || null,
                 match_source: anchoredAsTranscript ? 'utterance_id' : 'content_anchor',
-                matched_utterance_id: matchedContentEntry
-                  ? matchedContentEntry.utteranceId
-                  : null,
+                matched_utterance_id: matchedContentEntry ? matchedContentEntry.utteranceId : null,
                 reason: 'transcript_already_extracted',
               });
             } else {
@@ -1110,10 +1122,8 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
             //       rather than silently treating as "untracked" (which
             //       hides shape bugs in the client).
             const hasAnchor =
-              typeof msg.consumed_utterance_id === 'string' &&
-              msg.consumed_utterance_id.length > 0;
-            const hasMalformedAnchor =
-              !hasAnchor && msg.consumed_utterance_id !== undefined;
+              typeof msg.consumed_utterance_id === 'string' && msg.consumed_utterance_id.length > 0;
+            const hasMalformedAnchor = !hasAnchor && msg.consumed_utterance_id !== undefined;
             if (hasMalformedAnchor) {
               logger.warn('stage6.ask_user_answered_malformed_anchor', {
                 sessionId: currentSessionId,
@@ -1426,8 +1436,7 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
                   type: q.type || null,
                   field: q.field || null,
                   circuit: q.circuit === null || q.circuit === undefined ? null : q.circuit,
-                  questionPreview:
-                    typeof q.question === 'string' ? q.question.slice(0, 120) : null,
+                  questionPreview: typeof q.question === 'string' ? q.question.slice(0, 120) : null,
                 }))
               : [],
         });
@@ -1839,7 +1848,7 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         const normalisedMsg = normaliseForAskMatch(msg.text);
         if (normalisedMsg.length > 0) {
           const matchIdx = entry.recentAskAnswers.findIndex(
-            (a) => a.normalisedText === normalisedMsg,
+            (a) => a.normalisedText === normalisedMsg
           );
           if (matchIdx >= 0) {
             const matched = entry.recentAskAnswers.splice(matchIdx, 1)[0];
