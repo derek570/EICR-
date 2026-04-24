@@ -78,7 +78,7 @@ const MARKER_STRINGS = [
   // `user-text-open` / `user-text-close` reason when a full
   // wrapper is present. If iteration order were reversed, a
   // payload containing `<<<USER_TEXT>>>` would surface as the
-  // weaker `left-angle-triple` marker.
+  // weaker bare-identifier marker.
   { id: 'user-text-open', value: '<<<USER_TEXT>>>' },
   { id: 'user-text-close', value: '<<<END_USER_TEXT>>>' },
   { id: 'system-channel', value: 'SYSTEM_CHANNEL' },
@@ -103,23 +103,74 @@ const MARKER_STRINGS = [
   //      surface as the weaker `user-text-bare` reason rather
   //      than `end-user-text-bare`.
   //
-  // FP profile (validated on 60-sample composite normal corpus ×
-  // 4 field classes — 0/240 FP):
+  // Plan 04-31 r24-#2: bare `<<<` and `>>>` REMOVED from this list.
+  // The triple-angle sequences can appear legitimately in code /
+  // diff contexts (merge-conflict markers, emphasis, ASCII art).
+  // Flagging every occurrence was too broad. They are now only
+  // flagged via the `hasWrapperScaffolding()` detector (runs after
+  // this marker iteration), which requires a USER_TEXT or
+  // END_USER_TEXT token within 20 chars — i.e., the wrapper
+  // scaffolding is being referenced explicitly. See detector
+  // function below.
+  //
+  // FP profile for the 2 bare identifier markers (validated on
+  // 60-sample composite normal corpus × 4 field classes — 0/240 FP):
   //   - USER_TEXT / END_USER_TEXT: never appear in spoken
   //     inspection content. Case-insensitive via the existing
   //     `lower.includes(marker.value.toLowerCase())` path —
   //     consistent with all other markers.
-  //   - <<< / >>>: diff/code-style triple-angle sequences. Absent
-  //     from voice-dictated inspection utterances; an attacker
-  //     emitting them into any of the 4 filter-scanned fields
-  //     (question, observation_text, observation_location,
-  //     observation_regulation) is out-of-domain and is a strong
-  //     leak signal.
   { id: 'end-user-text-bare', value: 'END_USER_TEXT' },
   { id: 'user-text-bare', value: 'USER_TEXT' },
-  { id: 'left-angle-triple', value: '<<<' },
-  { id: 'right-angle-triple', value: '>>>' },
 ];
+
+/**
+ * Plan 04-31 r24-#2 — wrapper-scaffolding proximity detector.
+ *
+ * Flags `<<<` or `>>>` when either triple-angle sequence sits
+ * within 20 characters of `USER_TEXT` or `END_USER_TEXT` (case-
+ * insensitive). That proximity indicates the wrapper syntax is
+ * being referenced explicitly — a prompt-scaffolding disclosure
+ * signal.
+ *
+ * WHY 20 chars: `<<<USER_TEXT>>>` is 14 chars; `<<<END_USER_TEXT>>>`
+ * is 18. A 20-char window on either side of the triple-angle
+ * catches any payload where the triple sits adjacent to the
+ * wrapper identifier without requiring exact concatenation (the
+ * `<<<USER_TEXT>>>` full-wrapper case is already caught by the
+ * composite MARKER_STRINGS entries with sharper telemetry).
+ *
+ * WHY lowercased: the caller lowercases input once at the top of
+ * `checkForPromptLeak`; we reuse that. Both triples (`<<<`,
+ * `>>>`) lowercase to themselves; both targets (`user_text`,
+ * `end_user_text`) are the lowercased forms.
+ *
+ * @param {string} lower  Pre-lowercased input text.
+ * @returns {{id: string}|null}
+ */
+const WRAPPER_NEAR_WINDOW = 20;
+const WRAPPER_TRIPLES = [
+  { marker: '<<<', id: 'wrapper-scaffolding-left' },
+  { marker: '>>>', id: 'wrapper-scaffolding-right' },
+];
+const WRAPPER_TARGETS = ['user_text', 'end_user_text'];
+
+function hasWrapperScaffolding(lower) {
+  for (const { marker, id } of WRAPPER_TRIPLES) {
+    let idx = lower.indexOf(marker);
+    while (idx !== -1) {
+      const windowStart = Math.max(0, idx - WRAPPER_NEAR_WINDOW);
+      const windowEnd = Math.min(lower.length, idx + marker.length + WRAPPER_NEAR_WINDOW);
+      const window = lower.slice(windowStart, windowEnd);
+      for (const target of WRAPPER_TARGETS) {
+        if (window.includes(target)) {
+          return { id };
+        }
+      }
+      idx = lower.indexOf(marker, idx + 1);
+    }
+  }
+  return null;
+}
 
 /**
  * Requirement-ID regex set. Each must be a 3-letter prefix + dash
@@ -408,17 +459,22 @@ const COMPOSITE_SEPARATOR_RE = /\s*(?:\/|,|;|\s+and\s+)\s*/i;
  * references.
  * Plan 04-31 r24-#1 — first-non-empty-token MUST be fully qualified;
  * subsequent tokens may be fully-qualified OR bare-modifier.
+ * Plan 04-31 r24-#2 — malformed composites (leading / trailing /
+ * doubled separators yielding empty tokens after trim) REJECT,
+ * they previously silently skipped.
  *
  * Returns true iff:
  *   1. the input contains at least one separator (so a single-ref
  *      value never trips this path — the single-ref fast path
  *      above already returned for those), AND
- *   2. at least one non-empty token exists (so a pure-separator
- *      string doesn't accept), AND
- *   3. the FIRST non-empty trimmed token matches at least one
+ *   2. `split()` produces at least 2 tokens (a single-token
+ *      result means no separator actually split the input), AND
+ *   3. NO token (after trim) is empty — r24-#2 rejects
+ *      leading / trailing / doubled separators as malformed, AND
+ *   4. the FIRST token matches at least one
  *      FULLY_QUALIFIED_PATTERNS entry (establishes a standard),
  *      AND
- *   4. every SUBSEQUENT non-empty trimmed token matches either
+ *   5. every SUBSEQUENT token matches either
  *      FULLY_QUALIFIED_PATTERNS or BARE_MODIFIER_PATTERNS.
  *
  * r24-#1 rationale: a bare modifier like "Table 41.1" is NOT a
@@ -429,24 +485,28 @@ const COMPOSITE_SEPARATOR_RE = /\s*(?:\/|,|;|\s+and\s+)\s*/i;
  * r23-#1 gap where standalone "Table 41.1" accepted as a
  * regulation reference.
  *
- * Empty tokens (from leading / trailing / doubled separators) are
- * currently skipped rather than failed — dictation artefacts.
- * r24-#2 (Task 3 in the r24 plan) tightens this to REJECT;
- * until that lands the current skip semantics are preserved.
+ * r24-#2 rationale: silently skipping empty tokens treats
+ * malformed input as acceptable ("411.3.3," accepts). A model /
+ * user retry is cheaper than silently accepting invalid content
+ * as a regulation reference. The normal "411.3.3, 522.6.201"
+ * composite still accepts because the `\s*(?:\/|,|;|\s+and\s+)\s*`
+ * separator regex folds surrounding whitespace into the
+ * separator — genuine space-after-comma is NOT an empty token.
  */
 function looksLikeCompositeRegulationRef(text) {
   if (!COMPOSITE_SEPARATOR_RE.test(text)) return false;
   const tokens = text.split(COMPOSITE_SEPARATOR_RE);
-  let firstNonEmptyIdx = -1;
-  let nonEmpty = 0;
+  // r24-#2: any empty token (after trim) rejects the whole value.
+  // Malformed composites (leading / trailing / doubled separators)
+  // are caught here. Also rejects the single-token split case
+  // where the split produced nothing (would be length 1).
+  if (tokens.length < 2) return false;
   for (let i = 0; i < tokens.length; i++) {
     const trimmed = tokens[i].trim();
-    if (trimmed.length === 0) continue; // skip artefact (r24-#2 tightens this)
-    nonEmpty++;
-    if (firstNonEmptyIdx === -1) firstNonEmptyIdx = i;
-    const isFirstNonEmpty = i === firstNonEmptyIdx;
+    if (trimmed.length === 0) return false;
+    const isFirst = i === 0;
     let matched = false;
-    // First non-empty token: must be fully qualified.
+    // First token: must be fully qualified.
     for (const re of FULLY_QUALIFIED_PATTERNS) {
       if (re.test(trimmed)) {
         matched = true;
@@ -454,7 +514,7 @@ function looksLikeCompositeRegulationRef(text) {
       }
     }
     // Subsequent tokens: fully qualified OR bare modifier.
-    if (!matched && !isFirstNonEmpty) {
+    if (!matched && !isFirst) {
       for (const re of BARE_MODIFIER_PATTERNS) {
         if (re.test(trimmed)) {
           matched = true;
@@ -464,7 +524,7 @@ function looksLikeCompositeRegulationRef(text) {
     }
     if (!matched) return false;
   }
-  return nonEmpty > 0;
+  return true;
 }
 
 /**
@@ -638,6 +698,18 @@ export function checkForPromptLeak(text, opts = {}) {
     if (lower.includes(marker.value.toLowerCase())) {
       return makeUnsafe(field, `marker:${marker.id}`);
     }
+  }
+
+  // Family 1b — Plan 04-31 r24-#2 wrapper-scaffolding proximity
+  // detector. Bare `<<<` / `>>>` only fire when within 20 chars of
+  // USER_TEXT / END_USER_TEXT — i.e., the wrapper syntax is being
+  // referenced explicitly. Runs AFTER the composite MARKER_STRINGS
+  // iteration so a full `<<<USER_TEXT>>>` payload surfaces as the
+  // sharper `user-text-open` ID; runs BEFORE the rest of the chain
+  // so scaffolding references outrank entropy/length/shape.
+  const scaffolding = hasWrapperScaffolding(lower);
+  if (scaffolding) {
+    return makeUnsafe(field, `marker:${scaffolding.id}`);
   }
 
   // Family 2 — requirement IDs. The regex source (e.g. `STQ-0\d`) is
