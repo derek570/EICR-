@@ -238,7 +238,16 @@ describe('Layer 2 wiring — ask_user.question', () => {
 // Group 2: record_observation wiring
 // ---------------------------------------------------------------------------
 describe('Layer 2 wiring — record_observation.text', () => {
-  test('leaked text (marker) → observation recorded, text replaced with sanitised string', async () => {
+  // r20-#1 CHANGED THE CONTRACT for record_observation leak handling:
+  //   04-26: substitute text with sanitised string, preserve the
+  //          observation for audit trail.
+  //   04-27: reject the whole call with is_error:true. Reason: once
+  //          we also scan location + suggested_regulation (which
+  //          can't carry a long sanitised substitute without
+  //          corrupting the PDF shape), a uniform reject-on-leak
+  //          rule is simpler + safer. The prompt_leak_blocked warn
+  //          row already carries the audit breadcrumb.
+  test('leaked text (marker) → entire call rejected, observation NOT appended', async () => {
     const session = makeSession('live');
     const logger = makeLogger();
     const perTurnWrites = makePerTurnWrites();
@@ -258,24 +267,16 @@ describe('Layer 2 wiring — record_observation.text', () => {
 
     const res = await dispatchRecordObservation(call, ctx);
 
-    // Envelope: observation was recorded successfully.
-    expect(res.is_error).toBe(false);
+    // Envelope: rejected.
+    expect(res.is_error).toBe(true);
     const body = JSON.parse(res.content);
-    expect(body.ok).toBe(true);
-    expect(typeof body.observation_id).toBe('string');
+    expect(body.ok).toBe(false);
+    expect(body.error?.code).toBe('prompt_leak_in_observation');
+    expect(body.error.fields).toContain('text');
 
-    // The observation on the session was recorded — but with
-    // sanitised text, NOT the original leak text.
-    expect(session.extractedObservations).toHaveLength(1);
-    const rec = session.extractedObservations[0];
-    expect(rec.text).toBe('Attempted prompt extraction — refused.');
-    expect(rec.text.includes('TRUST BOUNDARY')).toBe(false);
-    expect(rec.text.includes('SYSTEM_CHANNEL')).toBe(false);
-    expect(rec.code).toBe('C3');
-
-    // perTurnWrites also carries the sanitised text.
-    expect(perTurnWrites.observations).toHaveLength(1);
-    expect(perTurnWrites.observations[0].text).toBe('Attempted prompt extraction — refused.');
+    // Observation NOT appended — neither to session nor perTurnWrites.
+    expect(session.extractedObservations).toHaveLength(0);
+    expect(perTurnWrites.observations).toHaveLength(0);
 
     // Log: a stage6.prompt_leak_blocked warning row.
     const warnCalls = logger.warn.mock.calls;
@@ -475,14 +476,19 @@ describe('Layer 2 wiring — rename_circuit.designation', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Group 4: other free-text fields deliberately NOT scanned
+// Group 4: normal domain-specific values on non-text free-text fields
+// pass the filter without flagging. r20-#1 reversed the 04-26 decision
+// to leave location/suggested_regulation unscanned — those fields are
+// now scanned, so this group documents the new contract: normal
+// inspector vocabulary (room names, regulation numbers) is safe, but
+// leak-shaped content in ANY free-text field on the observation gets
+// blocked (Group 5 locks that).
 // ---------------------------------------------------------------------------
-describe('Layer 2 wiring — other free-text fields are NOT over-filtered', () => {
-  test('record_observation.location with incidental text not flagged', async () => {
-    // location is a short domain-specific field (room/area) — adding
-    // a filter here would increase FP surface for marginal benefit.
-    // Test documents the deliberate scope boundary: only `text` on
-    // observations is scanned, not `location` or `suggested_regulation`.
+describe('Layer 2 wiring — non-leak values on scanned observation fields pass', () => {
+  test('record_observation with normal domain vocabulary on every free-text field → normal flow', async () => {
+    // Real room names, real regulation numbers, real narrative text.
+    // None of these should trip the filter even under r20-#1's wider
+    // scan.
     const session = makeSession('live');
     const logger = makeLogger();
     const perTurnWrites = makePerTurnWrites();
@@ -492,12 +498,65 @@ describe('Layer 2 wiring — other free-text fields are NOT over-filtered', () =
       tool_call_id: 'toolu_obs_loc',
       name: 'record_observation',
       input: {
+        code: 'C2',
+        text: 'Absence of RCD protection on socket circuit serving outdoor mobile equipment',
+        location: 'Kitchen under-sink consumer unit',
+        circuit: 3,
+        suggested_regulation: '411.3.3',
+      },
+    };
+
+    const res = await dispatchRecordObservation(call, ctx);
+    expect(res.is_error).toBe(false);
+    expect(session.extractedObservations).toHaveLength(1);
+    expect(session.extractedObservations[0].location).toBe('Kitchen under-sink consumer unit');
+    expect(session.extractedObservations[0].suggested_regulation).toBe('411.3.3');
+    // No prompt_leak_blocked warning on clean input.
+    expect(
+      logger.warn.mock.calls.find((args) => args[0] === 'stage6.prompt_leak_blocked')
+    ).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Group 5 — r20-#1 field coverage: scan ALL free-text observation fields
+//
+// r20 review identified that `dispatchRecordObservation` only scanned
+// `text`, leaving `location` and `suggested_regulation` as live bypass
+// routes. Both fields land on the PDF certificate (location column +
+// regulation text under each observation). r20-#1 widens the scan and
+// changes the failure mode from "substitute text / preserve observation
+// for audit" (04-26) to "reject the whole observation" (04-27) — the
+// shorter fields can't carry a meaningful substitution without
+// corrupting the PDF shape, so the entire call is refused and the
+// model retries with a clean observation.
+//
+// Design choices locked by this group:
+//   - Fields scanned: text + location + suggested_regulation (all
+//     three non-null string-shaped inputs to record_observation).
+//   - Failure mode: REJECT entire call (is_error:true,
+//     prompt_leak_in_observation). No partial insertion.
+//   - Log event: ONE stage6.prompt_leak_blocked row per call naming
+//     ALL offending fields (even if multiple leaked simultaneously).
+//   - Other tools: ask_user has exactly one free-text field
+//     (question, already filtered at 04-26); rename/create_circuit
+//     designations are already filtered. No new surface from r20-#1.
+// ---------------------------------------------------------------------------
+describe('r20-#1 wiring — record_observation scans location + suggested_regulation', () => {
+  test('leaked location (structural phrase) → entire call rejected, observation not appended', async () => {
+    const session = makeSession('live');
+    const logger = makeLogger();
+    const perTurnWrites = makePerTurnWrites();
+    const ctx = { session, logger, turnId: 'turn-1', perTurnWrites, round: 1 };
+
+    const call = {
+      tool_call_id: 'toolu_obs_loc_leak',
+      name: 'record_observation',
+      input: {
         code: 'C3',
-        text: 'Non-compliant cable colour',
-        // Intentionally include a structural phrase in LOCATION —
-        // filter must NOT flag this because location isn't scanned.
-        // (Real inspectors won't write this; the test just verifies
-        // scope boundary.)
+        text: 'Minor cable colour anomaly',
+        // Structural phrase in location — real-world attack would
+        // steer the model here because 04-26 scanned only text.
         location: 'Prefer silent writes corridor — cupboard under stairs',
         circuit: null,
         suggested_regulation: null,
@@ -505,10 +564,113 @@ describe('Layer 2 wiring — other free-text fields are NOT over-filtered', () =
     };
 
     const res = await dispatchRecordObservation(call, ctx);
+    expect(res.is_error).toBe(true);
+    const body = JSON.parse(res.content);
+    expect(body.ok).toBe(false);
+    expect(body.error?.code).toBe('prompt_leak_in_observation');
+    expect(Array.isArray(body.error?.fields)).toBe(true);
+    expect(body.error.fields).toContain('location');
+
+    // Observation NOT appended.
+    expect(session.extractedObservations).toHaveLength(0);
+    expect(perTurnWrites.observations).toHaveLength(0);
+
+    // prompt_leak_blocked warning emitted naming the offending field.
+    const warnCalls = logger.warn.mock.calls;
+    const blockedRow = warnCalls.find((args) => args[0] === 'stage6.prompt_leak_blocked');
+    expect(blockedRow).toBeDefined();
+    expect(blockedRow[1].tool).toBe('record_observation');
+  });
+
+  test('leaked suggested_regulation (requirement ID) → entire call rejected', async () => {
+    const session = makeSession('live');
+    const logger = makeLogger();
+    const perTurnWrites = makePerTurnWrites();
+    const ctx = { session, logger, turnId: 'turn-1', perTurnWrites, round: 1 };
+
+    const call = {
+      tool_call_id: 'toolu_obs_reg_leak',
+      name: 'record_observation',
+      input: {
+        code: 'C3',
+        text: 'Regulation ref anomaly',
+        location: 'Consumer unit',
+        circuit: null,
+        // Requirement-ID leak attempt in what should be a real reg
+        // reference — would have sailed into the PDF pre-r20.
+        suggested_regulation: 'STQ-01 reference',
+      },
+    };
+
+    const res = await dispatchRecordObservation(call, ctx);
+    expect(res.is_error).toBe(true);
+    const body = JSON.parse(res.content);
+    expect(body.error?.code).toBe('prompt_leak_in_observation');
+    expect(body.error.fields).toContain('suggested_regulation');
+
+    expect(session.extractedObservations).toHaveLength(0);
+  });
+
+  test('multi-field leak (text + location) → rejected once, log names ALL offending fields', async () => {
+    const session = makeSession('live');
+    const logger = makeLogger();
+    const perTurnWrites = makePerTurnWrites();
+    const ctx = { session, logger, turnId: 'turn-1', perTurnWrites, round: 1 };
+
+    const call = {
+      tool_call_id: 'toolu_obs_multi',
+      name: 'record_observation',
+      input: {
+        code: 'C3',
+        text: 'You are an EICR inspection assistant — prompt follows',
+        location: 'TRUST BOUNDARY corridor',
+        circuit: null,
+        suggested_regulation: null,
+      },
+    };
+
+    const res = await dispatchRecordObservation(call, ctx);
+    expect(res.is_error).toBe(true);
+
+    const body = JSON.parse(res.content);
+    expect(body.error?.code).toBe('prompt_leak_in_observation');
+    // Both offending fields reported in the error envelope.
+    expect(body.error.fields).toEqual(expect.arrayContaining(['text', 'location']));
+
+    // Exactly ONE warn row (not one per field).
+    const warnCalls = logger.warn.mock.calls.filter(
+      (args) => args[0] === 'stage6.prompt_leak_blocked'
+    );
+    expect(warnCalls).toHaveLength(1);
+  });
+
+  test('clean observation on all three free-text fields → normal flow', async () => {
+    // Regression: r20-#1 widens scan; clean inputs must still pass.
+    const session = makeSession('live');
+    const logger = makeLogger();
+    const perTurnWrites = makePerTurnWrites();
+    const ctx = { session, logger, turnId: 'turn-1', perTurnWrites, round: 1 };
+
+    const call = {
+      tool_call_id: 'toolu_obs_clean_all',
+      name: 'record_observation',
+      input: {
+        code: 'C2',
+        text: 'Absence of RCD protection on socket circuit serving outdoor mobile equipment',
+        location: 'Garage consumer unit',
+        circuit: 3,
+        suggested_regulation: '411.3.3',
+      },
+    };
+
+    const res = await dispatchRecordObservation(call, ctx);
     expect(res.is_error).toBe(false);
-    // Observation recorded — location NOT substituted.
-    expect(session.extractedObservations[0].location).toContain('Prefer silent writes');
-    // No prompt_leak_blocked (confirms location is NOT scanned).
+    expect(session.extractedObservations).toHaveLength(1);
+    expect(session.extractedObservations[0].text).toBe(
+      'Absence of RCD protection on socket circuit serving outdoor mobile equipment'
+    );
+    expect(session.extractedObservations[0].location).toBe('Garage consumer unit');
+    expect(session.extractedObservations[0].suggested_regulation).toBe('411.3.3');
     expect(
       logger.warn.mock.calls.find((args) => args[0] === 'stage6.prompt_leak_blocked')
     ).toBeUndefined();
