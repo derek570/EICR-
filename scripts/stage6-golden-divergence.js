@@ -202,7 +202,49 @@ function normaliseObservation(o) {
   // Accept either `text` or `observation_text` (legacy used the longer key).
   const rawText = o.observation_text ?? o.text ?? '';
   const text = String(rawText).trim();
-  return { code, text };
+
+  // Plan 04-09 r3-#1: widen the canonical surface to include the three
+  // semantic fields the production observation payload actually carries.
+  // Pre-r3 this function returned only {code, text}, which meant the
+  // divergence comparator silently ignored `location` / `circuit` /
+  // `suggested_regulation` — paths could disagree on observation
+  // metadata and still report 0% divergence. The full production shape
+  // (per stage6-per-turn-writes.js:40 + stage6-tool-schemas.js:275
+  // required list) is {id, code, location, text, circuit,
+  // suggested_regulation}.
+  //
+  // TRANSIENT (stripped below via omission):
+  //   - id                — both paths mint independent UUIDs
+  //                          (stage6-slot-comparator precedent).
+  //   - source_turn_id    — per-event trace metadata.
+  //   - timestamp         — per-event trace metadata.
+  //
+  // SEMANTIC (preserved below):
+  //   - code                  — UPPER-cased.
+  //   - text                  — trimmed (alias observation_text accepted).
+  //   - location              — trimmed, case preserved (inspector-facing
+  //                              text e.g. "Under-stairs cupboard").
+  //   - circuit               — integer | null preserved verbatim. No
+  //                              coercion: diverging `circuit: 3` vs
+  //                              `circuit: "3"` is a real failure mode
+  //                              the gate wants to catch.
+  //   - suggested_regulation  — trimmed, case preserved (regulation
+  //                              refs are case-insensitive but inspectors
+  //                              write "411.3.1.1" literally; preserve).
+  const rawLocation = typeof o.location === 'string' ? o.location.trim() : null;
+  const location = rawLocation && rawLocation.length > 0 ? rawLocation : null;
+
+  // circuit is integer | null in the schema; accept number, numeric string,
+  // or null. Non-null is preserved AS-IS (no int/string coercion — that's
+  // a real divergence case, mirrors the reading-level circuit policy).
+  const circuit = o.circuit === undefined ? null : o.circuit;
+
+  const rawRegulation =
+    typeof o.suggested_regulation === 'string' ? o.suggested_regulation.trim() : null;
+  const suggested_regulation =
+    rawRegulation && rawRegulation.length > 0 ? rawRegulation : null;
+
+  return { code, text, location, circuit, suggested_regulation };
 }
 
 /**
