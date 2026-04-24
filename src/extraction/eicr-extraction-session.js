@@ -268,12 +268,25 @@ function wrapSnapshotUserTextInline(raw) {
 // the legacy names. Same drift shape Codex r6-#3 fixed for the
 // golden fixture pre-seeds; r13-#2 closes the LIVE seed path.
 //
-// Non-seed-path keys (cable_size, cable_size_earth, ocpd_rating,
-// ocpd_breaking_capacity, ir_test_voltage, max_disconnect_time)
-// are kept as-is — they do not appear in _seedStateFromJobState
-// so they do NOT create a write-time / read-time mismatch. A
-// separate pass can canonicalise them if a future drift report
-// surfaces.
+// Plan 04-22 r16-#3 — completed the canonicalisation pass for
+// the 4 remaining non-reading-schema aliases that r13-#2 left
+// in legacy form: ocpd_rating → ocpd_rating_a, ocpd_breaking_capacity
+// → ocpd_breaking_capacity_ka, ir_test_voltage → ir_test_voltage_v,
+// max_disconnect_time → max_disconnect_time_s. Codex r15/r16
+// flagged that the old "no producer touches these so no mismatch"
+// rationale was not safe — a future ingestion path / hydration
+// from persisted state / direct-mutation test lands legacy text
+// in the cached prefix. Compact ids 8/10/19/27 stay identical so
+// on-wire byte-layout is preserved (anything consuming id 8 still
+// finds the OCPD rating regardless of which alias the producer
+// wrote it under). The 4 new legacy→canonical entries are added
+// to LEGACY_TO_CANONICAL_CIRCUIT_KEYS so hydration normalisation
+// (_normaliseCircuitKeysToCanonical) covers them automatically.
+//
+// Remaining legacy-vocabulary keys (cable_size, cable_size_earth)
+// have not surfaced in any drift report and are left as-is —
+// they're outside the canonicalisation pass scope. A separate
+// pass can canonicalise them if a future drift report surfaces.
 const FIELD_ID_MAP = {
   circuit_designation: 1,
   wiring_type: 2,
@@ -282,9 +295,9 @@ const FIELD_ID_MAP = {
   cable_size: 5,
   cable_size_earth: 6,
   ocpd_type: 7,
-  ocpd_rating: 8,
+  ocpd_rating_a: 8, // was: ocpd_rating (pre-r16)
   ocpd_bs_en: 9,
-  ocpd_breaking_capacity: 10,
+  ocpd_breaking_capacity_ka: 10, // was: ocpd_breaking_capacity (pre-r16)
   rcd_type: 11,
   rcd_operating_current_ma: 12,
   rcd_bs_en: 13,
@@ -293,7 +306,7 @@ const FIELD_ID_MAP = {
   ring_r1_ohm: 16, // was: ring_continuity_r1
   ring_rn_ohm: 17, // was: ring_continuity_rn
   ring_r2_ohm: 18, // was: ring_continuity_r2
-  ir_test_voltage: 19,
+  ir_test_voltage_v: 19, // was: ir_test_voltage (pre-r16)
   ir_live_live_mohm: 20, // was: insulation_resistance_l_l
   ir_live_earth_mohm: 21, // was: insulation_resistance_l_e
   measured_zs_ohm: 22, // was: zs
@@ -301,7 +314,7 @@ const FIELD_ID_MAP = {
   rcd_button_confirmed: 24,
   afdd_button_confirmed: 25,
   polarity_confirmed: 26, // was: polarity
-  max_disconnect_time: 27,
+  max_disconnect_time_s: 27, // was: max_disconnect_time (pre-r16). NB: _s for seconds, NOT _ms.
   ocpd_max_zs_ohm: 28,
 };
 
@@ -383,6 +396,18 @@ const WRAP_POLICY = {
   // future producer.
   ze: 'server_canonical',
   pfc: 'server_canonical',
+
+  // Plan 04-22 r16-#3 — the 4 newly-canonicalised non-reading
+  // schema fields. All numeric / closed-enum values, not user-
+  // derived. Classify pre-emptively as server_canonical so any
+  // future producer that lands them as strings (e.g. raw OCR text
+  // pipeline) still routes through the sanitise-only branch
+  // (over-apply wrap is the fail-safe but classification keeps
+  // the snapshot readable for the model).
+  ocpd_rating_a: 'server_canonical', // numeric amp rating (closed: 6/16/20/32/40/45)
+  ocpd_breaking_capacity_ka: 'server_canonical', // numeric kA rating (typical 6/10)
+  ir_test_voltage_v: 'server_canonical', // numeric test V (closed: 250/500/1000)
+  max_disconnect_time_s: 'server_canonical', // numeric seconds (BS 7671 Table 41.1)
 };
 
 /**
@@ -417,6 +442,19 @@ const LEGACY_TO_CANONICAL_CIRCUIT_KEYS = {
   ring_continuity_r2: 'ring_r2_ohm',
   rcd_trip_time: 'rcd_time_ms',
   polarity: 'polarity_confirmed',
+  // Plan 04-22 r16-#3 — extend the canonicalisation map with the
+  // 4 non-reading-schema aliases that r13-#2 missed. Hydration
+  // normalisation (_normaliseCircuitKeysToCanonical) iterates
+  // this map, so adding entries here automatically extends the
+  // hydration coverage. Same pattern used by the reading-schema
+  // aliases above. Canonical names verified against
+  // config/field_schema.json:82/109/124/207. Note _s on
+  // max_disconnect_time_s — `_s` for seconds matches the
+  // BS 7671 Table 41.1 disconnection-time vocabulary, not `_ms`.
+  ocpd_rating: 'ocpd_rating_a',
+  ocpd_breaking_capacity: 'ocpd_breaking_capacity_ka',
+  ir_test_voltage: 'ir_test_voltage_v',
+  max_disconnect_time: 'max_disconnect_time_s',
 };
 
 /**
