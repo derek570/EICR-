@@ -890,9 +890,32 @@ export class EICRExtractionSession {
    * `updateStateSnapshot`:1657 — that filter matches against the
    * in-memory `.field`, so a hydrated legacy entry + a new canonical
    * entry with the same value both survived. The r17-#1 extension
-   * canonicalises pending_readings in place AND dedups on
-   * (circuit, field) with rightmost-wins semantics matching the
-   * write-time filter (later entries are more recent).
+   * canonicalises pending_readings in place.
+   *
+   * Plan 04-24 r18-#1 — write-time invariant alignment. Codex r18
+   * flagged that the r17-#1 dedup-on-`(circuit, field)` pass was
+   * STRICTER than the write-time invariant. Investigation confirmed
+   * (grep audit of `pending_readings.push` / `.splice` on 2026-04-24):
+   *
+   *   - Write-time at `updateStateSnapshot`:1725 pushes every
+   *     unassigned (circuit=-1) reading UNCONDITIONALLY. No
+   *     (circuit, field) uniqueness filter before the push.
+   *   - The only filter (:1751) runs on circuit !== -1 writes and
+   *     matches on `(field, value)` — that's a pending-to-assigned
+   *     RESOLUTION filter, not a push-time uniqueness guard.
+   *   - Serialise-time `.map()` at :2040 and the `.length > 0`
+   *     check at :1805 iterate without uniqueness assumption. No
+   *     downstream code assumes uniqueness on `(circuit, field)`.
+   *
+   * Therefore multiple pending entries for the same `(circuit, field)`
+   * with DIFFERENT values can legitimately coexist — e.g. two
+   * unassigned readings for the same field arrive from Sonnet before
+   * either is resolved. The hydration pass MUST preserve this
+   * invariant. r18-#1 removes the r17-#1 dedup; canonicalise only.
+   *
+   * See the symmetric comment at the write site
+   * (`updateStateSnapshot`:1725) for the push-time contract this
+   * hydration pass mirrors.
    */
   _normaliseCircuitKeysToCanonical() {
     // Leg 1 — circuits buckets (r14-#3).
@@ -917,50 +940,31 @@ export class EICRExtractionSession {
       }
     }
 
-    // Leg 2 — pending_readings[] (r17-#1).
+    // Leg 2 — pending_readings[] (r17-#1, r18-#1).
     //
-    // Two-step: (a) canonicalise each entry's `.field` via the same
-    // map that drives the circuits loop; (b) rightmost-wins dedup on
-    // (circuit, field) keys so a hydrated legacy + canonical
-    // collision converges on a single entry with the later value.
+    // Canonicalise each entry's `.field` via the same map that
+    // drives the circuits loop. NO dedup pass — r18-#1 removed the
+    // r17-#1 rightmost-wins dedup because it was stricter than the
+    // write-time invariant:
     //
-    // Matches the r16-#2 write-time filter semantics at
-    // updateStateSnapshot:1657 where the filter drops EARLIER
-    // matches on the (field, value) pair. Here we generalise to
-    // (circuit, field) because the hydration path can carry the
-    // same field against the same circuit with different values
-    // (e.g. a mid-record persisted snapshot).
+    //   Write-time (`updateStateSnapshot`:1725) pushes every
+    //   unassigned reading unconditionally; two entries for the
+    //   same (circuit, field) with DIFFERENT values legitimately
+    //   coexist until resolution at :1751 (which matches on
+    //   (field, value), not (circuit, field)).
+    //
+    // Hydration must preserve this — dedup would silently discard
+    // a legitimate pending reading. Canonicalisation is in-place
+    // and idempotent; the `.field` rename does not change the
+    // entry's identity for any downstream consumer.
     const pending = this.stateSnapshot?.pending_readings;
     if (Array.isArray(pending) && pending.length > 0) {
-      // (a) Canonicalise in place.
       for (const entry of pending) {
         if (entry && typeof entry === 'object' && typeof entry.field === 'string') {
           const canonical = LEGACY_TO_CANONICAL_CIRCUIT_KEYS[entry.field];
           if (canonical) entry.field = canonical;
         }
       }
-
-      // (b) Rightmost-wins dedup. Walk right to left; the first time
-      // we see a (circuit, field) key (= the rightmost occurrence)
-      // we keep the entry; subsequent leftward occurrences are
-      // dropped. Non-object / non-string-field entries skip the
-      // dedup key (fall through keeping their position) — malformed
-      // input is not silently merged.
-      const seenKeys = new Set();
-      const keptReversed = [];
-      for (let i = pending.length - 1; i >= 0; i--) {
-        const entry = pending[i];
-        if (!entry || typeof entry !== 'object' || typeof entry.field !== 'string') {
-          keptReversed.push(entry);
-          continue;
-        }
-        const circuitKey = entry.circuit == null ? '_' : String(entry.circuit);
-        const key = `${circuitKey}::${entry.field}`;
-        if (seenKeys.has(key)) continue; // earlier occurrence — drop.
-        seenKeys.add(key);
-        keptReversed.push(entry);
-      }
-      this.stateSnapshot.pending_readings = keptReversed.reverse();
     }
   }
 
@@ -1721,7 +1725,21 @@ export class EICRExtractionSession {
         // single source of truth.
         const canonicalField = LEGACY_TO_CANONICAL_CIRCUIT_KEYS[reading.field] ?? reading.field;
         if (circuit === -1) {
-          // Unassigned reading — track as pending
+          // Unassigned reading — track as pending.
+          //
+          // Plan 04-24 r18-#1 — push-time INVARIANT: no
+          // (circuit, field) uniqueness check. Multiple pending
+          // entries for the same field are allowed; they
+          // legitimately carry different candidate values until
+          // one is resolved by a circuit-level write (filter
+          // below at line ~1755 matches on (field, value) to drop
+          // the resolved entry). The hydration pass
+          // (`_normaliseCircuitKeysToCanonical`, "Leg 2") MUST
+          // NOT dedup on (circuit, field) — doing so would
+          // silently discard a legitimate pending reading and
+          // violate this push-time contract. See the symmetric
+          // comment at that method for the hydration-time
+          // contract this push mirrors.
           this.stateSnapshot.pending_readings.push({
             field: canonicalField,
             value: reading.value,
