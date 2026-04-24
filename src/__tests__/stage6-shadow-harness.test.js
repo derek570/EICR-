@@ -379,3 +379,165 @@ describe('Group r5-1 — Plan 04-11 r5-#1: harness uses session.buildSystemBlock
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// Group r6-2 — Plan 04-12 r6-#2 MAJOR: shadow harness captures system blocks
+// BEFORE legacy mutation.
+//
+// Codex r6 MAJOR #2: r5-#1 fixed the harness to use
+// session.buildSystemBlocks() instead of hand-rolling a single block.
+// BUT the call sequence was:
+//   1. session.extractFromUtterance(...)  → mutates session.stateSnapshot
+//   2. session.buildSystemBlocks()        → reads (mutated) stateSnapshot
+//
+// Shadow's model input prompt therefore carried legacy's current-turn
+// writes. Example: inspector says "Zs on circuit 3 is 0.35". Legacy
+// records it on session.stateSnapshot.circuits[3].measured_zs_ohm=0.35.
+// Shadow's buildSystemBlocks reads the mutated snapshot, serialises
+// circuit 3 into the cached snapshot block, and the model sees the
+// slot as already filled — it doesn't re-emit record_reading because
+// anti-re-ask logic says "slot has value matching what was heard."
+// Dispatch divergence is suppressed.
+//
+// This is the sister bug to r5-#1's "harness drops snapshot" —
+// r5-#1 confirmed shadow SENDS buildSystemBlocks output; r6-#2
+// confirms that output must be captured BEFORE legacy mutation so
+// shadow sees the PRE-TURN state, matching the real-production
+// contract where shadow-vs-live divergence is measured on the same
+// starting state.
+//
+// Fix (r6-#2 GREEN): capture const preLegacySystemBlocks = session
+// .buildSystemBlocks() at line ~180 of stage6-shadow-harness.js,
+// BEFORE the session.extractFromUtterance call at line 183. Pass the
+// captured variable to runToolLoop at line ~284.
+//
+// These tests use a session stub whose buildSystemBlocks reflects LIVE
+// stateSnapshot state at call time (not a hand-rolled _snapshot string).
+// That mirrors EICRExtractionSession's real behaviour and exposes the
+// mutation contamination without needing to stand up a full real
+// session.
+// ---------------------------------------------------------------------------
+
+/**
+ * Stub factory for r6-2: buildSystemBlocks reads LIVE stateSnapshot at
+ * call time. Unlike the r5-1 stub (which reads a hand-rolled _snapshot
+ * string), this one serialises circuits as seen at the moment
+ * buildSystemBlocks is invoked — so if legacy mutates stateSnapshot
+ * between entry and the buildSystemBlocks call, the mutation leaks
+ * into the system block. That is the exact bug under test.
+ */
+function makeSessionReadingLiveSnapshot(mode, legacyMutation = null) {
+  return {
+    sessionId: 'sess-r6-2',
+    turnCount: 0,
+    toolCallsMode: mode,
+    systemPrompt: 'BASE-PROMPT-r6-2',
+    client: mockClient([endTurnStreamEvents('ok')]),
+    stateSnapshot: { circuits: {}, pending_readings: [], observations: [], validation_alerts: [] },
+    extractedObservations: [],
+    buildSystemBlocks() {
+      // Mirrors EICRExtractionSession.buildSystemBlocks (eicr-extraction-
+      // session.js:969-986) in miniature: return base block alone when
+      // stateSnapshot.circuits is empty; return base + snapshot when
+      // non-empty. Serialisation of circuits is verbatim JSON so test
+      // assertions can grep the output for specific keys/values.
+      const base = {
+        type: 'text',
+        text: this.systemPrompt,
+        cache_control: { type: 'ephemeral', ttl: '5m' },
+      };
+      if (this.toolCallsMode === 'off') return [base];
+      const circuits = this.stateSnapshot?.circuits ?? {};
+      if (Object.keys(circuits).length === 0) return [base];
+      // Serialise the LIVE snapshot — if legacy has mutated it, the
+      // mutation appears here.
+      const snapshotText = Object.entries(circuits)
+        .map(([ref, fields]) => `${ref}:${JSON.stringify(fields)}`)
+        .join('\n');
+      return [
+        base,
+        {
+          type: 'text',
+          text: snapshotText,
+          cache_control: { type: 'ephemeral', ttl: '5m' },
+        },
+      ];
+    },
+    extractFromUtterance: jest.fn().mockImplementation(async function () {
+      // Simulate legacy's mid-turn mutation of stateSnapshot PLUS the
+      // internal turn-count increment. Bug under test: buildSystemBlocks
+      // after this point sees the mutation.
+      if (typeof legacyMutation === 'function') legacyMutation(this);
+      this.turnCount = (this.turnCount ?? 0) + 1;
+      return { extracted_readings: [], observations: [], questions: [] };
+    }),
+  };
+}
+
+describe('Group r6-2 — Plan 04-12 r6-#2: harness captures system blocks BEFORE legacy mutation', () => {
+  test('r6-2a — empty pre-legacy snapshot, legacy writes circuit 3 → shadow system captures EMPTY snapshot (pre-fix: sees mutation)', async () => {
+    const logger = makeLogger();
+    // Empty starting snapshot (no circuits). Legacy writes
+    // circuit 3 Zs=0.35 during its mid-turn processing.
+    const s = makeSessionReadingLiveSnapshot('shadow', (session) => {
+      session.stateSnapshot.circuits[3] = { measured_zs_ohm: 0.35 };
+    });
+
+    await runShadowHarness(s, 'Zs on circuit 3 is 0.35', [], { logger });
+
+    const req = s.client._calls[0];
+    expect(Array.isArray(req.system)).toBe(true);
+    // Pre-fix: buildSystemBlocks called POST-legacy sees
+    // circuits[3].measured_zs_ohm = 0.35 → returns a 2-block system
+    // with snapshot containing "0.35".
+    // Post-fix: buildSystemBlocks captured PRE-legacy (empty circuits)
+    // → returns a 1-block system (no snapshot at all).
+    expect(req.system).toHaveLength(1);
+    // Belt-and-braces: no snapshot block at all means no way for
+    // legacy's write to have leaked into shadow's prompt input.
+    expect(req.system[1]).toBeUndefined();
+  });
+
+  test('r6-2b — pre-seeded circuit 1, legacy writes circuit 3 → shadow sees ONLY circuit 1 (pre-fix: sees both)', async () => {
+    const logger = makeLogger();
+    const s = makeSessionReadingLiveSnapshot('shadow', (session) => {
+      // Legacy writes circuit 3 Zs. Must NOT appear in shadow's captured
+      // system blocks.
+      session.stateSnapshot.circuits[3] = { measured_zs_ohm: 0.35 };
+    });
+    // Pre-seed circuit 1 (non-empty snapshot going in).
+    s.stateSnapshot.circuits[1] = { measured_zs_ohm: 0.42 };
+
+    await runShadowHarness(s, 'Zs on circuit 3 is 0.35', [], { logger });
+
+    const req = s.client._calls[0];
+    expect(req.system).toHaveLength(2);
+    const snapshotBlock = req.system[1];
+    expect(snapshotBlock.text).toContain('0.42'); // pre-legacy circuit 1 survives
+    // Pre-fix: snapshot text contains "0.35" (legacy's write leaked in).
+    // Post-fix: no legacy write in the captured snapshot.
+    expect(snapshotBlock.text).not.toContain('0.35');
+    // And circuit 3 key absent entirely.
+    expect(snapshotBlock.text).not.toMatch(/^3:/m);
+  });
+
+  test('r6-2c — base-prompt block stays identical pre-fix / post-fix (regression guard)', async () => {
+    const logger = makeLogger();
+    const s = makeSessionReadingLiveSnapshot('shadow', (session) => {
+      session.stateSnapshot.circuits[3] = { measured_zs_ohm: 0.35 };
+    });
+    s.stateSnapshot.circuits[1] = { measured_zs_ohm: 0.42 };
+    s.systemPrompt = 'BASE-PROMPT-MARKER-r6-2c';
+
+    await runShadowHarness(s, 'text', [], { logger });
+
+    const req = s.client._calls[0];
+    // Base prompt (block 0) is unaffected by the capture-timing fix —
+    // it's session.systemPrompt, which is immutable across extract calls.
+    expect(req.system[0].text).toBe('BASE-PROMPT-MARKER-r6-2c');
+    expect(req.system[0]).toMatchObject({
+      type: 'text',
+      cache_control: { type: 'ephemeral', ttl: '5m' },
+    });
+  });
+});
