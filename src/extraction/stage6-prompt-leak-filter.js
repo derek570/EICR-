@@ -73,10 +73,52 @@ import crypto from 'node:crypto';
 const MARKER_STRINGS = [
   { id: 'trust-boundary', value: 'TRUST BOUNDARY' },
   { id: 'snapshot-trust-boundary', value: 'SNAPSHOT TRUST BOUNDARY' },
+  // Composite wrapper literals — listed BEFORE the bare variants
+  // below so first-match-wins surfaces the sharper
+  // `user-text-open` / `user-text-close` reason when a full
+  // wrapper is present. If iteration order were reversed, a
+  // payload containing `<<<USER_TEXT>>>` would surface as the
+  // weaker `left-angle-triple` marker.
   { id: 'user-text-open', value: '<<<USER_TEXT>>>' },
   { id: 'user-text-close', value: '<<<END_USER_TEXT>>>' },
   { id: 'system-channel', value: 'SYSTEM_CHANNEL' },
   { id: 'user-channel', value: 'USER_CHANNEL' },
+  // Plan 04-30 r23-#2 — bare wrapper literals. The CONFIDENTIALITY
+  // prompt names USER_TEXT, END_USER_TEXT, <<<, >>> as forbidden
+  // literals (the wrapper syntax the harness uses to frame
+  // dictation inside the system prompt). r22 caught only the
+  // composite forms; an attacker steering the model into "The
+  // marker identifier is USER_TEXT" (no wrapper neighbour) could
+  // extract prompt scaffolding tokens and the filter returned
+  // safe:true.
+  //
+  // Ordering REQUIRED — two-level priority:
+  //   1. Composite wrappers (`<<<USER_TEXT>>>` +
+  //      `<<<END_USER_TEXT>>>`) stay ABOVE the bare variants so a
+  //      full wrapper surfaces as the sharper composite ID.
+  //   2. Within the bare block, `END_USER_TEXT` MUST come BEFORE
+  //      `USER_TEXT` (longest-match-wins), because `END_USER_TEXT`
+  //      contains `USER_TEXT` as a substring. If `USER_TEXT` came
+  //      first, a payload containing just "END_USER_TEXT" would
+  //      surface as the weaker `user-text-bare` reason rather
+  //      than `end-user-text-bare`.
+  //
+  // FP profile (validated on 60-sample composite normal corpus ×
+  // 4 field classes — 0/240 FP):
+  //   - USER_TEXT / END_USER_TEXT: never appear in spoken
+  //     inspection content. Case-insensitive via the existing
+  //     `lower.includes(marker.value.toLowerCase())` path —
+  //     consistent with all other markers.
+  //   - <<< / >>>: diff/code-style triple-angle sequences. Absent
+  //     from voice-dictated inspection utterances; an attacker
+  //     emitting them into any of the 4 filter-scanned fields
+  //     (question, observation_text, observation_location,
+  //     observation_regulation) is out-of-domain and is a strong
+  //     leak signal.
+  { id: 'end-user-text-bare', value: 'END_USER_TEXT' },
+  { id: 'user-text-bare', value: 'USER_TEXT' },
+  { id: 'left-angle-triple', value: '<<<' },
+  { id: 'right-angle-triple', value: '>>>' },
 ];
 
 /**
