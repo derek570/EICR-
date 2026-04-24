@@ -423,8 +423,12 @@ function serialisePerTurnWrites(pw) {
 
 /**
  * Plan 04-30 r23-#3 — structured-content-aware tool_result
- * serialisation. Anthropic SDK tool_result blocks may carry
- * content in several shapes:
+ * serialisation.
+ * Plan 04-31 r24-#3 — WeakSet cycle guard prevents infinite
+ * recursion on cyclic object graphs.
+ *
+ * Anthropic SDK tool_result blocks may carry content in several
+ * shapes:
  *
  *   - String (legacy + most common): content is a raw text body,
  *     captured directly.
@@ -442,30 +446,54 @@ function serialisePerTurnWrites(pw) {
  * that uses structured shape would all evade the leak scan under
  * the string-only implementation.
  *
- * Recursion terminator: the `block.content !== block.text` guard
- * prevents infinite recursion when `text` and `content` point at
- * the same reference (rare but observed in some SDK shapes). Null
- * / undefined short-circuit to '' so callers never get a throw on
- * odd fixtures.
+ * r24-#3 cycle guard: the r23-#3 implementation's only terminator
+ * was `block.content !== block.text` — catches the direct
+ * same-reference case but nothing else. A true object cycle
+ * (a.content = b, b.content = a) would infinite-loop. WeakSet
+ * visited-guard threaded through recursion short-circuits any
+ * already-walked object. WeakSet accepts only objects (primitives
+ * can't cycle) and doesn't retain references — no lifetime leak.
+ *
+ * Optional `visited` parameter: default `new WeakSet()` per call
+ * preserves back-compat signature (`extractTextFromBlock(block)`
+ * still works). Recursive calls thread the shared visited set so
+ * every node in a sub-tree is tracked against the same set.
+ *
+ * JSON.stringify catch: WeakSet prevents the walker's infinite
+ * recursion but JSON.stringify itself throws TypeError on cycles.
+ * The catch wraps that — primitive return '' keeps the helper a
+ * non-throw site.
+ *
+ * Null / undefined short-circuit to '' so callers never get a
+ * throw on odd fixtures.
  */
-function extractTextFromBlock(block) {
+function extractTextFromBlock(block, visited = new WeakSet()) {
   if (block == null) return '';
   if (typeof block === 'string') return block;
   if (typeof block === 'number' || typeof block === 'boolean') {
     return String(block);
   }
+  // Object or array shape — cycle check before recursing.
+  if (typeof block === 'object') {
+    if (visited.has(block)) return '';
+    visited.add(block);
+  }
   if (Array.isArray(block)) {
-    return block.map(extractTextFromBlock).filter(Boolean).join('\n');
+    return block
+      .map((item) => extractTextFromBlock(item, visited))
+      .filter(Boolean)
+      .join('\n');
   }
   // Object shape: walk .text, .content, fall back to JSON.
   const parts = [];
   if (typeof block.text === 'string') parts.push(block.text);
   if (block.content !== undefined && block.content !== block.text) {
-    parts.push(extractTextFromBlock(block.content));
+    parts.push(extractTextFromBlock(block.content, visited));
   }
   if (parts.length === 0) {
     // Unknown shape — stringify so a leak embedded in unexpected
-    // keys still reaches the substring assertion.
+    // keys still reaches the substring assertion. JSON.stringify
+    // throws on cycles; catch keeps the helper non-throw.
     try {
       return JSON.stringify(block);
     } catch {
