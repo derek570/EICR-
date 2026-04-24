@@ -407,8 +407,21 @@ export default function CircuitsPage() {
         // Run the matcher locally, stash the result in sessionStorage,
         // and navigate to the Match Review screen. The apply step runs
         // there once the inspector confirms / reassigns.
-        const boardCircuits = (job.circuits ?? []).filter(
-          (c) => (c.board_id as string | undefined) === selectedBoardId || c.board_id == null
+        //
+        // Candidates MUST be strictly board-scoped — legacy boardless
+        // circuits would otherwise get pulled into the match, and
+        // accepting the match would silently migrate them onto the
+        // active board along with their readings. That's the same
+        // cross-board-collateral trap that `boardScoped` protects the
+        // other bulk actions from. When no board is selected (e.g.
+        // single-board jobs on the pre-Phase-4 schema) we fall back
+        // to the unscoped list.
+        const boardCircuits = (
+          selectedBoardId
+            ? (job.circuits ?? []).filter(
+                (c) => (c.board_id as string | undefined) === selectedBoardId
+              )
+            : (job.circuits ?? [])
         ) as CircuitRow[];
         const initialMatches: CircuitMatch<CCUAnalysisCircuit, CircuitRow>[] = matchCircuits(
           analysis.circuits ?? [],

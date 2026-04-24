@@ -114,6 +114,48 @@ describe('applyCcuAnalysisToJob — names_only mode', () => {
     const circuits = result.patch.circuits as CircuitRow[];
     expect(circuits[0].circuit_designation).toBe('Hand-typed label');
   });
+
+  it('persists the synthesized board when running against a job with no boards yet', () => {
+    // Regression guard: previously the names_only branch extracted a
+    // boardId from buildBoardPatch but never persisted the synthesized
+    // board, leaving new circuits tagged with a board_id that didn't
+    // exist in job.board — breaking every later board-scoped flow.
+    const job = makeJob({
+      board: { boards: [] } as unknown as Record<string, unknown>,
+      circuits: [],
+    });
+
+    const result = applyCcuAnalysisToJob(job, makeAnalysis(), { mode: 'names_only' });
+
+    const patchedBoard = result.patch.board as { boards: { id: string }[] } | undefined;
+    expect(patchedBoard?.boards?.length).toBe(1);
+    const boardId = patchedBoard!.boards[0].id;
+
+    const circuits = result.patch.circuits as CircuitRow[];
+    expect(circuits.length).toBeGreaterThan(0);
+    // Every synthesized circuit's board_id must point at a board that
+    // is actually in the patch — no orphaned references.
+    for (const c of circuits) {
+      expect(c.board_id).toBe(boardId);
+    }
+  });
+
+  it('does NOT re-emit the board patch when the job already has boards', () => {
+    // Complement to the synthesis test — if the job already has a
+    // board, names_only must stay true to its "no board patch" spec.
+    const job = makeJob({
+      circuits: [
+        { id: 'c1', board_id: 'board-1', circuit_ref: '1', circuit_designation: '' } as CircuitRow,
+      ],
+    });
+
+    const result = applyCcuAnalysisToJob(job, makeAnalysis(), {
+      mode: 'names_only',
+      targetBoardId: 'board-1',
+    });
+
+    expect(result.patch.board).toBeUndefined();
+  });
 });
 
 describe('applyCcuAnalysisToJob — full_capture mode (default)', () => {

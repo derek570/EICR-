@@ -551,8 +551,17 @@ export function applyCcuAnalysisToJob(
     patch.ccu_analysis = analysis as unknown as Record<string, unknown>;
   } else {
     // Names-only still needs the board id to scope the circuits
-    // correctly, but we don't patch the board row itself.
-    const { boardId } = buildBoardPatch(job, analysis, options.targetBoardId ?? null, false);
+    // correctly, and we must persist the synthesized board when the
+    // job had none. Skipping `patch.board` in that case would leave
+    // the new circuits with a `board_id` pointing at a board that
+    // never got persisted, breaking every later board-scoped flow.
+    const { board, boardId } = buildBoardPatch(job, analysis, options.targetBoardId ?? null, false);
+    const hadBoardsBefore = Boolean(
+      (job.board as { boards?: unknown[] } | undefined)?.boards?.length
+    );
+    if (!hadBoardsBefore) {
+      patch.board = board;
+    }
     const circuits = buildCircuitsPatchNamesOnly(job, analysis, boardId);
     if (circuits) patch.circuits = circuits;
   }
