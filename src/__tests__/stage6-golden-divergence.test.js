@@ -3018,18 +3018,31 @@ describe('Group r8-3 — Plan 04-14 r8-#3: runToolCallPath honours fixture-decla
 // would.
 //
 // Fix (r9-#3 GREEN): expand the normalisation block:
-//   - Dedupe preserving first occurrence.
+//   - Dedupe matching production's splice+push idiom — LAST-occurrence
+//     wins. (r9 shipped first-wins by mistake; r10-#1 corrected it.)
 //   - Filter to circuits that actually exist in the seeded snapshot.
 //   - Filter out circuit 0 (supply) + non-integer + negative refs.
 //   - If the normalised array is empty after filters, fall back to
 //     numeric ascending (same as no-declared-order path) for a
 //     deterministic harness state.
 //
-// Three tests lock the behaviour:
-//   r9-3a — duplicated refs → deduped, first occurrence preserved.
+// Plan 04-16 r10-#1 correction: r9-3a's original assertion
+// `[1, 2, 1, 3]` → `[1, 2, 3]` was wrong — it matched r9's first-wins
+// implementation but NOT production's splice+push idiom. Production's
+// updateStateSnapshot at eicr-extraction-session.js:1218-1221 traces
+// as push 1 → push 2 → splice idx 0 + push → `[2, 1]` → push 3, final
+// `[2, 1, 3]`. r10 rewrote the dedupe to match production and
+// corrected r9-3a's expected value. r10-1a added to cover the
+// edge-duplicate case (duplicate at start-and-end).
+//
+// Four tests lock the behaviour:
+//   r9-3a — duplicated refs → deduped, LAST occurrence wins (matches
+//           production's splice+push).
 //   r9-3b — unknown refs → filtered out.
 //   r9-3c — fully-invalid declared order → fallback to numeric
 //           ascending of seeded circuits.
+//   r10-1a — edge-duplicate `[3, 1, 2, 3]` → `[1, 2, 3]` (the first 3
+//           is spliced when the second 3 is pushed).
 // ---------------------------------------------------------------------------
 
 describe('Group r9-3 — Plan 04-15 r9-#3: runToolCallPath normalises fixture-declared recentCircuitOrder', () => {
@@ -3044,20 +3057,31 @@ describe('Group r9-3 — Plan 04-15 r9-#3: runToolCallPath normalises fixture-de
     ).sse_events_tool_call_round2;
   }
 
-  test('r9-3a — duplicated refs in declared order are deduped (seeded array has no duplicates)', async () => {
-    // Fixture declares `[1, 2, 1, 3]` — the second occurrence of 1
-    // must be dropped so the normalised order is `[1, 2, 3]`.
-    // Production never emits duplicates (splice-then-push removes
-    // the prior slot before pushing), so the harness must match.
+  test('r9-3a — duplicated refs in declared order are deduped (seeded array matches production splice+push semantics)', async () => {
+    // Plan 04-16 r10-#1 — LAST-occurrence-wins dedupe, matching
+    // production's updateStateSnapshot idiom at
+    // eicr-extraction-session.js:1218-1221 (`indexOf` → `splice` →
+    // `push`). For `[1, 2, 1, 3]` the production trace is:
+    //   push 1 → `[1]`
+    //   push 2 → `[1, 2]`
+    //   push 1 → idx=0, splice → `[2]`, push → `[2, 1]`
+    //   push 3 → `[2, 1, 3]`
+    // Final normalised: `[2, 1, 3]`. The EARLIER 1 is removed, the
+    // LATER 1 stays — recency semantics means "last reference wins"
+    // because the splice+push moves a re-referenced circuit to the
+    // end.
+    //
+    // r9-#3 originally asserted `[1, 2, 3]` (first-wins), which
+    // matched r9's implementation but NOT production. r10-#1
+    // rewrote both the harness dedupe and this assertion to match
+    // production.
     //
     // The direct-observation check is on the SEEDED session's
-    // `recentCircuitOrder` array — it must contain no duplicates.
-    // Inspecting the snapshot text alone is insufficient because
-    // `.slice(-SNAPSHOT_RECENT_CIRCUITS=3)` can incidentally hide a
-    // duplicate when the array is short enough for the last 3 to
-    // be unique (e.g. `[1, 2, 1, 3]` → `.slice(-3) = [2, 1, 3]` by
-    // chance). Asserting the seeded array directly proves the
-    // normalisation ran.
+    // `recentCircuitOrder` array. Inspecting the snapshot text alone
+    // is insufficient because `.slice(-SNAPSHOT_RECENT_CIRCUITS=3)`
+    // can hide the dedupe outcome when the array has ≤3 entries.
+    // Asserting the seeded array directly proves the normalisation
+    // ran with the correct semantic.
     const syntheticFx = {
       pre_turn_state: {
         snapshot: {
@@ -3079,11 +3103,11 @@ describe('Group r9-3 — Plan 04-15 r9-#3: runToolCallPath normalises fixture-de
       sse_events_tool_call_round2: sample01ToolCallEventsR2(),
     };
     const { session } = await runToolCallPath(syntheticFx);
-    // Direct assertion: the seeded recentCircuitOrder has no
-    // duplicates. First-occurrence-wins semantic: `[1, 2, 1, 3]`
-    // normalises to `[1, 2, 3]`, NOT `[2, 1, 3]` (which would be
-    // "last occurrence wins").
-    expect(session.recentCircuitOrder).toEqual([1, 2, 3]);
+    // Direct assertion — production splice+push semantic:
+    // `[1, 2, 1, 3]` normalises to `[2, 1, 3]` (NOT `[1, 2, 3]`,
+    // which would be first-occurrence-wins — r9's original buggy
+    // implementation).
+    expect(session.recentCircuitOrder).toEqual([2, 1, 3]);
   });
 
   test('r9-3b — unknown refs in declared order are filtered out of seeded array', async () => {
@@ -3178,5 +3202,54 @@ describe('Group r9-3 — Plan 04-15 r9-#3: runToolCallPath normalises fixture-de
     expect(snapshotText).toContain('0.11');
     expect(snapshotText).toContain('0.22');
     expect(snapshotText).toContain('0.33');
+  });
+
+  test('r10-1a — edge-duplicate `[3, 1, 2, 3]` dedupes to `[1, 2, 3]` (last-occurrence-wins, splice+push mirror)', async () => {
+    // Plan 04-16 r10-#1 — complements r9-3a's middle-duplicate case
+    // with an edge case where the duplicate is at start AND end.
+    // For `[3, 1, 2, 3]` the production trace is:
+    //   push 3 → `[3]`
+    //   push 1 → `[3, 1]`
+    //   push 2 → `[3, 1, 2]`
+    //   push 3 → idx=0, splice → `[1, 2]`, push → `[1, 2, 3]`
+    // Final: `[1, 2, 3]`. The earlier 3 is removed, the later 3
+    // stays and lands at the END of the array.
+    //
+    // This test is distinct from r9-3a because r9-3a's duplicate is
+    // in the middle; splice+push vs first-wins produce DIFFERENT
+    // answers for both cases. A first-wins implementation would have
+    // normalised `[3, 1, 2, 3]` → `[3, 1, 2]` (second 3 dropped in
+    // place). Last-wins (production) normalises to `[1, 2, 3]`. The
+    // test locks the correct last-wins answer.
+    //
+    // Direct assertion on the seeded recentCircuitOrder — reading
+    // the snapshot text is insufficient because `.slice(-3)` on
+    // `[3, 1, 2]` and `[1, 2, 3]` emits different detail-line ordering
+    // but both are ambiguous when read alone (which one is "correct"
+    // depends on knowing the dedupe semantic).
+    const syntheticFx = {
+      pre_turn_state: {
+        snapshot: {
+          circuits: {
+            1: { circuit_ref: 1, circuit_designation: 'Ring 1', measured_zs_ohm: 0.11 },
+            2: { circuit_ref: 2, circuit_designation: 'Ring 2', measured_zs_ohm: 0.22 },
+            3: { circuit_ref: 3, circuit_designation: 'Lights', measured_zs_ohm: 0.33 },
+          },
+          pending_readings: [],
+          observations: [],
+          validation_alerts: [],
+        },
+        recentCircuitOrder: [3, 1, 2, 3],
+        askedQuestions: [],
+        extractedObservations: [],
+      },
+      transcript: 'test',
+      sse_events_tool_call: sample01ToolCallEvents(),
+      sse_events_tool_call_round2: sample01ToolCallEventsR2(),
+    };
+    const { session } = await runToolCallPath(syntheticFx);
+    // Direct assertion — production splice+push semantic:
+    // `[3, 1, 2, 3]` normalises to `[1, 2, 3]`.
+    expect(session.recentCircuitOrder).toEqual([1, 2, 3]);
   });
 });
