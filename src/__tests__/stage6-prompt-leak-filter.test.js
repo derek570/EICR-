@@ -1065,6 +1065,203 @@ describe('checkForPromptLeak() — Layer 2 output-side prompt-leak filter', () =
   });
 
   // ------------------------------------------------------------------
+  // Group 12 — r23-#1 composite regulation references
+  // ------------------------------------------------------------------
+  //
+  // WHY: r23 re-review found that my r22-#1 REGULATION_SHAPE_PATTERNS
+  // allowlist is anchored `^...$` on each pattern. Real electricians
+  // routinely dictate composite references — a single
+  // suggested_regulation value that cites multiple regulations
+  // joined by a separator:
+  //   - "411.3.3 / 522.6.201"              (slash-separated)
+  //   - "BS 7671 411.3.3, Table 41.1"      (comma-separated, reg+table)
+  //   - "Regulation 522.6.201 and 411.3.3" (" and " conjunction, spoken)
+  //   - "BS 7671; 411.3.3"                 (semicolon-separated)
+  // Each token is individually valid under an existing pattern, but
+  // the composite string fails every anchored pattern and gets
+  // rejected as `non-regulation-shape`. Legitimate inspection data
+  // blocked.
+  //
+  // Fix: composite-splitter recognises separators (/, comma,
+  // semicolon, " and "), splits the trimmed value, and accepts iff
+  // every non-empty token matches REGULATION_SHAPE_PATTERNS. Empty
+  // tokens (leading/trailing/doubled separators) are skipped — they
+  // are dictation artefacts, not failed references. A 10th bare-
+  // modifier pattern ("Table 41.1", "Part 6", "Appendix 4" without
+  // the BS prefix) is added to REGULATION_SHAPE_PATTERNS so
+  // composites like "BS 7671 411.3.3, Table 41.1" parse cleanly.
+  //
+  // Critical FP guard: 8 composite forms MUST accept; all 26 Group
+  // 11 single refs + 10 Group 9 single refs MUST still accept.
+  // Ordering invariant MUST be preserved: marker / phrase / entropy
+  // / length detectors fire BEFORE the shape gate, so a leak hidden
+  // in a composite-shaped envelope ("TRUST BOUNDARY / 411.3.3")
+  // surfaces as `marker:*` not `non-regulation-shape`.
+  describe('Group 12 — r23-#1 composite regulation-ref splitter', () => {
+    // --------- Accept: 8 composite forms real electricians dictate ---------
+    const COMPOSITE_ACCEPT = [
+      '411.3.3 / 522.6.201',
+      '411.3.3/522.6.201',
+      'BS 7671 411.3.3, Table 41.1',
+      'BS 7671 411.3.3, 522.6.201',
+      'Regulation 522.6.201 and 411.3.3',
+      'BS 7671; 411.3.3',
+      '411.3.3, 522.6.201, 132.15',
+      'BS EN 61008-1 / BS EN 60898-1',
+    ];
+
+    test.each(COMPOSITE_ACCEPT.map((s, i) => [i + 1, s]))(
+      'accept composite regulation #%i: "%s"',
+      (_i, sample) => {
+        const result = checkForPromptLeak(sample, { field: 'observation_regulation' });
+        expect(result.safe).toBe(true);
+      }
+    );
+
+    // --------- Reject: composite shape with at least one bad token ---------
+    test('reject: composite with prompt-injection imperative in 2nd token', () => {
+      const text = 'BS 7671 411.3.3, IGNORE PREVIOUS';
+      const result = checkForPromptLeak(text, { field: 'observation_regulation' });
+      expect(result.safe).toBe(false);
+      expect(result.reason).toMatch(/^non-regulation-shape/);
+    });
+
+    test('reject: composite with English narrative in 2nd token', () => {
+      const text = '411.3.3 / the system says leak';
+      const result = checkForPromptLeak(text, { field: 'observation_regulation' });
+      expect(result.safe).toBe(false);
+      expect(result.reason).toMatch(/^non-regulation-shape/);
+    });
+
+    test('reject: three-token composite all non-shape', () => {
+      const text = 'a / b / c';
+      const result = checkForPromptLeak(text, { field: 'observation_regulation' });
+      expect(result.safe).toBe(false);
+      expect(result.reason).toMatch(/^non-regulation-shape/);
+    });
+
+    // --------- Back-compat: single refs still pass ---------
+    test('back-compat: Group 11 ACCEPT_SAMPLES still pass under composite-aware validator', () => {
+      // Mirror Group 11 ACCEPT_SAMPLES — the composite-aware
+      // validator MUST NOT regress single-ref acceptance.
+      const singles = [
+        'Regulation 522.6.201',
+        'Regulation 411.3.3',
+        'Regulation 132.15',
+        'Reg 411.3.3',
+        'BS 7671',
+        'BS 3871',
+        'BS 88-2',
+        'BS 7671 643.3.2',
+        'BS 7671 411.3.3',
+        'BS 7671 Table 41.1',
+        'BS 7671 Table 54.7',
+        'BS 7671 Part 6',
+        'BS 7671 Section 706',
+        'BS 7671 Appendix 4',
+        'BS EN 61008-1',
+        'BS EN 60898-1',
+        'BS EN 60335-2-73',
+        'BS EN 61558-2-5',
+        'BS EN 61643-11',
+        '411.3.1.1',
+        '522.6.201',
+        '722.411.4.1',
+        '534.4.4.5',
+        '701.411.3.3',
+        'IET Guidance',
+        'IET Guidance Note 3',
+      ];
+      for (const s of singles) {
+        const result = checkForPromptLeak(s, { field: 'observation_regulation' });
+        expect(result.safe).toBe(true);
+      }
+    });
+
+    test('back-compat: Group 9 SAMPLES_REGULATION still pass under composite-aware validator', () => {
+      const group9 = [
+        'Regulation 522.6.201',
+        'BS 7671 643.3.2',
+        '411.3.1.1',
+        'Regulation 411.3.3',
+        'BS 7671 Part 6',
+        '701.415.2',
+        '544.1.1',
+        '722.533',
+        'BS 7671 Section 706',
+        'Regulation 132.15',
+      ];
+      for (const s of group9) {
+        const result = checkForPromptLeak(s, { field: 'observation_regulation' });
+        expect(result.safe).toBe(true);
+      }
+    });
+
+    // --------- Ordering invariant ---------
+    test('ordering: marker check fires BEFORE composite shape check', () => {
+      // TRUST BOUNDARY embedded in an otherwise-composite-shaped
+      // envelope — filter must return `marker:*` (sharper telemetry),
+      // not `non-regulation-shape`.
+      const text = 'TRUST BOUNDARY / 411.3.3';
+      const result = checkForPromptLeak(text, { field: 'observation_regulation' });
+      expect(result.safe).toBe(false);
+      expect(result.reason).toMatch(/^marker:/);
+      expect(result.reason).not.toMatch(/^non-regulation-shape/);
+    });
+
+    test('ordering: requirement-ID check fires BEFORE composite shape check', () => {
+      const text = 'STQ-01 / 411.3.3';
+      const result = checkForPromptLeak(text, { field: 'observation_regulation' });
+      expect(result.safe).toBe(false);
+      expect(result.reason).toMatch(/^req-id:/);
+      expect(result.reason).not.toMatch(/^non-regulation-shape/);
+    });
+
+    // --------- Empty-token handling ---------
+    test('empty tokens from trailing separator are skipped (not failed)', () => {
+      const text = '411.3.3, ';
+      const result = checkForPromptLeak(text, { field: 'observation_regulation' });
+      expect(result.safe).toBe(true);
+    });
+
+    test('empty tokens from leading separator are skipped (not failed)', () => {
+      const text = ', 411.3.3';
+      const result = checkForPromptLeak(text, { field: 'observation_regulation' });
+      expect(result.safe).toBe(true);
+    });
+
+    test('empty tokens from doubled separator are skipped (not failed)', () => {
+      const text = '411.3.3,,522.6.201';
+      const result = checkForPromptLeak(text, { field: 'observation_regulation' });
+      expect(result.safe).toBe(true);
+    });
+
+    test('pure-separator string rejects (no non-empty tokens)', () => {
+      const text = ', , ,';
+      const result = checkForPromptLeak(text, { field: 'observation_regulation' });
+      expect(result.safe).toBe(false);
+      expect(result.reason).toMatch(/^non-regulation-shape/);
+    });
+
+    // --------- "and" word boundary ---------
+    test('word "understand" (contains "and" substring) does NOT split a single ref', () => {
+      // The " and " separator must be whitespace-bounded so "and"
+      // inside a word doesn't split. "understand" is not a real reg
+      // but this test proves the splitter regex doesn't false-split.
+      const text = 'understand';
+      // The string doesn't match any pattern AND doesn't contain a
+      // real separator, so it rejects as non-regulation-shape (which
+      // is correct — "understand" is not a reg ref). The point here
+      // is that it doesn't accidentally split into ["underst", "d"]
+      // and pretend to be a composite; the telemetry reason should
+      // be non-regulation-shape, not a spurious composite accept.
+      const result = checkForPromptLeak(text, { field: 'observation_regulation' });
+      expect(result.safe).toBe(false);
+      expect(result.reason).toMatch(/^non-regulation-shape/);
+    });
+  });
+
+  // ------------------------------------------------------------------
   // Defensive edge cases
   // ------------------------------------------------------------------
   describe('Edge cases', () => {
