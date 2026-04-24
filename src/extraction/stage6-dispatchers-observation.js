@@ -52,6 +52,7 @@ import {
   validateDeleteObservation,
 } from './stage6-dispatch-validation.js';
 import { logToolCall } from './stage6-dispatcher-logger.js';
+import { checkForPromptLeak } from './stage6-prompt-leak-filter.js';
 
 function envelope(tool_use_id, body, is_error) {
   return { tool_use_id, content: JSON.stringify(body), is_error };
@@ -97,12 +98,38 @@ export async function dispatchRecordObservation(call, ctx) {
     return envelope(call.tool_call_id, { ok: false, error: err }, true);
   }
 
+  // Plan 04-26 Layer 2: scan observation text for system-prompt leak content.
+  //
+  // Scope: `text` ONLY. `location` and `suggested_regulation` are
+  // deliberately NOT scanned — `location` is a short room/area name
+  // (false-positive risk high, real-leak vector minimal); regulation is
+  // an IET reg number. Scanning them would raise the false-positive
+  // surface without meaningfully improving protection.
+  //
+  // On leak: REPLACE `text` with the sanitised string (not reject). The
+  // observation still goes into the certificate PDF as an audit trail
+  // (the inspector can see that a prompt extraction attempt happened),
+  // but the attacker's content is scrubbed. PII guard on the log row
+  // already redacts text from input_summary (line below).
+  const obsLeak = checkForPromptLeak(input.text, { field: 'observation_text' });
+  const safeText = obsLeak.safe ? input.text : obsLeak.sanitised;
+  if (!obsLeak.safe) {
+    logger.warn('stage6.prompt_leak_blocked', {
+      tool: 'record_observation',
+      tool_call_id: call.tool_call_id,
+      sessionId: session.sessionId,
+      turnId,
+      reason: obsLeak.reason,
+      sanitised_sample: typeof input.text === 'string' ? input.text.slice(0, 80) : '',
+    });
+  }
+
   // Atom owns UUID generation. Atom writes to session.extractedObservations.
   // (Legacy session.stateSnapshot.observations is a separate text-dedup
   // surface the atom deliberately does NOT touch — see Plan 02-01 SUMMARY.)
   const { id } = appendObservation(session, {
     code: input.code ?? null,
-    text: input.text,
+    text: safeText,
     location: input.location ?? null,
     circuit: input.circuit ?? null,
     suggested_regulation: input.suggested_regulation ?? null,
@@ -111,7 +138,7 @@ export async function dispatchRecordObservation(call, ctx) {
   perTurnWrites.observations.push({
     id,
     code: input.code ?? null,
-    text: input.text,
+    text: safeText,
     location: input.location ?? null,
     circuit: input.circuit ?? null,
     suggested_regulation: input.suggested_regulation ?? null,
@@ -187,7 +214,7 @@ export async function dispatchDeleteObservation(call, ctx) {
     return envelope(
       call.tool_call_id,
       { ok: true, noop: true, reason: 'observation_not_found' },
-      false,
+      false
     );
   }
 
@@ -198,7 +225,7 @@ export async function dispatchDeleteObservation(call, ctx) {
     // mutation, corrupted session state). Surfacing this as a thrown error
     // beats silently swallowing state corruption.
     throw new Error(
-      `delete_observation invariant violated: ${input.observation_id} vanished between find and delete`,
+      `delete_observation invariant violated: ${input.observation_id} vanished between find and delete`
     );
   }
 

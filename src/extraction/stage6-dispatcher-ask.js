@@ -94,6 +94,7 @@
 
 import { validateAskUser } from './stage6-dispatch-validation.js';
 import { logAskUser } from './stage6-dispatcher-logger.js';
+import { checkForPromptLeak } from './stage6-prompt-leak-filter.js';
 
 /**
  * STA-03 — exported so test override and Phase 5 tuning have a single knob.
@@ -142,6 +143,59 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws) {
       };
     }
 
+    // Step 1b — Plan 04-26 Layer 2: prompt-leak filter (pre-dispatch).
+    //
+    // Runs AFTER validation (payload is well-formed) but BEFORE shadow-mode
+    // short-circuit + registry.register + ws ask_user_started. On a leak:
+    //   - DO NOT register (prevents 20s STA-03 wait on a refused ask).
+    //   - DO NOT emit ask_user_started (iOS TTS would speak the leak text
+    //     otherwise — the whole reason the filter is pre-dispatch).
+    //   - Emit a stage6.prompt_leak_blocked warn row (defence-in-depth
+    //     visibility; Phase 8 analyzer will count and alert).
+    //   - Emit a stage6.ask_user row with answer_outcome='prompt_leak_blocked'
+    //     so per-ask audit is complete.
+    //   - Return a clean envelope (is_error:false, answered:false,
+    //     reason:'prompt_leak_blocked') — this lets the model see a
+    //     refusal-shaped tool_result and move on. is_error:true would
+    //     drive retries (Research §Q8 — error envelopes are retry signals).
+    //
+    // Runs in BOTH live and shadow mode. In shadow, the ask would otherwise
+    // log as shadow_mode; leak detection is more specific and takes
+    // precedence.
+    const leak = checkForPromptLeak(input.question, { field: 'question' });
+    if (!leak.safe) {
+      logger.warn('stage6.prompt_leak_blocked', {
+        tool: 'ask_user',
+        tool_call_id: toolCallId,
+        sessionId,
+        turnId,
+        reason: leak.reason,
+        sanitised_sample: typeof input.question === 'string' ? input.question.slice(0, 80) : '',
+      });
+      logAskUser(logger, {
+        sessionId,
+        turnId,
+        mode,
+        tool_call_id: toolCallId,
+        // DO NOT log the raw question body — it contains the leaked
+        // prompt content. Log a redacted descriptor only.
+        question: '(redacted: prompt-leak blocked)',
+        reason: typeof input.reason === 'string' ? input.reason : 'missing_context',
+        context_field: input.context_field ?? null,
+        context_circuit: input.context_circuit ?? null,
+        answer_outcome: 'prompt_leak_blocked',
+        wait_duration_ms: 0,
+      });
+      return {
+        tool_use_id: toolCallId,
+        content: JSON.stringify({
+          answered: false,
+          reason: 'prompt_leak_blocked',
+        }),
+        is_error: false,
+      };
+    }
+
     // Step 2: shadow-mode short-circuit (Research §Q5, Open Question #5).
     if (mode === 'shadow') {
       logAskUser(logger, {
@@ -180,83 +234,83 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws) {
     let outcome;
     try {
       outcome = await new Promise((resolve) => {
-      // (3a) 20s timeout self-resolves via registry.resolve, which enforces
-      // strict clearTimeout → delete → resolve ordering and injects
-      // wait_duration_ms.
-      const timer = setTimeout(() => {
-        pendingAsks.resolve(toolCallId, { answered: false, reason: 'timeout' });
-      }, ASK_USER_TIMEOUT_MS);
+        // (3a) 20s timeout self-resolves via registry.resolve, which enforces
+        // strict clearTimeout → delete → resolve ordering and injects
+        // wait_duration_ms.
+        const timer = setTimeout(() => {
+          pendingAsks.resolve(toolCallId, { answered: false, reason: 'timeout' });
+        }, ASK_USER_TIMEOUT_MS);
 
-      // (3b) Register the deferred. register() throws on duplicate tool_call_id
-      // (Pitfall 7 — Anthropic SDK retry-replay guard). We catch locally,
-      // clear our timer, and synchronously resolve so the outer await returns
-      // without propagating a throw into the tool loop.
-      //
-      // Plan 03-10 Task 3 (STG MAJOR #3) — TYPED catch. Previously the catch
-      // was bare (`catch {}`) which swallowed ANY throw as a duplicate. That
-      // is a lie surface: any future registry invariant (corrupt entry,
-      // capacity breach, bad timer handle) would produce a log row claiming
-      // "duplicate_tool_call_id" and a matching envelope, sending humans +
-      // analyzer down the wrong investigation axis. Now we branch on the
-      // `.code = 'DUPLICATE_TOOL_CALL_ID'` stamp that the registry puts on
-      // its own throw. Anything else → clearTimeout + rethrow so the tool
-      // loop sees the real error.
-      try {
-        pendingAsks.register(toolCallId, {
-          contextField: input.context_field,
-          contextCircuit: input.context_circuit,
-          // Plan 03-11 Task 2 (STG r3 MAJOR remediation) — stash the ask's
-          // expected_answer_shape on the registry entry so classifyOvertake
-          // can short-circuit the "no regex hits → user_moved_on" fallback
-          // for yes_no / free_text asks whose replies are inherently
-          // non-regex. Without this, a "yes" or "upstairs lighting" reply
-          // arriving through the transcript channel (pre-Phase-4 iOS or
-          // bug path) is rejected as abandonment, forcing the user to
-          // restate. Keeps number / circuit_ref regex-gated — wrong
-          // numeric attribution is the harder failure mode to detect
-          // (poisons the slot map) than a re-ask.
-          expectedAnswerShape: input.expected_answer_shape,
-          resolve,
-          timer,
-          askStartedAt,
-        });
-      } catch (err) {
-        if (err?.code === 'DUPLICATE_TOOL_CALL_ID') {
-          clearTimeout(timer);
-          resolve({
-            answered: false,
-            reason: 'duplicate_tool_call_id',
-            wait_duration_ms: 0,
-          });
-          return;
-        }
-        // Non-duplicate throw: this is a real bug — don't masquerade as
-        // duplicate. Clear the timer to avoid a ghost fire, then rethrow.
-        clearTimeout(timer);
-        throw err;
-      }
-
-      // (3c) Emit ask_user_started to iOS. Guarded on ws presence + OPEN
-      // state; a send failure is swallowed (the ask still proceeds — the
-      // answer path flows through a separate message routed by Plan 03-08).
-      if (ws && ws.readyState === ws.OPEN) {
+        // (3b) Register the deferred. register() throws on duplicate tool_call_id
+        // (Pitfall 7 — Anthropic SDK retry-replay guard). We catch locally,
+        // clear our timer, and synchronously resolve so the outer await returns
+        // without propagating a throw into the tool loop.
+        //
+        // Plan 03-10 Task 3 (STG MAJOR #3) — TYPED catch. Previously the catch
+        // was bare (`catch {}`) which swallowed ANY throw as a duplicate. That
+        // is a lie surface: any future registry invariant (corrupt entry,
+        // capacity breach, bad timer handle) would produce a log row claiming
+        // "duplicate_tool_call_id" and a matching envelope, sending humans +
+        // analyzer down the wrong investigation axis. Now we branch on the
+        // `.code = 'DUPLICATE_TOOL_CALL_ID'` stamp that the registry puts on
+        // its own throw. Anything else → clearTimeout + rethrow so the tool
+        // loop sees the real error.
         try {
-          ws.send(
-            JSON.stringify({
-              type: 'ask_user_started',
-              tool_call_id: toolCallId,
-              question: input.question,
-              reason: input.reason,
-              context_field: input.context_field,
-              context_circuit: input.context_circuit,
-              expected_answer_shape: input.expected_answer_shape,
-            }),
-          );
-        } catch {
-          // Intentional: WS send failures must not tear down the ask.
+          pendingAsks.register(toolCallId, {
+            contextField: input.context_field,
+            contextCircuit: input.context_circuit,
+            // Plan 03-11 Task 2 (STG r3 MAJOR remediation) — stash the ask's
+            // expected_answer_shape on the registry entry so classifyOvertake
+            // can short-circuit the "no regex hits → user_moved_on" fallback
+            // for yes_no / free_text asks whose replies are inherently
+            // non-regex. Without this, a "yes" or "upstairs lighting" reply
+            // arriving through the transcript channel (pre-Phase-4 iOS or
+            // bug path) is rejected as abandonment, forcing the user to
+            // restate. Keeps number / circuit_ref regex-gated — wrong
+            // numeric attribution is the harder failure mode to detect
+            // (poisons the slot map) than a re-ask.
+            expectedAnswerShape: input.expected_answer_shape,
+            resolve,
+            timer,
+            askStartedAt,
+          });
+        } catch (err) {
+          if (err?.code === 'DUPLICATE_TOOL_CALL_ID') {
+            clearTimeout(timer);
+            resolve({
+              answered: false,
+              reason: 'duplicate_tool_call_id',
+              wait_duration_ms: 0,
+            });
+            return;
+          }
+          // Non-duplicate throw: this is a real bug — don't masquerade as
+          // duplicate. Clear the timer to avoid a ghost fire, then rethrow.
+          clearTimeout(timer);
+          throw err;
         }
-      }
-    });
+
+        // (3c) Emit ask_user_started to iOS. Guarded on ws presence + OPEN
+        // state; a send failure is swallowed (the ask still proceeds — the
+        // answer path flows through a separate message routed by Plan 03-08).
+        if (ws && ws.readyState === ws.OPEN) {
+          try {
+            ws.send(
+              JSON.stringify({
+                type: 'ask_user_started',
+                tool_call_id: toolCallId,
+                question: input.question,
+                reason: input.reason,
+                context_field: input.context_field,
+                context_circuit: input.context_circuit,
+                expected_answer_shape: input.expected_answer_shape,
+              })
+            );
+          } catch {
+            // Intentional: WS send failures must not tear down the ask.
+          }
+        }
+      });
     } catch (err) {
       // Unexpected — the executor above handles the two legitimate live-path
       // exits (duplicate_tool_call_id → synchronous resolve, real throw →

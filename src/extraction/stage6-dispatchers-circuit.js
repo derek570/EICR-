@@ -58,6 +58,7 @@ import {
   validateRenameCircuit,
 } from './stage6-dispatch-validation.js';
 import { logToolCall } from './stage6-dispatcher-logger.js';
+import { checkForPromptLeak } from './stage6-prompt-leak-filter.js';
 
 /**
  * Format a dispatcher return envelope. `content` is JSON-stringified here so
@@ -178,11 +179,7 @@ export async function dispatchClearReading(call, ctx) {
       validation_error: null,
       input_summary: { field: input.field, circuit: input.circuit, reason: input.reason },
     });
-    return envelope(
-      call.tool_call_id,
-      { ok: true, noop: true, reason: 'field_not_set' },
-      false,
-    );
+    return envelope(call.tool_call_id, { ok: true, noop: true, reason: 'field_not_set' }, false);
   }
 
   // Same-turn correction: if a record_reading for this slot was pushed earlier
@@ -240,6 +237,51 @@ export async function dispatchCreateCircuit(call, ctx) {
       input_summary: { circuit_ref: input.circuit_ref },
     });
     return envelope(call.tool_call_id, { ok: false, error: err }, true);
+  }
+
+  // Plan 04-26 Layer 2: scan designation for system-prompt leak content.
+  //
+  // Scope: `designation` ONLY (when non-null). Other meta fields (phase,
+  // rating_amps, cable_csa_mm2) are constrained types (enum / number)
+  // and not plausible leak surfaces.
+  //
+  // On leak: REJECT the tool call (is_error:true, prompt_leak_in_designation).
+  // Certificate correctness: the designation becomes the circuit's column
+  // header in the PDF. Substituting a refusal string there would corrupt
+  // the cert. Rejection + is_error:true signals the model to retry with
+  // a real inspection-domain name.
+  if (typeof input.designation === 'string' && input.designation.length > 0) {
+    const desLeak = checkForPromptLeak(input.designation, { field: 'designation' });
+    if (!desLeak.safe) {
+      logger.warn('stage6.prompt_leak_blocked', {
+        tool: 'create_circuit',
+        tool_call_id: call.tool_call_id,
+        sessionId: session.sessionId,
+        turnId,
+        reason: desLeak.reason,
+        sanitised_sample: input.designation.slice(0, 80),
+      });
+      logToolCall(logger, {
+        sessionId: session.sessionId,
+        turnId,
+        tool_use_id: call.tool_call_id,
+        tool: 'create_circuit',
+        round,
+        is_error: true,
+        outcome: 'rejected',
+        validation_error: 'prompt_leak_in_designation',
+        // PII: circuit_ref only. Never log designation.
+        input_summary: { circuit_ref: input.circuit_ref },
+      });
+      return envelope(
+        call.tool_call_id,
+        {
+          ok: false,
+          error: { code: 'prompt_leak_in_designation', reason: desLeak.reason },
+        },
+        true
+      );
+    }
   }
 
   upsertCircuitMeta(session.stateSnapshot, {
@@ -315,6 +357,42 @@ export async function dispatchRenameCircuit(call, ctx) {
     return envelope(call.tool_call_id, { ok: false, error: err }, true);
   }
 
+  // Plan 04-26 Layer 2: scan designation for system-prompt leak content.
+  // Same rationale as dispatchCreateCircuit — reject rather than
+  // substitute; certificate correctness trumps retry simplicity.
+  if (typeof input.designation === 'string' && input.designation.length > 0) {
+    const desLeak = checkForPromptLeak(input.designation, { field: 'designation' });
+    if (!desLeak.safe) {
+      logger.warn('stage6.prompt_leak_blocked', {
+        tool: 'rename_circuit',
+        tool_call_id: call.tool_call_id,
+        sessionId: session.sessionId,
+        turnId,
+        reason: desLeak.reason,
+        sanitised_sample: input.designation.slice(0, 80),
+      });
+      logToolCall(logger, {
+        sessionId: session.sessionId,
+        turnId,
+        tool_use_id: call.tool_call_id,
+        tool: 'rename_circuit',
+        round,
+        is_error: true,
+        outcome: 'rejected',
+        validation_error: 'prompt_leak_in_designation',
+        input_summary: { from_ref: input.from_ref, circuit_ref: input.circuit_ref },
+      });
+      return envelope(
+        call.tool_call_id,
+        {
+          ok: false,
+          error: { code: 'prompt_leak_in_designation', reason: desLeak.reason },
+        },
+        true
+      );
+    }
+  }
+
   const metaSupplied =
     input.designation != null ||
     input.phase != null ||
@@ -334,11 +412,7 @@ export async function dispatchRenameCircuit(call, ctx) {
       validation_error: null,
       input_summary: { from_ref: input.from_ref, circuit_ref: input.circuit_ref },
     });
-    return envelope(
-      call.tool_call_id,
-      { ok: true, noop: true, reason: 'rename_to_same' },
-      false,
-    );
+    return envelope(call.tool_call_id, { ok: true, noop: true, reason: 'rename_to_same' }, false);
   }
 
   // Rekey when from_ref !== circuit_ref. The atom is a pure noop when they

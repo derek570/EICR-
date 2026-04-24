@@ -138,6 +138,11 @@ export const ASK_USER_ANSWER_OUTCOMES = [
   // Plan 03-12 r10 expansion (1): outer try/catch in dispatchAskUser emits
   // this when the live-path Promise setup/await throws unexpectedly.
   'dispatcher_error',
+  // Plan 04-26 Layer 2 — prompt-leak filter blocked the ask_user
+  // pre-register because the model's question contained system-prompt
+  // disclosure content. No iOS TTS emission, no registry register,
+  // no STA-03 wait — just one audited row for the Phase 8 analyzer.
+  'prompt_leak_blocked',
 ];
 
 // Plan 03-12 r19 MINOR remediation — closed enum for the `mode` field.
