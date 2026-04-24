@@ -475,3 +475,176 @@ describe('Plan 04-02 — legacy off-mode regression guard (Group 6)', () => {
     s.stop();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Plan 04-10 (r4-#1) — r2 regression: off-mode byte-identical.
+//
+// WHY THIS GROUP EXISTS: Codex r4 (2026-04-23) found that Plan 04-08 r2's
+// fix (re-home ASKED QUESTIONS + EXTRACTED OBSERVATIONS digests into the
+// cached prefix for non-off modes) unconditionally added those two
+// sections to buildStateSnapshotMessage() — including when called from
+// off-mode's buildMessageWindow() path. Net effect: off-mode now emits
+// DUPLICATES of both digests in each turn (once via the snapshot pair
+// that buildMessageWindow pushes into messages, once via buildUserMessage's
+// own legacy-path emission).
+//
+// SC #7 ("off-mode path is byte-identical to pre-Phase-4 behaviour") is a
+// hard invariant — breaking it compromises STR-01 rollback.
+//
+// Fix: gate the new ASKED QUESTIONS + EXTRACTED OBSERVATIONS sections in
+// buildStateSnapshotMessage() behind `this.toolCallsMode !== 'off'`. In
+// off mode these sections are emitted only by buildUserMessage() per
+// legacy behaviour. Also restore the pre-r2 "empty-sections" null gate
+// for off-mode so off-mode snapshot returns null when only askedQuestions
+// / extractedObservations are populated (pre-r2 semantic).
+// ---------------------------------------------------------------------------
+
+describe('Plan 04-10 r4-#1 — off-mode snapshot byte-identical regression', () => {
+  beforeEach(() => mockCreate.mockReset());
+
+  test("r4-1a: off-mode buildStateSnapshotMessage() with ONLY askedQuestions returns null (pre-r2 semantic)", () => {
+    // Pre-r2: off-mode snapshot returned null when circuits + pending +
+    // observations + alerts + schedule were all empty, even if
+    // askedQuestions was non-empty — askedQuestions was NOT a
+    // snapshot-source surface in off-mode (it lived in buildUserMessage).
+    // r2 widened the gate to include askedQuestions for non-off, but
+    // applied the widening to off-mode too — causing off-mode to emit
+    // a snapshot message where pre-r2 it would have been silent.
+    const s = new EICRExtractionSession('k', 's', 'eicr', { toolCallsMode: 'off' });
+    s.askedQuestions = ['measured_zs_ohm:1'];
+    const snapshot = s.buildStateSnapshotMessage();
+    // Pre-r2 (and post-r4 fix): null, because off-mode considers only the
+    // five legacy sections when deciding whether to emit a snapshot.
+    expect(snapshot).toBeNull();
+  });
+
+  test("r4-1b: off-mode buildStateSnapshotMessage() with seeded state omits ASKED QUESTIONS + EXTRACTED OBSERVATIONS", () => {
+    // Off mode: even with circuits seeded (so snapshot is non-null), the
+    // ASKED QUESTIONS + EXTRACTED OBSERVATIONS sections must NOT appear
+    // in the snapshot text — they live in buildUserMessage for off-mode.
+    const s = new EICRExtractionSession('k', 's', 'eicr', { toolCallsMode: 'off' });
+    s.updateStateSnapshot({
+      extracted_readings: [{ circuit: 1, field: 'measured_zs_ohm', value: '0.35' }],
+    });
+    s.askedQuestions = ['polarity_confirmed:2'];
+    s.extractedObservations = [{ id: 'id-a', text: 'missing earth bond', code: 'C2' }];
+    const snapshot = s.buildStateSnapshotMessage();
+    expect(snapshot).toBeTruthy();
+    expect(snapshot).toContain('EXTRACTED');
+    // Off mode: new r2 sections MUST NOT appear — they duplicate
+    // buildUserMessage's off-mode output.
+    expect(snapshot).not.toContain('ASKED QUESTIONS');
+    expect(snapshot).not.toContain('EXTRACTED OBSERVATIONS');
+  });
+
+  test("r4-1c: shadow-mode preservation — ASKED QUESTIONS + EXTRACTED OBSERVATIONS still ride the cached prefix", () => {
+    // Regression guard: the off-mode gate must NOT break the non-off
+    // cached-prefix behaviour that r2-1a / r2-1b locked. Shadow mode
+    // still emits both sections via buildStateSnapshotMessage.
+    const s = new EICRExtractionSession('k', 's', 'eicr', { toolCallsMode: 'shadow' });
+    s.askedQuestions = ['measured_zs_ohm:1'];
+    s.extractedObservations = [{ id: 'id-a', text: 'missing earth bond', code: 'C2' }];
+    const snapshot = s.buildStateSnapshotMessage();
+    expect(snapshot).toBeTruthy();
+    expect(snapshot).toContain('ASKED QUESTIONS');
+    expect(snapshot).toContain('EXTRACTED OBSERVATIONS');
+    expect(snapshot).toContain('measured_zs_ohm:1');
+    expect(snapshot).toContain('missing earth bond');
+  });
+
+  test("r4-1d: off-mode extractFromUtterance — each digest appears EXACTLY ONCE across messages", async () => {
+    // The duplication bug is only visible end-to-end: buildUserMessage in
+    // off-mode emits 'Already asked (skip)' + 'Observations already
+    // created', and buildMessageWindow pushes the snapshot (which pre-fix
+    // ALSO contained those digests under r2 section headers) as a
+    // user/assistant pair. The API payload therefore carried each digest
+    // twice, breaking SC #7 byte-identical semantics vs pre-Phase-4.
+    //
+    // This test asserts each digest appears exactly ONCE across the
+    // combined messages content in off mode. Pre-fix: fails (snapshot
+    // contains 'ASKED QUESTIONS' section + buildUserMessage contains
+    // 'Already asked' — two distinct surfaces but SAME information).
+    // Post-fix: passes (snapshot gate suppresses the new sections in
+    // off-mode; only buildUserMessage's legacy emission survives).
+    mockCreate.mockResolvedValue({
+      content: [
+        {
+          type: 'tool_use',
+          name: 'record_extraction',
+          input: {
+            extracted_readings: [],
+            field_clears: [],
+            circuit_updates: [],
+            observations: [],
+            validation_alerts: [],
+            questions_for_user: [],
+            confirmations: [],
+          },
+        },
+      ],
+      usage: { input_tokens: 100, output_tokens: 10 },
+      stop_reason: 'tool_use',
+    });
+
+    const s = new EICRExtractionSession('k', 's', 'eicr', { toolCallsMode: 'off' });
+    s.start(null);
+    // Seed circuits, askedQuestions, extractedObservations — all three
+    // digest-source surfaces populated so the duplication (pre-fix) is
+    // visible.
+    s.updateStateSnapshot({
+      extracted_readings: [{ circuit: 1, field: 'measured_zs_ohm', value: '0.35' }],
+    });
+    s.askedQuestions = ['polarity_confirmed:2'];
+    s.extractedObservations = [{ id: 'id-a', text: 'missing earth bond at kitchen', code: 'C2' }];
+
+    await s.extractFromUtterance('test utterance');
+    await s.flushUtteranceBuffer();
+
+    const payload = mockCreate.mock.calls[0][0];
+    // Concatenate every text block across every message so we can count
+    // substring occurrences (digests may land in snapshot-pair user
+    // message OR in buildUserMessage's turn user message).
+    const allText = payload.messages
+      .map((m) =>
+        Array.isArray(m.content)
+          ? m.content.map((b) => b.text || '').join('')
+          : String(m.content ?? '')
+      )
+      .join('\n---\n');
+
+    // r2 section header (new per-mode surface, should be SUPPRESSED in off).
+    const r2AskedCount = (allText.match(/ASKED QUESTIONS/g) || []).length;
+    const r2ExtObsCount = (allText.match(/EXTRACTED OBSERVATIONS/g) || []).length;
+    expect(r2AskedCount).toBe(0);
+    expect(r2ExtObsCount).toBe(0);
+
+    // Legacy buildUserMessage emissions (should appear EXACTLY ONCE —
+    // from the turn's user message, not duplicated into a snapshot
+    // section).
+    const legacyAskedCount = (allText.match(/Already asked \(skip\):/g) || []).length;
+    const legacyExtObsCount = (allText.match(/Observations already created \(do NOT re-extract\):/g) || []).length;
+    expect(legacyAskedCount).toBe(1);
+    expect(legacyExtObsCount).toBe(1);
+
+    s.stop();
+  });
+
+  test("r4-1e: off-mode buildUserMessage byte-identical — r2-1d parity preserved", () => {
+    // Cross-check the r2-1d lock still holds: buildUserMessage's off-mode
+    // output is byte-identical to the pre-r2 expectation, regardless of
+    // the r4 snapshot-builder gate. This is a defensive regression — any
+    // drift in buildUserMessage would compromise SC #7 independently.
+    const s = new EICRExtractionSession('k', 's', 'eicr', { toolCallsMode: 'off' });
+    s.circuitSchedule = 'Circuit 1: Kitchen Sockets []';
+    s.askedQuestions = ['measured_zs_ohm:1', 'r1_r2_ohm:2'];
+    s.extractedObservations = [{ id: 'id-a', text: 'missing earth bond at kitchen', code: 'C2' }];
+    const msg = s.buildUserMessage('new utterance');
+    const expected = [
+      'NEW utterance: new utterance',
+      'CIRCUIT SCHEDULE (confirmed values -- do NOT question these):\nCircuit 1: Kitchen Sockets []',
+      'Already asked (skip): measured_zs_ohm:1; r1_r2_ohm:2',
+      'Observations already created (do NOT re-extract): missing earth bond at kitchen',
+    ].join('\n\n');
+    expect(msg).toBe(expected);
+  });
+});
