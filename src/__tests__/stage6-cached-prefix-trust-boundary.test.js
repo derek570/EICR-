@@ -1737,29 +1737,16 @@ describe('Plan 04-23 r17-#1 — pending_readings hydration normalisation + dedup
     expect(entry.unit).toBe('ohm');
   });
 
-  test('r17-1b — hydration + dedup: legacy + canonical collision → later (rightmost) entry wins', () => {
-    // If hydrated state carries BOTH a legacy and a canonical entry
-    // for the same logical reading, post-canonicalisation dedup
-    // keeps the later-in-array (rightmost) entry. Matches the
-    // r16-#2 write-time dedup semantics where updateStateSnapshot's
-    // filter at line 1657 drops EARLIER matches on the (field, value)
-    // pair. Interpreting "rightmost wins" here is the direct
-    // generalisation — array order is insertion order, later is
-    // more recent.
-    const session = new EICRExtractionSession('k', 'sess-r17-1b', 'eicr', {
-      toolCallsMode: 'shadow',
-    });
-    session.stateSnapshot.pending_readings = [
-      { circuit: 1, field: 'zs', value: '0.35', unit: 'ohm' }, // legacy → canonicalised to measured_zs_ohm
-      { circuit: 1, field: 'measured_zs_ohm', value: '0.42', unit: 'ohm' }, // already canonical, newer
-    ];
-    session.start();
-
-    expect(session.stateSnapshot.pending_readings).toHaveLength(1);
-    const entry = session.stateSnapshot.pending_readings[0];
-    expect(entry.field).toBe('measured_zs_ohm');
-    expect(entry.value).toBe('0.42'); // rightmost wins.
-  });
+  // r17-1b removed at r18-#1 — the original test codified the WRONG
+  // invariant. It asserted rightmost-wins dedup on (circuit, field),
+  // but the write-time path at updateStateSnapshot:1725 pushes every
+  // unassigned (circuit=-1) reading unconditionally with no
+  // (circuit, field) uniqueness check. Two pending entries for the
+  // same (circuit, field) with DIFFERENT values can legitimately
+  // coexist until a circuit-level reading resolves one. See the
+  // r18-#1 describe block below for the corrected tests (r18-1a /
+  // r18-1b) that align hydration semantics with the write-time
+  // invariant (canonicalise only — preserve duplicates).
 
   test('r17-1c — hydration: idempotent — two direct calls are deep-equal', () => {
     // Lock idempotency — any future edit that (e.g.) appends a
@@ -1842,6 +1829,104 @@ describe('Plan 04-23 r17-#1 — pending_readings hydration normalisation + dedup
     const after = JSON.parse(JSON.stringify(session.stateSnapshot.pending_readings));
 
     expect(after).toEqual(before);
+  });
+});
+
+/**
+ * Plan 04-24 r18-#1 — hydration dedup invariant alignment with write path.
+ *
+ * Codex r18 (re-review after r17 close, 2026-04-24) flagged that
+ * the `_normaliseCircuitKeysToCanonical` dedup pass landed at
+ * r17-#1 is stricter than the write-time invariant:
+ *
+ *   Write-time at `updateStateSnapshot`:1725 pushes every
+ *   unassigned (circuit=-1) reading unconditionally. There is no
+ *   pre-push filter on `(circuit, field)`. The only filter is at
+ *   :1751 — a RESOLUTION filter on circuit !== -1 writes that
+ *   drops ALL pending entries matching `(field, value)`. That's a
+ *   pending-to-assigned transition, not a push-time uniqueness
+ *   guard.
+ *
+ * So two pending entries for the same `(circuit, field)` with
+ * DIFFERENT values can legitimately coexist — e.g. Sonnet emits
+ * two unassigned readings for the same field with different values
+ * before either is assigned; both survive until their respective
+ * circuit-level readings arrive to resolve them.
+ *
+ * My r17-#1 hydration dedup on `(circuit, field)` with
+ * rightmost-wins would silently destroy the earlier legitimate
+ * entry. The fix: remove the dedup from hydration. Canonicalise
+ * only.
+ *
+ * **Investigation confirmed (2026-04-24):** grep of
+ * `pending_readings.push` and `pending_readings.splice` found
+ * exactly ONE write-time push (line 1725, no uniqueness check) and
+ * ONE filter (line 1751, value-based resolution). Serialise-time
+ * `.map()` at :2040 iterates without uniqueness assumption; no
+ * downstream code assumes uniqueness on `(circuit, field)`.
+ * **Option B chosen: duplicates allowed at write → remove
+ * hydration dedup.**
+ *
+ * Tests:
+ *   r18-1a — hydration preserves duplicate-by-(circuit,field) entries when values differ.
+ *   r18-1b — hydration preserves legacy+canonical pair for same (circuit,field) when values differ.
+ *
+ * Replaces the r17-1b test that codified the wrong invariant (see
+ * the removed-r17-1b comment in the r17-#1 describe block).
+ */
+describe('Plan 04-24 r18-#1 — hydration preserves write-time invariant: duplicate (circuit, field) allowed', () => {
+  beforeEach(() => mockCreate.mockReset());
+
+  test('r18-1a — hydration preserves two entries for same (circuit, field) when values differ', () => {
+    // Mirrors a live scenario: Sonnet emits two unassigned readings
+    // for `zs` on the same circuit with different values (e.g.
+    // inspector re-reads the meter). Both should survive hydration
+    // — the write-time path pushes unconditionally, and downstream
+    // resolution (on a circuit-level write) matches on (field,
+    // value) to drop the matching entry. Hydration dedup would
+    // silently destroy one of them.
+    const session = new EICRExtractionSession('k', 'sess-r18-1a', 'eicr', {
+      toolCallsMode: 'shadow',
+    });
+    session.stateSnapshot.pending_readings = [
+      { circuit: 1, field: 'zs', value: '0.35', unit: 'ohm' },
+      { circuit: 1, field: 'zs', value: '0.42', unit: 'ohm' },
+    ];
+    session.start(); // hydration pass runs here.
+
+    // Both entries survive — no dedup.
+    expect(session.stateSnapshot.pending_readings).toHaveLength(2);
+    // Both canonicalised.
+    expect(session.stateSnapshot.pending_readings[0].field).toBe('measured_zs_ohm');
+    expect(session.stateSnapshot.pending_readings[1].field).toBe('measured_zs_ohm');
+    // Original order preserved: 0.35 first, 0.42 second.
+    expect(session.stateSnapshot.pending_readings[0].value).toBe('0.35');
+    expect(session.stateSnapshot.pending_readings[1].value).toBe('0.42');
+  });
+
+  test('r18-1b — hydration preserves legacy+canonical pair for same (circuit, field) when values differ', () => {
+    // Hydrated persisted state: one legacy-vocab entry (pre-r13-#2)
+    // and one canonical entry (post-r13-#2), same (circuit, field)
+    // post-canonicalisation, DIFFERENT values. Both are legitimate
+    // — write-time would have pushed both unconditionally. Neither
+    // should be discarded by hydration.
+    const session = new EICRExtractionSession('k', 'sess-r18-1b', 'eicr', {
+      toolCallsMode: 'shadow',
+    });
+    session.stateSnapshot.pending_readings = [
+      { circuit: 1, field: 'zs', value: '0.35', unit: 'ohm' }, // legacy vocab
+      { circuit: 1, field: 'measured_zs_ohm', value: '0.42', unit: 'ohm' }, // canonical
+    ];
+    session.start();
+
+    // Both survive — no dedup after canonicalisation.
+    expect(session.stateSnapshot.pending_readings).toHaveLength(2);
+    // Both canonicalised (the legacy entry is renamed in place).
+    expect(session.stateSnapshot.pending_readings[0].field).toBe('measured_zs_ohm');
+    expect(session.stateSnapshot.pending_readings[1].field).toBe('measured_zs_ohm');
+    // Original insertion order preserved.
+    expect(session.stateSnapshot.pending_readings[0].value).toBe('0.35');
+    expect(session.stateSnapshot.pending_readings[1].value).toBe('0.42');
   });
 });
 
