@@ -14,8 +14,10 @@ import { applyExtractionToJob } from './recording/apply-extraction';
 import { AudioRingBuffer } from './recording/audio-ring-buffer';
 import { SleepManager, type SleepState } from './recording/sleep-manager';
 import { useLiveFillStore } from './recording/live-fill-state';
+import { cancelSpeech, confirmationToSentence, speak } from './recording/tts';
 import { api } from './api-client';
 import { useJobContext } from './job-context';
+import { applyVoiceCommand, parseVoiceCommand, type VoiceCommandJob } from '@certmate/shared-utils';
 
 /**
  * Recording context.
@@ -83,8 +85,16 @@ export type RecordingSnapshot = {
   sonnetState: SonnetConnectionState;
   /** Gated questions surfaced by Sonnet (unclear value, orphaned reading,
    *  out-of-range). FIFO — oldest first. Phase 4d renders these inline
-   *  under the transcript log; Phase 4e pipes them to TTS. */
+   *  under the transcript log; Phase 8 pipes them to TTS so they get
+   *  read aloud when the voice-feedback toggle is on. */
   questions: SonnetQuestion[];
+  /** Count of in-flight transcripts currently being processed by Sonnet
+   *  (sent but no extraction / question response received yet). Drives
+   *  the <ProcessingBadge>; iOS parity. */
+  processingCount: number;
+  /** Count of validation alerts / orphaned readings Sonnet flagged during
+   *  the session. Drives the <PendingDataBanner>; iOS parity. */
+  pendingReadings: number;
   /** Error string when `state === 'error'`. */
   errorMessage: string | null;
 };
@@ -135,6 +145,15 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
   const [deepgramState, setDeepgramState] = React.useState<DeepgramConnectionState>('disconnected');
   const [sonnetState, setSonnetState] = React.useState<SonnetConnectionState>('disconnected');
   const [questions, setQuestions] = React.useState<SonnetQuestion[]>([]);
+  // Processing count = transcripts dispatched to Sonnet minus extraction
+  // replies observed. We increment in the final-transcript callback and
+  // decrement when a result / question / validation alert arrives. Used
+  // by <ProcessingBadge> on the recording chrome so the inspector can
+  // see Sonnet is still thinking between turns.
+  const [processingCount, setProcessingCount] = React.useState(0);
+  // Cumulative count of validation-alerts / orphaned readings Sonnet has
+  // flagged during the session. Mirrors iOS `PendingDataBanner`.
+  const [pendingReadings, setPendingReadings] = React.useState(0);
   const [errorMessage, setErrorMessage] = React.useState<string | null>(null);
 
   // Job snapshot kept in a ref so we can send the latest `jobState` on
@@ -257,10 +276,31 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
           ];
           return next.length > 10 ? next.slice(next.length - 10) : next;
         });
+        // Client-side voice command dispatch (Phase 8). Attempt the MVP
+        // parser; when it matches, apply the patch, speak the response
+        // synchronously, and SKIP forwarding to Sonnet — otherwise
+        // Sonnet would produce a second, conflicting extraction from
+        // the same transcript. Anything the parser doesn't recognise
+        // continues to the server-side extraction path.
+        const command = parseVoiceCommand(text);
+        if (command) {
+          const outcome = applyVoiceCommand(command, jobRef.current as unknown as VoiceCommandJob);
+          if (outcome.patch) {
+            updateJobRef.current(outcome.patch);
+          }
+          if (outcome.response) {
+            speak(outcome.response);
+          }
+          sleepManagerRef.current?.onSpeechActivity();
+          return;
+        }
         // Fire the final utterance at the Sonnet session so server-side
         // multi-turn extraction can fill form fields. No-op if the WS
         // isn't open — the Sonnet client queues pre-connect messages.
         sonnetRef.current?.sendTranscript(text);
+        // Each dispatched transcript is one outstanding Sonnet turn
+        // until an extraction / question frame arrives to clear it.
+        setProcessingCount((n) => n + 1);
         // Reset the SleepManager's no-final-transcript timer. Interim
         // partials deliberately don't — iOS does the same so the mic's
         // AGC can't self-feed and keep the doze timer permanently armed.
@@ -311,7 +351,12 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
    *  Kept in a stable callback so the Sonnet WS callbacks don't rebind
    *  every render. Reads the current job from `jobRef` to decide whether
    *  to overwrite (3-tier priority: pre-existing manual data wins over
-   *  Sonnet unless Sonnet is explicitly clearing / correcting). */
+   *  Sonnet unless Sonnet is explicitly clearing / correcting).
+   *
+   *  Also clears one slot of the processingCount (an extraction result
+   *  is the positive acknowledgement that Sonnet finished a turn) and
+   *  rolls any server-side `confirmations` into the TTS pipeline +
+   *  validation_alerts into the pending-readings counter. */
   const applyExtraction = React.useCallback(
     (result: ExtractionResult) => {
       const applied = applyExtractionToJob(jobRef.current, result);
@@ -324,6 +369,24 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
           liveFill.markUpdated(applied.changedKeys);
         }
       }
+      // Speak the first confirmation (if any). We deliberately speak
+      // only the first to avoid backlogging stacked readings behind
+      // stale news — iOS does the same.
+      const first = result.confirmations?.[0];
+      if (first) {
+        const sentence = confirmationToSentence(first);
+        if (sentence) speak(sentence);
+      }
+      // Surface validation alerts in the pending-readings counter so
+      // the inspector sees them in the recording chrome even if they
+      // haven't yet opened the question stack.
+      const alertCount = result.validation_alerts?.length ?? 0;
+      if (alertCount > 0) {
+        setPendingReadings((n) => n + alertCount);
+      }
+      // Each extraction frame closes one outstanding turn — clamp at
+      // zero so a spurious extra frame doesn't push the count negative.
+      setProcessingCount((n) => Math.max(0, n - 1));
     },
     [liveFill]
   );
@@ -341,13 +404,24 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         applyExtraction(result);
       },
       onQuestion: (q) => {
+        let isNew = false;
         setQuestions((prev) => {
           // Dedup by text — Sonnet occasionally re-asks the same
           // question across turns until the field is filled.
           if (prev.some((p) => p.question === q.question)) return prev;
+          isNew = true;
           const next = [...prev, q];
           return next.length > 5 ? next.slice(next.length - 5) : next;
         });
+        // A question frame also closes the turn that produced it — same
+        // accounting as the extraction branch above.
+        setProcessingCount((n) => Math.max(0, n - 1));
+        // Speak only newly-appearing questions. Re-asks are suppressed
+        // by the dedup above, matching iOS where the AlertCardView
+        // doesn't re-announce a queued question.
+        if (isNew && q.question) {
+          speak(q.question);
+        }
       },
       onCostUpdate: (update) => {
         // Server sends totalJobCost in USD. We keep Sonnet cost
@@ -570,6 +644,8 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     setTranscript([]);
     setInterim('');
     setQuestions([]);
+    setProcessingCount(0);
+    setPendingReadings(0);
     liveFill.reset();
     // Capture the new session id synchronously and snapshot it locally so
     // that any async handler resolving below (mic permission prompt, WS
@@ -641,9 +717,14 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     teardownDeepgram();
     teardownSonnet();
     teardownSleep();
+    // Cancel any in-flight TTS so the last confirmation doesn't keep
+    // speaking after the inspector has ended the session.
+    cancelSpeech();
     setState('idle');
     setMicLevel(0);
     setQuestions([]);
+    setProcessingCount(0);
+    setPendingReadings(0);
     liveFill.reset();
   }, [setState, clearTick, teardownMic, teardownDeepgram, teardownSonnet, teardownSleep, liveFill]);
 
@@ -752,6 +833,8 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
       deepgramState,
       sonnetState,
       questions,
+      processingCount,
+      pendingReadings,
       errorMessage,
       start,
       stop,
@@ -769,6 +852,8 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
       deepgramState,
       sonnetState,
       questions,
+      processingCount,
+      pendingReadings,
       errorMessage,
       start,
       stop,
@@ -800,9 +885,13 @@ export function formatElapsed(seconds: number): string {
   return `${mm}:${ss}`;
 }
 
-/** Utility for the cost chip: $0.0153 → "$0.02". Rounds to nearest cent, clamps
- *  to $0.00 minimum so "-$0.00" never shows after a stop/start glitch. */
+/** Utility for the cost chip: £~0.02. iOS surfaces cost in GBP because the
+ *  inspector base is UK-only; Deepgram + OpenAI/Anthropic pricing is quoted
+ *  in USD but at these session-level magnitudes (pence) the FX difference
+ *  is noise — we label with £~ to show it's an approximate conversion
+ *  rather than attempting a live FX lookup every tick. Clamps to 0 so
+ *  "-£~0.00" never shows after a stop/start glitch. */
 export function formatCost(usd: number): string {
   const n = Math.max(0, usd);
-  return `$${n.toFixed(2)}`;
+  return `£~${n.toFixed(2)}`;
 }
