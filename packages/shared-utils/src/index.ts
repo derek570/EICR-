@@ -20,3 +20,10 @@ export type {
 } from './apply-defaults';
 export { DEFAULTS_BY_CIRCUIT, GLOBAL_DEFAULTS, inferCircuitType } from './circuit-defaults-schema';
 export type { CircuitTypeKey } from './circuit-defaults-schema';
+export { parseVoiceCommand, applyVoiceCommand } from './voice-commands';
+export type {
+  VoiceCommand,
+  VoiceCommandOutcome,
+  VoiceCommandJob,
+  VoiceCommandCircuit,
+} from './voice-commands';
