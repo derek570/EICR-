@@ -3439,3 +3439,170 @@ describe('Group r11-1 — Plan 04-17 r11-#1: runToolCallPath fails fast when rec
     expect(session.recentCircuitOrder).toEqual([5, 1, 3, 2, 4]);
   });
 });
+
+describe('Group r12-2 — Plan 04-18 r12-#2: fail-fast guard closes empty-declared-order bypass', () => {
+  // Codex r12 flagged that r11-#1's guard gate keys off
+  // `!Array.isArray(declaredOrder)` — which lets a fixture bypass
+  // the fail-fast by declaring `recentCircuitOrder: []` (empty
+  // array IS an array; the guard does not fire; normalisation
+  // produces empty; the pathological-fallback else branch assigns
+  // numeric ascending of seeded keys). r12-#2 tightens the guard
+  // to require NON-EMPTY post-normalisation when seededKeys
+  // exceed the detail window, plus an explicit
+  // `_force_numeric_recency: true` escape hatch for fixtures
+  // that deliberately exercise the pathological fallback.
+
+  function sample01ToolCallEvents() {
+    return JSON.parse(
+      fssync.readFileSync(path.join(FIXTURE_DIR, 'sample-01-routine.json'), 'utf8'),
+    ).sse_events_tool_call;
+  }
+  function sample01ToolCallEventsR2() {
+    return JSON.parse(
+      fssync.readFileSync(path.join(FIXTURE_DIR, 'sample-01-routine.json'), 'utf8'),
+    ).sse_events_tool_call_round2;
+  }
+
+  test('r12-2a — >SNAPSHOT_RECENT_CIRCUITS seeded + declared `[]` throws fail-fast (empty-array bypass closed)', async () => {
+    // 5 seeded circuits + `recentCircuitOrder: []`. Pre-r12 this
+    // bypassed r11-#1's guard because `Array.isArray([])` is true.
+    // Post-r12 the guard checks POST-normalisation length and
+    // fires when the result would be empty.
+    const syntheticFx = {
+      pre_turn_state: {
+        snapshot: {
+          circuits: {
+            1: { circuit_ref: 1, circuit_designation: 'Ring 1' },
+            2: { circuit_ref: 2, circuit_designation: 'Ring 2' },
+            3: { circuit_ref: 3, circuit_designation: 'Lights' },
+            4: { circuit_ref: 4, circuit_designation: 'Cooker' },
+            5: { circuit_ref: 5, circuit_designation: 'Shower' },
+          },
+          pending_readings: [],
+          observations: [],
+          validation_alerts: [],
+        },
+        // The bypass shape r12-#2 closes: empty declared array.
+        recentCircuitOrder: [],
+        askedQuestions: [],
+        extractedObservations: [],
+      },
+      transcript: 'test',
+      sse_events_tool_call: sample01ToolCallEvents(),
+      sse_events_tool_call_round2: sample01ToolCallEventsR2(),
+    };
+    // Error MUST namespace with `golden-divergence:` and mention
+    // "normalises to empty" so the author understands the
+    // declared shape normalised away rather than not being present.
+    await expect(runToolCallPath(syntheticFx)).rejects.toThrow(/golden-divergence:/);
+    await expect(runToolCallPath(syntheticFx)).rejects.toThrow(/normalises to empty/);
+    // SNAPSHOT_RECENT_CIRCUITS value cited so the author understands
+    // the threshold rule.
+    await expect(runToolCallPath(syntheticFx)).rejects.toThrow(/SNAPSHOT_RECENT_CIRCUITS=3/);
+  });
+
+  test('r12-2b — >SNAPSHOT_RECENT_CIRCUITS seeded + declared `[99, 0, -1]` (all filtered) throws fail-fast', async () => {
+    // A declaration that LOOKS non-empty but normalises to empty
+    // because every entry fails a filter: 99 is an unknown ref
+    // (not seeded), 0 is the supply, -1 is negative. This is the
+    // same shape as r9-3c (pathological invalid entries) but now
+    // with seededKeys exceeding the detail window — must throw.
+    const syntheticFx = {
+      pre_turn_state: {
+        snapshot: {
+          circuits: {
+            1: { circuit_ref: 1, circuit_designation: 'Ring 1' },
+            2: { circuit_ref: 2, circuit_designation: 'Ring 2' },
+            3: { circuit_ref: 3, circuit_designation: 'Lights' },
+            4: { circuit_ref: 4, circuit_designation: 'Cooker' },
+            5: { circuit_ref: 5, circuit_designation: 'Shower' },
+          },
+          pending_readings: [],
+          observations: [],
+          validation_alerts: [],
+        },
+        // 99 = unknown ref (not in seededKeys), 0 = supply, -1 =
+        // negative. Every entry fails a filter → normalised empty.
+        recentCircuitOrder: [99, 0, -1],
+        askedQuestions: [],
+        extractedObservations: [],
+      },
+      transcript: 'test',
+      sse_events_tool_call: sample01ToolCallEvents(),
+      sse_events_tool_call_round2: sample01ToolCallEventsR2(),
+    };
+    await expect(runToolCallPath(syntheticFx)).rejects.toThrow(/golden-divergence:/);
+    await expect(runToolCallPath(syntheticFx)).rejects.toThrow(/normalises to empty/);
+  });
+
+  test('r12-2c — >SNAPSHOT_RECENT_CIRCUITS seeded + declared `[]` + _force_numeric_recency: true → escape hatch bypasses guard', async () => {
+    // The escape hatch for test fixtures that DELIBERATELY exercise
+    // the pathological numeric fallback. Without the flag the
+    // fixture would hit r12-2a; with the flag set it's accepted and
+    // numeric ascending is used.
+    //
+    // This test + the flag together formalise what r9-3c relies on
+    // implicitly. r9-3c stays unchanged because its seededKeys size
+    // (3) does not exceed SNAPSHOT_RECENT_CIRCUITS — the guard
+    // doesn't fire for it regardless. The escape hatch only matters
+    // when seededKeys > the window AND the author wants the
+    // pathological fallback.
+    const syntheticFx = {
+      pre_turn_state: {
+        snapshot: {
+          circuits: {
+            1: { circuit_ref: 1, circuit_designation: 'Ring 1' },
+            2: { circuit_ref: 2, circuit_designation: 'Ring 2' },
+            3: { circuit_ref: 3, circuit_designation: 'Lights' },
+            4: { circuit_ref: 4, circuit_designation: 'Cooker' },
+            5: { circuit_ref: 5, circuit_designation: 'Shower' },
+          },
+          pending_readings: [],
+          observations: [],
+          validation_alerts: [],
+        },
+        recentCircuitOrder: [],
+        _force_numeric_recency: true, // escape hatch
+        askedQuestions: [],
+        extractedObservations: [],
+      },
+      transcript: 'test',
+      sse_events_tool_call: sample01ToolCallEvents(),
+      sse_events_tool_call_round2: sample01ToolCallEventsR2(),
+    };
+    const { session } = await runToolCallPath(syntheticFx);
+    // Numeric ascending of all seeded keys.
+    expect(session.recentCircuitOrder).toEqual([1, 2, 3, 4, 5]);
+  });
+
+  test('r12-2d — >SNAPSHOT_RECENT_CIRCUITS seeded + non-empty declared order: no throw (regression guard overlapping r11-1c)', async () => {
+    // Defence-in-depth with r11-1c: a fixture that meets its
+    // declared-order obligation (non-empty + all entries valid) MUST
+    // pass. The r12-#2 tightening is a SUPERSET of r11-#1's guard;
+    // we lock both conditions side-by-side.
+    const syntheticFx = {
+      pre_turn_state: {
+        snapshot: {
+          circuits: {
+            1: { circuit_ref: 1, circuit_designation: 'Ring 1' },
+            2: { circuit_ref: 2, circuit_designation: 'Ring 2' },
+            3: { circuit_ref: 3, circuit_designation: 'Lights' },
+            4: { circuit_ref: 4, circuit_designation: 'Cooker' },
+            5: { circuit_ref: 5, circuit_designation: 'Shower' },
+          },
+          pending_readings: [],
+          observations: [],
+          validation_alerts: [],
+        },
+        recentCircuitOrder: [5, 1, 3, 2, 4],
+        askedQuestions: [],
+        extractedObservations: [],
+      },
+      transcript: 'test',
+      sse_events_tool_call: sample01ToolCallEvents(),
+      sse_events_tool_call_round2: sample01ToolCallEventsR2(),
+    };
+    const { session } = await runToolCallPath(syntheticFx);
+    expect(session.recentCircuitOrder).toEqual([5, 1, 3, 2, 4]);
+  });
+});
