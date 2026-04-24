@@ -137,6 +137,7 @@ import { runShadowHarness } from '../extraction/stage6-shadow-harness.js';
 import { createPendingAsksRegistry } from '../extraction/stage6-pending-asks-registry.js';
 import { filterQuestionsAgainstFilledSlots } from '../extraction/filled-slots-filter.js';
 import { mockClient } from './helpers/mockStream.js';
+import { EICRExtractionSession } from '../extraction/eicr-extraction-session.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -412,6 +413,203 @@ describe('STT-04 Scenario B — New prompt + cached prefix + tool-call path (SC 
     const divergenceLogs = logger.info.mock.calls.filter((c) => c[0] === 'stage6_divergence');
     expect(divergenceLogs).toHaveLength(1);
 
+    const askUserLogs = logger.info.mock.calls.filter((c) => c[0] === 'stage6.ask_user');
+    expect(askUserLogs).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Scenario B' — Plan 04-09 r3-#3: real-session SC #4 exit check.
+// ---------------------------------------------------------------------------
+//
+// Codex r3 MAJOR #3: the original Scenario B (above) never instantiates a
+// real EICRExtractionSession. It injects a session double with a hand-
+// rolled `systemPrompt: 'TEST AGENTIC SYSTEM PROMPT ...'` string. That
+// means a regression in prompt LOADING (Plan 04-01 — the fs.readFileSync
+// of sonnet_agentic_system.md) OR in `buildSystemBlocks()` (Plan 04-02 —
+// the two-block [prompt, snapshot] cached-prefix structure with
+// cache_control:'ephemeral') would pass this test silently. The Phase 4
+// SC #4 claim ("F21934D4 replay zero re-asks on the NEW PROMPT + tool-call
+// path") is therefore unprovable without a real session.
+//
+// This scenario refactors Scenario B to:
+//   1. Construct a REAL `EICRExtractionSession` in shadow mode. The
+//      constructor reads the real prompt from
+//      `config/prompts/sonnet_agentic_system.md` and stores it on
+//      `this.systemPrompt`.
+//   2. Replace `session.client` with mockClient so no Anthropic calls go
+//      out, but the request payload the harness constructs is still the
+//      real one.
+//   3. Capture the actual payload via mockClient._calls (added in the
+//      same r3-#3 fix to `helpers/mockStream.js`).
+//   4. Assert the captured request:
+//      - `system` is an ARRAY (cached-prefix structure, not a string)
+//      - `system[0].text` contains the "TRUST BOUNDARY" marker —
+//        a uniquely-identifying substring from the real agentic prompt
+//        that no fake placeholder would include.
+//   5. Separately invoke `session.buildSystemBlocks()` directly and
+//      assert the [prompt, snapshot] two-block structure with correct
+//      `cache_control: {type:'ephemeral', ttl:'5m'}` on system[1] when
+//      the snapshot has content. The live shadow-harness path uses a
+//      single-block system array on purpose (stage6-shadow-harness.js:265);
+//      the cached-prefix two-block layout is exercised on the main
+//      `callWithRetry` path (eicr-extraction-session.js:838). Both
+//      paths matter to Phase 4 SC #4; this test covers both.
+//   6. Preserve the 7 original SC #4 assertions. They pass because the
+//      real session exhibits the same behaviour — just now backed by
+//      the real prompt + real cached-prefix construction.
+//
+// Scenario A (Legacy filled-slots-filter baseline, above) is a
+// legitimate unit test of `filterQuestionsAgainstFilledSlots` — it
+// doesn't need the full session and is NOT touched by this fix.
+// ---------------------------------------------------------------------------
+
+describe("STT-04 Scenario B' — Real EICRExtractionSession SC #4 exit check (r3-#3)", () => {
+  test("F21934D4 transcript against REAL session: captured request shows prompt loaded from disk + cached-prefix structure", async () => {
+    // Arrange: real session. Pass 'test-key' as apiKey — the constructor
+    // wires a real Anthropic instance but we replace .client below so no
+    // network call ever fires. toolCallsMode='shadow' selects the
+    // EICR_AGENTIC_SYSTEM_PROMPT (Plan 04-01), which is read at module
+    // import time from config/prompts/sonnet_agentic_system.md.
+    const session = new EICRExtractionSession('test-key', 'sess-f21934d4-realB', 'eicr', {
+      toolCallsMode: 'shadow',
+    });
+
+    // Seed snapshot from fixture (deep-clone to keep tests independent).
+    session.stateSnapshot = JSON.parse(JSON.stringify(fixture.pre_turn_state.snapshot));
+
+    // Simulate the legacy-path mutation that would have run in production:
+    // extractFromUtterance writes circuit-3 insulation reading to the
+    // LIVE session's snapshot. Same shape as the fake-session version
+    // above (Scenario B); the method lives on the real class but we
+    // overwrite it here to keep the test hermetic (no real Anthropic).
+    session.extractFromUtterance = jest.fn().mockImplementation(async function () {
+      this.turnCount = (this.turnCount ?? 0) + 1;
+      this.stateSnapshot.circuits['3'] = {
+        ...(this.stateSnapshot.circuits['3'] || {}),
+        insulation_resistance_l_l: '>200',
+      };
+      return {
+        extracted_readings: [
+          { field: 'insulation_resistance_l_l', circuit: 3, value: '>200', confidence: 0.95 },
+        ],
+        observations: [],
+        questions: [],
+      };
+    });
+    session.loggedQuestionsForUserBypass = false;
+
+    // Replace Anthropic client with mockClient replaying the fixture's
+    // two rounds. mockClient._calls records the request args per
+    // stream() invocation (added alongside this test in r3-#3 — the
+    // pre-r3 helper had no such accumulator, which is why this
+    // assertion fires RED until GREEN lands).
+    session.client = mockClient([
+      fixture.sse_events_well_behaved,
+      fixture.sse_events_well_behaved_round2,
+    ]);
+
+    const pendingAsks = createPendingAsksRegistry();
+    const wsStub = {
+      OPEN: 1,
+      readyState: 1,
+      sent: [],
+      send(msg) {
+        this.sent.push(typeof msg === 'string' ? JSON.parse(msg) : msg);
+      },
+    };
+    const logger = makeLogger();
+
+    expect(pendingAsks.size).toBe(0);
+
+    // Act.
+    await runShadowHarness(session, fixture.transcript, [], {
+      logger,
+      pendingAsks,
+      ws: wsStub,
+    });
+
+    // ─────────────────────────────────────────────────────────────────────
+    // NEW r3-#3 ASSERTIONS — real prompt + captured payload.
+    // ─────────────────────────────────────────────────────────────────────
+
+    // r3-#3-A. mockClient captured at least one stream() call.
+    expect(Array.isArray(session.client._calls)).toBe(true);
+    expect(session.client._calls.length).toBeGreaterThan(0);
+
+    // r3-#3-B. `request.system` is an ARRAY (cached-prefix shape —
+    // runShadowHarness wraps session.systemPrompt in a single-block
+    // array at stage6-shadow-harness.js:265). Pre-r3 the fake session's
+    // hand-rolled string literal would flow through unchanged; the
+    // array assertion still held because the harness did the wrapping.
+    // The NEW thing r3-#3 locks is the CONTENT of system[0].text —
+    // see r3-#3-C below.
+    const firstRequest = session.client._calls[0];
+    expect(Array.isArray(firstRequest.system)).toBe(true);
+    expect(firstRequest.system.length).toBeGreaterThan(0);
+    expect(firstRequest.system[0]).toHaveProperty('type', 'text');
+
+    // r3-#3-C. system[0].text carries real content from
+    // sonnet_agentic_system.md — verified by the unique marker
+    // "TRUST BOUNDARY" at line 3 of that file. Pre-r3 (fake session
+    // with hand-rolled string 'TEST AGENTIC SYSTEM PROMPT ...') this
+    // assertion would fail → RED. Post-r3 (real session loads the
+    // file via fs.readFileSync at module top) it passes → GREEN.
+    // If sonnet_agentic_system.md is ever deleted, renamed, or the
+    // TRUST BOUNDARY section is removed, this test fires loudly —
+    // that's the Phase 4 SC #4 backstop.
+    expect(firstRequest.system[0].text).toContain('TRUST BOUNDARY');
+
+    // r3-#3-D. Direct call to session.buildSystemBlocks() to prove
+    // the two-block cached-prefix layout is structurally correct on
+    // the main callWithRetry path (not exercised by runShadowHarness,
+    // which intentionally uses a single block — see harness comment).
+    // With the F21934D4 snapshot seed (non-empty circuits), snapshot
+    // text is non-null so buildSystemBlocks returns 2 blocks.
+    const systemBlocks = session.buildSystemBlocks();
+    expect(Array.isArray(systemBlocks)).toBe(true);
+    expect(systemBlocks.length).toBe(2);
+    // Block 0 — agentic prompt, ephemeral 5m cache.
+    expect(systemBlocks[0]).toMatchObject({
+      type: 'text',
+      cache_control: { type: 'ephemeral', ttl: '5m' },
+    });
+    expect(systemBlocks[0].text).toContain('TRUST BOUNDARY');
+    // Block 1 — state snapshot, ephemeral 5m cache.
+    expect(systemBlocks[1]).toMatchObject({
+      type: 'text',
+      cache_control: { type: 'ephemeral', ttl: '5m' },
+    });
+    expect(typeof systemBlocks[1].text).toBe('string');
+    expect(systemBlocks[1].text.length).toBeGreaterThan(0);
+
+    // ─────────────────────────────────────────────────────────────────────
+    // ORIGINAL 7 SC #4 ASSERTIONS — preserved from Scenario B.
+    // ─────────────────────────────────────────────────────────────────────
+
+    // 1. pendingAsks.size === 0 — no ask was ever registered.
+    expect(pendingAsks.size).toBe(0);
+
+    // 2. Zero ws.send calls of type 'ask_user_started'.
+    const askStartedMessages = wsStub.sent.filter((m) => m && m.type === 'ask_user_started');
+    expect(askStartedMessages).toHaveLength(0);
+
+    // 3. runShadowHarness completed without throwing.
+    expect(session.client._callCount).toBeGreaterThan(0);
+
+    // 4. Bypass log for questions_for_user never fired.
+    expect(session.loggedQuestionsForUserBypass).toBeFalsy();
+
+    // 5. At-risk slot (circuits[2].r1_r2) preserved at 0.64.
+    expect(session.stateSnapshot.circuits['2'].r1_r2).toBe(0.64);
+
+    // 6. Turn's new reading landed on live snapshot.
+    expect(session.stateSnapshot.circuits['3'].insulation_resistance_l_l).toBe('>200');
+
+    // 7. Two model invocations (tool_use round + end_turn round).
+    expect(session.client._callCount).toBe(2);
+
+    // 8. BONUS — zero stage6.ask_user log rows.
     const askUserLogs = logger.info.mock.calls.filter((c) => c[0] === 'stage6.ask_user');
     expect(askUserLogs).toHaveLength(0);
   });
