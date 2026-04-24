@@ -12,3 +12,11 @@ export {
   formatImpedance,
 } from './impedance';
 export type { CalcResult, CalcSkipReason, BulkCalcOutcome } from './impedance';
+export { applyDefaultsToCircuit, applyDefaultsToCircuits } from './apply-defaults';
+export type {
+  ApplyDefaultsOptions,
+  ApplyDefaultsSummary,
+  ApplyDefaultsBulkResult,
+} from './apply-defaults';
+export { DEFAULTS_BY_CIRCUIT, GLOBAL_DEFAULTS, inferCircuitType } from './circuit-defaults-schema';
+export type { CircuitTypeKey } from './circuit-defaults-schema';
