@@ -50,6 +50,7 @@ import {
   computeBreached,
   runDirectory,
   runFixture,
+  runToolCallPath,
   expectedSlotWritesToLegacyShape,
 } from '../../scripts/stage6-golden-divergence.js';
 import { TOOL_SCHEMAS, CONTEXT_FIELD_ENUM } from '../extraction/stage6-tool-schemas.js';
@@ -1573,5 +1574,161 @@ describe('Group K — Plan 04-09 r3-#2: breach gated on call + session only (sec
     );
     expect(report.breached).toBe(recomputed);
     expect(report.breached).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Group L — Plan 04-10 r4-#2: divergence harness uses REAL agentic prompt.
+//
+// WHY THIS GROUP EXISTS: Codex r4 (2026-04-23) found that
+// scripts/stage6-golden-divergence.js:474 hardcoded
+// `system: [{text:"GOLDEN-DIVERGENCE SYSTEM PROMPT"}]` — a PLACEHOLDER.
+// The entire Phase 4 SC #6 "0% divergence" claim was validated against a
+// FAKE prompt. This is the most damaging of the r4 findings because it
+// means the gate has been green for the wrong reason all along.
+//
+// Root cause: runToolCallPath() constructed a hand-rolled session stub
+// (plain object, not a real EICRExtractionSession) and never invoked
+// the real class's constructor, so sonnet_agentic_system.md was never
+// loaded, buildSystemBlocks() was never called, and the cached-prefix
+// two-block layout was never exercised.
+//
+// Fix: refactor runToolCallPath to instantiate a real EICRExtractionSession
+// per fixture replay, seed its state from the fixture, and use
+// session.buildSystemBlocks() to build the system array. mockClient
+// captures the request args so tests can verify the REAL prompt + REAL
+// snapshot structure reach the tool loop.
+//
+// The runToolCallPath export is a new hook added to make the captured
+// system array visible to tests without leaking the internal client.
+//
+// CRITICAL — if post-fix divergence rate exceeds the 10% SC #6 budget,
+// that is a BLOCK-class finding: the agentic prompt is drifting the
+// dispatcher output from the legacy path. The rate assertion at the end
+// of this group is the gate that surfaces it.
+// ---------------------------------------------------------------------------
+
+describe('Group L — Plan 04-10 r4-#2: runToolCallPath uses REAL agentic prompt', () => {
+  // Helper — load a fixture from disk. Tests own their own copy per fixture
+  // so mutations don't leak across tests.
+  function loadFixture(name) {
+    return JSON.parse(
+      fssync.readFileSync(path.join(FIXTURE_DIR, name), 'utf8'),
+    );
+  }
+
+  test('r4-2a: captured system[0].text contains TRUST BOUNDARY — real prompt loaded from disk', async () => {
+    // "TRUST BOUNDARY" is a uniquely-identifying marker from line 3 of
+    // config/prompts/sonnet_agentic_system.md. A placeholder system prompt
+    // (the pre-fix behaviour) would NOT contain this substring. Locking
+    // its presence is the Phase 4 SC #4 backstop for prompt-loading
+    // regressions in the divergence harness — if someone deletes the
+    // prompt file, renames the env var, or removes the real-session
+    // construction, this assertion fires.
+    const fx = loadFixture('sample-01-routine.json');
+    const { client } = await runToolCallPath(fx);
+    expect(Array.isArray(client._calls)).toBe(true);
+    expect(client._calls.length).toBeGreaterThan(0);
+    const firstRequest = client._calls[0];
+    expect(Array.isArray(firstRequest.system)).toBe(true);
+    expect(firstRequest.system.length).toBeGreaterThan(0);
+    expect(firstRequest.system[0].type).toBe('text');
+    expect(firstRequest.system[0].text).toContain('TRUST BOUNDARY');
+  });
+
+  test('r4-2b: captured system[0].text does NOT contain the old placeholder', async () => {
+    // Negative assertion — ensure the pre-fix placeholder
+    // "GOLDEN-DIVERGENCE SYSTEM PROMPT" is gone. If someone partially
+    // reverts the fix this catches it.
+    const fx = loadFixture('sample-01-routine.json');
+    const { client } = await runToolCallPath(fx);
+    const firstRequest = client._calls[0];
+    expect(firstRequest.system[0].text).not.toContain('GOLDEN-DIVERGENCE SYSTEM PROMPT');
+  });
+
+  test('r4-2c: fixture with non-empty pre_turn_state produces two-block cached-prefix system array', async () => {
+    // sample-05-refill-guard has a non-empty snapshot (circuit 1 with
+    // ze=0.32 pre-filled + circuit 3 designated). buildSystemBlocks()
+    // in shadow mode returns a two-block array [prompt, snapshot] with
+    // cache_control:{type:'ephemeral', ttl:'5m'} on BOTH blocks. That's
+    // the STS-09 cached-prefix contract locked in Plan 04-02.
+    const fx = loadFixture('sample-05-refill-guard.json');
+    const { client } = await runToolCallPath(fx);
+    const firstRequest = client._calls[0];
+    expect(firstRequest.system.length).toBe(2);
+    // Block 0 — agentic prompt.
+    expect(firstRequest.system[0]).toMatchObject({
+      type: 'text',
+      cache_control: { type: 'ephemeral', ttl: '5m' },
+    });
+    expect(firstRequest.system[0].text).toContain('TRUST BOUNDARY');
+    // Block 1 — snapshot.
+    expect(firstRequest.system[1]).toMatchObject({
+      type: 'text',
+      cache_control: { type: 'ephemeral', ttl: '5m' },
+    });
+    expect(typeof firstRequest.system[1].text).toBe('string');
+    expect(firstRequest.system[1].text.length).toBeGreaterThan(0);
+    // The snapshot must reflect the seeded pre_turn_state — e.g. circuit 1's
+    // pre-filled ze=0.32 should be visible in the EXTRACTED section.
+    expect(firstRequest.system[1].text).toContain('EXTRACTED');
+  });
+
+  test("r4-2d: fixture with empty pre_turn_state produces single-block system array (snapshot collapses)", async () => {
+    // Fixtures may legitimately ship an empty snapshot (no prior circuits).
+    // Plan 04-02 locked that buildSystemBlocks() collapses to a single
+    // block in that case — because Anthropic's cache key includes all
+    // blocks, emitting an empty-string second block would cache-miss
+    // every call. Verify the divergence harness honours the collapse.
+    const syntheticFx = {
+      pre_turn_state: {
+        snapshot: {
+          circuits: {},
+          pending_readings: [],
+          observations: [],
+          validation_alerts: [],
+        },
+        askedQuestions: [],
+        extractedObservations: [],
+      },
+      transcript: 'test',
+      // Reuse sample-01's events — we only care about the system array
+      // shape here, not the dispatcher output.
+      sse_events_tool_call: loadFixture('sample-01-routine.json').sse_events_tool_call,
+      sse_events_tool_call_round2: loadFixture('sample-01-routine.json').sse_events_tool_call_round2,
+    };
+    const { client } = await runToolCallPath(syntheticFx);
+    const firstRequest = client._calls[0];
+    expect(firstRequest.system.length).toBe(1);
+    expect(firstRequest.system[0].text).toContain('TRUST BOUNDARY');
+  });
+
+  test('r4-2e: post-real-prompt directory runner still at 0% divergence across 6 fixtures', async () => {
+    // THE GATE — this is the SC #6 re-validation. Re-run runDirectory on
+    // the 5 golden fixtures + F21934D4 AFTER the real-prompt refactor.
+    // Expected: rates unchanged at 0 (the canned events drive both paths
+    // deterministically regardless of which system prompt reached the
+    // tool loop — the normalisation/dispatch/bundle mechanics are what
+    // produce the convergence, not the prompt).
+    //
+    // **Critical — BLOCK escalation:** if any rate exceeds the 10% SC #6
+    // threshold, the agentic prompt is measurably drifting the pipeline
+    // output. That's a BLOCK finding; fix the prompt or the dispatcher
+    // before landing this commit. Sub-threshold non-zero rates are
+    // SURFACED in the r4 REVIEW entry but permitted under the Phase 4
+    // envelope.
+    const F21934D4_PATH_LOCAL = path.resolve(
+      __dirname,
+      'fixtures/stage6-sse/f21934d4-re-ask-scenario.json',
+    );
+    const report = await runDirectory(FIXTURE_DIR, { extraFixtures: [F21934D4_PATH_LOCAL] });
+    expect(report.threshold).toBe(0.10);
+    expect(report.breached).toBe(false);
+    // Tight assertion: rates stay at 0 on the 6 deterministic fixtures.
+    // The 10%-budget clause is the escape valve for Phase 5/7 real-model
+    // runs — not for Phase 4's deterministic baseline.
+    expect(report.session_divergence_rate).toBe(0);
+    expect(report.call_divergence_rate).toBe(0);
+    expect(report.section_divergence_rate).toBe(0);
   });
 });
