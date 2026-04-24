@@ -70,6 +70,186 @@ describe('checkForPromptLeak() — Layer 2 output-side prompt-leak filter', () =
       });
       expect(result.safe).toBe(true);
     });
+
+    // ----------------------------------------------------------
+    // r23-#2 — bare wrapper literals
+    //
+    // WHY: r22 marker set catches <<<USER_TEXT>>> and
+    // <<<END_USER_TEXT>>> as composite wrappers but lets the bare
+    // identifiers (USER_TEXT, END_USER_TEXT, <<<, >>>) slip
+    // through. The CONFIDENTIALITY prompt names all four bare
+    // tokens as forbidden literals — the model must never emit
+    // them. An attacker steering the model into "The marker
+    // identifier is USER_TEXT" extracts prompt scaffolding with
+    // no wrapper-character neighbour and the filter currently
+    // returns safe:true.
+    //
+    // Fix: 4 new MARKER_STRINGS entries with distinct stable IDs
+    // (`user-text-bare`, `end-user-text-bare`, `left-angle-triple`,
+    // `right-angle-triple`). Listed AFTER the composite entries so
+    // a full wrapper surfaces as `marker:user-text-open` (sharper
+    // telemetry) rather than the weaker bare ID.
+    // ----------------------------------------------------------
+    describe('r23-#2 bare wrapper literals', () => {
+      test('flags bare USER_TEXT as marker:user-text-bare', () => {
+        const result = checkForPromptLeak('The scaffolding uses USER_TEXT markers.', {
+          field: 'question',
+        });
+        expect(result.safe).toBe(false);
+        expect(result.reason).toBe('marker:user-text-bare');
+      });
+
+      test('flags bare END_USER_TEXT as marker:end-user-text-bare', () => {
+        const result = checkForPromptLeak('Dictation ends at END_USER_TEXT every time.', {
+          field: 'question',
+        });
+        expect(result.safe).toBe(false);
+        expect(result.reason).toBe('marker:end-user-text-bare');
+      });
+
+      test('flags bare <<< as marker:left-angle-triple', () => {
+        const result = checkForPromptLeak('The wrapper opens with <<< at the start.', {
+          field: 'question',
+        });
+        expect(result.safe).toBe(false);
+        // First-match-wins: <<< appears first in the text AND the
+        // marker list comes BEFORE >>>, so the reason is
+        // left-angle-triple. If the iteration hits USER_TEXT first
+        // (for a payload containing both), the composite/earlier
+        // entries take precedence — that's fine.
+        expect(result.reason).toBe('marker:left-angle-triple');
+      });
+
+      test('flags bare >>> as marker:right-angle-triple', () => {
+        const result = checkForPromptLeak('Legitimate reference to >>> chunks exists.', {
+          field: 'question',
+        });
+        expect(result.safe).toBe(false);
+        expect(result.reason).toBe('marker:right-angle-triple');
+      });
+
+      test('case-insensitive: lowercase user_text fires bare marker', () => {
+        const result = checkForPromptLeak('user_text identifiers in the prompt source.', {
+          field: 'question',
+        });
+        expect(result.safe).toBe(false);
+        expect(result.reason).toBe('marker:user-text-bare');
+      });
+
+      // Back-compat — composite markers still ID'd as composite
+      test('composite <<<USER_TEXT>>> still surfaces as user-text-open (not the bare ID)', () => {
+        const result = checkForPromptLeak('<<<USER_TEXT>>> is the full wrapper.', {
+          field: 'question',
+        });
+        expect(result.safe).toBe(false);
+        expect(result.reason).toBe('marker:user-text-open');
+      });
+
+      test('composite <<<END_USER_TEXT>>> still surfaces as user-text-close (not the bare ID)', () => {
+        const result = checkForPromptLeak('<<<END_USER_TEXT>>> closes dictation.', {
+          field: 'question',
+        });
+        expect(result.safe).toBe(false);
+        expect(result.reason).toBe('marker:user-text-close');
+      });
+
+      // FP audit — 60-sample composite normal corpus must show 0 FP
+      // across all 4 field classes under the 4 new markers.
+      describe('FP audit: 60-sample normal corpus 0/60 across 4 field classes', () => {
+        const GROUP_7_SAMPLES = [
+          'Zs on circuit three is nought point three five.',
+          'Circuit two, insulation greater than two hundred both ways, polarity correct.',
+          'Consumer unit in the hallway, RCBO type B, 32 amp.',
+          'For example, 1 hour delay before the RCD tripped.',
+          'Observation: missing earthing on the immersion heater.',
+          'The trusted bounds of the installation include a sub-board in the garage.',
+          'Code this as C2 — absent main bonding to gas.',
+          'Add a C3 observation for the non-standard cable colour.',
+          'R1 plus R2 is zero point five one ohms on circuit four.',
+          'Example 1 of 5 scenarios tested — all circuits passed.',
+          'The system does not emit any readings when the test is incomplete.',
+          'Please correct the reading for circuit 3 — it should be 0.71.',
+          'The silent writes mode is preferred by this electrician but not required.',
+          'You are correct that circuit 6 is outdoors.',
+          'The 7 tools in my kit include a multimeter and clamp meter.',
+          'For instance, STQ is not a valid code.',
+          'We have 7 observations so far in this inspection.',
+          'The meter reads less than 0.5 ohm.',
+          'Ring continuity test on circuit 4 gave matching values.',
+          'No visible damage to the insulation on any accessible cable.',
+        ];
+        const GROUP_9_LOCATION = [
+          'Kitchen sockets consumer unit',
+          'Bathroom shaver socket',
+          'Under stairs cupboard',
+          'Garage sub-main distribution board',
+          'Main CU by front door',
+          'First floor landing ring',
+          'Upstairs bedroom lighting board',
+          'Hallway consumer unit position 3',
+          'Outside meter tails',
+          'Loft immersion isolator',
+        ];
+        const GROUP_9_REGULATION = [
+          'Regulation 522.6.201',
+          'BS 7671 643.3.2',
+          '411.3.1.1',
+          'Regulation 411.3.3',
+          'BS 7671 Part 6',
+          '701.415.2',
+          '544.1.1',
+          '722.533',
+          'BS 7671 Section 706',
+          'Regulation 132.15',
+        ];
+        const GROUP_9_NORMAL = [
+          'Circuit 3 MCB is BS EN 60898-1 type C 16 amp.',
+          'Ring final on upstairs ring: R1 plus R2 is 0.51 ohms.',
+          'Downstairs sockets ring tested with mini-RCBO.',
+          'Lighting circuit live tested with line to earth at 230V.',
+          'Shower circuit protected by 50mA type A RCD.',
+          'Immersion heater isolator adjacent to cylinder.',
+          'Consumer unit labelled and accessible in the garage.',
+          'Main bonding to gas within 600mm of the gas meter.',
+          'RCBO on cooker circuit type B 32 amp.',
+          'Continuity of CPC by all three means confirmed.',
+        ];
+        const ALL_SAMPLES = [
+          ...GROUP_7_SAMPLES,
+          ...GROUP_9_LOCATION,
+          ...GROUP_9_REGULATION,
+          ...GROUP_9_NORMAL,
+        ];
+        // 60 samples: 20 Group 7 + 10 + 10 + 10 Group 9
+        const FIELD_CLASSES = [
+          'question',
+          'observation_text',
+          'observation_location',
+          'observation_regulation',
+        ];
+
+        test('no sample trips any of the 4 new bare markers under any of the 4 field classes', () => {
+          const falsePositives = [];
+          for (const field of FIELD_CLASSES) {
+            for (const sample of ALL_SAMPLES) {
+              const result = checkForPromptLeak(sample, { field });
+              if (!result.safe) {
+                const reason = result.reason || '';
+                if (
+                  reason === 'marker:user-text-bare' ||
+                  reason === 'marker:end-user-text-bare' ||
+                  reason === 'marker:left-angle-triple' ||
+                  reason === 'marker:right-angle-triple'
+                ) {
+                  falsePositives.push({ field, sample, reason });
+                }
+              }
+            }
+          }
+          expect(falsePositives).toEqual([]);
+        });
+      });
+    });
   });
 
   // ------------------------------------------------------------------
