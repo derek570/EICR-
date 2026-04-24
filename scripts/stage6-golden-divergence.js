@@ -442,6 +442,115 @@ export function computeCallLevelDivergence(legacyNorm, toolCallNorm) {
 }
 
 /**
+ * Plan 04-12 r6-#1 BLOCK — UNION call-count aggregator for triple-
+ * compare fixtures.
+ *
+ * Problem it fixes: r2-#3 added the oracle path so runFixture reports
+ * tool_vs_oracle_divergence and legacy_vs_oracle_divergence pairwise
+ * rates, and r2-#3 set `divergence.diverged = OR of all three pairings`.
+ * BUT `call_total` / `call_divergent_count` were still the PRIMARY
+ * legacy-vs-tool counts. runDirectory's aggregate at line 1071-1077
+ * reads from those primary counts, so a fixture where legacy+tool
+ * agree but both disagree with oracle ("both wrong the same way")
+ * reports call_divergence_rate=0 despite diverged=true. The exact
+ * failure mode the oracle exists to catch was silently zeroed.
+ *
+ * Fix methodology: UNION. For each section, for each index (up to max
+ * length across the three sources), check every pairwise comparison
+ * independently. If any pair disagrees on that write, the write is
+ * counted ONCE as divergent. Total writes = max(lengths) per section,
+ * summed. Missing on any source counts as divergent (matches the
+ * pre-r6 computeCallLevelDivergence semantics — dropping a slot is
+ * divergence, not a free pass).
+ *
+ * Rationale for UNION over Option B (tool-vs-oracle as primary):
+ *   - Back-compat with Shape B (oracle only) and Shape C (legacy+tool
+ *     only) — those have only 1 pairwise comparison each; the union
+ *     degenerates to that single comparison.
+ *   - A write divergent in multiple pairings (tool drifts from both
+ *     legacy AND oracle) counts ONCE — set semantics, not sum. Prevents
+ *     double-counting while still catching the divergence.
+ *   - Additive on top of the existing three pairwise rates rather than
+ *     flipping the contract.
+ *
+ * @param {Object} legacyNorm   normaliseExtractionResult output (or null)
+ * @param {Object} toolNorm     normaliseExtractionResult output (or null)
+ * @param {Object} oracleNorm   normaliseExtractionResult output (or null)
+ *                              — for triple-compare. Pass null when only
+ *                              two-way comparison is possible.
+ * @returns {{total: number, divergent: number, rate: number, reasons: string[]}}
+ */
+export function unionPairwiseCallCounts(legacyNorm, toolNorm, oracleNorm) {
+  const sections = ['readings', 'clears', 'circuit_ops', 'observations'];
+  let total = 0;
+  let divergent = 0;
+  const reasons = [];
+  for (const s of sections) {
+    const a = Array.isArray(legacyNorm?.[s]) ? legacyNorm[s] : [];
+    const b = Array.isArray(toolNorm?.[s]) ? toolNorm[s] : [];
+    const c = Array.isArray(oracleNorm?.[s]) ? oracleNorm[s] : [];
+    // Determine which sources are PRESENT for this comparison. A null
+    // norm means "no data at all from this source" — not "empty
+    // section". The distinction matters: if oracle is null (Shape C —
+    // no oracle), we do NOT count "missing in oracle" as divergence;
+    // the oracle simply isn't in the comparison set.
+    const hasLegacy = legacyNorm != null;
+    const hasTool = toolNorm != null;
+    const hasOracle = oracleNorm != null;
+    const len = Math.max(
+      hasLegacy ? a.length : 0,
+      hasTool ? b.length : 0,
+      hasOracle ? c.length : 0,
+    );
+    total += len;
+    for (let i = 0; i < len; i += 1) {
+      const ai = hasLegacy ? (i < a.length ? JSON.stringify(a[i]) : null) : null;
+      const bi = hasTool ? (i < b.length ? JSON.stringify(b[i]) : null) : null;
+      const ci = hasOracle ? (i < c.length ? JSON.stringify(c[i]) : null) : null;
+
+      // Compare each pair that has both sources present AT THIS INDEX.
+      // A source missing at this index OR null (source absent) both
+      // count as "no contribution to the comparison from that pair"
+      // — but a present-vs-missing counts as divergent (dropping a
+      // write is divergence, matching pre-r6 semantics).
+      let divAtIndex = false;
+      const mismatches = [];
+
+      // legacy vs tool
+      if (hasLegacy && hasTool) {
+        if (ai !== bi) {
+          divAtIndex = true;
+          mismatches.push(`legacy_vs_tool[${s}][${i}]`);
+        }
+      }
+      // tool vs oracle
+      if (hasTool && hasOracle) {
+        if (bi !== ci) {
+          divAtIndex = true;
+          mismatches.push(`tool_vs_oracle[${s}][${i}]`);
+        }
+      }
+      // legacy vs oracle
+      if (hasLegacy && hasOracle) {
+        if (ai !== ci) {
+          divAtIndex = true;
+          mismatches.push(`legacy_vs_oracle[${s}][${i}]`);
+        }
+      }
+
+      if (divAtIndex) {
+        divergent += 1; // UNION — count once even if multiple pairs fire
+        reasons.push(
+          `${s}[${i}]: ${mismatches.join(' + ')} (legacy=${ai ?? 'MISSING'} tool=${bi ?? 'MISSING'} oracle=${ci ?? 'MISSING'})`,
+        );
+      }
+    }
+  }
+  const rate = total === 0 ? 0 : divergent / total;
+  return { total, divergent, rate, reasons };
+}
+
+/**
  * Back-compat surface — combines BOTH section-level and call-level
  * divergence into one result object. Existing callers (tests, CLI
  * digest) that only read `diverged` / `reasons` keep working; new
@@ -925,19 +1034,46 @@ export async function runFixture(fixturePath) {
     const oracleEndState = projectToEndState(oracleNorm);
     const toolVsOracle = computeCallLevelDivergence(oracleEndState, toolEndState);
     const legacyVsOracle = computeCallLevelDivergence(oracleEndState, legacyEndState);
+
+    // Plan 04-12 r6-#1 BLOCK — UNION call-count aggregation. Before r6,
+    // `...primary` spread left `call_total` + `call_divergent_count` at
+    // the PRIMARY (legacy-vs-tool) counts, so "both wrong the same way"
+    // reported call_divergence=0 despite diverged=true. runDirectory's
+    // headline call_divergence_rate was built off these primary counts
+    // and therefore undercounted oracle-only divergences to zero. The
+    // union aggregator folds ALL pairwise comparisons into a single
+    // per-write divergent-or-not verdict (set semantics — a write
+    // divergent in multiple pairings counts once). End-state projection
+    // applies consistently: the oracle describes end-state so all three
+    // normsare projected for the union to compare on the same basis.
+    const union = unionPairwiseCallCounts(legacyEndState, toolEndState, oracleEndState);
+
     divergence = {
-      ...primary,
+      // Section-level + primary back-compat fields (unchanged from r5).
+      section_divergence: primary.section_divergence,
+      section_reasons: primary.section_reasons,
+      reasons: primary.reasons,
+      // Primary call-level (legacy-vs-tool) kept for any caller that
+      // explicitly wants the pairwise rate.
+      call_reasons: primary.call_reasons,
       // Triple-compare surface (Plan 04-08 r2-#3).
       legacy_vs_tool_divergence: primary.call_divergence,
       tool_vs_oracle_divergence: toolVsOracle.rate,
       legacy_vs_oracle_divergence: legacyVsOracle.rate,
       tool_vs_oracle_reasons: toolVsOracle.reasons,
       legacy_vs_oracle_reasons: legacyVsOracle.reasons,
-      // Diverged is now the OR of ALL THREE pairwise rates.
+      // Diverged is the OR of ALL THREE pairwise rates (unchanged).
       diverged:
         primary.diverged ||
         toolVsOracle.rate > 0 ||
         legacyVsOracle.rate > 0,
+      // CALL-LEVEL aggregate now reflects the UNION (Plan 04-12 r6-#1).
+      // runDirectory aggregates these across sessions into the headline
+      // call_divergence_rate. Post-r6 the headline correctly surfaces
+      // oracle-only divergence; pre-r6 it silently zeroed those.
+      call_divergence: union.rate,
+      call_total: union.total,
+      call_divergent_count: union.divergent,
     };
     // Attach the normalised oracle so downstream tooling can use it.
     return {
