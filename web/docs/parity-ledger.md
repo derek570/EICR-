@@ -250,14 +250,14 @@ iOS sources:
 | ios-ref | web-ref | status | phase | notes |
 |---|---|---|---|---|
 | `CircuitsTab.swift:L79-L114` portrait-only boards filter bar (horizontal pills) | `circuits/page.tsx:L240-L259` board pills (any orientation) | match |  |  |
-| `CircuitsTab.swift:L132-L139` Cancel delete-mode button | MISSING | missing | 5 | Web has no multi-select delete mode at all. |
-| `CircuitsTab.swift:L142-L155` Select All / Deselect All in delete mode | MISSING | missing | 5 |  |
-| `CircuitsTab.swift:L157-L164` "Delete (N)" bulk delete with count | `circuits/page.tsx:L386-L391` `stub('Delete all')` — non-functional | missing | 5 | Button is present but surfaces "not available on web yet." Listed at line 130. |
+| `CircuitsTab.swift:L132-L139` Cancel delete-mode button | N/A — web has single "Delete all" with confirm dialog | match | 5 | Phase 5: web simplifies multi-select → single "Delete all circuits on this board" guarded by `ConfirmDialog`. Wider web viewports make per-row delete trivially accessible; multi-select-mode state machine was not worth porting. |
+| `CircuitsTab.swift:L142-L155` Select All / Deselect All in delete mode | N/A — no multi-select mode on web | match | 5 | Subsumed by the simplification above. |
+| `CircuitsTab.swift:L157-L164` "Delete (N)" bulk delete with count | `circuits/page.tsx` Delete → `setConfirmDeleteAllOpen(true)` + `ConfirmDialog` showing count | match | 5 | Dialog body renders "This will remove N circuits …" so the count-aware intent is preserved. |
 | `CircuitsTab.swift:L166-L171` Add circuit button | `circuits/page.tsx:L380-L385` Add → RailButton onClick={addCircuit} | match |  |  |
-| `CircuitsTab.swift:L173-L180` Delete mode toggle (enters multi-select) | MISSING | missing | 5 |  |
-| `CircuitsTab.swift:L182-L188` Apply Defaults button | `circuits/page.tsx:L392-L397` `stub('Apply defaults')` | missing | 5 | Button rendered but stubbed. |
+| `CircuitsTab.swift:L173-L180` Delete mode toggle (enters multi-select) | N/A — no multi-select mode on web | match | 5 | Same rationale as the Cancel-delete-mode row. |
+| `CircuitsTab.swift:L182-L188` Apply Defaults button | `circuits/page.tsx` Defaults → `handleApplyDefaults` via `@certmate/shared-utils` `applyDefaultsToCircuits` | match | 5 | Phase 5 shipped. Non-overwrite invariant enforced in the shared helper (unit test `phase-5-apply-defaults.test.ts`). |
 | `CircuitsTab.swift:L190-L197` Reverse circuits button | `circuits/page.tsx:L398` Reverse → `reverse()` (wired) | match |  |  |
-| `CircuitsTab.swift:L199-L222` Calculate menu (Zs = Ze + R1+R2, R1+R2 = Zs − Ze) | `circuits/page.tsx:L399-L404` `stub('Calculate Zs / R1+R2')` | missing | 5 | Full impedance calculator algorithm at `CircuitsTab.swift:L1660+` not ported. |
+| `CircuitsTab.swift:L199-L222` Calculate menu (Zs = Ze + R1+R2, R1+R2 = Zs − Ze) | `circuits/page.tsx` Calculate rail button → floating menu → `handleCalculateZs` / `handleCalculateR1R2` via `@certmate/shared-utils` `applyZsCalculation` / `applyR1R2Calculation` | match | 5 | Phase 5 shipped. Pure helpers live in `packages/shared-utils/src/impedance.ts`; `formatImpedance` mirrors iOS trailing-zero trim. Negative R1+R2 skipped (iOS parity). |
 | `CircuitsTab.swift:L224-L245` CCU Photo button + retry state + mode sheet flow | `circuits/page.tsx:L405-L412` CCU RailButton + hidden `<input capture="environment">` + `handleCcuFile` | partial | 7 | Web triggers camera + hits `/api/analyze-ccu`, but skips mode selection. See CCU Mode Sheet rows below. |
 | `CircuitsTab.swift:L247-L260` Extract Doc button + dialog (Take Photo / Library / Files) | `circuits/page.tsx:L413-L420` Extract RailButton + hidden `<input accept="image/*">` + `handleDocFile` | partial | 7 | Web has single library picker only — no camera nor file picker. PDFs explicitly not supported (backend limitation). |
 
@@ -309,22 +309,22 @@ Column order from `Constants.swift:L180-L211`. Web surfaces them grouped in coll
 | `polarity_confirmed` (Polarity) | `Constants.swift:L206` | `circuits/page.tsx:L696-L705` SegmentedControl Pass/Fail/N/A | match |  |  |
 | `measured_zs_ohm` (Meas Zs) | `Constants.swift:L207` | `circuits/page.tsx:L665-L670` | match |  |  |
 | `rcd_time_ms` (RCD ms) | `Constants.swift:L208` | `circuits/page.tsx:L689-L694` | match |  |  |
-| `rcd_button_confirmed` (RCD Btn) | `Constants.swift:L209` | MISSING | missing | 5 | Web card doesn't expose the boolean RCD-button confirmation. |
-| `afdd_button_confirmed` (AFDD Btn) | `Constants.swift:L210` | MISSING | missing | 5 | Same — AFDD button confirmation missing on web. |
+| `rcd_button_confirmed` (RCD Btn) | `Constants.swift:L209` | `circuits-sticky-table.tsx` select column (OK/Y/N) | partial | 5 | Exposed in the Table view via a schema-aligned `<select>`; Cards view doesn't surface it yet. Close fully when card view adds an RCD Btn row. |
+| `afdd_button_confirmed` (AFDD Btn) | `Constants.swift:L210` | `circuits-sticky-table.tsx` select column (OK/Y/N) | partial | 5 | Same — Table view only. |
 
 ### Circuits — grid / layout / misc
 
 | ios-ref | web-ref | status | phase | notes |
 |---|---|---|---|---|
-| `CircuitsTab.swift:L565-L572` portraitCardGrid vs stickyGrid layout | `circuits/page.tsx:L460-L710` CircuitCard list (collapsible) | partial | 5 | iOS ships a full 29-column horizontally-scrolling sticky grid in landscape. Web uses only the card view. Wide Overview panel at `app/job/[id]/page.tsx:L364-L461` shows read-only version. |
-| `CircuitsTab.swift:L580-L600` landscape multi-board section header | MISSING | missing | 5 | Only relevant with sticky grid. |
-| `CircuitsTab.swift:L19-L21` polarityManuallyCleared Set<String> (prevents auto-set overwrite) | MISSING | missing | 5 | No auto-set logic on web to require this guard yet. |
-| `CircuitsTab.swift:L393-L410` Bulk-delete alert with dynamic count | MISSING | missing | 5 |  |
-| `CircuitsTab.swift:L411-L426` Scan Error + Impedance Calculation alerts | `circuits/page.tsx:L304-L329` inline banners | match |  | Shape differs (banner vs alert); same intent. |
+| `CircuitsTab.swift:L565-L572` portraitCardGrid vs stickyGrid layout | `circuits/page.tsx` Cards/Table toggle — Cards = collapsible list, Table = sticky 29-col grid (`components/job/circuits-sticky-table.tsx`) | match | 5 | Phase 5 shipped. Toggle persists to localStorage under `cm-circuits-view`; mobile default = Cards, desktop (≥1024) default = Table. Sticky left columns are Ref + Designation; scrollable pane holds all 27 remaining columns with iOS-derived widths. |
+| `CircuitsTab.swift:L580-L600` landscape multi-board section header | N/A — web board selector is a pill bar above the table regardless of orientation | match | 5 | Web doesn't swap layouts on orientation; the existing board-pills selector covers the multi-board UX in both Cards and Table modes. |
+| `CircuitsTab.swift:L19-L21` polarityManuallyCleared Set<String> (prevents auto-set overwrite) | N/A — no polarity auto-set on web yet | match | 5 | Guard only exists to protect against an auto-set iOS feature the web client doesn't implement. Re-visit if/when polarity auto-confirm ships (would pair with recording pipeline). |
+| `CircuitsTab.swift:L393-L410` Bulk-delete alert with dynamic count | `circuits/page.tsx` `ConfirmDialog` — body text renders `N circuit(s)` dynamically | match | 5 | Same intent; shape differs (modal vs native alert). |
+| `CircuitsTab.swift:L411-L426` Scan Error + Impedance Calculation alerts | `circuits/page.tsx` inline `actionHint` banner + error banners | match |  | Shape differs (banner vs alert); same intent. Calculate banner surfaces per-reason skip counts. |
 | `CircuitsTab.swift:L486-L520` `onChange(of: viewModel.job.circuits.count)` clear stale expandedCircuitId / draggedCircuitId | `circuits/page.tsx:L119` expandedId auto-clear on remove | partial | 5 | Web lacks drag-reorder, so draggedCircuitId N/A. |
-| Drag-and-drop reorder (`draggedCircuitId`) | `CircuitsTab.swift:L11` | MISSING | missing | 5 | Web Circuits have no drag reorder. |
+| Drag-and-drop reorder (`draggedCircuitId`) | `CircuitsTab.swift:L11` | MISSING | partial | 5 | Deferred from Phase 5 — drag reorder is niche on the table view (inspectors reorder rarely; web Reverse already covers the most common case). Re-visit only if parity ledger shows an inspector hitting it. |
 | `CircuitsTab.swift:L278-L295` Pending extractions section — thumbnails + Retry All | MISSING | missing | 7 | Covered under CCU flow. |
-| `CircuitsTab.swift:L130` stub → `setActionHint(\`${label} — not available on web yet.\`)` | `circuits/page.tsx:L130` same string | missing | 5 | The `stub()` text literally says the feature is unimplemented — every consumer (Delete all, Apply defaults, Calculate) is a targeted gap. |
+| `CircuitsTab.swift:L130` stub → `setActionHint(\`${label} — not available on web yet.\`)` | Removed — `stub()` helper deleted, all three consumers (Delete all / Apply defaults / Calculate) are wired | match | 5 | Closed by Phase 5. |
 
 ---
 
