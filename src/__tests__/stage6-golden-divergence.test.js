@@ -2570,11 +2570,19 @@ describe('Group r7-2 — Plan 04-13 r7-#2: runToolCallPath seeds recentCircuitOr
 
   test('r7-2c — back-compat: >SNAPSHOT_RECENT_CIRCUITS seeded circuits → only last N expanded in detail', async () => {
     // Synthetic fixture with 5 pre-seeded circuits (1..5). SNAPSHOT_RECENT_CIRCUITS
-    // is 3 (eicr-extraction-session.js:47). The harness-derived
-    // recentCircuitOrder should be [1,2,3,4,5]; the builder's
+    // is 3 (eicr-extraction-session.js:47). The declared
+    // recentCircuitOrder is [1,2,3,4,5]; the builder's
     // `.slice(-3)` keeps [3,4,5] detailed and pushes [1,2] to the
     // summary. This proves the seed respects the compaction semantic
     // rather than blindly exposing all circuits.
+    //
+    // Plan 04-17 r11-#1 — recentCircuitOrder declared explicitly
+    // (previously the fixture omitted it and relied on the numeric-
+    // ascending fallback, which r11-#1 now rejects with a fail-fast
+    // throw because seededKeys.size=5 > SNAPSHOT_RECENT_CIRCUITS=3).
+    // The declared value [1, 2, 3, 4, 5] matches the pre-r11 numeric
+    // fallback byte-for-byte so the downstream assertions on the
+    // detailed/summarised partition are unchanged.
     const syntheticFx = {
       pre_turn_state: {
         snapshot: {
@@ -2589,6 +2597,7 @@ describe('Group r7-2 — Plan 04-13 r7-#2: runToolCallPath seeds recentCircuitOr
           observations: [],
           validation_alerts: [],
         },
+        recentCircuitOrder: [1, 2, 3, 4, 5],
         askedQuestions: [],
         extractedObservations: [],
       },
@@ -2614,6 +2623,12 @@ describe('Group r7-2 — Plan 04-13 r7-#2: runToolCallPath seeds recentCircuitOr
     // guards with `if (circuit !== 0)`). The harness seed must mirror
     // that convention — otherwise supply fields would occupy one of the
     // three recent slots.
+    //
+    // Plan 04-17 r11-#1 — recentCircuitOrder declared explicitly
+    // (seededKeys.size=4 non-supply circuits > SNAPSHOT_RECENT_CIRCUITS=3
+    // so the fail-fast guard would otherwise fire). Declared value
+    // [1, 2, 3, 4] matches the pre-r11 numeric fallback byte-for-byte
+    // so downstream assertions stay unchanged.
     const syntheticFx = {
       pre_turn_state: {
         snapshot: {
@@ -2628,6 +2643,7 @@ describe('Group r7-2 — Plan 04-13 r7-#2: runToolCallPath seeds recentCircuitOr
           observations: [],
           validation_alerts: [],
         },
+        recentCircuitOrder: [1, 2, 3, 4],
         askedQuestions: [],
         extractedObservations: [],
       },

@@ -93,7 +93,13 @@ import { mockClient } from '../src/__tests__/helpers/mockStream.js';
 // shadow sessions use (fs.readFileSync of sonnet_agentic_system.md,
 // mode-gated systemPrompt selection, buildSystemBlocks two-block
 // cached-prefix layout). See runToolCallPath below.
-import { EICRExtractionSession } from '../src/extraction/eicr-extraction-session.js';
+import {
+  EICRExtractionSession,
+  // Plan 04-17 r11-#1 — track production value directly so the
+  // harness's fail-fast guard can't drift from the builder's
+  // detailed-view window size.
+  SNAPSHOT_RECENT_CIRCUITS,
+} from '../src/extraction/eicr-extraction-session.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const DEFAULT_THRESHOLD = 0.10;
@@ -837,6 +843,51 @@ export async function runToolCallPath(fx) {
         .map(Number)
         .filter((n) => Number.isInteger(n) && n !== 0),
     );
+
+    // Plan 04-17 r11-#1 [MAJOR] — fail-fast when the numeric fallback
+    // would be UNSAFE. The fallback (`[...seededKeys].sort((a, b) => a - b)`)
+    // matches production chronology only incidentally: production's
+    // `recentCircuitOrder` is CHRONOLOGICAL (splice+push per
+    // record_reading at eicr-extraction-session.js:1218-1221), not
+    // numeric. The fallback is safe-by-size when seeded circuits fit
+    // entirely in the detailed-view window
+    // (`seededKeys.size <= SNAPSHOT_RECENT_CIRCUITS`) — the builder's
+    // `.slice(-SNAPSHOT_RECENT_CIRCUITS)` compaction at line 1470
+    // trims nothing, so order doesn't affect which circuits land in
+    // the detailed block.
+    //
+    // When a fixture has MORE seeded circuits than the detail window,
+    // the numeric fallback silently guesses an ordering that may not
+    // match production chronology. Previously the harness accepted
+    // this silently — sample-03 has 4 seeded circuits + no declared
+    // order and was exercising this silent divergence since Plan 04-05.
+    // r11-#1 makes it explicit: the fixture author MUST declare
+    // `recentCircuitOrder` when seeded circuits exceed the detail-view
+    // window. The error message surfaces the seeded-circuit list and
+    // the constant value so the author can act on it without digging
+    // into the harness source.
+    //
+    // The guard sits in the no-declaration `else` branch. Fixtures
+    // that DO declare recentCircuitOrder have opted into chronology
+    // explicitly, so the guard does not apply — that path flows into
+    // the `if (Array.isArray(declaredOrder))` block below.
+    if (!Array.isArray(declaredOrder) && seededKeys.size > SNAPSHOT_RECENT_CIRCUITS) {
+      const seededList = [...seededKeys].sort((a, b) => a - b).join(', ');
+      throw new Error(
+        `golden-divergence: fixture seeds ${seededKeys.size} non-supply ` +
+          `circuits (${seededList}) but does not declare ` +
+          `\`pre_turn_state.recentCircuitOrder\`. The detailed-view ` +
+          `window is SNAPSHOT_RECENT_CIRCUITS=${SNAPSHOT_RECENT_CIRCUITS}, ` +
+          `so numeric fallback may silently diverge from production ` +
+          `chronology. Add an explicit recentCircuitOrder array to ` +
+          `the fixture declaring the chronological order the inspector ` +
+          `dictated these circuits (most recent at the end). For ` +
+          `pathological test cases (empty-chronology intent), declare ` +
+          `an empty array \`[]\` which will trigger the pathological ` +
+          `fallback deliberately.`,
+      );
+    }
+
     if (Array.isArray(declaredOrder)) {
       const normalised = [];
       for (const raw of declaredOrder) {
@@ -1130,7 +1181,24 @@ export async function runFixture(fixturePath) {
   // stage6-golden-divergence.test.js). runFixture only needs `bundled`
   // here, but accept both shapes defensively in case the fixture path
   // errored and returned null early.
-  const runOut = await runToolCallPath(fx);
+  // Plan 04-17 r11-#1 — wrap the toolCallPath call so a fail-fast
+  // recency error (or any other `golden-divergence:`-namespaced harness
+  // error) can be enriched with the fixture path before it propagates
+  // up the stack. This lets the CLI + batch runner surface which
+  // fixture failed without the caller having to walk the stack. The
+  // wrapper is narrow — only errors whose message begins with
+  // `golden-divergence:` are re-thrown with path context; everything
+  // else (including network errors from the tool loop) re-throws
+  // as-is so the original stack trace is preserved for debugging.
+  let runOut;
+  try {
+    runOut = await runToolCallPath(fx);
+  } catch (err) {
+    if (err && typeof err.message === 'string' && err.message.startsWith('golden-divergence:')) {
+      throw new Error(`${err.message} (fixture: ${path.basename(fixturePath)})`);
+    }
+    throw err;
+  }
   const toolResult = runOut ? runOut.bundled : null;
 
   // Resolve the three possible inputs to the comparison:

@@ -16,6 +16,8 @@
       "observations": [],
       "validation_alerts": []
     },
+    "_recentCircuitOrder_doc": "Plan 04-17 r11-#1 — recentCircuitOrder declared explicitly because seeded circuits exceed SNAPSHOT_RECENT_CIRCUITS (=3). Numeric ascending [1, 2, 3, 4] chosen because the fixture narrative doesn't impose chronology on circuits 1-4 (they were all pre-seeded before the ask_user round that this fixture models the resolution of); the value matches the pre-r11 numeric fallback byte-for-byte so downstream assertions are unchanged.",
+    "recentCircuitOrder": [1, 2, 3, 4],
     "askedQuestions": [],
     "extractedObservations": []
   },

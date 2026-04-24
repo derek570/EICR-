@@ -45,7 +45,14 @@ const CACHE_KEEPALIVE_MS = 4 * 60 * 1000; // 4 minutes
 
 // Number of most-recently-updated circuits to include in full detail in the state snapshot.
 // Older circuits are listed by number only (values stored server-side, not sent to API).
-const SNAPSHOT_RECENT_CIRCUITS = 3;
+//
+// Plan 04-17 r11-#1 — exported so `scripts/stage6-golden-divergence.js` can
+// track the production value directly rather than shadowing the constant
+// and risking drift. The harness uses this value to fail-fast when a
+// fixture seeds more non-supply circuits than fit in the detailed-view
+// window without declaring `recentCircuitOrder` explicitly (the numeric
+// fallback is safe-by-size only under `seededKeys.size <= this`).
+export const SNAPSHOT_RECENT_CIRCUITS = 3;
 
 // Plan 04-13 r7-#1 — cached-prefix TRUST BOUNDARY framing.
 //
