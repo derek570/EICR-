@@ -107,25 +107,22 @@ describe('checkForPromptLeak() — Layer 2 output-side prompt-leak filter', () =
         expect(result.reason).toBe('marker:end-user-text-bare');
       });
 
-      test('flags bare <<< as marker:left-angle-triple', () => {
+      // r24-#2: bare <<< / >>> no longer auto-flag. They only
+      // flag when within 20 chars of USER_TEXT / END_USER_TEXT
+      // (wrapper context). The payloads below have <<< / >>>
+      // but NO USER_TEXT nearby — r24-#2 makes these SAFE.
+      test('r24-#2: bare <<< without wrapper context is SAFE (code/diff context)', () => {
         const result = checkForPromptLeak('The wrapper opens with <<< at the start.', {
           field: 'question',
         });
-        expect(result.safe).toBe(false);
-        // First-match-wins: <<< appears first in the text AND the
-        // marker list comes BEFORE >>>, so the reason is
-        // left-angle-triple. If the iteration hits USER_TEXT first
-        // (for a payload containing both), the composite/earlier
-        // entries take precedence — that's fine.
-        expect(result.reason).toBe('marker:left-angle-triple');
+        expect(result.safe).toBe(true);
       });
 
-      test('flags bare >>> as marker:right-angle-triple', () => {
+      test('r24-#2: bare >>> without wrapper context is SAFE (code/diff context)', () => {
         const result = checkForPromptLeak('Legitimate reference to >>> chunks exists.', {
           field: 'question',
         });
-        expect(result.safe).toBe(false);
-        expect(result.reason).toBe('marker:right-angle-triple');
+        expect(result.safe).toBe(true);
       });
 
       test('case-insensitive: lowercase user_text fires bare marker', () => {
@@ -240,6 +237,219 @@ describe('checkForPromptLeak() — Layer 2 output-side prompt-leak filter', () =
                   reason === 'marker:end-user-text-bare' ||
                   reason === 'marker:left-angle-triple' ||
                   reason === 'marker:right-angle-triple'
+                ) {
+                  falsePositives.push({ field, sample, reason });
+                }
+              }
+            }
+          }
+          expect(falsePositives).toEqual([]);
+        });
+      });
+    });
+
+    // ----------------------------------------------------------
+    // r24-#2 — wrapper-context triple-angle scaffolding detector
+    //
+    // WHY: r23-#2 added bare `<<<` / `>>>` as MARKER_STRINGS
+    // entries that flag ANY occurrence. Those triple-angle
+    // sequences are the `<<<USER_TEXT>>>` wrapper syntax but
+    // also appear legitimately in code / diff contexts
+    // (merge-conflict markers, emphasis, ASCII art). The bare
+    // entries were too broad.
+    //
+    // Fix: narrow to WRAPPER CONTEXT. `<<<` / `>>>` are only
+    // flagged when they sit within 20 chars of USER_TEXT or
+    // END_USER_TEXT — i.e., the wrapper scaffolding is being
+    // referenced explicitly. New reason IDs:
+    // `marker:wrapper-scaffolding-left` (for <<<) and
+    // `marker:wrapper-scaffolding-right` (for >>>).
+    //
+    // Composite wrappers (`<<<USER_TEXT>>>` /
+    // `<<<END_USER_TEXT>>>`) retain first-match priority —
+    // those full-wrapper payloads still surface as the sharper
+    // `marker:user-text-open` / `marker:user-text-close`.
+    // ----------------------------------------------------------
+    describe('r24-#2 wrapper-context triple-angle scaffolding', () => {
+      test('flags <<<USER_TEXT (left triple adjacent to USER_TEXT)', () => {
+        const result = checkForPromptLeak('<<<USER_TEXT', { field: 'question' });
+        expect(result.safe).toBe(false);
+        expect(result.reason).toMatch(/^marker:wrapper-scaffolding-left$|^marker:user-text-bare$/);
+      });
+
+      test('flags USER_TEXT>>> (right triple adjacent to USER_TEXT)', () => {
+        const result = checkForPromptLeak('USER_TEXT>>>', { field: 'question' });
+        expect(result.safe).toBe(false);
+        expect(result.reason).toMatch(/^marker:wrapper-scaffolding-right$|^marker:user-text-bare$/);
+      });
+
+      test('flags "the wrapper uses <<< near USER_TEXT"', () => {
+        // <<< is 16 chars before USER_TEXT — well within 20.
+        const result = checkForPromptLeak('the wrapper uses <<< near USER_TEXT', {
+          field: 'question',
+        });
+        expect(result.safe).toBe(false);
+        expect(result.reason).toMatch(/^marker:wrapper-scaffolding-left$|^marker:user-text-bare$/);
+      });
+
+      test('flags "USER_TEXT then >>> closes"', () => {
+        const result = checkForPromptLeak('USER_TEXT then >>> closes', {
+          field: 'question',
+        });
+        expect(result.safe).toBe(false);
+        expect(result.reason).toMatch(/^marker:wrapper-scaffolding-right$|^marker:user-text-bare$/);
+      });
+
+      test('flags ">>> near END_USER_TEXT" (END_USER_TEXT adjacency)', () => {
+        const result = checkForPromptLeak('the END_USER_TEXT close uses >>>', {
+          field: 'question',
+        });
+        expect(result.safe).toBe(false);
+        expect(result.reason).toMatch(
+          /^marker:wrapper-scaffolding-right$|^marker:end-user-text-bare$/
+        );
+      });
+
+      test('flags "<<< and END_USER_TEXT together"', () => {
+        const result = checkForPromptLeak('<<< and END_USER_TEXT together', {
+          field: 'question',
+        });
+        expect(result.safe).toBe(false);
+        expect(result.reason).toMatch(
+          /^marker:wrapper-scaffolding-left$|^marker:end-user-text-bare$/
+        );
+      });
+
+      // r24-#2: bare triple-angle WITHOUT USER_TEXT nearby is SAFE.
+      test('SAFE: "<<<" in code/diff context with NO USER_TEXT nearby', () => {
+        const result = checkForPromptLeak('Code diff: <<< line removed', {
+          field: 'question',
+        });
+        expect(result.safe).toBe(true);
+      });
+
+      test('SAFE: ">>>" in prose with NO USER_TEXT nearby', () => {
+        const result = checkForPromptLeak('Legit >>> marker in the middle of a text', {
+          field: 'question',
+        });
+        expect(result.safe).toBe(true);
+      });
+
+      test('SAFE: triple-angle >21 chars away from USER_TEXT does NOT fire wrapper detector', () => {
+        // 30 chars of padding between <<< and USER_TEXT — outside
+        // the 20-char window. The bare USER_TEXT marker still
+        // fires (r23-#2 coverage), but the wrapper-scaffolding
+        // detector does NOT.
+        const text = '<<<' + ' '.repeat(30) + 'USER_TEXT';
+        const result = checkForPromptLeak(text, { field: 'question' });
+        expect(result.safe).toBe(false);
+        // Only USER_TEXT fires; <<< is too far to count as wrapper
+        // scaffolding.
+        expect(result.reason).toBe('marker:user-text-bare');
+      });
+
+      // Back-compat — composite wrapper still surfaces as sharper ID.
+      test('back-compat: <<<USER_TEXT>>> full wrapper surfaces as user-text-open (sharper than scaffolding)', () => {
+        const result = checkForPromptLeak('<<<USER_TEXT>>> is the full wrapper.', {
+          field: 'question',
+        });
+        expect(result.safe).toBe(false);
+        expect(result.reason).toBe('marker:user-text-open');
+      });
+
+      test('back-compat: <<<END_USER_TEXT>>> full wrapper surfaces as user-text-close', () => {
+        const result = checkForPromptLeak('<<<END_USER_TEXT>>> closes dictation.', {
+          field: 'question',
+        });
+        expect(result.safe).toBe(false);
+        expect(result.reason).toBe('marker:user-text-close');
+      });
+
+      // FP audit — 60-sample composite normal corpus × 4 field
+      // classes = 240 checks. 0 should trip the new wrapper-
+      // scaffolding-* markers.
+      describe('FP audit: wrapper-scaffolding 0/240 on 60-sample composite normal corpus', () => {
+        const GROUP_7_SAMPLES = [
+          'Zs on circuit three is nought point three five.',
+          'Circuit two, insulation greater than two hundred both ways, polarity correct.',
+          'Consumer unit in the hallway, RCBO type B, 32 amp.',
+          'For example, 1 hour delay before the RCD tripped.',
+          'Observation: missing earthing on the immersion heater.',
+          'The trusted bounds of the installation include a sub-board in the garage.',
+          'Code this as C2 — absent main bonding to gas.',
+          'Add a C3 observation for the non-standard cable colour.',
+          'R1 plus R2 is zero point five one ohms on circuit four.',
+          'Example 1 of 5 scenarios tested — all circuits passed.',
+          'The system does not emit any readings when the test is incomplete.',
+          'Please correct the reading for circuit 3 — it should be 0.71.',
+          'The silent writes mode is preferred by this electrician but not required.',
+          'You are correct that circuit 6 is outdoors.',
+          'The 7 tools in my kit include a multimeter and clamp meter.',
+          'For instance, STQ is not a valid code.',
+          'We have 7 observations so far in this inspection.',
+          'The meter reads less than 0.5 ohm.',
+          'Ring continuity test on circuit 4 gave matching values.',
+          'No visible damage to the insulation on any accessible cable.',
+        ];
+        const GROUP_9_LOCATION = [
+          'Kitchen sockets consumer unit',
+          'Bathroom shaver socket',
+          'Under stairs cupboard',
+          'Garage sub-main distribution board',
+          'Main CU by front door',
+          'First floor landing ring',
+          'Upstairs bedroom lighting board',
+          'Hallway consumer unit position 3',
+          'Outside meter tails',
+          'Loft immersion isolator',
+        ];
+        const GROUP_9_REGULATION = [
+          'Regulation 522.6.201',
+          'BS 7671 643.3.2',
+          '411.3.1.1',
+          'Regulation 411.3.3',
+          'BS 7671 Part 6',
+          '701.415.2',
+          '544.1.1',
+          '722.533',
+          'BS 7671 Section 706',
+          'Regulation 132.15',
+        ];
+        const GROUP_9_NORMAL = [
+          'Circuit 3 MCB is BS EN 60898-1 type C 16 amp.',
+          'Ring final on upstairs ring: R1 plus R2 is 0.51 ohms.',
+          'Downstairs sockets ring tested with mini-RCBO.',
+          'Lighting circuit live tested with line to earth at 230V.',
+          'Shower circuit protected by 50mA type A RCD.',
+          'Immersion heater isolator adjacent to cylinder.',
+          'Consumer unit labelled and accessible in the garage.',
+          'Main bonding to gas within 600mm of the gas meter.',
+          'RCBO on cooker circuit type B 32 amp.',
+          'Continuity of CPC by all three means confirmed.',
+        ];
+        const ALL_SAMPLES = [
+          ...GROUP_7_SAMPLES,
+          ...GROUP_9_LOCATION,
+          ...GROUP_9_REGULATION,
+          ...GROUP_9_NORMAL,
+        ];
+        const FIELD_CLASSES = [
+          'question',
+          'observation_text',
+          'observation_location',
+          'observation_regulation',
+        ];
+
+        test('no sample trips wrapper-scaffolding-* under any field class', () => {
+          const falsePositives = [];
+          for (const field of FIELD_CLASSES) {
+            for (const sample of ALL_SAMPLES) {
+              const result = checkForPromptLeak(sample, { field });
+              if (!result.safe) {
+                const reason = result.reason || '';
+                if (
+                  reason === 'marker:wrapper-scaffolding-left' ||
+                  reason === 'marker:wrapper-scaffolding-right'
                 ) {
                   falsePositives.push({ field, sample, reason });
                 }
@@ -1397,23 +1607,53 @@ describe('checkForPromptLeak() — Layer 2 output-side prompt-leak filter', () =
       expect(result.reason).not.toMatch(/^non-regulation-shape/);
     });
 
-    // --------- Empty-token handling ---------
-    test('empty tokens from trailing separator are skipped (not failed)', () => {
+    // --------- r24-#2: malformed-composite handling (flipped from r23 skip to r24 reject) ---------
+    //
+    // Plan 04-30 r23-#1 silently SKIPPED empty tokens from
+    // leading / trailing / doubled separators (considered
+    // dictation artefacts). r24-#2 tightens this: malformed
+    // composite inputs REJECT. A retry is cheaper than
+    // silently accepting invalid content as a regulation ref.
+    test('r24-#2: trailing separator rejects (was r23 skip)', () => {
       const text = '411.3.3, ';
       const result = checkForPromptLeak(text, { field: 'observation_regulation' });
-      expect(result.safe).toBe(true);
+      expect(result.safe).toBe(false);
+      expect(result.reason).toMatch(/^non-regulation-shape/);
     });
 
-    test('empty tokens from leading separator are skipped (not failed)', () => {
+    test('r24-#2: leading separator rejects (was r23 skip)', () => {
       const text = ', 411.3.3';
       const result = checkForPromptLeak(text, { field: 'observation_regulation' });
-      expect(result.safe).toBe(true);
+      expect(result.safe).toBe(false);
+      expect(result.reason).toMatch(/^non-regulation-shape/);
     });
 
-    test('empty tokens from doubled separator are skipped (not failed)', () => {
+    test('r24-#2: doubled separator rejects (was r23 skip)', () => {
       const text = '411.3.3,,522.6.201';
       const result = checkForPromptLeak(text, { field: 'observation_regulation' });
-      expect(result.safe).toBe(true);
+      expect(result.safe).toBe(false);
+      expect(result.reason).toMatch(/^non-regulation-shape/);
+    });
+
+    test('r24-#2: whitespace-doubled separator rejects', () => {
+      const text = '411.3.3, , 522.6.201';
+      const result = checkForPromptLeak(text, { field: 'observation_regulation' });
+      expect(result.safe).toBe(false);
+      expect(result.reason).toMatch(/^non-regulation-shape/);
+    });
+
+    test('r24-#2: slash edge case "411.3.3 /" rejects', () => {
+      const text = '411.3.3 /';
+      const result = checkForPromptLeak(text, { field: 'observation_regulation' });
+      expect(result.safe).toBe(false);
+      expect(result.reason).toMatch(/^non-regulation-shape/);
+    });
+
+    test('r24-#2: slash edge case "/ 411.3.3" rejects', () => {
+      const text = '/ 411.3.3';
+      const result = checkForPromptLeak(text, { field: 'observation_regulation' });
+      expect(result.safe).toBe(false);
+      expect(result.reason).toMatch(/^non-regulation-shape/);
     });
 
     test('pure-separator string rejects (no non-empty tokens)', () => {
@@ -1421,6 +1661,13 @@ describe('checkForPromptLeak() — Layer 2 output-side prompt-leak filter', () =
       const result = checkForPromptLeak(text, { field: 'observation_regulation' });
       expect(result.safe).toBe(false);
       expect(result.reason).toMatch(/^non-regulation-shape/);
+    });
+
+    // Back-compat: normal composite with space after comma still ACCEPTS.
+    test('back-compat: normal composite "411.3.3, 522.6.201" (space after comma) accepts', () => {
+      const text = '411.3.3, 522.6.201';
+      const result = checkForPromptLeak(text, { field: 'observation_regulation' });
+      expect(result.safe).toBe(true);
     });
 
     // --------- "and" word boundary ---------
