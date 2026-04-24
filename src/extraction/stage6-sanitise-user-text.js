@@ -41,8 +41,14 @@ export const HARD_REJECT_USER_TEXT_LEN = 8192;
 
 // Match every C0 control character EXCEPT \t (0x09), \n (0x0A), \r (0x0D).
 // Also matches DEL (0x7F). Global flag so .replace() strips all occurrences.
+//
+// Plan 04-13 r7-#1 — exported so `eicr-extraction-session.js`'s
+// `sanitiseSnapshotField` helper can reuse the same regex. Single
+// source of truth for C0-control stripping across both
+// `untrusted_user_text` (Phase 3) and cached-prefix snapshot content
+// (Phase 4 r7 fix).
 // eslint-disable-next-line no-control-regex
-const CONTROL_CHAR_PATTERN = /[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g;
+export const CONTROL_CHAR_PATTERN = /[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g;
 
 export function sanitiseUserText(raw) {
   if (typeof raw !== 'string') {
