@@ -88,5 +88,11 @@
       "question": "Was that R1 plus R2 for circuit 2?",
       "heard_value": "0.64"
     }
-  ]
+  ],
+  "expected_slot_writes": {
+    "_doc": "Plan 04-07 r1 (Codex MAJOR #3) ORACLE. Previously the fixture had no sse_events_legacy AND no expected_slot_writes, so runFixture fell back to legacyResult=toolResult and reported 0% divergence as a self-compare artefact. The new oracle locks what the WELL-BEHAVED tool-call path should emit for this transcript (insulation l-l 200 on circuit 3) given the cached prefix already carries r1_r2_ohm=0.64 on circuit 2. Divergence is now a real comparison: runFixture derives {extracted_readings:[{circuit:3,field:'ir_live_live_mohm',value:'>200'}]} from this oracle via expectedSlotWritesToLegacyShape and checks the tool-call output matches it. Any future dispatcher change that drops, splits, or mis-routes the reading surfaces as non-zero divergence here, not as a free 0% pass.",
+    "circuits": {
+      "3": { "ir_live_live_mohm": ">200" }
+    }
+  }
 }

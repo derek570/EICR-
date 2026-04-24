@@ -400,8 +400,77 @@ async function runToolCallPath(fx) {
 }
 
 /**
+ * Convert an `expected_slot_writes` oracle into the legacy result shape
+ * (`{extracted_readings: Array<{circuit,field,value}>}`) that
+ * `normaliseExtractionResult` already knows how to canonicalise.
+ *
+ * This is the oracle-path equivalent of `extractLegacyFromFixture` for
+ * Variant-B fixtures that ship only an intended-outcome map, not a
+ * canned legacy SSE stream.
+ *
+ * WHY expose this as a named export: Plan 04-07 r1 tests bind against
+ * the helper directly (`Group H — expectedSlotWritesToLegacyShape ...`)
+ * to lock its {circuits:{N:{f:v}}} → {extracted_readings:[{c,f,v}]}
+ * contract independently of the larger runFixture flow. If a future
+ * edit changes how oracles are shaped, the test surfaces it before
+ * integration reports go wrong.
+ *
+ * Input shape: `{circuits: {[N]: {[field]: value, ...}}}`. Any non-
+ * reading fields on a circuit (e.g. `circuit_designation`) are also
+ * emitted as readings for comparison symmetry — the normaliser treats
+ * all `{circuit,field,value}` tuples uniformly, which means the oracle
+ * path compares designation-as-a-reading too. In practice the tool-call
+ * bundler emits circuit_designation via circuit_updates, not
+ * extracted_readings, so oracle + tool-call diverge on designation
+ * UNLESS the oracle author also wires the circuit_ops slot. See
+ * sample-03 for the dual pattern. Callers should keep oracle content
+ * scoped to reading-shaped slots.
+ *
+ * @param {{circuits?: Object}} oracle
+ * @returns {{extracted_readings: Array<{circuit:number|string, field:string, value:any}>}}
+ */
+export function expectedSlotWritesToLegacyShape(oracle) {
+  const out = { extracted_readings: [] };
+  if (!oracle || typeof oracle !== 'object') return out;
+  const circuits = oracle.circuits;
+  if (!circuits || typeof circuits !== 'object') return out;
+  for (const [circuitKey, bucket] of Object.entries(circuits)) {
+    if (!bucket || typeof bucket !== 'object') continue;
+    // Coerce numeric keys back to numbers so the normaliser's sort
+    // comparator uses integer ordering rather than string ordering.
+    // Keeps parity with fixture snapshots that key circuits by integer.
+    const circuit = /^-?\d+$/.test(circuitKey) ? Number(circuitKey) : circuitKey;
+    for (const [field, value] of Object.entries(bucket)) {
+      out.extracted_readings.push({ circuit, field, value });
+    }
+  }
+  return out;
+}
+
+/**
  * Run one fixture: derive legacy result, run tool-call dispatcher, normalise
  * both, compute divergence, return per-fixture outcome.
+ *
+ * Plan 04-07 r1 remediation (Codex MAJOR #3): the previous
+ * `legacyResult = toolResult` fallback made Variant-B fixtures self-
+ * compare, producing fake 0% divergence regardless of dispatcher
+ * correctness. The new behaviour:
+ *
+ *   - Fixture has `sse_events_legacy`: use it (Variant A — unchanged).
+ *   - Fixture has only `expected_slot_writes`: use the ORACLE PATH —
+ *     convert the oracle into a legacy-shape result via
+ *     `expectedSlotWritesToLegacyShape` and compare against the
+ *     tool-call output. This is a REAL comparison, not a self-compare.
+ *   - Fixture has NEITHER: throw. Silent self-compare is the exact
+ *     failure mode Codex's finding called out; throwing makes the
+ *     missing data impossible to miss.
+ *
+ * Combined shape (Variant A + oracle): if a fixture ships BOTH
+ * sse_events_legacy AND expected_slot_writes, the legacy SSE stream
+ * takes priority (it models richer behaviour the oracle cannot — e.g.
+ * specific question text, validation alerts). The oracle is still
+ * useful as documentation of intent but is not used for comparison
+ * in that case.
  */
 export async function runFixture(fixturePath) {
   const fx = readJsonSync(fixturePath);
@@ -411,12 +480,24 @@ export async function runFixture(fixturePath) {
   // directory-runner aggregation surfaces the issue.
   const toolResult = await runToolCallPath(fx);
 
-  // Legacy side: prefer the fixture's sse_events_legacy; fall back to the
-  // tool-call result (Variant B — F21934D4 style) which makes the fixture
-  // a self-consistency check.
+  // Legacy side resolution order:
+  //   1. sse_events_legacy (Variant A — existing path, pre-r1 behaviour)
+  //   2. expected_slot_writes (Variant B / oracle path — NEW in r1)
+  //   3. throw (no more silent self-compare)
   let legacyResult = extractLegacyFromFixture(fx);
+  let legacySource = 'sse_events_legacy';
   if (!legacyResult) {
-    legacyResult = toolResult;
+    if (fx.expected_slot_writes) {
+      legacyResult = expectedSlotWritesToLegacyShape(fx.expected_slot_writes);
+      legacySource = 'expected_slot_writes';
+    } else {
+      throw new Error(
+        `golden-divergence: fixture ${path.basename(fixturePath)} is missing ` +
+          `both sse_events_legacy and expected_slot_writes — refusing to ` +
+          `self-compare (Plan 04-07 r1 remediation of Codex MAJOR #3). ` +
+          `Add an expected_slot_writes oracle or a sse_events_legacy stream.`,
+      );
+    }
   }
 
   const legacyNorm = normaliseExtractionResult(legacyResult);
@@ -429,6 +510,7 @@ export async function runFixture(fixturePath) {
     legacyNorm,
     toolCallNorm,
     divergence,
+    legacy_source: legacySource,
   };
 }
 
