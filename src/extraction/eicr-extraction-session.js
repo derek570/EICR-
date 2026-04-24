@@ -1310,13 +1310,36 @@ export class EICRExtractionSession {
 
     const parts = [];
 
+    // Plan 04-14 r8-#2 — FRAMING GATE. The r7 TRUST BOUNDARY
+    // preamble and the USER_TEXT marker wraps (schedule,
+    // observations, extractedObservations, circuit designations,
+    // supply fields, pending readings) are non-off-only. Off-mode
+    // snapshot must stay byte-identical to pre-Phase-4 per SC #7
+    // (STR-01 rollback). Sanitisation (C0 strip + length cap) still
+    // runs in all modes below — that's a safety fix, not a shape
+    // change, so preserving it in off-mode is correct.
+    //
+    // Why this gate matters: this is the SECOND time a remediation
+    // has leaked non-off-only content to off-mode. Plan 04-08 r2
+    // added ASKED/EXTRACTED digests un-gated (Codex r4 caught, Plan
+    // 04-10 r4-#1 gated them). Plan 04-13 r7 added preamble + wraps
+    // un-gated (Codex r8 caught, this line gates them). The
+    // stage6-off-mode-snapshot-canary.test.js file installs a
+    // PERMANENT byte-identical tripwire so a third occurrence fires
+    // at CI.
+    const includeFraming = this.toolCallsMode !== 'off';
+
     // Plan 04-13 r7-#1 [SECURITY BLOCK] — prepend TRUST BOUNDARY
     // preamble as the FIRST entry so every user-derived span that
-    // follows is covered by the preamble's prose contract. Unconditional
-    // inside the non-null gate (we've already proven at least one
+    // follows is covered by the preamble's prose contract. Inside
+    // the non-null gate (we've already proven at least one
     // user-content surface is populated). When the snapshot is null
     // (pre-gate), no preamble lands — caller never sees an orphan.
-    parts.push(SNAPSHOT_TRUST_BOUNDARY_PREAMBLE);
+    //
+    // Plan 04-14 r8-#2 gate: non-off only.
+    if (includeFraming) {
+      parts.push(SNAPSHOT_TRUST_BOUNDARY_PREAMBLE);
+    }
 
     // Include circuit schedule so Sonnet knows circuit designations, supply info,
     // and hardware details even after early messages drop from the sliding window.
@@ -1327,9 +1350,15 @@ export class EICRExtractionSession {
     // Sanitise via `sanitiseSnapshotField` (C0 strip + marker-escape +
     // length cap) and wrap in <<<USER_TEXT>>>...<<<END_USER_TEXT>>>
     // markers so the model knows the block is quoted data.
+    //
+    // Plan 04-14 r8-#2 gate: sanitise always; wrap non-off only.
     if (hasSchedule) {
+      const sanitisedSchedule = sanitiseSnapshotField(this.circuitSchedule);
+      const scheduleContent = includeFraming
+        ? wrapSnapshotUserText(sanitisedSchedule)
+        : sanitisedSchedule;
       parts.push(
-        `CIRCUIT SCHEDULE (confirmed values — do NOT question these):\n${wrapSnapshotUserText(sanitiseSnapshotField(this.circuitSchedule))}`
+        `CIRCUIT SCHEDULE (confirmed values — do NOT question these):\n${scheduleContent}`
       );
     }
 
@@ -1351,14 +1380,23 @@ export class EICRExtractionSession {
       // pass through unchanged — numbers have no injection surface
       // and wrapping them would break JSON shape (`"volts":"<<<...>>>230<<<...>>>"`
       // vs `"volts":230`).
+      //
+      // Plan 04-14 r8-#2 gate: in off-mode, keep the pre-r7 shape
+      // (raw string values, no wrap) so SC #7 byte-identical
+      // rollback holds.
       const supplyData = this.stateSnapshot.circuits[0];
       if (supplyData && Object.keys(supplyData).length > 0) {
-        const wrappedSupply = {};
-        for (const [field, value] of Object.entries(supplyData)) {
-          wrappedSupply[field] =
-            typeof value === 'string' ? wrapSnapshotUserTextInline(value) : value;
+        if (includeFraming) {
+          const wrappedSupply = {};
+          for (const [field, value] of Object.entries(supplyData)) {
+            wrappedSupply[field] =
+              typeof value === 'string' ? wrapSnapshotUserTextInline(value) : value;
+          }
+          lines.push(`0:${JSON.stringify(wrappedSupply)}`);
+        } else {
+          // Off-mode: emit the raw object verbatim. Pre-Phase-4 shape.
+          lines.push(`0:${JSON.stringify(supplyData)}`);
         }
-        lines.push(`0:${JSON.stringify(wrappedSupply)}`);
       }
 
       // Split non-supply circuits into recent (detailed) and older (summary)
@@ -1393,14 +1431,25 @@ export class EICRExtractionSession {
       // escape + length cap) still runs underneath the wrap, so an
       // attacker embedding the close marker verbatim cannot
       // terminate the region early.
+      //
+      // Plan 04-14 r8-#2 gate: off-mode keeps the pre-r7 shape
+      // (raw string values, no wrap). Pre-Phase-4 snapshot had no
+      // framing because there was no security model for it; SC #7
+      // locks that shape invariant for rollback.
       for (const num of recentNums) {
         const fields = this.stateSnapshot.circuits[num];
         if (!fields) continue;
         const compact = {};
         for (const [field, value] of Object.entries(fields)) {
           const id = FIELD_ID_MAP[field];
-          const cleanedValue =
-            typeof value === 'string' ? wrapSnapshotUserTextInline(value) : value;
+          let cleanedValue;
+          if (typeof value === 'string') {
+            cleanedValue = includeFraming
+              ? wrapSnapshotUserTextInline(value)
+              : value;
+          } else {
+            cleanedValue = value;
+          }
           compact[id != null ? id : field] = cleanedValue;
         }
         lines.push(`${num}:${JSON.stringify(compact)}`);
@@ -1415,18 +1464,26 @@ export class EICRExtractionSession {
       // coverage over every user-derived span in the snapshot.
       // `field` is a canonical name drawn from our schema, not user
       // input, so it stays unwrapped.
+      //
+      // Plan 04-14 r8-#2 gate: off-mode keeps the raw shape —
+      // `pending:[{"field":"...","value":"...","unit":"..."}]`
+      // — per SC #7.
       if (hasPending) {
-        const wrappedPending = this.stateSnapshot.pending_readings.map((p) => {
-          const wrapped = { ...p };
-          if (typeof p.value === 'string') {
-            wrapped.value = wrapSnapshotUserTextInline(p.value);
-          }
-          if (typeof p.unit === 'string') {
-            wrapped.unit = wrapSnapshotUserTextInline(p.unit);
-          }
-          return wrapped;
-        });
-        lines.push(`pending:${JSON.stringify(wrappedPending)}`);
+        if (includeFraming) {
+          const wrappedPending = this.stateSnapshot.pending_readings.map((p) => {
+            const wrapped = { ...p };
+            if (typeof p.value === 'string') {
+              wrapped.value = wrapSnapshotUserTextInline(p.value);
+            }
+            if (typeof p.unit === 'string') {
+              wrapped.unit = wrapSnapshotUserTextInline(p.unit);
+            }
+            return wrapped;
+          });
+          lines.push(`pending:${JSON.stringify(wrappedPending)}`);
+        } else {
+          lines.push(`pending:${JSON.stringify(this.stateSnapshot.pending_readings)}`);
+        }
       }
 
       if (hasAlerts) {
@@ -1446,10 +1503,17 @@ export class EICRExtractionSession {
     // after sanitisation, so the model sees per-observation quoted
     // boundaries. Enumeration number ("1.") stays OUTSIDE the marker
     // because it's harness-generated metadata, not user content.
+    //
+    // Plan 04-14 r8-#2 gate: off-mode emits the pre-r7 shape —
+    // `1. <raw obs text>` with no markers. Sanitisation still runs
+    // (C0 strip + length cap) because that's a hygiene fix, not a
+    // shape change.
     if (hasObs) {
       const condensed = this.stateSnapshot.observations.map((o, i) => {
         const short = o.length > 50 ? o.substring(0, 50) + '...' : o;
-        return `${i + 1}. ${wrapSnapshotUserText(sanitiseSnapshotField(short))}`;
+        const sanitised = sanitiseSnapshotField(short);
+        const content = includeFraming ? wrapSnapshotUserText(sanitised) : sanitised;
+        return `${i + 1}. ${content}`;
       });
       parts.push(
         `OBSERVATIONS ALREADY RECORDED (${this.stateSnapshot.observations.length} total, do NOT re-extract):\n${condensed.join('\n')}`
