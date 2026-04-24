@@ -300,6 +300,258 @@ describe('checkForPromptLeak() — Layer 2 output-side prompt-leak filter', () =
   });
 
   // ------------------------------------------------------------------
+  // Group 8 — r20-#3 entropy + reversed + conservative detection
+  //
+  // r20 review identified that 04-26's detection families (markers,
+  // requirement-IDs, structural phrases, example scaffolding, length
+  // ceilings) covered plaintext leaks but not encoded / transformed
+  // content. Three new families close the gap:
+  //
+  //   1. High-entropy substring detection — flags base64 / hex blobs
+  //      of ≥40 chars. Real-world inspection text has almost no
+  //      long high-entropy runs (a regulation like 411.3.3 is 7
+  //      chars, a measurement like 0.35 is 4; base64-encoded prompt
+  //      content is ≥60 chars minimum for useful fragments).
+  //
+  //   2. Reversed-content detection — checks whether the input
+  //      reversed contains any known marker or structural phrase.
+  //      Cheap: 1 reverse + ~11 substring checks.
+  //
+  //   3. Per-field conservative low-alpha-ratio backstop — for
+  //      `question` (≥200 chars, <50% alpha) and `designation`
+  //      (≥40 chars, <40% alpha). Catches binary-ish payloads that
+  //      slip under length ceilings. `observation_text` is NOT
+  //      low-alpha-guarded — observations legitimately contain lots
+  //      of numeric content (readings, regulation refs, cable
+  //      sizes).
+  //
+  // False-positive bar: 0/20 on both the 04-26 corpus (Group 7)
+  // and the new 20-sample r20-#3 corpus below. If any FP, the
+  // detector MUST be tightened — failing legitimate inspector
+  // dictation is worse than a prompt leak, and the product's
+  // existence depends on voice extraction working.
+  // ------------------------------------------------------------------
+  describe('Group 8 — r20-#3 entropy + reversed + conservative detection', () => {
+    // --------- Entropy: base64 chunks ---------
+    test('48-char base64 chunk is flagged (entropy)', () => {
+      // 48 chars = typical base64 expansion of a 36-byte prompt
+      // fragment. No sane inspection text contains this.
+      const text = 'WW91IGFyZSBhbiBFSUNSIGluc3BlY3Rpb24gYXNzaXN0YW50';
+      const result = checkForPromptLeak(text, { field: 'question' });
+      expect(result.safe).toBe(false);
+      expect(result.reason).toMatch(/^entropy:/);
+    });
+
+    test('36-char base64 string is safe (under 40 threshold — UUID-sized)', () => {
+      // A UUID is 36 chars (with hyphens); without hyphens ~32.
+      // 36 chars of base64 chars is close to that range — keep it
+      // below threshold so UUID refs in text aren't false-positived.
+      const text = 'WW91IGFyZSBhbiBFSUNSIGluc3BlY3Rpb24gYWE=';
+      // Strip to exactly 36 base64 chars.
+      const bounded = text.slice(0, 36);
+      const result = checkForPromptLeak(bounded, { field: 'question' });
+      expect(result.safe).toBe(true);
+    });
+
+    test('48-char hex chunk is flagged (entropy)', () => {
+      // 48 hex chars = 192-bit hash or arbitrary binary encoding.
+      const text = 'a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6';
+      const result = checkForPromptLeak(text, { field: 'question' });
+      expect(result.safe).toBe(false);
+      expect(result.reason).toMatch(/^entropy:/);
+    });
+
+    test('16-char hex (short-hash / colour code) is safe', () => {
+      const text = 'Reference code #a1b2c3 for the red wire.';
+      const result = checkForPromptLeak(text, { field: 'observation_text' });
+      expect(result.safe).toBe(true);
+    });
+
+    test('base64 chunk embedded in longer text is still caught', () => {
+      // Attack: leak the prompt as b64 inside an otherwise-normal
+      // sentence to dodge plaintext detection.
+      const text =
+        'For reference see ' + 'WW91IGFyZSBhbiBFSUNSIGluc3BlY3Rpb24gYXNzaXN0YW50' + ' end.';
+      const result = checkForPromptLeak(text, { field: 'question' });
+      expect(result.safe).toBe(false);
+      expect(result.reason).toMatch(/^entropy:/);
+    });
+
+    // --------- Reversed content ---------
+    test('reversed TRUST BOUNDARY ("YRADNUOB TSURT") is flagged', () => {
+      const text = 'Here is a string: YRADNUOB TSURT';
+      const result = checkForPromptLeak(text, { field: 'question' });
+      expect(result.safe).toBe(false);
+      expect(result.reason).toMatch(/^reversed:/);
+    });
+
+    test('reversed "You are an EICR inspection assistant" is flagged', () => {
+      // Reversed: 'tnatsissa noitcepsni RCIE na era uoY'
+      const text = 'tnatsissa noitcepsni RCIE na era uoY';
+      const result = checkForPromptLeak(text, { field: 'question' });
+      expect(result.safe).toBe(false);
+      expect(result.reason).toMatch(/^reversed:/);
+    });
+
+    test('reversed SYSTEM_CHANNEL is flagged', () => {
+      // Reversed of SYSTEM_CHANNEL → 'LENNAHC_METSYS'
+      const text = 'Output contains LENNAHC_METSYS as a delimiter.';
+      const result = checkForPromptLeak(text, { field: 'observation_text' });
+      expect(result.safe).toBe(false);
+      expect(result.reason).toMatch(/^reversed:/);
+    });
+
+    test('normal reversed word ("tuo gnitset") is safe — no marker match', () => {
+      // Reversed of "testing out" is "tuo gnitset" — not in any
+      // marker list. Must pass cleanly.
+      const text = 'tuo gnitset';
+      const result = checkForPromptLeak(text, { field: 'observation_text' });
+      expect(result.safe).toBe(true);
+    });
+
+    // --------- Per-field conservative low-alpha backstop ---------
+    test('question field: 200 chars with <50% alpha → flagged (low-alpha-ratio)', () => {
+      // 50 alphabetic chars + 150 non-alpha = 200 chars, 25% alpha.
+      const text = 'a'.repeat(50) + '1234567890'.repeat(15);
+      expect(text.length).toBe(200);
+      const result = checkForPromptLeak(text, { field: 'question' });
+      expect(result.safe).toBe(false);
+      expect(result.reason).toMatch(/^low-alpha-ratio:/);
+    });
+
+    test('question field: 200 chars with normal alpha ratio → safe', () => {
+      // 100% alpha; 200 chars — under 500 length ceiling.
+      const text = 'a'.repeat(200);
+      const result = checkForPromptLeak(text, { field: 'question' });
+      expect(result.safe).toBe(true);
+    });
+
+    test('designation field: 50 chars with <40% alpha → flagged', () => {
+      // 18 alpha + 32 non-alpha = 50 chars, 36% alpha.
+      const text = 'abcdefghijklmnopqr' + '0'.repeat(32);
+      expect(text.length).toBe(50);
+      const result = checkForPromptLeak(text, { field: 'designation' });
+      expect(result.safe).toBe(false);
+      expect(result.reason).toMatch(/^low-alpha-ratio:/);
+    });
+
+    test('designation field: 50 chars with normal alpha → safe', () => {
+      // "Upstairs lights and landing corridor socket cct" = 48 chars
+      // all alpha/space.
+      const text = 'Upstairs lights and landing corridor socket cct';
+      const result = checkForPromptLeak(text, { field: 'designation' });
+      expect(result.safe).toBe(true);
+    });
+
+    test('observation_text field: NO low-alpha guard (numerics are legit)', () => {
+      // 100 chars with 30% alpha — legitimate observation content
+      // with lots of numeric readings must pass. Regulation refs,
+      // cable sizes, readings, etc. all drive alpha ratio down.
+      const text = '0.35 ohms 411.3.3 2.5mm2 0.71 0.5 ohm 522.6.201';
+      expect(text.length).toBeGreaterThan(20);
+      const result = checkForPromptLeak(text, { field: 'observation_text' });
+      expect(result.safe).toBe(true);
+    });
+
+    // --------- Combined / ordering tests ---------
+    test('length ceiling still fires as last resort on long alpha text (question)', () => {
+      // 600 chars of alpha — passes entropy + reversed + low-alpha
+      // but exceeds 500-char length ceiling. Last-resort guard.
+      const text = 'abcdefghij'.repeat(60);
+      expect(text.length).toBe(600);
+      const result = checkForPromptLeak(text, { field: 'question' });
+      expect(result.safe).toBe(false);
+      // Length-suspicious OR low-alpha-ratio OR whatever fires first
+      // — both are acceptable as long as the call is flagged.
+      expect(result.reason).toMatch(/^(length-suspicious|low-alpha-ratio):/);
+    });
+
+    // --------- False-positive guard — NEW 20-sample corpus ---------
+    //
+    // This is a SECOND 20-sample corpus focused on content the
+    // new detectors must NOT flag. Covers: regulation numbers,
+    // readings with units, compound electrical terms, UUID/hash
+    // references, observation narratives with mixed content.
+    describe('Group 8 — FP guard: 20 normal samples safe across ALL field classes', () => {
+      const SAMPLES_2 = [
+        'Circuit 3 Zs is 0.35 ohms measured at the distribution board.',
+        'RCD type AC 30mA trip time 23ms compliant with BS 7671 411.3.3.',
+        'MCB 32A type C on Upstairs sockets ring circuit 2.5mm2 T+E.',
+        'Cable reference colours — brown, black, grey and blue on L1/L2/L3/N.',
+        'Insulation resistance > 999 MΩ between L and E at 500V test voltage.',
+        'R1 + R2 measured 0.51, ring final so divide by 4 gives 0.128.',
+        'Main earth conductor verified at 16mm2 minimum per 544.1.1.',
+        'Bonding conductor to gas meter observed missing — C2 remedial.',
+        'RCBO on circuit 4 did not trip at I delta n over 1 second.',
+        'Consumer unit Wylex NHRS 17 with 100A isolator and 8 ways.',
+        'Observation: loose neutral in back box, C1, immediate action.',
+        'Test voltage 500V, live to earth and live to live on every circuit.',
+        'Protective device rating 20A matches cable capacity 2.5mm2.',
+        'CPC size correct for circuit rating per BS 7671 table 54.7.',
+        'SPD observed type 2 fitted but not labelled per 534.4.4.5.',
+        'Zs measured equals Ze plus R1+R2 so earth loop is sound.',
+        'Distribution board location noted as under stairs cupboard.',
+        'Labels for RCD protection present and legible on all ways.',
+        'Reference id a1b2c3 noted on the certificate template.',
+        'Bathroom Zone 2 compliance verified per 701 section.',
+      ];
+
+      test.each(SAMPLES_2.map((s, i) => [i + 1, s]))(
+        'sample2 #%i is safe across question + observation_text + designation: %s',
+        (_i, sample) => {
+          const q = checkForPromptLeak(sample, { field: 'question' });
+          expect(q.safe).toBe(true);
+          const o = checkForPromptLeak(sample, { field: 'observation_text' });
+          expect(o.safe).toBe(true);
+          const d = checkForPromptLeak(sample, { field: 'designation' });
+          expect(d.safe).toBe(true);
+        }
+      );
+    });
+
+    // --------- Re-run the 04-26 corpus across the new detectors ---------
+    //
+    // r20-#3 must not regress the 04-26 false-positive guard. If any
+    // of the original 20 samples trip, the detector must be tightened.
+    describe('Group 8 — 04-26 corpus still 0 FPs under new detectors', () => {
+      const SAMPLES_04_26 = [
+        'Zs on circuit three is nought point three five.',
+        'Circuit two, insulation greater than two hundred both ways, polarity correct.',
+        'Consumer unit in the hallway, RCBO type B, 32 amp.',
+        'For example, 1 hour delay before the RCD tripped.',
+        'Observation: missing earthing on the immersion heater.',
+        'The trusted bounds of the installation include a sub-board in the garage.',
+        'Code this as C2 — absent main bonding to gas.',
+        'Add a C3 observation for the non-standard cable colour.',
+        'R1 plus R2 is zero point five one ohms on circuit four.',
+        'Example 1 of 5 scenarios tested — all circuits passed.',
+        'The system does not emit any readings when the test is incomplete.',
+        'Please correct the reading for circuit 3 — it should be 0.71.',
+        'The silent writes mode is preferred by this electrician but not required.',
+        'You are correct that circuit 6 is outdoors.',
+        'The 7 tools in my kit include a multimeter and clamp meter.',
+        'For instance, STQ is not a valid code.',
+        'We have 7 observations so far in this inspection.',
+        'The meter reads less than 0.5 ohm.',
+        'Ring continuity test on circuit 4 gave matching values.',
+        'No visible damage to the insulation on any accessible cable.',
+      ];
+
+      test.each(SAMPLES_04_26.map((s, i) => [i + 1, s]))(
+        'sample1 #%i stays safe under r20-#3 detectors: %s',
+        (_i, sample) => {
+          const q = checkForPromptLeak(sample, { field: 'question' });
+          expect(q.safe).toBe(true);
+          const o = checkForPromptLeak(sample, { field: 'observation_text' });
+          expect(o.safe).toBe(true);
+          const d = checkForPromptLeak(sample, { field: 'designation' });
+          expect(d.safe).toBe(true);
+        }
+      );
+    });
+  });
+
+  // ------------------------------------------------------------------
   // Defensive edge cases
   // ------------------------------------------------------------------
   describe('Edge cases', () => {

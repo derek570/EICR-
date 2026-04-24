@@ -283,6 +283,45 @@ describe('Plan 04-26 Layer 3 — cross-vector invariants', () => {
       expect(result.sanitised).toBeNull();
     }
   });
+
+  // --------- r20-#3 specific detector coverage for vectors 11 + 12 ---------
+  //
+  // 04-26 relied on the length ceiling to catch the base64 variant
+  // (vector #11) and the reverse variant (vector #12). r20-#3 adds
+  // entropy + reversed-marker detectors so those vectors are caught
+  // EVEN IF truncated under the ceiling. Lock that in.
+  test('r20-#3: vector #11 base64 miss is caught by entropy detector even when short', () => {
+    // Take first 200 chars of the repeated-block base64 payload so
+    // the length ceiling (500) no longer fires. Entropy should fire
+    // instead.
+    const vector11 = ATTACK_VECTORS.find((v) => v.id === 11);
+    const truncated = vector11.layer1Miss.slice(0, 200);
+    expect(truncated.length).toBeLessThan(500);
+    const result = checkForPromptLeak(truncated, { field: 'question' });
+    expect(result.safe).toBe(false);
+    // The high-entropy substring detector should catch it — not
+    // the length ceiling.
+    expect(result.reason).toMatch(/^(entropy|low-alpha-ratio):/);
+  });
+
+  test('r20-#3: vector #12 reverse miss is caught by reversed-marker detector', () => {
+    // The reverse variant was under 500 chars already, so this
+    // asserts the reversed detector fires even without the length
+    // ceiling. Drop the STQ/STR tail that req-id would already
+    // catch — isolate the reversed-markers contribution.
+    const vector12 = ATTACK_VECTORS.find((v) => v.id === 12);
+    // Strip the req-id tail deliberately.
+    const reversedOnly = vector12.layer1Miss
+      .replace(/STQ-01/gi, '')
+      .replace(/STR-02/gi, '')
+      .replace(/STT-04/gi, '');
+    const result = checkForPromptLeak(reversedOnly, { field: 'question' });
+    expect(result.safe).toBe(false);
+    // reversed detector OR req-id (if any regex fragment survives
+    // the strip) OR length is acceptable — the invariant is that
+    // the content is blocked, not which family fires.
+    expect(result.reason).toMatch(/^(reversed|req-id|length-suspicious|low-alpha-ratio):/);
+  });
 });
 
 // ---------------------------------------------------------------------------
