@@ -422,9 +422,67 @@ function serialisePerTurnWrites(pw) {
 }
 
 /**
+ * Plan 04-30 r23-#3 — structured-content-aware tool_result
+ * serialisation. Anthropic SDK tool_result blocks may carry
+ * content in several shapes:
+ *
+ *   - String (legacy + most common): content is a raw text body,
+ *     captured directly.
+ *   - Array of blocks: each block may have `.text` (simple text
+ *     block), `.content` (nested), or other keys.
+ *   - Object with `.content`: single wrapper block, recurse.
+ *   - Other (primitive, unexpected shape): JSON.stringify as a
+ *     defence-in-depth fallback so a leak embedded in a truly
+ *     unexpected shape still surfaces to the assertion.
+ *
+ * WHY shape-aware: r23-#3 noted that the r22-#2 string-only
+ * implementation would silently skip structured content. A future
+ * SDK upgrade, a dispatcher refactor that returns structured
+ * bodies for consistency with model-facing blocks, or a fixture
+ * that uses structured shape would all evade the leak scan under
+ * the string-only implementation.
+ *
+ * Recursion terminator: the `block.content !== block.text` guard
+ * prevents infinite recursion when `text` and `content` point at
+ * the same reference (rare but observed in some SDK shapes). Null
+ * / undefined short-circuit to '' so callers never get a throw on
+ * odd fixtures.
+ */
+function extractTextFromBlock(block) {
+  if (block == null) return '';
+  if (typeof block === 'string') return block;
+  if (typeof block === 'number' || typeof block === 'boolean') {
+    return String(block);
+  }
+  if (Array.isArray(block)) {
+    return block.map(extractTextFromBlock).filter(Boolean).join('\n');
+  }
+  // Object shape: walk .text, .content, fall back to JSON.
+  const parts = [];
+  if (typeof block.text === 'string') parts.push(block.text);
+  if (block.content !== undefined && block.content !== block.text) {
+    parts.push(extractTextFromBlock(block.content));
+  }
+  if (parts.length === 0) {
+    // Unknown shape — stringify so a leak embedded in unexpected
+    // keys still reaches the substring assertion.
+    try {
+      return JSON.stringify(block);
+    } catch {
+      return '';
+    }
+  }
+  return parts.filter(Boolean).join('\n');
+}
+
+/**
  * Collect every tool_result content body in messages_final, joined so
  * a single substring assertion covers all of them. messages_final is
  * returned by runToolLoop and captured via _shadowCapture's toolLoopOut.
+ *
+ * r23-#3: delegates to extractTextFromBlock so string / array /
+ * nested-object / fallback shapes are all walked — a leak hidden
+ * in any of them surfaces to the assertion.
  */
 function serialiseToolResultBodies(toolLoopOut) {
   const parts = [];
@@ -432,9 +490,9 @@ function serialiseToolResultBodies(toolLoopOut) {
   for (const msg of toolLoopOut.messages_final) {
     if (!Array.isArray(msg.content)) continue;
     for (const block of msg.content) {
-      if (block?.type === 'tool_result' && typeof block.content === 'string') {
-        parts.push(block.content);
-      }
+      if (block?.type !== 'tool_result') continue;
+      const text = extractTextFromBlock(block.content);
+      if (text) parts.push(text);
     }
   }
   return parts.join('\n');
