@@ -386,6 +386,36 @@ const WRAP_POLICY = {
 };
 
 /**
+ * Plan 04-19 r13-#3 — known canonical `type` values for validation_alerts.
+ * Sourced from `config/prompts/sonnet_extraction_system.md` instructions
+ * (lines 482-483: `myth_rejected`, `nc_only`) + prior Codex review
+ * evidence (r12-3b accepted `value_out_of_range` as canonical).
+ *
+ *   - KNOWN   → serialise BARE (readable for the model, matches the
+ *               r12-#3 classification of `type` as server_canonical).
+ *   - UNKNOWN → serialise WRAPPED via USER_TEXT markers + log a
+ *               `validation_alert_unknown_type` warning so drift /
+ *               attack signals are investigable by operators.
+ *
+ * The wrap-unknowns branch is defence-in-depth. An attacker who
+ * bypasses every OTHER USER_TEXT wrap (designations, pending values,
+ * observations, alert messages) still can't inject through `type`
+ * because the sanitise+wrap path applies identically. The allowlist
+ * is the fast path for the 99% case; the wrap is the fail-safe.
+ *
+ * Keep this set tight — if a new canonical type is added to the
+ * prompt, add it here in the same commit that edits the prompt. A
+ * new type will surface as wrapped + warned at ingestion before it
+ * reaches the model's system block, which is the desired feedback
+ * loop for prompt authors (drift visible rather than silent).
+ *
+ * Added by Plan 04-19 r13-#3 after Codex flagged that r12-#3 left
+ * `type` unconditionally bare with an explicit comment calling out
+ * the gap.
+ */
+const VALIDATION_ALERT_KNOWN_TYPES = new Set(['myth_rejected', 'nc_only', 'value_out_of_range']);
+
+/**
  * Plan 04-18 r12-#1 — look up the wrap policy for a field. Unknown
  * fields fall through to 'user_derived' as a fail-safe default
  * (over-apply wrap rather than under-apply).
@@ -1735,48 +1765,58 @@ export class EICRExtractionSession {
         lines.push(`pending:${JSON.stringify(wrappedPending)}`);
       }
 
-      // Plan 04-18 r12-#3 — validation_alerts objects have shape
-      // `{type, severity, message, ...}` per the model's
-      // extraction tool schema (config/prompts/sonnet_extraction_system.md:578-580).
-      // Investigation:
-      //   - `type`     is a model-generated tag (e.g. "myth_rejected",
-      //                 "value_out_of_range"); tag-shaped cardinality;
-      //                 classified as server_canonical.
-      //   - `severity` is a closed enum info|warning|critical;
-      //                 server_canonical.
-      //   - `message`  is MODEL-GENERATED FREE TEXT that can
-      //                 legitimately reflect user-derived substring
-      //                 (designations, observation phrases, values)
-      //                 because the system prompt instructs the model
-      //                 to write explanatory messages referencing
-      //                 specific circuits/values/observations.
-      //                 Classified as user_derived — sanitise + wrap.
+      // Plan 04-18 r12-#3 + Plan 04-19 r13-#3 — validation_alerts
+      // objects have shape `{type, severity, message, ...}` per the
+      // model's extraction tool schema
+      // (config/prompts/sonnet_extraction_system.md:578-580).
       //
-      // Pre-r12 the raw JSON.stringify emission leaked the `message`
-      // carrier into the authoritative system-channel JSON unwrapped,
-      // reopening the cached-prefix injection surface r7 / r8 / r9
-      // closed for designations, pending values, and observations.
-      // r12-#3 routes the alerts through a per-field transform that
-      // uses the same WRAP_POLICY semantics:
-      //   - `message` → wrapSnapshotUserTextInline (sanitise + wrap).
-      //   - everything else string-valued → sanitiseSnapshotField
-      //     (sanitise-only as a fail-safe; type/severity strings
-      //     flow through unchanged).
+      // Per-field classification:
+      //   - `message`  → user_derived (sanitise + wrap). Model-
+      //                   generated free text that can legitimately
+      //                   reflect user-derived substrings
+      //                   (designations, observation phrases,
+      //                   values). r12-#3.
+      //   - `severity` → server_canonical (sanitise only). Closed
+      //                   enum info|warning|critical.
+      //   - `type`     → DEFENCE-IN-DEPTH ALLOWLIST (r13-#3).
+      //                   Known canonical types
+      //                   (VALIDATION_ALERT_KNOWN_TYPES —
+      //                   myth_rejected, nc_only, value_out_of_range)
+      //                   serialise BARE. UNKNOWN types WRAP + log
+      //                   a warning. Pre-r13 `type` was
+      //                   unconditionally bare-after-sanitise with
+      //                   a comment acknowledging "model-generated,
+      //                   unconstrained" — if the model
+      //                   hallucinates a novel tag or a prompt
+      //                   drift allows user text in `type`, bare
+      //                   serialisation reopens the injection
+      //                   surface r12-#3 closed for `message`.
+      //                   Allowlist lives next to WRAP_POLICY so
+      //                   reviewers see both classification surfaces
+      //                   together.
+      //   - everything else string-valued → sanitise only (fail-safe;
+      //                   known shape is {type, severity, message}
+      //                   and any future user-derived field must be
+      //                   classified explicitly).
       //   - non-strings (numbers, booleans, arrays, objects) pass
       //     through unchanged.
-      //
-      // The fail-safe choice for non-`message` string fields is
-      // sanitise-ONLY (not wrap) because the known shape today is
-      // `{type, severity, message}` and both non-message fields are
-      // server-canonical. If a future schema extension adds a new
-      // user-derived alert field, classify it explicitly alongside
-      // `message` here.
       if (hasAlerts) {
         const wrappedAlerts = this.stateSnapshot.validation_alerts.map((alert) => {
           const out = {};
           for (const [key, value] of Object.entries(alert)) {
             if (key === 'message' && typeof value === 'string') {
               out[key] = wrapSnapshotUserTextInline(value);
+            } else if (key === 'type' && typeof value === 'string') {
+              // Plan 04-19 r13-#3 — defence-in-depth allowlist. Known
+              // types stay BARE; unknown types WRAP + log.
+              if (VALIDATION_ALERT_KNOWN_TYPES.has(value)) {
+                out[key] = sanitiseSnapshotField(value);
+              } else {
+                logger.warn?.(
+                  `Session ${this.sessionId} validation_alert_unknown_type: received unknown alert type "${value}" — wrapping defensively`
+                );
+                out[key] = wrapSnapshotUserTextInline(value);
+              }
             } else if (typeof value === 'string') {
               out[key] = sanitiseSnapshotField(value);
             } else {
