@@ -416,6 +416,35 @@ const WRAP_POLICY = {
 const VALIDATION_ALERT_KNOWN_TYPES = new Set(['myth_rejected', 'nc_only', 'value_out_of_range']);
 
 /**
+ * Plan 04-20 r14-#2 — known canonical `severity` values for validation_alerts.
+ * Sourced from the schema documented at
+ * `config/prompts/sonnet_extraction_system.md:579`
+ * (`"severity": "<info|warning|critical>"`) and the prompt's example
+ * usage at lines 482-483 (`severity "info"`).
+ *
+ *   - KNOWN   → serialise BARE (readable for the model, matches the
+ *               classification of `severity` as server_canonical).
+ *   - UNKNOWN → serialise WRAPPED via USER_TEXT markers + log a
+ *               `validation_alert_unknown_severity` warning so drift /
+ *               attack signals surface for operators.
+ *
+ * Mirrors the r13-#3 VALIDATION_ALERT_KNOWN_TYPES pattern one-for-one.
+ * Codex r14 flagged that r13-#3 closed the gap for `type` but left
+ * `severity` as the remaining bare-after-sanitise field — schema
+ * enforces a closed enum in prose but no code enforces it, so a
+ * hallucinated severity or future prompt drift reopens the injection
+ * surface for this field.
+ *
+ * Keep this set tight — if the schema widens the severity enum, add
+ * the new value here in the same commit that edits the prompt. Any
+ * novel value surfaces as wrapped + warned at ingestion (visible
+ * drift, not silent).
+ *
+ * Added by Plan 04-20 r14-#2.
+ */
+const VALIDATION_ALERT_KNOWN_SEVERITIES = new Set(['info', 'warning', 'critical']);
+
+/**
  * Plan 04-18 r12-#1 — look up the wrap policy for a field. Unknown
  * fields fall through to 'user_derived' as a fail-safe default
  * (over-apply wrap rather than under-apply).
@@ -1765,10 +1794,10 @@ export class EICRExtractionSession {
         lines.push(`pending:${JSON.stringify(wrappedPending)}`);
       }
 
-      // Plan 04-18 r12-#3 + Plan 04-19 r13-#3 — validation_alerts
-      // objects have shape `{type, severity, message, ...}` per the
-      // model's extraction tool schema
-      // (config/prompts/sonnet_extraction_system.md:578-580).
+      // Plan 04-18 r12-#3 + Plan 04-19 r13-#3 + Plan 04-20 r14-#2 —
+      // validation_alerts objects have shape
+      // `{type, severity, message, ...}` per the model's extraction
+      // tool schema (config/prompts/sonnet_extraction_system.md:578-580).
       //
       // Per-field classification:
       //   - `message`  → user_derived (sanitise + wrap). Model-
@@ -1776,8 +1805,6 @@ export class EICRExtractionSession {
       //                   reflect user-derived substrings
       //                   (designations, observation phrases,
       //                   values). r12-#3.
-      //   - `severity` → server_canonical (sanitise only). Closed
-      //                   enum info|warning|critical.
       //   - `type`     → DEFENCE-IN-DEPTH ALLOWLIST (r13-#3).
       //                   Known canonical types
       //                   (VALIDATION_ALERT_KNOWN_TYPES —
@@ -1794,6 +1821,21 @@ export class EICRExtractionSession {
       //                   Allowlist lives next to WRAP_POLICY so
       //                   reviewers see both classification surfaces
       //                   together.
+      //   - `severity` → DEFENCE-IN-DEPTH ALLOWLIST (r14-#2).
+      //                   Mirrors the r13-#3 treatment of `type`.
+      //                   Known canonical severities
+      //                   (VALIDATION_ALERT_KNOWN_SEVERITIES —
+      //                   info, warning, critical) serialise BARE.
+      //                   UNKNOWN severities WRAP + log a
+      //                   `validation_alert_unknown_severity`
+      //                   warning. Pre-r14 `severity` went through
+      //                   the generic sanitise-only bare branch
+      //                   below — the schema documents a closed
+      //                   enum in prose but no code enforced it,
+      //                   so a hallucinated severity (or a prompt
+      //                   drift) would reopen the injection surface
+      //                   r13-#3 closed for `type`. r14-#2 closes
+      //                   the gap with the same pattern.
       //   - everything else string-valued → sanitise only (fail-safe;
       //                   known shape is {type, severity, message}
       //                   and any future user-derived field must be
@@ -1814,6 +1856,22 @@ export class EICRExtractionSession {
               } else {
                 logger.warn?.(
                   `Session ${this.sessionId} validation_alert_unknown_type: received unknown alert type "${value}" — wrapping defensively`
+                );
+                out[key] = wrapSnapshotUserTextInline(value);
+              }
+            } else if (key === 'severity' && typeof value === 'string') {
+              // Plan 04-20 r14-#2 — defence-in-depth allowlist mirroring
+              // r13-#3's treatment of `type`. Schema is the closed enum
+              // info|warning|critical (prompt line 579) but no code
+              // enforces it. Known severities stay BARE (readable,
+              // matches server_canonical classification); unknown
+              // severities WRAP + log so drift / attack signals are
+              // investigable by operators.
+              if (VALIDATION_ALERT_KNOWN_SEVERITIES.has(value)) {
+                out[key] = sanitiseSnapshotField(value);
+              } else {
+                logger.warn?.(
+                  `Session ${this.sessionId} validation_alert_unknown_severity: received unknown alert severity "${value}" — wrapping defensively`
                 );
                 out[key] = wrapSnapshotUserTextInline(value);
               }
