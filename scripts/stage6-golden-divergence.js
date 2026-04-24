@@ -84,6 +84,16 @@ import { createPerTurnWrites } from '../src/extraction/stage6-per-turn-writes.js
 import { bundleToolCallsIntoResult } from '../src/extraction/stage6-event-bundler.js';
 import { TOOL_SCHEMAS } from '../src/extraction/stage6-tool-schemas.js';
 import { mockClient } from '../src/__tests__/helpers/mockStream.js';
+// Plan 04-10 r4-#2: the divergence harness must exercise the REAL
+// agentic prompt + the REAL buildSystemBlocks() cached-prefix structure.
+// Pre-r4 this script used a hand-rolled session stub with a placeholder
+// system prompt, so the SC #6 "0% divergence" claim was validated
+// against a fake prompt. Importing EICRExtractionSession here means each
+// fixture replay now runs through the same constructor that production
+// shadow sessions use (fs.readFileSync of sonnet_agentic_system.md,
+// mode-gated systemPrompt selection, buildSystemBlocks two-block
+// cached-prefix layout). See runToolCallPath below.
+import { EICRExtractionSession } from '../src/extraction/eicr-extraction-session.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const DEFAULT_THRESHOLD = 0.10;
@@ -466,31 +476,60 @@ const silentLogger = {
  * result from `bundleToolCallsIntoResult`. Uses mockClient to replay the
  * fixture's canned streams; any additional round requests get an empty
  * end_turn so runToolLoop terminates if the fixture author forgot one.
+ *
+ * Plan 04-10 r4-#2 — this function now instantiates a REAL
+ * EICRExtractionSession per fixture replay. Pre-r4 it used a hand-rolled
+ * session stub with a placeholder system prompt, so the harness never
+ * exercised sonnet_agentic_system.md loading or buildSystemBlocks(). The
+ * SC #6 "0% divergence" claim was therefore measuring a fake-prompt self-
+ * agreement, not the actual agentic-prompt pipeline. Post-r4:
+ *   - `new EICRExtractionSession('test-key', ..., {toolCallsMode:'shadow'})`
+ *     loads the real agentic prompt via the module-top fs.readFileSync.
+ *   - `session.buildSystemBlocks()` constructs the two-block cached-prefix
+ *     layout (prompt + snapshot, both cache_control ephemeral 5m).
+ *   - `session.client = mockClient(...)` replaces the real Anthropic
+ *     client so no network call fires; mockClient._calls captures the
+ *     request args for test assertions.
+ *
+ * Return shape:
+ *   { bundled, client } — `bundled` is the legacy-shaped result from the
+ *     dispatcher/bundler stack (same as pre-r4). `client` is the mockClient
+ *     instance, exposed so tests can inspect `client._calls` to verify the
+ *     real prompt + cached-prefix structure reached the tool loop. Pre-r4
+ *     callers received just `bundled`; runFixture has been updated to
+ *     destructure the new shape.
+ *
+ * Returns `null` when the fixture has no tool-call round1 events — same
+ * semantics as pre-r4 so runFixture's downstream "tool path empty"
+ * handling is unchanged.
  */
-async function runToolCallPath(fx) {
+export async function runToolCallPath(fx) {
   const { round1, round2 } = pickToolCallEvents(fx);
   if (!Array.isArray(round1) || round1.length === 0) {
     return null;
   }
 
-  // Build a mutable snapshot clone so the dispatcher's mutations do not leak
-  // across fixtures.
-  const snapshot =
-    fx.pre_turn_state && fx.pre_turn_state.snapshot
-      ? structuredClone(fx.pre_turn_state.snapshot)
-      : { circuits: {}, pending_readings: [], observations: [], validation_alerts: [] };
-
-  const session = {
-    sessionId: 'golden-divergence',
-    stateSnapshot: snapshot,
-    extractedObservations: Array.isArray(fx.pre_turn_state?.extractedObservations)
-      ? [...fx.pre_turn_state.extractedObservations]
-      : [],
-    // Dispatcher expects toolCallsMode but only uses it in ask paths;
-    // golden fixtures never exercise ask_user (that's Variant B territory
-    // owned by Plan 04-04), so this just needs to be defined.
+  // Instantiate a real EICRExtractionSession in shadow mode. 'test-key' is
+  // a placeholder — the Anthropic client constructor accepts it, and we
+  // replace session.client with mockClient immediately below so no real
+  // API call is ever attempted. 'eicr' certType is arbitrary because shadow
+  // mode uses the cert-agnostic agentic prompt regardless.
+  const session = new EICRExtractionSession('test-key', 'golden-divergence', 'eicr', {
     toolCallsMode: 'shadow',
-  };
+  });
+
+  // Seed state from the fixture. Deep-clone the snapshot so dispatcher
+  // mutations during replay don't leak across fixtures or trip the
+  // structuredClone safety in other session methods.
+  if (fx.pre_turn_state && fx.pre_turn_state.snapshot) {
+    session.stateSnapshot = structuredClone(fx.pre_turn_state.snapshot);
+  }
+  if (Array.isArray(fx.pre_turn_state?.extractedObservations)) {
+    session.extractedObservations = [...fx.pre_turn_state.extractedObservations];
+  }
+  if (Array.isArray(fx.pre_turn_state?.askedQuestions)) {
+    session.askedQuestions = [...fx.pre_turn_state.askedQuestions];
+  }
 
   const perTurnWrites = createPerTurnWrites();
   const dispatcher = createWriteDispatcher(session, silentLogger, 'turn-1', perTurnWrites);
@@ -511,14 +550,24 @@ async function runToolCallPath(fx) {
   // not a zero-event stream that would hang the assembler.
   streamResponses.push(endTurnEventStream('trailer'));
 
-  const client = mockClient(streamResponses);
+  // Replace the real Anthropic client with the replay mock. mockClient
+  // captures request args per stream() invocation on its `_calls`
+  // accumulator — tests in Group L assert against this to prove the
+  // real prompt + real cached-prefix structure flowed through the tool
+  // loop.
+  session.client = mockClient(streamResponses);
   const messages = [{ role: 'user', content: fx.transcript ?? '' }];
 
-  const systemBlocks = [{ type: 'text', text: 'GOLDEN-DIVERGENCE SYSTEM PROMPT' }];
+  // REAL buildSystemBlocks() — loads sonnet_agentic_system.md from disk
+  // (via EICR_AGENTIC_SYSTEM_PROMPT module constant) AND constructs the
+  // two-block cached-prefix layout when the seeded snapshot is non-empty.
+  // This is THE fix — pre-r4 the script hardcoded a placeholder string
+  // that short-circuited both of these surfaces.
+  const systemBlocks = session.buildSystemBlocks();
 
   try {
     await runToolLoop({
-      client,
+      client: session.client,
       model: 'claude-sonnet-4-6',
       system: systemBlocks,
       messages,
@@ -540,7 +589,7 @@ async function runToolCallPath(fx) {
   // passed through. Phase 4 tool-call branch deletes questions_for_user
   // (Plan 04-03), so questions is always []. We pass an empty shape.
   const bundled = bundleToolCallsIntoResult(perTurnWrites, { questions: [] });
-  return bundled;
+  return { bundled, client: session.client };
 }
 
 /**
@@ -690,7 +739,15 @@ export async function runFixture(fixturePath) {
   // Tool-call side always runs. When it fails to produce anything (bad
   // fixture / error) we return a synthetic divergent verdict so the
   // directory-runner aggregation surfaces the issue.
-  const toolResult = await runToolCallPath(fx);
+  //
+  // Plan 04-10 r4-#2: runToolCallPath now returns `{bundled, client}` or
+  // null. `bundled` is the legacy-shaped result (same as pre-r4); `client`
+  // is exposed for test assertions on captured request args (Group L in
+  // stage6-golden-divergence.test.js). runFixture only needs `bundled`
+  // here, but accept both shapes defensively in case the fixture path
+  // errored and returned null early.
+  const runOut = await runToolCallPath(fx);
+  const toolResult = runOut ? runOut.bundled : null;
 
   // Resolve the three possible inputs to the comparison:
   const legacyRaw = extractLegacyFromFixture(fx); // may be null
