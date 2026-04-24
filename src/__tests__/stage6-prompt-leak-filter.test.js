@@ -877,6 +877,178 @@ describe('checkForPromptLeak() — Layer 2 output-side prompt-leak filter', () =
   });
 
   // ------------------------------------------------------------------
+  // Group 11 — r22-#1 positive regulation-shape allowlist
+  // ------------------------------------------------------------------
+  //
+  // WHY: r22 re-review of my r21-#1 fix found that the
+  // observation_regulation field class added a 60-char length
+  // ceiling but NO positive shape validation. Real regulation
+  // references are narrowly shaped — "Regulation 522.6.201",
+  // "BS 7671 Table 41.1", "BS EN 61008-1", bare numerics like
+  // "411.3.3". A 50-char English paraphrase like "The system says
+  // sockets must be GFCI protected" is under 60 chars, hits no
+  // markers, no entropy, no low-alpha guard (deliberately off for
+  // numeric-heavy regulation refs) — filter currently lets it
+  // through as safe:true.
+  //
+  // Fix: REGULATION_SHAPE_PATTERNS allowlist; observation_regulation
+  // values that don't match at least one shape are rejected with
+  // reason 'non-regulation-shape'. Must fire AFTER the existing
+  // detector chain so that marker/phrase/entropy/length reasons
+  // still take precedence for sharper telemetry.
+  //
+  // Critical FP guard: the 20 real regulation refs below MUST all
+  // accept. If any legitimate reference fails the shape check, we
+  // LOOSEN the pattern — never reject real inspection content.
+  describe('Group 11 — r22-#1 observation_regulation shape allowlist', () => {
+    // --------- Accept: 20+ real regulation references ---------
+    const ACCEPT_SAMPLES = [
+      // "Regulation <numeric>" forms
+      'Regulation 522.6.201',
+      'Regulation 411.3.3',
+      'Regulation 132.15',
+      'Reg 411.3.3',
+      // Bare BS series
+      'BS 7671',
+      'BS 3871',
+      'BS 88-2',
+      // "BS <num> <numeric>"
+      'BS 7671 643.3.2',
+      'BS 7671 411.3.3',
+      // "BS <num> <modifier> <section>"
+      'BS 7671 Table 41.1',
+      'BS 7671 Table 54.7',
+      'BS 7671 Part 6',
+      'BS 7671 Section 706',
+      'BS 7671 Appendix 4',
+      // BS EN series
+      'BS EN 61008-1',
+      'BS EN 60898-1',
+      'BS EN 60335-2-73',
+      'BS EN 61558-2-5',
+      'BS EN 61643-11',
+      // Bare numeric sections
+      '411.3.1.1',
+      '522.6.201',
+      '722.411.4.1',
+      '534.4.4.5',
+      '701.411.3.3',
+      // IET / HSE guidance
+      'IET Guidance',
+      'IET Guidance Note 3',
+    ];
+
+    test.each(ACCEPT_SAMPLES.map((s, i) => [i + 1, s]))(
+      'accept real regulation #%i: "%s"',
+      (_i, sample) => {
+        const result = checkForPromptLeak(sample, { field: 'observation_regulation' });
+        expect(result.safe).toBe(true);
+      }
+    );
+
+    // --------- Reject: non-regulation-shape content ---------
+    test('reject: 50-char English paraphrase', () => {
+      const text = 'The system says sockets must be GFCI protected';
+      expect(text.length).toBeLessThanOrEqual(60);
+      const result = checkForPromptLeak(text, { field: 'observation_regulation' });
+      expect(result.safe).toBe(false);
+      expect(result.reason).toMatch(/^non-regulation-shape/);
+    });
+
+    test('reject: narrative non-shape content', () => {
+      const text = 'abcdefgh xyz ijk mno';
+      const result = checkForPromptLeak(text, { field: 'observation_regulation' });
+      expect(result.safe).toBe(false);
+      expect(result.reason).toMatch(/^non-regulation-shape/);
+    });
+
+    test('reject: "Regulation 411.3.3 is breached" (narrative form, not pure ref)', () => {
+      // Anchored patterns — accepts "Regulation 411.3.3" but NOT
+      // "Regulation 411.3.3 is breached" (narrative). The
+      // observation's TEXT field is where the narrative goes;
+      // suggested_regulation is the bare ref.
+      const text = 'Regulation 411.3.3 is breached';
+      const result = checkForPromptLeak(text, { field: 'observation_regulation' });
+      expect(result.safe).toBe(false);
+      expect(result.reason).toMatch(/^non-regulation-shape/);
+    });
+
+    // --------- Ordering invariant ---------
+    test('ordering: marker check fires BEFORE shape check', () => {
+      // TRUST BOUNDARY in observation_regulation field: the filter
+      // should surface the sharper "marker:*" telemetry, not the
+      // coarser "non-regulation-shape".
+      const text = 'TRUST BOUNDARY';
+      const result = checkForPromptLeak(text, { field: 'observation_regulation' });
+      expect(result.safe).toBe(false);
+      expect(result.reason).toMatch(/^marker:/);
+      expect(result.reason).not.toMatch(/^non-regulation-shape/);
+    });
+
+    test('ordering: structural phrase check fires BEFORE shape check', () => {
+      const text = 'You are an EICR inspection assistant';
+      const result = checkForPromptLeak(text, { field: 'observation_regulation' });
+      expect(result.safe).toBe(false);
+      expect(result.reason).toMatch(/^phrase:/);
+      expect(result.reason).not.toMatch(/^non-regulation-shape/);
+    });
+
+    test('ordering: length-ceiling fires BEFORE shape check (over-60c pure alpha)', () => {
+      // 65-char alpha string with no markers/phrases/entropy. Fails
+      // BOTH the 60c length ceiling AND the shape check; ceiling
+      // should win for sharper telemetry.
+      const text = 'A'.repeat(65);
+      expect(text.length).toBe(65);
+      const result = checkForPromptLeak(text, { field: 'observation_regulation' });
+      expect(result.safe).toBe(false);
+      expect(result.reason).toMatch(/^length-suspicious:/);
+    });
+
+    // --------- Empty / nullish ---------
+    test('empty string in observation_regulation → safe (null regulation is legit)', () => {
+      const result = checkForPromptLeak('', { field: 'observation_regulation' });
+      expect(result.safe).toBe(true);
+    });
+
+    test('whitespace-only in observation_regulation → safe', () => {
+      // trim() removes it; empty after trim = safe.
+      const result = checkForPromptLeak('   ', { field: 'observation_regulation' });
+      expect(result.safe).toBe(true);
+    });
+
+    // --------- Cross-class: same content passes under observation_text ---------
+    test('cross-class: English paraphrase passes under observation_text (narrative field)', () => {
+      const text = 'The system says sockets must be GFCI protected';
+      const result = checkForPromptLeak(text, { field: 'observation_text' });
+      expect(result.safe).toBe(true);
+    });
+
+    // --------- Group 9 corpus regression ---------
+    describe('Group 11 — Group 9 regulation corpus passes under new shape gate', () => {
+      const SAMPLES_REGULATION_FROM_GROUP_9 = [
+        'Regulation 522.6.201',
+        'BS 7671 643.3.2',
+        '411.3.1.1',
+        'Regulation 411.3.3',
+        'BS 7671 Part 6',
+        '701.415.2',
+        '544.1.1',
+        '722.533',
+        'BS 7671 Section 706',
+        'Regulation 132.15',
+      ];
+
+      test.each(SAMPLES_REGULATION_FROM_GROUP_9.map((s, i) => [i + 1, s]))(
+        'Group 9 regulation corpus #%i safe under shape gate: "%s"',
+        (_i, sample) => {
+          const result = checkForPromptLeak(sample, { field: 'observation_regulation' });
+          expect(result.safe).toBe(true);
+        }
+      );
+    });
+  });
+
+  // ------------------------------------------------------------------
   // Defensive edge cases
   // ------------------------------------------------------------------
   describe('Edge cases', () => {
