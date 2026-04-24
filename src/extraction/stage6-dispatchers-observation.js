@@ -98,30 +98,78 @@ export async function dispatchRecordObservation(call, ctx) {
     return envelope(call.tool_call_id, { ok: false, error: err }, true);
   }
 
-  // Plan 04-26 Layer 2: scan observation text for system-prompt leak content.
+  // Plan 04-27 r20-#1: scan ALL free-text observation fields for system-
+  // prompt leak content, not just `text`.
   //
-  // Scope: `text` ONLY. `location` and `suggested_regulation` are
-  // deliberately NOT scanned — `location` is a short room/area name
-  // (false-positive risk high, real-leak vector minimal); regulation is
-  // an IET reg number. Scanning them would raise the false-positive
-  // surface without meaningfully improving protection.
+  // r20 review found that 04-26's decision to only scan `text` left
+  // `location` and `suggested_regulation` as live bypass routes: both
+  // render on the PDF certificate (location column + regulation reference
+  // under the observation text). An attacker who steers the model to
+  // emit prompt content into either field sees it appear verbatim in
+  // the customer's PDF.
   //
-  // On leak: REPLACE `text` with the sanitised string (not reject). The
-  // observation still goes into the certificate PDF as an audit trail
-  // (the inspector can see that a prompt extraction attempt happened),
-  // but the attacker's content is scrubbed. PII guard on the log row
-  // already redacts text from input_summary (line below).
-  const obsLeak = checkForPromptLeak(input.text, { field: 'observation_text' });
-  const safeText = obsLeak.safe ? input.text : obsLeak.sanitised;
-  if (!obsLeak.safe) {
+  // Failure mode CHANGED (r20-#1) vs 04-26:
+  //   04-26 — substitute `text` with sanitised refusal; preserve the
+  //           observation on session for audit trail.
+  //   04-27 — reject the ENTIRE call (is_error:true). `location` and
+  //           `suggested_regulation` are short fields that can't carry
+  //           a meaningful sanitised substitute without corrupting the
+  //           PDF shape (a refusal string in the location column would
+  //           be nonsensical). A uniform reject rule is simpler and
+  //           safer. The prompt_leak_blocked warn row carries the
+  //           audit breadcrumb (which fields leaked, what filter family
+  //           fired, how long the payload was — NEVER any substring of
+  //           the blocked content; see r20-#2 redaction).
+  //
+  // Scan results aggregated across all three fields so the log row
+  // names EVERY offending field in one emission (not one-per-field).
+  // The model sees a single structured error with `fields: [...]` and
+  // can retry with a fresh observation.
+  const OBS_FREE_TEXT_FIELDS = ['text', 'location', 'suggested_regulation'];
+  const offendingLeaks = [];
+  for (const fieldName of OBS_FREE_TEXT_FIELDS) {
+    const value = input[fieldName];
+    if (typeof value !== 'string' || value.length === 0) continue;
+    const leak = checkForPromptLeak(value, { field: 'observation_text' });
+    if (!leak.safe) {
+      offendingLeaks.push({ field: fieldName, reason: leak.reason, length: value.length });
+    }
+  }
+
+  if (offendingLeaks.length > 0) {
+    const offendingFieldNames = offendingLeaks.map((entry) => entry.field);
+    const primary = offendingLeaks[0];
     logger.warn('stage6.prompt_leak_blocked', {
       tool: 'record_observation',
       tool_call_id: call.tool_call_id,
       sessionId: session.sessionId,
       turnId,
-      reason: obsLeak.reason,
-      sanitised_sample: typeof input.text === 'string' ? input.text.slice(0, 80) : '',
+      reason: primary.reason,
+      fields: offendingFieldNames,
+      offending_field_lengths: offendingLeaks.reduce((acc, entry) => {
+        acc[entry.field] = entry.length;
+        return acc;
+      }, {}),
     });
+    logToolCall(logger, {
+      ...baseLogRow,
+      is_error: true,
+      outcome: 'rejected',
+      validation_error: 'prompt_leak_in_observation',
+      input_summary: { code: input.code ?? null, fields: offendingFieldNames },
+    });
+    return envelope(
+      call.tool_call_id,
+      {
+        ok: false,
+        error: {
+          code: 'prompt_leak_in_observation',
+          reason: primary.reason,
+          fields: offendingFieldNames,
+        },
+      },
+      true
+    );
   }
 
   // Atom owns UUID generation. Atom writes to session.extractedObservations.
@@ -129,7 +177,7 @@ export async function dispatchRecordObservation(call, ctx) {
   // surface the atom deliberately does NOT touch — see Plan 02-01 SUMMARY.)
   const { id } = appendObservation(session, {
     code: input.code ?? null,
-    text: safeText,
+    text: input.text,
     location: input.location ?? null,
     circuit: input.circuit ?? null,
     suggested_regulation: input.suggested_regulation ?? null,
@@ -138,7 +186,7 @@ export async function dispatchRecordObservation(call, ctx) {
   perTurnWrites.observations.push({
     id,
     code: input.code ?? null,
-    text: safeText,
+    text: input.text,
     location: input.location ?? null,
     circuit: input.circuit ?? null,
     suggested_regulation: input.suggested_regulation ?? null,
