@@ -247,6 +247,29 @@ body {
   animation: pulse-dot 0.9s ease-in-out infinite;
 }
 
+/* VAD indicator ring — outer ring scales/fades while the recorder is
+ * actively listening, steady while paused/sleeping. Referenced inline
+ * from <VadIndicator> so unused recording screens don't pay the CSS
+ * cost (Tailwind would tree-shake but the inline animation shorthand
+ * keeps the token values visible here). */
+@keyframes cm-vad-ring {
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 0.4;
+  }
+  50% {
+    transform: scale(1.4);
+    opacity: 0.15;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  /* Inline `animation: cm-vad-ring ... infinite` can't be targeted by a
+   * selector, but honouring the media-query-level preference in the
+   * global `html { animation-play-state: paused }` block stops the ring
+   * from pulsing. The global guard lives above on this sheet. */
+}
+
 /*
  * Applied to the fixed-positioned recording ring overlay. Caller passes
  * the colour via `--rec-ring-color` inline so the same class drives
