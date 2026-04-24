@@ -46,6 +46,8 @@ import {
   normaliseExtractionResult,
   computeDivergence,
   runDirectory,
+  runFixture,
+  expectedSlotWritesToLegacyShape,
 } from '../../scripts/stage6-golden-divergence.js';
 import { TOOL_SCHEMAS, CONTEXT_FIELD_ENUM } from '../extraction/stage6-tool-schemas.js';
 
@@ -618,4 +620,201 @@ describe('Group G — Plan 04-07 r1: fixture-level schema validation (Codex MAJO
       expect(allMismatches).toEqual([]);
     });
   }
+});
+
+// ---------------------------------------------------------------------------
+// Group H — Plan 04-07 r1 — runFixture oracle path (Codex MAJOR #3).
+//
+// WHY THIS GROUP EXISTS: Codex flagged that `runFixture()` falls back
+// to `legacyResult = toolResult` when `sse_events_legacy` is absent,
+// making Variant-B fixtures (F21934D4) self-compare — divergence
+// trivially 0 regardless of whether the dispatcher is right. SC #6's
+// "0% on F21934D4" was an artefact of identity equality, not a real
+// gate. This group locks Codex's "strongest option" remediation:
+//   - If fixture has sse_events_legacy: Variant A (existing path) unchanged.
+//   - If fixture has only expected_slot_writes: ORACLE PATH — compare
+//     tool-call output vs oracle-derived legacy shape.
+//   - If fixture has neither: throw loudly.
+//
+// The oracle path uses a new helper `expectedSlotWritesToLegacyShape`
+// exported from the divergence script, which converts
+// {circuits:{N:{field:value, ...}}} into the legacy-shape
+// {extracted_readings:[{circuit:N,field,value}, ...]} that
+// normaliseExtractionResult already knows how to canonicalise.
+// ---------------------------------------------------------------------------
+
+describe('Group H — Plan 04-07 r1: runFixture oracle path (Codex MAJOR #3)', () => {
+  const tmp = fssync.mkdtempSync(
+    path.join(fssync.realpathSync.native ? fssync.realpathSync.native('/tmp') : '/tmp', 'goldenX-'),
+  );
+
+  function writeFixture(name, body) {
+    const p = path.join(tmp, name);
+    fssync.writeFileSync(p, JSON.stringify(body, null, 2));
+    return p;
+  }
+
+  test('expectedSlotWritesToLegacyShape converts {circuits:{N:{f:v}}} → {extracted_readings}', () => {
+    const oracle = {
+      circuits: {
+        3: { measured_zs_ohm: '0.35', polarity_confirmed: 'correct' },
+        2: { measured_zs_ohm: '0.40' },
+      },
+    };
+    const shape = expectedSlotWritesToLegacyShape(oracle);
+    // Readings need to be an array of {circuit, field, value}. Order is not
+    // specified here — normalisation handles the sort — but the contents
+    // must be correct.
+    expect(Array.isArray(shape.extracted_readings)).toBe(true);
+    expect(shape.extracted_readings).toHaveLength(3);
+    const asSet = new Set(
+      shape.extracted_readings.map((r) => `${r.circuit}:${r.field}=${r.value}`),
+    );
+    expect(asSet.has('3:measured_zs_ohm=0.35')).toBe(true);
+    expect(asSet.has('3:polarity_confirmed=correct')).toBe(true);
+    expect(asSet.has('2:measured_zs_ohm=0.40')).toBe(true);
+  });
+
+  test('fixture with NEITHER sse_events_legacy NOR expected_slot_writes throws', async () => {
+    // Minimal Variant-B fixture with neither path available.
+    const p = writeFixture('broken-no-legacy-no-oracle.json', {
+      _doc: 'deliberately broken — neither legacy nor oracle',
+      pre_turn_state: {
+        snapshot: { circuits: {}, pending_readings: [], observations: [], validation_alerts: [] },
+        askedQuestions: [],
+        extractedObservations: [],
+      },
+      transcript: 'anything',
+      sse_events_tool_call: [
+        { type: 'message_start', message: { id: 'msg_bad', role: 'assistant', content: [] } },
+        { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } },
+        { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'noop' } },
+        { type: 'content_block_stop', index: 0 },
+        { type: 'message_delta', delta: { stop_reason: 'end_turn' } },
+        { type: 'message_stop' },
+      ],
+      // NO sse_events_legacy, NO expected_slot_writes.
+    });
+
+    await expect(runFixture(p)).rejects.toThrow(
+      /broken-no-legacy-no-oracle\.json.*(missing|oracle|both|sse_events_legacy|expected_slot_writes)/i,
+    );
+  });
+
+  test('oracle-path fixture (no legacy, has oracle) compares tool-call output vs oracle — agreement → 0 divergence', async () => {
+    // Construct a Variant-B fixture WITH an expected_slot_writes oracle
+    // matching what the tool-call dispatcher will emit.
+    const p = writeFixture('oracle-agreement.json', {
+      _doc: 'oracle path — tool-call agrees with oracle',
+      pre_turn_state: {
+        snapshot: {
+          circuits: { 3: { circuit_ref: 3, circuit_designation: 'Lighting (downstairs)' } },
+          pending_readings: [],
+          observations: [],
+          validation_alerts: [],
+        },
+        askedQuestions: [],
+        extractedObservations: [],
+      },
+      transcript: 'Zs on circuit three is nought point three five.',
+      sse_events_tool_call: [
+        { type: 'message_start', message: { id: 'msg_ok', role: 'assistant', content: [] } },
+        {
+          type: 'content_block_start',
+          index: 0,
+          content_block: { type: 'tool_use', id: 'toolu_ok', name: 'record_reading', input: {} },
+        },
+        {
+          type: 'content_block_delta',
+          index: 0,
+          delta: {
+            type: 'input_json_delta',
+            partial_json:
+              '{"field":"measured_zs_ohm","circuit":3,"value":"0.35","confidence":0.95,"source_turn_id":"t1"}',
+          },
+        },
+        { type: 'content_block_stop', index: 0 },
+        { type: 'message_delta', delta: { stop_reason: 'tool_use' } },
+        { type: 'message_stop' },
+      ],
+      expected_slot_writes: {
+        circuits: { 3: { measured_zs_ohm: '0.35' } },
+      },
+    });
+
+    const result = await runFixture(p);
+    expect(result).toBeDefined();
+    expect(result.divergence.diverged).toBe(false);
+    expect(result.divergence.call_divergence).toBe(0);
+  });
+
+  test('oracle-path fixture — tool-call DISAGREES with oracle → divergence surfaces non-zero', async () => {
+    // Same shape, but oracle expects a DIFFERENT value. Divergence must
+    // fire — this is the proof that the oracle path is not self-compare.
+    const p = writeFixture('oracle-disagreement.json', {
+      _doc: 'oracle path — tool-call value differs from oracle',
+      pre_turn_state: {
+        snapshot: {
+          circuits: { 3: { circuit_ref: 3, circuit_designation: 'Lighting (downstairs)' } },
+          pending_readings: [],
+          observations: [],
+          validation_alerts: [],
+        },
+        askedQuestions: [],
+        extractedObservations: [],
+      },
+      transcript: 'Zs on circuit three is nought point three five.',
+      sse_events_tool_call: [
+        { type: 'message_start', message: { id: 'msg_mismatch', role: 'assistant', content: [] } },
+        {
+          type: 'content_block_start',
+          index: 0,
+          content_block: {
+            type: 'tool_use',
+            id: 'toolu_mismatch',
+            name: 'record_reading',
+            input: {},
+          },
+        },
+        {
+          type: 'content_block_delta',
+          index: 0,
+          delta: {
+            type: 'input_json_delta',
+            partial_json:
+              '{"field":"measured_zs_ohm","circuit":3,"value":"0.35","confidence":0.95,"source_turn_id":"t1"}',
+          },
+        },
+        { type: 'content_block_stop', index: 0 },
+        { type: 'message_delta', delta: { stop_reason: 'tool_use' } },
+        { type: 'message_stop' },
+      ],
+      expected_slot_writes: {
+        // Oracle expects 0.71 — tool-call wrote 0.35 — must diverge.
+        circuits: { 3: { measured_zs_ohm: '0.71' } },
+      },
+    });
+
+    const result = await runFixture(p);
+    expect(result).toBeDefined();
+    expect(result.divergence.diverged).toBe(true);
+    expect(result.divergence.reasons).toContain('readings');
+  });
+
+  test('F21934D4 fixture (Variant-B) uses oracle path and reports 0% divergence against its oracle', async () => {
+    // After Plan 04-07 r1, the F21934D4 fixture ships an
+    // expected_slot_writes oracle. This test locks that the oracle path
+    // is actually engaged (not the self-compare fallback) and that the
+    // fixture's tool-call output agrees with the oracle.
+    const F21 = F21934D4_PATH;
+    const result = await runFixture(F21);
+    expect(result).toBeDefined();
+    // Oracle agreement after r1 fixture update.
+    expect(result.divergence.diverged).toBe(false);
+    expect(result.divergence.call_divergence).toBe(0);
+    // The Variant-B marker: no sse_events_legacy; oracle IS present.
+    const raw = JSON.parse(fssync.readFileSync(F21, 'utf8'));
+    expect(raw.sse_events_legacy).toBeUndefined();
+    expect(raw.expected_slot_writes).toBeDefined();
+  });
 });
