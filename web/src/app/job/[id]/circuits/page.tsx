@@ -1,6 +1,7 @@
 'use client';
 
 import * as React from 'react';
+import { useParams, useRouter } from 'next/navigation';
 import {
   Calculator,
   Camera,
@@ -21,16 +22,19 @@ import {
   applyDefaultsToCircuits,
   applyR1R2Calculation,
   applyZsCalculation,
+  matchCircuits,
   type BulkCalcOutcome,
   type CalcSkipReason,
+  type CircuitMatch,
 } from '@certmate/shared-utils';
 import { api } from '@/lib/api-client';
 import { useJobContext } from '@/lib/job-context';
 import { useCurrentUser } from '@/lib/use-current-user';
 import { useUserDefaults } from '@/hooks/use-user-defaults';
-import { ApiError } from '@/lib/types';
-import { applyCcuAnalysisToJob } from '@/lib/recording/apply-ccu-analysis';
+import { ApiError, type CCUAnalysisCircuit, type CircuitRow } from '@/lib/types';
+import { applyCcuAnalysisToJob, type CcuApplyMode } from '@/lib/recording/apply-ccu-analysis';
 import { applyDocumentExtractionToJob } from '@/lib/recording/apply-document-extraction';
+import { writeMatchHandoff } from '@/lib/recording/ccu-match-handoff';
 import { ConfirmDialog } from '@/components/ui/confirm-dialog';
 import { FloatingLabelInput } from '@/components/ui/floating-label-input';
 import { IconButton } from '@/components/ui/icon-button';
@@ -38,6 +42,7 @@ import { SectionCard } from '@/components/ui/section-card';
 import { SegmentedControl } from '@/components/ui/segmented-control';
 import { SelectChips } from '@/components/ui/select-chips';
 import { CircuitsStickyTable } from '@/components/job/circuits-sticky-table';
+import { CcuModeSheet } from '@/components/job/ccu-mode-sheet';
 
 /**
  * Circuits tab — mirrors iOS `CircuitsTab.swift` + `Circuit.swift`.
@@ -111,6 +116,9 @@ function readInitialView(): CircuitView {
 
 export default function CircuitsPage() {
   const { job, updateJob } = useJobContext();
+  const router = useRouter();
+  const params = useParams<{ id: string }>();
+  const jobId = params.id;
   // Phase 6 — thread user-scoped circuit-field defaults into
   // `applyDefaultsToCircuits`. iOS reads these from `DefaultsService`;
   // the web hook hydrates from IDB cache first (instant paint offline)
@@ -126,6 +134,15 @@ export default function CircuitsPage() {
   const [ccuError, setCcuError] = React.useState<string | null>(null);
   const [ccuQuestions, setCcuQuestions] = React.useState<string[]>([]);
   const ccuInputRef = React.useRef<HTMLInputElement>(null);
+  /**
+   * Phase 7 — CCU extraction flow now starts with a mode sheet. The
+   * inspector picks Names Only / Hardware Update / Full Capture
+   * BEFORE the file picker opens. We store the chosen mode in a ref
+   * between the sheet dismissal and the picker onChange handler so
+   * the same hidden `<input>` can serve all three modes.
+   */
+  const [ccuModeSheetOpen, setCcuModeSheetOpen] = React.useState(false);
+  const pendingCcuModeRef = React.useRef<CcuApplyMode | null>(null);
   const [docBusy, setDocBusy] = React.useState(false);
   const [docError, setDocError] = React.useState<string | null>(null);
   const docInputRef = React.useRef<HTMLInputElement>(null);
@@ -349,9 +366,20 @@ export default function CircuitsPage() {
     setActionHint(`Deleted ${removedCount} circuit${removedCount === 1 ? '' : 's'}.`);
   };
 
+  /** CCU button click — open the mode sheet instead of the picker
+   *  directly. The sheet's onSelect handler wires the chosen mode
+   *  into the ref and then opens the file picker. */
   const openCcuPicker = () => {
     setCcuError(null);
-    ccuInputRef.current?.click();
+    setCcuModeSheetOpen(true);
+  };
+
+  const onCcuModeSelected = (mode: CcuApplyMode) => {
+    pendingCcuModeRef.current = mode;
+    // Defer the click by a tick so iOS Safari's sheet-close animation
+    // doesn't race with the file picker popup (same rationale as the
+    // setTimeout inside the sheet's own click handler — belt-and-braces).
+    window.setTimeout(() => ccuInputRef.current?.click(), 0);
   };
 
   const handleCcuFile = async (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -359,14 +387,59 @@ export default function CircuitsPage() {
     // Reset the input immediately so the same file can be chosen again
     // after a failure (otherwise onChange won't fire a second time).
     event.target.value = '';
+    const mode: CcuApplyMode = pendingCcuModeRef.current ?? 'full_capture';
+    pendingCcuModeRef.current = null;
     if (!file) return;
 
     setCcuBusy(true);
     setCcuError(null);
-    setActionHint('Analysing consumer unit…');
+    setActionHint(
+      mode === 'names_only'
+        ? 'Analysing board labels…'
+        : mode === 'hardware_update'
+          ? 'Analysing new board hardware…'
+          : 'Analysing consumer unit…'
+    );
     try {
       const analysis = await api.analyzeCCU(file);
+
+      if (mode === 'hardware_update') {
+        // Run the matcher locally, stash the result in sessionStorage,
+        // and navigate to the Match Review screen. The apply step runs
+        // there once the inspector confirms / reassigns.
+        const boardCircuits = (job.circuits ?? []).filter(
+          (c) => (c.board_id as string | undefined) === selectedBoardId || c.board_id == null
+        ) as CircuitRow[];
+        const initialMatches: CircuitMatch<CCUAnalysisCircuit, CircuitRow>[] = matchCircuits(
+          analysis.circuits ?? [],
+          boardCircuits
+        );
+        // Even if the matcher returned 0 candidates, we still hand
+        // off — the review screen will show every circuit as "new"
+        // which is the correct state and lets the inspector double-
+        // check before we touch the job.
+        const patchedBoardsSnapshot = (job.board as { boards?: { id: string }[] } | undefined)
+          ?.boards;
+        const boardId =
+          selectedBoardId ??
+          (patchedBoardsSnapshot && patchedBoardsSnapshot[0]?.id) ??
+          'board-pending';
+        const nonce = writeMatchHandoff(jobId, {
+          analysis,
+          matches: initialMatches,
+          boardId,
+          existingBoardCircuits: boardCircuits,
+        });
+        router.push(`/job/${jobId}/circuits/match-review?nonce=${nonce}`);
+        setActionHint(
+          `Review ${initialMatches.length} proposed match${initialMatches.length === 1 ? '' : 'es'}…`
+        );
+        return;
+      }
+
+      // Names Only + Full Capture — apply immediately.
       const { patch, questions } = applyCcuAnalysisToJob(job, analysis, {
+        mode,
         targetBoardId: selectedBoardId,
       });
       updateJob(patch);
@@ -377,9 +450,10 @@ export default function CircuitsPage() {
         setSelectedBoardId(patchedBoards[0].id);
       }
       const added = analysis.circuits?.length ?? 0;
+      const suffix = mode === 'names_only' ? ' (labels only)' : mode === 'full_capture' ? '' : '';
       setActionHint(
         added > 0
-          ? `CCU analysed — ${added} circuit${added === 1 ? '' : 's'} merged.`
+          ? `CCU analysed — ${added} circuit${added === 1 ? '' : 's'} merged${suffix}.`
           : 'CCU analysed — no circuits detected.'
       );
       setCcuQuestions(questions);
@@ -706,6 +780,13 @@ export default function CircuitsPage() {
        * the UX simplification: one button + one confirm replaces the
        * iOS enter-mode / tap-rows / confirm-count cascade.
        */}
+      <CcuModeSheet
+        open={ccuModeSheetOpen}
+        onOpenChange={setCcuModeSheetOpen}
+        onSelect={onCcuModeSelected}
+        existingCircuitCount={boardScoped.length}
+      />
+
       <ConfirmDialog
         open={confirmDeleteAllOpen}
         onOpenChange={setConfirmDeleteAllOpen}
