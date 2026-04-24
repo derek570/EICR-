@@ -167,6 +167,8 @@ const LENGTH_CEILING = {
 
 /**
  * Plan 04-29 r22-#1 — positive regulation-shape allowlist.
+ * Plan 04-30 r23-#1 — extended with 10th bare-modifier shape +
+ * composite-splitter helper.
  *
  * WHY: the r21-#1 `observation_regulation` field class added a
  * 60-char length ceiling but NO positive shape validation. A
@@ -213,11 +215,37 @@ const LENGTH_CEILING = {
  *   9. IET / HSE guidance:
  *        "IET Guidance", "IET Guidance Note 3",
  *        "IET Guidance Note 3.2", "HSE Guidance Note 5"
+ *  10. Bare "<Modifier> <section>" (r23-#1): "Table 41.1",
+ *        "Appendix 4", "Part 6", "Section 706", "Annex A".
+ *        Needed by composites like "BS 7671 411.3.3, Table 41.1"
+ *        where the BS-number is stated once in the first token
+ *        and subsequent tokens reference sub-sections of the same
+ *        standard.
  *
- * WHY anchored patterns (`^...$`): the field holds a pure
- * reference, not a sentence. A narrative like "Regulation 411.3.3
- * is breached by..." belongs in `observation_text`, not
- * `suggested_regulation`. Anchoring enforces the schema.
+ * Composite forms (r23-#1): real electricians routinely cite
+ * multiple regulations in a single `suggested_regulation` value,
+ * joined by a separator:
+ *   - slash:      "411.3.3 / 522.6.201"
+ *   - comma:      "BS 7671 411.3.3, Table 41.1"
+ *   - semicolon:  "BS 7671; 411.3.3"
+ *   - " and ":    "Regulation 522.6.201 and 411.3.3"
+ *
+ * The composite-splitter (`looksLikeCompositeRegulationRef`) runs
+ * AFTER the single-ref fast path, so a string that matches a
+ * single pattern never triggers the splitter (telemetry stays
+ * sharp — a single ref is not classified as composite). Empty
+ * tokens (from leading / trailing / doubled separators) are
+ * skipped — they represent dictation artefacts, not failed
+ * references. The splitter accepts iff at least one non-empty
+ * token exists AND every non-empty token matches at least one
+ * REGULATION_SHAPE_PATTERNS entry.
+ *
+ * WHY anchored patterns (`^...$`) on the per-token check: the
+ * field holds a pure reference, not a sentence. A narrative like
+ * "Regulation 411.3.3 is breached by..." belongs in
+ * `observation_text`, not `suggested_regulation`. Anchoring
+ * enforces the schema PER TOKEN — the composite splitter is what
+ * handles the between-token grammar.
  *
  * WHY gate fires LAST in the detector chain: when content fails
  * BOTH the shape check AND an existing detector (marker, phrase,
@@ -227,9 +255,10 @@ const LENGTH_CEILING = {
  * sits immediately before the final `safe:true` return so it only
  * fires when nothing else would have caught the content.
  *
- * FP guard: 26 real regulation references in Task 2 RED corpus,
- * plus the 10 existing Group 9 samples = 36 unique real refs.
- * All accept under the 9 patterns below.
+ * FP guard (r22-#1 + r23-#1): 26 single refs in r22-#1 RED +
+ * 10 Group 9 samples + 8 composite forms in r23-#1 RED = 44
+ * unique real refs. All accept under the 10 patterns + composite
+ * splitter below.
  */
 const REGULATION_SHAPE_PATTERNS = [
   // Bare numeric: 132.15, 411.3.3, 701.411.3.3, 522.6.201a.
@@ -261,7 +290,73 @@ const REGULATION_SHAPE_PATTERNS = [
   // IET / HSE Guidance (+ optional "Note <num>").
   /^IET\s+Guidance(\s+Note(\s+\d{1,3}(\.\d{1,3}){0,2})?)?$/i,
   /^HSE\s+Guidance(\s+Note(\s+\d{1,3}(\.\d{1,3}){0,2})?)?$/i,
+
+  // Plan 04-30 r23-#1 — bare modifier-section form without BS
+  // prefix: "Table 41.1", "Appendix 4", "Part 6", "Section 706",
+  // "Annex A", "Regulation 522.6.201" (already covered by pattern
+  // 2 but this alternate shape accepts any modifier keyword).
+  // Required by composite refs like "BS 7671 411.3.3, Table 41.1"
+  // where the second token is a bare modifier.
+  /^(Table|Part|Section|Chapter|Annex|Appendix|Figure|Regulation|Reg)\s+(\d{1,4}(\.\d{1,3}){0,3}|[A-Z])$/i,
 ];
+
+/**
+ * Plan 04-30 r23-#1 — composite-reference separator regex.
+ *
+ * Matches: slash (`/`), comma (`,`), semicolon (`;`), or word-
+ * bounded " and " (case-insensitive). Surrounding whitespace is
+ * folded into the separator so `split()` returns tokens with
+ * predictable edges and the per-token `.trim()` in
+ * `looksLikeCompositeRegulationRef` still handles any stray
+ * whitespace tolerably.
+ *
+ * WHY whitespace-bounded " and ": substring "and" inside a word
+ * ("understand", "brand") must NOT split. The leading+trailing
+ * `\s+` ensures `and` only matches when it stands alone as a
+ * conjunction. The leading `\s*` outer group is preserved so
+ * `", and"` (comma + and — rare but dictation-shaped) folds into
+ * a single separator.
+ *
+ * WHY global (implicit via split): `String.prototype.split` with a
+ * regex splits at EVERY match, which is what we need for 3+ token
+ * composites like "411.3.3, 522.6.201, 132.15".
+ */
+const COMPOSITE_SEPARATOR_RE = /\s*(?:\/|,|;|\s+and\s+)\s*/i;
+
+/**
+ * Plan 04-30 r23-#1 — split-and-validate for composite regulation
+ * references. Returns true iff:
+ *   1. the input contains at least one separator (so a single-ref
+ *      value never trips this path — the single-ref fast path
+ *      above already returned for those), AND
+ *   2. at least one non-empty token exists (so a pure-separator
+ *      string doesn't accept), AND
+ *   3. every non-empty trimmed token matches at least one
+ *      REGULATION_SHAPE_PATTERNS entry.
+ *
+ * Empty tokens (from leading / trailing / doubled separators) are
+ * skipped rather than failed — dictation artefacts like "411.3.3,"
+ * and "411.3.3,,522.6.201" should accept.
+ */
+function looksLikeCompositeRegulationRef(text) {
+  if (!COMPOSITE_SEPARATOR_RE.test(text)) return false;
+  const tokens = text.split(COMPOSITE_SEPARATOR_RE);
+  let nonEmpty = 0;
+  for (const tok of tokens) {
+    const trimmed = tok.trim();
+    if (trimmed.length === 0) continue; // skip artefact
+    nonEmpty++;
+    let matched = false;
+    for (const re of REGULATION_SHAPE_PATTERNS) {
+      if (re.test(trimmed)) {
+        matched = true;
+        break;
+      }
+    }
+    if (!matched) return false;
+  }
+  return nonEmpty > 0;
+}
 
 /**
  * Returns true if `text` matches at least one
@@ -277,9 +372,17 @@ function looksLikeRegulationRef(text) {
   if (typeof text !== 'string') return true;
   const trimmed = text.trim();
   if (trimmed.length === 0) return true;
+  // Single-ref fast path: if the entire value matches one of the
+  // 10 shape patterns, accept without invoking the splitter.
+  // Keeps telemetry sharp — single refs are classified as
+  // single-ref matches, not composite matches.
   for (const re of REGULATION_SHAPE_PATTERNS) {
     if (re.test(trimmed)) return true;
   }
+  // Plan 04-30 r23-#1 — composite path. Activates only when a
+  // separator is present AND every non-empty token individually
+  // matches a REGULATION_SHAPE_PATTERNS entry.
+  if (looksLikeCompositeRegulationRef(trimmed)) return true;
   return false;
 }
 
