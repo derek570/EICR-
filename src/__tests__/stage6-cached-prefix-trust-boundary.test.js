@@ -1669,6 +1669,183 @@ describe('Plan 04-20 r14-#3 — hydration normalisation for pre-existing legacy 
 });
 
 /**
+ * Plan 04-23 r17-#1 — pending_readings[] hydration normalisation + dedup.
+ *
+ * Codex r17 (re-review after r16 close) flagged that r16-#2's
+ * canonicalisation is two-point (write-time at extractData +
+ * serialise-time at buildStateSnapshotMessage's wrappedPending
+ * mapper) but the r14-#3 hydration pass
+ * `_normaliseCircuitKeysToCanonical` walks ONLY
+ * `stateSnapshot.circuits[n]` buckets — it does not visit
+ * `stateSnapshot.pending_readings[]`. Any hydrated session whose
+ * persisted state carries `pending_readings: [{field: "zs", ...}]`
+ * stays legacy-keyed:
+ *   - The write-time canonicalisation only fires when new readings
+ *     arrive via `extracted_readings` — hydrated entries bypass it.
+ *   - The serialise-time canonicalisation rewrites the SERIALISED
+ *     form but does not mutate `this.stateSnapshot.pending_readings`
+ *     in place, so the dedup filter in updateStateSnapshot (which
+ *     matches against the IN-MEMORY `.field`) still compares
+ *     against the legacy name. A legacy entry survives alongside a
+ *     new canonical entry after a reading lands → stale pending
+ *     state in the cached prefix.
+ *
+ * The r17-#1 fix:
+ *   (a) Extend `_normaliseCircuitKeysToCanonical` to walk
+ *       `stateSnapshot.pending_readings[]` after the circuits-bucket
+ *       loop and rewrite each entry's `.field` via
+ *       `LEGACY_TO_CANONICAL_CIRCUIT_KEYS[entry.field] ?? entry.field`.
+ *       Single source of truth — same map used by every other
+ *       canonicalisation site since r13-#2.
+ *   (b) Dedup pass. After canonicalisation, rightmost-wins dedup on
+ *       `(circuit, field)` keys — matches the r16-#2 write-time
+ *       dedup filter semantics at eicr-extraction-session.js:1657.
+ *       If hydration merged two entries whose `.field` collided
+ *       post-canonicalisation (one legacy, one canonical), the
+ *       later (rightmost) entry wins and the earlier is dropped.
+ *   (c) Idempotent. Already-canonical entries pass through as
+ *       no-op; dedup on a no-duplicate array is a no-op walk.
+ *
+ * Five tests:
+ *   r17-1a — hydration: legacy `field: "zs"` → canonical `measured_zs_ohm`.
+ *   r17-1b — hydration + dedup: legacy + canonical collision → later wins.
+ *   r17-1c — hydration: idempotent (two direct calls deep-equal).
+ *   r17-1d — hydration: all 14 aliases in LEGACY_TO_CANONICAL_CIRCUIT_KEYS covered.
+ *   r17-1e — hydration: no-op for canonical-only input (byte-identical array).
+ */
+describe('Plan 04-23 r17-#1 — pending_readings hydration normalisation + dedup', () => {
+  beforeEach(() => mockCreate.mockReset());
+
+  test('r17-1a — hydration: pre-existing legacy `field: "zs"` in pending_readings is canonicalised on start()', () => {
+    // Direct-assign a pending_readings entry with legacy field name
+    // BEFORE start() runs. Mirrors a restored-persisted-session
+    // shape: the session was persisted pre-r13-#2 (legacy vocabulary)
+    // and rehydrated after the rename shipped. Without the r17-#1
+    // extension the entry stays legacy-keyed forever.
+    const session = new EICRExtractionSession('k', 'sess-r17-1a', 'eicr', {
+      toolCallsMode: 'shadow',
+    });
+    session.stateSnapshot.pending_readings = [
+      { circuit: 1, field: 'zs', value: '0.35', unit: 'ohm' },
+    ];
+    session.start(); // hydration pass runs here.
+
+    expect(session.stateSnapshot.pending_readings).toHaveLength(1);
+    const entry = session.stateSnapshot.pending_readings[0];
+    expect(entry.field).toBe('measured_zs_ohm');
+    expect(entry.value).toBe('0.35');
+    expect(entry.unit).toBe('ohm');
+  });
+
+  test('r17-1b — hydration + dedup: legacy + canonical collision → later (rightmost) entry wins', () => {
+    // If hydrated state carries BOTH a legacy and a canonical entry
+    // for the same logical reading, post-canonicalisation dedup
+    // keeps the later-in-array (rightmost) entry. Matches the
+    // r16-#2 write-time dedup semantics where updateStateSnapshot's
+    // filter at line 1657 drops EARLIER matches on the (field, value)
+    // pair. Interpreting "rightmost wins" here is the direct
+    // generalisation — array order is insertion order, later is
+    // more recent.
+    const session = new EICRExtractionSession('k', 'sess-r17-1b', 'eicr', {
+      toolCallsMode: 'shadow',
+    });
+    session.stateSnapshot.pending_readings = [
+      { circuit: 1, field: 'zs', value: '0.35', unit: 'ohm' }, // legacy → canonicalised to measured_zs_ohm
+      { circuit: 1, field: 'measured_zs_ohm', value: '0.42', unit: 'ohm' }, // already canonical, newer
+    ];
+    session.start();
+
+    expect(session.stateSnapshot.pending_readings).toHaveLength(1);
+    const entry = session.stateSnapshot.pending_readings[0];
+    expect(entry.field).toBe('measured_zs_ohm');
+    expect(entry.value).toBe('0.42'); // rightmost wins.
+  });
+
+  test('r17-1c — hydration: idempotent — two direct calls are deep-equal', () => {
+    // Lock idempotency — any future edit that (e.g.) appends a
+    // suffix on each pass would fail at CI. Mirrors r14-3e's pattern
+    // for the circuits-bucket loop.
+    const session = new EICRExtractionSession('k', 'sess-r17-1c', 'eicr', {
+      toolCallsMode: 'shadow',
+    });
+    session.stateSnapshot.pending_readings = [
+      { circuit: 2, field: 'polarity', value: 'OK', unit: null },
+    ];
+    session.start(); // first pass via hydration.
+
+    const afterFirst = JSON.parse(JSON.stringify(session.stateSnapshot.pending_readings));
+    session._normaliseCircuitKeysToCanonical(); // second pass direct.
+    const afterSecond = JSON.parse(JSON.stringify(session.stateSnapshot.pending_readings));
+
+    expect(afterSecond).toEqual(afterFirst);
+    expect(afterFirst[0].field).toBe('polarity_confirmed');
+  });
+
+  test('r17-1d — hydration: all 14 LEGACY_TO_CANONICAL_CIRCUIT_KEYS aliases canonicalise in one pass', () => {
+    // Seed one entry per known legacy alias (10 reading aliases
+    // from r13-#2 + 4 r16-#3 additions = 14 total).
+    // Post-start() every entry's `.field` must be canonical; zero
+    // legacy names survive. Drives the canonicalisation map
+    // iteration path against the pending_readings surface.
+    const session = new EICRExtractionSession('k', 'sess-r17-1d', 'eicr', {
+      toolCallsMode: 'shadow',
+    });
+    const legacyToCanonical = {
+      // r13-#2 reading aliases.
+      zs: 'measured_zs_ohm',
+      r1_r2: 'r1_r2_ohm',
+      r2: 'r2_ohm',
+      insulation_resistance_l_e: 'ir_live_earth_mohm',
+      insulation_resistance_l_l: 'ir_live_live_mohm',
+      ring_continuity_r1: 'ring_r1_ohm',
+      ring_continuity_rn: 'ring_rn_ohm',
+      ring_continuity_r2: 'ring_r2_ohm',
+      rcd_trip_time: 'rcd_time_ms',
+      polarity: 'polarity_confirmed',
+      // r16-#3 additions.
+      ocpd_rating: 'ocpd_rating_a',
+      ocpd_breaking_capacity: 'ocpd_breaking_capacity_ka',
+      ir_test_voltage: 'ir_test_voltage_v',
+      max_disconnect_time: 'max_disconnect_time_s',
+    };
+    // Seed distinct circuit numbers so dedup doesn't collapse any entries.
+    session.stateSnapshot.pending_readings = Object.keys(legacyToCanonical).map((legacy, i) => ({
+      circuit: i + 1,
+      field: legacy,
+      value: '1',
+      unit: null,
+    }));
+    session.start();
+
+    expect(session.stateSnapshot.pending_readings).toHaveLength(14);
+    for (const entry of session.stateSnapshot.pending_readings) {
+      const expectedCanonical =
+        legacyToCanonical[Object.keys(legacyToCanonical)[entry.circuit - 1]];
+      expect(entry.field).toBe(expectedCanonical);
+      // Negative: no legacy key survives.
+      expect(Object.keys(legacyToCanonical)).not.toContain(entry.field);
+    }
+  });
+
+  test('r17-1e — hydration: no-op for canonical-only pending_readings (deep-equal before/after)', () => {
+    // Clean canonical input must be byte-identical post-hydration.
+    // Proves the pass is pure overhead on post-r13-#2 writes.
+    const session = new EICRExtractionSession('k', 'sess-r17-1e', 'eicr', {
+      toolCallsMode: 'shadow',
+    });
+    session.stateSnapshot.pending_readings = [
+      { circuit: 1, field: 'measured_zs_ohm', value: '0.35', unit: 'ohm' },
+      { circuit: 2, field: 'r1_r2_ohm', value: '0.47', unit: 'ohm' },
+    ];
+    const before = JSON.parse(JSON.stringify(session.stateSnapshot.pending_readings));
+    session.start();
+    const after = JSON.parse(JSON.stringify(session.stateSnapshot.pending_readings));
+
+    expect(after).toEqual(before);
+  });
+});
+
+/**
  * Plan 04-22 r16-#2 — pending_readings[].field canonicalisation.
  *
  * Codex r16 (re-statement of r15-#1) flagged that
