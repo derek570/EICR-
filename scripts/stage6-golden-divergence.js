@@ -517,22 +517,66 @@ async function runToolCallPath(fx) {
  * edit changes how oracles are shaped, the test surfaces it before
  * integration reports go wrong.
  *
- * Input shape: `{circuits: {[N]: {[field]: value, ...}}}`. Any non-
- * reading fields on a circuit (e.g. `circuit_designation`) are also
- * emitted as readings for comparison symmetry — the normaliser treats
- * all `{circuit,field,value}` tuples uniformly, which means the oracle
- * path compares designation-as-a-reading too. In practice the tool-call
- * bundler emits circuit_designation via circuit_updates, not
- * extracted_readings, so oracle + tool-call diverge on designation
- * UNLESS the oracle author also wires the circuit_ops slot. See
- * sample-03 for the dual pattern. Callers should keep oracle content
- * scoped to reading-shaped slots.
+ * Input shape: `{circuits: {[N]: {[field]: value, ...}}}`.
+ *
+ * Plan 04-08 r2-#3 update — route `circuit_designation` into
+ * `circuit_updates` rather than `extracted_readings`, because that's
+ * where the real legacy (`record_extraction`) and tool-call (`create_circuit`
+ * via bundler) paths BOTH emit it. Pre-r2, the oracle naively flattened
+ * every field into readings, causing the oracle to diverge from both
+ * pipelines on sample-03 (designation sat in circuit_ops on both sides,
+ * but readings on the oracle). Now the oracle converges with both paths
+ * and the triple-compare can run cleanly.
+ *
+ * Action is inferred as `create` when the oracle lists a designation —
+ * that's the only production path that puts designation into the write
+ * stream (rename also emits designation but is a RARE case in Stage 6
+ * fixtures; if a future fixture needs rename-oracle, extend the input
+ * shape with an explicit action key then).
  *
  * @param {{circuits?: Object}} oracle
- * @returns {{extracted_readings: Array<{circuit:number|string, field:string, value:any}>}}
+ * @returns {{extracted_readings: Array, circuit_updates: Array}}
  */
+/**
+ * Project a normalised extraction result to END STATE for oracle
+ * comparison (Plan 04-08 r2-#3).
+ *
+ * The oracle shape (`expected_slot_writes`) models WHAT ENDS UP IN THE
+ * STATE after a turn — it does not model transient events. But both the
+ * legacy path and the tool-call path emit transient intermediates
+ * (notably `clears` — a `clear_reading` + `record_reading` on the same
+ * (circuit, field) in one turn is how "correct my Zs from 0.35 to 0.71"
+ * renders in both pipelines).
+ *
+ * End-state projection rules:
+ *  - Drop `clears` entries that are SUPERSEDED by a subsequent
+ *    `readings` entry on the same (circuit, field). End state of a
+ *    clear-then-record pair is just the record.
+ *  - Preserve `clears` entries that have no matching reading — those
+ *    represent a genuine "end with this slot empty" outcome. These
+ *    are rare in the current fixture set but keep them for symmetry.
+ *
+ * Input/output shape: same 4-section container as normaliseExtractionResult.
+ */
+function projectToEndState(norm) {
+  const src = norm ?? { readings: [], clears: [], circuit_ops: [], observations: [] };
+  const readingKeys = new Set(
+    (src.readings ?? []).map((r) => `${r.circuit}::${r.field}`),
+  );
+  const clearsProjected = (src.clears ?? []).filter((c) => {
+    const key = `${c.circuit}::${c.field}`;
+    return !readingKeys.has(key);
+  });
+  return {
+    readings: Array.isArray(src.readings) ? src.readings : [],
+    clears: clearsProjected,
+    circuit_ops: Array.isArray(src.circuit_ops) ? src.circuit_ops : [],
+    observations: Array.isArray(src.observations) ? src.observations : [],
+  };
+}
+
 export function expectedSlotWritesToLegacyShape(oracle) {
-  const out = { extracted_readings: [] };
+  const out = { extracted_readings: [], circuit_updates: [] };
   if (!oracle || typeof oracle !== 'object') return out;
   const circuits = oracle.circuits;
   if (!circuits || typeof circuits !== 'object') return out;
@@ -543,6 +587,18 @@ export function expectedSlotWritesToLegacyShape(oracle) {
     // Keeps parity with fixture snapshots that key circuits by integer.
     const circuit = /^-?\d+$/.test(circuitKey) ? Number(circuitKey) : circuitKey;
     for (const [field, value] of Object.entries(bucket)) {
+      // Route circuit-shape fields into circuit_updates; everything else
+      // stays as a reading. circuit_ref is a pure shape field (no write
+      // semantics) so skip it too.
+      if (field === 'circuit_ref') continue;
+      if (field === 'circuit_designation') {
+        out.circuit_updates.push({
+          action: 'create',
+          circuit_ref: circuit,
+          designation: value,
+        });
+        continue;
+      }
       out.extracted_readings.push({ circuit, field, value });
     }
   }
@@ -553,66 +609,175 @@ export function expectedSlotWritesToLegacyShape(oracle) {
  * Run one fixture: derive legacy result, run tool-call dispatcher, normalise
  * both, compute divergence, return per-fixture outcome.
  *
- * Plan 04-07 r1 remediation (Codex MAJOR #3): the previous
- * `legacyResult = toolResult` fallback made Variant-B fixtures self-
- * compare, producing fake 0% divergence regardless of dispatcher
- * correctness. The new behaviour:
+ * Plan 04-07 r1 (Codex MAJOR #3): the previous `legacyResult = toolResult`
+ * fallback made Variant-B fixtures self-compare — fixed by the oracle
+ * path.
  *
- *   - Fixture has `sse_events_legacy`: use it (Variant A — unchanged).
- *   - Fixture has only `expected_slot_writes`: use the ORACLE PATH —
- *     convert the oracle into a legacy-shape result via
- *     `expectedSlotWritesToLegacyShape` and compare against the
- *     tool-call output. This is a REAL comparison, not a self-compare.
- *   - Fixture has NEITHER: throw. Silent self-compare is the exact
- *     failure mode Codex's finding called out; throwing makes the
- *     missing data impossible to miss.
+ * Plan 04-08 r2-#3 (Codex MAJOR r2-#3): extend the oracle path to engage
+ * ALSO when sse_events_legacy is present. Without this, legacy + tool-call
+ * could agree on wrong output (both wrong the same way) and pass 0%
+ * because the oracle is never consulted. Four shapes:
  *
- * Combined shape (Variant A + oracle): if a fixture ships BOTH
- * sse_events_legacy AND expected_slot_writes, the legacy SSE stream
- * takes priority (it models richer behaviour the oracle cannot — e.g.
- * specific question text, validation alerts). The oracle is still
- * useful as documentation of intent but is not used for comparison
- * in that case.
+ *   (A) sse_events_legacy + sse_events_tool_call + expected_slot_writes
+ *       → TRIPLE COMPARE. Compute three pairwise rates:
+ *         legacy_vs_tool   — the primary divergence (existing).
+ *         tool_vs_oracle   — NEW. Catches "tool-call silently wrong".
+ *         legacy_vs_oracle — NEW. Catches "legacy drift from contract".
+ *       `diverged` = OR of all three. Primary `divergence` stays
+ *       legacy-vs-tool for back-compat; the pairwise rates are surfaced
+ *       as additional fields on the divergence object.
+ *
+ *   (B) sse_events_tool_call + expected_slot_writes only (no
+ *       sse_events_legacy) → r1 ORACLE PATH. Oracle acts as the
+ *       legacy-equivalent; tool-vs-oracle IS the primary rate.
+ *
+ *   (C) sse_events_legacy + sse_events_tool_call (no oracle) → r1
+ *       Variant A path. Emit a `warnings` breadcrumb encouraging oracle
+ *       addition; the gate still runs on legacy-vs-tool only.
+ *
+ *   (D) Neither tool+oracle nor legacy+tool → THROW (r1 behaviour).
+ *
+ * Returns `.warnings: string[]` on the fixture result so the CLI digest
+ * and the aggregation runner can surface "this fixture could be
+ * strengthened" without failing the gate.
  */
 export async function runFixture(fixturePath) {
   const fx = readJsonSync(fixturePath);
+  const warnings = [];
 
   // Tool-call side always runs. When it fails to produce anything (bad
   // fixture / error) we return a synthetic divergent verdict so the
   // directory-runner aggregation surfaces the issue.
   const toolResult = await runToolCallPath(fx);
 
-  // Legacy side resolution order:
-  //   1. sse_events_legacy (Variant A — existing path, pre-r1 behaviour)
-  //   2. expected_slot_writes (Variant B / oracle path — NEW in r1)
-  //   3. throw (no more silent self-compare)
-  let legacyResult = extractLegacyFromFixture(fx);
-  let legacySource = 'sse_events_legacy';
-  if (!legacyResult) {
-    if (fx.expected_slot_writes) {
-      legacyResult = expectedSlotWritesToLegacyShape(fx.expected_slot_writes);
-      legacySource = 'expected_slot_writes';
-    } else {
-      throw new Error(
-        `golden-divergence: fixture ${path.basename(fixturePath)} is missing ` +
-          `both sse_events_legacy and expected_slot_writes — refusing to ` +
-          `self-compare (Plan 04-07 r1 remediation of Codex MAJOR #3). ` +
-          `Add an expected_slot_writes oracle or a sse_events_legacy stream.`,
-      );
-    }
+  // Resolve the three possible inputs to the comparison:
+  const legacyRaw = extractLegacyFromFixture(fx); // may be null
+  const oracleRaw = fx.expected_slot_writes
+    ? expectedSlotWritesToLegacyShape(fx.expected_slot_writes)
+    : null;
+  const hasLegacy = !!legacyRaw;
+  const hasOracle = !!oracleRaw;
+
+  // Plan 04-08 r2-#3: Shape D — throw when neither comparison is possible.
+  if (!hasLegacy && !hasOracle) {
+    throw new Error(
+      `golden-divergence: fixture ${path.basename(fixturePath)} is missing ` +
+        `both sse_events_legacy and expected_slot_writes — refusing to ` +
+        `self-compare (Plan 04-07 r1 remediation of Codex MAJOR #3). ` +
+        `Add an expected_slot_writes oracle or a sse_events_legacy stream.`,
+    );
   }
 
-  const legacyNorm = normaliseExtractionResult(legacyResult);
   const toolCallNorm = normaliseExtractionResult(toolResult);
-  const divergence = computeDivergence(legacyNorm, toolCallNorm);
 
+  let divergence;
+  let legacySource;
+
+  if (hasLegacy && hasOracle) {
+    // Shape A — triple-compare. Primary rate stays legacy-vs-tool for
+    // back-compat with existing tests + callers; pairwise rates against
+    // the oracle are surfaced as additional fields.
+    legacySource = 'sse_events_legacy+expected_slot_writes';
+    const legacyNorm = normaliseExtractionResult(legacyRaw);
+    const oracleNorm = normaliseExtractionResult(oracleRaw);
+    const primary = computeDivergence(legacyNorm, toolCallNorm);
+    // Plan 04-08 r2-#3: oracle-vs-pipeline comparisons use END STATE
+    // projection (see projectToEndState) — clears are an intermediate
+    // event stream, not an end-state property. A clear-then-record on
+    // (circuit, field) collapses to just the record for end-state
+    // comparison. Without this projection, fixtures like sample-02
+    // (where both paths emit a clear + a record for the same slot but
+    // the oracle only describes the final value) would diverge against
+    // the oracle even though they're operationally equivalent.
+    const toolEndState = projectToEndState(toolCallNorm);
+    const legacyEndState = projectToEndState(legacyNorm);
+    const oracleEndState = projectToEndState(oracleNorm);
+    const toolVsOracle = computeCallLevelDivergence(oracleEndState, toolEndState);
+    const legacyVsOracle = computeCallLevelDivergence(oracleEndState, legacyEndState);
+    divergence = {
+      ...primary,
+      // Triple-compare surface (Plan 04-08 r2-#3).
+      legacy_vs_tool_divergence: primary.call_divergence,
+      tool_vs_oracle_divergence: toolVsOracle.rate,
+      legacy_vs_oracle_divergence: legacyVsOracle.rate,
+      tool_vs_oracle_reasons: toolVsOracle.reasons,
+      legacy_vs_oracle_reasons: legacyVsOracle.reasons,
+      // Diverged is now the OR of ALL THREE pairwise rates.
+      diverged:
+        primary.diverged ||
+        toolVsOracle.rate > 0 ||
+        legacyVsOracle.rate > 0,
+    };
+    // Attach the normalised oracle so downstream tooling can use it.
+    return {
+      fixture: path.basename(fixturePath),
+      fixturePath,
+      legacyNorm,
+      toolCallNorm,
+      oracleNorm,
+      divergence,
+      legacy_source: legacySource,
+      warnings,
+    };
+  }
+
+  if (!hasLegacy && hasOracle) {
+    // Shape B — r1 oracle path. Oracle IS the legacy-equivalent; the
+    // triple-compare degenerates to a single pairwise comparison.
+    legacySource = 'expected_slot_writes';
+    const legacyNorm = normaliseExtractionResult(oracleRaw);
+    const primary = computeDivergence(legacyNorm, toolCallNorm);
+    divergence = {
+      ...primary,
+      // tool_vs_oracle IS the primary comparison here — surface it with
+      // the explicit name too so downstream tooling can query it
+      // uniformly across shapes.
+      legacy_vs_tool_divergence: null, // no legacy to compare against
+      tool_vs_oracle_divergence: primary.call_divergence,
+      legacy_vs_oracle_divergence: null, // no legacy to compare
+      tool_vs_oracle_reasons: primary.call_reasons,
+      legacy_vs_oracle_reasons: [],
+    };
+    return {
+      fixture: path.basename(fixturePath),
+      fixturePath,
+      legacyNorm,
+      toolCallNorm,
+      oracleNorm: legacyNorm, // same reference — oracle IS legacy here.
+      divergence,
+      legacy_source: legacySource,
+      warnings,
+    };
+  }
+
+  // Shape C — legacy + tool only (no oracle). r1 Variant A preserved.
+  // Emit a warning so fixture authors know the gate is weaker here.
+  legacySource = 'sse_events_legacy';
+  warnings.push(
+    `golden-divergence: fixture ${path.basename(fixturePath)} has no ` +
+      `expected_slot_writes oracle — legacy-vs-tool comparison only. ` +
+      `Consider adding an oracle to strengthen the gate against the ` +
+      `"both wrong the same way" failure mode (Plan 04-08 r2-#3).`,
+  );
+  const legacyNorm = normaliseExtractionResult(legacyRaw);
+  const primary = computeDivergence(legacyNorm, toolCallNorm);
+  divergence = {
+    ...primary,
+    legacy_vs_tool_divergence: primary.call_divergence,
+    tool_vs_oracle_divergence: null, // no oracle available
+    legacy_vs_oracle_divergence: null, // no oracle available
+    tool_vs_oracle_reasons: [],
+    legacy_vs_oracle_reasons: [],
+  };
   return {
     fixture: path.basename(fixturePath),
     fixturePath,
     legacyNorm,
     toolCallNorm,
+    oracleNorm: null,
     divergence,
     legacy_source: legacySource,
+    warnings,
   };
 }
 

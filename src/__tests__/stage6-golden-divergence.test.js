@@ -1092,12 +1092,21 @@ describe('Group I — Plan 04-08 r2-#3: triple-comparison oracle path', () => {
 
   // Shared fixture-body factory. Takes optional `oracle` + `legacyValue`
   // + `toolValue` to construct matching / mismatching variants for the
-  // three-way comparison tests.
+  // three-way comparison tests. Pre-seeds circuit 3 on the snapshot so
+  // stage6-dispatch-validation.validateRecordReading accepts the write
+  // (dispatcher requires the circuit to exist before record_reading runs).
   function fixtureBody({ legacyValue, toolValue, oracleValue }) {
     const base = {
       _doc: 'r2-#3 triple-comparison test fixture',
       pre_turn_state: {
-        snapshot: { circuits: {}, pending_readings: [], observations: [], validation_alerts: [] },
+        snapshot: {
+          circuits: {
+            3: { circuit_ref: 3, circuit_designation: 'Lighting (downstairs)' },
+          },
+          pending_readings: [],
+          observations: [],
+          validation_alerts: [],
+        },
         askedQuestions: [],
         extractedObservations: [],
       },
@@ -1261,7 +1270,11 @@ describe('Group I — Plan 04-08 r2-#3: triple-comparison oracle path', () => {
     // r2 is declared done.
     const report = await runDirectory(FIXTURE_DIR, { extraFixtures: [F21934D4_PATH] });
     for (const s of report.sessions) {
-      expect(s.divergence.legacy_vs_tool_divergence).toBe(0);
+      // legacy_vs_tool is null on Variant-B fixtures (no sse_events_legacy);
+      // on Variant-A it must be 0 (legacy agrees with tool).
+      if (s.divergence.legacy_vs_tool_divergence !== null) {
+        expect(s.divergence.legacy_vs_tool_divergence).toBe(0);
+      }
       // tool_vs_oracle must be present (every fixture in the set has
       // an oracle) and 0.
       expect(s.divergence.tool_vs_oracle_divergence).toBe(0);
