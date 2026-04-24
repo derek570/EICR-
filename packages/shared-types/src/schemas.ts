@@ -78,6 +78,40 @@ export const JobDetailSchema = JobSchema.extend({
 
 export const JobListResponseSchema = z.array(JobSchema);
 
+// ============= Settings / Auth / Invite (Phase 6) =============
+
+/**
+ * Change-password request body (PUT /api/auth/change-password).
+ * Intentionally permissive on lengths — backend enforces the ≥6 char
+ * rule and surfaces the error message, we don't want to double-guard
+ * here and drift from server truth.
+ */
+export const ChangePasswordRequestSchema = z.object({
+  currentPassword: z.string().min(1, 'Current password is required'),
+  newPassword: z.string().min(6, 'New password must be at least 6 characters'),
+});
+
+/**
+ * Invite-employee request body (POST /api/companies/:companyId/invite).
+ * Backend rejects empty name/email with 400; schema mirrors that so
+ * form validation + server validation speak the same contract.
+ */
+export const InviteEmployeeRequestSchema = z.object({
+  name: z.string().min(1, 'Name is required'),
+  email: z.string().email('Enter a valid email address'),
+});
+
+/**
+ * User defaults — circuit-field default values (PUT/GET
+ * /api/settings/:userId/defaults). Backend stores a free-form JSON
+ * object; shape is `Record<string, string>` so any key the UI knows
+ * about round-trips untouched. Empty strings are kept verbatim (the
+ * apply-defaults helper treats them as "no default" — stripping them
+ * here would collapse a deliberate "clear this default" edit into a
+ * no-op).
+ */
+export const UserDefaultsSchema = z.record(z.string(), z.string());
+
 // ============= Validate utility =============
 
 /**
