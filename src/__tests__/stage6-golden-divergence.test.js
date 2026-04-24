@@ -58,10 +58,7 @@ import { TOOL_SCHEMAS, CONTEXT_FIELD_ENUM } from '../extraction/stage6-tool-sche
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const FIXTURE_DIR = path.resolve(__dirname, 'fixtures/stage6-golden-sessions');
-const F21934D4_PATH = path.resolve(
-  __dirname,
-  'fixtures/stage6-sse/f21934d4-re-ask-scenario.json',
-);
+const F21934D4_PATH = path.resolve(__dirname, 'fixtures/stage6-sse/f21934d4-re-ask-scenario.json');
 
 // ---------------------------------------------------------------------------
 // Group A — normaliseExtractionResult
@@ -201,13 +198,13 @@ describe('normaliseExtractionResult — STR-02 canonicalisation', () => {
     };
     const b = {
       extracted_readings: [
-        { circuit: 1, field: 'ZS', value: '0.35', confidence: 0.10, source_turn_id: 't99' },
+        { circuit: 1, field: 'ZS', value: '0.35', confidence: 0.1, source_turn_id: 't99' },
       ],
       observations: [{ code: 'C2', text: ' X ' }],
     };
     // Same truth after canonicalisation despite differing casing + transient fields.
     expect(JSON.stringify(normaliseExtractionResult(a))).toBe(
-      JSON.stringify(normaliseExtractionResult(b)),
+      JSON.stringify(normaliseExtractionResult(b))
     );
   });
 });
@@ -465,7 +462,7 @@ describe('computeDivergence — back-compat surface (section + call combined)', 
     expect(d.call_divergence).toBeCloseTo(0.2, 6);
   });
 
-  test("divergedness is OR of both metrics — section=0 with call>0 still flags", () => {
+  test('divergedness is OR of both metrics — section=0 with call>0 still flags', () => {
     // Defensive: if a future refactor lets the two metrics disagree on
     // zero-ness, the OR keeps diverged honest.
     const same = { ...empty, readings: [{ circuit: 1, field: 'zs', value: '0.35' }] };
@@ -487,14 +484,14 @@ describe('runDirectory — 5 golden fixtures', () => {
 
   test('session_divergence_rate ≤ 0.10 (expected 0 on deterministic fixtures)', async () => {
     const report = await runDirectory(FIXTURE_DIR);
-    expect(report.session_divergence_rate).toBeLessThanOrEqual(0.10);
+    expect(report.session_divergence_rate).toBeLessThanOrEqual(0.1);
     // Expected: exact-match deterministic fixtures.
     expect(report.session_divergence_rate).toBe(0);
   });
 
   test('call_divergence_rate ≤ 0.10 (expected 0 on deterministic fixtures)', async () => {
     const report = await runDirectory(FIXTURE_DIR);
-    expect(report.call_divergence_rate).toBeLessThanOrEqual(0.10);
+    expect(report.call_divergence_rate).toBeLessThanOrEqual(0.1);
     expect(report.call_divergence_rate).toBe(0);
   });
 
@@ -528,7 +525,7 @@ describe('runDirectory — extraFixtures (F21934D4 inclusion)', () => {
     await expect(
       runDirectory(FIXTURE_DIR, {
         extraFixtures: ['/path/to/does-not-exist.json'],
-      }),
+      })
     ).rejects.toThrow(/does-not-exist\.json/);
   });
 });
@@ -540,7 +537,7 @@ describe('runDirectory — extraFixtures (F21934D4 inclusion)', () => {
 // real metric); `section_divergence_rate` is kept as a diagnostic.
 // ---------------------------------------------------------------------------
 
-describe('Group C\' — runDirectory exposes section + call metrics separately (r2-#2)', () => {
+describe("Group C' — runDirectory exposes section + call metrics separately (r2-#2)", () => {
   test('runDirectory report surfaces both section_divergence_rate AND call_divergence_rate', async () => {
     const report = await runDirectory(FIXTURE_DIR);
     expect(report).toHaveProperty('section_divergence_rate');
@@ -613,7 +610,7 @@ describe('runDirectory — threshold breach', () => {
     };
     syntheticReport.session_divergence_rate = 1 / 2;
     syntheticReport.call_divergence_rate = (0 + 0.5) / 2;
-    syntheticReport.threshold = 0.10;
+    syntheticReport.threshold = 0.1;
     syntheticReport.breached =
       syntheticReport.session_divergence_rate > syntheticReport.threshold ||
       syntheticReport.call_divergence_rate > syntheticReport.threshold;
@@ -635,7 +632,7 @@ describe('runDirectory — threshold breach', () => {
 describe('Phase 4 SC #6 — golden-session divergence gate', () => {
   test('combined 5 goldens + F21934D4 ≤ 10% threshold (SC #6 lock)', async () => {
     const report = await runDirectory(FIXTURE_DIR, {
-      threshold: 0.10,
+      threshold: 0.1,
       extraFixtures: [F21934D4_PATH],
     });
 
@@ -646,19 +643,19 @@ describe('Phase 4 SC #6 — golden-session divergence gate', () => {
     expect(report).toEqual(
       expect.objectContaining({
         total: 6,
-        threshold: 0.10,
+        threshold: 0.1,
         session_divergence_rate: expect.any(Number),
         call_divergence_rate: expect.any(Number),
         breached: expect.any(Boolean),
         sessions: expect.any(Array),
-      }),
+      })
     );
 
     // The gate: both aggregate rates must sit at or below threshold. Plan
     // 04-05 establishes 0% as the expected baseline on deterministic
     // fixtures — any movement off 0% on these 6 is a bug, not drift.
-    expect(report.session_divergence_rate).toBeLessThanOrEqual(0.10);
-    expect(report.call_divergence_rate).toBeLessThanOrEqual(0.10);
+    expect(report.session_divergence_rate).toBeLessThanOrEqual(0.1);
+    expect(report.call_divergence_rate).toBeLessThanOrEqual(0.1);
     expect(report.breached).toBe(false);
 
     // Every session records its per-fixture divergence verdict with the
@@ -775,7 +772,11 @@ describe('Group G — Plan 04-07 r1: fixture-level schema validation (Codex MAJO
         ev.delta?.type === 'input_json_delta'
       ) {
         current.partial += ev.delta.partial_json ?? '';
-      } else if (ev.type === 'content_block_stop' && current !== null && ev.index === current.index) {
+      } else if (
+        ev.type === 'content_block_stop' &&
+        current !== null &&
+        ev.index === current.index
+      ) {
         try {
           out.push({ name: current.name, input: JSON.parse(current.partial || '{}') });
         } catch {
@@ -829,7 +830,9 @@ describe('Group G — Plan 04-07 r1: fixture-level schema validation (Codex MAJO
       if (Array.isArray(propSchema.enum)) {
         const allowed = new Set(propSchema.enum);
         if (!allowed.has(value)) {
-          mismatches.push(`${toolName}.${propName}="${value}" not in enum [${[...allowed].join(',')}]`);
+          mismatches.push(
+            `${toolName}.${propName}="${value}" not in enum [${[...allowed].join(',')}]`
+          );
         }
       }
     }
@@ -903,7 +906,7 @@ describe('Group G — Plan 04-07 r1: fixture-level schema validation (Codex MAJO
 
 describe('Group H — Plan 04-07 r1: runFixture oracle path (Codex MAJOR #3)', () => {
   const tmp = fssync.mkdtempSync(
-    path.join(fssync.realpathSync.native ? fssync.realpathSync.native('/tmp') : '/tmp', 'goldenX-'),
+    path.join(fssync.realpathSync.native ? fssync.realpathSync.native('/tmp') : '/tmp', 'goldenX-')
   );
 
   function writeFixture(name, body) {
@@ -926,7 +929,7 @@ describe('Group H — Plan 04-07 r1: runFixture oracle path (Codex MAJOR #3)', (
     expect(Array.isArray(shape.extracted_readings)).toBe(true);
     expect(shape.extracted_readings).toHaveLength(3);
     const asSet = new Set(
-      shape.extracted_readings.map((r) => `${r.circuit}:${r.field}=${r.value}`),
+      shape.extracted_readings.map((r) => `${r.circuit}:${r.field}=${r.value}`)
     );
     expect(asSet.has('3:measured_zs_ohm=0.35')).toBe(true);
     expect(asSet.has('3:polarity_confirmed=correct')).toBe(true);
@@ -955,7 +958,7 @@ describe('Group H — Plan 04-07 r1: runFixture oracle path (Codex MAJOR #3)', (
     });
 
     await expect(runFixture(p)).rejects.toThrow(
-      /broken-no-legacy-no-oracle\.json.*(missing|oracle|both|sse_events_legacy|expected_slot_writes)/i,
+      /broken-no-legacy-no-oracle\.json.*(missing|oracle|both|sse_events_legacy|expected_slot_writes)/i
     );
   });
 
@@ -1105,7 +1108,7 @@ describe('Group H — Plan 04-07 r1: runFixture oracle path (Codex MAJOR #3)', (
 
 describe('Group I — Plan 04-08 r2-#3: triple-comparison oracle path', () => {
   const tmp = fssync.mkdtempSync(
-    path.join(fssync.realpathSync.native ? fssync.realpathSync.native('/tmp') : '/tmp', 'goldenY-'),
+    path.join(fssync.realpathSync.native ? fssync.realpathSync.native('/tmp') : '/tmp', 'goldenY-')
   );
 
   function writeFixture(name, body) {
@@ -1143,7 +1146,12 @@ describe('Group I — Plan 04-08 r2-#3: triple-comparison oracle path', () => {
         {
           type: 'content_block_start',
           index: 0,
-          content_block: { type: 'tool_use', id: 'toolu_legacy', name: 'record_extraction', input: {} },
+          content_block: {
+            type: 'tool_use',
+            id: 'toolu_legacy',
+            name: 'record_extraction',
+            input: {},
+          },
         },
         {
           type: 'content_block_delta',
@@ -1151,9 +1159,7 @@ describe('Group I — Plan 04-08 r2-#3: triple-comparison oracle path', () => {
           delta: {
             type: 'input_json_delta',
             partial_json: JSON.stringify({
-              extracted_readings: [
-                { circuit: 3, field: 'measured_zs_ohm', value: legacyValue },
-              ],
+              extracted_readings: [{ circuit: 3, field: 'measured_zs_ohm', value: legacyValue }],
               field_clears: [],
               circuit_updates: [],
               observations: [],
@@ -1209,7 +1215,7 @@ describe('Group I — Plan 04-08 r2-#3: triple-comparison oracle path', () => {
   test('r2-3a triple-compare PASS: legacy + tool + oracle all agree → diverged=false, all pairwise rates 0', async () => {
     const p = writeFixture(
       'triple-agree.json',
-      fixtureBody({ legacyValue: '0.35', toolValue: '0.35', oracleValue: '0.35' }),
+      fixtureBody({ legacyValue: '0.35', toolValue: '0.35', oracleValue: '0.35' })
     );
     const result = await runFixture(p);
     expect(result).toBeDefined();
@@ -1232,7 +1238,7 @@ describe('Group I — Plan 04-08 r2-#3: triple-comparison oracle path', () => {
     // value is "0.35", so BOTH oracle comparisons must fire.
     const p = writeFixture(
       'triple-both-wrong-same-way.json',
-      fixtureBody({ legacyValue: '0.71', toolValue: '0.71', oracleValue: '0.35' }),
+      fixtureBody({ legacyValue: '0.71', toolValue: '0.71', oracleValue: '0.35' })
     );
     const result = await runFixture(p);
     expect(result).toBeDefined();
@@ -1252,7 +1258,7 @@ describe('Group I — Plan 04-08 r2-#3: triple-comparison oracle path', () => {
     // warning that no oracle was consulted.
     const p = writeFixture(
       'legacy-tool-no-oracle.json',
-      fixtureBody({ legacyValue: '0.35', toolValue: '0.35' /* no oracleValue */ }),
+      fixtureBody({ legacyValue: '0.35', toolValue: '0.35' /* no oracleValue */ })
     );
     const result = await runFixture(p);
     expect(result).toBeDefined();
@@ -1274,7 +1280,7 @@ describe('Group I — Plan 04-08 r2-#3: triple-comparison oracle path', () => {
     // legacy_vs_oracle = 0 (legacy + oracle agree).
     const p = writeFixture(
       'triple-tool-only-wrong.json',
-      fixtureBody({ legacyValue: '0.35', toolValue: '0.99', oracleValue: '0.35' }),
+      fixtureBody({ legacyValue: '0.35', toolValue: '0.99', oracleValue: '0.35' })
     );
     const result = await runFixture(p);
     expect(result).toBeDefined();
@@ -1341,11 +1347,27 @@ describe('Group J — Plan 04-09 r3-#1: normaliseObservation widened field surfa
   test('J1 — observations differing ONLY in `location` → diverged=true', () => {
     const a = {
       ...empty,
-      observations: [{ code: 'C2', text: 'Missing cover', location: 'Kitchen', circuit: null, suggested_regulation: null }],
+      observations: [
+        {
+          code: 'C2',
+          text: 'Missing cover',
+          location: 'Kitchen',
+          circuit: null,
+          suggested_regulation: null,
+        },
+      ],
     };
     const b = {
       ...empty,
-      observations: [{ code: 'C2', text: 'Missing cover', location: 'Bathroom', circuit: null, suggested_regulation: null }],
+      observations: [
+        {
+          code: 'C2',
+          text: 'Missing cover',
+          location: 'Bathroom',
+          circuit: null,
+          suggested_regulation: null,
+        },
+      ],
     };
     // Need to normalise the shapes first (like the real pipeline does).
     const normA = normaliseExtractionResult(a);
@@ -1358,11 +1380,27 @@ describe('Group J — Plan 04-09 r3-#1: normaliseObservation widened field surfa
   test('J2 — observations differing ONLY in `circuit` → diverged=true', () => {
     const a = {
       ...empty,
-      observations: [{ code: 'C2', text: 'Loose neutral', location: 'DB', circuit: 3, suggested_regulation: null }],
+      observations: [
+        {
+          code: 'C2',
+          text: 'Loose neutral',
+          location: 'DB',
+          circuit: 3,
+          suggested_regulation: null,
+        },
+      ],
     };
     const b = {
       ...empty,
-      observations: [{ code: 'C2', text: 'Loose neutral', location: 'DB', circuit: 7, suggested_regulation: null }],
+      observations: [
+        {
+          code: 'C2',
+          text: 'Loose neutral',
+          location: 'DB',
+          circuit: 7,
+          suggested_regulation: null,
+        },
+      ],
     };
     const normA = normaliseExtractionResult(a);
     const normB = normaliseExtractionResult(b);
@@ -1510,7 +1548,7 @@ describe('Group K — Plan 04-09 r3-#2: breach gated on call + session only (sec
         call_divergence_rate: 0.05,
         session_divergence_rate: 0,
       },
-      0.10,
+      0.1
     );
     expect(breached).toBe(false);
   });
@@ -1522,7 +1560,7 @@ describe('Group K — Plan 04-09 r3-#2: breach gated on call + session only (sec
         call_divergence_rate: 0.11,
         session_divergence_rate: 0,
       },
-      0.10,
+      0.1
     );
     expect(breached).toBe(true);
   });
@@ -1532,9 +1570,9 @@ describe('Group K — Plan 04-09 r3-#2: breach gated on call + session only (sec
       {
         section_divergence_rate: 0,
         call_divergence_rate: 0,
-        session_divergence_rate: 0.20,
+        session_divergence_rate: 0.2,
       },
-      0.10,
+      0.1
     );
     expect(breached).toBe(true);
   });
@@ -1546,7 +1584,7 @@ describe('Group K — Plan 04-09 r3-#2: breach gated on call + session only (sec
         call_divergence_rate: 0,
         session_divergence_rate: 0,
       },
-      0.10,
+      0.1
     );
     expect(breached).toBe(false);
   });
@@ -1557,11 +1595,11 @@ describe('Group K — Plan 04-09 r3-#2: breach gated on call + session only (sec
     // (acceptable). This mirrors Plan 04-05's "≤ 10%" claim language.
     const breached = computeBreached(
       {
-        section_divergence_rate: 0.10,
-        call_divergence_rate: 0.10,
-        session_divergence_rate: 0.10,
+        section_divergence_rate: 0.1,
+        call_divergence_rate: 0.1,
+        session_divergence_rate: 0.1,
       },
-      0.10,
+      0.1
     );
     expect(breached).toBe(false);
   });
@@ -1569,11 +1607,11 @@ describe('Group K — Plan 04-09 r3-#2: breach gated on call + session only (sec
   test('K6 — both call AND session exceed → breached=true (gate fires on OR)', () => {
     const breached = computeBreached(
       {
-        section_divergence_rate: 0.50,
+        section_divergence_rate: 0.5,
         call_divergence_rate: 0.15,
-        session_divergence_rate: 0.30,
+        session_divergence_rate: 0.3,
       },
-      0.10,
+      0.1
     );
     expect(breached).toBe(true);
   });
@@ -1592,7 +1630,7 @@ describe('Group K — Plan 04-09 r3-#2: breach gated on call + session only (sec
         call_divergence_rate: report.call_divergence_rate,
         session_divergence_rate: report.session_divergence_rate,
       },
-      report.threshold,
+      report.threshold
     );
     expect(report.breached).toBe(recomputed);
     expect(report.breached).toBe(false);
@@ -1634,9 +1672,7 @@ describe('Group L — Plan 04-10 r4-#2: runToolCallPath uses REAL agentic prompt
   // Helper — load a fixture from disk. Tests own their own copy per fixture
   // so mutations don't leak across tests.
   function loadFixture(name) {
-    return JSON.parse(
-      fssync.readFileSync(path.join(FIXTURE_DIR, name), 'utf8'),
-    );
+    return JSON.parse(fssync.readFileSync(path.join(FIXTURE_DIR, name), 'utf8'));
   }
 
   test('r4-2a: captured system[0].text contains TRUST BOUNDARY — real prompt loaded from disk', async () => {
@@ -1696,7 +1732,7 @@ describe('Group L — Plan 04-10 r4-#2: runToolCallPath uses REAL agentic prompt
     expect(firstRequest.system[1].text).toContain('EXTRACTED');
   });
 
-  test("r4-2d: fixture with empty pre_turn_state produces single-block system array (snapshot collapses)", async () => {
+  test('r4-2d: fixture with empty pre_turn_state produces single-block system array (snapshot collapses)', async () => {
     // Fixtures may legitimately ship an empty snapshot (no prior circuits).
     // Plan 04-02 locked that buildSystemBlocks() collapses to a single
     // block in that case — because Anthropic's cache key includes all
@@ -1717,7 +1753,8 @@ describe('Group L — Plan 04-10 r4-#2: runToolCallPath uses REAL agentic prompt
       // Reuse sample-01's events — we only care about the system array
       // shape here, not the dispatcher output.
       sse_events_tool_call: loadFixture('sample-01-routine.json').sse_events_tool_call,
-      sse_events_tool_call_round2: loadFixture('sample-01-routine.json').sse_events_tool_call_round2,
+      sse_events_tool_call_round2:
+        loadFixture('sample-01-routine.json').sse_events_tool_call_round2,
     };
     const { client } = await runToolCallPath(syntheticFx);
     const firstRequest = client._calls[0];
@@ -1741,10 +1778,10 @@ describe('Group L — Plan 04-10 r4-#2: runToolCallPath uses REAL agentic prompt
     // envelope.
     const F21934D4_PATH_LOCAL = path.resolve(
       __dirname,
-      'fixtures/stage6-sse/f21934d4-re-ask-scenario.json',
+      'fixtures/stage6-sse/f21934d4-re-ask-scenario.json'
     );
     const report = await runDirectory(FIXTURE_DIR, { extraFixtures: [F21934D4_PATH_LOCAL] });
-    expect(report.threshold).toBe(0.10);
+    expect(report.threshold).toBe(0.1);
     expect(report.breached).toBe(false);
     // Tight assertion: rates stay at 0 on the 6 deterministic fixtures.
     // The 10%-budget clause is the escape valve for Phase 5/7 real-model
@@ -1791,15 +1828,39 @@ describe('Group r5-2 — Plan 04-11 r5-#2: observation sort uses full canonical 
     const a = {
       ...empty,
       observations: [
-        { code: 'C2', text: 'loose neutral', location: 'Kitchen', circuit: null, suggested_regulation: null },
-        { code: 'C2', text: 'loose neutral', location: 'Bathroom', circuit: null, suggested_regulation: null },
+        {
+          code: 'C2',
+          text: 'loose neutral',
+          location: 'Kitchen',
+          circuit: null,
+          suggested_regulation: null,
+        },
+        {
+          code: 'C2',
+          text: 'loose neutral',
+          location: 'Bathroom',
+          circuit: null,
+          suggested_regulation: null,
+        },
       ],
     };
     const b = {
       ...empty,
       observations: [
-        { code: 'C2', text: 'loose neutral', location: 'Bathroom', circuit: null, suggested_regulation: null },
-        { code: 'C2', text: 'loose neutral', location: 'Kitchen', circuit: null, suggested_regulation: null },
+        {
+          code: 'C2',
+          text: 'loose neutral',
+          location: 'Bathroom',
+          circuit: null,
+          suggested_regulation: null,
+        },
+        {
+          code: 'C2',
+          text: 'loose neutral',
+          location: 'Kitchen',
+          circuit: null,
+          suggested_regulation: null,
+        },
       ],
     };
     const normA = normaliseExtractionResult(a);
@@ -1813,15 +1874,39 @@ describe('Group r5-2 — Plan 04-11 r5-#2: observation sort uses full canonical 
     const a = {
       ...empty,
       observations: [
-        { code: 'C3', text: 'old cable', location: 'Board', circuit: 5, suggested_regulation: null },
-        { code: 'C3', text: 'old cable', location: 'Board', circuit: 2, suggested_regulation: null },
+        {
+          code: 'C3',
+          text: 'old cable',
+          location: 'Board',
+          circuit: 5,
+          suggested_regulation: null,
+        },
+        {
+          code: 'C3',
+          text: 'old cable',
+          location: 'Board',
+          circuit: 2,
+          suggested_regulation: null,
+        },
       ],
     };
     const b = {
       ...empty,
       observations: [
-        { code: 'C3', text: 'old cable', location: 'Board', circuit: 2, suggested_regulation: null },
-        { code: 'C3', text: 'old cable', location: 'Board', circuit: 5, suggested_regulation: null },
+        {
+          code: 'C3',
+          text: 'old cable',
+          location: 'Board',
+          circuit: 2,
+          suggested_regulation: null,
+        },
+        {
+          code: 'C3',
+          text: 'old cable',
+          location: 'Board',
+          circuit: 5,
+          suggested_regulation: null,
+        },
       ],
     };
     const normA = normaliseExtractionResult(a);
@@ -1925,13 +2010,25 @@ describe('Group r5-2 — Plan 04-11 r5-#2: observation sort uses full canonical 
     const a = {
       ...empty,
       observations: [
-        { code: 'C2', text: 'loose neutral', location: 'Kitchen', circuit: null, suggested_regulation: null },
+        {
+          code: 'C2',
+          text: 'loose neutral',
+          location: 'Kitchen',
+          circuit: null,
+          suggested_regulation: null,
+        },
       ],
     };
     const b = {
       ...empty,
       observations: [
-        { code: 'C2', text: 'loose live', location: 'Kitchen', circuit: null, suggested_regulation: null },
+        {
+          code: 'C2',
+          text: 'loose live',
+          location: 'Kitchen',
+          circuit: null,
+          suggested_regulation: null,
+        },
       ],
     };
     const normA = normaliseExtractionResult(a);
@@ -1977,13 +2074,21 @@ describe('Group r5-3 — Plan 04-11 r5-#3: circuit op normaliser + oracle cover 
     const a = {
       ...empty,
       circuit_updates: [
-        { op: 'create', circuit_ref: 3, meta: { designation: 'Ring', phase: 'L1', rating_amps: null, cable_csa_mm2: null } },
+        {
+          op: 'create',
+          circuit_ref: 3,
+          meta: { designation: 'Ring', phase: 'L1', rating_amps: null, cable_csa_mm2: null },
+        },
       ],
     };
     const b = {
       ...empty,
       circuit_updates: [
-        { op: 'create', circuit_ref: 3, meta: { designation: 'Ring', phase: 'L2', rating_amps: null, cable_csa_mm2: null } },
+        {
+          op: 'create',
+          circuit_ref: 3,
+          meta: { designation: 'Ring', phase: 'L2', rating_amps: null, cable_csa_mm2: null },
+        },
       ],
     };
     const normA = normaliseExtractionResult(a);
@@ -1997,13 +2102,21 @@ describe('Group r5-3 — Plan 04-11 r5-#3: circuit op normaliser + oracle cover 
     const a = {
       ...empty,
       circuit_updates: [
-        { op: 'create', circuit_ref: 3, meta: { designation: 'Ring', phase: null, rating_amps: 32, cable_csa_mm2: null } },
+        {
+          op: 'create',
+          circuit_ref: 3,
+          meta: { designation: 'Ring', phase: null, rating_amps: 32, cable_csa_mm2: null },
+        },
       ],
     };
     const b = {
       ...empty,
       circuit_updates: [
-        { op: 'create', circuit_ref: 3, meta: { designation: 'Ring', phase: null, rating_amps: 40, cable_csa_mm2: null } },
+        {
+          op: 'create',
+          circuit_ref: 3,
+          meta: { designation: 'Ring', phase: null, rating_amps: 40, cable_csa_mm2: null },
+        },
       ],
     };
     const normA = normaliseExtractionResult(a);
@@ -2017,13 +2130,21 @@ describe('Group r5-3 — Plan 04-11 r5-#3: circuit op normaliser + oracle cover 
     const a = {
       ...empty,
       circuit_updates: [
-        { op: 'create', circuit_ref: 3, meta: { designation: 'Ring', phase: null, rating_amps: null, cable_csa_mm2: 2.5 } },
+        {
+          op: 'create',
+          circuit_ref: 3,
+          meta: { designation: 'Ring', phase: null, rating_amps: null, cable_csa_mm2: 2.5 },
+        },
       ],
     };
     const b = {
       ...empty,
       circuit_updates: [
-        { op: 'create', circuit_ref: 3, meta: { designation: 'Ring', phase: null, rating_amps: null, cable_csa_mm2: 4 } },
+        {
+          op: 'create',
+          circuit_ref: 3,
+          meta: { designation: 'Ring', phase: null, rating_amps: null, cable_csa_mm2: 4 },
+        },
       ],
     };
     const normA = normaliseExtractionResult(a);
@@ -2148,10 +2269,7 @@ describe('Group r5-3 — Plan 04-11 r5-#3: circuit op normaliser + oracle cover 
         },
       ],
     };
-    const d = computeDivergence(
-      normaliseExtractionResult(flat),
-      normaliseExtractionResult(legacy),
-    );
+    const d = computeDivergence(normaliseExtractionResult(flat), normaliseExtractionResult(legacy));
     expect(d.diverged).toBe(false);
     expect(d.call_divergence).toBe(0);
   });
@@ -2207,7 +2325,7 @@ describe('Group r5-3 — Plan 04-11 r5-#3: circuit op normaliser + oracle cover 
 
 describe('Group r6-1 — Plan 04-12 r6-#1 BLOCK: call-count union aggregation across pairwise comparisons', () => {
   const tmp = fssync.mkdtempSync(
-    path.join(fssync.realpathSync.native ? fssync.realpathSync.native('/tmp') : '/tmp', 'goldenZ-'),
+    path.join(fssync.realpathSync.native ? fssync.realpathSync.native('/tmp') : '/tmp', 'goldenZ-')
   );
 
   function writeFixture(name, body) {
@@ -2221,7 +2339,12 @@ describe('Group r6-1 — Plan 04-12 r6-#1 BLOCK: call-count union aggregation ac
   // can construct "both wrong same way" (legacy=tool, oracle differs),
   // full agreement, tool-only-wrong, etc. Optional second write lets
   // r6-1e construct multi-write fixtures.
-  function fixtureBody({ legacyValues, toolValues, oracleValues, transcript = 'Zs on circuit three is nought point three five.' }) {
+  function fixtureBody({
+    legacyValues,
+    toolValues,
+    oracleValues,
+    transcript = 'Zs on circuit three is nought point three five.',
+  }) {
     const base = {
       _doc: 'r6-1 union-aggregation test fixture',
       pre_turn_state: {
@@ -2251,7 +2374,12 @@ describe('Group r6-1 — Plan 04-12 r6-#1 BLOCK: call-count union aggregation ac
         {
           type: 'content_block_start',
           index: 0,
-          content_block: { type: 'tool_use', id: 'toolu_legacy', name: 'record_extraction', input: {} },
+          content_block: {
+            type: 'tool_use',
+            id: 'toolu_legacy',
+            name: 'record_extraction',
+            input: {},
+          },
         },
         {
           type: 'content_block_delta',
@@ -2285,7 +2413,12 @@ describe('Group r6-1 — Plan 04-12 r6-#1 BLOCK: call-count union aggregation ac
         events.push({
           type: 'content_block_start',
           index: i,
-          content_block: { type: 'tool_use', id: `toolu_tool_${i}`, name: 'record_reading', input: {} },
+          content_block: {
+            type: 'tool_use',
+            id: `toolu_tool_${i}`,
+            name: 'record_reading',
+            input: {},
+          },
         });
         events.push({
           type: 'content_block_delta',
@@ -2331,7 +2464,7 @@ describe('Group r6-1 — Plan 04-12 r6-#1 BLOCK: call-count union aggregation ac
         legacyValues: [{ circuit: 3, value: '0.71' }],
         toolValues: [{ circuit: 3, value: '0.71' }],
         oracleValues: [{ circuit: 3, value: '0.35' }],
-      }),
+      })
     );
     const result = await runFixture(p);
     expect(result).toBeDefined();
@@ -2352,7 +2485,10 @@ describe('Group r6-1 — Plan 04-12 r6-#1 BLOCK: call-count union aggregation ac
     // aggregator reads s.divergence.call_total=1, call_divergent_count=0
     // → rate = 0/1 = 0. Post-fix: 1/1 = 1.
     const dir = fssync.mkdtempSync(
-      path.join(fssync.realpathSync.native ? fssync.realpathSync.native('/tmp') : '/tmp', 'goldenZdir-'),
+      path.join(
+        fssync.realpathSync.native ? fssync.realpathSync.native('/tmp') : '/tmp',
+        'goldenZdir-'
+      )
     );
     fssync.writeFileSync(
       path.join(dir, 'both-wrong.json'),
@@ -2363,10 +2499,10 @@ describe('Group r6-1 — Plan 04-12 r6-#1 BLOCK: call-count union aggregation ac
           oracleValues: [{ circuit: 3, value: '0.35' }],
         }),
         null,
-        2,
-      ),
+        2
+      )
     );
-    const report = await runDirectory(dir, { threshold: 0.10 });
+    const report = await runDirectory(dir, { threshold: 0.1 });
     expect(report.total).toBe(1);
     // THE BLOCK ASSERTION at aggregator level.
     expect(report.call_divergence_rate).toBeGreaterThan(0);
@@ -2383,7 +2519,7 @@ describe('Group r6-1 — Plan 04-12 r6-#1 BLOCK: call-count union aggregation ac
         legacyValues: [{ circuit: 3, value: '0.35' }],
         toolValues: [{ circuit: 3, value: '0.35' }],
         oracleValues: [{ circuit: 3, value: '0.35' }],
-      }),
+      })
     );
     const result = await runFixture(p);
     expect(result.divergence.diverged).toBe(false);
@@ -2403,7 +2539,7 @@ describe('Group r6-1 — Plan 04-12 r6-#1 BLOCK: call-count union aggregation ac
         legacyValues: [{ circuit: 3, value: '0.35' }],
         toolValues: [{ circuit: 3, value: '0.99' }],
         oracleValues: [{ circuit: 3, value: '0.35' }],
-      }),
+      })
     );
     const result = await runFixture(p);
     expect(result.divergence.diverged).toBe(true);
@@ -2436,7 +2572,7 @@ describe('Group r6-1 — Plan 04-12 r6-#1 BLOCK: call-count union aggregation ac
           { circuit: 3, value: '0.35' },
           { circuit: 4, value: '0.50' },
         ],
-      }),
+      })
     );
     const result = await runFixture(p);
     expect(result.divergence.diverged).toBe(true);
@@ -2451,7 +2587,7 @@ describe('Group r6-1 — Plan 04-12 r6-#1 BLOCK: call-count union aggregation ac
     // was bogus because the aggregator was undercounting. Plan
     // 04-12 explicitly escalates to BLOCK on any non-zero rate here.
     const report = await runDirectory(FIXTURE_DIR, {
-      threshold: 0.10,
+      threshold: 0.1,
       extraFixtures: [F21934D4_PATH],
     });
     expect(report.total).toBe(6);
@@ -2519,14 +2655,12 @@ describe('Group r7-2 — Plan 04-13 r7-#2: runToolCallPath seeds recentCircuitOr
   // Helper — load a canned tool-call events block from sample-01 so each
   // fixture below has a valid SSE stream for the tool loop.
   function sample01ToolCallEvents() {
-    return JSON.parse(
-      fssync.readFileSync(path.join(FIXTURE_DIR, 'sample-01-routine.json'), 'utf8'),
-    ).sse_events_tool_call;
+    return JSON.parse(fssync.readFileSync(path.join(FIXTURE_DIR, 'sample-01-routine.json'), 'utf8'))
+      .sse_events_tool_call;
   }
   function sample01ToolCallEventsR2() {
-    return JSON.parse(
-      fssync.readFileSync(path.join(FIXTURE_DIR, 'sample-01-routine.json'), 'utf8'),
-    ).sse_events_tool_call_round2;
+    return JSON.parse(fssync.readFileSync(path.join(FIXTURE_DIR, 'sample-01-routine.json'), 'utf8'))
+      .sse_events_tool_call_round2;
   }
 
   test('r7-2a — F21934D4 captured system[1].text contains r1_r2_ohm (not collapsed to earlier-circuits summary)', async () => {
@@ -2635,9 +2769,9 @@ describe('Group r7-2 — Plan 04-13 r7-#2: runToolCallPath seeds recentCircuitOr
           circuits: {
             0: { ze: '0.32', pfc: '1500' }, // supply
             1: { circuit_ref: 1, circuit_designation: 'Ring', measured_zs_ohm: 0.45 },
-            2: { circuit_ref: 2, circuit_designation: 'Lights', measured_zs_ohm: 0.80 },
+            2: { circuit_ref: 2, circuit_designation: 'Lights', measured_zs_ohm: 0.8 },
             3: { circuit_ref: 3, circuit_designation: 'Cooker', measured_zs_ohm: 0.95 },
-            4: { circuit_ref: 4, circuit_designation: 'Shower', measured_zs_ohm: 1.10 },
+            4: { circuit_ref: 4, circuit_designation: 'Shower', measured_zs_ohm: 1.1 },
           },
           pending_readings: [],
           observations: [],
@@ -2817,14 +2951,12 @@ describe('Group r7-3 — Plan 04-13 r7-#3: circuit_ops sort uses full canonical 
 
 describe('Group r8-3 — Plan 04-14 r8-#3: runToolCallPath honours fixture-declared recentCircuitOrder', () => {
   function sample01ToolCallEvents() {
-    return JSON.parse(
-      fssync.readFileSync(path.join(FIXTURE_DIR, 'sample-01-routine.json'), 'utf8'),
-    ).sse_events_tool_call;
+    return JSON.parse(fssync.readFileSync(path.join(FIXTURE_DIR, 'sample-01-routine.json'), 'utf8'))
+      .sse_events_tool_call;
   }
   function sample01ToolCallEventsR2() {
-    return JSON.parse(
-      fssync.readFileSync(path.join(FIXTURE_DIR, 'sample-01-routine.json'), 'utf8'),
-    ).sse_events_tool_call_round2;
+    return JSON.parse(fssync.readFileSync(path.join(FIXTURE_DIR, 'sample-01-routine.json'), 'utf8'))
+      .sse_events_tool_call_round2;
   }
 
   test('r8-3a — fixture-declared recentCircuitOrder used verbatim (NOT re-sorted)', async () => {
@@ -2866,8 +2998,7 @@ describe('Group r8-3 — Plan 04-14 r8-#3: runToolCallPath honours fixture-decla
     // line is `<num>:{...}` — extract indices of circuits 1/2/3 in
     // the EXTRACTED block and assert the sequence matches [3, 1, 2].
     const extractedSection = snapshotText.match(/EXTRACTED \(field IDs[^]*$/)[0];
-    const posForCircuit = (n) =>
-      extractedSection.indexOf(`\n${n}:{`);
+    const posForCircuit = (n) => extractedSection.indexOf(`\n${n}:{`);
     const pos1 = posForCircuit(1);
     const pos2 = posForCircuit(2);
     const pos3 = posForCircuit(3);
@@ -2961,8 +3092,7 @@ describe('Group r8-3 — Plan 04-14 r8-#3: runToolCallPath honours fixture-decla
     // All circuits appear in numeric ascending order (the fallback's
     // deterministic output). Extract positions and verify.
     const extractedSection = snapshotText.match(/EXTRACTED \(field IDs[^]*$/)[0];
-    const posForCircuit = (n) =>
-      extractedSection.indexOf(`\n${n}:{`);
+    const posForCircuit = (n) => extractedSection.indexOf(`\n${n}:{`);
     expect(posForCircuit(1)).toBeLessThan(posForCircuit(2));
     expect(posForCircuit(2)).toBeLessThan(posForCircuit(3));
   });
@@ -2980,7 +3110,7 @@ describe('Group r8-3 — Plan 04-14 r8-#3: runToolCallPath honours fixture-decla
           circuits: {
             0: { ze: '0.32' },
             1: { circuit_ref: 1, circuit_designation: 'Ring', measured_zs_ohm: 0.45 },
-            2: { circuit_ref: 2, circuit_designation: 'Lights', measured_zs_ohm: 0.80 },
+            2: { circuit_ref: 2, circuit_designation: 'Lights', measured_zs_ohm: 0.8 },
           },
           pending_readings: [],
           observations: [],
@@ -3063,14 +3193,12 @@ describe('Group r8-3 — Plan 04-14 r8-#3: runToolCallPath honours fixture-decla
 
 describe('Group r9-3 — Plan 04-15 r9-#3: runToolCallPath normalises fixture-declared recentCircuitOrder', () => {
   function sample01ToolCallEvents() {
-    return JSON.parse(
-      fssync.readFileSync(path.join(FIXTURE_DIR, 'sample-01-routine.json'), 'utf8'),
-    ).sse_events_tool_call;
+    return JSON.parse(fssync.readFileSync(path.join(FIXTURE_DIR, 'sample-01-routine.json'), 'utf8'))
+      .sse_events_tool_call;
   }
   function sample01ToolCallEventsR2() {
-    return JSON.parse(
-      fssync.readFileSync(path.join(FIXTURE_DIR, 'sample-01-routine.json'), 'utf8'),
-    ).sse_events_tool_call_round2;
+    return JSON.parse(fssync.readFileSync(path.join(FIXTURE_DIR, 'sample-01-routine.json'), 'utf8'))
+      .sse_events_tool_call_round2;
   }
 
   test('r9-3a — duplicated refs in declared order are deduped (seeded array matches production splice+push semantics)', async () => {
@@ -3145,7 +3273,7 @@ describe('Group r9-3 — Plan 04-15 r9-#3: runToolCallPath normalises fixture-de
         snapshot: {
           circuits: {
             1: { circuit_ref: 1, circuit_designation: 'Ring', measured_zs_ohm: 0.45 },
-            2: { circuit_ref: 2, circuit_designation: 'Lights', measured_zs_ohm: 0.80 },
+            2: { circuit_ref: 2, circuit_designation: 'Lights', measured_zs_ohm: 0.8 },
           },
           pending_readings: [],
           observations: [],
@@ -3209,8 +3337,7 @@ describe('Group r9-3 — Plan 04-15 r9-#3: runToolCallPath normalises fixture-de
     expect(snapshotText).not.toMatch(/earlier circuits/);
     // Detailed lines appear in numeric ascending order.
     const extractedSection = snapshotText.match(/EXTRACTED \(field IDs[^]*$/)[0];
-    const posForCircuit = (n) =>
-      extractedSection.indexOf(`\n${n}:{`);
+    const posForCircuit = (n) => extractedSection.indexOf(`\n${n}:{`);
     expect(posForCircuit(1)).toBeLessThan(posForCircuit(2));
     expect(posForCircuit(2)).toBeLessThan(posForCircuit(3));
     // All three circuits' readings are present (proves none fell
@@ -3306,14 +3433,12 @@ describe('Group r9-3 — Plan 04-15 r9-#3: runToolCallPath normalises fixture-de
 
 describe('Group r11-1 — Plan 04-17 r11-#1: runToolCallPath fails fast when recency fallback is unsafe', () => {
   function sample01ToolCallEvents() {
-    return JSON.parse(
-      fssync.readFileSync(path.join(FIXTURE_DIR, 'sample-01-routine.json'), 'utf8'),
-    ).sse_events_tool_call;
+    return JSON.parse(fssync.readFileSync(path.join(FIXTURE_DIR, 'sample-01-routine.json'), 'utf8'))
+      .sse_events_tool_call;
   }
   function sample01ToolCallEventsR2() {
-    return JSON.parse(
-      fssync.readFileSync(path.join(FIXTURE_DIR, 'sample-01-routine.json'), 'utf8'),
-    ).sse_events_tool_call_round2;
+    return JSON.parse(fssync.readFileSync(path.join(FIXTURE_DIR, 'sample-01-routine.json'), 'utf8'))
+      .sse_events_tool_call_round2;
   }
 
   test('r11-1a — >SNAPSHOT_RECENT_CIRCUITS seeded + no declared order throws fail-fast with actionable message', async () => {
@@ -3453,14 +3578,12 @@ describe('Group r12-2 — Plan 04-18 r12-#2: fail-fast guard closes empty-declar
   // that deliberately exercise the pathological fallback.
 
   function sample01ToolCallEvents() {
-    return JSON.parse(
-      fssync.readFileSync(path.join(FIXTURE_DIR, 'sample-01-routine.json'), 'utf8'),
-    ).sse_events_tool_call;
+    return JSON.parse(fssync.readFileSync(path.join(FIXTURE_DIR, 'sample-01-routine.json'), 'utf8'))
+      .sse_events_tool_call;
   }
   function sample01ToolCallEventsR2() {
-    return JSON.parse(
-      fssync.readFileSync(path.join(FIXTURE_DIR, 'sample-01-routine.json'), 'utf8'),
-    ).sse_events_tool_call_round2;
+    return JSON.parse(fssync.readFileSync(path.join(FIXTURE_DIR, 'sample-01-routine.json'), 'utf8'))
+      .sse_events_tool_call_round2;
   }
 
   test('r12-2a — >SNAPSHOT_RECENT_CIRCUITS seeded + declared `[]` throws fail-fast (empty-array bypass closed)', async () => {
@@ -3604,5 +3727,191 @@ describe('Group r12-2 — Plan 04-18 r12-#2: fail-fast guard closes empty-declar
     };
     const { session } = await runToolCallPath(syntheticFx);
     expect(session.recentCircuitOrder).toEqual([5, 1, 3, 2, 4]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Group r13-1 — Plan 04-19 r13-#1 MAJOR: runToolCallPath fails fast on
+// PARTIAL recentCircuitOrder coverage (declared order that normalises
+// non-empty but doesn't cover every seeded non-supply circuit).
+//
+// Codex r13 flagged that r12-#2's empty-normalisation check is
+// insufficient. A fixture declaring `recentCircuitOrder: [5]` on a
+// 5-circuit seeded fixture passes r12-#2 (normalised `[5]` is
+// non-empty, length 1 > 0) but leaves circuits 1-4 undeclared.
+// buildStateSnapshotMessage's `.slice(-SNAPSHOT_RECENT_CIRCUITS)`
+// shows only circuit 5 in the detailed view; the other 4 collapse
+// into the summary line where JS integer-key iteration order
+// silently supplies a numeric-ascending chronology guess for the
+// omitted positions — same silent-ordering-guess r11-#1 fail-fast
+// was meant to prevent.
+//
+// r13-#1 tightens the guard: when seededKeys.size exceeds
+// SNAPSHOT_RECENT_CIRCUITS AND normalised declared order doesn't
+// cover every seeded circuit, throw. The `_force_numeric_recency`
+// escape hatch covers partial declarations identically to the way
+// it covers the empty case (uniform "accept whatever the author
+// declares, numeric-fallback for the rest" semantics).
+//
+// Tests:
+//   r13-1a — 5 seeded + `[5]` (partial) → throws with "missing 1, 2, 3, 4".
+//   r13-1b — 5 seeded + `[1, 2, 3, 4, 5]` (full) → passes.
+//   r13-1c — 5 seeded + `[5]` + _force_numeric_recency: true → passes,
+//            numeric fallback applied.
+//   r13-1d — 3 seeded + `[3]` (partial but seededKeys.size ==
+//            SNAPSHOT_RECENT_CIRCUITS → guard doesn't fire) → passes.
+// ---------------------------------------------------------------------------
+
+describe('Group r13-1 — Plan 04-19 r13-#1: runToolCallPath fails fast on partial recentCircuitOrder coverage', () => {
+  function sample01ToolCallEvents() {
+    return JSON.parse(fssync.readFileSync(path.join(FIXTURE_DIR, 'sample-01-routine.json'), 'utf8'))
+      .sse_events_tool_call;
+  }
+  function sample01ToolCallEventsR2() {
+    return JSON.parse(fssync.readFileSync(path.join(FIXTURE_DIR, 'sample-01-routine.json'), 'utf8'))
+      .sse_events_tool_call_round2;
+  }
+
+  test('r13-1a — >SNAPSHOT_RECENT_CIRCUITS seeded + PARTIAL declared order throws fail-fast (coverage gap)', async () => {
+    // 5 seeded circuits + `recentCircuitOrder: [5]`. Pre-r13 this
+    // passed r12-#2's check (normalised `[5]` is non-empty) but
+    // left circuits 1-4 silently numeric-ascending in the summary
+    // line. r13-#1 closes the gap by requiring full coverage.
+    const syntheticFx = {
+      pre_turn_state: {
+        snapshot: {
+          circuits: {
+            1: { circuit_ref: 1, circuit_designation: 'Ring 1' },
+            2: { circuit_ref: 2, circuit_designation: 'Ring 2' },
+            3: { circuit_ref: 3, circuit_designation: 'Lights' },
+            4: { circuit_ref: 4, circuit_designation: 'Cooker' },
+            5: { circuit_ref: 5, circuit_designation: 'Shower' },
+          },
+          pending_readings: [],
+          observations: [],
+          validation_alerts: [],
+        },
+        // Partial: only circuit 5 named; 1-4 left to silent fallback.
+        recentCircuitOrder: [5],
+        askedQuestions: [],
+        extractedObservations: [],
+      },
+      transcript: 'test',
+      sse_events_tool_call: sample01ToolCallEvents(),
+      sse_events_tool_call_round2: sample01ToolCallEventsR2(),
+    };
+    // Harness namespace convention.
+    await expect(runToolCallPath(syntheticFx)).rejects.toThrow(/golden-divergence:/);
+    // Error names the missing circuits explicitly so the author
+    // sees exactly which positions need to be added to the
+    // declared order.
+    await expect(runToolCallPath(syntheticFx)).rejects.toThrow(/missing 1, 2, 3, 4/);
+    // Seeded circuit list appears so the author can cross-check.
+    await expect(runToolCallPath(syntheticFx)).rejects.toThrow(/1, 2, 3, 4, 5/);
+    // Threshold named.
+    await expect(runToolCallPath(syntheticFx)).rejects.toThrow(/SNAPSHOT_RECENT_CIRCUITS=3/);
+  });
+
+  test('r13-1b — >SNAPSHOT_RECENT_CIRCUITS seeded + FULL declared order passes (coverage met)', async () => {
+    // When the fixture declares every seeded circuit, the guard
+    // doesn't fire. Same shape as r11-1c + r12-2d — r13-1b pins
+    // the POSITIVE path for r13-#1's coverage check.
+    const syntheticFx = {
+      pre_turn_state: {
+        snapshot: {
+          circuits: {
+            1: { circuit_ref: 1, circuit_designation: 'Ring 1' },
+            2: { circuit_ref: 2, circuit_designation: 'Ring 2' },
+            3: { circuit_ref: 3, circuit_designation: 'Lights' },
+            4: { circuit_ref: 4, circuit_designation: 'Cooker' },
+            5: { circuit_ref: 5, circuit_designation: 'Shower' },
+          },
+          pending_readings: [],
+          observations: [],
+          validation_alerts: [],
+        },
+        recentCircuitOrder: [1, 2, 3, 4, 5],
+        askedQuestions: [],
+        extractedObservations: [],
+      },
+      transcript: 'test',
+      sse_events_tool_call: sample01ToolCallEvents(),
+      sse_events_tool_call_round2: sample01ToolCallEventsR2(),
+    };
+    const { session } = await runToolCallPath(syntheticFx);
+    expect(session.recentCircuitOrder).toEqual([1, 2, 3, 4, 5]);
+  });
+
+  test('r13-1c — >SNAPSHOT_RECENT_CIRCUITS seeded + PARTIAL declared + _force_numeric_recency: true bypasses guard', async () => {
+    // Same escape hatch semantics as r12-2c (empty case). Uniform
+    // "one escape hatch, numeric fallback for whatever isn't
+    // declared" — a test fixture that deliberately wants the
+    // pathological fallback just sets the flag.
+    const syntheticFx = {
+      pre_turn_state: {
+        snapshot: {
+          circuits: {
+            1: { circuit_ref: 1, circuit_designation: 'Ring 1' },
+            2: { circuit_ref: 2, circuit_designation: 'Ring 2' },
+            3: { circuit_ref: 3, circuit_designation: 'Lights' },
+            4: { circuit_ref: 4, circuit_designation: 'Cooker' },
+            5: { circuit_ref: 5, circuit_designation: 'Shower' },
+          },
+          pending_readings: [],
+          observations: [],
+          validation_alerts: [],
+        },
+        recentCircuitOrder: [5],
+        _force_numeric_recency: true, // escape hatch
+        askedQuestions: [],
+        extractedObservations: [],
+      },
+      transcript: 'test',
+      sse_events_tool_call: sample01ToolCallEvents(),
+      sse_events_tool_call_round2: sample01ToolCallEventsR2(),
+    };
+    const { session } = await runToolCallPath(syntheticFx);
+    // Escape hatch bypasses the r13-#1 coverage guard. With flag
+    // set + non-empty declared order, the declared order is
+    // honoured verbatim (it normalises to [5] non-empty; the
+    // else-branch numeric fallback is NOT triggered). Matches
+    // r12-2c semantics: the hatch only swaps to numeric fallback
+    // when the normalised declared order is empty; for a
+    // non-empty partial declaration it honours the declared
+    // positions. This is the documented contract — the flag
+    // bypasses the GUARD, not the normalisation.
+    expect(session.recentCircuitOrder).toEqual([5]);
+  });
+
+  test('r13-1d — safe-by-size (seededKeys == SNAPSHOT_RECENT_CIRCUITS) + partial declared order: guard does NOT fire', async () => {
+    // Lock the boundary: when seededKeys.size does NOT exceed
+    // SNAPSHOT_RECENT_CIRCUITS, the guard never fires regardless
+    // of declared-order coverage. The r11-1b counterpart asserted
+    // the no-declaration safe-by-size path; r13-1d locks the
+    // partial-declaration safe-by-size path.
+    const syntheticFx = {
+      pre_turn_state: {
+        snapshot: {
+          circuits: {
+            1: { circuit_ref: 1, circuit_designation: 'Ring 1' },
+            2: { circuit_ref: 2, circuit_designation: 'Ring 2' },
+            3: { circuit_ref: 3, circuit_designation: 'Lights' },
+          },
+          pending_readings: [],
+          observations: [],
+          validation_alerts: [],
+        },
+        recentCircuitOrder: [3], // partial (missing 1, 2) but SAFE-BY-SIZE
+        askedQuestions: [],
+        extractedObservations: [],
+      },
+      transcript: 'test',
+      sse_events_tool_call: sample01ToolCallEvents(),
+      sse_events_tool_call_round2: sample01ToolCallEventsR2(),
+    };
+    const { session } = await runToolCallPath(syntheticFx);
+    // Declared order used verbatim — r8-3 path. r13-#1's coverage
+    // guard is size-gated and does not affect this case.
+    expect(session.recentCircuitOrder).toEqual([3]);
   });
 });
