@@ -396,8 +396,9 @@ describe('checkForPromptLeak() — Layer 2 output-side prompt-leak filter', () =
           expect(result.reason).not.toBe('marker:user-text-bare');
         });
 
-        test('flags "the END_USER_TEXT close uses >>>" as EXACT wrapper-scaffolding-right (NOT end-user-text-bare)', () => {
-          const result = checkForPromptLeak('the END_USER_TEXT close uses >>>', {
+        test('flags "END_USER_TEXT >>>" as EXACT wrapper-scaffolding-right (NOT end-user-text-bare)', () => {
+          // >>> is 1 char after END_USER_TEXT — well within 20.
+          const result = checkForPromptLeak('END_USER_TEXT >>>', {
             field: 'question',
           });
           expect(result.safe).toBe(false);
