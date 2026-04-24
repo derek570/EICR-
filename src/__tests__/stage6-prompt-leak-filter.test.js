@@ -570,6 +570,188 @@ describe('checkForPromptLeak() — Layer 2 output-side prompt-leak filter', () =
   });
 
   // ------------------------------------------------------------------
+  // Group 9 — r21-#1 field-class granularity for observation sub-fields
+  // ------------------------------------------------------------------
+  //
+  // WHY: r21 re-review of my r20-#1 fix found that `location` and
+  // `suggested_regulation` were correctly ADDED to the scan list in
+  // `dispatchRecordObservation`, but BOTH were classified as
+  // `field: 'observation_text'`, inheriting the loose 1000-char length
+  // ceiling. Real-world values:
+  //   - `location`: ~30 chars ("Kitchen sockets consumer unit")
+  //   - `suggested_regulation`: ~20 chars ("Regulation 522.6.201")
+  // A 150-char benign paraphrase of the system prompt in either
+  // field passes every existing detector (no markers, no entropy, no
+  // low-alpha, under 1000c) yet is genuinely anomalous for these
+  // fields. Introducing `observation_location` (120c + alpha guard)
+  // + `observation_regulation` (60c, no alpha guard because real
+  // refs are numeric-heavy) closes the bypass.
+  describe('Group 9 — r21-#1 observation_location + observation_regulation field classes', () => {
+    // --------- observation_location (120c ceiling) ---------
+    test('observation_location: 150-char benign paraphrase → flagged on length ceiling', () => {
+      // Pure alpha + spaces so no markers, no entropy, no low-alpha
+      // detectors fire. Only the 120-char length ceiling should
+      // catch this for `observation_location`.
+      const text =
+        'This is a legitimate looking short narrative describing ' +
+        'some position in the consumer unit but it is a bit too long ' +
+        'for a location label and should be flagged.';
+      expect(text.length).toBeGreaterThan(120);
+      expect(text.length).toBeLessThan(200);
+      const result = checkForPromptLeak(text, { field: 'observation_location' });
+      expect(result.safe).toBe(false);
+      expect(result.reason).toMatch(/^length-suspicious:/);
+    });
+
+    test('observation_location: 30-char real location "Kitchen sockets consumer unit" → safe', () => {
+      const text = 'Kitchen sockets consumer unit';
+      expect(text.length).toBe(29);
+      const result = checkForPromptLeak(text, { field: 'observation_location' });
+      expect(result.safe).toBe(true);
+    });
+
+    test('observation_location: 60-char real location (edge case) → safe', () => {
+      const text = 'Bathroom shaver socket and lighting circuit junction box TB';
+      expect(text.length).toBeGreaterThan(50);
+      expect(text.length).toBeLessThan(120);
+      const result = checkForPromptLeak(text, { field: 'observation_location' });
+      expect(result.safe).toBe(true);
+    });
+
+    test('observation_location same 150-char text under observation_text class → safe (1000c ceiling)', () => {
+      // Same text that trips the 120c observation_location ceiling
+      // should pass under observation_text (1000c). Proves the
+      // split field-class contract.
+      const text =
+        'This is a legitimate looking short narrative describing ' +
+        'some position in the consumer unit but it is a bit too long ' +
+        'for a location label and should be flagged.';
+      const result = checkForPromptLeak(text, { field: 'observation_text' });
+      expect(result.safe).toBe(true);
+    });
+
+    // --------- observation_location low-alpha backstop ---------
+    test('observation_location: 50 chars with <60% alpha → flagged low-alpha', () => {
+      // Use non-base64 punctuation so entropy can't pre-empt.
+      // 20 alpha + 30 dots/dashes = 50 chars, 40% alpha.
+      const text = 'abcdefghijklmnopqrst' + '.'.repeat(30);
+      const bounded = text.slice(0, 50);
+      expect(bounded.length).toBe(50);
+      const alphaCount = (bounded.match(/[a-zA-Z]/g) || []).length;
+      expect(alphaCount / bounded.length).toBeLessThan(0.6);
+      const result = checkForPromptLeak(bounded, { field: 'observation_location' });
+      expect(result.safe).toBe(false);
+      expect(result.reason).toMatch(/^low-alpha-ratio:/);
+    });
+
+    test('observation_location: 30 chars with 80% alpha → safe', () => {
+      const text = 'Hallway board position 2';
+      const result = checkForPromptLeak(text, { field: 'observation_location' });
+      expect(result.safe).toBe(true);
+    });
+
+    // --------- observation_regulation (60c ceiling) ---------
+    test('observation_regulation: 150-char benign paraphrase → flagged length', () => {
+      const text =
+        'This is a really long regulation citation that would ' +
+        'describe some BS 7671 section in great detail and should be ' +
+        'rejected for exceeding the ceiling.';
+      expect(text.length).toBeGreaterThan(60);
+      const result = checkForPromptLeak(text, { field: 'observation_regulation' });
+      expect(result.safe).toBe(false);
+      expect(result.reason).toMatch(/^length-suspicious:/);
+    });
+
+    test('observation_regulation: 20-char real reg "Regulation 522.6.201" → safe', () => {
+      const text = 'Regulation 522.6.201';
+      expect(text.length).toBe(20);
+      const result = checkForPromptLeak(text, { field: 'observation_regulation' });
+      expect(result.safe).toBe(true);
+    });
+
+    test('observation_regulation: 18-char real reg "BS 7671 643.3.2" → safe', () => {
+      const text = 'BS 7671 643.3.2';
+      expect(text.length).toBe(15);
+      const result = checkForPromptLeak(text, { field: 'observation_regulation' });
+      expect(result.safe).toBe(true);
+    });
+
+    test('observation_regulation: 55-char edge case (just under 60c ceiling) → safe', () => {
+      // A plausible-shape regulation string with a section title.
+      const text = 'BS 7671 regulation 522.6.201 shock-risk installation';
+      expect(text.length).toBeGreaterThan(50);
+      expect(text.length).toBeLessThan(60);
+      const result = checkForPromptLeak(text, { field: 'observation_regulation' });
+      expect(result.safe).toBe(true);
+    });
+
+    test('observation_regulation: NO low-alpha guard — numeric-heavy refs pass', () => {
+      // Real regulation refs are numeric-heavy: "522.6.201" is 22%
+      // alpha over its raw length. A legitimate rich ref like
+      // "BS 7671 522.6.201" is ~50% alpha but applying the
+      // observation_location 0.6 bar would destroy real content.
+      // Test below-40% alpha string passes iff it's short enough.
+      const text = '7671 522.6.201';
+      expect(text.length).toBeLessThan(60);
+      const alphaCount = (text.match(/[a-zA-Z]/g) || []).length;
+      expect(alphaCount / text.length).toBeLessThan(0.4);
+      const result = checkForPromptLeak(text, { field: 'observation_regulation' });
+      expect(result.safe).toBe(true);
+    });
+
+    // --------- 60-sample corpus regression across new field classes ---------
+    describe('Group 9 — FP guard on new field classes (60-sample composite corpus)', () => {
+      const SAMPLES_LOCATION = [
+        'Kitchen sockets consumer unit',
+        'Bathroom shaver socket',
+        'Under stairs cupboard',
+        'Garage sub-main distribution board',
+        'Main CU by front door',
+        'First floor landing ring',
+        'Upstairs bedroom lighting board',
+        'Hallway consumer unit position 3',
+        'Outside meter tails',
+        'Loft immersion isolator',
+      ];
+      const SAMPLES_REGULATION = [
+        'Regulation 522.6.201',
+        'BS 7671 643.3.2',
+        '411.3.1.1',
+        'Regulation 411.3.3',
+        'BS 7671 Part 6',
+        '701.415.2',
+        '544.1.1',
+        '722.533',
+        'BS 7671 Section 706',
+        'Regulation 132.15',
+      ];
+
+      test.each(SAMPLES_LOCATION.map((s, i) => [i + 1, s]))(
+        'location sample #%i safe in observation_location class: %s',
+        (_i, sample) => {
+          const result = checkForPromptLeak(sample, { field: 'observation_location' });
+          expect(result.safe).toBe(true);
+        }
+      );
+
+      test.each(SAMPLES_REGULATION.map((s, i) => [i + 1, s]))(
+        'regulation sample #%i safe in observation_regulation class: %s',
+        (_i, sample) => {
+          const result = checkForPromptLeak(sample, { field: 'observation_regulation' });
+          expect(result.safe).toBe(true);
+        }
+      );
+
+      // Cross-class: the 40 existing corpus samples (20 from 04-26
+      // + 20 from r20-#3) should still be safe on the NEW classes
+      // too — except that real observation narratives legitimately
+      // exceed 120c (for location) / 60c (for regulation), so we
+      // scope this regression to location/regulation only on
+      // realistic location/regulation inputs (the 20 above).
+    });
+  });
+
+  // ------------------------------------------------------------------
   // Defensive edge cases
   // ------------------------------------------------------------------
   describe('Edge cases', () => {

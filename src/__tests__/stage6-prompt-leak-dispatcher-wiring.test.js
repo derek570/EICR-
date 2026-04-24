@@ -975,3 +975,159 @@ describe('r20-#2 redaction — prompt_leak_blocked log rows carry hash + length,
     expect(row1.hash).not.toBe(row2.hash);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Group 7 — r21-#1 field-class granularity wiring.
+//
+// r21 re-review of r20-#1: the observation dispatcher correctly SCANS
+// `location` + `suggested_regulation`, but classifies BOTH as
+// `field: 'observation_text'`, inheriting the 1000-char length ceiling.
+// Real-world values are orders of magnitude shorter:
+//   - location: "Kitchen sockets consumer unit" (~30 chars)
+//   - suggested_regulation: "Regulation 522.6.201" (~20 chars)
+// A 150-char benign paraphrase of the system prompt in either field
+// passes every existing detector and lands verbatim in the PDF.
+//
+// Fix: introduce `observation_location` (120c ceiling + 0.6 alpha guard)
+// and `observation_regulation` (60c ceiling, no alpha guard) field
+// classes. Dispatcher routes each field to its own class.
+//
+// Tests below drive the bypass through the dispatcher end-to-end: a
+// 150-char paraphrase that is CLEAN under observation_text class must
+// now be REJECTED when it lands in `location` or `suggested_regulation`.
+// ---------------------------------------------------------------------------
+describe('r21-#1 wiring — observation dispatcher uses per-field classes', () => {
+  test('150-char clean paraphrase in `location` → rejected on observation_location 120c ceiling', async () => {
+    const session = makeSession('live');
+    const logger = makeLogger();
+    const perTurnWrites = makePerTurnWrites();
+    const ctx = { session, logger, turnId: 'turn-1', perTurnWrites, round: 1 };
+
+    // Clean-looking narrative — no markers, no entropy, normal alpha
+    // ratio, well under the 1000c observation_text ceiling. The
+    // ONLY way it gets rejected is if the dispatcher classifies
+    // `location` as its own class with a tighter ceiling.
+    const paraphrase =
+      'This is a legitimate looking short narrative describing some ' +
+      'position in the consumer unit but it is a bit too long for a ' +
+      'location label and should be flagged by the new ceiling.';
+    expect(paraphrase.length).toBeGreaterThan(120);
+    expect(paraphrase.length).toBeLessThan(200);
+
+    const call = {
+      tool_call_id: 'toolu_obs_loc_paraphrase',
+      name: 'record_observation',
+      input: {
+        code: 'C3',
+        text: 'Minor cable colour anomaly',
+        location: paraphrase,
+        circuit: null,
+        suggested_regulation: null,
+      },
+    };
+
+    const res = await dispatchRecordObservation(call, ctx);
+    expect(res.is_error).toBe(true);
+    const body = JSON.parse(res.content);
+    expect(body.ok).toBe(false);
+    expect(body.error?.code).toBe('prompt_leak_in_observation');
+    expect(body.error.fields).toContain('location');
+    // r21-#1 proof: the reason is the LENGTH family on the new class,
+    // not any of the content-family detectors that already caught it
+    // under r20.
+    expect(body.error.reason).toMatch(/^length-suspicious:/);
+
+    expect(session.extractedObservations).toHaveLength(0);
+  });
+
+  test('150-char clean paraphrase in `suggested_regulation` → rejected on observation_regulation 60c ceiling', async () => {
+    const session = makeSession('live');
+    const logger = makeLogger();
+    const perTurnWrites = makePerTurnWrites();
+    const ctx = { session, logger, turnId: 'turn-1', perTurnWrites, round: 1 };
+
+    const paraphrase =
+      'This is a really long regulation citation that would describe ' +
+      'some BS 7671 section in great detail and is well over what real ' +
+      'references look like — a bypass attempt.';
+    expect(paraphrase.length).toBeGreaterThan(60);
+
+    const call = {
+      tool_call_id: 'toolu_obs_reg_paraphrase',
+      name: 'record_observation',
+      input: {
+        code: 'C3',
+        text: 'Minor cable colour anomaly',
+        location: 'Consumer unit',
+        circuit: null,
+        suggested_regulation: paraphrase,
+      },
+    };
+
+    const res = await dispatchRecordObservation(call, ctx);
+    expect(res.is_error).toBe(true);
+    const body = JSON.parse(res.content);
+    expect(body.error?.code).toBe('prompt_leak_in_observation');
+    expect(body.error.fields).toContain('suggested_regulation');
+    expect(body.error.reason).toMatch(/^length-suspicious:/);
+
+    expect(session.extractedObservations).toHaveLength(0);
+  });
+
+  test('Same 150-char paraphrase in `text` field → ACCEPTED (observation_text 1000c ceiling)', async () => {
+    // Proves the per-field class split: same content is safe under
+    // observation_text class but unsafe under observation_location.
+    // This is the exact assertion r21-#1 requires.
+    const session = makeSession('live');
+    const logger = makeLogger();
+    const perTurnWrites = makePerTurnWrites();
+    const ctx = { session, logger, turnId: 'turn-1', perTurnWrites, round: 1 };
+
+    const paraphrase =
+      'This is a legitimate looking short narrative describing some ' +
+      'position in the consumer unit but it is a bit too long for a ' +
+      'location label and should be flagged by the new ceiling.';
+
+    const call = {
+      tool_call_id: 'toolu_obs_text_paraphrase_ok',
+      name: 'record_observation',
+      input: {
+        code: 'C3',
+        text: paraphrase,
+        location: 'Consumer unit',
+        circuit: null,
+        suggested_regulation: null,
+      },
+    };
+
+    const res = await dispatchRecordObservation(call, ctx);
+    expect(res.is_error).toBe(false);
+    expect(session.extractedObservations).toHaveLength(1);
+    expect(session.extractedObservations[0].text).toBe(paraphrase);
+  });
+
+  test('Short real location (30 chars) → normal flow', async () => {
+    const session = makeSession('live');
+    const logger = makeLogger();
+    const perTurnWrites = makePerTurnWrites();
+    const ctx = { session, logger, turnId: 'turn-1', perTurnWrites, round: 1 };
+
+    const call = {
+      tool_call_id: 'toolu_obs_loc_short',
+      name: 'record_observation',
+      input: {
+        code: 'C3',
+        text: 'Loose neutral on ring final',
+        location: 'Kitchen sockets consumer unit',
+        circuit: 4,
+        suggested_regulation: 'Regulation 522.6.201',
+      },
+    };
+
+    const res = await dispatchRecordObservation(call, ctx);
+    expect(res.is_error).toBe(false);
+    expect(session.extractedObservations).toHaveLength(1);
+    expect(session.extractedObservations[0].location).toBe('Kitchen sockets consumer unit');
+    expect(session.extractedObservations[0].suggested_regulation).toBe('Regulation 522.6.201');
+  });
+});
