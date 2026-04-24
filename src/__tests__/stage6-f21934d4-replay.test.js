@@ -88,8 +88,11 @@
  *        not fire because the model did not emit legacy JSON.
  *     5. session.stateSnapshot.circuits[2].r1_r2 === 0.64 — the at-risk
  *        slot is preserved unchanged on the live session.
- *     6. session.stateSnapshot.circuits[3].insulation_resistance_l_l
- *        === '>200' — the turn's new reading landed on the live snapshot.
+ *     6. session.stateSnapshot.circuits[3].ir_live_live_mohm
+ *        === '>200' — the turn's new reading landed on the live snapshot
+ *        under the CANONICAL field name (Plan 04-10 r4-#3: was
+ *        `insulation_resistance_l_l` pre-r4; canonicalised to match the
+ *        tool-call fixture + oracle).
  *     7. session.client._callCount === 2 — two-round tool loop executed.
  *     8. zero `stage6.ask_user` log rows were emitted across the turn.
  *
@@ -193,7 +196,16 @@ function makeLogger() {
  * the shadow tool loop a realistic starting state — circuit 3 exists and
  * is referenced by the tool_use input without tripping validateRecordReading's
  * circuit_not_found guard (stage6-dispatch-validation.js:58-63).
+ *
+ * NOTE: this helper is currently UNUSED (Plan 04-09 r3-#3 removed the legacy
+ * Scenario B that called it; Scenario B' — below — uses a real
+ * EICRExtractionSession instead). Kept in the file because a future test
+ * that needs a hand-rolled session mock may want to revive it; if it DOES
+ * get revived, it now uses the canonical field name `ir_live_live_mohm`
+ * (Plan 04-10 r4-#3 canonicalisation) — don't regress back to the legacy
+ * alias `insulation_resistance_l_l`.
  */
+// eslint-disable-next-line no-unused-vars
 function makeSessionWithSeededSnapshot(mode, snapshotSeed) {
   const snapshot = JSON.parse(JSON.stringify(snapshotSeed));
   return {
@@ -213,14 +225,15 @@ function makeSessionWithSeededSnapshot(mode, snapshotSeed) {
       // Simulate legacy applying the turn's extraction to the live snapshot —
       // circuit 3 gets the insulation reading the inspector said. Mutating
       // snapshot.circuits directly; this is how the live path updates state.
+      // Plan 04-10 r4-#3: canonical field name matches the tool-call fixture.
       this.stateSnapshot.circuits['3'] = {
         ...(this.stateSnapshot.circuits['3'] || {}),
-        insulation_resistance_l_l: '>200',
+        ir_live_live_mohm: '>200',
       };
       return {
         extracted_readings: [
           {
-            field: 'insulation_resistance_l_l',
+            field: 'ir_live_live_mohm',
             circuit: 3,
             value: '>200',
             confidence: 0.95,
@@ -373,15 +386,27 @@ describe("STT-04 Scenario B' — Real EICRExtractionSession SC #4 exit check (r3
     // LIVE session's snapshot. Same shape as the fake-session version
     // above (Scenario B); the method lives on the real class but we
     // overwrite it here to keep the test hermetic (no real Anthropic).
+    //
+    // Plan 04-10 r4-#3 — use the CANONICAL field name `ir_live_live_mohm`
+    // (per config/field_schema.json + stage6-tool-schemas.js circuit_fields
+    // enum). Pre-r4 this stub wrote the legacy alias
+    // `insulation_resistance_l_l` while the tool-call fixture
+    // (sse_events_well_behaved partial_json) writes the canonical
+    // `ir_live_live_mohm`. Live and shadow paths silently disagreed on
+    // the field key; "zero ask_user" assertions passed because the ask
+    // surface is independent of the extraction key, but the test's
+    // dispatch lock was weaker than claimed. Canonicalising here makes
+    // both paths converge on the same (field, circuit, value) tuple and
+    // assertions #6/#9/#10 lock that convergence.
     session.extractFromUtterance = jest.fn().mockImplementation(async function () {
       this.turnCount = (this.turnCount ?? 0) + 1;
       this.stateSnapshot.circuits['3'] = {
         ...(this.stateSnapshot.circuits['3'] || {}),
-        insulation_resistance_l_l: '>200',
+        ir_live_live_mohm: '>200',
       };
       return {
         extracted_readings: [
-          { field: 'insulation_resistance_l_l', circuit: 3, value: '>200', confidence: 0.95 },
+          { field: 'ir_live_live_mohm', circuit: 3, value: '>200', confidence: 0.95 },
         ],
         observations: [],
         questions: [],
