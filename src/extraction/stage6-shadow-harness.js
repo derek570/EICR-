@@ -178,6 +178,28 @@ export async function runShadowHarness(session, transcriptText, regexResults, op
     ? structuredClone(session.extractedObservations)
     : [];
 
+  // Plan 04-12 r6-#2 — capture the system-blocks array BEFORE legacy
+  // mutates session.stateSnapshot. r5-#1 fixed the harness to use
+  // session.buildSystemBlocks() but left the call at Step 4 (line 284
+  // historically), which runs AFTER session.extractFromUtterance mutates
+  // session.stateSnapshot at Step 1. Shadow's model-facing prompt then
+  // carried legacy's current-turn writes — anti-re-ask logic saw the slot
+  // as filled and suppressed shadow's divergence signal.
+  //
+  // Capturing here (pre-legacy) mirrors the real-production contract:
+  // shadow and live both observe the SAME starting state at turn entry,
+  // and any divergence between them is measured on equal footing. The
+  // dispatcher-side `shadowSession` (built at Step 3b below) was already
+  // correctly cloning pre-legacy state; this fix brings the PROMPT-SIDE
+  // input into the same pre-legacy window.
+  //
+  // buildSystemBlocks returns the full system-blocks array the session
+  // would send on the real path (see r5-#1 remediation). In off mode the
+  // array is a single base-prompt block. In non-off mode it is either
+  // a single base-prompt block (empty snapshot) or a two-block array
+  // (base prompt + cached snapshot, both cache_control ephemeral 5m).
+  const preLegacySystemBlocks = session.buildSystemBlocks();
+
   // Step 1: run legacy FIRST. If legacy throws, the error propagates — no
   // divergence log (no payload to compare).
   const legacy = await session.extractFromUtterance(transcriptText, regexResults, options);
@@ -269,19 +291,19 @@ export async function runShadowHarness(session, transcriptText, regexResults, op
     //     when non-empty ([base prompt, state snapshot]). BOTH blocks carry
     //     cache_control:{type:'ephemeral', ttl:'5m'} per Plan 04-02 STQ-03.
     //
-    // Pre-r5 the harness hand-rolled a single-block array with a bare
-    // cache_control:{type:'ephemeral'} (no ttl). Two bugs:
-    //   1. Dropped the cached snapshot entirely — Phase 7 STR-03 would
-    //      measure "shadow-no-snapshot vs live-with-snapshot" and mis-
-    //      attribute model drift to dispatch drift.
-    //   2. Cache-control didn't match the live path's {type:'ephemeral',
-    //      ttl:'5m'}, so shadow and live used different cache keys even
-    //      for the base prompt block.
+    // Plan 04-12 r6-#2 — the buildSystemBlocks CALL itself now lives at
+    // Step 0b (before legacy's extractFromUtterance) so the captured
+    // array reflects PRE-TURN state rather than post-legacy-mutation
+    // state. `preLegacySystemBlocks` carries the captured array. Without
+    // this move, shadow's model would see legacy's current-turn writes
+    // in its cached snapshot block — anti-re-ask logic would then see
+    // the slot as filled and suppress shadow's divergence signal.
     //
-    // After r5, both surfaces share the same buildSystemBlocks() method —
-    // shadow differs from live ONLY on dispatch semantics (tool-call vs
-    // prose-JSON parse), never on prompt shape.
-    const systemBlocks = session.buildSystemBlocks();
+    // After r5+r6, both surfaces share the same buildSystemBlocks() method
+    // AND observe the same pre-turn starting state — shadow differs from
+    // live ONLY on dispatch semantics (tool-call vs prose-JSON parse),
+    // never on prompt shape or state visibility.
+    const systemBlocks = preLegacySystemBlocks;
 
     toolLoopOut = await runToolLoop({
       client: session.client,
