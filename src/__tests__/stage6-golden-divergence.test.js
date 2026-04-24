@@ -2766,3 +2766,229 @@ describe('Group r7-3 — Plan 04-13 r7-#3: circuit_ops sort uses full canonical 
     expect(String(ops[2].circuit_ref)).toBe('3');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Group r8-3 — Plan 04-14 r8-#3 MINOR: runToolCallPath accepts a
+// fixture-declared recentCircuitOrder; numeric fallback flagged as
+// non-chronological.
+//
+// Codex r8 MINOR #3: scripts/stage6-golden-divergence.js:789-793 —
+// r7-#2 derived recentCircuitOrder from the seeded snapshot via
+// numeric ascending sort. Production's recentCircuitOrder is
+// CHRONOLOGICAL (each record_reading moves the circuit to the END
+// of the array, so .slice(-3) returns the three most-recently-edited).
+// For fixtures with >SNAPSHOT_RECENT_CIRCUITS (=3) seeded circuits,
+// numeric ≠ chronological → harness exposes a different detailed-view
+// set than production would.
+//
+// Fix (r8-#3 GREEN): fixture pre_turn_state may declare
+// `recentCircuitOrder` explicitly; harness uses it verbatim. When
+// absent, falls back to numeric ascending (the r7-#2 behaviour) with
+// a caveat comment. Fixtures with implied chronology and >3 seeded
+// circuits should declare the order explicitly.
+//
+// Four tests lock the behaviour:
+//   r8-3a — declared recentCircuitOrder is used verbatim (preserves
+//           chronology the fixture author encoded).
+//   r8-3b — >SNAPSHOT_RECENT_CIRCUITS with declared order: last 3 of
+//           declared order are detailed, earlier ones summarised.
+//           Chronology-first, NOT numeric-first.
+//   r8-3c — no declared order: fallback to numeric ascending matches
+//           r7-#2 behaviour (back-compat for 6 current fixtures).
+//   r8-3d — declared order filters circuit 0 (supply) just like the
+//           fallback does.
+// ---------------------------------------------------------------------------
+
+describe('Group r8-3 — Plan 04-14 r8-#3: runToolCallPath honours fixture-declared recentCircuitOrder', () => {
+  function sample01ToolCallEvents() {
+    return JSON.parse(
+      fssync.readFileSync(path.join(FIXTURE_DIR, 'sample-01-routine.json'), 'utf8'),
+    ).sse_events_tool_call;
+  }
+  function sample01ToolCallEventsR2() {
+    return JSON.parse(
+      fssync.readFileSync(path.join(FIXTURE_DIR, 'sample-01-routine.json'), 'utf8'),
+    ).sse_events_tool_call_round2;
+  }
+
+  test('r8-3a — fixture-declared recentCircuitOrder used verbatim (NOT re-sorted)', async () => {
+    // Declared order is [3, 1, 2] — harness MUST preserve it rather
+    // than sorting numerically. This captures the chronology the
+    // fixture author intended (circuit 3 edited first, circuit 2 most
+    // recent). The builder's `.slice(-SNAPSHOT_RECENT_CIRCUITS=3)`
+    // returns all three in declared order; test assertion iterates
+    // the detailed circuits block and asserts the ORDER in output
+    // matches the declared order.
+    const syntheticFx = {
+      pre_turn_state: {
+        snapshot: {
+          circuits: {
+            1: { circuit_ref: 1, circuit_designation: 'Ring 1' },
+            2: { circuit_ref: 2, circuit_designation: 'Ring 2' },
+            3: { circuit_ref: 3, circuit_designation: 'Lights' },
+          },
+          pending_readings: [],
+          observations: [],
+          validation_alerts: [],
+        },
+        // Declared chronology (NOT numeric). Most recent = last
+        // element per production semantics.
+        recentCircuitOrder: [3, 1, 2],
+        askedQuestions: [],
+        extractedObservations: [],
+      },
+      transcript: 'test',
+      sse_events_tool_call: sample01ToolCallEvents(),
+      sse_events_tool_call_round2: sample01ToolCallEventsR2(),
+    };
+    const { client } = await runToolCallPath(syntheticFx);
+    const snapshotText = client._calls[0].system[1].text;
+    // All three circuits detailed (none in "earlier circuits" summary
+    // — SNAPSHOT_RECENT_CIRCUITS=3 and we have 3 non-supply).
+    expect(snapshotText).not.toMatch(/earlier circuits/);
+    // The detailed circuit lines appear in the declared order. Each
+    // line is `<num>:{...}` — extract indices of circuits 1/2/3 in
+    // the EXTRACTED block and assert the sequence matches [3, 1, 2].
+    const extractedSection = snapshotText.match(/EXTRACTED \(field IDs[^]*$/)[0];
+    const posForCircuit = (n) =>
+      extractedSection.indexOf(`\n${n}:{`);
+    const pos1 = posForCircuit(1);
+    const pos2 = posForCircuit(2);
+    const pos3 = posForCircuit(3);
+    expect(pos1).toBeGreaterThan(-1);
+    expect(pos2).toBeGreaterThan(-1);
+    expect(pos3).toBeGreaterThan(-1);
+    // Order: 3 first, 1 second, 2 last.
+    expect(pos3).toBeLessThan(pos1);
+    expect(pos1).toBeLessThan(pos2);
+  });
+
+  test('r8-3b — declared order of length 5: last 3 detailed, first 2 summarised (chronology, NOT numeric)', async () => {
+    // Declared chronology `[4, 5, 1, 2, 3]` means circuit 3 is most
+    // recently edited (last element). `.slice(-3)` returns `[1, 2, 3]`
+    // detailed; circuits 4 & 5 summarise into "2 earlier circuits
+    // (4,5)". Under pure numeric fallback, detailed would be `[3, 4, 5]`
+    // and summary `[1, 2]` — the mismatch is exactly the divergence
+    // r8-#3 fixes.
+    const syntheticFx = {
+      pre_turn_state: {
+        snapshot: {
+          circuits: {
+            1: { circuit_ref: 1, circuit_designation: 'Ring 1', measured_zs_ohm: 0.11 },
+            2: { circuit_ref: 2, circuit_designation: 'Ring 2', measured_zs_ohm: 0.22 },
+            3: { circuit_ref: 3, circuit_designation: 'Lights 1', measured_zs_ohm: 0.33 },
+            4: { circuit_ref: 4, circuit_designation: 'Lights 2', measured_zs_ohm: 0.44 },
+            5: { circuit_ref: 5, circuit_designation: 'Shower', measured_zs_ohm: 0.55 },
+          },
+          pending_readings: [],
+          observations: [],
+          validation_alerts: [],
+        },
+        recentCircuitOrder: [4, 5, 1, 2, 3],
+        askedQuestions: [],
+        extractedObservations: [],
+      },
+      transcript: 'test',
+      sse_events_tool_call: sample01ToolCallEvents(),
+      sse_events_tool_call_round2: sample01ToolCallEventsR2(),
+    };
+    const { client } = await runToolCallPath(syntheticFx);
+    const snapshotText = client._calls[0].system[1].text;
+    // Earlier circuits summary names 4 and 5 — the FIRST two of the
+    // declared order.
+    expect(snapshotText).toMatch(/2 earlier circuits \(4,5\) stored server-side/);
+    // Detailed section: circuits 1, 2, 3 with their readings. Under
+    // the numeric fallback this test would instead see circuits 3,
+    // 4, 5 detailed (0.33, 0.44, 0.55) and circuits 1, 2 summarised
+    // (0.11, 0.22 hidden).
+    expect(snapshotText).toContain('0.11'); // circuit 1 reading (detailed)
+    expect(snapshotText).toContain('0.22'); // circuit 2 reading (detailed)
+    expect(snapshotText).toContain('0.33'); // circuit 3 reading (detailed)
+    // Summarised circuits' readings MUST NOT appear verbatim.
+    expect(snapshotText).not.toContain('0.44');
+    expect(snapshotText).not.toContain('0.55');
+  });
+
+  test('r8-3c — no declared order: fallback to numeric ascending (back-compat with r7-#2)', async () => {
+    // The 6 current fixtures don't declare recentCircuitOrder. The
+    // fallback derivation (numeric ascending, excluding circuit 0)
+    // must match r7-#2 behaviour exactly — otherwise existing fixtures
+    // would regress. For fixtures with <=SNAPSHOT_RECENT_CIRCUITS
+    // circuits this is indistinguishable from any declared order
+    // (all fit in detailed view).
+    const syntheticFx = {
+      pre_turn_state: {
+        snapshot: {
+          circuits: {
+            1: { circuit_ref: 1, circuit_designation: 'Ring 1' },
+            2: { circuit_ref: 2, circuit_designation: 'Ring 2' },
+            3: { circuit_ref: 3, circuit_designation: 'Lights' },
+          },
+          pending_readings: [],
+          observations: [],
+          validation_alerts: [],
+        },
+        // NO recentCircuitOrder declared — fallback path exercised.
+        askedQuestions: [],
+        extractedObservations: [],
+      },
+      transcript: 'test',
+      sse_events_tool_call: sample01ToolCallEvents(),
+      sse_events_tool_call_round2: sample01ToolCallEventsR2(),
+    };
+    const { client } = await runToolCallPath(syntheticFx);
+    const snapshotText = client._calls[0].system[1].text;
+    // All 3 circuits detailed (fits in window regardless of order
+    // — numeric ascending OR any declared chronology). No summary
+    // line. This proves the fallback still works for the common case.
+    expect(snapshotText).not.toMatch(/earlier circuits/);
+    // All circuits appear in numeric ascending order (the fallback's
+    // deterministic output). Extract positions and verify.
+    const extractedSection = snapshotText.match(/EXTRACTED \(field IDs[^]*$/)[0];
+    const posForCircuit = (n) =>
+      extractedSection.indexOf(`\n${n}:{`);
+    expect(posForCircuit(1)).toBeLessThan(posForCircuit(2));
+    expect(posForCircuit(2)).toBeLessThan(posForCircuit(3));
+  });
+
+  test('r8-3d — declared order with circuit 0 present: circuit 0 filtered out of recentCircuitOrder (matches fallback invariant)', async () => {
+    // Production's recentCircuitOrder NEVER contains circuit 0
+    // (updateStateSnapshot line 1093 guards with `if (circuit !== 0)`).
+    // A fixture author who incorrectly includes 0 in the declared
+    // order must see it filtered out so the detailed-view window
+    // isn't stolen by the supply block (which has its own always-
+    // visible emission).
+    const syntheticFx = {
+      pre_turn_state: {
+        snapshot: {
+          circuits: {
+            0: { ze: '0.32' },
+            1: { circuit_ref: 1, circuit_designation: 'Ring', measured_zs_ohm: 0.45 },
+            2: { circuit_ref: 2, circuit_designation: 'Lights', measured_zs_ohm: 0.80 },
+          },
+          pending_readings: [],
+          observations: [],
+          validation_alerts: [],
+        },
+        // Attempted to include 0 — must be filtered.
+        recentCircuitOrder: [0, 1, 2],
+        askedQuestions: [],
+        extractedObservations: [],
+      },
+      transcript: 'test',
+      sse_events_tool_call: sample01ToolCallEvents(),
+      sse_events_tool_call_round2: sample01ToolCallEventsR2(),
+    };
+    const { client } = await runToolCallPath(syntheticFx);
+    const snapshotText = client._calls[0].system[1].text;
+    // Supply block present separately.
+    expect(snapshotText).toMatch(/0:\{.*ze.*0\.32/);
+    // Non-supply circuits 1 + 2 both detailed (no "earlier circuits"
+    // summary), confirming the circuit-0 filter restored the two
+    // detailed slots that an unfiltered [0, 1, 2] would have given
+    // to supply (slice(-3)=[0,1,2] with 0 stealing a recent slot).
+    expect(snapshotText).not.toMatch(/earlier circuits/);
+    expect(snapshotText).toContain('0.45');
+    expect(snapshotText).toContain('0.8'); // 0.80 → 0.8 per JSON stringify
+  });
+});
