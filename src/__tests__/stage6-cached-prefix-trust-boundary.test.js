@@ -1653,3 +1653,164 @@ describe('Plan 04-20 r14-#3 — hydration normalisation for pre-existing legacy 
     expect(extractedBlock).not.toMatch(/"polarity"\s*:/);
   });
 });
+
+/**
+ * Plan 04-22 r16-#2 — pending_readings[].field canonicalisation.
+ *
+ * Codex r16 (re-statement of r15-#1) flagged that
+ * `stateSnapshot.pending_readings[].field` still serialises legacy
+ * field names (e.g. `field: "zs"`, `field: "r1_r2"`) — the same
+ * vocabulary drift class r13-#2 fixed for the circuit-bucket keys
+ * and r14-#3 closed for hydration. The tool-schema's
+ * `record_reading.field` enum (sourced from
+ * `Object.keys(fieldSchema.circuit_fields)`) only accepts canonical
+ * names, so legacy entries in pending_readings can't be dispatched
+ * by the model — but they DO leak into the cached prefix as
+ * "content the model sees", which weakens the model's re-ask
+ * suppression heuristics on pending-readings paths.
+ *
+ * The r16-#2 fix:
+ *   (a) WRITE-time — when `extracted_readings` arrives with
+ *       `circuit === -1`, canonicalise `reading.field` via
+ *       `LEGACY_TO_CANONICAL_CIRCUIT_KEYS[field] ?? field` BEFORE
+ *       pushing into `stateSnapshot.pending_readings`. Same lookup
+ *       used for the dedup filter.
+ *   (b) SERIALISE-time — `buildStateSnapshotMessage`'s
+ *       `wrappedPending` mapper applies the same canonicalisation
+ *       (defence in depth: catches any pre-existing legacy entry
+ *       that a future ingestion path could drop in directly).
+ *   (c) `field` is a canonical enum name — it is NOT user-derived.
+ *       Serialise BARE (no USER_TEXT wrap). `value` and `unit`
+ *       remain wrapped per the existing r8-#1 contract.
+ *
+ * Six tests:
+ *   r16-2a — write-time: push pending with `field: 'zs'` →
+ *            stored as `measured_zs_ohm`.
+ *   r16-2b — write-time idempotent: push pending with
+ *            `field: 'measured_zs_ohm'` → unchanged.
+ *   r16-2c — write-time: push pending with `field: 'r1_r2'` →
+ *            stored as `r1_r2_ohm`.
+ *   r16-2d — write-time: push pending with `field: 'polarity'` →
+ *            stored as `polarity_confirmed`.
+ *   r16-2e — serialise-time: pre-existing legacy `field: 'zs'`
+ *            in pending_readings → emitted line carries
+ *            `"field":"measured_zs_ohm"` BARE (no USER_TEXT
+ *            markers around the field name).
+ *   r16-2f — canary: value still wrapped (the field
+ *            canonicalisation is orthogonal to the value wrap).
+ *            Asserts BOTH `"field":"measured_zs_ohm"` (bare) and
+ *            `"value":"<<<USER_TEXT>>>0.42<<<END_USER_TEXT>>>"`
+ *            (wrapped).
+ */
+describe('Plan 04-22 r16-#2 — pending_readings field canonicalisation', () => {
+  beforeEach(() => mockCreate.mockReset());
+
+  // Helper: extract the `pending:` line from a snapshot block. The
+  // pending line is emitted inside the EXTRACTED block on its own
+  // newline-prefixed entry — same pattern as findAlertsLine but
+  // narrowed to the pending payload.
+  function findPendingLine(snapshotText) {
+    const match = snapshotText.match(/^pending:(.*)$/m);
+    return match ? match[1] : null;
+  }
+
+  test('r16-2a — write-time: pending push with legacy `field: "zs"` lands as canonical `measured_zs_ohm`', () => {
+    // Drives the WRITE-time branch via updateStateSnapshot's
+    // `extracted_readings` loop. circuit === -1 routes to the
+    // pending push.
+    const session = new EICRExtractionSession('k', 'sess-r16-2a', 'eicr', {
+      toolCallsMode: 'shadow',
+    });
+    session.updateStateSnapshot({
+      extracted_readings: [{ circuit: -1, field: 'zs', value: '0.42', unit: 'ohm' }],
+    });
+    expect(session.stateSnapshot.pending_readings).toHaveLength(1);
+    const entry = session.stateSnapshot.pending_readings[0];
+    expect(entry.field).toBe('measured_zs_ohm');
+    expect(entry.value).toBe('0.42');
+    expect(entry.unit).toBe('ohm');
+  });
+
+  test('r16-2b — write-time idempotent: pending push with already-canonical `field: "measured_zs_ohm"` is unchanged', () => {
+    // Idempotency canary — running canonicalisation on a canonical
+    // value is a no-op. Locks against any future "double-rename"
+    // edit that would corrupt already-canonical entries.
+    const session = new EICRExtractionSession('k', 'sess-r16-2b', 'eicr', {
+      toolCallsMode: 'shadow',
+    });
+    session.updateStateSnapshot({
+      extracted_readings: [{ circuit: -1, field: 'measured_zs_ohm', value: '0.42', unit: 'ohm' }],
+    });
+    expect(session.stateSnapshot.pending_readings).toHaveLength(1);
+    expect(session.stateSnapshot.pending_readings[0].field).toBe('measured_zs_ohm');
+  });
+
+  test('r16-2c — write-time: pending push with `field: "r1_r2"` lands as canonical `r1_r2_ohm`', () => {
+    // Same path as r16-2a but driving a different alias from the
+    // r13-#2 map (LEGACY_TO_CANONICAL_CIRCUIT_KEYS.r1_r2 = r1_r2_ohm).
+    const session = new EICRExtractionSession('k', 'sess-r16-2c', 'eicr', {
+      toolCallsMode: 'shadow',
+    });
+    session.updateStateSnapshot({
+      extracted_readings: [{ circuit: -1, field: 'r1_r2', value: '0.64', unit: 'ohm' }],
+    });
+    expect(session.stateSnapshot.pending_readings).toHaveLength(1);
+    expect(session.stateSnapshot.pending_readings[0].field).toBe('r1_r2_ohm');
+  });
+
+  test('r16-2d — write-time: pending push with `field: "polarity"` lands as canonical `polarity_confirmed`', () => {
+    // Polarity is the one alias whose canonical form differs in
+    // shape (string suffix instead of unit suffix). Locks the
+    // map handles ALL r13-#2 aliases, not just the unit-suffix
+    // ones.
+    const session = new EICRExtractionSession('k', 'sess-r16-2d', 'eicr', {
+      toolCallsMode: 'shadow',
+    });
+    session.updateStateSnapshot({
+      extracted_readings: [{ circuit: -1, field: 'polarity', value: 'OK', unit: null }],
+    });
+    expect(session.stateSnapshot.pending_readings).toHaveLength(1);
+    expect(session.stateSnapshot.pending_readings[0].field).toBe('polarity_confirmed');
+  });
+
+  test('r16-2e — serialise-time defence: pre-existing legacy `field: "zs"` in pending → emitted BARE as canonical', () => {
+    // Drives the SERIALISE-time branch: a test mutates pending
+    // directly with a legacy field (skipping the write-time guard).
+    // The serialiser MUST canonicalise on the way out so a future
+    // direct-mutation ingestion path cannot drop legacy text into
+    // the cached prefix.
+    const session = new EICRExtractionSession('k', 'sess-r16-2e', 'eicr', {
+      toolCallsMode: 'shadow',
+    });
+    session.stateSnapshot.pending_readings = [{ field: 'zs', value: '0.42', unit: 'ohm' }];
+    const blocks = session.buildSystemBlocks();
+    const pendingLine = findPendingLine(blocks[1].text);
+    expect(pendingLine).not.toBeNull();
+
+    // Field appears BARE (no USER_TEXT markers around the field
+    // name — it's a canonical enum, not user-derived).
+    expect(pendingLine).toMatch(/"field"\s*:\s*"measured_zs_ohm"/);
+    // Legacy name MUST NOT leak.
+    expect(pendingLine).not.toMatch(/"field"\s*:\s*"zs"/);
+    // No USER_TEXT wrap around the field value.
+    expect(pendingLine).not.toMatch(/"field"\s*:\s*"<<<USER_TEXT>>>/);
+  });
+
+  test('r16-2f — canary: serialised pending carries BARE field + WRAPPED value (orthogonal contracts)', () => {
+    // Locks both surface contracts in one assertion so a future
+    // edit that accidentally wraps `field` (over-broad wrap fix)
+    // OR un-wraps `value` (under-broad wrap fix) fails loudly.
+    const session = new EICRExtractionSession('k', 'sess-r16-2f', 'eicr', {
+      toolCallsMode: 'shadow',
+    });
+    session.stateSnapshot.pending_readings = [{ field: 'zs', value: '0.42', unit: 'ohm' }];
+    const blocks = session.buildSystemBlocks();
+    const pendingLine = findPendingLine(blocks[1].text);
+    expect(pendingLine).not.toBeNull();
+
+    // Field bare (canonical name, server_canonical authority).
+    expect(pendingLine).toMatch(/"field"\s*:\s*"measured_zs_ohm"/);
+    // Value wrapped (user-derived per r8-#1 + r9-#2).
+    expect(pendingLine).toMatch(/"value"\s*:\s*"<<<USER_TEXT>>>0\.42<<<END_USER_TEXT>>>"/);
+  });
+});
