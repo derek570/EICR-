@@ -649,8 +649,8 @@ iOS sources:
 | ios-ref | web-ref | status | phase | notes |
 |---|---|---|---|---|
 | `CertMateDesign.swift` — colour tokens (brandBlue/brandGreen/dark surfaces/gradients/shadows/animations) | `web/src/lib/design-tokens.ts` + `globals.css` CSS vars | match |  |  |
-| `CMSectionCard.swift` — gradient-bordered card with category-coded accent | `web/src/components/ui/section-card.tsx` | match |  |  |
-| Hero gradient (blue→green or green→blue) used on every tab header | web tab pages render equivalent gradients | match |  |  |
+| `CMSectionCard.swift` — gradient-bordered card with category-coded accent | `web/src/components/ui/section-card.tsx` | match |  | Phase 1 — added iOS-parity category accents (client/electrical/board/test-results/schedule/notes/protection) driven by `SECTION_ACCENTS` token map in `lib/constants/section-accents.ts`. |
+| Hero gradient (blue→green or green→blue) used on every tab header | web tab pages render equivalent gradients + `components/ui/hero-header.tsx` | match |  | Phase 1 — reusable `HeroHeader` primitive with breathing radial glow (respects `prefers-reduced-motion`). Accepts the same `SectionAccent` token set as `SectionCard`. |
 | Staggered section entrance (`cmStaggeredEntrance(index:appeared:)`) | MISSING | missing | 9 | Web tabs don't have per-card stagger-in animations. Consider `framer-motion` or CSS `animation-delay`. |
 | Data-arrival flash (`DataArrivalFlash.swift`) — blue flash when Sonnet fills a field | `web/src/components/live-fill/live-field.tsx` | partial | 8 | Web has LiveField with flash; check visual parity. |
 | `CMFloatingTextField` floating-label input | `web/src/components/ui/floating-label-input.tsx` | match |  |  |
@@ -664,9 +664,10 @@ iOS sources:
 | `OutcomeButtonGroup.swift` (✓/✗/N/A/LIM/C1/C2/C3/FI chip row) | inlined in `inspection/page.tsx` ScheduleRow | match |  |  |
 | `TypingText.swift` typing animation | MISSING | missing | 9 | iOS uses this for tour narration subtitles. |
 | `OfflineBanner.swift` (top of dashboard when offline) | `web/src/components/pwa/offline-indicator.tsx` (header pill) | partial | 9 | Visual shape differs. |
-| Skeleton shimmer (dashboard loading) | `globals.css` `.cm-shimmer` + `dashboard/page.tsx:L225-L233` | match |  |  |
-| Job-deletion confirmation alert (universally) | MISSING on dashboard row | missing | 9 | Covered above. |
-| `components/ui/confirm-dialog.tsx` | reused in Settings outbox discard | match |  |  |
+| Skeleton shimmer (dashboard loading) | `globals.css` `.cm-shimmer` + `dashboard/page.tsx:L225-L233` + `components/ui/skeleton-row.tsx` | match |  | Phase 1 — reusable `SkeletonRow` primitive wrapping the existing `.cm-shimmer` keyframes with `role="status"` + `aria-busy`. |
+| Job-deletion confirmation alert (universally) | MISSING on dashboard row | missing | 9 | Covered above. `ConfirmDialog` primitive ready to wire in Phase 3. |
+| `components/ui/confirm-dialog.tsx` | reused in Settings outbox discard | match |  | Phase 1 — added `destructive` ergonomic alias + internal async-promise busy tracking so destructive actions can't double-fire while the mutation is in flight. |
+| Tally-badge primitive (Observations totals, Phase 3 Alerts bell) | `components/ui/tally-badge.tsx` | match |  | Phase 1 — count+label pill with severity variants (destructive/warn/info/muted/success) mapped to the existing `--color-severity-*` tokens. |
 | Brand logo | `components/brand/logo.tsx` | match |  |  |
 | Tab bar / sidebar navigation shell | `components/layout/app-shell.tsx` | match |  |  |
 | Job header (back + title + menu) | `components/job/job-header.tsx` | partial | 4 | Menu missing (see Overview tab). |
