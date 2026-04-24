@@ -1281,3 +1281,172 @@ describe('Group I — Plan 04-08 r2-#3: triple-comparison oracle path', () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// Group J — Plan 04-09 r3-#1: normaliseObservation widened field surface.
+//
+// Codex r3 MAJOR #1: `normaliseObservation()` in stage6-golden-divergence.js
+// canonicalised observations down to `{code, text}` only. Fields like
+// `location`, `circuit`, `suggested_regulation` were stripped, so the
+// divergence gate reported a FALSE 0% when legacy + tool-call disagreed on
+// observation metadata — the comparator never saw those fields.
+//
+// The full production observation shape is:
+//   {id, code, location, text, circuit, suggested_regulation}
+// (see src/extraction/stage6-per-turn-writes.js:40 and
+// src/extraction/stage6-tool-schemas.js:275 required list).
+//
+// After r3-#1 fix, normaliseObservation preserves all 5 semantic fields.
+// `id` is still stripped (both paths mint independent UUIDs —
+// precedent established by stage6-slot-comparator's observation UUID
+// normalisation). Transient source_turn_id / timestamp also stripped.
+//
+// Five tests lock the widened comparator surface:
+//   J1. Two observations differing ONLY in `location` → diverged=true.
+//   J2. Two observations differing ONLY in `circuit` → diverged=true.
+//   J3. Two observations differing ONLY in `suggested_regulation` → diverged=true.
+//   J4. Two observations with same core 5 fields + different transient
+//       fields (id, source_turn_id, timestamp) → diverged=false.
+//   J5. Round-trip: normaliseObservation preserves all 5 fields after
+//       canonicalisation on a full-payload input.
+// ---------------------------------------------------------------------------
+
+describe('Group J — Plan 04-09 r3-#1: normaliseObservation widened field surface', () => {
+  const empty = { readings: [], clears: [], circuit_ops: [] };
+
+  test('J1 — observations differing ONLY in `location` → diverged=true', () => {
+    const a = {
+      ...empty,
+      observations: [{ code: 'C2', text: 'Missing cover', location: 'Kitchen', circuit: null, suggested_regulation: null }],
+    };
+    const b = {
+      ...empty,
+      observations: [{ code: 'C2', text: 'Missing cover', location: 'Bathroom', circuit: null, suggested_regulation: null }],
+    };
+    // Need to normalise the shapes first (like the real pipeline does).
+    const normA = normaliseExtractionResult(a);
+    const normB = normaliseExtractionResult(b);
+    const d = computeDivergence(normA, normB);
+    expect(d.diverged).toBe(true);
+    expect(d.call_divergence).toBeGreaterThan(0);
+  });
+
+  test('J2 — observations differing ONLY in `circuit` → diverged=true', () => {
+    const a = {
+      ...empty,
+      observations: [{ code: 'C2', text: 'Loose neutral', location: 'DB', circuit: 3, suggested_regulation: null }],
+    };
+    const b = {
+      ...empty,
+      observations: [{ code: 'C2', text: 'Loose neutral', location: 'DB', circuit: 7, suggested_regulation: null }],
+    };
+    const normA = normaliseExtractionResult(a);
+    const normB = normaliseExtractionResult(b);
+    const d = computeDivergence(normA, normB);
+    expect(d.diverged).toBe(true);
+    expect(d.call_divergence).toBeGreaterThan(0);
+  });
+
+  test('J3 — observations differing ONLY in `suggested_regulation` → diverged=true', () => {
+    const a = {
+      ...empty,
+      observations: [
+        {
+          code: 'C2',
+          text: 'Exposed live conductor',
+          location: 'Under-stairs cupboard',
+          circuit: null,
+          suggested_regulation: '411.3.1.1',
+        },
+      ],
+    };
+    const b = {
+      ...empty,
+      observations: [
+        {
+          code: 'C2',
+          text: 'Exposed live conductor',
+          location: 'Under-stairs cupboard',
+          circuit: null,
+          suggested_regulation: '522.6.201',
+        },
+      ],
+    };
+    const normA = normaliseExtractionResult(a);
+    const normB = normaliseExtractionResult(b);
+    const d = computeDivergence(normA, normB);
+    expect(d.diverged).toBe(true);
+    expect(d.call_divergence).toBeGreaterThan(0);
+  });
+
+  test('J4 — observations with same 5 core fields + different transient fields → diverged=false', () => {
+    // Transient: id (UUID, independently minted), source_turn_id, timestamp.
+    const a = {
+      ...empty,
+      observations: [
+        {
+          id: 'a38c7b50-1111-4222-8333-aaaaaaaaaaaa',
+          source_turn_id: 't-123',
+          timestamp: '2026-04-23T10:00:00Z',
+          code: 'C3',
+          text: 'Non-compliant cable support',
+          location: 'Loft',
+          circuit: 4,
+          suggested_regulation: '522.8.5',
+        },
+      ],
+    };
+    const b = {
+      ...empty,
+      observations: [
+        {
+          id: '99999999-2222-4333-8444-bbbbbbbbbbbb',
+          source_turn_id: 't-456',
+          timestamp: '2026-04-23T11:30:42Z',
+          code: 'C3',
+          text: 'Non-compliant cable support',
+          location: 'Loft',
+          circuit: 4,
+          suggested_regulation: '522.8.5',
+        },
+      ],
+    };
+    const normA = normaliseExtractionResult(a);
+    const normB = normaliseExtractionResult(b);
+    const d = computeDivergence(normA, normB);
+    // Core-fields match; transient fields must be stripped during
+    // canonicalisation so the two observations compare equal.
+    expect(d.diverged).toBe(false);
+    expect(d.call_divergence).toBe(0);
+  });
+
+  test('J5 — normaliseObservation round-trip preserves all 5 semantic fields', () => {
+    const input = {
+      observations: [
+        {
+          id: 'should-be-stripped',
+          source_turn_id: 'also-stripped',
+          timestamp: 'also-stripped',
+          code: 'c2', // lower-cased input, should UPPER on output
+          text: '  Missing RCD  ', // whitespace, should trim
+          location: '  Board ', // whitespace, should trim; preserve case
+          circuit: 5,
+          suggested_regulation: '  411.3.3 ', // trim; preserve case
+        },
+      ],
+    };
+    const norm = normaliseExtractionResult(input);
+    expect(norm.observations).toHaveLength(1);
+    const o = norm.observations[0];
+    // All 5 semantic fields preserved.
+    expect(o).toHaveProperty('code', 'C2');
+    expect(o).toHaveProperty('text', 'Missing RCD');
+    expect(o).toHaveProperty('location', 'Board');
+    expect(o).toHaveProperty('circuit', 5);
+    expect(o).toHaveProperty('suggested_regulation', '411.3.3');
+    // Transient fields stripped.
+    expect(o).not.toHaveProperty('id');
+    expect(o).not.toHaveProperty('source_turn_id');
+    expect(o).not.toHaveProperty('timestamp');
+  });
+});
