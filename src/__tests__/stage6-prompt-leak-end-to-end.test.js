@@ -672,6 +672,159 @@ describe('r22-#2 real shadow-path state assertions via _shadowCapture', () => {
 });
 
 // ---------------------------------------------------------------------------
+// r23-#3 — serialiseToolResultBodies structured-content coverage
+//
+// WHY: r22-#2 landed serialiseToolResultBodies as a helper that
+// inspects `block.content` only when typeof === 'string'. Anthropic
+// SDK tool_result blocks also support structured content (array of
+// blocks, each with `.text` or nested `.content`; single-object
+// wrapper with `.content`). The current harness returns string
+// bodies — but a future SDK upgrade, a dispatcher refactor, or a
+// fixture with structured content would silently skip the block
+// and a leak could pass the r22-#2 Scenario 4 assertions.
+//
+// This group tests serialiseToolResultBodies directly against
+// synthetic toolLoopOut shapes covering:
+//   1. String content (back-compat; what r22-#2 already tests)
+//   2. Array-of-text-blocks content (structured shape)
+//   3. Nested structured content (array whose blocks have .content)
+//   4. Unknown-shape fallback (JSON.stringify defence-in-depth)
+// plus null/undefined safety.
+// ---------------------------------------------------------------------------
+describe('r23-#3 serialiseToolResultBodies — structured-content shape coverage', () => {
+  test('1. string content — back-compat, leak substring present', () => {
+    const toolLoopOut = {
+      messages_final: [
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'tool_result',
+              tool_use_id: 'toolu_x',
+              content: 'leak-substring TRUST BOUNDARY here',
+            },
+          ],
+        },
+      ],
+    };
+    expect(serialiseToolResultBodies(toolLoopOut)).toContain('TRUST BOUNDARY');
+  });
+
+  test('2. array-of-text-blocks content — all block.text concatenated', () => {
+    const toolLoopOut = {
+      messages_final: [
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'tool_result',
+              tool_use_id: 'toolu_x',
+              content: [
+                { type: 'text', text: 'leak-part-1 TRUST BOUNDARY' },
+                { type: 'text', text: 'leak-part-2 SYSTEM_CHANNEL' },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+    const joined = serialiseToolResultBodies(toolLoopOut);
+    expect(joined).toContain('TRUST BOUNDARY');
+    expect(joined).toContain('SYSTEM_CHANNEL');
+  });
+
+  test('3. nested structured content — recursion into block.content', () => {
+    const toolLoopOut = {
+      messages_final: [
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'tool_result',
+              tool_use_id: 'toolu_x',
+              content: [
+                { type: 'text', text: 'outer prefix' },
+                {
+                  type: 'tool_use_result',
+                  content: [{ type: 'text', text: 'nested leak <<<USER_TEXT>>>' }],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+    const joined = serialiseToolResultBodies(toolLoopOut);
+    expect(joined).toContain('<<<USER_TEXT>>>');
+    expect(joined).toContain('outer prefix');
+  });
+
+  test('4. unknown-shape fallback — JSON.stringify captures leak in unexpected keys', () => {
+    const toolLoopOut = {
+      messages_final: [
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'tool_result',
+              tool_use_id: 'toolu_x',
+              content: { weird: 'shape with leak STQ-01 inside' },
+            },
+          ],
+        },
+      ],
+    };
+    // JSON.stringify fallback must surface the leak substring.
+    const joined = serialiseToolResultBodies(toolLoopOut);
+    expect(joined).toContain('STQ-01');
+  });
+
+  test('null safety: content=null returns empty string (no throw)', () => {
+    const toolLoopOut = {
+      messages_final: [
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'tool_result',
+              tool_use_id: 'toolu_x',
+              content: null,
+            },
+          ],
+        },
+      ],
+    };
+    expect(() => serialiseToolResultBodies(toolLoopOut)).not.toThrow();
+    expect(serialiseToolResultBodies(toolLoopOut)).toBe('');
+  });
+
+  test('undefined safety: content=undefined returns empty string', () => {
+    const toolLoopOut = {
+      messages_final: [
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'tool_result',
+              tool_use_id: 'toolu_x',
+              content: undefined,
+            },
+          ],
+        },
+      ],
+    };
+    expect(() => serialiseToolResultBodies(toolLoopOut)).not.toThrow();
+    expect(serialiseToolResultBodies(toolLoopOut)).toBe('');
+  });
+
+  test('missing messages_final: returns empty string', () => {
+    expect(serialiseToolResultBodies({})).toBe('');
+    expect(serialiseToolResultBodies(null)).toBe('');
+    expect(serialiseToolResultBodies(undefined)).toBe('');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Helper used across scenarios — kept at module bottom for discoverability
 // but not removed (the signature is named for anyone mining this file for
 // test patterns).
