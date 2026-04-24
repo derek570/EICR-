@@ -6,6 +6,7 @@ import { useRouter } from 'next/navigation';
 import {
   Building2,
   ChevronRight,
+  Compass,
   FilePlus,
   LogOut,
   Search,
@@ -20,6 +21,8 @@ import { useOutboxState } from '@/lib/pwa/use-outbox-state';
 import { ApiError, type Job } from '@/lib/types';
 import { AnimatedCounter } from '@/components/dashboard/animated-counter';
 import { JobRow } from '@/components/dashboard/job-row';
+import { TourOverlay } from '@/components/tour/tour-overlay';
+import { useTour } from '@/hooks/use-tour';
 
 /**
  * iOS-parity dashboard:
@@ -126,12 +129,26 @@ export default function DashboardPage() {
   const stats = React.useMemo(() => {
     const list = jobs ?? [];
     // ACTIVE = anything not yet complete (includes failed so nothing is lost
-    // in UI accounting). DONE = completed. EXP = expired certificates — the
-    // backend doesn't yet expose `next_inspection_due`, so we keep this at 0
-    // until that field lands (matches iOS placeholder behaviour pre-Phase 7).
+    // in UI accounting). DONE = completed.
     const active = list.filter((j) => j.status !== 'done').length;
     const done = list.filter((j) => j.status === 'done').length;
-    const exp = 0;
+    // Phase 3 — EXP parity with iOS `DashboardView.swift:L384-L387`.
+    // The iOS app uses the same placeholder: done jobs whose
+    // `lastModified` is older than 4 years. We mirror that with the
+    // list-level `updated_at` (fallback to `created_at`) because the
+    // Job list endpoint does NOT carry `next_inspection_due` — that
+    // field lives only on `JobDetail.installation_details`. The
+    // authoritative fix is a backend change to surface
+    // `next_inspection_due` on the list response (flagged in the
+    // parity ledger as a backend gap). Until then this heuristic is
+    // byte-compatible with iOS's own fallback.
+    const FOUR_YEARS_MS = 4 * 365.25 * 24 * 60 * 60 * 1000;
+    const cutoff = Date.now() - FOUR_YEARS_MS;
+    const exp = list.filter((j) => {
+      if (j.status !== 'done') return false;
+      const t = Date.parse(j.updated_at ?? j.created_at);
+      return Number.isFinite(t) && t < cutoff;
+    }).length;
     return { active, done, exp };
   }, [jobs]);
 
@@ -157,10 +174,21 @@ export default function DashboardPage() {
     }
   }
 
+  // Phase 3 — drop a deleted job out of the list without a full refetch.
+  // The JobRow calls this once the backend DELETE lands.
+  const handleJobDeleted = React.useCallback((jobId: string) => {
+    setJobs((prev) => (prev ? prev.filter((j) => j.id !== jobId) : prev));
+  }, []);
+
   function signOut() {
     clearAuth();
     router.replace('/login');
   }
+
+  // Phase 3 — guided tour controller. Auto-starts on first visit, and
+  // the "Start tour" tile below hands off to `tour.start()` so the
+  // same state machine runs whether the tour is auto or manual.
+  const tour = useTour({ autoStartOnFirstRun: true });
 
   return (
     <main
@@ -168,10 +196,12 @@ export default function DashboardPage() {
       style={{ maxWidth: '1100px' }}
     >
       {/* ---------- Hero ---------- */}
-      <HeroCard active={stats.active} done={stats.done} exp={stats.exp} />
+      <div data-tour="hero">
+        <HeroCard active={stats.active} done={stats.done} exp={stats.exp} />
+      </div>
 
       {/* ---------- Start new certificate ---------- */}
-      <section className="grid gap-3 md:grid-cols-2">
+      <section className="grid gap-3 md:grid-cols-2" data-tour="start-eicr">
         <StartTile
           kind="EICR"
           label="Start EICR"
@@ -240,7 +270,12 @@ export default function DashboardPage() {
         ) : (
           <div className="flex flex-col gap-2">
             {recent.map((j) => (
-              <JobRow key={j.id} job={j} pendingSync={pendingJobIds.has(j.id)} />
+              <JobRow
+                key={j.id}
+                job={j}
+                pendingSync={pendingJobIds.has(j.id)}
+                onDeleted={handleJobDeleted}
+              />
             ))}
           </div>
         )}
@@ -258,7 +293,7 @@ export default function DashboardPage() {
        * iOS). Log Out stays but is rendered by its own destructive
        * variant so the colour tells the story.
        */}
-      <section className="flex flex-col gap-3 pt-2">
+      <section className="flex flex-col gap-3 pt-2" data-tour="setup-tools">
         <h2 className="text-[17px] font-semibold text-[var(--color-text-primary)]">
           Setup &amp; Tools
         </h2>
@@ -266,9 +301,31 @@ export default function DashboardPage() {
           <SetupTile icon={Building2} label="Company" href="/settings/company" />
           <SetupTile icon={UserCheck} label="Staff" href="/settings/staff" />
           <SetupTile icon={Settings} label="Settings" href="/settings" />
+          {/*
+           * Phase 3 — Tour tile. Two flavours:
+           *   - While the tour is live, we show "Stop tour" so the
+           *     user can always bail without hunting for the floating
+           *     overlay's X button.
+           *   - Otherwise, "Start tour" becomes the manual entry
+           *     point. The tile appears regardless of the `seen` flag
+           *     so returning users can re-run on demand (matches the
+           *     iOS "Tour" tile which is always visible).
+           * Defaults tile (iOS `DashboardView.swift:L593-L595`) is
+           * intentionally hidden — the Defaults page is Phase 6 work.
+           */}
+          <SetupTile
+            icon={Compass}
+            label={tour.active ? 'Stop tour' : 'Start tour'}
+            onClick={() => (tour.active ? tour.stop() : tour.start())}
+          />
           <SetupTile icon={LogOut} label="Log Out" variant="destructive" onClick={signOut} />
         </div>
       </section>
+
+      {/* Phase 3 — floating tour overlay. Renders nothing when the
+          tour isn't active, so mounting is free on every dashboard
+          visit. */}
+      <TourOverlay controller={tour} />
     </main>
   );
 }
