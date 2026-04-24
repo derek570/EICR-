@@ -2156,3 +2156,318 @@ describe('Group r5-3 — Plan 04-11 r5-#3: circuit op normaliser + oracle cover 
     expect(d.call_divergence).toBe(0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Group r6-1 — Plan 04-12 r6-#1 BLOCK: oracle mismatches fold into
+// per-session call_divergent_count via UNION semantics across all pairwise
+// comparisons.
+//
+// Codex r6 BLOCK #1: runFixture's triple-compare path at
+// scripts/stage6-golden-divergence.js:907-953 sets divergence.diverged
+// correctly (OR of all three pairwise rates) but leaves `call_total` /
+// `call_divergent_count` as the PRIMARY legacy-vs-tool counts only via
+// `...primary` spread. runDirectory at line 1071-1077 aggregates these
+// primary counts into `call_divergence_rate`. When legacy==tool but both
+// disagree with oracle, primary.call_divergent_count=0 — so a fixture
+// where the pipeline is "both wrong the same way" reports
+// call_divergence_rate=0 in the final digest despite diverged=true.
+// That's exactly the failure mode the oracle (r2-#3) exists to catch.
+// The gate was structurally undercounting oracle-only divergences.
+//
+// Fix (r6-#1 GREEN): union semantics — a write is divergent at the
+// per-session level if ANY pairwise comparison flags it. Set semantics
+// means a single write that diverges in multiple pairings counts once.
+// runFixture's Shape A now replaces the `...primary` spread with an
+// explicit union-backed `call_total` + `call_divergent_count`.
+//
+// Why UNION (not tool-vs-oracle primary):
+//  - Preserves back-compat with Shape B/C (no oracle → smaller union,
+//    still correct)
+//  - "Both wrong the same way" → oracle disagrees on the write → union
+//    picks it up
+//  - Tool drifts alone → legacy_vs_tool picks it up, oracle picks it up,
+//    same write counts once
+//  - Additive rather than contract-flipping, existing tests keep passing
+//
+// Six tests lock the union-aggregation contract:
+//   r6-1a. "Both wrong same way" via runFixture → call_divergent_count ≥ 1.
+//          (Pre-fix: 0. This is the BLOCK scenario.)
+//   r6-1b. Same fixture via runDirectory → call_divergence_rate > 0.
+//          (Pre-fix: 0/1 = 0 because primary counts only.)
+//   r6-1c. All three agree → call_divergent_count=0. Back-compat.
+//   r6-1d. Tool diverges from BOTH legacy + oracle on same write →
+//          call_divergent_count=1 (union, not 2). Same-write dedup.
+//   r6-1e. Two writes: one "both wrong same way", one full agreement →
+//          call_divergent_count=1, call_total=2.
+//   r6-1f. 6 canonical fixtures post-fix still report rate 0 on
+//          runDirectory (NO HIDDEN ORACLE DISAGREEMENT). Escalation
+//          threshold — any non-zero rate here = BLOCK evidence SC #6
+//          has been bogus.
+// ---------------------------------------------------------------------------
+
+describe('Group r6-1 — Plan 04-12 r6-#1 BLOCK: call-count union aggregation across pairwise comparisons', () => {
+  const tmp = fssync.mkdtempSync(
+    path.join(fssync.realpathSync.native ? fssync.realpathSync.native('/tmp') : '/tmp', 'goldenZ-'),
+  );
+
+  function writeFixture(name, body) {
+    const p = path.join(tmp, name);
+    fssync.writeFileSync(p, JSON.stringify(body, null, 2));
+    return p;
+  }
+
+  // Shared factory — pre-seeds circuit 3 so record_reading dispatcher
+  // validation accepts the write. Takes per-comparison values so callers
+  // can construct "both wrong same way" (legacy=tool, oracle differs),
+  // full agreement, tool-only-wrong, etc. Optional second write lets
+  // r6-1e construct multi-write fixtures.
+  function fixtureBody({ legacyValues, toolValues, oracleValues, transcript = 'Zs on circuit three is nought point three five.' }) {
+    const base = {
+      _doc: 'r6-1 union-aggregation test fixture',
+      pre_turn_state: {
+        snapshot: {
+          circuits: {
+            3: { circuit_ref: 3, circuit_designation: 'Lighting (downstairs)' },
+            4: { circuit_ref: 4, circuit_designation: 'Lighting (upstairs)' },
+          },
+          pending_readings: [],
+          observations: [],
+          validation_alerts: [],
+        },
+        askedQuestions: [],
+        extractedObservations: [],
+      },
+      transcript,
+    };
+
+    if (Array.isArray(legacyValues)) {
+      const readings = legacyValues.map(({ circuit, value }) => ({
+        circuit,
+        field: 'measured_zs_ohm',
+        value,
+      }));
+      base.sse_events_legacy = [
+        { type: 'message_start', message: { id: 'msg_legacy', role: 'assistant', content: [] } },
+        {
+          type: 'content_block_start',
+          index: 0,
+          content_block: { type: 'tool_use', id: 'toolu_legacy', name: 'record_extraction', input: {} },
+        },
+        {
+          type: 'content_block_delta',
+          index: 0,
+          delta: {
+            type: 'input_json_delta',
+            partial_json: JSON.stringify({
+              extracted_readings: readings,
+              field_clears: [],
+              circuit_updates: [],
+              observations: [],
+              validation_alerts: [],
+              questions_for_user: [],
+              confirmations: [],
+            }),
+          },
+        },
+        { type: 'content_block_stop', index: 0 },
+        { type: 'message_delta', delta: { stop_reason: 'tool_use' } },
+        { type: 'message_stop' },
+      ];
+    }
+
+    if (Array.isArray(toolValues)) {
+      // Emit one record_reading tool_use per write. Each gets its own
+      // content_block index so the dispatcher replays them independently.
+      const events = [
+        { type: 'message_start', message: { id: 'msg_tool', role: 'assistant', content: [] } },
+      ];
+      toolValues.forEach(({ circuit, value }, i) => {
+        events.push({
+          type: 'content_block_start',
+          index: i,
+          content_block: { type: 'tool_use', id: `toolu_tool_${i}`, name: 'record_reading', input: {} },
+        });
+        events.push({
+          type: 'content_block_delta',
+          index: i,
+          delta: {
+            type: 'input_json_delta',
+            partial_json: JSON.stringify({
+              field: 'measured_zs_ohm',
+              circuit,
+              value,
+              confidence: 0.95,
+              source_turn_id: 't1',
+            }),
+          },
+        });
+        events.push({ type: 'content_block_stop', index: i });
+      });
+      events.push({ type: 'message_delta', delta: { stop_reason: 'tool_use' } });
+      events.push({ type: 'message_stop' });
+      base.sse_events_tool_call = events;
+    }
+
+    if (Array.isArray(oracleValues)) {
+      const circuits = {};
+      for (const { circuit, value } of oracleValues) {
+        circuits[circuit] = { measured_zs_ohm: value };
+      }
+      base.expected_slot_writes = { circuits };
+    }
+
+    return base;
+  }
+
+  test('r6-1a — both wrong same way → runFixture reports call_divergent_count ≥ 1 (pre-fix: 0)', async () => {
+    // This is THE BLOCK scenario. Legacy + tool BOTH emit 0.71, oracle
+    // says correct is 0.35. Primary comparison (legacy-vs-tool) shows
+    // zero divergence. But tool-vs-oracle + legacy-vs-oracle both fire.
+    // Pre-fix: call_total=1, call_divergent_count=0 (primary only).
+    // Post-fix: call_total=1, call_divergent_count=1 (union fires).
+    const p = writeFixture(
+      'r6-1a-both-wrong-same-way.json',
+      fixtureBody({
+        legacyValues: [{ circuit: 3, value: '0.71' }],
+        toolValues: [{ circuit: 3, value: '0.71' }],
+        oracleValues: [{ circuit: 3, value: '0.35' }],
+      }),
+    );
+    const result = await runFixture(p);
+    expect(result).toBeDefined();
+    // Sanity: diverged IS true (r2-#3 worked) — oracle pairings fire.
+    expect(result.divergence.diverged).toBe(true);
+    expect(result.divergence.legacy_vs_tool_divergence).toBe(0);
+    expect(result.divergence.tool_vs_oracle_divergence).toBeGreaterThan(0);
+    expect(result.divergence.legacy_vs_oracle_divergence).toBeGreaterThan(0);
+    // THE BLOCK ASSERTION: call-level aggregate now reflects the
+    // oracle disagreement. Pre-fix this is 0.
+    expect(result.divergence.call_total).toBeGreaterThanOrEqual(1);
+    expect(result.divergence.call_divergent_count).toBeGreaterThanOrEqual(1);
+    expect(result.divergence.call_divergence).toBeGreaterThan(0);
+  });
+
+  test('r6-1b — both wrong same way → runDirectory reports call_divergence_rate > 0 (pre-fix: 0)', async () => {
+    // Same fixture as r6-1a in a runDirectory aggregation. Pre-fix the
+    // aggregator reads s.divergence.call_total=1, call_divergent_count=0
+    // → rate = 0/1 = 0. Post-fix: 1/1 = 1.
+    const dir = fssync.mkdtempSync(
+      path.join(fssync.realpathSync.native ? fssync.realpathSync.native('/tmp') : '/tmp', 'goldenZdir-'),
+    );
+    fssync.writeFileSync(
+      path.join(dir, 'both-wrong.json'),
+      JSON.stringify(
+        fixtureBody({
+          legacyValues: [{ circuit: 3, value: '0.71' }],
+          toolValues: [{ circuit: 3, value: '0.71' }],
+          oracleValues: [{ circuit: 3, value: '0.35' }],
+        }),
+        null,
+        2,
+      ),
+    );
+    const report = await runDirectory(dir, { threshold: 0.10 });
+    expect(report.total).toBe(1);
+    // THE BLOCK ASSERTION at aggregator level.
+    expect(report.call_divergence_rate).toBeGreaterThan(0);
+    // Session-level catches it (diverged OR of three pairings).
+    expect(report.session_divergence_rate).toBeGreaterThan(0);
+    // Breach: call + session both above threshold 0.10 → breached.
+    expect(report.breached).toBe(true);
+  });
+
+  test('r6-1c — all three agree → call_divergent_count=0, back-compat preserved', async () => {
+    const p = writeFixture(
+      'r6-1c-triple-agree.json',
+      fixtureBody({
+        legacyValues: [{ circuit: 3, value: '0.35' }],
+        toolValues: [{ circuit: 3, value: '0.35' }],
+        oracleValues: [{ circuit: 3, value: '0.35' }],
+      }),
+    );
+    const result = await runFixture(p);
+    expect(result.divergence.diverged).toBe(false);
+    expect(result.divergence.call_total).toBe(1);
+    expect(result.divergence.call_divergent_count).toBe(0);
+    expect(result.divergence.call_divergence).toBe(0);
+  });
+
+  test('r6-1d — tool diverges from BOTH legacy + oracle on same write → call_divergent_count=1 (union dedup)', async () => {
+    // Tool=0.99, legacy=0.35, oracle=0.35. Two pairings fire
+    // (legacy-vs-tool + tool-vs-oracle). Same write should count ONCE
+    // via union, not 2. If naïvely summing pairwise counts you'd get
+    // 2 — the union semantics is the point of this test.
+    const p = writeFixture(
+      'r6-1d-tool-wrong-two-pairings.json',
+      fixtureBody({
+        legacyValues: [{ circuit: 3, value: '0.35' }],
+        toolValues: [{ circuit: 3, value: '0.99' }],
+        oracleValues: [{ circuit: 3, value: '0.35' }],
+      }),
+    );
+    const result = await runFixture(p);
+    expect(result.divergence.diverged).toBe(true);
+    expect(result.divergence.legacy_vs_tool_divergence).toBeGreaterThan(0);
+    expect(result.divergence.tool_vs_oracle_divergence).toBeGreaterThan(0);
+    expect(result.divergence.legacy_vs_oracle_divergence).toBe(0);
+    expect(result.divergence.call_total).toBe(1);
+    // UNION not SUM — the single write counts once even though two
+    // pairings flag it.
+    expect(result.divergence.call_divergent_count).toBe(1);
+  });
+
+  test('r6-1e — two writes (one both-wrong-same-way, one all-agree) → call_divergent_count=1, call_total=2', async () => {
+    // circuit 3: legacy=0.71, tool=0.71, oracle=0.35  → both wrong same way
+    // circuit 4: legacy=0.50, tool=0.50, oracle=0.50  → all agree
+    // Pre-fix call_total=2, call_divergent_count=0 (primary says 0/2).
+    // Post-fix call_total=2, call_divergent_count=1 (union fires on one).
+    const p = writeFixture(
+      'r6-1e-mixed-writes.json',
+      fixtureBody({
+        legacyValues: [
+          { circuit: 3, value: '0.71' },
+          { circuit: 4, value: '0.50' },
+        ],
+        toolValues: [
+          { circuit: 3, value: '0.71' },
+          { circuit: 4, value: '0.50' },
+        ],
+        oracleValues: [
+          { circuit: 3, value: '0.35' },
+          { circuit: 4, value: '0.50' },
+        ],
+      }),
+    );
+    const result = await runFixture(p);
+    expect(result.divergence.diverged).toBe(true);
+    expect(result.divergence.call_total).toBe(2);
+    expect(result.divergence.call_divergent_count).toBe(1);
+  });
+
+  test('r6-1f — 6 canonical fixtures still report 0 after union fix (ESCALATION THRESHOLD — any non-zero = BLOCK evidence)', async () => {
+    // THE GATE — if this trips, SC #6 has been claiming 0% divergence
+    // on fixtures that secretly had oracle-vs-pipeline disagreement
+    // all along. That would mean the r5 (and earlier) 0% baseline
+    // was bogus because the aggregator was undercounting. Plan
+    // 04-12 explicitly escalates to BLOCK on any non-zero rate here.
+    const report = await runDirectory(FIXTURE_DIR, {
+      threshold: 0.10,
+      extraFixtures: [F21934D4_PATH],
+    });
+    expect(report.total).toBe(6);
+    expect(report.call_divergence_rate).toBe(0);
+    expect(report.session_divergence_rate).toBe(0);
+    expect(report.breached).toBe(false);
+    // Cross-check: every session's per-pairwise rate is 0 as well —
+    // if any one's oracle disagrees, the union aggregator above would
+    // catch it.
+    for (const s of report.sessions) {
+      if (s.divergence.tool_vs_oracle_divergence != null) {
+        expect(s.divergence.tool_vs_oracle_divergence).toBe(0);
+      }
+      if (s.divergence.legacy_vs_oracle_divergence != null) {
+        expect(s.divergence.legacy_vs_oracle_divergence).toBe(0);
+      }
+    }
+  });
+});
