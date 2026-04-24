@@ -489,6 +489,96 @@ function serialisePerTurnWrites(pw) {
  * Null / undefined short-circuit to '' so callers never get a
  * throw on odd fixtures.
  */
+const UNSUPPORTED_SHAPE_PLACEHOLDER = '[unsupported-shape]';
+
+/**
+ * Plan 04-33 r26-#1 — detect object shapes that cannot be scanned
+ * safely by Object.keys-based traversal + JSON.stringify
+ * round-trip. Two attack / bug classes:
+ *
+ *   (a) Non-enumerable own-properties. `Object.defineProperty` with
+ *       `enumerable: false` hides content from `Object.keys` AND
+ *       from `JSON.stringify`. The walker's fallback would serialise
+ *       the object as `"{}"` — the leak never surfaces.
+ *   (b) Custom `toJSON()`. The JSON round-trip invokes `toJSON`,
+ *       which can return scrubbed content, throw, or return a
+ *       completely different shape than the original. Any of those
+ *       silently erases hidden leaks (or hides their presence).
+ *
+ * `Reflect.ownKeys(x)` returns every own-key (enumerable or not,
+ * string or symbol). A mismatch between its length and
+ * `Object.keys(x)` length indicates non-enumerable / symbol keys
+ * present. Either is unusual for a legitimate tool_result body.
+ *
+ * `typeof x.toJSON === 'function'` flags objects whose JSON
+ * normalisation would be mediated by custom code.
+ *
+ * @param {object} block  Pre-filtered object (non-null, not array,
+ *                        not primitive).
+ * @returns {boolean}  True if the shape is suspicious and the
+ *                     walker should substitute the fail-closed
+ *                     placeholder.
+ */
+function hasHiddenShape(block) {
+  let allOwnKeys;
+  try {
+    allOwnKeys = Reflect.ownKeys(block);
+  } catch {
+    // Reflect.ownKeys can throw on Proxy handlers that return
+    // non-array / invalid data from the `ownKeys` trap. Fail-
+    // closed.
+    return true;
+  }
+  const enumerableKeys = Object.keys(block);
+  if (allOwnKeys.length !== enumerableKeys.length) return true;
+
+  // Custom toJSON - if present, the JSON round-trip is mediated
+  // by user code we cannot trust. Fail-closed.
+  if (typeof block.toJSON === 'function') return true;
+
+  return false;
+}
+
+/**
+ * Walk a tool_result `content` block extracting every string-ish
+ * value into a single joined blob so the caller's substring
+ * assertion covers it all.
+ *
+ * Plan 04-30 r23-#3 — shape-aware walker (string / array / nested-
+ *   object / fallback).
+ * Plan 04-31 r24-#3 — WeakSet visited-guard prevents infinite
+ *   recursion on cycles.
+ * Plan 04-32 r25-#1 — walker iterates EVERY enumerable own-property
+ *   rather than hardcoded `.text` + `.content`; sibling keys reached
+ *   naturally.
+ * Plan 04-33 r26-#1 — pre-flight `hasHiddenShape` check + JSON
+ *   round-trip normalisation + fail-closed substitution for shapes
+ *   the walker cannot scan safely.
+ *
+ * WHY normalise via JSON round-trip: `JSON.parse(JSON.stringify(x))`
+ *   (a) collapses nested non-enumerable keys into the enumerable-
+ *       key projection that downstream consumers actually see
+ *   (b) invokes toJSON exactly once (rather than the walker
+ *       independently of the round-trip)
+ *   (c) drops symbol keys (which are never legitimate
+ *       tool_result content in the Anthropic SDK).
+ *
+ * For plain enumerable-only objects the round-trip is structurally
+ * a no-op — existing r25-#1 sibling-key coverage is preserved.
+ *
+ * WHY fail-closed on hidden shapes: the caller's contract is
+ *   "leak substring NOT in output". When the walker cannot scan
+ *   safely (non-enumerable own-props, custom toJSON, Proxy traps
+ *   that throw), substituting `[unsupported-shape]` means the
+ *   substring assertion FAILS LOUDLY — the attacker cannot hide
+ *   a leak inside a shape the scanner doesn't understand. No
+ *   production tool_result has any reason to carry non-enumerable
+ *   own-props or a scrubbing toJSON — encountering one is a bug
+ *   or attack, and fail-closed is the correct posture for both.
+ *
+ * Null / undefined short-circuit to '' so callers never get a
+ * throw on odd fixtures.
+ */
 function extractTextFromBlock(block, visited = new WeakSet()) {
   if (block == null) return '';
   if (typeof block === 'string') return block;
@@ -509,39 +599,57 @@ function extractTextFromBlock(block, visited = new WeakSet()) {
       .join('\n');
   }
 
-  // Plan 04-32 r25-#1 — walk EVERY enumerable own-property, not
-  // just `.text` and `.content`. The r24-#3 implementation
-  // hardcoded those two property names, so a structured
-  // tool_result body with the leak payload in a sibling key
-  // (`.message`, `.value`, `.raw`, `.description`, nested) would
-  // only surface the leak IF `.text` and `.content` were both
-  // empty (triggering the JSON.stringify fallback). When either
-  // was populated with benign content, parts.length > 0 and the
-  // fallback was skipped — the sibling leak was silently
-  // dropped.
-  //
-  // The rewrite: iterate Object.keys(block). Each value is
-  // type-dispatched via the same recursive entry point (string →
-  // collect; number/boolean → stringify; array → recurse;
-  // object → recurse with shared WeakSet). .text and .content
-  // are still reached — they are enumerable own-properties by
-  // construction — but no longer special-cased.
+  // Plan 04-33 r26-#1 — fail-closed for suspicious shapes BEFORE
+  // the round-trip normalisation itself erases evidence. The
+  // round-trip silently drops non-enumerable keys and invokes
+  // toJSON; we MUST detect those shapes on the ORIGINAL object,
+  // otherwise the normalisation hides what we're trying to
+  // detect.
+  if (hasHiddenShape(block)) {
+    return UNSUPPORTED_SHAPE_PLACEHOLDER;
+  }
+
+  // Normalise via JSON round-trip. For plain enumerable-only
+  // objects this is structurally a no-op. The catch handles
+  // cycles (the WeakSet above prevents infinite walker recursion
+  // but JSON.stringify itself has its own cycle detector that
+  // throws TypeError), toJSON failures, etc. — fail-closed.
+  let normalised;
+  try {
+    normalised = JSON.parse(JSON.stringify(block));
+  } catch {
+    return UNSUPPORTED_SHAPE_PLACEHOLDER;
+  }
+
+  // JSON.parse of a root-level toJSON that returns a primitive
+  // gives us a primitive back. Handle via the same entry point.
+  if (normalised == null || typeof normalised !== 'object') {
+    return extractTextFromBlock(normalised, visited);
+  }
+
+  // Plan 04-32 r25-#1 — walk EVERY enumerable own-property on the
+  // normalised shape. Sibling keys (`.message`, `.value`, `.raw`,
+  // `.description`, nested) are reached alongside `.text` and
+  // `.content`; the generic loop catches them all.
+  if (Array.isArray(normalised)) {
+    return normalised
+      .map((item) => extractTextFromBlock(item, visited))
+      .filter(Boolean)
+      .join('\n');
+  }
   const parts = [];
-  for (const key of Object.keys(block)) {
-    const extracted = extractTextFromBlock(block[key], visited);
+  for (const key of Object.keys(normalised)) {
+    const extracted = extractTextFromBlock(normalised[key], visited);
     if (extracted) parts.push(extracted);
   }
 
   if (parts.length > 0) return parts.join('\n');
 
-  // Unserialisable / empty / non-enumerable-only shape —
-  // JSON.stringify fallback preserved as defence-in-depth. The
-  // catch keeps the helper non-throw on `toJSON()` exceptions or
-  // any residual cycle the WeakSet missed (none expected:
-  // WeakSet covers every visited object, but the catch keeps the
-  // contract of never escaping an exception).
+  // Empty normalised shape with no string contribution —
+  // JSON.stringify fallback preserved for primitive / edge shapes
+  // (Date objects, objects with only numeric-valued keys, etc.).
   try {
-    return JSON.stringify(block);
+    return JSON.stringify(normalised);
   } catch {
     return '';
   }
