@@ -852,6 +852,68 @@ export const api = {
     return res.blob();
   },
 
+  // ----------------------------------------------------------------
+  // Auth — change password (Phase 6)
+  // ----------------------------------------------------------------
+
+  /**
+   * Change the signed-in user's password.
+   * `PUT /api/auth/change-password` returns `{success, message}` on 200,
+   * 401 with `{error: "Current password is incorrect"}` when the current
+   * password is wrong, 400 on a too-short new password. We surface those
+   * errors through `ApiError.message` unchanged (see `parseErrorBody`
+   * above) so the form can render them inline without any mapping.
+   *
+   * Intentionally NOT strict-parsed: the endpoint doesn't round-trip
+   * sensitive state, so silent shape drift (e.g. the backend dropping
+   * `message`) is preferable to a hard-throw that blocks a successful
+   * password change.
+   */
+  changePassword(currentPassword: string, newPassword: string): Promise<{ success: boolean }> {
+    return request<{ success: boolean }>('/api/auth/change-password', {
+      method: 'PUT',
+      body: JSON.stringify({ currentPassword, newPassword }),
+    });
+  },
+
+  // ----------------------------------------------------------------
+  // Settings — user defaults (Phase 6)
+  // ----------------------------------------------------------------
+
+  /**
+   * Fetch user-scoped circuit-field defaults.
+   * `GET /api/settings/:userId/defaults` returns `{}` when nothing has
+   * been saved yet (backend returns the empty object rather than 404 so
+   * the page can render without a special-case branch). Values are the
+   * raw JSON the PUT wrote — no server-side merge with the schema, so
+   * the caller is responsible for combining with
+   * `packages/shared-utils/src/circuit-defaults-schema.ts` defaults if
+   * it wants the full effective map.
+   */
+  userDefaults(userId: string): Promise<Record<string, string>> {
+    return request<Record<string, string>>(`/api/settings/${encodeURIComponent(userId)}/defaults`);
+  },
+
+  /**
+   * Replace user-scoped circuit-field defaults. Full-blob PUT (no
+   * server-side merge). Mirrors `updateInspectorProfiles` — the caller
+   * owns the merge, we just persist. Empty values are preserved so the
+   * inspector can deliberately clear a default by blanking the input.
+   */
+  saveUserDefaults(
+    userId: string,
+    defaults: Record<string, string>
+  ): Promise<{ success: boolean }> {
+    return request(
+      `/api/settings/${encodeURIComponent(userId)}/defaults`,
+      {
+        method: 'PUT',
+        body: JSON.stringify(defaults),
+      },
+      UpdateSettingsResponseSchema
+    );
+  },
+
   /**
    * Look up a UK postcode via the backend postcodes.io proxy.
    * Returns `null` on 404 (postcode not found) so the Installation

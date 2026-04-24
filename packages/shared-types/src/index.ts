@@ -10,5 +10,8 @@ export {
   JobSchema,
   JobDetailSchema,
   JobListResponseSchema,
+  ChangePasswordRequestSchema,
+  InviteEmployeeRequestSchema,
+  UserDefaultsSchema,
   validateResponse,
 } from './schemas';
