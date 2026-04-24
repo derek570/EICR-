@@ -16,6 +16,7 @@ import { useJobContext } from '@/lib/job-context';
 import { FloatingLabelInput } from '@/components/ui/floating-label-input';
 import { MultilineField } from '@/components/ui/multiline-field';
 import { NumericStepper } from '@/components/ui/numeric-stepper';
+import { HeroHeader } from '@/components/ui/hero-header';
 import { SectionCard } from '@/components/ui/section-card';
 import { SegmentedControl } from '@/components/ui/segmented-control';
 import { SelectChips } from '@/components/ui/select-chips';
@@ -204,24 +205,17 @@ export default function InstallationPage() {
 
   return (
     <div
-      className="mx-auto flex w-full flex-col gap-5 px-4 py-6 md:px-8 md:py-8"
+      className="cm-stagger-children mx-auto flex w-full flex-col gap-5 px-4 py-6 md:px-8 md:py-8"
       style={{ maxWidth: '960px' }}
     >
       {/* Hero banner — iOS parity ("Installation Details" / gradient). */}
-      <div
-        className="relative flex items-center justify-between overflow-hidden rounded-[var(--radius-xl)] px-5 py-5 md:px-6 md:py-6"
-        style={{
-          background:
-            'linear-gradient(135deg, var(--color-brand-blue) 0%, var(--color-brand-green) 100%)',
-        }}
-      >
-        <div className="flex flex-col gap-1">
-          <p className="text-[11px] uppercase tracking-[0.14em] text-white/75">{certificateType}</p>
-          <h2 className="text-[22px] font-bold text-white md:text-[26px]">Installation Details</h2>
-          <p className="text-[13px] text-white/85">Client, premises &amp; dates</p>
-        </div>
-        <Building2 className="h-10 w-10 text-white/30" strokeWidth={2} aria-hidden />
-      </div>
+      <HeroHeader
+        eyebrow={certificateType}
+        title="Installation Details"
+        subtitle="Client, premises & dates"
+        accent="client"
+        icon={<Building2 className="h-10 w-10" strokeWidth={2} aria-hidden />}
+      />
 
       <SectionCard accent="blue" icon={User} title="Client details">
         <FloatingLabelInput

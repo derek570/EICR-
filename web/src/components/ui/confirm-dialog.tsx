@@ -3,6 +3,7 @@
 import * as React from 'react';
 import { Dialog, DialogContent, DialogTitle, DialogDescription } from '@/components/ui/dialog';
 import { Button, type ButtonProps } from '@/components/ui/button';
+import { haptic } from '@/lib/haptic';
 
 /**
  * Controlled confirm-dialog primitive (Wave 4 D5).
@@ -106,6 +107,10 @@ export function ConfirmDialog({
   const busyText = confirmLabelBusy ?? `${confirmLabel}…`;
 
   const handleConfirm = React.useCallback(() => {
+    // Phase 9: fire a lightweight haptic pulse when the inspector
+    // commits a destructive action. Best-effort — platforms without
+    // the Vibration API silently no-op. See `web/src/lib/haptic.ts`.
+    haptic(resolvedVariant === 'danger' ? 'medium' : 'light');
     if (busy !== undefined) {
       void onConfirm();
       return;
@@ -117,7 +122,7 @@ export function ConfirmDialog({
         setInternalBusy(false);
       });
     }
-  }, [busy, onConfirm]);
+  }, [busy, onConfirm, resolvedVariant]);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>

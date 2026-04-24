@@ -4,6 +4,7 @@ import * as React from 'react';
 import { Boxes, Cable, CircuitBoard, MapPin, ShieldCheck, Zap } from 'lucide-react';
 import { useJobContext } from '@/lib/job-context';
 import { FloatingLabelInput } from '@/components/ui/floating-label-input';
+import { HeroHeader } from '@/components/ui/hero-header';
 import { SectionCard } from '@/components/ui/section-card';
 import { SelectChips } from '@/components/ui/select-chips';
 import { SegmentedControl } from '@/components/ui/segmented-control';
@@ -208,7 +209,7 @@ export default function BoardPage() {
 
   return (
     <div
-      className="mx-auto flex w-full flex-col gap-5 px-4 py-6 md:px-8 md:py-8"
+      className="cm-stagger-children mx-auto flex w-full flex-col gap-5 px-4 py-6 md:px-8 md:py-8"
       style={{ maxWidth: '960px' }}
     >
       <HeroBanner certificateType={certificateType} count={boards.length} />
@@ -524,21 +525,12 @@ function HeroBanner({
   count: number;
 }) {
   return (
-    <div
-      className="relative flex items-center justify-between overflow-hidden rounded-[var(--radius-xl)] px-5 py-5 md:px-6 md:py-6"
-      style={{
-        background:
-          'linear-gradient(135deg, var(--color-brand-blue) 0%, var(--color-brand-green) 100%)',
-      }}
-    >
-      <div className="flex flex-col gap-1">
-        <p className="text-[11px] uppercase tracking-[0.14em] text-white/75">{certificateType}</p>
-        <h2 className="text-[22px] font-bold text-white md:text-[26px]">Distribution Boards</h2>
-        <p className="text-[13px] text-white/85">
-          {count === 1 ? '1 board' : `${count} boards`} · make, model &amp; protection
-        </p>
-      </div>
-      <Boxes className="h-10 w-10 text-white/30" strokeWidth={2} aria-hidden />
-    </div>
+    <HeroHeader
+      eyebrow={certificateType}
+      title="Distribution Boards"
+      subtitle={`${count === 1 ? '1 board' : `${count} boards`} · make, model & protection`}
+      accent="board"
+      icon={<Boxes className="h-10 w-10" strokeWidth={2} aria-hidden />}
+    />
   );
 }

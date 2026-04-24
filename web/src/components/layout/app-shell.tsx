@@ -9,7 +9,7 @@ import { clearAuth, getUser } from '@/lib/auth';
 import { Button } from '@/components/ui/button';
 import { IconButton } from '@/components/ui/icon-button';
 import { InstallButton } from '@/components/pwa/install-button';
-import { OfflineIndicator } from '@/components/pwa/offline-indicator';
+import { OfflineBanner, OfflineIndicator } from '@/components/pwa/offline-indicator';
 import { AlertsBell } from '@/components/dashboard/alerts-bell';
 import { useOutboxReplay } from '@/lib/pwa/outbox-replay';
 
@@ -118,6 +118,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           </Button>
         </div>
       </header>
+      {/*
+       * Phase 9 — mobile full-width offline banner. Hidden on `md+`
+       * viewports (the header pill covers that case). Placed just
+       * below the sticky header so it matches the iOS
+       * `OfflineBanner` slide-in shape without overlapping content.
+       */}
+      <OfflineBanner />
       <div className="flex-1">{children}</div>
     </div>
   );
