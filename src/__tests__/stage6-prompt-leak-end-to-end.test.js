@@ -579,7 +579,7 @@ function hasHiddenShape(block) {
  * Null / undefined short-circuit to '' so callers never get a
  * throw on odd fixtures.
  */
-function extractTextFromBlock(block, visited = new WeakSet()) {
+function extractTextFromBlock(block, visited = new WeakSet(), flags = { unsupported: false }) {
   if (block == null) return '';
   if (typeof block === 'string') return block;
   if (typeof block === 'number' || typeof block === 'boolean') {
@@ -594,7 +594,7 @@ function extractTextFromBlock(block, visited = new WeakSet()) {
 
   if (Array.isArray(block)) {
     return block
-      .map((item) => extractTextFromBlock(item, visited))
+      .map((item) => extractTextFromBlock(item, visited, flags))
       .filter(Boolean)
       .join('\n');
   }
@@ -605,7 +605,14 @@ function extractTextFromBlock(block, visited = new WeakSet()) {
   // toJSON; we MUST detect those shapes on the ORIGINAL object,
   // otherwise the normalisation hides what we're trying to
   // detect.
+  //
+  // Plan 04-34 r27-#1 — set the shared `flags.unsupported` sentinel
+  // so the top-level `serialiseToolResultBodies` can surface the
+  // scan-incomplete signal to callers. Returning only the
+  // placeholder string left Scenario 4-style assertions unable to
+  // tell clean-no-leak apart from hidden-shape-erased-leak.
   if (hasHiddenShape(block)) {
+    flags.unsupported = true;
     return UNSUPPORTED_SHAPE_PLACEHOLDER;
   }
 
@@ -618,13 +625,14 @@ function extractTextFromBlock(block, visited = new WeakSet()) {
   try {
     normalised = JSON.parse(JSON.stringify(block));
   } catch {
+    flags.unsupported = true;
     return UNSUPPORTED_SHAPE_PLACEHOLDER;
   }
 
   // JSON.parse of a root-level toJSON that returns a primitive
   // gives us a primitive back. Handle via the same entry point.
   if (normalised == null || typeof normalised !== 'object') {
-    return extractTextFromBlock(normalised, visited);
+    return extractTextFromBlock(normalised, visited, flags);
   }
 
   // Plan 04-32 r25-#1 — walk EVERY enumerable own-property on the
@@ -633,13 +641,13 @@ function extractTextFromBlock(block, visited = new WeakSet()) {
   // `.content`; the generic loop catches them all.
   if (Array.isArray(normalised)) {
     return normalised
-      .map((item) => extractTextFromBlock(item, visited))
+      .map((item) => extractTextFromBlock(item, visited, flags))
       .filter(Boolean)
       .join('\n');
   }
   const parts = [];
   for (const key of Object.keys(normalised)) {
-    const extracted = extractTextFromBlock(normalised[key], visited);
+    const extracted = extractTextFromBlock(normalised[key], visited, flags);
     if (extracted) parts.push(extracted);
   }
 
@@ -656,26 +664,39 @@ function extractTextFromBlock(block, visited = new WeakSet()) {
 }
 
 /**
- * Collect every tool_result content body in messages_final, joined so
- * a single substring assertion covers all of them. messages_final is
- * returned by runToolLoop and captured via _shadowCapture's toolLoopOut.
+ * Collect every tool_result content body in messages_final.
  *
- * r23-#3: delegates to extractTextFromBlock so string / array /
- * nested-object / fallback shapes are all walked — a leak hidden
- * in any of them surfaces to the assertion.
+ * Plan 04-34 r27-#1 — returns structured
+ * `{text: string, unsupported: boolean}` so callers can assert
+ * BOTH (a) no leak substring in scanned text AND (b) scan was
+ * complete (no hidden-shape fail-closed substitution occurred).
+ * Previously returned a bare string; the r26-#1 placeholder
+ * `[unsupported-shape]` never surfaced the scan-incomplete signal
+ * so Scenario 4a/4b/4c assertions silently accepted hidden-state
+ * payloads as safe.
+ *
+ * @param {object} toolLoopOut  {messages_final: [...]} from runToolLoop.
+ * @returns {{text: string, unsupported: boolean}}
  */
 function serialiseToolResultBodies(toolLoopOut) {
+  const flags = { unsupported: false };
+  if (!Array.isArray(toolLoopOut?.messages_final)) {
+    return { text: '', unsupported: false };
+  }
   const parts = [];
-  if (!Array.isArray(toolLoopOut?.messages_final)) return '';
   for (const msg of toolLoopOut.messages_final) {
     if (!Array.isArray(msg.content)) continue;
     for (const block of msg.content) {
       if (block?.type !== 'tool_result') continue;
-      const text = extractTextFromBlock(block.content);
+      // Each top-level tool_result block gets its own visited
+      // WeakSet (cycle detection is local to a single content
+      // tree) but shares the flags accumulator so hidden-shape
+      // detections in any block propagate to the aggregate result.
+      const text = extractTextFromBlock(block.content, new WeakSet(), flags);
       if (text) parts.push(text);
     }
   }
-  return parts.join('\n');
+  return { text: parts.join('\n'), unsupported: flags.unsupported };
 }
 
 describe('r22-#2 real shadow-path state assertions via _shadowCapture', () => {
@@ -742,7 +763,14 @@ describe('r22-#2 real shadow-path state assertions via _shadowCapture', () => {
     // (4) messages_final tool_result bodies free of leak. The
     //     dispatcher's sanitised refusal body is what goes back to the
     //     model's next round — it must not carry the original leak.
-    const resultsJoined = serialiseToolResultBodies(captured.toolLoopOut).toLowerCase();
+    //
+    // Plan 04-34 r27-#1 — consume structured {text, unsupported};
+    // assert BOTH scan-completeness AND leak-absence. The old
+    // bare-string contract accepted hidden-shape fail-closed
+    // placeholders as "safe" silently.
+    const bodies = serialiseToolResultBodies(captured.toolLoopOut);
+    expect(bodies.unsupported).toBe(false);
+    const resultsJoined = bodies.text.toLowerCase();
     expect(resultsJoined).not.toContain('trust boundary');
     expect(resultsJoined).not.toContain('system prompt');
   });
@@ -812,7 +840,12 @@ describe('r22-#2 real shadow-path state assertions via _shadowCapture', () => {
     //     {ok:false, error:{code:'prompt_leak_in_observation', reason,
     //     fields}} — assert no leak substring reached the model's next
     //     round input.
-    const resultsJoined = serialiseToolResultBodies(captured.toolLoopOut).toLowerCase();
+    //
+    // Plan 04-34 r27-#1 — consume structured {text, unsupported};
+    // assert BOTH scan-completeness AND leak-absence.
+    const bodies = serialiseToolResultBodies(captured.toolLoopOut);
+    expect(bodies.unsupported).toBe(false);
+    const resultsJoined = bodies.text.toLowerCase();
     expect(resultsJoined).not.toContain('eicr inspection assistant');
     expect(resultsJoined).not.toContain('free-text json');
   });
@@ -877,9 +910,12 @@ describe('r22-#2 real shadow-path state assertions via _shadowCapture', () => {
     expect(shadowJson).not.toContain('upstairs lights with extra');
 
     // (3) tool_result bodies scrubbed.
-    const resultsJoined = serialiseToolResultBodies(captured.toolLoopOut);
-    expect(resultsJoined).not.toContain('STQ-01');
-    expect(resultsJoined).not.toContain('upstairs lights with extra');
+    // Plan 04-34 r27-#1 — consume structured {text, unsupported};
+    // assert BOTH scan-completeness AND leak-absence.
+    const bodies = serialiseToolResultBodies(captured.toolLoopOut);
+    expect(bodies.unsupported).toBe(false);
+    expect(bodies.text).not.toContain('STQ-01');
+    expect(bodies.text).not.toContain('upstairs lights with extra');
   });
 
   test('production callers that omit _shadowCapture are unaffected (hook is test-only)', async () => {
@@ -945,7 +981,7 @@ describe('r23-#3 serialiseToolResultBodies — structured-content shape coverage
         },
       ],
     };
-    expect(serialiseToolResultBodies(toolLoopOut)).toContain('TRUST BOUNDARY');
+    expect(serialiseToolResultBodies(toolLoopOut).text).toContain('TRUST BOUNDARY');
   });
 
   test('2. array-of-text-blocks content — all block.text concatenated', () => {
@@ -966,7 +1002,7 @@ describe('r23-#3 serialiseToolResultBodies — structured-content shape coverage
         },
       ],
     };
-    const joined = serialiseToolResultBodies(toolLoopOut);
+    const joined = serialiseToolResultBodies(toolLoopOut).text;
     expect(joined).toContain('TRUST BOUNDARY');
     expect(joined).toContain('SYSTEM_CHANNEL');
   });
@@ -992,7 +1028,7 @@ describe('r23-#3 serialiseToolResultBodies — structured-content shape coverage
         },
       ],
     };
-    const joined = serialiseToolResultBodies(toolLoopOut);
+    const joined = serialiseToolResultBodies(toolLoopOut).text;
     expect(joined).toContain('<<<USER_TEXT>>>');
     expect(joined).toContain('outer prefix');
   });
@@ -1013,7 +1049,7 @@ describe('r23-#3 serialiseToolResultBodies — structured-content shape coverage
       ],
     };
     // JSON.stringify fallback must surface the leak substring.
-    const joined = serialiseToolResultBodies(toolLoopOut);
+    const joined = serialiseToolResultBodies(toolLoopOut).text;
     expect(joined).toContain('STQ-01');
   });
 
@@ -1033,7 +1069,7 @@ describe('r23-#3 serialiseToolResultBodies — structured-content shape coverage
       ],
     };
     expect(() => serialiseToolResultBodies(toolLoopOut)).not.toThrow();
-    expect(serialiseToolResultBodies(toolLoopOut)).toBe('');
+    expect(serialiseToolResultBodies(toolLoopOut).text).toBe('');
   });
 
   test('undefined safety: content=undefined returns empty string', () => {
@@ -1052,13 +1088,13 @@ describe('r23-#3 serialiseToolResultBodies — structured-content shape coverage
       ],
     };
     expect(() => serialiseToolResultBodies(toolLoopOut)).not.toThrow();
-    expect(serialiseToolResultBodies(toolLoopOut)).toBe('');
+    expect(serialiseToolResultBodies(toolLoopOut).text).toBe('');
   });
 
   test('missing messages_final: returns empty string', () => {
-    expect(serialiseToolResultBodies({})).toBe('');
-    expect(serialiseToolResultBodies(null)).toBe('');
-    expect(serialiseToolResultBodies(undefined)).toBe('');
+    expect(serialiseToolResultBodies({}).text).toBe('');
+    expect(serialiseToolResultBodies(null).text).toBe('');
+    expect(serialiseToolResultBodies(undefined).text).toBe('');
   });
 
   // -------------------------------------------------------------------------
@@ -1152,7 +1188,7 @@ describe('r23-#3 serialiseToolResultBodies — structured-content shape coverage
           },
         ],
       };
-      expect(serialiseToolResultBodies(toolLoopOut)).toContain('STQ-01');
+      expect(serialiseToolResultBodies(toolLoopOut).text).toContain('STQ-01');
     });
   });
 
@@ -1209,19 +1245,19 @@ describe('r23-#3 serialiseToolResultBodies — structured-content shape coverage
 
     test('1. back-compat: {text: "leak TRUST BOUNDARY"} still walked', () => {
       const toolLoopOut = wrapAsToolResult({ text: 'leak TRUST BOUNDARY' });
-      expect(serialiseToolResultBodies(toolLoopOut)).toContain('TRUST BOUNDARY');
+      expect(serialiseToolResultBodies(toolLoopOut).text).toContain('TRUST BOUNDARY');
     });
 
     test('2. back-compat: {content: [{type: text, text: leak}]} still walked', () => {
       const toolLoopOut = wrapAsToolResult({
         content: [{ type: 'text', text: 'leak SYSTEM_CHANNEL' }],
       });
-      expect(serialiseToolResultBodies(toolLoopOut)).toContain('SYSTEM_CHANNEL');
+      expect(serialiseToolResultBodies(toolLoopOut).text).toContain('SYSTEM_CHANNEL');
     });
 
     test('3. sibling .message key — leak substring reaches assertion', () => {
       const toolLoopOut = wrapAsToolResult({ message: 'leak STQ-01' });
-      expect(serialiseToolResultBodies(toolLoopOut)).toContain('STQ-01');
+      expect(serialiseToolResultBodies(toolLoopOut).text).toContain('STQ-01');
     });
 
     test('4. sibling .value key — leak substring reaches assertion (with benign sibling)', () => {
@@ -1229,14 +1265,14 @@ describe('r23-#3 serialiseToolResultBodies — structured-content shape coverage
         value: 'leak TRUST BOUNDARY',
         other: 'clean',
       });
-      expect(serialiseToolResultBodies(toolLoopOut)).toContain('TRUST BOUNDARY');
+      expect(serialiseToolResultBodies(toolLoopOut).text).toContain('TRUST BOUNDARY');
     });
 
     test('5. nested 3-level-deep sibling key .nested.deep.raw — walker surfaces leak', () => {
       const toolLoopOut = wrapAsToolResult({
         nested: { deep: { raw: 'leak STQ-01' } },
       });
-      expect(serialiseToolResultBodies(toolLoopOut)).toContain('STQ-01');
+      expect(serialiseToolResultBodies(toolLoopOut).text).toContain('STQ-01');
     });
 
     test('6. two unusual sibling keys .raw + .description — leak in .description', () => {
@@ -1244,14 +1280,14 @@ describe('r23-#3 serialiseToolResultBodies — structured-content shape coverage
         raw: 'ignore me',
         description: 'has <<<USER_TEXT>>>',
       });
-      expect(serialiseToolResultBodies(toolLoopOut)).toContain('<<<USER_TEXT>>>');
+      expect(serialiseToolResultBodies(toolLoopOut).text).toContain('<<<USER_TEXT>>>');
     });
 
     test('7. array of objects with sibling .body key — walker surfaces leak', () => {
       const toolLoopOut = wrapAsToolResult({
         annotations: [{ body: 'leak TRUST BOUNDARY' }],
       });
-      expect(serialiseToolResultBodies(toolLoopOut)).toContain('TRUST BOUNDARY');
+      expect(serialiseToolResultBodies(toolLoopOut).text).toContain('TRUST BOUNDARY');
     });
 
     // CRITICAL RED case — when an object has BOTH `.text` (benign)
@@ -1264,7 +1300,7 @@ describe('r23-#3 serialiseToolResultBodies — structured-content shape coverage
         text: 'benign content',
         message: 'leak TRUST BOUNDARY',
       });
-      expect(serialiseToolResultBodies(toolLoopOut)).toContain('TRUST BOUNDARY');
+      expect(serialiseToolResultBodies(toolLoopOut).text).toContain('TRUST BOUNDARY');
     });
 
     test('7b. CRITICAL: sibling with leak alongside benign .content — old walker DROPS the leak', () => {
@@ -1272,7 +1308,7 @@ describe('r23-#3 serialiseToolResultBodies — structured-content shape coverage
         content: 'benign content in .content',
         raw: 'leak STQ-01 inside sibling .raw',
       });
-      expect(serialiseToolResultBodies(toolLoopOut)).toContain('STQ-01');
+      expect(serialiseToolResultBodies(toolLoopOut).text).toContain('STQ-01');
     });
 
     test('7c. CRITICAL: nested sibling — leak under .nested while .text provides benign header', () => {
@@ -1280,7 +1316,7 @@ describe('r23-#3 serialiseToolResultBodies — structured-content shape coverage
         text: 'header only',
         nested: { raw: 'leak SYSTEM_CHANNEL inside' },
       });
-      expect(serialiseToolResultBodies(toolLoopOut)).toContain('SYSTEM_CHANNEL');
+      expect(serialiseToolResultBodies(toolLoopOut).text).toContain('SYSTEM_CHANNEL');
     });
 
     // Cycle safety from r24-#3 — preserved for arbitrary property
@@ -1367,7 +1403,7 @@ describe('r23-#3 serialiseToolResultBodies — structured-content shape coverage
       // describe below tightens this to assert
       // `.toContain('[unsupported-shape]')` for the attack cases.
       expect(() => serialiseToolResultBodies(toolLoopOut)).not.toThrow();
-      expect(serialiseToolResultBodies(toolLoopOut)).not.toContain('TRUST BOUNDARY');
+      expect(serialiseToolResultBodies(toolLoopOut).text).not.toContain('TRUST BOUNDARY');
     });
   });
 
@@ -1429,10 +1465,10 @@ describe('r23-#3 serialiseToolResultBodies — structured-content shape coverage
         enumerable: false,
       });
       const toolLoopOut = wrapAsToolResult(obj);
-      expect(serialiseToolResultBodies(toolLoopOut)).toContain('[unsupported-shape]');
+      expect(serialiseToolResultBodies(toolLoopOut).text).toContain('[unsupported-shape]');
       // Raw leak never reaches output; placeholder is what the
       // downstream substring assertion trips on (fail-closed).
-      expect(serialiseToolResultBodies(toolLoopOut)).not.toContain('TRUST BOUNDARY');
+      expect(serialiseToolResultBodies(toolLoopOut).text).not.toContain('TRUST BOUNDARY');
     });
 
     test('2. toJSON returning scrubbed shape with hidden non-enumerable leak → [unsupported-shape]', () => {
@@ -1453,8 +1489,8 @@ describe('r23-#3 serialiseToolResultBodies — structured-content shape coverage
         enumerable: false,
       });
       const toolLoopOut = wrapAsToolResult(obj);
-      expect(serialiseToolResultBodies(toolLoopOut)).toContain('[unsupported-shape]');
-      expect(serialiseToolResultBodies(toolLoopOut)).not.toContain('SYSTEM_CHANNEL');
+      expect(serialiseToolResultBodies(toolLoopOut).text).toContain('[unsupported-shape]');
+      expect(serialiseToolResultBodies(toolLoopOut).text).not.toContain('SYSTEM_CHANNEL');
     });
 
     test('3. toJSON returning content containing leak → walker surfaces the leak (normalisation does not over-trigger)', () => {
@@ -1477,8 +1513,8 @@ describe('r23-#3 serialiseToolResultBodies — structured-content shape coverage
       // toJSON's benignness). Test asserts the placeholder
       // substitution — leak content is never trusted through a
       // toJSON code path.
-      expect(serialiseToolResultBodies(toolLoopOut)).toContain('[unsupported-shape]');
-      expect(serialiseToolResultBodies(toolLoopOut)).not.toContain('TRUST BOUNDARY');
+      expect(serialiseToolResultBodies(toolLoopOut).text).toContain('[unsupported-shape]');
+      expect(serialiseToolResultBodies(toolLoopOut).text).not.toContain('TRUST BOUNDARY');
     });
 
     test('4. toJSON that throws → [unsupported-shape], no throw escapes', () => {
@@ -1489,7 +1525,7 @@ describe('r23-#3 serialiseToolResultBodies — structured-content shape coverage
       };
       const toolLoopOut = wrapAsToolResult(obj);
       expect(() => serialiseToolResultBodies(toolLoopOut)).not.toThrow();
-      expect(serialiseToolResultBodies(toolLoopOut)).toContain('[unsupported-shape]');
+      expect(serialiseToolResultBodies(toolLoopOut).text).toContain('[unsupported-shape]');
     });
 
     test('5. Proxy object hiding state → [unsupported-shape]', () => {
@@ -1531,7 +1567,7 @@ describe('r23-#3 serialiseToolResultBodies — structured-content shape coverage
       // closed substitution or via genuine inability of the
       // attacker to land content through the Proxy.
       expect(() => serialiseToolResultBodies(toolLoopOut)).not.toThrow();
-      expect(serialiseToolResultBodies(toolLoopOut)).not.toContain('TRUST BOUNDARY');
+      expect(serialiseToolResultBodies(toolLoopOut).text).not.toContain('TRUST BOUNDARY');
     });
 
     test('6. non-enumerable alongside enumerable benign content → [unsupported-shape] (original had hidden content)', () => {
@@ -1546,8 +1582,8 @@ describe('r23-#3 serialiseToolResultBodies — structured-content shape coverage
       // (parts.length > 0). Post-r26-#1, hasHiddenShape fires
       // FIRST and returns the placeholder regardless of benign
       // siblings.
-      expect(serialiseToolResultBodies(toolLoopOut)).toContain('[unsupported-shape]');
-      expect(serialiseToolResultBodies(toolLoopOut)).not.toContain('TRUST BOUNDARY');
+      expect(serialiseToolResultBodies(toolLoopOut).text).toContain('[unsupported-shape]');
+      expect(serialiseToolResultBodies(toolLoopOut).text).not.toContain('TRUST BOUNDARY');
     });
   });
 
