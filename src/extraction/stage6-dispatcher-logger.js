@@ -230,3 +230,58 @@ export function logAskUser(logger, payload) {
 
   logger.info('stage6.ask_user', row);
 }
+
+/**
+ * Stage 6 Phase 5 Plan 05-04 — `stage6.restrained_mode` lifecycle log row
+ * emitter (STA-05, STO-03).
+ *
+ * Two events fire per activation cycle:
+ *   - `activated` on entering active state (the rolling 5-turn window
+ *     accumulated triggerCount asks) — emitted from the activeSessions
+ *     entry's onActivate callback in sonnet-stream.js.
+ *   - `released`  on the wall-clock 60s expiry — emitted from the
+ *     onRelease callback. NOT emitted on destroy() (destroy is silent
+ *     per Plan 05-04 §Group 5 lock).
+ *
+ * WHY a CLOSED enum (not free-form string): Phase 8 dashboards split
+ * by `event` value to compute restrained_mode_rate per session. A typo
+ * at any caller ('actived', 'unlocked', 'expired') would silently
+ * corrupt the split with zero loud surface. Validate at the emit site.
+ * Same discipline as ASK_USER_ANSWER_OUTCOMES (Phase 3 r10 STG
+ * remediation) and ASK_USER_MODES (Phase 3 r19 MINOR remediation).
+ *
+ * WHY trigger_ask_count defaults to null (not omitted): the released
+ * path doesn't carry an ask count, but consumers query
+ * `filter ispresent(trigger_ask_count)` as shorthand for "this row
+ * marks an activation". Emitting null keeps the field present with a
+ * deterministic missing-value sentinel — same idiom as
+ * `validation_error: payload.validation_error ?? null` in logToolCall.
+ *
+ * WHY this helper does NOT log emittedAt itself outside the row body:
+ * logger.info adds its own timestamp via the structured-log adapter
+ * (Phase 1 logger.js convention). The in-row emittedAt is a SECOND
+ * timestamp recorded at the helper's wall-clock — useful for cross-
+ * checking row interleaving when the logger's transport buffers (e.g.
+ * Winston's batched flush). Same pattern as logAskUser, kept for
+ * Phase 8 query-plan parity.
+ */
+export const RESTRAINED_MODE_EVENTS = Object.freeze(['activated', 'released']);
+
+export function logRestrainedMode(
+  logger,
+  { sessionId, turnId, event, triggerAskCount, windowTurns, releaseMs }
+) {
+  if (!RESTRAINED_MODE_EVENTS.includes(event)) {
+    throw new Error(`invalid_restrained_mode_event:${event}`);
+  }
+  logger.info('stage6.restrained_mode', {
+    sessionId,
+    turnId: turnId ?? null,
+    phase: 5,
+    event,
+    trigger_ask_count: triggerAskCount ?? null,
+    window_turns: windowTurns,
+    release_ms: releaseMs,
+    emittedAt: new Date().toISOString(),
+  });
+}
