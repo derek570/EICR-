@@ -47,10 +47,18 @@ interface ColumnSpec {
   inputMode?: 'decimal' | 'numeric' | 'text';
 }
 
-const POLARITY_OPTS = ['', 'OK', 'Y', 'N'] as const;
-const OCPD_TYPE_OPTS = ['', 'B', 'C', 'D', 'gG', 'gM', 'aM', 'HRC', 'Rew', 'N/A'] as const;
-const RCD_TYPE_OPTS = ['', 'AC', 'A', 'F', 'B', 'S', 'N/A'] as const;
-const BUTTON_CONFIRM_OPTS = ['', 'OK', 'Y', 'N'] as const;
+// Enum sets MUST stay aligned with the card view's SelectChips in
+// web/src/app/job/[id]/circuits/page.tsx — if the table writes a value
+// the card can't render, switching between views would leave the card
+// chip unselected and the user would overwrite the prior value on the
+// next tap. Polarity/OCPD/RCD options mirror POLARITY_OPTIONS /
+// OCPD_TYPES / RCD_TYPES above. Button-confirmed fields have no card
+// counterpart so the table uses iOS's "✓" sentinel directly
+// (DeepgramRecordingViewModel.swift sets rcdButtonConfirmed = "✓").
+const POLARITY_OPTS = ['', 'pass', 'fail', 'na'] as const;
+const OCPD_TYPE_OPTS = ['', 'B', 'C', 'D'] as const;
+const RCD_TYPE_OPTS = ['', 'AC', 'A', 'B', 'F'] as const;
+const BUTTON_CONFIRM_OPTS = ['', '✓'] as const;
 
 const COLUMNS: ColumnSpec[] = [
   { key: 'wiring_type', label: 'Wiring', width: 60, kind: 'text' },

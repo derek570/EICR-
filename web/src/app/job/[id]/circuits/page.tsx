@@ -148,15 +148,33 @@ export default function CircuitsPage() {
     ? circuits.filter((c) => c.board_id === selectedBoardId || c.board_id == null)
     : circuits;
 
+  // Bulk actions (Apply Defaults / Calculate Zs / Calculate R1+R2 /
+  // Delete all) must only target circuits that are DEFINITELY on the
+  // active board. `visible` intentionally includes legacy boardless
+  // rows (board_id == null) so they stay editable from any board, but
+  // sweeping them into a bulk action is collateral — "Delete all on
+  // Board 2" must not silently wipe legacy unassigned circuits. When
+  // no board is selected, the bulk target is the whole list.
+  const boardScoped = selectedBoardId
+    ? circuits.filter((c) => c.board_id === selectedBoardId)
+    : circuits;
+
   /**
-   * Resolve the supply Ze to use for Zs / R1+R2 calculations.
-   * iOS reads `job.supply.earth_loop_impedance_ze` (with a fallback to
-   * per-board ze). Web has a single supply-level Ze for now; per-board
-   * Ze lives on the Board tab and would route through the same helper
-   * if it were exposed.
+   * Resolve the Ze to use for Zs / R1+R2 calculations. iOS reads the
+   * per-board Ze when available, falling back to the supply-level Ze.
+   * Sub-boards often record their own Ze on the Board tab that differs
+   * from the supply value, and a missing supply Ze would otherwise
+   * turn Calculate into a no-op for those jobs.
    */
-  const supplyZe = ((job.supply as { earth_loop_impedance_ze?: string } | undefined)
+  const activeBoard = boards.find((b) => b.id === selectedBoardId) as
+    | { ze?: string; earth_loop_impedance_ze?: string }
+    | undefined;
+  const supplyLevelZe = ((job.supply as { earth_loop_impedance_ze?: string } | undefined)
     ?.earth_loop_impedance_ze ?? '') as string;
+  const supplyZe =
+    activeBoard?.ze?.toString().trim() ||
+    activeBoard?.earth_loop_impedance_ze?.toString().trim() ||
+    supplyLevelZe;
 
   const persist = (next: Circuit[]) =>
     updateJob({ circuits: next as unknown as typeof job.circuits });
@@ -193,8 +211,8 @@ export default function CircuitsPage() {
    * working on Board #2 doesn't accidentally stomp Board #1.
    */
   const handleApplyDefaults = () => {
-    const visibleIds = new Set(visible.map((c) => c.id));
-    const { circuits: updatedVisible, summary } = applyDefaultsToCircuits(visible);
+    const visibleIds = new Set(boardScoped.map((c) => c.id));
+    const { circuits: updatedVisible, summary } = applyDefaultsToCircuits(boardScoped);
     if (summary.filledFields === 0) {
       setActionHint('Apply Defaults — nothing to fill (all fields already set).');
       return;
@@ -253,8 +271,8 @@ export default function CircuitsPage() {
 
   const handleCalculateZs = () => {
     setCalcMenuOpen(false);
-    const visibleIds = new Set(visible.map((c) => c.id));
-    const res = applyZsCalculation(visible, supplyZe);
+    const visibleIds = new Set(boardScoped.map((c) => c.id));
+    const res = applyZsCalculation(boardScoped, supplyZe);
     if (res.updated > 0) {
       const byId = new Map(res.circuits.map((c) => [c.id, c]));
       const merged = circuits.map((c) => (visibleIds.has(c.id) ? (byId.get(c.id) ?? c) : c));
@@ -265,8 +283,8 @@ export default function CircuitsPage() {
 
   const handleCalculateR1R2 = () => {
     setCalcMenuOpen(false);
-    const visibleIds = new Set(visible.map((c) => c.id));
-    const res = applyR1R2Calculation(visible, supplyZe);
+    const visibleIds = new Set(boardScoped.map((c) => c.id));
+    const res = applyR1R2Calculation(boardScoped, supplyZe);
     if (res.updated > 0) {
       const byId = new Map(res.circuits.map((c) => [c.id, c]));
       const merged = circuits.map((c) => (visibleIds.has(c.id) ? (byId.get(c.id) ?? c) : c));
@@ -297,15 +315,15 @@ export default function CircuitsPage() {
    * `missing` to `match` with this simplification recorded.
    */
   const handleConfirmDeleteAll = () => {
-    const removedCount = visible.length;
+    const removedCount = boardScoped.length;
     if (removedCount === 0) {
       setActionHint('Delete all — no circuits to remove.');
       setConfirmDeleteAllOpen(false);
       return;
     }
-    const visibleIds = new Set(visible.map((c) => c.id));
-    persist(circuits.filter((c) => !visibleIds.has(c.id)));
-    if (expandedId && visibleIds.has(expandedId)) setExpandedId(null);
+    const scopedIds = new Set(boardScoped.map((c) => c.id));
+    persist(circuits.filter((c) => !scopedIds.has(c.id)));
+    if (expandedId && scopedIds.has(expandedId)) setExpandedId(null);
     setConfirmDeleteAllOpen(false);
     setActionHint(`Deleted ${removedCount} circuit${removedCount === 1 ? '' : 's'}.`);
   };
@@ -586,14 +604,14 @@ export default function CircuitsPage() {
             label="Delete"
             colour="var(--color-status-failed)"
             onClick={() => setConfirmDeleteAllOpen(true)}
-            disabled={visible.length === 0}
+            disabled={boardScoped.length === 0}
           />
           <RailButton
             Icon={SlidersHorizontal}
             label="Defaults"
             colour="#ff375f"
             onClick={handleApplyDefaults}
-            disabled={visible.length === 0}
+            disabled={boardScoped.length === 0}
           />
           <RailButton
             Icon={FlipHorizontal2}
@@ -608,7 +626,7 @@ export default function CircuitsPage() {
               label="Calculate"
               colour="var(--color-brand-green)"
               onClick={() => setCalcMenuOpen((v) => !v)}
-              disabled={visible.length === 0}
+              disabled={boardScoped.length === 0}
             />
             {calcMenuOpen ? (
               <div
@@ -673,7 +691,8 @@ export default function CircuitsPage() {
         title={`Delete all circuits on this board?`}
         description={
           <>
-            This will remove {visible.length} {visible.length === 1 ? 'circuit' : 'circuits'}
+            This will remove {boardScoped.length}{' '}
+            {boardScoped.length === 1 ? 'circuit' : 'circuits'}
             {selectedBoardId ? ` on the selected board` : ''}. This cannot be undone.
           </>
         }

@@ -80,7 +80,7 @@ const CIRCUITS = [
     circuit_designation: 'Sockets ring',
     ocpd_type: 'B',
     ocpd_rating_a: '32',
-    polarity_confirmed: 'OK',
+    polarity_confirmed: 'pass',
   },
 ];
 
@@ -134,7 +134,7 @@ describe('CircuitsStickyTable', () => {
     expect(onPatch).toHaveBeenCalledWith('c1', { measured_zs_ohm: '1.23' });
   });
 
-  it('renders select fields with iOS schema options', () => {
+  it('renders select fields with card-aligned options so values round-trip between Cards and Table views', () => {
     mounted = mount(
       <CircuitsStickyTable circuits={CIRCUITS} onPatch={() => {}} onRemove={() => {}} />
     );
@@ -142,11 +142,23 @@ describe('CircuitsStickyTable', () => {
       'select[aria-label="Circuit 1 Type"]'
     ) as HTMLSelectElement | null;
     expect(ocpdSelect).not.toBeNull();
-    const values = Array.from(ocpdSelect!.options).map((o) => o.value);
-    // Must include the iOS schema set.
-    expect(values).toEqual(
-      expect.arrayContaining(['B', 'C', 'D', 'gG', 'gM', 'aM', 'HRC', 'Rew', 'N/A'])
-    );
+    const ocpdValues = Array.from(ocpdSelect!.options).map((o) => o.value);
+    // Table OCPD options MUST match the card's OCPD_TYPES — any extra
+    // value written here would appear as "unselected" when the user
+    // toggles back to the card view and would be silently overwritten.
+    expect(ocpdValues).toEqual(['', 'B', 'C', 'D']);
+
+    const polaritySelect = mounted.container.querySelector(
+      'select[aria-label="Circuit 1 Pol"]'
+    ) as HTMLSelectElement | null;
+    const polarityValues = Array.from(polaritySelect!.options).map((o) => o.value);
+    expect(polarityValues).toEqual(['', 'pass', 'fail', 'na']);
+
+    const rcdSelect = mounted.container.querySelector(
+      'select[aria-label="Circuit 1 RCD Type"]'
+    ) as HTMLSelectElement | null;
+    const rcdValues = Array.from(rcdSelect!.options).map((o) => o.value);
+    expect(rcdValues).toEqual(['', 'AC', 'A', 'B', 'F']);
   });
 
   it('calls onRemove when the per-row trash icon is clicked', () => {
