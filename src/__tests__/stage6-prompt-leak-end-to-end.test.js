@@ -880,6 +880,101 @@ describe('r23-#3 serialiseToolResultBodies — structured-content shape coverage
     expect(serialiseToolResultBodies(null)).toBe('');
     expect(serialiseToolResultBodies(undefined)).toBe('');
   });
+
+  // -------------------------------------------------------------------------
+  // r24-#3 — WeakSet cycle guard on extractTextFromBlock
+  //
+  // WHY: r23-#3 landed extractTextFromBlock with a narrow cycle guard
+  // (`block.content !== block.text`) that only handles the direct
+  // same-reference case. A true object cycle like
+  //   a.content = b; b.content = a;
+  // would infinite-loop.
+  //
+  // Fix: WeakSet visited-guard threaded through recursive calls. WeakSet
+  // accepts only objects (exactly what we need — primitives can't cycle)
+  // and doesn't retain references to visited objects, so cycle tracking
+  // doesn't leak object lifetime into the helper.
+  //
+  // Tests below construct progressively deeper cycles to prove the
+  // guard handles:
+  //   1. indirect two-node cycle (a → b → a)
+  //   2. direct self-reference (x → x)
+  //   3. deep three-node cycle (a → b → c → a)
+  //   4. acyclic deep content still walks every level
+  // -------------------------------------------------------------------------
+  describe('r24-#3 cycle guard on extractTextFromBlock', () => {
+    test('indirect two-node cycle a→b→a resolves without stack overflow', () => {
+      const a = {};
+      const b = { content: a };
+      a.content = b;
+      const toolLoopOut = {
+        messages_final: [
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'tool_result',
+                tool_use_id: 'toolu_x',
+                content: a,
+              },
+            ],
+          },
+        ],
+      };
+      expect(() => serialiseToolResultBodies(toolLoopOut)).not.toThrow();
+    });
+
+    test('direct self-reference x→x resolves without throw', () => {
+      const x = {};
+      x.content = x;
+      const toolLoopOut = {
+        messages_final: [
+          {
+            role: 'user',
+            content: [{ type: 'tool_result', tool_use_id: 'toolu_x', content: x }],
+          },
+        ],
+      };
+      expect(() => serialiseToolResultBodies(toolLoopOut)).not.toThrow();
+    });
+
+    test('deep chain cycle a→b→c→a resolves without throw', () => {
+      const a = {};
+      const b = { content: null };
+      const c = { content: null };
+      a.content = b;
+      b.content = c;
+      c.content = a;
+      const toolLoopOut = {
+        messages_final: [
+          {
+            role: 'user',
+            content: [{ type: 'tool_result', tool_use_id: 'toolu_x', content: a }],
+          },
+        ],
+      };
+      expect(() => serialiseToolResultBodies(toolLoopOut)).not.toThrow();
+    });
+
+    test('acyclic deep content still walks every level under the cycle guard', () => {
+      const deep = {
+        text: 'level1',
+        content: {
+          text: 'level2',
+          content: { text: 'level3 leak STQ-01' },
+        },
+      };
+      const toolLoopOut = {
+        messages_final: [
+          {
+            role: 'user',
+            content: [{ type: 'tool_result', tool_use_id: 'toolu_x', content: deep }],
+          },
+        ],
+      };
+      expect(serialiseToolResultBodies(toolLoopOut)).toContain('STQ-01');
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------
