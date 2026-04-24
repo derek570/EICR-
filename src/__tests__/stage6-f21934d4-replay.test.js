@@ -600,3 +600,125 @@ describe("STT-04 Scenario B' — Real EICRExtractionSession SC #4 exit check (r3
     expect(toolCallField).toBe('ir_live_live_mohm');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Group r6-3 — Plan 04-12 r6-#3: F21934D4 fixture pre-seeded snapshot uses
+// CANONICAL field keys (not legacy).
+//
+// Codex r6 MAJOR #3: the fixture's `pre_turn_state.snapshot.circuits`
+// seeds `circuits.1.zs = 0.42` and `circuits.2.r1_r2 = 0.64` — LEGACY
+// field keys. The agentic tool schemas (stage6-tool-schemas.js) derive
+// the record_reading.field enum from `config/field_schema.json.circuit_fields`
+// which uses the CANONICAL names `measured_zs_ohm` and `r1_r2_ohm`. The
+// fixture's own oracle (`expected_slot_writes`) and the tool-call
+// partial_json (`sse_events_well_behaved`) correctly use canonical —
+// only the pre-seed was legacy.
+//
+// Consequence: when `runShadowHarness` (or `runToolCallPath` in the
+// divergence harness) serialises the snapshot for the cached-prefix
+// system block, the model sees `"r1_r2":0.64` and `"zs":0.42` on the
+// pre-existing circuits. The agentic prompt instructs the model to
+// check the cached prefix before emitting ask_user, but the prompt is
+// keyed on canonical vocabulary while the snapshot is keyed on legacy.
+// The two surfaces disagree on what a "filled slot" looks like. SC #4's
+// zero-re-ask claim passes only because the test transcript
+// ("insulation live to live") happens to avoid the `r1_r2` / `zs`
+// slots entirely.
+//
+// Fix (r6-#3 GREEN):
+//   1. Rename `circuits.1.zs` → `circuits.1.measured_zs_ohm` in the
+//      fixture pre-seed.
+//   2. Rename `circuits.2.r1_r2` → `circuits.2.r1_r2_ohm`.
+//   3. Leave `sse_events_misbehaving_legacy_questions_for_user` AS-IS
+//      — that block deliberately reproduces the LEGACY payload shape
+//      (what pre-Phase-4 Sonnet emitted); it's a documented pre-Phase-4
+//      artefact, not a fixture drift.
+//   4. Update Scenario A to construct its own legacy-shaped snapshot
+//      inline (the filter contract is legacy-vocabulary — the fixture's
+//      pre-seed being canonical doesn't change what the FILTER accepts;
+//      Scenario A documents the legacy safety net).
+//   5. Update Scenario B' assertion #5 to check canonical key.
+//
+// Tests in this group lock the fixture's post-fix canonical shape so a
+// future edit that reverts to legacy fires loudly.
+// ---------------------------------------------------------------------------
+
+describe('Group r6-3 — Plan 04-12 r6-#3: F21934D4 fixture pre-seed uses canonical field keys', () => {
+  test('r6-3a — circuit 1 uses canonical measured_zs_ohm, not legacy zs', () => {
+    // Raw fixture inspection — post-fix the pre-seeded snapshot uses
+    // canonical field names matching the tool-schema enum in
+    // config/field_schema.json.
+    const seed = fixture.pre_turn_state.snapshot.circuits['1'];
+    expect(seed).toHaveProperty('measured_zs_ohm', 0.42);
+    // Negative: the legacy key MUST NOT appear. Catches a future
+    // partial refactor that re-introduces it.
+    expect(seed).not.toHaveProperty('zs');
+  });
+
+  test('r6-3b — circuit 2 uses canonical r1_r2_ohm, not legacy r1_r2', () => {
+    const seed = fixture.pre_turn_state.snapshot.circuits['2'];
+    expect(seed).toHaveProperty('r1_r2_ohm', 0.64);
+    expect(seed).not.toHaveProperty('r1_r2');
+  });
+
+  test('r6-3c — legacy reproducer payload UNCHANGED (documents pre-Phase-4 Sonnet output shape)', () => {
+    // The `sse_events_misbehaving_legacy_questions_for_user` block
+    // documents what legacy Sonnet emitted in the real F21934D4
+    // session — field='r1_r2' under the legacy vocabulary. This block
+    // is the INPUT to the filled-slots-filter safety net. It MUST
+    // stay legacy-shaped — it is documentation of pre-Phase-4
+    // behaviour, NOT a fixture drift to be cleaned up.
+    const legacy = fixture.sse_events_misbehaving_legacy_questions_for_user;
+    expect(Array.isArray(legacy)).toBe(true);
+    expect(legacy).toHaveLength(1);
+    expect(legacy[0]).toMatchObject({
+      field: 'r1_r2', // legacy — deliberately not canonicalised
+      circuit: 2,
+      type: 'unclear',
+    });
+  });
+
+  test('r6-3d — cached-prefix system block carries CANONICAL key name when snapshot has circuit 2 r1_r2_ohm', async () => {
+    // End-to-end lock: after renaming the fixture keys, the live
+    // session's buildStateSnapshotMessage serialises the pre-seeded
+    // snapshot into the cached-prefix block. The block text must
+    // contain the canonical key `r1_r2_ohm` (or its compact FIELD_ID_MAP
+    // id if that map is ever extended), NOT the legacy key `r1_r2`.
+    // This is the ASSERTION that links the fixture to the model-facing
+    // prompt — if a future edit re-introduces the legacy pre-seed
+    // shape, the cached-prefix block reverts to legacy vocabulary and
+    // this test fires.
+    //
+    // Note on snapshot windowing: buildStateSnapshotMessage compacts
+    // circuits NOT in `recentCircuitOrder` to a summary line ("N
+    // earlier circuits (...) stored server-side"). The session we
+    // build here is fresh — no writes have happened yet — so
+    // recentCircuitOrder is empty and circuits 1/2/3 would compact.
+    // Seed recentCircuitOrder with the fixture's circuits so the
+    // serialised output exposes field names (the whole point of this
+    // assertion).
+    const session = new EICRExtractionSession('test-key', 'sess-r6-3d', 'eicr', {
+      toolCallsMode: 'shadow',
+    });
+    session.stateSnapshot = JSON.parse(JSON.stringify(fixture.pre_turn_state.snapshot));
+    session.recentCircuitOrder = [1, 2, 3];
+    const systemBlocks = session.buildSystemBlocks();
+    expect(systemBlocks).toHaveLength(2);
+    const snapshotText = systemBlocks[1].text;
+    // Canonical key present somewhere in the serialised snapshot.
+    // FIELD_ID_MAP at eicr-extraction-session.js:52-81 does NOT map
+    // canonical names (r1_r2_ohm, measured_zs_ohm) — they fall through
+    // the compact mapping path and serialise verbatim. A future
+    // extension of FIELD_ID_MAP to include canonical names would
+    // replace the literal text with a numeric id; if that happens,
+    // update this assertion to also accept the mapped form.
+    expect(snapshotText).toContain('r1_r2_ohm');
+    expect(snapshotText).toContain('measured_zs_ohm');
+    // Legacy keys MUST NOT appear. Guard against the fixture reverting
+    // or the snapshot serialiser growing a legacy back-compat path.
+    // Note: `"r1_r2":` (literal with colon) catches only the standalone
+    // key — substring matches of `r1_r2` inside `r1_r2_ohm` are fine.
+    expect(snapshotText).not.toMatch(/"r1_r2":/);
+    expect(snapshotText).not.toMatch(/"zs":/);
+  });
+});
