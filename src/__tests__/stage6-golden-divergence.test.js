@@ -45,6 +45,8 @@ import { fileURLToPath } from 'node:url';
 import {
   normaliseExtractionResult,
   computeDivergence,
+  computeSectionDivergence,
+  computeCallLevelDivergence,
   runDirectory,
   runFixture,
   expectedSlotWritesToLegacyShape,
@@ -187,28 +189,29 @@ describe('normaliseExtractionResult — STR-02 canonicalisation', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Group B — computeDivergence
+// Group B — computeSectionDivergence (renamed in Plan 04-08 r2-#2 from
+// `computeDivergence`; the old name still exports a back-compat shape that
+// exposes BOTH metrics). Group B locks section-level semantics only.
 // ---------------------------------------------------------------------------
 
-describe('computeDivergence — section-level section diff', () => {
+describe('computeSectionDivergence — section-level section diff', () => {
   const empty = { readings: [], clears: [], circuit_ops: [], observations: [] };
 
-  test('identical inputs → { diverged: false, call_divergence: 0 }', () => {
+  test('identical inputs → { diverged: false, section_divergence: 0 }', () => {
     const a = { ...empty, readings: [{ circuit: 1, field: 'zs', value: '0.35' }] };
     const b = { ...empty, readings: [{ circuit: 1, field: 'zs', value: '0.35' }] };
-    expect(computeDivergence(a, b)).toEqual({
-      diverged: false,
-      call_divergence: 0,
-      reasons: [],
-    });
+    const d = computeSectionDivergence(a, b);
+    expect(d.diverged).toBe(false);
+    expect(d.section_divergence).toBe(0);
+    expect(d.reasons).toEqual([]);
   });
 
   test('different readings section → diverged, 1/4 sections = 0.25', () => {
     const a = { ...empty, readings: [{ circuit: 1, field: 'zs', value: '0.35' }] };
     const b = { ...empty, readings: [{ circuit: 1, field: 'zs', value: '0.71' }] };
-    const d = computeDivergence(a, b);
+    const d = computeSectionDivergence(a, b);
     expect(d.diverged).toBe(true);
-    expect(d.call_divergence).toBeCloseTo(0.25, 6);
+    expect(d.section_divergence).toBeCloseTo(0.25, 6);
     expect(d.reasons).toContain('readings');
   });
 
@@ -220,16 +223,16 @@ describe('computeDivergence — section-level section diff', () => {
       observations: [{ code: 'C2', text: 'X' }],
     };
     const b = { ...empty };
-    const d = computeDivergence(a, b);
+    const d = computeSectionDivergence(a, b);
     expect(d.diverged).toBe(true);
-    expect(d.call_divergence).toBeCloseTo(1.0, 6);
+    expect(d.section_divergence).toBeCloseTo(1.0, 6);
     expect(d.reasons.sort()).toEqual(['circuit_ops', 'clears', 'observations', 'readings']);
   });
 
   test('empty-vs-non-empty reading list → diverged', () => {
     const a = { ...empty };
     const b = { ...empty, readings: [{ circuit: 1, field: 'zs', value: '0.35' }] };
-    const d = computeDivergence(a, b);
+    const d = computeSectionDivergence(a, b);
     expect(d.diverged).toBe(true);
     expect(d.reasons).toContain('readings');
   });
@@ -248,10 +251,202 @@ describe('computeDivergence — section-level section diff', () => {
       observations: [{ code: 'C2', text: 'B' }],
     };
     // Same readings section; observations differ; 1 section diverges.
+    const d = computeSectionDivergence(a, b);
+    expect(d.diverged).toBe(true);
+    expect(d.section_divergence).toBeCloseTo(0.25, 6);
+    expect(d.reasons).toEqual(['observations']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Group B' — computeCallLevelDivergence (Plan 04-08 r2-#2).
+//
+// WHY THIS GROUP EXISTS: Codex r2-#2 flagged that
+// `call_divergence = reasons.length / 4` is a SECTION-level fraction
+// misnamed as call-level. One wrong reading in 20 flags the whole
+// readings section and the aggregate misstates true per-call divergence
+// by up to 20x. The new `computeCallLevelDivergence` helper counts
+// INDIVIDUAL writes — 1 mismatch / 20 total writes = 0.05 call-level
+// divergence, not 0.25. SC #6's ≤10% claim is now measured against
+// this metric.
+// ---------------------------------------------------------------------------
+
+describe('computeCallLevelDivergence — per-write divergence', () => {
+  const empty = { readings: [], clears: [], circuit_ops: [], observations: [] };
+
+  test('identical empty → {rate: 0, total: 0, divergent: 0}', () => {
+    const d = computeCallLevelDivergence(empty, empty);
+    expect(d.rate).toBe(0);
+    expect(d.total).toBe(0);
+    expect(d.divergent).toBe(0);
+  });
+
+  test('5 matching readings → rate 0, total 5, divergent 0', () => {
+    const same = {
+      ...empty,
+      readings: [
+        { circuit: 1, field: 'zs', value: '0.35' },
+        { circuit: 2, field: 'zs', value: '0.40' },
+        { circuit: 3, field: 'zs', value: '0.45' },
+        { circuit: 4, field: 'zs', value: '0.50' },
+        { circuit: 5, field: 'zs', value: '0.55' },
+      ],
+    };
+    const d = computeCallLevelDivergence(same, same);
+    expect(d.rate).toBe(0);
+    expect(d.total).toBe(5);
+    expect(d.divergent).toBe(0);
+  });
+
+  test('1 wrong reading in 5 → rate 0.2, total 5, divergent 1', () => {
+    const a = {
+      ...empty,
+      readings: [
+        { circuit: 1, field: 'zs', value: '0.35' },
+        { circuit: 2, field: 'zs', value: '0.40' },
+        { circuit: 3, field: 'zs', value: '0.45' },
+        { circuit: 4, field: 'zs', value: '0.50' },
+        { circuit: 5, field: 'zs', value: '0.55' },
+      ],
+    };
+    const b = {
+      ...empty,
+      readings: [
+        { circuit: 1, field: 'zs', value: '0.35' },
+        { circuit: 2, field: 'zs', value: '0.40' },
+        { circuit: 3, field: 'zs', value: '0.99' }, // wrong
+        { circuit: 4, field: 'zs', value: '0.50' },
+        { circuit: 5, field: 'zs', value: '0.55' },
+      ],
+    };
+    const d = computeCallLevelDivergence(a, b);
+    expect(d.rate).toBeCloseTo(0.2, 6);
+    expect(d.total).toBe(5);
+    expect(d.divergent).toBe(1);
+    // reasons must be a non-empty array describing the mismatch.
+    expect(Array.isArray(d.reasons)).toBe(true);
+    expect(d.reasons.length).toBeGreaterThan(0);
+  });
+
+  test('completely disjoint — 0 legacy vs 3 tool-call → rate 1.0, total 3, divergent 3', () => {
+    const a = { ...empty };
+    const b = {
+      ...empty,
+      readings: [
+        { circuit: 1, field: 'zs', value: '0.35' },
+        { circuit: 2, field: 'zs', value: '0.40' },
+        { circuit: 3, field: 'zs', value: '0.45' },
+      ],
+    };
+    const d = computeCallLevelDivergence(a, b);
+    expect(d.rate).toBe(1.0);
+    expect(d.total).toBe(3);
+    expect(d.divergent).toBe(3);
+  });
+
+  test('cross-section counting — 2 reading mismatches + 1 obs mismatch / 5 total writes = 0.6', () => {
+    const a = {
+      readings: [
+        { circuit: 1, field: 'zs', value: '0.35' },
+        { circuit: 2, field: 'zs', value: '0.40' },
+        { circuit: 3, field: 'zs', value: '0.45' },
+      ],
+      clears: [],
+      circuit_ops: [],
+      observations: [
+        { code: 'C2', text: 'X' },
+        { code: 'C3', text: 'Y' },
+      ],
+    };
+    const b = {
+      readings: [
+        { circuit: 1, field: 'zs', value: '0.99' }, // wrong
+        { circuit: 2, field: 'zs', value: '0.40' },
+        { circuit: 3, field: 'zs', value: '0.50' }, // wrong
+      ],
+      clears: [],
+      circuit_ops: [],
+      observations: [
+        { code: 'C2', text: 'X' },
+        { code: 'C3', text: 'Z' }, // wrong
+      ],
+    };
+    const d = computeCallLevelDivergence(a, b);
+    // 5 total writes (3 readings + 2 obs); 3 mismatched.
+    expect(d.total).toBe(5);
+    expect(d.divergent).toBe(3);
+    expect(d.rate).toBeCloseTo(0.6, 6);
+  });
+
+  test('mismatched list lengths — missing and extra both count as divergent', () => {
+    const a = { ...empty, readings: [{ circuit: 1, field: 'zs', value: '0.35' }] };
+    const b = {
+      ...empty,
+      readings: [
+        { circuit: 1, field: 'zs', value: '0.35' },
+        { circuit: 2, field: 'zs', value: '0.40' },
+      ],
+    };
+    const d = computeCallLevelDivergence(a, b);
+    // Total is max(a.readings.length, b.readings.length) per section so
+    // missing entries also count toward divergent.
+    expect(d.total).toBe(2);
+    expect(d.divergent).toBe(1);
+    expect(d.rate).toBeCloseTo(0.5, 6);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Group B'' — computeDivergence (back-compat surface). After r2-#2 this
+// wraps BOTH section + call metrics into one result object. Existing
+// callers that only consult `diverged` / `reasons` keep working. Callers
+// that want the precise metric use the new fields `section_divergence` +
+// `call_divergence`.
+// ---------------------------------------------------------------------------
+
+describe('computeDivergence — back-compat surface (section + call combined)', () => {
+  const empty = { readings: [], clears: [], circuit_ops: [], observations: [] };
+
+  test('identical inputs → diverged=false, both rates 0', () => {
+    const a = { ...empty, readings: [{ circuit: 1, field: 'zs', value: '0.35' }] };
+    const b = { ...empty, readings: [{ circuit: 1, field: 'zs', value: '0.35' }] };
+    const d = computeDivergence(a, b);
+    expect(d.diverged).toBe(false);
+    expect(d.section_divergence).toBe(0);
+    expect(d.call_divergence).toBe(0);
+    expect(d.reasons).toEqual([]);
+  });
+
+  test('1 wrong reading in 5 → section_divergence 0.25 (legacy) + call_divergence 0.2 (real)', () => {
+    const mk = (readings) => ({ ...empty, readings });
+    const a = mk([
+      { circuit: 1, field: 'zs', value: '0.35' },
+      { circuit: 2, field: 'zs', value: '0.40' },
+      { circuit: 3, field: 'zs', value: '0.45' },
+      { circuit: 4, field: 'zs', value: '0.50' },
+      { circuit: 5, field: 'zs', value: '0.55' },
+    ]);
+    const b = mk([
+      { circuit: 1, field: 'zs', value: '0.35' },
+      { circuit: 2, field: 'zs', value: '0.40' },
+      { circuit: 3, field: 'zs', value: '0.99' }, // wrong
+      { circuit: 4, field: 'zs', value: '0.50' },
+      { circuit: 5, field: 'zs', value: '0.55' },
+    ]);
     const d = computeDivergence(a, b);
     expect(d.diverged).toBe(true);
-    expect(d.call_divergence).toBeCloseTo(0.25, 6);
-    expect(d.reasons).toEqual(['observations']);
+    // OLD section metric — 1/4 sections differ.
+    expect(d.section_divergence).toBeCloseTo(0.25, 6);
+    // NEW call-level metric — 1/5 writes differ.
+    expect(d.call_divergence).toBeCloseTo(0.2, 6);
+  });
+
+  test("divergedness is OR of both metrics — section=0 with call>0 still flags", () => {
+    // Defensive: if a future refactor lets the two metrics disagree on
+    // zero-ness, the OR keeps diverged honest.
+    const same = { ...empty, readings: [{ circuit: 1, field: 'zs', value: '0.35' }] };
+    const d = computeDivergence(same, same);
+    expect(d.diverged).toBe(false);
   });
 });
 
@@ -311,6 +506,45 @@ describe('runDirectory — extraFixtures (F21934D4 inclusion)', () => {
         extraFixtures: ['/path/to/does-not-exist.json'],
       }),
     ).rejects.toThrow(/does-not-exist\.json/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Group C' — Plan 04-08 r2-#2: runDirectory now reports BOTH section-level
+// and call-level divergence rates as separate aggregate fields. The
+// SC #6 / STT-11 gate threshold applies to `call_divergence_rate` (the
+// real metric); `section_divergence_rate` is kept as a diagnostic.
+// ---------------------------------------------------------------------------
+
+describe('Group C\' — runDirectory exposes section + call metrics separately (r2-#2)', () => {
+  test('runDirectory report surfaces both section_divergence_rate AND call_divergence_rate', async () => {
+    const report = await runDirectory(FIXTURE_DIR);
+    expect(report).toHaveProperty('section_divergence_rate');
+    expect(report).toHaveProperty('call_divergence_rate');
+    expect(typeof report.section_divergence_rate).toBe('number');
+    expect(typeof report.call_divergence_rate).toBe('number');
+  });
+
+  test('on deterministic goldens both rates are 0 (5-fixture set)', async () => {
+    const report = await runDirectory(FIXTURE_DIR);
+    expect(report.section_divergence_rate).toBe(0);
+    expect(report.call_divergence_rate).toBe(0);
+  });
+
+  test('on combined 5+F21934D4 set both rates are 0', async () => {
+    const report = await runDirectory(FIXTURE_DIR, { extraFixtures: [F21934D4_PATH] });
+    expect(report.section_divergence_rate).toBe(0);
+    expect(report.call_divergence_rate).toBe(0);
+  });
+
+  test('per-session divergence now exposes BOTH section_divergence AND call_divergence fields', async () => {
+    const report = await runDirectory(FIXTURE_DIR, { extraFixtures: [F21934D4_PATH] });
+    for (const s of report.sessions) {
+      // Back-compat: call_divergence field still present.
+      expect(s.divergence).toHaveProperty('call_divergence');
+      // New r2-#2 field.
+      expect(s.divergence).toHaveProperty('section_divergence');
+    }
   });
 });
 
