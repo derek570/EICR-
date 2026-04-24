@@ -1550,6 +1550,163 @@ describe('r23-#3 serialiseToolResultBodies — structured-content shape coverage
       expect(serialiseToolResultBodies(toolLoopOut)).not.toContain('TRUST BOUNDARY');
     });
   });
+
+  // -------------------------------------------------------------------------
+  // Plan 04-34 r27-#1 — serialiseToolResultBodies returns structured
+  // {text, unsupported} so the fail-closed contract reaches callers.
+  //
+  // WHY: my r26-#1 walker substitutes `[unsupported-shape]` for
+  // hidden-state objects, but the r22-#2 Scenario 4a/4b/4c
+  // assertions only check `.not.toContain('<leak>')` on the raw
+  // string return. The placeholder contains no leak substring, so
+  // the assertion silently passes on hidden-state inputs — the
+  // caller has no way to detect whether the scan was complete. A
+  // fabricated-state fixture could land a leak on a hidden shape
+  // and all three Scenario 4 scenarios would remain green.
+  //
+  // Fix: refactor `serialiseToolResultBodies` to return
+  // `{text, unsupported}`; propagate `unsupported = true` up from
+  // `extractTextFromBlock` via a shared mutable flags object.
+  // Every caller asserts BOTH:
+  //   (a) `result.unsupported === false` — scan was complete.
+  //   (b) `result.text` doesn't contain the leak substring —
+  //       no leak in the scanned output.
+  //
+  // Tests below exercise:
+  //   1. Normal string content → {unsupported: false, text: '...'}
+  //   2. Non-enumerable own-property → {unsupported: true, ...}
+  //   3. toJSON present → {unsupported: true, ...}
+  //   4. Proxy with empty ownKeys → {unsupported: true, ...}
+  //      (deferred to r27-#2 sentinel probe — RED here, GREEN in
+  //      Task 3; for Task 2 we assert only the flag presence on
+  //      explicit non-enumerable + toJSON fixtures)
+  //   5. Deep nested tool_result with one leaky block among clean
+  //      → {unsupported: true, ...} propagation.
+  //   6. Multiple tool_result messages, all clean →
+  //      {unsupported: false, ...}.
+  //   7. Empty / missing messages_final → {text: '', unsupported: false}
+  // -------------------------------------------------------------------------
+  describe('r27-#1 serialiseToolResultBodies returns {text, unsupported} — structured return + flag propagation', () => {
+    const wrapAsToolResult = (contentShape) => ({
+      messages_final: [
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'tool_result',
+              tool_use_id: 'toolu_r27',
+              content: contentShape,
+            },
+          ],
+        },
+      ],
+    });
+
+    test('1. normal string content → {unsupported: false, text: "content"}', () => {
+      const toolLoopOut = wrapAsToolResult('benign content');
+      const result = serialiseToolResultBodies(toolLoopOut);
+      expect(result).toEqual({ text: 'benign content', unsupported: false });
+    });
+
+    test('2. non-enumerable own-property holding leak → {unsupported: true}', () => {
+      const obj = {};
+      Object.defineProperty(obj, 'leak', {
+        value: 'TRUST BOUNDARY',
+        enumerable: false,
+      });
+      const toolLoopOut = wrapAsToolResult(obj);
+      const result = serialiseToolResultBodies(toolLoopOut);
+      expect(result.unsupported).toBe(true);
+      expect(result.text).not.toContain('TRUST BOUNDARY');
+    });
+
+    test('3. toJSON() present → {unsupported: true}', () => {
+      const obj = {
+        text: 'ok',
+        toJSON() {
+          return { text: 'ok' };
+        },
+      };
+      const toolLoopOut = wrapAsToolResult(obj);
+      const result = serialiseToolResultBodies(toolLoopOut);
+      expect(result.unsupported).toBe(true);
+    });
+
+    test('5. deep-nested tool_result — one leaky block among clean siblings → unsupported propagates up', () => {
+      // Two tool_result messages; the first is clean, the second
+      // carries a hidden-shape payload. The unsupported flag must
+      // propagate from the second to the aggregate result.
+      const hiddenObj = {};
+      Object.defineProperty(hiddenObj, 'leak', {
+        value: 'SYSTEM_CHANNEL',
+        enumerable: false,
+      });
+      const toolLoopOut = {
+        messages_final: [
+          {
+            role: 'user',
+            content: [{ type: 'tool_result', tool_use_id: 't1', content: 'clean' }],
+          },
+          {
+            role: 'user',
+            content: [{ type: 'tool_result', tool_use_id: 't2', content: hiddenObj }],
+          },
+        ],
+      };
+      const result = serialiseToolResultBodies(toolLoopOut);
+      expect(result.unsupported).toBe(true);
+      expect(result.text).toContain('clean');
+    });
+
+    test('6. multiple tool_result messages all clean → {unsupported: false}', () => {
+      const toolLoopOut = {
+        messages_final: [
+          {
+            role: 'user',
+            content: [{ type: 'tool_result', tool_use_id: 't1', content: 'first body' }],
+          },
+          {
+            role: 'user',
+            content: [{ type: 'tool_result', tool_use_id: 't2', content: { text: 'second body' } }],
+          },
+        ],
+      };
+      const result = serialiseToolResultBodies(toolLoopOut);
+      expect(result.unsupported).toBe(false);
+      expect(result.text).toContain('first body');
+      expect(result.text).toContain('second body');
+    });
+
+    test('7. missing / empty messages_final → {text: "", unsupported: false}', () => {
+      expect(serialiseToolResultBodies({})).toEqual({ text: '', unsupported: false });
+      expect(serialiseToolResultBodies(null)).toEqual({ text: '', unsupported: false });
+      expect(serialiseToolResultBodies(undefined)).toEqual({ text: '', unsupported: false });
+      expect(serialiseToolResultBodies({ messages_final: [] })).toEqual({
+        text: '',
+        unsupported: false,
+      });
+    });
+
+    test('8. Scenario 4-style: tool_result carrying ONLY hidden-state → assertion unsupported===false would fail', () => {
+      // This is the critical failure case: the raw leak is
+      // replaced by `[unsupported-shape]` so the old
+      // `.not.toContain('TRUST BOUNDARY')` assertion SILENTLY
+      // PASSES on the placeholder. Post-r27-#1, the caller MUST
+      // also assert `unsupported === false` to catch the
+      // scan-incomplete signal.
+      const obj = {};
+      Object.defineProperty(obj, 'leak', {
+        value: 'TRUST BOUNDARY',
+        enumerable: false,
+      });
+      const toolLoopOut = wrapAsToolResult(obj);
+      const result = serialiseToolResultBodies(toolLoopOut);
+      // Raw leak not in text (r26-#1 behaviour preserved).
+      expect(result.text).not.toContain('TRUST BOUNDARY');
+      // But Scenario 4's complete-scan contract REQUIRES this:
+      expect(result.unsupported).toBe(true);
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------
