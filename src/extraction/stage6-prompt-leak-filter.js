@@ -137,10 +137,31 @@ const EXAMPLE_HEADER_RE = /\bExample\s+[1-9]:/i;
  * anything above 120 is either a dump-style attack or a user
  * dictating the WHOLE sentence as a circuit name — both warrant a
  * reject (and the model retries with a short, real name).
+ *
+ * Plan 04-28 r21-#1 — introduce per-field classes for the observation
+ * sub-fields. The 04-27 r20-#1 fix correctly ADDED `location` and
+ * `suggested_regulation` to the scan list but classified both as
+ * `observation_text`, inheriting the 1000-char ceiling. Real-world
+ * values for these sub-fields are much shorter:
+ *
+ *   - `observation_location` (120c): real locations are short
+ *     position labels — "Kitchen sockets consumer unit" (~30 chars),
+ *     "Bathroom shaver socket and lighting circuit junction box"
+ *     (~58 chars). A 120c ceiling catches a 150-char benign
+ *     paraphrase of the prompt with zero FPs on real location data.
+ *
+ *   - `observation_regulation` (60c): real regulation refs are
+ *     VERY short — "Regulation 522.6.201" (20 chars), "BS 7671
+ *     643.3.2" (15 chars), occasional rich forms up to ~55 chars
+ *     ("BS 7671 regulation 522.6.201 shock-risk installation").
+ *     60c ceiling catches anything longer as suspicious with
+ *     zero FPs on real regulation data.
  */
 const LENGTH_CEILING = {
   question: 500,
   observation_text: 1000,
+  observation_location: 120,
+  observation_regulation: 60,
   designation: 120,
 };
 
@@ -210,10 +231,22 @@ function hasHighEntropyChunk(text, re) {
 const LOW_ALPHA_MIN_LENGTH = {
   question: 200,
   designation: 40,
+  // Plan 04-28 r21-#1 — observation_location gets a conservative
+  // low-alpha guard (real locations are almost all alpha + spaces:
+  // "Kitchen sockets consumer unit" is 95% alpha). 40-char min
+  // floor + 0.6 ratio bar catches punctuation-heavy bypass attempts
+  // without false-positiving on real location labels.
+  observation_location: 40,
+  // DELIBERATELY NOT applied to observation_regulation: real regulation
+  // refs are numeric-heavy. "Regulation 522.6.201" is 50% alpha;
+  // "7671 522.6.201" is 22% alpha — a 0.4 or 0.6 bar would destroy
+  // real content. The 60c length ceiling is the only backstop for
+  // that field.
 };
 const LOW_ALPHA_THRESHOLD = {
   question: 0.5,
   designation: 0.4,
+  observation_location: 0.6,
 };
 
 function alphaRatio(text) {
@@ -322,9 +355,11 @@ export function checkForPromptLeak(text, opts = {}) {
     return makeUnsafe(field, 'entropy:hex');
   }
 
-  // Family 7 — r20-#3 per-field conservative low-alpha-ratio guard
-  // for question + designation (NOT observation_text — see const
-  // docblock above for why).
+  // Family 7 — r20-#3 + r21-#1 per-field conservative low-alpha-ratio
+  // guard for question + designation + observation_location. NOT
+  // applied to observation_text (real observations carry numeric
+  // content) or observation_regulation (real regulation refs are
+  // numeric-heavy). See LOW_ALPHA_MIN_LENGTH docblock above.
   const minLen = LOW_ALPHA_MIN_LENGTH[field];
   const alphaBar = LOW_ALPHA_THRESHOLD[field];
   if (minLen && alphaBar && text.length >= minLen) {

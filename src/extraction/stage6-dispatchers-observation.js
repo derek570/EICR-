@@ -98,39 +98,53 @@ export async function dispatchRecordObservation(call, ctx) {
     return envelope(call.tool_call_id, { ok: false, error: err }, true);
   }
 
-  // Plan 04-27 r20-#1: scan ALL free-text observation fields for system-
-  // prompt leak content, not just `text`.
+  // Plan 04-27 r20-#1 + Plan 04-28 r21-#1: scan ALL free-text
+  // observation fields for system-prompt leak content, routing EACH
+  // field to its own `checkForPromptLeak()` field class.
   //
-  // r20 review found that 04-26's decision to only scan `text` left
-  // `location` and `suggested_regulation` as live bypass routes: both
-  // render on the PDF certificate (location column + regulation reference
-  // under the observation text). An attacker who steers the model to
-  // emit prompt content into either field sees it appear verbatim in
-  // the customer's PDF.
+  // r20-#1 widened the scan to location + suggested_regulation but
+  // classified both as `observation_text` — inheriting the 1000-char
+  // length ceiling. r21-#1 closed that bypass: a 150-char benign
+  // paraphrase of the prompt in `location` passes every marker,
+  // entropy, reversed, and low-alpha check AND stays under the 1000c
+  // ceiling for observation_text, yet is genuinely anomalous for a
+  // location label (real locations are ~30 chars — "Kitchen sockets
+  // consumer unit"). Same bypass shape for suggested_regulation (real
+  // refs are ~20 chars — "Regulation 522.6.201").
   //
-  // Failure mode CHANGED (r20-#1) vs 04-26:
-  //   04-26 — substitute `text` with sanitised refusal; preserve the
-  //           observation on session for audit trail.
-  //   04-27 — reject the ENTIRE call (is_error:true). `location` and
-  //           `suggested_regulation` are short fields that can't carry
-  //           a meaningful sanitised substitute without corrupting the
-  //           PDF shape (a refusal string in the location column would
-  //           be nonsensical). A uniform reject rule is simpler and
-  //           safer. The prompt_leak_blocked warn row carries the
-  //           audit breadcrumb (which fields leaked, what filter family
-  //           fired, how long the payload was — NEVER any substring of
-  //           the blocked content; see r20-#2 redaction).
+  // Per-field class map:
+  //   - `text`                  → observation_text       (1000c ceiling)
+  //   - `location`              → observation_location   (120c + 0.6 alpha guard)
+  //   - `suggested_regulation`  → observation_regulation (60c ceiling only)
+  //
+  // Why no alpha guard on observation_regulation: real regulation
+  // references are numeric-heavy ("522.6.201" is 22% alpha). Applying
+  // a low-alpha guard would destroy real content. The 60c ceiling is
+  // the sole backstop for that field.
+  //
+  // Failure mode (inherited from r20-#1): leak in ANY field rejects
+  // the ENTIRE call (is_error:true). Uniform reject rule — no
+  // substitution attempt for these short fields because a refusal
+  // string in the PDF location column or regulation reference row
+  // would be nonsensical. The prompt_leak_blocked warn row carries
+  // the audit breadcrumb (which fields leaked, what filter family
+  // fired, how long the payload was — NEVER any substring of the
+  // blocked content; see r20-#2 redaction).
   //
   // Scan results aggregated across all three fields so the log row
   // names EVERY offending field in one emission (not one-per-field).
   // The model sees a single structured error with `fields: [...]` and
   // can retry with a fresh observation.
-  const OBS_FREE_TEXT_FIELDS = ['text', 'location', 'suggested_regulation'];
+  const OBS_FREE_TEXT_FIELD_CLASSES = {
+    text: 'observation_text',
+    location: 'observation_location',
+    suggested_regulation: 'observation_regulation',
+  };
   const offendingLeaks = [];
-  for (const fieldName of OBS_FREE_TEXT_FIELDS) {
+  for (const [fieldName, fieldClass] of Object.entries(OBS_FREE_TEXT_FIELD_CLASSES)) {
     const value = input[fieldName];
     if (typeof value !== 'string' || value.length === 0) continue;
-    const leak = checkForPromptLeak(value, { field: 'observation_text' });
+    const leak = checkForPromptLeak(value, { field: fieldClass });
     if (!leak.safe) {
       offendingLeaks.push({ field: fieldName, reason: leak.reason, length: value.length });
     }
