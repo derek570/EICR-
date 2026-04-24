@@ -1442,6 +1442,170 @@ describe('checkForPromptLeak() — Layer 2 output-side prompt-leak filter', () =
   });
 
   // ------------------------------------------------------------------
+  // Group 13 — r24-#1 composite context scoping for bare modifier-section
+  // ------------------------------------------------------------------
+  //
+  // WHY: r24 re-review found that my r23-#1 10th
+  // REGULATION_SHAPE_PATTERNS entry (bare modifier-section:
+  // "Table 41.1", "Appendix 4", "Part 6", "Section 706",
+  // "Annex A") was added to cover the NON-FIRST token of
+  // composites like "BS 7671 411.3.3, Table 41.1". But the
+  // pattern is also live on the single-ref fast path, so
+  // standalone "Table 41.1" / "Appendix 4" / "Part 6" now
+  // passes as a regulation reference. In isolation the value
+  // is not meaningful — "Table 41.1 of WHICH standard?"
+  //
+  // Fix: split REGULATION_SHAPE_PATTERNS into
+  //   FULLY_QUALIFIED_PATTERNS (9 — each standalone-valid;
+  //     establishes a standard), and
+  //   BARE_MODIFIER_PATTERNS (r23-#1 10th — only valid as a
+  //     non-first token in a composite, scoped to the
+  //     preceding fully-qualified token's standard).
+  // Single-ref (non-composite) validation uses only
+  // FULLY_QUALIFIED. Composite validation requires
+  // first-non-empty-token be fully-qualified; subsequent
+  // tokens may be either fully-qualified or bare-modifier.
+  //
+  // Ordering invariant preserved: marker / phrase / entropy /
+  // length detectors still fire BEFORE the shape gate, so a
+  // leak hidden in a composite-shaped envelope ("TRUST
+  // BOUNDARY / Table 41.1") surfaces as `marker:*` not
+  // `non-regulation-shape`.
+  describe('Group 13 — r24-#1 composite context scoping for bare modifier-section', () => {
+    // --------- Reject: standalone bare-modifier (NOT fully qualified) ---------
+    test.each([['Table 41.1'], ['Appendix 4'], ['Part 6'], ['Section 706'], ['Annex A']])(
+      'reject standalone bare-modifier "%s" (no standard established)',
+      (sample) => {
+        const result = checkForPromptLeak(sample, { field: 'observation_regulation' });
+        expect(result.safe).toBe(false);
+        expect(result.reason).toMatch(/^non-regulation-shape/);
+      }
+    );
+
+    // --------- Accept: composite with bare-modifier as NON-FIRST token ---------
+    test.each([
+      ['BS 7671 411.3.3, Table 41.1'],
+      ['BS 7671, Table 41.1'],
+      ['BS 7671 411.3.3, Appendix 4'],
+      ['Regulation 522.6.201, Table 41.1'],
+    ])('accept composite with bare-modifier non-first: "%s"', (sample) => {
+      const result = checkForPromptLeak(sample, { field: 'observation_regulation' });
+      expect(result.safe).toBe(true);
+    });
+
+    // --------- Reject: composite with bare-modifier as FIRST token ---------
+    test.each([
+      ['Table 41.1, BS 7671 411.3.3'],
+      ['Part 6, BS 7671 411.3.3'],
+      ['Appendix 4 / 411.3.3'],
+    ])('reject composite with bare-modifier first: "%s"', (sample) => {
+      const result = checkForPromptLeak(sample, { field: 'observation_regulation' });
+      expect(result.safe).toBe(false);
+      expect(result.reason).toMatch(/^non-regulation-shape/);
+    });
+
+    // --------- Accept: bare-numeric-first (fully qualified by convention) ---------
+    test('accept bare-numeric-first composite: "411.3.3, Table 41.1"', () => {
+      // Bare numeric "411.3.3" matches pattern 1 (FULLY_QUALIFIED)
+      // — it establishes a standard by UK electrical convention
+      // (BS 7671 is the implicit standard for bare numeric refs).
+      const text = '411.3.3, Table 41.1';
+      const result = checkForPromptLeak(text, { field: 'observation_regulation' });
+      expect(result.safe).toBe(true);
+    });
+
+    // --------- Back-compat: Group 12 composite accepts still pass ---------
+    test('back-compat: all 8 Group 12 composite accepts still pass', () => {
+      const group12 = [
+        '411.3.3 / 522.6.201',
+        '411.3.3/522.6.201',
+        'BS 7671 411.3.3, Table 41.1',
+        'BS 7671 411.3.3, 522.6.201',
+        'Regulation 522.6.201 and 411.3.3',
+        'BS 7671; 411.3.3',
+        '411.3.3, 522.6.201, 132.15',
+        'BS EN 61008-1 / BS EN 60898-1',
+      ];
+      for (const s of group12) {
+        const result = checkForPromptLeak(s, { field: 'observation_regulation' });
+        expect(result.safe).toBe(true);
+      }
+    });
+
+    // --------- Back-compat: Group 11 + Group 9 single refs still pass ---------
+    test('back-compat: 26 Group 11 ACCEPT_SAMPLES still pass as single refs', () => {
+      const singles = [
+        'Regulation 522.6.201',
+        'Regulation 411.3.3',
+        'Regulation 132.15',
+        'Reg 411.3.3',
+        'BS 7671',
+        'BS 3871',
+        'BS 88-2',
+        'BS 7671 643.3.2',
+        'BS 7671 411.3.3',
+        'BS 7671 Table 41.1',
+        'BS 7671 Table 54.7',
+        'BS 7671 Part 6',
+        'BS 7671 Section 706',
+        'BS 7671 Appendix 4',
+        'BS EN 61008-1',
+        'BS EN 60898-1',
+        'BS EN 60335-2-73',
+        'BS EN 61558-2-5',
+        'BS EN 61643-11',
+        '411.3.1.1',
+        '522.6.201',
+        '722.411.4.1',
+        '534.4.4.5',
+        '701.411.3.3',
+        'IET Guidance',
+        'IET Guidance Note 3',
+      ];
+      for (const s of singles) {
+        const result = checkForPromptLeak(s, { field: 'observation_regulation' });
+        expect(result.safe).toBe(true);
+      }
+    });
+
+    test('back-compat: 10 Group 9 SAMPLES_REGULATION still pass as single refs', () => {
+      const group9 = [
+        'Regulation 522.6.201',
+        'BS 7671 643.3.2',
+        '411.3.1.1',
+        'Regulation 411.3.3',
+        'BS 7671 Part 6',
+        '701.415.2',
+        '544.1.1',
+        '722.533',
+        'BS 7671 Section 706',
+        'Regulation 132.15',
+      ];
+      for (const s of group9) {
+        const result = checkForPromptLeak(s, { field: 'observation_regulation' });
+        expect(result.safe).toBe(true);
+      }
+    });
+
+    // --------- Ordering invariant ---------
+    test('ordering: marker check fires BEFORE shape check (composite with bare modifier)', () => {
+      const text = 'TRUST BOUNDARY / Table 41.1';
+      const result = checkForPromptLeak(text, { field: 'observation_regulation' });
+      expect(result.safe).toBe(false);
+      expect(result.reason).toMatch(/^marker:/);
+      expect(result.reason).not.toMatch(/^non-regulation-shape/);
+    });
+
+    test('ordering: requirement-ID check fires BEFORE shape check (composite with bare modifier)', () => {
+      const text = 'STQ-01, Table 41.1';
+      const result = checkForPromptLeak(text, { field: 'observation_regulation' });
+      expect(result.safe).toBe(false);
+      expect(result.reason).toMatch(/^req-id:/);
+      expect(result.reason).not.toMatch(/^non-regulation-shape/);
+    });
+  });
+
+  // ------------------------------------------------------------------
   // Defensive edge cases
   // ------------------------------------------------------------------
   describe('Edge cases', () => {
