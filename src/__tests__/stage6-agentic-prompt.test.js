@@ -30,6 +30,8 @@ import fssync from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { TOOL_SCHEMAS, CONTEXT_FIELD_ENUM } from '../extraction/stage6-tool-schemas.js';
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const PROMPT_PATH = path.join(
@@ -245,6 +247,151 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       const mentionsPrefixOrSnapshot =
         lower.includes('prefix') || lower.includes('snapshot');
       expect(mentionsPrefixOrSnapshot).toBe(true);
+    });
+  });
+
+  // ------------------------------------------------------------------
+  // Group 8: Plan 04-07 r1 — field-name audit against schema enum.
+  //
+  // WHY THIS GROUP EXISTS: Codex STG r1 (2026-04-23) flagged the
+  // `r1_plus_r2` vs `r1_r2_ohm` typo on prompt line 159. Cross-check
+  // expanded the audit and found 11 distinct field-name mismatches
+  // across every worked example. Under strict:true tool schemas
+  // (STS-08), any of these would cause the Anthropic API to reject
+  // the tool call at dispatch. This group locks the prompt's field
+  // names against the CANONICAL SOURCE (stage6-tool-schemas.js at
+  // test-time), so the prompt cannot silently drift from the enum
+  // ever again — a future phase that widens the enum auto-updates
+  // this test; a future prompt edit that invents a new alias breaks
+  // this test loudly.
+  //
+  // AUDIT SCOPE: three surfaces in the prompt, all derived from the
+  // same enum sources:
+  //   1. `field: "X"` patterns inside worked-example pseudocode.
+  //      Must be a member of record_reading.field enum.
+  //   2. `context_field: "X"` patterns inside ask_user pseudocode.
+  //      Must be a member of ask_user.context_field enum (circuit
+  //      fields + sentinels).
+  //   3. Backtick-quoted field names on the EDGE CASES discontinuous-
+  //      continuity line — explicit enumeration of ring/continuity
+  //      field keys where the model is told to write "∞".
+  // ------------------------------------------------------------------
+  describe('Group 8 — Plan 04-07 r1: field-name audit (Codex MAJOR #1)', () => {
+    function getRecordReadingFieldEnum() {
+      const tool = TOOL_SCHEMAS.find((t) => t.name === 'record_reading');
+      if (!tool) throw new Error('record_reading schema not found');
+      return new Set(tool.input_schema.properties.field.enum);
+    }
+
+    function getContextFieldEnum() {
+      // ask_user.context_field accepts circuit_fields keys + sentinels + null.
+      // CONTEXT_FIELD_ENUM is the exported single source of truth.
+      // Filter out null (not a quoted string), stringify the rest for lookup.
+      return new Set(CONTEXT_FIELD_ENUM.filter((v) => typeof v === 'string'));
+    }
+
+    test('record_reading enum is non-empty and correctly codegenned', () => {
+      const validFields = getRecordReadingFieldEnum();
+      // Sanity: the enum must exist and contain the canonical Zs field.
+      // If this fails, something is wrong with the test setup — the
+      // field-name audit below would otherwise return false positives.
+      expect(validFields.size).toBeGreaterThan(0);
+      expect(validFields.has('measured_zs_ohm')).toBe(true);
+      expect(validFields.has('r1_r2_ohm')).toBe(true);
+      expect(validFields.has('polarity_confirmed')).toBe(true);
+      expect(validFields.has('ir_live_live_mohm')).toBe(true);
+      expect(validFields.has('ir_live_earth_mohm')).toBe(true);
+    });
+
+    test('every `field: "X"` in the prompt is a record_reading enum member', () => {
+      const validFields = getRecordReadingFieldEnum();
+      // Match `field: "snake_case_identifier"` — quoted values inside
+      // worked-example pseudocode. Double-quoted form only; the prompt
+      // uses "..." around pseudocode values throughout.
+      const matches = prompt.match(/field:\s*"([a-z_][a-z0-9_]*)"/g) || [];
+      const ids = [...new Set(matches.map((m) => m.match(/"([^"]+)"/)[1]))];
+
+      const invalid = ids.filter((id) => !validFields.has(id));
+      expect(invalid).toEqual([]);
+    });
+
+    test('every `context_field: "X"` in the prompt is an ask_user context_field enum member', () => {
+      const validCtx = getContextFieldEnum();
+      const matches =
+        prompt.match(/context_field:\s*"([a-z_][a-z0-9_]*)"/g) || [];
+      const ids = [...new Set(matches.map((m) => m.match(/"([^"]+)"/)[1]))];
+
+      const invalid = ids.filter((id) => !validCtx.has(id));
+      expect(invalid).toEqual([]);
+    });
+
+    test('every backticked field name on the EDGE CASES discontinuous-continuity line is a record_reading enum member', () => {
+      // Locate the EDGE CASES discontinuous-continuity line. The prompt
+      // line shape (post-fix) is: "Discontinuous continuity: emit the
+      // LITERAL character "∞" (U+221E) as the `value` for `FIELD1`,
+      // `FIELD2`, ... and call `record_observation`...".
+      //
+      // We extract all backtick-quoted tokens on the line and filter
+      // out tool names / pseudocode keywords (value, record_observation,
+      // etc.), leaving only identifiers that are claimed to be
+      // record_reading field names.
+      const validFields = getRecordReadingFieldEnum();
+      const TOOL_NAMES = new Set(TOOL_SCHEMAS.map((t) => t.name));
+      const PSEUDOCODE_KEYWORDS = new Set(['value', 'tool_result', 'code']);
+
+      // Find the Discontinuous continuity bullet. Accept either heading
+      // convention in case a future edit rewords "Discontinuous continuity"
+      // slightly — we look for the "LITERAL character ∞" anchor which
+      // is stable across edits.
+      const lines = prompt.split(/\r?\n/);
+      const discontLine = lines.find(
+        (l) => l.includes('LITERAL character') && l.includes('∞'),
+      );
+      expect(discontLine).toBeDefined();
+
+      const backtickIds = [
+        ...new Set(
+          (discontLine.match(/`([a-z][a-z0-9_]*)`/g) || []).map((m) =>
+            m.replace(/`/g, ''),
+          ),
+        ),
+      ];
+
+      // Filter out tool names + pseudocode keywords; remainder are claimed
+      // field-name enum values.
+      const fieldClaims = backtickIds.filter(
+        (id) => !TOOL_NAMES.has(id) && !PSEUDOCODE_KEYWORDS.has(id),
+      );
+
+      // There SHOULD be at least one field claim on this line (otherwise
+      // the prompt has dropped the explicit enumeration and the test is
+      // vacuous). Lock that.
+      expect(fieldClaims.length).toBeGreaterThan(0);
+
+      const invalid = fieldClaims.filter((id) => !validFields.has(id));
+      expect(invalid).toEqual([]);
+    });
+
+    test('prompt does NOT contain the broken `r1_plus_r2` alias (Codex MAJOR #1 direct regression lock)', () => {
+      // Direct regression lock on the specific typo Codex flagged. If a
+      // future refactor re-introduces this string, this test fires loudly
+      // rather than waiting for the full-enum audit to catch it.
+      expect(prompt.includes('r1_plus_r2')).toBe(false);
+    });
+
+    test('prompt does NOT reference `address`/`client_address` as a record_reading field or ask_user context_field', () => {
+      // Plan 04-07 decision: Circuit-0 installation-level write surface
+      // is a pre-existing design gap — `address`/`client_address` are
+      // NOT in the strict enum, so the model cannot write them via
+      // record_reading today. Remove the dead disambiguation language
+      // rather than paper-over. Deferred to follow-up plan.
+      //
+      // Lock: neither identifier appears as a `field: "..."` nor
+      // `context_field: "..."` in the prompt pseudocode.
+      expect(prompt).not.toMatch(/field:\s*"address"/);
+      expect(prompt).not.toMatch(/field:\s*"client_address"/);
+      expect(prompt).not.toMatch(/context_field:\s*"address"/);
+      expect(prompt).not.toMatch(/context_field:\s*"client_address"/);
     });
   });
 });
