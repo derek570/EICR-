@@ -352,7 +352,7 @@ iOS sources:
 | AddObservationSheet Schedule Item (e.g. 4.4) `L220-L221` | MISSING | missing | 4 | Web sheet has no "Schedule Item" input field. Populated via Inspection tab instead. |
 | AddObservationSheet remedial action | iOS has no `remedial` field in AddObservationSheet | `observation-sheet.tsx` + page.tsx:L287-L294 Remedial block | partial | 4 | Web adds a `remedial` field; iOS surfaces remedial via `EditObservationSheet.swift:L210+` (confirmed separately in `Views/JobDetail/EditObservationSheet.swift` not fully read). |
 | Photos section — horizontal scroll of ObservationPhotoThumbnail with X-button remove `L230-L256` | `observation-sheet.tsx` photo grid with delete | match |  |  |
-| Camera button (fullScreenCover → PhotoCaptureView) `L267-L272` | observation-sheet.tsx Camera input (`capture="environment"`) | partial |  | iOS uses native camera overlay; web uses OS file input. Acceptable. |
+| Camera button (fullScreenCover → PhotoCaptureView) `L267-L272` | observation-sheet.tsx Camera input (`capture="environment"`) | ios-only |  | iOS uses native camera overlay; web uses OS file input. Acceptable — no gap to close. |
 | PhotosPicker Library button `L260-L266` | observation-sheet.tsx Library input | match |  | iOS PhotosPicker is native; web library file input covers same case. |
 | onAppear / toolbar Save + Cancel + Add (disabled when text empty) `L285-L302` | observation-sheet.tsx Save / Cancel | match |  |  |
 | ObservationCardView photo thumbnails (inline preview, tap to enlarge) | `observations/page.tsx:L296-L316` ObservationPhoto thumbs + "+N more" chip | match |  |  |
@@ -510,7 +510,7 @@ iOS sources:
 | Cost bar / cost pill — `$X.XX` during recording | `recording-chrome.tsx:L131-L138` formatCost + formatElapsed | match |  |  |
 | `formatElapsed` timer during recording | recording-chrome.tsx same | match |  |  |
 | 3-tier sleep (Active / Dozing / Sleeping) indicator | `recording-chrome.tsx:L240-L266` state-pill supports dozing/sleeping | match |  |  |
-| `recording-chrome.tsx:L41-L49` RecordingRing (pulsing border around page) — keeps page visible during recording | iOS keeps overlay floating over the page | partial |  | Different visual treatment; both achieve the "page visible while recording" goal. |
+| `recording-chrome.tsx:L41-L49` RecordingRing (pulsing border around page) — keeps page visible during recording | iOS keeps overlay floating over the page | match |  | Different visual treatment; both communicate "recording in progress" — no gap. |
 | `recording-chrome.tsx:L147-L158` Voice button `disabledReason="Voice prompts are iOS-only for now."` | covered above | missing | 8 |  |
 | `recording-chrome.tsx:L163-L171` Apply button `disabledReason="Apply-last-snapshot is iOS-only for now."` | covered above | missing | 8 |  |
 | `recording-context.tsx` sonnet-session + deepgram-service + mic-capture + resample + audio-ring-buffer + sleep-manager | iOS `DeepgramRecordingViewModel` + `DeepgramService` + `SonnetStreamingSession` | match |  | Web pipeline is feature-complete as of Phase 4e; architecture matches. |
@@ -658,8 +658,8 @@ iOS sources:
 | `CMUnitTextField` (text with trailing unit) | `web/src/components/ui/floating-label-input.tsx` `trailing` slot | match |  | Used in Supply tab for Ω / V / A / kA. |
 | `CMDatePickerField` | `<input type="date">` native | match |  |  |
 | `SignatureCaptureView` | `web/src/components/settings/signature-canvas.tsx` | match |  |  |
-| `PhotoCaptureView` (fullScreenCover native camera) | `<input type="file" accept="image/*" capture="environment">` | partial |  | Different native affordance. |
-| `PhotoPickerView` (PhotosPicker) | `<input type="file">` | partial |  |  |
+| `PhotoCaptureView` (fullScreenCover native camera) | `<input type="file" accept="image/*" capture="environment">` | ios-only |  | Different native affordance — web equivalent is acceptable. |
+| `PhotoPickerView` (PhotosPicker) | `<input type="file">` | ios-only |  | iOS-native primitive; web file input is the equivalent. |
 | `StatusBadge` (valid/expired/expiring/pending coloured pills) | `web/src/components/ui/pill.tsx` | match |  |  |
 | `OutcomeButtonGroup.swift` (✓/✗/N/A/LIM/C1/C2/C3/FI chip row) | inlined in `inspection/page.tsx` ScheduleRow | match |  |  |
 | `TypingText.swift` typing animation | MISSING | missing | 9 | iOS uses this for tour narration subtitles. |
