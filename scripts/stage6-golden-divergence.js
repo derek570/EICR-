@@ -157,12 +157,60 @@ export function normaliseExtractionResult(result) {
   const observations = (Array.isArray(src.observations) ? src.observations : [])
     .map((o) => normaliseObservation(o))
     .filter(Boolean)
+    // Plan 04-11 r5-#2: sort on the FULL canonical tuple. r3 (Plan 04-09)
+    // widened normaliseObservation to return {code, text, location,
+    // circuit, suggested_regulation} but the sort was still keyed on
+    // (code, text) alone. Two observations with matching (code, text)
+    // but differing metadata compared in input-order, producing order-
+    // dependent false divergences. Full-tuple sort makes the comparator
+    // order-invariant across input permutations.
+    //
+    // Ordering convention for the three new fields:
+    //   - location: string | null. Nulls sort LAST for easier digest
+    //     reading ("Kitchen" before null). localeCompare on non-null
+    //     pairs; null handling via explicit checks below.
+    //   - circuit: number | null. Integer compare on number pairs;
+    //     string compare when types mismatch (shouldn't happen under
+    //     the schema but defensive); nulls last.
+    //   - suggested_regulation: string | null. Same as location.
     .sort((a, b) => {
       if (a.code !== b.code) return a.code.localeCompare(b.code);
-      return a.text.localeCompare(b.text);
+      if (a.text !== b.text) return a.text.localeCompare(b.text);
+      const locCmp = compareNullableString(a.location, b.location);
+      if (locCmp !== 0) return locCmp;
+      const circCmp = compareNullableScalar(a.circuit, b.circuit);
+      if (circCmp !== 0) return circCmp;
+      return compareNullableString(a.suggested_regulation, b.suggested_regulation);
     });
 
   return { readings, clears, circuit_ops, observations };
+}
+
+/**
+ * Compare two values that may be null, preserving a stable "nulls last"
+ * ordering so sort output is deterministic even when some entries have
+ * missing metadata. Plan 04-11 r5-#2 helper — used by the observation
+ * sort (and the circuit-op sort where appropriate).
+ *
+ * Semantics:
+ *   - Both null → equal (0).
+ *   - Only a is null → a sorts AFTER b → return +1.
+ *   - Only b is null → a sorts BEFORE b → return -1.
+ *   - Neither null → caller-provided comparator.
+ */
+function compareNullableString(a, b) {
+  if (a === null && b === null) return 0;
+  if (a === null) return 1;
+  if (b === null) return -1;
+  return String(a).localeCompare(String(b));
+}
+
+function compareNullableScalar(a, b) {
+  if ((a === null || a === undefined) && (b === null || b === undefined)) return 0;
+  if (a === null || a === undefined) return 1;
+  if (b === null || b === undefined) return -1;
+  if (typeof a === 'number' && typeof b === 'number') return a - b;
+  return String(a).localeCompare(String(b));
 }
 
 function normaliseReading(r) {
