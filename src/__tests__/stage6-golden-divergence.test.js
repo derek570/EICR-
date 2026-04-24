@@ -2680,11 +2680,13 @@ describe('Group r7-2 — Plan 04-13 r7-#2: runToolCallPath seeds recentCircuitOr
     expect(Array.isArray(firstRequest.system)).toBe(true);
     expect(firstRequest.system.length).toBe(2);
     const snapshotText = firstRequest.system[1].text;
-    // Filled slot for circuit 2 must be visible. FIELD_ID_MAP at
-    // eicr-extraction-session.js:52-81 does NOT map r1_r2_ohm
-    // (canonical key is not in the compact map), so it serialises
-    // as the literal string `r1_r2_ohm`.
-    expect(snapshotText).toContain('r1_r2_ohm');
+    // Plan 04-19 r13-#2 — FIELD_ID_MAP was extended to canonical
+    // names (r1_r2_ohm → 14). Filled slot for circuit 2 must be
+    // visible EITHER as `"r1_r2_ohm":0.64` (if FIELD_ID_MAP ever
+    // drops the entry) OR as the compacted `"14":0.64` form. Both
+    // satisfy the "filled slot not collapsed into earlier-circuits
+    // summary" contract of r7-#2.
+    expect(snapshotText).toMatch(/("r1_r2_ohm"|"14")\s*:\s*0\.64/);
     // And the value must be preserved.
     expect(snapshotText).toContain('0.64');
   });

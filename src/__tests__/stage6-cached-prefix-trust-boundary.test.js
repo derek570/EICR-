@@ -530,14 +530,19 @@ describe('Plan 04-18 r12-#1 — WRAP_POLICY classification (server-canonical fie
   beforeEach(() => mockCreate.mockReset());
 
   test('r12-1a — polarity enum is serialised bare (no USER_TEXT markers)', () => {
-    // polarity is a closed enum ["", OK, Y, N]. No attack surface.
+    // polarity_confirmed is a closed enum ["", OK, Y, N]. No attack surface.
     // The pre-r12 code wrapped it the same way as free-text designations;
     // the r12 fix routes it through sanitise-only.
+    //
+    // Plan 04-19 r13-#2 — the seed key renamed from legacy `polarity`
+    // to canonical `polarity_confirmed`. FIELD_ID_MAP compact id stays
+    // 26 so the on-wire JSON shape (`"26":"OK"`) is unchanged —
+    // only the in-memory key name changed.
     const session = new EICRExtractionSession('k', 'sess-r12-1a', 'eicr', {
       toolCallsMode: 'shadow',
     });
     session.stateSnapshot.circuits[1] = {
-      polarity: 'OK',
+      polarity_confirmed: 'OK',
     };
     session.recentCircuitOrder = [1];
     const blocks = session.buildSystemBlocks();
@@ -549,9 +554,9 @@ describe('Plan 04-18 r12-#1 — WRAP_POLICY classification (server-canonical fie
     expect(extractedBlockMatch).not.toBeNull();
     const extractedBlock = extractedBlockMatch[0];
 
-    // polarity appears bare — no USER_TEXT wrap around "OK".
-    // FIELD_ID_MAP compacts `polarity` to numeric id 26, so the JSON
-    // shape is `"26":"OK"` (not `"polarity":"OK"`).
+    // polarity_confirmed appears bare — no USER_TEXT wrap around "OK".
+    // FIELD_ID_MAP compacts `polarity_confirmed` to numeric id 26, so
+    // the JSON shape is `"26":"OK"` (not `"polarity_confirmed":"OK"`).
     expect(extractedBlock).toMatch(/"26"\s*:\s*"OK"/);
     // No markers anywhere in the EXTRACTED block for this single-field
     // canonical circuit.
@@ -584,14 +589,17 @@ describe('Plan 04-18 r12-#1 — WRAP_POLICY classification (server-canonical fie
   test('r12-1c — mixed circuit: designation WRAPPED + polarity BARE in same JSON object', () => {
     // Most common real-world shape: a circuit has both a user-
     // dictated designation AND canonical test result fields. The
-    // map must split them — designation gets the wrap, polarity
-    // stays bare.
+    // map must split them — designation gets the wrap,
+    // polarity_confirmed stays bare.
+    //
+    // Plan 04-19 r13-#2 — key renamed from legacy `polarity` to
+    // canonical `polarity_confirmed`. Compact id 26 stable.
     const session = new EICRExtractionSession('k', 'sess-r12-1c', 'eicr', {
       toolCallsMode: 'shadow',
     });
     session.stateSnapshot.circuits[3] = {
       circuit_designation: 'kitchen sockets',
-      polarity: 'OK',
+      polarity_confirmed: 'OK',
     };
     session.recentCircuitOrder = [3];
     const blocks = session.buildSystemBlocks();
@@ -603,10 +611,10 @@ describe('Plan 04-18 r12-#1 — WRAP_POLICY classification (server-canonical fie
 
     // designation wrapped — FIELD_ID_MAP compacts `circuit_designation` → "1"
     expect(extractedBlock).toMatch(/"1"\s*:\s*"<<<USER_TEXT>>>kitchen sockets<<<END_USER_TEXT>>>"/);
-    // polarity bare in the SAME JSON object — FIELD_ID_MAP maps
-    // `polarity` to id 26.
+    // polarity_confirmed bare in the SAME JSON object — FIELD_ID_MAP
+    // maps `polarity_confirmed` to id 26.
     expect(extractedBlock).toMatch(/"26"\s*:\s*"OK"/);
-    // polarity is NOT wrapped — match the negation explicitly.
+    // polarity_confirmed is NOT wrapped — match the negation explicitly.
     expect(extractedBlock).not.toMatch(/"26"\s*:\s*"<<<USER_TEXT>>>OK<<<END_USER_TEXT>>>"/);
     // Exactly ONE open + ONE close marker in the block (one per
     // designation), so mixed policy is structurally clean.

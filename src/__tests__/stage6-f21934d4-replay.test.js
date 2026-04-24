@@ -413,7 +413,7 @@ describe('STT-04 Scenario A — Legacy prompt path (filled-slots-filter baseline
 // ---------------------------------------------------------------------------
 
 describe("STT-04 Scenario B' — Real EICRExtractionSession SC #4 exit check (r3-#3)", () => {
-  test("F21934D4 transcript against REAL session: captured request shows prompt loaded from disk + cached-prefix structure", async () => {
+  test('F21934D4 transcript against REAL session: captured request shows prompt loaded from disk + cached-prefix structure', async () => {
     // Arrange: real session. Pass 'test-key' as apiKey — the constructor
     // wires a real Anthropic instance but we replace .client below so no
     // network call ever fires. toolCallsMode='shadow' selects the
@@ -642,8 +642,8 @@ describe("STT-04 Scenario B' — Real EICRExtractionSession SC #4 exit check (r3
     //     renames the field is caught.
     const toolCallField = JSON.parse(
       fixture.sse_events_well_behaved.find(
-        (ev) => ev.type === 'content_block_delta' && ev.delta?.type === 'input_json_delta',
-      ).delta.partial_json,
+        (ev) => ev.type === 'content_block_delta' && ev.delta?.type === 'input_json_delta'
+      ).delta.partial_json
     ).field;
     expect(toolCallField).toBe('ir_live_live_mohm');
   });
@@ -753,19 +753,30 @@ describe('Group r6-3 — Plan 04-12 r6-#3: F21934D4 fixture pre-seed uses canoni
     const systemBlocks = session.buildSystemBlocks();
     expect(systemBlocks).toHaveLength(2);
     const snapshotText = systemBlocks[1].text;
-    // Canonical key present somewhere in the serialised snapshot.
-    // FIELD_ID_MAP at eicr-extraction-session.js:52-81 does NOT map
-    // canonical names (r1_r2_ohm, measured_zs_ohm) — they fall through
-    // the compact mapping path and serialise verbatim. A future
-    // extension of FIELD_ID_MAP to include canonical names would
-    // replace the literal text with a numeric id; if that happens,
-    // update this assertion to also accept the mapped form.
-    expect(snapshotText).toContain('r1_r2_ohm');
-    expect(snapshotText).toContain('measured_zs_ohm');
-    // Legacy keys MUST NOT appear. Guard against the fixture reverting
-    // or the snapshot serialiser growing a legacy back-compat path.
-    // Note: `"r1_r2":` (literal with colon) catches only the standalone
-    // key — substring matches of `r1_r2` inside `r1_r2_ohm` are fine.
+    // Plan 04-19 r13-#2 — FIELD_ID_MAP was extended to canonical
+    // names (r1_r2_ohm → 14, measured_zs_ohm → 22). The snapshot
+    // now compacts these to their numeric ids instead of serialising
+    // the literal text. This assertion accepts EITHER form (the
+    // literal text fallback OR the compacted id) because the point
+    // of the test is "the canonical slot is filled" — r6-#3's
+    // contract is that the LEGACY key must not appear, NOT that the
+    // canonical name must appear as a literal substring.
+    //
+    // Both key→id mappings for r6-3d's seeded fields:
+    //   r1_r2_ohm      → FIELD_ID_MAP id 14 → serialised as "14":0.64
+    //   measured_zs_ohm → FIELD_ID_MAP id 22 → serialised as "22":0.42
+    //
+    // The seeded values in the fixture snapshot are circuit 1's Zs
+    // (0.42) and circuit 2's R1+R2 (0.64) — the "canonical slot is
+    // filled" check pins on those values landing in the snapshot
+    // under EITHER the canonical key name or its compact id.
+    expect(snapshotText).toMatch(/("r1_r2_ohm"|"14")\s*:\s*0\.64/);
+    expect(snapshotText).toMatch(/("measured_zs_ohm"|"22")\s*:\s*0\.42/);
+    // Legacy keys MUST NOT appear as standalone object keys. Guard
+    // against the fixture reverting or the snapshot serialiser
+    // growing a legacy back-compat path. Note: `"r1_r2":` (literal
+    // with colon) catches only the standalone key — substring
+    // matches of `r1_r2` inside `r1_r2_ohm` are fine.
     expect(snapshotText).not.toMatch(/"r1_r2":/);
     expect(snapshotText).not.toMatch(/"zs":/);
   });
