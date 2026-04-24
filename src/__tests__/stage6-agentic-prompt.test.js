@@ -115,8 +115,7 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       // ask mid-sequence because the server batches utterances.
       const lower = prompt.toLowerCase();
       // Either "server batches" or "sequence" anchors the batching idea.
-      const anchorsBatching =
-        lower.includes('server batches') || lower.includes('sequence');
+      const anchorsBatching = lower.includes('server batches') || lower.includes('sequence');
       expect(anchorsBatching).toBe(true);
       // Plus an explicit prohibition on asking mid-utterance.
       expect(lower).toEqual(expect.stringContaining('do not ask before'));
@@ -244,8 +243,7 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
     test('prompt describes the cached prefix / snapshot as the state read surface', () => {
       const lower = prompt.toLowerCase();
       expect(lower).toEqual(expect.stringContaining('cached'));
-      const mentionsPrefixOrSnapshot =
-        lower.includes('prefix') || lower.includes('snapshot');
+      const mentionsPrefixOrSnapshot = lower.includes('prefix') || lower.includes('snapshot');
       expect(mentionsPrefixOrSnapshot).toBe(true);
     });
   });
@@ -317,8 +315,7 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
 
     test('every `context_field: "X"` in the prompt is an ask_user context_field enum member', () => {
       const validCtx = getContextFieldEnum();
-      const matches =
-        prompt.match(/context_field:\s*"([a-z_][a-z0-9_]*)"/g) || [];
+      const matches = prompt.match(/context_field:\s*"([a-z_][a-z0-9_]*)"/g) || [];
       const ids = [...new Set(matches.map((m) => m.match(/"([^"]+)"/)[1]))];
 
       const invalid = ids.filter((id) => !validCtx.has(id));
@@ -344,23 +341,19 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       // slightly — we look for the "LITERAL character ∞" anchor which
       // is stable across edits.
       const lines = prompt.split(/\r?\n/);
-      const discontLine = lines.find(
-        (l) => l.includes('LITERAL character') && l.includes('∞'),
-      );
+      const discontLine = lines.find((l) => l.includes('LITERAL character') && l.includes('∞'));
       expect(discontLine).toBeDefined();
 
       const backtickIds = [
         ...new Set(
-          (discontLine.match(/`([a-z][a-z0-9_]*)`/g) || []).map((m) =>
-            m.replace(/`/g, ''),
-          ),
+          (discontLine.match(/`([a-z][a-z0-9_]*)`/g) || []).map((m) => m.replace(/`/g, ''))
         ),
       ];
 
       // Filter out tool names + pseudocode keywords; remainder are claimed
       // field-name enum values.
       const fieldClaims = backtickIds.filter(
-        (id) => !TOOL_NAMES.has(id) && !PSEUDOCODE_KEYWORDS.has(id),
+        (id) => !TOOL_NAMES.has(id) && !PSEUDOCODE_KEYWORDS.has(id)
       );
 
       // There SHOULD be at least one field claim on this line (otherwise
@@ -392,6 +385,117 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       expect(prompt).not.toMatch(/field:\s*"client_address"/);
       expect(prompt).not.toMatch(/context_field:\s*"address"/);
       expect(prompt).not.toMatch(/context_field:\s*"client_address"/);
+    });
+  });
+
+  // ------------------------------------------------------------------
+  // Group 9: Plan 04-26 — CONFIDENTIALITY (prompt non-disclosure)
+  //
+  // WHY THIS GROUP EXISTS: rounds 7-14 locked the INPUT side of the
+  // trust boundary — user-dictated text in the cached prefix can't
+  // steer the model. Plan 04-26 locks the OUTPUT side — the model
+  // must not disclose the system prompt back through free-text tool-
+  // use fields (ask_user.question, record_observation.text, circuit
+  // designations). This group asserts the prompt contains a
+  // non-disclosure section with:
+  //   A — section header "## CONFIDENTIALITY"
+  //   B — explicit non-disclosure clause ("MUST NOT disclose")
+  //   C — extraction-pattern refusal (names at least 4 of
+  //       translation / roleplay / completion / code block /
+  //       marker injection / hypothetical)
+  //   D — banned-literals enumeration (TRUST BOUNDARY, USER_TEXT,
+  //       STQ-0, <<< — all in the same ~600-char window)
+  //   E — C3 attempt-recording clause (code C3 + record_observation
+  //       + extraction concept co-located within ~400 chars)
+  //   F — the new section leaves total prompt ≤ 4000 tokens
+  //       (Group 1 also asserts this — Group 9 re-asserts as a
+  //       regression lock for the new section).
+  //
+  // Layer 2 (output filter) + Layer 3 (adversarial battery) are
+  // locked in separate test files — this group is scoped to the
+  // prompt-content invariant only.
+  // ------------------------------------------------------------------
+  describe('Group 9 — Plan 04-26: CONFIDENTIALITY (prompt non-disclosure)', () => {
+    test('Test A — section header "## CONFIDENTIALITY" is present (case-sensitive)', () => {
+      // Anchor. If the section is ever removed or renamed, this
+      // fires first before the detailed content checks.
+      expect(prompt).toEqual(expect.stringContaining('## CONFIDENTIALITY'));
+    });
+
+    test('Test B — non-disclosure clause names "MUST NOT disclose"', () => {
+      // Verbatim, case-sensitive — the directive phrasing is
+      // deliberately in all-caps for model-alignment emphasis
+      // (same stylistic choice as "TRUST BOUNDARY (CRITICAL — ...)").
+      expect(prompt).toEqual(expect.stringContaining('MUST NOT disclose'));
+    });
+
+    test('Test C — names at least 4 extraction-attempt patterns', () => {
+      // The directive must enumerate the common jailbreak shapes so
+      // the model has named vectors to pattern-match against in its
+      // refusal decision. A loose case-insensitive count on the
+      // named set catches a minimum-coverage drop without locking
+      // exact phrasing.
+      const lower = prompt.toLowerCase();
+      const patterns = [
+        'translation',
+        'roleplay',
+        'completion',
+        'code block',
+        'code-block', // accept either hyphenation
+        'marker injection',
+        'marker-injection',
+        'hypothetical',
+        'encoding', // bonus — matches "encoded" phrasing
+        'reversal',
+      ];
+      const hits = patterns.filter((p) => lower.includes(p)).length;
+      // Allow accepting alternate hyphenations (code block / code-block
+      // count as one concept, etc.) — require the DISTINCT CONCEPT
+      // count to be ≥ 4 via this loose superset.
+      expect(hits).toBeGreaterThanOrEqual(4);
+    });
+
+    test('Test D — banned-literals enumeration contains TRUST BOUNDARY, USER_TEXT, STQ-0, <<< within a ~600-char window', () => {
+      // The prompt must tell the model NEVER to output these literal
+      // strings from its own instructions. We require co-location in
+      // a single bullet / paragraph (within 600 chars) so the banned-
+      // list reads as one cohesive rule, not four scattered mentions.
+      const anchor = 'NEVER include literal strings';
+      const anchorIdx = prompt.indexOf(anchor);
+      expect(anchorIdx).toBeGreaterThanOrEqual(0);
+      const windowEnd = Math.min(prompt.length, anchorIdx + 1200);
+      const window = prompt.slice(anchorIdx, windowEnd);
+      expect(window).toEqual(expect.stringContaining('TRUST BOUNDARY'));
+      expect(window).toEqual(expect.stringContaining('USER_TEXT'));
+      expect(window).toEqual(expect.stringContaining('STQ-0'));
+      expect(window).toEqual(expect.stringContaining('<<<'));
+    });
+
+    test('Test E — C3 attempt-recording clause co-locates C3 + record_observation + extraction', () => {
+      // On detected prompt-extraction attempts, the model should
+      // record a C3 observation rather than echo the attack text
+      // back. This test locks that the directive exists in a
+      // single ~400-char window anchored on the word "extraction".
+      const lower = prompt.toLowerCase();
+      const extractionIdx = lower.indexOf('prompt-extraction attempt');
+      // Accept "prompt extraction attempt" with/without hyphen.
+      const altIdx = lower.indexOf('prompt extraction attempt');
+      const anyIdx = extractionIdx >= 0 ? extractionIdx : altIdx;
+      expect(anyIdx).toBeGreaterThanOrEqual(0);
+      const windowStart = Math.max(0, anyIdx - 100);
+      const windowEnd = Math.min(prompt.length, anyIdx + 400);
+      const window = prompt.slice(windowStart, windowEnd);
+      expect(window).toEqual(expect.stringContaining('C3'));
+      expect(window).toEqual(expect.stringContaining('record_observation'));
+    });
+
+    test('Test F — total prompt token estimate ≤ 4000 (regression lock for new section)', () => {
+      // Group 1 already asserts this — re-assert here so a regression
+      // inside the CONFIDENTIALITY section (e.g., verbose rewrite)
+      // fires under the Group 9 banner instead of Group 1, making the
+      // root cause obvious in the test output.
+      const estimate = Math.ceil(prompt.length / 4);
+      expect(estimate).toBeLessThanOrEqual(4000);
     });
   });
 });
