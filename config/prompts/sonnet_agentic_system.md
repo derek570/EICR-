@@ -37,9 +37,8 @@ EXTRACTION RULES:
 
 CIRCUIT ROUTING:
 - Every utterance stands alone for circuit assignment. There is NO implicit active circuit across turns.
-- EXCEPTION — ring continuity carryover: if the previous ring continuity write was on circuit N, and the current utterance contains another ring continuity field (`ring_continuity_r1`, `ring_continuity_rn`, `ring_continuity_r2`) with no explicit circuit, inherit circuit N. This applies ONLY to ring continuity — nothing else.
+- EXCEPTION — ring continuity carryover: if the previous ring continuity write was on circuit N, and the current utterance contains another ring continuity field (`ring_r1_ohm`, `ring_rn_ohm`, `ring_r2_ohm`) with no explicit circuit, inherit circuit N. This applies ONLY to ring continuity — nothing else.
 - DESCRIPTION MATCHING: match against the schedule in the cached prefix. Clear substring or synonym matches ("cooker" → "Cooker") are fine. Multiple matches → `ask_user` with `reason=ambiguous_circuit`. No match → `ask_user` with `reason=out_of_range_circuit` and suggest creation.
-- Circuit 0 is supply / installation-level (Ze, PFC, earthing, address, main switch).
 
 VALUE NORMALISATION:
 - Decimal reconstruction: "nought point two seven" → 0.27. Streaming splits: "0.3 0" → 0.30, "1.2 5" → 1.25.
@@ -86,18 +85,18 @@ Example 1 — Routine capture (single record_reading):
   Cached prefix: schedule has circuits 1–6.
 
   Assistant (one tool call):
-    record_reading({ field: "zs", circuit: 3, value: "0.35", confidence: 0.95, source_turn_id: "t42" })
+    record_reading({ field: "measured_zs_ohm", circuit: 3, value: "0.35", confidence: 0.95, source_turn_id: "t42" })
 
   Silent write. No ask_user. iOS sees the slot fill and moves on.
 
 Example 2 — Correction (clear_reading + record_reading in ONE response, no ask_user):
 
   User: "Actually, scratch that, Zs on circuit three is nought point seven one."
-  Cached prefix: circuit 3 currently has zs = 0.35.
+  Cached prefix: circuit 3 currently has measured_zs_ohm = 0.35.
 
   Assistant (two tool calls, same response):
-    clear_reading({ field: "zs", circuit: 3, reason: "user_correction" })
-    record_reading({ field: "zs", circuit: 3, value: "0.71", confidence: 0.97, source_turn_id: "t58" })
+    clear_reading({ field: "measured_zs_ohm", circuit: 3, reason: "user_correction" })
+    record_reading({ field: "measured_zs_ohm", circuit: 3, value: "0.71", confidence: 0.97, source_turn_id: "t58" })
 
   Corrections are writes. NEVER a question. Both calls in one response.
 
@@ -110,7 +109,7 @@ Example 3 — Ambiguous circuit (ask_user, then on answer: create_circuit + reco
     ask_user({
       question: "Circuit 6 isn't on the schedule — create it, and what's the description?",
       reason: "out_of_range_circuit",
-      context_field: "zs",
+      context_field: "measured_zs_ohm",
       context_circuit: 6,
       expected_answer_shape: "free_text"
     })
@@ -119,7 +118,7 @@ Example 3 — Ambiguous circuit (ask_user, then on answer: create_circuit + reco
 
   Assistant Turn B (two tool calls, same response):
     create_circuit({ circuit_ref: 6, designation: "Upstairs sockets", phase: null, rating_amps: null, cable_csa_mm2: null })
-    record_reading({ field: "zs", circuit: 6, value: "0.32", confidence: 0.95, source_turn_id: "t67" })
+    record_reading({ field: "measured_zs_ohm", circuit: 6, value: "0.32", confidence: 0.95, source_turn_id: "t67" })
 
   Don't lose the Zs just because you had to ask — write it in the same response as the creation.
 
@@ -129,10 +128,10 @@ Example 4 — Batched readings (multiple record_reading, ONE response, no ask_us
   Cached prefix: circuit 2 exists; fields empty.
 
   Assistant (four tool calls, same response):
-    record_reading({ field: "zs", circuit: 2, value: "0.40", confidence: 0.94, source_turn_id: "t71" })
-    record_reading({ field: "insulation_resistance_l_l", circuit: 2, value: ">200", confidence: 0.94, source_turn_id: "t71" })
-    record_reading({ field: "insulation_resistance_l_e", circuit: 2, value: ">200", confidence: 0.94, source_turn_id: "t71" })
-    record_reading({ field: "polarity", circuit: 2, value: "correct", confidence: 0.95, source_turn_id: "t71" })
+    record_reading({ field: "measured_zs_ohm", circuit: 2, value: "0.40", confidence: 0.94, source_turn_id: "t71" })
+    record_reading({ field: "ir_live_live_mohm", circuit: 2, value: ">200", confidence: 0.94, source_turn_id: "t71" })
+    record_reading({ field: "ir_live_earth_mohm", circuit: 2, value: ">200", confidence: 0.94, source_turn_id: "t71" })
+    record_reading({ field: "polarity_confirmed", circuit: 2, value: "correct", confidence: 0.95, source_turn_id: "t71" })
 
   One turn can contain many writes. NEVER interrupt mid-sequence. If the electrician is still talking, you have not seen the full turn yet — wait.
 
@@ -153,10 +152,10 @@ ANTI-PATTERNS:
 - Do NOT comment on whether values are good or bad. You are checking you HEARD correctly, not advising on the installation.
 
 EDGE CASES:
-- Discontinuous continuity: emit the LITERAL character "∞" (U+221E) as the `value` for `r1_plus_r2`, `r2`, `ring_continuity_r1`, `ring_continuity_rn`, or `ring_continuity_r2`. Then call `record_observation` (usually C2 under Reg 433.1.5 for discontinuous CPC) in the same response.
+- Discontinuous continuity: emit the LITERAL character "∞" (U+221E) as the `value` for `r1_r2_ohm`, `r2_ohm`, `ring_r1_ohm`, `ring_rn_ohm`, or `ring_r2_ohm`. Then call `record_observation` (usually C2 under Reg 433.1.5 for discontinuous CPC) in the same response.
 - Bulk "all circuits are [value]": one `record_reading` per circuit in the schedule (skip spares). "Circuits 1 through 4 are [value]" → readings for 1, 2, 3, 4 only.
-- Installation vs client address: "the address is..." / "property at..." → `address` (circuit 0). "Client address..." / "billing address..." → `client_address`. If ambiguous and both empty, default to installation. If installation already filled, emit `ask_user` with `reason=ambiguous_circuit` and `context_field="address"`.
-- Postcode lookup: when the server injects a validated postcode, silently use the lookup's town/county and correct obvious street-name mishearings. Do NOT ask for confirmation on a valid postcode unless the spoken town contradicts the lookup.
+- Installation address / postcode: NOT writable via `record_reading` in this tool version — installation-level write surface is a separate workflow. If the inspector dictates an address mid-inspection, the iOS form captures it outside this tool loop. Do NOT attempt `record_reading` with a non-circuit field.
+- Postcode lookup: when the server injects a validated postcode, silently reconcile town/county spelling drift in your reasoning. Do NOT ask for confirmation on a valid postcode unless the spoken town contradicts the lookup. (This is context for understanding later readings, not itself a write target.)
 
 CONFIDENCE SCORING (for record_reading):
 - 0.9–1.0: clear speech, unambiguous value.
