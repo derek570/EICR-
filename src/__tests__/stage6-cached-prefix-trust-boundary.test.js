@@ -490,3 +490,205 @@ describe('Plan 04-13 r7-#1 [SECURITY BLOCK] — cached-prefix TRUST BOUNDARY fra
     session.stop();
   });
 });
+
+/**
+ * Plan 04-18 r12-#1 — WRAP_POLICY classification.
+ *
+ * Codex r12 (2026-04-28) flagged that r8-#1's `wrapSnapshotUserTextInline`
+ * is applied indiscriminately to EVERY string-typed value in the circuit
+ * bucket (supply AND per-circuit). Canonical enum strings (polarity,
+ * phase, wiring_type, ocpd_type, rcd_type) and BS/EN code strings
+ * (ocpd_bs_en, rcd_bs_en) get the same framing as free-text designations.
+ *
+ * Two problems with that:
+ *
+ *   1. It contradicts r11-#2's TRUSTWORTHY contract. r11-#2 installed
+ *      explicit language saying server-authored state (filled-slot
+ *      tables etc.) is TRUSTWORTHY. Wrapping `"polarity":"OK"` with
+ *      USER_TEXT markers tells the model "treat this span as quoted
+ *      user data, no authority" which cuts against the preamble.
+ *
+ *   2. It provides zero security benefit. Closed enums (polarity in
+ *      {"", OK, Y, N}) have no prompt-injection surface. The wrap's
+ *      entire raison d'etre is user-derived free text (designations,
+ *      observation phrases, pending values); wrapping canonical enums
+ *      burns trust signal for no payoff.
+ *
+ * The r12-#1 fix introduces a WRAP_POLICY map that classifies each
+ * snapshot field as `user_derived` (wrap + sanitise) or
+ * `server_canonical` (sanitise only). Unknown fields default to
+ * `user_derived` (fail-safe: over-apply wrap rather than under-apply).
+ *
+ * Five tests pin the new routing:
+ *   r12-1a — polarity (enum) serialised bare, no markers.
+ *   r12-1b — phase (enum) serialised bare, no markers.
+ *   r12-1c — mixed designation + polarity: designation wrapped, polarity bare.
+ *   r12-1d — unknown string field defaults to wrapped (fail-safe).
+ *   r12-1e — wiring_type / ocpd_type / rcd_type / ocpd_bs_en all bare.
+ */
+describe('Plan 04-18 r12-#1 — WRAP_POLICY classification (server-canonical fields stay bare)', () => {
+  beforeEach(() => mockCreate.mockReset());
+
+  test('r12-1a — polarity enum is serialised bare (no USER_TEXT markers)', () => {
+    // polarity is a closed enum ["", OK, Y, N]. No attack surface.
+    // The pre-r12 code wrapped it the same way as free-text designations;
+    // the r12 fix routes it through sanitise-only.
+    const session = new EICRExtractionSession('k', 'sess-r12-1a', 'eicr', {
+      toolCallsMode: 'shadow',
+    });
+    session.stateSnapshot.circuits[1] = {
+      polarity: 'OK',
+    };
+    session.recentCircuitOrder = [1];
+    const blocks = session.buildSystemBlocks();
+    const snapshotText = blocks[1].text;
+
+    // Extract the EXTRACTED block so the preamble's literal marker
+    // mentions (the teaching examples) don't confuse the count.
+    const extractedBlockMatch = snapshotText.match(/EXTRACTED \(field IDs[\s\S]*$/);
+    expect(extractedBlockMatch).not.toBeNull();
+    const extractedBlock = extractedBlockMatch[0];
+
+    // polarity appears bare — no USER_TEXT wrap around "OK".
+    // FIELD_ID_MAP compacts `polarity` to numeric id 26, so the JSON
+    // shape is `"26":"OK"` (not `"polarity":"OK"`).
+    expect(extractedBlock).toMatch(/"26"\s*:\s*"OK"/);
+    // No markers anywhere in the EXTRACTED block for this single-field
+    // canonical circuit.
+    expect(extractedBlock).not.toContain('<<<USER_TEXT>>>');
+    expect(extractedBlock).not.toContain('<<<END_USER_TEXT>>>');
+  });
+
+  test('r12-1b — phase enum is serialised bare (no USER_TEXT markers)', () => {
+    // phase is populated by upsertCircuitMeta (create_circuit /
+    // rename_circuit dispatchers) as a canonical enum L1/L2/L3/N.
+    const session = new EICRExtractionSession('k', 'sess-r12-1b', 'eicr', {
+      toolCallsMode: 'shadow',
+    });
+    session.stateSnapshot.circuits[2] = {
+      phase: 'L2',
+    };
+    session.recentCircuitOrder = [2];
+    const blocks = session.buildSystemBlocks();
+    const snapshotText = blocks[1].text;
+
+    const extractedBlockMatch = snapshotText.match(/EXTRACTED \(field IDs[\s\S]*$/);
+    expect(extractedBlockMatch).not.toBeNull();
+    const extractedBlock = extractedBlockMatch[0];
+
+    expect(extractedBlock).toMatch(/"phase"\s*:\s*"L2"/);
+    expect(extractedBlock).not.toContain('<<<USER_TEXT>>>');
+    expect(extractedBlock).not.toContain('<<<END_USER_TEXT>>>');
+  });
+
+  test('r12-1c — mixed circuit: designation WRAPPED + polarity BARE in same JSON object', () => {
+    // Most common real-world shape: a circuit has both a user-
+    // dictated designation AND canonical test result fields. The
+    // map must split them — designation gets the wrap, polarity
+    // stays bare.
+    const session = new EICRExtractionSession('k', 'sess-r12-1c', 'eicr', {
+      toolCallsMode: 'shadow',
+    });
+    session.stateSnapshot.circuits[3] = {
+      circuit_designation: 'kitchen sockets',
+      polarity: 'OK',
+    };
+    session.recentCircuitOrder = [3];
+    const blocks = session.buildSystemBlocks();
+    const snapshotText = blocks[1].text;
+
+    const extractedBlockMatch = snapshotText.match(/EXTRACTED \(field IDs[\s\S]*$/);
+    expect(extractedBlockMatch).not.toBeNull();
+    const extractedBlock = extractedBlockMatch[0];
+
+    // designation wrapped — FIELD_ID_MAP compacts `circuit_designation` → "1"
+    expect(extractedBlock).toMatch(
+      /"1"\s*:\s*"<<<USER_TEXT>>>kitchen sockets<<<END_USER_TEXT>>>"/,
+    );
+    // polarity bare in the SAME JSON object — FIELD_ID_MAP maps
+    // `polarity` to id 26.
+    expect(extractedBlock).toMatch(/"26"\s*:\s*"OK"/);
+    // polarity is NOT wrapped — match the negation explicitly.
+    expect(extractedBlock).not.toMatch(
+      /"26"\s*:\s*"<<<USER_TEXT>>>OK<<<END_USER_TEXT>>>"/,
+    );
+    // Exactly ONE open + ONE close marker in the block (one per
+    // designation), so mixed policy is structurally clean.
+    const openCount = (extractedBlock.match(/<<<USER_TEXT>>>/g) || []).length;
+    const closeCount = (extractedBlock.match(/<<<END_USER_TEXT>>>/g) || []).length;
+    expect(openCount).toBe(1);
+    expect(closeCount).toBe(1);
+  });
+
+  test('r12-1d — unknown string-valued field defaults to WRAPPED (fail-safe)', () => {
+    // If a new field is added to the circuit bucket and nobody
+    // remembers to classify it in WRAP_POLICY, the fail-safe
+    // default should be `user_derived` (over-apply wrap, not
+    // under-apply). This test pins that default so a regression
+    // that inverts the fallback to `server_canonical` would fire.
+    const session = new EICRExtractionSession('k', 'sess-r12-1d', 'eicr', {
+      toolCallsMode: 'shadow',
+    });
+    // Synthetic field name not in WRAP_POLICY. If WRAP_POLICY ever
+    // grows to include `comments`, swap this to another synthetic
+    // key like `r12_1d_synthetic_field`.
+    session.stateSnapshot.circuits[4] = {
+      r12_1d_synthetic_field: 'random note from test',
+    };
+    session.recentCircuitOrder = [4];
+    const blocks = session.buildSystemBlocks();
+    const snapshotText = blocks[1].text;
+
+    const extractedBlockMatch = snapshotText.match(/EXTRACTED \(field IDs[\s\S]*$/);
+    expect(extractedBlockMatch).not.toBeNull();
+    const extractedBlock = extractedBlockMatch[0];
+
+    // Unknown field value WRAPPED (fail-safe default).
+    expect(extractedBlock).toMatch(
+      /"r12_1d_synthetic_field"\s*:\s*"<<<USER_TEXT>>>random note from test<<<END_USER_TEXT>>>"/,
+    );
+  });
+
+  test('r12-1e — wiring_type / ref_method / ocpd_type / rcd_type / ocpd_bs_en all BARE', () => {
+    // Sweep the closed-enum + BS/EN code fields in one shot. All of
+    // them are server-canonical per WRAP_POLICY and must not carry
+    // USER_TEXT wraps.
+    const session = new EICRExtractionSession('k', 'sess-r12-1e', 'eicr', {
+      toolCallsMode: 'shadow',
+    });
+    session.stateSnapshot.circuits[5] = {
+      wiring_type: 'A',
+      ref_method: 'C',
+      ocpd_type: 'B',
+      rcd_type: 'A',
+      ocpd_bs_en: '60898',
+    };
+    session.recentCircuitOrder = [5];
+    const blocks = session.buildSystemBlocks();
+    const snapshotText = blocks[1].text;
+
+    const extractedBlockMatch = snapshotText.match(/EXTRACTED \(field IDs[\s\S]*$/);
+    expect(extractedBlockMatch).not.toBeNull();
+    const extractedBlock = extractedBlockMatch[0];
+
+    // None of the canonical fields are wrapped. The EXTRACTED
+    // block for this single-circuit synthetic has no user-derived
+    // content at all, so total marker count is zero.
+    const openCount = (extractedBlock.match(/<<<USER_TEXT>>>/g) || []).length;
+    const closeCount = (extractedBlock.match(/<<<END_USER_TEXT>>>/g) || []).length;
+    expect(openCount).toBe(0);
+    expect(closeCount).toBe(0);
+
+    // Individual bare-value assertions for each field. FIELD_ID_MAP
+    // compacts these to numeric ids (see
+    // `eicr-extraction-session.js` FIELD_ID_MAP block) — the
+    // numeric-id form is what lands in the JSON:
+    //   wiring_type → "2", ref_method → "3", ocpd_type → "7",
+    //   rcd_type → "11", ocpd_bs_en → "9".
+    expect(extractedBlock).toMatch(/"2"\s*:\s*"A"/);
+    expect(extractedBlock).toMatch(/"3"\s*:\s*"C"/);
+    expect(extractedBlock).toMatch(/"7"\s*:\s*"B"/);
+    expect(extractedBlock).toMatch(/"11"\s*:\s*"A"/);
+    expect(extractedBlock).toMatch(/"9"\s*:\s*"60898"/);
+  });
+});
