@@ -70,7 +70,8 @@ jest.unstable_mockModule('@anthropic-ai/sdk', () => ({
   })),
 }));
 
-const { EICRExtractionSession } = await import('../extraction/eicr-extraction-session.js');
+const { EICRExtractionSession, LEGACY_TO_CANONICAL_CIRCUIT_KEYS } =
+  await import('../extraction/eicr-extraction-session.js');
 
 describe('Plan 04-13 r7-#1 [SECURITY BLOCK] — cached-prefix TRUST BOUNDARY framing', () => {
   beforeEach(() => mockCreate.mockReset());
@@ -1768,35 +1769,28 @@ describe('Plan 04-23 r17-#1 — pending_readings hydration normalisation + dedup
     expect(afterFirst[0].field).toBe('polarity_confirmed');
   });
 
-  test('r17-1d — hydration: all 14 LEGACY_TO_CANONICAL_CIRCUIT_KEYS aliases canonicalise in one pass', () => {
-    // Seed one entry per known legacy alias (10 reading aliases
-    // from r13-#2 + 4 r16-#3 additions = 14 total).
-    // Post-start() every entry's `.field` must be canonical; zero
-    // legacy names survive. Drives the canonicalisation map
-    // iteration path against the pending_readings surface.
+  test('r17-1d — hydration: every LEGACY_TO_CANONICAL_CIRCUIT_KEYS alias canonicalises in one pass (map-derived)', () => {
+    // Plan 04-24 r18-#2 — map-derived expectation. The test now
+    // iterates the imported LEGACY_TO_CANONICAL_CIRCUIT_KEYS rather
+    // than hardcoding a literal list of legacy keys + a hardcoded
+    // count. Any future alias addition to the map auto-extends this
+    // test's coverage with zero test-code changes.
+    //
+    // Previously this test hardcoded 14 entries; r17-#2 added 2
+    // aliases (cable_size, cable_size_earth) but the test was not
+    // updated — the 2 new aliases were NOT exercised on the
+    // pending_readings hydration path. Codex r18 flagged this as
+    // MINOR. The map-derived refactor below closes the gap and
+    // prevents recurrence. Explicit regression cases for the 2
+    // cable-size aliases are added below as defence in depth
+    // (r18-2a, r18-2b).
     const session = new EICRExtractionSession('k', 'sess-r17-1d', 'eicr', {
       toolCallsMode: 'shadow',
     });
-    const legacyToCanonical = {
-      // r13-#2 reading aliases.
-      zs: 'measured_zs_ohm',
-      r1_r2: 'r1_r2_ohm',
-      r2: 'r2_ohm',
-      insulation_resistance_l_e: 'ir_live_earth_mohm',
-      insulation_resistance_l_l: 'ir_live_live_mohm',
-      ring_continuity_r1: 'ring_r1_ohm',
-      ring_continuity_rn: 'ring_rn_ohm',
-      ring_continuity_r2: 'ring_r2_ohm',
-      rcd_trip_time: 'rcd_time_ms',
-      polarity: 'polarity_confirmed',
-      // r16-#3 additions.
-      ocpd_rating: 'ocpd_rating_a',
-      ocpd_breaking_capacity: 'ocpd_breaking_capacity_ka',
-      ir_test_voltage: 'ir_test_voltage_v',
-      max_disconnect_time: 'max_disconnect_time_s',
-    };
-    // Seed distinct circuit numbers so dedup doesn't collapse any entries.
-    session.stateSnapshot.pending_readings = Object.keys(legacyToCanonical).map((legacy, i) => ({
+    const legacyKeys = Object.keys(LEGACY_TO_CANONICAL_CIRCUIT_KEYS);
+    // Seed distinct circuit numbers so the write-time invariant
+    // preservation (r18-#1) doesn't merge any entries at read-time.
+    session.stateSnapshot.pending_readings = legacyKeys.map((legacy, i) => ({
       circuit: i + 1,
       field: legacy,
       value: '1',
@@ -1804,13 +1798,13 @@ describe('Plan 04-23 r17-#1 — pending_readings hydration normalisation + dedup
     }));
     session.start();
 
-    expect(session.stateSnapshot.pending_readings).toHaveLength(14);
+    expect(session.stateSnapshot.pending_readings).toHaveLength(legacyKeys.length);
     for (const entry of session.stateSnapshot.pending_readings) {
-      const expectedCanonical =
-        legacyToCanonical[Object.keys(legacyToCanonical)[entry.circuit - 1]];
+      const legacyAtIndex = legacyKeys[entry.circuit - 1];
+      const expectedCanonical = LEGACY_TO_CANONICAL_CIRCUIT_KEYS[legacyAtIndex];
       expect(entry.field).toBe(expectedCanonical);
       // Negative: no legacy key survives.
-      expect(Object.keys(legacyToCanonical)).not.toContain(entry.field);
+      expect(legacyKeys).not.toContain(entry.field);
     }
   });
 
@@ -1927,6 +1921,79 @@ describe('Plan 04-24 r18-#1 — hydration preserves write-time invariant: duplic
     // Original insertion order preserved.
     expect(session.stateSnapshot.pending_readings[0].value).toBe('0.35');
     expect(session.stateSnapshot.pending_readings[1].value).toBe('0.42');
+  });
+});
+
+/**
+ * Plan 04-24 r18-#2 — explicit alias regression: cable_size /
+ * cable_size_earth hydration on the pending_readings path.
+ *
+ * Codex r18 flagged that the r17-1d "all aliases covered" test
+ * previously hardcoded 14 entries + literal legacy names. When
+ * r17-#2 added `cable_size` + `cable_size_earth` to
+ * LEGACY_TO_CANONICAL_CIRCUIT_KEYS, those 2 new aliases were NOT
+ * exercised on the pending_readings hydration surface — the test
+ * was out of sync with the map.
+ *
+ * The r18-#2 fix has two legs:
+ *   1. Refactor r17-1d to derive its expectation from the imported
+ *      LEGACY_TO_CANONICAL_CIRCUIT_KEYS map (done above) — any
+ *      future alias addition auto-extends coverage with zero
+ *      test-code changes.
+ *   2. Add explicit regression cases for cable_size +
+ *      cable_size_earth as defence in depth. Future contributors
+ *      reading this file should see the 2 new aliases exercised
+ *      by name.
+ *
+ * The explicit cases below (r18-2a, r18-2b) codify the
+ * pending_readings hydration path for the 2 cable-size aliases
+ * specifically. They would fail if either alias were removed from
+ * the map, catching a partial-revert of r17-#2.
+ */
+describe('Plan 04-24 r18-#2 — pending_readings hydration: explicit cable_size / cable_size_earth aliases', () => {
+  beforeEach(() => mockCreate.mockReset());
+
+  test('r18-2a — hydration: legacy `cable_size` → canonical `live_csa_mm2` on pending_readings path', () => {
+    // Mirrors a hydrated session whose persisted pending_readings
+    // carry the pre-r17-#2 `cable_size` vocabulary. Without the
+    // r17-#2 map extension + r17-#1 hydration leg this entry
+    // would stay legacy-keyed on the cached prefix. Canonical name
+    // verified against config/field_schema.json:52 (live_csa_mm2).
+    const session = new EICRExtractionSession('k', 'sess-r18-2a', 'eicr', {
+      toolCallsMode: 'shadow',
+    });
+    session.stateSnapshot.pending_readings = [
+      { circuit: 1, field: 'cable_size', value: '2.5', unit: 'mm2' },
+    ];
+    session.start();
+
+    expect(session.stateSnapshot.pending_readings).toHaveLength(1);
+    const entry = session.stateSnapshot.pending_readings[0];
+    expect(entry.field).toBe('live_csa_mm2');
+    // Negative: legacy key name does not survive.
+    expect(entry.field).not.toBe('cable_size');
+    expect(entry.value).toBe('2.5');
+    expect(entry.unit).toBe('mm2');
+  });
+
+  test('r18-2b — hydration: legacy `cable_size_earth` → canonical `cpc_csa_mm2` on pending_readings path', () => {
+    // Canonical name verified against config/field_schema.json:67
+    // (cpc_csa_mm2, CPC = Circuit Protective Conductor).
+    const session = new EICRExtractionSession('k', 'sess-r18-2b', 'eicr', {
+      toolCallsMode: 'shadow',
+    });
+    session.stateSnapshot.pending_readings = [
+      { circuit: 1, field: 'cable_size_earth', value: '1.5', unit: 'mm2' },
+    ];
+    session.start();
+
+    expect(session.stateSnapshot.pending_readings).toHaveLength(1);
+    const entry = session.stateSnapshot.pending_readings[0];
+    expect(entry.field).toBe('cpc_csa_mm2');
+    // Negative: legacy key name does not survive.
+    expect(entry.field).not.toBe('cable_size_earth');
+    expect(entry.value).toBe('1.5');
+    expect(entry.unit).toBe('mm2');
   });
 });
 

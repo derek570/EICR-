@@ -456,7 +456,11 @@ const WRAP_POLICY = {
  * adding an entry here still extends coverage automatically across
  * circuits + pending_readings + the WRAP_POLICY default classification.
  */
-const LEGACY_TO_CANONICAL_CIRCUIT_KEYS = {
+// Plan 04-24 r18-#2 — export at module level so tests can derive
+// their "all aliases covered" expectation from the map itself
+// rather than hardcoding the list. Any future alias addition
+// auto-extends test coverage without touching test code.
+export const LEGACY_TO_CANONICAL_CIRCUIT_KEYS = {
   zs: 'measured_zs_ohm',
   r1_r2: 'r1_r2_ohm',
   r2: 'r2_ohm',
