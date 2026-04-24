@@ -784,20 +784,33 @@ export async function runToolCallPath(fx) {
     //
     // r9-#3 hardens the fixture-declared path's normalisation to
     // match what production would produce. Production's
-    // splice+push idiom at updateStateSnapshot line 1186-1188
+    // splice+push idiom at updateStateSnapshot line 1218-1221
     // guarantees:
     //   (a) No duplicates (splice removes the prior slot before
     //       push appends).
     //   (b) Only circuits the session knows about (you can only
     //       record_reading on a circuit after create_circuit has
     //       seeded it into stateSnapshot.circuits).
-    //   (c) Circuit 0 (supply) is never pushed — line 1093 guards
+    //   (c) Circuit 0 (supply) is never pushed — line 1218 guards
     //       with `if (circuit !== 0)`.
     //
     // The harness normalises fixture input the same way so
     // pathological declarations (duplicates, unknown refs,
     // circuit-0 leaks, non-integers) can't silently corrupt the
     // test's model inputs.
+    //
+    // Plan 04-16 r10-#1 — the dedupe must be LAST-OCCURRENCE-WINS,
+    // mirroring production's `indexOf` + `splice` + `push` idiom.
+    // r9-#3 shipped first-wins with the rationale "preserves
+    // fixture author's intended ordering position" — r10-#1
+    // rejected that rationale. Chronology-by-construction IS
+    // last-wins: if `record_reading(circuit=1)` fires after
+    // `record_reading(circuit=2)` which itself fires after an
+    // earlier `record_reading(circuit=1)`, circuit 1's position
+    // in recentCircuitOrder is at the END (most recent). A
+    // fixture author typing `[1, 2, 1, 3]` is declaring a
+    // chronology, and the only chronology-consistent answer is
+    // `[2, 1, 3]` — the EARLIER 1 removed, the LATER 1 kept.
     //
     // Filter rules (fixture-declared path):
     //   - Non-integer values dropped (defensive for JSON-authored
@@ -807,11 +820,11 @@ export async function runToolCallPath(fx) {
     //   - Circuit 0 (supply) dropped — production-invariant match.
     //   - Unknown refs (not seeded in stateSnapshot.circuits)
     //     dropped — production could not reach this state.
-    //   - Duplicates deduped, FIRST occurrence wins (preserves the
-    //     fixture author's intended ordering position; "last
-    //     occurrence wins" would silently move a duplicated
-    //     circuit to the most-recent end which isn't what a
-    //     fixture author typing `[1, 2, 1, 3]` likely meant).
+    //   - Duplicates deduped, LAST occurrence wins via inline
+    //     splice+push — mirrors production's idiom at
+    //     eicr-extraction-session.js:1218-1221 byte-for-byte.
+    //     For `[1, 2, 1, 3]` the trace is push 1 → push 2 →
+    //     splice idx 0 + push → `[2, 1]` → push 3 → `[2, 1, 3]`.
     //   - If normalisation empties the array (pathological
     //     declaration where every entry fails a filter), fall back
     //     to numeric ascending of seeded circuits — same as the
@@ -825,15 +838,18 @@ export async function runToolCallPath(fx) {
         .filter((n) => Number.isInteger(n) && n !== 0),
     );
     if (Array.isArray(declaredOrder)) {
-      const seen = new Set();
       const normalised = [];
       for (const raw of declaredOrder) {
         const n = Number(raw);
         if (!Number.isInteger(n)) continue;
         if (n <= 0) continue; // drops 0 (supply) + any negatives
         if (!seededKeys.has(n)) continue; // drops unknown refs
-        if (seen.has(n)) continue; // dedupe, first-wins
-        seen.add(n);
+        // Last-occurrence-wins dedupe — inline mirror of
+        // updateStateSnapshot's splice+push. If the ref already
+        // exists in `normalised`, remove its prior slot before
+        // appending so a re-declared circuit moves to the end.
+        const idx = normalised.indexOf(n);
+        if (idx !== -1) normalised.splice(idx, 1);
         normalised.push(n);
       }
       if (normalised.length > 0) {
