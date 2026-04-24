@@ -1732,3 +1732,405 @@ describe('Group L — Plan 04-10 r4-#2: runToolCallPath uses REAL agentic prompt
     expect(report.section_divergence_rate).toBe(0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Group r5-2 — Plan 04-11 r5-#2: observation sort uses full canonical tuple.
+//
+// Codex r5 MINOR #2: r3 (Plan 04-09) widened normaliseObservation to
+// return {code, text, location, circuit, suggested_regulation}, but the
+// sort comparator inside normaliseExtractionResult was NOT updated. It
+// still keys on (code, text) only. Two observations with the same
+// (code, text) but different metadata can compare in input-order —
+// producing order-dependent false divergences or passes.
+//
+// Fix: sort observations on the full canonical tuple so the result
+// is order-invariant across input permutations. Then divergence
+// measures true semantic difference, not input-ordering noise.
+//
+// These tests construct two result shapes carrying SAME multiset of
+// observations but in DIFFERENT input orders. Expected post-fix:
+// divergence = 0 (sort canonicalises order). Pre-fix: divergence > 0
+// because same-(code,text) items compare at different positions.
+// ---------------------------------------------------------------------------
+
+describe('Group r5-2 — Plan 04-11 r5-#2: observation sort uses full canonical tuple', () => {
+  const empty = { readings: [], clears: [], circuit_ops: [] };
+
+  test('r5-2a — same (code,text) differing only on location: reversed inputs → divergence stays 0', () => {
+    // Two observations with identical (code, text) but different
+    // location. Fixture A emits them in order [Kitchen, Bathroom];
+    // fixture B emits them reversed [Bathroom, Kitchen]. With a
+    // (code, text) sort the comparator doesn't know how to order the
+    // two items, so after normalise they land in input order and the
+    // comparator reports 2 mismatches ("Kitchen" vs "Bathroom" at
+    // index 0, vice-versa at index 1). After the full-tuple sort
+    // both fixtures canonicalise to the same order ["Bathroom"
+    // before "Kitchen"] so divergence is 0.
+    const a = {
+      ...empty,
+      observations: [
+        { code: 'C2', text: 'loose neutral', location: 'Kitchen', circuit: null, suggested_regulation: null },
+        { code: 'C2', text: 'loose neutral', location: 'Bathroom', circuit: null, suggested_regulation: null },
+      ],
+    };
+    const b = {
+      ...empty,
+      observations: [
+        { code: 'C2', text: 'loose neutral', location: 'Bathroom', circuit: null, suggested_regulation: null },
+        { code: 'C2', text: 'loose neutral', location: 'Kitchen', circuit: null, suggested_regulation: null },
+      ],
+    };
+    const normA = normaliseExtractionResult(a);
+    const normB = normaliseExtractionResult(b);
+    const d = computeDivergence(normA, normB);
+    expect(d.diverged).toBe(false);
+    expect(d.call_divergence).toBe(0);
+  });
+
+  test('r5-2b — same (code,text) differing only on circuit: reversed inputs → divergence stays 0', () => {
+    const a = {
+      ...empty,
+      observations: [
+        { code: 'C3', text: 'old cable', location: 'Board', circuit: 5, suggested_regulation: null },
+        { code: 'C3', text: 'old cable', location: 'Board', circuit: 2, suggested_regulation: null },
+      ],
+    };
+    const b = {
+      ...empty,
+      observations: [
+        { code: 'C3', text: 'old cable', location: 'Board', circuit: 2, suggested_regulation: null },
+        { code: 'C3', text: 'old cable', location: 'Board', circuit: 5, suggested_regulation: null },
+      ],
+    };
+    const normA = normaliseExtractionResult(a);
+    const normB = normaliseExtractionResult(b);
+    const d = computeDivergence(normA, normB);
+    expect(d.diverged).toBe(false);
+    expect(d.call_divergence).toBe(0);
+  });
+
+  test('r5-2c — same (code,text) differing only on suggested_regulation: reversed → divergence 0', () => {
+    const a = {
+      ...empty,
+      observations: [
+        {
+          code: 'C2',
+          text: 'exposed conductor',
+          location: 'Loft',
+          circuit: null,
+          suggested_regulation: '411.3.1.1',
+        },
+        {
+          code: 'C2',
+          text: 'exposed conductor',
+          location: 'Loft',
+          circuit: null,
+          suggested_regulation: '522.6.201',
+        },
+      ],
+    };
+    const b = {
+      ...empty,
+      observations: [
+        {
+          code: 'C2',
+          text: 'exposed conductor',
+          location: 'Loft',
+          circuit: null,
+          suggested_regulation: '522.6.201',
+        },
+        {
+          code: 'C2',
+          text: 'exposed conductor',
+          location: 'Loft',
+          circuit: null,
+          suggested_regulation: '411.3.1.1',
+        },
+      ],
+    };
+    const normA = normaliseExtractionResult(a);
+    const normB = normaliseExtractionResult(b);
+    const d = computeDivergence(normA, normB);
+    expect(d.diverged).toBe(false);
+    expect(d.call_divergence).toBe(0);
+  });
+
+  test('r5-2d — transient fields differ but all 5 canonical fields identical → divergence 0', () => {
+    // Back-compat sanity with Group J4: two observations that share all
+    // 5 canonical fields but carry different id / source_turn_id /
+    // timestamp values. The transient-stripping in normaliseObservation
+    // already handles this; the full-tuple sort must not break it.
+    const a = {
+      ...empty,
+      observations: [
+        {
+          id: 'aaaa',
+          source_turn_id: 't1',
+          timestamp: '2026-04-23T10:00Z',
+          code: 'C3',
+          text: 'OK',
+          location: 'Board',
+          circuit: 1,
+          suggested_regulation: '411.1',
+        },
+      ],
+    };
+    const b = {
+      ...empty,
+      observations: [
+        {
+          id: 'bbbb',
+          source_turn_id: 't99',
+          timestamp: '2026-04-23T11:00Z',
+          code: 'C3',
+          text: 'OK',
+          location: 'Board',
+          circuit: 1,
+          suggested_regulation: '411.1',
+        },
+      ],
+    };
+    const normA = normaliseExtractionResult(a);
+    const normB = normaliseExtractionResult(b);
+    const d = computeDivergence(normA, normB);
+    expect(d.diverged).toBe(false);
+    expect(d.call_divergence).toBe(0);
+  });
+
+  test('r5-2e — genuine divergence on observation content still reported', () => {
+    // Guard: the sort change must NOT make the comparator blind to
+    // real disagreement. Different TEXT on one side → divergence > 0.
+    const a = {
+      ...empty,
+      observations: [
+        { code: 'C2', text: 'loose neutral', location: 'Kitchen', circuit: null, suggested_regulation: null },
+      ],
+    };
+    const b = {
+      ...empty,
+      observations: [
+        { code: 'C2', text: 'loose live', location: 'Kitchen', circuit: null, suggested_regulation: null },
+      ],
+    };
+    const normA = normaliseExtractionResult(a);
+    const normB = normaliseExtractionResult(b);
+    const d = computeDivergence(normA, normB);
+    expect(d.diverged).toBe(true);
+    expect(d.call_divergence).toBeGreaterThan(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Group r5-3 — Plan 04-11 r5-#3: oracle projection + circuit-op normalisation
+// cover ALL create/rename circuit fields.
+//
+// Codex r5 MINOR #3: expectedSlotWritesToLegacyShape only projects
+// `circuit_designation` into `circuit_updates`; normaliseCircuitOp only
+// canonicalises `designation`. `phase`, `rating_amps`, `cable_csa_mm2`,
+// and `from_ref` (rename) are invisible to the oracle + comparator. Two
+// circuit ops that agree on (action, circuit_ref, designation) but
+// disagree on phase / rating / CSA compare equal — oracle reports 0%
+// divergence on real pipeline drift.
+//
+// Fix:
+//   1. Extend normaliseCircuitOp to canonicalise the full schema-backed
+//      field set (designation + phase + rating_amps + cable_csa_mm2 +
+//      from_ref), accepting both flat (legacy) and nested `meta` (tool-
+//      call bundler) layouts.
+//   2. Extend expectedSlotWritesToLegacyShape to route all recognised
+//      per-circuit fields (circuit_designation, circuit_phase,
+//      circuit_rating_amps, circuit_cable_csa_mm2) into a single
+//      circuit_updates entry per circuit_ref, with a `meta` sub-object.
+//
+// These tests exercise each field independently (r5-3a/b/c), verify
+// the oracle projection writes the new fields (r5-3d), and confirm
+// the legacy-flat / tool-call-nested shapes still normalise equal
+// when their semantics agree (r5-3e).
+// ---------------------------------------------------------------------------
+
+describe('Group r5-3 — Plan 04-11 r5-#3: circuit op normaliser + oracle cover full field set', () => {
+  const empty = { readings: [], clears: [], observations: [] };
+
+  test('r5-3a — circuit ops differing only on phase → divergence reported', () => {
+    const a = {
+      ...empty,
+      circuit_updates: [
+        { op: 'create', circuit_ref: 3, meta: { designation: 'Ring', phase: 'L1', rating_amps: null, cable_csa_mm2: null } },
+      ],
+    };
+    const b = {
+      ...empty,
+      circuit_updates: [
+        { op: 'create', circuit_ref: 3, meta: { designation: 'Ring', phase: 'L2', rating_amps: null, cable_csa_mm2: null } },
+      ],
+    };
+    const normA = normaliseExtractionResult(a);
+    const normB = normaliseExtractionResult(b);
+    const d = computeDivergence(normA, normB);
+    expect(d.diverged).toBe(true);
+    expect(d.call_divergence).toBeGreaterThan(0);
+  });
+
+  test('r5-3b — circuit ops differing only on rating_amps → divergence reported', () => {
+    const a = {
+      ...empty,
+      circuit_updates: [
+        { op: 'create', circuit_ref: 3, meta: { designation: 'Ring', phase: null, rating_amps: 32, cable_csa_mm2: null } },
+      ],
+    };
+    const b = {
+      ...empty,
+      circuit_updates: [
+        { op: 'create', circuit_ref: 3, meta: { designation: 'Ring', phase: null, rating_amps: 40, cable_csa_mm2: null } },
+      ],
+    };
+    const normA = normaliseExtractionResult(a);
+    const normB = normaliseExtractionResult(b);
+    const d = computeDivergence(normA, normB);
+    expect(d.diverged).toBe(true);
+    expect(d.call_divergence).toBeGreaterThan(0);
+  });
+
+  test('r5-3c — circuit ops differing only on cable_csa_mm2 → divergence reported', () => {
+    const a = {
+      ...empty,
+      circuit_updates: [
+        { op: 'create', circuit_ref: 3, meta: { designation: 'Ring', phase: null, rating_amps: null, cable_csa_mm2: 2.5 } },
+      ],
+    };
+    const b = {
+      ...empty,
+      circuit_updates: [
+        { op: 'create', circuit_ref: 3, meta: { designation: 'Ring', phase: null, rating_amps: null, cable_csa_mm2: 4 } },
+      ],
+    };
+    const normA = normaliseExtractionResult(a);
+    const normB = normaliseExtractionResult(b);
+    const d = computeDivergence(normA, normB);
+    expect(d.diverged).toBe(true);
+    expect(d.call_divergence).toBeGreaterThan(0);
+  });
+
+  test('r5-3d — oracle projection writes phase / rating / csa into circuit_updates meta', () => {
+    // Oracle with circuit_designation + circuit_phase + circuit_rating_amps
+    // + circuit_cable_csa_mm2 — every recognised circuit-shape field.
+    // Pre-fix: only circuit_designation survives into circuit_updates;
+    // phase / rating / csa vanish (pre-fix they silently flow into
+    // extracted_readings as `{circuit, field: 'circuit_phase', value: ...}`
+    // which normalises harmlessly but NEVER compares against the bundler's
+    // circuit_updates shape). Post-fix: one circuit_updates entry carrying
+    // all four fields under `meta`.
+    const oracle = {
+      circuits: {
+        3: {
+          circuit_designation: 'Ring',
+          circuit_phase: 'L1',
+          circuit_rating_amps: 32,
+          circuit_cable_csa_mm2: 2.5,
+        },
+      },
+    };
+    const shape = expectedSlotWritesToLegacyShape(oracle);
+    expect(Array.isArray(shape.circuit_updates)).toBe(true);
+    expect(shape.circuit_updates).toHaveLength(1);
+    const op = shape.circuit_updates[0];
+    expect(op.action).toBe('create');
+    expect(op.circuit_ref).toBe(3);
+    // Post-fix: every field makes it into the canonical meta bucket.
+    expect(op.meta).toMatchObject({
+      designation: 'Ring',
+      phase: 'L1',
+      rating_amps: 32,
+      cable_csa_mm2: 2.5,
+    });
+    // Post-fix: circuit-shape fields MUST NOT leak into readings — the
+    // pre-r5 behaviour silently put them there, which falsely masked
+    // divergence when legacy emitted them correctly as circuit_updates.
+    const readingFields = new Set(shape.extracted_readings.map((r) => r.field));
+    expect(readingFields.has('circuit_phase')).toBe(false);
+    expect(readingFields.has('circuit_rating_amps')).toBe(false);
+    expect(readingFields.has('circuit_cable_csa_mm2')).toBe(false);
+    expect(readingFields.has('circuit_designation')).toBe(false);
+  });
+
+  test('r5-3e — flat-legacy vs nested-meta circuit ops normalise equal when semantically identical', () => {
+    // Legacy record_extraction emits {action, circuit_ref, designation,
+    // phase, rating_amps, cable_csa_mm2} FLAT at the top level.
+    // Tool-call bundler emits {op, circuit_ref, meta:{designation, phase,
+    // rating_amps, cable_csa_mm2}} with fields nested. Post-fix the
+    // normaliser must accept both layouts and converge on the same
+    // canonical shape. Semantically identical inputs → divergence 0.
+    const legacyFlat = {
+      ...empty,
+      circuit_updates: [
+        {
+          action: 'create',
+          circuit_ref: 3,
+          designation: 'Ring',
+          phase: 'L1',
+          rating_amps: 32,
+          cable_csa_mm2: 2.5,
+        },
+      ],
+    };
+    const toolNested = {
+      ...empty,
+      circuit_updates: [
+        {
+          op: 'create',
+          circuit_ref: 3,
+          meta: {
+            designation: 'Ring',
+            phase: 'L1',
+            rating_amps: 32,
+            cable_csa_mm2: 2.5,
+          },
+        },
+      ],
+    };
+    const normLegacy = normaliseExtractionResult(legacyFlat);
+    const normTool = normaliseExtractionResult(toolNested);
+    const d = computeDivergence(normLegacy, normTool);
+    expect(d.diverged).toBe(false);
+    expect(d.call_divergence).toBe(0);
+  });
+
+  test('r5-3f — rename op: from_ref preserved through normalisation (flat or meta)', () => {
+    // Rename schema requires from_ref. Bundler at stage6-dispatchers-circuit.js
+    // :366-376 puts from_ref flat at the top level. A hypothetical future
+    // legacy shape might nest it under meta. Either placement must
+    // normalise to the same canonical shape so rename comparisons are
+    // layout-independent.
+    const flat = {
+      ...empty,
+      circuit_updates: [
+        {
+          op: 'rename',
+          from_ref: 3,
+          circuit_ref: 4,
+          meta: { designation: 'Ring v2', phase: null, rating_amps: null, cable_csa_mm2: null },
+        },
+      ],
+    };
+    const legacy = {
+      ...empty,
+      circuit_updates: [
+        {
+          action: 'rename',
+          from_ref: 3,
+          circuit_ref: 4,
+          designation: 'Ring v2',
+          phase: null,
+          rating_amps: null,
+          cable_csa_mm2: null,
+        },
+      ],
+    };
+    const d = computeDivergence(
+      normaliseExtractionResult(flat),
+      normaliseExtractionResult(legacy),
+    );
+    expect(d.diverged).toBe(false);
+    expect(d.call_divergence).toBe(0);
+  });
+});
