@@ -3253,3 +3253,173 @@ describe('Group r9-3 — Plan 04-15 r9-#3: runToolCallPath normalises fixture-de
     expect(session.recentCircuitOrder).toEqual([1, 2, 3]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Group r11-1 — Plan 04-17 r11-#1 MAJOR: runToolCallPath fails fast when the
+// numeric-ascending fallback is unsafe (>SNAPSHOT_RECENT_CIRCUITS seeded
+// non-supply circuits + no declared recentCircuitOrder).
+//
+// Codex r11 MAJOR #1: the r9-#3 / r10-#1 normalisation only addressed the
+// EXPLICIT fixture-declared path. The FALLBACK path (when
+// `pre_turn_state.recentCircuitOrder` is omitted) remained numeric
+// ascending, matching production chronology only incidentally. The
+// "invariant that saves the 6 current golden fixtures" is that seeded
+// circuits fit entirely in the detailed-view window
+// (`seededKeys.size <= SNAPSHOT_RECENT_CIRCUITS`) — under that condition
+// the `.slice(-SNAPSHOT_RECENT_CIRCUITS)` compaction trims nothing, so
+// ordering doesn't affect the detailed set.
+//
+// When a fixture has >SNAPSHOT_RECENT_CIRCUITS seeded non-supply circuits
+// AND no declared order, the numeric fallback silently guesses an ordering
+// that may not match production chronology. sample-03 (4 seeded circuits,
+// no declared order) has been exercising this silent divergence since Plan
+// 04-05 — no downstream assertion catches it because the fixture's
+// assertions don't include detail-line ordering. r11-#1 makes the hazard
+// explicit: the harness throws when the fallback is unsafe, forcing the
+// fixture author to declare order.
+//
+// Three tests lock the behaviour:
+//   r11-1a — 5 seeded circuits + no declared order → throws with message
+//            containing `golden-divergence:` + `does not declare` + the
+//            seeded circuit list.
+//   r11-1b — 3 seeded circuits + no declared order → safe-by-size; numeric
+//            fallback succeeds with no throw.
+//   r11-1c — 5 seeded circuits + explicit declared order → uses declared
+//            order verbatim; no throw (fixture has met its obligation).
+// ---------------------------------------------------------------------------
+
+describe('Group r11-1 — Plan 04-17 r11-#1: runToolCallPath fails fast when recency fallback is unsafe', () => {
+  function sample01ToolCallEvents() {
+    return JSON.parse(
+      fssync.readFileSync(path.join(FIXTURE_DIR, 'sample-01-routine.json'), 'utf8'),
+    ).sse_events_tool_call;
+  }
+  function sample01ToolCallEventsR2() {
+    return JSON.parse(
+      fssync.readFileSync(path.join(FIXTURE_DIR, 'sample-01-routine.json'), 'utf8'),
+    ).sse_events_tool_call_round2;
+  }
+
+  test('r11-1a — >SNAPSHOT_RECENT_CIRCUITS seeded + no declared order throws fail-fast with actionable message', async () => {
+    // Plan 04-17 r11-#1 — 5 seeded circuits, no declared order. The
+    // numeric fallback would produce `[1, 2, 3, 4, 5]` but production's
+    // chronological order could be any permutation. The harness MUST
+    // throw so the fixture author is forced to declare the chronology
+    // explicitly.
+    //
+    // The error message MUST:
+    //   - Start with `golden-divergence:` (the harness's namespace
+    //     convention for harness-level errors; see the legacy+oracle
+    //     check at runFixture line ~1147).
+    //   - Name the seeded circuit count and list so the author can
+    //     cross-reference against their fixture's snapshot.
+    //   - Tell the author what to add ("declare recentCircuitOrder").
+    const syntheticFx = {
+      pre_turn_state: {
+        snapshot: {
+          circuits: {
+            1: { circuit_ref: 1, circuit_designation: 'Ring 1' },
+            2: { circuit_ref: 2, circuit_designation: 'Ring 2' },
+            3: { circuit_ref: 3, circuit_designation: 'Lights' },
+            4: { circuit_ref: 4, circuit_designation: 'Cooker' },
+            5: { circuit_ref: 5, circuit_designation: 'Shower' },
+          },
+          pending_readings: [],
+          observations: [],
+          validation_alerts: [],
+        },
+        // Deliberately OMIT recentCircuitOrder — this is the path r11-#1
+        // disallows when seededKeys.size > SNAPSHOT_RECENT_CIRCUITS.
+        askedQuestions: [],
+        extractedObservations: [],
+      },
+      transcript: 'test',
+      sse_events_tool_call: sample01ToolCallEvents(),
+      sse_events_tool_call_round2: sample01ToolCallEventsR2(),
+    };
+    // Async throw — use rejects matcher.
+    await expect(runToolCallPath(syntheticFx)).rejects.toThrow(/golden-divergence:/);
+    await expect(runToolCallPath(syntheticFx)).rejects.toThrow(/does not declare/);
+    // Seeded circuit list appears in the error so the author can match
+    // against their fixture's snapshot at a glance.
+    await expect(runToolCallPath(syntheticFx)).rejects.toThrow(/1, 2, 3, 4, 5/);
+    // The error names the SNAPSHOT_RECENT_CIRCUITS constant value so the
+    // author understands WHY 5 > threshold triggers the guard.
+    await expect(runToolCallPath(syntheticFx)).rejects.toThrow(/SNAPSHOT_RECENT_CIRCUITS=3/);
+  });
+
+  test('r11-1b — seededKeys.size == SNAPSHOT_RECENT_CIRCUITS + no declared order: safe-by-size fallback succeeds', async () => {
+    // Plan 04-17 r11-#1 — with exactly SNAPSHOT_RECENT_CIRCUITS=3
+    // seeded non-supply circuits, all entries fit in the detailed-view
+    // window regardless of chronology. The numeric fallback is safe:
+    // `.slice(-3)` on a 3-element array returns the whole array, so
+    // ordering doesn't affect which circuits are detailed. The
+    // fail-fast guard deliberately DOES NOT fire here — this test pins
+    // that boundary condition.
+    //
+    // This test overlaps with r8-3c in intent but asserts a DIFFERENT
+    // invariant: r8-3c proves the fallback produces numeric ascending
+    // output; r11-1b proves the fallback DOES NOT THROW under the
+    // safe-by-size condition.
+    const syntheticFx = {
+      pre_turn_state: {
+        snapshot: {
+          circuits: {
+            1: { circuit_ref: 1, circuit_designation: 'Ring 1' },
+            2: { circuit_ref: 2, circuit_designation: 'Ring 2' },
+            3: { circuit_ref: 3, circuit_designation: 'Lights' },
+          },
+          pending_readings: [],
+          observations: [],
+          validation_alerts: [],
+        },
+        askedQuestions: [],
+        extractedObservations: [],
+      },
+      transcript: 'test',
+      sse_events_tool_call: sample01ToolCallEvents(),
+      sse_events_tool_call_round2: sample01ToolCallEventsR2(),
+    };
+    const { session } = await runToolCallPath(syntheticFx);
+    // Numeric ascending fallback, same as r8-3c.
+    expect(session.recentCircuitOrder).toEqual([1, 2, 3]);
+  });
+
+  test('r11-1c — >SNAPSHOT_RECENT_CIRCUITS seeded + explicit declared order: fixture has met obligation, no throw', async () => {
+    // Plan 04-17 r11-#1 — when the fixture declares recentCircuitOrder
+    // explicitly (even for >3 circuits) the fail-fast guard does NOT
+    // fire. The fixture author has opted into the declared-path
+    // chronology; the harness trusts their declaration.
+    //
+    // 5 seeded circuits + declared `[5, 1, 3, 2, 4]` (no duplicates,
+    // no invalid entries, no circuit 0). The normalised output should
+    // equal the declared order verbatim because the r10-#1 last-wins
+    // dedupe is a no-op on input without duplicates.
+    const syntheticFx = {
+      pre_turn_state: {
+        snapshot: {
+          circuits: {
+            1: { circuit_ref: 1, circuit_designation: 'Ring 1' },
+            2: { circuit_ref: 2, circuit_designation: 'Ring 2' },
+            3: { circuit_ref: 3, circuit_designation: 'Lights' },
+            4: { circuit_ref: 4, circuit_designation: 'Cooker' },
+            5: { circuit_ref: 5, circuit_designation: 'Shower' },
+          },
+          pending_readings: [],
+          observations: [],
+          validation_alerts: [],
+        },
+        recentCircuitOrder: [5, 1, 3, 2, 4],
+        askedQuestions: [],
+        extractedObservations: [],
+      },
+      transcript: 'test',
+      sse_events_tool_call: sample01ToolCallEvents(),
+      sse_events_tool_call_round2: sample01ToolCallEventsR2(),
+    };
+    const { session } = await runToolCallPath(syntheticFx);
+    // Declared order used verbatim (no duplicates to dedupe, all refs
+    // seeded, no circuit 0).
+    expect(session.recentCircuitOrder).toEqual([5, 1, 3, 2, 4]);
+  });
+});
