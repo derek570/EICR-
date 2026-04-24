@@ -1814,3 +1814,170 @@ describe('Plan 04-22 r16-#2 — pending_readings field canonicalisation', () => 
     expect(pendingLine).toMatch(/"value"\s*:\s*"<<<USER_TEXT>>>0\.42<<<END_USER_TEXT>>>"/);
   });
 });
+
+/**
+ * Plan 04-22 r16-#3 — FIELD_ID_MAP canonical completion.
+ *
+ * Codex r16 (re-statement of r15-#2) flagged that 4 keys in
+ * FIELD_ID_MAP retained legacy vocabulary after r13-#2's
+ * canonicalisation pass:
+ *   - ocpd_rating               → ocpd_rating_a
+ *   - ocpd_breaking_capacity    → ocpd_breaking_capacity_ka
+ *   - ir_test_voltage           → ir_test_voltage_v
+ *   - max_disconnect_time       → max_disconnect_time_s  (NB: _s
+ *     for seconds — verified against config/field_schema.json:82)
+ *
+ * Canonical names verified at field_schema.json lines 82, 109,
+ * 124, 207 — these are the names the tool-schema's
+ * record_reading.field enum (sourced from
+ * Object.keys(circuit_fields)) accepts. r13-#2 narrowed the
+ * canonical-vocabulary contract to the 10 reading aliases (zs,
+ * r1_r2, r2, ir_*, ring_continuity_*, rcd_trip_time, polarity);
+ * the remaining 4 non-reading aliases were left as-is with a
+ * comment calling out "no write-time / read-time mismatch
+ * because they don't appear in _seedStateFromJobState". Codex
+ * r15/r16 flagged that the comment's narrow scope is true but
+ * not safe — any future producer (a new ingestion path, a
+ * direct-mutation test, hydration from persisted state) lands
+ * legacy text in the cached prefix.
+ *
+ * The r16-#3 fix:
+ *   (a) Rename the 4 FIELD_ID_MAP keys to canonical. COMPACT IDS
+ *       (8, 10, 19, 27) stay identical so on-wire snapshot
+ *       layout is byte-compatible — anything consuming id 8
+ *       still finds the OCPD rating at id 8 regardless of which
+ *       alias the producer wrote it under.
+ *   (b) Extend LEGACY_TO_CANONICAL_CIRCUIT_KEYS with the 4 new
+ *       legacy→canonical entries — this gets the 4 aliases into
+ *       _normaliseCircuitKeysToCanonical (hydration normalisation)
+ *       for free.
+ *   (c) Extend WRAP_POLICY with the 4 canonical entries as
+ *       server_canonical (numeric / closed-enum values, not
+ *       user-derived).
+ *
+ * Six tests:
+ *   r16-3a — hydration: legacy ocpd_rating → canonical ocpd_rating_a.
+ *   r16-3b — hydration: ocpd_breaking_capacity → ocpd_breaking_capacity_ka.
+ *   r16-3c — hydration: ir_test_voltage → ir_test_voltage_v.
+ *   r16-3d — hydration: max_disconnect_time → max_disconnect_time_s.
+ *   r16-3e — canonical compact id: seed canonical ocpd_rating_a → snapshot
+ *            block emits "8":<value> (id 8 unchanged from pre-r16).
+ *   r16-3f — multi-key end-to-end: all 4 legacy aliases on one circuit
+ *            hydrate to canonical + bucket has zero legacy leakage.
+ */
+describe('Plan 04-22 r16-#3 — FIELD_ID_MAP canonical completion (4 remaining keys)', () => {
+  beforeEach(() => mockCreate.mockReset());
+
+  test('r16-3a — hydration: pre-existing legacy `ocpd_rating` lands on canonical `ocpd_rating_a`', () => {
+    // Drives the _normaliseCircuitKeysToCanonical pass via start().
+    // Mirrors the r14-3a pattern but for one of the 4 r16 additions
+    // to LEGACY_TO_CANONICAL_CIRCUIT_KEYS.
+    const session = new EICRExtractionSession('k', 'sess-r16-3a', 'eicr', {
+      toolCallsMode: 'shadow',
+    });
+    session.stateSnapshot.circuits[1] = { ocpd_rating: 32 };
+    session.start();
+
+    const bucket = session.stateSnapshot.circuits[1];
+    expect(bucket).toHaveProperty('ocpd_rating_a', 32);
+    expect(bucket).not.toHaveProperty('ocpd_rating');
+  });
+
+  test('r16-3b — hydration: pre-existing legacy `ocpd_breaking_capacity` lands on canonical `ocpd_breaking_capacity_ka`', () => {
+    const session = new EICRExtractionSession('k', 'sess-r16-3b', 'eicr', {
+      toolCallsMode: 'shadow',
+    });
+    session.stateSnapshot.circuits[1] = { ocpd_breaking_capacity: 6 };
+    session.start();
+
+    const bucket = session.stateSnapshot.circuits[1];
+    expect(bucket).toHaveProperty('ocpd_breaking_capacity_ka', 6);
+    expect(bucket).not.toHaveProperty('ocpd_breaking_capacity');
+  });
+
+  test('r16-3c — hydration: pre-existing legacy `ir_test_voltage` lands on canonical `ir_test_voltage_v`', () => {
+    const session = new EICRExtractionSession('k', 'sess-r16-3c', 'eicr', {
+      toolCallsMode: 'shadow',
+    });
+    session.stateSnapshot.circuits[1] = { ir_test_voltage: 500 };
+    session.start();
+
+    const bucket = session.stateSnapshot.circuits[1];
+    expect(bucket).toHaveProperty('ir_test_voltage_v', 500);
+    expect(bucket).not.toHaveProperty('ir_test_voltage');
+  });
+
+  test('r16-3d — hydration: pre-existing legacy `max_disconnect_time` lands on canonical `max_disconnect_time_s` (NB: _s for seconds, NOT _ms)', () => {
+    // Locks the canonical name's exact suffix — `_s` matches
+    // config/field_schema.json:82 (`max_disconnect_time_s`).
+    // A future contributor swapping to `_ms` would break the
+    // tool-schema enum match and this test catches it pre-deploy.
+    const session = new EICRExtractionSession('k', 'sess-r16-3d', 'eicr', {
+      toolCallsMode: 'shadow',
+    });
+    session.stateSnapshot.circuits[1] = { max_disconnect_time: 0.4 };
+    session.start();
+
+    const bucket = session.stateSnapshot.circuits[1];
+    expect(bucket).toHaveProperty('max_disconnect_time_s', 0.4);
+    expect(bucket).not.toHaveProperty('max_disconnect_time');
+    // Negative assertion against the wrong-suffix variant.
+    expect(bucket).not.toHaveProperty('max_disconnect_time_ms');
+  });
+
+  test('r16-3e — canonical compact id: seed canonical `ocpd_rating_a` → snapshot block emits compact id 8 (unchanged from pre-r16)', () => {
+    // Locks that the FIELD_ID_MAP rename PRESERVED compact id 8.
+    // On-wire snapshot bytes for id 8 must stay identical so any
+    // existing fixture / golden-divergence test that asserts on
+    // id 8 continues to pass.
+    const session = new EICRExtractionSession('k', 'sess-r16-3e', 'eicr', {
+      toolCallsMode: 'shadow',
+    });
+    session.stateSnapshot.circuits[1] = { ocpd_rating_a: 32 };
+    session.recentCircuitOrder = [1];
+    session.start();
+
+    const blocks = session.buildSystemBlocks();
+    const snapshotText = blocks[1].text;
+    const extractedBlockMatch = snapshotText.match(/EXTRACTED \(field IDs[\s\S]*$/);
+    expect(extractedBlockMatch).not.toBeNull();
+    const extractedBlock = extractedBlockMatch[0];
+
+    // Compact id 8 carries the canonical ocpd_rating value.
+    expect(extractedBlock).toMatch(/"8"\s*:\s*32/);
+    // Canonical key name does NOT leak as an object key (compacted
+    // serialisation uses ids, not names).
+    expect(extractedBlock).not.toMatch(/"ocpd_rating_a"\s*:/);
+    expect(extractedBlock).not.toMatch(/"ocpd_rating"\s*:/);
+  });
+
+  test('r16-3f — multi-key end-to-end: all 4 legacy aliases on one circuit hydrate to canonical with zero leakage', () => {
+    // Mirrors r14-3d (the all-10-aliases-at-once test) for the 4
+    // r16 additions. Drives the simultaneous-presence branch of
+    // _normaliseCircuitKeysToCanonical.
+    const session = new EICRExtractionSession('k', 'sess-r16-3f', 'eicr', {
+      toolCallsMode: 'shadow',
+    });
+    session.stateSnapshot.circuits[1] = {
+      ocpd_rating: 32,
+      ocpd_breaking_capacity: 6,
+      ir_test_voltage: 500,
+      max_disconnect_time: 0.4,
+    };
+    session.start();
+
+    const bucket = session.stateSnapshot.circuits[1];
+
+    // Canonical keys present with values preserved.
+    expect(bucket).toHaveProperty('ocpd_rating_a', 32);
+    expect(bucket).toHaveProperty('ocpd_breaking_capacity_ka', 6);
+    expect(bucket).toHaveProperty('ir_test_voltage_v', 500);
+    expect(bucket).toHaveProperty('max_disconnect_time_s', 0.4);
+
+    // None of the 4 legacy aliases leaked through.
+    expect(bucket).not.toHaveProperty('ocpd_rating');
+    expect(bucket).not.toHaveProperty('ocpd_breaking_capacity');
+    expect(bucket).not.toHaveProperty('ir_test_voltage');
+    expect(bucket).not.toHaveProperty('max_disconnect_time');
+  });
+});
