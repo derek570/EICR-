@@ -94,8 +94,10 @@
  *     3. runShadowHarness resolved (tool loop completed cleanly).
  *     4. session.loggedQuestionsForUserBypass falsy — the bypass log did
  *        not fire because the model did not emit legacy JSON.
- *     5. session.stateSnapshot.circuits[2].r1_r2 === 0.64 — the at-risk
- *        slot is preserved unchanged on the live session.
+ *     5. session.stateSnapshot.circuits[2].r1_r2_ohm === 0.64 — the at-risk
+ *        slot is preserved unchanged on the live session (Plan 04-12 r6-#3:
+ *        canonicalised from legacy `r1_r2` to `r1_r2_ohm` matching the
+ *        tool-schema enum + oracle).
  *     6. session.stateSnapshot.circuits[3].ir_live_live_mohm
  *        === '>200' — the turn's new reading landed on the live snapshot
  *        under the CANONICAL field name (Plan 04-10 r4-#3: was
@@ -143,8 +145,8 @@
  *   loggedQuestionsForUserBypass true → someone restored questions_for_user
  *                                        emission on the tool-call branch.
  *                                        Plan 04-03 regression.
- *   circuits[2].r1_r2 not 0.64 → live session mutated by shadow path
- *                                → BLOCK #1 clone regression.
+ *   circuits[2].r1_r2_ohm not 0.64 → live session mutated by shadow path
+ *                                   → BLOCK #1 clone regression.
  *   _callCount !== 2 → tool loop did not execute two rounds. Check fixture
  *                      SSE event shape hasn't drifted from assembler
  *                      expectations.
@@ -269,9 +271,43 @@ function makeSessionWithSeededSnapshot(mode, snapshotSeed) {
 // ---------------------------------------------------------------------------
 
 describe('STT-04 Scenario A — Legacy prompt path (filled-slots-filter baseline)', () => {
+  // Plan 04-12 r6-#3: the fixture's pre_turn_state.snapshot is now
+  // CANONICAL (measured_zs_ohm, r1_r2_ohm). Scenario A documents the
+  // LEGACY safety net — the filter input is `sse_events_misbehaving_
+  // legacy_questions_for_user` which carries field='r1_r2' verbatim
+  // (pre-Phase-4 Sonnet vocabulary). The filter checks the question's
+  // field string against snapshot keys directly, so the snapshot it
+  // sees must ALSO be legacy-shaped for the filter to suppress the
+  // payload. Constructing a legacy-shaped snapshot inline preserves
+  // Scenario A's semantic ("the pre-Phase-4 safety net works on pre-
+  // Phase-4 payloads") without relying on the fixture pre-seed.
+  function legacyShapedSnapshot() {
+    return {
+      circuits: {
+        1: {
+          circuit_ref: 1,
+          circuit_designation: 'Ring final (downstairs sockets)',
+          zs: 0.42, // legacy key — filter matches legacy question field
+        },
+        2: {
+          circuit_ref: 2,
+          circuit_designation: 'Ring final (kitchen)',
+          r1_r2: 0.64, // legacy key — see above
+        },
+        3: {
+          circuit_ref: 3,
+          circuit_designation: 'Lighting (downstairs)',
+        },
+      },
+      pending_readings: [],
+      observations: [],
+      validation_alerts: [],
+    };
+  }
+
   test('filter drops the F21934D4 production questions_for_user payload', () => {
     const legacyQuestions = fixture.sse_events_misbehaving_legacy_questions_for_user;
-    const snapshot = JSON.parse(JSON.stringify(fixture.pre_turn_state.snapshot));
+    const snapshot = legacyShapedSnapshot();
 
     const filtered = filterQuestionsAgainstFilledSlots(
       legacyQuestions,
@@ -290,17 +326,18 @@ describe('STT-04 Scenario A — Legacy prompt path (filled-slots-filter baseline
   test('filter pass-through sanity — a NEW field on the same circuit is NOT suppressed', () => {
     // Defensive: the filter should ONLY suppress re-asks for already-filled
     // slots. An 'unclear' question about a DIFFERENT field on the same circuit
-    // (e.g. asking about zs on circuit 2, which is not filled in the seed)
-    // must survive — otherwise the filter would silently block legitimate
-    // questions about missing readings. This is the complement of the drop
-    // assertion above and guards against enum/shape regressions in the filter.
-    const snapshot = JSON.parse(JSON.stringify(fixture.pre_turn_state.snapshot));
+    // (e.g. asking about insulation_resistance_l_e on circuit 2, which is
+    // not filled in the seed) must survive — otherwise the filter would
+    // silently block legitimate questions about missing readings. This is
+    // the complement of the drop assertion above and guards against
+    // enum/shape regressions in the filter.
+    const snapshot = legacyShapedSnapshot();
     const newFieldQuestion = [
       {
-        field: 'zs',
+        field: 'insulation_resistance_l_e',
         circuit: 2,
         type: 'unclear',
-        question: 'Was that Zs for circuit 2?',
+        question: 'Was that insulation L-E for circuit 2?',
       },
     ];
     const filtered = filterQuestionsAgainstFilledSlots(
@@ -541,8 +578,19 @@ describe("STT-04 Scenario B' — Real EICRExtractionSession SC #4 exit check (r3
     // 4. Bypass log for questions_for_user never fired.
     expect(session.loggedQuestionsForUserBypass).toBeFalsy();
 
-    // 5. At-risk slot (circuits[2].r1_r2) preserved at 0.64.
-    expect(session.stateSnapshot.circuits['2'].r1_r2).toBe(0.64);
+    // 5. At-risk slot (circuits[2].r1_r2_ohm) preserved at 0.64.
+    //    Plan 04-12 r6-#3: the fixture pre-seed was renamed from the
+    //    legacy key `r1_r2` to the canonical `r1_r2_ohm` matching the
+    //    record_reading tool-schema enum + oracle vocabulary. Shadow
+    //    path must NOT mutate the pre-seeded live snapshot (BLOCK #1
+    //    clone invariant from Phase 2), so this assertion locks that
+    //    the canonical slot's value survives the turn unchanged.
+    expect(session.stateSnapshot.circuits['2'].r1_r2_ohm).toBe(0.64);
+    // Negative guard: the legacy key MUST NOT re-appear. A future
+    // fixture edit that reverts to legacy pre-seed OR a dispatcher
+    // regression that double-writes under the legacy name would
+    // surface here.
+    expect(session.stateSnapshot.circuits['2']).not.toHaveProperty('r1_r2');
 
     // 6. Turn's new reading landed on live snapshot under the CANONICAL
     //    field key. Plan 04-10 r4-#3 rename — `ir_live_live_mohm`

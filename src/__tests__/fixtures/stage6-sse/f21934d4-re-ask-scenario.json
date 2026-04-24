@@ -1,5 +1,5 @@
 {
-  "_doc": "F21934D4 replay fixture — Phase 4 SC #4 exit check. See src/__tests__/stage6-f21934d4-replay.test.js for the full origin narrative and per-assertion justification. Purpose: codify the exact production reproducer scenario that motivated filled-slots-filter and that Phase 4 (agentic prompt + cached-prefix snapshot + gated questions_for_user deletion) is intended to eliminate at source rather than suppress downstream.",
+  "_doc": "F21934D4 replay fixture — Phase 4 SC #4 exit check. See src/__tests__/stage6-f21934d4-replay.test.js for the full origin narrative and per-assertion justification. Purpose: codify the exact production reproducer scenario that motivated filled-slots-filter and that Phase 4 (agentic prompt + cached-prefix snapshot + gated questions_for_user deletion) is intended to eliminate at source rather than suppress downstream. Plan 04-12 r6-#3: pre_turn_state.snapshot uses CANONICAL field keys (measured_zs_ohm, r1_r2_ohm) matching the agentic tool-schema enum in config/field_schema.json; the sse_events_misbehaving_legacy_questions_for_user block below deliberately keeps the LEGACY vocabulary (field='r1_r2') because it documents the pre-Phase-4 Sonnet payload that filled-slots-filter Scenario A must suppress.",
   "_origin_ref": "src/extraction/filled-slots-filter.js lines 54-58 — production session F21934D4: inspector said 'R1 plus R2 for circuit 2 is 0.64 ohms' on turn N. Legacy sliding-window capped at SLIDING_WINDOW_SIZE=6 pairs, so by turn N+7 the exchange had rolled out of the model's effective window. On a later turn whose transcript did NOT re-supply r1_r2, the legacy prompt (which lived alongside the stateSnapshot injected as a USER message) emitted { field: 'r1_r2', circuit: 2, type: 'unclear' } in questions_for_user, which reached QuestionGate and fired TTS re-asking for a value already on the form.",
   "_proof_of_fix": "Plan 04-02 moved the stateSnapshot into the CACHED PREFIX (system-prompt cache_control:'ephemeral' block) so it is visible on every turn regardless of sliding-window rotation. Plan 04-01 added STQ-05 restraint text instructing the model to not re-ask filled slots. Plan 04-03 deleted the questions_for_user JSON emission on the tool-call branch so any residual legacy prompt survival cannot leak into the gate. Together these three changes make the scenario below return zero ask_user tool calls — SC #4.",
   "_why_simulated_not_live": "This fixture drives a deterministic, offline, sub-second replay. We are NOT measuring real-model shadow divergence (that is Plan 04-05's golden-session job). We are locking DISPATCH behaviour: given a well-behaved model response to the F21934D4 transcript under the new prompt + cached prefix, our tool-call path delivers zero ask_user registrations, zero ws ask_user_started emissions, zero questions_for_user JSON bypass logs, and a correctly-updated stateSnapshot. If Plan 04-05 later surfaces that the REAL model still emits ask_user on this transcript, that is a prompt tuning issue (Phase 5/6) tracked separately — it would not invalidate the dispatch-level lock this fixture provides.",
@@ -10,12 +10,12 @@
         "1": {
           "circuit_ref": 1,
           "circuit_designation": "Ring final (downstairs sockets)",
-          "zs": 0.42
+          "measured_zs_ohm": 0.42
         },
         "2": {
           "circuit_ref": 2,
           "circuit_designation": "Ring final (kitchen)",
-          "r1_r2": 0.64
+          "r1_r2_ohm": 0.64
         },
         "3": {
           "circuit_ref": 3,
