@@ -475,6 +475,275 @@ describe('checkForPromptLeak() — Layer 2 output-side prompt-leak filter', () =
         });
       });
 
+      // ----------------------------------------------------------
+      // Plan 04-33 r26-#2 — non-adjacent proximity matrix locking
+      // the 20-char window boundary.
+      //
+      // WHY: my r25-#2 proximity tests cover adjacent (0-char gap)
+      // triple-angles only (`<<<USER_TEXT`, `USER_TEXT>>>`,
+      // `END_USER_TEXT >>>` etc.). The 20-char proximity boundary
+      // in `hasWrapperScaffolding` is test-unlocked: a future
+      // regression narrowing the detector to "touching" would
+      // pass every existing assertion.
+      //
+      // DETECTOR SEMANTICS — the `hasWrapperScaffolding` window is
+      // `[idx - 20, idx + marker.length + 20)` where idx is the
+      // triple-angle position. For the identifier `user_text` (9
+      // chars) to be fully inside the window sliced as
+      // `lower.slice(windowStart, windowEnd)` via
+      // `window.includes('user_text')`, the identifier's character
+      // range must be within the sliced region.
+      //
+      // AFTER direction (USER_TEXT + G + >>>):
+      //   - USER_TEXT occupies idx 0..8 (9 chars).
+      //   - `>>>` at idx (9+G), window [max(0, 9+G-20), 9+G+23).
+      //   - Identifier inside window needs 0 >= 9+G-20 → G <= 11.
+      //   - Gap count G is "characters between `T` of USER_TEXT and
+      //     first `>`". With `"USER_TEXT 123456789 >>>"` G = 1+9+1
+      //     = 11 chars (space, 9 digits, space) → `>>>` at idx 20
+      //     → windowStart = 0 → user_text at 0 INSIDE → FIRES.
+      //   - With `"USER_TEXT 1234567890 >>>"` G = 12 → `>>>` at 21
+      //     → windowStart = 1 → user_text at 0 NOT in slice → does
+      //     NOT fire.
+      //
+      // BEFORE direction (<<< + G + USER_TEXT):
+      //   - `<<<` at idx 0, window [0, 3+20) = [0, 23).
+      //   - USER_TEXT at idx (3+G). Inside window needs 3+G+9 <= 23
+      //     → G <= 11.
+      //   - G = 11 padding chars between last `<` and first `U`
+      //     (e.g. `"<<< 123456789 USER_TEXT"` has 1 space + 9
+      //     digits + 1 space = 11) → USER_TEXT at idx 14 → fully
+      //     inside → FIRES.
+      //   - G = 12 → USER_TEXT at idx 15 → runs to idx 23 which
+      //     is NOT in window.slice(0, 23) → does NOT fire.
+      //
+      // END_USER_TEXT (13 chars) mirrors — boundary different:
+      //   - AFTER: G <= 7 fires. Window [max(0, 13+G-20), ...);
+      //     for 0 inside → 13+G-20 <= 0 → G <= 7.
+      //   - BEFORE: 3+G+13 <= 23 → G <= 7 fires.
+      //
+      // Total: 16 tests (4 gap × 2 directions × 2 identifiers).
+      // Each asserts EXACT reason + `.not.toBe(<other-family>)`.
+      //
+      // Same TDD pattern as r18-#2 / r19-#2 / r25-#2 test-only
+      // fixes — the detector already behaves correctly; the fix
+      // IS the test coverage. No source change, no RED/GREEN
+      // split.
+      // ----------------------------------------------------------
+      describe('r26-#2 non-adjacent proximity — 20-char window regression matrix', () => {
+        // AFTER direction: USER_TEXT + <gap> + >>>
+        test('3-char-padding gap (inside): "USER_TEXT 1 >>>" → EXACT wrapper-scaffolding-right', () => {
+          // G = 3 (space, digit, space). `>>>` at idx 12. windowStart
+          // = 0. user_text at 0 inside → FIRES.
+          const result = checkForPromptLeak('USER_TEXT 1 >>>', {
+            field: 'question',
+          });
+          expect(result.safe).toBe(false);
+          expect(result.reason).toBe('marker:wrapper-scaffolding-right');
+          expect(result.reason).not.toBe('marker:user-text-bare');
+        });
+
+        test('7-char-padding gap (inside): "USER_TEXT 12345 >>>" → EXACT wrapper-scaffolding-right', () => {
+          // G = 7. `>>>` at idx 16. windowStart = 0. FIRES.
+          const result = checkForPromptLeak('USER_TEXT 12345 >>>', {
+            field: 'question',
+          });
+          expect(result.safe).toBe(false);
+          expect(result.reason).toBe('marker:wrapper-scaffolding-right');
+          expect(result.reason).not.toBe('marker:user-text-bare');
+        });
+
+        test('11-char-padding gap (boundary): "USER_TEXT 123456789 >>>" → EXACT wrapper-scaffolding-right', () => {
+          // G = 11 (space + 9 digits + space). `>>>` at idx 20.
+          // windowStart = 0. user_text inside. FIRES at boundary.
+          const result = checkForPromptLeak('USER_TEXT 123456789 >>>', {
+            field: 'question',
+          });
+          expect(result.safe).toBe(false);
+          expect(result.reason).toBe('marker:wrapper-scaffolding-right');
+          expect(result.reason).not.toBe('marker:user-text-bare');
+        });
+
+        test('12-char-padding gap (just outside): "USER_TEXT 1234567890 >>>" → EXACT user-text-bare', () => {
+          // G = 12. `>>>` at idx 21. windowStart = 1. user_text at
+          // 0 NOT in slice → proximity does NOT fire → bare-id
+          // marker wins.
+          const result = checkForPromptLeak('USER_TEXT 1234567890 >>>', {
+            field: 'question',
+          });
+          expect(result.safe).toBe(false);
+          expect(result.reason).toBe('marker:user-text-bare');
+          expect(result.reason).not.toBe('marker:wrapper-scaffolding-right');
+          expect(result.reason).not.toBe('marker:wrapper-scaffolding-left');
+        });
+
+        // AFTER direction mirror: END_USER_TEXT + <gap> + >>>
+        test('3-char-padding gap (inside): "END_USER_TEXT 1 >>>" → EXACT wrapper-scaffolding-right', () => {
+          // END_USER_TEXT idx 0..12 (13 chars). G = 3. `>>>` at idx 16.
+          // windowStart = max(0, 16-20) = 0. end_user_text at 0
+          // fully inside window [0, 39) → FIRES.
+          const result = checkForPromptLeak('END_USER_TEXT 1 >>>', {
+            field: 'question',
+          });
+          expect(result.safe).toBe(false);
+          expect(result.reason).toBe('marker:wrapper-scaffolding-right');
+          expect(result.reason).not.toBe('marker:end-user-text-bare');
+        });
+
+        test('5-char-padding gap (inside): "END_USER_TEXT 123 >>>" → EXACT wrapper-scaffolding-right', () => {
+          // G = 5 (space+3digits+space). `>>>` at idx 18. FIRES.
+          const result = checkForPromptLeak('END_USER_TEXT 123 >>>', {
+            field: 'question',
+          });
+          expect(result.safe).toBe(false);
+          expect(result.reason).toBe('marker:wrapper-scaffolding-right');
+          expect(result.reason).not.toBe('marker:end-user-text-bare');
+        });
+
+        test('7-char-padding gap (inside): "END_USER_TEXT 12345 >>>" → EXACT wrapper-scaffolding-right', () => {
+          // G = 7. `>>>` at idx 20. windowStart = 0. Full
+          // end_user_text at idx 0..12 inside window [0, 43).
+          // FIRES.
+          const result = checkForPromptLeak('END_USER_TEXT 12345 >>>', {
+            field: 'question',
+          });
+          expect(result.safe).toBe(false);
+          expect(result.reason).toBe('marker:wrapper-scaffolding-right');
+          expect(result.reason).not.toBe('marker:end-user-text-bare');
+        });
+
+        test('11-char-padding gap (effective boundary via user_text substring): "END_USER_TEXT 123456789 >>>" → EXACT wrapper-scaffolding-right', () => {
+          // G = 11. `>>>` at idx 24. windowStart = 4. end_user_text
+          // at idx 0..12 — start 0 NOT in window slice, so
+          // end_user_text target alone would NOT match. BUT
+          // WRAPPER_TARGETS also contains 'user_text' (substring at
+          // idx 4..12 of the input, which IS inside window slice
+          // [4, 47)). Detector fires via user_text-substring match.
+          //
+          // This test LOCKS the sub-identifier match behaviour —
+          // a regression that only matched the exact identifier
+          // would mis-classify this case.
+          const result = checkForPromptLeak('END_USER_TEXT 123456789 >>>', {
+            field: 'question',
+          });
+          expect(result.safe).toBe(false);
+          expect(result.reason).toBe('marker:wrapper-scaffolding-right');
+          expect(result.reason).not.toBe('marker:end-user-text-bare');
+        });
+
+        test('12-char-padding gap (just outside): "END_USER_TEXT 1234567890 >>>" → EXACT end-user-text-bare', () => {
+          // G = 12. `>>>` at idx 25. windowStart = 5. user_text at
+          // idx 4 — NOT in window slice [5, 48). end_user_text at
+          // idx 0 — also NOT in slice. Detector does NOT fire →
+          // bare-id end-user-text wins (longer-match-wins across
+          // MARKER_STRINGS because END_USER_TEXT is listed BEFORE
+          // USER_TEXT in the bare marker block).
+          const result = checkForPromptLeak('END_USER_TEXT 1234567890 >>>', {
+            field: 'question',
+          });
+          expect(result.safe).toBe(false);
+          expect(result.reason).toBe('marker:end-user-text-bare');
+          expect(result.reason).not.toBe('marker:wrapper-scaffolding-right');
+        });
+
+        // BEFORE direction: <<< + <gap> + USER_TEXT
+        // `<<<` at idx 0; window [0, 3+20) = [0, 23). USER_TEXT at
+        // idx (3+G). Full user_text fits iff 3+G+9 <= 23 → G <= 11.
+        test('5-char-padding gap (inside): "<<< 123 USER_TEXT" → EXACT wrapper-scaffolding-left', () => {
+          // G = 5 (space+3digits+space). USER_TEXT at idx 8.
+          // user_text 8..16 fully inside window [0, 23). FIRES.
+          const result = checkForPromptLeak('<<< 123 USER_TEXT', {
+            field: 'question',
+          });
+          expect(result.safe).toBe(false);
+          expect(result.reason).toBe('marker:wrapper-scaffolding-left');
+          expect(result.reason).not.toBe('marker:user-text-bare');
+        });
+
+        test('7-char-padding gap (inside): "<<< 12345 USER_TEXT" → EXACT wrapper-scaffolding-left', () => {
+          // G = 7. USER_TEXT at idx 10. user_text 10..18 inside
+          // window. FIRES.
+          const result = checkForPromptLeak('<<< 12345 USER_TEXT', {
+            field: 'question',
+          });
+          expect(result.safe).toBe(false);
+          expect(result.reason).toBe('marker:wrapper-scaffolding-left');
+          expect(result.reason).not.toBe('marker:user-text-bare');
+        });
+
+        test('11-char-padding gap (boundary): "<<< 123456789 USER_TEXT" → EXACT wrapper-scaffolding-left', () => {
+          // G = 11 (space + 9 digits + space). USER_TEXT at idx 14;
+          // user_text 14..22, fully inside window [0, 23). FIRES
+          // at boundary.
+          const result = checkForPromptLeak('<<< 123456789 USER_TEXT', {
+            field: 'question',
+          });
+          expect(result.safe).toBe(false);
+          expect(result.reason).toBe('marker:wrapper-scaffolding-left');
+          expect(result.reason).not.toBe('marker:user-text-bare');
+        });
+
+        test('12-char-padding gap (just outside): "<<< 1234567890 USER_TEXT" → EXACT user-text-bare', () => {
+          // G = 12. USER_TEXT at idx 15; user_text 15..23. Window
+          // slice [0, 23) — user_text needs char at idx 23 which
+          // is excluded → does NOT fire.
+          const result = checkForPromptLeak('<<< 1234567890 USER_TEXT', {
+            field: 'question',
+          });
+          expect(result.safe).toBe(false);
+          expect(result.reason).toBe('marker:user-text-bare');
+          expect(result.reason).not.toBe('marker:wrapper-scaffolding-left');
+        });
+
+        // BEFORE direction mirror: <<< + <gap> + END_USER_TEXT
+        // `<<<` at 0, window [0, 23). END_USER_TEXT (13 chars) at
+        // idx (3+G) fully inside iff 3+G+13 <= 23 → G <= 7.
+        test('3-char-padding gap (inside): "<<< 1 END_USER_TEXT" → EXACT wrapper-scaffolding-left', () => {
+          // G = 3. END_USER_TEXT at idx 6; end_user_text 6..18
+          // inside [0, 23). FIRES.
+          const result = checkForPromptLeak('<<< 1 END_USER_TEXT', {
+            field: 'question',
+          });
+          expect(result.safe).toBe(false);
+          expect(result.reason).toBe('marker:wrapper-scaffolding-left');
+          expect(result.reason).not.toBe('marker:end-user-text-bare');
+        });
+
+        test('5-char-padding gap (inside): "<<< 123 END_USER_TEXT" → EXACT wrapper-scaffolding-left', () => {
+          // G = 5. END_USER_TEXT at idx 8; end_user_text 8..20
+          // inside [0, 23). FIRES.
+          const result = checkForPromptLeak('<<< 123 END_USER_TEXT', {
+            field: 'question',
+          });
+          expect(result.safe).toBe(false);
+          expect(result.reason).toBe('marker:wrapper-scaffolding-left');
+          expect(result.reason).not.toBe('marker:end-user-text-bare');
+        });
+
+        test('7-char-padding gap (boundary): "<<< 12345 END_USER_TEXT" → EXACT wrapper-scaffolding-left', () => {
+          // G = 7. END_USER_TEXT at idx 10; end_user_text 10..22
+          // fully inside window [0, 23). FIRES at boundary.
+          const result = checkForPromptLeak('<<< 12345 END_USER_TEXT', {
+            field: 'question',
+          });
+          expect(result.safe).toBe(false);
+          expect(result.reason).toBe('marker:wrapper-scaffolding-left');
+          expect(result.reason).not.toBe('marker:end-user-text-bare');
+        });
+
+        test('8-char-padding gap (just outside): "<<< 123456 END_USER_TEXT" → EXACT end-user-text-bare', () => {
+          // G = 8. END_USER_TEXT at idx 11; end_user_text 11..23.
+          // Window slice excludes idx 23 → does NOT fire → bare-id
+          // wins.
+          const result = checkForPromptLeak('<<< 123456 END_USER_TEXT', {
+            field: 'question',
+          });
+          expect(result.safe).toBe(false);
+          expect(result.reason).toBe('marker:end-user-text-bare');
+          expect(result.reason).not.toBe('marker:wrapper-scaffolding-left');
+        });
+      });
+
       // r24-#2: bare triple-angle WITHOUT USER_TEXT nearby is SAFE.
       test('SAFE: "<<<" in code/diff context with NO USER_TEXT nearby', () => {
         const result = checkForPromptLeak('Code diff: <<< line removed', {
