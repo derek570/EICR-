@@ -285,6 +285,115 @@ const FIELD_ID_MAP = {
   ocpd_max_zs_ohm: 28,
 };
 
+// Plan 04-18 r12-#1 — WRAP_POLICY classifies each field that can land
+// in `stateSnapshot.circuits[n][field]` or
+// `stateSnapshot.circuits[0][supply_field]` by its AUTHORSHIP:
+//
+//   - 'user_derived'      → sanitise + wrap with
+//                            <<<USER_TEXT>>>...<<<END_USER_TEXT>>> markers.
+//                            Applies to free-text fields the inspector
+//                            dictates (circuit designations, supply
+//                            fields with free-text payloads).
+//
+//   - 'server_canonical'  → sanitise ONLY (C0 strip + marker escape +
+//                            length cap). No USER_TEXT wrap. Applies to
+//                            closed-enum select fields and BS/EN code
+//                            strings that originate from server-side
+//                            schema enforcement rather than raw
+//                            inspector speech.
+//
+// Why not type-based: `typeof value === 'string'` keys off RUNTIME
+// type, not semantic authorship. A numeric-coerced "32" (stored as
+// number) and a canonical-enum "OK" (stored as string) are both non-
+// user-derived, but only the first is excluded by a typeof guard.
+// The map makes authorship explicit + auditable + greppable.
+//
+// Keys are RAW field names as stored in stateSnapshot.circuits[n].
+// Supply fields (circuit 0) share the same key space; supply-level
+// fields like `ze`/`pfc` and `supply_type`/`earthing_system` are
+// classified on the same map.
+//
+// DEFAULT for unlisted string-valued fields: 'user_derived'. This is
+// a FAIL-SAFE default — if a new field is added and the author
+// forgets to classify it, the snapshot over-applies the wrap (minor:
+// model may redundantly treat a canonical enum as quoted) rather
+// than under-applying it (major: prompt-injection surface reopens).
+// The r12-1d test pins this default.
+//
+// Added by Plan 04-18 r12-#1 after Codex flagged that the pre-r12
+// serialisation loops wrapped EVERY string-typed value (including
+// canonical enums like polarity/phase/wiring_type), which contradicts
+// r11-#2's TRUSTWORTHY marker for server-authored state.
+const WRAP_POLICY = {
+  // --- User-derived free text (WRAP) ---
+  circuit_designation: 'user_derived',
+  designation: 'user_derived', // upsertCircuitMeta stores under 'designation'
+
+  // --- Server-canonical enums / status / codes (SANITISE only) ---
+  // Field-schema select enums at config/field_schema.json:
+  wiring_type: 'server_canonical',
+  ref_method: 'server_canonical',
+  ocpd_type: 'server_canonical',
+  rcd_type: 'server_canonical',
+  polarity_confirmed: 'server_canonical',
+  polarity: 'server_canonical', // seed path (_seedStateFromJobState) stores under 'polarity'
+
+  // Phase enum (L1/L2/L3/N) — stored by upsertCircuitMeta as
+  // canonical enum per config/stage6-enumerations.json circuit_phase.
+  phase: 'server_canonical',
+
+  // BS/EN code strings — closed namespace of IEC/BS numbers
+  // (60898, 61009, 88-2, 1361, 3036 etc). Not free text.
+  ocpd_bs_en: 'server_canonical',
+  rcd_bs_en: 'server_canonical',
+
+  // Supply-level canonical enums (if later wired into the seed path
+  // or supply_characteristics surface). Classify pre-emptively so a
+  // future seed-path extension is safe-by-default.
+  supply_type: 'server_canonical',
+  earthing_system: 'server_canonical',
+
+  // Supply ze/pfc are numeric-coerced in the current seed path but
+  // classify explicitly in case they arrive as strings from some
+  // future producer.
+  ze: 'server_canonical',
+  pfc: 'server_canonical',
+};
+
+/**
+ * Plan 04-18 r12-#1 — look up the wrap policy for a field. Unknown
+ * fields fall through to 'user_derived' as a fail-safe default
+ * (over-apply wrap rather than under-apply).
+ */
+function wrapPolicyFor(fieldKey) {
+  return WRAP_POLICY[fieldKey] ?? 'user_derived';
+}
+
+/**
+ * Plan 04-18 r12-#1 — apply WRAP_POLICY to a field's value before it
+ * lands in the snapshot JSON serialisation.
+ *
+ *   - user_derived      → wrapSnapshotUserTextInline (sanitise + wrap)
+ *   - server_canonical  → sanitiseSnapshotField (sanitise only)
+ *
+ * Non-string values pass through unchanged (numbers, booleans, nulls)
+ * — the wrap surface was never about them. This preserves the existing
+ * numeric-value behaviour byte-for-byte.
+ *
+ * The serialisation loops use this helper in place of the pre-r12
+ * `typeof value === 'string' ? wrapSnapshotUserTextInline(value) : value`
+ * idiom, so the authorship classification is single-sourced on
+ * WRAP_POLICY and not duplicated across supply/recent-circuits/alerts.
+ */
+function applyWrapPolicy(fieldKey, value) {
+  if (typeof value !== 'string') return value;
+  const policy = wrapPolicyFor(fieldKey);
+  if (policy === 'server_canonical') {
+    return sanitiseSnapshotField(value);
+  }
+  return wrapSnapshotUserTextInline(value);
+}
+
 // Tool-use schema for forced structured output. claude-sonnet-4-6 does not
 // support assistant-message prefill, so we use tool_choice to guarantee the
 // model returns JSON that matches our extraction schema. The tool is never
@@ -1497,10 +1606,14 @@ export class EICRExtractionSession {
       // branch deleted per security trade-off).
       const supplyData = this.stateSnapshot.circuits[0];
       if (supplyData && Object.keys(supplyData).length > 0) {
+        // Plan 04-18 r12-#1 — route each supply field through
+        // `applyWrapPolicy` so canonical enums (supply_type,
+        // earthing_system) and numeric-coerced fields (ze, pfc)
+        // stay bare while genuine user-derived free text (if any
+        // future supply field adds one) picks up the wrap.
         const wrappedSupply = {};
         for (const [field, value] of Object.entries(supplyData)) {
-          wrappedSupply[field] =
-            typeof value === 'string' ? wrapSnapshotUserTextInline(value) : value;
+          wrappedSupply[field] = applyWrapPolicy(field, value);
         }
         lines.push(`0:${JSON.stringify(wrappedSupply)}`);
       }
@@ -1543,15 +1656,21 @@ export class EICRExtractionSession {
       // because it silently re-exposed the r7 injection surface
       // on rollback. SC #7 reinterpreted for security; framing
       // uniform across modes.
+      //
+      // Plan 04-18 r12-#1 — route each field through
+      // `applyWrapPolicy(field, value)` so canonical enums (polarity,
+      // phase, wiring_type, ocpd_type, rcd_type) and BS/EN code
+      // strings (ocpd_bs_en, rcd_bs_en) stay bare while
+      // user-derived free text (circuit_designation / designation)
+      // picks up the wrap. Unknown string fields default to wrapped
+      // via `wrapPolicyFor`'s fail-safe.
       for (const num of recentNums) {
         const fields = this.stateSnapshot.circuits[num];
         if (!fields) continue;
         const compact = {};
         for (const [field, value] of Object.entries(fields)) {
           const id = FIELD_ID_MAP[field];
-          const cleanedValue =
-            typeof value === 'string' ? wrapSnapshotUserTextInline(value) : value;
-          compact[id != null ? id : field] = cleanedValue;
+          compact[id != null ? id : field] = applyWrapPolicy(field, value);
         }
         lines.push(`${num}:${JSON.stringify(compact)}`);
       }

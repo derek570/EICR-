@@ -261,24 +261,34 @@ describe('Plan 04-13 r7-#1 [SECURITY BLOCK] — cached-prefix TRUST BOUNDARY fra
     );
   });
 
-  test('r8-1i — supply (circuit 0) string fields are wrapped inline', () => {
+  test('r8-1i [updated by r12-#1] — supply (circuit 0) canonical enum fields are BARE; unknown string fields default to wrapped', () => {
     // Plan 04-14 r8-#1 — supply fields at circuit 0 emit as the
-    // first snapshot line (`0:{...}`). They can carry user-derived
-    // string values (e.g. `supply_type: 'TN-C-S'` — chosen from an
-    // enum by the user). Defence in depth: wrap them with the same
-    // inline markers so the preamble's contract applies uniformly.
+    // first snapshot line (`0:{...}`). Pre-r12 the loop wrapped
+    // EVERY string-typed supply value, including canonical enums
+    // like `supply_type` ('TN-C-S' chosen from a server-side enum).
+    //
+    // Plan 04-18 r12-#1 — WRAP_POLICY classifies `supply_type` as
+    // `server_canonical` (closed enum, no injection surface). It
+    // now emits BARE. The wrap contract still applies to any
+    // UNKNOWN string-typed supply field (fail-safe default routes
+    // to `user_derived`), so a future supply field that carries
+    // genuine user-derived free text picks up the wrap without
+    // needing an explicit classification.
     const session = new EICRExtractionSession('k', 'sess-r8-1i', 'eicr', {
       toolCallsMode: 'shadow',
     });
     session.stateSnapshot.circuits[0] = {
-      supply_type: 'TN-C-S',
-      nominal_voltage: 230, // numeric — NOT wrapped
+      supply_type: 'TN-C-S', // server_canonical per WRAP_POLICY → bare
+      nominal_voltage: 230, // numeric — not wrapped (passthrough)
+      installer_notes: 'free-form note', // NOT in WRAP_POLICY → wrap fail-safe
     };
     const blocks = session.buildSystemBlocks();
     const snapshotText = blocks[1].text;
 
-    // String-typed supply field is wrapped.
-    expect(snapshotText).toMatch(
+    // Canonical enum supply_type is BARE (r12-#1 change).
+    expect(snapshotText).toMatch(/"supply_type"\s*:\s*"TN-C-S"/);
+    // Confirm it's NOT wrapped.
+    expect(snapshotText).not.toMatch(
       /"supply_type"\s*:\s*"<<<USER_TEXT>>>TN-C-S<<<END_USER_TEXT>>>"/,
     );
     // Numeric field is NOT wrapped (numbers have no injection
@@ -286,6 +296,11 @@ describe('Plan 04-13 r7-#1 [SECURITY BLOCK] — cached-prefix TRUST BOUNDARY fra
     expect(snapshotText).toMatch(/"nominal_voltage"\s*:\s*230/);
     expect(snapshotText).not.toContain(
       '"nominal_voltage":"<<<USER_TEXT>>>230<<<END_USER_TEXT>>>"',
+    );
+    // Unknown string-typed field (`installer_notes`) picks up the
+    // fail-safe `user_derived` default — wrapped.
+    expect(snapshotText).toMatch(
+      /"installer_notes"\s*:\s*"<<<USER_TEXT>>>free-form note<<<END_USER_TEXT>>>"/,
     );
   });
 
