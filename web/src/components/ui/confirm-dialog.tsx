@@ -67,6 +67,18 @@ export interface ConfirmDialogProps {
   confirmLabelBusy?: string;
   cancelLabel?: string;
   confirmVariant?: 'primary' | 'danger';
+  /**
+   * Phase 1 ergonomic alias — `destructive={true}` is equivalent to
+   * `confirmVariant="danger"`. Explicit `confirmVariant` still wins when
+   * both are set so existing callsites don't silently flip colour.
+   */
+  destructive?: boolean;
+  /**
+   * Controlled busy state. When omitted, the dialog manages its own busy
+   * state internally: onConfirm returning a Promise causes the confirm
+   * button to disable + show the busy label until the promise settles
+   * (resolves OR rejects), preventing double-fire on destructive taps.
+   */
   busy?: boolean;
   onConfirm: () => void | Promise<void>;
 }
@@ -79,14 +91,33 @@ export function ConfirmDialog({
   confirmLabel = 'Confirm',
   confirmLabelBusy,
   cancelLabel = 'Cancel',
-  confirmVariant = 'primary',
-  busy = false,
+  confirmVariant,
+  destructive,
+  busy,
   onConfirm,
 }: ConfirmDialogProps) {
+  const [internalBusy, setInternalBusy] = React.useState(false);
+  const effectiveBusy = busy ?? internalBusy;
+  const resolvedVariant: 'primary' | 'danger' =
+    confirmVariant ?? (destructive ? 'danger' : 'primary');
   const confirmButtonVariant: ButtonProps['variant'] =
-    confirmVariant === 'danger' ? 'destructive' : 'primary';
+    resolvedVariant === 'danger' ? 'destructive' : 'primary';
 
   const busyText = confirmLabelBusy ?? `${confirmLabel}…`;
+
+  const handleConfirm = React.useCallback(() => {
+    if (busy !== undefined) {
+      void onConfirm();
+      return;
+    }
+    const result = onConfirm();
+    if (result && typeof (result as Promise<void>).then === 'function') {
+      setInternalBusy(true);
+      (result as Promise<void>).finally(() => {
+        setInternalBusy(false);
+      });
+    }
+  }, [busy, onConfirm]);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -94,18 +125,21 @@ export function ConfirmDialog({
         <DialogTitle>{title}</DialogTitle>
         {description ? <DialogDescription>{description}</DialogDescription> : null}
         <div className="mt-5 flex items-center justify-end gap-2">
-          <Button type="button" variant="ghost" onClick={() => onOpenChange(false)} disabled={busy}>
+          <Button
+            type="button"
+            variant="ghost"
+            onClick={() => onOpenChange(false)}
+            disabled={effectiveBusy}
+          >
             {cancelLabel}
           </Button>
           <Button
             type="button"
             variant={confirmButtonVariant}
-            disabled={busy}
-            onClick={() => {
-              void onConfirm();
-            }}
+            disabled={effectiveBusy}
+            onClick={handleConfirm}
           >
-            {busy ? busyText : confirmLabel}
+            {effectiveBusy ? busyText : confirmLabel}
           </Button>
         </div>
       </DialogContent>

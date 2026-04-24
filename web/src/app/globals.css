@@ -271,6 +271,46 @@ body {
   animation: shimmer 2.4s linear infinite;
 }
 
+/*
+ * Hero breathing glow — radial highlight overlaid on top of the linear
+ * gradient banner. The colour is driven by the inline `--hero-accent`
+ * custom property set by `<HeroHeader accent=...>`, so every section
+ * category can tint its own hero without a class matrix. Pairs with
+ * CMDesign.Animation.breatheScale (duration: 2s) and the ambient glow
+ * effect from `cmAmbientGlow` on iOS. The global prefers-reduced-motion
+ * guard above kills the keyframes at the OS level.
+ */
+@keyframes cm-hero-breathe {
+  0%,
+  100% {
+    opacity: 0.45;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.75;
+    transform: scale(1.08);
+  }
+}
+
+.cm-hero-glow {
+  position: absolute;
+  inset: -20%;
+  pointer-events: none;
+  background:
+    radial-gradient(
+      circle at 25% 40%,
+      color-mix(in srgb, var(--hero-accent, #0066ff) 35%, transparent) 0%,
+      transparent 55%
+    ),
+    radial-gradient(
+      circle at 80% 60%,
+      color-mix(in srgb, #00cc66 22%, transparent) 0%,
+      transparent 60%
+    );
+  filter: blur(28px);
+  animation: cm-hero-breathe 6s ease-in-out infinite;
+}
+
 .cm-orb {
   position: absolute;
   border-radius: 999px;
