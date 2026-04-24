@@ -336,53 +336,142 @@ describe('checkForPromptLeak() — Layer 2 output-side prompt-leak filter', () =
     // `marker:user-text-open` / `marker:user-text-close`.
     // ----------------------------------------------------------
     describe('r24-#2 wrapper-context triple-angle scaffolding', () => {
-      test('flags <<<USER_TEXT (left triple adjacent to USER_TEXT)', () => {
-        const result = checkForPromptLeak('<<<USER_TEXT', { field: 'question' });
-        expect(result.safe).toBe(false);
-        expect(result.reason).toMatch(/^marker:wrapper-scaffolding-left$|^marker:user-text-bare$/);
-      });
+      // ----------------------------------------------------------
+      // Plan 04-32 r25-#2 — split into proximity-exact + bare-id-
+      // exact groups with cross-family `.not.toBe` assertions.
+      //
+      // WHY: the r24-#2 tests accepted EITHER reason
+      // (wrapper-scaffolding-* OR user-text-bare) via loose
+      // toMatch regex. That accidentally hid a real bug: the
+      // current filter iterates MARKER_STRINGS (including bare
+      // USER_TEXT / END_USER_TEXT) BEFORE hasWrapperScaffolding
+      // runs, so every proximity input fires the bare-id marker
+      // first and hasWrapperScaffolding never runs — the
+      // proximity detector was dead code.
+      //
+      // Fix (r25-#2): tighten assertions to EXACT
+      // wrapper-scaffolding-{left,right} for proximity inputs,
+      // with cross-family `.not.toBe` guards so detector-family
+      // drift is caught by the RED case. GREEN reorders
+      // checkForPromptLeak so composite wrappers fire first
+      // (1a sharper IDs preserved), proximity scaffolding fires
+      // second (1b), residual MARKER_STRINGS iteration last (1c).
+      // ----------------------------------------------------------
 
-      test('flags USER_TEXT>>> (right triple adjacent to USER_TEXT)', () => {
-        const result = checkForPromptLeak('USER_TEXT>>>', { field: 'question' });
-        expect(result.safe).toBe(false);
-        expect(result.reason).toMatch(/^marker:wrapper-scaffolding-right$|^marker:user-text-bare$/);
-      });
-
-      test('flags "the wrapper uses <<< near USER_TEXT"', () => {
-        // <<< is 16 chars before USER_TEXT — well within 20.
-        const result = checkForPromptLeak('the wrapper uses <<< near USER_TEXT', {
-          field: 'question',
+      // PROXIMITY GROUP — triple-angle within 20 chars of
+      // USER_TEXT / END_USER_TEXT MUST surface the EXACT
+      // wrapper-scaffolding-{left,right} reason and NOT the
+      // bare-identifier marker.
+      describe('r25-#2 proximity group — exact wrapper-scaffolding-{left,right} reason', () => {
+        test('flags <<<USER_TEXT as EXACT wrapper-scaffolding-left (NOT user-text-bare)', () => {
+          const result = checkForPromptLeak('<<<USER_TEXT', { field: 'question' });
+          expect(result.safe).toBe(false);
+          expect(result.reason).toBe('marker:wrapper-scaffolding-left');
+          expect(result.reason).not.toBe('marker:user-text-bare');
         });
-        expect(result.safe).toBe(false);
-        expect(result.reason).toMatch(/^marker:wrapper-scaffolding-left$|^marker:user-text-bare$/);
+
+        test('flags USER_TEXT>>> as EXACT wrapper-scaffolding-right (NOT user-text-bare)', () => {
+          const result = checkForPromptLeak('USER_TEXT>>>', { field: 'question' });
+          expect(result.safe).toBe(false);
+          expect(result.reason).toBe('marker:wrapper-scaffolding-right');
+          expect(result.reason).not.toBe('marker:user-text-bare');
+        });
+
+        test('flags "the wrapper uses <<< near USER_TEXT" as EXACT wrapper-scaffolding-left', () => {
+          // <<< is 16 chars before USER_TEXT — well within 20.
+          const result = checkForPromptLeak('the wrapper uses <<< near USER_TEXT', {
+            field: 'question',
+          });
+          expect(result.safe).toBe(false);
+          expect(result.reason).toBe('marker:wrapper-scaffolding-left');
+          expect(result.reason).not.toBe('marker:user-text-bare');
+        });
+
+        test('flags "USER_TEXT then >>> closes" as EXACT wrapper-scaffolding-right', () => {
+          const result = checkForPromptLeak('USER_TEXT then >>> closes', {
+            field: 'question',
+          });
+          expect(result.safe).toBe(false);
+          expect(result.reason).toBe('marker:wrapper-scaffolding-right');
+          expect(result.reason).not.toBe('marker:user-text-bare');
+        });
+
+        test('flags "the END_USER_TEXT close uses >>>" as EXACT wrapper-scaffolding-right (NOT end-user-text-bare)', () => {
+          const result = checkForPromptLeak('the END_USER_TEXT close uses >>>', {
+            field: 'question',
+          });
+          expect(result.safe).toBe(false);
+          expect(result.reason).toBe('marker:wrapper-scaffolding-right');
+          expect(result.reason).not.toBe('marker:end-user-text-bare');
+          expect(result.reason).not.toBe('marker:user-text-bare');
+        });
+
+        test('flags "<<< and END_USER_TEXT together" as EXACT wrapper-scaffolding-left', () => {
+          const result = checkForPromptLeak('<<< and END_USER_TEXT together', {
+            field: 'question',
+          });
+          expect(result.safe).toBe(false);
+          expect(result.reason).toBe('marker:wrapper-scaffolding-left');
+          expect(result.reason).not.toBe('marker:end-user-text-bare');
+          expect(result.reason).not.toBe('marker:user-text-bare');
+        });
       });
 
-      test('flags "USER_TEXT then >>> closes"', () => {
-        const result = checkForPromptLeak('USER_TEXT then >>> closes', {
-          field: 'question',
+      // BARE-ID GROUP — wrapper identifiers WITHOUT adjacent
+      // triple-angles MUST surface the EXACT bare-identifier
+      // reason and NOT the wrapper-scaffolding-* reason.
+      describe('r25-#2 bare-id group — exact user-text-bare / end-user-text-bare reason', () => {
+        test('flags "The marker is called USER_TEXT" as EXACT user-text-bare (no triple-angle near)', () => {
+          const result = checkForPromptLeak('The marker is called USER_TEXT', {
+            field: 'question',
+          });
+          expect(result.safe).toBe(false);
+          expect(result.reason).toBe('marker:user-text-bare');
+          expect(result.reason).not.toBe('marker:wrapper-scaffolding-left');
+          expect(result.reason).not.toBe('marker:wrapper-scaffolding-right');
         });
-        expect(result.safe).toBe(false);
-        expect(result.reason).toMatch(/^marker:wrapper-scaffolding-right$|^marker:user-text-bare$/);
-      });
 
-      test('flags ">>> near END_USER_TEXT" (END_USER_TEXT adjacency)', () => {
-        const result = checkForPromptLeak('the END_USER_TEXT close uses >>>', {
-          field: 'question',
+        test('flags "the END_USER_TEXT wrapper" as EXACT end-user-text-bare (no triple-angle near)', () => {
+          const result = checkForPromptLeak('the END_USER_TEXT wrapper', {
+            field: 'question',
+          });
+          expect(result.safe).toBe(false);
+          expect(result.reason).toBe('marker:end-user-text-bare');
+          expect(result.reason).not.toBe('marker:wrapper-scaffolding-left');
+          expect(result.reason).not.toBe('marker:wrapper-scaffolding-right');
         });
-        expect(result.safe).toBe(false);
-        expect(result.reason).toMatch(
-          /^marker:wrapper-scaffolding-right$|^marker:end-user-text-bare$/
-        );
-      });
 
-      test('flags "<<< and END_USER_TEXT together"', () => {
-        const result = checkForPromptLeak('<<< and END_USER_TEXT together', {
-          field: 'question',
+        test('flags "The scaffolding uses USER_TEXT markers" as EXACT user-text-bare', () => {
+          const result = checkForPromptLeak('The scaffolding uses USER_TEXT markers.', {
+            field: 'question',
+          });
+          expect(result.safe).toBe(false);
+          expect(result.reason).toBe('marker:user-text-bare');
+          expect(result.reason).not.toBe('marker:wrapper-scaffolding-left');
+          expect(result.reason).not.toBe('marker:wrapper-scaffolding-right');
         });
-        expect(result.safe).toBe(false);
-        expect(result.reason).toMatch(
-          /^marker:wrapper-scaffolding-left$|^marker:end-user-text-bare$/
-        );
+
+        test('flags "Dictation ends at END_USER_TEXT every time" as EXACT end-user-text-bare', () => {
+          const result = checkForPromptLeak('Dictation ends at END_USER_TEXT every time.', {
+            field: 'question',
+          });
+          expect(result.safe).toBe(false);
+          expect(result.reason).toBe('marker:end-user-text-bare');
+          expect(result.reason).not.toBe('marker:wrapper-scaffolding-left');
+          expect(result.reason).not.toBe('marker:wrapper-scaffolding-right');
+        });
+
+        test('out-of-window: <<< padded >20 chars from USER_TEXT — bare-id, NOT scaffolding', () => {
+          // 30 chars of padding between <<< and USER_TEXT —
+          // outside the 20-char proximity window. Proximity
+          // detector does NOT fire; bare-id marker does.
+          const text = '<<<' + ' '.repeat(30) + 'USER_TEXT';
+          const result = checkForPromptLeak(text, { field: 'question' });
+          expect(result.safe).toBe(false);
+          expect(result.reason).toBe('marker:user-text-bare');
+          expect(result.reason).not.toBe('marker:wrapper-scaffolding-left');
+          expect(result.reason).not.toBe('marker:wrapper-scaffolding-right');
+        });
       });
 
       // r24-#2: bare triple-angle WITHOUT USER_TEXT nearby is SAFE.
@@ -398,19 +487,6 @@ describe('checkForPromptLeak() — Layer 2 output-side prompt-leak filter', () =
           field: 'question',
         });
         expect(result.safe).toBe(true);
-      });
-
-      test('SAFE: triple-angle >21 chars away from USER_TEXT does NOT fire wrapper detector', () => {
-        // 30 chars of padding between <<< and USER_TEXT — outside
-        // the 20-char window. The bare USER_TEXT marker still
-        // fires (r23-#2 coverage), but the wrapper-scaffolding
-        // detector does NOT.
-        const text = '<<<' + ' '.repeat(30) + 'USER_TEXT';
-        const result = checkForPromptLeak(text, { field: 'question' });
-        expect(result.safe).toBe(false);
-        // Only USER_TEXT fires; <<< is too far to count as wrapper
-        // scaffolding.
-        expect(result.reason).toBe('marker:user-text-bare');
       });
 
       // Back-compat — composite wrapper still surfaces as sharper ID.
