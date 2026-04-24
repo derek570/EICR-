@@ -345,3 +345,63 @@ describe('saveJob (P0-1)', () => {
     }
   });
 });
+
+/**
+ * Phase 2 — api.generatePdf contract.
+ *
+ * Locks the wire contract between the PDF tab and the backend's
+ * `POST /api/job/:userId/:jobId/generate-pdf` route:
+ *   1. Method is POST, URL segments are encoded.
+ *   2. A successful response returns the Blob as-is (application/pdf
+ *      bytes are consumed by <iframe src={URL.createObjectURL(blob)}>).
+ *   3. A 500 JSON error envelope is lifted onto ApiError.message so the
+ *      PDF tab's red "Generation failed" card renders the backend's
+ *      reason verbatim.
+ *
+ * This route bypasses the typed `request()` helper (raw bytes, not JSON),
+ * so the standard D12 envelope parsing is not automatic — these tests
+ * prove the bespoke path still does the right thing.
+ */
+describe('api.generatePdf — Phase 2 PDF wiring', () => {
+  it('POSTs to /api/job/:userId/:jobId/generate-pdf and returns the raw Blob', async () => {
+    const originalFetch = globalThis.fetch;
+    const spy = vi.fn().mockResolvedValue(
+      makeResponse({
+        status: 200,
+        headers: {
+          'content-type': 'application/pdf',
+          'content-disposition': 'attachment; filename="EICR_j1.pdf"',
+        },
+        _body: '%PDF-1.4 test',
+      })
+    );
+    globalThis.fetch = spy as unknown as typeof fetch;
+    try {
+      const blob = await api.generatePdf('user 1', 'job/1');
+      expect(blob).toBeInstanceOf(Blob);
+      const [url, init] = spy.mock.calls[0];
+      expect(url).toMatch(/\/api\/job\/user%201\/job%2F1\/generate-pdf$/);
+      expect(init.method).toBe('POST');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('lifts a 500 {error} envelope onto ApiError.message', async () => {
+    restoreFetch = fetchStub([
+      {
+        status: 500,
+        statusText: 'Internal Server Error',
+        headers: { 'content-type': 'application/json' },
+        _body: { error: 'PDF generation failed: missing extracted_data.json' },
+      },
+    ]);
+    // generatePdf is non-idempotent — no retry on 500, so the first
+    // response IS the final one. This mirrors the POST path in
+    // `request()` (see IDEMPOTENT set above).
+    await expect(api.generatePdf('u1', 'j1')).rejects.toMatchObject({
+      status: 500,
+      message: 'PDF generation failed: missing extracted_data.json',
+    });
+  });
+});
