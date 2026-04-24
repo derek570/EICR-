@@ -41,7 +41,7 @@ Every fixture is a JSON file with these keys:
 |---|---|---|
 | `sample-01-routine.json` | 1 — routine capture | Single reading. Baseline: one utterance → one tool_use → one canonical write. |
 | `sample-02-correction.json` | 2 — same-turn correction | `clear_reading` + `record_reading` in one round. STT-09 last-write-wins on the perTurnWrites Map. |
-| `sample-03-ambiguous-circuit.json` | 3 — ambiguous circuit (post-ask-resolved) | `create_circuit` + `record_reading` in one round. The live `ask_user` round-trip is elided for determinism; see the fixture's `_deviation_from_production` note. |
+| `sample-03-post-ask-resolved.json` | 3 — post-ask-resolved (ambiguous-circuit CONSEQUENTS only) | `create_circuit` + `record_reading` in one round. Models the state AFTER an `ask_user` has been answered; the round-trip itself is elided and tested separately (Phase 3 ask-integration suites + F21934D4 replay). Renamed from `sample-03-ambiguous-circuit.json` in Plan 04-07 r1 so the filename no longer overclaims the coverage; a proper round-trip fixture lands in Phase 5's STT-11 full exit check. |
 | `sample-04-batched.json` | 4 — batched readings | Four parallel `record_reading` tool_uses in one round. Confirms no cross-talk on the perTurnWrites Map (keys are `field::circuit`). |
 | `sample-05-refill-guard.json` | STQ-05 restraint | Supply-level Ze pre-fill on circuit 1. Neither path re-emits (1,ze); both only write the new (3,zs). Different field-combo from F21934D4 so both shapes are covered. |
 
