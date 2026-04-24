@@ -1981,3 +1981,262 @@ describe('Plan 04-22 r16-#3 — FIELD_ID_MAP canonical completion (4 remaining k
     expect(bucket).not.toHaveProperty('max_disconnect_time');
   });
 });
+
+/**
+ * Plan 04-22 r16-#4 — validation_alert unknown-value log calls:
+ * sanitise BEFORE interpolate + per-session dedupe.
+ *
+ * Codex r16 (re-statement of r15-#3) flagged that the
+ * `validation_alert_unknown_type` and
+ * `validation_alert_unknown_severity` log calls at
+ * `eicr-extraction-session.js:1940/1956` interpolate the unknown
+ * value RAW into the message template:
+ *
+ *   logger.warn?.(`Session ${this.sessionId} validation_alert_unknown_type: received unknown alert type "${value}" — wrapping defensively`);
+ *
+ * Two issues:
+ *   (a) `value` is interpolated raw — C0 control characters
+ *       (`\n`, `\r`, etc) survive into the log line and forge
+ *       multi-line / log-injection entries.
+ *   (b) Same unknown value reappears on every snapshot rebuild,
+ *       so a session that hits a single drift causes a per-snapshot
+ *       log flood (the snapshot rebuilds at every Sonnet turn,
+ *       roughly every utterance).
+ *
+ * The r16-#4 fix:
+ *   (a) Sanitise the value via `sanitiseSnapshotField` BEFORE
+ *       interpolating into the log call.
+ *   (b) Switch to structured-log shape — pass the value as a meta
+ *       field on logger.warn's second argument rather than as a
+ *       template interpolation. Mirrors the
+ *       `stage6.invalid_tool_calls_mode` pattern at line 683.
+ *   (c) Per-session Set tracks already-warned values; second
+ *       occurrence in the same session is silently suppressed.
+ *       Per-session lifetime (instance state) — second session
+ *       with the same bad value warns independently.
+ *   (d) Dedupe key prefixed with `type:` vs `severity:` so the
+ *       same string appearing in both fields produces two
+ *       distinct log entries.
+ *
+ * Six tests:
+ *   r16-4a — unknown type with control chars → log meta sanitised.
+ *   r16-4b — same unknown type twice in one session → 1 log call.
+ *   r16-4c — same unknown type in two sessions → 2 log calls
+ *            (per-session dedupe boundary).
+ *   r16-4d — unknown severity uses the
+ *            `stage6.validation_alert_unknown_severity` event name.
+ *   r16-4e — same string as type AND severity in same session →
+ *            2 log calls (distinct dedupe prefixes).
+ *   r16-4f — log call uses structured-meta shape (event name as
+ *            message, value as meta field).
+ *
+ * The pre-existing r13-3e and r14-2e tests use a loose
+ * `call.map(String).join(' ')` matcher that accepts BOTH the old
+ * template-string form AND the new structured-meta form — they
+ * survive r16-#4 unchanged. r16-4d/f below pin the new structured
+ * shape exactly so a future regression to the template form is
+ * caught loudly.
+ */
+describe('Plan 04-22 r16-#4 — validation_alert unknown-value log sanitisation + per-session dedupe', () => {
+  beforeEach(() => mockCreate.mockReset());
+
+  // Helper: seed a minimal circuit so the alerts line emits.
+  function seedMinCircuit(session) {
+    session.stateSnapshot.circuits[1] = { measured_zs_ohm: 0.35 };
+    session.recentCircuitOrder = [1];
+  }
+
+  test('r16-4a — unknown type with `\\n` control char in value → log meta sanitised (no raw newline)', async () => {
+    const loggerModule = await import('../logger.js');
+    const warnSpy = jest.spyOn(loggerModule.default, 'warn').mockImplementation(() => {});
+
+    const session = new EICRExtractionSession('k', 'sess-r16-4a', 'eicr', {
+      toolCallsMode: 'shadow',
+    });
+    seedMinCircuit(session);
+    // Attack-shape value: control char + newline + injected tag.
+    session.stateSnapshot.validation_alerts = [
+      {
+        type: 'mystery\nINJECTED LOG LINE',
+        severity: 'info',
+        message: 'ok',
+      },
+    ];
+    session.buildSystemBlocks();
+
+    // Find the warn call about unknown_type. The structured-meta
+    // form has the event name as the first arg and an object with
+    // {sessionId, value} as the second arg. Sanitised value MUST
+    // NOT contain a literal newline.
+    const matched = warnSpy.mock.calls.find((call) => {
+      const arg0 = String(call[0] ?? '');
+      return arg0.includes('validation_alert_unknown_type');
+    });
+    expect(matched).toBeDefined();
+
+    // Extract sanitised value — wherever it is in the call.
+    const allArgs = matched.map((a) => (typeof a === 'string' ? a : JSON.stringify(a))).join(' ');
+    // Sanitised: no literal newline in the recorded args.
+    expect(allArgs).not.toMatch(/mystery\nINJECTED LOG LINE/);
+    // Either the meta-object form OR an inline-sanitised template
+    // form — both forms strip the \n. Locking the negative
+    // assertion (no raw \n) is the security guarantee.
+
+    warnSpy.mockRestore();
+  });
+
+  test('r16-4b — same unknown type appears TWICE in one session → logger.warn called exactly ONCE for that value (per-session dedupe)', async () => {
+    const loggerModule = await import('../logger.js');
+    const warnSpy = jest.spyOn(loggerModule.default, 'warn').mockImplementation(() => {});
+
+    const session = new EICRExtractionSession('k', 'sess-r16-4b', 'eicr', {
+      toolCallsMode: 'shadow',
+    });
+    seedMinCircuit(session);
+    session.stateSnapshot.validation_alerts = [
+      { type: 'novel_type_a', severity: 'info', message: 'ok' },
+    ];
+    // First emission — should log once.
+    session.buildSystemBlocks();
+    // Second emission of the same snapshot — should NOT log again
+    // (dedupe fires).
+    session.buildSystemBlocks();
+    // Third emission for good measure.
+    session.buildSystemBlocks();
+
+    const matchedCalls = warnSpy.mock.calls.filter((call) => {
+      const allArgs = call.map((a) => (typeof a === 'string' ? a : JSON.stringify(a))).join(' ');
+      return allArgs.includes('validation_alert_unknown_type') && allArgs.includes('novel_type_a');
+    });
+    expect(matchedCalls).toHaveLength(1);
+
+    warnSpy.mockRestore();
+  });
+
+  test('r16-4c — same unknown type in TWO different sessions → logger.warn called TWICE total (dedupe is per-session)', async () => {
+    const loggerModule = await import('../logger.js');
+    const warnSpy = jest.spyOn(loggerModule.default, 'warn').mockImplementation(() => {});
+
+    const sessionA = new EICRExtractionSession('k', 'sess-r16-4c-A', 'eicr', {
+      toolCallsMode: 'shadow',
+    });
+    seedMinCircuit(sessionA);
+    sessionA.stateSnapshot.validation_alerts = [
+      { type: 'shared_novel_type', severity: 'info', message: 'ok' },
+    ];
+    sessionA.buildSystemBlocks();
+    // Re-emit in session A to prove dedupe fires within session.
+    sessionA.buildSystemBlocks();
+
+    const sessionB = new EICRExtractionSession('k', 'sess-r16-4c-B', 'eicr', {
+      toolCallsMode: 'shadow',
+    });
+    seedMinCircuit(sessionB);
+    sessionB.stateSnapshot.validation_alerts = [
+      { type: 'shared_novel_type', severity: 'info', message: 'ok' },
+    ];
+    sessionB.buildSystemBlocks();
+
+    const matchedCalls = warnSpy.mock.calls.filter((call) => {
+      const allArgs = call.map((a) => (typeof a === 'string' ? a : JSON.stringify(a))).join(' ');
+      return (
+        allArgs.includes('validation_alert_unknown_type') && allArgs.includes('shared_novel_type')
+      );
+    });
+    expect(matchedCalls).toHaveLength(2);
+
+    warnSpy.mockRestore();
+  });
+
+  test('r16-4d — unknown severity uses `stage6.validation_alert_unknown_severity` event name (structured shape)', async () => {
+    const loggerModule = await import('../logger.js');
+    const warnSpy = jest.spyOn(loggerModule.default, 'warn').mockImplementation(() => {});
+
+    const session = new EICRExtractionSession('k', 'sess-r16-4d', 'eicr', {
+      toolCallsMode: 'shadow',
+    });
+    seedMinCircuit(session);
+    session.stateSnapshot.validation_alerts = [
+      { type: 'myth_rejected', severity: 'mystery_sev', message: 'ok' },
+    ];
+    session.buildSystemBlocks();
+
+    // Find the warn call where the FIRST arg starts with the
+    // event name (structured-log convention from line 683).
+    const matched = warnSpy.mock.calls.find(
+      (call) =>
+        typeof call[0] === 'string' && call[0] === 'stage6.validation_alert_unknown_severity'
+    );
+    expect(matched).toBeDefined();
+    // Confirm the event name is NOT the type-namespaced variant.
+    expect(matched[0]).not.toBe('stage6.validation_alert_unknown_type');
+
+    warnSpy.mockRestore();
+  });
+
+  test('r16-4e — same novel string appears as TYPE in session A AND as SEVERITY in session A → TWO log calls (distinct dedupe prefixes)', async () => {
+    // Locks that the dedupe key namespaces type vs severity. A
+    // string that drifts in BOTH fields surfaces TWICE because
+    // each field's drift is operationally distinct.
+    const loggerModule = await import('../logger.js');
+    const warnSpy = jest.spyOn(loggerModule.default, 'warn').mockImplementation(() => {});
+
+    const session = new EICRExtractionSession('k', 'sess-r16-4e', 'eicr', {
+      toolCallsMode: 'shadow',
+    });
+    seedMinCircuit(session);
+    session.stateSnapshot.validation_alerts = [
+      // Same string in both type AND severity slots. Both unknown
+      // (only myth_rejected/nc_only/value_out_of_range are known
+      // types; only info/warning/critical are known severities).
+      { type: 'shared_drift_token', severity: 'shared_drift_token', message: 'ok' },
+    ];
+    session.buildSystemBlocks();
+
+    const matchedTypeCalls = warnSpy.mock.calls.filter((call) => {
+      const allArgs = call.map((a) => (typeof a === 'string' ? a : JSON.stringify(a))).join(' ');
+      return (
+        allArgs.includes('validation_alert_unknown_type') && allArgs.includes('shared_drift_token')
+      );
+    });
+    const matchedSevCalls = warnSpy.mock.calls.filter((call) => {
+      const allArgs = call.map((a) => (typeof a === 'string' ? a : JSON.stringify(a))).join(' ');
+      return (
+        allArgs.includes('validation_alert_unknown_severity') &&
+        allArgs.includes('shared_drift_token')
+      );
+    });
+    expect(matchedTypeCalls).toHaveLength(1);
+    expect(matchedSevCalls).toHaveLength(1);
+
+    warnSpy.mockRestore();
+  });
+
+  test('r16-4f — structured-log shape: second arg to logger.warn is an object containing sessionId + sanitised value', async () => {
+    const loggerModule = await import('../logger.js');
+    const warnSpy = jest.spyOn(loggerModule.default, 'warn').mockImplementation(() => {});
+
+    const session = new EICRExtractionSession('k', 'sess-r16-4f', 'eicr', {
+      toolCallsMode: 'shadow',
+    });
+    seedMinCircuit(session);
+    session.stateSnapshot.validation_alerts = [
+      { type: 'novel_type_for_shape_check', severity: 'info', message: 'ok' },
+    ];
+    session.buildSystemBlocks();
+
+    const matched = warnSpy.mock.calls.find(
+      (call) => typeof call[0] === 'string' && call[0] === 'stage6.validation_alert_unknown_type'
+    );
+    expect(matched).toBeDefined();
+    // Second arg must be a non-null object.
+    expect(typeof matched[1]).toBe('object');
+    expect(matched[1]).not.toBeNull();
+    // Carries sessionId + value as named fields (matches the
+    // line-683 pattern for stage6.invalid_tool_calls_mode).
+    expect(matched[1]).toHaveProperty('sessionId', 'sess-r16-4f');
+    expect(matched[1]).toHaveProperty('value', 'novel_type_for_shape_check');
+
+    warnSpy.mockRestore();
+  });
+});
