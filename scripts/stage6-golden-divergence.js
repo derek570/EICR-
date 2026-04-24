@@ -979,7 +979,24 @@ export async function runToolCallPath(fx) {
       }
     }
 
-    if (Array.isArray(declaredOrder)) {
+    if (forceNumeric) {
+      // Plan 04-20 r14-#1 [MAJOR] — `_force_numeric_recency: true`
+      // short-circuits BEFORE the declaration is read. Flag name
+      // + error text promise numeric ascending of seeded circuits;
+      // pre-r14 the flag only bypassed the guard arms and the
+      // non-empty declaration was then honoured verbatim, so a
+      // fixture with `[5]` + flag ended up at
+      // `session.recentCircuitOrder = [5]` — contradicting the
+      // documented semantics.
+      //
+      // Post-r14: flag ⇒ numeric ascending unconditionally.
+      // Declaration shape (empty, partial, full, ordered, unordered)
+      // is ignored. r12-2c's empty-case contract is preserved
+      // byte-for-byte because empty → numeric was already the
+      // fallback path. r13-1c (flipped) + r14-1a pin the new
+      // partial-declaration contract.
+      session.recentCircuitOrder = [...seededKeys].sort((a, b) => a - b);
+    } else if (Array.isArray(declaredOrder)) {
       const normalised = [];
       for (const raw of declaredOrder) {
         const n = Number(raw);
