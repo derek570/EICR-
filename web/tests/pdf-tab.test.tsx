@@ -317,4 +317,41 @@ describe('Phase 2 · PDF tab', () => {
     delete nav.canShare;
     delete nav.share;
   });
+
+  it('does NOT download when the user cancels the native share sheet', async () => {
+    // Regression guard for the Phase 2 post-codex fix: a navigator.share
+    // AbortError must not silently fall through to downloadBlob — the
+    // user explicitly cancelled, so we should leave them alone.
+    generatePdfMock.mockResolvedValueOnce(new Blob(['%PDF-1.4 stub'], { type: 'application/pdf' }));
+    const nav = navigator as unknown as {
+      canShare?: (data: unknown) => boolean;
+      share?: (data: unknown) => Promise<void>;
+    };
+    nav.canShare = () => true;
+    nav.share = vi.fn(async () => {
+      const err = new Error('User cancelled');
+      err.name = 'AbortError';
+      throw err;
+    });
+
+    harness = mount();
+    await act(async () => {
+      findButton(harness!.container, 'Generate PDF')!.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const share = findButton(harness.container, 'Share PDF')!;
+    downloadBlobMock.mockClear();
+    await act(async () => {
+      share.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(nav.share).toHaveBeenCalledTimes(1);
+    expect(downloadBlobMock).not.toHaveBeenCalled();
+
+    delete nav.canShare;
+    delete nav.share;
+  });
 });

@@ -97,7 +97,7 @@ export default function PdfPage() {
 
   const hasPdf = pdfBlob !== null;
 
-  const filename = `EICR_${jobId}.pdf`;
+  const filename = `${certificateType}_${jobId}.pdf`;
 
   const handleGenerate = React.useCallback(async () => {
     if (!userId || !jobId || isGenerating) return;
@@ -126,27 +126,36 @@ export default function PdfPage() {
   const handleShare = React.useCallback(async () => {
     if (!pdfBlob) return;
     const file = new File([pdfBlob], filename, { type: 'application/pdf' });
-    // Guard on canShare({files}) — Chrome on Android + iOS Safari 15+
-    // support file-payload share. Desktop Safari/Firefox do not, so
-    // we fall back to a regular anchor download. `canShare` can
-    // throw in a non-secure context; wrap the whole probe.
+
+    let canShareFiles = false;
     try {
-      if (
+      canShareFiles =
         typeof navigator !== 'undefined' &&
         typeof navigator.canShare === 'function' &&
-        navigator.canShare({ files: [file] }) &&
-        typeof navigator.share === 'function'
-      ) {
-        await navigator.share({ files: [file], title: 'EICR Certificate' });
-        return;
-      }
+        typeof navigator.share === 'function' &&
+        navigator.canShare({ files: [file] });
     } catch {
-      // Fall through to download fallback below — typical triggers
-      // are AbortError (user cancelled share sheet) or the odd
-      // browser that throws on canShare in a non-secure origin.
+      // canShare can throw on non-secure origins — treat as "unsupported".
+      canShareFiles = false;
     }
-    downloadBlob(pdfBlob, filename);
-  }, [pdfBlob, filename]);
+
+    if (!canShareFiles) {
+      downloadBlob(pdfBlob, filename);
+      return;
+    }
+
+    try {
+      await navigator.share({ files: [file], title: `${certificateType} Certificate` });
+    } catch (err) {
+      // User cancelled the native share sheet (AbortError) or the OS
+      // denied the share — do NOT silently fall through to a download,
+      // which would save a file the user just declined to share.
+      if (err instanceof Error && err.name === 'AbortError') return;
+      // Any other share error: surface via download fallback so the
+      // user can still get the file out.
+      downloadBlob(pdfBlob, filename);
+    }
+  }, [pdfBlob, filename, certificateType]);
 
   const handleConfirmDelete = React.useCallback(() => {
     setPdfBlob(null);
