@@ -411,10 +411,23 @@ describe('checkForPromptLeak() — Layer 2 output-side prompt-leak filter', () =
 
     // --------- Per-field conservative low-alpha backstop ---------
     test('question field: 200 chars with <50% alpha → flagged (low-alpha-ratio)', () => {
-      // 50 alphabetic chars + 150 non-alpha = 200 chars, 25% alpha.
-      const text = 'a'.repeat(50) + '1234567890'.repeat(15);
-      expect(text.length).toBe(200);
-      const result = checkForPromptLeak(text, { field: 'question' });
+      // Mix short alpha runs with non-base64/hex punctuation so no
+      // 40-char contiguous base64-charset run exists (entropy
+      // detector stays silent). Attacker payload: a question
+      // peppered with Unicode punctuation to dodge plaintext filters.
+      //
+      // Pattern: 3 alpha chars + 7 non-base64 chars, repeated 20 times.
+      // 3*20=60 alpha, 140 non-alpha = 200 chars, 30% alpha.
+      // Longest contiguous base64-range run is 3 chars — well under
+      // the 40-char entropy threshold.
+      const text = ('abc' + '…—.—…—.').repeat(20);
+      const bounded = text.slice(0, 200);
+      // Pad if somehow short.
+      const padded = bounded.length < 200 ? bounded + '.'.repeat(200 - bounded.length) : bounded;
+      expect(padded.length).toBe(200);
+      const alphaCount = (padded.match(/[a-zA-Z]/g) || []).length;
+      expect(alphaCount / padded.length).toBeLessThan(0.5);
+      const result = checkForPromptLeak(padded, { field: 'question' });
       expect(result.safe).toBe(false);
       expect(result.reason).toMatch(/^low-alpha-ratio:/);
     });
@@ -427,10 +440,15 @@ describe('checkForPromptLeak() — Layer 2 output-side prompt-leak filter', () =
     });
 
     test('designation field: 50 chars with <40% alpha → flagged', () => {
-      // 18 alpha + 32 non-alpha = 50 chars, 36% alpha.
-      const text = 'abcdefghijklmnopqr' + '0'.repeat(32);
-      expect(text.length).toBe(50);
-      const result = checkForPromptLeak(text, { field: 'designation' });
+      // Use punctuation outside b64/hex ranges so entropy can't
+      // pre-empt the low-alpha guard.
+      // 18 alpha + 32 em-dash/ellipsis/dots = 50 chars, 36% alpha.
+      const text = 'abcdefghijklmnopqr' + '…—.—…—.'.repeat(5);
+      const bounded = text.slice(0, 50);
+      expect(bounded.length).toBe(50);
+      const alphaCount = (bounded.match(/[a-zA-Z]/g) || []).length;
+      expect(alphaCount / bounded.length).toBeLessThan(0.4);
+      const result = checkForPromptLeak(bounded, { field: 'designation' });
       expect(result.safe).toBe(false);
       expect(result.reason).toMatch(/^low-alpha-ratio:/);
     });
@@ -455,15 +473,15 @@ describe('checkForPromptLeak() — Layer 2 output-side prompt-leak filter', () =
 
     // --------- Combined / ordering tests ---------
     test('length ceiling still fires as last resort on long alpha text (question)', () => {
-      // 600 chars of alpha — passes entropy + reversed + low-alpha
-      // but exceeds 500-char length ceiling. Last-resort guard.
-      const text = 'abcdefghij'.repeat(60);
+      // 600 chars using only 6 distinct chars — under the entropy
+      // distinct-char threshold (10) so entropy doesn't fire, alpha
+      // ratio is 100% so low-alpha doesn't fire, no markers or
+      // reversed content. Length ceiling is the last resort.
+      const text = 'abcdef'.repeat(100);
       expect(text.length).toBe(600);
       const result = checkForPromptLeak(text, { field: 'question' });
       expect(result.safe).toBe(false);
-      // Length-suspicious OR low-alpha-ratio OR whatever fires first
-      // — both are acceptable as long as the call is flagged.
-      expect(result.reason).toMatch(/^(length-suspicious|low-alpha-ratio):/);
+      expect(result.reason).toMatch(/^length-suspicious:/);
     });
 
     // --------- False-positive guard — NEW 20-sample corpus ---------

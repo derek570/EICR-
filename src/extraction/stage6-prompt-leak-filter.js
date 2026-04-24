@@ -145,6 +145,84 @@ const LENGTH_CEILING = {
 };
 
 /**
+ * Plan 04-27 r20-#3 — high-entropy substring detection.
+ *
+ * Regex captures contiguous base64 or hex blobs of at least 40
+ * chars. 40 chars is the tightest threshold that stays above the
+ * 36-char UUID boundary while covering useful-size prompt fragments
+ * (a 30-byte prompt substring base64-encodes to 40 chars, the
+ * minimum an attacker would find useful). Shorter-than-40 blobs
+ * are too short to carry meaningful prompt content AND too close
+ * to legitimate UUID/hash references to flag without false-
+ * positives.
+ *
+ * WHY base64 charset includes =: base64 pads multiples of 4 with
+ * 0–2 `=` chars. A 40-char chunk might end with `==`; stripping
+ * padding from the regex would miss those real-world cases.
+ *
+ * Hex pattern is separate + stricter: legitimate hex in inspection
+ * text is rare (observation text doesn't typically contain hash
+ * refs) but a colour code `#a1b2c3` (6 chars) or reference
+ * `a1b2c3d4` (8 chars) does exist. 40 char-bar excludes those.
+ *
+ * CHAR-DIVERSITY GUARD: a long run of a single repeated char
+ * (`aaaa...aaaa`) technically matches the base64 charset but has
+ * near-zero Shannon entropy. Real base64-encoded content uses the
+ * full alphabet; repeated-char runs are test fixtures or padding
+ * artefacts. We require at least 10 distinct chars inside the
+ * matched chunk before flagging — excludes `a.repeat(N)` style
+ * length-ceiling test fixtures AND legitimate monotonic content
+ * like solid ASCII dashes in a separator.
+ */
+const BASE64_RE = /[A-Za-z0-9+/=]{40,}/;
+const HEX_RE = /[0-9a-fA-F]{40,}/;
+const MIN_ENTROPY_DISTINCT_CHARS = 10;
+
+function hasHighEntropyChunk(text, re) {
+  const match = text.match(re);
+  if (!match) return false;
+  const chunk = match[0];
+  const distinct = new Set(chunk).size;
+  return distinct >= MIN_ENTROPY_DISTINCT_CHARS;
+}
+
+/**
+ * Plan 04-27 r20-#3 — per-field conservative low-alpha-ratio guard.
+ *
+ * For short natural-language fields (question + designation) that
+ * have low plausible-content length ceilings (500 / 120 chars),
+ * a payload with an anomalously low alphabetic-char ratio is
+ * suspicious — legitimate inspector questions + circuit names are
+ * almost entirely alpha + whitespace.
+ *
+ * `observation_text` is DELIBERATELY excluded: real observations
+ * carry lots of numeric content (Zs 0.35, regulation 411.3.3,
+ * cable 2.5mm², test voltage 500V, Ir > 999MΩ). A 200-char
+ * observation legitimately hits 30–40% alphabetic ratio — flagging
+ * it would destroy voice extraction on real inspection speech.
+ * The 1000-char length ceiling is the only backstop for this
+ * field.
+ *
+ * Thresholds:
+ *   question:    length ≥ 200 AND alpha ratio < 0.5
+ *   designation: length ≥ 40  AND alpha ratio < 0.4
+ */
+const LOW_ALPHA_MIN_LENGTH = {
+  question: 200,
+  designation: 40,
+};
+const LOW_ALPHA_THRESHOLD = {
+  question: 0.5,
+  designation: 0.4,
+};
+
+function alphaRatio(text) {
+  if (typeof text !== 'string' || text.length === 0) return 1;
+  const alphaCount = (text.match(/[a-zA-Z]/g) || []).length;
+  return alphaCount / text.length;
+}
+
+/**
  * Sanitised-replacement strings per field class.
  */
 const SANITISED_QUESTION = "I can't share that — please proceed with the inspection.";
@@ -206,7 +284,57 @@ export function checkForPromptLeak(text, opts = {}) {
     }
   }
 
-  // Family 5 — per-field length ceilings.
+  // Family 5 — r20-#3 reversed-content detection.
+  //
+  // Attackers can bypass substring matching by reversing the leaked
+  // content. Cheap to check: reverse the whole text once, then test
+  // whether it contains any known marker / structural phrase.
+  //
+  // We check MARKER_STRINGS + STRUCTURAL_PHRASES here (the closed
+  // banned-literals lists). REQUIREMENT_PATTERNS are regex-based
+  // and not cleanly reversible (STQ-01 reversed is 10-QTS — hyphen
+  // position changes; skip). The 04-26 req-id coverage on forward
+  // content is sufficient — an attacker reversing a req-id still
+  // has a req-id in some orientation.
+  const reversed = text.split('').reverse().join('').toLowerCase();
+  for (const marker of MARKER_STRINGS) {
+    if (reversed.includes(marker.value.toLowerCase())) {
+      return makeUnsafe(field, `reversed:marker:${marker.id}`);
+    }
+  }
+  for (const phrase of STRUCTURAL_PHRASES) {
+    if (reversed.includes(phrase.value.toLowerCase())) {
+      return makeUnsafe(field, `reversed:phrase:${phrase.id}`);
+    }
+  }
+
+  // Family 6 — r20-#3 high-entropy substring detection.
+  //
+  // Base64 or hex blobs of ≥40 chars are anomalous in inspection
+  // speech and a standard attacker channel for binary-encoding a
+  // prompt leak under the length ceiling. 40-char threshold sits
+  // above the 36-char UUID bound and below any useful prompt
+  // fragment encoding.
+  if (hasHighEntropyChunk(text, BASE64_RE)) {
+    return makeUnsafe(field, 'entropy:base64');
+  }
+  if (hasHighEntropyChunk(text, HEX_RE)) {
+    return makeUnsafe(field, 'entropy:hex');
+  }
+
+  // Family 7 — r20-#3 per-field conservative low-alpha-ratio guard
+  // for question + designation (NOT observation_text — see const
+  // docblock above for why).
+  const minLen = LOW_ALPHA_MIN_LENGTH[field];
+  const alphaBar = LOW_ALPHA_THRESHOLD[field];
+  if (minLen && alphaBar && text.length >= minLen) {
+    const ratio = alphaRatio(text);
+    if (ratio < alphaBar) {
+      return makeUnsafe(field, `low-alpha-ratio:${ratio.toFixed(2)}<${alphaBar}`);
+    }
+  }
+
+  // Family 8 — per-field length ceilings (final backstop).
   const ceiling = LENGTH_CEILING[field];
   if (ceiling && text.length > ceiling) {
     return makeUnsafe(field, `length-suspicious:${text.length}>${ceiling}`);
