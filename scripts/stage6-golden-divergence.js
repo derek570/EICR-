@@ -887,10 +887,20 @@ export async function runDirectory(dir, options = {}) {
   }
   const call_divergence_rate = callTotal === 0 ? 0 : callDivergent / callTotal;
 
-  const breached =
-    session_divergence_rate > threshold ||
-    section_divergence_rate > threshold ||
-    call_divergence_rate > threshold;
+  // Plan 04-09 r3-#2: breach is gated on call + session only.
+  // `section_divergence_rate` is diagnostic (see Plan 04-08 r2-#2 design
+  // intent) — gating on it was a bug; a high section fraction on a
+  // single multi-section disagreement would trip the gate even when
+  // the real per-write rate is well below threshold. See
+  // `computeBreached` below for the authoritative gate logic.
+  const breached = computeBreached(
+    {
+      section_divergence_rate,
+      call_divergence_rate,
+      session_divergence_rate,
+    },
+    threshold,
+  );
 
   return {
     total,
@@ -903,6 +913,45 @@ export async function runDirectory(dir, options = {}) {
     breached,
     sessions,
   };
+}
+
+/**
+ * Plan 04-09 r3-#2: breach-determination helper. Pure function over
+ * three rates + threshold.
+ *
+ * Gate semantics:
+ *   breached = (call_divergence_rate > threshold)
+ *           || (session_divergence_rate > threshold)
+ *
+ * `section_divergence_rate` is DIAGNOSTIC (Plan 04-08 r2-#2 design
+ * intent) — it is reported in the final digest but NOT included in the
+ * breach OR. A high section fraction on a single multi-section
+ * disagreement (one reading wrong in one fixture makes the readings
+ * section diverge, giving section_divergence=0.25) should not trip the
+ * gate when the real per-write rate is well below threshold (1/20 =
+ * 0.05 under the same scenario).
+ *
+ * `session_divergence_rate` IS a legitimate gate: fraction of sessions
+ * that had ANY divergence. If a large fraction of sessions fail
+ * end-to-end, the per-call average may hide broad-but-shallow drift
+ * behind a small number of matched slots — the session rate surfaces
+ * that pattern.
+ *
+ * Threshold semantics: strict `>` (the pre-r3 code used strict `>` too
+ * and Plan 04-05's claim is "≤ 10%"). A rate exactly at threshold is
+ * still at-limit, not a breach.
+ *
+ * @param {{section_divergence_rate:number, call_divergence_rate:number, session_divergence_rate:number}} rates
+ * @param {number} threshold
+ * @returns {boolean}
+ */
+export function computeBreached(rates, threshold) {
+  const call = typeof rates?.call_divergence_rate === 'number' ? rates.call_divergence_rate : 0;
+  const session =
+    typeof rates?.session_divergence_rate === 'number' ? rates.session_divergence_rate : 0;
+  // section_divergence_rate DELIBERATELY NOT IN THIS EXPRESSION.
+  // See JSDoc above — it is diagnostic, not a gate.
+  return call > threshold || session > threshold;
 }
 
 // ---------------------------------------------------------------------------
@@ -971,11 +1020,15 @@ if (invokedAsScript) {
       };
       console.log(JSON.stringify(digest, null, 2));
       if (report.breached) {
+        // Plan 04-09 r3-#2: label metrics clearly.
+        //   call_divergence_rate    — primary gate (STR-02/STR-03 budget)
+        //   session_divergence_rate — secondary gate (session-level drift)
+        //   section_divergence_rate — diagnostic ONLY (not gated)
         console.error(
           `divergence exceeds threshold ${report.threshold}: ` +
-            `session=${report.session_divergence_rate} ` +
-            `section=${report.section_divergence_rate} ` +
-            `call=${report.call_divergence_rate}`,
+            `call=${report.call_divergence_rate} (primary gate), ` +
+            `session=${report.session_divergence_rate} (secondary gate). ` +
+            `Diagnostic: section=${report.section_divergence_rate} (not gated).`,
         );
         process.exit(1);
       }
