@@ -47,6 +47,7 @@ import {
   computeDivergence,
   computeSectionDivergence,
   computeCallLevelDivergence,
+  computeBreached,
   runDirectory,
   runFixture,
   expectedSlotWritesToLegacyShape,
@@ -1448,5 +1449,129 @@ describe('Group J — Plan 04-09 r3-#1: normaliseObservation widened field surfa
     expect(o).not.toHaveProperty('id');
     expect(o).not.toHaveProperty('source_turn_id');
     expect(o).not.toHaveProperty('timestamp');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Group K — Plan 04-09 r3-#2: breach gated on call + session only (NOT
+// section, which is diagnostic per r2-#2 design intent).
+//
+// Codex r3 MAJOR #2: `runDirectory()`'s `breached` flag is OR'd across
+// session_divergence_rate, section_divergence_rate, AND
+// call_divergence_rate. But Plan 04-08 r2-#2 explicitly designated
+// `section_divergence_rate` as DIAGNOSTIC (old metric preserved for
+// signal, not for gating). A high section rate on a single multi-section
+// disagreement should not trip the gate when the real per-call rate is
+// well below threshold.
+//
+// After r3-#2 fix, breach logic is:
+//   breached = (call_divergence_rate > threshold)
+//           || (session_divergence_rate > threshold)
+// `section_divergence_rate` is reported but not gated.
+//
+// Extracted helper `computeBreached(rates, threshold)` is the pure
+// function that runDirectory consumes, so breach semantics can be
+// unit-tested without standing up synthetic fixture infrastructure.
+// ---------------------------------------------------------------------------
+
+describe('Group K — Plan 04-09 r3-#2: breach gated on call + session only (section is diagnostic)', () => {
+  test('K1 — section-only high (section=0.25, call=0.05, session=0) → breached=false', () => {
+    // This is the exact scenario r3-#2 calls out: the section fraction
+    // fires because one section disagreed, but the real per-write rate
+    // is well under threshold AND no session is flagged as diverged.
+    // Pre-r3 this returned breached=true (wrong). Post-r3 it returns
+    // breached=false because section is diagnostic only.
+    const breached = computeBreached(
+      {
+        section_divergence_rate: 0.25,
+        call_divergence_rate: 0.05,
+        session_divergence_rate: 0,
+      },
+      0.10,
+    );
+    expect(breached).toBe(false);
+  });
+
+  test('K2 — call rate exceeds threshold → breached=true (primary gate)', () => {
+    const breached = computeBreached(
+      {
+        section_divergence_rate: 0,
+        call_divergence_rate: 0.11,
+        session_divergence_rate: 0,
+      },
+      0.10,
+    );
+    expect(breached).toBe(true);
+  });
+
+  test('K3 — session rate exceeds threshold → breached=true (secondary gate)', () => {
+    const breached = computeBreached(
+      {
+        section_divergence_rate: 0,
+        call_divergence_rate: 0,
+        session_divergence_rate: 0.20,
+      },
+      0.10,
+    );
+    expect(breached).toBe(true);
+  });
+
+  test('K4 — all three rates zero → breached=false', () => {
+    const breached = computeBreached(
+      {
+        section_divergence_rate: 0,
+        call_divergence_rate: 0,
+        session_divergence_rate: 0,
+      },
+      0.10,
+    );
+    expect(breached).toBe(false);
+  });
+
+  test('K5 — section rate exactly at threshold + call/session at threshold → breached=false (> not >=)', () => {
+    // Threshold semantics from pre-r3 retained: rate > threshold
+    // (strict) triggers breach, rate == threshold is still at-limit
+    // (acceptable). This mirrors Plan 04-05's "≤ 10%" claim language.
+    const breached = computeBreached(
+      {
+        section_divergence_rate: 0.10,
+        call_divergence_rate: 0.10,
+        session_divergence_rate: 0.10,
+      },
+      0.10,
+    );
+    expect(breached).toBe(false);
+  });
+
+  test('K6 — both call AND session exceed → breached=true (gate fires on OR)', () => {
+    const breached = computeBreached(
+      {
+        section_divergence_rate: 0.50,
+        call_divergence_rate: 0.15,
+        session_divergence_rate: 0.30,
+      },
+      0.10,
+    );
+    expect(breached).toBe(true);
+  });
+
+  test('K7 — runDirectory on 6 fixtures uses new breach logic (integration lock)', async () => {
+    // Integration: the real runDirectory output on the 6-fixture set
+    // exposes `breached: false` (all three rates are 0, well under any
+    // threshold). Post-r3 this MUST be false for the same input even
+    // if section rate were elsewhere non-zero.
+    const report = await runDirectory(FIXTURE_DIR, { extraFixtures: [F21934D4_PATH] });
+    // Belt + braces — directly re-compute breach from the reported
+    // rates and confirm it matches what runDirectory returned.
+    const recomputed = computeBreached(
+      {
+        section_divergence_rate: report.section_divergence_rate,
+        call_divergence_rate: report.call_divergence_rate,
+        session_divergence_rate: report.session_divergence_rate,
+      },
+      report.threshold,
+    );
+    expect(report.breached).toBe(recomputed);
+    expect(report.breached).toBe(false);
   });
 });
