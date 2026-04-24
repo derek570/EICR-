@@ -283,17 +283,26 @@ function wrapSnapshotUserTextInline(raw) {
 // to LEGACY_TO_CANONICAL_CIRCUIT_KEYS so hydration normalisation
 // (_normaliseCircuitKeysToCanonical) covers them automatically.
 //
-// Remaining legacy-vocabulary keys (cable_size, cable_size_earth)
-// have not surfaced in any drift report and are left as-is —
-// they're outside the canonicalisation pass scope. A separate
-// pass can canonicalise them if a future drift report surfaces.
+// Plan 04-23 r17-#2 — closed the final 2 legacy FIELD_ID_MAP keys
+// (cable_size → live_csa_mm2, cable_size_earth → cpc_csa_mm2). Codex
+// r17 rejected the r16-#3 deferral rationale ("not in drift report")
+// as the same rationale r15-#2 rejected for the other 4 non-reading
+// aliases — applying "no producer currently touches this" to a
+// hydration path is the exact scope gap r14-#3 was created to
+// close. All FIELD_ID_MAP keys now use canonical schema vocabulary
+// per config/field_schema.json. Compact ids 5 and 6 stay identical
+// so on-wire snapshot layout is byte-compatible (anything consuming
+// id 5 still finds the live CSA at id 5 regardless of alias). The
+// 2 new legacy→canonical entries are added to
+// LEGACY_TO_CANONICAL_CIRCUIT_KEYS so hydration normalisation
+// (_normaliseCircuitKeysToCanonical) covers them automatically.
 const FIELD_ID_MAP = {
   circuit_designation: 1,
   wiring_type: 2,
   ref_method: 3,
   number_of_points: 4,
-  cable_size: 5,
-  cable_size_earth: 6,
+  live_csa_mm2: 5, // was: cable_size (pre-r17)
+  cpc_csa_mm2: 6, // was: cable_size_earth (pre-r17)
   ocpd_type: 7,
   ocpd_rating_a: 8, // was: ocpd_rating (pre-r16)
   ocpd_bs_en: 9,
@@ -408,6 +417,13 @@ const WRAP_POLICY = {
   ocpd_breaking_capacity_ka: 'server_canonical', // numeric kA rating (typical 6/10)
   ir_test_voltage_v: 'server_canonical', // numeric test V (closed: 250/500/1000)
   max_disconnect_time_s: 'server_canonical', // numeric seconds (BS 7671 Table 41.1)
+
+  // Plan 04-23 r17-#2 — final 2 cable-size canonical names. Numeric
+  // mm² values from a closed domestic set (1.0 / 1.5 / 2.5 / 4.0 /
+  // 6.0 / 10.0 / 16.0 typical). Pre-emptive server_canonical
+  // classification mirrors the r16-#3 rationale above.
+  live_csa_mm2: 'server_canonical', // numeric mm² — line conductor CSA
+  cpc_csa_mm2: 'server_canonical', // numeric mm² — CPC / earth conductor CSA
 };
 
 /**
@@ -464,6 +480,14 @@ const LEGACY_TO_CANONICAL_CIRCUIT_KEYS = {
   ocpd_breaking_capacity: 'ocpd_breaking_capacity_ka',
   ir_test_voltage: 'ir_test_voltage_v',
   max_disconnect_time: 'max_disconnect_time_s',
+  // Plan 04-23 r17-#2 — final 2 legacy cable-size aliases. Canonical
+  // names verified against config/field_schema.json:52 (live_csa_mm2)
+  // and :67 (cpc_csa_mm2). CPC = Circuit Protective Conductor per
+  // BS 7671 (the earth / bonding conductor within the circuit cable).
+  // Hydration normalisation extends to pending_readings (r17-#1) +
+  // circuits buckets (r14-#3) automatically via this map.
+  cable_size: 'live_csa_mm2',
+  cable_size_earth: 'cpc_csa_mm2',
 };
 
 /**
