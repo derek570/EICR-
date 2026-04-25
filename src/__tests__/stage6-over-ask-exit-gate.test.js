@@ -1020,3 +1020,164 @@ describe('Plan 05-14 r8-#3 — harness askCount excludes dispatcher_error envelo
     expect(session.askCount).toBe(0);
   });
 });
+
+// =============================================================================
+// Plan 05-15 r9-#1 — fixture validation must be source-directory-keyed
+// =============================================================================
+// Pre-fix: validateFixtureInputs filtered by per-fixture _fixture_shape marker.
+// A canary fixture dropped into PHASE5_FIXTURES_DIR without the marker silently
+// fell through `applyDefaults` (Phase-4 backwards-compat path) and contributed
+// zero asks instead of failing closed. Same for fixtures missing
+// ask_user_calls, per-call ids, or per-call turnIds.
+//
+// Post-fix: every file LOADED FROM PHASE5_FIXTURES_DIR must carry the marker
+// + ask_user_calls array + per-call id/turnId. Files from PHASE4_DUAL_SSE_DIR
+// stay on the legacy path (zero-contribution via absent marker). Files from
+// arbitrary --fixtures-dir overrides (tmpdir tests) stay on the legacy path
+// too — the source-directory branch only enforces against the canonical
+// Phase 5 fixture directory.
+// =============================================================================
+
+describe('Plan 05-15 r9-#1 — fixture validation enforced by source directory', () => {
+  jest.setTimeout(15000);
+
+  // Use dynamic import so RED state surfaces cleanly when the new exports
+  // (PHASE5_FIXTURES_DIR + validateFixtureInputs) don't yet exist.
+  let PHASE5_FIXTURES_DIR;
+  let validateFixtureInputs;
+
+  beforeAll(async () => {
+    const mod = await import('../../scripts/stage6-over-ask-exit-gate.js');
+    PHASE5_FIXTURES_DIR = mod.PHASE5_FIXTURES_DIR;
+    validateFixtureInputs = mod.validateFixtureInputs;
+  });
+
+  function buildValidPhase5Fixture() {
+    return {
+      _doc: 'Plan 05-15 r9-#1 — minimal valid Phase 5 fixture',
+      _fixture_shape: 'phase5-over-ask',
+      session: { jobId: 'r9-1-valid', certificateType: 'EICR' },
+      ask_user_calls: [
+        {
+          turnId: 'r9-1-valid-turn-1',
+          synthetic_time_ms: 0,
+          call: {
+            id: 'toolu_r9_1_valid',
+            name: 'ask_user',
+            input: {
+              question: 'Q?',
+              reason: 'ambiguous_circuit',
+              context_field: 'none',
+              context_circuit: null,
+              expected_answer_shape: 'free_text',
+            },
+          },
+          inner_outcome: { answered: true, user_text: 'whatever' },
+        },
+      ],
+      expected_ask_user_count: 1,
+      expected_restrained_activations: 0,
+      expected_outcome_distribution: { answered: 1 },
+      expected_filled_slots_shadow_logs: 0,
+      gate_fixture: true,
+    };
+  }
+
+  test('valid Phase 5 fixture in PHASE5_FIXTURES_DIR passes validation', () => {
+    const fixture = buildValidPhase5Fixture();
+    expect(() =>
+      validateFixtureInputs([
+        {
+          filename: 'r9-1-valid.json',
+          fullPath: '/tmp/x',
+          fixture,
+          sourceDir: PHASE5_FIXTURES_DIR,
+        },
+      ])
+    ).not.toThrow();
+  });
+
+  test('Phase 5 fixture missing _fixture_shape → throws', () => {
+    const fixture = buildValidPhase5Fixture();
+    delete fixture._fixture_shape;
+    expect(() =>
+      validateFixtureInputs([
+        {
+          filename: 'r9-1-missing-shape.json',
+          fullPath: '/tmp/x',
+          fixture,
+          sourceDir: PHASE5_FIXTURES_DIR,
+        },
+      ])
+    ).toThrow(/r9-1-missing-shape\.json.*_fixture_shape/);
+  });
+
+  test('Phase 5 fixture missing ask_user_calls field → throws', () => {
+    const fixture = buildValidPhase5Fixture();
+    delete fixture.ask_user_calls;
+    expect(() =>
+      validateFixtureInputs([
+        {
+          filename: 'r9-1-missing-calls.json',
+          fullPath: '/tmp/x',
+          fixture,
+          sourceDir: PHASE5_FIXTURES_DIR,
+        },
+      ])
+    ).toThrow(/r9-1-missing-calls\.json.*ask_user_calls/);
+  });
+
+  test('Phase 5 fixture with ask_user_calls[i] missing call.id → throws', () => {
+    const fixture = buildValidPhase5Fixture();
+    delete fixture.ask_user_calls[0].call.id;
+    expect(() =>
+      validateFixtureInputs([
+        {
+          filename: 'r9-1-missing-id.json',
+          fullPath: '/tmp/x',
+          fixture,
+          sourceDir: PHASE5_FIXTURES_DIR,
+        },
+      ])
+    ).toThrow(/r9-1-missing-id\.json.*ask_user_calls\[0\].*id/);
+  });
+
+  test('Phase 5 fixture with ask_user_calls[i] missing turnId → throws', () => {
+    const fixture = buildValidPhase5Fixture();
+    delete fixture.ask_user_calls[0].turnId;
+    expect(() =>
+      validateFixtureInputs([
+        {
+          filename: 'r9-1-missing-turn.json',
+          fullPath: '/tmp/x',
+          fixture,
+          sourceDir: PHASE5_FIXTURES_DIR,
+        },
+      ])
+    ).toThrow(/r9-1-missing-turn\.json.*ask_user_calls\[0\].*turnId/);
+  });
+
+  test('regression lock — Phase 4 fixture missing _fixture_shape does NOT throw (legacy zero-ask path)', () => {
+    // Pre-r9-#1 the Phase-4 legacy fixtures (sample-01..05 in
+    // stage6-golden-sessions/) deliberately omit `_fixture_shape`; they
+    // contribute zero asks via applyDefaults' backwards-compat path. The
+    // r9-#1 fix MUST NOT regress that — only PHASE5_FIXTURES_DIR-loaded
+    // entries get the strict gate.
+    const phase4Fixture = {
+      _doc: 'Plan 05-15 r9-#1 regression lock — phase 4 dual-SSE shape',
+      // No _fixture_shape marker — by design.
+      session: { jobId: 'phase4-legacy', certificateType: 'EICR' },
+      // No ask_user_calls — by design.
+    };
+    expect(() =>
+      validateFixtureInputs([
+        {
+          filename: 'sample-phase4-legacy.json',
+          fullPath: '/tmp/x',
+          fixture: phase4Fixture,
+          sourceDir: '/some/other/dir',
+        },
+      ])
+    ).not.toThrow();
+  });
+});
