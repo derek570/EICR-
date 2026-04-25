@@ -1483,9 +1483,21 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         existing.fallbackToLegacy = false;
         existing.protocolVersion = 'stage6';
       } else {
-        // off mode: record the latest value so a future mode flip sees
-        // the freshest data; no policy enforcement (STR-01 functional
-        // equivalence).
+        // ── Plan 06-09 r8-#3 (MINOR) — STR-01 rollback contract on
+        // shadow → off transition. Pre-r8 the off branch wrote ONLY
+        // protocolVersion; existing.fallbackToLegacy from a prior
+        // shadow + mismatch handshake stayed true, leaving the entry
+        // in a non-pristine state for the rest of its lifetime.
+        // fallbackToLegacy is a shadow-mode artifact (see the shadow
+        // branch above and Plan 06-02 r1-#1's dispatcher gate); off
+        // mode has no notion of it. Cleared here so a future code
+        // path that reads entry.fallbackToLegacy WITHOUT first
+        // checking entry.session.toolCallsMode === 'shadow' won't
+        // suppress emission incorrectly. The protocolVersion write
+        // retains its original "record latest from client" semantics
+        // (no policy enforcement in off mode); only the
+        // fallbackToLegacy reset is new in r8-#3.
+        existing.fallbackToLegacy = false;
         existing.protocolVersion = protocolVersion;
       }
       // ── Plan 06-07 r6-#1 (BLOCK) + Plan 06-08 r7-#1 (MAJOR) —
@@ -2184,8 +2196,15 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
       entry.fallbackToLegacy = false;
       entry.protocolVersion = 'stage6';
     } else {
-      // off mode: record the latest value so a future mode flip sees the
-      // freshest data; no policy enforcement.
+      // ── Plan 06-09 r8-#3 (MINOR) — STR-01 rollback contract on
+      // shadow → off transition. Mirrors handleSessionStart's
+      // reconnect off-branch (see r8-#3 comment there for the full
+      // rationale). entry.fallbackToLegacy from a prior shadow +
+      // mismatch handshake is cleared here so an off-mode entry has
+      // pristine Stage 6 emission state — defends future code paths
+      // that might read entry.fallbackToLegacy without first
+      // gating on entry.session.toolCallsMode === 'shadow'.
+      entry.fallbackToLegacy = false;
       entry.protocolVersion = requestedProtocolVersion;
     }
     // ── Plan 06-07 r6-#1 (BLOCK) + Plan 06-08 r7-#1 (MAJOR) —
