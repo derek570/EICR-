@@ -77,6 +77,43 @@ class FakeEICRExtractionSession {
     // pulling in the real class's prompt module imports.
     const raw = options.toolCallsMode ?? process.env.SONNET_TOOL_CALLS ?? 'off';
     this.toolCallsMode = raw === 'off' || raw === 'shadow' || raw === 'live' ? raw : 'off';
+    this.certType = certType;
+    // Plan 06-08 r7-#1 — mirror the real EICRExtractionSession's
+    // constructor-time systemPrompt derivation. Sentinel strings
+    // ('legacy-prompt-eicr', 'legacy-prompt-eic', 'agentic-prompt')
+    // stand in for the real prompt files — Group H.5 only needs to
+    // assert which BUCKET of prompt the fake session lands in
+    // (legacy-eicr / legacy-eic / agentic), not the actual prompt
+    // bytes. Real-prompt-bytes regression is covered by the unit
+    // test file `eicr-extraction-session-apply-mode-change.test.js`
+    // which imports the real class.
+    this.systemPrompt =
+      this.toolCallsMode === 'off'
+        ? this.certType === 'eic'
+          ? 'legacy-prompt-eic'
+          : 'legacy-prompt-eicr'
+        : 'agentic-prompt';
+  }
+
+  // Plan 06-08 r7-#1 — mirror the real applyModeChange contract so
+  // sonnet-stream.js's reconnect/resume call sites can hit the same
+  // method on the fake. Validation + no-op + restamp logic is byte-
+  // for-byte-equivalent semantics with the real method.
+  applyModeChange(newMode) {
+    let resolved;
+    if (newMode === 'off' || newMode === 'shadow' || newMode === 'live') {
+      resolved = newMode;
+    } else {
+      resolved = 'off';
+    }
+    if (resolved === this.toolCallsMode) return;
+    this.toolCallsMode = resolved;
+    this.systemPrompt =
+      this.toolCallsMode === 'off'
+        ? this.certType === 'eic'
+          ? 'legacy-prompt-eic'
+          : 'legacy-prompt-eicr'
+        : 'agentic-prompt';
   }
 }
 
@@ -874,5 +911,161 @@ describe('Group G — entry.session.toolCallsMode tracks effective env mode afte
     expect(entry.session.toolCallsMode).toBe('shadow');
     expect(entry.fallbackToLegacy).toBe(true);
     expect(entry.protocolVersion).toBeNull();
+  });
+});
+
+// -----------------------------------------------------------------------------
+// Group H — applyModeChange + systemPrompt restamp (r7-#1 MAJOR)
+// -----------------------------------------------------------------------------
+//
+// Plan 06-08 r7-#1 (MAJOR) — r6 wrote `entry.session.toolCallsMode` on
+// reconnect/resume so runtime path-selection tracks the live env mode.
+// But `EICRExtractionSession.systemPrompt` is the OTHER constructor-time
+// mode-derived field — set ONCE at construction (line 697-702) from
+// `toolCallsMode` and never re-derived. After off → shadow flip,
+// `buildSystemBlocks()` correctly switches its layout (snapshot in
+// system[1] instead of in messages array, because it re-reads
+// toolCallsMode live), but `system[0].text` is still the LEGACY prompt —
+// a hybrid that doesn't exist in any release of the prompt module.
+//
+// Plan 06-08 fix: new public `applyModeChange(newMode)` method on
+// EICRExtractionSession that restamps BOTH `toolCallsMode` AND
+// `systemPrompt` together. Sonnet-stream.js's two write sites
+// (handleSessionStart reconnect, handleSessionResumeRehydrate) call
+// applyModeChange instead of poking session.toolCallsMode directly.
+//
+// Group H.5 here is the "call site uses the method" integration test —
+// open under off (legacy prompt), reconnect under shadow, assert
+// `entry.session.systemPrompt` flipped to the agentic prompt. The
+// FakeEICRExtractionSession at the top of this file mirrors the real
+// class's systemPrompt selection (sentinel strings 'legacy-prompt-eicr'
+// vs 'agentic-prompt') AND mirrors the applyModeChange contract, so
+// this test fails under RED if (a) sonnet-stream.js still does direct
+// `session.toolCallsMode = ...` assignment instead of calling
+// applyModeChange, and passes under GREEN once both call sites use the
+// method.
+//
+// H.1-H.4 (method-contract unit tests on the REAL class) live in
+// `eicr-extraction-session-apply-mode-change.test.js`.
+
+describe('Group H — applyModeChange call-site integration (r7-#1)', () => {
+  test('H.5 — reconnect off → shadow flips entry.session.systemPrompt to agentic', async () => {
+    // Original session under off: legacy prompt selected at construction.
+    process.env.SONNET_TOOL_CALLS = 'off';
+    const ws1 = connect(wss, 'user-H');
+    await sendFrame(ws1, {
+      type: 'session_start',
+      sessionId: 'sess-H5',
+      jobState: { certificateType: 'eicr' },
+    });
+    expect(activeSessions.get('sess-H5').session.toolCallsMode).toBe('off');
+    expect(activeSessions.get('sess-H5').session.systemPrompt).toBe('legacy-prompt-eicr');
+
+    // Operator flips off → shadow. iOS reconnects with stage6.
+    // Without the r7-#1 fix, sonnet-stream.js writes
+    // `existing.session.toolCallsMode = 'shadow'` directly — toolCallsMode
+    // updates (r6 already pinned that) but systemPrompt stays at
+    // 'legacy-prompt-eicr' because it's a constructor-cached field.
+    // With the fix, sonnet-stream.js calls applyModeChange which
+    // restamps both fields atomically.
+    process.env.SONNET_TOOL_CALLS = 'shadow';
+    const ws2 = connect(wss, 'user-H');
+    await sendFrame(ws2, {
+      type: 'session_start',
+      sessionId: 'sess-H5',
+      jobState: { certificateType: 'eicr' },
+      protocol_version: 'stage6',
+    });
+
+    const entry = activeSessions.get('sess-H5');
+    expect(entry).toBeDefined();
+    expect(entry.ws).toBe(ws2);
+    expect(entry.session.toolCallsMode).toBe('shadow');
+    expect(entry.session.systemPrompt).toBe('agentic-prompt');
+  });
+
+  test('H.5b — resume off → shadow via session_resume flips systemPrompt to agentic', async () => {
+    process.env.SONNET_TOOL_CALLS = 'off';
+    const ws1 = connect(wss, 'user-H');
+    await sendFrame(ws1, {
+      type: 'session_start',
+      sessionId: 'sess-H5b',
+      jobState: { certificateType: 'eicr' },
+      protocol_version: 'stage6',
+    });
+    expect(activeSessions.get('sess-H5b').session.systemPrompt).toBe('legacy-prompt-eicr');
+    const token = readRehydrateToken(ws1);
+
+    process.env.SONNET_TOOL_CALLS = 'shadow';
+    const ws2 = connect(wss, 'user-H');
+    await sendFrame(ws2, {
+      type: 'session_resume',
+      sessionId: token,
+      protocol_version: 'stage6',
+    });
+
+    const entry = activeSessions.get('sess-H5b');
+    expect(entry).toBeDefined();
+    expect(entry.ws).toBe(ws2);
+    expect(entry.session.toolCallsMode).toBe('shadow');
+    expect(entry.session.systemPrompt).toBe('agentic-prompt');
+  });
+
+  test('H.5c — STR-01 rollback: shadow → off restores legacy-eicr prompt', async () => {
+    process.env.SONNET_TOOL_CALLS = 'shadow';
+    const ws1 = connect(wss, 'user-H');
+    await sendFrame(ws1, {
+      type: 'session_start',
+      sessionId: 'sess-H5c',
+      jobState: { certificateType: 'eicr' },
+      protocol_version: 'stage6',
+    });
+    expect(activeSessions.get('sess-H5c').session.systemPrompt).toBe('agentic-prompt');
+
+    process.env.SONNET_TOOL_CALLS = 'off';
+    const ws2 = connect(wss, 'user-H');
+    await sendFrame(ws2, {
+      type: 'session_start',
+      sessionId: 'sess-H5c',
+      jobState: { certificateType: 'eicr' },
+      protocol_version: 'stage6',
+    });
+
+    const entry = activeSessions.get('sess-H5c');
+    expect(entry).toBeDefined();
+    expect(entry.ws).toBe(ws2);
+    expect(entry.session.toolCallsMode).toBe('off');
+    expect(entry.session.systemPrompt).toBe('legacy-prompt-eicr');
+  });
+
+  test('H.5d — match-mode reconnect (shadow → shadow with stage6) is a no-op for systemPrompt', async () => {
+    // Regression lock for the no-op path. After r7-#1 the
+    // applyModeChange method short-circuits when newMode ===
+    // current — preserves prompt object reference and emits no log.
+    process.env.SONNET_TOOL_CALLS = 'shadow';
+    const ws1 = connect(wss, 'user-H');
+    await sendFrame(ws1, {
+      type: 'session_start',
+      sessionId: 'sess-H5d',
+      jobState: { certificateType: 'eicr' },
+      protocol_version: 'stage6',
+    });
+    const entry1 = activeSessions.get('sess-H5d');
+    const promptBefore = entry1.session.systemPrompt;
+    expect(promptBefore).toBe('agentic-prompt');
+
+    // Reconnect, same mode.
+    const ws2 = connect(wss, 'user-H');
+    await sendFrame(ws2, {
+      type: 'session_start',
+      sessionId: 'sess-H5d',
+      jobState: { certificateType: 'eicr' },
+      protocol_version: 'stage6',
+    });
+
+    const entry2 = activeSessions.get('sess-H5d');
+    expect(entry2.session.systemPrompt).toBe(promptBefore);
+    // Same exact reference — no recompute fired.
+    expect(entry2.session.systemPrompt).toBe('agentic-prompt');
   });
 });
