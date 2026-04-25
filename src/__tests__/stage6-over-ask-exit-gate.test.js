@@ -175,3 +175,136 @@ describe('Plan 05-06 — exit-gate harness smoke test', () => {
     expect(stat.isDirectory()).toBe(true);
   });
 });
+
+// =============================================================================
+// Plan 05-07 r1-#4 — fixture-load-time schema validation
+// =============================================================================
+// The minimal mock inner dispatcher accepts any payload shape, so an invalid
+// ask_user fixture would replay through the gate stack unchallenged. Real
+// Plan 03-05 dispatch would have rejected every fixture call at the
+// validateAskUser gate. This block writes a temp fixture with an invalid
+// expected_answer_shape, points the harness at it via --fixtures-dir, and
+// asserts the script exits with the runtime-error code (2) and that stderr
+// carries the validator's failure code so the operator can find the offending
+// fixture quickly.
+//
+// WHY a temp dir: the production fixture pool is now scrubbed clean (Plan
+// 05-07 Task 1 r1-#5 GREEN); we cannot point the harness at any real fixture
+// to demonstrate the failure mode. A temp dir built per-test guarantees
+// isolation from the production pool and from other tests' temp dirs.
+// =============================================================================
+
+describe('Plan 05-07 r1-#4 — exit-gate harness validates fixture inputs at load time', () => {
+  jest.setTimeout(30000);
+
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(REPO_ROOT, 'tmp-plan-05-07-r1-4-'));
+  });
+
+  afterEach(() => {
+    if (tmpDir && fs.existsSync(tmpDir)) {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  test('invalid expected_answer_shape in fixture → exit code 2 with informative stderr', () => {
+    // Author a single-fixture pool with a bad expected_answer_shape value.
+    // Every other field is valid (real validateAskUser semantics — the
+    // first-failure short-circuit hits expected_answer_shape last in the
+    // input order).
+    const badFixture = {
+      _doc: 'Plan 05-07 r1-#4 RED — invalid expected_answer_shape',
+      _fixture_shape: 'phase5-over-ask',
+      session: { jobId: 'temp-r1-4-bad-shape', certificateType: 'EICR' },
+      ask_user_calls: [
+        {
+          turnId: 'temp-r1-4-bad-shape-turn-1',
+          synthetic_time_ms: 0,
+          call: {
+            id: 'toolu_temp_a',
+            name: 'ask_user',
+            input: {
+              question: 'Q?',
+              reason: 'ambiguous_circuit',
+              context_field: 'none',
+              context_circuit: null,
+              expected_answer_shape: 'invalid_shape_value',
+            },
+          },
+          inner_outcome: { answered: true, user_text: 'whatever' },
+        },
+      ],
+      expected_ask_user_count: 1,
+      expected_restrained_activations: 0,
+      expected_outcome_distribution: {},
+      expected_filled_slots_shadow_logs: 0,
+      gate_fixture: true,
+    };
+    fs.writeFileSync(path.join(tmpDir, 'sample-bad.json'), JSON.stringify(badFixture, null, 2));
+
+    const result = spawnSync('node', [SCRIPT_PATH, '--json', '--fixtures-dir', tmpDir], {
+      encoding: 'utf8',
+      cwd: REPO_ROOT,
+    });
+
+    // Runtime-error exit code per the harness CLI's catch block (process.exit(2))
+    // — the schema failure is thrown from within loadFixtures-or-validate, so
+    // the catch block is the natural exit path.
+    expect(result.status).toBe(2);
+    // The stderr message must surface the validator's failure code so an
+    // operator finding this in CI can grep for "invalid_expected_answer_shape"
+    // without reading the harness internals.
+    expect(result.stderr).toMatch(/invalid_expected_answer_shape/);
+    // The stderr should also include the offending fixture's filename so the
+    // operator finds the file in one click.
+    expect(result.stderr).toMatch(/sample-bad\.json/);
+  });
+
+  test('valid fixture → schema check passes and harness runs as normal', () => {
+    // Sanity check — a fixture with all-valid inputs should NOT trigger the
+    // schema gate; the harness behaves as it would on the production pool.
+    const goodFixture = {
+      _doc: 'Plan 05-07 r1-#4 sanity — valid fixture survives the schema gate',
+      _fixture_shape: 'phase5-over-ask',
+      session: { jobId: 'temp-r1-4-good-shape', certificateType: 'EICR' },
+      ask_user_calls: [
+        {
+          turnId: 'temp-r1-4-good-shape-turn-1',
+          synthetic_time_ms: 0,
+          call: {
+            id: 'toolu_temp_b',
+            name: 'ask_user',
+            input: {
+              question: 'Q?',
+              reason: 'ambiguous_circuit',
+              context_field: 'none',
+              context_circuit: null,
+              expected_answer_shape: 'free_text',
+            },
+          },
+          inner_outcome: { answered: true, user_text: 'ok' },
+        },
+      ],
+      expected_ask_user_count: 1,
+      expected_restrained_activations: 0,
+      expected_outcome_distribution: { answered: 1 },
+      expected_filled_slots_shadow_logs: 0,
+      gate_fixture: true,
+    };
+    fs.writeFileSync(path.join(tmpDir, 'sample-good.json'), JSON.stringify(goodFixture, null, 2));
+
+    const result = spawnSync('node', [SCRIPT_PATH, '--json', '--fixtures-dir', tmpDir], {
+      encoding: 'utf8',
+      cwd: REPO_ROOT,
+    });
+
+    // The harness runs to completion. exit_code is 0 if the lone fixture
+    // passes the gate metrics, 1 if it breaches — either way it is NOT 2
+    // (which would mean the runtime-error path tripped, which is the bug
+    // we are guarding against).
+    expect(result.status).not.toBe(2);
+    expect(result.stderr).not.toMatch(/invalid_expected_answer_shape/);
+  });
+});
