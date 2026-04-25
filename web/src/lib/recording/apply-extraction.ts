@@ -26,6 +26,8 @@ import type {
   FieldClear,
   Observation,
 } from './sonnet-session';
+import { FieldSourceMap, circuit0Key, perCircuitKey } from './field-source';
+import { applySonnetValue, type ApplyOutcome } from './apply-rules';
 
 type Section = 'supply' | 'board' | 'installation' | 'extent' | 'design';
 
@@ -118,36 +120,44 @@ function routeSupplyField(field: string): Section {
   return CIRCUIT_0_SECTION[field] ?? 'supply';
 }
 
-/** Non-empty / non-null check used by the 3-tier priority guard. */
-export function hasValue(v: unknown): boolean {
-  if (v == null) return false;
-  if (typeof v === 'string') return v.trim().length > 0;
-  if (typeof v === 'boolean' || typeof v === 'number') return true;
-  if (Array.isArray(v)) return v.length > 0;
-  if (typeof v === 'object') return Object.keys(v as object).length > 0;
-  return false;
-}
+// Re-export from `apply-utils` so existing callers keep working.
+export { hasValue } from './apply-utils';
+import { hasValue } from './apply-utils';
 
 /** Apply all readings belonging to circuit 0. Returns a map of
- *  section → merged record that can be folded into the final patch. */
+ *  section → merged record that can be folded into the final patch.
+ *  Per-field writes go through `applySonnetValue` so the iOS 3-tier
+ *  priority chain decides whether to overwrite pre-existing /
+ *  regex-source values. */
 function applyCircuit0Readings(
   job: JobDetail,
-  readings: ExtractedReading[]
+  readings: ExtractedReading[],
+  sources: FieldSourceMap,
+  outcomes: Map<string, ApplyOutcome>
 ): Partial<Record<Section, Record<string, unknown>>> {
   const bySection: Partial<Record<Section, Record<string, unknown>>> = {};
 
   for (const reading of readings) {
     if (reading.circuit !== 0 || !reading.field) continue;
     const section = routeSupplyField(reading.field);
-    const existing = (job[section] as Record<string, unknown> | undefined) ?? {};
-    // 3-tier priority — don't overwrite a pre-existing value. Sonnet
-    // dedups against its own state snapshot, but the user might have
-    // typed a correction since the last job_state_update landed.
-    if (hasValue(existing[reading.field])) continue;
-    bySection[section] = {
-      ...(bySection[section] ?? {}),
-      [reading.field]: reading.value,
-    };
+    const existingSection = (bySection[section] ??
+      (job[section] as Record<string, unknown> | undefined) ??
+      {}) as Record<string, unknown>;
+    const currentValue = existingSection[reading.field];
+    const key = circuit0Key(section, reading.field);
+    const outcome = applySonnetValue({
+      key,
+      newValue: reading.value,
+      currentValue,
+      sources,
+      apply: () => {
+        bySection[section] = {
+          ...existingSection,
+          [reading.field]: reading.value,
+        };
+      },
+    });
+    outcomes.set(key, outcome);
   }
 
   // Fold in per-section updates, preserving other keys on the section.
@@ -167,7 +177,9 @@ function applyCircuitReadings(
   job: JobDetail,
   readings: ExtractedReading[],
   circuitUpdates: CircuitUpdate[],
-  fieldClears: FieldClear[]
+  fieldClears: FieldClear[],
+  sources: FieldSourceMap,
+  outcomes: Map<string, ApplyOutcome>
 ): CircuitRow[] | null {
   const perCircuitReadings = readings.filter((r) => r.circuit >= 1 && r.field);
   const hasCircuitUpdate = circuitUpdates.some((u) => u.circuit >= 1);
@@ -209,13 +221,21 @@ function applyCircuitReadings(
   for (const reading of perCircuitReadings) {
     const idx = ensureRow(reading.circuit);
     const row = circuits[idx];
-    // 3-tier priority — keep the user's value if they've already typed
-    // one into the field.
-    if (hasValue(row[reading.field])) continue;
-    circuits[idx] = {
-      ...row,
-      [reading.field]: reading.value as unknown,
-    };
+    const currentValue = row[reading.field];
+    const key = perCircuitKey(reading.circuit, reading.field);
+    const outcome = applySonnetValue({
+      key,
+      newValue: reading.value,
+      currentValue,
+      sources,
+      apply: () => {
+        circuits[idx] = {
+          ...circuits[idx],
+          [reading.field]: reading.value as unknown,
+        };
+      },
+    });
+    outcomes.set(key, outcome);
   }
 
   for (const clear of fieldClears) {
@@ -343,25 +363,39 @@ export type AppliedExtraction = {
    *  state the patch was computed against. Feeds LiveFillState so the
    *  LiveFillView can flash exactly the cells Sonnet filled. */
   changedKeys: string[];
+  /** Count of writes that overwrote a regex-source field with a
+   *  different value. Mirrors iOS `discrepancyCount` — surfaced for
+   *  per-session telemetry / future R6 soak observability. */
+  discrepancyCount: number;
+  /** Count of writes that overwrote a pre-existing field with a
+   *  different value. Mirrors iOS `preexisting_overwrite` log. */
+  preexistingOverwriteCount: number;
 };
 
 /** Public entry point — returns the JobDetail patch + a flat list of
  *  dot-path keys describing which fields actually changed, or null if
  *  the extraction was effectively empty. Any field_clears on circuit 0
- *  are honoured too (they delete the key from the matching section). */
+ *  are honoured too (they delete the key from the matching section).
+ *
+ *  `sources` is the per-session FieldSourceMap. Callers that don't have
+ *  one (legacy / unit tests) get a fresh empty map; that's safe — an
+ *  empty map means every populated field is treated as 'preExisting'
+ *  on first encounter, exactly matching what iOS does on cold start. */
 export function applyExtractionToJob(
   job: JobDetail,
-  result: ExtractionResult
+  result: ExtractionResult,
+  sources: FieldSourceMap = new FieldSourceMap()
 ): AppliedExtraction | null {
   const readings = result.readings ?? [];
   const circuitUpdates = result.circuit_updates ?? [];
   const fieldClears = result.field_clears ?? [];
   const observations = result.observations ?? [];
 
+  const outcomes = new Map<string, ApplyOutcome>();
   const patch: Partial<JobDetail> = {};
 
   // Circuit 0 readings — split by section.
-  const supplyPatches = applyCircuit0Readings(job, readings);
+  const supplyPatches = applyCircuit0Readings(job, readings, sources, outcomes);
   for (const section of Object.keys(supplyPatches) as Section[]) {
     const merged = supplyPatches[section];
     if (merged) patch[section] = merged;
@@ -383,7 +417,14 @@ export function applyExtractionToJob(
   }
 
   // Per-circuit readings + updates + clears.
-  const newCircuits = applyCircuitReadings(job, readings, circuitUpdates, fieldClears);
+  const newCircuits = applyCircuitReadings(
+    job,
+    readings,
+    circuitUpdates,
+    fieldClears,
+    sources,
+    outcomes
+  );
   if (newCircuits) patch.circuits = newCircuits;
 
   // Observations.
@@ -413,5 +454,16 @@ export function applyExtractionToJob(
     changedKeys.push(...diffObservationKeys(job.observations, patch.observations));
   }
 
-  return { patch, changedKeys };
+  let discrepancyCount = 0;
+  let preexistingOverwriteCount = 0;
+  for (const outcome of outcomes.values()) {
+    if (outcome.applied && outcome.reason === 'sonnet-overwrite-regex') {
+      discrepancyCount += 1;
+    }
+    if (outcome.applied && outcome.reason === 'sonnet-overwrite-preexisting') {
+      preexistingOverwriteCount += 1;
+    }
+  }
+
+  return { patch, changedKeys, discrepancyCount, preexistingOverwriteCount };
 }

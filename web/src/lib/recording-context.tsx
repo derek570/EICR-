@@ -11,6 +11,7 @@ import {
   type SonnetQuestion,
 } from './recording/sonnet-session';
 import { applyExtractionToJob } from './recording/apply-extraction';
+import { FieldSourceMap } from './recording/field-source';
 import { normalise as normaliseTranscript } from './recording/number-normaliser';
 import { AudioRingBuffer } from './recording/audio-ring-buffer';
 import { SleepManager, type SleepState } from './recording/sleep-manager';
@@ -186,6 +187,15 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
   // Monotonic session id — used when requesting a scoped Deepgram token
   // and (Phase 4d) as the Sonnet extraction session id.
   const sessionIdRef = React.useRef<string>('');
+  // Per-session source-of-truth for which tier (preExisting / regex /
+  // sonnet) last wrote each field. Initialised on session start by
+  // walking the JobDetail and stamping every populated field as
+  // 'preExisting'. Threaded through `applyExtractionToJob` so the
+  // 3-tier priority chain decides each Sonnet write.
+  // Phase R2 of `web/audit/REGEX_TIER_PLAN.md` — the regex tier (R3)
+  // will write to this same map via `applyRegexValue` once the
+  // matcher is wired into onFinalTranscript.
+  const fieldSourcesRef = React.useRef<FieldSourceMap>(new FieldSourceMap());
   const tickRef = React.useRef<ReturnType<typeof setInterval> | null>(null);
   // Throttle setMicLevel to ~60Hz — audio callbacks fire every ~8ms at
   // 16kHz/128 samples which is overkill for a VU meter and would flood
@@ -393,7 +403,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
    *  validation_alerts into the pending-readings counter. */
   const applyExtraction = React.useCallback(
     (result: ExtractionResult) => {
-      const applied = applyExtractionToJob(jobRef.current, result);
+      const applied = applyExtractionToJob(jobRef.current, result, fieldSourcesRef.current);
       if (applied) {
         updateJobRef.current(applied.patch);
         // Feed LiveFillState so <LiveFillView> can flash the fields
@@ -697,6 +707,12 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     // dead session — we bail and tear down the accidental resources.
     const sessionId = `sess_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
     sessionIdRef.current = sessionId;
+    // Reset the per-session source map and stamp every currently-
+    // populated field as 'preExisting'. iOS does the same at session
+    // start so Sonnet's 3-tier priority chain knows which fields to
+    // protect from naive duplicate writes vs which are blank slates.
+    fieldSourcesRef.current.clear();
+    fieldSourcesRef.current.initializeFromJob(jobRef.current);
     try {
       await beginMicPipeline();
       // sessionId rotated while awaiting the mic / WS handshake — drop

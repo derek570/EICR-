@@ -13,7 +13,7 @@ Closes the two coupled Phase 6 P0s deferred from Wave B: "No regex layer" + "2-t
 |---|--------|--------|-----------|
 | R0 | Plan committed + INDEX updated | 🚧 in flight | (this commit) |
 | R1 | `NumberNormaliser` TS port + 20 vitest cases | ✅ done | `c0f2c2a` + `065727a` + `eac73ff` + `79d1c74` + `42b60c1` (4× codex iterations resolved to iOS-canon) |
-| R2 | `FieldSource` map + `applyRegexValue` / `applySonnetValue` priority rules | ⏳ pending | — |
+| R2 | `FieldSource` map + `applyRegexValue` / `applySonnetValue` priority rules | ✅ done | (this commit) |
 | R3 | `TranscriptFieldMatcher` engine + 6 regex categories (~60 cases) | ⏳ pending | — |
 | R4 | Wire matcher into `recording-context` + LiveFill (flag-gated) | ⏳ pending | — |
 | R5 | `regex_fields` hint protocol — web starts emitting (no backend change) | ⏳ pending | — |
