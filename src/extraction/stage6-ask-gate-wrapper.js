@@ -408,45 +408,86 @@ export function wrapAskDispatcherWithGates(
  * reach this classifier because their code paths return synth envelopes
  * BEFORE the post-dispatch step.
  */
-// Plan 05-07 r1-#1 — exported so the offline exit-gate harness
-// (scripts/stage6-over-ask-exit-gate.js) can mirror the wrapper's
-// real-fire classification when computing per-session askCount. Keeping
-// the source-of-truth in this module guarantees the harness's metric
-// matches the runtime budget/restrained-window accounting; drift would
-// silently corrupt the SC #8 aggregate (the wrapper increments counters
-// only when isRealFire returns true; the harness MUST count exactly the
-// same envelopes towards askCount).
-export const WRAPPER_SHORT_CIRCUIT_REASONS = new Set([
+// Plan 05-10 r4-#2 — Sets are module-PRIVATE, public surface is the
+// predicate helpers `isWrapperShortCircuitReason` /
+// `isPreEmitNonFireReason` exported below. Pre-r4-#2 these were
+// exported as raw Sets:
+//
+//   - WRAPPER_SHORT_CIRCUIT_REASONS = new Set([...])
+//     (no Object.freeze at all — bare Set)
+//   - PRE_EMIT_NON_FIRE_REASONS = Object.freeze(new Set([...]))
+//
+// `Object.freeze` on a Set does NOT prevent `.add()` / `.delete()` —
+// it freezes the Set object's own enumerable properties + prevents
+// extensions, but the Set's internal [[SetData]] slot is unaffected.
+// So an importer could call:
+//
+//   import { WRAPPER_SHORT_CIRCUIT_REASONS } from '...';
+//   WRAPPER_SHORT_CIRCUIT_REASONS.add('foo');
+//
+// and silently change the budget classifier in-process for the rest
+// of its lifetime. The harness's
+// `HARNESS_WRAPPER_SHORT_CIRCUIT_REASONS = new Set([...
+// WRAPPER_SHORT_CIRCUIT_REASONS, ...])` would also pull in the
+// mutated entry on next harness run. Same risk on the
+// `PRE_EMIT_NON_FIRE_REASONS` side — `.delete('shadow_mode')` would
+// silently undo Plan 05-09 r3-#1's fix.
+//
+// Footgun, not active attack surface (we don't pass these Sets to
+// untrusted code), but the API contract was that they were
+// constants and the previous shape didn't enforce it. r4-#2 fix:
+// keep the Sets module-private + expose predicate helpers. The
+// harness updates to use the predicates instead of importing +
+// spreading the Sets — single source of truth becomes the predicate
+// behaviour, not the Set's contents (the Sets themselves are no
+// longer reachable from outside this module).
+//
+// Internal consumer (isRealFire below) continues to call `.has()`
+// directly on the private Sets — internal access to a module-
+// private Set is fine; only the EXTERNAL exposure changed.
+//
+// =============================================================================
+// _WRAPPER_SHORT_CIRCUIT_REASONS — Plan 05-07 r1-#1.
+// Reasons emitted by the wrapper itself (synthResultWrapped) when its
+// own gates short-circuit BEFORE the inner dispatcher runs. These
+// reasons MUST NOT count as real fires (no budget burn, no restrained-
+// window slot consumed). The wrapper's `isRealFire` consults this set;
+// the offline exit-gate harness mirrors the same set via the
+// `isWrapperShortCircuitReason` predicate (single source of truth so
+// the offline aggregate metric matches runtime budget accounting).
+// =============================================================================
+const _WRAPPER_SHORT_CIRCUIT_REASONS = new Set([
   'gated',
   'session_terminated',
   'dispatcher_error',
-  // Plan 05-07 r1-#1 also adds `restrained_mode` and `ask_budget_exhausted`
-  // to the harness's "exclude from askCount" set indirectly: those reasons
-  // never reach this classifier inside the wrapper because their code paths
-  // return synth envelopes BEFORE the post-dispatch counter step. The
-  // harness imports this constant for its own isWrapperShortCircuit
-  // helper — the harness's helper additionally treats restrained_mode +
-  // ask_budget_exhausted as wrapper short-circuits because at the harness
-  // accounting layer (which sees envelopes ONLY, not wrapper internals)
-  // those are also "wrapper-suppressed asks" the metric should exclude.
+  // Plan 05-07 r1-#1 — note: `restrained_mode` and `ask_budget_exhausted`
+  // are also wrapper-emitted synth reasons BUT they live in pre-dispatch
+  // branches of wrapAskDispatcherWithGates (NOT in isRealFire's
+  // classifier path). The harness's accounting layer (envelopes only,
+  // no wrapper internals) treats them as wrapper-suppressed too — but
+  // it composes them ON TOP of the wrapper's predicate, not inside
+  // this internal Set. See scripts/stage6-over-ask-exit-gate.js
+  // `isHarnessWrapperShortCircuitReason` for the harness composition.
 ]);
 
-// Plan 05-08 r2-#1 + Plan 05-09 r3-#1 — FOUR answer_outcomes whose
-// envelopes signal "the ask never reached iOS / never registered with
-// pendingAsks". All four are dispatcher PRE-EMIT failures whose returns
-// happen BEFORE pendingAsks.register and ws.send(ask_user_started):
+// =============================================================================
+// _PRE_EMIT_NON_FIRE_REASONS — Plan 05-08 r2-#1 + Plan 05-09 r3-#1.
+// FOUR answer_outcomes whose envelopes signal "the ask never reached
+// iOS / never registered with pendingAsks". All four are dispatcher
+// PRE-EMIT failures whose returns happen BEFORE pendingAsks.register
+// and ws.send(ask_user_started):
 //   - validation_error    (Plan 03-02; pre-dispatch shape rejection)
 //   - duplicate_tool_call_id (Plan 03-05; SDK retry-replay caught at register)
 //   - prompt_leak_blocked (Plan 04-26; output filter blocked the ask pre-emit)
 //   - shadow_mode         (Plan 03-05; shadow-path short-circuit pre-register)
 //
 // Pre-fix isRealFire returned true for these because they aren't in
-// WRAPPER_SHORT_CIRCUIT_REASONS — the wrapper then incremented askBudget
-// + restrainedMode.recordAsk for inputs the user never even saw. That
-// inverts the meaning of the budget cap (which counts "Sonnet probed the
-// user", not "Sonnet attempted to probe"). It also raises the false-
-// positive rate of the rolling-5-turn restrained-mode trigger by
-// counting phantom asks.
+// _WRAPPER_SHORT_CIRCUIT_REASONS — the wrapper then incremented
+// askBudget + restrainedMode.recordAsk for inputs the user never even
+// saw. That inverts the meaning of the budget cap (which counts
+// "Sonnet probed the user", not "Sonnet attempted to probe"). It also
+// raises the false-positive rate of the rolling-5-turn restrained-
+// mode trigger by counting phantom asks.
 //
 // Audit basis (every value here): each reason's emit site in
 // src/extraction/stage6-dispatcher-ask.js is structurally BEFORE
@@ -457,50 +498,84 @@ export const WRAPPER_SHORT_CIRCUIT_REASONS = new Set([
 //   - prompt_leak_blocked   → returns at line 196 (the leak-filter `return`)
 //   - shadow_mode           → returns at lines 206-225 (`if (mode === 'shadow') { … }`)
 //   - duplicate_tool_call_id → resolves at line 287 inside the register catch
-// Step 3 (register + ws.send) starts at line 228+ — every reason listed
-// above returns BEFORE that block.
+// Step 3 (register + ws.send) starts at line 228+ — every reason
+// listed above returns BEFORE that block.
 //
-// ASK_USER_ANSWER_OUTCOMES contains 13 entries (Plan 05-05); every other
-// entry either represents a real fire that DID register (answered,
-// timeout, user_moved_on, session_*, transcript_already_*) or a wrapper-
-// internal short-circuit already handled in WRAPPER_SHORT_CIRCUIT_REASONS
-// / the wrapper's pre-dispatch synth branches.
+// ASK_USER_ANSWER_OUTCOMES contains 13 entries (Plan 05-05); every
+// other entry either represents a real fire that DID register
+// (answered, timeout, user_moved_on, session_*, transcript_already_*)
+// or a wrapper-internal short-circuit already handled in
+// _WRAPPER_SHORT_CIRCUIT_REASONS / the wrapper's pre-dispatch synth
+// branches.
 //
 // Plan 05-09 r3-#1 — D2 reversal. Plan 05-08 D2 originally claimed
 // "shadow_mode runs after register/ws emission ... so it counts as a
-// fire and stays out of this set." That conclusion was wrong. The "after
-// validation + leak filter" characterisation is true (shadow_mode is
-// step 2 in dispatcher ordering, which is after step 1 = validation and
-// step 1b = leak filter), but irrelevant — the predicate that determines
-// whether budget burns is "did register + ws.send fire?", and for
-// shadow_mode the answer is no. Codex r3 surfaced this; r3-#1 corrects
-// the set + the audit prose.
+// fire and stays out of this set." That conclusion was wrong. The
+// "after validation + leak filter" characterisation is true
+// (shadow_mode is step 2 in dispatcher ordering, which is after
+// step 1 = validation and step 1b = leak filter), but irrelevant —
+// the predicate that determines whether budget burns is "did
+// register + ws.send fire?", and for shadow_mode the answer is no.
+// Codex r3 surfaced this; r3-#1 corrects the set + the audit prose.
 //
 // Production effect of the pre-fix bug:
 //   - Shadow runs (Plan 05-02 + Plan 05-04 shadow harness) burned
 //     askBudget on every shadow_mode envelope. Shadow's whole point is
 //     observe-without-affect — burning shadow runs against the budget
 //     cap is the OPPOSITE of that.
-//   - Shadow-mode rolling-5-turn restrained-mode counter accrued phantom
-//     asks, contaminating the next live run's threshold accounting.
-//
-// Exported so scripts/stage6-over-ask-exit-gate.js extends its
-// HARNESS_WRAPPER_SHORT_CIRCUIT_REASONS set with these values via
-// `...PRE_EMIT_NON_FIRE_REASONS` spread. Single source of truth —
-// runtime budget AND offline askCount share the classifier; adding a
-// reason here automatically tightens the harness too.
-export const PRE_EMIT_NON_FIRE_REASONS = Object.freeze(
-  new Set(['validation_error', 'duplicate_tool_call_id', 'prompt_leak_blocked', 'shadow_mode'])
-);
+//   - Shadow-mode rolling-5-turn restrained-mode counter accrued
+//     phantom asks, contaminating the next live run's threshold
+//     accounting.
+// =============================================================================
+const _PRE_EMIT_NON_FIRE_REASONS = new Set([
+  'validation_error',
+  'duplicate_tool_call_id',
+  'prompt_leak_blocked',
+  'shadow_mode',
+]);
+
+/**
+ * Public predicate: is `reason` one of the wrapper's own short-circuit
+ * reasons (`gated`, `session_terminated`, `dispatcher_error`)?
+ *
+ * Plan 05-10 r4-#2 — replaces the previous `WRAPPER_SHORT_CIRCUIT_REASONS`
+ * Set export. The previous shape was a footgun: `Object.freeze` on a Set
+ * doesn't prevent `.add()` / `.delete()`, so any importer could mutate
+ * the budget classifier silently. The predicate keeps the data module-
+ * private and exposes only a read-only check.
+ *
+ * @param {string} reason — answer_outcome string from the envelope body.
+ * @returns {boolean}
+ */
+export function isWrapperShortCircuitReason(reason) {
+  return _WRAPPER_SHORT_CIRCUIT_REASONS.has(reason);
+}
+
+/**
+ * Public predicate: is `reason` one of the dispatcher's pre-emit
+ * non-fire reasons (`validation_error`, `duplicate_tool_call_id`,
+ * `prompt_leak_blocked`, `shadow_mode`)?
+ *
+ * Plan 05-10 r4-#2 — replaces the previous `PRE_EMIT_NON_FIRE_REASONS`
+ * Set export. Same rationale as `isWrapperShortCircuitReason`: the Set
+ * was nominally "frozen" but `Object.freeze` doesn't lock Set
+ * mutation methods. The predicate prevents external mutation entirely.
+ *
+ * @param {string} reason — answer_outcome string from the envelope body.
+ * @returns {boolean}
+ */
+export function isPreEmitNonFireReason(reason) {
+  return _PRE_EMIT_NON_FIRE_REASONS.has(reason);
+}
 
 function isRealFire(envelope) {
   try {
     const body = JSON.parse(envelope.content);
     if (body.answered === true) return true;
-    if (WRAPPER_SHORT_CIRCUIT_REASONS.has(body.reason)) return false;
+    if (_WRAPPER_SHORT_CIRCUIT_REASONS.has(body.reason)) return false;
     // Plan 05-08 r2-#1 — pre-emit failures are non-fires (the ask never
     // reached iOS / never registered). Burning budget on these is wrong.
-    if (PRE_EMIT_NON_FIRE_REASONS.has(body.reason)) return false;
+    if (_PRE_EMIT_NON_FIRE_REASONS.has(body.reason)) return false;
     return true;
   } catch {
     // Malformed envelope from a buggy inner dispatcher — treat as real

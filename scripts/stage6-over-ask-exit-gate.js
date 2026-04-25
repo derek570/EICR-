@@ -162,36 +162,52 @@ import { fileURLToPath } from 'node:url';
 import {
   createAskGateWrapper,
   wrapAskDispatcherWithGates,
-  WRAPPER_SHORT_CIRCUIT_REASONS,
-  PRE_EMIT_NON_FIRE_REASONS,
+  isWrapperShortCircuitReason,
+  isPreEmitNonFireReason,
 } from '../src/extraction/stage6-ask-gate-wrapper.js';
 import { createAskBudget } from '../src/extraction/stage6-ask-budget.js';
 import { createRestrainedMode } from '../src/extraction/stage6-restrained-mode.js';
 import { createFilledSlotsShadowLogger } from '../src/extraction/stage6-filled-slots-shadow.js';
 import { validateAskUser } from '../src/extraction/stage6-dispatch-validation.js';
 
-// Plan 05-07 r1-#1 — the harness's "exclude from askCount" set is the
-// wrapper's own WRAPPER_SHORT_CIRCUIT_REASONS PLUS the two reasons that
-// never reach the wrapper's isRealFire classifier (their code paths
-// short-circuit BEFORE the post-dispatch step). At the harness accounting
-// layer (envelopes only, no wrapper internals), all five are
-// wrapper-suppressed asks the metric should exclude.
+// Plan 05-07 r1-#1 + Plan 05-08 r2-#1 + Plan 05-10 r4-#2 — the
+// harness's "exclude from askCount" predicate composes the wrapper's
+// two predicates with the harness-local pair of synth reasons.
 //
-// Plan 05-08 r2-#1 — additionally extend with PRE_EMIT_NON_FIRE_REASONS
-// (validation_error / duplicate_tool_call_id / prompt_leak_blocked).
-// These are dispatcher-local pre-emit failures: the envelope returned to
-// runToolLoop carries one of these reasons but the ask never registered
-// with pendingAsks and never emitted ask_user_started to iOS. The wrapper
-// itself now treats these as non-fires (PRE_EMIT_NON_FIRE_REASONS gate in
-// isRealFire) so askBudget + restrainedMode.recordAsk are not consumed.
-// The harness must mirror that classification or the offline aggregate
-// diverges from the runtime gate semantics.
-const HARNESS_WRAPPER_SHORT_CIRCUIT_REASONS = new Set([
-  ...WRAPPER_SHORT_CIRCUIT_REASONS,
-  'restrained_mode',
-  'ask_budget_exhausted',
-  ...PRE_EMIT_NON_FIRE_REASONS,
-]);
+// Members:
+//   - isWrapperShortCircuitReason(reason)  — gated / session_terminated /
+//     dispatcher_error (the wrapper's own short-circuit synth reasons).
+//   - 'restrained_mode' / 'ask_budget_exhausted' — wrapper-emitted
+//     synth reasons that NEVER reach the wrapper's isRealFire
+//     classifier (their code paths short-circuit BEFORE the post-
+//     dispatch counter step). At the harness accounting layer
+//     (envelopes only, no wrapper internals), they're "wrapper-
+//     suppressed" all the same.
+//   - isPreEmitNonFireReason(reason) — validation_error /
+//     duplicate_tool_call_id / prompt_leak_blocked / shadow_mode.
+//     Dispatcher-local pre-emit failures: the envelope carries one of
+//     these reasons but the ask never registered with pendingAsks and
+//     never emitted ask_user_started to iOS. The wrapper itself treats
+//     these as non-fires (isRealFire gates on isPreEmitNonFireReason)
+//     so askBudget + restrainedMode.recordAsk are not consumed. The
+//     harness mirrors via the same predicate (single source of truth —
+//     adding a member to the wrapper's private set automatically
+//     tightens the harness too).
+//
+// Plan 05-10 r4-#2 background: the wrapper used to export the two
+// underlying Sets directly. `Object.freeze(new Set([...]))` does NOT
+// prevent `.add()` / `.delete()` on a Set, so any importer could
+// silently mutate the budget classifier. r4-#2 replaced the Set
+// exports with read-only predicates; the harness composes them here
+// rather than spreading the (now private) Sets.
+function isHarnessWrapperShortCircuitReason(reason) {
+  return (
+    isWrapperShortCircuitReason(reason) ||
+    reason === 'restrained_mode' ||
+    reason === 'ask_budget_exhausted' ||
+    isPreEmitNonFireReason(reason)
+  );
+}
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -503,16 +519,20 @@ async function replayFixture(fx) {
 
   // Compute observed metrics from envelopes + logger.rows.
   //
-  // Plan 05-07 r1-#1 — askCount mirrors the wrapper's real-fire semantics:
-  // every dispatched ask_user counts EXCEPT those whose envelope reason is
-  // in HARNESS_WRAPPER_SHORT_CIRCUIT_REASONS (gated / session_terminated /
-  // dispatcher_error / restrained_mode / ask_budget_exhausted). Pre-fix the
-  // metric counted only `body.answered === true` which underclassified
-  // user_moved_on / timeout / etc — the wrapper itself increments budget
-  // for those (because they ARE real asks Sonnet emitted to the user;
-  // the user just didn't engage with them). The aggregate metric must
-  // match the wrapper's accounting or the SC #8 gate diverges from the
-  // production gate semantics.
+  // Plan 05-07 r1-#1 + Plan 05-10 r4-#2 — askCount mirrors the wrapper's
+  // real-fire semantics via the harness's
+  // `isHarnessWrapperShortCircuitReason` predicate (composed from the
+  // wrapper's two read-only predicates plus the harness-local pair of
+  // synth reasons). Every dispatched ask_user counts EXCEPT those whose
+  // envelope reason is wrapper-suppressed (gated / session_terminated /
+  // dispatcher_error / restrained_mode / ask_budget_exhausted /
+  // validation_error / duplicate_tool_call_id / prompt_leak_blocked /
+  // shadow_mode). Pre-fix the metric counted only `body.answered === true`
+  // which underclassified user_moved_on / timeout / etc — the wrapper
+  // itself increments budget for those (because they ARE real asks
+  // Sonnet emitted to the user; the user just didn't engage with them).
+  // The aggregate metric must match the wrapper's accounting or the SC #8
+  // gate diverges from the production gate semantics.
   const outcomeDistribution = {
     answered: 0,
     gated: 0,
@@ -539,11 +559,15 @@ async function replayFixture(fx) {
       } else {
         outcomeDistribution[body.reason] = (outcomeDistribution[body.reason] ?? 0) + 1;
       }
-      // Plan 05-07 r1-#1 — count this envelope toward askCount UNLESS it's
-      // a wrapper-internal short-circuit. Inner-dispatcher reasons
-      // (user_moved_on, timeout, transcript_already_extracted, etc) all
-      // count as fires; only wrapper-suppressed asks are excluded.
-      if (!HARNESS_WRAPPER_SHORT_CIRCUIT_REASONS.has(body.reason)) {
+      // Plan 05-07 r1-#1 + Plan 05-10 r4-#2 — count this envelope toward
+      // askCount UNLESS it's a wrapper-internal short-circuit. Inner-
+      // dispatcher reasons (user_moved_on, timeout, transcript_already_
+      // extracted, etc) all count as fires; only wrapper-suppressed asks
+      // are excluded. The predicate composes the wrapper's two
+      // read-only predicates with the harness-local pair of synth
+      // reasons (single source of truth — the underlying Sets are
+      // module-private inside the wrapper).
+      if (!isHarnessWrapperShortCircuitReason(body.reason)) {
         firedAskCount += 1;
       }
     }
