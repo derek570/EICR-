@@ -302,18 +302,53 @@ function synthResultWithoutLog(call, reason) {
  * Plan 05-12 r6) + `session_terminated` short-circuit rows then carry
  * the correct mode.
  *
+ * Plan 05-15 r9-#3: `innerAlreadyLogs` opt added — controls the
+ * timer-catch's logging behaviour on inner-dispatcher throw. Two modes:
+ *
+ *   - `innerAlreadyLogs: true` (DEFAULT). The wrapper's timer-catch
+ *     resolves the awaiter with `synthResultWithoutLog(call,
+ *     'dispatcher_error')` — NO `logAskUser` call from the wrapper.
+ *     Correct for the production composition where
+ *     `createAskDispatcher` is the inner: that dispatcher's outer
+ *     catch ALREADY calls `logAskUser` with
+ *     `answer_outcome: 'dispatcher_error'` + `lifecycle: 'pre_emit'`
+ *     before rethrowing, so a wrapper-side `logAskUser` would emit a
+ *     duplicate row (Plan 05-14 r8-#1 closure behaviour).
+ *
+ *   - `innerAlreadyLogs: false`. The wrapper's timer-catch resolves the
+ *     awaiter via `synthResultWrapped(...)` which DOES call
+ *     `logAskUser`. Correct for custom inner dispatchers that throw
+ *     WITHOUT logging — the wrapper takes over the audit-trail
+ *     responsibility so the breadcrumb is preserved. Used by future
+ *     test-only mocks, alternative dispatchers in a Phase 6 refactor,
+ *     hypothetical replay tools.
+ *
+ * Default-true preserves the Plan 05-14 r8-#1 fix verbatim — production
+ * composition (`runShadowHarness` → `createAskDispatcher` → this
+ * wrapper) emits exactly one `stage6.ask_user` row per failed ask
+ * (from the dispatcher's outer catch) with no duplication. Setting
+ * the flag false is a deliberate opt-in that says "my inner does not
+ * log on throw; you take over".
+ *
  * @param {object} opts
  * @param {number} [opts.delayMs=QUESTION_GATE_DELAY_MS]  Debounce window.
  * @param {object} opts.logger
  * @param {string} opts.sessionId
  * @param {'live'|'shadow'} [opts.mode='live']  Mode threaded into wrapper-
  *   emitted log rows. Defaults to 'live' for back-compat.
+ * @param {boolean} [opts.innerAlreadyLogs=true]  When true (default), the
+ *   wrapper's timer-catch synthesises a recovery envelope WITHOUT calling
+ *   `logAskUser` (assumes the inner dispatcher logged before rethrowing).
+ *   When false, the wrapper takes over the `stage6.ask_user` emit on
+ *   inner-throw so custom inner dispatchers without their own catch+log
+ *   path don't lose audit-trail breadcrumbs.
  */
 export function createAskGateWrapper({
   delayMs = QUESTION_GATE_DELAY_MS,
   logger,
   sessionId,
   mode = 'live',
+  innerAlreadyLogs = true,
 }) {
   /** @type {Map<string, { timer: any, pendingCall: object, pendingCtx: object, pendingResolve: Function }>} */
   const pending = new Map();
@@ -385,7 +420,21 @@ export function createAskGateWrapper({
           // verbatim so the envelope `body.reason` matches the
           // closed-enum value the classifier and downstream consumers
           // expect.
-          resolve(synthResultWithoutLog(call, 'dispatcher_error'));
+          //
+          // Plan 05-15 r9-#3 — flag-driven branch. The r8-#1 always-
+          // non-logging assumption is correct ONLY when the inner is
+          // the production createAskDispatcher (which logs from its
+          // own outer catch). For custom inner dispatchers that
+          // throw WITHOUT logging (test-only mocks, alternative
+          // dispatchers, replay tools), the breadcrumb would be lost.
+          // Default `innerAlreadyLogs: true` preserves the r8-#1 fix
+          // verbatim for production. Explicit `false` delegates the
+          // audit-trail emission to the wrapper.
+          if (innerAlreadyLogs) {
+            resolve(synthResultWithoutLog(call, 'dispatcher_error'));
+          } else {
+            resolve(synthResultWrapped(call, 'dispatcher_error', ctx, logger, sessionId, mode));
+          }
         }
       }, delayMs);
 
