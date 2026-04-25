@@ -1380,6 +1380,45 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
     // Reuse existing session if reconnecting (within 30s timeout or old ws still open)
     if (activeSessions.has(sessionId)) {
       const existing = activeSessions.get(sessionId);
+      // ── Plan 06-06 r5-#2 (MAJOR) — write the freshly-computed
+      // protocolVersion + fallbackToLegacy values (computed at the top
+      // block above, lines ~1319-1378) back onto the existing entry.
+      // Without this, the entry's stamped values stayed at their original
+      // session_start value for the entry's lifetime — two real-world
+      // surfaces broke:
+      //   (a) Operator flipping SONNET_TOOL_CALLS=off → shadow mid-session
+      //       would not re-stamp fallbackToLegacy on reconnect, so even
+      //       mismatched clients would leak Stage 6 wire shapes after the
+      //       flip.
+      //   (b) iOS firmware upgrade mid-session that now advertises
+      //       protocol_version='stage6' on reconnect would still see
+      //       fallbackToLegacy=true, suppressing every Stage 6 emit on
+      //       the upgraded client.
+      //
+      // The LIVE-mismatch policy is already enforced by the top block at
+      // lines 1321-1345, which RETURNs before this reconnect branch is
+      // ever reached. So we don't need a duplicate live-reject path
+      // here — the top block handles it BEFORE we touch `existing`. We
+      // only need to handle (shadow + match), (shadow + mismatch), (live
+      // + match — top block did NOT reject because it matched), and
+      // (off + anything).
+      //
+      // The write-back happens BEFORE clearTimeout(disconnectTimer) and
+      // BEFORE existing.ws = ws (later in this branch) — keeping the
+      // policy decision adjacent to the policy inputs.
+      if (toolCallsMode === 'shadow' && protocolVersion !== 'stage6') {
+        existing.fallbackToLegacy = true;
+        existing.protocolVersion = protocolVersion; // null when missing
+      } else if (toolCallsMode === 'shadow' || toolCallsMode === 'live') {
+        // shadow + match OR live + match — write through.
+        existing.fallbackToLegacy = false;
+        existing.protocolVersion = 'stage6';
+      } else {
+        // off mode: record the latest value so a future mode flip sees
+        // the freshest data; no policy enforcement (STR-01 functional
+        // equivalence).
+        existing.protocolVersion = protocolVersion;
+      }
       if (existing.disconnectTimer) {
         clearTimeout(existing.disconnectTimer);
         existing.disconnectTimer = null;
