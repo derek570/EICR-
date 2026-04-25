@@ -122,6 +122,56 @@ function estimateShadowCost(/* toolLoopOut */) {
 }
 
 /**
+ * Plan 06-06 r5-#3 (MINOR) — extracted helper that builds the cloned
+ * shadowSession passed into createAskDispatcher (and the write dispatcher).
+ *
+ * Pre-fix the construction was inline at the harness body and pinned
+ * `toolCallsMode: 'shadow'` regardless of input. That made the dispatcher's
+ * `fallbackToLegacy` gate inside the LIVE branch (added in Plan 06-02
+ * r1-#1) unreachable through the harness — the dispatcher's shadow
+ * short-circuit at stage6-dispatcher-ask.js:233 fired first for every
+ * harness call. Tests at the harness layer were therefore proving an
+ * impossible state (live + fallbackToLegacy via harness was unreachable).
+ *
+ * Post-fix the clone reflects the input session's toolCallsMode. In
+ * Phase 6 the harness's mode-guard at line 147 throws on
+ * session.toolCallsMode === 'live' so the dispatcher's live-branch gate
+ * is still unreachable through the harness today; once Phase 7 lifts
+ * that guard, the gate becomes reachable for the first time. The change
+ * is observable ONLY when the caller runs the harness against a live
+ * session (a Phase 7 surface); for shadow runs the upstream env is
+ * shadow, so session.toolCallsMode === 'shadow' and behaviour is
+ * byte-identical to the old pin.
+ *
+ * The helper is exported for testability — see
+ * `stage6-shadow-harness-toolcallsmode-threading.test.js` for the
+ * structural assertions that lock this contract at CI time.
+ *
+ * @param {Object} session  Live session passed to runShadowHarness.
+ *   Must expose: sessionId, toolCallsMode (optional — defaults 'shadow').
+ * @param {Object} preLegacySnapshot  Pre-legacy clone of stateSnapshot
+ *   (Codex Phase-2 BLOCK#1 round-2 fix — see Step 0 above).
+ * @param {Array} preLegacyObservations  Pre-legacy clone of
+ *   extractedObservations.
+ * @returns {Object} A new object with sessionId, stateSnapshot,
+ *   extractedObservations, and toolCallsMode preserved from the input.
+ */
+export function buildShadowSessionForDispatcher(session, preLegacySnapshot, preLegacyObservations) {
+  return {
+    sessionId: session.sessionId,
+    stateSnapshot: preLegacySnapshot,
+    extractedObservations: preLegacyObservations,
+    // Plan 06-06 r5-#3 — preserve the input's toolCallsMode rather than
+    // pinning 'shadow'. See JSDoc above for the WHY.
+    //
+    // Defaults to 'shadow' for back-compat with any caller (or test
+    // stub) that omits the field — the existing Phase 2-5 tests use
+    // bare session stubs that may not set toolCallsMode explicitly.
+    toolCallsMode: session.toolCallsMode ?? 'shadow',
+  };
+}
+
+/**
  * Shadow-harness entry point. Drop-in replacement for
  * `session.extractFromUtterance(...)` at the sonnet-stream.js seam.
  *
@@ -246,19 +296,11 @@ export async function runShadowHarness(session, transcriptText, regexResults, op
   // observations / validation_alerts as primitive-typed arrays). Deep-cloning
   // once above AND passing those clones directly (no second clone here) keeps
   // the cost at one clone per shadow turn.
-  const shadowSession = {
-    sessionId: session.sessionId,
-    stateSnapshot: preLegacySnapshot,
-    extractedObservations: preLegacyObservations,
-    // Phase 3 Plan 03-05: createAskDispatcher branches on
-    // session.toolCallsMode to pick the shadow-mode short-circuit path
-    // (non-blocking, non-registering, non-ws-emitting) vs the live path.
-    // Shadow harness is shadow-only (live mode throws above), so we pin
-    // toolCallsMode='shadow' on the clone. Forwarding the live session
-    // here would be fine today but couples the ask dispatcher's mode
-    // branch to a field the clone was not meant to carry semantically.
-    toolCallsMode: 'shadow',
-  };
+  const shadowSession = buildShadowSessionForDispatcher(
+    session,
+    preLegacySnapshot,
+    preLegacyObservations
+  );
 
   // Phase 3 Plan 03-07: optional ask composition.
   //
