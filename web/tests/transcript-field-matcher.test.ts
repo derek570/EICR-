@@ -195,6 +195,30 @@ describe('TranscriptFieldMatcher — ring_continuity (ring R1 / Rn / R2)', () =>
     expect(result.circuitUpdates.get('5')?.ring_rn_ohm).toBe('0.36');
   });
 
+  it('codex P2 R3 follow-up #3: rename to non-ring designation drops the sticky cache', () => {
+    // Inspector says "Circuit 5 ring R1 is 0.34" against a blank
+    // row → cache marks 5 as ring. They then rename circuit 5 to
+    // "Cooker" (a radial). A follow-up "neutrals are 0.36" must
+    // NOT populate ring_rn_ohm — the authoritative designation
+    // overrides the stale cache entry.
+    const matcher = new TranscriptFieldMatcher();
+    const turn1Job = emptyJob({
+      circuits: [{ id: 'uuid-5', circuit_ref: '5', circuit_designation: '' }],
+    } as unknown as Partial<JobDetail>);
+    const turn1 = 'Circuit 5 ring R1 is 0.34';
+    matcher.match(turn1, turn1Job);
+    expect(matcher._knownRingCircuitsForTest().has('5')).toBe(true);
+
+    const turn2Job = emptyJob({
+      circuits: [{ id: 'uuid-5', circuit_ref: '5', circuit_designation: 'Cooker' }],
+    } as unknown as Partial<JobDetail>);
+    const turn2 = `${turn1} neutrals are 0.36`;
+    const result = matcher.match(turn2, turn2Job);
+    expect(result.circuitUpdates.get('5')?.ring_rn_ohm).toBeUndefined();
+    // Cache also dropped:
+    expect(matcher._knownRingCircuitsForTest().has('5')).toBe(false);
+  });
+
   it('codex P2 R3 follow-up #2: missing circuit row → not treated as unlabeled ring', () => {
     // Job has NO row for circuit 22. An utterance "Circuit 22 ring
     // R1 is 0.34" must NOT populate ring_r1_ohm — that would be

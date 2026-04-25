@@ -494,10 +494,13 @@ function isRingCircuit(
   job: JobDetail,
   knownRing: Set<string>
 ): boolean {
-  // Sticky cache hit (codex P1 #2 R3 follow-up, the active-circuit-
-  // workflow case).
-  if (knownRing.has(circuitRef)) return true;
-
+  // Authoritative lookup FIRST — the sticky cache must never
+  // outlive an explicit designation change. Codex P2 R3 follow-up
+  // #3: previously the cache short-circuit returned true even
+  // after the inspector renamed circuit 5 from blank to "Cooker".
+  // Now the cache only applies when the row STILL has a blank
+  // designation (case b), at which point we trust the per-session
+  // memory of an earlier "ring R1/R2" utterance.
   const circuits =
     (job.circuits as Array<{ circuit_ref?: string; circuit_designation?: string }>) ?? [];
   const row = circuits.find((c) => c.circuit_ref === circuitRef);
@@ -506,21 +509,30 @@ function isRingCircuit(
   // never invents ring/non-ring classification for circuits that
   // don't yet exist in the job (codex P2 #2 R3 follow-up). The
   // matcher will fall through to the bare-R1/R2 → r1_r2_ohm
-  // fallback, the conservative safe default.
-  if (!row) return false;
+  // fallback, the conservative safe default. Also drop the cache
+  // entry since the row no longer exists — it can be re-established
+  // if the inspector recreates the circuit.
+  if (!row) {
+    knownRing.delete(circuitRef);
+    return false;
+  }
 
   const designation = row.circuit_designation?.trim() ?? '';
   if (designation.length > 0) {
-    // Case (a) + (c): trust the labelled designation.
+    // Case (a) + (c): trust the labelled designation. If the user
+    // changed the designation away from ring, drop the stale cache
+    // entry so it can't override the authoritative state.
     if (/\bring\b/i.test(designation)) {
       knownRing.add(circuitRef);
       return true;
     }
+    knownRing.delete(circuitRef);
     return false;
   }
-  // Case (b): row exists with blank designation — trust the
-  // explicit transcript form, then cache so follow-ups within the
-  // session don't need to re-prove it.
+
+  // Case (b): row exists with blank designation. Apply the cache
+  // hit (active-flow follow-up) OR check the transcript wording.
+  if (knownRing.has(circuitRef)) return true;
   if (/\bring\s+r\s*[12]\b/i.test(text)) {
     knownRing.add(circuitRef);
     return true;
