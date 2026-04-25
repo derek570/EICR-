@@ -1,0 +1,5 @@
+{"timestamp":"2026-04-23T10:00:00.000Z","event":"session_started","category":"session","data":{}}
+{"timestamp":"2026-04-23T10:00:01.000Z","event":"transcript_utterance","category":"transcript","data":{"text":"ze is point three five","normalised_text":"ze is 0.35"}}
+{"timestamp":"2026-04-23T10:00:01.500Z","event":"field_set","category":"regex","data":{"key":"ze","value":"0.35"}}
+{"timestamp":"2026-04-23T10:00:02.000Z","event":"stage6_tool_call","category":"stage6","data":{"sessionId":"dual-shape-001","turnId":"t1","tool_use_id":"tu_1","tool":"record_reading","round":1,"phase":2,"is_error":false,"outcome":"ok","duration_ms":10,"input_summary":{}}}
+{"timestamp":"2026-04-23T10:03:00.000Z","event":"session_ended","category":"session","data":{}}
