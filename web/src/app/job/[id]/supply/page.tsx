@@ -25,7 +25,7 @@ import { SelectChips } from '@/components/ui/select-chips';
  *
  * Phase 4 additions (iOS parity):
  *   - Earthing-arrangement side-effect: picking TT auto-sets electrode=true
- *     and flips `inspection.isTTEarthing` (mirrors `SupplyTab.swift:L28-L48`).
+ *     and flips `inspection.is_tt_earthing` (mirrors `SupplyTab.swift:L28-L48`).
  *   - Distributor + Electrode are independent toggles — real installations
  *     can have both (iOS pattern at L88-L91).
  *   - Earth electrode type select (rod/plate/tape/mat/other) + rod/EE/P alias.
@@ -115,7 +115,7 @@ export default function SupplyPage() {
    * explicitly set electrode=true on a TN system (backup electrode,
    * PME supplement, etc). Only the TT→true edge is auto.
    *
-   * Mirror to `inspection.isTTEarthing` also routes through the
+   * Mirror to `inspection.is_tt_earthing` also routes through the
    * job context so the Inspection tab sees it via the same debounced
    * save — no bespoke cross-tab wiring needed.
    */
@@ -129,7 +129,7 @@ export default function SupplyPage() {
     // captures both sides of the coupling.
     updateJob({
       supply_characteristics: { ...supply, ...nextSupply },
-      inspection_schedule: { ...inspection, isTTEarthing: value === 'TT' },
+      inspection_schedule: { ...inspection, is_tt_earthing: value === 'TT' },
     });
   };
 

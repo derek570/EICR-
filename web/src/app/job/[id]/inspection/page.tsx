@@ -63,9 +63,9 @@ import {
 
 type InspectionShape = {
   items?: Record<string, ScheduleOutcome | undefined>;
-  isTTEarthing?: boolean;
-  hasMicrogeneration?: boolean;
-  markSection7NA?: boolean;
+  is_tt_earthing?: boolean;
+  has_microgeneration?: boolean;
+  mark_section7_na?: boolean;
 };
 
 const EICR_SECTION_ICONS = [Eye, Bolt, Shield, Wrench, ClipboardCheck, BathIcon, Flame, MapPin];
@@ -269,14 +269,14 @@ export default function InspectionPage() {
       next['3.1'] = 'tick';
       next['3.2'] = 'N/A';
     }
-    patch({ isTTEarthing: on, items: next });
+    patch({ is_tt_earthing: on, items: next });
   };
 
   const setMicrogeneration = (on: boolean) => {
     const next = { ...items };
     const refs = ['2.0', '4.11', '4.21', '4.22'];
     for (const r of refs) next[r] = on ? 'tick' : 'N/A';
-    patch({ hasMicrogeneration: on, items: next });
+    patch({ has_microgeneration: on, items: next });
   };
 
   const setSection7NA = (on: boolean) => {
@@ -286,26 +286,26 @@ export default function InspectionPage() {
     } else {
       for (const item of EICR_SCHEDULE[6].items) delete next[item.ref];
     }
-    patch({ markSection7NA: on, items: next });
+    patch({ mark_section7_na: on, items: next });
   };
 
   const autoControlled = React.useMemo(() => {
     const refs = new Set<string>();
-    if (insp.isTTEarthing !== undefined) {
+    if (insp.is_tt_earthing !== undefined) {
       refs.add('3.1');
       refs.add('3.2');
     }
-    if (insp.hasMicrogeneration !== undefined) {
+    if (insp.has_microgeneration !== undefined) {
       refs.add('2.0');
       refs.add('4.11');
       refs.add('4.21');
       refs.add('4.22');
     }
-    if (insp.markSection7NA) {
+    if (insp.mark_section7_na) {
       for (const item of EICR_SCHEDULE[6].items) refs.add(item.ref);
     }
     return refs;
-  }, [insp.isTTEarthing, insp.hasMicrogeneration, insp.markSection7NA]);
+  }, [insp.is_tt_earthing, insp.has_microgeneration, insp.mark_section7_na]);
 
   const pendingItem = pendingChange ? findItem(pendingChange.ref) : null;
 
@@ -326,24 +326,24 @@ export default function InspectionPage() {
         <SectionCard accent="blue" icon={SlidersHorizontal} title="Schedule Options">
           <ToggleRow
             label="TT Earthing System"
-            hint={insp.isTTEarthing ? '3.2 ticked, 3.1 marked N/A' : '3.1 ticked, 3.2 marked N/A'}
-            value={insp.isTTEarthing === true}
+            hint={insp.is_tt_earthing ? '3.2 ticked, 3.1 marked N/A' : '3.1 ticked, 3.2 marked N/A'}
+            value={insp.is_tt_earthing === true}
             onChange={setTTEarthing}
           />
           <ToggleRow
             label="Microgeneration / Solar / Batteries"
             hint={
-              insp.hasMicrogeneration
+              insp.has_microgeneration
                 ? 'Items 2.0, 4.11, 4.21, 4.22 ticked'
                 : 'Items 2.0, 4.11, 4.21, 4.22 marked N/A'
             }
-            value={insp.hasMicrogeneration === true}
+            value={insp.has_microgeneration === true}
             onChange={setMicrogeneration}
           />
           <ToggleRow
             label="Mark all Section 7 as N/A"
             hint="Special locations not present"
-            value={insp.markSection7NA === true}
+            value={insp.mark_section7_na === true}
             onChange={setSection7NA}
           />
         </SectionCard>
