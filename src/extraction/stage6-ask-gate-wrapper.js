@@ -367,11 +367,14 @@ export const WRAPPER_SHORT_CIRCUIT_REASONS = new Set([
   // those are also "wrapper-suppressed asks" the metric should exclude.
 ]);
 
-// Plan 05-08 r2-#1 — three answer_outcomes whose envelopes signal "the ask
-// never reached iOS / never registered with pendingAsks". These are
-// dispatcher PRE-EMIT failures: validation rejection, SDK retry-replay
-// guard, and prompt-leak filter blocking the ask before any registry
-// register or ws emission happens.
+// Plan 05-08 r2-#1 + Plan 05-09 r3-#1 — FOUR answer_outcomes whose
+// envelopes signal "the ask never reached iOS / never registered with
+// pendingAsks". All four are dispatcher PRE-EMIT failures whose returns
+// happen BEFORE pendingAsks.register and ws.send(ask_user_started):
+//   - validation_error    (Plan 03-02; pre-dispatch shape rejection)
+//   - duplicate_tool_call_id (Plan 03-05; SDK retry-replay caught at register)
+//   - prompt_leak_blocked (Plan 04-26; output filter blocked the ask pre-emit)
+//   - shadow_mode         (Plan 03-05; shadow-path short-circuit pre-register)
 //
 // Pre-fix isRealFire returned true for these because they aren't in
 // WRAPPER_SHORT_CIRCUIT_REASONS — the wrapper then incremented askBudget
@@ -385,21 +388,45 @@ export const WRAPPER_SHORT_CIRCUIT_REASONS = new Set([
 // src/extraction/stage6-dispatcher-ask.js is structurally BEFORE
 // pendingAsks.register(toolCallId, …) and BEFORE the ws.send(…
 // ask_user_started …) emission, so the ask never crossed the boundary
-// to iOS. ASK_USER_ANSWER_OUTCOMES contains 13 entries (Plan 05-05);
-// every other entry either represents a real fire that DID register
-// (answered, timeout, user_moved_on, session_*, transcript_already_*)
-// or a wrapper-internal short-circuit already handled in
-// WRAPPER_SHORT_CIRCUIT_REASONS / the wrapper's pre-dispatch synth
-// branches. shadow_mode also runs after register/ws emission (Plan
-// 03-05 step 2 is post-validation + post-leak-filter) — so it counts
-// as a fire and stays out of this set.
+// to iOS. Confirmed call-site lines (read at Plan 05-09 r3-#1 close):
+//   - validation_error      → returns at line 135 (the validation `return`)
+//   - prompt_leak_blocked   → returns at line 196 (the leak-filter `return`)
+//   - shadow_mode           → returns at lines 206-225 (`if (mode === 'shadow') { … }`)
+//   - duplicate_tool_call_id → resolves at line 287 inside the register catch
+// Step 3 (register + ws.send) starts at line 228+ — every reason listed
+// above returns BEFORE that block.
+//
+// ASK_USER_ANSWER_OUTCOMES contains 13 entries (Plan 05-05); every other
+// entry either represents a real fire that DID register (answered,
+// timeout, user_moved_on, session_*, transcript_already_*) or a wrapper-
+// internal short-circuit already handled in WRAPPER_SHORT_CIRCUIT_REASONS
+// / the wrapper's pre-dispatch synth branches.
+//
+// Plan 05-09 r3-#1 — D2 reversal. Plan 05-08 D2 originally claimed
+// "shadow_mode runs after register/ws emission ... so it counts as a
+// fire and stays out of this set." That conclusion was wrong. The "after
+// validation + leak filter" characterisation is true (shadow_mode is
+// step 2 in dispatcher ordering, which is after step 1 = validation and
+// step 1b = leak filter), but irrelevant — the predicate that determines
+// whether budget burns is "did register + ws.send fire?", and for
+// shadow_mode the answer is no. Codex r3 surfaced this; r3-#1 corrects
+// the set + the audit prose.
+//
+// Production effect of the pre-fix bug:
+//   - Shadow runs (Plan 05-02 + Plan 05-04 shadow harness) burned
+//     askBudget on every shadow_mode envelope. Shadow's whole point is
+//     observe-without-affect — burning shadow runs against the budget
+//     cap is the OPPOSITE of that.
+//   - Shadow-mode rolling-5-turn restrained-mode counter accrued phantom
+//     asks, contaminating the next live run's threshold accounting.
 //
 // Exported so scripts/stage6-over-ask-exit-gate.js extends its
-// HARNESS_WRAPPER_SHORT_CIRCUIT_REASONS set with these values. Single
-// source of truth — runtime budget AND offline askCount share the
-// classifier.
+// HARNESS_WRAPPER_SHORT_CIRCUIT_REASONS set with these values via
+// `...PRE_EMIT_NON_FIRE_REASONS` spread. Single source of truth —
+// runtime budget AND offline askCount share the classifier; adding a
+// reason here automatically tightens the harness too.
 export const PRE_EMIT_NON_FIRE_REASONS = Object.freeze(
-  new Set(['validation_error', 'duplicate_tool_call_id', 'prompt_leak_blocked'])
+  new Set(['validation_error', 'duplicate_tool_call_id', 'prompt_leak_blocked', 'shadow_mode'])
 );
 
 function isRealFire(envelope) {
