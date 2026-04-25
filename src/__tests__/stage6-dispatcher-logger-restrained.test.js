@@ -177,11 +177,19 @@ describe('Phase 5 observability contract (Plan 05-05 — STO-03)', () => {
       expect(Object.isFrozen(ASK_USER_ANSWER_OUTCOMES)).toBe(true);
     });
 
-    test('contains exactly the 15 expected values (strict-equality snapshot)', () => {
+    test('contains exactly the 17 expected values (strict-equality snapshot — Plan 05-13 r7 split)', () => {
       // Strict equality — order-sensitive. Order is part of the contract
       // because the source file groups values by Phase + remediation round,
       // and rearranging the order signals an intentional refactor that
       // requires reviewer eyeballs on this test.
+      //
+      // Plan 05-13 r7: the legacy `dispatcher_error` (added Plan 03-12 r10)
+      // stays in the enum for back-compat with archived log rows but moves
+      // to ambiguous-legacy classification (no active emit site; isRealFire
+      // fallthrough = fire). Two NEW lifecycle-keyed values
+      // (`dispatcher_error_pre_emit` / `dispatcher_error_post_emit`) appended
+      // at the end so the active emission name encodes lifecycle position
+      // structurally — closing the r5↔r6 same-name toggle problem.
       expect([...ASK_USER_ANSWER_OUTCOMES]).toEqual([
         // STO-02 original 6 + Phase 5 reserved (rev'd into the original 6 group):
         'answered',
@@ -199,10 +207,13 @@ describe('Phase 5 observability contract (Plan 05-05 — STO-03)', () => {
         'duplicate_tool_call_id',
         // Plan 03-12 r8:
         'transcript_already_extracted',
-        // Plan 03-12 r10:
+        // Plan 03-12 r10 (legacy at r7 — back-compat only, no active emit):
         'dispatcher_error',
         // Plan 04-26 Layer 2:
         'prompt_leak_blocked',
+        // Plan 05-13 r7 — lifecycle-keyed split of `dispatcher_error`:
+        'dispatcher_error_pre_emit',
+        'dispatcher_error_post_emit',
       ]);
     });
 

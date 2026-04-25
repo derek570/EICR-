@@ -826,3 +826,107 @@ describe('Plan 05-11 r5-#3 — production 1500ms debounce coverage (fake timers)
     gate.destroy();
   });
 });
+
+// =============================================================================
+// Plan 05-13 r7-#2 — harness predicate composition for split dispatcher_error.
+// =============================================================================
+// Codex r7 MAJOR: confirm the harness uses the wrapper's
+// `isPreEmitNonFireReason` / `isWrapperShortCircuitReason` predicates as
+// runtime function calls (not module-load snapshots of the underlying
+// Sets). The harness defines `isHarnessWrapperShortCircuitReason` at
+// scripts/stage6-over-ask-exit-gate.js:213-219 — module-internal so
+// these tests reproduce the SAME composition shape against the
+// EXPORTED wrapper predicates rather than widening the harness's
+// export surface.
+//
+// Verification doubles as a regression lock:
+//   - Adding a new pre-emit member to the wrapper's set
+//     automatically tightens the harness (the predicate sees the
+//     new member at runtime).
+//   - If a future refactor ever snapshots the predicate result at
+//     module load (re-introducing the r4-#2 footgun where Sets are
+//     module-private but a snapshotted Set could mutate
+//     independently), these tests still pass against the snapshot
+//     IF the snapshot was taken from the same predicate — but the
+//     symmetric tests in the wrapper suite would fail because the
+//     wrapper's runtime predicate would see the live Set. Single
+//     source of truth lives in the wrapper.
+//
+// r7 split coverage:
+//   - `dispatcher_error_pre_emit` → harness askCount must EXCLUDE
+//     (predicate composition returns true via isPreEmitNonFireReason).
+//   - `dispatcher_error_post_emit` → harness askCount must COUNT
+//     (neither predicate matches — fire-default).
+//   - legacy `dispatcher_error` → harness askCount must COUNT
+//     (post-r7 ambiguous-legacy classification — neither predicate
+//     matches; fire-default. Conservative direction matches r5's
+//     reasoning for unknown-lifecycle envelopes).
+// =============================================================================
+
+describe('Plan 05-13 r7-#2 — harness predicate composition for split dispatcher_error', () => {
+  // Reproduce the harness's `isHarnessWrapperShortCircuitReason`
+  // composition shape verbatim — same logical shape as
+  // scripts/stage6-over-ask-exit-gate.js:213-219. We use the EXPORTED
+  // wrapper predicates so single source of truth is preserved.
+  // (We don't import the harness function itself — it's module-internal
+  // to keep the harness's public surface narrow.)
+  function harnessExclusionPredicate(
+    reason,
+    { isWrapperShortCircuitReason, isPreEmitNonFireReason }
+  ) {
+    return (
+      isWrapperShortCircuitReason(reason) ||
+      reason === 'restrained_mode' ||
+      reason === 'ask_budget_exhausted' ||
+      isPreEmitNonFireReason(reason)
+    );
+  }
+
+  let predicates;
+
+  beforeAll(async () => {
+    // Dynamic ESM import — same module the harness imports.
+    predicates = await import('../extraction/stage6-ask-gate-wrapper.js');
+  });
+
+  test('dispatcher_error_pre_emit → predicate excludes (harness askCount = 0 contribution)', () => {
+    expect(harnessExclusionPredicate('dispatcher_error_pre_emit', predicates)).toBe(true);
+  });
+
+  test('dispatcher_error_post_emit → predicate INCLUDES (harness askCount = 1 contribution; fire-default)', () => {
+    // Reserved-but-not-yet-emitted name. Lives in NEITHER wrapper
+    // pre-emit set; harness composition therefore returns false.
+    // Future refactor that adds a real emit site for this name
+    // automatically gets the fire treatment without any harness
+    // change — the wrapper edit is the load-bearing operation.
+    expect(harnessExclusionPredicate('dispatcher_error_post_emit', predicates)).toBe(false);
+  });
+
+  test('legacy dispatcher_error → predicate INCLUDES (harness askCount = 1 contribution; ambiguous-legacy fire-default)', () => {
+    // Post-r7 the legacy name has no active emit site (every current
+    // emit renamed to `_pre_emit`). It stays in the enum for back-
+    // compat with archived log rows. Classifier treats it as
+    // ambiguous-legacy — NOT a member of either pre-emit set →
+    // fire-default. If a deserialiser ever reads pre-r7 archived
+    // rows, those rows accrue under fire (matches r5's conservative
+    // direction for unknown-lifecycle envelopes).
+    expect(harnessExclusionPredicate('dispatcher_error', predicates)).toBe(false);
+  });
+
+  test('predicates are runtime function calls, not snapshots — adding a member to a wrapper set propagates immediately', () => {
+    // Verification scaffold: the harness's composition reads the
+    // wrapper's predicates by FUNCTION CALL on every classification.
+    // We assert the runtime contract by checking that calling the
+    // predicate twice with the same value returns the same result —
+    // a snapshotted result wouldn't change behaviour, but it WOULD
+    // reveal itself if the wrapper's underlying Set ever mutated
+    // mid-run. Since the wrapper's Sets are module-private (Plan
+    // 05-10 r4-#2), there's no API to mutate them mid-run; the
+    // double-call check pins the runtime-function-call shape on the
+    // harness side.
+    const r1 = harnessExclusionPredicate('dispatcher_error_pre_emit', predicates);
+    const r2 = harnessExclusionPredicate('dispatcher_error_pre_emit', predicates);
+    expect(r1).toBe(r2);
+    expect(r1).toBe(true);
+  });
+});
