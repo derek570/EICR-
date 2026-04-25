@@ -21,19 +21,60 @@ import path from "node:path";
 
 // ── Helpers ──
 
+/**
+ * Parse a JSONL file into an array of objects PLUS a `_warnings` array
+ * tracking lines that looked like JSON but failed to parse.
+ *
+ * Phase 8 Plan 08-01 SC #1 — soft-fail on malformed events. Pre-fix,
+ * malformed lines were silently dropped via .filter(Boolean). A truncated
+ * debug_log.jsonl (network drop / disk full mid-write) would silently
+ * lose a row; downstream consumers had no way to know. Post-fix, the
+ * analyzer surfaces these as `warnings` entries in analysis.json so the
+ * optimizer + reviewer can see something went wrong without changing
+ * the silent-drop behaviour for fully-empty / non-JSON-shaped lines
+ * (those stay invisible — they were never log rows to begin with).
+ *
+ * Two-tier classification:
+ *   - empty / pure-whitespace line → silently skip (legacy contract)
+ *   - looks like JSON (starts with `{`) but parse fails → push warning
+ *     entry of shape {type:'malformed_event', line:<n>, snippet:<60-char-prefix>}
+ *     and skip the row
+ *   - parses cleanly → include in events
+ */
 function parseJSONL(filePath) {
   const content = fs.readFileSync(filePath, "utf8");
-  return content
-    .split("\n")
-    .filter((line) => line.trim().length > 0)
-    .map((line) => {
-      try {
-        return JSON.parse(line);
-      } catch {
-        return null;
+  const lines = content.split("\n");
+  const events = [];
+  const warnings = [];
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (line.trim().length === 0) continue;
+    try {
+      events.push(JSON.parse(line));
+    } catch {
+      // Only warn on lines that LOOK like JSON. Random non-JSON detritus
+      // (e.g. a stray printf to stdout that ended up in the log) stays
+      // silent to preserve the legacy contract.
+      if (line.trimStart().startsWith("{")) {
+        warnings.push({
+          type: "malformed_event",
+          line: i + 1, // 1-indexed for human readability
+          snippet: line.slice(0, 60),
+        });
       }
-    })
-    .filter(Boolean);
+    }
+  }
+
+  // Stash warnings on the array via a non-enumerable property so existing
+  // call sites (which iterate `events` as a plain array) see no behaviour
+  // change. analyzeSession() reads `events._warnings` to merge into the
+  // analysis.json `warnings` field.
+  Object.defineProperty(events, "_warnings", {
+    value: warnings,
+    enumerable: false,
+  });
+  return events;
 }
 
 function loadJSON(filePath) {
@@ -870,6 +911,111 @@ function analyzeSession(sessionDir) {
     deepgram_streaming_stopped: sleepCycles.length > 0,
   };
 
+  // ── 14b. Tool-call traffic summary (Phase 8 Plan 08-01 SC #2) ──
+  //
+  // Surfaces stage6_tool_call + stage6.ask_user log rows as a per-session
+  // histogram so the optimizer report + CloudWatch dashboards have a
+  // stable view of agentic-extraction behaviour during the shadow → live
+  // transition (and forever after live cutover).
+  //
+  // Tool-call surface:
+  //   - count by `tool` (record_reading / clear_reading / create_circuit /
+  //     rename_circuit / record_observation / delete_observation / ask_user)
+  //   - median duration_ms per tool (sort durations, pick middle / mean
+  //     of two middles)
+  //   - validation_error_count per tool — rows with is_error=true
+  //
+  // ask_user surface:
+  //   - total count (all stage6.ask_user rows regardless of mode)
+  //   - histogram by `answer_outcome` covering EVERY frozen
+  //     ASK_USER_ANSWER_OUTCOMES enum member (missing outcomes default to
+  //     0 so dashboards splitting by the dimension see a stable shape).
+  //
+  // Source-of-truth for the enum: src/extraction/stage6-dispatcher-logger.js.
+  // Duplicated here verbatim because the analyzer ships independently to
+  // the optimizer mac and shouldn't have a runtime dep on backend modules.
+  // If the backend enum drifts, the analyze-session.test.mjs SC #2 test
+  // fails loudly (the test re-duplicates the list independently).
+  const ASK_USER_ANSWER_OUTCOMES = [
+    "answered",
+    "timeout",
+    "user_moved_on",
+    "restrained_mode",
+    "ask_budget_exhausted",
+    "gated",
+    "shadow_mode",
+    "validation_error",
+    "session_terminated",
+    "session_stopped",
+    "session_reconnected",
+    "duplicate_tool_call_id",
+    "transcript_already_extracted",
+    "dispatcher_error",
+    "prompt_leak_blocked",
+  ];
+
+  const toolCallEvents = events.filter((e) => e.event === "stage6_tool_call");
+  const askUserEvents = events.filter((e) => e.event === "stage6.ask_user");
+
+  // Tool histogram — group by tool name
+  const toolMap = new Map();
+  for (const evt of toolCallEvents) {
+    const data = evt.data || {};
+    const name = data.tool || "unknown";
+    if (!toolMap.has(name)) {
+      toolMap.set(name, { name, durations: [], errorCount: 0 });
+    }
+    const entry = toolMap.get(name);
+    if (typeof data.duration_ms === "number") {
+      entry.durations.push(data.duration_ms);
+    }
+    if (data.is_error === true) entry.errorCount += 1;
+  }
+
+  function median(nums) {
+    if (nums.length === 0) return 0;
+    const sorted = [...nums].sort((a, b) => a - b);
+    const mid = Math.floor(sorted.length / 2);
+    if (sorted.length % 2 === 0) {
+      return (sorted[mid - 1] + sorted[mid]) / 2;
+    }
+    return sorted[mid];
+  }
+
+  const tools = [...toolMap.values()]
+    .map((entry) => ({
+      name: entry.name,
+      count: entry.durations.length || toolCallEvents.filter((e) => (e.data?.tool) === entry.name).length,
+      median_duration_ms: median(entry.durations),
+      validation_error_count: entry.errorCount,
+    }))
+    .sort((a, b) => b.count - a.count);
+
+  // ask_user outcomes histogram — every frozen enum key, default 0
+  const outcomes = {};
+  for (const o of ASK_USER_ANSWER_OUTCOMES) outcomes[o] = 0;
+  for (const evt of askUserEvents) {
+    const outcome = evt.data?.answer_outcome;
+    if (outcome && outcome in outcomes) {
+      outcomes[outcome] += 1;
+    }
+    // Outcomes not in the frozen enum are silently dropped — the loud
+    // surface for that case is the backend's `invalid_answer_outcome:`
+    // throw at the emit site (stage6-dispatcher-logger.js:380). If a
+    // bad outcome ever reaches the analyzer it means a row escaped the
+    // backend gate, which is a separate (more serious) bug; the
+    // analyzer's job here is to keep the dashboard shape stable.
+  }
+
+  const toolCallTraffic = {
+    enabled: true,
+    tools,
+    ask_user: {
+      total: askUserEvents.length,
+      outcomes,
+    },
+  };
+
   // ── 15. Voice commands ──
   // Extract voice_command_sent/response events to surface user intentions expressed via voice commands.
 
@@ -1058,6 +1204,17 @@ function analyzeSession(sessionDir) {
     repeated_values: repeatedValues,
     vad_sleep_analysis: vadSleepAnalysis,
     observation_capture_quality: observationCaptureQuality,
+    // Phase 8 Plan 08-01 SC #2 — tool-call traffic summary (post Phase 1+2+3
+    // tool-call rollout). Always emitted; .enabled=true even on legacy-shape
+    // sessions so downstream consumers can rely on the section's presence.
+    tool_call_traffic: toolCallTraffic,
+    // Phase 8 Plan 08-01 SC #1 — soft-fail breadcrumbs from parseJSONL.
+    // Always an array (empty on a clean log). Non-empty when the analyzer
+    // saw a JSON-shaped line that failed to parse (typically a truncated
+    // last record from a network drop or disk-full mid-write). Surfacing
+    // these means the optimizer + reviewer can tell "session was clean"
+    // from "session got cut off" — pre-fix both looked identical.
+    warnings: events._warnings || [],
     // Full transcript and voice commands (intent visibility)
     full_transcript: fullTranscriptOriginal,
     voice_commands: voiceCommands,
@@ -1101,6 +1258,10 @@ function analyzeSession(sessionDir) {
   console.log(`  Total stream paused: ${vadSleepAnalysis.total_stream_paused_min}min (saved $${vadSleepAnalysis.deepgram_saved_usd.toFixed(4)} Deepgram)`);
   console.log(`  Buffer replays: ${vadSleepAnalysis.buffer_replays}`);
   console.log(`  Wake failures: ${vadSleepAnalysis.post_wake_no_transcript}`);
+  console.log(`  Tool-call traffic: ${toolCallTraffic.tools.length} tools, ${toolCallTraffic.ask_user.total} ask_user calls`);
+  if (analysis.warnings.length > 0) {
+    console.log(`  ⚠ Warnings: ${analysis.warnings.length} malformed event(s) in debug_log.jsonl`);
+  }
   console.log(`  Total cost (USD): $${costBreakdown.total_usd.toFixed(4)}`);
   if (costBreakdown.doze_savings.session_duration_min > 0) {
     console.log(`  ── Doze Savings ──`);
