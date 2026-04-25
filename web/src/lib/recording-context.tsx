@@ -11,6 +11,10 @@ import {
   type SonnetQuestion,
 } from './recording/sonnet-session';
 import { applyExtractionToJob } from './recording/apply-extraction';
+import { FieldSourceMap, buildRegexHints } from './recording/field-source';
+import { normalise as normaliseTranscript } from './recording/number-normaliser';
+import { TranscriptFieldMatcher } from './recording/transcript-field-matcher';
+import { applyRegexResultToJob } from './recording/apply-regex-result';
 import { AudioRingBuffer } from './recording/audio-ring-buffer';
 import { SleepManager, type SleepState } from './recording/sleep-manager';
 import { useLiveFillStore } from './recording/live-fill-state';
@@ -185,6 +189,26 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
   // Monotonic session id — used when requesting a scoped Deepgram token
   // and (Phase 4d) as the Sonnet extraction session id.
   const sessionIdRef = React.useRef<string>('');
+  // Per-session source-of-truth for which tier (preExisting / regex /
+  // sonnet) last wrote each field. Initialised on session start by
+  // walking the JobDetail and stamping every populated field as
+  // 'preExisting'. Threaded through `applyExtractionToJob` so the
+  // 3-tier priority chain decides each Sonnet write.
+  // Phase R2 of `web/audit/REGEX_TIER_PLAN.md` — the regex tier (R3)
+  // will write to this same map via `applyRegexValue` once the
+  // matcher is wired into onFinalTranscript.
+  const fieldSourcesRef = React.useRef<FieldSourceMap>(new FieldSourceMap());
+  // Per-session regex-tier matcher (R3/R4 of REGEX_TIER_PLAN.md).
+  // Reset on every session.start() so a new session doesn't pick
+  // up sliding-window state from the prior one. Behind the
+  // NEXT_PUBLIC_REGEX_TIER_ENABLED env flag — when off, the matcher
+  // never fires and the existing 2-tier flow keeps working.
+  const fieldMatcherRef = React.useRef<TranscriptFieldMatcher>(new TranscriptFieldMatcher());
+  // Accumulated normalised transcript fed to the matcher. The
+  // matcher's sliding-window logic clips at 500 chars internally so
+  // this string growing across the session is fine — typical
+  // 30-min session is ~90k chars at most.
+  const normalisedTranscriptRef = React.useRef<string>('');
   const tickRef = React.useRef<ReturnType<typeof setInterval> | null>(null);
   // Throttle setMicLevel to ~60Hz — audio callbacks fire every ~8ms at
   // 16kHz/128 samples which is overkill for a VU meter and would flood
@@ -317,10 +341,73 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
             sleepManagerRef.current?.onSpeechActivity();
             return;
           }
+          // Normalise spoken-number / unit forms before sending to Sonnet
+          // (and, after R3 of REGEX_TIER_PLAN.md, before regex matching).
+          // Mirrors iOS `TranscriptProcessor.normalise()` which sits at
+          // the same point in the iOS pipeline. The voice-command branch
+          // above deliberately runs against raw text — its regexes were
+          // tuned against the Deepgram raw form and the inspector log
+          // shows the raw transcript so they can verify what they said.
+          const normalised = normaliseTranscript(text);
+          // R4 of REGEX_TIER_PLAN.md — regex tier runs BEFORE Sonnet
+          // so the FieldSourceMap is stamped before any Sonnet response
+          // can land on the same field. Behind the
+          // NEXT_PUBLIC_REGEX_TIER_ENABLED env flag (default off) so
+          // the existing 2-tier flow keeps working until R6 staging
+          // soak proves the regex tier behaves.
+          if (process.env.NEXT_PUBLIC_REGEX_TIER_ENABLED === 'true') {
+            normalisedTranscriptRef.current = `${normalisedTranscriptRef.current} ${normalised}`;
+            // Reconcile any inspector edits made between the last
+            // turn and now — without this, an inspector correcting
+            // a field would still see source='regex' on the next
+            // utterance and the matcher's regex-last-wins branch
+            // would clobber the correction (codex P1 R4 fix).
+            // Same pre-apply reconcile the Sonnet branch does.
+            fieldSourcesRef.current.reconcileFromJob(jobRef.current);
+            const matchResult = fieldMatcherRef.current.match(
+              normalisedTranscriptRef.current,
+              jobRef.current
+            );
+            const applied = applyRegexResultToJob(
+              jobRef.current,
+              matchResult,
+              fieldSourcesRef.current
+            );
+            if (applied) {
+              updateJobRef.current(applied.patch);
+              // Mirror into jobRef synchronously (same pattern as
+              // the voice-command branch above) so a Sonnet
+              // extraction landing in the same React tick reads the
+              // regex-updated job and decides to overwrite-or-skip
+              // correctly.
+              jobRef.current = {
+                ...jobRef.current,
+                ...(applied.patch as Partial<typeof jobRef.current>),
+              };
+              if (applied.changedKeys.length > 0) {
+                liveFill.markUpdated(applied.changedKeys);
+              }
+            }
+          }
           // Fire the final utterance at the Sonnet session so server-side
           // multi-turn extraction can fill form fields. No-op if the WS
           // isn't open — the Sonnet client queues pre-connect messages.
-          sonnetRef.current?.sendTranscript(text);
+          // R5 of REGEX_TIER_PLAN.md: bundle the regex-hint summary so
+          // the backend's Sonnet adapter knows which fields the regex
+          // tier already filled (and skips re-asking about them). Hints
+          // are only emitted when the regex tier is enabled — flag-off
+          // sessions send identical wire payloads to the pre-R5 client.
+          const regexHints =
+            process.env.NEXT_PUBLIC_REGEX_TIER_ENABLED === 'true'
+              ? buildRegexHints(
+                  fieldSourcesRef.current,
+                  jobRef.current as unknown as Parameters<typeof buildRegexHints>[1]
+                )
+              : undefined;
+          sonnetRef.current?.sendTranscript(
+            normalised,
+            regexHints && regexHints.length > 0 ? { regexHints } : undefined
+          );
           // Each dispatched transcript is one outstanding Sonnet turn
           // until an extraction / question frame arrives to clear it.
           setProcessingCount((n) => n + 1);
@@ -384,9 +471,25 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
    *  validation_alerts into the pending-readings counter. */
   const applyExtraction = React.useCallback(
     (result: ExtractionResult) => {
-      const applied = applyExtractionToJob(jobRef.current, result);
+      // Reconcile any inspector edits made between Sonnet turns
+      // (e.g. tapping into the Circuits tab and correcting a Zs)
+      // before applying the new extraction. Without this, the next
+      // Sonnet write would see source='sonnet' from its own prior
+      // fill and freely overwrite the inspector's correction.
+      fieldSourcesRef.current.reconcileFromJob(jobRef.current);
+      const applied = applyExtractionToJob(jobRef.current, result, fieldSourcesRef.current);
       if (applied) {
         updateJobRef.current(applied.patch);
+        // Mirror the patch into jobRef.current synchronously so a
+        // final transcript landing in the same React tick (regex
+        // tier or another Sonnet response) reads the up-to-date job
+        // state instead of the pre-apply snapshot. Same pattern the
+        // voice-command branch uses; codex R4 P2 follow-up made this
+        // load-bearing for circuit_ref routing in the regex tier.
+        jobRef.current = {
+          ...jobRef.current,
+          ...(applied.patch as Partial<typeof jobRef.current>),
+        };
         // Feed LiveFillState so <LiveFillView> can flash the fields
         // Sonnet actually filled. No-op if the list is empty (the patch
         // only had `field_clears`, which we deliberately don't flash).
@@ -688,6 +791,14 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     // dead session — we bail and tear down the accidental resources.
     const sessionId = `sess_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
     sessionIdRef.current = sessionId;
+    // Reset the per-session source map and stamp every currently-
+    // populated field as 'preExisting'. iOS does the same at session
+    // start so Sonnet's 3-tier priority chain knows which fields to
+    // protect from naive duplicate writes vs which are blank slates.
+    fieldSourcesRef.current.clear();
+    fieldSourcesRef.current.initializeFromJob(jobRef.current);
+    fieldMatcherRef.current.reset();
+    normalisedTranscriptRef.current = '';
     try {
       await beginMicPipeline();
       // sessionId rotated while awaiting the mic / WS handshake — drop

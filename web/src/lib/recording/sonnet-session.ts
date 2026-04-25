@@ -191,7 +191,17 @@ export class SonnetSession {
   // Transcripts that arrive before the socket finishes opening are queued
   // and flushed on `onopen` — otherwise the user loses anything said in
   // the first ~200ms while the WS handshakes.
-  private preConnectQueue: string[] = [];
+  /** Pre-connect transcript queue. Stores the full sendTranscript
+   *  payload (not just the text) so regexResults hints from R5
+   *  survive the open handshake — the first utterance right after
+   *  session.start() / reconnect is the most common pre-connect
+   *  case, and dropping hints there would mean Sonnet re-asks about
+   *  fields the regex tier already filled. */
+  private preConnectQueue: Array<{
+    text: string;
+    confirmationsEnabled?: boolean;
+    regexHints?: ReadonlyArray<{ field: string; value?: string }>;
+  }> = [];
   // Server-minted session identifier from the most recent `session_ack`.
   // Unused on the first open (the server allocates it); on reconnect the
   // state machine echoes it back inside a `session_resume` frame so the
@@ -326,10 +336,23 @@ export class SonnetSession {
       this.hasConnectedOnce = true;
 
       // Flush anything queued while connecting. On reconnect this also
-      // drains anything the user said while the socket was down.
+      // drains anything the user said while the socket was down. R5:
+      // queue entries carry their full payload (text + confirmations
+      // flag + regexResults hints) so flushed messages keep the
+      // hint protocol — without this, the first transcript after open
+      // would be a bare {type, text} and Sonnet would miss the
+      // regex-tier disambiguation cues.
       if (this.preConnectQueue.length > 0) {
-        for (const text of this.preConnectQueue) {
-          this.sendRaw({ type: 'transcript', text });
+        for (const entry of this.preConnectQueue) {
+          const flushPayload: Record<string, unknown> = {
+            type: 'transcript',
+            text: entry.text,
+            confirmations_enabled: entry.confirmationsEnabled ?? false,
+          };
+          if (entry.regexHints && entry.regexHints.length > 0) {
+            flushPayload.regexResults = entry.regexHints;
+          }
+          this.sendRaw(flushPayload);
         }
         this.preConnectQueue = [];
       }
@@ -403,20 +426,44 @@ export class SonnetSession {
   }
 
   /** Feed a final Deepgram transcript into the Sonnet session. No-op if
-   *  the text is empty. Messages sent before `onopen` are queued. */
-  sendTranscript(text: string, options?: { confirmationsEnabled?: boolean }): void {
+   *  the text is empty. Messages sent before `onopen` are queued.
+   *
+   *  `regexHints`, when non-empty, attaches as `regexResults` on the
+   *  wire payload — the regex-tier hint protocol iOS has shipped since
+   *  2026-02 (camelCase wire field name, see iOS
+   *  ServerWebSocketService.swift:389). Backend reads `msg.regexResults`
+   *  (sonnet-stream.js:2654) and feeds it into the
+   *  EICRExtractionSession.extractFromUtterance(_, regexResults) flow.
+   *  Empty array vs absent field is treated identically by the server
+   *  schema, so we omit the key entirely when there are no hints to
+   *  keep pre-existing test fixtures + wire snapshots stable. */
+  sendTranscript(
+    text: string,
+    options?: {
+      confirmationsEnabled?: boolean;
+      regexHints?: ReadonlyArray<{ field: string; value?: string }>;
+    }
+  ): void {
     const trimmed = text?.trim();
     if (!trimmed) return;
     if (!this.ws || this.state === 'connecting') {
-      this.preConnectQueue.push(trimmed);
+      this.preConnectQueue.push({
+        text: trimmed,
+        confirmationsEnabled: options?.confirmationsEnabled,
+        regexHints: options?.regexHints,
+      });
       return;
     }
     if (this.state !== 'connected') return;
-    this.sendRaw({
+    const payload: Record<string, unknown> = {
       type: 'transcript',
       text: trimmed,
       confirmations_enabled: options?.confirmationsEnabled ?? false,
-    });
+    };
+    if (options?.regexHints && options.regexHints.length > 0) {
+      payload.regexResults = options.regexHints;
+    }
+    this.sendRaw(payload);
   }
 
   /** Manual field correction — sent as a pseudo-transcript so Sonnet can
