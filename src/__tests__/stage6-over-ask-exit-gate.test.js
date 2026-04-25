@@ -29,6 +29,7 @@
 import { jest } from '@jest/globals';
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -1305,35 +1306,42 @@ describe('Plan 05-16 r10-#1 — strict-gate dispatch via basename, not exact-pat
     expect(result.stderr).toMatch(/sample-canary-no-turnid\.json/);
   });
 
-  test('regression lock — tmpdir with basename "stage6-golden-sessions" stays on legacy path (no _fixture_shape required)', async () => {
-    // The ONE basename that the strict gate must whitelist as legacy.
-    // Build a parent tmpdir, then a child dir with the canonical legacy
-    // basename. Drop a Phase-4-shape fixture (no _fixture_shape) into it.
-    // Direct call to validateFixtureInputs to assert the legacy whitelist.
+  test('regression lock — synthetic legacy-basename path no longer whitelisted under canonical-path rule (r11-#1 closure)', async () => {
+    // Plan 05-17 r11-#1 update: under the new canonical-path rule, a
+    // synthetic path whose basename matches `stage6-golden-sessions` but
+    // does NOT resolve to the canonical in-tree Phase-4 dir hits the
+    // STRICT gate. This is the inverse of the original r10-#1 assertion
+    // (which whitelisted by basename alone) — Codex r11 inverted the
+    // threat model: a Phase-5 fixture pool placed in any
+    // `stage6-golden-sessions`-named dir would otherwise bypass strict
+    // validation. The fix replaces basename-equality with canonical
+    // absolute-path equality against the in-tree PHASE4_DUAL_SSE_DIR.
     const mod = await import('../../scripts/stage6-over-ask-exit-gate.js');
     const { validateFixtureInputs } = mod;
 
     const phase4LegacyFixture = {
-      _doc: 'Plan 05-16 r10-#1 regression lock — phase 4 legacy dir whitelisted by basename',
-      // No _fixture_shape — by design, legacy dual-SSE shape.
-      session: { jobId: 'phase4-legacy-r10-1', certificateType: 'EICR' },
-      // No ask_user_calls — by design.
+      _doc: 'Plan 05-17 r11-#1 — synthetic legacy-basename path no longer whitelisted',
+      // No _fixture_shape — Phase-4 legacy shape.
+      session: { jobId: 'phase4-legacy-r11-1', certificateType: 'EICR' },
+      // No ask_user_calls — Phase-4 legacy shape.
     };
 
-    // Synthetic sourceDir whose basename matches the legacy whitelist.
-    // Full-path differs from PHASE5_FIXTURES_DIR by design.
-    const syntheticLegacyPath = '/some/synthetic/copy/stage6-golden-sessions';
+    // Synthetic sourceDir whose basename matches the legacy basename
+    // BUT whose canonical absolute path does NOT equal the in-tree
+    // PHASE4_DUAL_SSE_DIR. Under the canonical-path rule, this is
+    // strict (per r11-#1 closure).
+    const syntheticLegacyBasenamePath = '/some/synthetic/copy/stage6-golden-sessions';
 
     expect(() =>
       validateFixtureInputs([
         {
-          filename: 'sample-phase4-legacy-r10-1.json',
+          filename: 'sample-phase4-legacy-r11-1.json',
           fullPath: '/tmp/x',
           fixture: phase4LegacyFixture,
-          sourceDir: syntheticLegacyPath,
+          sourceDir: syntheticLegacyBasenamePath,
         },
       ])
-    ).not.toThrow();
+    ).toThrow(/sample-phase4-legacy-r11-1\.json.*_fixture_shape/);
   });
 });
 
@@ -1422,5 +1430,158 @@ describe('Plan 05-16 r10-#2 — strict gate rejects whitespace-only turnId and c
         },
       ])
     ).toThrow(/r10-2-whitespace-id\.json.*id/);
+  });
+});
+
+// =============================================================================
+// Plan 05-17 r11-#1 — legacy whitelist requires canonical-path equality
+// =============================================================================
+// Pre-fix (r10-#1): isLegacyPhase4Dir(sourceDir) keyed on basename equality
+// against 'stage6-golden-sessions'. A Phase-5 fixture pool COPIED into ANY
+// directory whose basename happens to be 'stage6-golden-sessions' is treated
+// as legacy zero-contribution and bypasses the strict Phase-5 validation
+// gate via applyDefaults — even though its `_fixture_shape:
+// 'phase5-over-ask'` marker is present.
+//
+// Codex r11 inverted the threat model: the actual risk isn't a Phase-4
+// fixture leaking out (those are zero-contribution by design); the risk is
+// a Phase-5 fixture pool dropped into a `stage6-golden-sessions`-named
+// dir (intentional sabotage, accidental rename, innocent test scaffolding).
+//
+// Post-fix (r11-#1): isLegacyPhase4Dir(sourceDir) keys on canonical
+// absolute-path equality against the in-tree PHASE4_DUAL_SSE_DIR
+// (`path.resolve(sourceDir) === PHASE4_DUAL_SSE_DIR`). Copies, symlinks
+// (post-resolution), and similarly-named dirs in other locations all fail
+// the match → fall into strict validation.
+//
+// Why canonical path equality and not a per-fixture-pool marker file:
+// minimum-surface-area change (single equality check, single constant),
+// no new I/O at every fixture load, no new fixture-pool concept. The
+// legacy dir's identity is structural (it's the path checked into the
+// repo) — encoding that structurally via path equality is more honest
+// than encoding it via a sentinel marker the directory could be missing.
+// =============================================================================
+
+describe('Plan 05-17 r11-#1 — legacy whitelist requires canonical-path equality', () => {
+  jest.setTimeout(15000);
+
+  let PHASE4_DUAL_SSE_DIR;
+  let validateFixtureInputs;
+
+  beforeAll(async () => {
+    const mod = await import('../../scripts/stage6-over-ask-exit-gate.js');
+    PHASE4_DUAL_SSE_DIR = mod.PHASE4_DUAL_SSE_DIR;
+    validateFixtureInputs = mod.validateFixtureInputs;
+  });
+
+  function buildPhase4LegacyFixture(extraDocSuffix = '') {
+    return {
+      _doc: 'Plan 05-17 r11-#1 — phase 4 legacy fixture' + extraDocSuffix,
+      // No _fixture_shape — Phase-4 legacy dual-SSE shape.
+      session: { jobId: 'phase4-legacy-r11-1', certificateType: 'EICR' },
+      // No ask_user_calls — Phase-4 legacy shape.
+    };
+  }
+
+  test('positive — canonical PHASE4_DUAL_SSE_DIR is whitelisted (legacy fixture without _fixture_shape passes)', () => {
+    // The real in-tree Phase-4 legacy dir resolves to itself. Legacy
+    // zero-contribution path preserved.
+    const phase4Fixture = buildPhase4LegacyFixture(' (canonical path)');
+    expect(() =>
+      validateFixtureInputs([
+        {
+          filename: 'sample-phase4-legacy-canonical.json',
+          fullPath: '/tmp/x',
+          fixture: phase4Fixture,
+          sourceDir: PHASE4_DUAL_SSE_DIR,
+        },
+      ])
+    ).not.toThrow();
+  });
+
+  test('negative — synthetic /some/path/stage6-golden-sessions hits strict gate (basename match alone is no longer enough)', () => {
+    // A directory whose basename matches but whose canonical path
+    // differs MUST hit the strict gate (per r11-#1 closure). This is
+    // the inverse of r10-#1's basename-keyed dispatch.
+    const phase4Fixture = buildPhase4LegacyFixture(' (synthetic basename)');
+    const syntheticBasenamePath = '/some/synthetic/copy/stage6-golden-sessions';
+    expect(() =>
+      validateFixtureInputs([
+        {
+          filename: 'sample-canary-synthetic-basename.json',
+          fullPath: '/tmp/x',
+          fixture: phase4Fixture,
+          sourceDir: syntheticBasenamePath,
+        },
+      ])
+    ).toThrow(/sample-canary-synthetic-basename\.json.*_fixture_shape/);
+  });
+
+  test('negative — real tmpdir whose basename is "stage6-golden-sessions" hits strict gate (real filesystem, not synthetic)', () => {
+    // Belt-and-braces: build a tmpdir on the actual filesystem whose
+    // basename is the legacy whitelist string. Under the canonical-path
+    // rule it MUST hit the strict gate because path.resolve() of this
+    // real tmpdir does not equal PHASE4_DUAL_SSE_DIR.
+    const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'plan-05-17-r11-1-real-tmpdir-'));
+    const tmpLegacyBasenameDir = path.join(tmpRoot, 'stage6-golden-sessions');
+    fs.mkdirSync(tmpLegacyBasenameDir);
+    try {
+      const phase4Fixture = buildPhase4LegacyFixture(' (real tmpdir)');
+      expect(() =>
+        validateFixtureInputs([
+          {
+            filename: 'sample-canary-real-tmpdir-basename.json',
+            fullPath: '/tmp/x',
+            fixture: phase4Fixture,
+            sourceDir: tmpLegacyBasenameDir,
+          },
+        ])
+      ).toThrow(/sample-canary-real-tmpdir-basename\.json.*_fixture_shape/);
+    } finally {
+      fs.rmSync(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('negative — Phase-5 fixture with broken ids dropped into a `stage6-golden-sessions`-named dir hits strict gate (Codex r11 threat model)', () => {
+    // The exact scenario Codex r11 flagged: a Phase-5 fixture pool
+    // (with the `_fixture_shape: 'phase5-over-ask'` marker present)
+    // dropped into a dir whose basename matches the legacy whitelist.
+    // Pre-r11-#1: bypassed the strict gate, broken ids silently
+    // contributed zero asks via applyDefaults. Post-r11-#1: strict
+    // gate fires (turnId broken → throw).
+    const phase5BrokenFixture = {
+      _doc: 'Plan 05-17 r11-#1 — Phase 5 marker present, broken turnId',
+      _fixture_shape: 'phase5-over-ask',
+      session: { jobId: 'r11-1-canary-phase5', certificateType: 'EICR' },
+      ask_user_calls: [
+        {
+          turnId: '', // INTENTIONALLY BROKEN
+          synthetic_time_ms: 0,
+          call: {
+            id: 'toolu_r11_1_canary',
+            name: 'ask_user',
+            input: {
+              question: 'Q?',
+              reason: 'ambiguous_circuit',
+              context_field: 'none',
+              context_circuit: null,
+              expected_answer_shape: 'free_text',
+            },
+          },
+          inner_outcome: { answered: true, user_text: 'whatever' },
+        },
+      ],
+    };
+    const syntheticLegacyBasenamePath = '/some/synthetic/copy/stage6-golden-sessions';
+    expect(() =>
+      validateFixtureInputs([
+        {
+          filename: 'sample-canary-phase5-in-legacy-named-dir.json',
+          fullPath: '/tmp/x',
+          fixture: phase5BrokenFixture,
+          sourceDir: syntheticLegacyBasenamePath,
+        },
+      ])
+    ).toThrow(/sample-canary-phase5-in-legacy-named-dir\.json.*turnId/);
   });
 });
