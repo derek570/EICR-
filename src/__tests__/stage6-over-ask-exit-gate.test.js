@@ -529,44 +529,53 @@ describe('Plan 05-08 r2-#1 — harness askCount excludes pre-emit non-fire reaso
     };
   }
 
-  test.each([['validation_error'], ['duplicate_tool_call_id'], ['prompt_leak_blocked']])(
-    '%s — askCount === 0 (envelope is a pre-emit non-fire)',
-    (reason) => {
-      fs.writeFileSync(
-        path.join(tmpDir, `sample-pre-emit-${reason}.json`),
-        JSON.stringify(buildPreEmitFixture(reason), null, 2)
-      );
+  // Plan 05-09 r3-#1 — shadow_mode added as the FOURTH pre-emit non-fire.
+  // The harness inherits this automatically via the
+  // `...PRE_EMIT_NON_FIRE_REASONS` spread on
+  // HARNESS_WRAPPER_SHORT_CIRCUIT_REASONS (line 193 of the harness),
+  // so this parametrised test goes GREEN as soon as the wrapper's set
+  // adds 'shadow_mode'. Single source of truth — runtime budget AND
+  // offline askCount share the classifier via the imported constant.
+  test.each([
+    ['validation_error'],
+    ['duplicate_tool_call_id'],
+    ['prompt_leak_blocked'],
+    ['shadow_mode'],
+  ])('%s — askCount === 0 (envelope is a pre-emit non-fire)', (reason) => {
+    fs.writeFileSync(
+      path.join(tmpDir, `sample-pre-emit-${reason}.json`),
+      JSON.stringify(buildPreEmitFixture(reason), null, 2)
+    );
 
-      const result = spawnSync('node', [SCRIPT_PATH, '--json', '--fixtures-dir', tmpDir], {
-        encoding: 'utf8',
-        cwd: REPO_ROOT,
-      });
+    const result = spawnSync('node', [SCRIPT_PATH, '--json', '--fixtures-dir', tmpDir], {
+      encoding: 'utf8',
+      cwd: REPO_ROOT,
+    });
 
-      let digest = null;
-      if (typeof result.stdout === 'string') {
-        const lines = result.stdout
-          .split('\n')
-          .map((l) => l.trim())
-          .filter((l) => l.startsWith('{'));
-        const lastJsonLine = lines[lines.length - 1];
-        if (lastJsonLine) {
-          try {
-            digest = JSON.parse(lastJsonLine);
-          } catch {
-            digest = null;
-          }
+    let digest = null;
+    if (typeof result.stdout === 'string') {
+      const lines = result.stdout
+        .split('\n')
+        .map((l) => l.trim())
+        .filter((l) => l.startsWith('{'));
+      const lastJsonLine = lines[lines.length - 1];
+      if (lastJsonLine) {
+        try {
+          digest = JSON.parse(lastJsonLine);
+        } catch {
+          digest = null;
         }
       }
-
-      if (!digest) {
-        throw new Error(
-          `failed to parse digest; status=${result.status}\nstdout=${result.stdout}\nstderr=${result.stderr}`
-        );
-      }
-
-      const session = digest.sessions[0];
-      expect(session).toBeDefined();
-      expect(session.askCount).toBe(0);
     }
-  );
+
+    if (!digest) {
+      throw new Error(
+        `failed to parse digest; status=${result.status}\nstdout=${result.stdout}\nstderr=${result.stderr}`
+      );
+    }
+
+    const session = digest.sessions[0];
+    expect(session).toBeDefined();
+    expect(session.askCount).toBe(0);
+  });
 });

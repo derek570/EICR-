@@ -861,6 +861,62 @@ describe('Plan 05-08 r2-#1 — PRE_EMIT_NON_FIRE_REASONS treated as non-fires', 
     gate.destroy();
   });
 
+  // ===========================================================================
+  // Plan 05-09 r3-#1 — shadow_mode is ALSO a pre-emit non-fire.
+  // ===========================================================================
+  // Codex r3 review of Plan 05-08's closure surface raised this finding:
+  // shadow_mode is structurally pre-emit. Inner dispatcher returns the
+  // shadow_mode envelope at stage6-dispatcher-ask.js:206-225 — that block
+  // is BEFORE step 3 (line 228+) where pendingAsks.register and
+  // ws.send(ask_user_started) run. So shadow_mode runs are no-iOS-emission,
+  // no-registry-register: identical pre-emit pattern to the other three
+  // reasons in PRE_EMIT_NON_FIRE_REASONS.
+  //
+  // Plan 05-08 D2 wording was wrong: it claimed "shadow_mode runs after
+  // validation + leak filter ... so it counts as a fire". Post-validation
+  // + post-leak-filter is true but irrelevant — the relevant predicate is
+  // "before register + ws.send", which holds for shadow_mode.
+  //
+  // Effect of the pre-fix bug (production):
+  //   - Shadow runs (Plan 05-02 + Plan 05-04 shadow harness) burned
+  //     askBudget on every shadow_mode envelope. Shadow's whole point is
+  //     observe-without-affect — burning shadow runs against the budget
+  //     cap is the OPPOSITE of that.
+  //   - Worse: shadow-mode rolling-5-turn restrained-mode counter accrued
+  //     phantom asks, contaminating the next live run's threshold
+  //     accounting.
+  //
+  // Fix: add 'shadow_mode' to PRE_EMIT_NON_FIRE_REASONS. The harness
+  // automatically inherits via the existing ...PRE_EMIT_NON_FIRE_REASONS
+  // spread (single source of truth).
+  // ===========================================================================
+  test('shadow_mode → askBudget.increment + restrainedMode.recordAsk NOT called', async () => {
+    const logger = makeLogger();
+    const inner = makeInnerDispatcherReturning('shadow_mode', false);
+    const askBudget = makeBudget();
+    const restrainedMode = makeRestrained();
+    const gate = createAskGateWrapper({ logger, sessionId: 'sess-1' });
+
+    const wrapped = wrapAskDispatcherWithGates(inner, {
+      askBudget,
+      restrainedMode,
+      gate,
+      filledSlotsShadow: () => {},
+      logger,
+      sessionId: 'sess-1',
+    });
+
+    const promise = wrapped(makeCall('call-1', 'ze', 0), makeCtx('sess-1-turn-1'));
+    jest.advanceTimersByTime(QUESTION_GATE_DELAY_MS);
+    const result = await promise;
+
+    expect(JSON.parse(result.content).reason).toBe('shadow_mode');
+    expect(askBudget.increment).not.toHaveBeenCalled();
+    expect(restrainedMode.recordAsk).not.toHaveBeenCalled();
+
+    gate.destroy();
+  });
+
   test('regression lock — inner-dispatcher reasons NOT in PRE_EMIT_NON_FIRE_REASONS still count as fires', async () => {
     // user_moved_on / timeout / etc are real fires (Sonnet did probe the
     // user; the user just didn't engage). These MUST still increment.
