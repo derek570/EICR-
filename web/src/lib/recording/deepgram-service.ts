@@ -3,7 +3,7 @@
  *
  * Mirrors the iOS `DeepgramService.swift` protocol so the two clients
  * behave identically — same URL parameters (nova-3 / linear16 / 16kHz /
- * en-GB / interim_results / endpointing=300 / utterance_end_ms=2000 /
+ * en-GB / interim_results / endpointing=300 / utterance_end_ms=1500 /
  * vad_events=true). Auth differs by transport: iOS sets an
  * `Authorization: Bearer <jwt>` header on the WS upgrade; browsers can't
  * set upgrade headers so we pass the same JWT as the `bearer` subprotocol
@@ -483,7 +483,16 @@ export class DeepgramService {
       language: 'en-GB',
       interim_results: 'true',
       endpointing: '300',
-      utterance_end_ms: '2000',
+      // utterance_end_ms 1500 — match iOS DeepgramService.swift after the
+      // 2026-04-20 voice-quality-sprint Stage 1 tuning. iOS history (per
+      // its inline comment): 2000 → 1200 shortened TTS latency (8-12s →
+      // ~3s); 1200 → 1500 trades 300ms for fewer mid-utterance
+      // truncations when the inspector pauses mid-reading ("R1 plus R2
+      // is ... zero point six four"). speech_final remains the primary
+      // turn-end signal; UtteranceEnd is the silence-timeout fallback.
+      // Project rule (`~/.claude/rules/mistakes.md`): keep web and iOS
+      // Deepgram configs in sync. Audit Phase 6 P0 flagged this drift.
+      utterance_end_ms: '1500',
       vad_events: 'true',
     });
     return `wss://api.deepgram.com/v1/listen?${params.toString()}`;

@@ -747,4 +747,67 @@ describe('DeepgramService', () => {
       expect(server.messages.length).toBe(priorCount);
     });
   });
+
+  // ────────────────────────────────────────────────────────────────────────
+  // iOS parity — Deepgram WebSocket URL params.
+  //
+  // Project rule (`~/.claude/rules/mistakes.md`): keep web and iOS
+  // Deepgram configs in sync. The Wave-A audit Phase 6 P0 flagged
+  // `utterance_end_ms=2000` on web vs iOS canonical 1500 (post 2026-04-20
+  // voice-quality-sprint Stage 1 tuning). This locks the params so a
+  // future drift triggers a CI failure rather than discovering the
+  // mismatch in production via a perceived recording-quality regression.
+  //
+  // We can't read `buildURL` directly (it's private), but `mock-socket`
+  // exposes the URL the client connected with on `server.url` of the
+  // *connecting client*, accessible via `server.server.clients()[0].url`
+  // — except mock-socket doesn't expose that cleanly either. The
+  // simplest robust approach: monkey-patch `WebSocket` once, capture the
+  // URL the constructor was invoked with, restore. ────────────────────
+  describe('iOS-parity URL params (audit Phase 6 P0)', () => {
+    it('connects with the canonical iOS Deepgram param set', async () => {
+      const realWebSocket = globalThis.WebSocket;
+      let capturedUrl = '';
+      class CapturingWebSocket extends realWebSocket {
+        constructor(url: string | URL, protocols?: string | string[]) {
+          capturedUrl = typeof url === 'string' ? url : url.toString();
+          super(url, protocols);
+        }
+      }
+      // Replace global before creating the service so its `new WebSocket`
+      // call uses the capturing subclass.
+      globalThis.WebSocket = CapturingWebSocket as unknown as typeof WebSocket;
+
+      try {
+        const service = new DeepgramService({
+          onInterimTranscript: vi.fn(),
+          onFinalTranscript: vi.fn(),
+        });
+        service.connect('fake-api-key', 16000);
+        await server.connected;
+
+        const url = new URL(capturedUrl);
+        expect(url.host).toBe('api.deepgram.com');
+        expect(url.pathname).toBe('/v1/listen');
+
+        const params = url.searchParams;
+        // Every param iOS DeepgramService.swift sends, with iOS values.
+        expect(params.get('model')).toBe('nova-3');
+        expect(params.get('smart_format')).toBe('true');
+        expect(params.get('punctuate')).toBe('true');
+        expect(params.get('encoding')).toBe('linear16');
+        expect(params.get('sample_rate')).toBe('16000');
+        expect(params.get('language')).toBe('en-GB');
+        expect(params.get('interim_results')).toBe('true');
+        expect(params.get('endpointing')).toBe('300');
+        // utterance_end_ms 1500 — pre-fix this was 2000 on web.
+        expect(params.get('utterance_end_ms')).toBe('1500');
+        expect(params.get('vad_events')).toBe('true');
+
+        service.disconnect();
+      } finally {
+        globalThis.WebSocket = realWebSocket;
+      }
+    });
+  });
 });
