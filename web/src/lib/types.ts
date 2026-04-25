@@ -260,10 +260,25 @@ export interface JobDetail extends Job {
   last_session_id?: string;
 }
 
+/**
+ * One row of a circuits table. Wire shape (`packages/shared-types/src/
+ * circuit.ts Circuit`) uses `circuit_ref` + `circuit_designation`;
+ * web pre-Wave-B-#13 was typed with `number` + `description`, which
+ * never matched what the backend or iOS emit and forced every
+ * consumer into a `circuit.circuit_ref ?? circuit.number` fallback
+ * pattern that masked the drift. Wave-B closed audit Phase 3 #16/#18
+ * by aligning the type to the wire shape.
+ *
+ * Legacy `number` / `description` are still tolerated by readers via
+ * the `[key: string]: unknown` index signature — no production data
+ * should carry them (backend has always used the canonical names),
+ * but the fallback is cheap insurance for any pre-Wave-B job blob
+ * that somehow survived the audit-flagged drift.
+ */
 export interface CircuitRow {
   id: string;
-  number?: string;
-  description?: string;
+  circuit_ref?: string;
+  circuit_designation?: string;
   [key: string]: unknown;
 }
 

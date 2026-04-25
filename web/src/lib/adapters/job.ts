@@ -15,11 +15,19 @@
 
 import { z } from 'zod';
 
+/**
+ * Wire shape for one circuit row. Canonical keys are
+ * `circuit_ref` + `circuit_designation` (matches
+ * `packages/shared-types/src/circuit.ts Circuit`); the schema accepts
+ * legacy `number` / `description` via `.passthrough()` so any pre-
+ * Wave-B job blob still validates without coercion. Wave-B closed
+ * audit Phase 3 #16/#18 by aligning the named keys to the wire.
+ */
 export const CircuitRowSchema = z
   .object({
     id: z.string(),
-    number: z.string().optional(),
-    description: z.string().optional(),
+    circuit_ref: z.string().optional(),
+    circuit_designation: z.string().optional(),
   })
   .passthrough();
 

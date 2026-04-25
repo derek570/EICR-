@@ -22,7 +22,10 @@ Guiding rule: **iOS is canon. Divergence is a bug unless explicitly documented**
 | B2.1 | T&Cs acceptance gate (Phase 2 P0 #1) | ✅ done | `06caaf9`, `6465a4a` (codex fix) |
 | B2.4 | Dashboard JobRow swipe-delete regression test | ✅ done — feature already on main from `9fcbeed`; this commit only adds the missing test coverage flagged by the audit (Phase 2 P0 #4 was a false-positive from stage6) |
 | B4.1 | Deepgram `utterance_end_ms` 2000 → 1500 (iOS canon) | ✅ done | `ba3bbdf` |
-| B4.2 | Deepgram keyterm prompting (port iOS `KeywordBoostGenerator`) | ⏳ open — separate follow-up |
+| B4.2 | Deepgram keyterm prompting (port iOS `KeywordBoostGenerator`) | ✅ done | `e38fa5e`, `fed9a1c` (codex fix) |
+| B6.1 | Sonnet ALB heartbeat + `observation_update` handler | ✅ done | `d035b71`, `f104a3e` (codex fix) |
+| B6.2 | Cross-check verifications: LiveFillView used, Sonnet questions wired, AudioRingBuffer present | ✅ all stage6-only false positives — closed by inspection |
+| B7 | Per-circuit field drift refactor (CircuitRow `number/description` → `circuit_ref/circuit_designation`) | ⏳ open — biggest remaining work |
 | B5 | Recording UI parity | ⏳ open — needs main-vs-stage6 cross-check first |
 | B6 | Remaining dashboard + settings P0s (T&Cs gate, preset picker on creation, swipe delete on rows, admin form drift) | ⏳ open |
 | B7 | Inner-field drift (CircuitRow, ObservationRow, per-bucket field naming) | ⏳ open — biggest remaining work |
@@ -34,6 +37,10 @@ Guiding rule: **iOS is canon. Divergence is a bug unless explicitly documented**
 
 | SHA | Subject |
 |-----|---------|
+| `f104a3e` | persist server observation_id + match by stored description (codex fix on `d035b71`) |
+| `d035b71` | Sonnet ALB heartbeat (25s) + observation_update handler (Phase 6 P0s) |
+| `fed9a1c` | reserve URL+keyterm slots for CCU-augmented Deepgram terms (codex fix on `e38fa5e`) |
+| `e38fa5e` | port iOS KeywordBoostGenerator → Nova-3 keyterm prompting |
 | `ba3bbdf` | align Deepgram utterance_end_ms 2000 → 1500 (iOS canon) + iOS-parity URL params test |
 | `b79c332` | lock JobRow swipe-delete + INDEX update for closed audit items |
 | `6465a4a` | close T&Cs gate open-redirect + preserve query string (codex fix on `06caaf9`) |
