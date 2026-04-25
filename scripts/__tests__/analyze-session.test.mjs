@@ -379,3 +379,114 @@ test("Plan 08-02 r1-#3 — sessions WITHOUT unknowns produce empty unknown_outco
   );
   assert.equal(unknownOutcomeWarnings.length, 0);
 });
+
+// ─────────────────────────────────────────────────────────────────
+// Phase 8 — Plan 08-03 r2-#1: Prototype-chain attack vector closed.
+//
+// Codex r2-#1 (MAJOR) raised that `scripts/analyze-session.js:1022-1024`
+// builds the `outcomes` histogram via `const outcomes = {}` (a normal
+// object) and tests membership via `outcome in outcomes`. The `in`
+// operator walks `Object.prototype`, so untrusted log data with
+// `answer_outcome: "__proto__"` / `"constructor"` / `"toString"` is
+// silently treated as a KNOWN histogram key — the unknown-surface
+// added in r1-#3 never fires for those names because the `in` check
+// returns true on inherited properties.
+//
+// Fix: `Object.create(null)` for the histogram (no prototype chain) +
+// `Object.hasOwn(outcomes, outcome)` for membership (own-properties
+// only). This closes the prototype-pollution attack vector while
+// preserving the frozen-enum histogram shape and r1-#3's unknown
+// surface intact for ordinary unknowns.
+//
+// Fixture: `proto-pollution-session/` has 6 ask_user rows —
+// 2 known (answered, gated) + 2 prototype-chain names
+// (__proto__, constructor) + 2 ordinary unknowns (foobar, barbaz —
+// regression-lock so we don't break r1-#3 surface while fixing r2-#1).
+// ─────────────────────────────────────────────────────────────────
+
+test("Plan 08-03 r2-#1 — prototype-chain names route to unknown_outcomes (not the histogram)", () => {
+  const a = runAnalyzer("proto-pollution-session");
+  const askUser = a.tool_call_traffic.ask_user;
+
+  // Total = 6 (2 known + 2 proto-chain + 2 ordinary unknowns).
+  assert.equal(askUser.total, 6);
+
+  // All 4 unknowns (proto-chain + ordinary) flow into unknown_outcomes.
+  assert.equal(askUser.unknown_outcome_count, 4);
+
+  const byValue = Object.fromEntries(
+    askUser.unknown_outcomes.map((u) => [u.value, u.count]),
+  );
+  assert.equal(byValue.__proto__, 1, "__proto__ must appear in unknown_outcomes with count 1");
+  assert.equal(byValue.constructor, 1, "constructor must appear in unknown_outcomes with count 1");
+  assert.equal(byValue.foobar, 1, "foobar (regression-lock for r1-#3) must still surface");
+  assert.equal(byValue.barbaz, 1, "barbaz (regression-lock for r1-#3) must still surface");
+});
+
+test("Plan 08-03 r2-#1 — histogram has NO own-property leak from prototype-chain names", () => {
+  // The frozen-enum `outcomes` histogram MUST keep exactly the
+  // ASK_USER_ANSWER_OUTCOMES keys as own-properties. `__proto__`,
+  // `constructor`, `toString` etc. all live on `Object.prototype`
+  // and were silently treated as known by the `in`-operator-based
+  // membership check. After the fix, NONE of them are own-properties
+  // of the histogram.
+  const a = runAnalyzer("proto-pollution-session");
+  const outcomes = a.tool_call_traffic.ask_user.outcomes;
+
+  // Native Object.hasOwn — survives JSON round-trip because the
+  // serialised histogram is itself a plain object on the receiver
+  // side; what matters here is that AFTER serialisation, none of
+  // the prototype-chain names appear as own enumerable keys.
+  assert.ok(
+    !Object.hasOwn(outcomes, "__proto__"),
+    "__proto__ MUST NOT be an own-property of the histogram",
+  );
+  assert.ok(
+    !Object.hasOwn(outcomes, "constructor"),
+    "constructor MUST NOT be an own-property of the histogram",
+  );
+  assert.ok(
+    !Object.hasOwn(outcomes, "toString"),
+    "toString MUST NOT be an own-property of the histogram",
+  );
+});
+
+test("Plan 08-03 r2-#1 — prototype-chain names appear in warnings[] entries", () => {
+  const a = runAnalyzer("proto-pollution-session");
+
+  const unknownOutcomeWarnings = (a.warnings || []).filter(
+    (w) => w.type === "unknown_ask_user_outcome",
+  );
+
+  // 4 distinct unknowns → 4 warnings (one per distinct value).
+  assert.equal(
+    unknownOutcomeWarnings.length,
+    4,
+    "expected 4 warnings (one per distinct unknown outcome value)",
+  );
+
+  const byValue = Object.fromEntries(
+    unknownOutcomeWarnings.map((w) => [w.value, w.count]),
+  );
+  assert.equal(byValue.__proto__, 1);
+  assert.equal(byValue.constructor, 1);
+  assert.equal(byValue.foobar, 1);
+  assert.equal(byValue.barbaz, 1);
+});
+
+test("Plan 08-03 r2-#1 — known outcomes still bucket correctly with prototype-chain names present", () => {
+  // Sanity check: the prototype-chain hardening MUST NOT regress the
+  // known-outcome bucketing. In a session with 2 known (answered, gated)
+  // alongside 4 unknowns, the histogram still increments answered=1
+  // and gated=1.
+  const a = runAnalyzer("proto-pollution-session");
+  const askUser = a.tool_call_traffic.ask_user;
+
+  assert.equal(askUser.outcomes.answered, 1);
+  assert.equal(askUser.outcomes.gated, 1);
+
+  // Other frozen-enum keys present at default 0.
+  assert.equal(askUser.outcomes.timeout, 0);
+  assert.equal(askUser.outcomes.user_moved_on, 0);
+  assert.equal(askUser.outcomes.dispatcher_error, 0);
+});

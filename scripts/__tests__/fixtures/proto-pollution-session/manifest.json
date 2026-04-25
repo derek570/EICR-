@@ -1,0 +1,10 @@
+{
+  "sessionId": "proto-pollution-001",
+  "address": "Proto Pollution Session",
+  "date": "2026-04-23",
+  "circuitCount": 0,
+  "recordingDurationMin": "5.0",
+  "deepgramStreamingMinutes": 5.0,
+  "sonnetCostUSD": "0.10",
+  "durationSeconds": 300
+}
