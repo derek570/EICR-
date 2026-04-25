@@ -235,6 +235,55 @@ function synthResultWrapped(call, reason, ctx, logger, sessionId, mode) {
 }
 
 /**
+ * Plan 05-14 r8-#1 — sibling helper that builds the wrapper synth
+ * envelope WITHOUT calling `logAskUser`.
+ *
+ * WHY a separate helper: every wrapper-OWNED short-circuit reason
+ * (`gated`, `restrained_mode`, `ask_budget_exhausted`,
+ * `session_terminated`) has the wrapper as the SOLE emitter — the
+ * inner dispatcher never sees those calls, so the wrapper logs the
+ * one and only `stage6.ask_user` row for that ask. `synthResultWrapped`
+ * is the right helper for those paths.
+ *
+ * The exception is the timer-catch at line ~316 below: when the
+ * inner dispatcher throws and its outer catch
+ * (`stage6-dispatcher-ask.js` line ~352-364) has ALREADY called
+ * `logAskUser(...)` before rethrowing, the wrapper's job here is to
+ * recover from the throw with a properly-shaped envelope so the
+ * awaiter is not stranded — but a second `logAskUser(...)` call
+ * would emit a DUPLICATE row carrying the same answer_outcome +
+ * tool_call_id but a `wait_duration_ms` of 0 (instead of the real
+ * wait the dispatcher recorded). Analyzer queries on
+ * `stage6.ask_user` would then over-state failure rates 2x.
+ *
+ * r8-#1 closure routes the timer-catch through this non-logging
+ * helper so the dispatcher's outer catch stays the sole emitter
+ * for the inner-throw path, producing exactly ONE row total.
+ *
+ * Same envelope shape as `synthResultWrapped`: `{tool_use_id,
+ * content, is_error}` with `content` = JSON-encoded
+ * `{answered:false, reason}`. The model-side runToolLoop contract
+ * is unchanged.
+ *
+ * @param {object} call
+ * @param {string} reason  Must still be a recognised
+ *   ASK_USER_ANSWER_OUTCOMES value (the inner dispatcher's outer
+ *   catch already logged with the same outcome — keeping the names
+ *   in lockstep avoids a future split where one emitter uses one
+ *   name and another emitter uses a different name for the same
+ *   semantic event).
+ * @returns {{ tool_use_id: string, content: string, is_error: false }}
+ */
+function synthResultWithoutLog(call, reason) {
+  const toolCallId = call.tool_call_id ?? call.id;
+  return {
+    tool_use_id: toolCallId,
+    content: JSON.stringify({ answered: false, reason }),
+    is_error: false,
+  };
+}
+
+/**
  * Per-turn debounce engine. Maintains a private `Map<key, entry>` of pending
  * timers. Same-key arrivals within `delayMs` cancel the pending timer and
  * REPLACE it (Research §Q10 scenario 3 — without explicit replacement the
@@ -313,9 +362,21 @@ export function createAskGateWrapper({
           // `dispatcher_error_post_emit` (enum-reserved in
           // stage6-dispatcher-logger.js's ASK_USER_ANSWER_OUTCOMES;
           // lives in NEITHER pre-emit set → fire-default).
-          resolve(
-            synthResultWrapped(call, 'dispatcher_error_pre_emit', ctx, logger, sessionId, mode)
-          );
+          //
+          // Plan 05-14 r8-#1 — route through `synthResultWithoutLog`
+          // instead of `synthResultWrapped`. The inner dispatcher's
+          // outer catch ALREADY called `logAskUser(...)` before
+          // rethrowing (stage6-dispatcher-ask.js line ~352-364), so
+          // a second `logAskUser(...)` here would emit a DUPLICATE
+          // `stage6.ask_user` row carrying the same answer_outcome +
+          // tool_call_id but `wait_duration_ms: 0` (instead of the
+          // real wait the dispatcher recorded). Analyzer queries
+          // would over-state failure rates 2x. The wrapper's job
+          // here is recovery (a properly-shaped envelope so the
+          // awaiter is not stranded), NOT a second emit. The
+          // dispatcher remains the sole emitter for the inner-throw
+          // path; the wrapper produces zero rows on this path.
+          resolve(synthResultWithoutLog(call, 'dispatcher_error_pre_emit'));
         }
       }, delayMs);
 
