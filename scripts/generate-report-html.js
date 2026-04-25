@@ -25,6 +25,25 @@ const summary = JSON.parse(fs.readFileSync(summaryPath, "utf8"));
 
 const USD_TO_GBP = 0.79;
 
+// Plan 08-04 r3-#1 (MAJOR): every render site that interpolates a
+// user-derived string into HTML output MUST flow through this helper.
+// The contract is locked by `scripts/__tests__/generate-report-html.test.mjs`
+// which spawns the renderer with adversarial payloads in every
+// user-data slot and asserts no live `<script>` element survives.
+//
+// Defence-in-depth pair: scripts/analyze-session.js's safeDisplayValue()
+// is the analyzer-side gate (sanitises log values BEFORE they enter
+// analysis.json); this escapeHtml() is the renderer-side gate
+// (escapes HTML-significant chars at every render site). Both gates
+// must hold for the contract to be safe.
+//
+// `String(str || "")` coerces falsy values (0, false, "", null,
+// undefined) to the empty string — acceptable because the goal is
+// "safe render", and empty IS safe. Out of scope for r3: a deliberately-
+// poisoned numeric 0 field would render as empty rather than "0", but
+// no current renderer slot accepts numeric values that ought to render
+// as visible text (numbers are coerced via `.toFixed`/`formatTokens`
+// before reaching template literals).
 function escapeHtml(str) {
   return String(str || "")
     .replace(/&/g, "&amp;")
@@ -382,10 +401,22 @@ function buildMissedValues() {
       }
     }
 
+    // Plan 08-04 r3-#1 (MAJOR): both `${ef.reason}` (class attribute)
+    // and `${reason}` (text content via `reasonLabels[ef.reason] ||
+    // ef.reason || "Unknown"`) carry user-derived strings. Pre-fix
+    // they were interpolated raw — an adversarial `ef.reason` of
+    // `<script>alert(1)</script>` would render as a live script tag
+    // here. Both slots now flow through escapeHtml(); the analyzer
+    // side (safeDisplayValue, commit 44b95f1) is the first gate, this
+    // is the second. `transcriptRef` is a literal `&mdash;` or a
+    // generated `<a href="#" onclick="scrollToUtterance(${i})">${time}</a>`
+    // where `${i}` is the loop index (number) and `${time}` is a
+    // formatted en-GB time string from `toLocaleTimeString` — both
+    // safe by construction.
     html += `
       <div class="missed-row">
         <span class="missed-col-field">${escapeHtml(ef.key)}</span>
-        <span class="missed-col-reason missed-reason-${ef.reason || 'unknown'}">${reason}</span>
+        <span class="missed-col-reason missed-reason-${escapeHtml(ef.reason || 'unknown')}">${escapeHtml(reason)}</span>
         <span class="missed-col-ref">${transcriptRef}</span>
       </div>`;
   }
