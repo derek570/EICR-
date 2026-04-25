@@ -273,7 +273,16 @@ export const EXIT_GATE_THRESHOLDS = Object.freeze({
 // The exit-gate harness aggregates BOTH directories — sample-01..05 from
 // the Phase 4 dir contribute as zero-ask fixtures (per truth #6's
 // backwards-compat default).
-const PHASE5_FIXTURES_DIR = path.resolve(
+//
+// Plan 05-15 r9-#1 — exported so tests can call validateFixtureInputs
+// directly with sourceDir set to PHASE5_FIXTURES_DIR. Tagging entries
+// with their loaded-from directory is what gates the strict r9-#1
+// validation (marker required, ask_user_calls present, per-call
+// ids/turnIds present). The legacy --fixtures-dir override still
+// works for tmpdir tests; those tmpdir entries carry the override
+// path as sourceDir so they fall through to the legacy schema-marker
+// branch instead of triggering the strict gate.
+export const PHASE5_FIXTURES_DIR = path.resolve(
   __dirname,
   '..',
   'src',
@@ -303,6 +312,12 @@ const DEFAULT_FIXTURES_DIR = PHASE5_FIXTURES_DIR;
  * Read every *.json file in `dir` (sorted) and parse. Throws on parse
  * failure — silent skipping would let a malformed fixture slip into a
  * 0% breach result. Mirrors the divergence-script convention.
+ *
+ * Plan 05-15 r9-#1 — every returned entry now carries a `sourceDir: dir`
+ * tag. validateFixtureInputs branches on this tag to apply the strict
+ * gate ONLY against PHASE5_FIXTURES_DIR-loaded entries; tmpdir / Phase-4
+ * entries fall through to the legacy schema-marker path (preserving
+ * back-compat with the spawn-based tests in this file's sibling test).
  */
 function loadFixtures(dir) {
   if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) {
@@ -318,40 +333,106 @@ function loadFixtures(dir) {
     } catch (err) {
       throw new Error(`fixture parse failed: ${fullPath}: ${err.message}`);
     }
-    out.push({ filename: name, fullPath, fixture: parsed });
+    out.push({ filename: name, fullPath, fixture: parsed, sourceDir: dir });
   }
   return out;
 }
 
 /**
- * Plan 05-07 r1-#4 — fixture schema validation gate.
+ * Plan 05-07 r1-#4 + Plan 05-15 r9-#1 — fixture schema validation gate.
  *
- * Every loaded Phase 5 over-ask fixture MUST carry ask_user_calls[].call.input
- * shapes that pass the production validateAskUser. The minimal mock inner
- * dispatcher in this harness does NOT run the validator (deliberately —
- * see module header), so without this gate an invalid fixture would replay
- * through the wrapper composition unchallenged and silently corrupt the
- * metric. Real Plan 03-05 dispatch rejects the same shapes at the validator
- * gate before any inner work runs; the harness mirrors that discipline.
+ * Two-tier gate:
  *
- * Skips Phase 4 dual-SSE fixtures (_fixture_shape !== 'phase5-over-ask')
- * because those fixtures don't carry ask_user_calls[] — they contribute
- * zero to the aggregate by design (Plan 05-06 truth #6).
+ *   TIER 1 (Plan 05-15 r9-#1) — STRICT, source-directory-keyed.
  *
- * Throws on first invalid call. The CLI's catch block maps the throw to
- * process.exit(2); the message format includes the fixture filename and
- * the failed call index so an operator can find the offending fixture in
- * one click.
+ *     Applied to every entry whose `sourceDir === PHASE5_FIXTURES_DIR`.
+ *     Every such file MUST carry:
+ *       (a) `_fixture_shape === 'phase5-over-ask'`,
+ *       (b) `ask_user_calls` array (may be empty, but must be present),
+ *       (c) every `ask_user_calls[i]` MUST have a non-empty string `turnId`,
+ *       (d) every `ask_user_calls[i].call.id` MUST be a non-empty string.
  *
- * @param {Array<{filename:string, fullPath:string, fixture:object}>} loaded
- * @throws {Error} on first invalid ask_user input
+ *     Pre-r9-#1 the gate was keyed on the per-fixture `_fixture_shape`
+ *     marker alone — a Phase-5 canary missing the marker silently fell
+ *     through `applyDefaults` (Phase-4 backwards-compat path) and
+ *     contributed zero asks instead of failing closed. Per-source-dir
+ *     branching means any new file dropped into the canonical Phase-5
+ *     directory without the marker (or without per-call ids/turnIds)
+ *     fails loud at harness-load time.
+ *
+ *   TIER 2 (Plan 05-07 r1-#4) — LEGACY, schema-marker-keyed.
+ *
+ *     Applied to every entry whose `sourceDir !== PHASE5_FIXTURES_DIR`
+ *     (tmpdir overrides for spawn-based tests; PHASE4_DUAL_SSE_DIR for
+ *     the legacy zero-ask backwards-compat path).
+ *
+ *     Branches on `_fixture_shape === 'phase5-over-ask'`:
+ *       - marker present → schema-validate every ask_user_calls[].call.input
+ *         via the production `validateAskUser`. Throws on first failure.
+ *       - marker absent → skip (legacy zero-contribution path).
+ *
+ *     The minimal mock inner dispatcher in this harness does NOT run the
+ *     validator (deliberately — see module header), so without this gate
+ *     an invalid fixture would replay through the wrapper composition
+ *     unchallenged and silently corrupt the metric. Real Plan 03-05
+ *     dispatch rejects the same shapes at the validator gate before any
+ *     inner work runs; the harness mirrors that discipline.
+ *
+ * Throws on first invalid fixture. The CLI's catch block maps the throw
+ * to `process.exit(2)`; the message format includes the fixture filename
+ * (and call index when relevant) so an operator can find the offending
+ * fixture in one click.
+ *
+ * Plan 05-15 r9-#1 — exported so tests can call this directly with
+ * `sourceDir: PHASE5_FIXTURES_DIR` set in each entry, exercising the
+ * strict-gate branch without spawning the harness CLI (the CLI's
+ * --fixtures-dir override would replace PHASE5_FIXTURES_DIR with tmpDir,
+ * making the strict-gate branch unreachable from spawn).
+ *
+ * @param {Array<{filename:string, fullPath:string, fixture:object, sourceDir?:string}>} loaded
+ * @throws {Error} on first invalid fixture
  */
-function validateFixtureInputs(loaded) {
-  for (const { filename, fixture } of loaded) {
-    // Phase 4 dual-SSE fixtures never carry ask_user_calls[]; skip them.
-    // The harness already treats them as zero-contribution via applyDefaults
-    // → ask_user_calls = [] and the per-fixture replay loop iterates an
-    // empty array.
+export function validateFixtureInputs(loaded) {
+  for (const entry of loaded) {
+    const { filename, fixture, sourceDir } = entry;
+
+    // TIER 1 — strict gate for PHASE5_FIXTURES_DIR-loaded entries.
+    if (sourceDir === PHASE5_FIXTURES_DIR) {
+      // (a) marker MUST be present + correct.
+      if (fixture._fixture_shape !== 'phase5-over-ask') {
+        throw new Error(
+          `fixture invalid: ${filename}: PHASE5_FIXTURES_DIR fixture missing _fixture_shape='phase5-over-ask' marker`
+        );
+      }
+      // (b) ask_user_calls field MUST be present + an array.
+      if (!Array.isArray(fixture.ask_user_calls)) {
+        throw new Error(
+          `fixture invalid: ${filename}: PHASE5_FIXTURES_DIR fixture missing ask_user_calls array`
+        );
+      }
+      // (c) + (d) per-call turnId + call.id MUST be non-empty strings.
+      for (let i = 0; i < fixture.ask_user_calls.length; i += 1) {
+        const entryCall = fixture.ask_user_calls[i];
+        const turnId = entryCall?.turnId;
+        if (typeof turnId !== 'string' || turnId.length === 0) {
+          throw new Error(
+            `fixture invalid: ${filename}: ask_user_calls[${i}].turnId must be a non-empty string`
+          );
+        }
+        const callId = entryCall?.call?.id;
+        if (typeof callId !== 'string' || callId.length === 0) {
+          throw new Error(
+            `fixture invalid: ${filename}: ask_user_calls[${i}].call.id must be a non-empty string`
+          );
+        }
+      }
+      // Strict gate also runs the legacy ask_user input validator below
+      // (TIER 1 is a SUPERSET of TIER 2 for Phase-5-dir entries — the
+      // r1-#4 schema gate stays load-bearing for input shape correctness).
+    }
+
+    // TIER 2 — legacy schema-marker gate (also runs for TIER 1 entries
+    // because the Phase-5-dir contract includes valid ask_user inputs).
     if (fixture._fixture_shape !== 'phase5-over-ask') continue;
     const calls = Array.isArray(fixture.ask_user_calls) ? fixture.ask_user_calls : [];
     for (let i = 0; i < calls.length; i += 1) {
