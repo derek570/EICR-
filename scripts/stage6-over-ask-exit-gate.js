@@ -54,23 +54,31 @@
  * gates work on real model behaviour).
  *
  * ---------------------------------------------------------------------------
- * GATE-FIXTURE PARTITION — fixtures.gate_fixture:bool
+ * AGGREGATION — full set (Plan 05-07 r1-#2 closure)
  * ---------------------------------------------------------------------------
- * With N=12 the 2% restrained_rate threshold cannot tolerate even ONE
- * positive activation in the aggregate (1/12 = 8.3%). Sample-07 deliberately
- * activates restrained mode (proves the wiring works) — including it in
- * the aggregate gate would unconditionally breach. Same for sample-08
- * (budget exhaustion) — its 2-ask count would skew the head of the
- * median.
+ * Every loaded fixture contributes to median / p95 / restrained_rate. The
+ * pre-fix gate_fixture:true partition was dropped in r1-#2 because it
+ * silently EXCLUDED the canonical over-ask scenarios (sample-07
+ * restrained-mode trigger; sample-08 budget exhaustion) from breach
+ * detection — the aggregate could never breach on the very fixtures
+ * designed to demonstrate the wiring works.
  *
- * Resolution: each fixture carries `gate_fixture: true|false`. The
- * aggregate gate sums over gate_fixture:true fixtures ONLY. Smoke mode
- * (--smoke) asserts ALL fixtures regardless.
+ * Threshold recalibration: with 1 deliberate activation canary in N=12
+ * the floor on restrained_rate is 1/12 ≈ 8.3%. The original 0.02 target
+ * (now scoped to Phase 7 STR-03 prod-shadow) was bumped to 0.10 — the
+ * smallest sensible ceiling that admits the canary while still rejecting
+ * a regression that adds a SECOND unintended activation (2/12 ≈ 16.6%).
  *
- * Phase 7's STR-03 prod-shadow gate operates on the 20-session pool
- * with no partition — the aggregate IS the gate, because real prod
- * traffic has the natural distribution Phase 5 fixtures cannot reproduce
- * with hand-crafted seeds.
+ * The fixtures' `gate_fixture` boolean is RETAINED on the per-fixture
+ * digest entries as a diagnostic (so a fixture author can still see
+ * which fixtures were historically considered "smoke-only"), but it is
+ * NO LONGER consulted by the aggregate metric path.
+ *
+ * Phase 7's STR-03 prod-shadow gate operates on the 20-session prod pool
+ * with the original 2% restrained_rate target — real prod traffic has
+ * the natural distribution Phase 5 fixtures cannot reproduce with
+ * hand-crafted seeds. The two-tier threshold (0.10 hand-crafted; 0.02
+ * prod-shadow) is documented in 05-REVIEW.md + 05-07-SUMMARY.md.
  *
  * ---------------------------------------------------------------------------
  * INNER-DISPATCHER REPLAY SHAPE — minimal mock (Plan 05-06 Open Question)
@@ -177,13 +185,40 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 // ============================================================================
-// LOCKED THRESHOLDS — ROADMAP §Phase 5 SC #8 verbatim, frozen so runtime
-// drift requires a triple-update (ROADMAP + this script + 05-06-SUMMARY).
+// LOCKED THRESHOLDS — Phase 5 hand-crafted 12-fixture aggregate calibration.
+// Frozen so runtime drift requires a triple-update (ROADMAP + this script +
+// 05-06-SUMMARY + 05-07-SUMMARY + 05-REVIEW).
 // ============================================================================
+//
+// Plan 05-07 r1-#2 — restrainedRateMax bumped from 0.02 (Phase 7 prod-shadow
+// target) to 0.10 (Phase 5 hand-crafted aggregate target).
+//
+// Why the bump:
+//   - r1-#2 fix removed the gate_fixture:false partition; the aggregate now
+//     spans EVERY loaded fixture (N=12). Sample-07 deliberately activates
+//     restrained mode (proving the wiring works), so the floor on this set
+//     is 1/12 ≈ 8.3%. The original 0.02 value would unconditionally breach
+//     under r1-#2's full-set aggregation — masking real over-ask breaches
+//     behind a gate that already failed on a healthy run.
+//   - 0.10 is the smallest sensible ceiling that admits sample-07's
+//     deliberate canary while still rejecting a regression that adds a
+//     SECOND unintended activation (2/12 ≈ 16.6% > 10% breaches).
+//
+// Why the 0.02 target is preserved (NOT raised everywhere):
+//   - Phase 7 STR-03 prod-shadow gate operates on REAL prod traffic where
+//     hand-crafted activation canaries don't exist. The 2% target reflects
+//     real prod tolerance, not Phase 5's synthetic distribution.
+//   - 05-REVIEW.md + 05-07-SUMMARY.md + this header all document the
+//     two-tier threshold (Phase 5 = 0.10 hand-crafted; Phase 7 = 0.02
+//     prod-shadow) so Phase 7 STR-03 work inherits the correct value.
+//
+// medianMax + p95Max unchanged from Plan 05-06's calibration — those held
+// up across the r1-#1 askCount semantic shift + the r1-#2 full-set
+// aggregation move (current run: median=0, p95=3, comfortably under 1+4).
 export const EXIT_GATE_THRESHOLDS = Object.freeze({
   medianMax: 1,
   p95Max: 4,
-  restrainedRateMax: 0.02,
+  restrainedRateMax: 0.1,
 });
 
 // Plan 05-06 ships Phase 5 over-ask fixtures in a DEDICATED sibling
@@ -637,14 +672,15 @@ export async function runHarness({ fixturesDir, smoke = false } = {}) {
     }
   }
 
-  // Aggregate metric — gate_fixture:true SUBSET only.
-  const gateObserved = allObserved.filter((o) => o.observed.isGateFixture);
-  const askCountsPerSession = gateObserved.map((o) => o.observed.askCount);
-  const totalActivations = gateObserved.reduce(
-    (sum, o) => sum + o.observed.activationCount,
-    0
-  );
-  const restrainedRate = gateObserved.length === 0 ? 0 : totalActivations / gateObserved.length;
+  // Plan 05-07 r1-#2 — aggregate over the FULL fixture set. Pre-fix
+  // filtered to gate_fixture:true subset, which excluded the canonical
+  // over-ask scenarios (sample-07 + sample-08) from breach detection.
+  // Post-fix every loaded fixture contributes; the aggregate IS the gate.
+  // The gate_fixture flag is kept on per-fixture digest entries as a
+  // diagnostic but NO LONGER consulted by the metric path.
+  const askCountsPerSession = allObserved.map((o) => o.observed.askCount);
+  const totalActivations = allObserved.reduce((sum, o) => sum + o.observed.activationCount, 0);
+  const restrainedRate = allObserved.length === 0 ? 0 : totalActivations / allObserved.length;
   const median = percentile(askCountsPerSession, 50);
   const p95 = percentile(askCountsPerSession, 95);
   const breaches = computeBreaches({ median, p95, restrainedRate });
@@ -659,7 +695,11 @@ export async function runHarness({ fixturesDir, smoke = false } = {}) {
 
   return {
     fixture_count: loaded.length,
-    gate_fixture_count: gateObserved.length,
+    // Plan 05-07 r1-#2 — replaces gate_fixture_count. With the partition
+    // gone, aggregate_fixture_count always equals fixture_count. Kept as
+    // a separate field for forward-compat with downstream consumers that
+    // may want to assert "aggregate covers every loaded fixture".
+    aggregate_fixture_count: allObserved.length,
     smoke_mode: smoke,
     smoke_mismatches: smokeMismatches,
     ask_counts_per_session: askCountsPerSession,
@@ -671,7 +711,9 @@ export async function runHarness({ fixturesDir, smoke = false } = {}) {
     exit_code: exitCode,
     thresholds: EXIT_GATE_THRESHOLDS,
     // Per-fixture detail for debugging — kept terse so --json output is
-    // still grep-able.
+    // still grep-able. gate_fixture is now ADVISORY (no longer consulted
+    // by the metric path) but retained for fixture-author diagnostics
+    // explaining the historical partition.
     sessions: allObserved.map((o) => ({
       id: o.fx.id ?? o.fx.filename,
       gate_fixture: o.observed.isGateFixture,
@@ -713,7 +755,7 @@ function printProgressDigest(digest) {
   const lines = [
     `Plan 05-06 — exit-gate replay`,
     `  fixtures loaded:   ${digest.fixture_count}`,
-    `  gate aggregate:    ${digest.gate_fixture_count} (gate_fixture:true subset)`,
+    `  aggregate:         ${digest.aggregate_fixture_count} (full set, no gate_fixture partition)`,
     `  smoke mode:        ${digest.smoke_mode}`,
     `  median asks:       ${fmt(digest.median)}  (threshold ≤ ${digest.thresholds.medianMax})`,
     `  p95 asks:          ${fmt(digest.p95)}  (threshold ≤ ${digest.thresholds.p95Max})`,
