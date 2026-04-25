@@ -1193,3 +1193,266 @@ describe('Group I — resume token survives protocol_version rejection (r7-#2)',
     expect(errorsOnWs3.length).toBe(0);
   });
 });
+
+// -----------------------------------------------------------------------------
+// Group J — handshake reads SONNET_TOOL_CALLS once per request (r8-#1 + r8-#2)
+// -----------------------------------------------------------------------------
+//
+// Plan 06-09 r8-#1 (MAJOR) — handleSessionStart reads
+// process.env.SONNET_TOOL_CALLS TWICE per request:
+//   1. Top-of-function: `const toolCallsMode = process.env.SONNET_TOOL_CALLS
+//      || 'off';` — drives the live-reject + shadow-fallback policy block.
+//   2. Reconnect branch: `existing.session.applyModeChange(
+//      resolveEffectiveToolCallsMode());` — re-reads via the r6 resolver.
+// If the env flips between the two reads, the entry is stamped under one
+// mode (policy block writes entry.fallbackToLegacy + entry.protocolVersion)
+// and the session prompt is written under the OTHER mode (applyModeChange
+// writes session.toolCallsMode + systemPrompt). Split-brain entry.
+//
+// Plan 06-09 r8-#2 (MAJOR) — same shape on handleSessionResumeRehydrate.
+//
+// Group J pins the contract: the function snapshots the env exactly ONCE
+// at function entry and threads that single value through both the policy
+// block AND the applyModeChange call. After the fix, BOTH writes reflect
+// the SAME mode regardless of an intervening env flip.
+//
+// Test mechanism: install a getter on process.env.SONNET_TOOL_CALLS that
+// returns a FIFO sequence of values across consecutive reads, simulating
+// an env flip mid-request. Pre-fix the two reads return different values
+// and the entry's policy + session mode disagree. Post-fix the second
+// read never happens (the snapshot is reused), so both writes use the
+// same first-read value.
+//
+// Helper: mockEnvSequence(values) installs a getter that returns
+// `values[i]` on the i-th read (clamped to the last value). The
+// existing afterEach resets process.env.SONNET_TOOL_CALLS via delete /
+// reassign which clears the getter back to a plain-data property.
+
+function mockEnvSequence(values) {
+  // Returns a values array consumed FIFO on each .get(). Used as the
+  // property descriptor for SONNET_TOOL_CALLS so successive reads within
+  // one request return different values — simulating the env flipping
+  // between two reads.
+  let i = 0;
+  Object.defineProperty(process.env, 'SONNET_TOOL_CALLS', {
+    get() {
+      const v = values[Math.min(i, values.length - 1)];
+      i += 1;
+      return v;
+    },
+    configurable: true,
+  });
+}
+
+describe('Group J — handshake reads SONNET_TOOL_CALLS once per request (r8-#1 + r8-#2)', () => {
+  test('J.1 — handleSessionStart reconnect: env flip between two reads is invisible to entry', async () => {
+    // Original session under shadow + match.
+    process.env.SONNET_TOOL_CALLS = 'shadow';
+    const ws1 = connect(wss, 'user-J');
+    await sendFrame(ws1, {
+      type: 'session_start',
+      sessionId: 'sess-J1',
+      jobState: { certificateType: 'eicr' },
+      protocol_version: 'stage6',
+    });
+    expect(activeSessions.get('sess-J1').fallbackToLegacy).toBe(false);
+    expect(activeSessions.get('sess-J1').session.toolCallsMode).toBe('shadow');
+
+    // Simulate a flip BETWEEN the two reads inside the next reconnect.
+    // Provide enough distinct values to expose the race: first read
+    // (policy block) returns 'shadow'; subsequent reads return 'off'.
+    // Pre-fix the policy treats this as shadow + match (writes
+    // entry.fallbackToLegacy=false + entry.protocolVersion='stage6')
+    // but applyModeChange writes session.toolCallsMode='off' AND resets
+    // systemPrompt to legacy — split-brain entry.
+    //
+    // Post-fix the function calls resolveEffectiveToolCallsMode() ONCE
+    // at entry; subsequent reads of process.env.SONNET_TOOL_CALLS don't
+    // happen, so the entry is stamped consistently from the FIRST
+    // sampled value.
+    mockEnvSequence(['shadow', 'off', 'off']);
+
+    const ws2 = connect(wss, 'user-J');
+    await sendFrame(ws2, {
+      type: 'session_start',
+      sessionId: 'sess-J1',
+      jobState: { certificateType: 'eicr' },
+      protocol_version: 'stage6',
+    });
+
+    const entry = activeSessions.get('sess-J1');
+    expect(entry).toBeDefined();
+    expect(entry.ws).toBe(ws2);
+    // CONSISTENCY CONTRACT: whichever single mode was sampled at entry,
+    // BOTH writes use it. Post-fix this should pin to the first value
+    // ('shadow') because that's what the single resolveEffectiveToolCallsMode
+    // call returns; pre-fix the session.toolCallsMode would be 'off'
+    // (second read) while fallbackToLegacy/protocolVersion reflect
+    // shadow + match — disagreeing fields.
+    expect(entry.session.toolCallsMode).toBe('shadow');
+    expect(entry.fallbackToLegacy).toBe(false);
+    expect(entry.protocolVersion).toBe('stage6');
+    expect(entry.session.systemPrompt).toBe('agentic-prompt');
+  });
+
+  test('J.2 — handleSessionResumeRehydrate: env flip between two reads is invisible to entry', async () => {
+    // Original session under shadow + match (mints a resume token).
+    process.env.SONNET_TOOL_CALLS = 'shadow';
+    const ws1 = connect(wss, 'user-J');
+    await sendFrame(ws1, {
+      type: 'session_start',
+      sessionId: 'sess-J2',
+      jobState: { certificateType: 'eicr' },
+      protocol_version: 'stage6',
+    });
+    const token = readRehydrateToken(ws1);
+    expect(activeSessions.get('sess-J2').session.toolCallsMode).toBe('shadow');
+
+    // Resume: simulate env flip between policy read and applyModeChange
+    // read. Pre-r8 the rehydrate function reads env twice (line 2072
+    // policy + line 2166 applyModeChange) — split-brain entry. Post-fix
+    // single snapshot at entry.
+    mockEnvSequence(['shadow', 'off', 'off']);
+
+    const ws2 = connect(wss, 'user-J');
+    await sendFrame(ws2, {
+      type: 'session_resume',
+      sessionId: token,
+      protocol_version: 'stage6',
+    });
+
+    const entry = activeSessions.get('sess-J2');
+    expect(entry).toBeDefined();
+    expect(entry.ws).toBe(ws2);
+    // Same consistency contract as J.1: post-fix BOTH writes reflect
+    // the single first-sampled value ('shadow').
+    expect(entry.session.toolCallsMode).toBe('shadow');
+    expect(entry.fallbackToLegacy).toBe(false);
+    expect(entry.protocolVersion).toBe('stage6');
+    expect(entry.session.systemPrompt).toBe('agentic-prompt');
+  });
+
+  test('J.3 — invalid env value: policy + applyModeChange both fall back to off consistently', async () => {
+    // Pre-r8 the policy block reads env via `|| 'off'` (no allow-list
+    // sanitisation), so a value like 'garbage' falls through to no
+    // matching branch (off-equivalent default). applyModeChange's
+    // resolveEffectiveToolCallsMode() correctly normalises 'garbage'
+    // → 'off' via the allow-list. Post-r8 the policy block ALSO uses
+    // resolveEffectiveToolCallsMode(), so 'garbage' is normalised to
+    // 'off' for the policy block too — single source of truth, single
+    // fallback policy. The contract this pins: the off-fallback applies
+    // CONSISTENTLY to both surfaces, so an off-mode entry is created
+    // (no live-reject, no shadow-mismatch warn, fallbackToLegacy false).
+    process.env.SONNET_TOOL_CALLS = 'garbage';
+    const ws = connect(wss, 'user-J');
+    await sendFrame(ws, {
+      type: 'session_start',
+      sessionId: 'sess-J3',
+      jobState: { certificateType: 'eicr' },
+      protocol_version: 'stage6',
+    });
+
+    const entry = activeSessions.get('sess-J3');
+    expect(entry).toBeDefined();
+    // Policy must NOT live-reject (garbage ≠ 'live').
+    expect(ws.close).not.toHaveBeenCalled();
+    // applyModeChange normalises to 'off'. Post-fix the policy block
+    // uses the same resolver, so the entry is in a consistent off
+    // state.
+    expect(entry.session.toolCallsMode).toBe('off');
+    // STR-01: off mode must have pristine emission state.
+    expect(entry.fallbackToLegacy).toBe(false);
+    // No shadow-mismatch warn fired (we're effectively off, not shadow).
+    const warnCalls = mockLogger.warn.mock.calls.map(([msg]) => msg);
+    expect(warnCalls).not.toContain('stage6.protocol_version_mismatch_shadow_fallback');
+  });
+});
+
+// -----------------------------------------------------------------------------
+// Group K — STR-01 rollback clears fallbackToLegacy on off branch (r8-#3)
+// -----------------------------------------------------------------------------
+//
+// Plan 06-09 r8-#3 (MINOR) — both off-mode write-back branches
+// (handleSessionStart reconnect at line ~1461 + handleSessionResumeRehydrate
+// at line ~2141) update existing.protocolVersion / entry.protocolVersion
+// but leave existing.fallbackToLegacy / entry.fallbackToLegacy untouched.
+//
+// After the sequence:
+//   1. Original session_start under shadow + mismatch (no protocol_version)
+//      → entry.fallbackToLegacy = true.
+//   2. Reconnect/resume under off + anything → off-branch fires, only
+//      writes protocolVersion. fallbackToLegacy stays at true from step 1.
+//
+// STR-01 says off mode is the rollback safe state — an entry whose
+// fallbackToLegacy stays true across a shadow → off transition violates
+// "off has pristine Stage 6 emission state" because the dispatcher's
+// fallbackToLegacy gate (Plan 06-02 r1-#1) is shadow-only territory but
+// any future code that reads entry.fallbackToLegacy WITHOUT first
+// gating on entry.session.toolCallsMode === 'shadow' would suppress
+// emission incorrectly.
+//
+// Group K pins the contract: the off-branch writes BOTH fallbackToLegacy
+// = false AND protocolVersion together. Single line addition per branch
+// alongside the existing protocolVersion write.
+
+describe('Group K — STR-01 rollback clears fallbackToLegacy on off branch (r8-#3)', () => {
+  test('K.1 — reconnect shadow→off: stale fallbackToLegacy is cleared', async () => {
+    // Step 1: open under shadow with NO protocol_version → mismatch
+    // → entry.fallbackToLegacy = true.
+    process.env.SONNET_TOOL_CALLS = 'shadow';
+    const ws1 = connect(wss, 'user-K');
+    await sendFrame(ws1, {
+      type: 'session_start',
+      sessionId: 'sess-K1',
+      jobState: { certificateType: 'eicr' },
+    });
+    expect(activeSessions.get('sess-K1').fallbackToLegacy).toBe(true);
+
+    // Step 2: operator flips shadow → off. Reconnect under off.
+    // Off-branch (line 1461-1466 pre-fix) only writes protocolVersion;
+    // fallbackToLegacy stays true. STR-01 violation.
+    process.env.SONNET_TOOL_CALLS = 'off';
+    const ws2 = connect(wss, 'user-K');
+    await sendFrame(ws2, {
+      type: 'session_start',
+      sessionId: 'sess-K1',
+      jobState: { certificateType: 'eicr' },
+      protocol_version: 'stage6',
+    });
+
+    const entry = activeSessions.get('sess-K1');
+    expect(entry).toBeDefined();
+    expect(entry.ws).toBe(ws2);
+    // STR-01 contract: off-mode entry must have pristine Stage 6
+    // emission state. Pre-fix this is `true`; post-fix it's `false`.
+    expect(entry.fallbackToLegacy).toBe(false);
+    expect(entry.session.toolCallsMode).toBe('off');
+  });
+
+  test('K.2 — resume shadow→off: stale entry.fallbackToLegacy is cleared', async () => {
+    process.env.SONNET_TOOL_CALLS = 'shadow';
+    const ws1 = connect(wss, 'user-K');
+    await sendFrame(ws1, {
+      type: 'session_start',
+      sessionId: 'sess-K2',
+      jobState: { certificateType: 'eicr' },
+      // No protocol_version → shadow mismatch → fallbackToLegacy=true.
+    });
+    expect(activeSessions.get('sess-K2').fallbackToLegacy).toBe(true);
+    const token = readRehydrateToken(ws1);
+
+    process.env.SONNET_TOOL_CALLS = 'off';
+    const ws2 = connect(wss, 'user-K');
+    await sendFrame(ws2, {
+      type: 'session_resume',
+      sessionId: token,
+      protocol_version: 'stage6',
+    });
+
+    const entry = activeSessions.get('sess-K2');
+    expect(entry).toBeDefined();
+    expect(entry.ws).toBe(ws2);
+    expect(entry.fallbackToLegacy).toBe(false);
+    expect(entry.session.toolCallsMode).toBe('off');
+  });
+});
