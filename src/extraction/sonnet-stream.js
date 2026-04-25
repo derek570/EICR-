@@ -111,6 +111,51 @@ function consumeLegacyQuestionsForUser(entry) {
 }
 
 /**
+ * Plan 06-07 r6-#1 (BLOCK) — re-resolve SONNET_TOOL_CALLS at reconnect/
+ * resume time so the freshly-bound entry's session tracks the latest env
+ * mode for runtime path selection.
+ *
+ * EICRExtractionSession._resolveToolCallsMode does the same allow-list
+ * sanitisation but it's an instance method that logs a warn keyed by
+ * `this.sessionId`. The two callers here (handleSessionStart reconnect,
+ * handleSessionResumeRehydrate) want a free function — they're updating
+ * an existing session's mode flag, not constructing a new one — and
+ * warning on every reconnect for an invalid env value would be log spam
+ * (the original construction already warned once at session_start).
+ * Duplicating the three-line allow-list is cheaper than refactoring
+ * `_resolveToolCallsMode` to be a static helper just for this surface.
+ *
+ * Why this matters (r6 root cause): the runtime dispatch path-selection
+ * happens in two places:
+ *   1. `runShadowHarness` (stage6-shadow-harness.js:188) reads
+ *      `session.toolCallsMode ?? 'off'` and routes to the legacy fast
+ *      path / Phase-6 throw / shadow harness.
+ *   2. `consumeLegacyQuestionsForUser` (above, line 109) reads
+ *      `entry?.session?.toolCallsMode === 'off'` to gate ingestion of
+ *      the legacy `questions_for_user` JSON field per STR-01.
+ *
+ * `entry.session.toolCallsMode` is set ONCE at session-construction
+ * time by EICRExtractionSession from process.env.SONNET_TOOL_CALLS.
+ * After r5 wrote `entry.protocolVersion` + `entry.fallbackToLegacy` on
+ * reconnect/resume, the entry's session.toolCallsMode stayed at the
+ * construction-time value forever — so an operator flipping
+ * SONNET_TOOL_CALLS=off→shadow (or shadow→off STR-01 rollback) mid-
+ * session left the runtime routing on the OLD path even though r5
+ * wrote the new handshake state. r6's fix calls this helper and writes
+ * the result onto `existing.session.toolCallsMode` (or
+ * `entry.session.toolCallsMode`) before rebinding `ws`.
+ *
+ * @returns {'off' | 'shadow' | 'live'} The effective toolCallsMode
+ *   given the current value of process.env.SONNET_TOOL_CALLS. Defaults
+ *   'off' when unset or invalid.
+ */
+function resolveEffectiveToolCallsMode() {
+  const raw = process.env.SONNET_TOOL_CALLS ?? 'off';
+  if (raw === 'off' || raw === 'shadow' || raw === 'live') return raw;
+  return 'off';
+}
+
+/**
  * One-shot per-session bypass log — fires exactly the first time a
  * non-empty `questions_for_user` payload is seen on the tool-call branch.
  * Subsequent turns for the same session are silent so a prompt regression
@@ -1419,6 +1464,35 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         // equivalence).
         existing.protocolVersion = protocolVersion;
       }
+      // ── Plan 06-07 r6-#1 (BLOCK) — write the freshly-resolved
+      // toolCallsMode onto the existing session AT REBIND TIME. r5-#2
+      // (block immediately above) wrote `fallbackToLegacy` +
+      // `protocolVersion` onto the entry. r6 completes the trio so the
+      // runtime dispatch (`runShadowHarness` route + the
+      // `consumeLegacyQuestionsForUser` legacy-question gate) tracks the
+      // latest env mode at every WS-rebind surface.
+      //
+      // Without this write, the entry.session's toolCallsMode stays at
+      // its construction-time value for the entry's lifetime — so an
+      // operator flipping SONNET_TOOL_CALLS=off → shadow (or
+      // shadow → off STR-01 rollback) mid-session leaves the runtime
+      // routing on the OLD path even though r5 wrote the new
+      // handshake state.
+      //
+      // The live + mismatch policy is enforced by the top block at
+      // lines ~1336-1359 which RETURNs before this reconnect branch is
+      // ever reached. So a rejected reconnect's session.toolCallsMode
+      // is never touched here — `existing.session` stays bound to the
+      // ORIGINAL ws's state and its disconnectTimer reaps normally.
+      //
+      // Placed BEFORE clearTimeout + BEFORE existing.ws = ws (later in
+      // this branch) so the three handshake-state writes
+      // (toolCallsMode, protocolVersion, fallbackToLegacy) are
+      // co-located adjacent to the inputs that drove the (mode × match)
+      // decision.
+      if (existing.session) {
+        existing.session.toolCallsMode = resolveEffectiveToolCallsMode();
+      }
       if (existing.disconnectTimer) {
         clearTimeout(existing.disconnectTimer);
         existing.disconnectTimer = null;
@@ -1994,6 +2068,20 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
       // off mode: record the latest value so a future mode flip sees the
       // freshest data; no policy enforcement.
       entry.protocolVersion = requestedProtocolVersion;
+    }
+    // ── Plan 06-07 r6-#1 (BLOCK) — symmetric write of the freshly-
+    // resolved toolCallsMode onto the existing session, mirroring the
+    // handleSessionStart reconnect branch. The rehydrate path is the
+    // OTHER WS-rebind surface; both must propagate the env mode so the
+    // runtime dispatch (`runShadowHarness` routing +
+    // `consumeLegacyQuestionsForUser` gate) follows it.
+    //
+    // The live + mismatch reject path above (line ~2031) RETURNs before
+    // reaching this write, so a rejected resume's session is never
+    // touched. Placed BEFORE entry.ws = ws (later in this function) so
+    // the three handshake-state writes are co-located.
+    if (entry.session) {
+      entry.session.toolCallsMode = resolveEffectiveToolCallsMode();
     }
 
     // Cancel any pending disconnect timer — we're live again.
