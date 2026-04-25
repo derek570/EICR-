@@ -982,6 +982,57 @@ function analyzeSession(sessionDir) {
     return sorted[mid];
   }
 
+  // Plan 08-04 r3-#1 (MAJOR): defence-in-depth normaliser for any
+  // log-derived value that flows into the dashboards / warnings.
+  //
+  // Codex r3-#1 surfaced that raw `answer_outcome` log values were being
+  // copied verbatim into `tool_call_traffic.ask_user.unknown_outcomes[]`
+  // and `events._warnings`. Those analysis.json surfaces are consumed by
+  // `scripts/generate-report-html.js` (which renders into the operator
+  // dashboard). The renderer escapes via `escapeHtml()` at the render
+  // sites it currently has — but `unknown_outcomes[]` and `warnings[]`
+  // are not yet rendered, and any future renderer addition that drops
+  // the escape would introduce a stored-XSS sink.
+  //
+  // Defence-in-depth: sanitise on the way IN here (analyzer), so the
+  // values entering the report surface are already safe-display-bounded:
+  //   1. Stringify non-strings via JSON.stringify (preserves type info —
+  //      0 → "0", false → "false", {} → "{}", [] → "[]"). Pairs with the
+  //      r3-#2 fix that routes non-string outcomes to the malformed
+  //      surface where this same helper stringifies them.
+  //   2. Strip control codepoints (Unicode 0x00..0x1F + 0x7F). Raw
+  //      control bytes corrupt log files / break terminals downstream
+  //      AND can carry CR/LF injection payloads in some renderers.
+  //   3. Truncate to 100 chars with a U+2026 (HORIZONTAL ELLIPSIS)
+  //      marker. Bounds report size against length-bomb payloads.
+  //
+  // Run BEFORE bucketing so the Map keys are already-safe; collapses
+  // attacker-distinct evil strings whose only difference was control
+  // chars or 100+ char prefixes (acceptable conflation — count
+  // aggregates correctly per visible shape; the operational signal is
+  // "something unknown showed up", not the exact byte contents).
+  //
+  // The renderer's `escapeHtml()` (`scripts/generate-report-html.js:28`)
+  // is the SECOND gate — it escapes HTML-significant chars (`<`, `>`,
+  // `&`, `"`) at every render site. Both gates must hold for the
+  // contract to be safe; this helper closes the analyzer side, the
+  // renderer's escape audit (Plan 08-04 Task 3-4) closes the renderer
+  // side.
+  function safeDisplayValue(raw) {
+    const s = typeof raw === "string" ? raw : JSON.stringify(raw);
+    // Strip control chars (Unicode 0x00..0x1F + 0x7F). Some hostile
+    // log writers encode literal control bytes inside JSON strings
+    // rather than the safer `\u00XX` form; this catches both forms
+    // (parsed JSON yields the literal char in either case).
+    // eslint-disable-next-line no-control-regex
+    const stripped = s.replace(/[\x00-\x1F\x7F]/g, "");
+    if (stripped.length <= 100) return stripped;
+    // Single-char U+2026 ellipsis (NOT three dots ".") so the cap is
+    // exactly 100 JS chars / Unicode codepoints. Three-dot ASCII
+    // would be 102 chars and break the length contract.
+    return stripped.slice(0, 99) + "…";
+  }
+
   const tools = [...toolMap.values()]
     .map((entry) => ({
       name: entry.name,
@@ -1055,14 +1106,25 @@ function analyzeSession(sessionDir) {
   for (const evt of askUserEvents) {
     const outcome = evt.data?.answer_outcome;
     if (outcome === "" || outcome === null || outcome === undefined) {
-      const key = String(outcome);
+      // Plan 08-04 r3-#1: route the malformed key through
+      // safeDisplayValue() so length-cap + control-char-strip are
+      // applied uniformly across both surfaces. For these three values
+      // the helper is a no-op (each stringifies to ≤100 chars with no
+      // control bytes), so the r2-#2 byte-level contract is preserved.
+      const key = safeDisplayValue(String(outcome));
       malformedOutcomeMap.set(key, (malformedOutcomeMap.get(key) || 0) + 1);
       continue;
     }
+    // Plan 08-04 r3-#1: bucket the unknown branch by the SAFE display
+    // form rather than the raw value. Two adversarial strings whose
+    // only difference was a 100+ char suffix or control bytes will
+    // collide here (acceptable conflation — the operational signal is
+    // "something unknown showed up", not the exact byte contents).
     if (Object.hasOwn(outcomes, outcome)) {
       outcomes[outcome] += 1;
     } else {
-      unknownOutcomeMap.set(outcome, (unknownOutcomeMap.get(outcome) || 0) + 1);
+      const safeKey = safeDisplayValue(outcome);
+      unknownOutcomeMap.set(safeKey, (unknownOutcomeMap.get(safeKey) || 0) + 1);
     }
   }
 
