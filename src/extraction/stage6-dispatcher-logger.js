@@ -116,7 +116,7 @@ export function logToolCall(logger, row) {
  * force every CloudWatch consumer to filter by an `event_type` discriminator
  * and complicate Insights queries. Two names → two clean query planes.
  *
- * WHY the 14-value enum (was 13 pre-r10, 12 pre-r8, 6 pre-Phase 3): Phase 3 ROADMAP
+ * WHY the 17-value enum (was 15 pre-r7, 14 pre-prompt-leak, 13 pre-r10, 12 pre-r8, 6 pre-Phase 3): Phase 3 ROADMAP
  * Open Question #1 resolved to expand the enum to cover every lifecycle
  * end-state surfaced by the Phase 3 dispatcher + session-termination flows.
  * Per STG-05 ("weakening requires sign-off"), this is expansion not
@@ -147,6 +147,47 @@ export function logToolCall(logger, row) {
  * an error-path — and swallow both the original bug AND the logger throw,
  * leaving the session with no STO-02 breadcrumb at all. The enum must stay
  * in lockstep with every answer_outcome the dispatcher can emit.
+ *
+ * Plan 05-13 r7 BLOCK remediation: split `dispatcher_error` into two
+ * lifecycle-keyed values (`dispatcher_error_pre_emit` and
+ * `dispatcher_error_post_emit`). The r5↔r6 toggle history (Plan 05-11
+ * → Plan 05-12) showed that a single outcome string cannot carry
+ * lifecycle position — the SAME envelope reason was classified
+ * non-fire (initial), fire (r5), and non-fire (r6) across three
+ * successive rounds based on lifecycle assumption alone. r7 closes
+ * the toggle problem permanently by encoding lifecycle position into
+ * the outcome NAME itself.
+ *
+ * Current emit sites (post-r7):
+ *   - stage6-dispatcher-ask.js outer catch (line 341): emits
+ *     `dispatcher_error_pre_emit`. The schema audit preserved in the
+ *     wrapper's _WRAPPER_SHORT_CIRCUIT_REASONS audit block confirms
+ *     this catch is structurally pre-emit (register rethrow at line
+ *     297 is BEFORE ws.send line 305; ws.send failures are caught +
+ *     swallowed in an inner try/catch that never reaches the outer
+ *     catch; no synchronous post-send work exists).
+ *   - stage6-ask-gate-wrapper.js timer-catch (line ~302): emits
+ *     `dispatcher_error_pre_emit` when the inner dispatcher throws
+ *     (always pre-emit because the only inner-throw path is the
+ *     register rethrow above).
+ *
+ * Reserved (no current emit site):
+ *   - `dispatcher_error_post_emit`: for any future refactor that adds
+ *     synchronous post-emit code (post-`ws.send` analytics, post-send
+ *     registry update, etc.) that can throw and reach the same outer
+ *     catch. The new emit site MUST use the `_post_emit` name (NOT
+ *     reclassify `_pre_emit`) so historical analyzer queries on the
+ *     existing names stay stable across the change. Classifier shape:
+ *     - dispatcher_error_pre_emit  → in _PRE_EMIT_NON_FIRE_REASONS (non-fire)
+ *     - dispatcher_error_post_emit → in NEITHER set (default fire branch)
+ *
+ * Legacy back-compat:
+ *   - `dispatcher_error` (Plan 03-12 r10) stays in the enum for
+ *     archived log row deserialisation. No active emit site post-r7.
+ *     Classifier treats it as ambiguous-legacy (NOT a member of either
+ *     pre-emit set → fire-default via isRealFire's fallthrough branch).
+ *     Conservative direction matches r5's reasoning for unknown-
+ *     lifecycle envelopes.
  */
 // Plan 05-05 — Object.freeze applied so runtime .push/.pop cannot silently
 // widen the closed enum. The freeze is a STRUCTURAL guarantee that pairs
@@ -177,12 +218,33 @@ export const ASK_USER_ANSWER_OUTCOMES = Object.freeze([
   'transcript_already_extracted',
   // Plan 03-12 r10 expansion (1): outer try/catch in dispatchAskUser emits
   // this when the live-path Promise setup/await throws unexpectedly.
+  // Plan 05-13 r7 — LEGACY at this point. No active emit site post-r7
+  // (every current emit renamed to dispatcher_error_pre_emit). Stays
+  // in the enum so logAskUser's invalid_answer_outcome gate accepts
+  // archived log rows shipped pre-r7. Classifier treats unknown-
+  // lifecycle envelopes carrying this reason as fire-default.
   'dispatcher_error',
   // Plan 04-26 Layer 2 — prompt-leak filter blocked the ask_user
   // pre-register because the model's question contained system-prompt
   // disclosure content. No iOS TTS emission, no registry register,
   // no STA-03 wait — just one audited row for the Phase 8 analyzer.
   'prompt_leak_blocked',
+  // Plan 05-13 r7 — lifecycle-keyed split of legacy `dispatcher_error`.
+  // `_pre_emit` is the active emit site post-r7 (stage6-dispatcher-ask.js
+  // outer catch + stage6-ask-gate-wrapper.js timer-catch). Pre-emit
+  // non-fire — register rethrow happens BEFORE ws.send, so the ask
+  // never reached iOS. See _PRE_EMIT_NON_FIRE_REASONS in
+  // stage6-ask-gate-wrapper.js for classifier membership.
+  'dispatcher_error_pre_emit',
+  // Plan 05-13 r7 — RESERVED for future post-emit code paths. Not
+  // emitted at r7 closure; pre-registered so a future refactor adding
+  // post-emit synchronous work that can throw + reach the same outer
+  // catch can emit this name and the classifier is already wired
+  // correctly (in NEITHER pre-emit set → fire by default — correct
+  // for post-emit lifecycle where the user has seen ask_user_started).
+  // Parallel to Plan 05-11 r5-#2's pre-registration of
+  // `gate_dispatcher_error` in _WRAPPER_SHORT_CIRCUIT_REASONS.
+  'dispatcher_error_post_emit',
 ]);
 
 // Plan 03-12 r19 MINOR remediation — closed enum for the `mode` field.

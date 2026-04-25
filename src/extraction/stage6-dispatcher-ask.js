@@ -324,10 +324,30 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws) {
       // clearTimeout + rethrow). Anything hitting this outer catch is a
       // genuine bug (a resolver threw, register() broke an invariant, the
       // Promise constructor itself threw on a runtime env quirk, etc.).
-      // Emit exactly one STO-02 row with answer_outcome='dispatcher_error'
-      // so the analyzer sees the ask attempt; then rethrow so runToolLoop
-      // produces a proper tool-loop error envelope. Best-effort — if the
-      // logger itself throws we let both errors propagate unchanged.
+      //
+      // Plan 05-13 r7 — emits answer_outcome='dispatcher_error_pre_emit'
+      // (was 'dispatcher_error' through Plan 05-12 r6). Schema audit
+      // preserved in stage6-ask-gate-wrapper.js's
+      // _WRAPPER_SHORT_CIRCUIT_REASONS audit block: this catch is
+      // structurally pre-emit. The only inner-throw path is the
+      // pendingAsks.register rethrow at the not-duplicate branch (line
+      // 297) which clears the timer and throws BEFORE ws.send (line
+      // 305). ws.send failures are caught + swallowed in their own
+      // inner try/catch (lines 304-318) and never reach the outer
+      // catch. No synchronous post-send code exists. The `_pre_emit`
+      // suffix encodes the audit conclusion in the name itself, so a
+      // future re-audit cannot toggle the classification without
+      // renaming the emit site too — closing the r5↔r6 same-name
+      // toggle problem permanently. If a future refactor introduces
+      // synchronous post-emit code that can throw and reaches the
+      // same outer catch, the right move is to BRANCH on lifecycle
+      // and emit `dispatcher_error_post_emit` (already enum-reserved
+      // in stage6-dispatcher-logger.js's ASK_USER_ANSWER_OUTCOMES) at
+      // that point — NOT reclassify the existing emit.
+      //
+      // Then rethrow so runToolLoop produces a proper tool-loop error
+      // envelope. Best-effort — if the logger itself throws we let
+      // both errors propagate unchanged.
       try {
         logAskUser(logger, {
           sessionId,
@@ -338,7 +358,7 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws) {
           reason: typeof input.reason === 'string' ? input.reason : 'missing_context',
           context_field: input.context_field ?? null,
           context_circuit: input.context_circuit ?? null,
-          answer_outcome: 'dispatcher_error',
+          answer_outcome: 'dispatcher_error_pre_emit',
           dispatcher_error: err?.code || err?.message || String(err),
           wait_duration_ms: Date.now() - askStartedAt,
         });

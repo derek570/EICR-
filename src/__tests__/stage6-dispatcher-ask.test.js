@@ -20,10 +20,7 @@
  */
 
 import { jest } from '@jest/globals';
-import {
-  createAskDispatcher,
-  ASK_USER_TIMEOUT_MS,
-} from '../extraction/stage6-dispatcher-ask.js';
+import { createAskDispatcher, ASK_USER_TIMEOUT_MS } from '../extraction/stage6-dispatcher-ask.js';
 import { createPendingAsksRegistry } from '../extraction/stage6-pending-asks-registry.js';
 
 // --- helpers ----------------------------------------------------------------
@@ -90,7 +87,7 @@ describe('createAskDispatcher — validation guard (STS-07)', () => {
         answer_outcome: 'validation_error',
         validation_error: 'invalid_question',
         mode: 'live',
-      }),
+      })
     );
   });
 
@@ -100,10 +97,10 @@ describe('createAskDispatcher — validation guard (STS-07)', () => {
     const pending = createPendingAsksRegistry();
     const dispatch = createAskDispatcher(session, logger, 'turn-1', pending, makeWs());
 
-    const res = await dispatch(
-      makeCall('toolu_b', { reason: 'NOT_A_REAL_REASON' }),
-      { sessionId: 'sess-1', turnId: 'turn-1' },
-    );
+    const res = await dispatch(makeCall('toolu_b', { reason: 'NOT_A_REAL_REASON' }), {
+      sessionId: 'sess-1',
+      turnId: 'turn-1',
+    });
 
     expect(res.is_error).toBe(true);
     expect(JSON.parse(res.content)).toMatchObject({
@@ -154,7 +151,7 @@ describe('createAskDispatcher — shadow-mode short-circuit', () => {
         answer_outcome: 'shadow_mode',
         mode: 'shadow',
         wait_duration_ms: 0,
-      }),
+      })
     );
   });
 
@@ -246,7 +243,7 @@ describe('createAskDispatcher — live happy path', () => {
           mode: 'live',
           user_text: 'Circuit 5',
           wait_duration_ms: 750,
-        }),
+        })
       );
     } finally {
       jest.useRealTimers();
@@ -339,7 +336,7 @@ describe('createAskDispatcher — live timeout path (STA-03)', () => {
           answer_outcome: 'timeout',
           mode: 'live',
           wait_duration_ms: 20000,
-        }),
+        })
       );
     } finally {
       jest.useRealTimers();
@@ -404,7 +401,7 @@ describe('createAskDispatcher — duplicate tool_call_id guard', () => {
     });
     expect(logger.info).toHaveBeenCalledWith(
       'stage6.ask_user',
-      expect.objectContaining({ answer_outcome: 'duplicate_tool_call_id' }),
+      expect.objectContaining({ answer_outcome: 'duplicate_tool_call_id' })
     );
 
     // Cleanup pre-seeded entry.
@@ -445,13 +442,13 @@ describe('createAskDispatcher — duplicate tool_call_id guard', () => {
       dispatch(makeCall('toolu_unexpected'), {
         sessionId: 'sess-1',
         turnId: 'turn-1',
-      }),
+      })
     ).rejects.toThrow(/boom/);
 
     // Must NOT log a duplicate_tool_call_id row — that would be a lie.
     expect(logger.info).not.toHaveBeenCalledWith(
       'stage6.ask_user',
-      expect.objectContaining({ answer_outcome: 'duplicate_tool_call_id' }),
+      expect.objectContaining({ answer_outcome: 'duplicate_tool_call_id' })
     );
 
     // Restore for hygiene (not strictly needed; registry is local).
@@ -482,7 +479,7 @@ describe('createAskDispatcher — askStartedAt captured before Promise construct
       await p;
 
       const logCall = logger.info.mock.calls.find(
-        (c) => c[0] === 'stage6.ask_user' && c[1].answer_outcome === 'answered',
+        (c) => c[0] === 'stage6.ask_user' && c[1].answer_outcome === 'answered'
       );
       expect(logCall).toBeDefined();
       expect(logCall[1].wait_duration_ms).toBe(500);
@@ -500,17 +497,23 @@ describe('createAskDispatcher — exports', () => {
   });
 });
 
-// --- Group 8: r10 outer try/catch — dispatcher_error log on executor throw
+// --- Group 8: r10 outer try/catch — dispatcher_error_pre_emit log on executor throw
 //
 // Plan 03-12 r10 MAJOR remediation. A non-duplicate throw from register()
 // (or any other unexpected failure inside the Promise executor) used to
 // propagate out of `await new Promise(...)` with ZERO stage6.ask_user row
 // emitted — analyzer lost the breadcrumb for the ask attempt entirely.
-// The new outer try/catch emits one row with answer_outcome='dispatcher_error'
-// before rethrowing. These tests lock that contract.
+// The new outer try/catch emits one row with answer_outcome=
+// 'dispatcher_error_pre_emit' (Plan 05-13 r7 — was 'dispatcher_error'
+// through Plan 05-12 r6) before rethrowing. The `_pre_emit` suffix
+// encodes the lifecycle position structurally — this catch only fires
+// from the line 297 register-rethrow path (clearTimeout + throw BEFORE
+// ws.send line 305), so the ask never reached iOS. r7 closes the
+// r5↔r6 same-name toggle problem permanently. These tests lock that
+// contract.
 
-describe('createAskDispatcher — r10 outer try/catch emits dispatcher_error row', () => {
-  test('non-duplicate register() throw produces ONE stage6.ask_user row with answer_outcome=dispatcher_error, then rethrows', async () => {
+describe('createAskDispatcher — r10 outer try/catch emits dispatcher_error_pre_emit row (Plan 05-13 r7 rename)', () => {
+  test('non-duplicate register() throw produces ONE stage6.ask_user row with answer_outcome=dispatcher_error_pre_emit, then rethrows', async () => {
     const session = makeSession('live');
     const logger = makeLogger();
     const pending = createPendingAsksRegistry();
@@ -525,11 +528,11 @@ describe('createAskDispatcher — r10 outer try/catch emits dispatcher_error row
     const dispatch = createAskDispatcher(session, logger, 'turn-1', pending, ws);
 
     await expect(
-      dispatch(makeCall('toolu_e1'), { sessionId: 'sess-1', turnId: 'turn-1' }),
+      dispatch(makeCall('toolu_e1'), { sessionId: 'sess-1', turnId: 'turn-1' })
     ).rejects.toBe(boom);
 
     const errCalls = logger.info.mock.calls.filter(
-      (c) => c[0] === 'stage6.ask_user' && c[1].answer_outcome === 'dispatcher_error',
+      (c) => c[0] === 'stage6.ask_user' && c[1].answer_outcome === 'dispatcher_error_pre_emit'
     );
     expect(errCalls).toHaveLength(1);
     const row = errCalls[0][1];
@@ -564,7 +567,9 @@ describe('createAskDispatcher — r10 outer try/catch emits dispatcher_error row
     });
 
     // The single row uses answer_outcome='duplicate_tool_call_id', NOT
-    // 'dispatcher_error' — the outer catch must not swallow this path.
+    // 'dispatcher_error_pre_emit' — the outer catch must not swallow
+    // this path. (Pre-Plan 05-13 r7 the comparison was against
+    // 'dispatcher_error'; the rename does not change semantics here.)
     const rows = logger.info.mock.calls.filter((c) => c[0] === 'stage6.ask_user');
     expect(rows).toHaveLength(1);
     expect(rows[0][1].answer_outcome).toBe('duplicate_tool_call_id');
