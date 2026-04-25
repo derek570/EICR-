@@ -41,6 +41,15 @@ export interface CircuitUpdate {
 }
 
 export interface Observation {
+  /**
+   * Server-assigned stable UUID for the observation. Present on all
+   * current sessions (`src/extraction/sonnet-stream.js:226` Phase A).
+   * Stored on the row so a follow-up `observation_update` can find
+   * the originating observation even when Sonnet rewords the
+   * `observation_text` between the initial extraction and the
+   * BPG4-resolved refinement.
+   */
+  observation_id?: string;
   code?: string;
   observation_text: string;
   item_location?: string | null;
@@ -87,6 +96,29 @@ export interface SonnetQuestion {
   circuit?: number | null;
 }
 
+/**
+ * Refinement of an existing observation's classification — sent by the
+ * server a second or two after the initial extraction once the BPG4 /
+ * BS 7671 web-search lookup resolves. Mirrors iOS
+ * `ServerWebSocketService.ObservationUpdate` byte-for-byte (snake_case
+ * wire keys; iOS uses CodingKeys to map to its camelCase properties).
+ *
+ * Wire reference: `src/extraction/sonnet-stream.js` emits this with
+ * `{type: 'observation_update', observation_id, observation_text, code,
+ * regulation?, rationale?, source?}`.
+ */
+export interface ObservationUpdate {
+  /** Server-assigned stable UUID matching the `observation_id` on the
+   *  initial extraction. May be missing on legacy sessions; handler
+   *  falls back to fuzzy text match in that case. */
+  observation_id?: string;
+  observation_text: string;
+  code: string;
+  regulation?: string;
+  rationale?: string;
+  source?: string;
+}
+
 export interface VoiceCommandResponse {
   understood: boolean;
   spoken_response: string;
@@ -119,6 +151,17 @@ export interface SonnetSessionCallbacks {
   onSessionAck?: (status: string, sessionId?: string) => void;
   onExtraction?: (result: ExtractionResult) => void;
   onQuestion?: (q: SonnetQuestion) => void;
+  /**
+   * Fires when the server emits an `observation_update` — a refinement
+   * of an existing observation's classification once the BPG4 /
+   * BS 7671 lookup resolves. Caller patches the matching
+   * `job.observations` row (matched by `observation_id`, with fuzzy
+   * text fallback). Without this handler, observations that the
+   * inspector saw populate from the initial extraction would never
+   * pick up the lookup-resolved code/regulation refinement — same gap
+   * the audit's Phase 6 P0 flagged.
+   */
+  onObservationUpdate?: (update: ObservationUpdate) => void;
   onVoiceCommandResponse?: (payload: VoiceCommandResponse) => void;
   onCostUpdate?: (update: CostUpdate) => void;
   onError?: (err: Error, recoverable: boolean) => void;
@@ -135,6 +178,14 @@ export interface SonnetSessionCallbacks {
 export interface SonnetSessionDeps {
   scheduler?: (cb: () => void, ms: number) => unknown;
   clearScheduler?: (handle: unknown) => void;
+  /**
+   * Override the 25-s ALB heartbeat interval. Production never sets
+   * this; tests pass a tiny value (e.g. 50 ms) so the heartbeat-loop
+   * regression can be observed without faking timers around the
+   * jest-websocket-mock handshake (which itself needs real timers to
+   * settle).
+   */
+  heartbeatIntervalMs?: number;
 }
 
 export interface SessionStartOptions {
@@ -177,6 +228,26 @@ export function isReconnectEnabled(): boolean {
 }
 
 /** Base backoff delay in ms — first reconnect attempt waits ~500ms. */
+/**
+ * Application-level heartbeat interval. Matches iOS
+ * `ServerWebSocketService.pingInterval` exactly (25 s).
+ *
+ * Why an app-level JSON heartbeat AND not just WS ping frames: AWS ALB
+ * idle_timeout tracks application data-frame traffic, not control
+ * frames. iOS observed three consecutive sessions in 2026-04-22..24
+ * (51A530BB / A02B018D / 0952EC64) where ALB closed the WS after ~88s
+ * of doze silence despite WS PINGs flowing. Sending `{"type":
+ * "heartbeat"}` over the same socket every 25 s resets ALB's idle
+ * counter and keeps the Sonnet session (+ its 5-min Anthropic prompt
+ * cache) alive through any silence. Server treats it as a no-op (see
+ * `src/extraction/sonnet-stream.js` `case 'heartbeat'`).
+ *
+ * Audit Phase 6 P0 flagged web's missing heartbeat. iOS parity here
+ * means a doze gap on web no longer reconnects mid-session and rebuilds
+ * Sonnet context from scratch.
+ */
+const HEARTBEAT_INTERVAL_MS = 25_000;
+
 const RECONNECT_BASE_MS = 500;
 /** Hard cap in ms — later attempts plateau here rather than growing unbounded. */
 const RECONNECT_CAP_MS = 10_000;
@@ -219,12 +290,18 @@ export class SonnetSession {
   // Gates whether we send `session_start` (first open) or `session_resume`
   // (reconnect) on the new socket's onopen.
   private hasConnectedOnce = false;
+  // 25-s app-level heartbeat to defeat ALB idle_timeout. Started on
+  // every successful open, cleared on disconnect AND on close (so a
+  // mid-session dirty close doesn't keep firing into a dead socket).
+  private heartbeatTimer: unknown = null;
+  private heartbeatIntervalMs: number;
 
   constructor(callbacks: SonnetSessionCallbacks = {}, deps: SonnetSessionDeps = {}) {
     this.callbacks = callbacks;
     this.schedule = deps.scheduler ?? ((cb, ms) => setTimeout(cb, ms));
     this.clearSchedule =
       deps.clearScheduler ?? ((h) => clearTimeout(h as ReturnType<typeof setTimeout>));
+    this.heartbeatIntervalMs = deps.heartbeatIntervalMs ?? HEARTBEAT_INTERVAL_MS;
   }
 
   /**
@@ -324,6 +401,7 @@ export class SonnetSession {
       }
 
       this.hasConnectedOnce = true;
+      this.startHeartbeat();
 
       // Flush anything queued while connecting. On reconnect this also
       // drains anything the user said while the socket was down.
@@ -344,6 +422,7 @@ export class SonnetSession {
 
     ws.onclose = (event) => {
       this.ws = null;
+      this.stopHeartbeat();
       if (this.state !== 'error') this.setState('disconnected');
 
       const isClean = event.code === 1000 || event.code === 1005 || !this.shouldReconnect;
@@ -458,6 +537,7 @@ export class SonnetSession {
       this.clearSchedule(this.reconnectTimer);
       this.reconnectTimer = null;
     }
+    this.stopHeartbeat();
     const ws = this.ws;
     if (!ws) {
       this.setState('disconnected');
@@ -485,6 +565,37 @@ export class SonnetSession {
   }
 
   // ── Internals ──────────────────────────────────────────────────────────
+
+  /**
+   * Start the 25-s heartbeat loop. Idempotent — clears any previous
+   * timer before scheduling. Uses `setInterval` directly because the
+   * injected `schedule` is a one-shot `setTimeout` shape; the
+   * heartbeat is a steady-state cadence and doesn't need
+   * exp-backoff/jitter the way reconnect does. Tests can verify via
+   * `getHeartbeatInterval()` debug accessor (see end of class).
+   */
+  private startHeartbeat(): void {
+    this.stopHeartbeat();
+    this.heartbeatTimer = setInterval(() => {
+      // Bail if the socket isn't actually open — interval can fire
+      // between a clean close and the next open. Sending into a
+      // closed socket would throw; gate to avoid the no-op overhead.
+      if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+      try {
+        this.ws.send(JSON.stringify({ type: 'heartbeat' }));
+      } catch {
+        // Send failures here are non-fatal — the socket will surface
+        // its own onerror/onclose if it's actually broken.
+      }
+    }, this.heartbeatIntervalMs);
+  }
+
+  private stopHeartbeat(): void {
+    if (this.heartbeatTimer) {
+      clearInterval(this.heartbeatTimer as ReturnType<typeof setInterval>);
+      this.heartbeatTimer = null;
+    }
+  }
 
   private setState(next: SonnetConnectionState) {
     if (this.state === next) return;
@@ -593,6 +704,24 @@ export class SonnetSession {
       }
       case 'cost_update': {
         this.callbacks.onCostUpdate?.(json as unknown as CostUpdate);
+        break;
+      }
+      case 'observation_update': {
+        // BPG4 / BS 7671 lookup resolved — refine the observation row
+        // the inspector saw populate from the initial extraction. iOS
+        // parity: `ServerWebSocketService.swift:760` decodes the same
+        // wire shape and fans out to `handleObservationUpdate`. Without
+        // this branch the observation stays at its initial-extraction
+        // classification forever even though the server sent the
+        // refined code/regulation seconds later.
+        this.callbacks.onObservationUpdate?.({
+          observation_id: typeof json.observation_id === 'string' ? json.observation_id : undefined,
+          observation_text: (json.observation_text as string) ?? '',
+          code: (json.code as string) ?? '',
+          regulation: typeof json.regulation === 'string' ? json.regulation : undefined,
+          rationale: typeof json.rationale === 'string' ? json.rationale : undefined,
+          source: typeof json.source === 'string' ? json.source : undefined,
+        });
         break;
       }
       case 'error': {

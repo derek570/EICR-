@@ -29,9 +29,7 @@ function makeJob(overrides: Partial<JobDetail> = {}): JobDetail {
     user_id: 'u1',
     certificate_type: 'EICR',
     folder_name: 'job-1',
-    board: {
-      boards: [{ id: 'board-1', designation: 'DB1', manufacturer: 'Existing Co' }],
-    },
+    boards: [{ id: 'board-1', designation: 'DB1', manufacturer: 'Existing Co' }],
     circuits: [],
     ...overrides,
   } as unknown as JobDetail;
@@ -77,8 +75,8 @@ describe('applyCcuAnalysisToJob — names_only mode', () => {
     });
 
     // No board / supply patch — names-only mode intentionally skips them.
-    expect(result.patch.board).toBeUndefined();
-    expect(result.patch.supply).toBeUndefined();
+    expect(result.patch.boards).toBeUndefined();
+    expect(result.patch.supply_characteristics).toBeUndefined();
 
     const circuits = result.patch.circuits as CircuitRow[];
     expect(circuits).toHaveLength(2);
@@ -121,15 +119,15 @@ describe('applyCcuAnalysisToJob — names_only mode', () => {
     // board, leaving new circuits tagged with a board_id that didn't
     // exist in job.board — breaking every later board-scoped flow.
     const job = makeJob({
-      board: { boards: [] } as unknown as Record<string, unknown>,
+      boards: [],
       circuits: [],
     });
 
     const result = applyCcuAnalysisToJob(job, makeAnalysis(), { mode: 'names_only' });
 
-    const patchedBoard = result.patch.board as { boards: { id: string }[] } | undefined;
-    expect(patchedBoard?.boards?.length).toBe(1);
-    const boardId = patchedBoard!.boards[0].id;
+    const patchedBoards = result.patch.boards as { id: string }[] | undefined;
+    expect(patchedBoards?.length).toBe(1);
+    const boardId = patchedBoards![0].id;
 
     const circuits = result.patch.circuits as CircuitRow[];
     expect(circuits.length).toBeGreaterThan(0);
@@ -154,7 +152,7 @@ describe('applyCcuAnalysisToJob — names_only mode', () => {
       targetBoardId: 'board-1',
     });
 
-    expect(result.patch.board).toBeUndefined();
+    expect(result.patch.boards).toBeUndefined();
   });
 });
 
@@ -163,7 +161,7 @@ describe('applyCcuAnalysisToJob — full_capture mode (default)', () => {
     const job = makeJob();
     const result = applyCcuAnalysisToJob(job, makeAnalysis(), { targetBoardId: 'board-1' });
     // Board patched (proves full_capture ran, not names_only).
-    expect(result.patch.board).toBeDefined();
+    expect(result.patch.boards).toBeDefined();
     const circuits = result.patch.circuits as CircuitRow[];
     expect(circuits[0].ocpd_type).toBe('B');
   });
@@ -225,9 +223,7 @@ describe('applyCcuAnalysisToJob — full_capture mode (default)', () => {
 
   it('does NOT overwrite board manufacturer when full_capture runs over an existing board', () => {
     const job = makeJob({
-      board: {
-        boards: [{ id: 'board-1', designation: 'DB1', manufacturer: 'Inspector Typed' }],
-      },
+      boards: [{ id: 'board-1', designation: 'DB1', manufacturer: 'Inspector Typed' }],
     } as unknown as Partial<JobDetail>);
 
     const result = applyCcuAnalysisToJob(job, makeAnalysis(), {
@@ -235,8 +231,8 @@ describe('applyCcuAnalysisToJob — full_capture mode (default)', () => {
       targetBoardId: 'board-1',
     });
 
-    const board = result.patch.board as { boards: Array<Record<string, unknown>> };
-    expect(board.boards[0].manufacturer).toBe('Inspector Typed');
+    const patchedBoards = result.patch.boards as Array<Record<string, unknown>>;
+    expect(patchedBoards[0].manufacturer).toBe('Inspector Typed');
   });
 });
 
@@ -286,9 +282,7 @@ describe('applyCcuAnalysisToJob — hardware_update mode', () => {
   it('OVERWRITES board-level info (physically different board)', () => {
     const job = makeJob({
       circuits: existing,
-      board: {
-        boards: [{ id: 'board-1', designation: 'DB1', manufacturer: 'Old Brand' }],
-      },
+      boards: [{ id: 'board-1', designation: 'DB1', manufacturer: 'Old Brand' }],
     } as unknown as Partial<JobDetail>);
 
     const analysis = makeAnalysis();
@@ -300,9 +294,9 @@ describe('applyCcuAnalysisToJob — hardware_update mode', () => {
       userApprovedMatches,
     });
 
-    const board = result.patch.board as { boards: Array<Record<string, unknown>> };
+    const patchedBoards = result.patch.boards as Array<Record<string, unknown>>;
     // Contrast with full_capture — hardware_update IS destructive on board info.
-    expect(board.boards[0].manufacturer).toBe('Wylex');
+    expect(patchedBoards[0].manufacturer).toBe('Wylex');
   });
 
   it('preserves readings on matched circuits and drops unmatched blanks', () => {

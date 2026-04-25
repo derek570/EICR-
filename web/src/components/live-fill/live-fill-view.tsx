@@ -49,10 +49,10 @@ export function LiveFillView() {
     // in a row we still re-fire the scroll.
   }, [lastUpdatedSection, lastUpdatedAt]);
 
-  const installation = (job.installation ?? {}) as Record<string, unknown>;
-  const supply = (job.supply ?? {}) as Record<string, unknown>;
-  const board = (job.board ?? {}) as Record<string, unknown>;
-  const extent = (job.extent ?? {}) as Record<string, unknown>;
+  const installation = (job.installation_details ?? {}) as Record<string, unknown>;
+  const supply = (job.supply_characteristics ?? {}) as Record<string, unknown>;
+  const board = (job.board_info ?? {}) as Record<string, unknown>;
+  const extent = (job.extent_and_type ?? {}) as Record<string, unknown>;
   const circuits = job.circuits ?? [];
   const observations = job.observations ?? [];
 

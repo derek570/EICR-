@@ -170,10 +170,10 @@ function mergeBoard(
   job: JobDetail,
   incoming: Record<string, unknown>,
   targetBoardId: string | null
-): { board: Record<string, unknown>; boardId: string } | null {
+): { boards: Record<string, unknown>[]; boardId: string } | null {
   type BoardRecord = Record<string, unknown> & { id: string };
-  const boardState = (job.board as { boards?: BoardRecord[] } | undefined) ?? {};
-  const boards: BoardRecord[] = boardState.boards ? [...boardState.boards] : [];
+  const existingBoards = (job.boards ?? []) as BoardRecord[];
+  const boards: BoardRecord[] = [...existingBoards];
 
   // Only bother synthesising if the extractor actually populated
   // something — otherwise returning a patch would just churn state.
@@ -202,11 +202,13 @@ function mergeBoard(
     changed = true;
   }
 
-  if (!changed && boards === boardState.boards) return null;
+  if (!changed && boards.length === existingBoards.length && boards[idx] === existingBoards[idx]) {
+    return null;
+  }
 
   boards[idx] = next;
   return {
-    board: { ...boardState, boards },
+    boards,
     boardId: next.id,
   };
 }
@@ -382,18 +384,19 @@ export function applyDocumentExtractionToJob(
   const formData: DocumentExtractionFormData = response?.formData ?? {};
 
   const installationIncoming = formData.installation_details ?? {};
-  const installationExisting = (job.installation as Record<string, unknown> | undefined) ?? {};
+  const installationExisting =
+    (job.installation_details as Record<string, unknown> | undefined) ?? {};
   const installationPatch = mergeInstallation(installationExisting, installationIncoming);
-  if (installationPatch) patch.installation = installationPatch;
+  if (installationPatch) patch.installation_details = installationPatch;
 
   const supplyIncoming = formData.supply_characteristics ?? {};
-  const supplyExisting = (job.supply as Record<string, unknown> | undefined) ?? {};
+  const supplyExisting = (job.supply_characteristics as Record<string, unknown> | undefined) ?? {};
   const supplyPatch = mergeSupply(supplyExisting, supplyIncoming);
-  if (supplyPatch) patch.supply = supplyPatch;
+  if (supplyPatch) patch.supply_characteristics = supplyPatch;
 
   const boardIncoming = formData.board_info ?? {};
   const boardResult = mergeBoard(job, boardIncoming, options.targetBoardId ?? null);
-  if (boardResult) patch.board = boardResult.board;
+  if (boardResult) patch.boards = boardResult.boards;
 
   const boardId =
     boardResult?.boardId ??
@@ -402,8 +405,8 @@ export function applyDocumentExtractionToJob(
       // Fall back to the first existing board if we didn't synth one —
       // keeps new circuits attached to a real board when the extractor
       // didn't populate board fields.
-      const boards = (job.board as { boards?: { id: string }[] } | undefined)?.boards;
-      return boards?.[0]?.id ?? null;
+      const boards = (job.boards ?? []) as Array<{ id?: string }>;
+      return boards[0]?.id ?? null;
     })();
 
   const circuitsResult = mergeCircuits(job, formData.circuits ?? [], boardId);

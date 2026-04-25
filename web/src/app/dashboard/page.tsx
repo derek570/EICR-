@@ -12,6 +12,7 @@ import {
   Search,
   Settings,
   Shield,
+  SlidersHorizontal,
   UserCheck,
 } from 'lucide-react';
 import { api } from '@/lib/api-client';
@@ -152,13 +153,25 @@ export default function DashboardPage() {
     return { active, done, exp };
   }, [jobs]);
 
-  const recent = React.useMemo(() => {
+  // Initial render shows up to RECENT_INITIAL jobs; "Show all" toggles
+  // off the cap. The bounded default protects inspectors with hundreds
+  // of historical jobs from a 1000-row first-paint (each `JobRow` is a
+  // full client component with its own outbox-pending lookup), while
+  // the toggle still lets a power user reach every job from the
+  // dashboard without leaving the page.
+  const RECENT_INITIAL = 50;
+  const [showAll, setShowAll] = React.useState(false);
+  const recentFiltered = React.useMemo(() => {
     const list = jobs ?? [];
-    const filtered = query.trim()
+    return query.trim()
       ? list.filter((j) => (j.address ?? '').toLowerCase().includes(query.trim().toLowerCase()))
       : list;
-    return filtered.slice(0, 8);
   }, [jobs, query]);
+  const recent = React.useMemo(
+    () => (showAll ? recentFiltered : recentFiltered.slice(0, RECENT_INITIAL)),
+    [recentFiltered, showAll]
+  );
+  const recentTruncated = recentFiltered.length > recent.length;
 
   async function createJob(kind: 'EICR' | 'EIC') {
     const user = getUser();
@@ -268,16 +281,32 @@ export default function DashboardPage() {
               : 'No certificates yet — start an EICR or EIC above.'}
           </div>
         ) : (
-          <div className="flex flex-col gap-2">
-            {recent.map((j) => (
-              <JobRow
-                key={j.id}
-                job={j}
-                pendingSync={pendingJobIds.has(j.id)}
-                onDeleted={handleJobDeleted}
-              />
-            ))}
-          </div>
+          <>
+            <div
+              className="flex max-h-[60vh] flex-col gap-2 overflow-y-auto pr-1"
+              // ↑ scroll container so every job is reachable. Cap at
+              // 60vh to keep the Setup & Tools tiles visible below
+              // without forcing two scroll regions on the same page.
+            >
+              {recent.map((j) => (
+                <JobRow
+                  key={j.id}
+                  job={j}
+                  pendingSync={pendingJobIds.has(j.id)}
+                  onDeleted={handleJobDeleted}
+                />
+              ))}
+            </div>
+            {recentTruncated ? (
+              <button
+                type="button"
+                onClick={() => setShowAll(true)}
+                className="mt-1 self-start rounded-full border border-[var(--color-border-subtle)] bg-[var(--color-surface-2)] px-3 py-1.5 text-[12px] font-semibold text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]"
+              >
+                Show all {recentFiltered.length} jobs
+              </button>
+            ) : null}
+          </>
         )}
       </section>
 
@@ -302,6 +331,14 @@ export default function DashboardPage() {
           <SetupTile icon={UserCheck} label="Staff" href="/settings/staff" />
           <SetupTile icon={Settings} label="Settings" href="/settings" />
           {/*
+           * Defaults tile — iOS `DashboardView.swift:L593-L595` parity.
+           * Was previously hidden (the comment claimed the page was
+           * "Phase 6 work"), but `/settings/defaults` ships on main
+           * already, so the dashboard now surfaces the same shortcut
+           * iOS does instead of forcing a Settings → Defaults two-tap.
+           */}
+          <SetupTile icon={SlidersHorizontal} label="Defaults" href="/settings/defaults" />
+          {/*
            * Phase 3 — Tour tile. Two flavours:
            *   - While the tour is live, we show "Stop tour" so the
            *     user can always bail without hunting for the floating
@@ -310,8 +347,6 @@ export default function DashboardPage() {
            *     point. The tile appears regardless of the `seen` flag
            *     so returning users can re-run on demand (matches the
            *     iOS "Tour" tile which is always visible).
-           * Defaults tile (iOS `DashboardView.swift:L593-L595`) is
-           * intentionally hidden — the Defaults page is Phase 6 work.
            */}
           <SetupTile
             icon={Compass}

@@ -456,6 +456,56 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
           speak(q.question);
         }
       },
+      onObservationUpdate: (update) => {
+        // BPG4 / BS 7671 lookup resolved on the server — patch the
+        // matching observation row in place. Match strategy mirrors
+        // iOS `handleObservationUpdate`:
+        //   1. Prefer `observation_id` exact match. The id is the
+        //      server-assigned stable UUID stored on the row by
+        //      `applyObservations` from the initial extraction; the
+        //      field exists on every observation Sonnet has emitted
+        //      since `src/extraction/sonnet-stream.js:226` (Phase A).
+        //   2. Fall back to fuzzy text match against the row's
+        //      `description` (which is what `applyObservations`
+        //      writes) using the wire `observation_text` from the
+        //      update. Matters for legacy sessions that pre-date the
+        //      id assignment.
+        // No match → drop the update (the observation may have been
+        // deleted by the inspector between extraction + refinement).
+        // Codex review on `d035b71` caught a shape mismatch where the
+        // lookup used `o.observation_text` (the wire key) instead of
+        // `o.description` (the stored key).
+        const job = jobRef.current;
+        const observations = job.observations ?? [];
+        if (observations.length === 0) return;
+
+        let idx = -1;
+        if (update.observation_id) {
+          idx = observations.findIndex((o) => o.observation_id === update.observation_id);
+        }
+        if (idx === -1 && update.observation_text) {
+          const target = update.observation_text.trim().toLowerCase();
+          idx = observations.findIndex((o) => {
+            const text = o.description;
+            return typeof text === 'string' && text.trim().toLowerCase() === target;
+          });
+        }
+        if (idx === -1) return;
+
+        const next = observations.slice();
+        next[idx] = {
+          ...next[idx],
+          // Refinement always carries `code` + `observation_text`;
+          // `regulation` / `rationale` / `source` are optional and
+          // only landed on the row when present.
+          code: update.code as 'C1' | 'C2' | 'C3' | 'FI' | undefined,
+          description: update.observation_text,
+          ...(update.regulation !== undefined ? { regulation: update.regulation } : {}),
+          ...(update.rationale !== undefined ? { rationale: update.rationale } : {}),
+          ...(update.source !== undefined ? { source: update.source } : {}),
+        };
+        updateJobRef.current({ observations: next });
+      },
       onCostUpdate: (update) => {
         // Server sends totalJobCost in USD. We keep Sonnet cost
         // separate from Deepgram so the UI ticker stays smooth between

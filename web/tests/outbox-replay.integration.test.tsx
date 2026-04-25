@@ -77,7 +77,7 @@ const BASE_JOB: JobDetail = JobDetailSchema.parse({
   status: 'pending',
   created_at: '2026-04-18T00:00:00Z',
   certificate_type: 'EICR',
-  installation: { postcode: 'SW1A 1AA' },
+  installation_details: { postcode: 'SW1A 1AA' },
 }) as unknown as JobDetail;
 
 /**
@@ -179,9 +179,10 @@ describe('Wave 3a · replay worker · MSW integration', () => {
     // Write-through overlays the patch on the cached doc.
     expect(cached?.address).toBe('2 New Road');
     // Unrelated cached fields survive the overlay.
-    expect((cached as unknown as { installation?: Record<string, unknown> })?.installation).toEqual(
-      { postcode: 'SW1A 1AA' }
-    );
+    expect(
+      (cached as unknown as { installation_details?: Record<string, unknown> })
+        ?.installation_details
+    ).toEqual({ postcode: 'SW1A 1AA' });
   });
 
   it('2. 4xx poison — 422 row moved to poisoned, later row still replays', async () => {

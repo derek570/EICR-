@@ -3,7 +3,7 @@
  *
  * Mirrors the iOS `DeepgramService.swift` protocol so the two clients
  * behave identically — same URL parameters (nova-3 / linear16 / 16kHz /
- * en-GB / interim_results / endpointing=300 / utterance_end_ms=2000 /
+ * en-GB / interim_results / endpointing=300 / utterance_end_ms=1500 /
  * vad_events=true). Auth differs by transport: iOS sets an
  * `Authorization: Bearer <jwt>` header on the WS upgrade; browsers can't
  * set upgrade headers so we pass the same JWT as the `bearer` subprotocol
@@ -19,6 +19,8 @@
  * identical to transcript-standalone — keep in sync if Deepgram params
  * change there.
  */
+
+import { appendKeytermsToUrl, generateKeyterms, type CcuAnalysisLite } from './keyword-boosts';
 
 export type DeepgramConnectionState =
   | 'disconnected'
@@ -136,6 +138,14 @@ export class DeepgramService {
   // `reconnecting` state change is the UI signal) so transient blips
   // don't flash scary errors mid-session.
   private hasEverOpened = false;
+
+  // Most recent CCU photo analysis. When non-null, `buildURL` augments
+  // the keyterm list with board-specific vocabulary (manufacturer,
+  // OCPD types, circuit labels) for stronger Deepgram boosts on the
+  // job under test. Set via `setCcuAnalysis()` from the recording
+  // context after CCU analysis lands; persisted across reconnects so
+  // mid-session reopens keep the augmented keyterm set.
+  private ccuAnalysis: CcuAnalysisLite | null = null;
 
   constructor(callbacks: DeepgramCallbacks, wsFactory?: WebSocketFactory) {
     this.callbacks = callbacks;
@@ -483,10 +493,48 @@ export class DeepgramService {
       language: 'en-GB',
       interim_results: 'true',
       endpointing: '300',
-      utterance_end_ms: '2000',
+      // utterance_end_ms 1500 — match iOS DeepgramService.swift after the
+      // 2026-04-20 voice-quality-sprint Stage 1 tuning. iOS history (per
+      // its inline comment): 2000 → 1200 shortened TTS latency (8-12s →
+      // ~3s); 1200 → 1500 trades 300ms for fewer mid-utterance
+      // truncations when the inspector pauses mid-reading ("R1 plus R2
+      // is ... zero point six four"). speech_final remains the primary
+      // turn-end signal; UtteranceEnd is the silence-timeout fallback.
+      // Project rule (`~/.claude/rules/mistakes.md`): keep web and iOS
+      // Deepgram configs in sync. Audit Phase 6 P0 flagged this drift.
+      utterance_end_ms: '1500',
       vad_events: 'true',
     });
-    return `wss://api.deepgram.com/v1/listen?${params.toString()}`;
+
+    // Nova-3 keyterm prompting — port of iOS `KeywordBoostGenerator`.
+    // The base electrical vocabulary (~89 keyterms) goes on every
+    // connect; CCU-augmented keyterms (board manufacturer / OCPD types
+    // / circuit labels) are layered on via `setCcuAnalysis()` before
+    // the next `connect()`. Audit Phase 6 P0 closed by this branch.
+    //
+    // The URL-length budget (1800 chars) is enforced inside
+    // `appendKeytermsToUrl`. Lower-budget operators (mobile carriers
+    // doing in-flight HTTP rewriting) sometimes truncate WS-upgrade
+    // URLs; iOS picked 1800 as the safe cap after a 2026-02-26 incident
+    // where 95 keyterms produced URLs >2200 chars and Deepgram 400'd.
+    const baseUrl = 'wss://api.deepgram.com/v1/listen';
+    const baseLength = baseUrl.length + '?'.length + params.toString().length;
+    const keyterms = generateKeyterms(this.ccuAnalysis);
+    appendKeytermsToUrl(params, keyterms, baseLength);
+
+    return `${baseUrl}?${params.toString()}`;
+  }
+
+  /**
+   * Snapshot of the most recent CCU photo analysis. When set, the next
+   * `connect()` call augments the keyterm list with board-specific
+   * vocabulary (manufacturer, OCPD types found, circuit labels, etc.)
+   * — see `generateKeyterms` for the full set of derivations. Caller
+   * (the recording context) sets this when CCU analysis lands and
+   * before re-connecting Deepgram for the next recording session.
+   */
+  setCcuAnalysis(analysis: CcuAnalysisLite | null): void {
+    this.ccuAnalysis = analysis;
   }
 
   private resampleTo16k(samples: Float32Array): Float32Array {

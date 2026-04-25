@@ -2,7 +2,7 @@
 
 import * as React from 'react';
 import Link from 'next/link';
-import { usePathname, useRouter } from 'next/navigation';
+import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { Logo } from '@/components/brand/logo';
 import { api } from '@/lib/api-client';
 import { clearAuth, getUser } from '@/lib/auth';
@@ -12,6 +12,7 @@ import { InstallButton } from '@/components/pwa/install-button';
 import { OfflineBanner, OfflineIndicator } from '@/components/pwa/offline-indicator';
 import { AlertsBell } from '@/components/dashboard/alerts-bell';
 import { useOutboxReplay } from '@/lib/pwa/outbox-replay';
+import { hasAcceptedCurrentTerms } from '@/app/terms/legal-texts-gate';
 
 /**
  * Top-nav + page frame for all authenticated screens.
@@ -20,6 +21,7 @@ import { useOutboxReplay } from '@/lib/pwa/outbox-replay';
  */
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
+  const searchParams = useSearchParams();
   const router = useRouter();
   const [userName, setUserName] = React.useState<string>('');
 
@@ -27,6 +29,38 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     const u = getUser();
     if (u) setUserName(u.name || u.email);
   }, []);
+
+  /*
+   * Client-side T&Cs gate. Middleware can't read localStorage, so the
+   * cross-platform terms-accepted state must be checked once the
+   * AppShell mounts. Inspectors who haven't accepted (or whose accepted
+   * version is stale) are bounced to `/terms?next=<currentPath>` so we
+   * can return them to where they were going on success.
+   *
+   * The `next` value preserves both the pathname AND the original search
+   * string. Routes like `/job/[id]/circuits/match-review?nonce=...` rely
+   * on query state to resume the right flow; an earlier version of this
+   * gate stored only `pathname` and silently dropped the query, sending
+   * the inspector to the wrong screen post-accept (codex review finding
+   * on `06caaf9`).
+   *
+   * Auth-gated routes are exempt from re-running this redirect (they
+   * have their own AppShell mount), but `/terms` itself and any future
+   * `/login`-style unauthenticated routes are not under AppShell.
+   * `/offline` is a similar exception — we want PWA users on a flaky
+   * network to see the offline page even if they haven't accepted yet.
+   */
+  React.useEffect(() => {
+    if (pathname === '/terms') return;
+    if (hasAcceptedCurrentTerms()) return;
+    const params = new URLSearchParams();
+    if (pathname && pathname !== '/dashboard') {
+      const search = searchParams ? searchParams.toString() : '';
+      params.set('next', search ? `${pathname}?${search}` : pathname);
+    }
+    const qs = params.toString();
+    router.replace(qs ? `/terms?${qs}` : '/terms');
+  }, [pathname, router, searchParams]);
 
   /*
    * Phase 7c — drain the offline mutation outbox on mount, on `online`,

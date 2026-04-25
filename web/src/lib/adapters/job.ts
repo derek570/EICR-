@@ -15,11 +15,19 @@
 
 import { z } from 'zod';
 
+/**
+ * Wire shape for one circuit row. Canonical keys are
+ * `circuit_ref` + `circuit_designation` (matches
+ * `packages/shared-types/src/circuit.ts Circuit`); the schema accepts
+ * legacy `number` / `description` via `.passthrough()` so any pre-
+ * Wave-B job blob still validates without coercion. Wave-B closed
+ * audit Phase 3 #16/#18 by aligning the named keys to the wire.
+ */
 export const CircuitRowSchema = z
   .object({
     id: z.string(),
-    number: z.string().optional(),
-    description: z.string().optional(),
+    circuit_ref: z.string().optional(),
+    circuit_designation: z.string().optional(),
   })
   .passthrough();
 
@@ -69,17 +77,32 @@ export const JobListSchema = z.array(JobSchema);
  * own files and evolve independently. The adapter boundary only
  * enforces the envelope — individual tabs validate their own fields
  * at render time.
+ *
+ * Keys match the backend wire shape emitted by `GET /api/job/:userId/:jobId`
+ * (`src/routes/jobs.js:575-592`) and the canonical shared-types
+ * JobDetailSchema (`packages/shared-types/src/schemas.ts:65-77`). iOS
+ * is aligned with the backend by construction; Wave 5 on the PWA
+ * replaced them with drifted single-word aliases (`installation`,
+ * `supply`, `board`, …) which zod's default strip-mode silently
+ * dropped, so every tab was reading an empty bucket even though the
+ * server returned the data.
  */
 export const JobDetailSchema = JobSchema.extend({
-  installation: z.record(z.string(), z.unknown()).optional(),
-  extent: z.record(z.string(), z.unknown()).optional(),
-  supply: z.record(z.string(), z.unknown()).optional(),
-  board: z.record(z.string(), z.unknown()).optional(),
+  // Backend emits these as `null` when the bucket isn't populated yet
+  // (src/routes/jobs.js:585-591); schemas must accept null or the first
+  // job load on a blank-slate job fails validation and the UI never
+  // paints. `board_info` is the sole exception — the backend always
+  // defaults it to `{}` so it's present on every response.
+  installation_details: z.record(z.string(), z.unknown()).nullable().optional(),
+  supply_characteristics: z.record(z.string(), z.unknown()).nullable().optional(),
+  board_info: z.record(z.string(), z.unknown()).optional(),
+  boards: z.array(z.record(z.string(), z.unknown())).nullable().optional(),
   circuits: z.array(CircuitRowSchema).optional(),
   observations: z.array(ObservationRowSchema).optional(),
-  inspection: z.record(z.string(), z.unknown()).optional(),
-  design: z.record(z.string(), z.unknown()).optional(),
-  inspector: InspectorInfoSchema.optional(),
+  inspection_schedule: z.record(z.string(), z.unknown()).nullable().optional(),
+  extent_and_type: z.record(z.string(), z.unknown()).nullable().optional(),
+  design_construction: z.record(z.string(), z.unknown()).nullable().optional(),
+  inspector_id: z.string().nullable().optional(),
   // CCU analysis — most-recent flat copy + per-board map. See the
   // `ccu_analysis_by_board` comment on `JobDetail` for the multi-board
   // scoping decision (P0-3).

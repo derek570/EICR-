@@ -14,7 +14,10 @@ import {
   Wrench,
   Zap as ZapIcon,
 } from 'lucide-react';
+import { api } from '@/lib/api-client';
 import { useJobContext } from '@/lib/job-context';
+import { useCurrentUser } from '@/lib/use-current-user';
+import type { InspectorProfile } from '@/lib/types';
 import { HeroHeader } from '@/components/ui/hero-header';
 import { SectionCard } from '@/components/ui/section-card';
 import { cn } from '@/lib/utils';
@@ -24,53 +27,72 @@ import { cn } from '@/lib/utils';
  *
  * EICR shows two role pickers: "Inspected & Tested By" and "Authorised By".
  * EIC shows three: Designer, Constructor, Inspection & Testing. Each role
- * picker is a list of Inspector profiles (MVP: a locally-fetched stub list
- * — settings CRUD arrives in Phase 6). Selecting an inspector also reveals
- * a Test Equipment card showing serial numbers + calibration dates for the
- * 5 test instruments (MFT, Continuity, IR, Earth fault, RCD).
+ * picker is a list of `InspectorProfile`s loaded from
+ * `api.inspectorProfiles(user.id)` on mount — same source as the Settings
+ * → Staff page so the roster stays in sync. iOS reads from a local GRDB
+ * table populated by the same API; PWA has no client-side DB so we fetch
+ * each time the tab mounts (cheap — single JSON blob per user).
+ *
+ * Selecting an inspector also reveals a Test Equipment card showing
+ * serial numbers + calibration dates for the 5 test instruments (MFT,
+ * Continuity, IR, Earth fault, RCD). Equipment fields live on the PWA
+ * `InspectorProfile` extension only; backend stores the profiles blob
+ * verbatim so the keys round-trip.
  *
  * State shape (snake_case per JobFormData):
  *   - job.inspector_id
  *   - job.authorised_by_id     (EICR)
  *   - job.designer_id          (EIC)
  *   - job.constructor_id       (EIC)
- *   - job.inspectors: Inspector[] (future: loaded from /api/inspectors)
  */
-
-type Inspector = {
-  id: string;
-  full_name: string;
-  position?: string;
-  mft_serial?: string;
-  mft_calibration_date?: string;
-  continuity_serial?: string;
-  continuity_calibration_date?: string;
-  insulation_serial?: string;
-  insulation_calibration_date?: string;
-  earth_fault_serial?: string;
-  earth_fault_calibration_date?: string;
-  rcd_serial?: string;
-  rcd_calibration_date?: string;
-};
 
 type StaffJobShape = {
   inspector_id?: string;
   authorised_by_id?: string;
   designer_id?: string;
   constructor_id?: string;
-  /**
-   * Embedded inspector roster. Persisted on the job so a historic cert
-   * renders correctly even after a staff member leaves. Refreshed from
-   * `/api/inspectors` each time the tab mounts (Phase 6).
-   */
-  inspectors?: Inspector[];
 };
 
 export default function StaffPage() {
   const { job, certificateType, updateJob } = useJobContext();
+  const { user } = useCurrentUser();
   const isEIC = certificateType === 'EIC';
   const data = job as unknown as StaffJobShape;
-  const inspectors = data.inspectors ?? [];
+  const [inspectors, setInspectors] = React.useState<InspectorProfile[]>([]);
+
+  // Fetch the roster on mount + whenever the signed-in user changes.
+  // Errors are swallowed (the empty-state copy already explains what to
+  // do); a transient API failure shouldn't blow up the whole tab. Mirrors
+  // iOS `InspectorTab.onAppear` which also tolerates an empty roster.
+  //
+  // Crucially we clear the local roster on every user change *and* on a
+  // failed fetch so the picker can never render a previous account's
+  // signatories. Without this, `useCurrentUser` flipping to `null` on a
+  // 401/403 (its documented session-revoked path) would leave the prior
+  // roster visible and the inspector could click a stale id, writing
+  // another account's signatory into `job.inspector_id`. Codex review
+  // finding on `317d18d`.
+  React.useEffect(() => {
+    if (!user) {
+      setInspectors([]);
+      return;
+    }
+    let cancelled = false;
+    void api.inspectorProfiles(user.id).then(
+      (list) => {
+        if (!cancelled) setInspectors(list);
+      },
+      () => {
+        // On rejection clear the roster — see comment above. Settings →
+        // Staff is the canonical place to debug fetch issues, so we
+        // intentionally don't surface a toast here.
+        if (!cancelled) setInspectors([]);
+      }
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [user]);
 
   const setRole = (role: keyof StaffJobShape, id: string) => {
     updateJob({ [role]: id } as Partial<typeof job>);
@@ -160,7 +182,7 @@ function RolePickerCard({
   accent: 'blue' | 'green' | 'amber' | 'magenta' | 'red';
   icon: React.ComponentType<{ className?: string; 'aria-hidden'?: boolean; strokeWidth?: number }>;
   title: string;
-  inspectors: Inspector[];
+  inspectors: InspectorProfile[];
   selectedId: string | undefined;
   onSelect: (id: string) => void;
 }) {
@@ -208,11 +230,11 @@ function RolePickerCard({
                   background: selected ? 'var(--color-brand-blue)' : 'rgba(0, 102, 255, 0.12)',
                 }}
               >
-                {i.full_name.trim().charAt(0).toUpperCase() || '?'}
+                {i.name.trim().charAt(0).toUpperCase() || '?'}
               </span>
               <span className="flex min-w-0 flex-1 flex-col">
                 <span className="truncate text-[15px] font-medium text-[var(--color-text-primary)]">
-                  {i.full_name}
+                  {i.name}
                 </span>
                 {i.position ? (
                   <span className="truncate text-[12px] text-[var(--color-text-secondary)]">
@@ -237,37 +259,37 @@ function RolePickerCard({
 
 /* ----------------------------------------------------------------------- */
 
-function EquipmentCard({ inspector }: { inspector: Inspector }) {
+function EquipmentCard({ inspector }: { inspector: InspectorProfile }) {
   return (
     <SectionCard accent="green" icon={Wrench} title="Test Equipment">
       <EquipmentRow
         icon={Gauge}
         name="MFT"
-        serial={inspector.mft_serial}
+        serial={inspector.mft_serial_number}
         calibration={inspector.mft_calibration_date}
       />
       <EquipmentRow
         icon={ZapIcon}
         name="Continuity"
-        serial={inspector.continuity_serial}
+        serial={inspector.continuity_serial_number}
         calibration={inspector.continuity_calibration_date}
       />
       <EquipmentRow
         icon={ShieldCheck}
         name="Insulation Resistance"
-        serial={inspector.insulation_serial}
+        serial={inspector.insulation_serial_number}
         calibration={inspector.insulation_calibration_date}
       />
       <EquipmentRow
         icon={ZapIcon}
         name="Earth Fault Loop"
-        serial={inspector.earth_fault_serial}
+        serial={inspector.earth_fault_serial_number}
         calibration={inspector.earth_fault_calibration_date}
       />
       <EquipmentRow
         icon={ShieldCheck}
         name="RCD"
-        serial={inspector.rcd_serial}
+        serial={inspector.rcd_serial_number}
         calibration={inspector.rcd_calibration_date}
       />
     </SectionCard>

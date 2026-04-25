@@ -24,8 +24,9 @@ function outcomeToObservationCode(
   outcome: ScheduleOutcome | undefined
 ): NonNullable<ObservationRow['code']> | null {
   if (!outcome) return null;
+  // Inspection-item outcomes are 'tick' | 'N/A' | 'C1' | 'C2' | 'C3' | 'LIM'.
+  // Only C1/C2/C3 trigger observation creation; FI is observation-only.
   if (outcome === 'C1' || outcome === 'C2' || outcome === 'C3') return outcome;
-  if (outcome === 'FI') return 'FI';
   return null;
 }
 
@@ -65,9 +66,7 @@ describe('outcomeToObservationCode', () => {
     expect(outcomeToObservationCode('C1')).toBe('C1');
     expect(outcomeToObservationCode('C2')).toBe('C2');
     expect(outcomeToObservationCode('C3')).toBe('C3');
-    expect(outcomeToObservationCode('FI')).toBe('FI');
-    expect(outcomeToObservationCode('✓')).toBeNull();
-    expect(outcomeToObservationCode('✗')).toBeNull();
+    expect(outcomeToObservationCode('tick')).toBeNull();
     expect(outcomeToObservationCode('N/A')).toBeNull();
     expect(outcomeToObservationCode('LIM')).toBeNull();
     expect(outcomeToObservationCode(undefined)).toBeNull();
@@ -81,8 +80,8 @@ describe('Inspection — outcome change decision', () => {
     expect(d.shouldUnlink).toBe(false);
   });
 
-  it('empty → ✓: commits, no form, no unlink', () => {
-    const d = decideOutcomeChange(undefined, '✓', null);
+  it('empty → tick: commits, no form, no unlink', () => {
+    const d = decideOutcomeChange(undefined, 'tick', null);
     expect(d.shouldOpenInlineForm).toBe(false);
     expect(d.shouldUnlink).toBe(false);
   });

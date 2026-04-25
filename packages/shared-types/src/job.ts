@@ -85,9 +85,14 @@ export interface InspectionItem {
 
 export interface InspectionSchedule {
   items: Record<string, InspectionItem>;
-  hasMicrogeneration?: boolean;
-  isTTEarthing?: boolean;
-  markSection7NA?: boolean;
+  // Wire keys match iOS `InspectionSchedule.swift` CodingKeys (snake_case)
+  // so a job round-trips losslessly between iOS and PWA. Earlier camelCase
+  // names here did not match what iOS encoded — the actual wire shape is
+  // snake_case (the camelCase forms are Swift property names that get
+  // remapped at encode time).
+  has_microgeneration?: boolean;
+  is_tt_earthing?: boolean;
+  mark_section7_na?: boolean;
 }
 
 export interface ExtentAndType {

@@ -27,7 +27,12 @@ import type {
   Observation,
 } from './sonnet-session';
 
-type Section = 'supply' | 'board' | 'installation' | 'extent' | 'design';
+type Section =
+  | 'supply_characteristics'
+  | 'board_info'
+  | 'installation_details'
+  | 'extent_and_type'
+  | 'design_construction';
 
 // ─────────────────────────────────────────────────────────────────────────
 // Field routing for circuit: 0 (supply / installation / etc.)
@@ -39,83 +44,83 @@ type Section = 'supply' | 'board' | 'installation' | 'extent' | 'design';
 // ─────────────────────────────────────────────────────────────────────────
 const CIRCUIT_0_SECTION: Record<string, Section> = {
   // Supply
-  ze: 'supply',
-  pfc: 'supply',
-  earthing_arrangement: 'supply',
-  main_earth_conductor_csa: 'supply',
-  main_bonding_conductor_csa: 'supply',
-  bonding_water: 'supply',
-  bonding_gas: 'supply',
-  bonding_oil: 'supply',
-  bonding_structural_steel: 'supply',
-  bonding_lightning: 'supply',
-  bonding_other: 'supply',
-  earth_electrode_type: 'supply',
-  earth_electrode_resistance: 'supply',
-  earth_electrode_location: 'supply',
-  earthing_conductor_material: 'supply',
-  earthing_conductor_continuity: 'supply',
-  main_bonding_material: 'supply',
-  main_bonding_continuity: 'supply',
-  supply_voltage: 'supply',
-  nominal_voltage: 'supply',
-  nominal_voltage_u: 'supply',
-  nominal_voltage_uo: 'supply',
-  supply_frequency: 'supply',
-  nominal_frequency: 'supply',
-  supply_polarity_confirmed: 'supply',
-  live_conductors: 'supply',
-  number_of_supplies: 'supply',
-  zs_at_db: 'supply',
+  ze: 'supply_characteristics',
+  pfc: 'supply_characteristics',
+  earthing_arrangement: 'supply_characteristics',
+  main_earth_conductor_csa: 'supply_characteristics',
+  main_bonding_conductor_csa: 'supply_characteristics',
+  bonding_water: 'supply_characteristics',
+  bonding_gas: 'supply_characteristics',
+  bonding_oil: 'supply_characteristics',
+  bonding_structural_steel: 'supply_characteristics',
+  bonding_lightning: 'supply_characteristics',
+  bonding_other: 'supply_characteristics',
+  earth_electrode_type: 'supply_characteristics',
+  earth_electrode_resistance: 'supply_characteristics',
+  earth_electrode_location: 'supply_characteristics',
+  earthing_conductor_material: 'supply_characteristics',
+  earthing_conductor_continuity: 'supply_characteristics',
+  main_bonding_material: 'supply_characteristics',
+  main_bonding_continuity: 'supply_characteristics',
+  supply_voltage: 'supply_characteristics',
+  nominal_voltage: 'supply_characteristics',
+  nominal_voltage_u: 'supply_characteristics',
+  nominal_voltage_uo: 'supply_characteristics',
+  supply_frequency: 'supply_characteristics',
+  nominal_frequency: 'supply_characteristics',
+  supply_polarity_confirmed: 'supply_characteristics',
+  live_conductors: 'supply_characteristics',
+  number_of_supplies: 'supply_characteristics',
+  zs_at_db: 'supply_characteristics',
   // Board / Main Switch / SPD
-  main_switch_bs_en: 'board',
-  main_switch_current: 'board',
-  main_switch_fuse_setting: 'board',
-  main_switch_poles: 'board',
-  main_switch_voltage: 'board',
-  main_switch_location: 'board',
-  main_switch_conductor_material: 'board',
-  main_switch_conductor_csa: 'board',
-  rcd_operating_current: 'board',
-  rcd_time_delay: 'board',
-  rcd_operating_time: 'board',
-  spd_bs_en: 'board',
-  spd_type_supply: 'board',
-  spd_short_circuit: 'board',
-  spd_rated_current: 'board',
-  manufacturer: 'board',
+  main_switch_bs_en: 'board_info',
+  main_switch_current: 'board_info',
+  main_switch_fuse_setting: 'board_info',
+  main_switch_poles: 'board_info',
+  main_switch_voltage: 'board_info',
+  main_switch_location: 'board_info',
+  main_switch_conductor_material: 'board_info',
+  main_switch_conductor_csa: 'board_info',
+  rcd_operating_current: 'board_info',
+  rcd_time_delay: 'board_info',
+  rcd_operating_time: 'board_info',
+  spd_bs_en: 'board_info',
+  spd_type_supply: 'board_info',
+  spd_short_circuit: 'board_info',
+  spd_rated_current: 'board_info',
+  manufacturer: 'board_info',
   // Installation
-  address: 'installation',
-  postcode: 'installation',
-  town: 'installation',
-  county: 'installation',
-  client_name: 'installation',
-  client_address: 'installation',
-  client_postcode: 'installation',
-  client_town: 'installation',
-  client_county: 'installation',
-  client_phone: 'installation',
-  client_email: 'installation',
-  reason_for_report: 'installation',
-  occupier_name: 'installation',
-  date_of_inspection: 'installation',
-  date_of_previous_inspection: 'installation',
-  previous_certificate_number: 'installation',
-  estimated_age_of_installation: 'installation',
-  general_condition: 'installation',
-  next_inspection_years: 'installation',
-  premises_description: 'installation',
+  address: 'installation_details',
+  postcode: 'installation_details',
+  town: 'installation_details',
+  county: 'installation_details',
+  client_name: 'installation_details',
+  client_address: 'installation_details',
+  client_postcode: 'installation_details',
+  client_town: 'installation_details',
+  client_county: 'installation_details',
+  client_phone: 'installation_details',
+  client_email: 'installation_details',
+  reason_for_report: 'installation_details',
+  occupier_name: 'installation_details',
+  date_of_inspection: 'installation_details',
+  date_of_previous_inspection: 'installation_details',
+  previous_certificate_number: 'installation_details',
+  estimated_age_of_installation: 'installation_details',
+  general_condition: 'installation_details',
+  next_inspection_years: 'installation_details',
+  premises_description: 'installation_details',
   // Extent (EIC)
-  extent_of_installation: 'extent',
-  installation_type: 'extent',
+  extent_of_installation: 'extent_and_type',
+  installation_type: 'extent_and_type',
   // Design (EIC)
-  departures_from_bs7671: 'design',
-  departure_details: 'design',
-  design_comments: 'design',
+  departures_from_bs7671: 'design_construction',
+  departure_details: 'design_construction',
+  design_comments: 'design_construction',
 };
 
 function routeSupplyField(field: string): Section {
-  return CIRCUIT_0_SECTION[field] ?? 'supply';
+  return CIRCUIT_0_SECTION[field] ?? 'supply_characteristics';
 }
 
 /** Non-empty / non-null check used by the 3-tier priority guard. */
@@ -250,6 +255,11 @@ function applyObservations(job: JobDetail, observations: Observation[]): Observa
     const code = parseObservationCode(obs.code);
     existing.push({
       id,
+      // Persist the server-assigned `observation_id` so follow-up
+      // `observation_update` frames can patch this row by stable id
+      // even when Sonnet rewords the description between extraction
+      // and BPG4-resolved refinement.
+      ...(obs.observation_id ? { observation_id: obs.observation_id } : {}),
       code,
       description: text,
       location: obs.item_location ?? undefined,
@@ -271,7 +281,28 @@ export function parseObservationCode(
 }
 
 /** Sections whose flat records feed LiveFillState section keys. */
-const SCALAR_SECTIONS: Section[] = ['installation', 'supply', 'board', 'extent', 'design'];
+const SCALAR_SECTIONS: Section[] = [
+  'installation_details',
+  'supply_characteristics',
+  'board_info',
+  'extent_and_type',
+  'design_construction',
+];
+
+/** LiveFillView uses short-form section prefixes on its `fieldKey`
+ *  props (e.g. `installation.client_name`). The wire-shape Section type
+ *  uses the backend-canonical long-form (`installation_details`), so the
+ *  diff must emit the short form to keep the "just changed" flash
+ *  firing on real-time Sonnet updates. Map here at the emission boundary
+ *  rather than renaming all 31 fieldKey props — the short form is a
+ *  pure-client identifier with no wire-shape implication. */
+const SECTION_LIVE_FILL_PREFIX: Record<Section, string> = {
+  installation_details: 'installation',
+  supply_characteristics: 'supply',
+  board_info: 'board',
+  extent_and_type: 'extent',
+  design_construction: 'design',
+};
 
 /** Diff two section records and emit dot-path keys for any value that
  *  changed. Only reports keys whose new value passes `hasValue` — zero
@@ -285,9 +316,10 @@ function diffSectionKeys(
   if (!after) return [];
   const prev = before ?? {};
   const keys: string[] = [];
+  const prefix = SECTION_LIVE_FILL_PREFIX[section];
   for (const field of Object.keys(after)) {
     if (prev[field] !== after[field] && hasValue(after[field])) {
-      keys.push(`${section}.${field}`);
+      keys.push(`${prefix}.${field}`);
     }
   }
   return keys;

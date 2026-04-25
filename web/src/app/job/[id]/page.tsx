@@ -44,9 +44,9 @@ export default function JobOverviewPage() {
 
   // Cast tab data bags to a permissive record so we can read whichever
   // keys Sonnet has populated without fighting the type system.
-  const installation = (job.installation ?? {}) as Record<string, unknown>;
-  const supply = (job.supply ?? {}) as Record<string, unknown>;
-  const board = (job.board ?? {}) as Record<string, unknown>;
+  const installation = (job.installation_details ?? {}) as Record<string, unknown>;
+  const supply = (job.supply_characteristics ?? {}) as Record<string, unknown>;
+  const board = (job.board_info ?? {}) as Record<string, unknown>;
   const circuits: CircuitRow[] = job.circuits ?? [];
   const observations: ObservationRow[] = job.observations ?? [];
 
@@ -142,7 +142,7 @@ export default function JobOverviewPage() {
             icon={ClipboardList}
             title="Extent"
             href={`${base}/extent`}
-            body={str((job.extent ?? ({} as Record<string, unknown>)).extent)}
+            body={str((job.extent_and_type ?? ({} as Record<string, unknown>)).extent)}
             empty="No extent recorded yet."
           />
         )}
