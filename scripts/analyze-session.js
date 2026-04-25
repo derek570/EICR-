@@ -1015,13 +1015,30 @@ function analyzeSession(sessionDir) {
   // the analyzer) or instrumentation failure (a row escaped the throw).
   // Either is operationally serious. Silently dropping the row would
   // hide the failure from the optimizer / report.
-  const outcomes = {};
+  //
+  // Plan 08-03 r2-#1 (MAJOR): log data is UNTRUSTED. The previous shape
+  // — `const outcomes = {};` + `if (outcome in outcomes)` — walks
+  // `Object.prototype` on every membership check, so an `answer_outcome`
+  // value of "__proto__", "constructor", or "toString" passes the
+  // membership test as if it were a known frozen-enum key — silently
+  // bypassing the unknown-surface added by r1-#3. We close the
+  // prototype-pollution attack vector by:
+  //   - building the histogram via `Object.create(null)` so it has NO
+  //     prototype chain at all (own-properties only — JSON.stringify
+  //     walks own enumerable keys, which is exactly the frozen-enum
+  //     set we want);
+  //   - testing membership via `Object.hasOwn(outcomes, outcome)` so
+  //     the lookup ONLY tests own-properties.
+  // Same defence as a `Set`-backed lookup, lighter at the call site,
+  // and preserves the existing `analysis.json` shape byte-identical
+  // for known-only sessions.
+  const outcomes = Object.create(null);
   for (const o of ASK_USER_ANSWER_OUTCOMES) outcomes[o] = 0;
   const unknownOutcomeMap = new Map();
   for (const evt of askUserEvents) {
     const outcome = evt.data?.answer_outcome;
     if (!outcome) continue;
-    if (outcome in outcomes) {
+    if (Object.hasOwn(outcomes, outcome)) {
       outcomes[outcome] += 1;
     } else {
       unknownOutcomeMap.set(outcome, (unknownOutcomeMap.get(outcome) || 0) + 1);
