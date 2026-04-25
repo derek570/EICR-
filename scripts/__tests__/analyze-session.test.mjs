@@ -599,3 +599,138 @@ test("Plan 08-03 r2-#2 — sessions WITHOUT malformed outcomes produce 0 count +
   );
   assert.equal(malformedWarnings.length, 0);
 });
+
+// ── Phase 8 — Plan 08-04 r3-#1: XSS injection lock for unknown_outcomes + warnings values ──
+//
+// Codex r3-#1 (MAJOR) raised that `scripts/analyze-session.js:1077` (the
+// `unknown_outcomes[]` array push and `events._warnings` warnings push)
+// copies raw `answer_outcome` log values verbatim into the analysis.json
+// surface that downstream consumers (generate-report-html.js) render.
+// If any future renderer addition skips `escapeHtml()`, an attacker-
+// poisoned debug log can inject markup or script (stored XSS).
+//
+// Defence-in-depth: sanitise on the way IN at the analyzer (this round
+// of tests) so the values entering the report surface are already
+// length-bounded + control-char-stripped + type-info-preserving.
+//
+// Fixture: `xss-injection-session/` has 5 ask_user rows —
+// 1 known (`answered`), 3 adversarial unknowns (`<script>alert(1)
+// </script>` payload, 200-char `"AAAA…"` length-bomb, control-char
+// `evil\x00\x1Bvalue`), 1 known (`gated`).
+test("Plan 08-04 r3-#1 — short HTML-significant payload passes through but stays length-bounded", () => {
+  const a = runAnalyzer("xss-injection-session");
+  const askUser = a.tool_call_traffic.ask_user;
+
+  // The 30-char `<script>alert(1)</script>` payload is below the 100-char
+  // cap and contains no control chars, so it should pass through the
+  // sanitiser byte-identical. The HTML-significant chars themselves are
+  // safe to carry in JSON; the renderer's `escapeHtml()` is the second
+  // gate that prevents them from rendering as markup.
+  const scriptEntry = askUser.unknown_outcomes.find(
+    (e) => e.value === "<script>alert(1)</script>",
+  );
+  assert.ok(
+    scriptEntry,
+    "<script>alert(1)</script> payload should appear in unknown_outcomes (pass-through, length OK)",
+  );
+  assert.equal(scriptEntry.count, 1);
+  assert.ok(
+    scriptEntry.value.length <= 100,
+    "Sanitised value MUST be ≤100 chars",
+  );
+});
+
+test("Plan 08-04 r3-#1 — long payload (>100 chars) truncated with U+2026 ellipsis", () => {
+  const a = runAnalyzer("xss-injection-session");
+  const askUser = a.tool_call_traffic.ask_user;
+
+  // The 200-char `"AAAA..."` length-bomb should be truncated to exactly
+  // 100 chars total: 99 × "A" + 1-char U+2026 ellipsis marker.
+  const truncatedEntry = askUser.unknown_outcomes.find(
+    (e) => e.value.startsWith("AAAA") && e.value.length === 100,
+  );
+  assert.ok(
+    truncatedEntry,
+    "200-char length-bomb should be truncated to exactly 100 chars",
+  );
+  assert.equal(truncatedEntry.count, 1);
+  // U+2026 (HORIZONTAL ELLIPSIS) — single Unicode codepoint, single
+  // JS string char. Use the literal character to lock the contract.
+  assert.equal(
+    truncatedEntry.value[truncatedEntry.value.length - 1],
+    "…",
+    "Truncation marker MUST be U+2026 ellipsis (single char)",
+  );
+  // Verify the 99 chars before the ellipsis are all "A".
+  assert.equal(
+    truncatedEntry.value.slice(0, 99),
+    "A".repeat(99),
+    "First 99 chars MUST be the original payload prefix",
+  );
+});
+
+test("Plan 08-04 r3-#1 — control-char payload has 0x00 and 0x1B bytes stripped", () => {
+  const a = runAnalyzer("xss-injection-session");
+  const askUser = a.tool_call_traffic.ask_user;
+
+  // Fixture row 4 carries `evil\x00\x1Bvalue` (11 chars: e-v-i-l-NUL-ESC-v-a-l-u-e).
+  // Sanitiser strips the NUL (0x00) and ESC (0x1B), leaving "evilvalue" (9 chars).
+  const stripped = askUser.unknown_outcomes.find(
+    (e) => e.value === "evilvalue",
+  );
+  assert.ok(
+    stripped,
+    "Control bytes (0x00 + 0x1B) MUST be stripped, leaving 'evilvalue'",
+  );
+  assert.equal(stripped.count, 1);
+
+  // Defence-in-depth: the raw control-char form MUST NOT survive into
+  // unknown_outcomes (would corrupt logs / break terminals downstream).
+  const raw = askUser.unknown_outcomes.find(
+    (e) => e.value === "evil\x00\x1Bvalue",
+  );
+  assert.equal(
+    raw,
+    undefined,
+    "Raw control-char form MUST NOT appear in unknown_outcomes",
+  );
+});
+
+test("Plan 08-04 r3-#1 — sanitised values appear in warnings[] entries with same shape", () => {
+  const a = runAnalyzer("xss-injection-session");
+
+  const xssWarnings = (a.warnings || []).filter(
+    (w) => w.type === "unknown_ask_user_outcome",
+  );
+  // Three distinct adversarial unknowns: <script>, length-bomb, control-char.
+  assert.equal(xssWarnings.length, 3);
+
+  // Each warning's value MUST match the same sanitised form found in
+  // unknown_outcomes — defence-in-depth applies to BOTH surfaces (the
+  // analysis.json field AND the warnings array).
+  const scriptWarn = xssWarnings.find(
+    (w) => w.value === "<script>alert(1)</script>",
+  );
+  assert.ok(scriptWarn, "<script> warning entry");
+  assert.equal(scriptWarn.count, 1);
+
+  const truncatedWarn = xssWarnings.find(
+    (w) => typeof w.value === "string" && w.value.length === 100 && w.value.endsWith("…"),
+  );
+  assert.ok(truncatedWarn, "Truncated length-bomb warning entry");
+  assert.equal(truncatedWarn.count, 1);
+
+  const strippedWarn = xssWarnings.find((w) => w.value === "evilvalue");
+  assert.ok(strippedWarn, "Stripped control-char warning entry");
+  assert.equal(strippedWarn.count, 1);
+
+  // Backstop: NO warning carries the 200-char length-bomb in raw form.
+  const rawLong = xssWarnings.find(
+    (w) => typeof w.value === "string" && w.value.length > 100,
+  );
+  assert.equal(
+    rawLong,
+    undefined,
+    "Warnings MUST NOT carry values longer than 100 chars",
+  );
+});
