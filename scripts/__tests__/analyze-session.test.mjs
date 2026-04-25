@@ -490,3 +490,112 @@ test("Plan 08-03 r2-#1 — known outcomes still bucket correctly with prototype-
   assert.equal(askUser.outcomes.user_moved_on, 0);
   assert.equal(askUser.outcomes.dispatcher_error, 0);
 });
+
+// ─────────────────────────────────────────────────────────────────
+// Phase 8 — Plan 08-03 r2-#2: Malformed ask_user outcomes surfaced.
+//
+// Codex r2-#2 (MINOR) raised that `scripts/analyze-session.js:1023`
+// uses `if (!outcome) continue;` to skip rows where `answer_outcome`
+// is empty string, null, or undefined. r1-#3 covered enum-drift
+// unknowns ("value not in the frozen enum") but didn't cover
+// MALFORMED outcomes ("no value emitted at all"). The two have
+// distinct operational signatures:
+//   - Unknown = enum drift / backend-deploy out of sync with analyzer.
+//   - Malformed = instrumentation failure / row escaped the emit-site
+//     `invalid_answer_outcome` throw with NO outcome set.
+// Both are operationally serious; both deserve their own surface
+// so dashboards can count them separately.
+//
+// Fix: surface as `malformed_outcome_count` (scalar) +
+// `warnings[]` entries of shape
+// `{type: 'malformed_ask_user_outcome', value, count}` per distinct
+// malformed value. Stringify the value so the warnings JSON
+// serialises cleanly: "" → "", null → "null", undefined → "undefined".
+//
+// Fixture: `malformed-outcome-session/` has 5 ask_user rows —
+// 1 known (answered) + 1 empty-string + 1 null + 1 undefined (no
+// answer_outcome key at all) + 1 known (gated, regression-lock).
+// ─────────────────────────────────────────────────────────────────
+
+test("Plan 08-03 r2-#2 — malformed outcomes surface as malformed_outcome_count", () => {
+  const a = runAnalyzer("malformed-outcome-session");
+  const askUser = a.tool_call_traffic.ask_user;
+
+  // 5 ask_user rows total: 2 known + 3 malformed.
+  assert.equal(askUser.total, 5);
+
+  // 3 distinct malformed shapes (empty, null, undefined) each count 1.
+  assert.equal(askUser.malformed_outcome_count, 3);
+
+  // Malformed values are NOT routed to unknown_outcomes (different
+  // drift signature: instrumentation failure, not enum drift).
+  assert.equal(askUser.unknown_outcome_count, 0);
+  assert.deepEqual(askUser.unknown_outcomes, []);
+});
+
+test("Plan 08-03 r2-#2 — malformed outcomes surface as warnings entries with stringified value", () => {
+  const a = runAnalyzer("malformed-outcome-session");
+
+  const malformedWarnings = (a.warnings || []).filter(
+    (w) => w.type === "malformed_ask_user_outcome",
+  );
+
+  // 3 distinct malformed values → 3 warnings entries.
+  assert.equal(
+    malformedWarnings.length,
+    3,
+    "expected 3 warnings (one per distinct malformed outcome shape)",
+  );
+
+  const byValue = Object.fromEntries(
+    malformedWarnings.map((w) => [w.value, w.count]),
+  );
+  // Empty string keeps its empty form; null and undefined are stringified
+  // so the warnings JSON serialises with a readable label per shape.
+  assert.equal(byValue[""], 1, 'empty-string outcome must surface as warning value=""');
+  assert.equal(byValue.null, 1, 'null outcome must surface as warning value="null"');
+  assert.equal(byValue.undefined, 1, 'undefined outcome must surface as warning value="undefined"');
+});
+
+test("Plan 08-03 r2-#2 — known outcomes still bucket correctly when malformed rows present", () => {
+  // Sanity check: the malformed-outcome surface MUST NOT regress
+  // the known-outcome bucketing. In a session with 2 known (answered,
+  // gated) alongside 3 malformed rows, the histogram still increments
+  // answered=1 and gated=1.
+  const a = runAnalyzer("malformed-outcome-session");
+  const askUser = a.tool_call_traffic.ask_user;
+
+  assert.equal(askUser.outcomes.answered, 1);
+  assert.equal(askUser.outcomes.gated, 1);
+
+  // Frozen-enum histogram shape preserved — none of "", "null",
+  // "undefined" leak in as own-properties.
+  assert.ok(
+    !Object.hasOwn(askUser.outcomes, ""),
+    'empty string MUST NOT be a histogram own-property',
+  );
+  assert.ok(
+    !Object.hasOwn(askUser.outcomes, "null"),
+    '"null" string MUST NOT be a histogram own-property',
+  );
+  assert.ok(
+    !Object.hasOwn(askUser.outcomes, "undefined"),
+    '"undefined" string MUST NOT be a histogram own-property',
+  );
+});
+
+test("Plan 08-03 r2-#2 — sessions WITHOUT malformed outcomes produce 0 count + no warnings", () => {
+  // Regression check: re-run the existing tool-call-only-session fixture
+  // (which has only known outcomes). The new malformed_outcome_count
+  // must be present (stable shape) but report 0.
+  const a = runAnalyzer("tool-call-only-session");
+  const askUser = a.tool_call_traffic.ask_user;
+
+  assert.equal(askUser.malformed_outcome_count, 0);
+
+  // No `malformed_ask_user_outcome` warnings either.
+  const malformedWarnings = (a.warnings || []).filter(
+    (w) => w.type === "malformed_ask_user_outcome",
+  );
+  assert.equal(malformedWarnings.length, 0);
+});
