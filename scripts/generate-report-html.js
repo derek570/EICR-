@@ -500,6 +500,107 @@ function buildVadAnalysis() {
   return html;
 }
 
+// ── Section 6b: Tool-Call Traffic (Phase 8 Plan 08-01 SC #2) ──
+//
+// Renders the tool_call_traffic section produced by analyze-session.js.
+// Two surfaces:
+//   - Tool histogram: per-tool count + median duration_ms + validation
+//     error count. Sorted by count descending.
+//   - ask_user outcomes: bar chart over the 15 frozen
+//     ASK_USER_ANSWER_OUTCOMES enum values. Outcomes with count 0 still
+//     render (as zero-height bars) so the dashboard shape is stable
+//     across sessions and the reviewer can visually scan for "did
+//     anything new appear?".
+//
+// Renders an empty-state card when the session has no tool-call rows
+// (legacy / pre-Phase-7 sessions). The empty state still confirms the
+// section exists so the operator knows the analyzer parsed the section
+// (vs. analysis.json missing the field).
+function buildToolCallTraffic() {
+  const tct = summary.tool_call_traffic;
+  if (!tct || !tct.enabled) {
+    return `<div class="card"><p class="muted">No tool-call traffic in this session (legacy shape only).</p></div>`;
+  }
+
+  const tools = Array.isArray(tct.tools) ? tct.tools : [];
+  const askUser = tct.ask_user || { total: 0, outcomes: {} };
+  const outcomes = askUser.outcomes || {};
+
+  const hasAny = tools.length > 0 || askUser.total > 0;
+  if (!hasAny) {
+    return `<div class="card"><p class="muted">Session was tool-call enabled but no tool-call rows logged.</p></div>`;
+  }
+
+  // Tool histogram table
+  const toolRows = tools
+    .map((t) => `
+      <tr>
+        <td>${escapeHtml(t.name)}</td>
+        <td style="text-align:right;">${t.count}</td>
+        <td style="text-align:right;">${t.median_duration_ms} ms</td>
+        <td style="text-align:right;color:${t.validation_error_count > 0 ? "#ef4444" : "#9ca3af"};">${t.validation_error_count}</td>
+      </tr>`)
+    .join("");
+
+  const toolTable = tools.length === 0
+    ? `<p class="muted">No tool calls in this session.</p>`
+    : `
+      <table style="width:100%;border-collapse:collapse;font-size:13px;color:#ccc;">
+        <thead>
+          <tr style="border-bottom:1px solid #2a2a4a;color:#aaa;">
+            <th style="text-align:left;padding:6px 4px;">Tool</th>
+            <th style="text-align:right;padding:6px 4px;">Count</th>
+            <th style="text-align:right;padding:6px 4px;">Median</th>
+            <th style="text-align:right;padding:6px 4px;">Errors</th>
+          </tr>
+        </thead>
+        <tbody>${toolRows}</tbody>
+      </table>`;
+
+  // ask_user outcomes histogram — render as horizontal bars
+  // Find max for normalising bar widths (1 if all zero so divisor is safe)
+  const maxOutcome = Math.max(1, ...Object.values(outcomes));
+  const outcomeKeys = Object.keys(outcomes).sort();
+  const outcomeBars = outcomeKeys
+    .map((key) => {
+      const count = outcomes[key] || 0;
+      const widthPct = (count / maxOutcome) * 100;
+      const isZero = count === 0;
+      // Outcome category colouring — answered=green, gated/restrained=amber,
+      // dispatcher_error=red, everything else=neutral. Visual cue lets the
+      // reviewer spot a regression at a glance.
+      const colour = key === "answered" ? "#22c55e"
+        : key === "gated" || key === "restrained_mode" || key === "ask_budget_exhausted" ? "#eab308"
+        : key === "dispatcher_error" || key === "validation_error" || key === "prompt_leak_blocked" ? "#ef4444"
+        : "#6b7280";
+      return `
+        <div style="display:flex;align-items:center;gap:8px;margin:4px 0;font-size:12px;">
+          <span style="width:200px;color:${isZero ? "#666" : "#ccc"};font-family:'SF Mono',monospace;">${escapeHtml(key)}</span>
+          <div style="flex:1;background:#1a1a2e;border-radius:3px;height:14px;position:relative;">
+            <div style="width:${widthPct}%;background:${colour};height:100%;border-radius:3px;${isZero ? "opacity:0.2;" : ""}"></div>
+          </div>
+          <span style="width:32px;text-align:right;color:${isZero ? "#666" : "#fff"};">${count}</span>
+        </div>`;
+    })
+    .join("");
+
+  const askUserBlock = askUser.total === 0
+    ? `<p class="muted" style="margin-top:14px;">No ask_user calls in this session.</p>`
+    : `
+      <div style="margin-top:14px;">
+        <div style="font-size:13px;font-weight:700;color:#a855f7;margin-bottom:8px;">
+          ask_user outcomes (${askUser.total} total)
+        </div>
+        ${outcomeBars}
+      </div>`;
+
+  return `
+    <div class="card">
+      ${toolTable}
+      ${askUserBlock}
+    </div>`;
+}
+
 // ── Section 7: Sonnet Prompt Audit ──
 
 function buildPromptAudit() {
@@ -771,6 +872,7 @@ const html = `<!DOCTYPE html>
     <a href="#section-missed" onclick="scrollToSection('section-missed')">Missed</a>
     <a href="#section-recs" onclick="scrollToSection('section-recs')">Recs</a>
     <a href="#section-vad" onclick="scrollToSection('section-vad')">Sleep</a>
+    <a href="#section-tools" onclick="scrollToSection('section-tools')">Tools</a>
     <a href="#section-audit" onclick="scrollToSection('section-audit')">Audit</a>
   </nav>
 
@@ -881,6 +983,17 @@ const html = `<!DOCTYPE html>
       </div>
     </div>
 
+    <!-- Section 6b: Tool-Call Traffic (Phase 8 SC #2) -->
+    <div class="section" id="section-tools">
+      <div class="section-title" onclick="toggleSection('tools')">
+        <span>Tool-Call Traffic</span>
+        <span class="collapse-icon" id="icon-tools">&#9660;</span>
+      </div>
+      <div class="section-body" id="body-tools">
+        ${buildToolCallTraffic()}
+      </div>
+    </div>
+
     <!-- Section 7: Sonnet Prompt Audit -->
     <div class="section" id="section-audit">
       <div class="section-title" onclick="toggleSection('audit')">
@@ -944,7 +1057,7 @@ const html = `<!DOCTYPE html>
     }
 
     // Update nav on scroll
-    var navSections = ["section-cost", "section-fields", "section-transcript", "section-missed", "section-recs", "section-vad", "section-audit"];
+    var navSections = ["section-cost", "section-fields", "section-transcript", "section-missed", "section-recs", "section-vad", "section-tools", "section-audit"];
     window.addEventListener("scroll", function() {
       var scrollPos = window.scrollY + 60;
       for (var i = navSections.length - 1; i >= 0; i--) {
