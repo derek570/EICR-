@@ -331,3 +331,196 @@ describe('Group D — entry stamps protocolVersion from msg', () => {
     expect(entry.protocolVersion).toBe('stage6');
   });
 });
+
+// -----------------------------------------------------------------------------
+// Group E — session_resume rehydrate path enforces protocol_version policy
+// -----------------------------------------------------------------------------
+//
+// Plan 06-06 r5-#1 (MAJOR) — handleSessionResumeRehydrate previously rebound
+// the existing entry's ws based purely on the resume token's TTL validity. It
+// never consulted msg.protocol_version against process.env.SONNET_TOOL_CALLS.
+// This left a backdoor for stale iOS clients holding valid resume tokens to
+// wake an entry into live mode without advertising stage6 capability —
+// defeating the STI-06 hard-rejection contract that handleSessionStart
+// already enforces on the fresh-connect path.
+//
+// These tests pin the policy at the resume surface: off ignores, shadow
+// stamps fallbackToLegacy + warns, live rejects with ws.close(1002).
+//
+// Test mechanics:
+//   1. Open the original session via session_start (mints rehydrateSessionId
+//      into sonnetSessionStore as a side-effect of activeSessions.set).
+//   2. Read the stored token from the session_ack response.
+//   3. Connect a NEW fake ws and send `{type:'session_resume', sessionId:
+//      <token>, protocol_version: <variant>}`. The new ws is what the
+//      rehydrate path rebinds to, so policy assertions target it.
+function readRehydrateToken(ws) {
+  // session_start response includes `{type:'session_ack', status:'started',
+  //   sessionId: <rehydrateSessionId>}`.
+  const ack = ws._sent.find((m) => m.type === 'session_ack' && m.status === 'started');
+  if (!ack || !ack.sessionId) {
+    throw new Error(`No started session_ack in ws._sent: ${JSON.stringify(ws._sent)}`);
+  }
+  return ack.sessionId;
+}
+
+describe('Group E — session_resume enforces protocol_version policy (r5-#1)', () => {
+  test('E.1 — off mode: session_resume works regardless of protocol_version (functional equivalence)', async () => {
+    process.env.SONNET_TOOL_CALLS = 'off';
+    const ws1 = connect(wss, 'user-E');
+    await sendFrame(ws1, {
+      type: 'session_start',
+      sessionId: 'sess-E1',
+      jobState: { certificateType: 'eicr' },
+      protocol_version: 'stage6',
+    });
+    const token = readRehydrateToken(ws1);
+
+    const ws2 = connect(wss, 'user-E');
+    await sendFrame(ws2, {
+      type: 'session_resume',
+      sessionId: token,
+      // off-mode: protocol_version should be ignored even if downgraded/missing.
+    });
+
+    // The entry should be rebound to the new ws — no close, no error envelope.
+    const entry = activeSessions.get('sess-E1');
+    expect(entry).toBeDefined();
+    expect(entry.ws).toBe(ws2);
+    expect(ws2.close).not.toHaveBeenCalled();
+    const errorEnvelopes = ws2._sent.filter((m) => m.type === 'error');
+    expect(errorEnvelopes.length).toBe(0);
+    // No mismatch warns either way.
+    const warnCalls = mockLogger.warn.mock.calls.map(([msg]) => msg);
+    expect(warnCalls).not.toContain('stage6.protocol_version_mismatch_live_reject_resume');
+    expect(warnCalls).not.toContain('stage6.protocol_version_mismatch_shadow_fallback_resume');
+  });
+
+  test('E.2 — shadow mode: resume frame missing protocol_version → fallbackToLegacy=true, warn fires, session usable', async () => {
+    process.env.SONNET_TOOL_CALLS = 'shadow';
+    const ws1 = connect(wss, 'user-E');
+    await sendFrame(ws1, {
+      type: 'session_start',
+      sessionId: 'sess-E2',
+      jobState: { certificateType: 'eicr' },
+      protocol_version: 'stage6',
+    });
+    // After session_start with stage6, fallbackToLegacy should be false.
+    expect(activeSessions.get('sess-E2').fallbackToLegacy).toBe(false);
+    const token = readRehydrateToken(ws1);
+
+    const ws2 = connect(wss, 'user-E');
+    await sendFrame(ws2, {
+      type: 'session_resume',
+      sessionId: token,
+      // protocol_version intentionally omitted (downgrade scenario).
+    });
+
+    const entry = activeSessions.get('sess-E2');
+    expect(entry).toBeDefined();
+    expect(entry.ws).toBe(ws2);
+    expect(entry.fallbackToLegacy).toBe(true);
+    expect(entry.protocolVersion).toBeNull();
+    expect(ws2.close).not.toHaveBeenCalled();
+    const warnCalls = mockLogger.warn.mock.calls.map(([msg]) => msg);
+    expect(warnCalls).toContain('stage6.protocol_version_mismatch_shadow_fallback_resume');
+  });
+
+  test('E.3 — shadow mode: resume frame with protocol_version=stage6 → fallbackToLegacy=false, no warn', async () => {
+    process.env.SONNET_TOOL_CALLS = 'shadow';
+    const ws1 = connect(wss, 'user-E');
+    // Open original under shadow with MISSING protocol_version (so initial
+    // fallbackToLegacy is true), then assert resume with stage6 clears it.
+    await sendFrame(ws1, {
+      type: 'session_start',
+      sessionId: 'sess-E3',
+      jobState: { certificateType: 'eicr' },
+    });
+    expect(activeSessions.get('sess-E3').fallbackToLegacy).toBe(true);
+    const token = readRehydrateToken(ws1);
+    mockLogger.warn.mockClear();
+
+    const ws2 = connect(wss, 'user-E');
+    await sendFrame(ws2, {
+      type: 'session_resume',
+      sessionId: token,
+      protocol_version: 'stage6',
+    });
+
+    const entry = activeSessions.get('sess-E3');
+    expect(entry).toBeDefined();
+    expect(entry.ws).toBe(ws2);
+    expect(entry.fallbackToLegacy).toBe(false);
+    expect(entry.protocolVersion).toBe('stage6');
+    const warnCalls = mockLogger.warn.mock.calls.map(([msg]) => msg);
+    expect(warnCalls).not.toContain('stage6.protocol_version_mismatch_shadow_fallback_resume');
+  });
+
+  test('E.4 — live mode: resume frame missing protocol_version → ws.close(1002), entry NOT rebound', async () => {
+    // Original session_start under live mode requires stage6 (otherwise it
+    // fails the fresh-connect policy and never mints an entry). So we open
+    // under stage6, then resume with the protocol_version omitted.
+    process.env.SONNET_TOOL_CALLS = 'live';
+    const ws1 = connect(wss, 'user-E');
+    await sendFrame(ws1, {
+      type: 'session_start',
+      sessionId: 'sess-E4',
+      jobState: { certificateType: 'eicr' },
+      protocol_version: 'stage6',
+    });
+    const entry = activeSessions.get('sess-E4');
+    expect(entry).toBeDefined();
+    expect(entry.ws).toBe(ws1);
+    const token = readRehydrateToken(ws1);
+    mockLogger.warn.mockClear();
+
+    const ws2 = connect(wss, 'user-E');
+    await sendFrame(ws2, {
+      type: 'session_resume',
+      sessionId: token,
+      // No protocol_version — downgraded resume attempt.
+    });
+
+    expect(ws2.close).toHaveBeenCalledWith(1002, 'protocol_version_mismatch');
+    const errorEnvelopes = ws2._sent.filter((m) => m.type === 'error');
+    expect(errorEnvelopes.length).toBe(1);
+    expect(errorEnvelopes[0].message).toMatch(/protocol_version_mismatch/);
+
+    // The entry must NOT have been rebound to the rejected ws.
+    const entryAfter = activeSessions.get('sess-E4');
+    expect(entryAfter).toBeDefined();
+    expect(entryAfter.ws).not.toBe(ws2);
+
+    const warnCalls = mockLogger.warn.mock.calls.map(([msg]) => msg);
+    expect(warnCalls).toContain('stage6.protocol_version_mismatch_live_reject_resume');
+  });
+
+  test('E.5 — live mode: resume frame with protocol_version=stage6 → rehydrate succeeds, ws rebound', async () => {
+    process.env.SONNET_TOOL_CALLS = 'live';
+    const ws1 = connect(wss, 'user-E');
+    await sendFrame(ws1, {
+      type: 'session_start',
+      sessionId: 'sess-E5',
+      jobState: { certificateType: 'eicr' },
+      protocol_version: 'stage6',
+    });
+    const token = readRehydrateToken(ws1);
+    mockLogger.warn.mockClear();
+
+    const ws2 = connect(wss, 'user-E');
+    await sendFrame(ws2, {
+      type: 'session_resume',
+      sessionId: token,
+      protocol_version: 'stage6',
+    });
+
+    const entry = activeSessions.get('sess-E5');
+    expect(entry).toBeDefined();
+    expect(entry.ws).toBe(ws2);
+    expect(entry.protocolVersion).toBe('stage6');
+    expect(entry.fallbackToLegacy).toBe(false);
+    expect(ws2.close).not.toHaveBeenCalled();
+    const warnCalls = mockLogger.warn.mock.calls.map(([msg]) => msg);
+    expect(warnCalls).not.toContain('stage6.protocol_version_mismatch_live_reject_resume');
+  });
+});
