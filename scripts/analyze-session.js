@@ -1019,7 +1019,25 @@ function analyzeSession(sessionDir) {
   // renderer's escape audit (Plan 08-04 Task 3-4) closes the renderer
   // side.
   function safeDisplayValue(raw) {
-    const s = typeof raw === "string" ? raw : JSON.stringify(raw);
+    let s;
+    if (typeof raw === "string") {
+      s = raw;
+    } else if (raw === undefined || raw === null) {
+      // JSON.stringify(undefined) returns the JS value `undefined`
+      // (not a string), and JSON.stringify(null) returns the string
+      // "null". For consistency with r2-#2's String()-based labels
+      // (`null` → `"null"`, `undefined` → `"undefined"`), handle these
+      // two explicitly via String() before the strip+cap.
+      s = String(raw);
+    } else {
+      // JSON.stringify covers numbers (0 → "0"), booleans (false →
+      // "false"), objects ({} → "{}"), arrays ([] → "[]"), and any
+      // other JSON-serialisable value. For exotic types (Symbol,
+      // function) JSON.stringify returns undefined; fall back to
+      // String() so the call site never sees a non-string `s`.
+      const j = JSON.stringify(raw);
+      s = typeof j === "string" ? j : String(raw);
+    }
     // Strip control chars (Unicode 0x00..0x1F + 0x7F). Some hostile
     // log writers encode literal control bytes inside JSON strings
     // rather than the safer `\u00XX` form; this catches both forms
@@ -1092,26 +1110,48 @@ function analyzeSession(sessionDir) {
   //   - Malformed = instrumentation failure; the row escaped the
   //     emit-site `invalid_answer_outcome` throw with NO outcome set.
   // Both are operationally serious; both deserve their own surface so
-  // optimizer dashboards can count them separately. We stringify the
-  // malformed value via `String(outcome)` so the warnings JSON
-  // serialises with a readable label per distinct shape:
-  //   "" → "", null → "null", undefined → "undefined".
-  // Routing malformed values through the unknown-outcome surface would
-  // misattribute the failure mode (an enum-drift fix is the wrong
-  // remediation for an instrumentation failure).
+  // optimizer dashboards can count them separately.
+  //
+  // Plan 08-04 r3-#2 (MINOR): r2-#2's predicate matched ONLY
+  // `outcome === "" || outcome === null || outcome === undefined`.
+  // Non-string outcomes (`0`, `false`, `42`, `{}`, `[]`) fell through
+  // to the unknown branch where `Object.hasOwn(outcomes, outcome)`
+  // coerces the key to a string for property lookup — corrupting the
+  // unknown bucket silently. Worst case: an array-typed outcome
+  // coerces to `""` for the property lookup AND collides with the
+  // r2-#2 empty-string malformed surface, depending on which branch
+  // ran first. Operationally, "outcome was the wrong type entirely"
+  // is the SAME class of instrumentation failure as "outcome was
+  // missing" — both belong on the malformed surface. We widen the
+  // predicate to `typeof outcome !== "string" || outcome === ""`,
+  // which catches: null, undefined, all numbers (incl. 0), all
+  // booleans (incl. false), all objects, all arrays, all symbols,
+  // all functions — everything except non-empty strings. The
+  // safeDisplayValue helper from r3-#1 then JSON.stringifies the
+  // non-string values into readable per-shape labels:
+  //   0 → "0",  false → "false",  42 → "42",
+  //   {} → "{}",  [] → "[]",  {a:1} → '{"a":1}',
+  //   "" → "",  null → "null",  undefined → "undefined".
+  // Routing malformed values through the unknown-outcome surface
+  // would misattribute the failure mode (an enum-drift fix is the
+  // wrong remediation for an instrumentation failure).
   const outcomes = Object.create(null);
   for (const o of ASK_USER_ANSWER_OUTCOMES) outcomes[o] = 0;
   const unknownOutcomeMap = new Map();
   const malformedOutcomeMap = new Map();
   for (const evt of askUserEvents) {
     const outcome = evt.data?.answer_outcome;
-    if (outcome === "" || outcome === null || outcome === undefined) {
-      // Plan 08-04 r3-#1: route the malformed key through
-      // safeDisplayValue() so length-cap + control-char-strip are
-      // applied uniformly across both surfaces. For these three values
-      // the helper is a no-op (each stringifies to ≤100 chars with no
-      // control bytes), so the r2-#2 byte-level contract is preserved.
-      const key = safeDisplayValue(String(outcome));
+    // Plan 08-04 r3-#2 (MINOR): treat ANY non-string outcome as
+    // malformed (instrumentation failure). The r2-#2 contract for
+    // `"" / null / undefined` is preserved — null/undefined satisfy
+    // the `typeof !== "string"` check, empty-string is caught by the
+    // explicit `=== ""` clause.
+    //
+    // safeDisplayValue handles the per-type stringification (null/
+    // undefined via String(), other non-strings via JSON.stringify;
+    // strings pass through unchanged) and the strip+cap.
+    if (typeof outcome !== "string" || outcome === "") {
+      const key = safeDisplayValue(outcome);
       malformedOutcomeMap.set(key, (malformedOutcomeMap.get(key) || 0) + 1);
       continue;
     }
