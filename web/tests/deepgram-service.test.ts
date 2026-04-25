@@ -809,5 +809,86 @@ describe('DeepgramService', () => {
         globalThis.WebSocket = realWebSocket;
       }
     });
+
+    it('appends Nova-3 keyterm params from the base config (post-B5 keyword-boosts wiring)', async () => {
+      const realWebSocket = globalThis.WebSocket;
+      let capturedUrl = '';
+      class CapturingWebSocket extends realWebSocket {
+        constructor(url: string | URL, protocols?: string | string[]) {
+          capturedUrl = typeof url === 'string' ? url : url.toString();
+          super(url, protocols);
+        }
+      }
+      globalThis.WebSocket = CapturingWebSocket as unknown as typeof WebSocket;
+
+      try {
+        const service = new DeepgramService({
+          onInterimTranscript: vi.fn(),
+          onFinalTranscript: vi.fn(),
+        });
+        service.connect('fake-api-key', 16000);
+        await server.connected;
+
+        const url = new URL(capturedUrl);
+        const keyterms = url.searchParams.getAll('keyterm');
+        // Pre-fix this was 0; post-fix should be many dozens.
+        expect(keyterms.length).toBeGreaterThan(50);
+
+        // Top-tier (≥3.0) keywords carry the ":X.X" boost suffix.
+        const hasSuffixed = keyterms.some((k) => /:3\.0$/.test(k));
+        expect(hasSuffixed).toBe(true);
+
+        // Lower-tier keywords are bare (no colon).
+        const hasBare = keyterms.some((k) => !k.includes(':'));
+        expect(hasBare).toBe(true);
+
+        // URL stays inside the 1800-char safety budget (with some
+        // headroom for the host / scheme not counted in the encoder
+        // path).
+        expect(capturedUrl.length).toBeLessThanOrEqual(2048);
+
+        service.disconnect();
+      } finally {
+        globalThis.WebSocket = realWebSocket;
+      }
+    });
+
+    it('augments keyterms with CCU board-specific terms when setCcuAnalysis() is called', async () => {
+      const realWebSocket = globalThis.WebSocket;
+      let capturedUrl = '';
+      class CapturingWebSocket extends realWebSocket {
+        constructor(url: string | URL, protocols?: string | string[]) {
+          capturedUrl = typeof url === 'string' ? url : url.toString();
+          super(url, protocols);
+        }
+      }
+      globalThis.WebSocket = CapturingWebSocket as unknown as typeof WebSocket;
+
+      try {
+        const service = new DeepgramService({
+          onInterimTranscript: vi.fn(),
+          onFinalTranscript: vi.fn(),
+        });
+        service.setCcuAnalysis({
+          board_manufacturer: 'NovelBrand',
+          circuits: [{ circuit_number: 7, label: 'Kitchen sockets' }],
+        });
+        service.connect('fake-api-key', 16000);
+        await server.connected;
+
+        const url = new URL(capturedUrl);
+        const keyterms = url.searchParams.getAll('keyterm');
+        // 1.5-tier augmentation (manufacturer name) reliably surfaces.
+        // 1.0-tier additions (Kitchen / "circuit 7") compete with base
+        // 1.0 entries for the last MAX_KEYTERMS slots — they're tested
+        // at the unit level in keyword-boosts.test.ts where the cap
+        // contention isn't part of the assertion.
+        expect(keyterms).toContain('NovelBrand');
+
+        service.disconnect();
+      } finally {
+        globalThis.WebSocket = realWebSocket;
+      }
+    });
   });
 });

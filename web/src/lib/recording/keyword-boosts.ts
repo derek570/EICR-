@@ -1,0 +1,436 @@
+/**
+ * Deepgram Nova-3 keyterm prompt generator — port of iOS
+ * `KeywordBoostGenerator.swift` + the `keyword_boosts` block of
+ * `CertMateUnified/Sources/Resources/default_config.json`.
+ *
+ * Why: iOS's recording pipeline sends ~89 boost-scored Nova-3 `keyterm`
+ * URL params on every WebSocket connect. They massively improve
+ * recognition of electrical jargon ("Zs", "R1 plus R2", "MICC",
+ * "ring continuity") that Nova-3's general English model would
+ * otherwise mishear. Pre-port the web client sent zero keyterms —
+ * recording quality on web for inspectors saying "five point seven six
+ * megohms" was demonstrably worse than iOS for the same audio.
+ *
+ * Boost tiers (verbatim from the iOS comment):
+ *   - 2.0–3.0: critical measurement / outcome terms (Zs, Ze, R1, R2,
+ *     R1+R2, megohms, LIM, observation codes)
+ *   - 1.5: vocabulary, common breaker types, board manufacturers, RCD
+ *     ratings, detected switch types
+ *   - 1.0: circuit labels, circuit numbers, general terms
+ *
+ * URL-length budget: Deepgram's HTTP→WS upgrade rejects URLs over
+ * ~2048 chars. iOS uses 1800 as the practical safety cap; we match.
+ *
+ * Boost-suffix optimisation: Deepgram interprets a bare keyterm
+ * (`?keyterm=foo`) at the model's default boost intensity, and a
+ * suffixed keyterm (`?keyterm=foo:3.0`) at the supplied multiplier.
+ * iOS's optimisation: only append `:X.X` for top-tier (≥3.0) keywords.
+ * Lower-tier keywords still benefit from being a keyterm at all; the
+ * suffix saves ~4 chars per word, freeing significant URL space for
+ * more keyterms. We carry the same convention here so behaviour
+ * matches iOS at the URL byte level.
+ *
+ * If iOS ever changes either constant — `MAX_KEYTERMS` (100) or the
+ * URL budget (1800) — keep them in lockstep with this file.
+ */
+
+/**
+ * Baseline electrical vocabulary boost table — ported verbatim from
+ * `default_config.json#keyword_boosts.base_electrical`. Order is not
+ * meaningful (the `dedupAndCap` step sorts by boost desc + alpha for
+ * stability).
+ */
+const BASE_KEYWORD_BOOSTS: Record<string, number> = {
+  CertMate: 3.0,
+  'cert mate': 3.0,
+  megohms: 3.0,
+  Zs: 2.0,
+  Ze: 2.0,
+  Zeddy: 2.0,
+  'Zed e': 2.0,
+  RCD: 1.5,
+  RCBO: 1.5,
+  MCB: 1.5,
+  AFDD: 1.5,
+  R1: 2.0,
+  R2: 2.0,
+  Rn: 1.5,
+  CPC: 1.5,
+  'R1 plus R2': 3.0,
+  'loop impedance': 1.5,
+  'insulation resistance': 2.5,
+  insulation: 1.5,
+  'ring continuity': 2.0,
+  lives: 1.5,
+  neutrals: 1.5,
+  earths: 2.0,
+  'live to live': 2.0,
+  'live to earth': 2.0,
+  'live to neutral': 1.5,
+  'greater than': 2.0,
+  'test voltage': 1.5,
+  radial: 1.0,
+  spur: 1.0,
+  polarity: 1.0,
+  'push button': 1.5,
+  'push button works': 2.0,
+  'trip time': 1.5,
+  megger: 1.5,
+  'earth fault': 1.5,
+  continuity: 1.5,
+  milliamps: 1.0,
+  milliseconds: 1.0,
+  circuit: 3.0,
+  'nought point': 1.5,
+  nought: 2.0,
+  'main earth': 1.5,
+  tails: 2.0, // iOS lists "tails" twice (1.5 then 2.0) — dedup keeps the higher.
+  'meter tails': 1.5,
+  bonding: 1.5,
+  earthing: 2.0,
+  'TN-C-S': 3.0,
+  'TN-C': 2.0,
+  'TN-S': 3.0,
+  TT: 1.5,
+  PME: 1.5,
+  'prospective fault current': 1.5,
+  PFC: 1.5,
+  'supply voltage': 1.5,
+  volts: 1.0,
+  frequency: 1.5,
+  hertz: 1.5,
+  'type B': 1.5,
+  'type C': 1.5,
+  'number of points': 1.5,
+  smokes: 1.5,
+  'smoke detectors': 1.5,
+  'cable size': 1.5,
+  'circuit number': 1.5,
+  upstairs: 1.0,
+  downstairs: 1.0,
+  wiring: 2.0,
+  'reference method': 2.0,
+  MICC: 2.5,
+  'mineral insulated': 2.5,
+  pyro: 2.0,
+  FP200: 2.0,
+  SWA: 2.0,
+  XLPE: 2.0,
+  armoured: 1.5,
+  conduit: 1.5,
+  trunking: 1.5,
+  discontinuous: 2.5,
+  'open circuit': 2.5,
+  infinity: 2.0,
+  correction: 1.5,
+  'N/A': 2.5,
+  LIM: 3.0,
+  limitation: 2.5,
+  debug: 2.0,
+  observation: 2.5,
+  C1: 2.0,
+  C2: 2.0,
+  C3: 2.0,
+  FI: 1.5,
+  'code 1': 1.5,
+  'code 2': 1.5,
+  'code 3': 1.5,
+  'danger present': 1.5,
+  'potentially dangerous': 1.5,
+  'improvement recommended': 1.5,
+  'further investigation': 1.5,
+  defect: 1.5,
+  postcode: 1.5,
+  customer: 1.5,
+  client: 1.5,
+  address: 1.5,
+  'in tails': 2.0,
+  DB: 1.5,
+  'distribution board': 1.5,
+  'Zs for': 2.0,
+  'R1 plus R2 for': 2.0,
+  'live to earth for': 2.0,
+  'live to live for': 2.0,
+  'number of points for': 1.5,
+  'trip time for': 1.5,
+};
+
+const BOARD_TYPE_BOOSTS: Record<string, number> = {
+  Hager: 1.5,
+  Elucian: 1.5,
+  BG: 1.5,
+  Wylex: 1.5,
+  MK: 1.5,
+  Schneider: 1.5,
+  Fusebox: 1.5,
+  Crabtree: 1.5,
+};
+
+const MAX_KEYTERMS = 100;
+const TOP_TIER_BOOST_THRESHOLD = 3.0;
+const URL_LENGTH_BUDGET = 1800;
+
+/**
+ * Lightweight subset of `CCUAnalysis` (web-side wire shape) that
+ * `generateKeyterms` needs. Inlined here so the keyword module has no
+ * dependency on `@/lib/types` (avoids a recording → types → recording
+ * import cycle if anyone reorganises later).
+ */
+export interface CcuAnalysisLite {
+  board_manufacturer?: string | null;
+  board_model?: string | null;
+  main_switch_type?: string | null;
+  spd_present?: boolean;
+  circuits?: Array<{
+    circuit_number?: number;
+    label?: string | null;
+    ocpd_type?: string | null;
+    is_rcbo?: boolean;
+    rcd_protected?: boolean;
+    rcd_rating_ma?: string | null;
+  }>;
+}
+
+export interface KeytermBoost {
+  keyword: string;
+  boost: number;
+}
+
+/**
+ * Generate the full keyterm list. If `analysis` is provided, board-
+ * specific terms (manufacturer, model, OCPD types found, SPD/main-
+ * switch presence, label terms, circuit numbers, RCD ratings) are
+ * appended on top of the base + board-type tables. The final list is
+ * deduped (case-insensitive, keeping the highest boost), sorted by
+ * boost desc then alphabetically, and capped at `MAX_KEYTERMS`.
+ *
+ * Mirrors iOS `KeywordBoostGenerator.generate(from:)` and
+ * `generateFromConfig()` byte-for-byte where the input shapes line up.
+ */
+export function generateKeyterms(analysis?: CcuAnalysisLite | null): KeytermBoost[] {
+  const boosts: KeytermBoost[] = [];
+
+  for (const [keyword, boost] of Object.entries(BASE_KEYWORD_BOOSTS)) {
+    boosts.push({ keyword, boost });
+  }
+  for (const [keyword, boost] of Object.entries(BOARD_TYPE_BOOSTS)) {
+    boosts.push({ keyword, boost });
+  }
+
+  if (analysis) {
+    const existing = new Set(boosts.map((b) => b.keyword.toLowerCase()));
+
+    // 1. Board manufacturer (if novel, i.e. not already in the
+    //    board-type table).
+    pushIfNovel(boosts, existing, analysis.board_manufacturer, 1.5);
+
+    // 2. Board model — distinct boost so we don't dupe the manufacturer.
+    pushIfNovel(boosts, existing, analysis.board_model, 1.0);
+
+    // 3. OCPD types found across circuits — strong (2.0) because they're
+    //    measurement-context terms the inspector says often.
+    for (const ocpd of extractOcpdTypes(analysis.circuits ?? [])) {
+      if (!existing.has(ocpd.toLowerCase())) {
+        boosts.push({ keyword: ocpd, boost: 2.0 });
+        existing.add(ocpd.toLowerCase());
+      }
+    }
+
+    // 4. SPD-related vocabulary if SPD is present on the board.
+    if (analysis.spd_present === true && !existing.has('spd')) {
+      boosts.push({ keyword: 'SPD', boost: 1.5 });
+      boosts.push({ keyword: 'surge protection', boost: 1.0 });
+      existing.add('spd');
+      existing.add('surge protection');
+    }
+
+    // 5. Main switch type if detected.
+    pushIfNovel(boosts, existing, analysis.main_switch_type, 1.5);
+
+    // 6. Label terms parsed out of circuit labels.
+    for (const term of extractLabelTerms(analysis.circuits ?? [])) {
+      if (!existing.has(term.toLowerCase())) {
+        boosts.push({ keyword: term, boost: 1.0 });
+        existing.add(term.toLowerCase());
+      }
+    }
+
+    // 7. "circuit N" references — useful when the inspector says
+    //    "circuit twelve" mid-test.
+    for (const circuit of analysis.circuits ?? []) {
+      if (typeof circuit.circuit_number === 'number') {
+        boosts.push({ keyword: `circuit ${circuit.circuit_number}`, boost: 1.0 });
+      }
+    }
+
+    // 8. RCD ratings spoken either way ("30 milliamp" / "30mA").
+    for (const rating of extractRcdRatings(analysis.circuits ?? [])) {
+      if (!existing.has(rating.toLowerCase())) {
+        boosts.push({ keyword: rating, boost: 1.5 });
+        existing.add(rating.toLowerCase());
+      }
+    }
+  }
+
+  return dedupAndCap(boosts);
+}
+
+/**
+ * Append `keyterm` URL params to an existing `URLSearchParams`, in
+ * boost-descending order, until the projected URL length would exceed
+ * `URL_LENGTH_BUDGET`. Top-tier (≥`TOP_TIER_BOOST_THRESHOLD`) keywords
+ * carry the explicit `:X.X` suffix; lower-tier keywords go in bare to
+ * save URL space. Mirrors iOS `DeepgramService.buildURL` behaviour.
+ *
+ * `baseUrlLength` is the length the URL has *before* any keyterm is
+ * appended (scheme + host + path + the existing query string + `&`).
+ * Caller measures it once and passes it in so the budget calculation
+ * stays correct as keyterms accumulate. The function mutates `params`
+ * in place and returns the count of keyterms actually appended (useful
+ * for diagnostics; iOS logs "stopped at N keyterms" when it bails).
+ */
+export function appendKeytermsToUrl(
+  params: URLSearchParams,
+  keyterms: KeytermBoost[],
+  baseUrlLength: number
+): number {
+  let appended = 0;
+  let projectedLen = baseUrlLength + (params.toString() ? 0 : 0);
+  // Account for the existing params already on `params` (caller's
+  // baseline) — keyterms are appended onto the same instance.
+  projectedLen = baseUrlLength;
+
+  for (const { keyword, boost } of keyterms) {
+    const value = boost >= TOP_TIER_BOOST_THRESHOLD ? `${keyword}:${boost.toFixed(1)}` : keyword;
+    // `&keyterm=<urlencoded value>` is the worst-case overhead per
+    // entry. URLSearchParams encodes the value when serialising, so
+    // we mirror that here for an honest length estimate.
+    const encoded = encodeURIComponent(value);
+    const overhead = '&keyterm='.length + encoded.length;
+    if (projectedLen + overhead > URL_LENGTH_BUDGET) {
+      break;
+    }
+    params.append('keyterm', value);
+    projectedLen += overhead;
+    appended += 1;
+  }
+
+  return appended;
+}
+
+// ---------------------------------------------------------------------
+// Internals
+// ---------------------------------------------------------------------
+
+function pushIfNovel(
+  list: KeytermBoost[],
+  existing: Set<string>,
+  raw: string | null | undefined,
+  boost: number
+): void {
+  if (!raw) return;
+  const trimmed = raw.trim();
+  if (!trimmed) return;
+  const key = trimmed.toLowerCase();
+  if (existing.has(key)) return;
+  list.push({ keyword: trimmed, boost });
+  existing.add(key);
+}
+
+function extractOcpdTypes(circuits: NonNullable<CcuAnalysisLite['circuits']>): string[] {
+  const types = new Set<string>();
+  for (const circuit of circuits) {
+    if (circuit.ocpd_type && circuit.ocpd_type.trim()) {
+      types.add(circuit.ocpd_type.trim().toUpperCase());
+    }
+    if (circuit.is_rcbo === true) types.add('RCBO');
+    if (circuit.rcd_protected === true) types.add('RCD');
+  }
+  return Array.from(types).sort();
+}
+
+const STOP_WORDS = new Set([
+  'the',
+  'a',
+  'an',
+  'and',
+  'or',
+  'of',
+  'for',
+  'to',
+  'in',
+  'on',
+  'no',
+  'n/a',
+  'na',
+  'spare',
+  'blank',
+  'circuit',
+  'way',
+  'cct',
+]);
+
+function extractLabelTerms(circuits: NonNullable<CcuAnalysisLite['circuits']>): string[] {
+  const terms = new Set<string>();
+  for (const circuit of circuits) {
+    const label = circuit.label;
+    if (!label) continue;
+
+    // Split on non-alphanumeric, drop tokens shorter than 3 chars and
+    // anything in the stop-word list. Title-case the rest so Deepgram
+    // sees a clean keyword.
+    const words = label.split(/[^A-Za-z0-9]+/).filter((w) => w.length >= 3);
+    for (const word of words) {
+      const lower = word.toLowerCase();
+      if (STOP_WORDS.has(lower)) continue;
+      const titled = word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
+      terms.add(titled);
+    }
+
+    // Also keep the full label if it's a likely room/area name (length
+    // window matches iOS heuristic).
+    const trimmed = label.trim();
+    if (trimmed.length >= 4 && trimmed.length <= 30) {
+      terms.add(trimmed);
+    }
+  }
+  return Array.from(terms).sort();
+}
+
+function extractRcdRatings(circuits: NonNullable<CcuAnalysisLite['circuits']>): string[] {
+  const ratings = new Set<string>();
+  for (const circuit of circuits) {
+    const raw = circuit.rcd_rating_ma;
+    if (!raw) continue;
+    const trimmed = raw.trim();
+    if (!trimmed) continue;
+    ratings.add(`${trimmed} milliamp`);
+    ratings.add(`${trimmed}mA`);
+  }
+  return Array.from(ratings).sort();
+}
+
+function dedupAndCap(boosts: KeytermBoost[]): KeytermBoost[] {
+  const bestByKey = new Map<string, KeytermBoost>();
+  for (const entry of boosts) {
+    const key = entry.keyword.toLowerCase();
+    const existing = bestByKey.get(key);
+    if (!existing || entry.boost > existing.boost) {
+      bestByKey.set(key, entry);
+    }
+  }
+  const sorted = Array.from(bestByKey.values()).sort((a, b) => {
+    if (a.boost !== b.boost) return b.boost - a.boost;
+    return a.keyword < b.keyword ? -1 : a.keyword > b.keyword ? 1 : 0;
+  });
+  return sorted.slice(0, MAX_KEYTERMS);
+}
+
+// Re-export constants for tests + diagnostics.
+export const KEYTERM_INTERNALS = {
+  MAX_KEYTERMS,
+  TOP_TIER_BOOST_THRESHOLD,
+  URL_LENGTH_BUDGET,
+  BASE_KEYWORD_BOOSTS,
+  BOARD_TYPE_BOOSTS,
+} as const;
