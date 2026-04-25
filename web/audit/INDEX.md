@@ -9,20 +9,37 @@ Guiding rule: **iOS is canon. Divergence is a bug unless explicitly documented**
 
 | # | Domain | Status | Commit(s) |
 |---|--------|--------|-----------|
-| B0 | Branch + env setup | ✅ | `61d7d76` (audit docs on branch) |
-| B1 | Data-shape P0s — bucket rename + flag/enum review | ✅ partial | `2314566`, `28556f9` (codex fixes) |
-| B2 | Tab / nav structural P0s (Observations tab, Extent/Design EIC-only) | ✅ | `86dac39` |
-| B3a | PDF wire-up (was stage6-only stub; main had it wired; bucket cleanup) | ✅ | `f8ab898` |
-| B3b | Change Password page | ⏳ pending |
-| B3c | Defaults area port | ⏳ pending |
-| B3d | CCU three-mode + review sheet | ⏳ on main already; audit against main needed |
-| B4 | Deepgram + Recording config | ⏳ pending |
-| B5 | Recording UI parity | ⏳ pending |
-| B6 | Dashboard + Settings gap closure | ⏳ pending |
-| B7 | Shared-tab content gaps (inner-field drift, CircuitRow, observations, outcomes) | ⏳ pending |
-| B8 | Cert-gated tabs + Staff remaining | ⏳ pending |
-| B9 | P1 sweeps | ⏳ pending |
-| B10 | P2 hygiene + final handoff | ⏳ pending |
+| B0 | Branch + env setup | ✅ done | `61d7d76` (audit docs on branch) |
+| B1 | Data-shape P0s — bucket rename | ✅ done | `2314566`, `28556f9` (codex fixes) |
+| B1.1 | Outcome enum + schedule-flag canonicalisation | ✅ done | `7e88133`, `5cc2022` (codex revert) |
+| B2 | Tab / nav structural P0s (Observations tab, Extent/Design EIC-only) | ✅ done | `86dac39` |
+| B3a | PDF tab bucket cleanup (was already wired on main) | ✅ done | `f8ab898` |
+| B3b | Change Password page | ✅ already on main — no work needed |
+| B3c | Defaults area | ✅ already on main (incl. cable defaults) — no work needed |
+| B3d | CCU three-mode + review sheet | ✅ already on main — no work needed |
+| B6.1 | Dashboard recent-jobs cap + Defaults tile | ✅ done | `181fc3a`, `39cb5a1` (codex fix) |
+| B4 | Deepgram + Recording config | ⏳ open — needs main-vs-stage6 cross-check first |
+| B5 | Recording UI parity | ⏳ open — needs main-vs-stage6 cross-check first |
+| B6 | Remaining dashboard + settings P0s (T&Cs gate, preset picker on creation, swipe delete on rows, admin form drift) | ⏳ open |
+| B7 | Inner-field drift (CircuitRow, ObservationRow, per-bucket field naming) | ⏳ open — biggest remaining work |
+| B8 | Cert-gated tabs + Staff remaining (3-way InspectorProfile shape, Phase 4 carry-forwards) | ⏳ open |
+| B9 | P1 sweeps | ⏳ open |
+| B10 | P2 hygiene + final handoff | ⏳ open |
+
+### Full Wave B commit log
+
+| SHA | Subject |
+|-----|---------|
+| `39cb5a1` | dashboard recent-jobs initial cap (codex fix on `181fc3a`) |
+| `181fc3a` | dashboard recent-jobs cap + Defaults tile |
+| `5cc2022` | revert flag-key camelCase rename — iOS wire is snake_case (codex fix on `7e88133`) |
+| `7e88133` | canonicalise inspection-schedule outcome enum + flag casing |
+| `6c50872` | INDEX progress + observations from the run |
+| `f8ab898` | PDF-tab bucket names + warning logic to canonical shape |
+| `86dac39` | cert-type-gate job tabs to match iOS canonical ordering |
+| `28556f9` | codex-review fixes on `2314566` (nullable schemas, single-board, LiveFill prefix) |
+| `2314566` | rename drifted job-bucket keys to backend canonical shape |
+| `61d7d76` | Wave A audit — 170 iOS↔PWA gaps across 8 phases |
 
 ### Notes from the run so far
 1. **The audit was run against `stage6-agentic-extraction`, which diverged from main in two directions.** Some gaps (Phase 5 Gap #5.5 PDF stubs, Phase 8 Gap #1 CCU three-mode, much of Phase 3 action-rail) are stage6-only regressions and **already resolved on main**. Each phase needs a "what's actually current on main" cross-check before the fix agent wastes effort.
@@ -32,9 +49,31 @@ Guiding rule: **iOS is canon. Divergence is a bug unless explicitly documented**
 5. **Collision hazard**: the `stage6-agentic-extraction` branch is actively being committed to by a parallel Claude session. A worktree at `../EICR_Automation_parity` isolates the parity work so the two don't fight over `git checkout`. Don't reuse the main repo checkout for parity fixes.
 
 ### Codex review findings closed so far
-- B1: nullable schema regression, single-board data-loss path, LiveFill prefix mismatch (all fixed in `28556f9`). Fourth finding (Overview board read vs Board write) deferred to B7's inner-field pass because the Overview already reads from a pre-existing drifted bucket that B7 will rationalize wholesale.
-- B2: no findings.
-- B3a: no separate review (tiny bucket-rename follow-up).
+- **B1** (`2314566`) → 4 findings, all addressed in `28556f9`: (P1) nullable-schema regression (backend emits `null` for unpopulated buckets — schemas now `.nullable().optional()`); (P1) single-board data-loss path (BoardPage now synthesises from `board_info` + writes back to both); (P2) LiveFill prefix mismatch (mapping table at the diff-emission boundary); (P2) Overview-board read vs Board-tab write inconsistency — deferred to B7's inner-field pass since the Overview reads pre-existing drifted buckets that need rationalising wholesale.
+- **B2** (`86dac39`) → no findings. Clean cert-type gating.
+- **B1.1 outcome+flag** (`7e88133`) → 1 finding addressed in `5cc2022`: (P1) iOS Swift `CodingKeys` map camelCase Swift property names to **snake_case JSON keys** on the wire (`is_tt_earthing` etc.), so the rename direction was wrong. shared-types had it backwards; reverted PWA to snake_case + updated shared-types to match the actual wire shape. Real divergence was just one key — `mark_section_7_na` (extra underscore) → `mark_section7_na`.
+- **B3a** (`f8ab898`) → no separate codex review (small bucket-rename follow-up).
+- **B6.1 dashboard** (`181fc3a`) → 1 finding addressed in `39cb5a1`: (P2) removing the cap entirely was a perf regression for inspectors with hundreds of jobs. New shape: render up to 50 by default, show a "Show all N jobs" button below when truncated.
+
+### Real remaining work for next session
+
+1. **InspectorProfile 3-way shape drift** (Phase 5 #5.3) — `staff/page.tsx` local `Inspector` type uses `full_name` + `mft_serial`; `web/src/lib/types.ts` `InspectorProfile` uses `name` + `mft_serial_number`; `packages/shared-types/src/job.ts` has only the 6 wire fields with no equipment block. iOS `Inspector.swift` is local-only (not on the wire); iOS `InspectorProfile.swift` is the wire shape (6 fields, single `name`). Fix: align `staff/page.tsx` local type to `web/src/lib/types.ts InspectorProfile`, drop the duplicate. Equipment fields stay in `web/src/lib/types.ts` as a PWA-local extension because the backend stores blobs verbatim, but they don't survive iOS round-trip.
+2. **Staff roster fetch** (Phase 5 #5.1) — `staff/page.tsx` reads `(job as StaffJobShape).inspectors ?? []` but nothing writes to `job.inspectors`. The roster should come from `api.inspectorProfiles(userId)`. Without this fetch, every role picker on the Staff tab is permanently empty.
+3. **Phase 4 #12** (inline observation workflow on schedule taps) — already implemented on main per `inspection/page.tsx` (the `inlineFormRef` / `pendingChange` flow is present); audit was wrong because it ran against stage6.
+4. **T&Cs gate** (Phase 2 P0 #1) — backend has no T&C endpoint per backend audit Q10. iOS uses localStorage flags `termsAccepted` / `termsAcceptedVersion="1.0"` / `termsAcceptedDate`. Web port needs: a `web/src/app/terms/page.tsx` page with the T&C text + accept button writing the same localStorage keys for cross-platform consistency, AND a client-side gate in `AppShell` that redirects to `/terms` when the flag is unset (middleware can't read localStorage; gate must be client-side).
+5. **Preset picker on job creation** (Phase 2 P0 #3) — iOS shows a `PresetPickerSheet` when 1+ saved defaults exist, allowing the inspector to apply a preset on the new job. Web `createJob` POSTs immediately. Needs a sheet component + integration with the (already-shipped) Defaults area.
+6. **Swipe delete on dashboard job rows** (Phase 2 P0 #4) — iOS UX affordance for quick row deletion. Web has `JobRow` with no swipe handling. Mobile-only feature; desktop falls back to context menu.
+7. **Deepgram config drift** (Phase 6 P0s) — needs main-vs-stage6 cross-check; some flagged config gaps may be stage6-only. Once verified-on-main, focus on `utterance_end_ms`, keyterm prompting (port `KeywordBoostGenerator`), 25s ALB heartbeat.
+8. **Per-circuit field drift** (Phase 3 #16, #18) — `CircuitRow` uses `id`/`number`/`description` while wire uses `circuit_ref`/`circuit_designation`. Big refactor; ladder of follow-ups.
+
+### How to resume
+
+1. `cd /Users/derekbeckley/Developer/EICR_Automation_parity` (the worktree, not the main checkout — the main checkout is on `stage6-agentic-extraction` and a different Claude session is actively committing there).
+2. `git status` should be clean on `pwa-parity-fixes`.
+3. Read `web/audit/INDEX.md` (this file) for the latest commit log + remaining work.
+4. Pick a next item from the "Real remaining work" list above. T&Cs gate or InspectorProfile shape consolidation are the two cleanest single-commit follow-ups; both are isolated and well-bounded.
+5. Run `npm test --workspace=web -- --run` after each change. Pre-existing TS errors in `tests/phase-6-clear-cache.test.tsx` and `tests/phase-9-haptic.test.ts` are noise (also on main); ignore.
+6. Run `codex review --commit <SHA>` after each commit. The shell needs `bash -lc 'codex …'` — codex is at `/opt/homebrew/bin/codex` but its node shebang fails under the default sandboxed PATH.
 
 ## Phase status — ALL DONE
 
