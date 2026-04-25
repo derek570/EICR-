@@ -366,7 +366,7 @@ export function createAskGateWrapper({
           // Plan 05-14 r8-#1 — route through `synthResultWithoutLog`
           // instead of `synthResultWrapped`. The inner dispatcher's
           // outer catch ALREADY called `logAskUser(...)` before
-          // rethrowing (stage6-dispatcher-ask.js line ~352-364), so
+          // rethrowing (stage6-dispatcher-ask.js line ~361), so
           // a second `logAskUser(...)` here would emit a DUPLICATE
           // `stage6.ask_user` row carrying the same answer_outcome +
           // tool_call_id but `wait_duration_ms: 0` (instead of the
@@ -376,7 +376,16 @@ export function createAskGateWrapper({
           // awaiter is not stranded), NOT a second emit. The
           // dispatcher remains the sole emitter for the inner-throw
           // path; the wrapper produces zero rows on this path.
-          resolve(synthResultWithoutLog(call, 'dispatcher_error_pre_emit'));
+          //
+          // Plan 05-14 r8-#2 — `'dispatcher_error'` (was
+          // `'dispatcher_error_pre_emit'` post-r7). r8-#2 reverted
+          // the wire-schema rename and layered lifecycle position
+          // as a separate log-row field at the dispatcher's outer
+          // catch — the wrapper synthesises the wire-schema name
+          // verbatim so the envelope `body.reason` matches the
+          // closed-enum value the classifier and downstream consumers
+          // expect.
+          resolve(synthResultWithoutLog(call, 'dispatcher_error'));
         }
       }, delayMs);
 
@@ -682,53 +691,83 @@ export function wrapAskDispatcherWithGates(
 //     classify THAT as fire.
 //
 // (5) Plan 05-13 r7 — split `dispatcher_error` into lifecycle-keyed
-//     names (`_pre_emit` / `_post_emit`).
+//     names (`_pre_emit` / `_post_emit`). REVERTED at (6) below.
 //
 //     Codex r7 BLOCK: the r5↔r6 toggle history (initial non-fire
 //     → r5 fire → r6 non-fire) is the symptom of a structural shape
 //     problem — a single outcome name cannot carry lifecycle
-//     position. The (4) "future-defence" guidance above already
-//     anticipated the right shape (introduce a NEW name for any
-//     post-emit refactor); r7 applies the same shape proactively
-//     by encoding lifecycle into the CURRENT emit name.
+//     position. r7 split the outcome NAME so the closed-enum
+//     wire-schema value encoded the lifecycle position structurally.
 //
-//     Concretely:
-//       - The outer catch in stage6-dispatcher-ask.js (line ~341)
-//         emits `dispatcher_error_pre_emit` post-r7. The r6 schema
-//         audit established that the only reachable code path is
-//         pre-emit; the new name encodes that conclusion structurally.
-//       - The wrapper's own timer-catch (line ~302 of this file)
-//         emits the same `_pre_emit` name when an inner throw
-//         propagates — the only inner-throw path today is the
-//         dispatcher's outer-catch rethrow (also pre-emit).
-//       - `dispatcher_error_post_emit` is enum-reserved for any
-//         future refactor adding synchronous post-emit code that
-//         can throw + reach the outer catch. The new emit site
-//         uses the new name; the classifier already lives in
-//         NEITHER pre-emit set → fire-default. Zero classifier
-//         change required at refactor time.
-//       - Legacy `dispatcher_error` (Plan 03-12 r10) stays in the
-//         logger enum for back-compat with archived log rows but
-//         is no longer emitted. Classifier treats it as ambiguous-
-//         legacy (not in either pre-emit set → fire-default via
-//         isRealFire's fallthrough). Conservative direction matches
-//         r5's reasoning for unknown-lifecycle envelopes.
+//     The split closed the toggle problem at the classifier level
+//     (re-audits couldn't toggle the SAME name) but it INTRODUCED
+//     a wire-schema break that re-surfaced as Codex r8-#2 below.
 //
-//     Why the split closes the toggle problem permanently:
+// (6) Plan 05-14 r8-#2 — REVERT (5)'s wire-schema rename; layer
+//     lifecycle position as a SEPARATE optional log-row metadata
+//     field.
+//
+//     Codex r8-#2 MAJOR: Plan 05-13 r7's split was a BREAKING
+//     wire-schema change to the closed enum
+//     ASK_USER_ANSWER_OUTCOMES. Downstream consumers (CloudWatch
+//     Insights queries, future analyzer expansions) filtering on
+//     `answer_outcome = 'dispatcher_error'` post-r7 silently match
+//     nothing because the active emit site at
+//     stage6-dispatcher-ask.js was renamed.
+//
+//     r8-#2 closure: revert the rename. Restore `'dispatcher_error'`
+//     as the single canonical wire-schema value. Encode lifecycle
+//     position as an out-of-band optional log-row field (`lifecycle:
+//     'pre_emit' | 'post_emit'`) — additive metadata, no break,
+//     same idiom as r10's `dispatcher_error` diagnostic field.
+//
+//     Concretely (post-r8-#2):
+//       - The outer catch in stage6-dispatcher-ask.js (line ~361)
+//         emits `answer_outcome: 'dispatcher_error'` (canonical
+//         wire-schema) WITH `lifecycle: 'pre_emit'` (out-of-band
+//         metadata). The r6 + r7 schema audit still applies — this
+//         catch is structurally pre-emit; the lifecycle field
+//         carries that audit conclusion at the log-row level.
+//       - The wrapper's timer-catch (line ~302 of this file) routes
+//         through the new `synthResultWithoutLog` helper (Plan
+//         05-14 r8-#1) so the dispatcher's outer catch is the sole
+//         emitter for the inner-throw path. The synthesised envelope
+//         carries `body.reason: 'dispatcher_error'` (matches the
+//         dispatcher's wire-schema value).
+//       - `_PRE_EMIT_NON_FIRE_REASONS` returns to the r6 placement:
+//         `'dispatcher_error'` is back in the set → non-fire on
+//         the envelope-layer classification.
+//       - `dispatcher_error_pre_emit` and `dispatcher_error_post_emit`
+//         REMOVED from the closed enum. The lifecycle position lives
+//         only at the log-row metadata layer post-r8-#2.
+//
+//     How r8-#2 still closes the r7 toggle-problem concern:
 //     a future re-audit of the SAME emit site reaches the SAME
-//     conclusion (pre-emit), so the classification stays stable.
-//     A genuinely different lifecycle position requires a different
-//     emit site emitting a different name — which is a deliberate,
-//     scope-controlled refactor (not a re-audit toggle). Phase 4
-//     r28 disposition policy permitted the targeted forbidden-file
-//     edit (rename in stage6-dispatcher-ask.js, 2 lines + comment)
-//     because the rename is semantic clarification of an existing
-//     invariant, not behavioural change.
+//     conclusion (pre-emit, given current code), so the lifecycle
+//     field stays stable. A genuinely different lifecycle position
+//     (a post-emit refactor adding code AFTER ws.send that can
+//     throw + reach the outer catch) emits `lifecycle: 'post_emit'`
+//     at the new code path — same `answer_outcome: 'dispatcher_error'`
+//     wire-schema name (analyzer queries keep matching); the
+//     lifecycle split happens at the metadata-field level, NOT at
+//     the closed-enum level.
 //
-//     This keeps the analyzer's historical aggregations stable
-//     across the split change too: pre-r7 archived rows carry
-//     legacy `dispatcher_error`; post-r7 rows carry `_pre_emit`;
-//     each name has its own historical bucket.
+//     Phase 4 r28 disposition policy permitted the targeted
+//     forbidden-file edit (revert in stage6-dispatcher-ask.js,
+//     line 361 outcome string + new lifecycle key + comment block
+//     updates) because the revert is semantic clarification of an
+//     existing invariant + a non-breaking metadata addition, not
+//     behavioural change.
+//
+//     Wire-schema continuity: pre-r7 archived rows carry
+//     `'dispatcher_error'`; r7-period rows carry `'_pre_emit'`;
+//     post-r8 rows carry `'dispatcher_error'` with `lifecycle:
+//     'pre_emit'`. Analyzer queries on the wire-schema name match
+//     pre-r7 + post-r8 rows; r7-period rows are a small archived
+//     bucket that future analyzers can union into the canonical
+//     name (`answer_outcome IN ('dispatcher_error',
+//     'dispatcher_error_pre_emit', 'dispatcher_error_post_emit')`)
+//     if precise back-compat coverage is needed.
 //
 // =============================================================================
 // `gate_dispatcher_error` — wrapper-internal pre-emit reservation.
@@ -902,23 +941,29 @@ const _PRE_EMIT_NON_FIRE_REASONS = new Set([
   'duplicate_tool_call_id',
   'prompt_leak_blocked',
   'shadow_mode',
-  // Plan 05-13 r7 — `dispatcher_error_pre_emit` ADDED, replacing
-  // legacy `dispatcher_error` (which was in this set at r6 only).
-  // The r5↔r6 toggle history showed that a single name cannot carry
-  // lifecycle position; r7 splits the name structurally. Every
-  // CURRENT emit site (the outer catch in stage6-dispatcher-ask.js
-  // + the wrapper's own timer-catch propagating an inner throw) now
-  // produces `_pre_emit`. The `_post_emit` sibling is enum-reserved
-  // in stage6-dispatcher-logger.js but lives in NEITHER pre-emit set
-  // here — fire-default (correct for post-emit lifecycle where the
-  // user has seen ask_user_started before the throw). Legacy
-  // `dispatcher_error` is REMOVED from this set: no active emit
-  // site means it can only appear in archived log rows, classifier
-  // treats it as ambiguous-legacy → fire-default via isRealFire's
-  // fallthrough (matches r5's conservative direction for unknown-
-  // lifecycle envelopes; bounds historical-deserialise false-positive
-  // cost at +1 budget slot per archived row).
-  'dispatcher_error_pre_emit',
+  // Plan 05-12 r6 → Plan 05-13 r7 → Plan 05-14 r8-#2 round-trip:
+  //   - r6 added `'dispatcher_error'` to this set after Codex r6
+  //     audited the current source and confirmed every emit site is
+  //     structurally pre-emit (register rethrow at line 297 BEFORE
+  //     ws.send line 305; ws.send failures caught + swallowed; no
+  //     synchronous post-send work).
+  //   - r7 RENAMED the wire-schema value to `dispatcher_error_pre_emit`
+  //     and updated this set's membership accordingly. Reserved
+  //     `dispatcher_error_post_emit` for future post-emit code paths
+  //     (NOT in either set → fire-default).
+  //   - r8-#2 REVERTED r7's rename — the closed-enum split was a
+  //     BREAKING wire-schema change, silently invalidating downstream
+  //     consumers filtering on `answer_outcome = 'dispatcher_error'`.
+  //     Restored `'dispatcher_error'` as the canonical wire-schema
+  //     name; layered lifecycle position as an out-of-band log-row
+  //     metadata field via `lifecycle: 'pre_emit' | 'post_emit'` at
+  //     the dispatcher's outer catch.
+  // The classifier returns to the r6 placement: `'dispatcher_error'`
+  // is back in this set → non-fire. The lifecycle metadata is for
+  // analyzer-query splits; the runtime classifier doesn't need it
+  // (the wire-schema name carries the classification at the envelope
+  // layer).
+  'dispatcher_error',
 ]);
 
 /**
