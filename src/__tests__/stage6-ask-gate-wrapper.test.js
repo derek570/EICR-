@@ -143,16 +143,64 @@ describe('deriveAskKey', () => {
     );
   });
 
-  test('"none" collapses case-insensitively (NONE / None / nOnE)', () => {
-    expect(deriveAskKey({ context_field: 'NONE', context_circuit: null })).toBe('_:_');
-    expect(deriveAskKey({ context_field: 'None', context_circuit: null })).toBe('_:_');
-    expect(deriveAskKey({ context_field: 'nOnE', context_circuit: null })).toBe('_:_');
+  // =========================================================================
+  // Plan 05-09 r3-#3 — deriveAskKey case-sensitivity matches validator.
+  // =========================================================================
+  // The real validator at stage6-dispatch-validation.js:204 is
+  // case-SENSITIVE:
+  //   if (input.context_field !== null && !CONTEXT_FIELD_ENUM.includes(input.context_field))
+  //     return { code: 'invalid_context_field', field: 'context_field' };
+  // CONTEXT_FIELD_ENUM is sourced from config/stage6-context-keys.json
+  // sentinels (lowercase 'none' + 'observation_clarify') + the
+  // circuit_fields keys (also all lowercase). Production never sees
+  // 'NONE' / 'None' because the validator rejects them upstream with
+  // 'invalid_context_field'.
+  //
+  // r2-#2 added a `.toLowerCase()` branch in deriveAskKey that admitted
+  // 'NONE' / 'None' / 'nOnE' as same-key as 'none' / null. That was
+  // dead code that ENCODED a contract divergence: a future change that
+  // touches the validator (e.g. adds case-insensitive input acceptance)
+  // would need to be matched in deriveAskKey. r3-#3 narrows the wrapper
+  // contract to verbatim mirror the validator's contract.
+  //
+  // Behaviour after r3-#3:
+  //   - 'none' (lowercase canonical sentinel) → '_' (UNCHANGED).
+  //   - null / undefined → '_' (UNCHANGED).
+  //   - 'NONE' / 'None' / 'nOnE' → 'NONE:_' / 'None:_' / 'nOnE:_'
+  //     (CHANGED — case-preserving distinct keys; production never
+  //     reaches this branch because the validator rejects upstream).
+  //   - Real field values (e.g. 'ze', 'Ze', 'measured_zs_ohm') →
+  //     case-preserving distinct keys (UNCHANGED).
+  // =========================================================================
+
+  test('"NONE" / "None" / "nOnE" do NOT collapse — case-sensitive match (r3-#3)', () => {
+    // Pre-fix: all three returned '_:_'. Post-fix: distinct keys so a
+    // wrapper caller bypassing the validator surfaces the bug rather
+    // than silently masking it.
+    expect(deriveAskKey({ context_field: 'NONE', context_circuit: null })).toBe('NONE:_');
+    expect(deriveAskKey({ context_field: 'None', context_circuit: null })).toBe('None:_');
+    expect(deriveAskKey({ context_field: 'nOnE', context_circuit: null })).toBe('nOnE:_');
+    // None of the three may equal each other or the canonical sentinel
+    // bucket — case-sensitivity contract.
+    expect(deriveAskKey({ context_field: 'NONE', context_circuit: null })).not.toBe(
+      deriveAskKey({ context_field: 'None', context_circuit: null })
+    );
+    expect(deriveAskKey({ context_field: 'NONE', context_circuit: null })).not.toBe(
+      deriveAskKey({ context_field: null, context_circuit: null })
+    );
+    expect(deriveAskKey({ context_field: 'NONE', context_circuit: null })).not.toBe(
+      deriveAskKey({ context_field: 'none', context_circuit: null })
+    );
   });
 
-  test('field collapse preserves real circuit number', () => {
+  test('field collapse preserves real circuit number (sentinel forms only)', () => {
+    // Only the validator-admitted sentinel forms (`null` and lowercase
+    // `'none'`) collapse to '_'. Both forms with the same circuit number
+    // must hit the same bucket so per-key budget cannot be bypassed by
+    // alternating sentinel representations.
     expect(deriveAskKey({ context_field: 'none', context_circuit: 3 })).toBe('_:3');
     expect(deriveAskKey({ context_field: null, context_circuit: 3 })).toBe('_:3');
-    expect(deriveAskKey({ context_field: 'NONE', context_circuit: 3 })).toBe(
+    expect(deriveAskKey({ context_field: 'none', context_circuit: 3 })).toBe(
       deriveAskKey({ context_field: null, context_circuit: 3 })
     );
   });
@@ -979,10 +1027,24 @@ describe('Plan 05-08 r2-#2 — null/"none" alternation cannot bypass per-key bud
       sessionId: 'sess-1',
     });
 
-    // Same circuit number across all 4 calls; field alternates between the
-    // canonical sentinel forms. Every form MUST resolve to the same
+    // Same circuit number across all 4 calls; field alternates between
+    // the TWO validator-admitted sentinel forms (null and lowercase
+    // 'none' — see stage6-dispatch-validation.js:204 + the
+    // CONTEXT_FIELD_ENUM contents). Every form MUST resolve to the same
     // budget key '_:7'.
-    const variants = [null, 'none', 'NONE', null];
+    //
+    // Plan 05-09 r3-#3 — the previous variants list included 'NONE' as
+    // the third member, locking case-INsensitive collapse. r3-#3
+    // narrowed deriveAskKey to verbatim case-sensitive matching of the
+    // validator's contract (CONTEXT_FIELD_ENUM is all lowercase;
+    // production never sees 'NONE' because the validator rejects it
+    // upstream with invalid_context_field). The alternation is now
+    // [null, 'none', null, 'none'] — same logical scope, two sentinel
+    // forms, same per-key budget bucket. Pre-fix-r2-#2 each form had a
+    // distinct key and no call would have exhausted; post-r2-#2 + r3-#3
+    // both forms collapse to '_:7' so calls 3+4 short-circuit
+    // ask_budget_exhausted.
+    const variants = [null, 'none', null, 'none'];
     const results = [];
     for (let i = 0; i < variants.length; i++) {
       const call = makeCall(`call-${i + 1}`, variants[i], 7);
