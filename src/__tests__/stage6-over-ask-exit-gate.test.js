@@ -177,6 +177,74 @@ describe('Plan 05-06 — exit-gate harness smoke test', () => {
 });
 
 // =============================================================================
+// Plan 05-07 r1-#1 — askCount counts every non-wrapper-short-circuited fire
+// =============================================================================
+// The current replayFixture at scripts/stage6-over-ask-exit-gate.js:391 counts
+// only `body.answered === true`. Inner-dispatcher reasons like user_moved_on,
+// timeout, transcript_already_extracted, session_stopped are real fires that
+// the wrapper's isRealFire classifier already counts (the budget + restrained
+// counters increment for them). The harness must mirror that classification.
+//
+// Sample-11 carries 1 inner_outcome:{answered:false, reason:'user_moved_on'}
+// — a real fire by the wrapper's accounting. Pre-fix askCount = 0 (because
+// answered !== true). Post-fix askCount = 1. Sample-08's wrapper-internal
+// short-circuit (ask_budget_exhausted) is excluded because it IS a wrapper
+// short-circuit reason.
+//
+// This test reads digest.sessions (which the harness already exposes per
+// fixture) and asserts the per-fixture askCount matches the wrapper's
+// real-fire semantics.
+// =============================================================================
+
+describe('Plan 05-07 r1-#1 — askCount counts every non-wrapper-short-circuited fire', () => {
+  jest.setTimeout(30000);
+
+  test('sample-11 (user_moved_on) askCount === 1 (was 0 pre-fix)', () => {
+    const { status, digest, stderr } = runGate();
+    if (status !== 0) {
+      throw new Error(
+        `expected exit_code=0; got status=${status}\n` +
+          `digest=${JSON.stringify(digest, null, 2)}\n` +
+          `stderr=${stderr}`
+      );
+    }
+    const sample11 = digest.sessions.find((s) => /sample-11|golden-11/.test(s.id));
+    if (!sample11) {
+      throw new Error(
+        `sample-11 not found in digest.sessions; available ids: ${digest.sessions.map((s) => s.id).join(', ')}`
+      );
+    }
+    expect(sample11.askCount).toBe(1);
+  });
+
+  test('sample-12 (legitimate deep flow, answered=true) askCount === 1', () => {
+    const { status, digest } = runGate();
+    expect(status).toBe(0);
+    const sample12 = digest.sessions.find((s) => /sample-12|golden-12/.test(s.id));
+    expect(sample12).toBeDefined();
+    expect(sample12.askCount).toBe(1);
+  });
+
+  test("sample-08 (budget-exhaustion) askCount === 2 (the 3rd ask short-circuits as 'ask_budget_exhausted' and is excluded)", () => {
+    const { status, digest } = runGate();
+    expect(status).toBe(0);
+    const sample08 = digest.sessions.find((s) => /sample-08|golden-08/.test(s.id));
+    expect(sample08).toBeDefined();
+    // 3 ask_user_calls, 2 fire (turns 1+2), 3rd is wrapper-short-circuited.
+    expect(sample08.askCount).toBe(2);
+  });
+
+  test("sample-07 (restrained-mode-trigger) askCount === 3 (the 4th ask short-circuits as 'restrained_mode' and is excluded)", () => {
+    const { status, digest } = runGate();
+    expect(status).toBe(0);
+    const sample07 = digest.sessions.find((s) => /sample-07|golden-07/.test(s.id));
+    expect(sample07).toBeDefined();
+    // 4 ask_user_calls, 3 fire (turns 1-3), 4th is wrapper-short-circuited.
+    expect(sample07.askCount).toBe(3);
+  });
+});
+
+// =============================================================================
 // Plan 05-07 r1-#4 — fixture-load-time schema validation
 // =============================================================================
 // The minimal mock inner dispatcher accepts any payload shape, so an invalid
