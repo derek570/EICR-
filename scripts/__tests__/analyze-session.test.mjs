@@ -896,3 +896,143 @@ test("Plan 08-04 r3-#2 — repeated non-string outcomes of same shape bucket tog
     'Same-shape "{}" warnings MUST coalesce to count=3',
   );
 });
+
+// ── Phase 8 — Plan 08-06 r5-#2: Bucketing on raw canonical value ──
+//
+// Codex r5-#2 (MINOR) raised that scripts/analyze-session.js:1166
+// (unknown bucketing) and :1154 (malformed bucketing) apply
+// safeDisplayValue() BEFORE bucketing — the call site sets the Map
+// key TO the truncated form. Two distinct outcomes that share their
+// first 99 chars but diverge at char 100+ both produce the same
+// "AAA…" key and collapse into one entry. True drift shape (two
+// distinct values) is hidden in the report.
+//
+// Fix: bucket on the RAW canonicalised value (post-control-strip but
+// PRE-truncate). The new canonicaliseRaw() helper does the same
+// per-type stringification + control-char strip as safeDisplayValue
+// but WITHOUT the length cap. Length-cap is applied at the
+// materialisation pass (when building the unknown_outcomes[] /
+// malformed_outcomes[] arrays for JSON output) so the operator-facing
+// display value still bounds report size.
+//
+// Run with:  node --test scripts/__tests__/analyze-session.test.mjs
+test("Plan 08-06 r5-#2 — values past truncation cap stay distinct (NOT collapsed by display-form bucketing)", () => {
+  // Fixture has THREE 201-char rows with a shared 200-char prefix:
+  //   row t2: "X".repeat(200) + "B"  (1 occurrence)
+  //   row t3: "X".repeat(200) + "C"  (1 occurrence)
+  //   row t4: "X".repeat(200) + "B"  (1 occurrence — duplicate of t2)
+  // Pre-fix: all three truncate to the same 100-char display ("X"x99
+  // + U+2026 ellipsis), bucket to ONE entry with count=3.
+  // Post-fix: bucketing on raw value keeps the B-suffix and C-suffix
+  // distinct → TWO entries: one with count=2 (B-suffix duplicates),
+  // one with count=1 (C-suffix). Both display the same truncated
+  // value (since they share the same 99-char prefix), but the count
+  // distribution preserves the underlying drift shape.
+  const a = runAnalyzer("near-collision-session");
+  const askUser = a.tool_call_traffic.ask_user;
+
+  assert.equal(
+    askUser.unknown_outcomes.length,
+    2,
+    "Two distinct raw values past the 99-char prefix MUST produce TWO entries, not one collapsed entry",
+  );
+
+  // Sort entries by count descending; the B-suffix duplicate must
+  // produce the count=2 entry, C-suffix the count=1 entry.
+  const sorted = [...askUser.unknown_outcomes].sort((a, b) => b.count - a.count);
+  assert.equal(sorted[0].count, 2, "B-suffix duplicates MUST bucket to count=2");
+  assert.equal(sorted[1].count, 1, "C-suffix MUST stay distinct with count=1");
+
+  // Total unknown_outcome_count is the sum of counts (3 unknowns total
+  // across the three rows). Locks the invariant: unknown_outcome_count
+  // = sum(unknown_outcomes[].count).
+  assert.equal(
+    askUser.unknown_outcome_count,
+    3,
+    "unknown_outcome_count MUST equal sum of all unknown_outcomes[].count values",
+  );
+
+  // Defence-in-depth: the displayed `value` field is still length-
+  // capped (the operator-facing string bounds report size). Both
+  // entries display the same truncated form because they share the
+  // first 99 chars; the COUNT distribution carries the drift signal.
+  for (const entry of askUser.unknown_outcomes) {
+    assert.ok(
+      entry.value.length <= 100,
+      "Each rendered entry's value MUST still be length-capped at 100 chars",
+    );
+    assert.ok(
+      entry.value.endsWith("…"),
+      "Each rendered entry's value MUST end with U+2026 ellipsis (truncation marker)",
+    );
+  }
+});
+
+test("Plan 08-06 r5-#2 — single 200-char value still produces ONE bucket (regression-lock)", () => {
+  // Existing xss-injection-session fixture has a SINGLE 200-char
+  // length-bomb value (all "A"). Pre-fix and post-fix this MUST
+  // bucket to ONE entry — bucketing on raw vs display only diverges
+  // when there are multiple raw values that share a display prefix.
+  // Single-value case is byte-identical.
+  const a = runAnalyzer("xss-injection-session");
+  const askUser = a.tool_call_traffic.ask_user;
+
+  // The xss-injection-session has 3 unknowns: <script> payload, the
+  // 200-char A-bomb, the control-char value. Find the A-bomb entry.
+  const aBomb = askUser.unknown_outcomes.find(
+    (e) => e.value.startsWith("AAAA") && e.value.length === 100,
+  );
+  assert.ok(aBomb, "200-char A-bomb MUST still produce a single truncated entry");
+  assert.equal(
+    aBomb.count,
+    1,
+    "Single 200-char A-bomb value MUST still produce count=1 (only ONE underlying raw value)",
+  );
+});
+
+test("Plan 08-06 r5-#2 — control-char strip still applies (regression-lock)", () => {
+  // Existing xss-injection-session has a control-char row:
+  //   "evil\x00\x1Bvalue" (11 chars: e-v-i-l-NUL-ESC-v-a-l-u-e)
+  // The canonicaliseRaw helper applies the same control-char strip
+  // as safeDisplayValue (just without the length cap), so this row
+  // still buckets on the stripped form "evilvalue" (9 chars).
+  const a = runAnalyzer("xss-injection-session");
+  const askUser = a.tool_call_traffic.ask_user;
+
+  const stripped = askUser.unknown_outcomes.find(
+    (e) => e.value === "evilvalue",
+  );
+  assert.ok(
+    stripped,
+    "Control-byte-stripped 'evilvalue' MUST still appear (canonicaliseRaw strips control bytes before bucketing)",
+  );
+  assert.equal(stripped.count, 1);
+
+  // Defence-in-depth: raw control-char form MUST NOT survive (would
+  // corrupt logs / break terminals downstream).
+  const raw = askUser.unknown_outcomes.find(
+    (e) => e.value === "evil\x00\x1Bvalue",
+  );
+  assert.equal(raw, undefined);
+});
+
+test("Plan 08-06 r5-#2 — sum of unknown_outcomes[].count equals unknown_outcome_count (invariant lock)", () => {
+  // Cross-fixture invariant: across xss-injection-session AND
+  // near-collision-session, the analyzer's unknown_outcome_count
+  // scalar MUST equal the sum of unknown_outcomes[].count entries.
+  // Pre-fix this happened to hold by accident (count was computed
+  // as the sum of Map values). Post-fix it MUST still hold even
+  // though we materialise length-capped display values that may
+  // share rendered shape — the count distribution is what carries
+  // the operational signal, not just the sum.
+  for (const fixtureName of ["xss-injection-session", "near-collision-session"]) {
+    const a = runAnalyzer(fixtureName);
+    const askUser = a.tool_call_traffic.ask_user;
+    const sum = askUser.unknown_outcomes.reduce((s, e) => s + e.count, 0);
+    assert.equal(
+      askUser.unknown_outcome_count,
+      sum,
+      `Fixture ${fixtureName}: unknown_outcome_count (${askUser.unknown_outcome_count}) MUST equal sum of entry counts (${sum})`,
+    );
+  }
+});
