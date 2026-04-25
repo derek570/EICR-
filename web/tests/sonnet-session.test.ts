@@ -162,7 +162,7 @@ describe('SonnetSession', () => {
       const wire = JSON.parse(raw);
       expect(wire.type).toBe('transcript');
       expect(wire.text).toBe('Circuit 3 Zs is 0.44');
-      expect(wire.regex_fields).toEqual([{ field: 'circuit.3.measured_zs_ohm' }]);
+      expect(wire.regexResults).toEqual([{ field: 'circuit.3.measured_zs_ohm' }]);
     });
 
     it('sendTranscript with no regexHints option omits regex_fields entirely (backwards-compatible)', async () => {
@@ -176,7 +176,7 @@ describe('SonnetSession', () => {
       const raw = (await server.nextMessage) as string;
       const wire = JSON.parse(raw);
       expect(wire.type).toBe('transcript');
-      expect(wire).not.toHaveProperty('regex_fields');
+      expect(wire).not.toHaveProperty('regexResults');
     });
 
     it('sendTranscript with empty regexHints array omits regex_fields too (matches absence)', async () => {
@@ -189,7 +189,7 @@ describe('SonnetSession', () => {
 
       const raw = (await server.nextMessage) as string;
       const wire = JSON.parse(raw);
-      expect(wire).not.toHaveProperty('regex_fields');
+      expect(wire).not.toHaveProperty('regexResults');
     });
 
     it('regex hints survive the pre-connect queue (codex P2 follow-up)', async () => {
@@ -212,7 +212,7 @@ describe('SonnetSession', () => {
       const wire = JSON.parse(raw);
       expect(wire.type).toBe('transcript');
       expect(wire.text).toBe('Circuit 3 Zs is 0.44');
-      expect(wire.regex_fields).toEqual([{ field: 'circuit.3.measured_zs_ohm' }]);
+      expect(wire.regexResults).toEqual([{ field: 'circuit.3.measured_zs_ohm' }]);
     });
 
     it('postcode hint includes value (iOS contract for postcodes.io enrichment)', async () => {
@@ -223,15 +223,18 @@ describe('SonnetSession', () => {
 
       session.sendTranscript('postcode is EC1A 1BB', {
         regexHints: [
-          { field: 'installation.postcode', value: 'EC1A 1BB' },
+          // iOS-canon wire-key prefix is `install.postcode` (not
+          // `installation.postcode` — the JobDetail section is
+          // `installation` but the regex-hint protocol shortens it).
+          { field: 'install.postcode', value: 'EC1A 1BB' },
           { field: 'circuit.3.measured_zs_ohm' },
         ],
       });
 
       const raw = (await server.nextMessage) as string;
       const wire = JSON.parse(raw);
-      expect(wire.regex_fields).toEqual([
-        { field: 'installation.postcode', value: 'EC1A 1BB' },
+      expect(wire.regexResults).toEqual([
+        { field: 'install.postcode', value: 'EC1A 1BB' },
         { field: 'circuit.3.measured_zs_ohm' },
       ]);
     });

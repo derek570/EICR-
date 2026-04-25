@@ -192,7 +192,7 @@ export class SonnetSession {
   // and flushed on `onopen` — otherwise the user loses anything said in
   // the first ~200ms while the WS handshakes.
   /** Pre-connect transcript queue. Stores the full sendTranscript
-   *  payload (not just the text) so regex_fields hints from R5
+   *  payload (not just the text) so regexResults hints from R5
    *  survive the open handshake — the first utterance right after
    *  session.start() / reconnect is the most common pre-connect
    *  case, and dropping hints there would mean Sonnet re-asks about
@@ -338,8 +338,8 @@ export class SonnetSession {
       // Flush anything queued while connecting. On reconnect this also
       // drains anything the user said while the socket was down. R5:
       // queue entries carry their full payload (text + confirmations
-      // flag + regex hints) so flushed messages keep the hint
-      // protocol — without this, the first transcript after open
+      // flag + regexResults hints) so flushed messages keep the
+      // hint protocol — without this, the first transcript after open
       // would be a bare {type, text} and Sonnet would miss the
       // regex-tier disambiguation cues.
       if (this.preConnectQueue.length > 0) {
@@ -350,7 +350,7 @@ export class SonnetSession {
             confirmations_enabled: entry.confirmationsEnabled ?? false,
           };
           if (entry.regexHints && entry.regexHints.length > 0) {
-            flushPayload.regex_fields = entry.regexHints;
+            flushPayload.regexResults = entry.regexHints;
           }
           this.sendRaw(flushPayload);
         }
@@ -428,15 +428,15 @@ export class SonnetSession {
   /** Feed a final Deepgram transcript into the Sonnet session. No-op if
    *  the text is empty. Messages sent before `onopen` are queued.
    *
-   *  `regexHints`, when non-empty, attaches as `regex_fields` on the
+   *  `regexHints`, when non-empty, attaches as `regexResults` on the
    *  wire payload — the regex-tier hint protocol iOS has shipped since
-   *  2026-02. The backend already understands this field; web just
-   *  starts emitting it (no backend change needed). Hints tell Sonnet
-   *  "the regex tier already filled these fields with high confidence;
-   *  only overwrite if you have a strong disagreement". Empty array
-   *  vs absent field is treated identically by the server schema, so
-   *  we omit the key entirely when there are no hints to keep
-   *  pre-existing test fixtures + wire snapshots stable. */
+   *  2026-02 (camelCase wire field name, see iOS
+   *  ServerWebSocketService.swift:389). Backend reads `msg.regexResults`
+   *  (sonnet-stream.js:2654) and feeds it into the
+   *  EICRExtractionSession.extractFromUtterance(_, regexResults) flow.
+   *  Empty array vs absent field is treated identically by the server
+   *  schema, so we omit the key entirely when there are no hints to
+   *  keep pre-existing test fixtures + wire snapshots stable. */
   sendTranscript(
     text: string,
     options?: {
@@ -461,7 +461,7 @@ export class SonnetSession {
       confirmations_enabled: options?.confirmationsEnabled ?? false,
     };
     if (options?.regexHints && options.regexHints.length > 0) {
-      payload.regex_fields = options.regexHints;
+      payload.regexResults = options.regexHints;
     }
     this.sendRaw(payload);
   }

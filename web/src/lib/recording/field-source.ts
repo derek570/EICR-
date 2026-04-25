@@ -274,18 +274,32 @@ export function perCircuitKey(circuitRef: string | number, field: string): strin
   return `circuit.${circuitRef}.${field}`;
 }
 
-/** Hint summary entry for the `regex_fields` wire payload. Mirrors
+/** Hint summary entry for the `regexResults` wire payload. Mirrors
  *  iOS `buildRegexSummary` shape:
- *    [{ field: "supply.ze" }, { field: "installation.postcode", value: "EC1A 1BB" }, …]
+ *    [{ field: "supply.ze" }, { field: "install.postcode", value: "EC1A 1BB" }, …]
  *  Most fields just send the field name — Sonnet looks up the
  *  current value from its server-side state snapshot. The
- *  `installation.postcode` exception attaches the value so the
- *  backend can trigger postcodes.io enrichment without an extra
- *  round-trip. v1 web doesn't ship installation matchers so the
- *  postcode branch is plumbed-but-dormant; future-proofing for v2. */
+ *  `install.postcode` exception attaches the value so the backend
+ *  can trigger postcodes.io enrichment without an extra round-trip.
+ *
+ *  iOS wire shape uses `install.<field>` (not `installation.<field>`)
+ *  for the installation-section keys. The FieldSourceMap keys
+ *  internal to web use `installation.<field>` (matches JobDetail
+ *  section name) — buildRegexHints translates between the two
+ *  shapes on the way out so the wire stays iOS-canon. */
 export interface RegexHintEntry {
   field: string;
   value?: string;
+}
+
+/** Map FieldSourceMap dot-paths to iOS-canon wire field keys. iOS
+ *  uses `install.X` for installation fields where the JobDetail
+ *  section is `installation`. The matcher's RegexMatchResult
+ *  emits the latter; we translate at the wire boundary so the
+ *  source-map internals can keep their JobDetail-aligned names. */
+function toWireFieldKey(key: string): string {
+  if (key.startsWith('installation.')) return `install.${key.slice('installation.'.length)}`;
+  return key;
 }
 
 /** Build the regex-hint summary the recording client sends alongside
@@ -301,8 +315,9 @@ export function buildRegexHints(
   const hints: RegexHintEntry[] = [];
   for (const [key, source] of sources.entries()) {
     if (source !== 'regex') continue;
-    const entry: RegexHintEntry = { field: key };
-    if (key === 'installation.postcode') {
+    const wireKey = toWireFieldKey(key);
+    const entry: RegexHintEntry = { field: wireKey };
+    if (wireKey === 'install.postcode') {
       const postcode = job?.installation?.postcode;
       if (typeof postcode === 'string' && postcode.trim().length > 0) {
         entry.value = postcode;

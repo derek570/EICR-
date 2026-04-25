@@ -279,11 +279,11 @@ describe('buildRegexHints (R5) — regex-tier hint summary for the wire', () => 
     expect(buildRegexHints(new FieldSourceMap())).toEqual([]);
   });
 
-  it('postcode hint attaches the value (iOS contract)', () => {
+  it('postcode hint attaches the value AND translates installation.X → install.X (iOS wire shape)', () => {
     const map = new FieldSourceMap();
     map.set('installation.postcode', 'regex', 'EC1A 1BB');
     const hints = buildRegexHints(map, { installation: { postcode: 'EC1A 1BB' } });
-    expect(hints).toEqual([{ field: 'installation.postcode', value: 'EC1A 1BB' }]);
+    expect(hints).toEqual([{ field: 'install.postcode', value: 'EC1A 1BB' }]);
   });
 
   it('non-postcode regex hints do NOT include value (matches iOS shape)', () => {
@@ -296,11 +296,11 @@ describe('buildRegexHints (R5) — regex-tier hint summary for the wire', () => 
     }
   });
 
-  it('postcode hint omits value when the job postcode is empty / missing', () => {
+  it('postcode hint omits value when the job postcode is empty / missing (still emits the install.postcode key)', () => {
     const map = new FieldSourceMap();
     map.set('installation.postcode', 'regex', 'EC1A 1BB');
     const hints = buildRegexHints(map, { installation: { postcode: '' } });
-    expect(hints).toEqual([{ field: 'installation.postcode' }]);
+    expect(hints).toEqual([{ field: 'install.postcode' }]);
   });
 });
 
