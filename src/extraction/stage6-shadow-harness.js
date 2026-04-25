@@ -72,6 +72,14 @@ import {
   createSortRecordsAsksLast,
 } from './stage6-dispatchers.js';
 import { createAskDispatcher } from './stage6-dispatcher-ask.js';
+// Stage 6 Phase 5 Plan 05-01 — higher-order composition of the four
+// Phase 5 gates (filled-slots shadow / restrained-mode / per-key budget /
+// 1500ms debounce) around the unmodified Plan 03-05 createAskDispatcher.
+// The branch below activates ONLY when sonnet-stream.js threads
+// options.askBudget AND options.restrainedMode through (Plans 05-03 +
+// 05-04 wire the activeSessions entry); without both, runShadowHarness
+// reverts to the Phase 3/4 dispatcher shape unchanged.
+import { createAskGateWrapper, wrapAskDispatcherWithGates } from './stage6-ask-gate-wrapper.js';
 import { createPerTurnWrites } from './stage6-per-turn-writes.js';
 import { bundleToolCallsIntoResult, BUNDLER_PHASE } from './stage6-event-bundler.js';
 import { compareSlots } from './stage6-slot-comparator.js';
@@ -271,8 +279,35 @@ export async function runShadowHarness(session, transcriptText, regexResults, op
   const writes = createWriteDispatcher(shadowSession, log, turnId, perTurnWrites);
   let dispatcher;
   let sortRecords;
+  // Stage 6 Phase 5 Plan 05-01 — per-turn debounce gate. Lives only for the
+  // duration of this harness invocation; destroyed in the finally below so
+  // pending timers can never leak across turns. Held in a let-binding so
+  // both the composition branch and the cleanup hook can see it.
+  let askGateForTurn = null;
   if (pendingAsks) {
-    const asks = createAskDispatcher(shadowSession, log, turnId, pendingAsks, ws);
+    let asks = createAskDispatcher(shadowSession, log, turnId, pendingAsks, ws);
+    // Phase 5 — wrap with gates ONLY when the activeSessions entry threaded
+    // both stateful resources through. Existing Phase 3/4 callers (and the
+    // dispatcher's own unit tests) thread neither, so they keep the
+    // Phase 3 dispatcher shape unchanged.
+    if (options.askBudget && options.restrainedMode) {
+      askGateForTurn = createAskGateWrapper({
+        logger: log,
+        sessionId: shadowSession.sessionId,
+      });
+      asks = wrapAskDispatcherWithGates(asks, {
+        askBudget: options.askBudget,
+        restrainedMode: options.restrainedMode,
+        gate: askGateForTurn,
+        // Plan 05-02 supplies the real adapter; until then a no-op keeps
+        // the wrapper's pre-wrapper shadow-log step (Open Question #5)
+        // a structural placeholder. The wrapper's own try/catch around
+        // filledSlotsShadow keeps a thrown adapter from tearing down dispatch.
+        filledSlotsShadow: options.filledSlotsShadow ?? (() => {}),
+        logger: log,
+        sessionId: shadowSession.sessionId,
+      });
+    }
     dispatcher = createToolDispatcher(writes, asks);
     sortRecords = createSortRecordsAsksLast();
   } else {
@@ -361,8 +396,19 @@ export async function runShadowHarness(session, transcriptText, regexResults, op
     } catch {
       // swallow logger failure — shadow must never break extraction
     }
+    // Plan 05-01 — release per-turn gate timers before bailing. By the time
+    // we reach this catch, every gateOrFire awaited in the tool loop has
+    // already resolved (runToolLoop awaits each tool call), so destroy() is
+    // primarily a defensive belt-and-braces hook in case a runtime quirk
+    // strands a pending timer. Idempotent — calling on an empty pending Map
+    // is a no-op.
+    askGateForTurn?.destroy();
     return legacy;
   }
+
+  // Plan 05-01 — release per-turn gate timers on the success path BEFORE
+  // bundling/divergence-log. Same idempotency contract as the catch path.
+  askGateForTurn?.destroy();
 
   // Step 5: bundle ONCE post-loop (Pitfall #3 — never mid-loop).
   const toolResult = bundleToolCallsIntoResult(perTurnWrites, legacy);

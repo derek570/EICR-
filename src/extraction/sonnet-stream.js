@@ -53,6 +53,13 @@ import { sanitiseUserText } from './stage6-sanitise-user-text.js';
 // prevent "hang up + reconnect" abuse of the kill-switch.
 import { createRestrainedMode } from './stage6-restrained-mode.js';
 import { logRestrainedMode } from './stage6-dispatcher-logger.js';
+// Stage 6 Phase 5 Plan 05-03 — per-(field, circuit) ask counter. The
+// activeSessions entry owns one askBudget per session; the wrapper layer
+// (Plan 05-01) calls isExhausted(key) BEFORE invoking the inner ask
+// dispatcher and increment(key) AFTER each non-short-circuited ask.
+// Reconnect deliberately PRESERVES the budget so a hang-up + reconnect
+// cannot reset the 2-ask cap (STA-06 + 05-03 Open Question #2).
+import { createAskBudget } from './stage6-ask-budget.js';
 
 // Lazy-initialised OpenAI client for observation refinement (gpt-5-search-api).
 // Kept at module scope so repeat refinements reuse the same HTTPS pool.
@@ -1261,6 +1268,13 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
           // run BEFORE this timer fires (Open Question #2: reconnect
           // PRESERVES restrained-mode state by not destroying it here).
           entry.restrainedMode?.destroy();
+          // Plan 05-03 — release per-key ask counter on disconnect-delete.
+          // Idempotent (Map.clear on empty is a no-op); same lifecycle as
+          // restrainedMode above. Reconnect within the 30s grace window
+          // does NOT reach this path (handleSessionStart clears the
+          // disconnectTimer first), so the budget survives the reconnect
+          // and the 2-ask cap is preserved across hang-up + reconnect.
+          entry.askBudget?.destroy();
           entry.questionGate.destroy();
           activeSessions.delete(currentSessionId);
         }, 300000);
@@ -1640,6 +1654,19 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
           });
         },
       }),
+      // Stage 6 Phase 5 Plan 05-03 — per-(field, circuit) ask counter
+      // (STA-06). The wrapper (Plan 05-01) calls
+      // askBudget.isExhausted(deriveAskKey(call.input)) BEFORE invoking
+      // the inner ask dispatcher and askBudget.increment(key) AFTER each
+      // non-short-circuited ask. With the default cap=2, the 1st and 2nd
+      // asks for a given key fire (counts 0→1, 1→2) and the 3rd
+      // short-circuits with answer_outcome='ask_budget_exhausted'.
+      // Reconnect deliberately PRESERVES the budget (handleSessionStart's
+      // reconnect path at ~L1255 is untouched here, mirroring restrainedMode
+      // above). Destroyed on the same termination paths that destroy
+      // restrainedMode/pendingAsks (the disconnectTimer fire at ~L1263
+      // and the handleSessionStop bottom at ~L2788).
+      askBudget: createAskBudget(),
       // Plan 03-10 Task 1 — FIFO set of Deepgram utterance ids that iOS has
       // already routed as ask_user_answered payloads. handleTranscript checks
       // this BEFORE invoking runShadowHarness so the same utterance doesn't
@@ -2404,6 +2431,17 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         // (the wrapper's composition guard is the truth source for
         // when the state machine fires).
         restrainedMode: entry.restrainedMode,
+        // Stage 6 Phase 5 Plan 05-03 — pass the per-(field, circuit) ask
+        // counter through to the wrapper layer (Plan 05-01) so the gate's
+        // STA-06 short-circuit fires at the dispatcher boundary. The
+        // wrapper checks askBudget.isExhausted(deriveAskKey(call.input))
+        // BEFORE invoking the inner dispatcher and increment(key) AFTER
+        // each non-short-circuited ask. Optional-chained read here so a
+        // future activeSessions entry without the field still constructs
+        // valid options — the wrapper's `if (options.askBudget &&
+        // options.restrainedMode)` guard in stage6-shadow-harness.js
+        // is the truth source for when the gates fire.
+        askBudget: entry.askBudget,
         ws,
       });
 
@@ -2786,6 +2824,11 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
     // straggler ask arrives via a paused transcript handler, the wrapper
     // should still see isActive() truthfully.
     entry.restrainedMode?.destroy();
+    // Plan 05-03 — release per-key ask counter on session_stopped.
+    // Same placement as restrainedMode above (deliberately AFTER
+    // flushUtteranceBuffer + S3 awaits) so a final straggler ask through
+    // the wrapper still sees the cap truthfully if the timing aligns.
+    entry.askBudget?.destroy();
 
     activeSessions.delete(sessionId);
     logger.info('Session stopped', { sessionId });
