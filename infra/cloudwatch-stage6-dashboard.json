@@ -13,7 +13,7 @@
         "view": "timeSeries",
         "stacked": false,
         "region": "eu-west-2",
-        "title": "Divergence Rate (target ≤5%, alarm ≥10%)",
+        "title": "Divergence Rate (target ≤5%, alarm >10%)",
         "period": 300,
         "yAxis": {
           "left": { "min": 0, "max": 0.2, "label": "Rate" }
@@ -21,7 +21,7 @@
         "annotations": {
           "horizontal": [
             { "label": "Target ≤5%", "value": 0.05, "fill": "below" },
-            { "label": "Alarm ≥10%", "value": 0.10, "color": "#ef4444" }
+            { "label": "Alarm >10%", "value": 0.10, "color": "#ef4444" }
           ]
         }
       }
@@ -39,14 +39,14 @@
         "view": "timeSeries",
         "stacked": false,
         "region": "eu-west-2",
-        "title": "Tool Loop Cap Hit Rate (target 0%, alarm ≥0.5%)",
+        "title": "Tool Loop Cap Hit Rate (target 0%, alarm >0.5%)",
         "period": 300,
         "yAxis": {
           "left": { "min": 0, "max": 0.02, "label": "Rate" }
         },
         "annotations": {
           "horizontal": [
-            { "label": "Alarm ≥0.5%", "value": 0.005, "color": "#ef4444" }
+            { "label": "Alarm >0.5%", "value": 0.005, "color": "#ef4444" }
           ]
         }
       }
@@ -114,7 +114,7 @@
         "view": "timeSeries",
         "stacked": false,
         "region": "eu-west-2",
-        "title": "Restrained Mode Rate (target ≤2%, alarm ≥5%)",
+        "title": "Restrained Mode Rate (target ≤2%, alarm >5%)",
         "period": 300,
         "yAxis": {
           "left": { "min": 0, "max": 0.10, "label": "Rate" }
@@ -122,7 +122,7 @@
         "annotations": {
           "horizontal": [
             { "label": "Target ≤2%", "value": 0.02, "fill": "below" },
-            { "label": "Alarm ≥5%", "value": 0.05, "color": "#ef4444" }
+            { "label": "Alarm >5%", "value": 0.05, "color": "#ef4444" }
           ]
         }
       }

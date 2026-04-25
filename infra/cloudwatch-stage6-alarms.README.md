@@ -34,9 +34,11 @@ Thresholds match ROADMAP §SC #4 verbatim:
 
 | Alarm | Target | Alarm threshold | Phase 8 SC #4 wording |
 |---|---|---|---|
-| `stage6-divergence-rate-high` | ≤ 5% | ≥ 10% | "divergence_rate > 10%" |
-| `stage6-restrained-mode-rate-high` | ≤ 2% | ≥ 5% | "restrained_mode_rate > 5%" |
-| `stage6-tool-loop-cap-hit-rate-high` | 0% | ≥ 0.5% | "tool_loop_cap_hit_rate > 0.5%" |
+| `stage6-divergence-rate-high` | ≤ 5% | > 10% | "divergence_rate > 10%" |
+| `stage6-restrained-mode-rate-high` | ≤ 2% | > 5% | "restrained_mode_rate > 5%" |
+| `stage6-tool-loop-cap-hit-rate-high` | 0% | > 0.5% | "tool_loop_cap_hit_rate > 0.5%" |
+
+**Strict greater-than wording is intentional.** Every alarm body sets `ComparisonOperator: GreaterThanThreshold` (CloudWatch's strict greater-than operator), so a datapoint of EXACTLY `0.10` does NOT alarm on the divergence-rate alarm. The dashboard annotations + this README must use strict `>` (not the "or-equal-to" form) so the operator's mental model matches the alarm contract — Codex r4-#2 (MINOR) flagged the previous "or-equal-to" wording as misleading; CI now locks the contract via `src/__tests__/stage6-dashboard-wording.test.js`.
 
 Per-alarm `Period: 300` (5-min) × `EvaluationPeriods: 3` × `DatapointsToAlarm: 3` means an alarm fires only after 15 contiguous breach minutes (anti-flap; one transient spike does not page the operator).
 

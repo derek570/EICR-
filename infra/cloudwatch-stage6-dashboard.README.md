@@ -34,11 +34,13 @@ Inline annotations on each alarm-bearing widget make threshold values visible at
 
 | Metric | Target | Alarm threshold |
 |---|---|---|
-| `stage6.divergence_rate` | ≤ 5% | ≥ 10% |
-| `stage6.restrained_mode_rate` | ≤ 2% | ≥ 5% |
-| `stage6.tool_loop_cap_hit_rate` | 0% | ≥ 0.5% |
+| `stage6.divergence_rate` | ≤ 5% | > 10% |
+| `stage6.restrained_mode_rate` | ≤ 2% | > 5% |
+| `stage6.tool_loop_cap_hit_rate` | 0% | > 0.5% |
 | `stage6.ask_user_per_session_p50` | ≤ 1 | (no alarm — soft target) |
 | `stage6.ask_user_per_session_p95` | ≤ 4 | (no alarm — soft target) |
+
+**Strict `>` wording is intentional.** Every alarm body uses `ComparisonOperator: GreaterThanThreshold` (CloudWatch's strict greater-than). A datapoint of EXACTLY `0.10` does NOT alarm. The dashboard annotations + this table must use strict `>` (not the "or-equal-to" form) so the operator's mental model matches the alarm contract — Codex r4-#2 (MINOR) flagged the previous "or-equal-to" wording as misleading; CI now locks the contract via `src/__tests__/stage6-dashboard-wording.test.js`.
 
 ## Region
 
