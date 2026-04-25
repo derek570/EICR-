@@ -11,6 +11,7 @@ import {
   type SonnetQuestion,
 } from './recording/sonnet-session';
 import { applyExtractionToJob } from './recording/apply-extraction';
+import { normalise as normaliseTranscript } from './recording/number-normaliser';
 import { AudioRingBuffer } from './recording/audio-ring-buffer';
 import { SleepManager, type SleepState } from './recording/sleep-manager';
 import { useLiveFillStore } from './recording/live-fill-state';
@@ -317,10 +318,18 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
             sleepManagerRef.current?.onSpeechActivity();
             return;
           }
+          // Normalise spoken-number / unit forms before sending to Sonnet
+          // (and, after R3 of REGEX_TIER_PLAN.md, before regex matching).
+          // Mirrors iOS `TranscriptProcessor.normalise()` which sits at
+          // the same point in the iOS pipeline. The voice-command branch
+          // above deliberately runs against raw text — its regexes were
+          // tuned against the Deepgram raw form and the inspector log
+          // shows the raw transcript so they can verify what they said.
+          const normalised = normaliseTranscript(text);
           // Fire the final utterance at the Sonnet session so server-side
           // multi-turn extraction can fill form fields. No-op if the WS
           // isn't open — the Sonnet client queues pre-connect messages.
-          sonnetRef.current?.sendTranscript(text);
+          sonnetRef.current?.sendTranscript(normalised);
           // Each dispatched transcript is one outstanding Sonnet turn
           // until an extraction / question frame arrives to clear it.
           setProcessingCount((n) => n + 1);
