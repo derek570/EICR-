@@ -54,21 +54,39 @@ import { logAskUser } from './stage6-dispatcher-logger.js';
  * future plans (05-02 filled-slots shadow, 05-06 exit harness) keep their
  * key derivation in lockstep.
  *
- * Plan 05-08 r2-#2 — context_field canonicalisation.
+ * Plan 05-08 r2-#2 + Plan 05-09 r3-#3 — context_field canonicalisation.
  *   stage6-tool-schemas.js:327 documents the context_field enum as
  *   admitting BOTH `null` AND the literal string sentinel `"none"` for
  *   scope-less asks: "...or the sentinel "none" (equivalently null) for
- *   scope-less asks." Pre-fix deriveAskKey produced different keys for
+ *   scope-less asks." Pre-r2 deriveAskKey produced different keys for
  *   the two forms ("none:N" vs "_:N"), allowing an attacker (or a buggy
  *   prompt) to alternate representations and bypass the per-key budget
  *   for the same logical question.
  *
- *   Collapse the canonical sentinel to '_' regardless of case (the schema
- *   doesn't pin the case but lower-level validators do not enforce it
- *   either, so any case variant is a legitimate input). Real field values
- *   are NOT case-folded — `'Ze'` !== `'ze'`. The validator owns canonical
- *   case for real values; collapsing here would mask a typo bug whose
- *   right surface is the validator's enum check.
+ *   Collapse the canonical sentinel `'none'` (lowercase) to '_'. Real
+ *   field values are NOT case-folded — `'Ze'` !== `'ze'`. The validator
+ *   owns canonical case for real values; collapsing here would mask a
+ *   typo bug whose right surface is the validator's enum check.
+ *
+ *   r3-#3 narrowed the case match to verbatim lowercase. The real
+ *   validator at stage6-dispatch-validation.js:204 is case-SENSITIVE:
+ *     if (input.context_field !== null &&
+ *         !CONTEXT_FIELD_ENUM.includes(input.context_field)) { ... }
+ *   CONTEXT_FIELD_ENUM is sourced from config/stage6-context-keys.json
+ *   sentinels (lowercase `"none"` + `"observation_clarify"`) + the
+ *   circuit_fields keys (also all lowercase). Production never sees
+ *   `'NONE'` / `'None'` because the validator rejects them upstream
+ *   with `invalid_context_field`. r2-#2's case-insensitive collapse
+ *   was therefore dead code that encoded a contract divergence: a
+ *   future change to the validator (e.g. adding case-insensitive input
+ *   acceptance) would need to be matched here, but the file pair had
+ *   no surface that surfaced the divergence at compile or test time.
+ *
+ *   r3-#3 fix: case-sensitive match. `'NONE'` / `'None'` / `'nOnE'`
+ *   now derive case-preserving distinct keys (e.g. `'NONE:_'`) so a
+ *   future caller bypassing the validator surfaces the bug as a
+ *   per-key bucket mismatch in Phase 8 analyzer dashboards rather
+ *   than silently masking it.
  *
  *   context_circuit canonicalisation is INTENTIONALLY narrower:
  *   stage6-tool-schemas.js:329 documents only `null` as the sentinel
@@ -84,13 +102,16 @@ import { logAskUser } from './stage6-dispatcher-logger.js';
  */
 export function deriveAskKey(input) {
   const fieldRaw = input?.context_field;
-  // Plan 05-08 r2-#2 — collapse `null`, `undefined`, AND the literal
-  // sentinel `"none"` (case-insensitive) to '_'. Real field values pass
-  // through with their original case preserved.
+  // Plan 05-08 r2-#2 + Plan 05-09 r3-#3 — collapse `null`, `undefined`,
+  // AND the literal lowercase sentinel `"none"` to '_'. Case-SENSITIVE
+  // match mirrors the validator at stage6-dispatch-validation.js:204
+  // (production never sees upper-case sentinel forms because the
+  // validator rejects them upstream with invalid_context_field). Real
+  // field values pass through with their original case preserved.
   let field;
   if (fieldRaw === null || fieldRaw === undefined) {
     field = '_';
-  } else if (typeof fieldRaw === 'string' && fieldRaw.toLowerCase() === 'none') {
+  } else if (fieldRaw === 'none') {
     field = '_';
   } else {
     field = fieldRaw;
