@@ -134,12 +134,13 @@ import { logAskUser } from './stage6-dispatcher-logger.js';
  */
 export function deriveAskKey(input) {
   const fieldRaw = input?.context_field;
-  // Plan 05-08 r2-#2 + Plan 05-10 r4-#1 — collapse `null`, `undefined`,
-  // AND the literal sentinel `"none"` (case-INSENSITIVE) to '_'. The
-  // case-insensitivity is SENTINEL-ONLY — real (non-sentinel) field
-  // values pass through with their original case preserved so a typo
-  // bug surfaces in the analyzer rather than silently bucketing
-  // wrong-case real values together.
+  // Plan 05-08 r2-#2 + Plan 05-10 r4-#1 + Plan 05-11 r5-#1 — collapse
+  // `null`, `undefined`, AND the literal sentinel `"none"` (case- AND
+  // whitespace-INSENSITIVE) to '_'. Both normalisations are
+  // SENTINEL-ONLY — real (non-sentinel) field values pass through
+  // verbatim (case + whitespace preserved) so a typo / drift bug
+  // surfaces in the analyzer rather than silently bucketing
+  // wrong-case or padded real values together.
   //
   // Why case-insensitive at the wrapper layer (Plan 05-10 r4-#1):
   // wrapAskDispatcherWithGates below in this file calls
@@ -148,13 +149,32 @@ export function deriveAskKey(input) {
   // ([null,'NONE','None',null]) derive distinct keys at the wrapper,
   // bypassing the wrapper's same-key debounce + per-key budget gates
   // even though each call was later rejected as validation_error.
+  //
+  // Why ALSO trim-insensitive (Plan 05-11 r5-#1): same lifecycle
+  // argument — `fieldRaw.toLowerCase() === 'none'` (the r4-#1 form)
+  // doesn't catch ` none `, `\tNONE\n`, ` None`. The validator at
+  // stage6-dispatch-validation.js:204 is strict membership against
+  // CONTEXT_FIELD_ENUM — no trim, no fold. Whitespace-padded forms
+  // are rejected upstream as invalid_context_field (pre-emit
+  // non-fire, no budget burn at validation), BUT the WRAPPER's
+  // protective debounce + per-key budget never fired during the
+  // pre-validation key derivation. Same bypass shape as r4-#1 but
+  // through whitespace alternation instead of case alternation.
+  // Defence-in-depth at the wrapper layer.
+  //
+  // Real (non-sentinel) values are NOT trimmed and NOT case-folded —
+  // a malformed `'  ze  '` derives `' ze :N'` so the validator's
+  // enum-check sees the drift and the analyzer can flag it. Trimming
+  // here would silently mask a typo bug whose right surface is the
+  // strict membership check.
+  //
   // The validator's case-sensitivity is the validator's contract; the
-  // wrapper's case-insensitivity here is defence-in-depth on a
-  // different axis.
+  // wrapper's case + whitespace insensitivity is defence-in-depth on
+  // a different axis (key bucketing, not input admission).
   let field;
   if (fieldRaw === null || fieldRaw === undefined) {
     field = '_';
-  } else if (typeof fieldRaw === 'string' && fieldRaw.toLowerCase() === 'none') {
+  } else if (typeof fieldRaw === 'string' && fieldRaw.trim().toLowerCase() === 'none') {
     field = '_';
   } else {
     field = fieldRaw;
