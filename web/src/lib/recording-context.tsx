@@ -357,6 +357,13 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
           // soak proves the regex tier behaves.
           if (process.env.NEXT_PUBLIC_REGEX_TIER_ENABLED === 'true') {
             normalisedTranscriptRef.current = `${normalisedTranscriptRef.current} ${normalised}`;
+            // Reconcile any inspector edits made between the last
+            // turn and now — without this, an inspector correcting
+            // a field would still see source='regex' on the next
+            // utterance and the matcher's regex-last-wins branch
+            // would clobber the correction (codex P1 R4 fix).
+            // Same pre-apply reconcile the Sonnet branch does.
+            fieldSourcesRef.current.reconcileFromJob(jobRef.current);
             const matchResult = fieldMatcherRef.current.match(
               normalisedTranscriptRef.current,
               jobRef.current
@@ -458,6 +465,16 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
       const applied = applyExtractionToJob(jobRef.current, result, fieldSourcesRef.current);
       if (applied) {
         updateJobRef.current(applied.patch);
+        // Mirror the patch into jobRef.current synchronously so a
+        // final transcript landing in the same React tick (regex
+        // tier or another Sonnet response) reads the up-to-date job
+        // state instead of the pre-apply snapshot. Same pattern the
+        // voice-command branch uses; codex R4 P2 follow-up made this
+        // load-bearing for circuit_ref routing in the regex tier.
+        jobRef.current = {
+          ...jobRef.current,
+          ...(applied.patch as Partial<typeof jobRef.current>),
+        };
         // Feed LiveFillState so <LiveFillView> can flash the fields
         // Sonnet actually filled. No-op if the list is empty (the patch
         // only had `field_clears`, which we deliberately don't flash).
