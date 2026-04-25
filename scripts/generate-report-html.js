@@ -656,8 +656,35 @@ function buildToolCallTraffic() {
   const unknownOutcomes = Array.isArray(askUser.unknown_outcomes)
     ? askUser.unknown_outcomes
     : [];
-  const unknownOutcomeCount = askUser.unknown_outcome_count || 0;
-  const malformedOutcomeCount = askUser.malformed_outcome_count || 0;
+  // Plan 08-06 r5-#1 (MAJOR): never trust `summary.json` shape on the
+  // count fields. The legacy `|| 0` fallback only catches FALSY values
+  // (0, NaN, "", null, undefined); a poisoned summary.json providing
+  // `unknown_outcome_count: "<script>alert(1)</script>"` (string,
+  // truthy) bypassed the fallback AND bypassed the per-entry
+  // escapeHtml() we apply to value slots — the hostile string flowed
+  // into the header template literal raw.
+  //
+  // Number.isFinite() returns true ONLY for genuine finite numbers
+  // (not NaN, not Infinity, not non-numbers); everything else falls
+  // back to 0. Pairs with the escapeHtml(String(...)) wrap on the
+  // interpolation site below — the contract from Plan 08-04 r3-#1
+  // (renderer) is "every interpolated user-data slot flows through
+  // escapeHtml", and counts honour the same contract even though
+  // post-coercion they cannot logically carry markup. Closes future-
+  // regression risk: a contributor who changes the upstream type
+  // doesn't accidentally re-open the XSS sink.
+  //
+  // Contract anchor: scripts/__tests__/generate-report-html.test.mjs
+  // "Plan 08-06 r5-#1" block — 3 tests cover string-typed counts +
+  // NaN + the malformed path with an <svg onload=> payload.
+  const rawUnknownCount = askUser.unknown_outcome_count;
+  const unknownOutcomeCount = Number.isFinite(rawUnknownCount)
+    ? rawUnknownCount
+    : 0;
+  const rawMalformedCount = askUser.malformed_outcome_count;
+  const malformedOutcomeCount = Number.isFinite(rawMalformedCount)
+    ? rawMalformedCount
+    : 0;
   const malformedWarnings = Array.isArray(summary.warnings)
     ? summary.warnings.filter((w) => w && w.type === "malformed_ask_user_outcome")
     : [];
@@ -685,7 +712,17 @@ function buildToolCallTraffic() {
           // -failure (malformed) at a glance. Both are operationally
           // serious; misattributing one for the other leads to the
           // wrong remediation.
-          const header = `${unknownOutcomeCount} unknown, ${malformedOutcomeCount} malformed`;
+          //
+          // Plan 08-06 r5-#1 (MAJOR): wrap interpolated counts in
+          // escapeHtml(String(...)) for defence-in-depth. After the
+          // Number.isFinite() coercion above, both values are genuine
+          // finite numbers and `String()` produces a digit-only string
+          // that escapeHtml() passes through byte-identical — but the
+          // contract anchored at Plan 08-04 r3-#1 (renderer) is "every
+          // interpolated user-data slot flows through escapeHtml". A
+          // future contributor who relaxes the upstream coercion
+          // doesn't accidentally reopen the XSS sink.
+          const header = `${escapeHtml(String(unknownOutcomeCount))} unknown, ${escapeHtml(String(malformedOutcomeCount))} malformed`;
           return `
             <div class="ask-user-drift-warning" style="margin-top:14px;background:#3b2a0a;border:1px solid #f59e0b;border-radius:6px;padding:10px 14px;">
               <div style="font-size:13px;font-weight:700;color:#fbbf24;margin-bottom:6px;">
