@@ -1793,3 +1793,152 @@ describe('Plan 05-11 r5-#2 — dispatcher_error / gate_dispatcher_error split', 
     expect(isPreEmitNonFireReason('dispatcher_error')).toBe(true);
   });
 });
+
+// =============================================================================
+// Plan 05-15 r9-#3 — innerAlreadyLogs option for createAskGateWrapper
+// =============================================================================
+// Plan 05-14 r8-#1 routed the wrapper's timer-catch through the new
+// `synthResultWithoutLog` helper. That's correct ONLY when the inner
+// dispatcher is the production `createAskDispatcher`, which logs its
+// own `dispatcher_error` row from its outer catch BEFORE rethrowing.
+// The wrapper is exported as a generic higher-order-function — a future
+// or custom inner dispatcher (test-only mock, alternative dispatcher in
+// a Phase 6 refactor, hypothetical replay tool) that throws WITHOUT
+// logging would lose its audit-trail breadcrumb under the always-non-
+// logging timer-catch.
+//
+// r9-#3 closure (Option B): expose an `innerAlreadyLogs: boolean` option
+// (default true for the production composition where createAskDispatcher
+// is the only in-tree caller). Default-true preserves the r8-#1 fix:
+// no double-log when the inner is the production dispatcher. Explicit-
+// false delegates the audit-trail emission to the wrapper, so a custom
+// inner dispatcher's throws still surface as one stage6.ask_user row.
+// =============================================================================
+
+describe('Plan 05-15 r9-#3 — innerAlreadyLogs flag for inner-throw logging', () => {
+  function makeThrowingInner() {
+    return jest.fn(async (/* call, ctx */) => {
+      throw new Error('synthetic inner-dispatcher failure');
+    });
+  }
+
+  test('createAskGateWrapper without innerAlreadyLogs option (default true): inner throws → wrapper does NOT call logAskUser', async () => {
+    // Default behaviour preserves Plan 05-14 r8-#1: production
+    // createAskDispatcher logs its own dispatcher_error row from the
+    // outer catch before rethrowing; wrapper's timer-catch must not
+    // duplicate. This regression-locks the default-true semantics.
+    const logger = makeLogger();
+    const inner = makeThrowingInner();
+    const askBudget = makeBudget();
+    const restrainedMode = makeRestrained();
+    const gate = createAskGateWrapper({ logger, sessionId: 'sess-1' });
+
+    const wrapped = wrapAskDispatcherWithGates(inner, {
+      askBudget,
+      restrainedMode,
+      gate,
+      filledSlotsShadow: () => {},
+      logger,
+      sessionId: 'sess-1',
+    });
+
+    const promise = wrapped(makeCall('call-1', 'ze', 0), makeCtx('sess-1-turn-1'));
+    jest.advanceTimersByTime(QUESTION_GATE_DELAY_MS);
+    const result = await promise;
+
+    const askUserRows = logger.info.mock.calls.filter((c) => c[0] === 'stage6.ask_user');
+    // Default-true → wrapper does NOT log; total log rows from the
+    // wrapper = 0 (the inner is a stub that doesn't log either, so
+    // total = 0 here; in production the dispatcher's outer catch
+    // would log exactly 1 row).
+    expect(askUserRows).toHaveLength(0);
+    // Envelope still synthesised so the awaiter is not stranded.
+    expect(result.tool_use_id).toBe('call-1');
+    expect(JSON.parse(result.content)).toEqual({
+      answered: false,
+      reason: 'dispatcher_error',
+    });
+
+    gate.destroy();
+  });
+
+  test('createAskGateWrapper({ innerAlreadyLogs: true }) explicit: same as default — wrapper does NOT log on inner-throw', async () => {
+    // Explicit-true must be byte-identical to default-true. Future
+    // refactors that change the default value would still pin this
+    // path closed.
+    const logger = makeLogger();
+    const inner = makeThrowingInner();
+    const askBudget = makeBudget();
+    const restrainedMode = makeRestrained();
+    const gate = createAskGateWrapper({
+      logger,
+      sessionId: 'sess-1',
+      innerAlreadyLogs: true,
+    });
+
+    const wrapped = wrapAskDispatcherWithGates(inner, {
+      askBudget,
+      restrainedMode,
+      gate,
+      filledSlotsShadow: () => {},
+      logger,
+      sessionId: 'sess-1',
+    });
+
+    const promise = wrapped(makeCall('call-1', 'ze', 0), makeCtx('sess-1-turn-1'));
+    jest.advanceTimersByTime(QUESTION_GATE_DELAY_MS);
+    await promise;
+
+    const askUserRows = logger.info.mock.calls.filter((c) => c[0] === 'stage6.ask_user');
+    expect(askUserRows).toHaveLength(0);
+
+    gate.destroy();
+  });
+
+  test('createAskGateWrapper({ innerAlreadyLogs: false }): inner throws → wrapper DOES call logAskUser exactly once with dispatcher_error', async () => {
+    // The defining test: when the consumer signals "my inner does NOT
+    // log on throw", the wrapper takes responsibility and emits the
+    // audit-trail row itself. Used by future custom inner dispatchers
+    // (test-only mocks, replay tools, alternative dispatchers in a
+    // Phase 6 refactor) that don't have the production createAskDispatcher's
+    // outer catch + logAskUser call.
+    const logger = makeLogger();
+    const inner = makeThrowingInner();
+    const askBudget = makeBudget();
+    const restrainedMode = makeRestrained();
+    const gate = createAskGateWrapper({
+      logger,
+      sessionId: 'sess-1',
+      innerAlreadyLogs: false,
+    });
+
+    const wrapped = wrapAskDispatcherWithGates(inner, {
+      askBudget,
+      restrainedMode,
+      gate,
+      filledSlotsShadow: () => {},
+      logger,
+      sessionId: 'sess-1',
+    });
+
+    const promise = wrapped(makeCall('call-1', 'ze', 0), makeCtx('sess-1-turn-1'));
+    jest.advanceTimersByTime(QUESTION_GATE_DELAY_MS);
+    const result = await promise;
+
+    const askUserRows = logger.info.mock.calls.filter((c) => c[0] === 'stage6.ask_user');
+    // Exactly ONE row from the wrapper itself (the inner doesn't log;
+    // the wrapper takes over).
+    expect(askUserRows).toHaveLength(1);
+    const [, row] = askUserRows[0];
+    expect(row.answer_outcome).toBe('dispatcher_error');
+    expect(row.tool_call_id).toBe('call-1');
+    // Envelope shape unchanged — only the logging side-effect differs.
+    expect(result.tool_use_id).toBe('call-1');
+    expect(JSON.parse(result.content)).toEqual({
+      answered: false,
+      reason: 'dispatcher_error',
+    });
+
+    gate.destroy();
+  });
+});
