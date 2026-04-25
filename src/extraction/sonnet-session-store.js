@@ -143,6 +143,58 @@ export function createSessionStore(options = {}) {
     },
 
     /**
+     * Plan 06-08 r7-#2 (MAJOR) — non-mutating read.
+     *
+     * Returns the same payload as `resume()` for valid hits but does NOT
+     * touch LRU and does NOT delete on miss/expired/user-mismatch.
+     * peek() is the validate-only primitive; consumption + security
+     * defence (e.g. blow-token-on-wrong-user) is the caller's choice
+     * via a follow-up `remove()`.
+     *
+     * Why a SEPARATE method (not a flag on resume): callers in
+     * `sonnet-stream.js`'s `handleSessionResumeRehydrate` use `peek` to
+     * VALIDATE the inbound `protocol_version` BEFORE committing the
+     * rebind via `resume`. The peek/resume split makes the call site
+     * self-documenting: "I'm reading to validate" vs "I'm committing
+     * the rebind". A rejected protocol_version validation must leave
+     * the token valid so the iOS client can retry without burning its
+     * only resume credential.
+     *
+     * Today's `resume()` is non-consuming on the happy path (LRU bump
+     * only). But the Wave 4c.5 brief explicitly anticipates evolving
+     * this in-memory store to a Redis-backed implementation with
+     * GETDEL-style consuming-on-read semantics. A future change there
+     * would silently break the retry-after-reject flow if the
+     * rehydrate path called `resume` first. Splitting into peek +
+     * resume now means that future re-implementation only changes
+     * the `resume` body — peek's contract is already
+     * "validate without consume".
+     *
+     * Why the user-mismatch path does NOT delete here: peek is a
+     * primitive — deletion is the caller's choice. The wrong-user-
+     * probe defence in the existing `resume()` contract is preserved
+     * by the `handleSessionResumeRehydrate` caller calling
+     * `sonnetSessionStore.remove(...)` on the !peeked branch (which
+     * fires for missing OR TTL-expired OR user-mismatch — peek's null
+     * doesn't disambiguate, but `remove()` is idempotent, so blanket-
+     * removing on any null is safe and preserves the defence). See
+     * the comment on `handleSessionResumeRehydrate`'s !peeked branch.
+     *
+     * @param {string} sessionId
+     * @param {string} userId
+     * @returns {object | null} The stored payload if the entry is
+     *   valid, in-TTL, and owned by `userId`. Otherwise null.
+     */
+    peek(sessionId, userId) {
+      if (!sessionId || !userId) return null;
+      const entry = entries.get(sessionId);
+      if (!entry) return null;
+      if (now() - entry.createdAt >= ttlMs) return null;
+      if (entry.userId !== userId) return null;
+      return entry.payload;
+    },
+
+    /**
      * Explicit removal (used when `session_stop` fires — no point keeping a
      * token around for a cleanly-closed session).
      */

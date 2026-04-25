@@ -1978,24 +1978,55 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
     requestedSessionId,
     requestedProtocolVersion = null
   ) {
-    const stored = sonnetSessionStore.resume(requestedSessionId, userId);
+    // ── Plan 06-08 r7-#2 (MAJOR) — peek before resume.
+    //
+    // Pre-r7 this function called `sonnetSessionStore.resume(...)` BEFORE
+    // validating the inbound `protocol_version`. resume() is non-consuming
+    // TODAY for the happy path (LRU bump only) but the contract is
+    // fragile against the Wave 4c.5 brief's explicit anticipation of
+    // evolving to a Redis-backed consuming-on-read store. A future
+    // change there would silently break: the live-mismatch reject path
+    // (~line 2038) returns AFTER resume's side-effects fire, so the
+    // token would be gone and the iOS client couldn't retry with a
+    // corrected protocol_version field.
+    //
+    // Fix: read via the new non-mutating peek() to extract
+    // `clientSessionId`, validate the protocol_version policy, and ONLY
+    // on a passing policy commit the rebind via resume(). The
+    // peek/resume split makes the call site self-documenting:
+    // "I'm reading to validate" vs "I'm committing the rebind".
+    const peeked = sonnetSessionStore.peek(requestedSessionId, userId);
 
     // Miss → mint a fresh rehydration token with no underlying entry. The
     // client will treat this as a brand-new session and follow up with
     // `session_start` on its next transcript. We don't pre-create the
     // runtime state here because we don't yet know the jobId / jobState
     // the client will want bound — those arrive with session_start.
-    if (!stored) {
+    if (!peeked) {
       logger.info('session_resume miss — returning fresh session_ack', {
         userId,
         requestedSessionId,
       });
+      // ── Plan 06-08 r7-#2 (MAJOR) — preserve the Wave 4c.5
+      // wrong-user-probe defence. peek() returns null for missing,
+      // TTL-expired, AND user-mismatch — the three cases share the
+      // same "no payload to return" outcome. The pre-r7 `resume()`
+      // call site at this position deleted the token on
+      // user-mismatch (security: an attempted abuse blows the
+      // token). peek() does NOT delete (it's a validate-only
+      // primitive), so the rehydrate caller MUST do the delete
+      // here to preserve the defence. `remove()` is idempotent on
+      // missing/already-deleted entries, so blanket-removing on
+      // every !peeked branch is safe and covers the user-mismatch
+      // case without leaking peek's null-disambiguation to the
+      // store boundary.
+      sonnetSessionStore.remove(requestedSessionId);
       // No entry minted yet; return status=new with no sessionId so the
       // client knows rehydration failed and must send session_start.
       return { sessionId: null, ack: { status: 'new' }, activeEntryKey: null };
     }
 
-    const { clientSessionId } = stored;
+    const { clientSessionId } = peeked;
     const entry = activeSessions.get(clientSessionId);
 
     // TTL-valid store hit but the runtime entry is gone (e.g. the 5-min
@@ -2008,6 +2039,10 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         requestedSessionId,
         clientSessionId,
       });
+      // The peeked entry has no runtime to rebind to — DO consume it
+      // here (remove explicitly) because there's nothing to retry
+      // against. peek() doesn't delete; we delete on this terminal
+      // miss path so the dead token doesn't hang around.
       sonnetSessionStore.remove(requestedSessionId);
       return { sessionId: null, ack: { status: 'new' }, activeEntryKey: null };
     }
@@ -2061,7 +2096,35 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
       // DO NOT touch entry.ws — the original ws is still valid until its own
       // close handler reaps the entry. Caller suppresses session_ack on the
       // 'rejected' status.
+      //
+      // ── Plan 06-08 r7-#2 (MAJOR) — return BEFORE the resume() commit
+      // call below. peek() did not touch the token; resume() never fires
+      // on this path; the iOS client can retry with a corrected
+      // protocol_version field. Without this ordering, a future
+      // consuming-on-read store would burn the only resume token on
+      // every rejected validation.
       return { sessionId: null, ack: { status: 'rejected' }, activeEntryKey: null };
+    }
+
+    // ── Plan 06-08 r7-#2 (MAJOR) — policy passed. Commit the rebind by
+    // calling resume(), which (today) bumps the entry to the LRU tail.
+    // The Wave 4c.5 contract for the in-memory store doesn't actually
+    // CONSUME the token here, but a future Redis-backed implementation
+    // will (GETDEL semantics) and this is where the consumption belongs:
+    // AFTER the protocol_version policy has signed off.
+    //
+    // Defensive null-check: peek() succeeded a few µs ago, but
+    // resume() could in principle return null if the TTL boundary
+    // crossed between the two reads. Treat as miss (same shape as the
+    // !peeked path above).
+    const stored = sonnetSessionStore.resume(requestedSessionId, userId);
+    if (!stored) {
+      logger.info('session_resume token expired between peek and resume', {
+        userId,
+        requestedSessionId,
+        clientSessionId,
+      });
+      return { sessionId: null, ack: { status: 'new' }, activeEntryKey: null };
     }
     if (toolCallsMode === 'shadow' && requestedProtocolVersion !== 'stage6') {
       logger.warn('stage6.protocol_version_mismatch_shadow_fallback_resume', {

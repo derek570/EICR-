@@ -321,13 +321,17 @@ describe('sonnet-session-store', () => {
     });
 
     test('I.5 — peek with the wrong user returns null but does NOT delete (defence in depth)', () => {
-      // resume() deletes on user-mismatch (security: an attempted abuse
-      // burns the token). peek must NOT — peek is a validate-only
-      // primitive; consumption is the caller's choice. If peek deleted
-      // here we'd double-delete when the rehydrate path falls through
-      // to resume's mismatch branch on a follow-up correct-user call,
-      // and the test below would fail because the second peek would
-      // see a missing entry instead of a present-but-mismatched one.
+      // peek is a validate-only primitive — consumption and the
+      // wrong-user-probe security defence are the CALLER's choice
+      // (handleSessionResumeRehydrate calls remove() on every
+      // !peeked branch, preserving the wave 4c.5 wrong-user-probe
+      // defence at the call site rather than baking it into the
+      // store primitive).
+      //
+      // If peek deleted on user-mismatch, the !peeked branch's
+      // explicit remove() would be a redundant no-op and a future
+      // call site that wanted "validate without delete" semantics
+      // would have no primitive to use.
       const { store } = buildStore();
       const id = store.create('user-1', { turns: 1 });
       expect(store.peek(id, 'user-2')).toBeNull();
@@ -337,9 +341,10 @@ describe('sonnet-session-store', () => {
     });
 
     test('I.5b — peek with the wrong user does NOT delete: subsequent CORRECT-user peek still finds the entry', () => {
-      // Stronger version of I.5 — peek twice. The second peek (correct
-      // user) must succeed because the first (wrong-user) peek did not
-      // delete.
+      // Stronger version of I.5 — peek twice. The second peek
+      // (correct user) must succeed because the first (wrong-user)
+      // peek did not delete. The wrong-user-probe defence runs at
+      // the rehydrate call site, NOT in the peek primitive.
       const { store } = buildStore();
       const id = store.create('user-1', { turns: 5 });
       expect(store.peek(id, 'user-2')).toBeNull();
