@@ -1158,21 +1158,25 @@ describe('Plan 05-15 r9-#1 — fixture validation enforced by source directory',
     ).toThrow(/r9-1-missing-turn\.json.*ask_user_calls\[0\].*turnId/);
   });
 
-  test('regression lock — Phase 4 fixture missing _fixture_shape does NOT throw (legacy zero-ask path)', () => {
+  test('regression lock — Phase 4 fixture missing _fixture_shape does NOT throw (legacy zero-ask path)', async () => {
     // Pre-r9-#1 the Phase-4 legacy fixtures (sample-01..05 in
     // stage6-golden-sessions/) deliberately omit `_fixture_shape`; they
     // contribute zero asks via applyDefaults' backwards-compat path. The
-    // r9-#1 fix MUST NOT regress that — only PHASE5_FIXTURES_DIR-loaded
-    // entries get the strict gate.
+    // r9-#1 fix MUST NOT regress that — only non-legacy entries get the
+    // strict gate.
     //
-    // Plan 05-16 r10-#1 update: the strict-gate dispatch is now
-    // basename-keyed (any directory whose basename is NOT
-    // 'stage6-golden-sessions' is strict). The original test used
-    // sourceDir='/some/other/dir' (basename='dir') which the basename
-    // rule treats as strict. Updated to use a synthetic path whose
-    // basename matches the canonical Phase-4 legacy directory — same
-    // intent (Phase-4 legacy fixture passes the legacy whitelist), now
-    // expressed against the basename-keyed dispatch.
+    // Plan 05-17 r11-#1 update: the strict-gate dispatch is now keyed
+    // on canonical absolute-path equality against PHASE4_DUAL_SSE_DIR.
+    // Earlier r10-#1 used basename equality against
+    // 'stage6-golden-sessions', but Codex r11 inverted the threat model
+    // (a Phase-5 fixture pool dropped into ANY dir of that basename
+    // bypassed strict). Test now uses the REAL canonical
+    // PHASE4_DUAL_SSE_DIR — same intent (Phase-4 legacy fixture passes
+    // the legacy whitelist), now expressed against the canonical-path
+    // dispatch.
+    const mod = await import('../../scripts/stage6-over-ask-exit-gate.js');
+    const { PHASE4_DUAL_SSE_DIR } = mod;
+
     const phase4Fixture = {
       _doc: 'Plan 05-15 r9-#1 regression lock — phase 4 dual-SSE shape',
       // No _fixture_shape marker — by design.
@@ -1185,7 +1189,7 @@ describe('Plan 05-15 r9-#1 — fixture validation enforced by source directory',
           filename: 'sample-phase4-legacy.json',
           fullPath: '/tmp/x',
           fixture: phase4Fixture,
-          sourceDir: '/some/synthetic/copy/stage6-golden-sessions',
+          sourceDir: PHASE4_DUAL_SSE_DIR,
         },
       ])
     ).not.toThrow();

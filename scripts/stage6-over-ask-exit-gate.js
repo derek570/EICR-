@@ -290,7 +290,14 @@ export const PHASE5_FIXTURES_DIR = path.resolve(
   'fixtures',
   'stage6-phase5-golden-sessions'
 );
-const PHASE4_DUAL_SSE_DIR = path.resolve(
+// Plan 05-17 r11-#1 — exported so isLegacyPhase4Dir + tests can compare
+// against the canonical absolute path. Pre-r11-#1 this was a
+// module-private const + a basename whitelist (`LEGACY_PHASE4_DIR_BASENAME`)
+// drove the dispatch; Codex r11 inverted the threat model (a Phase-5
+// fixture pool dropped into ANY `stage6-golden-sessions`-named dir
+// bypassed the strict gate). Post-r11-#1 the dispatch keys on canonical
+// absolute-path equality against this constant — single source of truth.
+export const PHASE4_DUAL_SSE_DIR = path.resolve(
   __dirname,
   '..',
   'src',
@@ -304,37 +311,53 @@ const PHASE4_DUAL_SSE_DIR = path.resolve(
 // fixtures (5 legacy zero-ask + 7 new Phase 5).
 const DEFAULT_FIXTURES_DIR = PHASE5_FIXTURES_DIR;
 
-// Plan 05-16 r10-#1 — basename whitelist for the legacy Phase-4 dual-SSE
-// directory. The strict TIER 1 gate dispatches by SOURCE-DIR BASENAME
-// rather than by exact-path equality; any directory whose basename does
-// NOT match this whitelist is treated as a Phase-5-shaped pool and gets
-// the strict gate. Pre-r10-#1 the dispatch was keyed on
-// `sourceDir === PHASE5_FIXTURES_DIR`, which Codex r10-#1 found
-// bypassable via `--fixtures-dir /tmp/copy-of-phase5/` (the resolved
-// sourceDir doesn't equal PHASE5_FIXTURES_DIR so a malformed canary
-// silently falls through `applyDefaults`).
-//
-// Why basename and not "contains phase5" or a new --strict flag: any
-// non-legacy directory becomes strict by default under the basename rule,
-// which closes the bypass loophole for any future test that uses
-// --fixtures-dir without an opt-in flag. Opt-out via the legacy basename
-// is narrow and discoverable. A copied or symlinked Phase-4 directory
-// whose basename DOES match this whitelist still gets the legacy
-// applyDefaults zero-contribution treatment — that's acceptable because
-// Phase-4 fixtures are zero-contribution by design; their absence of
-// `_fixture_shape` is what gates them.
-const LEGACY_PHASE4_DIR_BASENAME = 'stage6-golden-sessions';
-
 /**
- * Plan 05-16 r10-#1 — return true iff `sourceDir`'s basename matches the
- * canonical Phase-4 legacy directory. Used by validateFixtureInputs to
- * dispatch the strict TIER 1 gate vs the legacy TIER 2 path.
+ * Plan 05-17 r11-#1 — return true iff `sourceDir` resolves to the
+ * canonical in-tree Phase-4 legacy directory. Used by
+ * validateFixtureInputs to dispatch the strict TIER 1 gate vs the
+ * legacy TIER 2 path.
  *
- * @param {string} sourceDir
+ * The Phase-4 legacy dir is identified by canonical absolute path
+ * equality (`path.resolve(sourceDir) === PHASE4_DUAL_SSE_DIR`).
+ * Basename equality alone is NOT sufficient — a Phase-5 fixture pool
+ * dropped into ANY directory whose basename happens to be
+ * `stage6-golden-sessions` would otherwise bypass the strict gate via
+ * `applyDefaults`. r11 closure: replaces r10-#1's basename whitelist
+ * after Codex r11 inverted the threat model.
+ *
+ * Lineage:
+ *   Plan 05-15 r9-#1: dispatch keyed on `sourceDir === PHASE5_FIXTURES_DIR`
+ *     (exact-path equality). Codex r10-#1 found bypassable via
+ *     `--fixtures-dir /tmp/copy-of-phase5/` — resolved sourceDir didn't
+ *     equal PHASE5_FIXTURES_DIR, so the strict gate never fired.
+ *   Plan 05-16 r10-#1: replaced exact-path equality with basename
+ *     equality against `'stage6-golden-sessions'` (any non-legacy
+ *     basename → strict). Codex r11 inverted the threat model: a
+ *     Phase-5 fixture pool COPIED into a `stage6-golden-sessions`-named
+ *     directory (intentional sabotage, accidental rename) was treated
+ *     as legacy zero-contribution and bypassed the strict gate.
+ *   Plan 05-17 r11-#1 (this version): canonical absolute-path equality
+ *     against PHASE4_DUAL_SSE_DIR. Copies, symlinks (post-resolution),
+ *     and similarly-named dirs in other locations all fail the match
+ *     and fall into strict validation.
+ *
+ * Why canonical path equality and not a per-fixture-pool marker file:
+ * minimum-surface-area change (single equality check, single constant),
+ * no new I/O at every fixture load, no new fixture-pool concept. The
+ * legacy dir's identity is structural (it's the path checked into the
+ * repo) — encoding that structurally via path equality is more honest
+ * than encoding it via a sentinel marker the directory could be missing.
+ *
+ * Note: the caller MUST validate that `sourceDir` is a non-empty string
+ * before calling this function (Plan 05-17 r11-#2 adds an up-front guard
+ * inside validateFixtureInputs). Passing `undefined` here would crash
+ * inside `path.resolve` with a raw TypeError.
+ *
+ * @param {string} sourceDir — non-empty string, validated by the caller
  * @returns {boolean}
  */
 function isLegacyPhase4Dir(sourceDir) {
-  return path.basename(sourceDir) === LEGACY_PHASE4_DIR_BASENAME;
+  return path.resolve(sourceDir) === PHASE4_DUAL_SSE_DIR;
 }
 
 // ============================================================================
@@ -378,16 +401,16 @@ function loadFixtures(dir) {
 }
 
 /**
- * Plan 05-07 r1-#4 + Plan 05-15 r9-#1 + Plan 05-16 r10-#1 + r10-#2 — fixture
- * schema validation gate.
+ * Plan 05-07 r1-#4 + Plan 05-15 r9-#1 + Plan 05-16 r10-#1/#2 + Plan 05-17 r11-#1
+ * — fixture schema validation gate.
  *
  * Two-tier gate:
  *
- *   TIER 1 (Plan 05-16 r10-#1) — STRICT, basename-keyed dispatch.
+ *   TIER 1 (Plan 05-17 r11-#1) — STRICT, canonical-path-keyed dispatch.
  *
- *     Applied to every entry whose source directory's BASENAME is NOT
- *     the canonical Phase-4 legacy basename (`stage6-golden-sessions`).
- *     Every such file MUST carry:
+ *     Applied to every entry whose source directory does NOT resolve
+ *     (via `path.resolve`) to the canonical in-tree Phase-4 legacy
+ *     directory (`PHASE4_DUAL_SSE_DIR`). Every such file MUST carry:
  *       (a) `_fixture_shape === 'phase5-over-ask'`,
  *       (b) `ask_user_calls` array (may be empty, but must be present),
  *       (c) every `ask_user_calls[i]` MUST have a non-empty string `turnId`
@@ -395,20 +418,23 @@ function loadFixtures(dir) {
  *       (d) every `ask_user_calls[i].call.id` MUST be a non-empty string
  *           (non-empty AFTER TRIM per Plan 05-16 r10-#2).
  *
- *     Pre-r9-#1 the gate was keyed on the per-fixture `_fixture_shape`
- *     marker alone — a Phase-5 canary missing the marker silently fell
- *     through `applyDefaults` (Phase-4 backwards-compat path) and
- *     contributed zero asks instead of failing closed. r9-#1 narrowed
- *     the dispatch to `sourceDir === PHASE5_FIXTURES_DIR` (exact-path
- *     equality), which Codex r10-#1 found bypassable via
- *     `--fixtures-dir /tmp/copy-of-phase5/` — the copy's resolved
- *     sourceDir doesn't equal PHASE5_FIXTURES_DIR, so the strict gate
- *     never fires. r10-#1's basename-keyed dispatch closes that bypass:
- *     any directory whose basename is NOT the legacy whitelist (i.e.
- *     PHASE5_FIXTURES_DIR, copies of it via --fixtures-dir, the
- *     synthetic-breach dir, tmpdir overrides) hits the strict gate. The
- *     legacy Phase-4 dir is the ONLY whitelist; copies of it are also
- *     legacy iff their basename matches.
+ *     Lineage:
+ *       Pre-r9-#1: gate was keyed on the per-fixture `_fixture_shape`
+ *         marker alone — a Phase-5 canary missing the marker silently
+ *         fell through `applyDefaults` (Phase-4 backwards-compat path)
+ *         and contributed zero asks instead of failing closed.
+ *       r9-#1: narrowed dispatch to `sourceDir === PHASE5_FIXTURES_DIR`
+ *         (exact-path equality). Codex r10-#1 found bypassable via
+ *         `--fixtures-dir /tmp/copy-of-phase5/`.
+ *       r10-#1: replaced exact-path equality with basename equality
+ *         against `'stage6-golden-sessions'`. Codex r11 inverted the
+ *         threat model — a Phase-5 fixture pool dropped into ANY
+ *         `stage6-golden-sessions`-named dir bypassed the strict gate.
+ *       r11-#1 (this version): canonical absolute-path equality against
+ *         `PHASE4_DUAL_SSE_DIR`. Copies, symlinks (post-resolution), and
+ *         similarly-named dirs in other locations all fail the match
+ *         and fall into strict validation. The ONLY directory the
+ *         legacy whitelist accepts is the in-tree Phase-4 fixtures dir.
  *
  *   TIER 2 (Plan 05-07 r1-#4) — LEGACY, schema-marker-keyed.
  *
@@ -437,9 +463,9 @@ function loadFixtures(dir) {
  * fixture in one click.
  *
  * Plan 05-15 r9-#1 — exported so tests can call this directly with
- * `sourceDir: PHASE5_FIXTURES_DIR` set in each entry. Plan 05-16 r10-#1
- * — direct callers can also pass any non-legacy basename to drive the
- * strict-gate branch (e.g. `/some/synthetic/path/copy-of-phase5`).
+ * `sourceDir: PHASE5_FIXTURES_DIR` set in each entry. Plan 05-17 r11-#1
+ * — direct callers can drive the strict-gate branch with any sourceDir
+ * whose canonical path differs from `PHASE4_DUAL_SSE_DIR`.
  *
  * @param {Array<{filename:string, fullPath:string, fixture:object, sourceDir?:string}>} loaded
  * @throws {Error} on first invalid fixture
@@ -448,10 +474,10 @@ export function validateFixtureInputs(loaded) {
   for (const entry of loaded) {
     const { filename, fixture, sourceDir } = entry;
 
-    // TIER 1 — strict gate for any non-legacy directory (basename
-    // dispatch per Plan 05-16 r10-#1; pre-r10-#1 this was keyed on
-    // exact-path equality against PHASE5_FIXTURES_DIR, which copies
-    // of the dir bypassed via --fixtures-dir).
+    // TIER 1 — strict gate for any non-legacy directory
+    // (canonical-path dispatch per Plan 05-17 r11-#1; pre-r11-#1 this
+    // was keyed on basename equality against `'stage6-golden-sessions'`,
+    // which Codex r11 found bypassable in the Phase-5 direction).
     if (!isLegacyPhase4Dir(sourceDir)) {
       // (a) marker MUST be present + correct.
       if (fixture._fixture_shape !== 'phase5-over-ask') {
