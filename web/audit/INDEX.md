@@ -21,7 +21,8 @@ Guiding rule: **iOS is canon. Divergence is a bug unless explicitly documented**
 | B5.1 | Staff tab — InspectorProfile shape + roster fetch | ✅ done | `317d18d`, `780266a` (codex fix) |
 | B2.1 | T&Cs acceptance gate (Phase 2 P0 #1) | ✅ done | `06caaf9`, `6465a4a` (codex fix) |
 | B2.4 | Dashboard JobRow swipe-delete regression test | ✅ done — feature already on main from `9fcbeed`; this commit only adds the missing test coverage flagged by the audit (Phase 2 P0 #4 was a false-positive from stage6) |
-| B4 | Deepgram + Recording config | ⏳ open — needs main-vs-stage6 cross-check first |
+| B4.1 | Deepgram `utterance_end_ms` 2000 → 1500 (iOS canon) | ✅ done | `ba3bbdf` |
+| B4.2 | Deepgram keyterm prompting (port iOS `KeywordBoostGenerator`) | ⏳ open — separate follow-up |
 | B5 | Recording UI parity | ⏳ open — needs main-vs-stage6 cross-check first |
 | B6 | Remaining dashboard + settings P0s (T&Cs gate, preset picker on creation, swipe delete on rows, admin form drift) | ⏳ open |
 | B7 | Inner-field drift (CircuitRow, ObservationRow, per-bucket field naming) | ⏳ open — biggest remaining work |
@@ -33,6 +34,8 @@ Guiding rule: **iOS is canon. Divergence is a bug unless explicitly documented**
 
 | SHA | Subject |
 |-----|---------|
+| `ba3bbdf` | align Deepgram utterance_end_ms 2000 → 1500 (iOS canon) + iOS-parity URL params test |
+| `b79c332` | lock JobRow swipe-delete + INDEX update for closed audit items |
 | `6465a4a` | close T&Cs gate open-redirect + preserve query string (codex fix on `06caaf9`) |
 | `06caaf9` | T&Cs acceptance gate — /terms page + AppShell client-side redirect |
 | `780266a` | clear Staff-tab roster on user-change / fetch-failure (codex fix on `317d18d`) |
@@ -72,8 +75,11 @@ Guiding rule: **iOS is canon. Divergence is a bug unless explicitly documented**
 4. ~~**T&Cs gate** (Phase 2 P0 #1)~~ ✅ closed by `06caaf9` (`/terms` page with verbatim iOS legal text + 3-doc / 3-confirmation gate, AppShell client-side redirect, iOS-parity localStorage keys). Codex P1 + P2 follow-ups in `6465a4a` (open-redirect closed via `sanitiseRedirect`, query string preserved through the gate). One deliberate divergence: signature capture deferred (signatures live on `InspectorProfile` on web; iOS's `termsAcceptanceSignature` audit-trail blob has no web counterpart yet).
 5. **Preset picker on job creation** (Phase 2 P0 #3) — ⚠️ deferred. iOS uses multiple-named `CertificateDefault` records per user (preset per cert type) backed by GRDB; web uses a single `user_defaults.json` blob applied on-demand from the Circuits tab (`/settings/defaults` is the editor, no auto-apply at job creation by deliberate architectural choice — see `web/src/app/settings/defaults/page.tsx` doc-comment). iOS's "1 preset → auto-apply, 2+ presets → picker" model doesn't translate without either schema migration on web (multi-named-preset CRUD endpoints) or a different UX (e.g., a single "Apply your defaults?" Yes/Skip sheet that doesn't match iOS's picker shape). Needs a design decision before implementation; not a single-commit follow-up.
 6. ~~**Swipe delete on dashboard job rows** (Phase 2 P0 #4)~~ ✅ already on main — feature shipped in commit `9fcbeed` (Phase 3 — dashboard expiring count, swipe/context-menu delete, tour tile). Audit was wrong because stage6 had regressed it. Regression test added in this batch (`tests/job-row-swipe-delete.test.tsx`) since coverage was zero.
-7. **Deepgram config drift** (Phase 6 P0s) — needs main-vs-stage6 cross-check; some flagged config gaps may be stage6-only. Once verified-on-main, focus on `utterance_end_ms`, keyterm prompting (port `KeywordBoostGenerator`), 25s ALB heartbeat.
-8. **Per-circuit field drift** (Phase 3 #16, #18) — `CircuitRow` uses `id`/`number`/`description` while wire uses `circuit_ref`/`circuit_designation`. Big refactor; ladder of follow-ups.
+7. **Deepgram config drift** (Phase 6 P0s) — main-vs-stage6 cross-check now done. Two real on-main divergences:
+   - ✅ `utterance_end_ms` (web 2000 → iOS canon 1500) closed by `ba3bbdf` with regression-locking URL-param test.
+   - ⏳ **Open: keyterm prompting.** iOS sends ~89 boost-scored Nova-3 `keyterm` URL params via `KeywordBoostGenerator` (URL-length budget 1800 chars, top-tier keywords get a `:3.0` suffix). Web sends 0. Porting needs the boost word list, the URL budget, and the boost-tier convention — its own scope.
+   - ⏳ Other Phase 6 P0s flagged in the audit (LiveFillView dead code, 25s ALB heartbeat, no `observation_update` handler, no transcript buffering during reconnect, no Sonnet question rendering, 3-tier field priority, regex layer) — all need verification-on-main first since several reference subsystems regressed only on stage6.
+8. **Per-circuit field drift** (Phase 3 #16, #18) — `CircuitRow` uses `id`/`number`/`description` while wire uses `circuit_ref`/`circuit_designation`. Big refactor; ladder of follow-ups; out of scope for single-commit follow-up sessions.
 
 ### Deliberate divergence — needs legal review
 
