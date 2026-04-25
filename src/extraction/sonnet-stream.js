@@ -173,6 +173,49 @@ function logBypassOnce(entry, sessionId, pathLabel) {
 }
 
 /**
+ * Stage 6 Phase 7 STR-05 / Plan 07-02 Task 1 — retirement-window warn log.
+ *
+ * One-shot per-session warn fired the FIRST time the legacy off-mode
+ * `filterQuestionsAgainstFilledSlots` path is invoked in a given
+ * session. Subsequent invocations within the same session are silent
+ * so a session that re-enters the legacy filter once per turn (not
+ * unusual under the off-mode batched-flush cadence) does not flood
+ * CloudWatch with hundreds of warn rows over a 5-min recording. The
+ * retirement signal we need at T+4w is "did any session at all touch
+ * this code in 14 days", not "how many times" — one row per session is
+ * exactly the resolution.
+ *
+ * Pattern mirrors `logBypassOnce` (above). Different log level (warn
+ * vs info) because this is the retirement-gate signal: a single row
+ * during the T+2w..T+4w pre-delete window aborts the deletion. info
+ * level on the bypass is sufficient because that one is diagnostic
+ * for prompt regressions, not a deletion gate.
+ *
+ * Three call sites (the three legacy filter invocations):
+ *   1. onBatchResult — `callSite: 'onBatchResult'`
+ *   2. handleTranscript sync path — `callSite: 'handleTranscript'`
+ *   3. periodic orphan review — `callSite: 'reviewForOrphanedValues'`
+ *
+ * Stamped on the `activeSessions` entry (not on the session itself)
+ * so reconnect/resume rebinds carry the flag across the session-swap
+ * surface — the entry persists across reconnects within the 300s
+ * session-reconnect window, so a session that already warned does
+ * not re-warn after a reconnect.
+ *
+ * Refs: REQUIREMENTS.md STR-05, STO-05, STB-03; ROLLBACK_RUNBOOK.md
+ *       "Retirement timeline" + "helper queries" sections.
+ */
+function logLegacyPathInvokedOnce(entry, sessionId, callSite) {
+  if (!entry || entry.loggedLegacyPathInvoked) return;
+  entry.loggedLegacyPathInvoked = true;
+  logger.warn('legacy_path_invoked', {
+    sessionId,
+    callSite,
+    toolCallsMode: entry.session?.toolCallsMode,
+  });
+}
+
+/**
  * Fire-and-forget observation refinement. For each observation in the result
  * that needs refinement (missing code/regulation/low confidence), call
  * `gpt-5-search-api` and emit an `observation_update` message to iOS. Runs
@@ -1770,6 +1813,14 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
           // Stage 5: drop questions whose slot is already filled in the
           // session's stateSnapshot (see filterQuestionsAgainstFilledSlots
           // docstring for the F21934D4 reproducer and same-turn protection).
+          //
+          // Phase 7 STR-05 (Plan 07-02 Task 1): one-shot retirement-gate
+          // warn fires here on first invocation per session. Stamped
+          // BEFORE the filter call so a downstream throw inside the
+          // filter still leaves the warn visible in CloudWatch — the
+          // retirement signal we need is "did any session at all reach
+          // this code", regardless of whether the filter itself errored.
+          logLegacyPathInvokedOnce(entryRef, sessionId, 'onBatchResult');
           const filteredBatch = filterQuestionsAgainstFilledSlots(
             result.questions_for_user,
             session.stateSnapshot,
@@ -3079,6 +3130,9 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         result.questions_for_user &&
         result.questions_for_user.length > 0
       ) {
+        // Phase 7 STR-05 retirement-gate warn — see logLegacyPathInvokedOnce
+        // docstring + the symmetric stamp in the onBatchResult path above.
+        logLegacyPathInvokedOnce(entry, sessionId, 'handleTranscript');
         const filteredSync = filterQuestionsAgainstFilledSlots(
           result.questions_for_user,
           entry.session.stateSnapshot,
@@ -3125,6 +3179,12 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
               sessionId,
               count: reviewResult.questions_for_user.length,
             });
+            // Phase 7 STR-05 retirement-gate warn — see logLegacyPathInvokedOnce
+            // docstring + symmetric stamps in onBatchResult / handleTranscript
+            // paths above. Orphan review is the third (and final) legacy
+            // entry into filterQuestionsAgainstFilledSlots — covering it here
+            // ensures the deletion-gate signal cannot miss a code path.
+            logLegacyPathInvokedOnce(entry, sessionId, 'reviewForOrphanedValues');
             // Stage 5: orphan review runs on accumulated state — no this-turn
             // readings, so pass an empty resolvedFields set. Any question
             // targeting a slot that's already filled in stateSnapshot is dropped.
