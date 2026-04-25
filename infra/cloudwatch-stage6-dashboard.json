@@ -1,7 +1,4 @@
 {
-  "_purpose": "Stage 6 Agentic Extraction CloudWatch dashboard. Defines widgets for the 5 STO-03 metrics + tool-call histogram. Apply with: aws cloudwatch put-dashboard --region eu-west-2 --dashboard-name 'Stage6-Agentic' --dashboard-body file://infra/cloudwatch-stage6-dashboard.json",
-  "_review_burden": "Phase 8 SC #3 — every STO-03 metric is represented; thresholds quoted in widget titles match the alarm thresholds in cloudwatch-stage6-alarms.json. Region: eu-west-2 (London).",
-  "_metric_namespace": "EICR/Stage6",
   "widgets": [
     {
       "type": "metric",
