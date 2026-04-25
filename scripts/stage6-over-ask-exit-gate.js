@@ -378,8 +378,8 @@ function loadFixtures(dir) {
 }
 
 /**
- * Plan 05-07 r1-#4 + Plan 05-15 r9-#1 + Plan 05-16 r10-#1 — fixture schema
- * validation gate.
+ * Plan 05-07 r1-#4 + Plan 05-15 r9-#1 + Plan 05-16 r10-#1 + r10-#2 — fixture
+ * schema validation gate.
  *
  * Two-tier gate:
  *
@@ -390,8 +390,10 @@ function loadFixtures(dir) {
  *     Every such file MUST carry:
  *       (a) `_fixture_shape === 'phase5-over-ask'`,
  *       (b) `ask_user_calls` array (may be empty, but must be present),
- *       (c) every `ask_user_calls[i]` MUST have a non-empty string `turnId`,
- *       (d) every `ask_user_calls[i].call.id` MUST be a non-empty string.
+ *       (c) every `ask_user_calls[i]` MUST have a non-empty string `turnId`
+ *           (non-empty AFTER TRIM per Plan 05-16 r10-#2),
+ *       (d) every `ask_user_calls[i].call.id` MUST be a non-empty string
+ *           (non-empty AFTER TRIM per Plan 05-16 r10-#2).
  *
  *     Pre-r9-#1 the gate was keyed on the per-fixture `_fixture_shape`
  *     marker alone — a Phase-5 canary missing the marker silently fell
@@ -464,18 +466,25 @@ export function validateFixtureInputs(loaded) {
         );
       }
       // (c) + (d) per-call turnId + call.id MUST be non-empty strings.
+      // Plan 05-16 r10-#2 — non-empty AFTER TRIM. Pre-r10-#2 the checks
+      // accepted whitespace-only values ("   ", "\t\n") because
+      // `length > 0` is true for those strings; downstream they
+      // collide as CloudWatch keys and analyzer queries can't
+      // distinguish them from genuine empty strings. Trimming before
+      // the length check rejects whitespace-only values without
+      // changing the typed-string contract.
       for (let i = 0; i < fixture.ask_user_calls.length; i += 1) {
         const entryCall = fixture.ask_user_calls[i];
         const turnId = entryCall?.turnId;
-        if (typeof turnId !== 'string' || turnId.length === 0) {
+        if (typeof turnId !== 'string' || turnId.trim().length === 0) {
           throw new Error(
-            `fixture invalid: ${filename}: ask_user_calls[${i}].turnId must be a non-empty string`
+            `fixture invalid: ${filename}: ask_user_calls[${i}].turnId must be a non-empty string (non-empty after trim)`
           );
         }
         const callId = entryCall?.call?.id;
-        if (typeof callId !== 'string' || callId.length === 0) {
+        if (typeof callId !== 'string' || callId.trim().length === 0) {
           throw new Error(
-            `fixture invalid: ${filename}: ask_user_calls[${i}].call.id must be a non-empty string`
+            `fixture invalid: ${filename}: ask_user_calls[${i}].call.id must be a non-empty string (non-empty after trim)`
           );
         }
       }
