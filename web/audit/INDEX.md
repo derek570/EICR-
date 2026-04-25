@@ -19,6 +19,8 @@ Guiding rule: **iOS is canon. Divergence is a bug unless explicitly documented**
 | B3d | CCU three-mode + review sheet | ✅ already on main — no work needed |
 | B6.1 | Dashboard recent-jobs cap + Defaults tile | ✅ done | `181fc3a`, `39cb5a1` (codex fix) |
 | B5.1 | Staff tab — InspectorProfile shape + roster fetch | ✅ done | `317d18d`, `780266a` (codex fix) |
+| B2.1 | T&Cs acceptance gate (Phase 2 P0 #1) | ✅ done | `06caaf9`, `6465a4a` (codex fix) |
+| B2.4 | Dashboard JobRow swipe-delete regression test | ✅ done — feature already on main from `9fcbeed`; this commit only adds the missing test coverage flagged by the audit (Phase 2 P0 #4 was a false-positive from stage6) |
 | B4 | Deepgram + Recording config | ⏳ open — needs main-vs-stage6 cross-check first |
 | B5 | Recording UI parity | ⏳ open — needs main-vs-stage6 cross-check first |
 | B6 | Remaining dashboard + settings P0s (T&Cs gate, preset picker on creation, swipe delete on rows, admin form drift) | ⏳ open |
@@ -31,6 +33,8 @@ Guiding rule: **iOS is canon. Divergence is a bug unless explicitly documented**
 
 | SHA | Subject |
 |-----|---------|
+| `6465a4a` | close T&Cs gate open-redirect + preserve query string (codex fix on `06caaf9`) |
+| `06caaf9` | T&Cs acceptance gate — /terms page + AppShell client-side redirect |
 | `780266a` | clear Staff-tab roster on user-change / fetch-failure (codex fix on `317d18d`) |
 | `317d18d` | consolidate Staff tab to canonical InspectorProfile + wire roster fetch |
 | `39cb5a1` | dashboard recent-jobs initial cap (codex fix on `181fc3a`) |
@@ -58,17 +62,23 @@ Guiding rule: **iOS is canon. Divergence is a bug unless explicitly documented**
 - **B3a** (`f8ab898`) → no separate codex review (small bucket-rename follow-up).
 - **B6.1 dashboard** (`181fc3a`) → 1 finding addressed in `39cb5a1`: (P2) removing the cap entirely was a perf regression for inspectors with hundreds of jobs. New shape: render up to 50 by default, show a "Show all N jobs" button below when truncated.
 - **B5.1 Staff tab** (`317d18d`) → 1 finding addressed in `780266a`: (P2) the new roster-fetch effect didn't clear local state on user-change or fetch-rejection, so a previous account's signatories could remain visible after a 401/403 or a failed re-fetch. Both branches now `setInspectors([])` before/after the request, collapsing the picker to its empty state and preventing wrong-account writes into `job.inspector_id`.
+- **B2.1 T&Cs gate** (`06caaf9`) → 2 findings addressed in `6465a4a`: (P1) the page passed `search.get('next')` straight to `router.replace()`, so a crafted `/terms?next=https://evil.example` could bounce an authenticated user off-site post-accept — same class as the `/login?redirect=` open-redirect closed by Wave 1 P0-16, now reusing the shared `sanitiseRedirect()` helper. (P2) the AppShell gate stored only `pathname` in the `next` param, dropping query state for routes like `/job/[id]/circuits/match-review?nonce=...`; the gate now reads `useSearchParams()` and round-trips the full URL through `next`.
 
 ### Real remaining work for next session
 
 1. ~~**InspectorProfile 3-way shape drift** (Phase 5 #5.3)~~ ✅ closed by `317d18d` (Staff page now imports `InspectorProfile` from `@/lib/types`; local `Inspector` type dropped; `full_name`/`*_serial` references rewritten to `name`/`*_serial_number`).
 2. ~~**Staff roster fetch** (Phase 5 #5.1)~~ ✅ closed by `317d18d` (Staff page now fetches via `api.inspectorProfiles(user.id)` on mount; the unused `inspectors?: Inspector[]` field on the StaffJobShape was dropped). Codex P2 follow-up `780266a` clears stale state on user-change / fetch-rejection.
-3. **Phase 4 #12** (inline observation workflow on schedule taps) — already implemented on main per `inspection/page.tsx` (the `inlineFormRef` / `pendingChange` flow is present); audit was wrong because it ran against stage6.
-4. **T&Cs gate** (Phase 2 P0 #1) — backend has no T&C endpoint per backend audit Q10. iOS uses localStorage flags `termsAccepted` / `termsAcceptedVersion="1.0"` / `termsAcceptedDate`. Web port needs: a `web/src/app/terms/page.tsx` page with the T&C text + accept button writing the same localStorage keys for cross-platform consistency, AND a client-side gate in `AppShell` that redirects to `/terms` when the flag is unset (middleware can't read localStorage; gate must be client-side).
-5. **Preset picker on job creation** (Phase 2 P0 #3) — iOS shows a `PresetPickerSheet` when 1+ saved defaults exist, allowing the inspector to apply a preset on the new job. Web `createJob` POSTs immediately. Needs a sheet component + integration with the (already-shipped) Defaults area.
-6. **Swipe delete on dashboard job rows** (Phase 2 P0 #4) — iOS UX affordance for quick row deletion. Web has `JobRow` with no swipe handling. Mobile-only feature; desktop falls back to context menu.
+3. ~~**Phase 4 #12** (inline observation workflow on schedule taps)~~ ✅ already on main — audit was wrong because it ran against stage6 (`inspection/page.tsx` carries the `inlineFormRef` / `pendingChange` flow on `main`).
+4. ~~**T&Cs gate** (Phase 2 P0 #1)~~ ✅ closed by `06caaf9` (`/terms` page with verbatim iOS legal text + 3-doc / 3-confirmation gate, AppShell client-side redirect, iOS-parity localStorage keys). Codex P1 + P2 follow-ups in `6465a4a` (open-redirect closed via `sanitiseRedirect`, query string preserved through the gate). One deliberate divergence: signature capture deferred (signatures live on `InspectorProfile` on web; iOS's `termsAcceptanceSignature` audit-trail blob has no web counterpart yet).
+5. **Preset picker on job creation** (Phase 2 P0 #3) — ⚠️ deferred. iOS uses multiple-named `CertificateDefault` records per user (preset per cert type) backed by GRDB; web uses a single `user_defaults.json` blob applied on-demand from the Circuits tab (`/settings/defaults` is the editor, no auto-apply at job creation by deliberate architectural choice — see `web/src/app/settings/defaults/page.tsx` doc-comment). iOS's "1 preset → auto-apply, 2+ presets → picker" model doesn't translate without either schema migration on web (multi-named-preset CRUD endpoints) or a different UX (e.g., a single "Apply your defaults?" Yes/Skip sheet that doesn't match iOS's picker shape). Needs a design decision before implementation; not a single-commit follow-up.
+6. ~~**Swipe delete on dashboard job rows** (Phase 2 P0 #4)~~ ✅ already on main — feature shipped in commit `9fcbeed` (Phase 3 — dashboard expiring count, swipe/context-menu delete, tour tile). Audit was wrong because stage6 had regressed it. Regression test added in this batch (`tests/job-row-swipe-delete.test.tsx`) since coverage was zero.
 7. **Deepgram config drift** (Phase 6 P0s) — needs main-vs-stage6 cross-check; some flagged config gaps may be stage6-only. Once verified-on-main, focus on `utterance_end_ms`, keyterm prompting (port `KeywordBoostGenerator`), 25s ALB heartbeat.
 8. **Per-circuit field drift** (Phase 3 #16, #18) — `CircuitRow` uses `id`/`number`/`description` while wire uses `circuit_ref`/`circuit_designation`. Big refactor; ladder of follow-ups.
+
+### Deliberate divergence — needs legal review
+
+- **T&Cs port (`06caaf9`)** — `web/src/app/terms/legal-texts.ts` carries the iOS legal text verbatim, including Apple-specific clauses (T&C §17, EULA §10/§13). These survive on web because (a) inspectors who installed iOS first already accepted them there, (b) the same operator owns both surfaces. A future legal-review pass may carve them out — log here so we don't lose track.
+- **No signature capture on web T&Cs gate (`06caaf9`)** — iOS captures a finger-drawn signature into `UserDefaults["termsAcceptanceSignature"]` for an audit trail. On web, the inspector's signature already lives on their `InspectorProfile`. If legal review requires the audit trail, port `SignatureCaptureView` and add it as a fourth confirmation step.
 
 ### How to resume
 
