@@ -160,10 +160,14 @@ describe('Plan 05-06 — exit-gate harness smoke test', () => {
     expect(Array.isArray(digest.ask_counts_per_session)).toBe(true);
     expect(digest.ask_counts_per_session.length).toBeGreaterThan(0);
     // Thresholds must be the locked Object.freeze contract.
+    // Plan 05-07 r1-#2 bumped restrainedRateMax 0.02 → 0.10 so the
+    // 12-fixture aggregate (with sample-07's deliberate 1/12 ≈ 8.3%
+    // activation canary) admits the canary. The 2% target stays scoped
+    // to Phase 7 STR-03 prod-shadow gate.
     expect(digest.thresholds).toEqual({
       medianMax: 1,
       p95Max: 4,
-      restrainedRateMax: 0.02,
+      restrainedRateMax: 0.1,
     });
   });
 
@@ -173,6 +177,88 @@ describe('Plan 05-06 — exit-gate harness smoke test', () => {
     // an opaque "0 fixtures loaded" digest.
     const stat = fs.statSync(MAIN_FIXTURES_DIR);
     expect(stat.isDirectory()).toBe(true);
+  });
+});
+
+// =============================================================================
+// Plan 05-07 r1-#2 — aggregate over the FULL fixture set
+// =============================================================================
+// Pre-fix: runHarness filtered out gate_fixture:false fixtures (sample-07 +
+// sample-08) before computing median / p95 / restrained_rate. The canonical
+// over-ask fixtures (the deliberate restrained-mode trigger + the budget-
+// exhaustion canary) could never breach the gate.
+//
+// Post-fix: every loaded fixture contributes to the aggregate. The
+// restrainedRateMax threshold is bumped from 0.02 (Phase 7 prod-shadow
+// target) to 0.10 (the smallest sensible ceiling that admits sample-07's
+// deliberate 1/12 ≈ 8.3% activation while still rejecting a regression
+// that adds a SECOND unintended activation).
+//
+// The synthetic-breach fixture (5 asks, restrained_rate=1/1=1.00) MUST
+// still breach with the new threshold (1.00 > 0.10).
+// =============================================================================
+
+describe('Plan 05-07 r1-#2 — aggregate over the FULL fixture set', () => {
+  jest.setTimeout(30000);
+
+  test('aggregate fixture count equals total fixture count (no gate_fixture partition)', () => {
+    const { status, digest } = runGate();
+    expect(status).toBe(0);
+    // Pre-fix: gate_fixture_count=10, fixture_count=12 (10/12 partition).
+    // Post-fix: every fixture contributes — they MUST be equal.
+    expect(digest.fixture_count).toBe(12);
+    expect(digest.aggregate_fixture_count).toBe(12);
+    // ask_counts_per_session length must match aggregate_fixture_count.
+    expect(digest.ask_counts_per_session).toHaveLength(12);
+  });
+
+  test('sample-07 deliberate restrained-mode activation appears in aggregate restrained_activation_count', () => {
+    const { status, digest } = runGate();
+    expect(status).toBe(0);
+    // Sample-07 fires restrained mode at its 3rd ask; sample-08 + every
+    // other fixture has 0 activations. Aggregate must surface the
+    // deliberate canary.
+    expect(digest.restrained_activation_count).toBe(1);
+    // 1 activation across 12 fixtures = 1/12 ≈ 0.0833.
+    expect(digest.restrained_rate).toBeCloseTo(1 / 12, 5);
+  });
+
+  test('restrainedRateMax threshold bumped to 0.10 (admits 1/12 canary; still rejects 2/12 regression)', () => {
+    const { status, digest } = runGate();
+    expect(status).toBe(0);
+    expect(digest.thresholds.restrainedRateMax).toBe(0.1);
+    // Sanity — the other two thresholds are unchanged.
+    expect(digest.thresholds.medianMax).toBe(1);
+    expect(digest.thresholds.p95Max).toBe(4);
+  });
+
+  test('exit_code === 0 on the main fixtures dir under the new full-set aggregation', () => {
+    const { status, digest, stderr } = runGate();
+    if (status !== 0) {
+      throw new Error(
+        `expected exit_code=0 under full-set aggregation; got status=${status}\n` +
+          `digest=${JSON.stringify(digest, null, 2)}\n` +
+          `stderr=${stderr}`
+      );
+    }
+    expect(digest.exit_code).toBe(0);
+    expect(digest.breaches).toEqual([]);
+  });
+
+  test('synthetic-breach fixture STILL breaches under the new aggregation + threshold', () => {
+    // Regression lock — sample-99 has 5 asks of which 3 fire and 2 are
+    // wrapper-short-circuited as restrained_mode, with 1 activation in
+    // the single-fixture pool → restrained_rate = 1/1 = 1.00. Even with
+    // restrainedRateMax bumped to 0.10, this still breaches loudly.
+    const { status, digest } = runGate(['--fixtures-dir', SYNTHETIC_BREACH_DIR]);
+    expect(status).toBe(1);
+    expect(digest.exit_code).toBe(1);
+    expect(digest.breaches.length).toBeGreaterThan(0);
+    // restrained_rate breach is the canonical breach signature on this
+    // fixture; assert it fires (the aggregate may also breach p95 or
+    // median, which is fine — the regression lock is "still breaches",
+    // not "breaches exactly the same way").
+    expect(digest.breaches).toContain('restrained_rate');
   });
 });
 
