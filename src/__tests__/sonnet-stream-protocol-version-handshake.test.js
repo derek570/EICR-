@@ -1,0 +1,333 @@
+/**
+ * Stage 6 Phase 6 Plan 06-01 — sonnet-stream.js handleSessionStart
+ * `protocol_version` handshake tests.
+ *
+ * REQUIREMENTS: STI-06 (iOS protocol version handshake), STR-01
+ * (rollback contract — off-mode functional equivalence).
+ *
+ * WHAT THIS FILE COVERS
+ *   Group A — off mode (default through Phase 6)
+ *     1. Missing protocol_version → session created, no warn log,
+ *        no close, activeSessions entry exists.
+ *     2. Wrong protocol_version → same (off-mode ignores entirely).
+ *     3. Correct protocol_version → same.
+ *
+ *   Group B — shadow mode (Phase 7+ cutover)
+ *     4. Missing protocol_version → warn logged
+ *        ('stage6.protocol_version_mismatch_shadow_fallback'),
+ *        entry.fallbackToLegacy === true, NO close, session usable.
+ *     5. Correct protocol_version → no warn,
+ *        entry.fallbackToLegacy === false.
+ *
+ *   Group C — live mode (Phase 7+2w post-cutover)
+ *     6. Missing protocol_version → warn logged
+ *        ('stage6.protocol_version_mismatch_live_reject'),
+ *        ws.send error envelope, ws.close(1002), NO activeSessions entry.
+ *     7. Wrong protocol_version → same as (6) but error message names
+ *        the value seen.
+ *     8. Correct protocol_version → no warn, session created,
+ *        entry.protocolVersion === 'stage6'.
+ *
+ *   Group D — entry metadata
+ *     9. Off-mode entry stores protocolVersion === null when client omits.
+ *     10. Off-mode entry stores protocolVersion === 'stage6' when client
+ *         sends (forward-looking — entry-level metadata is the same shape
+ *         regardless of mode).
+ *
+ * MOCK STRATEGY: lifted from sonnet-stream-ask-routing.test.js — drive
+ * a fake ws through wss.emit('connection',...) and capture handlers via
+ * the fake's ws.on mock. The logger is mock'd as a per-test jest.fn so
+ * we can assert specific warn calls without parsing real CloudWatch.
+ */
+
+import { jest, describe, test, expect, beforeEach, afterEach } from '@jest/globals';
+
+// ── Mocks (must register BEFORE dynamic import) ──────────────────────────────
+
+const mockLogger = {
+  info: jest.fn(),
+  warn: jest.fn(),
+  error: jest.fn(),
+  debug: jest.fn(),
+};
+
+const mockSessionStart = jest.fn();
+const mockSessionStop = jest.fn(() => ({ totals: { cost: 0 } }));
+const mockFlushBuffer = jest.fn(async () => null);
+
+class FakeEICRExtractionSession {
+  constructor(apiKey, sessionId, certType) {
+    this.sessionId = sessionId;
+    this.certType = certType;
+    this.turnCount = 0;
+    this.costTracker = { toCostUpdate: () => ({ type: 'cost_update', cost: 0 }) };
+    this.start = mockSessionStart;
+    this.stop = mockSessionStop;
+    this.flushUtteranceBuffer = mockFlushBuffer;
+    this.updateJobState = jest.fn();
+    this.pause = jest.fn();
+    this.resume = jest.fn();
+    this.onBatchResult = null;
+  }
+}
+
+jest.unstable_mockModule('../extraction/eicr-extraction-session.js', () => ({
+  EICRExtractionSession: FakeEICRExtractionSession,
+}));
+
+jest.unstable_mockModule('../logger.js', () => ({
+  default: mockLogger,
+}));
+
+jest.unstable_mockModule('../storage.js', () => ({
+  uploadJson: jest.fn(async () => {}),
+}));
+
+const { initSonnetStream, activeSessions } = await import('../extraction/sonnet-stream.js');
+const { sonnetSessionStore } = await import('../extraction/sonnet-session-store.js');
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+
+function makeFakeWs() {
+  const sent = [];
+  const ws = {
+    readyState: 1,
+    OPEN: 1,
+    send: jest.fn((payload) => {
+      sent.push(JSON.parse(payload));
+    }),
+    ping: jest.fn(),
+    close: jest.fn(),
+    on: jest.fn(),
+    _handlers: new Map(),
+  };
+  ws.on.mockImplementation((event, handler) => {
+    ws._handlers.set(event, handler);
+  });
+  ws._sent = sent;
+  ws._emit = async (event, data) => {
+    const h = ws._handlers.get(event);
+    if (!h) throw new Error(`No handler registered for ${event}`);
+    await h(data);
+  };
+  return ws;
+}
+
+function connect(wss, userId = 'user-1') {
+  const ws = makeFakeWs();
+  wss.emit('connection', ws, { headers: {} }, userId);
+  return ws;
+}
+
+async function sendFrame(ws, frame) {
+  await ws._emit('message', Buffer.from(JSON.stringify(frame)));
+}
+
+const getKey = async () => 'fake-anthropic-key';
+const verifyToken = jest.fn();
+
+let wss;
+let originalToolCallsMode;
+
+beforeEach(() => {
+  // Snapshot env for mode-specific tests; restored in afterEach.
+  originalToolCallsMode = process.env.SONNET_TOOL_CALLS;
+  delete process.env.SONNET_TOOL_CALLS;
+  mockLogger.info.mockClear();
+  mockLogger.warn.mockClear();
+  mockLogger.error.mockClear();
+  mockSessionStart.mockClear();
+  mockSessionStop.mockClear();
+  activeSessions.clear();
+  sonnetSessionStore.clear();
+  wss = initSonnetStream(null, getKey, verifyToken);
+});
+
+afterEach(() => {
+  if (originalToolCallsMode === undefined) {
+    delete process.env.SONNET_TOOL_CALLS;
+  } else {
+    process.env.SONNET_TOOL_CALLS = originalToolCallsMode;
+  }
+  activeSessions.clear();
+  sonnetSessionStore.clear();
+});
+
+// -----------------------------------------------------------------------------
+// Group A — off mode (default through Phase 6)
+// -----------------------------------------------------------------------------
+
+describe('Group A — off mode ignores protocol_version entirely', () => {
+  test('A.1 — missing protocol_version: session created, no warn, no close', async () => {
+    process.env.SONNET_TOOL_CALLS = 'off';
+    const ws = connect(wss, 'user-A');
+    await sendFrame(ws, {
+      type: 'session_start',
+      sessionId: 'sess-off-missing',
+      jobId: 'job-1',
+      jobState: { certificateType: 'eicr' },
+    });
+    expect(activeSessions.get('sess-off-missing')).toBeDefined();
+    expect(ws.close).not.toHaveBeenCalled();
+    // No mismatch warns in either mode (off-mode is silent by-design)
+    const warnCalls = mockLogger.warn.mock.calls.map(([msg]) => msg);
+    expect(warnCalls).not.toContain('stage6.protocol_version_mismatch_live_reject');
+    expect(warnCalls).not.toContain('stage6.protocol_version_mismatch_shadow_fallback');
+  });
+
+  test('A.2 — wrong protocol_version in off mode: same — fully ignored', async () => {
+    process.env.SONNET_TOOL_CALLS = 'off';
+    const ws = connect(wss, 'user-A');
+    await sendFrame(ws, {
+      type: 'session_start',
+      sessionId: 'sess-off-wrong',
+      jobState: { certificateType: 'eicr' },
+      protocol_version: 'stage7-future',
+    });
+    expect(activeSessions.get('sess-off-wrong')).toBeDefined();
+    expect(ws.close).not.toHaveBeenCalled();
+  });
+
+  test('A.3 — correct protocol_version in off mode: no warn, session created', async () => {
+    process.env.SONNET_TOOL_CALLS = 'off';
+    const ws = connect(wss, 'user-A');
+    await sendFrame(ws, {
+      type: 'session_start',
+      sessionId: 'sess-off-correct',
+      jobState: { certificateType: 'eicr' },
+      protocol_version: 'stage6',
+    });
+    expect(activeSessions.get('sess-off-correct')).toBeDefined();
+    const warnCalls = mockLogger.warn.mock.calls.map(([msg]) => msg);
+    expect(warnCalls).not.toContain('stage6.protocol_version_mismatch_live_reject');
+  });
+});
+
+// -----------------------------------------------------------------------------
+// Group B — shadow mode (Phase 7 cutover)
+// -----------------------------------------------------------------------------
+
+describe('Group B — shadow mode falls back to legacy on mismatch', () => {
+  test('B.1 — missing protocol_version: warn + fallbackToLegacy=true, no close', async () => {
+    process.env.SONNET_TOOL_CALLS = 'shadow';
+    const ws = connect(wss, 'user-B');
+    await sendFrame(ws, {
+      type: 'session_start',
+      sessionId: 'sess-shadow-missing',
+      jobState: { certificateType: 'eicr' },
+    });
+    const entry = activeSessions.get('sess-shadow-missing');
+    expect(entry).toBeDefined();
+    expect(entry.fallbackToLegacy).toBe(true);
+    expect(entry.protocolVersion).toBeNull();
+    expect(ws.close).not.toHaveBeenCalled();
+    const warnCalls = mockLogger.warn.mock.calls.map(([msg]) => msg);
+    expect(warnCalls).toContain('stage6.protocol_version_mismatch_shadow_fallback');
+  });
+
+  test('B.2 — correct protocol_version: no warn, fallbackToLegacy=false', async () => {
+    process.env.SONNET_TOOL_CALLS = 'shadow';
+    const ws = connect(wss, 'user-B');
+    await sendFrame(ws, {
+      type: 'session_start',
+      sessionId: 'sess-shadow-ok',
+      jobState: { certificateType: 'eicr' },
+      protocol_version: 'stage6',
+    });
+    const entry = activeSessions.get('sess-shadow-ok');
+    expect(entry.fallbackToLegacy).toBe(false);
+    expect(entry.protocolVersion).toBe('stage6');
+    const warnCalls = mockLogger.warn.mock.calls.map(([msg]) => msg);
+    expect(warnCalls).not.toContain('stage6.protocol_version_mismatch_shadow_fallback');
+  });
+});
+
+// -----------------------------------------------------------------------------
+// Group C — live mode (Phase 7+2w post-cutover)
+// -----------------------------------------------------------------------------
+
+describe('Group C — live mode hard-rejects mismatched clients', () => {
+  test('C.1 — missing protocol_version: warn + error envelope + ws.close(1002), NO entry', async () => {
+    process.env.SONNET_TOOL_CALLS = 'live';
+    const ws = connect(wss, 'user-C');
+    await sendFrame(ws, {
+      type: 'session_start',
+      sessionId: 'sess-live-missing',
+      jobState: { certificateType: 'eicr' },
+    });
+    expect(activeSessions.get('sess-live-missing')).toBeUndefined();
+    expect(ws.close).toHaveBeenCalledWith(1002, 'protocol_version_mismatch');
+    const errorEnvelopes = ws._sent.filter((m) => m.type === 'error');
+    expect(errorEnvelopes.length).toBe(1);
+    expect(errorEnvelopes[0].message).toMatch(/protocol_version_mismatch/);
+    expect(errorEnvelopes[0].message).toMatch(/expected stage6/);
+    expect(errorEnvelopes[0].recoverable).toBe(false);
+    const warnCalls = mockLogger.warn.mock.calls.map(([msg]) => msg);
+    expect(warnCalls).toContain('stage6.protocol_version_mismatch_live_reject');
+  });
+
+  test('C.2 — wrong protocol_version: error message names the value', async () => {
+    process.env.SONNET_TOOL_CALLS = 'live';
+    const ws = connect(wss, 'user-C');
+    await sendFrame(ws, {
+      type: 'session_start',
+      sessionId: 'sess-live-wrong',
+      jobState: { certificateType: 'eicr' },
+      protocol_version: 'stage99-future',
+    });
+    expect(activeSessions.get('sess-live-wrong')).toBeUndefined();
+    expect(ws.close).toHaveBeenCalledWith(1002, 'protocol_version_mismatch');
+    const errorEnvelopes = ws._sent.filter((m) => m.type === 'error');
+    expect(errorEnvelopes[0].message).toMatch(/got stage99-future/);
+  });
+
+  test('C.3 — correct protocol_version: session created with metadata stamped', async () => {
+    process.env.SONNET_TOOL_CALLS = 'live';
+    const ws = connect(wss, 'user-C');
+    await sendFrame(ws, {
+      type: 'session_start',
+      sessionId: 'sess-live-ok',
+      jobState: { certificateType: 'eicr' },
+      protocol_version: 'stage6',
+    });
+    const entry = activeSessions.get('sess-live-ok');
+    expect(entry).toBeDefined();
+    expect(entry.protocolVersion).toBe('stage6');
+    expect(entry.fallbackToLegacy).toBe(false);
+    expect(ws.close).not.toHaveBeenCalled();
+    const warnCalls = mockLogger.warn.mock.calls.map(([msg]) => msg);
+    expect(warnCalls).not.toContain('stage6.protocol_version_mismatch_live_reject');
+  });
+});
+
+// -----------------------------------------------------------------------------
+// Group D — entry metadata stamping (regardless of mode)
+// -----------------------------------------------------------------------------
+
+describe('Group D — entry stamps protocolVersion from msg', () => {
+  test('D.1 — off mode + missing key: protocolVersion === null', async () => {
+    process.env.SONNET_TOOL_CALLS = 'off';
+    const ws = connect(wss, 'user-D');
+    await sendFrame(ws, {
+      type: 'session_start',
+      sessionId: 'sess-D1',
+      jobState: { certificateType: 'eicr' },
+    });
+    const entry = activeSessions.get('sess-D1');
+    expect(entry.protocolVersion).toBeNull();
+    expect(entry.fallbackToLegacy).toBe(false);
+  });
+
+  test('D.2 — off mode + correct key: protocolVersion === stage6', async () => {
+    process.env.SONNET_TOOL_CALLS = 'off';
+    const ws = connect(wss, 'user-D');
+    await sendFrame(ws, {
+      type: 'session_start',
+      sessionId: 'sess-D2',
+      jobState: { certificateType: 'eicr' },
+      protocol_version: 'stage6',
+    });
+    const entry = activeSessions.get('sess-D2');
+    expect(entry.protocolVersion).toBe('stage6');
+  });
+});

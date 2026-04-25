@@ -1298,6 +1298,68 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
     const { sessionId, jobId, jobState } = msg;
     if (!sessionId) throw new Error('sessionId required');
 
+    // Stage 6 STI-06 — protocol_version handshake.
+    //
+    // iOS clients on Stage 6 firmware advertise `protocol_version: "stage6"`
+    // (see ServerWebSocketService.sendSessionStart). Backend behaviour
+    // depends on SONNET_TOOL_CALLS mode:
+    //   - off (default through Phase 6): IGNORE protocol_version entirely.
+    //     Functional-equivalence rollback contract per REQUIREMENTS.md
+    //     STR-01 amendment of 2026-04-26.
+    //   - shadow (Phase 7 cutover, Plan 07-NN): mismatched clients fall
+    //     back to legacy emission only — log warn, set _fallbackToLegacy
+    //     flag the downstream tool-call branches consume.
+    //   - live (Phase 7+2w): mismatched clients hard-rejected with WS
+    //     close code 1002 (protocol error) so old iOS builds get a clean
+    //     "please update" failure instead of silently degrading.
+    //
+    // The protocolVersion field is also stamped onto the session entry
+    // (see activeSessions.set below) so downstream emitters can reference
+    // it without re-reading msg.
+    const toolCallsMode = process.env.SONNET_TOOL_CALLS || 'off';
+    const protocolVersion = msg.protocol_version || null;
+    if (toolCallsMode === 'live' && protocolVersion !== 'stage6') {
+      logger.warn('stage6.protocol_version_mismatch_live_reject', {
+        sessionId,
+        protocolVersion,
+        mode: toolCallsMode,
+      });
+      try {
+        ws.send(
+          JSON.stringify({
+            type: 'error',
+            message: `protocol_version_mismatch: expected stage6, got ${protocolVersion ?? 'none'}`,
+            recoverable: false,
+          })
+        );
+      } catch {
+        // ws.send can throw on a half-closed socket; the close below still
+        // fires deterministically.
+      }
+      try {
+        ws.close(1002, 'protocol_version_mismatch');
+      } catch {
+        // Best-effort close — if it throws the socket is already gone.
+      }
+      return;
+    }
+    let fallbackToLegacy = false;
+    if (toolCallsMode === 'shadow' && protocolVersion !== 'stage6') {
+      logger.warn('stage6.protocol_version_mismatch_shadow_fallback', {
+        sessionId,
+        protocolVersion,
+      });
+      fallbackToLegacy = true;
+      // Forward-looking: downstream tool-call branches (Phase 7 work) will
+      // consume `entry.fallbackToLegacy` to skip stage6 emission for this
+      // session even when SONNET_TOOL_CALLS=shadow is in force globally.
+      // For Phase 6 itself (where shadow doesn't yet emit stage6 wire
+      // events from the bundler — see stage6-event-bundler.js header
+      // comment: "iOS still receives one extraction message per turn"),
+      // this flag is logged-only; Phase 7 plumbs the real branch.
+    }
+    // off mode: protocolVersion ignored. No log noise — by-design no-op.
+
     // Reuse existing session if reconnecting (within 30s timeout or old ws still open)
     if (activeSessions.has(sessionId)) {
       const existing = activeSessions.get(sessionId);
@@ -1582,6 +1644,13 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
       jobId,
       jobAddress,
       certType,
+      // Stage 6 STI-06 — handshake artefacts. Both fields are forward-
+      // looking metadata for Phase 7 (cutover) — Phase 6 only logs them.
+      // protocolVersion captures what iOS advertised; fallbackToLegacy
+      // is true when shadow-mode policy forces this session onto the
+      // legacy emission path despite global SONNET_TOOL_CALLS=shadow.
+      protocolVersion,
+      fallbackToLegacy,
       lastRegexResults: [],
       isExtracting: false,
       pendingTranscripts: [],
