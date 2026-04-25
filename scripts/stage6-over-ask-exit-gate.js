@@ -158,6 +158,7 @@ import {
 import { createAskBudget } from '../src/extraction/stage6-ask-budget.js';
 import { createRestrainedMode } from '../src/extraction/stage6-restrained-mode.js';
 import { createFilledSlotsShadowLogger } from '../src/extraction/stage6-filled-slots-shadow.js';
+import { validateAskUser } from '../src/extraction/stage6-dispatch-validation.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -234,6 +235,49 @@ function loadFixtures(dir) {
     out.push({ filename: name, fullPath, fixture: parsed });
   }
   return out;
+}
+
+/**
+ * Plan 05-07 r1-#4 — fixture schema validation gate.
+ *
+ * Every loaded Phase 5 over-ask fixture MUST carry ask_user_calls[].call.input
+ * shapes that pass the production validateAskUser. The minimal mock inner
+ * dispatcher in this harness does NOT run the validator (deliberately —
+ * see module header), so without this gate an invalid fixture would replay
+ * through the wrapper composition unchallenged and silently corrupt the
+ * metric. Real Plan 03-05 dispatch rejects the same shapes at the validator
+ * gate before any inner work runs; the harness mirrors that discipline.
+ *
+ * Skips Phase 4 dual-SSE fixtures (_fixture_shape !== 'phase5-over-ask')
+ * because those fixtures don't carry ask_user_calls[] — they contribute
+ * zero to the aggregate by design (Plan 05-06 truth #6).
+ *
+ * Throws on first invalid call. The CLI's catch block maps the throw to
+ * process.exit(2); the message format includes the fixture filename and
+ * the failed call index so an operator can find the offending fixture in
+ * one click.
+ *
+ * @param {Array<{filename:string, fullPath:string, fixture:object}>} loaded
+ * @throws {Error} on first invalid ask_user input
+ */
+function validateFixtureInputs(loaded) {
+  for (const { filename, fixture } of loaded) {
+    // Phase 4 dual-SSE fixtures never carry ask_user_calls[]; skip them.
+    // The harness already treats them as zero-contribution via applyDefaults
+    // → ask_user_calls = [] and the per-fixture replay loop iterates an
+    // empty array.
+    if (fixture._fixture_shape !== 'phase5-over-ask') continue;
+    const calls = Array.isArray(fixture.ask_user_calls) ? fixture.ask_user_calls : [];
+    for (let i = 0; i < calls.length; i += 1) {
+      const input = calls[i]?.call?.input;
+      const result = validateAskUser(input);
+      if (result !== null) {
+        throw new Error(
+          `fixture invalid: ${filename}: ask_user_calls[${i}].call.input → ${result.code}:${result.field ?? '<no field>'}`
+        );
+      }
+    }
+  }
 }
 
 /**
@@ -545,6 +589,11 @@ export async function runHarness({ fixturesDir, smoke = false } = {}) {
       );
     }
   }
+
+  // Plan 05-07 r1-#4 — schema-validate every Phase 5 fixture's ask_user
+  // inputs against the production validateAskUser before any replay starts.
+  // Throws on first invalid input; the CLI catch maps to exit code 2.
+  validateFixtureInputs(loaded);
 
   const allObserved = [];
   const smokeMismatches = [];
