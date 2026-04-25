@@ -12,6 +12,7 @@ import {
   Search,
   Settings,
   Shield,
+  SlidersHorizontal,
   UserCheck,
 } from 'lucide-react';
 import { api } from '@/lib/api-client';
@@ -157,7 +158,13 @@ export default function DashboardPage() {
     const filtered = query.trim()
       ? list.filter((j) => (j.address ?? '').toLowerCase().includes(query.trim().toLowerCase()))
       : list;
-    return filtered.slice(0, 8);
+    // Show every job in the (scrollable) container below — iOS
+    // `JobListView` shows a full scrollable list and inspectors with
+    // ≥10 active jobs can't reach older ones if the dashboard
+    // hard-caps at 8. The cap was a temporary safeguard from before
+    // the list got a max-height + overflow-y-auto wrapper; that
+    // wrapper is now applied around the rendered list.
+    return filtered;
   }, [jobs, query]);
 
   async function createJob(kind: 'EICR' | 'EIC') {
@@ -268,7 +275,12 @@ export default function DashboardPage() {
               : 'No certificates yet — start an EICR or EIC above.'}
           </div>
         ) : (
-          <div className="flex flex-col gap-2">
+          <div
+            className="flex max-h-[60vh] flex-col gap-2 overflow-y-auto pr-1"
+            // ↑ scroll container so every job is reachable. Cap at
+            // 60vh to keep the Setup & Tools tiles visible below
+            // without forcing two scroll regions on the same page.
+          >
             {recent.map((j) => (
               <JobRow
                 key={j.id}
@@ -302,6 +314,14 @@ export default function DashboardPage() {
           <SetupTile icon={UserCheck} label="Staff" href="/settings/staff" />
           <SetupTile icon={Settings} label="Settings" href="/settings" />
           {/*
+           * Defaults tile — iOS `DashboardView.swift:L593-L595` parity.
+           * Was previously hidden (the comment claimed the page was
+           * "Phase 6 work"), but `/settings/defaults` ships on main
+           * already, so the dashboard now surfaces the same shortcut
+           * iOS does instead of forcing a Settings → Defaults two-tap.
+           */}
+          <SetupTile icon={SlidersHorizontal} label="Defaults" href="/settings/defaults" />
+          {/*
            * Phase 3 — Tour tile. Two flavours:
            *   - While the tour is live, we show "Stop tour" so the
            *     user can always bail without hunting for the floating
@@ -310,8 +330,6 @@ export default function DashboardPage() {
            *     point. The tile appears regardless of the `seen` flag
            *     so returning users can re-run on demand (matches the
            *     iOS "Tour" tile which is always visible).
-           * Defaults tile (iOS `DashboardView.swift:L593-L595`) is
-           * intentionally hidden — the Defaults page is Phase 6 work.
            */}
           <SetupTile
             icon={Compass}
