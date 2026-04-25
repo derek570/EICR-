@@ -262,3 +262,120 @@ test("Plan 08-01 SC #2 — ask_user outcomes histogram covers every frozen enum 
   assert.equal(askUser.outcomes.dispatcher_error, 0);
   assert.equal(askUser.outcomes.prompt_leak_blocked, 0);
 });
+
+// ─────────────────────────────────────────────────────────────────
+// Phase 8 — Plan 08-02 r1-#3: Unknown ask_user outcomes surfaced explicitly.
+//
+// Codex r1-#3 (MAJOR) raised that `scripts/analyze-session.js:992` silently
+// drops `stage6.ask_user.answer_outcome` values that aren't in the frozen
+// `ASK_USER_ANSWER_OUTCOMES` enum. Enum drift / instrumentation failures
+// become invisible — a dispatcher that started emitting a new outcome
+// (e.g. via a backend deploy that adds the key without coordinating with
+// the analyzer) just disappears from the histogram with zero diagnostic.
+//
+// Fix: surface unknown outcomes in TWO places —
+//   1. `analysis.tool_call_traffic.ask_user.unknown_outcome_count` +
+//      `unknown_outcomes[]` (per-distinct-value entries with counts).
+//   2. `analysis.warnings[]` entry per distinct unknown outcome value
+//      (same surface as Plan 08-01 SC #1's malformed_event warnings).
+//
+// The frozen-enum histogram (`outcomes`) keeps its stable shape — unknowns
+// go to the side surface, NOT into the main histogram. CloudWatch
+// dashboards that split by the histogram dimension are unaffected.
+// ─────────────────────────────────────────────────────────────────
+
+test("Plan 08-02 r1-#3 — unknown outcomes surface as unknown_outcome_count + unknown_outcomes[]", () => {
+  const a = runAnalyzer("unknown-outcome-session");
+  const askUser = a.tool_call_traffic.ask_user;
+
+  // 4 stage6.ask_user rows: 2 known (answered, gated), 2 unknown (foobar, barbaz).
+  assert.equal(askUser.total, 4);
+
+  // Total unknown count surfaced as a scalar.
+  assert.equal(askUser.unknown_outcome_count, 2);
+
+  // Per-distinct-value entries.
+  assert.ok(Array.isArray(askUser.unknown_outcomes), "unknown_outcomes must be an array");
+  assert.equal(askUser.unknown_outcomes.length, 2);
+
+  const byValue = Object.fromEntries(askUser.unknown_outcomes.map((u) => [u.value, u.count]));
+  assert.equal(byValue.foobar, 1, "foobar should appear with count 1");
+  assert.equal(byValue.barbaz, 1, "barbaz should appear with count 1");
+});
+
+test("Plan 08-02 r1-#3 — unknown outcomes also surface as warnings entries", () => {
+  const a = runAnalyzer("unknown-outcome-session");
+
+  assert.ok(Array.isArray(a.warnings), "analysis.warnings must be an array");
+
+  // Each distinct unknown outcome gets its own warning entry.
+  const unknownOutcomeWarnings = a.warnings.filter(
+    (w) => w.type === "unknown_ask_user_outcome",
+  );
+  assert.equal(
+    unknownOutcomeWarnings.length,
+    2,
+    "expected 2 warnings (one per distinct unknown outcome)",
+  );
+
+  const byValue = Object.fromEntries(
+    unknownOutcomeWarnings.map((w) => [w.value, w.count]),
+  );
+  assert.equal(byValue.foobar, 1);
+  assert.equal(byValue.barbaz, 1);
+});
+
+test("Plan 08-02 r1-#3 — known outcomes still bucket correctly + don't appear in unknown list", () => {
+  const a = runAnalyzer("unknown-outcome-session");
+  const askUser = a.tool_call_traffic.ask_user;
+
+  // Known outcomes go into the frozen-enum histogram as before.
+  assert.equal(askUser.outcomes.answered, 1);
+  assert.equal(askUser.outcomes.gated, 1);
+
+  // Known outcome values MUST NOT appear in unknown_outcomes.
+  const unknownValues = askUser.unknown_outcomes.map((u) => u.value);
+  assert.ok(
+    !unknownValues.includes("answered"),
+    "answered is a known enum member; must NOT appear in unknown_outcomes",
+  );
+  assert.ok(
+    !unknownValues.includes("gated"),
+    "gated is a known enum member; must NOT appear in unknown_outcomes",
+  );
+});
+
+test("Plan 08-02 r1-#3 — frozen-enum histogram shape preserved (no `foobar` key)", () => {
+  // Critical: the `outcomes` object MUST keep exactly the
+  // ASK_USER_ANSWER_OUTCOMES keys. Adding `foobar`/`barbaz` as keys
+  // would break CloudWatch dashboards that group by the dimension —
+  // they'd suddenly see new dimension values for one session and
+  // not others. Unknown values go to the side surface only.
+  const a = runAnalyzer("unknown-outcome-session");
+  const askUser = a.tool_call_traffic.ask_user;
+
+  assert.ok(!("foobar" in askUser.outcomes), "foobar must NOT be a histogram key");
+  assert.ok(!("barbaz" in askUser.outcomes), "barbaz must NOT be a histogram key");
+
+  // Every frozen-enum key STILL present.
+  for (const outcome of ASK_USER_ANSWER_OUTCOMES) {
+    assert.ok(outcome in askUser.outcomes, `outcome key missing: ${outcome}`);
+  }
+});
+
+test("Plan 08-02 r1-#3 — sessions WITHOUT unknowns produce empty unknown_outcomes[] + 0 count", () => {
+  // Regression check: re-run the existing tool-call-only-session fixture
+  // (which has only known outcomes). The new fields must be present
+  // (stable shape) but report zero unknowns.
+  const a = runAnalyzer("tool-call-only-session");
+  const askUser = a.tool_call_traffic.ask_user;
+
+  assert.equal(askUser.unknown_outcome_count, 0);
+  assert.deepEqual(askUser.unknown_outcomes, []);
+
+  // No `unknown_ask_user_outcome` warnings either.
+  const unknownOutcomeWarnings = (a.warnings || []).filter(
+    (w) => w.type === "unknown_ask_user_outcome",
+  );
+  assert.equal(unknownOutcomeWarnings.length, 0);
+});
