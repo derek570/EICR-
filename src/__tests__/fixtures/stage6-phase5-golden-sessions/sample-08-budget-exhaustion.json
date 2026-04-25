@@ -1,0 +1,73 @@
+{
+  "_doc": "Phase 5 Plan 05-06 — per-key ask-budget exhaustion canary. Sonnet asks about (ze, 0) three times across non-consecutive turns (1, 2, 5) — this DELIBERATELY does NOT trigger restrained mode (3 asks but spread over a >5-turn window so the rolling-window state machine sees only 2 in any 5-turn slice; the budget is keyed independently on (field, circuit) so it still trips at the 3rd attempt). The 1st and 2nd asks fire (counts 0→1, 1→2 per stage6-ask-budget Group 2 lock); the 3rd MUST short-circuit with answer_outcome='ask_budget_exhausted'. Per Plan 05-06 design: SMOKE-ONLY (gate_fixture:false) — the budget-exhausted outcome is itself benign for the aggregate gate (no activation), but the ask-count of 2 on this fixture would skew the head of the distribution; we keep it out so the gate population mirrors expected prod traffic.",
+  "_requirement": "STA-06 + STB-04 — locks the per-key budget through the gate wrapper end-to-end. Pitfall 4: budget is incremented ONLY after a successful inner dispatch.",
+  "_fixture_shape": "phase5-over-ask",
+  "session": {
+    "jobId": "golden-08",
+    "certificateType": "EICR"
+  },
+  "transcript_summary": "5-turn scenario. Turns 1, 2, 5 all involve the model asking 'which circuit was Ze?' — same (field=ze, circuit=null) key. Window between asks is wide enough not to trigger restrained mode but identical enough to exhaust per-key budget at the 3rd attempt.",
+  "ask_user_calls": [
+    {
+      "turnId": "golden-08-turn-1",
+      "synthetic_time_ms": 0,
+      "call": {
+        "id": "toolu_08_a",
+        "name": "ask_user",
+        "input": {
+          "question": "Which circuit was Ze for?",
+          "reason": "ambiguous_circuit",
+          "context_field": "none",
+          "context_circuit": null,
+          "expected_answer_shape": "free_text"
+        }
+      },
+      "inner_outcome": { "answered": true, "user_text": "circuit one" }
+    },
+    {
+      "turnId": "golden-08-turn-2",
+      "synthetic_time_ms": 100,
+      "call": {
+        "id": "toolu_08_b",
+        "name": "ask_user",
+        "input": {
+          "question": "Sorry — which Ze did you mean?",
+          "reason": "ambiguous_circuit",
+          "context_field": "none",
+          "context_circuit": null,
+          "expected_answer_shape": "free_text"
+        }
+      },
+      "inner_outcome": { "answered": true, "user_text": "circuit two" }
+    },
+    {
+      "turnId": "golden-08-turn-5",
+      "synthetic_time_ms": 400,
+      "call": {
+        "id": "toolu_08_c",
+        "name": "ask_user",
+        "input": {
+          "question": "Could you clarify the Ze circuit again?",
+          "reason": "ambiguous_circuit",
+          "context_field": "none",
+          "context_circuit": null,
+          "expected_answer_shape": "free_text"
+        }
+      },
+      "inner_outcome": { "answered": true, "user_text": "circuit three" },
+      "expected_short_circuit_reason": "ask_budget_exhausted"
+    }
+  ],
+  "expected_ask_user_count": 2,
+  "expected_restrained_activations": 0,
+  "expected_outcome_distribution": {
+    "answered": 2,
+    "gated": 0,
+    "ask_budget_exhausted": 1,
+    "restrained_mode": 0,
+    "user_moved_on": 0,
+    "timeout": 0
+  },
+  "expected_filled_slots_shadow_logs": 0,
+  "gate_fixture": false
+}

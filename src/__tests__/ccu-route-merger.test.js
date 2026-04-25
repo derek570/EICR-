@@ -207,18 +207,29 @@ function makeSSCircuit(circuit_number, overrides = {}) {
 
 describe('slotsToCircuits', () => {
   test('1. returns null for empty slots array', () => {
-    expect(slotsToCircuits({ slots: [], mainSwitchSide: 'left', singleShotCircuits: [] })).toBeNull();
+    expect(
+      slotsToCircuits({ slots: [], mainSwitchSide: 'left', singleShotCircuits: [] })
+    ).toBeNull();
   });
 
   test('1b. returns null for undefined slots', () => {
-    expect(slotsToCircuits({ slots: undefined, mainSwitchSide: 'left', singleShotCircuits: [] })).toBeNull();
+    expect(
+      slotsToCircuits({ slots: undefined, mainSwitchSide: 'left', singleShotCircuits: [] })
+    ).toBeNull();
   });
 
   test('2. modern board, main switch LEFT — 4 slots in physical order', () => {
     const slots = [
       makeSlot({ classification: 'mcb', tripCurve: 'B', ratingAmps: 32, confidence: 0.9 }),
       makeSlot({ classification: 'mcb', tripCurve: 'C', ratingAmps: 16, confidence: 0.9 }),
-      makeSlot({ classification: 'rcbo', tripCurve: 'B', ratingAmps: 32, sensitivity: 30, rcdWaveformType: 'A', confidence: 0.9 }),
+      makeSlot({
+        classification: 'rcbo',
+        tripCurve: 'B',
+        ratingAmps: 32,
+        sensitivity: 30,
+        rcdWaveformType: 'A',
+        confidence: 0.9,
+      }),
       makeSlot({ classification: 'blank', confidence: 0.95 }),
     ];
 
@@ -436,7 +447,13 @@ describe('slotsToCircuits', () => {
 
   test('7. rewireable slot → ocpd_type="Rew", ocpd_bs_en="BS 3036", ocpd_breaking_capacity_ka=null', () => {
     const slots = [
-      makeSlot({ classification: 'rewireable', tripCurve: null, ratingAmps: 30, bsEn: null, confidence: 0.9 }),
+      makeSlot({
+        classification: 'rewireable',
+        tripCurve: null,
+        ratingAmps: 30,
+        bsEn: null,
+        confidence: 0.9,
+      }),
     ];
 
     const circuits = slotsToCircuits({ slots, mainSwitchSide: 'left', singleShotCircuits: [] });
@@ -450,7 +467,13 @@ describe('slotsToCircuits', () => {
 
   test('8. cartridge slot → ocpd_type="HRC", ocpd_bs_en="BS 1361"', () => {
     const slots = [
-      makeSlot({ classification: 'cartridge', tripCurve: null, ratingAmps: 30, bsEn: null, confidence: 0.9 }),
+      makeSlot({
+        classification: 'cartridge',
+        tripCurve: null,
+        ratingAmps: 30,
+        bsEn: null,
+        confidence: 0.9,
+      }),
     ];
 
     const circuits = slotsToCircuits({ slots, mainSwitchSide: 'left', singleShotCircuits: [] });
@@ -698,7 +721,11 @@ describe('classifyBoardTechnology', () => {
     };
 
     const fakeAnthropic = makeFakeAnthropic(fakeResponse);
-    const result = await classifyBoardTechnology('base64data==', fakeAnthropic, 'claude-sonnet-4-6');
+    const result = await classifyBoardTechnology(
+      'base64data==',
+      fakeAnthropic,
+      'claude-sonnet-4-6'
+    );
 
     expect(result.boardTechnology).toBe('modern');
     expect(result.mainSwitchPosition).toBe('left');
@@ -1166,9 +1193,7 @@ describe('analyze-ccu route — Stage 3 || Stage 4 parallel dispatch', () => {
     // the classifier resolved. If single-shot was awaiting classifier
     // completion, the order would be classifier-start → classifier-resolve
     // → single-shot-start.
-    const classifierResolveIdx = callOrder.findIndex(
-      (c) => c.name === 'classifier-resolve'
-    );
+    const classifierResolveIdx = callOrder.findIndex((c) => c.name === 'classifier-resolve');
     const singleShotStartIdx = callOrder.findIndex((c) => c.name === 'single-shot-start');
     expect(classifierResolveIdx).toBeGreaterThanOrEqual(0);
     expect(singleShotStartIdx).toBeGreaterThanOrEqual(0);

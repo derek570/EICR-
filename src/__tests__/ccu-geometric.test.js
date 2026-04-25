@@ -404,7 +404,7 @@ describe('extractCcuGeometric', () => {
       // main_switch_width=400 on 0-1000 → moduleWidth=200 → count=round(800/200)=4
       .mockResolvedValueOnce(
         fakeVlmResponse({
-          main_switch_center_x: 1000,  // outside rail bbox — no clamp
+          main_switch_center_x: 1000, // outside rail bbox — no clamp
           main_switch_width: 400,
           module_count_direct: 4,
         })
@@ -463,7 +463,7 @@ describe('extractCcuGeometric', () => {
       )
       .mockResolvedValueOnce(
         fakeVlmResponse({
-          main_switch_center_x: 1000,  // outside rail bbox — no clamp
+          main_switch_center_x: 1000, // outside rail bbox — no clamp
           main_switch_width: 400,
           module_count_direct: 4,
         })
@@ -764,7 +764,7 @@ describe('prepareModernGeometry', () => {
       )
       .mockResolvedValueOnce(
         fakeVlmResponse({
-          main_switch_center_x: 1000,  // outside rail bbox — no clamp
+          main_switch_center_x: 1000, // outside rail bbox — no clamp
           main_switch_width: 400,
           module_count_direct: 4,
         })
@@ -922,7 +922,7 @@ describe('classifyModernSlots', () => {
       )
       .mockResolvedValueOnce(
         fakeVlmResponse({
-          main_switch_center_x: 1000,  // outside rail bbox — no clamp
+          main_switch_center_x: 1000, // outside rail bbox — no clamp
           main_switch_width: 400,
           module_count_direct: 4,
         })
@@ -999,7 +999,7 @@ describe('prepare + classify → extractCcuGeometric equivalence', () => {
       )
       .mockResolvedValueOnce(
         fakeVlmResponse({
-          main_switch_center_x: 1000,  // outside rail bbox — no clamp
+          main_switch_center_x: 1000, // outside rail bbox — no clamp
           main_switch_width: 400,
           module_count_direct: 4,
         })
@@ -1024,7 +1024,7 @@ describe('prepare + classify → extractCcuGeometric equivalence', () => {
       )
       .mockResolvedValueOnce(
         fakeVlmResponse({
-          main_switch_center_x: 1000,  // outside rail bbox — no clamp
+          main_switch_center_x: 1000, // outside rail bbox — no clamp
           main_switch_width: 400,
           module_count_direct: 4,
         })

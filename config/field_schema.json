@@ -24,20 +24,20 @@
     "wiring_type": {
       "label": "Wiring Type",
       "type": "select",
-      "options": ["A", "B", "C", "D"],
+      "options": ["A", "B", "C", "D", "E", "F", "G", "H", "O"],
       "default": "A",
-      "description": "Type of wiring installation",
-      "ai_guidance": "Usually 'A' for domestic (enclosed in conduit in thermally insulating wall). Only use B/C/D if specifically mentioned.",
+      "description": "Type of wiring installation per IET model EICR Schedule of Test Results",
+      "ai_guidance": "IET model-form key (9 codes). A = PVC/PVC T&E (incl. XLPE T&E). B = PVC in metallic conduit. C = PVC in non-metallic conduit. D = PVC in metallic trunking. E = PVC in non-metallic trunking. F = PVC/SWA. G = XLPE/SWA. H = MICC / mineral / pyro. O = Other (FP200 fire-rated LSF, flex, SY/YY/CY). Default 'A' for domestic T&E. Map spoken descriptions: 'mineral'/'MICC'/'pyro'→H; 'SWA'→F (G if XLPE); 'FP200'→O.",
       "pdf_column": "Type of wiring",
       "group": "Circuit Details"
     },
     "ref_method": {
       "label": "Reference Method",
       "type": "select",
-      "options": ["A", "B", "C", "D"],
+      "options": ["A", "B", "C", "D", "E", "F", "G", "100", "101", "102", "103"],
       "default": "A",
-      "description": "Cable sizing reference method per BS7671",
-      "ai_guidance": "Reference method for cable current-carrying capacity. Usually 'A' or 'C' for domestic.",
+      "description": "Cable sizing reference method per BS 7671 Appendix 4",
+      "ai_guidance": "BS 7671 reference method. A–G are in-air methods; 100–103 are buried-cable methods (garden feeds, outbuildings, EV-charger trenches). Usually 'A' or 'C' for domestic interior, '100' range for buried runs.",
       "pdf_column": "Ref method",
       "group": "Circuit Details"
     },

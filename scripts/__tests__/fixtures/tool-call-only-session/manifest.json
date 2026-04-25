@@ -1,0 +1,10 @@
+{
+  "sessionId": "tool-call-only-001",
+  "address": "Tool-Call Only Session",
+  "date": "2026-04-23",
+  "circuitCount": 0,
+  "recordingDurationMin": "5.0",
+  "deepgramStreamingMinutes": 5.0,
+  "sonnetCostUSD": "0.50",
+  "durationSeconds": 300
+}

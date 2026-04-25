@@ -1,0 +1,40 @@
+{
+  "_doc": "Phase 5 Plan 05-06 — Phase 3 user_moved_on regression canary. The model emits ask_user; the user's next utterance overtakes the ask with unrelated content (a brand-new reading rather than answering the question). The Phase 3 dispatcher resolves with answer_outcome='user_moved_on' (a real-fire reason — the budget MUST still increment per stage6-ask-gate-wrapper.js:WRAPPER_SHORT_CIRCUIT_REASONS). Plan 05-06 verifies that the gated path PRESERVES this Phase 3 behaviour — the wrapper does NOT swallow user_moved_on into 'gated' or 'session_terminated'. Plan 05-07 r1-#1 corrected the harness's ask_user_count semantic — user_moved_on now counts as a real fire (the ask was emitted; the user's response just didn't engage). expected_ask_user_count=1 (was 0 pre-r1-#1).",
+  "_requirement": "STB-05 — no existing guard weakened: Phase 3's user_moved_on lifecycle must survive composition with the Phase 5 gates. Pitfall 4 carry-over: a real-fire (non-wrapper-short-circuit) outcome consumes a budget slot.",
+  "_fixture_shape": "phase5-over-ask",
+  "session": {
+    "jobId": "golden-11",
+    "certificateType": "EICR"
+  },
+  "transcript_summary": "Model asks 'which circuit was Ze for?' on turn 2; user's turn-3 utterance is unrelated ('R1+R2 on circuit 4 is point one one'). Ask resolves with user_moved_on.",
+  "ask_user_calls": [
+    {
+      "turnId": "golden-11-turn-2",
+      "synthetic_time_ms": 0,
+      "call": {
+        "id": "toolu_11_a",
+        "name": "ask_user",
+        "input": {
+          "question": "Which circuit was Ze for?",
+          "reason": "ambiguous_circuit",
+          "context_field": "none",
+          "context_circuit": null,
+          "expected_answer_shape": "free_text"
+        }
+      },
+      "inner_outcome": { "answered": false, "reason": "user_moved_on" }
+    }
+  ],
+  "expected_ask_user_count": 1,
+  "expected_restrained_activations": 0,
+  "expected_outcome_distribution": {
+    "answered": 0,
+    "gated": 0,
+    "ask_budget_exhausted": 0,
+    "restrained_mode": 0,
+    "user_moved_on": 1,
+    "timeout": 0
+  },
+  "expected_filled_slots_shadow_logs": 0,
+  "gate_fixture": true
+}

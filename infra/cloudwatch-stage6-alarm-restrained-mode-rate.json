@@ -1,0 +1,14 @@
+{
+  "AlarmName": "stage6-restrained-mode-rate-high",
+  "AlarmDescription": "Stage 6 restrained-mode activation rate exceeded 5% of sessions — Sonnet is asking too many questions; review prompt anti-over-ask language and per-key ask budget.",
+  "ActionsEnabled": true,
+  "MetricName": "stage6.restrained_mode_rate",
+  "Namespace": "EICR/Stage6",
+  "Statistic": "Average",
+  "Period": 300,
+  "EvaluationPeriods": 3,
+  "DatapointsToAlarm": 3,
+  "Threshold": 0.05,
+  "ComparisonOperator": "GreaterThanThreshold",
+  "TreatMissingData": "notBreaching"
+}

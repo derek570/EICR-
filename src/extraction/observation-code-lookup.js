@@ -17,7 +17,7 @@
 
 import logger from '../logger.js';
 
-const VALID_CODES = new Set(['C1', 'C2', 'C3', 'FI']);
+export const VALID_CODES = new Set(['C1', 'C2', 'C3', 'FI']);
 
 /**
  * Decide whether an observation needs refinement. Cheap gate so we don't

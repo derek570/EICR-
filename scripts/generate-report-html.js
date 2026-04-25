@@ -25,6 +25,25 @@ const summary = JSON.parse(fs.readFileSync(summaryPath, "utf8"));
 
 const USD_TO_GBP = 0.79;
 
+// Plan 08-04 r3-#1 (MAJOR): every render site that interpolates a
+// user-derived string into HTML output MUST flow through this helper.
+// The contract is locked by `scripts/__tests__/generate-report-html.test.mjs`
+// which spawns the renderer with adversarial payloads in every
+// user-data slot and asserts no live `<script>` element survives.
+//
+// Defence-in-depth pair: scripts/analyze-session.js's safeDisplayValue()
+// is the analyzer-side gate (sanitises log values BEFORE they enter
+// analysis.json); this escapeHtml() is the renderer-side gate
+// (escapes HTML-significant chars at every render site). Both gates
+// must hold for the contract to be safe.
+//
+// `String(str || "")` coerces falsy values (0, false, "", null,
+// undefined) to the empty string — acceptable because the goal is
+// "safe render", and empty IS safe. Out of scope for r3: a deliberately-
+// poisoned numeric 0 field would render as empty rather than "0", but
+// no current renderer slot accepts numeric values that ought to render
+// as visible text (numbers are coerced via `.toFixed`/`formatTokens`
+// before reaching template literals).
 function escapeHtml(str) {
   return String(str || "")
     .replace(/&/g, "&amp;")
@@ -382,10 +401,22 @@ function buildMissedValues() {
       }
     }
 
+    // Plan 08-04 r3-#1 (MAJOR): both `${ef.reason}` (class attribute)
+    // and `${reason}` (text content via `reasonLabels[ef.reason] ||
+    // ef.reason || "Unknown"`) carry user-derived strings. Pre-fix
+    // they were interpolated raw — an adversarial `ef.reason` of
+    // `<script>alert(1)</script>` would render as a live script tag
+    // here. Both slots now flow through escapeHtml(); the analyzer
+    // side (safeDisplayValue, commit 44b95f1) is the first gate, this
+    // is the second. `transcriptRef` is a literal `&mdash;` or a
+    // generated `<a href="#" onclick="scrollToUtterance(${i})">${time}</a>`
+    // where `${i}` is the loop index (number) and `${time}` is a
+    // formatted en-GB time string from `toLocaleTimeString` — both
+    // safe by construction.
     html += `
       <div class="missed-row">
         <span class="missed-col-field">${escapeHtml(ef.key)}</span>
-        <span class="missed-col-reason missed-reason-${ef.reason || 'unknown'}">${reason}</span>
+        <span class="missed-col-reason missed-reason-${escapeHtml(ef.reason || 'unknown')}">${escapeHtml(reason)}</span>
         <span class="missed-col-ref">${transcriptRef}</span>
       </div>`;
   }
@@ -498,6 +529,220 @@ function buildVadAnalysis() {
   }
 
   return html;
+}
+
+// ── Section 6b: Tool-Call Traffic (Phase 8 Plan 08-01 SC #2) ──
+//
+// Renders the tool_call_traffic section produced by analyze-session.js.
+// Two surfaces:
+//   - Tool histogram: per-tool count + median duration_ms + validation
+//     error count. Sorted by count descending.
+//   - ask_user outcomes: bar chart over the 15 frozen
+//     ASK_USER_ANSWER_OUTCOMES enum values. Outcomes with count 0 still
+//     render (as zero-height bars) so the dashboard shape is stable
+//     across sessions and the reviewer can visually scan for "did
+//     anything new appear?".
+//
+// Renders an empty-state card when the session has no tool-call rows
+// (legacy / pre-Phase-7 sessions). The empty state still confirms the
+// section exists so the operator knows the analyzer parsed the section
+// (vs. analysis.json missing the field).
+function buildToolCallTraffic() {
+  const tct = summary.tool_call_traffic;
+  if (!tct || !tct.enabled) {
+    return `<div class="card"><p class="muted">No tool-call traffic in this session (legacy shape only).</p></div>`;
+  }
+
+  const tools = Array.isArray(tct.tools) ? tct.tools : [];
+  const askUser = tct.ask_user || { total: 0, outcomes: {} };
+  const outcomes = askUser.outcomes || {};
+
+  const hasAny = tools.length > 0 || askUser.total > 0;
+  if (!hasAny) {
+    return `<div class="card"><p class="muted">Session was tool-call enabled but no tool-call rows logged.</p></div>`;
+  }
+
+  // Tool histogram table
+  const toolRows = tools
+    .map((t) => `
+      <tr>
+        <td>${escapeHtml(t.name)}</td>
+        <td style="text-align:right;">${t.count}</td>
+        <td style="text-align:right;">${t.median_duration_ms} ms</td>
+        <td style="text-align:right;color:${t.validation_error_count > 0 ? "#ef4444" : "#9ca3af"};">${t.validation_error_count}</td>
+      </tr>`)
+    .join("");
+
+  const toolTable = tools.length === 0
+    ? `<p class="muted">No tool calls in this session.</p>`
+    : `
+      <table style="width:100%;border-collapse:collapse;font-size:13px;color:#ccc;">
+        <thead>
+          <tr style="border-bottom:1px solid #2a2a4a;color:#aaa;">
+            <th style="text-align:left;padding:6px 4px;">Tool</th>
+            <th style="text-align:right;padding:6px 4px;">Count</th>
+            <th style="text-align:right;padding:6px 4px;">Median</th>
+            <th style="text-align:right;padding:6px 4px;">Errors</th>
+          </tr>
+        </thead>
+        <tbody>${toolRows}</tbody>
+      </table>`;
+
+  // ask_user outcomes histogram — render as horizontal bars
+  // Find max for normalising bar widths (1 if all zero so divisor is safe)
+  const maxOutcome = Math.max(1, ...Object.values(outcomes));
+  const outcomeKeys = Object.keys(outcomes).sort();
+  const outcomeBars = outcomeKeys
+    .map((key) => {
+      const count = outcomes[key] || 0;
+      const widthPct = (count / maxOutcome) * 100;
+      const isZero = count === 0;
+      // Outcome category colouring — answered=green, gated/restrained=amber,
+      // dispatcher_error=red, everything else=neutral. Visual cue lets the
+      // reviewer spot a regression at a glance.
+      const colour = key === "answered" ? "#22c55e"
+        : key === "gated" || key === "restrained_mode" || key === "ask_budget_exhausted" ? "#eab308"
+        : key === "dispatcher_error" || key === "validation_error" || key === "prompt_leak_blocked" ? "#ef4444"
+        : "#6b7280";
+      return `
+        <div style="display:flex;align-items:center;gap:8px;margin:4px 0;font-size:12px;">
+          <span style="width:200px;color:${isZero ? "#666" : "#ccc"};font-family:'SF Mono',monospace;">${escapeHtml(key)}</span>
+          <div style="flex:1;background:#1a1a2e;border-radius:3px;height:14px;position:relative;">
+            <div style="width:${widthPct}%;background:${colour};height:100%;border-radius:3px;${isZero ? "opacity:0.2;" : ""}"></div>
+          </div>
+          <span style="width:32px;text-align:right;color:${isZero ? "#666" : "#fff"};">${count}</span>
+        </div>`;
+    })
+    .join("");
+
+  const askUserBlock = askUser.total === 0
+    ? `<p class="muted" style="margin-top:14px;">No ask_user calls in this session.</p>`
+    : `
+      <div style="margin-top:14px;">
+        <div style="font-size:13px;font-weight:700;color:#a855f7;margin-bottom:8px;">
+          ask_user outcomes (${askUser.total} total)
+        </div>
+        ${outcomeBars}
+      </div>`;
+
+  // ── Plan 08-05 r4-#1 (MAJOR) — outcome drift warning block ──
+  //
+  // The analyzer surfaces three classes of ask_user outcome:
+  //   1. KNOWN (frozen-enum histogram in `outcomes`).
+  //   2. UNKNOWN — value not in the frozen ASK_USER_ANSWER_OUTCOMES
+  //      enum (analyzer surfaces via `unknown_outcomes[]` per r1-#3,
+  //      sanitised by `safeDisplayValue` per r3-#1).
+  //   3. MALFORMED — non-string outcome (`""`, `null`, `undefined`,
+  //      numbers, booleans, objects, arrays) per r2-#2 + r3-#2.
+  //      Analyzer surfaces these via `analysis.warnings[]` entries
+  //      of shape `{type:"malformed_ask_user_outcome", value, count}`.
+  //
+  // Codex r4-#1 (MAJOR) flagged that this renderer used to display
+  // ONLY the frozen-enum histogram. Drift was invisible to the
+  // operator until the optimizer cycled. The whole point of the
+  // analyzer surface added through r1-#3 + r2-#2 + r3-#2 was operator
+  // visibility — the renderer skip negated that work.
+  //
+  // Defence-in-depth: every value is run through `escapeHtml()` here
+  // even though the analyzer-side `safeDisplayValue` already strips
+  // control chars + caps length. The two layers solve different
+  // problems — analyzer-side is dashboard-safe display strings,
+  // renderer-side is HTML safety. The Plan 08-04 r3-#1 (renderer)
+  // contract anchored the principle at the analyzer→renderer edge;
+  // this block honours it on the new surface.
+  //
+  // The block renders ONLY when at least one of the three signals is
+  // non-empty. Clean sessions are byte-identical to pre-r4-#1 output.
+  const unknownOutcomes = Array.isArray(askUser.unknown_outcomes)
+    ? askUser.unknown_outcomes
+    : [];
+  // Plan 08-06 r5-#1 (MAJOR): never trust `summary.json` shape on the
+  // count fields. The legacy `|| 0` fallback only catches FALSY values
+  // (0, NaN, "", null, undefined); a poisoned summary.json providing
+  // `unknown_outcome_count: "<script>alert(1)</script>"` (string,
+  // truthy) bypassed the fallback AND bypassed the per-entry
+  // escapeHtml() we apply to value slots — the hostile string flowed
+  // into the header template literal raw.
+  //
+  // Number.isFinite() returns true ONLY for genuine finite numbers
+  // (not NaN, not Infinity, not non-numbers); everything else falls
+  // back to 0. Pairs with the escapeHtml(String(...)) wrap on the
+  // interpolation site below — the contract from Plan 08-04 r3-#1
+  // (renderer) is "every interpolated user-data slot flows through
+  // escapeHtml", and counts honour the same contract even though
+  // post-coercion they cannot logically carry markup. Closes future-
+  // regression risk: a contributor who changes the upstream type
+  // doesn't accidentally re-open the XSS sink.
+  //
+  // Contract anchor: scripts/__tests__/generate-report-html.test.mjs
+  // "Plan 08-06 r5-#1" block — 3 tests cover string-typed counts +
+  // NaN + the malformed path with an <svg onload=> payload.
+  const rawUnknownCount = askUser.unknown_outcome_count;
+  const unknownOutcomeCount = Number.isFinite(rawUnknownCount)
+    ? rawUnknownCount
+    : 0;
+  const rawMalformedCount = askUser.malformed_outcome_count;
+  const malformedOutcomeCount = Number.isFinite(rawMalformedCount)
+    ? rawMalformedCount
+    : 0;
+  const malformedWarnings = Array.isArray(summary.warnings)
+    ? summary.warnings.filter((w) => w && w.type === "malformed_ask_user_outcome")
+    : [];
+
+  const driftWarningBlock =
+    unknownOutcomeCount === 0 && malformedOutcomeCount === 0
+      ? ""
+      : (() => {
+          const unknownItems = unknownOutcomes
+            .map((entry) => {
+              const value = entry && typeof entry.value !== "undefined" ? entry.value : "";
+              const count = entry && typeof entry.count === "number" ? entry.count : 0;
+              return `<li><strong>Unknown</strong> · "${escapeHtml(String(value))}" × ${count}</li>`;
+            })
+            .join("");
+          const malformedItems = malformedWarnings
+            .map((entry) => {
+              const value = entry && typeof entry.value !== "undefined" ? entry.value : "";
+              const count = entry && typeof entry.count === "number" ? entry.count : 0;
+              return `<li><strong>Malformed</strong> · "${escapeHtml(String(value))}" × ${count}</li>`;
+            })
+            .join("");
+          // Header summary numbers — keep both counts visible so the
+          // operator can split enum-drift (unknown) from instrumentation
+          // -failure (malformed) at a glance. Both are operationally
+          // serious; misattributing one for the other leads to the
+          // wrong remediation.
+          //
+          // Plan 08-06 r5-#1 (MAJOR): wrap interpolated counts in
+          // escapeHtml(String(...)) for defence-in-depth. After the
+          // Number.isFinite() coercion above, both values are genuine
+          // finite numbers and `String()` produces a digit-only string
+          // that escapeHtml() passes through byte-identical — but the
+          // contract anchored at Plan 08-04 r3-#1 (renderer) is "every
+          // interpolated user-data slot flows through escapeHtml". A
+          // future contributor who relaxes the upstream coercion
+          // doesn't accidentally reopen the XSS sink.
+          const header = `${escapeHtml(String(unknownOutcomeCount))} unknown, ${escapeHtml(String(malformedOutcomeCount))} malformed`;
+          return `
+            <div class="ask-user-drift-warning" style="margin-top:14px;background:#3b2a0a;border:1px solid #f59e0b;border-radius:6px;padding:10px 14px;">
+              <div style="font-size:13px;font-weight:700;color:#fbbf24;margin-bottom:6px;">
+                ⚠ ask_user outcome drift detected — ${header}
+              </div>
+              <ul style="margin:6px 0 0 18px;padding:0;font-size:12px;color:#fde68a;font-family:'SF Mono',monospace;">
+                ${unknownItems}${malformedItems}
+              </ul>
+              <div style="font-size:11px;color:#fbbf24;margin-top:6px;opacity:0.85;">
+                Unknown = enum drift (backend deploy out of sync). Malformed = instrumentation failure (row escaped the emit-site validator).
+              </div>
+            </div>`;
+        })();
+
+  return `
+    <div class="card">
+      ${toolTable}
+      ${askUserBlock}
+      ${driftWarningBlock}
+    </div>`;
 }
 
 // ── Section 7: Sonnet Prompt Audit ──
@@ -771,6 +1016,7 @@ const html = `<!DOCTYPE html>
     <a href="#section-missed" onclick="scrollToSection('section-missed')">Missed</a>
     <a href="#section-recs" onclick="scrollToSection('section-recs')">Recs</a>
     <a href="#section-vad" onclick="scrollToSection('section-vad')">Sleep</a>
+    <a href="#section-tools" onclick="scrollToSection('section-tools')">Tools</a>
     <a href="#section-audit" onclick="scrollToSection('section-audit')">Audit</a>
   </nav>
 
@@ -881,6 +1127,17 @@ const html = `<!DOCTYPE html>
       </div>
     </div>
 
+    <!-- Section 6b: Tool-Call Traffic (Phase 8 SC #2) -->
+    <div class="section" id="section-tools">
+      <div class="section-title" onclick="toggleSection('tools')">
+        <span>Tool-Call Traffic</span>
+        <span class="collapse-icon" id="icon-tools">&#9660;</span>
+      </div>
+      <div class="section-body" id="body-tools">
+        ${buildToolCallTraffic()}
+      </div>
+    </div>
+
     <!-- Section 7: Sonnet Prompt Audit -->
     <div class="section" id="section-audit">
       <div class="section-title" onclick="toggleSection('audit')">
@@ -944,7 +1201,7 @@ const html = `<!DOCTYPE html>
     }
 
     // Update nav on scroll
-    var navSections = ["section-cost", "section-fields", "section-transcript", "section-missed", "section-recs", "section-vad", "section-audit"];
+    var navSections = ["section-cost", "section-fields", "section-transcript", "section-missed", "section-recs", "section-vad", "section-tools", "section-audit"];
     window.addEventListener("scroll", function() {
       var scrollPos = window.scrollY + 60;
       for (var i = navSections.length - 1; i >= 0; i--) {

@@ -106,18 +106,19 @@ function normaliseRcdType(raw: string | null | undefined): string | undefined {
   return cleaned;
 }
 
-/** Build the board patch — merges into an existing board row
+/** Build the boards-array patch — merges into an existing board row
  *  (matched by `boardId`) or creates one if the job has no boards
- *  yet. Never clobbers non-empty values. */
+ *  yet. Never clobbers non-empty values. Returns the updated boards
+ *  array (backend canonical `job.boards`) plus the resolved boardId. */
 function buildBoardPatch(
   job: JobDetail,
   analysis: CCUAnalysis,
   targetBoardId: string | null,
   overwrite: boolean
-): { board: Record<string, unknown>; boardId: string } {
+): { boards: Record<string, unknown>[]; boardId: string } {
   type BoardRecord = Record<string, unknown> & { id: string };
-  const boardState = (job.board as { boards?: BoardRecord[] } | undefined) ?? {};
-  const boards: BoardRecord[] = boardState.boards ? [...boardState.boards] : [];
+  const existingBoards = (job.boards ?? []) as BoardRecord[];
+  const boards: BoardRecord[] = [...existingBoards];
 
   // Resolve which board row we're patching. If none exist, synthesise a main board.
   let idx = targetBoardId ? boards.findIndex((b) => b.id === targetBoardId) : 0;
@@ -172,16 +173,16 @@ function buildBoardPatch(
   boards[idx] = next;
 
   return {
-    board: { ...boardState, boards },
+    boards,
     boardId: next.id,
   };
 }
 
 /** Build the supply patch — merges the `spd_*` supply-section
  *  fallbacks (which the backend auto-derives from the main switch in
- *  routes/extraction.js:961-974) into `job.supply`. */
+ *  routes/extraction.js:961-974) into `job.supply_characteristics`. */
 function buildSupplyPatch(job: JobDetail, analysis: CCUAnalysis): Record<string, unknown> | null {
-  const existing = (job.supply as Record<string, unknown> | undefined) ?? {};
+  const existing = (job.supply_characteristics as Record<string, unknown> | undefined) ?? {};
   const next: Record<string, unknown> = { ...existing };
   let changed = false;
 
@@ -515,16 +516,16 @@ export function applyCcuAnalysisToJob(
   // `names_only` mode intentionally skips board/supply patches — the
   // inspector is using the photo only to read circuit labels.
   if (mode !== 'names_only') {
-    const { board, boardId } = buildBoardPatch(
+    const { boards, boardId } = buildBoardPatch(
       job,
       analysis,
       options.targetBoardId ?? null,
       overwriteBoard
     );
-    patch.board = board;
+    patch.boards = boards;
 
     const supply = buildSupplyPatch(job, analysis);
-    if (supply) patch.supply = supply;
+    if (supply) patch.supply_characteristics = supply;
 
     if (mode === 'hardware_update') {
       if (!options.userApprovedMatches) {
@@ -552,15 +553,18 @@ export function applyCcuAnalysisToJob(
   } else {
     // Names-only still needs the board id to scope the circuits
     // correctly, and we must persist the synthesized board when the
-    // job had none. Skipping `patch.board` in that case would leave
+    // job had none. Skipping the boards patch in that case would leave
     // the new circuits with a `board_id` pointing at a board that
     // never got persisted, breaking every later board-scoped flow.
-    const { board, boardId } = buildBoardPatch(job, analysis, options.targetBoardId ?? null, false);
-    const hadBoardsBefore = Boolean(
-      (job.board as { boards?: unknown[] } | undefined)?.boards?.length
+    const { boards, boardId } = buildBoardPatch(
+      job,
+      analysis,
+      options.targetBoardId ?? null,
+      false
     );
+    const hadBoardsBefore = Boolean((job.boards ?? []).length);
     if (!hadBoardsBefore) {
-      patch.board = board;
+      patch.boards = boards;
     }
     const circuits = buildCircuitsPatchNamesOnly(job, analysis, boardId);
     if (circuits) patch.circuits = circuits;

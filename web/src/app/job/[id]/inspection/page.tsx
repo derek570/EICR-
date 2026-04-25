@@ -44,9 +44,11 @@ import {
  * These are deliberate shortcuts because the three conditions apply to
  * >80% of UK domestic EICRs — auto-filling saves ~30 taps per certificate.
  *
- * Outcomes are stored as `job.inspection.items: Record<ref, outcome>`
+ * Outcomes are stored as `job.inspection_schedule.items: Record<ref, {outcome, observation_text?}>`
  * (snake_case ref kept verbatim — "4.12", "5.12.1" etc). The backend
- * reads this shape directly when rendering the PDF schedule page.
+ * reads this shape directly when rendering the PDF schedule page; key
+ * matches backend wire shape in `src/routes/jobs.js:575-592` +
+ * `packages/shared-types/src/job.ts` `InspectionSchedule`.
  *
  * Phase 4 additions (iOS parity):
  *   - Linked-observation inline preview under outcomes — tapping opens
@@ -100,15 +102,15 @@ export default function InspectionPage() {
   const jobId = params?.id ?? '';
   const isEIC = certificateType === 'EIC';
   const insp = React.useMemo<InspectionShape>(
-    () => (job.inspection ?? {}) as InspectionShape,
-    [job.inspection]
+    () => (job.inspection_schedule ?? {}) as InspectionShape,
+    [job.inspection_schedule]
   );
   const items = insp.items ?? {};
   const observations = React.useMemo(() => job.observations ?? [], [job.observations]);
 
   const patch = React.useCallback(
     (next: Partial<InspectionShape>) => {
-      updateJob({ inspection: { ...insp, ...next } });
+      updateJob({ inspection_schedule: { ...insp, ...next } });
     },
     [insp, updateJob]
   );
@@ -201,7 +203,7 @@ export default function InspectionPage() {
     }
     const nextObservations = linked ? observations.filter((o) => o.id !== linked.id) : observations;
     updateJob({
-      inspection: { ...insp, items: nextItems },
+      inspection_schedule: { ...insp, items: nextItems },
       observations: nextObservations,
     });
     setPendingChange(null);

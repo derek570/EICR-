@@ -377,14 +377,12 @@ describe('QuestionGate', () => {
     test('suppresses via normalisation: "0.130" heard_value matches earlier "0.13"', () => {
       gate.enqueue([{ type: 'unclear', field: null, circuit: -1, heard_value: '0.13' }]);
       jest.advanceTimersByTime(1500);
-      gate.enqueue([
-        { type: 'unclear', field: null, circuit: -1, heard_value: '0.130' },
-      ]);
+      gate.enqueue([{ type: 'unclear', field: null, circuit: -1, heard_value: '0.130' }]);
       jest.advanceTimersByTime(1500);
       expect(sendCallback).toHaveBeenCalledTimes(1);
     });
 
-    test('different TYPE, same heard_value is NOT dedup\'d by the secondary map', () => {
+    test("different TYPE, same heard_value is NOT dedup'd by the secondary map", () => {
       // `unclear` 0.13 then `circuit_disambiguation` 0.13 are semantically
       // different asks (one confusion, one disambiguation). The secondary
       // map key includes type so only same-type variants are suppressed.
@@ -443,13 +441,9 @@ describe('QuestionGate', () => {
     test('no heard_value → secondary dedup does not fire', () => {
       // Questions with null heard_value participate only in the tuple sig
       // map. Two questions with different fields both fire.
-      gate.enqueue([
-        { type: 'unclear', field: 'postcode', circuit: 0, heard_value: null },
-      ]);
+      gate.enqueue([{ type: 'unclear', field: 'postcode', circuit: 0, heard_value: null }]);
       jest.advanceTimersByTime(1500);
-      gate.enqueue([
-        { type: 'unclear', field: 'address', circuit: 0, heard_value: null },
-      ]);
+      gate.enqueue([{ type: 'unclear', field: 'address', circuit: 0, heard_value: null }]);
       jest.advanceTimersByTime(1500);
       expect(sendCallback).toHaveBeenCalledTimes(2);
     });

@@ -1,0 +1,155 @@
+{
+  "widgets": [
+    {
+      "type": "metric",
+      "x": 0,
+      "y": 0,
+      "width": 12,
+      "height": 6,
+      "properties": {
+        "metrics": [
+          ["EICR/Stage6", "stage6.divergence_rate", { "label": "Divergence Rate", "stat": "Average" }]
+        ],
+        "view": "timeSeries",
+        "stacked": false,
+        "region": "eu-west-2",
+        "title": "Divergence Rate (target ≤5%, alarm >10%)",
+        "period": 300,
+        "yAxis": {
+          "left": { "min": 0, "max": 0.2, "label": "Rate" }
+        },
+        "annotations": {
+          "horizontal": [
+            { "label": "Target ≤5%", "value": 0.05, "fill": "below" },
+            { "label": "Alarm >10%", "value": 0.10, "color": "#ef4444" }
+          ]
+        }
+      }
+    },
+    {
+      "type": "metric",
+      "x": 12,
+      "y": 0,
+      "width": 12,
+      "height": 6,
+      "properties": {
+        "metrics": [
+          ["EICR/Stage6", "stage6.tool_loop_cap_hit_rate", { "label": "Tool Loop Cap Hit Rate", "stat": "Average" }]
+        ],
+        "view": "timeSeries",
+        "stacked": false,
+        "region": "eu-west-2",
+        "title": "Tool Loop Cap Hit Rate (target 0%, alarm >0.5%)",
+        "period": 300,
+        "yAxis": {
+          "left": { "min": 0, "max": 0.02, "label": "Rate" }
+        },
+        "annotations": {
+          "horizontal": [
+            { "label": "Alarm >0.5%", "value": 0.005, "color": "#ef4444" }
+          ]
+        }
+      }
+    },
+    {
+      "type": "metric",
+      "x": 0,
+      "y": 6,
+      "width": 8,
+      "height": 6,
+      "properties": {
+        "metrics": [
+          ["EICR/Stage6", "stage6.ask_user_per_session_p50", { "label": "ask_user p50", "stat": "Average" }]
+        ],
+        "view": "timeSeries",
+        "stacked": false,
+        "region": "eu-west-2",
+        "title": "ask_user per session p50 (target ≤1)",
+        "period": 300,
+        "yAxis": {
+          "left": { "min": 0, "max": 5, "label": "Count" }
+        },
+        "annotations": {
+          "horizontal": [
+            { "label": "Target ≤1", "value": 1.0, "fill": "below" }
+          ]
+        }
+      }
+    },
+    {
+      "type": "metric",
+      "x": 8,
+      "y": 6,
+      "width": 8,
+      "height": 6,
+      "properties": {
+        "metrics": [
+          ["EICR/Stage6", "stage6.ask_user_per_session_p95", { "label": "ask_user p95", "stat": "Average" }]
+        ],
+        "view": "timeSeries",
+        "stacked": false,
+        "region": "eu-west-2",
+        "title": "ask_user per session p95 (target ≤4)",
+        "period": 300,
+        "yAxis": {
+          "left": { "min": 0, "max": 10, "label": "Count" }
+        },
+        "annotations": {
+          "horizontal": [
+            { "label": "Target ≤4", "value": 4.0, "fill": "below" }
+          ]
+        }
+      }
+    },
+    {
+      "type": "metric",
+      "x": 16,
+      "y": 6,
+      "width": 8,
+      "height": 6,
+      "properties": {
+        "metrics": [
+          ["EICR/Stage6", "stage6.restrained_mode_rate", { "label": "Restrained Mode Rate", "stat": "Average" }]
+        ],
+        "view": "timeSeries",
+        "stacked": false,
+        "region": "eu-west-2",
+        "title": "Restrained Mode Rate (target ≤2%, alarm >5%)",
+        "period": 300,
+        "yAxis": {
+          "left": { "min": 0, "max": 0.10, "label": "Rate" }
+        },
+        "annotations": {
+          "horizontal": [
+            { "label": "Target ≤2%", "value": 0.02, "fill": "below" },
+            { "label": "Alarm >5%", "value": 0.05, "color": "#ef4444" }
+          ]
+        }
+      }
+    },
+    {
+      "type": "metric",
+      "x": 0,
+      "y": 12,
+      "width": 24,
+      "height": 6,
+      "properties": {
+        "metrics": [
+          ["EICR/Stage6", "stage6.tool_call.count", "tool", "record_reading", { "label": "record_reading" }],
+          ["...", "tool", "clear_reading", { "label": "clear_reading" }],
+          ["...", "tool", "create_circuit", { "label": "create_circuit" }],
+          ["...", "tool", "rename_circuit", { "label": "rename_circuit" }],
+          ["...", "tool", "record_observation", { "label": "record_observation" }],
+          ["...", "tool", "delete_observation", { "label": "delete_observation" }],
+          ["...", "tool", "ask_user", { "label": "ask_user" }]
+        ],
+        "view": "timeSeries",
+        "stacked": true,
+        "region": "eu-west-2",
+        "title": "Tool-Call Histogram (24h, by tool)",
+        "period": 300,
+        "stat": "Sum"
+      }
+    }
+  ]
+}

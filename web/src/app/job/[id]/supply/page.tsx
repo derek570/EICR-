@@ -84,15 +84,18 @@ export default function SupplyPage() {
   const { job, certificateType, updateJob } = useJobContext();
   // See DesignPage for the rationale — memo-wrap keeps identity stable
   // so `patch` isn't rebuilt every render.
-  const supply = React.useMemo<SupplyShape>(() => (job.supply ?? {}) as SupplyShape, [job.supply]);
+  const supply = React.useMemo<SupplyShape>(
+    () => (job.supply_characteristics ?? {}) as SupplyShape,
+    [job.supply_characteristics]
+  );
   const inspection = React.useMemo<Record<string, unknown>>(
-    () => (job.inspection ?? {}) as Record<string, unknown>,
-    [job.inspection]
+    () => (job.inspection_schedule ?? {}) as Record<string, unknown>,
+    [job.inspection_schedule]
   );
 
   const patch = React.useCallback(
     (next: SupplyShape) => {
-      updateJob({ supply: { ...supply, ...next } });
+      updateJob({ supply_characteristics: { ...supply, ...next } });
     },
     [supply, updateJob]
   );
@@ -125,8 +128,8 @@ export default function SupplyPage() {
     // Rebuild inspection + supply together so a single outbox write
     // captures both sides of the coupling.
     updateJob({
-      supply: { ...supply, ...nextSupply },
-      inspection: { ...inspection, is_tt_earthing: value === 'TT' },
+      supply_characteristics: { ...supply, ...nextSupply },
+      inspection_schedule: { ...inspection, is_tt_earthing: value === 'TT' },
     });
   };
 

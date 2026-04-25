@@ -1,0 +1,124 @@
+{
+  "_doc": "Post-ask-resolved state — models the CONSEQUENT tool calls (create_circuit + record_reading) that happen AFTER an ask_user is answered. Does NOT exercise the ask_user round-trip itself; that's locked by the blocking-ask-user Phase 3 tests (stage6-ask-integration, stage6-dispatcher-ask, stage6-overtake-classifier suites) plus the F21934D4 replay test in Plan 04-04. Scenario: inspector said 'Circuit six Zs nought point three two.', the model asked 'Circuit 6 isn't on the schedule — create it, and what's the description?', the inspector answered 'Upstairs sockets', and we pick up HERE — both paths emit create_circuit(6,'Upstairs sockets') followed by record_reading(6,measured_zs_ohm,'0.32') in one round. Fixture name was sample-03-ambiguous-circuit.json before Plan 04-07 r1 remediation of Codex MINOR #4, which flagged that the old _doc claim of 'end-to-end ambiguous-circuit coverage' was misleading given the ask_user round-trip was elided. Renamed here so the name no longer overclaims. A proper round-trip fixture (ask_user + answer + create_circuit + record_reading in sequence) is tracked for Phase 5's STT-11 full 20-session exit check.",
+  "_post_ask_scope": "This fixture starts AFTER an ask_user has fired and been answered. It exercises the WRITE dispatcher only (no ask registry, no ws fan-out). The divergence harness intentionally does not wire the Phase 3 ask registry; that's a separate integration surface covered by stage6-ask-integration.test.js. See Plan 04-07 r1 'Deferred Items' for the Phase 5 round-trip follow-up.",
+  "_requirement": "STT-11 + STQ-02 category 3 + STS-03 (create_circuit dispatcher) + STS-01 (record_reading dispatcher).",
+  "_fixture_shape": "dual-SSE",
+  "pre_turn_state": {
+    "_doc": "Schedule has circuits 1-4 only. Circuit 6 does NOT exist — this is what production would have triggered an ask_user on; in this fixture both paths jump directly to the create+record sequence.",
+    "snapshot": {
+      "circuits": {
+        "1": { "circuit_ref": 1, "circuit_designation": "Ring final (downstairs sockets)" },
+        "2": { "circuit_ref": 2, "circuit_designation": "Ring final (kitchen)" },
+        "3": { "circuit_ref": 3, "circuit_designation": "Lighting (downstairs)" },
+        "4": { "circuit_ref": 4, "circuit_designation": "Lighting (upstairs)" }
+      },
+      "pending_readings": [],
+      "observations": [],
+      "validation_alerts": []
+    },
+    "_recentCircuitOrder_doc": "Plan 04-17 r11-#1 — recentCircuitOrder declared explicitly because seeded circuits exceed SNAPSHOT_RECENT_CIRCUITS (=3). Numeric ascending [1, 2, 3, 4] chosen because the fixture narrative doesn't impose chronology on circuits 1-4 (they were all pre-seeded before the ask_user round that this fixture models the resolution of); the value matches the pre-r11 numeric fallback byte-for-byte so downstream assertions are unchanged.",
+    "recentCircuitOrder": [1, 2, 3, 4],
+    "askedQuestions": [],
+    "extractedObservations": []
+  },
+  "transcript": "Circuit six, Zs nought point three two.",
+  "sse_events_legacy": [
+    {
+      "_comment": "Legacy post-resolution — record_extraction emits both a circuit_updates[create(6)] and extracted_readings[(6,zs,0.32)].",
+      "type": "message_start",
+      "message": { "id": "msg_s03_legacy", "role": "assistant", "content": [] }
+    },
+    {
+      "type": "content_block_start",
+      "index": 0,
+      "content_block": {
+        "type": "tool_use",
+        "id": "toolu_s03_legacy",
+        "name": "record_extraction",
+        "input": {}
+      }
+    },
+    {
+      "type": "content_block_delta",
+      "index": 0,
+      "delta": {
+        "type": "input_json_delta",
+        "partial_json": "{\"extracted_readings\":[{\"circuit\":6,\"field\":\"measured_zs_ohm\",\"value\":\"0.32\",\"confidence\":0.9}],\"field_clears\":[],\"circuit_updates\":[{\"action\":\"create\",\"circuit_ref\":6,\"designation\":\"Upstairs sockets\"}],\"observations\":[],\"questions_for_user\":[]}"
+      }
+    },
+    { "type": "content_block_stop", "index": 0 },
+    { "type": "message_delta", "delta": { "stop_reason": "tool_use" } },
+    { "type": "message_stop" }
+  ],
+  "sse_events_tool_call": [
+    {
+      "_comment": "Round 1 — two tool_use blocks: create_circuit(6) then record_reading(6,zs). Dispatcher requires the circuit to exist on the snapshot before record_reading runs; stage6-dispatchers-circuit.js dispatchCreateCircuit mutates session.stateSnapshot.circuits[circuit_ref] synchronously, so the second dispatcher sees the new circuit in the same round.",
+      "type": "message_start",
+      "message": { "id": "msg_s03_tc_r1", "role": "assistant", "content": [] }
+    },
+    {
+      "type": "content_block_start",
+      "index": 0,
+      "content_block": {
+        "type": "tool_use",
+        "id": "toolu_s03_tc_create",
+        "name": "create_circuit",
+        "input": {}
+      }
+    },
+    {
+      "type": "content_block_delta",
+      "index": 0,
+      "delta": {
+        "type": "input_json_delta",
+        "partial_json": "{\"circuit_ref\":6,\"designation\":\"Upstairs sockets\"}"
+      }
+    },
+    { "type": "content_block_stop", "index": 0 },
+    {
+      "type": "content_block_start",
+      "index": 1,
+      "content_block": {
+        "type": "tool_use",
+        "id": "toolu_s03_tc_record",
+        "name": "record_reading",
+        "input": {}
+      }
+    },
+    {
+      "type": "content_block_delta",
+      "index": 1,
+      "delta": {
+        "type": "input_json_delta",
+        "partial_json": "{\"field\":\"measured_zs_ohm\",\"circuit\":6,\"value\":\"0.32\",\"confidence\":0.9,\"source_turn_id\":\"t3\"}"
+      }
+    },
+    { "type": "content_block_stop", "index": 1 },
+    { "type": "message_delta", "delta": { "stop_reason": "tool_use" } },
+    { "type": "message_stop" }
+  ],
+  "sse_events_tool_call_round2": [
+    {
+      "type": "message_start",
+      "message": { "id": "msg_s03_tc_r2", "role": "assistant", "content": [] }
+    },
+    {
+      "type": "content_block_start",
+      "index": 0,
+      "content_block": { "type": "text", "text": "" }
+    },
+    {
+      "type": "content_block_delta",
+      "index": 0,
+      "delta": { "type": "text_delta", "text": "Created circuit 6 and recorded Zs." }
+    },
+    { "type": "content_block_stop", "index": 0 },
+    { "type": "message_delta", "delta": { "stop_reason": "end_turn" } },
+    { "type": "message_stop" }
+  ],
+  "expected_slot_writes": {
+    "circuits": {
+      "6": { "measured_zs_ohm": "0.32", "circuit_designation": "Upstairs sockets" }
+    }
+  }
+}

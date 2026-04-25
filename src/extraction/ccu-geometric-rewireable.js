@@ -134,10 +134,10 @@ Also report whether one of the slots at the LEFT or RIGHT edge of the panel is o
 - "right-edge" = the RIGHTMOST position is the main switch, not a fuse carrier.
 
 Return the TOTAL number of positions (carriers + any main switch at the edge) as carrier_count. A 6-way board with main switch at the right edge has carrier_count = 7 and main_switch_offset = "right-edge". A 6-way board with a separate main switch below or to the side of the carrier bank has carrier_count = 6 and main_switch_offset = "none".${
-    retryContext
-      ? `\n\nIMPORTANT RECOUNT: we previously estimated this board has ${retryContext.previousCount} positions, but that value is outside the expected range given the panel width. From the panel geometry we measured the expected number of slots is between ${retryContext.expectedMin} and ${retryContext.expectedMax} (based on a typical rewireable carrier pitch of 30–90 px on a ${retryContext.panelWidthPx}-px-wide panel). Please recount carefully — walk left-to-right across the panel band and count every distinct carrier or main-switch slot separated by a visible gap or join between mouldings. Do NOT just echo the previous count; look again at the image.`
-      : ''
-  }
+  retryContext
+    ? `\n\nIMPORTANT RECOUNT: we previously estimated this board has ${retryContext.previousCount} positions, but that value is outside the expected range given the panel width. From the panel geometry we measured the expected number of slots is between ${retryContext.expectedMin} and ${retryContext.expectedMax} (based on a typical rewireable carrier pitch of 30–90 px on a ${retryContext.panelWidthPx}-px-wide panel). Please recount carefully — walk left-to-right across the panel band and count every distinct carrier or main-switch slot separated by a visible gap or join between mouldings. Do NOT just echo the previous count; look again at the image.`
+    : ''
+}
 
 Respond with JSON only:
 {"carrier_count": <int>, "main_switch_offset": "none"|"left-edge"|"right-edge"}`;
@@ -337,9 +337,7 @@ export async function getPanelGeometry(imageBuffer) {
       typeof panel_left !== 'number' ||
       typeof panel_right !== 'number'
     ) {
-      throw new Error(
-        'getPanelGeometry: VLM response missing required panel_* numeric fields'
-      );
+      throw new Error('getPanelGeometry: VLM response missing required panel_* numeric fields');
     }
     const side =
       main_switch_side === 'left' || main_switch_side === 'right' || main_switch_side === 'none'
@@ -468,18 +466,12 @@ export async function getCarrierCount(imageBuffer, medianPanel, imageDims) {
     typeof medianPanel.panel_left !== 'number' ||
     typeof medianPanel.panel_right !== 'number'
   ) {
-    throw new Error(
-      'getCarrierCount: medianPanel must include numeric panel_left and panel_right'
-    );
+    throw new Error('getCarrierCount: medianPanel must include numeric panel_left and panel_right');
   }
   if (medianPanel.panel_right <= medianPanel.panel_left) {
     throw new Error('getCarrierCount: panel_right must be greater than panel_left');
   }
-  if (
-    !imageDims ||
-    !Number.isFinite(imageDims.imageWidth) ||
-    imageDims.imageWidth <= 0
-  ) {
+  if (!imageDims || !Number.isFinite(imageDims.imageWidth) || imageDims.imageWidth <= 0) {
     throw new Error('getCarrierCount: imageDims.imageWidth must be a positive number');
   }
 
@@ -611,14 +603,8 @@ export async function cropCarrierSlot(imageBuffer, slotIndex, geom) {
   if (!Buffer.isBuffer(imageBuffer)) {
     throw new Error('cropCarrierSlot: imageBuffer must be a Buffer');
   }
-  const {
-    slotCentersX,
-    carrierPitchPx,
-    panelTopNorm,
-    panelBottomNorm,
-    imageWidth,
-    imageHeight,
-  } = geom || {};
+  const { slotCentersX, carrierPitchPx, panelTopNorm, panelBottomNorm, imageWidth, imageHeight } =
+    geom || {};
   if (!Array.isArray(slotCentersX) || slotCentersX.length === 0) {
     throw new Error('cropCarrierSlot: geom.slotCentersX must be a non-empty array');
   }
@@ -787,9 +773,7 @@ export async function classifyCarriers(_imageBuffer, slotCrops, opts = {}) {
       // BS 3036 colour code. VLM-returned ratings win (the VLM may have read a printed
       // number on a cartridge face and we must not overwrite that with colour).
       let ratingAmps =
-        typeof vlmItem.ratingAmps === 'number'
-          ? vlmItem.ratingAmps
-          : (vlmItem.ratingAmps ?? null);
+        typeof vlmItem.ratingAmps === 'number' ? vlmItem.ratingAmps : (vlmItem.ratingAmps ?? null);
       if (ratingAmps == null && bodyColour && BODY_COLOUR_TO_AMPS[bodyColour] != null) {
         ratingAmps = BODY_COLOUR_TO_AMPS[bodyColour];
       }
@@ -999,9 +983,7 @@ export async function classifyRewireableSlots(imageBuffer, preparedGeom) {
   // Stage 1's SD flag is combined by the wrapper / caller.
   const stage3LowConf =
     Array.isArray(slots) &&
-    slots.some(
-      (s) => typeof s.confidence === 'number' && s.confidence < STAGE3_LOW_CONF_THRESHOLD
-    );
+    slots.some((s) => typeof s.confidence === 'number' && s.confidence < STAGE3_LOW_CONF_THRESHOLD);
 
   return {
     slots,
@@ -1053,8 +1035,7 @@ export async function extractCcuRewireable(imageBuffer) {
 
   // Overall lowConfidence: stage1 SD-triggered OR any classified slot below
   // the stage3 confidence floor (delivered by classifyRewireableSlots).
-  const lowConfidence =
-    prepared.stageOutputs.stage1.lowConfidence || classified.lowConfidence;
+  const lowConfidence = prepared.stageOutputs.stage1.lowConfidence || classified.lowConfidence;
 
   return {
     schemaVersion: 'ccu-rewireable-v1',

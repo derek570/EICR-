@@ -1,0 +1,504 @@
+/**
+ * Stage 6 Phase 2 Plan 02-06 — Shadow harness (REWIRED).
+ *
+ * Phase 1 canned-replay is REPLACED. Under SONNET_TOOL_CALLS=shadow, this
+ * harness now drives the REAL multi-round tool loop (Plan 01-04 runToolLoop)
+ * with the Wave-2 dispatcher table (Plans 02-02 + 02-03 + 02-04) and the
+ * Wave-2 event bundler (Plan 02-05), then projects both the legacy result
+ * and the bundled tool-call result through Plan 02-06's slot comparator and
+ * logs `stage6_divergence` with the projection + divergence verdict.
+ *
+ * REQUIREMENTS: STT-03 (multi-round) + STT-09 (same-turn correction) +
+ * STO-01 (per-turn divergence log).
+ * RESEARCH: §Q11 (shadow comparator) + Pitfall #2 (per-turn state isolation)
+ * + Pitfall #3 (bundler fires ONCE post-loop) + Pitfall #6 (shadow mode =
+ * real API spend — cost logged per row for Phase 7 retrospective).
+ *
+ * ---------------------------------------------------------------------------
+ * MODES
+ * ---------------------------------------------------------------------------
+ *   'off'    (default) — pure passthrough. legacy only. ZERO API overhead.
+ *                        Phase-2 success criterion #6 (shadow-off idempotency)
+ *                        holds: when the env flag is unset, calling this
+ *                        harness is indistinguishable from calling
+ *                        session.extractFromUtterance directly.
+ *   'shadow' — run legacy FIRST (iOS gets legacy result, byte-identical),
+ *              then run runToolLoop against the same transcript, bundle,
+ *              compare, log. Returns LEGACY result. Any shadow failure
+ *              is caught + logged at warn; legacy still returned.
+ *   'live'   — Phase 7 gate. THROWS. Same as Phase 1's loud-failure guard.
+ *              Prevents a mis-set env var from surprising production with
+ *              authoritative tool-call dispatch before Phase 7 ships.
+ * ---------------------------------------------------------------------------
+ *
+ * ---------------------------------------------------------------------------
+ * WHY live MODE STILL THROWS (not "return legacy silently"):
+ * ---------------------------------------------------------------------------
+ * Phase 1 established this contract (stage6-shadow-harness.js pre-Phase-2
+ * throw) and the tool-loop test suite asserts it. A silent bypass would
+ * mask a deployment bug: someone set SONNET_TOOL_CALLS=live before Phase 7
+ * landed. Loud failure here is a deliberate safety net. The MINOR-2 test
+ * in stage6-tool-loop-e2e.test.js pins this behaviour.
+ * ---------------------------------------------------------------------------
+ *
+ * ---------------------------------------------------------------------------
+ * ANTHROPIC CLIENT SURFACE
+ * ---------------------------------------------------------------------------
+ * EICRExtractionSession exposes `session.client` (Anthropic SDK instance —
+ * see eicr-extraction-session.js:164) and `session.systemPrompt` (per-cert-
+ * type prompt — line 173). There is no `session.model` field; the session
+ * uses the literal 'claude-sonnet-4-6' at call sites (line 365, 823). This
+ * harness matches: SHADOW_MODEL = 'claude-sonnet-4-6'.
+ *
+ * NOTE on cache_control: runToolLoop forwards `system` opaquely to
+ * client.messages.stream({system, ...}). Anthropic's prompt-caching
+ * contract requires `system` as an array-of-blocks when cache_control is
+ * applied. Plan 04-11 r5-#1 — the harness now delegates to
+ * session.buildSystemBlocks() so shadow mode mirrors EXACTLY the same
+ * two-block cached-prefix shape the live path ships (base prompt +
+ * cached snapshot, both {type:'ephemeral', ttl:'5m'}). This keeps shadow
+ * and live on the same cache key AND ensures shadow carries the cached
+ * snapshot Phase 4 STQ-03 introduced — without which Phase 7 STR-03
+ * divergence would be measuring "shadow-no-snapshot vs live-with-snapshot"
+ * (contaminated baseline).
+ * ---------------------------------------------------------------------------
+ */
+
+import logger from '../logger.js';
+import { runToolLoop } from './stage6-tool-loop.js';
+import {
+  createWriteDispatcher,
+  createToolDispatcher,
+  createSortRecordsAsksLast,
+} from './stage6-dispatchers.js';
+import { createAskDispatcher } from './stage6-dispatcher-ask.js';
+// Stage 6 Phase 5 Plan 05-01 — higher-order composition of the four
+// Phase 5 gates (filled-slots shadow / restrained-mode / per-key budget /
+// 1500ms debounce) around the unmodified Plan 03-05 createAskDispatcher.
+// The branch below activates ONLY when sonnet-stream.js threads
+// options.askBudget AND options.restrainedMode through (Plans 05-03 +
+// 05-04 wire the activeSessions entry); without both, runShadowHarness
+// reverts to the Phase 3/4 dispatcher shape unchanged.
+import { createAskGateWrapper, wrapAskDispatcherWithGates } from './stage6-ask-gate-wrapper.js';
+import { createPerTurnWrites } from './stage6-per-turn-writes.js';
+import { bundleToolCallsIntoResult, BUNDLER_PHASE } from './stage6-event-bundler.js';
+import { compareSlots } from './stage6-slot-comparator.js';
+import { TOOL_SCHEMAS } from './stage6-tool-schemas.js';
+
+/**
+ * Sonnet model literal used by shadow-mode tool loop. Mirrors the literal at
+ * eicr-extraction-session.js:365,823. If the session ever takes a configurable
+ * model, thread it through here.
+ */
+const SHADOW_MODEL = 'claude-sonnet-4-6';
+
+/**
+ * Convert the projected slot shape (Map / Set) into a JSON-safe plain object
+ * for structured logging. Phase 7 analyzer reads these from CloudWatch — they
+ * must round-trip through JSON.stringify.
+ */
+function serialiseSlots(slots) {
+  return {
+    readings: Object.fromEntries(slots.readings),
+    cleared: [...slots.cleared],
+    observations: [...slots.observations],
+    circuit_ops: [...slots.circuit_ops],
+    observation_deletions: [...slots.observation_deletions],
+  };
+}
+
+/**
+ * Estimate shadow-mode cost from the tool-loop output's usage accumulator.
+ *
+ * Phase 2 contract: `runToolLoop` does NOT currently accumulate token usage
+ * across rounds (its signature returns {stop_reason, rounds, tool_calls,
+ * aborted, messages_final} — no `.usage`). We log `null` here and let the
+ * Phase 7 analyzer estimate cost retrospectively from the stored message
+ * lengths + model pricing constants. Adding a usage accumulator to
+ * runToolLoop is deliberate scope creep; Phase 7 owns that.
+ */
+function estimateShadowCost(/* toolLoopOut */) {
+  return null;
+}
+
+/**
+ * Plan 06-06 r5-#3 (MINOR) — extracted helper that builds the cloned
+ * shadowSession passed into createAskDispatcher (and the write dispatcher).
+ *
+ * Pre-fix the construction was inline at the harness body and pinned
+ * `toolCallsMode: 'shadow'` regardless of input. That made the dispatcher's
+ * `fallbackToLegacy` gate inside the LIVE branch (added in Plan 06-02
+ * r1-#1) unreachable through the harness — the dispatcher's shadow
+ * short-circuit at stage6-dispatcher-ask.js:233 fired first for every
+ * harness call. Tests at the harness layer were therefore proving an
+ * impossible state (live + fallbackToLegacy via harness was unreachable).
+ *
+ * Post-fix the clone reflects the input session's toolCallsMode. In
+ * Phase 6 the harness's mode-guard at line 147 throws on
+ * session.toolCallsMode === 'live' so the dispatcher's live-branch gate
+ * is still unreachable through the harness today; once Phase 7 lifts
+ * that guard, the gate becomes reachable for the first time. The change
+ * is observable ONLY when the caller runs the harness against a live
+ * session (a Phase 7 surface); for shadow runs the upstream env is
+ * shadow, so session.toolCallsMode === 'shadow' and behaviour is
+ * byte-identical to the old pin.
+ *
+ * The helper is exported for testability — see
+ * `stage6-shadow-harness-toolcallsmode-threading.test.js` for the
+ * structural assertions that lock this contract at CI time.
+ *
+ * @param {Object} session  Live session passed to runShadowHarness.
+ *   Must expose: sessionId, toolCallsMode (optional — defaults 'shadow').
+ * @param {Object} preLegacySnapshot  Pre-legacy clone of stateSnapshot
+ *   (Codex Phase-2 BLOCK#1 round-2 fix — see Step 0 above).
+ * @param {Array} preLegacyObservations  Pre-legacy clone of
+ *   extractedObservations.
+ * @returns {Object} A new object with sessionId, stateSnapshot,
+ *   extractedObservations, and toolCallsMode preserved from the input.
+ */
+export function buildShadowSessionForDispatcher(session, preLegacySnapshot, preLegacyObservations) {
+  return {
+    sessionId: session.sessionId,
+    stateSnapshot: preLegacySnapshot,
+    extractedObservations: preLegacyObservations,
+    // Plan 06-06 r5-#3 — preserve the input's toolCallsMode rather than
+    // pinning 'shadow'. See JSDoc above for the WHY.
+    //
+    // Defaults to 'shadow' for back-compat with any caller (or test
+    // stub) that omits the field — the existing Phase 2-5 tests use
+    // bare session stubs that may not set toolCallsMode explicitly.
+    toolCallsMode: session.toolCallsMode ?? 'shadow',
+  };
+}
+
+/**
+ * Shadow-harness entry point. Drop-in replacement for
+ * `session.extractFromUtterance(...)` at the sonnet-stream.js seam.
+ *
+ * @param {Object} session  Must expose: sessionId, turnCount, client
+ *   (Anthropic SDK), systemPrompt, toolCallsMode, extractFromUtterance.
+ * @param {string} transcriptText
+ * @param {Array} regexResults
+ * @param {Object} [options] Forwarded to legacy. Optional .logger for DI.
+ * @returns {Promise<any>} The LEGACY result verbatim — iOS wire unchanged
+ *   across all modes.
+ */
+export async function runShadowHarness(session, transcriptText, regexResults, options = {}) {
+  const log = options.logger ?? logger;
+  const mode = session.toolCallsMode ?? 'off';
+
+  // FAST PATH — zero observable difference from pre-stage-6 world.
+  if (mode === 'off') {
+    return session.extractFromUtterance(transcriptText, regexResults, options);
+  }
+
+  if (mode === 'live') {
+    // Phase-1 guard preserved. Phase 7 lifts this.
+    throw new Error('SONNET_TOOL_CALLS=live not implemented until Phase 7');
+  }
+
+  if (mode !== 'shadow') {
+    // Defensive: unknown mode string. Log once, fall back to legacy.
+    try {
+      log.warn?.('stage6_shadow_harness_unknown_mode', { mode });
+    } catch {
+      // swallow
+    }
+    return session.extractFromUtterance(transcriptText, regexResults, options);
+  }
+
+  // --- SHADOW MODE ---------------------------------------------------------
+  //
+  // Step 0 (Codex Phase-2 review BLOCK #1 round-2 fix): snapshot the mutable
+  // session surfaces BEFORE legacy runs.
+  //
+  // The round-1 fix (clone after legacy + swap dispatcher onto the clone)
+  // stopped shadow from CORRUPTING live state, but left a second bug: the
+  // clone was taken from POST-legacy state. Shadow's tool loop therefore
+  // replayed the same utterance against a state legacy had already mutated
+  // — e.g. legacy created circuit 2 → shadow's create_circuit(2) hits the
+  // "duplicate circuit_ref" validator and rejects spuriously. The resulting
+  // `stage6_divergence` row says "extra_in_legacy" or "circuit_ops_diff"
+  // when in fact both paths would have succeeded from the same starting
+  // point. That's exactly the noise STO-01 promises to NOT emit.
+  //
+  // Correct sequencing:
+  //   1. Clone pre-legacy state (this block).
+  //   2. Run legacy against live state (it mutates live).
+  //   3. Run shadow tool loop against the PRE-legacy clone.
+  //   4. Compare results.
+  //
+  // structuredClone is JSON-safe here — stateSnapshot contains only plain
+  // objects/arrays/primitives; extractedObservations is an array of plain
+  // observation records.
+  const preLegacySnapshot = structuredClone(session.stateSnapshot);
+  const preLegacyObservations = Array.isArray(session.extractedObservations)
+    ? structuredClone(session.extractedObservations)
+    : [];
+
+  // Plan 04-12 r6-#2 — capture the system-blocks array BEFORE legacy
+  // mutates session.stateSnapshot. r5-#1 fixed the harness to use
+  // session.buildSystemBlocks() but left the call at Step 4 (line 284
+  // historically), which runs AFTER session.extractFromUtterance mutates
+  // session.stateSnapshot at Step 1. Shadow's model-facing prompt then
+  // carried legacy's current-turn writes — anti-re-ask logic saw the slot
+  // as filled and suppressed shadow's divergence signal.
+  //
+  // Capturing here (pre-legacy) mirrors the real-production contract:
+  // shadow and live both observe the SAME starting state at turn entry,
+  // and any divergence between them is measured on equal footing. The
+  // dispatcher-side `shadowSession` (built at Step 3b below) was already
+  // correctly cloning pre-legacy state; this fix brings the PROMPT-SIDE
+  // input into the same pre-legacy window.
+  //
+  // buildSystemBlocks returns the full system-blocks array the session
+  // would send on the real path (see r5-#1 remediation). In off mode the
+  // array is a single base-prompt block. In non-off mode it is either
+  // a single base-prompt block (empty snapshot) or a two-block array
+  // (base prompt + cached snapshot, both cache_control ephemeral 5m).
+  const preLegacySystemBlocks = session.buildSystemBlocks();
+
+  // Step 1: run legacy FIRST. If legacy throws, the error propagates — no
+  // divergence log (no payload to compare).
+  const legacy = await session.extractFromUtterance(transcriptText, regexResults, options);
+
+  // Step 2: snapshot turn number AFTER the legacy await. extractFromUtterance
+  // runs `this.turnCount++` internally (eicr-extraction-session.js:641) so
+  // the POST-increment value describes the turn that just ran. Phase 1's
+  // Codex review (MAJOR) locked this ordering: reading BEFORE the await
+  // plus +1, OR AFTER the await unchanged — both give the same turnNum.
+  // We use the AFTER-unchanged form here (slightly simpler) for the
+  // divergence log; Phase 1's stage6-shadow-harness.test.js asserts the
+  // BEFORE+1 form. The tests for this plan mirror the legacy pattern.
+  const turnNum = session.turnCount ?? 0;
+  const turnId = `${session.sessionId}-turn-${turnNum}`;
+
+  // Step 3: per-turn writes accumulator. Function-local — NEVER stored on
+  // session (Pitfall #2). New instance per call structurally prevents
+  // cross-turn leaks.
+  const perTurnWrites = createPerTurnWrites();
+
+  // Step 3b (Codex Phase-2 review BLOCK #1): build the shadow dispatcher
+  // session from the PRE-LEGACY snapshot captured in Step 0.
+  //
+  // Two invariants this enforces:
+  //   (a) Shadow tool loop mutations NEVER reach the live session — dispatcher
+  //       writes land on `shadowSession.*` only. `sessionId` is shared for
+  //       log correlation on stage6_divergence / stage6.tool_call join keys.
+  //   (b) Shadow sees the SAME starting state legacy did. If we built the
+  //       wrapper from `session.stateSnapshot` post-legacy, the tool loop
+  //       would replay the same utterance against mutated state and the
+  //       divergence log would report spurious rejects (e.g. create_circuit
+  //       duplicate on a circuit_ref legacy just added).
+  //
+  // structuredClone is JSON-safe here — stateSnapshot contains only plain
+  // objects/arrays/primitives (circuits keyed by ref, pending_readings /
+  // observations / validation_alerts as primitive-typed arrays). Deep-cloning
+  // once above AND passing those clones directly (no second clone here) keeps
+  // the cost at one clone per shadow turn.
+  const shadowSession = buildShadowSessionForDispatcher(
+    session,
+    preLegacySnapshot,
+    preLegacyObservations
+  );
+
+  // Phase 3 Plan 03-07: optional ask composition.
+  //
+  // `pendingAsks` + `ws` are SESSION-SCOPED resources owned by sonnet-stream.js
+  // (Plan 03-08). The harness is stateless wrt those — it does NOT create,
+  // destroy, or rejectAll. It only (a) reads `pendingAsks` to decide whether
+  // to compose the ask dispatcher in the first place, and (b) threads both
+  // objects into `createAskDispatcher` which will register/resolve entries
+  // per-call.
+  //
+  // Fallback: when a caller (e.g. any Phase 2 call-site during the Plan
+  // 03-08 rollout window) does NOT pass pendingAsks, the harness reverts to
+  // Phase 2 shape — write-only dispatcher, identity sortRecords. This
+  // preserves every existing Phase 2 shadow run unchanged until Plan 03-08
+  // lands the per-session registry in sonnet-stream.js.
+  const pendingAsks = options.pendingAsks ?? null;
+  const ws = options.ws ?? null;
+  const writes = createWriteDispatcher(shadowSession, log, turnId, perTurnWrites);
+  let dispatcher;
+  let sortRecords;
+  // Stage 6 Phase 5 Plan 05-01 — per-turn debounce gate. Lives only for the
+  // duration of this harness invocation; destroyed in the finally below so
+  // pending timers can never leak across turns. Held in a let-binding so
+  // both the composition branch and the cleanup hook can see it.
+  let askGateForTurn = null;
+  if (pendingAsks) {
+    // Plan 06-02 r1-#1 — thread the live activeSessions entry's
+    // `fallbackToLegacy` flag (stamped by sonnet-stream.js handleSessionStart
+    // when an iOS client connects in shadow mode without
+    // protocol_version='stage6') through to the dispatcher so it can suppress
+    // `ask_user_started` ws.send for those sessions. Default false keeps every
+    // pre-Plan-06-02 caller byte-identical.
+    let asks = createAskDispatcher(shadowSession, log, turnId, pendingAsks, ws, {
+      fallbackToLegacy: options.fallbackToLegacy === true,
+    });
+    // Phase 5 — wrap with gates ONLY when the activeSessions entry threaded
+    // both stateful resources through. Existing Phase 3/4 callers (and the
+    // dispatcher's own unit tests) thread neither, so they keep the
+    // Phase 3 dispatcher shape unchanged.
+    if (options.askBudget && options.restrainedMode) {
+      askGateForTurn = createAskGateWrapper({
+        logger: log,
+        sessionId: shadowSession.sessionId,
+        // Plan 05-07 r1-#3 — pass the session's actual mode through so
+        // wrapper-emitted `gated` / `session_terminated` / `dispatcher_error`
+        // log rows tag with mode='shadow' instead of the hard-coded 'live'.
+        // Phase 8 dashboards split by mode; corrupting that split for shadow
+        // sessions was the r1-#3 finding.
+        mode: 'shadow',
+      });
+      asks = wrapAskDispatcherWithGates(asks, {
+        askBudget: options.askBudget,
+        restrainedMode: options.restrainedMode,
+        gate: askGateForTurn,
+        // Plan 05-02 supplies the real adapter; until then a no-op keeps
+        // the wrapper's pre-wrapper shadow-log step (Open Question #5)
+        // a structural placeholder. The wrapper's own try/catch around
+        // filledSlotsShadow keeps a thrown adapter from tearing down dispatch.
+        filledSlotsShadow: options.filledSlotsShadow ?? (() => {}),
+        logger: log,
+        sessionId: shadowSession.sessionId,
+        // Plan 05-07 r1-#3 — restrained_mode + ask_budget_exhausted rows
+        // are emitted from synthResultWrapped on the wrapper-internal
+        // short-circuit paths; thread the same shadow mode so they match.
+        mode: 'shadow',
+      });
+    }
+    dispatcher = createToolDispatcher(writes, asks);
+    sortRecords = createSortRecordsAsksLast();
+  } else {
+    dispatcher = writes;
+    sortRecords = undefined; // runToolLoop treats undefined as identity.
+  }
+
+  // Step 4: drive the real tool loop. Any thrown error is CAUGHT so shadow
+  // failure NEVER breaks production — legacy return value is authoritative.
+  let toolLoopOut;
+  try {
+    // Plan 04-11 r5-#1 — delegate to session.buildSystemBlocks() so the
+    // harness mirrors EXACTLY what the real (non-shadow) path would ship:
+    //   - off mode: 1 block [base prompt].
+    //   - non-off mode: 1 block when the state snapshot is empty, 2 blocks
+    //     when non-empty ([base prompt, state snapshot]). BOTH blocks carry
+    //     cache_control:{type:'ephemeral', ttl:'5m'} per Plan 04-02 STQ-03.
+    //
+    // Plan 04-12 r6-#2 — the buildSystemBlocks CALL itself now lives at
+    // Step 0b (before legacy's extractFromUtterance) so the captured
+    // array reflects PRE-TURN state rather than post-legacy-mutation
+    // state. `preLegacySystemBlocks` carries the captured array. Without
+    // this move, shadow's model would see legacy's current-turn writes
+    // in its cached snapshot block — anti-re-ask logic would then see
+    // the slot as filled and suppress shadow's divergence signal.
+    //
+    // After r5+r6, both surfaces share the same buildSystemBlocks() method
+    // AND observe the same pre-turn starting state — shadow differs from
+    // live ONLY on dispatch semantics (tool-call vs prose-JSON parse),
+    // never on prompt shape or state visibility.
+    const systemBlocks = preLegacySystemBlocks;
+
+    toolLoopOut = await runToolLoop({
+      client: session.client,
+      model: SHADOW_MODEL,
+      system: systemBlocks,
+      messages: [{ role: 'user', content: transcriptText }],
+      tools: TOOL_SCHEMAS,
+      dispatcher,
+      ctx: { sessionId: session.sessionId, turnId },
+      logger: log,
+      // Phase 3 Plan 03-07: pass sortRecords when ask composition is active.
+      // Undefined falls back to runToolLoop's identity default (Phase 2
+      // behaviour). When a composer is present, createSortRecordsAsksLast()
+      // moves any Sonnet-emitted ask_user blocks to the END of the round so
+      // write tools land BEFORE the blocking ask stalls dispatch — STA-02
+      // defense-in-depth per Plan 03-06.
+      sortRecords,
+    });
+
+    // Plan 04-29 r22-#2 — test-only shadow-path capture hook.
+    //
+    // WHY: r22-#2 re-review flagged that the r21-#3 end-to-end tests only
+    // assert on ws emissions + logger + live-session state (the surface
+    // channels). None of them inspect the internal shadow path — the
+    // `shadowSession` clone (where the shadow dispatcher actually writes)
+    // nor the `perTurnWrites` accumulator (where bundler would later read
+    // leak content from, if the filter ever failed). A regression that
+    // re-enabled writes-on-leak inside the shadow dispatcher while keeping
+    // live-side surfaces unchanged would pass the existing tests silently.
+    //
+    // The hook fires AFTER the tool loop finishes, capturing the moment
+    // before bundler/divergence post-processing runs. Production callers
+    // never pass `_shadowCapture` — the underscore prefix flags this as
+    // test-only (mirrors the Node convention for private-by-naming).
+    //
+    // Swallow-on-throw: a test-hook failure must NEVER break production
+    // extraction. Any error in the hook is silently discarded — the shadow
+    // harness continues to Step 5 (bundler) → Step 6 (comparator) → Step 7
+    // (divergence log) → Step 8 (legacy return) unchanged.
+    if (typeof options._shadowCapture === 'function') {
+      try {
+        options._shadowCapture({ shadowSession, perTurnWrites, toolLoopOut });
+      } catch {
+        // swallow — hook errors never propagate
+      }
+    }
+  } catch (err) {
+    try {
+      log.warn?.('stage6_shadow_error', {
+        sessionId: session.sessionId,
+        turnId,
+        phase: 2,
+        error: err?.message ?? String(err),
+      });
+    } catch {
+      // swallow logger failure — shadow must never break extraction
+    }
+    // Plan 05-01 — release per-turn gate timers before bailing. By the time
+    // we reach this catch, every gateOrFire awaited in the tool loop has
+    // already resolved (runToolLoop awaits each tool call), so destroy() is
+    // primarily a defensive belt-and-braces hook in case a runtime quirk
+    // strands a pending timer. Idempotent — calling on an empty pending Map
+    // is a no-op.
+    askGateForTurn?.destroy();
+    return legacy;
+  }
+
+  // Plan 05-01 — release per-turn gate timers on the success path BEFORE
+  // bundling/divergence-log. Same idempotency contract as the catch path.
+  askGateForTurn?.destroy();
+
+  // Step 5: bundle ONCE post-loop (Pitfall #3 — never mid-loop).
+  const toolResult = bundleToolCallsIntoResult(perTurnWrites, legacy);
+
+  // Step 6: slot-diff the two result shapes.
+  const divergence = compareSlots(legacy, toolResult);
+
+  // Step 7: emit single structured log row per turn. Phase 7 analyzer joins
+  // these on (sessionId, turnId) with stage6.tool_call rows emitted by the
+  // dispatchers themselves.
+  try {
+    log.info('stage6_divergence', {
+      sessionId: session.sessionId,
+      turnId,
+      phase: 2,
+      bundler_phase: BUNDLER_PHASE,
+      legacy_slots: serialiseSlots(divergence.legacy_slots),
+      tool_slots: serialiseSlots(divergence.tool_slots),
+      divergent: divergence.any,
+      reason: divergence.reason,
+      details: divergence.details,
+      aborted: toolLoopOut.aborted ?? false,
+      abort_reason: toolLoopOut.aborted && toolLoopOut.rounds >= 8 ? 'loop_cap' : null,
+      rounds: toolLoopOut.rounds,
+      shadow_cost_usd: estimateShadowCost(toolLoopOut),
+    });
+  } catch {
+    // Logging failure must NOT break extraction. Swallow and continue.
+  }
+
+  // Step 8: iOS ALWAYS gets legacy in Phase 2.
+  return legacy;
+}

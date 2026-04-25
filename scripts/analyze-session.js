@@ -21,19 +21,60 @@ import path from "node:path";
 
 // ── Helpers ──
 
+/**
+ * Parse a JSONL file into an array of objects PLUS a `_warnings` array
+ * tracking lines that looked like JSON but failed to parse.
+ *
+ * Phase 8 Plan 08-01 SC #1 — soft-fail on malformed events. Pre-fix,
+ * malformed lines were silently dropped via .filter(Boolean). A truncated
+ * debug_log.jsonl (network drop / disk full mid-write) would silently
+ * lose a row; downstream consumers had no way to know. Post-fix, the
+ * analyzer surfaces these as `warnings` entries in analysis.json so the
+ * optimizer + reviewer can see something went wrong without changing
+ * the silent-drop behaviour for fully-empty / non-JSON-shaped lines
+ * (those stay invisible — they were never log rows to begin with).
+ *
+ * Two-tier classification:
+ *   - empty / pure-whitespace line → silently skip (legacy contract)
+ *   - looks like JSON (starts with `{`) but parse fails → push warning
+ *     entry of shape {type:'malformed_event', line:<n>, snippet:<60-char-prefix>}
+ *     and skip the row
+ *   - parses cleanly → include in events
+ */
 function parseJSONL(filePath) {
   const content = fs.readFileSync(filePath, "utf8");
-  return content
-    .split("\n")
-    .filter((line) => line.trim().length > 0)
-    .map((line) => {
-      try {
-        return JSON.parse(line);
-      } catch {
-        return null;
+  const lines = content.split("\n");
+  const events = [];
+  const warnings = [];
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (line.trim().length === 0) continue;
+    try {
+      events.push(JSON.parse(line));
+    } catch {
+      // Only warn on lines that LOOK like JSON. Random non-JSON detritus
+      // (e.g. a stray printf to stdout that ended up in the log) stays
+      // silent to preserve the legacy contract.
+      if (line.trimStart().startsWith("{")) {
+        warnings.push({
+          type: "malformed_event",
+          line: i + 1, // 1-indexed for human readability
+          snippet: line.slice(0, 60),
+        });
       }
-    })
-    .filter(Boolean);
+    }
+  }
+
+  // Stash warnings on the array via a non-enumerable property so existing
+  // call sites (which iterate `events` as a plain array) see no behaviour
+  // change. analyzeSession() reads `events._warnings` to merge into the
+  // analysis.json `warnings` field.
+  Object.defineProperty(events, "_warnings", {
+    value: warnings,
+    enumerable: false,
+  });
+  return events;
 }
 
 function loadJSON(filePath) {
@@ -870,6 +911,364 @@ function analyzeSession(sessionDir) {
     deepgram_streaming_stopped: sleepCycles.length > 0,
   };
 
+  // ── 14b. Tool-call traffic summary (Phase 8 Plan 08-01 SC #2) ──
+  //
+  // Surfaces stage6_tool_call + stage6.ask_user log rows as a per-session
+  // histogram so the optimizer report + CloudWatch dashboards have a
+  // stable view of agentic-extraction behaviour during the shadow → live
+  // transition (and forever after live cutover).
+  //
+  // Tool-call surface:
+  //   - count by `tool` (record_reading / clear_reading / create_circuit /
+  //     rename_circuit / record_observation / delete_observation / ask_user)
+  //   - median duration_ms per tool (sort durations, pick middle / mean
+  //     of two middles)
+  //   - validation_error_count per tool — rows with is_error=true
+  //
+  // ask_user surface:
+  //   - total count (all stage6.ask_user rows regardless of mode)
+  //   - histogram by `answer_outcome` covering EVERY frozen
+  //     ASK_USER_ANSWER_OUTCOMES enum member (missing outcomes default to
+  //     0 so dashboards splitting by the dimension see a stable shape).
+  //
+  // Source-of-truth for the enum: src/extraction/stage6-dispatcher-logger.js.
+  // Duplicated here verbatim because the analyzer ships independently to
+  // the optimizer mac and shouldn't have a runtime dep on backend modules.
+  // If the backend enum drifts, the analyze-session.test.mjs SC #2 test
+  // fails loudly (the test re-duplicates the list independently).
+  const ASK_USER_ANSWER_OUTCOMES = [
+    "answered",
+    "timeout",
+    "user_moved_on",
+    "restrained_mode",
+    "ask_budget_exhausted",
+    "gated",
+    "shadow_mode",
+    "validation_error",
+    "session_terminated",
+    "session_stopped",
+    "session_reconnected",
+    "duplicate_tool_call_id",
+    "transcript_already_extracted",
+    "dispatcher_error",
+    "prompt_leak_blocked",
+  ];
+
+  const toolCallEvents = events.filter((e) => e.event === "stage6_tool_call");
+  const askUserEvents = events.filter((e) => e.event === "stage6.ask_user");
+
+  // Tool histogram — group by tool name
+  const toolMap = new Map();
+  for (const evt of toolCallEvents) {
+    const data = evt.data || {};
+    const name = data.tool || "unknown";
+    if (!toolMap.has(name)) {
+      toolMap.set(name, { name, durations: [], errorCount: 0 });
+    }
+    const entry = toolMap.get(name);
+    if (typeof data.duration_ms === "number") {
+      entry.durations.push(data.duration_ms);
+    }
+    if (data.is_error === true) entry.errorCount += 1;
+  }
+
+  function median(nums) {
+    if (nums.length === 0) return 0;
+    const sorted = [...nums].sort((a, b) => a - b);
+    const mid = Math.floor(sorted.length / 2);
+    if (sorted.length % 2 === 0) {
+      return (sorted[mid - 1] + sorted[mid]) / 2;
+    }
+    return sorted[mid];
+  }
+
+  // Plan 08-04 r3-#1 (MAJOR): defence-in-depth normaliser for any
+  // log-derived value that flows into the dashboards / warnings.
+  //
+  // Codex r3-#1 surfaced that raw `answer_outcome` log values were being
+  // copied verbatim into `tool_call_traffic.ask_user.unknown_outcomes[]`
+  // and `events._warnings`. Those analysis.json surfaces are consumed by
+  // `scripts/generate-report-html.js` (which renders into the operator
+  // dashboard). The renderer escapes via `escapeHtml()` at the render
+  // sites it currently has — but `unknown_outcomes[]` and `warnings[]`
+  // are not yet rendered, and any future renderer addition that drops
+  // the escape would introduce a stored-XSS sink.
+  //
+  // Defence-in-depth: sanitise on the way IN here (analyzer), so the
+  // values entering the report surface are already safe-display-bounded:
+  //   1. Stringify non-strings via JSON.stringify (preserves type info —
+  //      0 → "0", false → "false", {} → "{}", [] → "[]"). Pairs with the
+  //      r3-#2 fix that routes non-string outcomes to the malformed
+  //      surface where this same helper stringifies them.
+  //   2. Strip control codepoints (Unicode 0x00..0x1F + 0x7F). Raw
+  //      control bytes corrupt log files / break terminals downstream
+  //      AND can carry CR/LF injection payloads in some renderers.
+  //   3. Truncate to 100 chars with a U+2026 (HORIZONTAL ELLIPSIS)
+  //      marker. Bounds report size against length-bomb payloads.
+  //
+  // Run BEFORE bucketing so the Map keys are already-safe; collapses
+  // attacker-distinct evil strings whose only difference was control
+  // chars or 100+ char prefixes (acceptable conflation — count
+  // aggregates correctly per visible shape; the operational signal is
+  // "something unknown showed up", not the exact byte contents).
+  //
+  // The renderer's `escapeHtml()` (`scripts/generate-report-html.js:28`)
+  // is the SECOND gate — it escapes HTML-significant chars (`<`, `>`,
+  // `&`, `"`) at every render site. Both gates must hold for the
+  // contract to be safe; this helper closes the analyzer side, the
+  // renderer's escape audit (Plan 08-04 Task 3-4) closes the renderer
+  // side.
+  function safeDisplayValue(raw) {
+    let s;
+    if (typeof raw === "string") {
+      s = raw;
+    } else if (raw === undefined || raw === null) {
+      // JSON.stringify(undefined) returns the JS value `undefined`
+      // (not a string), and JSON.stringify(null) returns the string
+      // "null". For consistency with r2-#2's String()-based labels
+      // (`null` → `"null"`, `undefined` → `"undefined"`), handle these
+      // two explicitly via String() before the strip+cap.
+      s = String(raw);
+    } else {
+      // JSON.stringify covers numbers (0 → "0"), booleans (false →
+      // "false"), objects ({} → "{}"), arrays ([] → "[]"), and any
+      // other JSON-serialisable value. For exotic types (Symbol,
+      // function) JSON.stringify returns undefined; fall back to
+      // String() so the call site never sees a non-string `s`.
+      const j = JSON.stringify(raw);
+      s = typeof j === "string" ? j : String(raw);
+    }
+    // Strip control chars (Unicode 0x00..0x1F + 0x7F). Some hostile
+    // log writers encode literal control bytes inside JSON strings
+    // rather than the safer `\u00XX` form; this catches both forms
+    // (parsed JSON yields the literal char in either case).
+    // eslint-disable-next-line no-control-regex
+    const stripped = s.replace(/[\x00-\x1F\x7F]/g, "");
+    if (stripped.length <= 100) return stripped;
+    // Single-char U+2026 ellipsis (NOT three dots ".") so the cap is
+    // exactly 100 JS chars / Unicode codepoints. Three-dot ASCII
+    // would be 102 chars and break the length contract.
+    return stripped.slice(0, 99) + "…";
+  }
+
+  // Plan 08-06 r5-#2 (MINOR): bucket on the RAW canonicalised value,
+  // not on the truncated display form.
+  //
+  // Codex r5-#2 raised that safeDisplayValue() was applied BEFORE
+  // bucketing — the call site set the Map key TO the truncated form.
+  // Two distinct outcomes that share their first 99 chars but diverge
+  // at char 100+ both produced the same "AAA…" key and collapsed into
+  // one entry. True drift shape (two distinct values) was hidden.
+  //
+  // canonicaliseRaw() mirrors safeDisplayValue's per-type
+  // stringification + control-char strip but does NOT length-cap.
+  // This is the BUCKET KEY — distinct underlying values stay distinct
+  // even when their rendered display form is the same.
+  //
+  // Length-cap is applied at the materialisation pass (when building
+  // the unknown_outcomes[] / malformed_outcomes[] arrays for JSON
+  // output) so the operator-facing display value still bounds report
+  // size.
+  //
+  // Why share the per-type stringification path: the bucket key MUST
+  // be a primitive (Map keys are compared by SameValueZero, so two
+  // separate `{}` objects would never bucket together). Stringifying
+  // gives a stable primitive key per per-type shape, mirroring the
+  // r3-#2 contract where `0` → `"0"`, `false` → `"false"`, `{}` →
+  // `"{}"`, etc.
+  //
+  // Why share the control-char strip: hostile log writers can encode
+  // distinct control-byte payloads that would render identically
+  // (after strip) but bucket separately if we kept the raw form.
+  // Bucketing on the stripped form aligns with the operational
+  // signal: "evil\x00value" and "evil\x01value" are the same drift
+  // event from the operator's perspective. (If we ever want to
+  // distinguish them, this is the call site to revisit.)
+  //
+  // Contract anchor: scripts/__tests__/analyze-session.test.mjs
+  // "Plan 08-06 r5-#2" block — 4 tests (1 RED→GREEN + 3 regression
+  // locks for the legacy length-bomb / control-char / sum-invariant
+  // cases) + new fixture near-collision-session/.
+  function canonicaliseRaw(raw) {
+    let s;
+    if (typeof raw === "string") {
+      s = raw;
+    } else if (raw === undefined || raw === null) {
+      s = String(raw);
+    } else {
+      const j = JSON.stringify(raw);
+      s = typeof j === "string" ? j : String(raw);
+    }
+    // eslint-disable-next-line no-control-regex
+    return s.replace(/[\x00-\x1F\x7F]/g, "");
+  }
+
+  const tools = [...toolMap.values()]
+    .map((entry) => ({
+      name: entry.name,
+      count: entry.durations.length || toolCallEvents.filter((e) => (e.data?.tool) === entry.name).length,
+      median_duration_ms: median(entry.durations),
+      validation_error_count: entry.errorCount,
+    }))
+    .sort((a, b) => b.count - a.count);
+
+  // ask_user outcomes histogram — every frozen enum key, default 0.
+  //
+  // Plan 08-02 r1-#3 (MAJOR): unknown outcomes (values NOT in the frozen
+  // ASK_USER_ANSWER_OUTCOMES enum) are surfaced via TWO side channels —
+  //   1. `unknown_outcome_count` (scalar) + `unknown_outcomes[]` (array
+  //      of `{value, count}`) within `tool_call_traffic.ask_user`.
+  //   2. `warnings[]` entry of shape
+  //      `{type: 'unknown_ask_user_outcome', value, count}` per distinct
+  //      unknown value (same surface used for SC #1 malformed_event
+  //      warnings; appended to `events._warnings` so the existing
+  //      analysis.warnings merge picks them up).
+  //
+  // The frozen-enum `outcomes` histogram itself stays exactly
+  // ASK_USER_ANSWER_OUTCOMES shape — adding `foobar`-shaped keys would
+  // break CloudWatch dashboards that split by the dimension. Unknowns
+  // go to the side channel only.
+  //
+  // Why surface them at all: the backend's `invalid_answer_outcome:`
+  // throw at the emit site (`stage6-dispatcher-logger.js`) is the FIRST
+  // gate. If a row reaches the analyzer with an unknown outcome, that's
+  // either enum drift (backend adds a new key without coordinating with
+  // the analyzer) or instrumentation failure (a row escaped the throw).
+  // Either is operationally serious. Silently dropping the row would
+  // hide the failure from the optimizer / report.
+  //
+  // Plan 08-03 r2-#1 (MAJOR): log data is UNTRUSTED. The previous shape
+  // — `const outcomes = {};` + `if (outcome in outcomes)` — walks
+  // `Object.prototype` on every membership check, so an `answer_outcome`
+  // value of "__proto__", "constructor", or "toString" passes the
+  // membership test as if it were a known frozen-enum key — silently
+  // bypassing the unknown-surface added by r1-#3. We close the
+  // prototype-pollution attack vector by:
+  //   - building the histogram via `Object.create(null)` so it has NO
+  //     prototype chain at all (own-properties only — JSON.stringify
+  //     walks own enumerable keys, which is exactly the frozen-enum
+  //     set we want);
+  //   - testing membership via `Object.hasOwn(outcomes, outcome)` so
+  //     the lookup ONLY tests own-properties.
+  // Same defence as a `Set`-backed lookup, lighter at the call site,
+  // and preserves the existing `analysis.json` shape byte-identical
+  // for known-only sessions.
+  // Plan 08-03 r2-#2 (MINOR): the previous shape — `if (!outcome) continue;`
+  // — silently dropped empty-string / null / undefined outcomes. r1-#3
+  // covered enum-drift unknowns ("value not in the frozen enum") but
+  // didn't cover MALFORMED outcomes ("no value emitted at all"). The
+  // two failure modes have distinct operational signatures:
+  //   - Unknown = enum drift; backend deploy out of sync with analyzer.
+  //   - Malformed = instrumentation failure; the row escaped the
+  //     emit-site `invalid_answer_outcome` throw with NO outcome set.
+  // Both are operationally serious; both deserve their own surface so
+  // optimizer dashboards can count them separately.
+  //
+  // Plan 08-04 r3-#2 (MINOR): r2-#2's predicate matched ONLY
+  // `outcome === "" || outcome === null || outcome === undefined`.
+  // Non-string outcomes (`0`, `false`, `42`, `{}`, `[]`) fell through
+  // to the unknown branch where `Object.hasOwn(outcomes, outcome)`
+  // coerces the key to a string for property lookup — corrupting the
+  // unknown bucket silently. Worst case: an array-typed outcome
+  // coerces to `""` for the property lookup AND collides with the
+  // r2-#2 empty-string malformed surface, depending on which branch
+  // ran first. Operationally, "outcome was the wrong type entirely"
+  // is the SAME class of instrumentation failure as "outcome was
+  // missing" — both belong on the malformed surface. We widen the
+  // predicate to `typeof outcome !== "string" || outcome === ""`,
+  // which catches: null, undefined, all numbers (incl. 0), all
+  // booleans (incl. false), all objects, all arrays, all symbols,
+  // all functions — everything except non-empty strings. The
+  // safeDisplayValue helper from r3-#1 then JSON.stringifies the
+  // non-string values into readable per-shape labels:
+  //   0 → "0",  false → "false",  42 → "42",
+  //   {} → "{}",  [] → "[]",  {a:1} → '{"a":1}',
+  //   "" → "",  null → "null",  undefined → "undefined".
+  // Routing malformed values through the unknown-outcome surface
+  // would misattribute the failure mode (an enum-drift fix is the
+  // wrong remediation for an instrumentation failure).
+  const outcomes = Object.create(null);
+  for (const o of ASK_USER_ANSWER_OUTCOMES) outcomes[o] = 0;
+  const unknownOutcomeMap = new Map();
+  const malformedOutcomeMap = new Map();
+  for (const evt of askUserEvents) {
+    const outcome = evt.data?.answer_outcome;
+    // Plan 08-04 r3-#2 (MINOR): treat ANY non-string outcome as
+    // malformed (instrumentation failure). The r2-#2 contract for
+    // `"" / null / undefined` is preserved — null/undefined satisfy
+    // the `typeof !== "string"` check, empty-string is caught by the
+    // explicit `=== ""` clause.
+    //
+    // Plan 08-06 r5-#2 (MINOR): bucket on the RAW canonicalised value
+    // (canonicaliseRaw — same per-type stringification + control-char
+    // strip as safeDisplayValue but WITHOUT the length cap). Length-
+    // cap is applied at the materialisation pass below. Distinct raw
+    // values that share a 99-char prefix now stay in distinct buckets.
+    if (typeof outcome !== "string" || outcome === "") {
+      const bucketKey = canonicaliseRaw(outcome);
+      malformedOutcomeMap.set(bucketKey, (malformedOutcomeMap.get(bucketKey) || 0) + 1);
+      continue;
+    }
+    // Plan 08-06 r5-#2 (MINOR): same restructure on the unknown branch.
+    // The frozen-enum check (`Object.hasOwn(outcomes, outcome)`) still
+    // uses the RAW string outcome — known-enum keys are pure ASCII and
+    // bounded length, so bucket-vs-known disambiguation is unaffected.
+    if (Object.hasOwn(outcomes, outcome)) {
+      outcomes[outcome] += 1;
+    } else {
+      const bucketKey = canonicaliseRaw(outcome);
+      unknownOutcomeMap.set(bucketKey, (unknownOutcomeMap.get(bucketKey) || 0) + 1);
+    }
+  }
+
+  // Plan 08-06 r5-#2: materialisation pass — apply safeDisplayValue
+  // (length-cap + control-char strip — though the strip is redundant
+  // here because canonicaliseRaw already stripped) to the bucket keys
+  // when building the output arrays. The COUNT distribution carries
+  // the operational signal (two distinct raw values past the cap show
+  // up as two entries with their own counts, even when they render to
+  // the same display string); the displayed `value` is just the
+  // operator-facing label and is bounded by the length cap.
+  const unknownOutcomes = [...unknownOutcomeMap.entries()].map(([rawKey, count]) => ({
+    value: safeDisplayValue(rawKey),
+    count,
+  }));
+  const unknownOutcomeCount = unknownOutcomes.reduce((sum, e) => sum + e.count, 0);
+
+  const malformedOutcomes = [...malformedOutcomeMap.entries()].map(([rawKey, count]) => ({
+    value: safeDisplayValue(rawKey),
+    count,
+  }));
+  const malformedOutcomeCount = malformedOutcomes.reduce((sum, e) => sum + e.count, 0);
+
+  // Append per-distinct-value warning entries onto the parser's warnings
+  // accumulator. `events._warnings` is created by parseJSONL() as a
+  // non-enumerable property so this re-use is safe — analyzeSession()
+  // merges `events._warnings` into the top-level `warnings` field at
+  // serialise time.
+  if (events._warnings && unknownOutcomes.length > 0) {
+    for (const { value, count } of unknownOutcomes) {
+      events._warnings.push({ type: "unknown_ask_user_outcome", value, count });
+    }
+  }
+  if (events._warnings && malformedOutcomes.length > 0) {
+    for (const { value, count } of malformedOutcomes) {
+      events._warnings.push({ type: "malformed_ask_user_outcome", value, count });
+    }
+  }
+
+  const toolCallTraffic = {
+    enabled: true,
+    tools,
+    ask_user: {
+      total: askUserEvents.length,
+      outcomes,
+      unknown_outcome_count: unknownOutcomeCount,
+      unknown_outcomes: unknownOutcomes,
+      malformed_outcome_count: malformedOutcomeCount,
+    },
+  };
+
   // ── 15. Voice commands ──
   // Extract voice_command_sent/response events to surface user intentions expressed via voice commands.
 
@@ -1058,6 +1457,17 @@ function analyzeSession(sessionDir) {
     repeated_values: repeatedValues,
     vad_sleep_analysis: vadSleepAnalysis,
     observation_capture_quality: observationCaptureQuality,
+    // Phase 8 Plan 08-01 SC #2 — tool-call traffic summary (post Phase 1+2+3
+    // tool-call rollout). Always emitted; .enabled=true even on legacy-shape
+    // sessions so downstream consumers can rely on the section's presence.
+    tool_call_traffic: toolCallTraffic,
+    // Phase 8 Plan 08-01 SC #1 — soft-fail breadcrumbs from parseJSONL.
+    // Always an array (empty on a clean log). Non-empty when the analyzer
+    // saw a JSON-shaped line that failed to parse (typically a truncated
+    // last record from a network drop or disk-full mid-write). Surfacing
+    // these means the optimizer + reviewer can tell "session was clean"
+    // from "session got cut off" — pre-fix both looked identical.
+    warnings: events._warnings || [],
     // Full transcript and voice commands (intent visibility)
     full_transcript: fullTranscriptOriginal,
     voice_commands: voiceCommands,
@@ -1101,6 +1511,10 @@ function analyzeSession(sessionDir) {
   console.log(`  Total stream paused: ${vadSleepAnalysis.total_stream_paused_min}min (saved $${vadSleepAnalysis.deepgram_saved_usd.toFixed(4)} Deepgram)`);
   console.log(`  Buffer replays: ${vadSleepAnalysis.buffer_replays}`);
   console.log(`  Wake failures: ${vadSleepAnalysis.post_wake_no_transcript}`);
+  console.log(`  Tool-call traffic: ${toolCallTraffic.tools.length} tools, ${toolCallTraffic.ask_user.total} ask_user calls`);
+  if (analysis.warnings.length > 0) {
+    console.log(`  ⚠ Warnings: ${analysis.warnings.length} malformed event(s) in debug_log.jsonl`);
+  }
   console.log(`  Total cost (USD): $${costBreakdown.total_usd.toFixed(4)}`);
   if (costBreakdown.doze_savings.session_duration_min > 0) {
     console.log(`  ── Doze Savings ──`);

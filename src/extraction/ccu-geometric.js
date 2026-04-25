@@ -485,11 +485,15 @@ export async function getModuleCount(imageBuffer, medianRails, imageDimensions =
   // gate this session; logged as pitchCrossCheck in the return value.
   const { imageWidth, imageHeight } = imageDimensions || {};
   let pitchCrossCheck = null;
-  if (Number.isFinite(imageWidth) && imageWidth > 0 &&
-      Number.isFinite(imageHeight) && imageHeight > 0 &&
-      typeof medianRails.rail_top === 'number' &&
-      typeof medianRails.rail_bottom === 'number' &&
-      medianRails.rail_bottom > medianRails.rail_top) {
+  if (
+    Number.isFinite(imageWidth) &&
+    imageWidth > 0 &&
+    Number.isFinite(imageHeight) &&
+    imageHeight > 0 &&
+    typeof medianRails.rail_top === 'number' &&
+    typeof medianRails.rail_bottom === 'number' &&
+    medianRails.rail_bottom > medianRails.rail_top
+  ) {
     const railHeightPx = ((medianRails.rail_bottom - medianRails.rail_top) / 1000) * imageHeight;
     const moduleWidthPxFromMs = (moduleWidthFromMainSwitch / 1000) * imageWidth;
     const moduleWidthPxFromHeight = 17.5 * (railHeightPx / 82.5);
@@ -587,7 +591,9 @@ export async function getModuleCount(imageBuffer, medianRails, imageDimensions =
 
   const railWidth = effectiveRailRight - effectiveRailLeft;
   if (railWidth <= 0) {
-    throw new Error('getModuleCount: effective rail width collapsed to zero after main-switch clamp');
+    throw new Error(
+      'getModuleCount: effective rail width collapsed to zero after main-switch clamp'
+    );
   }
   // Use Math.floor so every generated slot's bbox (centre ± moduleWidth/2)
   // sits fully inside the effective rail. Math.round could push the last
@@ -666,7 +672,13 @@ export async function getModuleCount(imageBuffer, medianRails, imageDimensions =
     oppositeEndTightened
   ) {
     moduleWidth = railWidth / geometricCount;
-  } else if (geometricCount > 0 && !truncatedFromDisagreement && mainSwitchSide === null && populatedLeftTightened && populatedRightTightened) {
+  } else if (
+    geometricCount > 0 &&
+    !truncatedFromDisagreement &&
+    mainSwitchSide === null &&
+    populatedLeftTightened &&
+    populatedRightTightened
+  ) {
     // Inline / mains-less fallback: if both populated bounds were provided
     // AND main switch wasn't localised, both ends are VLM-tightened and
     // refinement is safe.
@@ -959,9 +971,7 @@ export async function classifySlots(_imageBuffer, slotCrops, opts = {}) {
       // suffix-curve convention ("NSB32-C", "PSB32-C") which the prompt
       // explicitly supports.
       let ratingAmps =
-        typeof vlmItem.ratingAmps === 'number'
-          ? vlmItem.ratingAmps
-          : (vlmItem.ratingAmps ?? null);
+        typeof vlmItem.ratingAmps === 'number' ? vlmItem.ratingAmps : (vlmItem.ratingAmps ?? null);
       let ratingHallucinationDetected = false;
       if (ratingAmps != null && typeof vlmItem.rating_text === 'string') {
         const textDigits = vlmItem.rating_text.replace(/\D+/g, ' ');
@@ -1157,8 +1167,7 @@ export async function prepareModernGeometry(imageBuffer, options = {}) {
       typeof c === 'number' && Number.isFinite(c)
         ? ((cropX0 + (c / 1000) * cropW) / origWidth) * 1000
         : c;
-    const scaleWidth = (w) =>
-      typeof w === 'number' && Number.isFinite(w) ? w * scale : w;
+    const scaleWidth = (w) => (typeof w === 'number' && Number.isFinite(w) ? w * scale : w);
 
     stage2.mainSwitchCenterX = translateX(stage2.mainSwitchCenterX);
     stage2.populatedAreaStartX = translateX(stage2.populatedAreaStartX);

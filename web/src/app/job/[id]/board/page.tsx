@@ -15,9 +15,13 @@ import { BoardSelectorBar } from '@/components/job/board-selector-bar';
  * Board tab — mirrors iOS `BoardTab.swift` + `BoardInfo.swift`.
  *
  * iOS supports multiple boards per job (main + sub-distribution); the web
- * stores the list in `job.board.boards`. We default to a single synthesized
- * main board if the array is empty so inspectors can start filling straight
- * away.
+ * stores the list in `job.boards` (backend wire key — see
+ * `src/routes/jobs.js:575-592` + `packages/shared-types/src/job.ts`
+ * `JobDetail.boards`). We default to a single synthesized main board if the
+ * array is empty so inspectors can start filling straight away. Adding /
+ * removing boards is a Phase 3a feature — the full parent / sub-main
+ * hierarchy editing lands with Phase 3b (Circuits) because that's when the
+ * feed-circuit reference actually matters.
  *
  * Phase 4 additions (iOS parity):
  *   - Move Left / Move Right reorder actions on the selector toolbar.
@@ -40,10 +44,6 @@ type BoardRecord = Record<string, string | undefined> & {
   /** Truthy-ish ('✓' / 'yes' / 'true') when polarity has been confirmed. */
   polarity_confirmed?: string;
   phases_confirmed?: string;
-};
-
-type BoardShape = {
-  boards?: BoardRecord[];
 };
 
 const BOARD_TYPE_OPTIONS = [
@@ -83,14 +83,19 @@ function newBoard(designation = 'DB1'): BoardRecord {
 
 export default function BoardPage() {
   const { job, certificateType, updateJob } = useJobContext();
-  const boardState = (job.board ?? {}) as BoardShape;
+  // `job.boards` is the canonical top-level array (backend wire key —
+  // see `src/routes/jobs.js:575-592` + `packages/shared-types/src/job.ts`
+  // `JobDetail.boards`). Fall back to a single synthesized main board so
+  // the form renders on a brand-new job before the inspector has added
+  // anything.
+  //
   // Memo-wrap so `boards` has a stable identity unless the underlying
-  // job state actually changed — needed by the selected-id guard
-  // effect below, and keeps downstream filters from re-running.
-  const boards: BoardRecord[] = React.useMemo(
-    () => (boardState.boards && boardState.boards.length > 0 ? boardState.boards : [newBoard()]),
-    [boardState.boards]
-  );
+  // job state actually changed — needed by the selected-id guard effect
+  // below, and keeps downstream filters from re-running.
+  const boards: BoardRecord[] = React.useMemo(() => {
+    const existing = (job.boards ?? []) as BoardRecord[];
+    return existing.length > 0 ? existing : [newBoard()];
+  }, [job.boards]);
 
   const [activeId, setActiveId] = React.useState(boards[0].id);
   const active = boards.find((b) => b.id === activeId) ?? boards[0];
@@ -105,7 +110,7 @@ export default function BoardPage() {
   }, [boards, activeId]);
 
   const persistBoards = (next: BoardRecord[]) => {
-    updateJob({ board: { ...boardState, boards: next } });
+    updateJob({ boards: next });
   };
 
   const patchActive = (patch: Partial<BoardRecord>) => {
@@ -171,7 +176,7 @@ export default function BoardPage() {
       (job.observations ?? []) as unknown as Array<Record<string, unknown>>
     ).filter((o) => o.board_id !== removedId);
     updateJob({
-      board: { ...boardState, boards: remaining },
+      boards: remaining,
       circuits: remainingCircuits as unknown as typeof job.circuits,
       observations: remainingObservations as unknown as typeof job.observations,
     });

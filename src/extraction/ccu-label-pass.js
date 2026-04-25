@@ -153,14 +153,8 @@ export async function cropSlotLabelZone(imageBuffer, slotIndex, geom) {
   if (!Buffer.isBuffer(imageBuffer)) {
     throw new Error('cropSlotLabelZone: imageBuffer must be a Buffer');
   }
-  const {
-    slotCentersX,
-    slotPitchPx,
-    panelTopNorm,
-    panelBottomNorm,
-    imageWidth,
-    imageHeight,
-  } = geom || {};
+  const { slotCentersX, slotPitchPx, panelTopNorm, panelBottomNorm, imageWidth, imageHeight } =
+    geom || {};
   if (!Array.isArray(slotCentersX) || slotCentersX.length === 0) {
     throw new Error('cropSlotLabelZone: geom.slotCentersX must be a non-empty array');
   }

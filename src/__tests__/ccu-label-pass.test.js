@@ -181,12 +181,12 @@ describe('cropSlotLabelZone', () => {
       /imageBuffer must be a Buffer/
     );
     await expect(cropSlotLabelZone(img, 99, makeGeom())).rejects.toThrow(/slotIndex 99/);
-    await expect(
-      cropSlotLabelZone(img, 0, makeGeom({ slotCentersX: [] }))
-    ).rejects.toThrow(/slotCentersX must be a non-empty array/);
-    await expect(
-      cropSlotLabelZone(img, 0, makeGeom({ slotPitchPx: 0 }))
-    ).rejects.toThrow(/slotPitchPx must be a positive number/);
+    await expect(cropSlotLabelZone(img, 0, makeGeom({ slotCentersX: [] }))).rejects.toThrow(
+      /slotCentersX must be a non-empty array/
+    );
+    await expect(cropSlotLabelZone(img, 0, makeGeom({ slotPitchPx: 0 }))).rejects.toThrow(
+      /slotPitchPx must be a positive number/
+    );
     await expect(
       cropSlotLabelZone(img, 0, makeGeom({ panelTopNorm: 500, panelBottomNorm: 400 }))
     ).rejects.toThrow(/panelTopNorm\/panelBottomNorm invalid/);
@@ -290,9 +290,7 @@ describe('readSlotLabels', () => {
 
   test('parses fenced ```json array response', async () => {
     const anthropic = mockAnthropic(
-      textResponse(
-        '```json\n[{"slot_index":0,"label":"Lights","confidence":0.9}]\n```'
-      )
+      textResponse('```json\n[{"slot_index":0,"label":"Lights","confidence":0.9}]\n```')
     );
 
     const slotCrops = [
@@ -354,9 +352,7 @@ describe('readSlotLabels', () => {
 
   test('confidence gating: label with confidence=0.9 passes through unchanged', async () => {
     const anthropic = mockAnthropic(
-      textResponse(
-        JSON.stringify([{ slot_index: 0, label: 'Sockets', confidence: 0.9 }])
-      )
+      textResponse(JSON.stringify([{ slot_index: 0, label: 'Sockets', confidence: 0.9 }]))
     );
     const slotCrops = [
       { slotIndex: 0, buffer: Buffer.from([0xff]), bbox: { x: 0, y: 0, w: 10, h: 10 } },
@@ -369,9 +365,7 @@ describe('readSlotLabels', () => {
 
   test('confidence gating: label with confidence=0.3 is nulled out but rawLabel is preserved', async () => {
     const anthropic = mockAnthropic(
-      textResponse(
-        JSON.stringify([{ slot_index: 0, label: 'Sockets', confidence: 0.3 }])
-      )
+      textResponse(JSON.stringify([{ slot_index: 0, label: 'Sockets', confidence: 0.3 }]))
     );
     const slotCrops = [
       { slotIndex: 0, buffer: Buffer.from([0xff]), bbox: { x: 0, y: 0, w: 10, h: 10 } },
@@ -384,9 +378,7 @@ describe('readSlotLabels', () => {
 
   test('confidence gating: label at exactly the threshold (0.5) is kept (>= semantics)', async () => {
     const anthropic = mockAnthropic(
-      textResponse(
-        JSON.stringify([{ slot_index: 0, label: 'Lights', confidence: 0.5 }])
-      )
+      textResponse(JSON.stringify([{ slot_index: 0, label: 'Lights', confidence: 0.5 }]))
     );
     const slotCrops = [
       { slotIndex: 0, buffer: Buffer.from([0xff]), bbox: { x: 0, y: 0, w: 10, h: 10 } },
@@ -398,9 +390,7 @@ describe('readSlotLabels', () => {
 
   test('confidence gating: opts.labelConfidenceMin=0.8 overrides default; 0.6-confidence label is nulled', async () => {
     const anthropic = mockAnthropic(
-      textResponse(
-        JSON.stringify([{ slot_index: 0, label: 'Cooker', confidence: 0.6 }])
-      )
+      textResponse(JSON.stringify([{ slot_index: 0, label: 'Cooker', confidence: 0.6 }]))
     );
     const slotCrops = [
       { slotIndex: 0, buffer: Buffer.from([0xff]), bbox: { x: 0, y: 0, w: 10, h: 10 } },
@@ -417,9 +407,7 @@ describe('readSlotLabels', () => {
   test('confidence gating: process.env.CCU_LABEL_CONFIDENCE_MIN overrides default 0.5', async () => {
     // 0.65-confidence label: passes with default (0.5) but should be nulled with env threshold (0.7)
     const anthropic = mockAnthropic(
-      textResponse(
-        JSON.stringify([{ slot_index: 0, label: 'Shower', confidence: 0.65 }])
-      )
+      textResponse(JSON.stringify([{ slot_index: 0, label: 'Shower', confidence: 0.65 }]))
     );
     const slotCrops = [
       { slotIndex: 0, buffer: Buffer.from([0xff]), bbox: { x: 0, y: 0, w: 10, h: 10 } },
@@ -509,11 +497,9 @@ describe('extractSlotLabels', () => {
       )
     );
 
-    const result = await extractSlotLabels(
-      img,
-      makeGeom({ slotCentersX: [100, 300, 500] }),
-      { anthropicClient: anthropic }
-    );
+    const result = await extractSlotLabels(img, makeGeom({ slotCentersX: [100, 300, 500] }), {
+      anthropicClient: anthropic,
+    });
 
     expect(result.skippedSlotIndices).toEqual([]);
     expect(result.labels).toHaveLength(3);

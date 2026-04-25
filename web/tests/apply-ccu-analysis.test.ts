@@ -22,7 +22,7 @@ function makeJob(boards: Array<{ id: string; designation: string }>): JobDetail 
     user_id: 'u1',
     certificate_type: 'EICR',
     folder_name: 'job-1',
-    board: { boards },
+    boards,
   } as unknown as JobDetail;
 }
 
@@ -79,8 +79,8 @@ describe('applyCcuAnalysisToJob — P0-3 multi-board scoping', () => {
       targetBoardId: 'board-db1',
     });
 
-    const patchedBoard = result.patch.board as { boards: Array<Record<string, unknown>> };
-    const row = patchedBoard.boards[0];
+    const patchedBoards = result.patch.boards as Array<Record<string, unknown>>;
+    const row = patchedBoards[0];
     expect(row.board_model).toBe('Wylex NH10');
     expect(row.name).toBe('Wylex NH10');
   });
@@ -91,24 +91,22 @@ describe('applyCcuAnalysisToJob — P0-3 multi-board scoping', () => {
     // code reads `spd_present` and early-returns when undefined.
     const job: JobDetail = {
       ...makeJob([{ id: 'board-db1', designation: 'DB1' }]),
-      board: {
-        boards: [
-          {
-            id: 'board-db1',
-            designation: 'DB1',
-            spd_status: 'Fitted',
-            spd_type: 'Type 2',
-          },
-        ],
-      },
+      boards: [
+        {
+          id: 'board-db1',
+          designation: 'DB1',
+          spd_status: 'Fitted',
+          spd_type: 'Type 2',
+        },
+      ],
     };
 
     const result = applyCcuAnalysisToJob(job, { board_model: 'X', circuits: [] } as CCUAnalysis, {
       targetBoardId: 'board-db1',
     });
 
-    const patchedBoard = result.patch.board as { boards: Array<Record<string, unknown>> };
-    const row = patchedBoard.boards[0];
+    const patchedBoards = result.patch.boards as Array<Record<string, unknown>>;
+    const row = patchedBoards[0];
     // Untouched because spd_present was undefined on the incoming analysis.
     expect(row.spd_status).toBe('Fitted');
     expect(row.spd_type).toBe('Type 2');

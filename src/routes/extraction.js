@@ -14,10 +14,7 @@ import { getActiveSession } from '../state/recording-sessions.js';
 import logger from '../logger.js';
 import sharp from 'sharp';
 import { createFileFilter, IMAGE_MIMES, handleUploadError } from '../utils/upload.js';
-import {
-  prepareModernGeometry,
-  classifyModernSlots,
-} from '../extraction/ccu-geometric.js';
+import { prepareModernGeometry, classifyModernSlots } from '../extraction/ccu-geometric.js';
 import {
   prepareRewireableGeometry,
   classifyRewireableSlots,
@@ -734,8 +731,7 @@ export function assembleGeometricResult(perSlotState) {
 
   if (isRewireablePipeline) {
     // Overall lowConfidence combines Stage 1 SD + any Stage 3 per-slot floor hit.
-    const lowConfidence =
-      prepared.stageOutputs.stage1.lowConfidence || !!cls.lowConfidence;
+    const lowConfidence = prepared.stageOutputs.stage1.lowConfidence || !!cls.lowConfidence;
 
     return {
       schemaVersion: 'ccu-rewireable-v1',
@@ -885,11 +881,7 @@ Return ONLY the JSON object.`;
  *
  * @returns {Array|null} circuits array, or null if slots is empty/invalid.
  */
-export function slotsToCircuits({
-  slots,
-  mainSwitchSide,
-  minSlotConfidence = 0.7,
-}) {
+export function slotsToCircuits({ slots, mainSwitchSide, minSlotConfidence = 0.7 }) {
   if (!Array.isArray(slots) || slots.length === 0) return null;
 
   const scanOrder = mainSwitchSide === 'right' ? [...slots].reverse() : [...slots];
@@ -980,14 +972,11 @@ export function slotsToCircuits({
       const nextUpstreamRcd = {
         type: slot.rcdWaveformType || null,
         sensitivity:
-          slot.sensitivity != null && slot.sensitivity !== ''
-            ? String(slot.sensitivity)
-            : null,
+          slot.sensitivity != null && slot.sensitivity !== '' ? String(slot.sensitivity) : null,
       };
 
       const lastPushed = circuits[circuits.length - 1];
-      const lastWasThisRcdPair =
-        lastPushed?.is_rcd_device && lastPushed?._rcdPairOpen === true;
+      const lastWasThisRcdPair = lastPushed?.is_rcd_device && lastPushed?._rcdPairOpen === true;
 
       if (lastWasThisRcdPair) {
         // Second slot of the same physical RCD — gap-fill any field the
@@ -1047,8 +1036,7 @@ export function slotsToCircuits({
     // still emits the slot's best reading — we don't drop it, because if
     // the neighbour wasn't classified we'd lose the circuit entirely.
     const isPartial = content === 'partial';
-    const confident =
-      !isPartial && (slot.confidence ?? 0) >= minSlotConfidence;
+    const confident = !isPartial && (slot.confidence ?? 0) >= minSlotConfidence;
     const slotLabel =
       slot.label != null && String(slot.label).trim().length > 0 ? slot.label : null;
 
@@ -1486,8 +1474,7 @@ questionsForInspector: return EMPTY array [] unless RCD type could not be determ
       // than a ~10-15s serial cost on wide boards — labeling an extra 1-2 slots
       // per request is fine because the merger skips main_switch/spd classifications
       // by design, so the extra labels never surface in circuits[].
-      const panelTopNorm =
-        prepared.panelBounds?.top ?? prepared.medianRails?.rail_top ?? null;
+      const panelTopNorm = prepared.panelBounds?.top ?? prepared.medianRails?.rail_top ?? null;
       const panelBottomNorm =
         prepared.panelBounds?.bottom ?? prepared.medianRails?.rail_bottom ?? null;
 
@@ -1529,9 +1516,7 @@ questionsForInspector: return EMPTY array [] unless RCD type could not be determ
         Number.isFinite(labelGeom.panelTopNorm) &&
         Number.isFinite(labelGeom.panelBottomNorm);
 
-      const classifyFn = isRewireablePipeline
-        ? classifyRewireableSlots
-        : classifyModernSlots;
+      const classifyFn = isRewireablePipeline ? classifyRewireableSlots : classifyModernSlots;
       const classifyPromise = classifyFn(imageBytes, prepared).catch((err) => {
         logger.warn('CCU per-slot classify failed (non-fatal)', {
           userId: req.user.id,
@@ -1550,10 +1535,7 @@ questionsForInspector: return EMPTY array [] unless RCD type could not be determ
           })
         : Promise.resolve(null);
 
-      const [classified, labelPassResult] = await Promise.all([
-        classifyPromise,
-        labelPromise,
-      ]);
+      const [classified, labelPassResult] = await Promise.all([classifyPromise, labelPromise]);
 
       return {
         prepared,
@@ -1720,9 +1702,7 @@ questionsForInspector: return EMPTY array [] unless RCD type could not be determ
     // Reassemble `geometricResult` from prepared + classified halves so the
     // rest of the request path (sidecar upload, circuit merge, logging) sees
     // the same object it did before the prepare/classify split.
-    const geometricResult = perSlotState
-      ? assembleGeometricResult(perSlotState)
-      : null;
+    const geometricResult = perSlotState ? assembleGeometricResult(perSlotState) : null;
 
     if (geometricResult) {
       // Attach geometry — shape varies slightly by pipeline.
@@ -1759,9 +1739,7 @@ questionsForInspector: return EMPTY array [] unless RCD type could not be determ
         if (labelPassResult && !labelPassResult.__error && Array.isArray(labelPassResult.labels)) {
           // Attach labels onto the slots[] array by slotIndex so iOS and
           // slotsToCircuits both see them.
-          const labelBySlotIndex = new Map(
-            labelPassResult.labels.map((l) => [l.slotIndex, l])
-          );
+          const labelBySlotIndex = new Map(labelPassResult.labels.map((l) => [l.slotIndex, l]));
           analysis.slots = geometricResult.slots.map((slot) => {
             const lab = labelBySlotIndex.get(slot.slotIndex);
             return lab
