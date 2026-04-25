@@ -1051,6 +1051,58 @@ function analyzeSession(sessionDir) {
     return stripped.slice(0, 99) + "…";
   }
 
+  // Plan 08-06 r5-#2 (MINOR): bucket on the RAW canonicalised value,
+  // not on the truncated display form.
+  //
+  // Codex r5-#2 raised that safeDisplayValue() was applied BEFORE
+  // bucketing — the call site set the Map key TO the truncated form.
+  // Two distinct outcomes that share their first 99 chars but diverge
+  // at char 100+ both produced the same "AAA…" key and collapsed into
+  // one entry. True drift shape (two distinct values) was hidden.
+  //
+  // canonicaliseRaw() mirrors safeDisplayValue's per-type
+  // stringification + control-char strip but does NOT length-cap.
+  // This is the BUCKET KEY — distinct underlying values stay distinct
+  // even when their rendered display form is the same.
+  //
+  // Length-cap is applied at the materialisation pass (when building
+  // the unknown_outcomes[] / malformed_outcomes[] arrays for JSON
+  // output) so the operator-facing display value still bounds report
+  // size.
+  //
+  // Why share the per-type stringification path: the bucket key MUST
+  // be a primitive (Map keys are compared by SameValueZero, so two
+  // separate `{}` objects would never bucket together). Stringifying
+  // gives a stable primitive key per per-type shape, mirroring the
+  // r3-#2 contract where `0` → `"0"`, `false` → `"false"`, `{}` →
+  // `"{}"`, etc.
+  //
+  // Why share the control-char strip: hostile log writers can encode
+  // distinct control-byte payloads that would render identically
+  // (after strip) but bucket separately if we kept the raw form.
+  // Bucketing on the stripped form aligns with the operational
+  // signal: "evil\x00value" and "evil\x01value" are the same drift
+  // event from the operator's perspective. (If we ever want to
+  // distinguish them, this is the call site to revisit.)
+  //
+  // Contract anchor: scripts/__tests__/analyze-session.test.mjs
+  // "Plan 08-06 r5-#2" block — 4 tests (1 RED→GREEN + 3 regression
+  // locks for the legacy length-bomb / control-char / sum-invariant
+  // cases) + new fixture near-collision-session/.
+  function canonicaliseRaw(raw) {
+    let s;
+    if (typeof raw === "string") {
+      s = raw;
+    } else if (raw === undefined || raw === null) {
+      s = String(raw);
+    } else {
+      const j = JSON.stringify(raw);
+      s = typeof j === "string" ? j : String(raw);
+    }
+    // eslint-disable-next-line no-control-regex
+    return s.replace(/[\x00-\x1F\x7F]/g, "");
+  }
+
   const tools = [...toolMap.values()]
     .map((entry) => ({
       name: entry.name,
@@ -1147,35 +1199,44 @@ function analyzeSession(sessionDir) {
     // the `typeof !== "string"` check, empty-string is caught by the
     // explicit `=== ""` clause.
     //
-    // safeDisplayValue handles the per-type stringification (null/
-    // undefined via String(), other non-strings via JSON.stringify;
-    // strings pass through unchanged) and the strip+cap.
+    // Plan 08-06 r5-#2 (MINOR): bucket on the RAW canonicalised value
+    // (canonicaliseRaw — same per-type stringification + control-char
+    // strip as safeDisplayValue but WITHOUT the length cap). Length-
+    // cap is applied at the materialisation pass below. Distinct raw
+    // values that share a 99-char prefix now stay in distinct buckets.
     if (typeof outcome !== "string" || outcome === "") {
-      const key = safeDisplayValue(outcome);
-      malformedOutcomeMap.set(key, (malformedOutcomeMap.get(key) || 0) + 1);
+      const bucketKey = canonicaliseRaw(outcome);
+      malformedOutcomeMap.set(bucketKey, (malformedOutcomeMap.get(bucketKey) || 0) + 1);
       continue;
     }
-    // Plan 08-04 r3-#1: bucket the unknown branch by the SAFE display
-    // form rather than the raw value. Two adversarial strings whose
-    // only difference was a 100+ char suffix or control bytes will
-    // collide here (acceptable conflation — the operational signal is
-    // "something unknown showed up", not the exact byte contents).
+    // Plan 08-06 r5-#2 (MINOR): same restructure on the unknown branch.
+    // The frozen-enum check (`Object.hasOwn(outcomes, outcome)`) still
+    // uses the RAW string outcome — known-enum keys are pure ASCII and
+    // bounded length, so bucket-vs-known disambiguation is unaffected.
     if (Object.hasOwn(outcomes, outcome)) {
       outcomes[outcome] += 1;
     } else {
-      const safeKey = safeDisplayValue(outcome);
-      unknownOutcomeMap.set(safeKey, (unknownOutcomeMap.get(safeKey) || 0) + 1);
+      const bucketKey = canonicaliseRaw(outcome);
+      unknownOutcomeMap.set(bucketKey, (unknownOutcomeMap.get(bucketKey) || 0) + 1);
     }
   }
 
-  const unknownOutcomes = [...unknownOutcomeMap.entries()].map(([value, count]) => ({
-    value,
+  // Plan 08-06 r5-#2: materialisation pass — apply safeDisplayValue
+  // (length-cap + control-char strip — though the strip is redundant
+  // here because canonicaliseRaw already stripped) to the bucket keys
+  // when building the output arrays. The COUNT distribution carries
+  // the operational signal (two distinct raw values past the cap show
+  // up as two entries with their own counts, even when they render to
+  // the same display string); the displayed `value` is just the
+  // operator-facing label and is bounded by the length cap.
+  const unknownOutcomes = [...unknownOutcomeMap.entries()].map(([rawKey, count]) => ({
+    value: safeDisplayValue(rawKey),
     count,
   }));
   const unknownOutcomeCount = unknownOutcomes.reduce((sum, e) => sum + e.count, 0);
 
-  const malformedOutcomes = [...malformedOutcomeMap.entries()].map(([value, count]) => ({
-    value,
+  const malformedOutcomes = [...malformedOutcomeMap.entries()].map(([rawKey, count]) => ({
+    value: safeDisplayValue(rawKey),
     count,
   }));
   const malformedOutcomeCount = malformedOutcomes.reduce((sum, e) => sum + e.count, 0);
