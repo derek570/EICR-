@@ -671,3 +671,159 @@ describe("Plan 05-07 r1-#3 — synthResultWrapped honours opts.mode (defaults to
     gate.destroy();
   });
 });
+
+// =============================================================================
+// Group 7: Plan 05-08 r2-#1 — PRE_EMIT_NON_FIRE_REASONS treated as non-fires
+// =============================================================================
+// The inner dispatcher (Plan 03-05 + 04-26) emits three reasons whose
+// envelopes signal "the ask never reached iOS / never registered with
+// pendingAsks":
+//
+//   - validation_error  (Plan 03-02 — invalid input rejected pre-dispatch)
+//   - duplicate_tool_call_id  (Plan 03-05 — SDK retry-replay caught at register)
+//   - prompt_leak_blocked  (Plan 04-26 — prompt-leak filter blocked pre-emit)
+//
+// Pre-fix the wrapper's isRealFire returned `true` for these (they aren't in
+// WRAPPER_SHORT_CIRCUIT_REASONS) so wrapAskDispatcherWithGates incremented
+// askBudget + restrainedMode.recordAsk for them. That is wrong — the budget
+// cap counts "Sonnet successfully probed the user", and these reasons mean
+// the user was never probed. Effects:
+//   - Budget burned on inputs that never reached the user.
+//   - Restrained-mode rolling-5-turn counter saw phantom asks, raising the
+//     false-positive activation rate.
+//
+// Fix: PRE_EMIT_NON_FIRE_REASONS frozen Set in stage6-ask-gate-wrapper.js;
+// isRealFire returns false when body.reason is in the set. Exported so the
+// offline harness can extend HARNESS_WRAPPER_SHORT_CIRCUIT_REASONS with the
+// same values (single source of truth — runtime budget AND offline askCount
+// share the classifier).
+//
+// Tests pass an inner dispatcher that returns the pre-emit envelope verbatim
+// (the inner dispatcher already emitted its STO-02 row before returning, so
+// the wrapper's job is purely to NOT consume budget on these).
+// =============================================================================
+
+describe('Plan 05-08 r2-#1 — PRE_EMIT_NON_FIRE_REASONS treated as non-fires', () => {
+  function makeInnerDispatcherReturning(reason, isError = false) {
+    return jest.fn(async (call /* , ctx */) => ({
+      tool_use_id: call.id,
+      content: JSON.stringify({ answered: false, reason }),
+      is_error: isError,
+    }));
+  }
+
+  test('validation_error → askBudget.increment + restrainedMode.recordAsk NOT called', async () => {
+    const logger = makeLogger();
+    // Real dispatcher returns is_error:true on validation_error (only outcome
+    // that does so) — the wrapper's accounting must still treat it as a
+    // pre-emit non-fire regardless of the is_error flag.
+    const inner = makeInnerDispatcherReturning('validation_error', true);
+    const askBudget = makeBudget();
+    const restrainedMode = makeRestrained();
+    const gate = createAskGateWrapper({ logger, sessionId: 'sess-1' });
+
+    const wrapped = wrapAskDispatcherWithGates(inner, {
+      askBudget,
+      restrainedMode,
+      gate,
+      filledSlotsShadow: () => {},
+      logger,
+      sessionId: 'sess-1',
+    });
+
+    const promise = wrapped(makeCall('call-1', 'ze', 0), makeCtx('sess-1-turn-1'));
+    jest.advanceTimersByTime(QUESTION_GATE_DELAY_MS);
+    const result = await promise;
+
+    expect(JSON.parse(result.content).reason).toBe('validation_error');
+    expect(askBudget.increment).not.toHaveBeenCalled();
+    expect(restrainedMode.recordAsk).not.toHaveBeenCalled();
+
+    gate.destroy();
+  });
+
+  test('duplicate_tool_call_id → askBudget.increment + restrainedMode.recordAsk NOT called', async () => {
+    const logger = makeLogger();
+    const inner = makeInnerDispatcherReturning('duplicate_tool_call_id', false);
+    const askBudget = makeBudget();
+    const restrainedMode = makeRestrained();
+    const gate = createAskGateWrapper({ logger, sessionId: 'sess-1' });
+
+    const wrapped = wrapAskDispatcherWithGates(inner, {
+      askBudget,
+      restrainedMode,
+      gate,
+      filledSlotsShadow: () => {},
+      logger,
+      sessionId: 'sess-1',
+    });
+
+    const promise = wrapped(makeCall('call-1', 'ze', 0), makeCtx('sess-1-turn-1'));
+    jest.advanceTimersByTime(QUESTION_GATE_DELAY_MS);
+    const result = await promise;
+
+    expect(JSON.parse(result.content).reason).toBe('duplicate_tool_call_id');
+    expect(askBudget.increment).not.toHaveBeenCalled();
+    expect(restrainedMode.recordAsk).not.toHaveBeenCalled();
+
+    gate.destroy();
+  });
+
+  test('prompt_leak_blocked → askBudget.increment + restrainedMode.recordAsk NOT called', async () => {
+    const logger = makeLogger();
+    const inner = makeInnerDispatcherReturning('prompt_leak_blocked', false);
+    const askBudget = makeBudget();
+    const restrainedMode = makeRestrained();
+    const gate = createAskGateWrapper({ logger, sessionId: 'sess-1' });
+
+    const wrapped = wrapAskDispatcherWithGates(inner, {
+      askBudget,
+      restrainedMode,
+      gate,
+      filledSlotsShadow: () => {},
+      logger,
+      sessionId: 'sess-1',
+    });
+
+    const promise = wrapped(makeCall('call-1', 'ze', 0), makeCtx('sess-1-turn-1'));
+    jest.advanceTimersByTime(QUESTION_GATE_DELAY_MS);
+    const result = await promise;
+
+    expect(JSON.parse(result.content).reason).toBe('prompt_leak_blocked');
+    expect(askBudget.increment).not.toHaveBeenCalled();
+    expect(restrainedMode.recordAsk).not.toHaveBeenCalled();
+
+    gate.destroy();
+  });
+
+  test('regression lock — inner-dispatcher reasons NOT in PRE_EMIT_NON_FIRE_REASONS still count as fires', async () => {
+    // user_moved_on / timeout / etc are real fires (Sonnet did probe the
+    // user; the user just didn't engage). These MUST still increment.
+    // Same case lives in Group 5 but we keep an explicit r2-#1 lock so a
+    // future careless edit to PRE_EMIT_NON_FIRE_REASONS that accidentally
+    // includes user_moved_on flips this regression test red.
+    const logger = makeLogger();
+    const inner = makeInnerDispatcherReturning('user_moved_on', false);
+    const askBudget = makeBudget();
+    const restrainedMode = makeRestrained();
+    const gate = createAskGateWrapper({ logger, sessionId: 'sess-1' });
+
+    const wrapped = wrapAskDispatcherWithGates(inner, {
+      askBudget,
+      restrainedMode,
+      gate,
+      filledSlotsShadow: () => {},
+      logger,
+      sessionId: 'sess-1',
+    });
+
+    const promise = wrapped(makeCall('call-1', 'ze', 0), makeCtx('sess-1-turn-1'));
+    jest.advanceTimersByTime(QUESTION_GATE_DELAY_MS);
+    await promise;
+
+    expect(askBudget.increment).toHaveBeenCalledTimes(1);
+    expect(restrainedMode.recordAsk).toHaveBeenCalledTimes(1);
+
+    gate.destroy();
+  });
+});

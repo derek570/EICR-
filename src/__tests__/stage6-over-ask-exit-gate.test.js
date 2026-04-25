@@ -462,3 +462,111 @@ describe('Plan 05-07 r1-#4 — exit-gate harness validates fixture inputs at loa
     expect(result.stderr).not.toMatch(/invalid_expected_answer_shape/);
   });
 });
+
+// =============================================================================
+// Plan 05-08 r2-#1 — harness askCount excludes pre-emit non-fire reasons
+// =============================================================================
+// The wrapper's PRE_EMIT_NON_FIRE_REASONS set captures three reasons whose
+// envelopes signal "the ask never reached iOS / never registered with
+// pendingAsks": validation_error, duplicate_tool_call_id, prompt_leak_blocked.
+// HARNESS_WRAPPER_SHORT_CIRCUIT_REASONS in scripts/stage6-over-ask-exit-gate.js
+// must include these via the same `import` so the offline aggregate matches
+// the runtime budget/restrained-window accounting.
+//
+// This block authors a temp 1-fixture pool whose inner_outcome is each of the
+// three pre-emit reasons in turn. Asserts the digest's askCount = 0 in every
+// case (the wrapper does not synthesise its own envelope for these — it
+// returns the inner dispatcher's verbatim envelope; the harness counts that
+// envelope at the post-dispatch `firedAskCount` step). Pre-fix the harness's
+// HARNESS_WRAPPER_SHORT_CIRCUIT_REASONS only excluded the wrapper's own short-
+// circuits; the dispatcher's pre-emit envelopes were counted as fires which
+// is wrong.
+// =============================================================================
+
+describe('Plan 05-08 r2-#1 — harness askCount excludes pre-emit non-fire reasons', () => {
+  jest.setTimeout(30000);
+
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(REPO_ROOT, 'tmp-plan-05-08-r2-1-'));
+  });
+
+  afterEach(() => {
+    if (tmpDir && fs.existsSync(tmpDir)) {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  function buildPreEmitFixture(reason) {
+    return {
+      _doc: `Plan 05-08 r2-#1 RED — single ask with inner_outcome reason="${reason}"`,
+      _fixture_shape: 'phase5-over-ask',
+      session: { jobId: `temp-r2-1-${reason}`, certificateType: 'EICR' },
+      ask_user_calls: [
+        {
+          turnId: `temp-r2-1-${reason}-turn-1`,
+          synthetic_time_ms: 0,
+          call: {
+            id: 'toolu_temp_pre_emit',
+            name: 'ask_user',
+            input: {
+              question: 'Q?',
+              reason: 'ambiguous_circuit',
+              context_field: 'none',
+              context_circuit: null,
+              expected_answer_shape: 'free_text',
+            },
+          },
+          inner_outcome: { answered: false, reason },
+        },
+      ],
+      expected_ask_user_count: 0,
+      expected_restrained_activations: 0,
+      expected_outcome_distribution: {},
+      expected_filled_slots_shadow_logs: 0,
+      gate_fixture: false,
+    };
+  }
+
+  test.each([['validation_error'], ['duplicate_tool_call_id'], ['prompt_leak_blocked']])(
+    '%s — askCount === 0 (envelope is a pre-emit non-fire)',
+    (reason) => {
+      fs.writeFileSync(
+        path.join(tmpDir, `sample-pre-emit-${reason}.json`),
+        JSON.stringify(buildPreEmitFixture(reason), null, 2)
+      );
+
+      const result = spawnSync('node', [SCRIPT_PATH, '--json', '--fixtures-dir', tmpDir], {
+        encoding: 'utf8',
+        cwd: REPO_ROOT,
+      });
+
+      let digest = null;
+      if (typeof result.stdout === 'string') {
+        const lines = result.stdout
+          .split('\n')
+          .map((l) => l.trim())
+          .filter((l) => l.startsWith('{'));
+        const lastJsonLine = lines[lines.length - 1];
+        if (lastJsonLine) {
+          try {
+            digest = JSON.parse(lastJsonLine);
+          } catch {
+            digest = null;
+          }
+        }
+      }
+
+      if (!digest) {
+        throw new Error(
+          `failed to parse digest; status=${result.status}\nstdout=${result.stdout}\nstderr=${result.stderr}`
+        );
+      }
+
+      const session = digest.sessions[0];
+      expect(session).toBeDefined();
+      expect(session.askCount).toBe(0);
+    }
+  );
+});
