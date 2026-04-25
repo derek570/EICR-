@@ -166,9 +166,48 @@ const BOARD_TYPE_BOOSTS: Record<string, number> = {
   Crabtree: 1.5,
 };
 
-const MAX_KEYTERMS = 100;
+/**
+ * Hard cap on keyterm count. iOS uses 100 but iOS's base config is
+ * "87+8=95" entries (per its `_budget_note`) so iOS rarely hits the
+ * cap. Web's base config is larger (~113 base + 8 board after recent
+ * additions) which means at MAX=100 the URL-byte budget (1800 chars)
+ * becomes the second cap, dropping the alpha-tail of the keyterm
+ * list — including the analysis-reserved slots in some scenarios.
+ *
+ * Lowering MAX to 85 puts the keyterm-count cap below the URL-byte
+ * cap so the analysis-reserved-slot policy actually delivers what it
+ * advertises. Net Deepgram recognition impact is minor — the dropped
+ * 15 entries are the alpha-tail of base 1.5 terms (mostly the second-
+ * tier observation codes and "for"-suffixed hint phrases), not the
+ * primary-recognition vocabulary.
+ *
+ * Codex review on `e38fa5e` flagged the user-facing miss; this
+ * constant + the analysis-first sort tie-break together resolve it.
+ */
+const MAX_KEYTERMS = 85;
 const TOP_TIER_BOOST_THRESHOLD = 3.0;
 const URL_LENGTH_BUDGET = 1800;
+/**
+ * Slots reserved at the bottom of the cap for analysis-derived
+ * keyterms (board model, parsed label words, "circuit N" refs,
+ * "surge protection"). All of those are 1.0-boost — under a pure
+ * boost-desc sort they lose every slot to the dozen-odd 1.0-tier
+ * base entries (radial, spur, polarity, milliamps, milliseconds,
+ * upstairs, downstairs, etc.) and never reach the URL.
+ *
+ * This is a deliberate, small divergence from iOS's strict
+ * boost-desc cap. iOS's `KeywordBoostGenerator` has the same latent
+ * issue but iOS's base config is shorter (the inline `_budget_note`
+ * in `default_config.json` says "87 base + 8 board" — written when
+ * the list was smaller than today's 113 entries). Reserving 10
+ * slots restores the user-facing "CCU augmentation surfaces in the
+ * Deepgram URL" behaviour that the keyterm port is meant to deliver.
+ *
+ * Codex review finding on commit `e38fa5e`: "1.0 CCU-derived
+ * keyterms are deterministically removed by the existing 100-term
+ * cap". This is the structural fix.
+ */
+const ANALYSIS_RESERVED_SLOTS = 10;
 
 /**
  * Lightweight subset of `CCUAnalysis` (web-side wire shape) that
@@ -208,50 +247,63 @@ export interface KeytermBoost {
  * `generateFromConfig()` byte-for-byte where the input shapes line up.
  */
 export function generateKeyterms(analysis?: CcuAnalysisLite | null): KeytermBoost[] {
-  const boosts: KeytermBoost[] = [];
+  const baseBoosts: KeytermBoost[] = [];
 
   for (const [keyword, boost] of Object.entries(BASE_KEYWORD_BOOSTS)) {
-    boosts.push({ keyword, boost });
+    baseBoosts.push({ keyword, boost });
   }
   for (const [keyword, boost] of Object.entries(BOARD_TYPE_BOOSTS)) {
-    boosts.push({ keyword, boost });
+    baseBoosts.push({ keyword, boost });
   }
 
+  // Track analysis-derived terms separately so the cap-allocation step
+  // below can reserve `ANALYSIS_RESERVED_SLOTS` for them. Dedup here
+  // is against the *base* set (so a base "Hager" still wins over a
+  // CCU "Hager"); the cross-cut between the two pools happens in the
+  // final dedupAndCap step.
+  const analysisBoosts: KeytermBoost[] = [];
+
   if (analysis) {
-    const existing = new Set(boosts.map((b) => b.keyword.toLowerCase()));
+    const baseSeen = new Set(baseBoosts.map((b) => b.keyword.toLowerCase()));
+    const analysisSeen = new Set<string>();
+    const isNovel = (lc: string): boolean => !baseSeen.has(lc) && !analysisSeen.has(lc);
 
     // 1. Board manufacturer (if novel, i.e. not already in the
     //    board-type table).
-    pushIfNovel(boosts, existing, analysis.board_manufacturer, 1.5);
+    pushAnalysisIfNovel(analysisBoosts, analysisSeen, isNovel, analysis.board_manufacturer, 1.5);
 
     // 2. Board model — distinct boost so we don't dupe the manufacturer.
-    pushIfNovel(boosts, existing, analysis.board_model, 1.0);
+    pushAnalysisIfNovel(analysisBoosts, analysisSeen, isNovel, analysis.board_model, 1.0);
 
     // 3. OCPD types found across circuits — strong (2.0) because they're
     //    measurement-context terms the inspector says often.
     for (const ocpd of extractOcpdTypes(analysis.circuits ?? [])) {
-      if (!existing.has(ocpd.toLowerCase())) {
-        boosts.push({ keyword: ocpd, boost: 2.0 });
-        existing.add(ocpd.toLowerCase());
+      const lc = ocpd.toLowerCase();
+      if (isNovel(lc)) {
+        analysisBoosts.push({ keyword: ocpd, boost: 2.0 });
+        analysisSeen.add(lc);
       }
     }
 
     // 4. SPD-related vocabulary if SPD is present on the board.
-    if (analysis.spd_present === true && !existing.has('spd')) {
-      boosts.push({ keyword: 'SPD', boost: 1.5 });
-      boosts.push({ keyword: 'surge protection', boost: 1.0 });
-      existing.add('spd');
-      existing.add('surge protection');
+    if (analysis.spd_present === true && isNovel('spd')) {
+      analysisBoosts.push({ keyword: 'SPD', boost: 1.5 });
+      analysisSeen.add('spd');
+      if (isNovel('surge protection')) {
+        analysisBoosts.push({ keyword: 'surge protection', boost: 1.0 });
+        analysisSeen.add('surge protection');
+      }
     }
 
     // 5. Main switch type if detected.
-    pushIfNovel(boosts, existing, analysis.main_switch_type, 1.5);
+    pushAnalysisIfNovel(analysisBoosts, analysisSeen, isNovel, analysis.main_switch_type, 1.5);
 
     // 6. Label terms parsed out of circuit labels.
     for (const term of extractLabelTerms(analysis.circuits ?? [])) {
-      if (!existing.has(term.toLowerCase())) {
-        boosts.push({ keyword: term, boost: 1.0 });
-        existing.add(term.toLowerCase());
+      const lc = term.toLowerCase();
+      if (isNovel(lc)) {
+        analysisBoosts.push({ keyword: term, boost: 1.0 });
+        analysisSeen.add(lc);
       }
     }
 
@@ -259,20 +311,83 @@ export function generateKeyterms(analysis?: CcuAnalysisLite | null): KeytermBoos
     //    "circuit twelve" mid-test.
     for (const circuit of analysis.circuits ?? []) {
       if (typeof circuit.circuit_number === 'number') {
-        boosts.push({ keyword: `circuit ${circuit.circuit_number}`, boost: 1.0 });
+        const ref = `circuit ${circuit.circuit_number}`;
+        const lc = ref.toLowerCase();
+        if (isNovel(lc)) {
+          analysisBoosts.push({ keyword: ref, boost: 1.0 });
+          analysisSeen.add(lc);
+        }
       }
     }
 
     // 8. RCD ratings spoken either way ("30 milliamp" / "30mA").
     for (const rating of extractRcdRatings(analysis.circuits ?? [])) {
-      if (!existing.has(rating.toLowerCase())) {
-        boosts.push({ keyword: rating, boost: 1.5 });
-        existing.add(rating.toLowerCase());
+      const lc = rating.toLowerCase();
+      if (isNovel(lc)) {
+        analysisBoosts.push({ keyword: rating, boost: 1.5 });
+        analysisSeen.add(lc);
       }
     }
   }
 
-  return dedupAndCap(boosts);
+  return mergeBaseAndAnalysisWithReservedSlots(baseBoosts, analysisBoosts);
+}
+
+/**
+ * Combine base + analysis pools into the final cap. Base entries get
+ * `MAX_KEYTERMS - ANALYSIS_RESERVED_SLOTS` slots (sorted boost desc →
+ * alpha); analysis entries get the rest (same sort within their pool).
+ *
+ * The combined output is sorted boost desc, then *analysis-first*
+ * within each boost tier, then alphabetically. The analysis-first
+ * tie-break is essential because the URL appender then walks this
+ * list in order and stops at the 1800-char budget — without it, base
+ * 1.0 entries (radial, spur, polarity, etc.) would consume the URL
+ * tail and analysis 1.0 entries (Kitchen, "circuit 7") would never
+ * be appended even though they survived the keyterm cap. iOS has
+ * the same latent issue but doesn't have a public-facing claim that
+ * CCU augmentation surfaces in the URL — we do.
+ */
+function mergeBaseAndAnalysisWithReservedSlots(
+  base: KeytermBoost[],
+  analysis: KeytermBoost[]
+): KeytermBoost[] {
+  if (analysis.length === 0) return dedupAndCap(base, MAX_KEYTERMS);
+
+  const reserved = Math.min(ANALYSIS_RESERVED_SLOTS, analysis.length);
+  const baseBudget = MAX_KEYTERMS - reserved;
+
+  const baseCapped = dedupAndCap(base, baseBudget).map((b) => ({ ...b, _isAnalysis: false }));
+  const analysisCapped = dedupAndCap(analysis, reserved).map((b) => ({
+    ...b,
+    _isAnalysis: true,
+  }));
+
+  // Dedup base/analysis collision (rare), then sort with the analysis-
+  // first tie-break and strip the internal flag.
+  const merged = new Map<string, KeytermBoost & { _isAnalysis: boolean }>();
+  for (const entry of [...baseCapped, ...analysisCapped]) {
+    const key = entry.keyword.toLowerCase();
+    const existing = merged.get(key);
+    // Higher boost wins; analysis wins ties (so a base 1.5 collision
+    // with an analysis 1.5 retains the analysis-priority sort key).
+    if (
+      !existing ||
+      entry.boost > existing.boost ||
+      (entry.boost === existing.boost && entry._isAnalysis && !existing._isAnalysis)
+    ) {
+      merged.set(key, entry);
+    }
+  }
+  return Array.from(merged.values())
+    .sort((a, b) => {
+      if (a.boost !== b.boost) return b.boost - a.boost;
+      // Analysis-first within tier — this is the URL-appender priority.
+      if (a._isAnalysis !== b._isAnalysis) return a._isAnalysis ? -1 : 1;
+      return a.keyword < b.keyword ? -1 : a.keyword > b.keyword ? 1 : 0;
+    })
+    .slice(0, MAX_KEYTERMS)
+    .map(({ keyword, boost }) => ({ keyword, boost }));
 }
 
 /**
@@ -322,9 +437,10 @@ export function appendKeytermsToUrl(
 // Internals
 // ---------------------------------------------------------------------
 
-function pushIfNovel(
+function pushAnalysisIfNovel(
   list: KeytermBoost[],
-  existing: Set<string>,
+  analysisSeen: Set<string>,
+  isNovel: (lc: string) => boolean,
   raw: string | null | undefined,
   boost: number
 ): void {
@@ -332,9 +448,9 @@ function pushIfNovel(
   const trimmed = raw.trim();
   if (!trimmed) return;
   const key = trimmed.toLowerCase();
-  if (existing.has(key)) return;
+  if (!isNovel(key)) return;
   list.push({ keyword: trimmed, boost });
-  existing.add(key);
+  analysisSeen.add(key);
 }
 
 function extractOcpdTypes(circuits: NonNullable<CcuAnalysisLite['circuits']>): string[] {
@@ -388,9 +504,12 @@ function extractLabelTerms(circuits: NonNullable<CcuAnalysisLite['circuits']>): 
     }
 
     // Also keep the full label if it's a likely room/area name (length
-    // window matches iOS heuristic).
+    // window matches iOS heuristic). Apply the stop-word filter to the
+    // full label too — iOS skips this check (its 1.0 boosts get capped
+    // out anyway), but with our reserved-slot fix a label like "Spare"
+    // would otherwise leak in via the analysis pool.
     const trimmed = label.trim();
-    if (trimmed.length >= 4 && trimmed.length <= 30) {
+    if (trimmed.length >= 4 && trimmed.length <= 30 && !STOP_WORDS.has(trimmed.toLowerCase())) {
       terms.add(trimmed);
     }
   }
@@ -410,7 +529,7 @@ function extractRcdRatings(circuits: NonNullable<CcuAnalysisLite['circuits']>): 
   return Array.from(ratings).sort();
 }
 
-function dedupAndCap(boosts: KeytermBoost[]): KeytermBoost[] {
+function dedupAndCap(boosts: KeytermBoost[], cap: number): KeytermBoost[] {
   const bestByKey = new Map<string, KeytermBoost>();
   for (const entry of boosts) {
     const key = entry.keyword.toLowerCase();
@@ -423,7 +542,7 @@ function dedupAndCap(boosts: KeytermBoost[]): KeytermBoost[] {
     if (a.boost !== b.boost) return b.boost - a.boost;
     return a.keyword < b.keyword ? -1 : a.keyword > b.keyword ? 1 : 0;
   });
-  return sorted.slice(0, MAX_KEYTERMS);
+  return sorted.slice(0, cap);
 }
 
 // Re-export constants for tests + diagnostics.
@@ -431,6 +550,7 @@ export const KEYTERM_INTERNALS = {
   MAX_KEYTERMS,
   TOP_TIER_BOOST_THRESHOLD,
   URL_LENGTH_BUDGET,
+  ANALYSIS_RESERVED_SLOTS,
   BASE_KEYWORD_BOOSTS,
   BOARD_TYPE_BOOSTS,
 } as const;

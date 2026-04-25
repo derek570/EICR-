@@ -74,27 +74,24 @@ describe('generateKeyterms — config-only path', () => {
 });
 
 describe('generateKeyterms — CCU-augmented path', () => {
-  it('injects manufacturer / SPD / main-switch terms (boost ≥1.5) when the analysis carries them', () => {
-    // 1.0-tier augmentations (model, circuit refs, label terms) compete
-    // with base config 1.0 entries for the last MAX_KEYTERMS slots —
-    // matching iOS behaviour they often get cut. The 1.5+ augmented
-    // terms always survive the cap; that's what we assert here.
-    // Coverage for the 1.0-tier extraction logic itself lives in the
-    // dedicated helper tests further down (it kicks in whenever the
-    // base config has spare budget).
+  it('injects manufacturer / model / SPD / main-switch terms when the analysis carries them', () => {
+    // Post codex-fix on `e38fa5e`: the analysis pool gets
+    // ANALYSIS_RESERVED_SLOTS (10) reserved at the bottom of the cap,
+    // so even 1.0-boost augmentations (board_model, surge_protection)
+    // make it into the URL.
     const list = generateKeyterms({
-      board_manufacturer: 'Acme Boards', // novel — Acme isn't in the base table — boost 1.5
-      board_model: 'Acme-X1', // boost 1.0 — may be cut by cap
+      board_manufacturer: 'Acme Boards', // novel — boost 1.5
+      board_model: 'Acme-X1', // boost 1.0 — now reaches via reserved slots
       main_switch_type: 'Isolator', // boost 1.5
       spd_present: true,
       circuits: [],
     });
     const keys = list.map((k) => k.keyword);
     expect(keys).toContain('Acme Boards');
+    expect(keys).toContain('Acme-X1');
     expect(keys).toContain('Isolator');
     expect(keys).toContain('SPD');
-    // surge protection is boost 1.0 — sometimes survives, sometimes
-    // doesn't, depending on config alphabetical sort. Don't assert.
+    expect(keys).toContain('surge protection');
   });
 
   it('does NOT duplicate manufacturer when the value matches an existing board-types entry', () => {
@@ -107,12 +104,8 @@ describe('generateKeyterms — CCU-augmented path', () => {
     expect(hagerEntries).toHaveLength(1);
   });
 
-  it('extracts OCPD types (uppercased) and dedupes against base config (RCBO/RCD)', () => {
-    // OCPD types from circuits are 2.0-boost — well above the cap
-    // threshold so they always make it. Circuit "circuit N" references
-    // are 1.0-boost and contend with base 1.0 entries; tested via the
-    // direct extraction helper below rather than asserting survival
-    // here.
+  it('extracts OCPD types (uppercased), RCBO/RCD flags, and "circuit N" refs from the circuits array', () => {
+    // Post codex-fix: "circuit N" entries land via the reserved slots.
     const list = generateKeyterms({
       circuits: [
         { circuit_number: 1, ocpd_type: 'mcb', is_rcbo: false, rcd_protected: false },
@@ -121,36 +114,52 @@ describe('generateKeyterms — CCU-augmented path', () => {
       ],
     });
     const keys = list.map((k) => k.keyword);
-    // OCPD types upper-cased and deduped.
     expect(keys).toContain('FUSE');
     // MCB / RCBO / RCD already in base — must NOT appear duplicated.
-    const mcbEntries = list.filter((k) => k.keyword.toLowerCase() === 'mcb');
-    const rcboEntries = list.filter((k) => k.keyword.toLowerCase() === 'rcbo');
-    const rcdEntries = list.filter((k) => k.keyword.toLowerCase() === 'rcd');
-    expect(mcbEntries).toHaveLength(1);
-    expect(rcboEntries).toHaveLength(1);
-    expect(rcdEntries).toHaveLength(1);
+    expect(list.filter((k) => k.keyword.toLowerCase() === 'mcb')).toHaveLength(1);
+    expect(list.filter((k) => k.keyword.toLowerCase() === 'rcbo')).toHaveLength(1);
+    expect(list.filter((k) => k.keyword.toLowerCase() === 'rcd')).toHaveLength(1);
+    expect(keys).toContain('circuit 1');
+    expect(keys).toContain('circuit 2');
+    expect(keys).toContain('circuit 3');
   });
 
   it('extracts label terms, skipping stop-words and short tokens', () => {
-    // Label terms are 1.0-boost — like circuit refs they contend with
-    // base 1.0 entries and the cap. The assertion that matters here is
-    // the *filter* — stop-words must NOT appear regardless of cap. We
-    // exercise the filter via a contrived input that has the chance of
-    // landing in the budget at all.
+    // Post codex-fix: label terms also reach the URL via reserved slots.
     const list = generateKeyterms({
       circuits: [
-        { circuit_number: 1, label: 'Spare' }, // stop-word — must NEVER appear
-        { circuit_number: 2, label: 'NA' }, // stop-word — must NEVER appear
-        { circuit_number: 3, label: 'Cct' }, // stop-word — must NEVER appear
+        { circuit_number: 1, label: 'Kitchen sockets' },
+        { circuit_number: 2, label: 'Spare' }, // stop-word — must be dropped
+        { circuit_number: 3, label: 'Bedroom 2 lights' },
       ],
     });
     const keys = list.map((k) => k.keyword);
-    // Stop-words are filtered out regardless of cap — the rejection
-    // happens before dedupAndCap.
+    expect(keys).toContain('Kitchen');
+    expect(keys).toContain('Sockets');
+    expect(keys).toContain('Bedroom');
+    expect(keys).toContain('Lights');
+    expect(keys).toContain('Kitchen sockets');
+    // Stop-words filtered before dedupAndCap.
     expect(keys.includes('Spare')).toBe(false);
-    expect(keys.includes('NA')).toBe(false);
-    expect(keys.includes('Cct')).toBe(false);
+  });
+
+  it('reserves slots for analysis-derived terms even when the base list is full (codex P2 on e38fa5e)', () => {
+    // The exact bug codex flagged: analysis-derived 1.0 terms used to
+    // be deterministically dropped because the base list saturated the
+    // 100-term cap before any analysis term was considered. Repro from
+    // the codex review verbatim:
+    const list = generateKeyterms({
+      board_model: 'Acme-X1',
+      circuits: [{ circuit_number: 7, label: 'Kitchen sockets' }],
+      spd_present: true,
+    });
+    const keys = list.map((k) => k.keyword);
+    // Pre-fix: NONE of these surfaced. Post-fix: all do via the
+    // ANALYSIS_RESERVED_SLOTS allocation.
+    expect(keys).toContain('Acme-X1');
+    expect(keys).toContain('circuit 7');
+    expect(keys).toContain('Kitchen');
+    expect(keys).toContain('surge protection');
   });
 
   it('emits both spoken + numeric RCD ratings and dedupes', () => {

@@ -878,12 +878,11 @@ describe('DeepgramService', () => {
 
         const url = new URL(capturedUrl);
         const keyterms = url.searchParams.getAll('keyterm');
-        // 1.5-tier augmentation (manufacturer name) reliably surfaces.
-        // 1.0-tier additions (Kitchen / "circuit 7") compete with base
-        // 1.0 entries for the last MAX_KEYTERMS slots — they're tested
-        // at the unit level in keyword-boosts.test.ts where the cap
-        // contention isn't part of the assertion.
-        expect(keyterms).toContain('NovelBrand');
+        // Post codex-fix on `e38fa5e`: analysis-derived terms land via
+        // the reserved slots so all three augmentation tiers surface.
+        expect(keyterms).toContain('NovelBrand'); // 1.5 — manufacturer
+        expect(keyterms).toContain('Kitchen'); // 1.0 — label-extracted
+        expect(keyterms).toContain('circuit 7'); // 1.0 — circuit-ref
 
         service.disconnect();
       } finally {
