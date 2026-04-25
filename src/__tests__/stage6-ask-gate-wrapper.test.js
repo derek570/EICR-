@@ -1336,15 +1336,26 @@ describe('Plan 05-10 r4-#2 — predicate helpers replace mutable Set exports', (
     expect(typeof isWrapperShortCircuitReason).toBe('function');
   });
 
-  test('isWrapperShortCircuitReason returns true for every legacy member', () => {
+  test('isWrapperShortCircuitReason returns true for every legacy member (post-r5-#2)', () => {
     // Legacy WRAPPER_SHORT_CIRCUIT_REASONS members (Plan 05-01 +
-    // r1-#1 audit prose):
+    // r1-#1 audit prose). Plan 05-11 r5-#2 splits dispatcher_error
+    // into two reasons:
+    //   - 'gate_dispatcher_error' (NEW) — wrapper-internal failures.
+    //     Reserved at r5-#2 closure for any future wrapper-side catch
+    //     (e.g. timer-leak, gate.destroy mid-fire). True non-fire.
+    //   - 'dispatcher_error' (REMOVED from this set at r5-#2) —
+    //     conservatively reclassified as a real fire because the
+    //     inner dispatcher's outer catch block (line 321 of
+    //     stage6-dispatcher-ask.js) wraps everything inside the
+    //     live-path Promise constructor including post-register +
+    //     post-ws.send code paths. We cannot prove pre-emit on every
+    //     code path, so we count as fire.
     expect(isWrapperShortCircuitReason('gated')).toBe(true);
     expect(isWrapperShortCircuitReason('session_terminated')).toBe(true);
-    expect(isWrapperShortCircuitReason('dispatcher_error')).toBe(true);
+    expect(isWrapperShortCircuitReason('gate_dispatcher_error')).toBe(true);
   });
 
-  test('isWrapperShortCircuitReason returns false for non-members', () => {
+  test('isWrapperShortCircuitReason returns false for non-members (post-r5-#2)', () => {
     // Real-fire reasons (inner dispatcher answers; not wrapper short-
     // circuits) MUST return false.
     expect(isWrapperShortCircuitReason('answered')).toBe(false);
@@ -1359,6 +1370,13 @@ describe('Plan 05-10 r4-#2 — predicate helpers replace mutable Set exports', (
     // isRealFire's classifier path):
     expect(isWrapperShortCircuitReason('restrained_mode')).toBe(false);
     expect(isWrapperShortCircuitReason('ask_budget_exhausted')).toBe(false);
+    // Plan 05-11 r5-#2 — `dispatcher_error` reclassified as fire
+    // (post-emit conservative). It is NOT in the wrapper's
+    // short-circuit set any more. The wrapper still EMITS the
+    // 'dispatcher_error' envelope at line ~282 (timer catch path);
+    // the classifier swap simply makes those envelopes count as
+    // fires now (budget burn, restrained-window slot consumed).
+    expect(isWrapperShortCircuitReason('dispatcher_error')).toBe(false);
     // Garbage input must not throw and must return false.
     expect(isWrapperShortCircuitReason('not-a-real-reason')).toBe(false);
     expect(isWrapperShortCircuitReason('')).toBe(false);
@@ -1383,6 +1401,16 @@ describe('Plan 05-10 r4-#2 — predicate helpers replace mutable Set exports', (
     expect(isPreEmitNonFireReason('gated')).toBe(false);
     expect(isPreEmitNonFireReason('restrained_mode')).toBe(false);
     expect(isPreEmitNonFireReason('ask_budget_exhausted')).toBe(false);
+    // Plan 05-11 r5-#2 — `dispatcher_error` is NOT pre-emit. The
+    // inner dispatcher's outer catch wraps post-register + post-
+    // ws.send code paths; we can't prove pre-emit. Conservative
+    // classification: real fire (NOT in pre-emit set, NOT in
+    // wrapper-short-circuit set — falls through to default
+    // real-fire branch in isRealFire).
+    expect(isPreEmitNonFireReason('dispatcher_error')).toBe(false);
+    // Plan 05-11 r5-#2 — `gate_dispatcher_error` is wrapper-internal
+    // (lives in WRAPPER_SHORT_CIRCUIT_REASONS), NOT pre-emit.
+    expect(isPreEmitNonFireReason('gate_dispatcher_error')).toBe(false);
     expect(isPreEmitNonFireReason('not-a-real-reason')).toBe(false);
     expect(isPreEmitNonFireReason('')).toBe(false);
   });
@@ -1433,5 +1461,191 @@ describe('Plan 05-10 r4-#2 — predicate helpers replace mutable Set exports', (
     expect(restrainedMode.recordAsk).not.toHaveBeenCalled();
 
     gate.destroy();
+  });
+});
+
+// =============================================================================
+// Group 10: Plan 05-11 r5-#2 — dispatcher_error vs gate_dispatcher_error
+// classification split.
+// =============================================================================
+// Codex r5 surfaced a lifecycle-position split for the wrapper's
+// dispatcher_error reason. Pre-r5-#2 it was a member of
+// WRAPPER_SHORT_CIRCUIT_REASONS so isRealFire returned false → no
+// budget burn. But the inner dispatcher (stage6-dispatcher-ask.js)
+// has its OWN dispatcher_error emit site at line 341 inside an outer
+// try/catch starting at line 321 that wraps EVERYTHING in the
+// live-path Promise constructor including post-register +
+// post-ws.send code paths.
+//
+// Schema audit of stage6-dispatcher-ask.js dispatcher_error emit
+// sites (line 341, outer catch line 321):
+//
+//   Inner dispatcher live-path Promise constructor:
+//     line 247 — setTimeout (timer registers; no throw possible
+//                synchronously)
+//     line 266 — pendingAsks.register(toolCallId, entry)
+//                throws on duplicate (caught at 285) or other
+//                invariants (rethrown at 297). Pre-emit if it
+//                throws non-duplicate at 297 (clearTimeout + throw
+//                propagates to Promise → outer catch fires →
+//                dispatcher_error logged at 341).
+//     line 305 — ws.send('ask_user_started') wrapped in its own
+//                try/catch which swallows send failures. ws.send
+//                throws CANNOT reach the outer catch.
+//
+//   Lifecycle position of inner dispatcher_error:
+//     CASE A (pre-emit): register() throws non-duplicate at 297.
+//       clearTimeout + throw → Promise rejection → outer catch
+//       at 321. No iOS emission. Treating as non-fire would be
+//       correct here.
+//     CASE B (post-emit, theoretical): if a future refactor adds
+//       any synchronous code AFTER ws.send (e.g. post-send
+//       analytics, post-send registry update) and that throws,
+//       the SAME outer catch fires at 321 — but the user has
+//       seen ask_user_started and may have started the TTS prompt.
+//       Treating as non-fire here would let Sonnet bypass the cap
+//       by repeatedly triggering this code path.
+//
+//   We cannot reliably distinguish CASE A from CASE B from the
+//   envelope alone (both produce the same `dispatcher_error`
+//   reason). Conservative classification: TREAT AS FIRE. The
+//   false-positive cost (CASE A unnecessary budget burn) is
+//   bounded at +1 budget slot per real bug. The false-negative
+//   cost (CASE B Sonnet bypass) is unbounded if dispatcher_error
+//   is reachable on demand.
+//
+// The wrapper's OWN dispatcher_error path (line 282 of the wrapper)
+// fires when the timer block catches an exception thrown by the
+// inner dispatcher. This is structurally pre-emit with respect to
+// the wrapper's own work — but the inner dispatcher may itself
+// have done post-emit work before throwing, so the conservative
+// classification still applies.
+//
+// gate_dispatcher_error (NEW reason at r5-#2) is RESERVED for a
+// future wrapper-internal catch (e.g. timer leak, gate.destroy
+// mid-fire, Promise constructor synchronous failure). At r5-#2
+// closure there is NO emit site — the reason is pre-registered
+// in WRAPPER_SHORT_CIRCUIT_REASONS so when a future refactor
+// introduces a wrapper-internal catch, the classification is
+// already in place.
+//
+// Tests:
+//   - End-to-end: inner dispatcher throws → wrapper's timer catch
+//     fires → resolves with `dispatcher_error` envelope →
+//     askBudget.increment + restrainedMode.recordAsk ARE called
+//     (post-r5-#2 fire classification).
+//   - Synthesised gate_dispatcher_error envelope (mock inner
+//     returns the reason directly) → counters NOT incremented
+//     (wrapper-internal non-fire reservation).
+// =============================================================================
+
+describe('Plan 05-11 r5-#2 — dispatcher_error / gate_dispatcher_error split', () => {
+  function makeThrowingInner() {
+    return jest.fn(async (/* call, ctx */) => {
+      throw new Error('synthetic inner-dispatcher failure');
+    });
+  }
+
+  function makeInnerReturning(reason) {
+    return jest.fn(async (call /* , ctx */) => ({
+      tool_use_id: call.id,
+      content: JSON.stringify({ answered: false, reason }),
+      is_error: false,
+    }));
+  }
+
+  test('inner dispatcher throws → wrapper resolves dispatcher_error → counters INCREMENTED (post-r5-#2 fire)', async () => {
+    // The wrapper's timer block catches inner throws and resolves the
+    // outer Promise with synthResultWrapped(call, 'dispatcher_error').
+    // Pre-r5-#2 these envelopes counted as non-fires; post-r5-#2 they
+    // count as fires (conservative classification — the inner dispatcher
+    // may have done post-emit work before throwing).
+    const logger = makeLogger();
+    const inner = makeThrowingInner();
+    const askBudget = makeBudget();
+    const restrainedMode = makeRestrained();
+    const gate = createAskGateWrapper({ logger, sessionId: 'sess-1' });
+
+    const wrapped = wrapAskDispatcherWithGates(inner, {
+      askBudget,
+      restrainedMode,
+      gate,
+      filledSlotsShadow: () => {},
+      logger,
+      sessionId: 'sess-1',
+    });
+
+    const promise = wrapped(makeCall('call-1', 'ze', 0), makeCtx('sess-1-turn-1'));
+    jest.advanceTimersByTime(QUESTION_GATE_DELAY_MS);
+    const result = await promise;
+
+    expect(JSON.parse(result.content).reason).toBe('dispatcher_error');
+    // r5-#2 reclassification: dispatcher_error is a fire. Both
+    // counters increment.
+    expect(askBudget.increment).toHaveBeenCalledTimes(1);
+    expect(askBudget.increment).toHaveBeenCalledWith('ze:0');
+    expect(restrainedMode.recordAsk).toHaveBeenCalledTimes(1);
+    expect(restrainedMode.recordAsk).toHaveBeenCalledWith('sess-1-turn-1');
+
+    gate.destroy();
+  });
+
+  test('synthesised gate_dispatcher_error envelope → counters NOT incremented (wrapper-internal non-fire)', async () => {
+    // gate_dispatcher_error is RESERVED for future wrapper-internal
+    // catches. At r5-#2 closure there is no emit site — to test the
+    // classifier we synthesise a mock inner dispatcher that returns
+    // the gate_dispatcher_error envelope directly. The wrapper's
+    // isRealFire must return false (consults the private
+    // _WRAPPER_SHORT_CIRCUIT_REASONS Set via .has()) so neither
+    // counter increments.
+    const logger = makeLogger();
+    const inner = makeInnerReturning('gate_dispatcher_error');
+    const askBudget = makeBudget();
+    const restrainedMode = makeRestrained();
+    const gate = createAskGateWrapper({ logger, sessionId: 'sess-1' });
+
+    const wrapped = wrapAskDispatcherWithGates(inner, {
+      askBudget,
+      restrainedMode,
+      gate,
+      filledSlotsShadow: () => {},
+      logger,
+      sessionId: 'sess-1',
+    });
+
+    const promise = wrapped(makeCall('call-1', 'ze', 0), makeCtx('sess-1-turn-1'));
+    jest.advanceTimersByTime(QUESTION_GATE_DELAY_MS);
+    const result = await promise;
+
+    expect(JSON.parse(result.content).reason).toBe('gate_dispatcher_error');
+    expect(askBudget.increment).not.toHaveBeenCalled();
+    expect(restrainedMode.recordAsk).not.toHaveBeenCalled();
+
+    gate.destroy();
+  });
+
+  test('predicate: isWrapperShortCircuitReason("gate_dispatcher_error") === true', () => {
+    // r5-#2 reservation: the new reason is the membership lock for
+    // future wrapper-internal catches. Adding it pre-emptively means
+    // a refactor that introduces a wrapper-internal try/catch can
+    // emit gate_dispatcher_error and the classifier is already
+    // wired correctly.
+    expect(isWrapperShortCircuitReason('gate_dispatcher_error')).toBe(true);
+  });
+
+  test('predicate: isWrapperShortCircuitReason("dispatcher_error") === false', () => {
+    // r5-#2 reclassification lock: dispatcher_error is removed from
+    // the wrapper-short-circuit set. isRealFire returns true for
+    // these envelopes (default branch, no Set.has() match) so the
+    // budget + restrained-window slot are consumed.
+    expect(isWrapperShortCircuitReason('dispatcher_error')).toBe(false);
+  });
+
+  test('predicate: isPreEmitNonFireReason("dispatcher_error") === false (regression lock)', () => {
+    // dispatcher_error is NOT pre-emit. The conservative reclassification
+    // intentionally avoids the pre-emit set so isRealFire's default
+    // branch (real fire) takes effect. Adding dispatcher_error to the
+    // pre-emit set would re-create the bypass surface r5-#2 closes.
+    expect(isPreEmitNonFireReason('dispatcher_error')).toBe(false);
   });
 });
