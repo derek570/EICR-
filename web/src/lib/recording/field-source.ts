@@ -60,11 +60,27 @@ const TOP_LEVEL_SECTIONS: ReadonlyArray<keyof JobDetail> = [
 export class FieldSourceMap {
   private readonly sources = new Map<string, FieldSource>();
   private readonly preExistingKeys = new Set<string>();
+  /** Per-key value snapshot taken every time a source is written. Used
+   *  by `reconcileFromJob` to detect inspector edits made between
+   *  Sonnet/regex writes — e.g. the inspector tapping into the
+   *  Circuits tab and correcting a Zs Sonnet just filled. Without
+   *  this, the next Sonnet extraction would see source='sonnet' and
+   *  freely overwrite the correction. */
+  private readonly snapshot = new Map<string, unknown>();
 
-  set(key: string, source: FieldSource): void {
+  set(key: string, source: FieldSource, value?: unknown): void {
     this.sources.set(key, source);
     if (source === 'preExisting') {
       this.preExistingKeys.add(key);
+    }
+    // The apply rules pass `value` so the snapshot reflects the
+    // exact value the source label is now guarding. Callers without
+    // a value (initializeFromJob, externally-stamped preExisting
+    // entries) leave the snapshot key undefined; reconcileFromJob
+    // treats `undefined` as "not yet snapshotted" and falls through
+    // to the normal "first encounter" branch.
+    if (arguments.length >= 3) {
+      this.snapshot.set(key, value);
     }
   }
 
@@ -105,19 +121,109 @@ export class FieldSourceMap {
   clear(): void {
     this.sources.clear();
     this.preExistingKeys.clear();
+    this.snapshot.clear();
+  }
+
+  /** Walk the current job and detect inspector edits made since the
+   *  last source-tracked write. Any field whose current value
+   *  differs from our snapshot is treated as a manual edit and
+   *  re-stamped as 'preExisting' so the next Sonnet extraction
+   *  doesn't naively overwrite the inspector's correction.
+   *
+   *  Newly-populated fields (no snapshot yet, no source label yet)
+   *  are stamped as 'preExisting' on first sight — the inspector
+   *  must have typed them manually for them to appear without an
+   *  apply-rules call.
+   *
+   *  Cleared fields (snapshot had a value, current job doesn't) drop
+   *  out of the source map entirely. iOS does the same — once a
+   *  field is empty again, the next regex / Sonnet write starts
+   *  fresh from the first-set branch.
+   *
+   *  Call site: recording-context invokes this BEFORE each
+   *  `applyExtractionToJob` so the apply rules see an up-to-date
+   *  source label. iOS-equivalent: there's no explicit reconcile in
+   *  iOS; manual edits go through SwiftUI bindings on the JobVM and
+   *  the iOS `applySonnetValue` reads `currentValue` from the live
+   *  JobVM at apply time. We have to walk the job because React
+   *  doesn't expose a per-field write hook. */
+  reconcileFromJob(job: JobDetail): void {
+    const seenKeys = new Set<string>();
+
+    for (const section of TOP_LEVEL_SECTIONS) {
+      const record = job[section] as Record<string, unknown> | undefined;
+      if (!record) continue;
+      for (const [field, value] of Object.entries(record)) {
+        if (!hasValue(value)) continue;
+        const key = `${section}.${field}`;
+        seenKeys.add(key);
+        this.reconcileKey(key, value);
+      }
+    }
+
+    const circuits = (job.circuits as CircuitRow[] | undefined) ?? [];
+    for (const row of circuits) {
+      const ref = row.circuit_ref ?? row.number;
+      if (typeof ref !== 'string' || ref.length === 0) continue;
+      for (const [field, value] of Object.entries(row)) {
+        if (field === 'id' || field === 'circuit_ref' || field === 'number') continue;
+        if (!hasValue(value)) continue;
+        const key = `circuit.${ref}.${field}`;
+        seenKeys.add(key);
+        this.reconcileKey(key, value);
+      }
+    }
+
+    // Any tracked key whose field is no longer populated → field was
+    // cleared by the inspector. Drop the source label so the next
+    // write goes through the first-set branch. Snapshot is cleaned
+    // up too so we don't keep stale entries forever.
+    for (const key of Array.from(this.sources.keys())) {
+      if (!seenKeys.has(key)) {
+        this.sources.delete(key);
+        this.snapshot.delete(key);
+        // preExistingKeys is intentionally NOT cleared — iOS
+        // `originallyPreExistingKeys` is a session-lifetime audit
+        // trail, not a live status flag.
+      }
+    }
+  }
+
+  private reconcileKey(key: string, currentValue: unknown): void {
+    const snapshotValue = this.snapshot.get(key);
+    const previouslyTracked = this.snapshot.has(key);
+    if (!previouslyTracked) {
+      // First time we've seen this key. If a source label already
+      // exists from elsewhere (initializeFromJob ran without a
+      // value, say), respect it; otherwise stamp as preExisting.
+      if (!this.sources.has(key)) {
+        this.set(key, 'preExisting', currentValue);
+      } else {
+        // Just snapshot the value so subsequent reconciles can
+        // detect drift from it. Don't change the source label.
+        this.snapshot.set(key, currentValue);
+      }
+      return;
+    }
+    if (looseEquals(currentValue, snapshotValue)) return;
+    // Value drifted from what we last source-tracked → manual edit.
+    this.set(key, 'preExisting', currentValue);
   }
 
   /** Walk a JobDetail and stamp every populated field as 'preExisting'.
+   *  Also takes the snapshot used by `reconcileFromJob` to detect
+   *  inspector edits made later in the session. Idempotent.
+   *
    *  Subsequent writes from regex / Sonnet flip the label as they
-   *  fire. Idempotent — calling twice on the same job is a no-op
-   *  (pre-existing labels stay sticky on the key set). */
+   *  fire (and re-snapshot the value via the apply rules' `set(key,
+   *  source, newValue)` call). */
   initializeFromJob(job: JobDetail): void {
     for (const section of TOP_LEVEL_SECTIONS) {
       const record = job[section] as Record<string, unknown> | undefined;
       if (!record) continue;
       for (const [field, value] of Object.entries(record)) {
         if (hasValue(value)) {
-          this.set(`${section}.${field}`, 'preExisting');
+          this.set(`${section}.${field}`, 'preExisting', value);
         }
       }
     }
@@ -130,11 +236,30 @@ export class FieldSourceMap {
         // measurable readings the priority chain applies to.
         if (field === 'id' || field === 'circuit_ref' || field === 'number') continue;
         if (hasValue(value)) {
-          this.set(`circuit.${ref}.${field}`, 'preExisting');
+          this.set(`circuit.${ref}.${field}`, 'preExisting', value);
         }
       }
     }
   }
+}
+
+/** Loose equality used by reconcileFromJob to decide whether a job
+ *  field has drifted from our last-tracked snapshot. Mirrors the
+ *  apply-rules `sameValue` helper: trim whitespace on string
+ *  comparison and string-coerce mixed-type pairs. */
+function looseEquals(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (a == null || b == null) return false;
+  if (typeof a === 'string' && typeof b === 'string') {
+    return a.trim() === b.trim();
+  }
+  if (
+    (typeof a === 'string' && typeof b === 'number') ||
+    (typeof a === 'number' && typeof b === 'string')
+  ) {
+    return String(a).trim() === String(b).trim();
+  }
+  return false;
 }
 
 /** Build a stable dot-path key for a circuit-0 reading on the section

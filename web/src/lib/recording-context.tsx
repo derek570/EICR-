@@ -403,6 +403,12 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
    *  validation_alerts into the pending-readings counter. */
   const applyExtraction = React.useCallback(
     (result: ExtractionResult) => {
+      // Reconcile any inspector edits made between Sonnet turns
+      // (e.g. tapping into the Circuits tab and correcting a Zs)
+      // before applying the new extraction. Without this, the next
+      // Sonnet write would see source='sonnet' from its own prior
+      // fill and freely overwrite the inspector's correction.
+      fieldSourcesRef.current.reconcileFromJob(jobRef.current);
       const applied = applyExtractionToJob(jobRef.current, result, fieldSourcesRef.current);
       if (applied) {
         updateJobRef.current(applied.patch);

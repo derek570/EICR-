@@ -121,6 +121,91 @@ describe('FieldSourceMap — initializeFromJob', () => {
   });
 });
 
+describe('FieldSourceMap — reconcileFromJob (inspector edits during session)', () => {
+  function emptyJob(): JobDetail {
+    return {
+      id: 'j1',
+      number: 'J-001',
+      property_address: '',
+      certificate_type: 'EICR',
+      cert_type: 'EICR',
+    } as unknown as JobDetail;
+  }
+
+  it('inspector edits a sonnet-source field → reconcile re-stamps as preExisting', () => {
+    // Codex P1 on R2 (90d5c85): without reconcile, the next Sonnet
+    // extraction would see source=sonnet on the inspector's correction
+    // and overwrite it. Reconcile catches the value drift between turns.
+    const map = new FieldSourceMap();
+    const before = { ...emptyJob(), supply: { ze: '0.27' } } as unknown as JobDetail;
+    map.initializeFromJob(before);
+    map.set('supply.ze', 'sonnet', '0.30'); // simulate Sonnet writing 0.30 over the preExisting 0.27
+    expect(map.get('supply.ze')).toBe('sonnet');
+    // Inspector taps into the field and corrects to 0.32:
+    const after = { ...emptyJob(), supply: { ze: '0.32' } } as unknown as JobDetail;
+    map.reconcileFromJob(after);
+    expect(map.get('supply.ze')).toBe('preExisting');
+  });
+
+  it('inspector edits a regex-source field → reconcile re-stamps as preExisting', () => {
+    const map = new FieldSourceMap();
+    map.set('circuit.3.measured_zs_ohm', 'regex', '0.44');
+    const after = {
+      ...emptyJob(),
+      circuits: [{ id: 'x', circuit_ref: '3', measured_zs_ohm: '0.50' }],
+    } as unknown as JobDetail;
+    map.reconcileFromJob(after);
+    expect(map.get('circuit.3.measured_zs_ohm')).toBe('preExisting');
+  });
+
+  it('inspector clears a previously-tracked field → reconcile drops the source label', () => {
+    const map = new FieldSourceMap();
+    const before = { ...emptyJob(), supply: { ze: '0.27' } } as unknown as JobDetail;
+    map.initializeFromJob(before);
+    expect(map.has('supply.ze')).toBe(true);
+    const after = { ...emptyJob(), supply: { ze: '' } } as unknown as JobDetail;
+    map.reconcileFromJob(after);
+    expect(map.has('supply.ze')).toBe(false);
+  });
+
+  it('reconcile is a no-op when the inspector did not edit anything', () => {
+    const map = new FieldSourceMap();
+    const job = { ...emptyJob(), supply: { ze: '0.27' } } as unknown as JobDetail;
+    map.initializeFromJob(job);
+    map.set('supply.ze', 'sonnet', '0.30'); // Sonnet wrote
+    const post = { ...emptyJob(), supply: { ze: '0.30' } } as unknown as JobDetail;
+    map.reconcileFromJob(post);
+    // Source label preserved — no inspector edit happened.
+    expect(map.get('supply.ze')).toBe('sonnet');
+  });
+
+  it('inspector adds a new field mid-session → reconcile stamps preExisting', () => {
+    const map = new FieldSourceMap();
+    const before = { ...emptyJob(), supply: { ze: '0.27' } } as unknown as JobDetail;
+    map.initializeFromJob(before);
+    // Inspector adds pfc:
+    const after = {
+      ...emptyJob(),
+      supply: { ze: '0.27', pfc: '1.5' },
+    } as unknown as JobDetail;
+    map.reconcileFromJob(after);
+    expect(map.get('supply.pfc')).toBe('preExisting');
+  });
+
+  it('reconcile does not break the originallyPreExisting audit trail', () => {
+    const map = new FieldSourceMap();
+    const before = { ...emptyJob(), supply: { ze: '0.27' } } as unknown as JobDetail;
+    map.initializeFromJob(before);
+    map.set('supply.ze', 'sonnet', '0.30');
+    const after = { ...emptyJob(), supply: { ze: '0.32' } } as unknown as JobDetail;
+    map.reconcileFromJob(after);
+    // Source flipped back to preExisting:
+    expect(map.get('supply.ze')).toBe('preExisting');
+    // OriginallyPreExisting audit trail still true (never cleared):
+    expect(map.isOriginallyPreExisting('supply.ze')).toBe(true);
+  });
+});
+
 describe('FieldSourceMap — key helpers', () => {
   it('circuit0Key formats section.field', () => {
     expect(circuit0Key('supply', 'ze')).toBe('supply.ze');

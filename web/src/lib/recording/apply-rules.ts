@@ -54,7 +54,7 @@ export function applyRegexValue(args: ApplyArgs): ApplyOutcome {
   const { key, newValue, currentValue, sources, apply } = args;
   if (!hasValue(currentValue)) {
     apply();
-    sources.set(key, 'regex');
+    sources.set(key, 'regex', newValue);
     return { applied: true, reason: 'first-set' };
   }
   const currentSource = sources.get(key);
@@ -106,13 +106,13 @@ export function applySonnetValue(args: ApplyArgs): ApplyOutcome {
 
   if (!hasValue(currentValue)) {
     apply();
-    sources.set(key, 'sonnet');
+    sources.set(key, 'sonnet', newValue);
     return { applied: true, reason: 'first-set' };
   }
 
   if (!sameValue(newValue, currentValue)) {
     apply();
-    sources.set(key, 'sonnet');
+    sources.set(key, 'sonnet', newValue);
     if (currentSource === 'regex') {
       return { applied: true, reason: 'sonnet-overwrite-regex' };
     }
@@ -123,7 +123,7 @@ export function applySonnetValue(args: ApplyArgs): ApplyOutcome {
   // so it's no longer eligible for regex last-wins. iOS does this so
   // the field is "locked in" once Sonnet has agreed once.
   if (currentSource === 'regex') {
-    sources.set(key, 'sonnet');
+    sources.set(key, 'sonnet', newValue);
   }
   return { applied: false, reason: 'sonnet-confirmed-same' };
 }
