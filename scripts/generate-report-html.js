@@ -625,10 +625,86 @@ function buildToolCallTraffic() {
         ${outcomeBars}
       </div>`;
 
+  // ── Plan 08-05 r4-#1 (MAJOR) — outcome drift warning block ──
+  //
+  // The analyzer surfaces three classes of ask_user outcome:
+  //   1. KNOWN (frozen-enum histogram in `outcomes`).
+  //   2. UNKNOWN — value not in the frozen ASK_USER_ANSWER_OUTCOMES
+  //      enum (analyzer surfaces via `unknown_outcomes[]` per r1-#3,
+  //      sanitised by `safeDisplayValue` per r3-#1).
+  //   3. MALFORMED — non-string outcome (`""`, `null`, `undefined`,
+  //      numbers, booleans, objects, arrays) per r2-#2 + r3-#2.
+  //      Analyzer surfaces these via `analysis.warnings[]` entries
+  //      of shape `{type:"malformed_ask_user_outcome", value, count}`.
+  //
+  // Codex r4-#1 (MAJOR) flagged that this renderer used to display
+  // ONLY the frozen-enum histogram. Drift was invisible to the
+  // operator until the optimizer cycled. The whole point of the
+  // analyzer surface added through r1-#3 + r2-#2 + r3-#2 was operator
+  // visibility — the renderer skip negated that work.
+  //
+  // Defence-in-depth: every value is run through `escapeHtml()` here
+  // even though the analyzer-side `safeDisplayValue` already strips
+  // control chars + caps length. The two layers solve different
+  // problems — analyzer-side is dashboard-safe display strings,
+  // renderer-side is HTML safety. The Plan 08-04 r3-#1 (renderer)
+  // contract anchored the principle at the analyzer→renderer edge;
+  // this block honours it on the new surface.
+  //
+  // The block renders ONLY when at least one of the three signals is
+  // non-empty. Clean sessions are byte-identical to pre-r4-#1 output.
+  const unknownOutcomes = Array.isArray(askUser.unknown_outcomes)
+    ? askUser.unknown_outcomes
+    : [];
+  const unknownOutcomeCount = askUser.unknown_outcome_count || 0;
+  const malformedOutcomeCount = askUser.malformed_outcome_count || 0;
+  const malformedWarnings = Array.isArray(summary.warnings)
+    ? summary.warnings.filter((w) => w && w.type === "malformed_ask_user_outcome")
+    : [];
+
+  const driftWarningBlock =
+    unknownOutcomeCount === 0 && malformedOutcomeCount === 0
+      ? ""
+      : (() => {
+          const unknownItems = unknownOutcomes
+            .map((entry) => {
+              const value = entry && typeof entry.value !== "undefined" ? entry.value : "";
+              const count = entry && typeof entry.count === "number" ? entry.count : 0;
+              return `<li><strong>Unknown</strong> · "${escapeHtml(String(value))}" × ${count}</li>`;
+            })
+            .join("");
+          const malformedItems = malformedWarnings
+            .map((entry) => {
+              const value = entry && typeof entry.value !== "undefined" ? entry.value : "";
+              const count = entry && typeof entry.count === "number" ? entry.count : 0;
+              return `<li><strong>Malformed</strong> · "${escapeHtml(String(value))}" × ${count}</li>`;
+            })
+            .join("");
+          // Header summary numbers — keep both counts visible so the
+          // operator can split enum-drift (unknown) from instrumentation
+          // -failure (malformed) at a glance. Both are operationally
+          // serious; misattributing one for the other leads to the
+          // wrong remediation.
+          const header = `${unknownOutcomeCount} unknown, ${malformedOutcomeCount} malformed`;
+          return `
+            <div class="ask-user-drift-warning" style="margin-top:14px;background:#3b2a0a;border:1px solid #f59e0b;border-radius:6px;padding:10px 14px;">
+              <div style="font-size:13px;font-weight:700;color:#fbbf24;margin-bottom:6px;">
+                ⚠ ask_user outcome drift detected — ${header}
+              </div>
+              <ul style="margin:6px 0 0 18px;padding:0;font-size:12px;color:#fde68a;font-family:'SF Mono',monospace;">
+                ${unknownItems}${malformedItems}
+              </ul>
+              <div style="font-size:11px;color:#fbbf24;margin-top:6px;opacity:0.85;">
+                Unknown = enum drift (backend deploy out of sync). Malformed = instrumentation failure (row escaped the emit-site validator).
+              </div>
+            </div>`;
+        })();
+
   return `
     <div class="card">
       ${toolTable}
       ${askUserBlock}
+      ${driftWarningBlock}
     </div>`;
 }
 
