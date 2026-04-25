@@ -8,6 +8,7 @@
 // See the docstring on `filterQuestionsAgainstFilledSlots` for behaviour.
 
 import logger from '../logger.js';
+import { normaliseValue } from './value-normalise.js';
 
 /**
  * Sonnet question types that are "refill-style" — i.e. the model is asking
@@ -102,6 +103,46 @@ export function filterQuestionsAgainstFilledSlots(
     const field = q && q.field;
     const circuit = q && q.circuit;
     const qType = q && typeof q.type === 'string' ? q.type.toLowerCase() : '';
+
+    // (A) heard_value cross-reference across the entire state snapshot.
+    //
+    // The existing (field, circuit) slot check can't catch questions that
+    // carry `field: null` or a sentinel circuit (e.g. -1 for "don't know").
+    // Those are exactly the shapes Sonnet emits on its `unclear` /
+    // orphan-disambiguation path. Session 0952EC64 (2026-04-24, job
+    // 19 Ivy Dean Road lunch) fired 4 questions about heard_value=0.13
+    // over 80s while `circuit.4.r1_plus_r2=0.13` was already stored:
+    //   Q2: {type:'unclear', field:null, circuit:-1, heard_value:'0.13'}
+    //   Q3: {type:'unclear', field:null, circuit:0,  heard_value:'0.13'}
+    //   Q4: {type:'circuit_disambiguation', field:'r1_plus_r2',
+    //        circuit:-1, heard_value:'0.13'}
+    // All three sail past the null-field early-return below. If we can
+    // prove the heard value is already stored SOMEWHERE in the snapshot
+    // (and that stored location wasn't just extracted this turn), the
+    // question is a stale re-ask and we drop it.
+    //
+    // Gated on REFILL_QUESTION_TYPES so out_of_range warnings / tt /
+    // observation confirmations about an existing value survive — same
+    // rule as the original slot-filled check below.
+    if (q && q.heard_value != null && REFILL_QUESTION_TYPES.has(qType)) {
+      const normHeard = normaliseValue(q.heard_value);
+      if (normHeard) {
+        const storedAt = findStoredLocation(circuits, normHeard, thisTurn);
+        if (storedAt) {
+          logger.info('suppressed_heard_value_already_stored', {
+            sessionId,
+            heardValue: normHeard.slice(0, 40),
+            storedAtCircuit: storedAt.circuit,
+            storedAtField: storedAt.field,
+            qType: qType.slice(0, 40),
+            qField: field || null,
+            qCircuit: circuit === null || circuit === undefined ? null : circuit,
+          });
+          continue;
+        }
+      }
+    }
+
     // Orphan/install-field questions — QuestionGate handles these.
     if (!field || circuit === null || circuit === undefined) {
       kept.push(q);
@@ -193,4 +234,31 @@ function logSuppressedRefillDeletionPendingOnce(sessionId) {
 // path. Same idiom as test-only setters in question-gate.js.
 export function __TEST_RESET_DELETION_PENDING_LOG_STATE() {
   _seenDeletionPendingSessions.clear();
+}
+
+/**
+ * Walk every (circuit, field) pair in the snapshot and return the first
+ * location whose stored value, after shared normalisation, equals the
+ * normalised heard_value. Skips locations already in `thisTurn` so a
+ * question emitted in the same turn as its extraction isn't suppressed
+ * by its own fresh write.
+ *
+ * Returns `{ circuit, field }` or `null`.
+ *
+ * O(circuits × fields) per question; the snapshot typically has ≤20
+ * circuits × ≤15 fields, so this is cheap enough to run inline.
+ */
+function findStoredLocation(circuits, normHeard, thisTurn) {
+  if (!circuits || !normHeard) return null;
+  for (const [cNum, cFields] of Object.entries(circuits)) {
+    if (!cFields || typeof cFields !== 'object') continue;
+    for (const [fName, fVal] of Object.entries(cFields)) {
+      if (fVal === null || fVal === undefined || fVal === '') continue;
+      if (thisTurn.has(`${fName}:${cNum}`)) continue;
+      if (normaliseValue(fVal) === normHeard) {
+        return { circuit: cNum, field: fName };
+      }
+    }
+  }
+  return null;
 }

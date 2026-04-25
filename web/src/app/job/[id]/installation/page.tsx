@@ -16,9 +16,11 @@ import { useJobContext } from '@/lib/job-context';
 import { FloatingLabelInput } from '@/components/ui/floating-label-input';
 import { MultilineField } from '@/components/ui/multiline-field';
 import { NumericStepper } from '@/components/ui/numeric-stepper';
+import { HeroHeader } from '@/components/ui/hero-header';
 import { SectionCard } from '@/components/ui/section-card';
 import { SegmentedControl } from '@/components/ui/segmented-control';
 import { SelectChips } from '@/components/ui/select-chips';
+import { usePostcodeLookup } from '@/hooks/use-postcode-lookup';
 
 /**
  * Installation tab — mirrors iOS `InstallationTab.swift` field-for-field.
@@ -112,26 +114,108 @@ export default function InstallationPage() {
     });
   };
 
+  // -----------------------------------------------------------------
+  // Debounced postcode autocomplete — mirrors iOS InstallationTab
+  // `schedulePostcodeLookup` / `performPostcodeLookup` at L251-L306.
+  // One hook per field so their memo caches stay independent.
+  //
+  // The 400ms debounce matches iOS and is the sweet spot between
+  // "inspector types fast, only fire once" and "feels responsive
+  // when they paste a value in". The hook also normalises + memos
+  // internally — we only need to plumb the onChange + patch back in.
+  //
+  // Fill-empty-only semantics: we only overwrite town/county if the
+  // user hasn't typed a value there already. This matches the iOS
+  // backend's `enrichInstallationDetails()` and the obvious UX
+  // expectation (manual edits win over postcodes.io's opinion).
+  // -----------------------------------------------------------------
+  const installationPostcodeLookup = usePostcodeLookup({
+    onResolved: ({ postcode, town, county }) => {
+      const next: Partial<InstallationShape> = { postcode };
+      if (!details.town) next.town = town;
+      if (!details.county) next.county = county;
+      patch(next);
+    },
+  });
+  const clientPostcodeLookup = usePostcodeLookup({
+    onResolved: ({ postcode, town, county }) => {
+      const next: Partial<InstallationShape> = { client_postcode: postcode };
+      if (!details.client_town) next.client_town = town;
+      if (!details.client_county) next.client_county = county;
+      patch(next);
+    },
+  });
+
+  // -----------------------------------------------------------------
+  // N/A sentinel for "Date of previous inspection" (EICR only).
+  // iOS `CMDatePickerStringField` stores either a date string or the
+  // literal "N/A". The web input is a native `<input type="date">` so
+  // we can't show "N/A" inside it — instead we toggle the visible
+  // input to a disabled greyed-out placeholder when the value is
+  // "N/A", and show a small pill-button that swaps between the two
+  // states. Tapping N/A when set clears it back to an editable date.
+  // -----------------------------------------------------------------
+  const isPreviousNA = details.date_of_previous_inspection === 'N/A';
+  const togglePreviousNA = () => {
+    if (isPreviousNA) {
+      patch({ date_of_previous_inspection: undefined });
+    } else {
+      patch({ date_of_previous_inspection: 'N/A' });
+    }
+  };
+
+  // -----------------------------------------------------------------
+  // Auto-seed defaults on first mount — iOS parity
+  // (`ensureDateOfInspection` + default `next_inspection_years = 5`
+  // at `InstallationTab.swift:L503-L527`).
+  //
+  // We run this once-per-mount and guard with a ref so a parent
+  // re-render (e.g. the job saving in the background) can't re-trigger
+  // the seed after the user has deliberately cleared a field. Also
+  // avoids the classic pitfall of reading `details` from closure —
+  // we compute the seed patch inline off the passed `job`.
+  // -----------------------------------------------------------------
+  const seededRef = React.useRef(false);
+  React.useEffect(() => {
+    if (seededRef.current) return;
+    seededRef.current = true;
+    const seed: Partial<InstallationShape> = {};
+    if (!details.date_of_inspection) {
+      seed.date_of_inspection = new Date().toISOString().slice(0, 10);
+    }
+    if (details.next_inspection_years == null) {
+      seed.next_inspection_years = 5;
+    }
+    if (!details.next_inspection_due_date) {
+      const baseIso = seed.date_of_inspection ?? details.date_of_inspection;
+      const years = seed.next_inspection_years ?? details.next_inspection_years ?? 5;
+      const base = baseIso ? new Date(baseIso) : new Date();
+      const due = new Date(base);
+      due.setFullYear(base.getFullYear() + years);
+      seed.next_inspection_due_date = due.toISOString().slice(0, 10);
+    }
+    if (Object.keys(seed).length > 0) {
+      patch(seed);
+    }
+    // `patch` changes identity per render (memoised on details), but
+    // the ref guard prevents re-entry, so we can safely depend only on
+    // the mount.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   return (
     <div
-      className="mx-auto flex w-full flex-col gap-5 px-4 py-6 md:px-8 md:py-8"
+      className="cm-stagger-children mx-auto flex w-full flex-col gap-5 px-4 py-6 md:px-8 md:py-8"
       style={{ maxWidth: '960px' }}
     >
       {/* Hero banner — iOS parity ("Installation Details" / gradient). */}
-      <div
-        className="relative flex items-center justify-between overflow-hidden rounded-[var(--radius-xl)] px-5 py-5 md:px-6 md:py-6"
-        style={{
-          background:
-            'linear-gradient(135deg, var(--color-brand-blue) 0%, var(--color-brand-green) 100%)',
-        }}
-      >
-        <div className="flex flex-col gap-1">
-          <p className="text-[11px] uppercase tracking-[0.14em] text-white/75">{certificateType}</p>
-          <h2 className="text-[22px] font-bold text-white md:text-[26px]">Installation Details</h2>
-          <p className="text-[13px] text-white/85">Client, premises &amp; dates</p>
-        </div>
-        <Building2 className="h-10 w-10 text-white/30" strokeWidth={2} aria-hidden />
-      </div>
+      <HeroHeader
+        eyebrow={certificateType}
+        title="Installation Details"
+        subtitle="Client, premises & dates"
+        accent="client"
+        icon={<Building2 className="h-10 w-10" strokeWidth={2} aria-hidden />}
+      />
 
       <SectionCard accent="blue" icon={User} title="Client details">
         <FloatingLabelInput
@@ -158,7 +242,11 @@ export default function InstallationPage() {
           <FloatingLabelInput
             label="Postcode"
             value={details.client_postcode ?? ''}
-            onChange={(e) => patch({ client_postcode: e.target.value })}
+            onChange={(e) => {
+              const v = e.target.value;
+              patch({ client_postcode: v });
+              clientPostcodeLookup.onChange(v);
+            }}
           />
           <FloatingLabelInput
             label="Phone"
@@ -197,7 +285,11 @@ export default function InstallationPage() {
           <FloatingLabelInput
             label="Postcode"
             value={details.postcode ?? ''}
-            onChange={(e) => patch({ postcode: e.target.value })}
+            onChange={(e) => {
+              const v = e.target.value;
+              patch({ postcode: v });
+              installationPostcodeLookup.onChange(v);
+            }}
           />
           <FloatingLabelInput
             label="Occupier name"
@@ -216,12 +308,39 @@ export default function InstallationPage() {
             onChange={(e) => patch({ date_of_inspection: e.target.value })}
           />
           {!isEIC ? (
-            <FloatingLabelInput
-              label="Date of previous inspection"
-              type="date"
-              value={details.date_of_previous_inspection ?? ''}
-              onChange={(e) => patch({ date_of_previous_inspection: e.target.value })}
-            />
+            <div className="flex flex-col gap-1.5">
+              <FloatingLabelInput
+                label="Date of previous inspection"
+                type="date"
+                // When the inspector has flipped the N/A sentinel on,
+                // the native date input can't render "N/A" — blank
+                // the field and disable keyboard entry until they
+                // toggle the pill off again.
+                disabled={isPreviousNA}
+                value={isPreviousNA ? '' : (details.date_of_previous_inspection ?? '')}
+                onChange={(e) => patch({ date_of_previous_inspection: e.target.value })}
+                trailing={
+                  <button
+                    type="button"
+                    onClick={togglePreviousNA}
+                    aria-pressed={isPreviousNA}
+                    aria-label="Mark previous inspection as not available"
+                    className={`rounded-full px-2 py-0.5 text-[11px] font-semibold transition ${
+                      isPreviousNA
+                        ? 'bg-[var(--color-brand-blue)] text-white'
+                        : 'bg-[var(--color-surface-2)] text-[var(--color-text-secondary)]'
+                    }`}
+                  >
+                    N/A
+                  </button>
+                }
+              />
+              {isPreviousNA ? (
+                <p className="text-[11px] text-[var(--color-text-tertiary)]">
+                  No previous inspection on record.
+                </p>
+              ) : null}
+            </div>
           ) : null}
           <NumericStepper
             label="Next inspection (years)"

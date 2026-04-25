@@ -1,30 +1,48 @@
 'use client';
 
 import * as React from 'react';
+import { useParams, useRouter } from 'next/navigation';
 import {
   Calculator,
   Camera,
   CircuitBoard,
   FileDown,
   FlipHorizontal2,
+  LayoutGrid,
   List,
   Loader2,
   Plus,
   SlidersHorizontal,
+  Table2,
   Trash2,
   X,
   Zap,
 } from 'lucide-react';
+import {
+  applyDefaultsToCircuits,
+  applyR1R2Calculation,
+  applyZsCalculation,
+  matchCircuits,
+  type BulkCalcOutcome,
+  type CalcSkipReason,
+  type CircuitMatch,
+} from '@certmate/shared-utils';
 import { api } from '@/lib/api-client';
 import { useJobContext } from '@/lib/job-context';
-import { ApiError } from '@/lib/types';
-import { applyCcuAnalysisToJob } from '@/lib/recording/apply-ccu-analysis';
+import { useCurrentUser } from '@/lib/use-current-user';
+import { useUserDefaults } from '@/hooks/use-user-defaults';
+import { ApiError, type CCUAnalysisCircuit, type CircuitRow } from '@/lib/types';
+import { applyCcuAnalysisToJob, type CcuApplyMode } from '@/lib/recording/apply-ccu-analysis';
 import { applyDocumentExtractionToJob } from '@/lib/recording/apply-document-extraction';
+import { writeMatchHandoff } from '@/lib/recording/ccu-match-handoff';
+import { ConfirmDialog } from '@/components/ui/confirm-dialog';
 import { FloatingLabelInput } from '@/components/ui/floating-label-input';
 import { IconButton } from '@/components/ui/icon-button';
 import { SectionCard } from '@/components/ui/section-card';
 import { SegmentedControl } from '@/components/ui/segmented-control';
 import { SelectChips } from '@/components/ui/select-chips';
+import { CircuitsStickyTable } from '@/components/job/circuits-sticky-table';
+import { CcuModeSheet } from '@/components/job/ccu-mode-sheet';
 
 /**
  * Circuits tab — mirrors iOS `CircuitsTab.swift` + `Circuit.swift`.
@@ -77,17 +95,81 @@ function newCircuit(ref: string, boardId?: string): Circuit {
   };
 }
 
+/** Stored preference key for the Cards ↔ Table view toggle. */
+const VIEW_PREF_KEY = 'cm-circuits-view';
+type CircuitView = 'cards' | 'table';
+
+function readInitialView(): CircuitView {
+  // Default to `cards` on narrow viewports (< 1024) and `table` on
+  // desktop. Persisted preference wins over both. SSR / non-browser
+  // contexts default to `cards` so the initial paint is identical on
+  // mobile where inspectors spend most of their time.
+  if (typeof window === 'undefined') return 'cards';
+  try {
+    const stored = window.localStorage.getItem(VIEW_PREF_KEY);
+    if (stored === 'cards' || stored === 'table') return stored;
+  } catch {
+    /* ignore private-mode quota etc. */
+  }
+  return window.matchMedia?.('(min-width: 1024px)').matches ? 'table' : 'cards';
+}
+
 export default function CircuitsPage() {
   const { job, updateJob } = useJobContext();
+  const router = useRouter();
+  const params = useParams<{ id: string }>();
+  const jobId = params.id;
+  // Phase 6 — thread user-scoped circuit-field defaults into
+  // `applyDefaultsToCircuits`. iOS reads these from `DefaultsService`;
+  // the web hook hydrates from IDB cache first (instant paint offline)
+  // then from the backend. When `user.id` is undefined (logged-out /
+  // still loading), `defaults` is an empty map and apply-defaults
+  // falls back to the schema-only path — identical to iOS when the
+  // inspector hasn't configured any user defaults yet.
+  const { user } = useCurrentUser();
+  const { defaults: userDefaults } = useUserDefaults(user?.id);
   const [expandedId, setExpandedId] = React.useState<string | null>(null);
   const [actionHint, setActionHint] = React.useState<string | null>(null);
   const [ccuBusy, setCcuBusy] = React.useState(false);
   const [ccuError, setCcuError] = React.useState<string | null>(null);
   const [ccuQuestions, setCcuQuestions] = React.useState<string[]>([]);
   const ccuInputRef = React.useRef<HTMLInputElement>(null);
+  /**
+   * Phase 7 — CCU extraction flow now starts with a mode sheet. The
+   * inspector picks Names Only / Hardware Update / Full Capture
+   * BEFORE the file picker opens. We store the chosen mode in a ref
+   * between the sheet dismissal and the picker onChange handler so
+   * the same hidden `<input>` can serve all three modes.
+   */
+  const [ccuModeSheetOpen, setCcuModeSheetOpen] = React.useState(false);
+  const pendingCcuModeRef = React.useRef<CcuApplyMode | null>(null);
   const [docBusy, setDocBusy] = React.useState(false);
   const [docError, setDocError] = React.useState<string | null>(null);
   const docInputRef = React.useRef<HTMLInputElement>(null);
+  const [confirmDeleteAllOpen, setConfirmDeleteAllOpen] = React.useState(false);
+  // Per-circuit delete confirmation — iOS surfaces a tap-confirm on the
+  // row trash button (CircuitsTab.swift:L220-L235). Without a guard, a
+  // mis-tap on the tight row action wipes the circuit and any linked
+  // observations without warning. Ledger row "Per-circuit trash guard"
+  // flipped to match in Phase 9.
+  const [pendingDeleteCircuitId, setPendingDeleteCircuitId] = React.useState<string | null>(null);
+  const [calcMenuOpen, setCalcMenuOpen] = React.useState(false);
+  const calcMenuRef = React.useRef<HTMLDivElement>(null);
+  const [view, setView] = React.useState<CircuitView>('cards');
+  // Resolve the persisted/desktop-default view on mount so SSR hydration
+  // matches. Reading localStorage / matchMedia during render would
+  // produce divergent markup between server + first client render.
+  React.useEffect(() => {
+    setView(readInitialView());
+  }, []);
+  const setViewPersisted = (next: CircuitView) => {
+    setView(next);
+    try {
+      window.localStorage.setItem(VIEW_PREF_KEY, next);
+    } catch {
+      /* ignore */
+    }
+  };
 
   const circuits = (job.circuits ?? []) as unknown as Circuit[];
   // Read boards from the canonical top-level `job.boards` (backend wire key).
@@ -100,12 +182,47 @@ export default function CircuitsPage() {
     ? circuits.filter((c) => c.board_id === selectedBoardId || c.board_id == null)
     : circuits;
 
+  // Bulk actions (Apply Defaults / Calculate Zs / Calculate R1+R2 /
+  // Delete all) must only target circuits that are DEFINITELY on the
+  // active board. `visible` intentionally includes legacy boardless
+  // rows (board_id == null) so they stay editable from any board, but
+  // sweeping them into a bulk action is collateral — "Delete all on
+  // Board 2" must not silently wipe legacy unassigned circuits. When
+  // no board is selected, the bulk target is the whole list.
+  const boardScoped = selectedBoardId
+    ? circuits.filter((c) => c.board_id === selectedBoardId)
+    : circuits;
+
+  /**
+   * Resolve the Ze to use for Zs / R1+R2 calculations. iOS reads the
+   * per-board Ze when available, falling back to the supply-level Ze.
+   * Sub-boards often record their own Ze on the Board tab that differs
+   * from the supply value, and a missing supply Ze would otherwise
+   * turn Calculate into a no-op for those jobs.
+   */
+  const activeBoard = boards.find((b) => b.id === selectedBoardId) as
+    | { ze?: string; earth_loop_impedance_ze?: string }
+    | undefined;
+  const supplyLevelZe = ((
+    job.supply_characteristics as { earth_loop_impedance_ze?: string } | undefined
+  )?.earth_loop_impedance_ze ?? '') as string;
+  const supplyZe =
+    activeBoard?.ze?.toString().trim() ||
+    activeBoard?.earth_loop_impedance_ze?.toString().trim() ||
+    supplyLevelZe;
+
   const persist = (next: Circuit[]) =>
     updateJob({ circuits: next as unknown as typeof job.circuits });
 
   const patchCircuit = (id: string, patch: Partial<Circuit>) => {
     persist(circuits.map((c) => (c.id === id ? { ...c, ...patch } : c)));
   };
+
+  // Table-view patch adapter — the sticky table passes `{key: value}`
+  // patches with string values only (no undefined), so this is a
+  // narrow alias rather than a duplicate state handler.
+  const patchCircuitTable = (id: string, patch: Record<string, string>) =>
+    patchCircuit(id, patch as Partial<Circuit>);
 
   const addCircuit = () => {
     const nextRef = String(visible.length + 1);
@@ -114,24 +231,171 @@ export default function CircuitsPage() {
     setExpandedId(c.id);
   };
 
-  const removeCircuit = (id: string) => {
+  /** Queue a per-circuit delete through ConfirmDialog (Phase 9). */
+  const requestDeleteCircuit = (id: string) => setPendingDeleteCircuitId(id);
+  const cancelPendingDelete = () => setPendingDeleteCircuitId(null);
+  const confirmPendingDelete = () => {
+    const id = pendingDeleteCircuitId;
+    if (!id) return;
     persist(circuits.filter((c) => c.id !== id));
     if (expandedId === id) setExpandedId(null);
+    setPendingDeleteCircuitId(null);
   };
+  const pendingDeleteCircuit = pendingDeleteCircuitId
+    ? (circuits.find((c) => c.id === pendingDeleteCircuitId) ?? null)
+    : null;
 
   const reverse = () => persist([...circuits].reverse());
 
-  // Non-functional actions that the iOS app carries but the web rebuild
-  // hasn't wired yet. We keep the buttons visible (iOS parity, and so
-  // the inspector's muscle memory from the iOS app still lands on the
-  // right rail button) but surface an honest "not available yet" hint
-  // rather than a silent no-op. Was: "wires up in Phase 5" — which
-  // shipped misleading copy once the rest of Phase 5 landed.
-  const stub = (label: string) => () => setActionHint(`${label} — not available on web yet.`);
+  /**
+   * Apply Defaults — fills empty fields from the field_schema subset.
+   * Non-overwrite invariant is enforced inside
+   * `applyDefaultsToCircuits`; see `packages/shared-utils/src/apply-defaults.ts`.
+   * We only apply to the currently-filtered board so an inspector
+   * working on Board #2 doesn't accidentally stomp Board #1.
+   */
+  const handleApplyDefaults = () => {
+    const visibleIds = new Set(boardScoped.map((c) => c.id));
+    // Strip scoped/cable-type keys (e.g. `lighting.live_csa_mm2`) before
+    // passing to the generic applier — otherwise the helper would write
+    // those dotted strings as if they were Circuit field names. Cable
+    // size defaults are applied by a separate per-circuit-type flow.
+    const flatDefaults: Record<string, string> = {};
+    for (const [k, v] of Object.entries(userDefaults)) {
+      if (!k.includes('.')) flatDefaults[k] = v;
+    }
+    const { circuits: updatedVisible, summary } = applyDefaultsToCircuits(boardScoped, {
+      userDefaults: flatDefaults as Partial<Record<keyof Circuit, string>>,
+    });
+    if (summary.filledFields === 0) {
+      setActionHint('Apply Defaults — nothing to fill (all fields already set).');
+      return;
+    }
+    const updatedById = new Map(updatedVisible.map((c) => [c.id, c]));
+    const merged = circuits.map((c) => (visibleIds.has(c.id) ? (updatedById.get(c.id) ?? c) : c));
+    persist(merged);
+    const circuitsWord = summary.touchedCircuits === 1 ? 'circuit' : 'circuits';
+    const suffix =
+      summary.ambiguousCircuits > 0
+        ? ` · ${summary.ambiguousCircuits} skipped (type not inferred)`
+        : '';
+    setActionHint(
+      `Apply Defaults — filled ${summary.filledFields} field${
+        summary.filledFields === 1 ? '' : 's'
+      } across ${summary.touchedCircuits} ${circuitsWord}${suffix}.`
+    );
+  };
 
+  /** Turn a bulk calc outcome into the user-facing banner copy. */
+  const formatCalcBanner = (op: 'Zs' | 'R1+R2', res: BulkCalcOutcome<Circuit>): string => {
+    if (res.terminalReason === 'missing-ze') {
+      return `${op} — no Ze on Supply tab. Set “Earth loop impedance Ze” first.`;
+    }
+    if (res.terminalReason === 'invalid-ze') {
+      return `${op} — Ze is not a number. Check the Supply tab.`;
+    }
+    if (res.updated === 0) {
+      const reason: CalcSkipReason | undefined = Object.keys(res.skippedReasons)[0] as
+        | CalcSkipReason
+        | undefined;
+      const why =
+        reason === 'missing-r1r2'
+          ? 'no circuits had R1+R2'
+          : reason === 'missing-zs'
+            ? 'no circuits had measured Zs'
+            : reason === 'negative-r1r2'
+              ? 'all would have been negative'
+              : 'no eligible circuits';
+      return `${op} — nothing updated (${why}).`;
+    }
+    const parts = [`Updated ${res.updated} circuit${res.updated === 1 ? '' : 's'}`];
+    if (res.skipped > 0) {
+      const neg = res.skippedReasons['negative-r1r2'] ?? 0;
+      const missR1R2 = res.skippedReasons['missing-r1r2'] ?? 0;
+      const missZs = res.skippedReasons['missing-zs'] ?? 0;
+      const bits: string[] = [];
+      if (missR1R2) bits.push(`${missR1R2} missing R1+R2`);
+      if (missZs) bits.push(`${missZs} missing Zs`);
+      if (neg) bits.push(`${neg} negative (skipped)`);
+      if (bits.length === 0) bits.push(`${res.skipped}`);
+      parts.push(`skipped ${bits.join(', ')}`);
+    }
+    return `${op} — ${parts.join('; ')}.`;
+  };
+
+  const handleCalculateZs = () => {
+    setCalcMenuOpen(false);
+    const visibleIds = new Set(boardScoped.map((c) => c.id));
+    const res = applyZsCalculation(boardScoped, supplyZe);
+    if (res.updated > 0) {
+      const byId = new Map(res.circuits.map((c) => [c.id, c]));
+      const merged = circuits.map((c) => (visibleIds.has(c.id) ? (byId.get(c.id) ?? c) : c));
+      persist(merged);
+    }
+    setActionHint(formatCalcBanner('Zs', res));
+  };
+
+  const handleCalculateR1R2 = () => {
+    setCalcMenuOpen(false);
+    const visibleIds = new Set(boardScoped.map((c) => c.id));
+    const res = applyR1R2Calculation(boardScoped, supplyZe);
+    if (res.updated > 0) {
+      const byId = new Map(res.circuits.map((c) => [c.id, c]));
+      const merged = circuits.map((c) => (visibleIds.has(c.id) ? (byId.get(c.id) ?? c) : c));
+      persist(merged);
+    }
+    setActionHint(formatCalcBanner('R1+R2', res));
+  };
+
+  // Close calc menu on outside click — a tiny floating menu doesn't
+  // need a full Radix portal; we wire a click-outside listener only
+  // while it's open to keep the component cheap on idle.
+  React.useEffect(() => {
+    if (!calcMenuOpen) return;
+    const onClick = (e: MouseEvent) => {
+      if (!calcMenuRef.current) return;
+      if (!calcMenuRef.current.contains(e.target as Node)) setCalcMenuOpen(false);
+    };
+    window.addEventListener('mousedown', onClick);
+    return () => window.removeEventListener('mousedown', onClick);
+  }, [calcMenuOpen]);
+
+  /**
+   * Delete-all for the current board. iOS exposes a multi-select bulk
+   * delete; web simplifies to "delete all on this board" because the
+   * wider desktop viewport makes per-row delete trivially accessible
+   * and multi-select-mode machinery adds a lot of state for a rarely-
+   * used path. See the parity ledger note flipping the row from
+   * `missing` to `match` with this simplification recorded.
+   */
+  const handleConfirmDeleteAll = () => {
+    const removedCount = boardScoped.length;
+    if (removedCount === 0) {
+      setActionHint('Delete all — no circuits to remove.');
+      setConfirmDeleteAllOpen(false);
+      return;
+    }
+    const scopedIds = new Set(boardScoped.map((c) => c.id));
+    persist(circuits.filter((c) => !scopedIds.has(c.id)));
+    if (expandedId && scopedIds.has(expandedId)) setExpandedId(null);
+    setConfirmDeleteAllOpen(false);
+    setActionHint(`Deleted ${removedCount} circuit${removedCount === 1 ? '' : 's'}.`);
+  };
+
+  /** CCU button click — open the mode sheet instead of the picker
+   *  directly. The sheet's onSelect handler wires the chosen mode
+   *  into the ref and then opens the file picker. */
   const openCcuPicker = () => {
     setCcuError(null);
-    ccuInputRef.current?.click();
+    setCcuModeSheetOpen(true);
+  };
+
+  const onCcuModeSelected = (mode: CcuApplyMode) => {
+    pendingCcuModeRef.current = mode;
+    // Defer the click by a tick so iOS Safari's sheet-close animation
+    // doesn't race with the file picker popup (same rationale as the
+    // setTimeout inside the sheet's own click handler — belt-and-braces).
+    window.setTimeout(() => ccuInputRef.current?.click(), 0);
   };
 
   const handleCcuFile = async (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -139,14 +403,68 @@ export default function CircuitsPage() {
     // Reset the input immediately so the same file can be chosen again
     // after a failure (otherwise onChange won't fire a second time).
     event.target.value = '';
+    const mode: CcuApplyMode = pendingCcuModeRef.current ?? 'full_capture';
+    pendingCcuModeRef.current = null;
     if (!file) return;
 
     setCcuBusy(true);
     setCcuError(null);
-    setActionHint('Analysing consumer unit…');
+    setActionHint(
+      mode === 'names_only'
+        ? 'Analysing board labels…'
+        : mode === 'hardware_update'
+          ? 'Analysing new board hardware…'
+          : 'Analysing consumer unit…'
+    );
     try {
       const analysis = await api.analyzeCCU(file);
+
+      if (mode === 'hardware_update') {
+        // Run the matcher locally, stash the result in sessionStorage,
+        // and navigate to the Match Review screen. The apply step runs
+        // there once the inspector confirms / reassigns.
+        //
+        // Candidates MUST be strictly board-scoped — legacy boardless
+        // circuits would otherwise get pulled into the match, and
+        // accepting the match would silently migrate them onto the
+        // active board along with their readings. That's the same
+        // cross-board-collateral trap that `boardScoped` protects the
+        // other bulk actions from. When no board is selected (e.g.
+        // single-board jobs on the pre-Phase-4 schema) we fall back
+        // to the unscoped list.
+        const boardCircuits = (
+          selectedBoardId
+            ? (job.circuits ?? []).filter(
+                (c) => (c.board_id as string | undefined) === selectedBoardId
+              )
+            : (job.circuits ?? [])
+        ) as CircuitRow[];
+        const initialMatches: CircuitMatch<CCUAnalysisCircuit, CircuitRow>[] = matchCircuits(
+          analysis.circuits ?? [],
+          boardCircuits
+        );
+        // Even if the matcher returned 0 candidates, we still hand
+        // off — the review screen will show every circuit as "new"
+        // which is the correct state and lets the inspector double-
+        // check before we touch the job.
+        const patchedBoardsSnapshot = (job.boards ?? []) as { id: string }[];
+        const boardId = selectedBoardId ?? patchedBoardsSnapshot[0]?.id ?? 'board-pending';
+        const nonce = writeMatchHandoff(jobId, {
+          analysis,
+          matches: initialMatches,
+          boardId,
+          existingBoardCircuits: boardCircuits,
+        });
+        router.push(`/job/${jobId}/circuits/match-review?nonce=${nonce}`);
+        setActionHint(
+          `Review ${initialMatches.length} proposed match${initialMatches.length === 1 ? '' : 'es'}…`
+        );
+        return;
+      }
+
+      // Names Only + Full Capture — apply immediately.
       const { patch, questions } = applyCcuAnalysisToJob(job, analysis, {
+        mode,
         targetBoardId: selectedBoardId,
       });
       updateJob(patch);
@@ -157,9 +475,10 @@ export default function CircuitsPage() {
         setSelectedBoardId(patchedBoards[0].id);
       }
       const added = analysis.circuits?.length ?? 0;
+      const suffix = mode === 'names_only' ? ' (labels only)' : mode === 'full_capture' ? '' : '';
       setActionHint(
         added > 0
-          ? `CCU analysed — ${added} circuit${added === 1 ? '' : 's'} merged.`
+          ? `CCU analysed — ${added} circuit${added === 1 ? '' : 's'} merged${suffix}.`
           : 'CCU analysed — no circuits detected.'
       );
       setCcuQuestions(questions);
@@ -261,14 +580,25 @@ export default function CircuitsPage() {
       <div className="flex gap-4 md:gap-5">
         {/* Circuit list column */}
         <div className="flex min-w-0 flex-1 flex-col gap-3">
-          <div className="flex items-center justify-between">
+          <div className="flex items-center justify-between gap-3">
             <h2 className="flex items-center gap-2 text-[13px] font-bold uppercase tracking-[0.08em] text-[var(--color-text-secondary)]">
               <Zap className="h-3.5 w-3.5 text-[var(--color-brand-blue)]" aria-hidden />
               Circuits
             </h2>
-            <span className="text-[11px] text-[var(--color-text-tertiary)]">
-              {visible.length} {visible.length === 1 ? 'circuit' : 'circuits'}
-            </span>
+            <div className="flex items-center gap-3">
+              {/*
+               * Cards / Table toggle — iOS ships landscape-only sticky
+               * grid, but the web client has no orientation signal (the
+               * same Next page serves phones AND 32" monitors), so we
+               * expose both layouts and persist the user's choice. Mobile
+               * default is `cards`; desktop default is `table`; the first
+               * explicit click sticks in localStorage.
+               */}
+              <ViewToggle view={view} onChange={setViewPersisted} />
+              <span className="text-[11px] text-[var(--color-text-tertiary)]">
+                {visible.length} {visible.length === 1 ? 'circuit' : 'circuits'}
+              </span>
+            </div>
           </div>
 
           {/* Hidden file input for CCU capture. `capture="environment"`
@@ -361,6 +691,12 @@ export default function CircuitsPage() {
                 Photo to auto-populate from a consumer-unit image.
               </p>
             </div>
+          ) : view === 'table' ? (
+            <CircuitsStickyTable
+              circuits={visible}
+              onPatch={patchCircuitTable}
+              onRemove={requestDeleteCircuit}
+            />
           ) : (
             visible.map((c) => (
               <CircuitCard
@@ -369,7 +705,7 @@ export default function CircuitsPage() {
                 expanded={expandedId === c.id}
                 onToggle={() => setExpandedId((p) => (p === c.id ? null : c.id))}
                 onPatch={(patch) => patchCircuit(c.id, patch)}
-                onRemove={() => removeCircuit(c.id)}
+                onRemove={() => requestDeleteCircuit(c.id)}
               />
             ))
           )}
@@ -387,21 +723,62 @@ export default function CircuitsPage() {
             Icon={Trash2}
             label="Delete"
             colour="var(--color-status-failed)"
-            onClick={stub('Delete all')}
+            onClick={() => setConfirmDeleteAllOpen(true)}
+            disabled={boardScoped.length === 0}
           />
           <RailButton
             Icon={SlidersHorizontal}
             label="Defaults"
             colour="#ff375f"
-            onClick={stub('Apply defaults')}
+            onClick={handleApplyDefaults}
+            disabled={boardScoped.length === 0}
           />
-          <RailButton Icon={FlipHorizontal2} label="Reverse" colour="#ec4899" onClick={reverse} />
           <RailButton
-            Icon={Calculator}
-            label="Calculate"
-            colour="var(--color-brand-green)"
-            onClick={stub('Calculate Zs / R1+R2')}
+            Icon={FlipHorizontal2}
+            label="Reverse"
+            colour="#ec4899"
+            onClick={reverse}
+            disabled={visible.length < 2}
           />
+          <div ref={calcMenuRef} className="relative">
+            <RailButton
+              Icon={Calculator}
+              label="Calculate"
+              colour="var(--color-brand-green)"
+              onClick={() => setCalcMenuOpen((v) => !v)}
+              disabled={boardScoped.length === 0}
+            />
+            {calcMenuOpen ? (
+              <div
+                role="menu"
+                aria-label="Calculate menu"
+                className="absolute right-full top-0 z-30 mr-2 w-56 rounded-[var(--radius-md)] border border-[var(--color-border-subtle)] bg-[var(--color-surface-1)] shadow-[0_8px_24px_rgba(0,0,0,0.35)]"
+              >
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={handleCalculateZs}
+                  className="block w-full px-3 py-2 text-left text-[12px] text-[var(--color-text-primary)] hover:bg-[var(--color-surface-2)]"
+                >
+                  <span className="block font-semibold">Calculate Zs</span>
+                  <span className="block text-[11px] text-[var(--color-text-tertiary)]">
+                    Zs = Ze + R1+R2
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={handleCalculateR1R2}
+                  className="block w-full border-t border-[var(--color-border-subtle)] px-3 py-2 text-left text-[12px] text-[var(--color-text-primary)] hover:bg-[var(--color-surface-2)]"
+                >
+                  <span className="block font-semibold">Calculate R1+R2</span>
+                  <span className="block text-[11px] text-[var(--color-text-tertiary)]">
+                    R1+R2 = Zs − Ze
+                  </span>
+                </button>
+              </div>
+            ) : null}
+          </div>
           <RailButton
             Icon={ccuBusy ? Loader2 : Camera}
             label={ccuBusy ? 'Analysing' : 'CCU'}
@@ -420,11 +797,113 @@ export default function CircuitsPage() {
           />
         </aside>
       </div>
+
+      {/*
+       * Delete-all confirmation — required because the button is
+       * terminal and iOS parity expects a guard even on its more
+       * elaborate multi-select flow. See the parity ledger note on
+       * the UX simplification: one button + one confirm replaces the
+       * iOS enter-mode / tap-rows / confirm-count cascade.
+       */}
+      <CcuModeSheet
+        open={ccuModeSheetOpen}
+        onOpenChange={setCcuModeSheetOpen}
+        onSelect={onCcuModeSelected}
+        existingCircuitCount={boardScoped.length}
+      />
+
+      <ConfirmDialog
+        open={confirmDeleteAllOpen}
+        onOpenChange={setConfirmDeleteAllOpen}
+        title={`Delete all circuits on this board?`}
+        description={
+          <>
+            This will remove {boardScoped.length}{' '}
+            {boardScoped.length === 1 ? 'circuit' : 'circuits'}
+            {selectedBoardId ? ` on the selected board` : ''}. This cannot be undone.
+          </>
+        }
+        confirmLabel="Delete all"
+        destructive
+        onConfirm={handleConfirmDeleteAll}
+      />
+
+      {/*
+       * Per-circuit delete confirmation (Phase 9). The trash button on
+       * each row / card is a high-risk tap target — a single mis-tap
+       * would silently wipe a circuit plus any observations linked via
+       * `schedule_item`. Routing through ConfirmDialog matches the
+       * bulk-delete and observations-delete patterns and closes the
+       * ledger gap for cross-cutting destructive guards.
+       */}
+      <ConfirmDialog
+        open={pendingDeleteCircuitId !== null}
+        onOpenChange={(open) => {
+          if (!open) cancelPendingDelete();
+        }}
+        title="Delete this circuit?"
+        description={
+          pendingDeleteCircuit ? (
+            <>
+              Remove circuit{' '}
+              <strong>
+                {pendingDeleteCircuit.circuit_ref ||
+                  pendingDeleteCircuit.circuit_designation ||
+                  'this row'}
+              </strong>
+              ? Any readings recorded for it will be lost. This cannot be undone.
+            </>
+          ) : undefined
+        }
+        confirmLabel="Delete"
+        confirmLabelBusy="Deleting…"
+        destructive
+        onConfirm={confirmPendingDelete}
+      />
     </div>
   );
 }
 
 /* ----------------------------------------------------------------------- */
+
+function ViewToggle({ view, onChange }: { view: CircuitView; onChange: (v: CircuitView) => void }) {
+  return (
+    <div
+      role="radiogroup"
+      aria-label="Circuit view"
+      className="inline-flex items-center rounded-full border border-[var(--color-border-subtle)] bg-[var(--color-surface-2)] p-0.5 text-[11px]"
+    >
+      <button
+        type="button"
+        role="radio"
+        aria-checked={view === 'cards'}
+        onClick={() => onChange('cards')}
+        className={`flex items-center gap-1 rounded-full px-2.5 py-1 font-semibold transition ${
+          view === 'cards'
+            ? 'bg-[var(--color-brand-blue)] text-white'
+            : 'text-[var(--color-text-secondary)]'
+        }`}
+      >
+        <LayoutGrid className="h-3 w-3" aria-hidden />
+        Cards
+      </button>
+      <button
+        type="button"
+        role="radio"
+        aria-checked={view === 'table'}
+        onClick={() => onChange('table')}
+        className={`flex items-center gap-1 rounded-full px-2.5 py-1 font-semibold transition ${
+          view === 'table'
+            ? 'bg-[var(--color-brand-blue)] text-white'
+            : 'text-[var(--color-text-secondary)]'
+        }`}
+      >
+        <Table2 className="h-3 w-3" aria-hidden />
+        Table
+      </button>
+    </div>
+  );
+}
 
 function RailButton({
   Icon,

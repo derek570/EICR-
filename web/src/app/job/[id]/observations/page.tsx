@@ -2,11 +2,13 @@
 
 import * as React from 'react';
 import { useParams } from 'next/navigation';
-import { AlertTriangle, ImageIcon, MapPin, Plus, Trash2 } from 'lucide-react';
+import { AlertTriangle, ClipboardList, ImageIcon, MapPin, Plus, Trash2 } from 'lucide-react';
 import { useJobContext } from '@/lib/job-context';
 import type { ObservationRow } from '@/lib/types';
 import { getUser } from '@/lib/auth';
 import { SectionCard } from '@/components/ui/section-card';
+import { HeroHeader } from '@/components/ui/hero-header';
+import { ConfirmDialog } from '@/components/ui/confirm-dialog';
 import { ObservationPhoto } from '@/components/observations/observation-photo';
 import { ObservationSheet } from '@/components/observations/observation-sheet';
 import { cn } from '@/lib/utils';
@@ -89,8 +91,29 @@ export default function ObservationsPage() {
     closeSheet();
   };
 
-  const removeAt = (id: string) => {
-    updateJob({ observations: observations.filter((o) => o.id !== id) });
+  /**
+   * Trash bin icon wraps this — but we queue the delete through a
+   * ConfirmDialog (Phase 1 primitive) since a mis-tap would lose the
+   * defect and any uploaded photos. Mirrors iOS context-menu delete at
+   * ObservationsTab.swift:L22-L45 which has a native confirmation.
+   *
+   * Additionally clears any Inspection schedule item back-reference
+   * via the schedule_item column on the observation. iOS does this in
+   * `ObservationScheduleLinker.observationDeleted`
+   * (ObservationsTab.swift:L173-L178) — the reference is one-way
+   * (observation → schedule ref), so on the web side the observation
+   * being gone is enough to clear the Inspection tab's inline preview,
+   * which reads through `observations.find(o => o.schedule_item === ref)`.
+   * No extra cross-tab wiring needed.
+   */
+  const [pendingDeleteId, setPendingDeleteId] = React.useState<string | null>(null);
+  const pendingDelete = pendingDeleteId
+    ? (observations.find((o) => o.id === pendingDeleteId) ?? null)
+    : null;
+  const confirmDelete = () => {
+    if (!pendingDeleteId) return;
+    updateJob({ observations: observations.filter((o) => o.id !== pendingDeleteId) });
+    setPendingDeleteId(null);
   };
 
   const editing =
@@ -102,40 +125,16 @@ export default function ObservationsPage() {
 
   return (
     <div
-      className="mx-auto flex w-full flex-col gap-5 px-4 py-6 md:px-8 md:py-8"
+      className="cm-stagger-children mx-auto flex w-full flex-col gap-5 px-4 py-6 md:px-8 md:py-8"
       style={{ maxWidth: '960px' }}
     >
-      <div
-        className="relative flex items-center justify-between overflow-hidden rounded-[var(--radius-xl)] px-5 py-5 md:px-6 md:py-6"
-        style={{
-          background:
-            'linear-gradient(135deg, var(--color-brand-blue) 0%, var(--color-brand-green) 100%)',
-        }}
-      >
-        <div className="flex flex-1 flex-col gap-2">
-          <p className="text-[11px] uppercase tracking-[0.14em] text-white/75">{certificateType}</p>
-          <h2 className="text-[22px] font-bold text-white md:text-[26px]">Observations</h2>
-          <p className="text-[13px] text-white/85">Defects, recommendations &amp; notes</p>
-          {observations.length > 0 ? (
-            <div className="mt-1 flex flex-wrap items-center gap-2">
-              <CountBadge label="Total" count={observations.length} colour="white" />
-              {counts.C1 > 0 ? (
-                <CountBadge label="C1" count={counts.C1} colour={CODE_COLOUR.C1} />
-              ) : null}
-              {counts.C2 > 0 ? (
-                <CountBadge label="C2" count={counts.C2} colour={CODE_COLOUR.C2} />
-              ) : null}
-              {counts.C3 > 0 ? (
-                <CountBadge label="C3" count={counts.C3} colour={CODE_COLOUR.C3} />
-              ) : null}
-              {counts.FI > 0 ? (
-                <CountBadge label="FI" count={counts.FI} colour={CODE_COLOUR.FI} />
-              ) : null}
-            </div>
-          ) : null}
-        </div>
-        <div className="flex flex-col items-end gap-2">
-          <AlertTriangle className="h-10 w-10 text-white/30" strokeWidth={2} aria-hidden />
+      <HeroHeader
+        eyebrow={certificateType}
+        title="Observations"
+        subtitle="Defects, recommendations & notes"
+        accent="test-results"
+        icon={<AlertTriangle className="h-10 w-10" strokeWidth={2} aria-hidden />}
+        action={
           <button
             type="button"
             onClick={openAdd}
@@ -144,8 +143,26 @@ export default function ObservationsPage() {
             <Plus className="h-3.5 w-3.5" aria-hidden />
             Add
           </button>
-        </div>
-      </div>
+        }
+      >
+        {observations.length > 0 ? (
+          <div className="mt-1 flex flex-wrap items-center gap-2">
+            <CountBadge label="Total" count={observations.length} colour="white" />
+            {counts.C1 > 0 ? (
+              <CountBadge label="C1" count={counts.C1} colour={CODE_COLOUR.C1} />
+            ) : null}
+            {counts.C2 > 0 ? (
+              <CountBadge label="C2" count={counts.C2} colour={CODE_COLOUR.C2} />
+            ) : null}
+            {counts.C3 > 0 ? (
+              <CountBadge label="C3" count={counts.C3} colour={CODE_COLOUR.C3} />
+            ) : null}
+            {counts.FI > 0 ? (
+              <CountBadge label="FI" count={counts.FI} colour={CODE_COLOUR.FI} />
+            ) : null}
+          </div>
+        ) : null}
+      </HeroHeader>
 
       {observations.length === 0 ? (
         <SectionCard accent="blue" icon={AlertTriangle} title="No observations">
@@ -165,7 +182,7 @@ export default function ObservationsPage() {
               userId={userId}
               jobId={jobId}
               onOpen={() => openEdit(obs.id)}
-              onRemove={() => removeAt(obs.id)}
+              onRemove={() => setPendingDeleteId(obs.id)}
             />
           ))}
         </div>
@@ -179,6 +196,31 @@ export default function ObservationsPage() {
           onCancel={closeSheet}
         />
       ) : null}
+
+      <ConfirmDialog
+        open={pendingDelete !== null}
+        onOpenChange={(next) => {
+          if (!next) setPendingDeleteId(null);
+        }}
+        title="Delete observation?"
+        description={
+          pendingDelete ? (
+            <>
+              {pendingDelete.code ? `${pendingDelete.code} · ` : null}
+              {pendingDelete.description?.slice(0, 120) || 'No description'}
+              {pendingDelete.schedule_item
+                ? ` (linked to schedule item ${pendingDelete.schedule_item})`
+                : ''}
+              . This cannot be undone.
+            </>
+          ) : (
+            'This cannot be undone.'
+          )
+        }
+        confirmLabel="Delete"
+        destructive
+        onConfirm={confirmDelete}
+      />
     </div>
   );
 }
@@ -254,9 +296,20 @@ function ObservationCard({
             {code ?? '—'}
           </span>
           <div className="flex flex-col gap-0.5">
-            <span className="text-[11px] font-medium uppercase tracking-[0.06em] text-[var(--color-text-tertiary)]">
-              {subtitle}
-            </span>
+            <div className="flex flex-wrap items-center gap-1">
+              <span className="text-[11px] font-medium uppercase tracking-[0.06em] text-[var(--color-text-tertiary)]">
+                {subtitle}
+              </span>
+              {obs.schedule_item ? (
+                <span
+                  className="inline-flex items-center gap-1 rounded-full bg-[var(--color-brand-blue)]/15 px-1.5 py-0.5 text-[10px] font-semibold text-[var(--color-brand-blue)]"
+                  title={obs.schedule_description ?? undefined}
+                >
+                  <ClipboardList className="h-2.5 w-2.5" aria-hidden />
+                  from schedule item {obs.schedule_item}
+                </span>
+              ) : null}
+            </div>
             {obs.location ? (
               <span className="inline-flex items-center gap-1 text-[12px] text-[var(--color-text-secondary)]">
                 <MapPin className="h-3 w-3" aria-hidden />

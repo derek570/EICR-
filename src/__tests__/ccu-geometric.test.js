@@ -27,6 +27,8 @@ let getModuleCount;
 let extractCcuGeometric;
 let cropSlot;
 let classifySlots;
+let prepareModernGeometry;
+let classifyModernSlots;
 
 beforeAll(async () => {
   const mod = await import('../extraction/ccu-geometric.js');
@@ -35,6 +37,8 @@ beforeAll(async () => {
   extractCcuGeometric = mod.extractCcuGeometric;
   cropSlot = mod.cropSlot;
   classifySlots = mod.classifySlots;
+  prepareModernGeometry = mod.prepareModernGeometry;
+  classifyModernSlots = mod.classifyModernSlots;
 });
 
 // Build a tiny in-memory JPEG buffer of known dimensions for metadata calls.
@@ -193,61 +197,140 @@ describe('getModuleCount', () => {
     rail_right: 900,
   };
 
-  test('geometricCount = round(rail_width / (main_switch_width/2))', async () => {
+  test('right-side main switch clamps rail_right to exclude its bbox', async () => {
     const buf = await makeFakeJpeg();
 
-    // rail_width = 800; main_switch_width=80 → module_width=40 → count=20
+    // rail = [100, 900], main switch centred at 820 width 80 → msLeft=780.
+    // effectiveRailRight = 780 → width 680, moduleWidth=40 → count=17.
     mockCreate.mockResolvedValueOnce(
       fakeVlmResponse({
-        main_switch_center_x: 140,
+        main_switch_center_x: 820,
+        main_switch_width: 80,
+        module_count_direct: 17,
+      })
+    );
+
+    const result = await getModuleCount(buf, medianRails);
+    expect(result.mainSwitchSide).toBe('right');
+    expect(result.geometricCount).toBe(17);
+    expect(result.vlmCount).toBe(17);
+    expect(result.disagreement).toBe(false);
+    expect(result.truncatedFromDisagreement).toBe(false);
+    expect(result.slotCentersX).toHaveLength(17);
+    // Right-side clamp: tile from the left end of the rail.
+    expect(result.slotCentersX[0]).toBeCloseTo(120);
+    // Last slot still leaves a gap before the main switch (msLeft=780,
+    // last centre = 100 + 40 * 16.5 = 760 → centre+moduleWidth/2 = 780).
+    expect(result.slotCentersX.at(-1)).toBeCloseTo(760);
+    expect(result.moduleWidth).toBe(40);
+  });
+
+  test('left-side main switch clamps rail_left to exclude its bbox', async () => {
+    const buf = await makeFakeJpeg();
+
+    // rail = [100, 900], main switch at left: centreX=180, width=80 → msRight=220.
+    // effectiveRailLeft=220 → width=680, moduleWidth=40 → count=17.
+    mockCreate.mockResolvedValueOnce(
+      fakeVlmResponse({
+        main_switch_center_x: 180,
+        main_switch_width: 80,
+        module_count_direct: 17,
+      })
+    );
+
+    const result = await getModuleCount(buf, medianRails);
+    expect(result.mainSwitchSide).toBe('left');
+    expect(result.geometricCount).toBe(17);
+    expect(result.slotCentersX).toHaveLength(17);
+    // Left-side clamp: first module sits just to the right of the main switch.
+    // Tiling runs right-to-left then reversed, so slotCentersX[0] is the
+    // leftmost module centre = effectiveLeft + moduleWidth*0.5 = 240.
+    expect(result.slotCentersX[0]).toBeCloseTo(240);
+    expect(result.slotCentersX.at(-1)).toBeCloseTo(880);
+  });
+
+  test('no clamp when main switch centre falls outside rail bbox', async () => {
+    const buf = await makeFakeJpeg();
+
+    // rail_width = 800; main switch is on a SEPARATE segment (centre past rail_right).
+    // Clamp is a no-op: full width used.
+    mockCreate.mockResolvedValueOnce(
+      fakeVlmResponse({
+        main_switch_center_x: 960,
         main_switch_width: 80,
         module_count_direct: 20,
       })
     );
 
     const result = await getModuleCount(buf, medianRails);
+    expect(result.mainSwitchSide).toBeNull();
     expect(result.geometricCount).toBe(20);
-    expect(result.vlmCount).toBe(20);
-    expect(result.disagreement).toBe(false);
     expect(result.slotCentersX).toHaveLength(20);
-    // First slot centre: rail_left + moduleWidth*0.5 = 100 + 20 = 120
     expect(result.slotCentersX[0]).toBeCloseTo(120);
-    // Last slot centre: rail_left + moduleWidth*(count - 0.5) = 100 + 40*19.5 = 880
-    expect(result.slotCentersX[19]).toBeCloseTo(880);
-    expect(result.moduleWidth).toBe(40);
+    expect(result.slotCentersX.at(-1)).toBeCloseTo(880);
   });
 
-  test('disagreement=true when |geometric - vlm| >= 1', async () => {
+  test('disagreement=true when |geometric - vlm| >= 1 (single-module drift kept)', async () => {
     const buf = await makeFakeJpeg();
-    // Geometric = 20 but VLM insists it's 18.
+    // Right-side MS at 820/80 → clamp to 780, width 680, moduleWidth 40 → count 17.
+    // VLM insists 18 — within the 1-module fencepost tolerance, kept as-is.
     mockCreate.mockResolvedValueOnce(
       fakeVlmResponse({
-        main_switch_center_x: 140,
+        main_switch_center_x: 820,
         main_switch_width: 80,
         module_count_direct: 18,
       })
     );
 
     const result = await getModuleCount(buf, medianRails);
-    expect(result.geometricCount).toBe(20);
+    expect(result.geometricCount).toBe(17);
     expect(result.vlmCount).toBe(18);
     expect(result.disagreement).toBe(true);
+    expect(result.truncatedFromDisagreement).toBe(false);
   });
 
-  test('rounds non-integer geometric counts', async () => {
+  test('truncates geometric → VLM when |geo − vlm| ≥ 2 post-clamp', async () => {
     const buf = await makeFakeJpeg();
-    // rail_width = 800; main_switch_width=70 → module_width=35 → 800/35 = 22.857 → 23
+    // Right-side MS: post-clamp geometric count = 17 but VLM insists 12.
+    // Clamp did its job on the main-switch end; remaining 5-module gap means
+    // rail_left estimate is off. Truncate geometric down to VLM's 12 and
+    // flag truncatedFromDisagreement.
     mockCreate.mockResolvedValueOnce(
       fakeVlmResponse({
-        main_switch_center_x: 150,
-        main_switch_width: 70,
-        module_count_direct: 23,
+        main_switch_center_x: 820,
+        main_switch_width: 80,
+        module_count_direct: 12,
       })
     );
 
     const result = await getModuleCount(buf, medianRails);
-    expect(result.geometricCount).toBe(23);
+    expect(result.vlmCount).toBe(12);
+    expect(result.geometricCount).toBe(12);
+    expect(result.slotCentersX).toHaveLength(12);
+    expect(result.truncatedFromDisagreement).toBe(true);
+    // With mainSwitchSide='right', tiling runs from the left, so the 12
+    // slots span the FAR-FROM-main-switch end: centres [120, 160, …, 560].
+    expect(result.slotCentersX[0]).toBeCloseTo(120);
+    expect(result.slotCentersX.at(-1)).toBeCloseTo(560);
+  });
+
+  test('rounds non-integer geometric counts', async () => {
+    const buf = await makeFakeJpeg();
+    // Right-side MS at 870/60 → msLeft=840; effectiveWidth=740; moduleWidth=30
+    // → 740/30 = 24.666 → floor()=24 (prevents phantom slot overlapping the
+    // main switch bbox). VLM agrees.
+    mockCreate.mockResolvedValueOnce(
+      fakeVlmResponse({
+        main_switch_center_x: 870,
+        main_switch_width: 60,
+        module_count_direct: 24,
+      })
+    );
+
+    const result = await getModuleCount(buf, medianRails);
+    expect(result.geometricCount).toBe(24);
     expect(result.disagreement).toBe(false);
+    expect(result.truncatedFromDisagreement).toBe(false);
   });
 
   test('throws when main_switch_width is invalid', async () => {
@@ -321,7 +404,7 @@ describe('extractCcuGeometric', () => {
       // main_switch_width=400 on 0-1000 → moduleWidth=200 → count=round(800/200)=4
       .mockResolvedValueOnce(
         fakeVlmResponse({
-          main_switch_center_x: 310,
+          main_switch_center_x: 1000, // outside rail bbox — no clamp
           main_switch_width: 400,
           module_count_direct: 4,
         })
@@ -380,7 +463,7 @@ describe('extractCcuGeometric', () => {
       )
       .mockResolvedValueOnce(
         fakeVlmResponse({
-          main_switch_center_x: 310,
+          main_switch_center_x: 1000, // outside rail bbox — no clamp
           main_switch_width: 400,
           module_count_direct: 4,
         })
@@ -656,5 +739,320 @@ describe('classifySlots', () => {
     expect(result.slots[0].rcdWaveformType).toBeNull();
     expect(result.slots[0].bsEn).toBeNull();
     expect(result.slots[0].confidence).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// prepareModernGeometry + classifyModernSlots (Stage 3 / Stage 4 parallelism split)
+// ---------------------------------------------------------------------------
+
+describe('prepareModernGeometry', () => {
+  test('returns Stage 1 + Stage 2 output shape (no Stage 3)', async () => {
+    const buf = await makeFakeJpeg();
+
+    // 3 rail samples + 1 module-count sample, then STOP — prepare must not
+    // advance to Stage 3.
+    mockCreate
+      .mockResolvedValueOnce(
+        fakeVlmResponse({ rail_top: 400, rail_bottom: 600, rail_left: 100, rail_right: 900 })
+      )
+      .mockResolvedValueOnce(
+        fakeVlmResponse({ rail_top: 410, rail_bottom: 610, rail_left: 110, rail_right: 910 })
+      )
+      .mockResolvedValueOnce(
+        fakeVlmResponse({ rail_top: 420, rail_bottom: 620, rail_left: 120, rail_right: 920 })
+      )
+      .mockResolvedValueOnce(
+        fakeVlmResponse({
+          main_switch_center_x: 1000, // outside rail bbox — no clamp
+          main_switch_width: 400,
+          module_count_direct: 4,
+        })
+      );
+
+    const prepared = await prepareModernGeometry(buf);
+
+    expect(prepared.medianRails).toEqual({
+      rail_top: 410,
+      rail_bottom: 610,
+      rail_left: 110,
+      rail_right: 910,
+    });
+    expect(prepared.moduleCount).toBe(4);
+    expect(prepared.vlmCount).toBe(4);
+    expect(prepared.disagreement).toBe(false);
+    expect(prepared.slotCentersX).toHaveLength(4);
+    expect(prepared.moduleWidth).toBe(200);
+    expect(prepared.imageWidth).toBeGreaterThan(0);
+    expect(prepared.stageOutputs.stage1).toBeDefined();
+    expect(prepared.stageOutputs.stage2).toBeDefined();
+    expect(prepared.stageOutputs.stage3).toBeUndefined();
+    expect(prepared.timings.stage1Ms).toBeGreaterThanOrEqual(0);
+    expect(prepared.timings.stage2Ms).toBeGreaterThanOrEqual(0);
+    expect(prepared.usage.inputTokens).toBeGreaterThan(0);
+    // Used exactly 4 VLM calls (no Stage 3 yet).
+    expect(mockCreate).toHaveBeenCalledTimes(4);
+  });
+
+  test('propagates Stage 1 failures (no Stage 2)', async () => {
+    const buf = await makeFakeJpeg();
+    mockCreate.mockRejectedValueOnce(new Error('VLM boom'));
+    await expect(prepareModernGeometry(buf)).rejects.toThrow(/VLM boom/);
+  });
+
+  test('railRoiHint option: bypasses Stage 1 VLM entirely, uses ROI as medianRails', async () => {
+    const buf = await makeFakeJpeg();
+    // Only Stage 2 VLM call should fire — no rail-detection samples.
+    mockCreate.mockResolvedValueOnce(
+      fakeVlmResponse({
+        main_switch_center_x: 1000,
+        main_switch_width: 400,
+        module_count_direct: 4,
+      })
+    );
+
+    const prepared = await prepareModernGeometry(buf, {
+      railRoiHint: { x: 0.05, y: 0.4, w: 0.9, h: 0.2 },
+    });
+
+    // medianRails converted from ROI: 0-1 → 0-1000 scale.
+    expect(prepared.medianRails).toEqual({
+      rail_top: 400,
+      rail_bottom: 600,
+      rail_left: 50,
+      rail_right: 950,
+    });
+    expect(prepared.stage1Source).toBe('roi-hint');
+    // Exactly ONE VLM call happened (Stage 2 module count), not 4 (Stage 1 × 3 + Stage 2).
+    expect(mockCreate).toHaveBeenCalledTimes(1);
+    // Stage 1 contribution to usage is zero.
+    expect(prepared.stageOutputs.stage1.usage.inputTokens).toBe(0);
+    expect(prepared.stageOutputs.stage1.usage.outputTokens).toBe(0);
+    // Stage 1 never trips lowConfidence on ROI path (user framed it).
+    expect(prepared.stageOutputs.stage1.lowConfidence).toBe(false);
+  });
+
+  test('railRoiHint accepts x_min/y_min/x_max/y_max form too', async () => {
+    const buf = await makeFakeJpeg();
+    mockCreate.mockResolvedValueOnce(
+      fakeVlmResponse({
+        main_switch_center_x: 1000,
+        main_switch_width: 400,
+        module_count_direct: 4,
+      })
+    );
+
+    const prepared = await prepareModernGeometry(buf, {
+      railRoiHint: { x_min: 0.1, y_min: 0.3, x_max: 0.9, y_max: 0.7 },
+    });
+
+    expect(prepared.medianRails).toEqual({
+      rail_top: 300,
+      rail_bottom: 700,
+      rail_left: 100,
+      rail_right: 900,
+    });
+    expect(prepared.stage1Source).toBe('roi-hint');
+  });
+
+  test('railRoiHint clamps out-of-range values to [0, 1]', async () => {
+    const buf = await makeFakeJpeg();
+    mockCreate.mockResolvedValueOnce(
+      fakeVlmResponse({
+        main_switch_center_x: 1000,
+        main_switch_width: 400,
+        module_count_direct: 4,
+      })
+    );
+
+    const prepared = await prepareModernGeometry(buf, {
+      railRoiHint: { x: -0.1, y: 0.4, w: 1.5, h: 0.2 }, // x<0 and x+w>1 both clamp
+    });
+
+    expect(prepared.medianRails.rail_left).toBe(0);
+    expect(prepared.medianRails.rail_right).toBe(1000);
+  });
+
+  test('railRoiHint with collapsed/invalid area throws', async () => {
+    const buf = await makeFakeJpeg();
+    // Stage 1 ROI path throws BEFORE any Stage 2 VLM call, so no mock needed.
+    await expect(
+      prepareModernGeometry(buf, { railRoiHint: { x: 0.5, y: 0.5, w: 0, h: 0 } })
+    ).rejects.toThrow(/zero area/);
+  });
+
+  test('no railRoiHint → behaves identically to before (Stage 1 × 3 + Stage 2 × 1)', async () => {
+    const buf = await makeFakeJpeg();
+    mockCreate
+      .mockResolvedValueOnce(
+        fakeVlmResponse({ rail_top: 400, rail_bottom: 600, rail_left: 100, rail_right: 900 })
+      )
+      .mockResolvedValueOnce(
+        fakeVlmResponse({ rail_top: 400, rail_bottom: 600, rail_left: 100, rail_right: 900 })
+      )
+      .mockResolvedValueOnce(
+        fakeVlmResponse({ rail_top: 400, rail_bottom: 600, rail_left: 100, rail_right: 900 })
+      )
+      .mockResolvedValueOnce(
+        fakeVlmResponse({
+          main_switch_center_x: 1000,
+          main_switch_width: 400,
+          module_count_direct: 4,
+        })
+      );
+
+    const prepared = await prepareModernGeometry(buf);
+    expect(prepared.stage1Source).toBe('vlm');
+    expect(mockCreate).toHaveBeenCalledTimes(4);
+  });
+});
+
+describe('classifyModernSlots', () => {
+  async function buildPreparedGeometry() {
+    const buf = await makeFakeJpeg();
+    mockCreate
+      .mockResolvedValueOnce(
+        fakeVlmResponse({ rail_top: 400, rail_bottom: 600, rail_left: 100, rail_right: 900 })
+      )
+      .mockResolvedValueOnce(
+        fakeVlmResponse({ rail_top: 410, rail_bottom: 610, rail_left: 110, rail_right: 910 })
+      )
+      .mockResolvedValueOnce(
+        fakeVlmResponse({ rail_top: 420, rail_bottom: 620, rail_left: 120, rail_right: 920 })
+      )
+      .mockResolvedValueOnce(
+        fakeVlmResponse({
+          main_switch_center_x: 1000, // outside rail bbox — no clamp
+          main_switch_width: 400,
+          module_count_direct: 4,
+        })
+      );
+    const prepared = await prepareModernGeometry(buf);
+    return { buf, prepared };
+  }
+
+  test('returns Stage 3 output given prepared geometry', async () => {
+    const { buf, prepared } = await buildPreparedGeometry();
+
+    mockCreate.mockResolvedValueOnce(
+      fakeVlmResponse([
+        { slot_index: 0, classification: 'main_switch', poles: 2, confidence: 0.9 },
+        { slot_index: 1, classification: 'mcb', ratingAmps: 32, poles: 1, confidence: 0.85 },
+        { slot_index: 2, classification: 'mcb', ratingAmps: 16, poles: 1, confidence: 0.8 },
+        { slot_index: 3, classification: 'rcbo', ratingAmps: 32, poles: 1, confidence: 0.75 },
+      ])
+    );
+
+    const classified = await classifyModernSlots(buf, prepared);
+
+    expect(classified.slots).toHaveLength(4);
+    expect(classified.slots[0].classification).toBe('main_switch');
+    expect(classified.slots[3].classification).toBe('rcbo');
+    expect(classified.stage3Error).toBeNull();
+    expect(classified.timings.stage3Ms).toBeGreaterThanOrEqual(0);
+    expect(classified.usage.inputTokens).toBeGreaterThan(0);
+    expect(classified.stageOutputs.stage3.batchCount).toBe(1);
+    expect(classified.stageOutputs.stage3.batchSize).toBe(4);
+  });
+
+  test('soft-fails when Stage 3 VLM returns garbage', async () => {
+    const { buf, prepared } = await buildPreparedGeometry();
+
+    mockCreate.mockResolvedValueOnce({
+      content: [{ type: 'text', text: 'not valid json' }],
+      usage: { input_tokens: 10, output_tokens: 5 },
+    });
+
+    const classified = await classifyModernSlots(buf, prepared);
+
+    expect(classified.slots).toBeNull();
+    expect(classified.stage3Error).toEqual(expect.stringMatching(/classifySlots/));
+  });
+
+  test('throws when preparedGeom is invalid', async () => {
+    const buf = await makeFakeJpeg();
+    await expect(classifyModernSlots(buf, null)).rejects.toThrow(/slotCentersX/);
+    await expect(classifyModernSlots(buf, {})).rejects.toThrow(/slotCentersX/);
+  });
+});
+
+describe('prepare + classify → extractCcuGeometric equivalence', () => {
+  // Lock behaviour of the split: calling prepare then classify must produce
+  // the same observable slot outputs + geometry + schemaVersion as calling
+  // the wrapper orchestrator. Guards against accidental drift between the
+  // two paths.
+  test('wrapper output equals prepare → classify composition for the same inputs', async () => {
+    const buf = await makeFakeJpeg();
+
+    // Deterministic response sequence — use identical samples across both runs.
+    // We run the wrapper first (consumes 5 VLM calls), then prepare+classify.
+    mockCreate
+      // Wrapper run — 3 rail + 1 count + 1 stage3 batch
+      .mockResolvedValueOnce(
+        fakeVlmResponse({ rail_top: 400, rail_bottom: 600, rail_left: 100, rail_right: 900 })
+      )
+      .mockResolvedValueOnce(
+        fakeVlmResponse({ rail_top: 400, rail_bottom: 600, rail_left: 100, rail_right: 900 })
+      )
+      .mockResolvedValueOnce(
+        fakeVlmResponse({ rail_top: 400, rail_bottom: 600, rail_left: 100, rail_right: 900 })
+      )
+      .mockResolvedValueOnce(
+        fakeVlmResponse({
+          main_switch_center_x: 1000, // outside rail bbox — no clamp
+          main_switch_width: 400,
+          module_count_direct: 4,
+        })
+      )
+      .mockResolvedValueOnce(
+        fakeVlmResponse([
+          { slot_index: 0, classification: 'main_switch', poles: 2, confidence: 0.9 },
+          { slot_index: 1, classification: 'mcb', ratingAmps: 32, poles: 1, confidence: 0.85 },
+          { slot_index: 2, classification: 'mcb', ratingAmps: 16, poles: 1, confidence: 0.85 },
+          { slot_index: 3, classification: 'blank', poles: 1, confidence: 0.95 },
+        ])
+      )
+      // prepare+classify run — identical samples
+      .mockResolvedValueOnce(
+        fakeVlmResponse({ rail_top: 400, rail_bottom: 600, rail_left: 100, rail_right: 900 })
+      )
+      .mockResolvedValueOnce(
+        fakeVlmResponse({ rail_top: 400, rail_bottom: 600, rail_left: 100, rail_right: 900 })
+      )
+      .mockResolvedValueOnce(
+        fakeVlmResponse({ rail_top: 400, rail_bottom: 600, rail_left: 100, rail_right: 900 })
+      )
+      .mockResolvedValueOnce(
+        fakeVlmResponse({
+          main_switch_center_x: 1000, // outside rail bbox — no clamp
+          main_switch_width: 400,
+          module_count_direct: 4,
+        })
+      )
+      .mockResolvedValueOnce(
+        fakeVlmResponse([
+          { slot_index: 0, classification: 'main_switch', poles: 2, confidence: 0.9 },
+          { slot_index: 1, classification: 'mcb', ratingAmps: 32, poles: 1, confidence: 0.85 },
+          { slot_index: 2, classification: 'mcb', ratingAmps: 16, poles: 1, confidence: 0.85 },
+          { slot_index: 3, classification: 'blank', poles: 1, confidence: 0.95 },
+        ])
+      );
+
+    const wrapperResult = await extractCcuGeometric(buf);
+    const prepared = await prepareModernGeometry(buf);
+    const classified = await classifyModernSlots(buf, prepared);
+
+    expect(wrapperResult.schemaVersion).toBe('ccu-geometric-v1');
+    expect(wrapperResult.slots).toHaveLength(4);
+    expect(classified.slots).toHaveLength(4);
+    // Slot CLASSIFICATIONS must match — proves the split is behaviour-equivalent.
+    for (let i = 0; i < 4; i++) {
+      expect(classified.slots[i].classification).toBe(wrapperResult.slots[i].classification);
+      expect(classified.slots[i].ratingAmps ?? null).toBe(
+        wrapperResult.slots[i].ratingAmps ?? null
+      );
+    }
+    expect(prepared.moduleCount).toBe(wrapperResult.moduleCount);
+    expect(prepared.slotCentersX).toEqual(wrapperResult.slotCentersX);
   });
 });

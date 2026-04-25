@@ -330,14 +330,18 @@ describe('QuestionGate', () => {
       expect(sendCallback).toHaveBeenCalledTimes(1);
     });
 
-    test('allows re-ask after DEDUPE_TTL_MS window expires', () => {
+    test('allows re-ask after both dedupe windows expire', () => {
+      // Historically this test only needed to advance past the 15s tuple
+      // TTL. After the secondary heard_value dedup (120s) landed, an
+      // identical re-ask must now outlast BOTH windows to fire again —
+      // else the heard_value map would keep it suppressed.
       const q = { type: 'unclear', field: 'postcode', heard_value: 'RG' };
       gate.enqueue([q]);
       jest.advanceTimersByTime(1500);
       expect(sendCallback).toHaveBeenCalledTimes(1);
 
-      // Jump past the 15s TTL — a legitimately repeated ask should fire
-      jest.advanceTimersByTime(16000);
+      // Past HEARD_VALUE_DEDUPE_TTL_MS (120s) — both TTLs have expired.
+      jest.advanceTimersByTime(121000);
       gate.enqueue([{ ...q }]);
       jest.advanceTimersByTime(1500);
       expect(sendCallback).toHaveBeenCalledTimes(2);
@@ -349,6 +353,108 @@ describe('QuestionGate', () => {
       gate.enqueue([{ type: 'unclear', field: 'postcode', heard_value: 'SW1' }]);
       jest.advanceTimersByTime(1500);
       expect(sendCallback).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  // --- heard_value-only dedup (2026-04-24 session 0952EC64 repro) ---
+  //
+  // The tuple sig `type|field|circuit|heard_value` caught none of the three
+  // 0.13 re-asks in that session because field/circuit differed. The
+  // secondary map keys on `(type, normalised_heard_value)` with a 120s TTL.
+
+  describe('heard_value re-ask suppression (secondary dedup)', () => {
+    test('suppresses same type + same heard_value across different circuit sentinels', () => {
+      // Repro: two `unclear` questions about 0.13 in quick succession with
+      // different sentinel circuits (-1 then 0). Tuple sig differs; the
+      // heard_value map catches the second.
+      gate.enqueue([{ type: 'unclear', field: null, circuit: -1, heard_value: '0.13' }]);
+      jest.advanceTimersByTime(1500);
+      gate.enqueue([{ type: 'unclear', field: null, circuit: 0, heard_value: '0.13' }]);
+      jest.advanceTimersByTime(1500);
+      expect(sendCallback).toHaveBeenCalledTimes(1);
+    });
+
+    test('suppresses via normalisation: "0.130" heard_value matches earlier "0.13"', () => {
+      gate.enqueue([{ type: 'unclear', field: null, circuit: -1, heard_value: '0.13' }]);
+      jest.advanceTimersByTime(1500);
+      gate.enqueue([{ type: 'unclear', field: null, circuit: -1, heard_value: '0.130' }]);
+      jest.advanceTimersByTime(1500);
+      expect(sendCallback).toHaveBeenCalledTimes(1);
+    });
+
+    test("different TYPE, same heard_value is NOT dedup'd by the secondary map", () => {
+      // `unclear` 0.13 then `circuit_disambiguation` 0.13 are semantically
+      // different asks (one confusion, one disambiguation). The secondary
+      // map key includes type so only same-type variants are suppressed.
+      // Filter A handles the stored-value case in parallel; this test is
+      // about gate behaviour only.
+      gate.enqueue([{ type: 'unclear', field: null, circuit: -1, heard_value: '0.13' }]);
+      jest.advanceTimersByTime(1500);
+      gate.enqueue([
+        {
+          type: 'circuit_disambiguation',
+          field: 'r1_plus_r2',
+          circuit: -1,
+          heard_value: '0.13',
+        },
+      ]);
+      jest.advanceTimersByTime(1500);
+      expect(sendCallback).toHaveBeenCalledTimes(2);
+    });
+
+    test('heard_value dedup survives beyond the 15s tuple TTL (120s horizon)', () => {
+      // Jump 90s between asks — tuple TTL would have expired, but the
+      // heard_value map keeps it dedup'd.
+      gate.enqueue([{ type: 'unclear', field: null, circuit: -1, heard_value: '0.13' }]);
+      jest.advanceTimersByTime(1500);
+      expect(sendCallback).toHaveBeenCalledTimes(1);
+
+      jest.advanceTimersByTime(90000); // 90s — past 15s, before 120s
+      gate.enqueue([{ type: 'unclear', field: null, circuit: 0, heard_value: '0.13' }]);
+      jest.advanceTimersByTime(1500);
+      expect(sendCallback).toHaveBeenCalledTimes(1);
+    });
+
+    test('heard_value dedup expires after HEARD_VALUE_DEDUPE_TTL_MS', () => {
+      gate.enqueue([{ type: 'unclear', field: null, circuit: -1, heard_value: '0.13' }]);
+      jest.advanceTimersByTime(1500);
+
+      // Jump 125s — past the 120s heard_value TTL.
+      jest.advanceTimersByTime(125000);
+      gate.enqueue([{ type: 'unclear', field: null, circuit: 0, heard_value: '0.13' }]);
+      jest.advanceTimersByTime(1500);
+      expect(sendCallback).toHaveBeenCalledTimes(2);
+    });
+
+    test('suppresses duplicate heard_value within the SAME enqueue batch', () => {
+      // Protects against Sonnet emitting two versions of the same question
+      // in one batch (e.g. after a tool-call retry).
+      gate.enqueue([
+        { type: 'unclear', field: null, circuit: -1, heard_value: '0.13' },
+        { type: 'unclear', field: null, circuit: 0, heard_value: '0.13' },
+      ]);
+      jest.advanceTimersByTime(1500);
+      expect(sendCallback).toHaveBeenCalledTimes(1);
+      expect(sendCallback.mock.calls[0][0]).toHaveLength(1);
+    });
+
+    test('no heard_value → secondary dedup does not fire', () => {
+      // Questions with null heard_value participate only in the tuple sig
+      // map. Two questions with different fields both fire.
+      gate.enqueue([{ type: 'unclear', field: 'postcode', circuit: 0, heard_value: null }]);
+      jest.advanceTimersByTime(1500);
+      gate.enqueue([{ type: 'unclear', field: 'address', circuit: 0, heard_value: null }]);
+      jest.advanceTimersByTime(1500);
+      expect(sendCallback).toHaveBeenCalledTimes(2);
+    });
+
+    test('destroy() clears the heard_value map too', () => {
+      gate.enqueue([{ type: 'unclear', field: null, circuit: -1, heard_value: '0.13' }]);
+      jest.advanceTimersByTime(1500);
+      // Flush populated the map (entry per flushed question's heard_value).
+      expect(gate.recentlyFlushedHeardValues.size).toBe(1);
+      gate.destroy();
+      expect(gate.recentlyFlushedHeardValues.size).toBe(0);
     });
   });
 

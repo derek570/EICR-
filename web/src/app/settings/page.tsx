@@ -5,12 +5,19 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import {
   Building2,
+  Bug,
   ChevronRight,
   CloudUpload,
+  Compass,
+  Info,
+  KeyRound,
   LayoutDashboard,
   LogOut,
   ShieldCheck,
+  SlidersHorizontal,
+  UserPlus,
   Users,
+  Wrench,
 } from 'lucide-react';
 import { api } from '@/lib/api-client';
 import { clearAuth } from '@/lib/auth';
@@ -19,6 +26,7 @@ import { useOutboxState } from '@/lib/pwa/use-outbox-state';
 import { isCompanyAdmin, isSystemAdmin } from '@/lib/roles';
 import { Button } from '@/components/ui/button';
 import { IOSInstallHint } from '@/components/pwa/ios-install-hint';
+import { resetTourState } from '@/lib/tour/state';
 
 /**
  * Settings hub. Ports iOS `SettingsView.swift` — hero profile header,
@@ -29,6 +37,17 @@ import { IOSInstallHint } from '@/components/pwa/ios-install-hint';
  * one) but route to placeholders until 6b / 6c land — see the guarded
  * `href` logic below.
  */
+const DEBUG_KEY = 'cm-debug';
+
+function readDebugFlag(): boolean {
+  if (typeof window === 'undefined') return false;
+  try {
+    return window.localStorage.getItem(DEBUG_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
 export default function SettingsHubPage() {
   const router = useRouter();
   const { user } = useCurrentUser();
@@ -40,6 +59,14 @@ export default function SettingsHubPage() {
   // there's no user-facing action to take.
   const { pending, poisoned, loading: outboxLoading } = useOutboxState();
   const hasOutboxWork = !outboxLoading && pending.length + poisoned.length > 0;
+
+  // Phase 6 — debug dashboard gate. Linked from the hub only when the
+  // About page toggle has set `cm-debug=1` so regular inspectors never
+  // discover it by scrolling.
+  const [debugEnabled, setDebugEnabled] = React.useState(false);
+  React.useEffect(() => {
+    setDebugEnabled(readDebugFlag());
+  }, []);
 
   async function handleSignOut() {
     try {
@@ -110,6 +137,80 @@ export default function SettingsHubPage() {
           subtitle="Manage inspectors, signatures, and test equipment"
           accent="blue"
         />
+        {isCompanyAdmin(user) ? (
+          <LinkCard
+            href="/settings/invite"
+            icon={<UserPlus className="h-5 w-5" aria-hidden />}
+            title="Invite Employee"
+            subtitle="Add a team member and share a one-time password"
+            accent="green"
+          />
+        ) : null}
+      </SectionGroup>
+
+      {/* Certificate Defaults — Phase 6. iOS `DefaultsManagerView`.
+          Links to the hub which then splits into Default Values +
+          Cable Size Defaults. */}
+      <SectionGroup title="CERTIFICATE DEFAULTS">
+        <LinkCard
+          href="/settings/defaults"
+          icon={<SlidersHorizontal className="h-5 w-5" aria-hidden />}
+          title="Defaults Manager"
+          subtitle="Preset circuit fields and per-type cable sizing"
+          accent="blue"
+        />
+      </SectionGroup>
+
+      {/* Account — Phase 6 (change password) */}
+      <SectionGroup title="ACCOUNT">
+        <LinkCard
+          href="/settings/change-password"
+          icon={<KeyRound className="h-5 w-5" aria-hidden />}
+          title="Change Password"
+          subtitle="Update the password you use to sign in"
+          accent="blue"
+        />
+      </SectionGroup>
+
+      {/* Guided tour — Phase 3. Re-runs the dashboard walkthrough by
+          clearing the `seen`/`disabled` flags; the next time the
+          dashboard mounts, the tour auto-starts again. We don't run
+          it from here (settings is the wrong surface for a dashboard
+          tour) — the redirect to /dashboard lets the tour hook pick
+          it up on mount. */}
+      <SectionGroup title="APP">
+        <button
+          type="button"
+          onClick={async () => {
+            await resetTourState();
+            router.push('/dashboard');
+          }}
+          className="block w-full text-left focus-visible:outline-2 focus-visible:outline-[var(--color-brand-blue)] rounded-[var(--radius-lg)]"
+        >
+          <div className="flex items-center gap-4 rounded-[var(--radius-lg)] border border-[var(--color-border-subtle)] bg-[var(--color-surface-2)] p-4 transition hover:bg-[var(--color-surface-3)]">
+            <span
+              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-[var(--radius-md)]"
+              style={{
+                color: 'var(--color-brand-blue)',
+                background: 'color-mix(in oklab, var(--color-brand-blue) 15%, transparent)',
+              }}
+            >
+              <Compass className="h-5 w-5" aria-hidden />
+            </span>
+            <div className="flex flex-1 flex-col gap-0.5">
+              <span className="text-[15px] font-semibold text-[var(--color-text-primary)]">
+                Start tour
+              </span>
+              <span className="text-[12px] text-[var(--color-text-secondary)]">
+                Replay the guided dashboard walkthrough
+              </span>
+            </div>
+            <ChevronRight
+              className="h-4 w-4 shrink-0 text-[var(--color-text-tertiary)]"
+              aria-hidden
+            />
+          </div>
+        </button>
       </SectionGroup>
 
       {/* Company — details page is visible to any authenticated user
@@ -171,6 +272,34 @@ export default function SettingsHubPage() {
           />
         </SectionGroup>
       ) : null}
+
+      {/* Support — Phase 6. Diagnostics + About. Debug row only
+          appears when the About-page toggle has been flipped. */}
+      <SectionGroup title="SUPPORT">
+        <LinkCard
+          href="/settings/diagnostics"
+          icon={<Wrench className="h-5 w-5" aria-hidden />}
+          title="Diagnostics"
+          subtitle="Export state snapshot or clear local cache"
+          accent="blue"
+        />
+        <LinkCard
+          href="/settings/about"
+          icon={<Info className="h-5 w-5" aria-hidden />}
+          title="About"
+          subtitle="Version, acknowledgments, and developer tools"
+          accent="blue"
+        />
+        {debugEnabled ? (
+          <LinkCard
+            href="/settings/debug"
+            icon={<Bug className="h-5 w-5" aria-hidden />}
+            title="Debug Dashboard"
+            subtitle="Live state for support triage"
+            accent="blue"
+          />
+        ) : null}
+      </SectionGroup>
 
       <Button
         variant="ghost"

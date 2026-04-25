@@ -247,6 +247,29 @@ body {
   animation: pulse-dot 0.9s ease-in-out infinite;
 }
 
+/* VAD indicator ring — outer ring scales/fades while the recorder is
+ * actively listening, steady while paused/sleeping. Referenced inline
+ * from <VadIndicator> so unused recording screens don't pay the CSS
+ * cost (Tailwind would tree-shake but the inline animation shorthand
+ * keeps the token values visible here). */
+@keyframes cm-vad-ring {
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 0.4;
+  }
+  50% {
+    transform: scale(1.4);
+    opacity: 0.15;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  /* Inline `animation: cm-vad-ring ... infinite` can't be targeted by a
+   * selector, but honouring the media-query-level preference in the
+   * global `html { animation-play-state: paused }` block stops the ring
+   * from pulsing. The global guard lives above on this sheet. */
+}
+
 /*
  * Applied to the fixed-positioned recording ring overlay. Caller passes
  * the colour via `--rec-ring-color` inline so the same class drives
@@ -269,6 +292,46 @@ body {
   );
   background-size: 400px 100%;
   animation: shimmer 2.4s linear infinite;
+}
+
+/*
+ * Hero breathing glow — radial highlight overlaid on top of the linear
+ * gradient banner. The colour is driven by the inline `--hero-accent`
+ * custom property set by `<HeroHeader accent=...>`, so every section
+ * category can tint its own hero without a class matrix. Pairs with
+ * CMDesign.Animation.breatheScale (duration: 2s) and the ambient glow
+ * effect from `cmAmbientGlow` on iOS. The global prefers-reduced-motion
+ * guard above kills the keyframes at the OS level.
+ */
+@keyframes cm-hero-breathe {
+  0%,
+  100% {
+    opacity: 0.45;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.75;
+    transform: scale(1.08);
+  }
+}
+
+.cm-hero-glow {
+  position: absolute;
+  inset: -20%;
+  pointer-events: none;
+  background:
+    radial-gradient(
+      circle at 25% 40%,
+      color-mix(in srgb, var(--hero-accent, #0066ff) 35%, transparent) 0%,
+      transparent 55%
+    ),
+    radial-gradient(
+      circle at 80% 60%,
+      color-mix(in srgb, #00cc66 22%, transparent) 0%,
+      transparent 60%
+    );
+  filter: blur(28px);
+  animation: cm-hero-breathe 6s ease-in-out infinite;
 }
 
 .cm-orb {
@@ -388,5 +451,104 @@ body {
   .cm-dialog-overlay,
   .cm-dialog-content {
     transition: none;
+  }
+}
+
+/* =============================================================================
+ * Staggered section entrance (Phase 9 — iOS `cmStaggeredEntrance` port)
+ *
+ * iOS applies a small per-index fade-up when a tab mounts so the
+ * content feels like it "arrives" rather than snapping in whole. The
+ * web port keys off a `--cm-stagger-index` custom property set inline
+ * on each `.cm-stagger-in` child, so the caller is free to use either
+ * an explicit index or `--cm-stagger-index: N` from CSS counters.
+ *
+ * The animation is small on purpose (180ms, 6px rise) — the same
+ * shape as `cm-live-section-in` so the two effects are visually
+ * coherent when they overlap (e.g. during a live-fill mount).
+ *
+ * Honour prefers-reduced-motion — the global reducer (above) already
+ * collapses the duration, but we also null out the transform so the
+ * final state doesn't leave cards drifted 6px below their rest
+ * position while the animation is suppressed.
+ * ============================================================================= */
+@keyframes cm-stagger-fade-slide-up {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.cm-stagger-in {
+  opacity: 0;
+  transform: translateY(6px);
+  animation: cm-stagger-fade-slide-up 300ms ease-out both;
+  animation-delay: calc(var(--cm-stagger-index, 0) * 40ms);
+}
+@media (prefers-reduced-motion: reduce) {
+  .cm-stagger-in {
+    animation: none;
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/*
+ * `.cm-stagger-children` — applies the stagger automatically to each
+ * direct child using `:nth-child` so callers don't need to thread an
+ * index prop through every SectionCard. Cascades up to 12 children;
+ * any beyond that land together on the 12-step delay (~480ms) so the
+ * tail of long lists doesn't drag. Honours reduced-motion via the
+ * nested rule.
+ */
+.cm-stagger-children > * {
+  opacity: 0;
+  transform: translateY(6px);
+  animation: cm-stagger-fade-slide-up 300ms ease-out both;
+}
+.cm-stagger-children > *:nth-child(1) {
+  animation-delay: 0ms;
+}
+.cm-stagger-children > *:nth-child(2) {
+  animation-delay: 40ms;
+}
+.cm-stagger-children > *:nth-child(3) {
+  animation-delay: 80ms;
+}
+.cm-stagger-children > *:nth-child(4) {
+  animation-delay: 120ms;
+}
+.cm-stagger-children > *:nth-child(5) {
+  animation-delay: 160ms;
+}
+.cm-stagger-children > *:nth-child(6) {
+  animation-delay: 200ms;
+}
+.cm-stagger-children > *:nth-child(7) {
+  animation-delay: 240ms;
+}
+.cm-stagger-children > *:nth-child(8) {
+  animation-delay: 280ms;
+}
+.cm-stagger-children > *:nth-child(9) {
+  animation-delay: 320ms;
+}
+.cm-stagger-children > *:nth-child(10) {
+  animation-delay: 360ms;
+}
+.cm-stagger-children > *:nth-child(11) {
+  animation-delay: 400ms;
+}
+.cm-stagger-children > *:nth-child(n + 12) {
+  animation-delay: 440ms;
+}
+@media (prefers-reduced-motion: reduce) {
+  .cm-stagger-children > * {
+    animation: none;
+    opacity: 1;
+    transform: none;
   }
 }

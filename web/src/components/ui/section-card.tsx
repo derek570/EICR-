@@ -1,5 +1,9 @@
 import * as React from 'react';
 import { cn } from '@/lib/utils';
+import {
+  SECTION_ACCENTS,
+  type SectionAccent as CategoryAccent,
+} from '@/lib/constants/section-accents';
 
 /**
  * SectionCard — the repeating "form card" unit across every /job/[id]/... tab.
@@ -13,6 +17,13 @@ import { cn } from '@/lib/utils';
  *   magenta — design / limitations (Extent)
  *   red     — failure (Observations)
  *
+ * Phase 1 — iOS-parity category accents are also accepted (client,
+ * electrical, board, test-results, schedule, notes, protection). When a
+ * category accent is passed, the card also picks up the very-subtle
+ * tinted background + accent-tinted border, matching `CMSectionCard`.
+ * The original five colour accents keep the original byte-identical
+ * surface so every existing callsite stays visually unchanged.
+ *
  * Layout:
  *   - Optional icon + title header row (matches iOS SF Symbols + Bold title)
  *   - Optional bottom-centre `</>` code chip (via `showCodeChip` prop) — a
@@ -24,15 +35,20 @@ import { cn } from '@/lib/utils';
  *     ...
  *   </SectionCard>
  */
-export type SectionAccent = 'blue' | 'green' | 'amber' | 'magenta' | 'red';
+export type ColourAccent = 'blue' | 'green' | 'amber' | 'magenta' | 'red';
+export type SectionAccent = ColourAccent | CategoryAccent;
 
-const ACCENT_TO_VAR: Record<SectionAccent, string> = {
+const COLOUR_ACCENTS: Record<ColourAccent, string> = {
   blue: 'var(--color-brand-blue)',
   green: 'var(--color-brand-green)',
   amber: 'var(--color-status-processing)',
   magenta: '#ff375f',
   red: 'var(--color-status-failed)',
 };
+
+function isCategoryAccent(accent: SectionAccent): accent is CategoryAccent {
+  return accent in SECTION_ACCENTS;
+}
 
 export function SectionCard({
   accent = 'blue',
@@ -54,7 +70,14 @@ export function SectionCard({
   subtitle?: string;
   showCodeChip?: boolean;
 } & Omit<React.HTMLAttributes<HTMLDivElement>, 'title'>) {
-  const accentColor = ACCENT_TO_VAR[accent];
+  const category = isCategoryAccent(accent) ? SECTION_ACCENTS[accent] : null;
+  const accentColor = category ? category.stripe : COLOUR_ACCENTS[accent as ColourAccent];
+  const surfaceStyle: React.CSSProperties = category
+    ? {
+        background: `linear-gradient(0deg, ${category.bg}, ${category.bg}), var(--color-surface-2)`,
+        borderColor: category.border,
+      }
+    : {};
   return (
     <section
       {...props}
@@ -62,6 +85,7 @@ export function SectionCard({
         'relative overflow-hidden rounded-[var(--radius-lg)] border border-[var(--color-border-subtle)] bg-[var(--color-surface-2)] pl-4 pr-4 py-4 md:pl-5 md:pr-5 md:py-5',
         className
       )}
+      style={{ ...surfaceStyle, ...(props.style ?? {}) }}
     >
       {/* Left accent stripe */}
       <span

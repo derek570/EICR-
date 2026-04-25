@@ -11,6 +11,7 @@
 // pattern but cuts a full second off every turn.
 
 import logger from '../logger.js';
+import { normaliseValue } from './value-normalise.js';
 
 // Stage 6 Phase 5 Plan 05-01 — single-source-of-truth for the question debounce.
 // Used both by QuestionGate.GATE_DELAY_MS (instance property below, line ~92)
@@ -112,6 +113,25 @@ export class QuestionGate {
     // the user has finished replying.
     this.recentlyFlushedSigs = new Map(); // sig -> expiryMs
     this.DEDUPE_TTL_MS = 15000;
+    // Secondary dedup keyed on (questionType, normalised heard_value). Catches
+    // variants the tuple sig above misses because type|field|circuit differ.
+    // Session 0952EC64 (2026-04-24): Sonnet emitted
+    //   (unclear, null, -1, 0.13) (unclear, null, 0, 0.13)
+    //   (circuit_disambiguation, r1_plus_r2, -1, 0.13)
+    // over 75s — three distinct tuple sigs, same heard_value, all fired
+    // because the 15s tuple TTL caught none of them. Filter A
+    // (filled-slots-filter) handles the case where the value is already in
+    // state; this map catches the case where the value is NOT in state yet
+    // but Sonnet is asking about it twice in the same type before the
+    // inspector has had a chance to answer.
+    //
+    // Window (2min) matches the typical "I'm about to answer that" horizon
+    // for an inspector in the field — shorter under-suppresses the 0952EC64
+    // repro; longer risks blocking legitimate re-asks at the end of a long
+    // circuit run where the inspector gave a second reading with the same
+    // numeric value.
+    this.recentlyFlushedHeardValues = new Map(); // `${type}|${normHeard}` -> expiryMs
+    this.HEARD_VALUE_DEDUPE_TTL_MS = 120000;
   }
 
   // Stable signature for "same question": type+field+circuit+heard_value.
@@ -130,6 +150,19 @@ export class QuestionGate {
     for (const [sig, expiry] of this.recentlyFlushedSigs) {
       if (expiry <= now) this.recentlyFlushedSigs.delete(sig);
     }
+    for (const [key, expiry] of this.recentlyFlushedHeardValues) {
+      if (expiry <= now) this.recentlyFlushedHeardValues.delete(key);
+    }
+  }
+
+  // Dedup key for the 120s heard_value map. Returns "" for questions with no
+  // usable heard_value — those cannot participate in this dedup mechanism
+  // (the tuple sig above is their only defence).
+  _heardValueKey(q) {
+    const type = (q.type || '').toLowerCase();
+    const normHeard = normaliseValue(q.heard_value);
+    if (!type || !normHeard) return '';
+    return `${type}|${normHeard}`;
   }
 
   // Sonnet returned questions -- enqueue and start/reset timer
@@ -137,21 +170,41 @@ export class QuestionGate {
     if (!questions || questions.length === 0) return;
     this._pruneRecentSigs();
     const existingSigs = new Set(this.pendingQuestions.map((q) => this._questionSig(q)));
+    const existingHeardKeys = new Set(
+      this.pendingQuestions.map((q) => this._heardValueKey(q)).filter(Boolean)
+    );
     const fresh = [];
     let droppedAsDupes = 0;
+    let droppedByHeardValue = 0;
     for (const q of questions) {
       const sig = this._questionSig(q);
       if (existingSigs.has(sig) || this.recentlyFlushedSigs.has(sig)) {
         droppedAsDupes += 1;
         continue;
       }
+      const heardKey = this._heardValueKey(q);
+      if (heardKey) {
+        if (existingHeardKeys.has(heardKey) || this.recentlyFlushedHeardValues.has(heardKey)) {
+          droppedByHeardValue += 1;
+          logger.info('suppressed_heard_value_reask', {
+            sessionId: this.sessionId,
+            heardKey,
+            qType: (q.type || '').toLowerCase().slice(0, 40),
+            qField: q.field || null,
+            qCircuit: q.circuit === null || q.circuit === undefined ? null : q.circuit,
+          });
+          continue;
+        }
+        existingHeardKeys.add(heardKey);
+      }
       existingSigs.add(sig);
       fresh.push(q);
     }
-    if (droppedAsDupes > 0) {
+    if (droppedAsDupes > 0 || droppedByHeardValue > 0) {
       logger.info('Questions de-duped', {
         sessionId: this.sessionId,
         dropped: droppedAsDupes,
+        droppedByHeardValue,
         pendingBefore: this.pendingQuestions.length,
       });
     }
@@ -348,9 +401,15 @@ export class QuestionGate {
       // re-emitted within DEDUPE_TTL_MS is suppressed in enqueue(). TTL is
       // short enough that a legitimately-repeated ask later in the session
       // still fires.
-      const expiry = Date.now() + this.DEDUPE_TTL_MS;
+      const now = Date.now();
+      const tupleExpiry = now + this.DEDUPE_TTL_MS;
+      const heardExpiry = now + this.HEARD_VALUE_DEDUPE_TTL_MS;
       for (const q of this.pendingQuestions) {
-        this.recentlyFlushedSigs.set(this._questionSig(q), expiry);
+        this.recentlyFlushedSigs.set(this._questionSig(q), tupleExpiry);
+        const heardKey = this._heardValueKey(q);
+        if (heardKey) {
+          this.recentlyFlushedHeardValues.set(heardKey, heardExpiry);
+        }
       }
       // Log full question payload (type/field/circuit/question-text/heard_value)
       // so CloudWatch can reconstruct *exactly* what Sonnet asked per session,
@@ -381,5 +440,6 @@ export class QuestionGate {
     this.pendingQuestions = [];
     this.gateTimer = null;
     this.recentlyFlushedSigs.clear();
+    this.recentlyFlushedHeardValues.clear();
   }
 }

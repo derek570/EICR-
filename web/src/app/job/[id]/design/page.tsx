@@ -3,6 +3,7 @@
 import * as React from 'react';
 import { AlertTriangle, CheckCircle2, Info, PencilRuler } from 'lucide-react';
 import { useJobContext } from '@/lib/job-context';
+import { HeroHeader } from '@/components/ui/hero-header';
 import { MultilineField } from '@/components/ui/multiline-field';
 import { SectionCard } from '@/components/ui/section-card';
 
@@ -46,25 +47,16 @@ export default function DesignPage() {
 
   return (
     <div
-      className="mx-auto flex w-full flex-col gap-5 px-4 py-6 md:px-8 md:py-8"
+      className="cm-stagger-children mx-auto flex w-full flex-col gap-5 px-4 py-6 md:px-8 md:py-8"
       style={{ maxWidth: '960px' }}
     >
-      <div
-        className="relative flex items-center justify-between overflow-hidden rounded-[var(--radius-xl)] px-5 py-5 md:px-6 md:py-6"
-        style={{
-          background:
-            'linear-gradient(135deg, var(--color-brand-blue) 0%, var(--color-brand-green) 100%)',
-        }}
-      >
-        <div className="flex flex-col gap-1">
-          <p className="text-[11px] uppercase tracking-[0.14em] text-white/75">{certificateType}</p>
-          <h2 className="text-[22px] font-bold text-white md:text-[26px]">
-            Design &amp; Construction
-          </h2>
-          <p className="text-[13px] text-white/85">BS 7671 compliance</p>
-        </div>
-        <PencilRuler className="h-10 w-10 text-white/30" strokeWidth={2} aria-hidden />
-      </div>
+      <HeroHeader
+        eyebrow={certificateType}
+        title="Design & Construction"
+        subtitle="BS 7671 compliance"
+        accent="notes"
+        icon={<PencilRuler className="h-10 w-10" strokeWidth={2} aria-hidden />}
+      />
 
       <SectionCard accent="amber" icon={AlertTriangle} title="Departures from BS 7671">
         <div

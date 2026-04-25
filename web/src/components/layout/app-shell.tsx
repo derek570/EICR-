@@ -9,7 +9,8 @@ import { clearAuth, getUser } from '@/lib/auth';
 import { Button } from '@/components/ui/button';
 import { IconButton } from '@/components/ui/icon-button';
 import { InstallButton } from '@/components/pwa/install-button';
-import { OfflineIndicator } from '@/components/pwa/offline-indicator';
+import { OfflineBanner, OfflineIndicator } from '@/components/pwa/offline-indicator';
+import { AlertsBell } from '@/components/dashboard/alerts-bell';
 import { useOutboxReplay } from '@/lib/pwa/outbox-replay';
 
 /**
@@ -96,6 +97,15 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             </span>
           ) : null}
           {/*
+           * Phase 3 — alerts bell. Lives right of the user-name pill
+           * so the user's eye lands on identity first, then state.
+           * Badge count drives off the same `api.jobs` cache the
+           * dashboard reads, so the number is always consistent.
+           * `data-tour` hook exposes the target selector for the
+           * guided tour's final step.
+           */}
+          <AlertsBell dataTour="alerts-bell" />
+          {/*
            * Renders only when Chrome/Edge/Android has fired
            * `beforeinstallprompt` and the deferred event is live in the
            * install store. On Safari (desktop + iOS) it stays hidden —
@@ -108,6 +118,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           </Button>
         </div>
       </header>
+      {/*
+       * Phase 9 — mobile full-width offline banner. Hidden on `md+`
+       * viewports (the header pill covers that case). Placed just
+       * below the sticky header so it matches the iOS
+       * `OfflineBanner` slide-in shape without overlapping content.
+       */}
+      <OfflineBanner />
       <div className="flex-1">{children}</div>
     </div>
   );

@@ -51,6 +51,40 @@ export interface UserDefaults {
   [fieldKey: string]: string;
 }
 
+// ----------------------------------------------------------------
+// Auth — change password (Phase 6)
+// ----------------------------------------------------------------
+
+/**
+ * Request body for `PUT /api/auth/change-password`.
+ *
+ * iOS sends the strings verbatim; the backend (src/routes/auth.js)
+ * rejects with 401 when `currentPassword` doesn't match and 400 when
+ * `newPassword.length < 6`. We keep the same shape on web so the API
+ * client can marshal without field renames.
+ */
+export interface ChangePasswordRequest {
+  currentPassword: string;
+  newPassword: string;
+}
+
+// ----------------------------------------------------------------
+// Companies — invite employee (Phase 6)
+// ----------------------------------------------------------------
+
+/**
+ * Request body for `POST /api/companies/:companyId/invite`.
+ *
+ * Backend accepts `{name, email}` — the temp password is generated
+ * server-side and returned exactly once in the response. Callers MUST
+ * show the temp password to the admin and never persist it past the
+ * modal close (treat as secret-adjacent PII).
+ */
+export interface InviteEmployeeRequest {
+  name: string;
+  email: string;
+}
+
 export interface CompanySettings {
   company_name: string;
   company_address: string;

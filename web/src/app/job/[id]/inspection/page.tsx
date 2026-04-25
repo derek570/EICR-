@@ -1,6 +1,7 @@
 'use client';
 
 import * as React from 'react';
+import { useParams } from 'next/navigation';
 import {
   BathIcon,
   Bolt,
@@ -13,7 +14,11 @@ import {
   Wrench,
 } from 'lucide-react';
 import { useJobContext } from '@/lib/job-context';
+import { HeroHeader } from '@/components/ui/hero-header';
 import { SectionCard } from '@/components/ui/section-card';
+import { ConfirmDialog } from '@/components/ui/confirm-dialog';
+import { ObservationSheet } from '@/components/observations/observation-sheet';
+import type { ObservationRow } from '@/lib/types';
 import { cn } from '@/lib/utils';
 import {
   EIC_SCHEDULE,
@@ -44,6 +49,14 @@ import {
  * reads this shape directly when rendering the PDF schedule page; key
  * matches backend wire shape in `src/routes/jobs.js:575-592` +
  * `packages/shared-types/src/job.ts` `InspectionSchedule`.
+ *
+ * Phase 4 additions (iOS parity):
+ *   - Linked-observation inline preview under outcomes — tapping opens
+ *     the ObservationSheet for in-place editing (InspectionTab.swift:L266-L284).
+ *   - Inline create-observation form on C1/C2/C3 click when none is
+ *     linked yet (InspectionTab.swift:L286-L300).
+ *   - Confirm-before-unlink when an outcome is changed away from a code
+ *     that linked an observation (InspectionTab.swift:L43-L66).
  */
 
 type InspectionShape = {
@@ -65,16 +78,35 @@ const EICR_SECTION_ACCENTS: Array<'blue' | 'green' | 'amber' | 'magenta' | 'red'
   'amber',
 ];
 
+const OBSERVATION_CODES: ReadonlyArray<ScheduleOutcome> = ['C1', 'C2', 'C3'];
+
+function outcomeToObservationCode(
+  outcome: ScheduleOutcome | undefined
+): NonNullable<ObservationRow['code']> | null {
+  if (!outcome) return null;
+  if (outcome === 'C1' || outcome === 'C2' || outcome === 'C3') return outcome;
+  if (outcome === 'FI') return 'FI';
+  return null;
+}
+
+function makeObservationId(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  return `obs_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
 export default function InspectionPage() {
   const { job, certificateType, updateJob } = useJobContext();
+  const params = useParams<{ id: string }>();
+  const jobId = params?.id ?? '';
   const isEIC = certificateType === 'EIC';
-  // See DesignPage for the rationale — memo-wrap keeps identity stable
-  // so `patch` isn't rebuilt every render.
   const insp = React.useMemo<InspectionShape>(
     () => (job.inspection_schedule ?? {}) as InspectionShape,
     [job.inspection_schedule]
   );
   const items = insp.items ?? {};
+  const observations = React.useMemo(() => job.observations ?? [], [job.observations]);
 
   const patch = React.useCallback(
     (next: Partial<InspectionShape>) => {
@@ -83,11 +115,145 @@ export default function InspectionPage() {
     [insp, updateJob]
   );
 
-  const setOutcome = (ref: string, outcome: ScheduleOutcome) => {
-    patch({ items: { ...items, [ref]: outcome === items[ref] ? undefined : outcome } });
+  /**
+   * Find the observation linked to a given schedule row. iOS stores the
+   * link on the observation side (`observation.schedule_item === ref`);
+   * web mirrors that so a round-trip via the backend is lossless.
+   */
+  const observationForRef = React.useCallback(
+    (ref: string): ObservationRow | undefined =>
+      observations.find((o) => {
+        const asAny = o as ObservationRow & { schedule_item?: string };
+        return asAny.schedule_item === ref;
+      }),
+    [observations]
+  );
+
+  /**
+   * Core setOutcome. Handles all four phase-4 flows:
+   *   1. Plain outcome change with no linked observation → write.
+   *   2. Selecting C1/C2/C3 on an empty row → open the inline form.
+   *   3. Re-selecting the same outcome → clear it.
+   *   4. Changing an outcome that has a linked observation → open the
+   *      unlink-confirm dialog.
+   */
+  const [inlineFormRef, setInlineFormRef] = React.useState<string | null>(null);
+  const [pendingChange, setPendingChange] = React.useState<{
+    ref: string;
+    nextOutcome: ScheduleOutcome | null;
+  } | null>(null);
+
+  const commitOutcome = (ref: string, nextOutcome: ScheduleOutcome | null) => {
+    const next: Record<string, ScheduleOutcome | undefined> = { ...items };
+    if (nextOutcome === null) {
+      delete next[ref];
+    } else {
+      next[ref] = nextOutcome;
+    }
+    patch({ items: next });
   };
 
-  // --- Auto-fill shortcuts -------------------------------------------------
+  const setOutcome = (ref: string, requested: ScheduleOutcome) => {
+    const current = items[ref];
+    const toggleOff = requested === current;
+    const nextOutcome: ScheduleOutcome | null = toggleOff ? null : requested;
+
+    const linked = observationForRef(ref);
+
+    // Re-tapping the same outcome toggles it off. If there's a linked
+    // observation, the unlink-confirm flow still applies.
+    if (linked) {
+      const linkedCode = linked.code;
+      // Picking a non-observation outcome OR a different observation
+      // code OR toggling off — all of these break the link.
+      const willKeepLink =
+        nextOutcome !== null && outcomeToObservationCode(nextOutcome) === linkedCode;
+      if (!willKeepLink) {
+        setPendingChange({ ref, nextOutcome });
+        return;
+      }
+      // Same code chosen again → no-op, leave link alone.
+      commitOutcome(ref, nextOutcome);
+      return;
+    }
+
+    // No linked observation yet. If the user picked C1 / C2 / C3 we
+    // open the inline form and defer the outcome write to the save
+    // handler — matches iOS behaviour where the form IS the outcome
+    // confirmation.
+    if (!toggleOff && OBSERVATION_CODES.includes(requested)) {
+      commitOutcome(ref, nextOutcome);
+      setInlineFormRef(ref);
+      return;
+    }
+
+    commitOutcome(ref, nextOutcome);
+  };
+
+  const confirmUnlink = () => {
+    if (!pendingChange) return;
+    const linked = observationForRef(pendingChange.ref);
+    // Apply outcome + drop the observation atomically so the backend
+    // only writes once. Mirrors iOS confirmPendingOutcomeChange.
+    const nextItems: Record<string, ScheduleOutcome | undefined> = { ...items };
+    if (pendingChange.nextOutcome === null) {
+      delete nextItems[pendingChange.ref];
+    } else {
+      nextItems[pendingChange.ref] = pendingChange.nextOutcome;
+    }
+    const nextObservations = linked ? observations.filter((o) => o.id !== linked.id) : observations;
+    updateJob({
+      inspection: { ...insp, items: nextItems },
+      observations: nextObservations,
+    });
+    setPendingChange(null);
+  };
+
+  const cancelUnlink = () => {
+    setPendingChange(null);
+  };
+
+  // --- Inline form save/cancel -------------------------------------------
+
+  const saveInlineObservation = (
+    ref: string,
+    code: NonNullable<ObservationRow['code']>,
+    location: string,
+    description: string
+  ) => {
+    const item = findItem(ref);
+    const draft: ObservationRow & { schedule_item?: string; schedule_description?: string } = {
+      id: makeObservationId(),
+      code,
+      location: location.trim() || undefined,
+      description: description.trim() || undefined,
+      schedule_item: ref,
+      schedule_description: item?.description,
+    };
+    updateJob({ observations: [...observations, draft] });
+    setInlineFormRef(null);
+  };
+
+  const cancelInlineForm = () => setInlineFormRef(null);
+
+  // --- ObservationSheet bridge for "tap the preview to edit" -------------
+
+  const [editingObservationId, setEditingObservationId] = React.useState<string | null>(null);
+  const editingObservation =
+    editingObservationId === null
+      ? null
+      : (observations.find((o) => o.id === editingObservationId) ?? null);
+
+  const handleObservationSheetSave = (next: ObservationRow) => {
+    const idx = observations.findIndex((o) => o.id === next.id);
+    const updated = observations.slice();
+    if (idx >= 0) updated[idx] = next;
+    else updated.push(next);
+    updateJob({ observations: updated });
+    setEditingObservationId(null);
+  };
+
+  // --- Auto-fill shortcuts (unchanged from pre-Phase-4) ------------------
 
   const setTTEarthing = (on: boolean) => {
     const next = { ...items };
@@ -118,8 +284,6 @@ export default function InspectionPage() {
     patch({ mark_section_7_na: on, items: next });
   };
 
-  // Refs that are auto-controlled by the three toggles — disabled to stop
-  // inspectors accidentally overriding the auto-fill mid-save.
   const autoControlled = React.useMemo(() => {
     const refs = new Set<string>();
     if (insp.is_tt_earthing !== undefined) {
@@ -138,27 +302,20 @@ export default function InspectionPage() {
     return refs;
   }, [insp.is_tt_earthing, insp.has_microgeneration, insp.mark_section_7_na]);
 
+  const pendingItem = pendingChange ? findItem(pendingChange.ref) : null;
+
   return (
     <div
-      className="mx-auto flex w-full flex-col gap-5 px-4 py-6 md:px-8 md:py-8"
+      className="cm-stagger-children mx-auto flex w-full flex-col gap-5 px-4 py-6 md:px-8 md:py-8"
       style={{ maxWidth: '960px' }}
     >
-      <div
-        className="relative flex items-center justify-between overflow-hidden rounded-[var(--radius-xl)] px-5 py-5 md:px-6 md:py-6"
-        style={{
-          background:
-            'linear-gradient(135deg, var(--color-brand-blue) 0%, var(--color-brand-green) 100%)',
-        }}
-      >
-        <div className="flex flex-col gap-1">
-          <p className="text-[11px] uppercase tracking-[0.14em] text-white/75">{certificateType}</p>
-          <h2 className="text-[22px] font-bold text-white md:text-[26px]">Inspection Schedule</h2>
-          <p className="text-[13px] text-white/85">
-            {isEIC ? 'Design, construction & verification' : 'Periodic inspection & testing'}
-          </p>
-        </div>
-        <ClipboardCheck className="h-10 w-10 text-white/30" strokeWidth={2} aria-hidden />
-      </div>
+      <HeroHeader
+        eyebrow={certificateType}
+        title="Inspection Schedule"
+        subtitle={isEIC ? 'Design, construction & verification' : 'Periodic inspection & testing'}
+        accent="schedule"
+        icon={<ClipboardCheck className="h-10 w-10" strokeWidth={2} aria-hidden />}
+      />
 
       {!isEIC ? (
         <SectionCard accent="blue" icon={SlidersHorizontal} title="Schedule Options">
@@ -187,76 +344,144 @@ export default function InspectionPage() {
         </SectionCard>
       ) : null}
 
-      {isEIC
-        ? // EIC: 14 top-level items rendered as a single card
-          (() => (
-            <SectionCard accent="blue" icon={ClipboardCheck} title="EIC Inspection Schedule">
-              {EIC_SCHEDULE.map((item) => (
+      {isEIC ? (
+        <SectionCard accent="blue" icon={ClipboardCheck} title="EIC Inspection Schedule">
+          {EIC_SCHEDULE.map((item) => (
+            <ScheduleRow
+              key={item.ref}
+              item={item}
+              outcome={items[item.ref]}
+              onSelect={(o) => setOutcome(item.ref, o)}
+              linkedObservation={observationForRef(item.ref)}
+              onOpenObservation={(id) => setEditingObservationId(id)}
+              inlineFormOpen={inlineFormRef === item.ref}
+              onInlineSave={(loc, desc) => {
+                const code = outcomeToObservationCode(items[item.ref]);
+                if (!code || code === 'FI') {
+                  cancelInlineForm();
+                  return;
+                }
+                saveInlineObservation(item.ref, code, loc, desc);
+              }}
+              onInlineCancel={cancelInlineForm}
+            />
+          ))}
+        </SectionCard>
+      ) : (
+        EICR_SCHEDULE.map((section, sectionIndex) => {
+          const sectionItems = section.items;
+          const answered = sectionItems.filter(
+            (i) => items[i.ref] !== undefined || autoControlled.has(i.ref)
+          ).length;
+          const Icon = EICR_SECTION_ICONS[sectionIndex % EICR_SECTION_ICONS.length];
+          const accent = EICR_SECTION_ACCENTS[sectionIndex % EICR_SECTION_ACCENTS.length];
+          return (
+            <SectionCard key={section.title} accent={accent} icon={Icon} title={section.title}>
+              <div className="flex items-center justify-between gap-2 pb-1">
+                <span className="text-[11px] font-medium uppercase tracking-[0.06em] text-[var(--color-text-tertiary)]">
+                  Progress
+                </span>
+                <div className="flex items-center gap-2">
+                  <span
+                    className={cn(
+                      'font-mono text-[11px] font-bold',
+                      answered === sectionItems.length
+                        ? 'text-[var(--color-brand-green)]'
+                        : 'text-[var(--color-text-tertiary)]'
+                    )}
+                  >
+                    {answered}/{sectionItems.length}
+                  </span>
+                  <div className="h-1 w-10 overflow-hidden rounded-full bg-[var(--color-surface-3)]">
+                    <div
+                      className="h-full transition-all"
+                      style={{
+                        width: `${sectionItems.length === 0 ? 0 : (answered / sectionItems.length) * 100}%`,
+                        background:
+                          answered === sectionItems.length
+                            ? 'var(--color-brand-green)'
+                            : 'var(--color-brand-blue)',
+                      }}
+                    />
+                  </div>
+                </div>
+              </div>
+              {sectionItems.map((item) => (
                 <ScheduleRow
                   key={item.ref}
                   item={item}
                   outcome={items[item.ref]}
                   onSelect={(o) => setOutcome(item.ref, o)}
+                  autoControlled={autoControlled.has(item.ref)}
+                  linkedObservation={observationForRef(item.ref)}
+                  onOpenObservation={(id) => setEditingObservationId(id)}
+                  inlineFormOpen={inlineFormRef === item.ref}
+                  onInlineSave={(loc, desc) => {
+                    const code = outcomeToObservationCode(items[item.ref]);
+                    if (!code || code === 'FI') {
+                      cancelInlineForm();
+                      return;
+                    }
+                    saveInlineObservation(item.ref, code, loc, desc);
+                  }}
+                  onInlineCancel={cancelInlineForm}
                 />
               ))}
             </SectionCard>
-          ))()
-        : // EICR: 7 sections, each its own SectionCard with progress header
-          EICR_SCHEDULE.map((section, sectionIndex) => {
-            const sectionItems = section.items;
-            const answered = sectionItems.filter(
-              (i) => items[i.ref] !== undefined || autoControlled.has(i.ref)
-            ).length;
-            const Icon = EICR_SECTION_ICONS[sectionIndex % EICR_SECTION_ICONS.length];
-            const accent = EICR_SECTION_ACCENTS[sectionIndex % EICR_SECTION_ACCENTS.length];
-            return (
-              <SectionCard key={section.title} accent={accent} icon={Icon} title={section.title}>
-                <div className="flex items-center justify-between gap-2 pb-1">
-                  <span className="text-[11px] font-medium uppercase tracking-[0.06em] text-[var(--color-text-tertiary)]">
-                    Progress
-                  </span>
-                  <div className="flex items-center gap-2">
-                    <span
-                      className={cn(
-                        'font-mono text-[11px] font-bold',
-                        answered === sectionItems.length
-                          ? 'text-[var(--color-brand-green)]'
-                          : 'text-[var(--color-text-tertiary)]'
-                      )}
-                    >
-                      {answered}/{sectionItems.length}
-                    </span>
-                    <div className="h-1 w-10 overflow-hidden rounded-full bg-[var(--color-surface-3)]">
-                      <div
-                        className="h-full transition-all"
-                        style={{
-                          width: `${sectionItems.length === 0 ? 0 : (answered / sectionItems.length) * 100}%`,
-                          background:
-                            answered === sectionItems.length
-                              ? 'var(--color-brand-green)'
-                              : 'var(--color-brand-blue)',
-                        }}
-                      />
-                    </div>
-                  </div>
-                </div>
-                {sectionItems.map((item) => (
-                  <ScheduleRow
-                    key={item.ref}
-                    item={item}
-                    outcome={items[item.ref]}
-                    onSelect={(o) => setOutcome(item.ref, o)}
-                    autoControlled={autoControlled.has(item.ref)}
-                  />
-                ))}
-              </SectionCard>
-            );
-          })}
+          );
+        })
+      )}
+
+      {/* Confirm dialog — unlink observation on outcome change. */}
+      <ConfirmDialog
+        open={pendingChange !== null}
+        onOpenChange={(next) => {
+          if (!next) cancelUnlink();
+        }}
+        title="Delete linked observation?"
+        description={
+          pendingItem ? (
+            <>
+              Changing item {pendingItem.ref} will delete the observation linked to it.
+              <br />
+              This cannot be undone.
+            </>
+          ) : (
+            'This will delete the linked observation. This cannot be undone.'
+          )
+        }
+        confirmLabel="Delete observation"
+        destructive
+        onConfirm={confirmUnlink}
+      />
+
+      {editingObservation && jobId ? (
+        <ObservationSheet
+          observation={editingObservation}
+          jobId={jobId}
+          onSave={handleObservationSheetSave}
+          onCancel={() => setEditingObservationId(null)}
+        />
+      ) : null}
     </div>
   );
 }
 
 /* ----------------------------------------------------------------------- */
+
+/**
+ * Resolve a schedule ref (e.g. "4.12") to its ScheduleItem across both
+ * EIC + EICR schedules. Used by the unlink confirmation dialog to
+ * render the human-readable item description.
+ */
+function findItem(ref: string): ScheduleItem | null {
+  for (const sec of EICR_SCHEDULE) {
+    const hit = sec.items.find((i) => i.ref === ref);
+    if (hit) return hit;
+  }
+  const eicHit = EIC_SCHEDULE.find((i) => i.ref === ref);
+  return eicHit ?? null;
+}
 
 function ToggleRow({
   label,
@@ -310,11 +535,21 @@ function ScheduleRow({
   outcome,
   onSelect,
   autoControlled,
+  linkedObservation,
+  onOpenObservation,
+  inlineFormOpen,
+  onInlineSave,
+  onInlineCancel,
 }: {
   item: ScheduleItem;
   outcome?: ScheduleOutcome;
   onSelect: (outcome: ScheduleOutcome) => void;
   autoControlled?: boolean;
+  linkedObservation?: ObservationRow;
+  onOpenObservation?: (id: string) => void;
+  inlineFormOpen?: boolean;
+  onInlineSave?: (location: string, description: string) => void;
+  onInlineCancel?: () => void;
 }) {
   return (
     <div
@@ -365,6 +600,110 @@ function ScheduleRow({
             </button>
           );
         })}
+      </div>
+
+      {/*
+        Linked-observation inline preview (InspectionTab.swift:L266-L284).
+        Tap to open the ObservationSheet in edit mode — same sheet as the
+        Observations tab, so the inspector doesn't need to switch tabs to
+        refine AI-populated observations.
+      */}
+      {linkedObservation ? (
+        <button
+          type="button"
+          onClick={() => onOpenObservation?.(linkedObservation.id)}
+          aria-label="Edit linked observation"
+          className="ml-14 mt-1 flex flex-col gap-1 rounded-[var(--radius-sm)] border border-[var(--color-border-subtle)] bg-[var(--color-surface-2)] px-2.5 py-2 text-left transition hover:border-[var(--color-border-strong)]"
+        >
+          <div className="flex items-center gap-2">
+            {linkedObservation.code ? (
+              <span
+                className="rounded-full px-1.5 py-0.5 text-[10px] font-bold text-white"
+                style={{ background: outcomeColour(linkedObservation.code as ScheduleOutcome) }}
+              >
+                {linkedObservation.code}
+              </span>
+            ) : null}
+            <span className="text-[11px] font-medium uppercase tracking-[0.06em] text-[var(--color-text-tertiary)]">
+              Linked observation
+            </span>
+          </div>
+          {linkedObservation.location ? (
+            <span className="text-[12px] text-[var(--color-text-secondary)]">
+              {linkedObservation.location}
+            </span>
+          ) : null}
+          {linkedObservation.description ? (
+            <span className="line-clamp-2 text-[12.5px] text-[var(--color-text-primary)]">
+              {linkedObservation.description}
+            </span>
+          ) : null}
+          <span className="text-[10.5px] font-medium text-[var(--color-brand-blue)]">
+            Tap to edit
+          </span>
+        </button>
+      ) : null}
+
+      {/* Inline observation form (InspectionTab.swift:L286-L300). */}
+      {inlineFormOpen && !linkedObservation ? (
+        <InlineObservationForm
+          scheduleItem={item}
+          onSave={(loc, desc) => onInlineSave?.(loc, desc)}
+          onCancel={() => onInlineCancel?.()}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+function InlineObservationForm({
+  scheduleItem,
+  onSave,
+  onCancel,
+}: {
+  scheduleItem: ScheduleItem;
+  onSave: (location: string, description: string) => void;
+  onCancel: () => void;
+}) {
+  const [location, setLocation] = React.useState('');
+  const [description, setDescription] = React.useState('');
+  const canSave = description.trim().length > 0;
+
+  return (
+    <div className="ml-14 mt-1 flex flex-col gap-2 rounded-[var(--radius-sm)] border border-[var(--color-brand-blue)]/40 bg-[var(--color-brand-blue)]/5 px-3 py-3">
+      <span className="text-[11px] font-medium uppercase tracking-[0.06em] text-[var(--color-text-tertiary)]">
+        New observation · {scheduleItem.ref}
+      </span>
+      <input
+        type="text"
+        value={location}
+        onChange={(e) => setLocation(e.target.value)}
+        placeholder="Location (e.g. Kitchen RCBO way 4)"
+        className="h-9 rounded-[var(--radius-sm)] border border-[var(--color-border-default)] bg-[var(--color-surface-1)] px-2.5 text-[12.5px] text-[var(--color-text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--color-brand-blue)]"
+      />
+      <textarea
+        value={description}
+        onChange={(e) => setDescription(e.target.value)}
+        placeholder="What was found?"
+        rows={2}
+        className="rounded-[var(--radius-sm)] border border-[var(--color-border-default)] bg-[var(--color-surface-1)] px-2.5 py-1.5 text-[12.5px] text-[var(--color-text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--color-brand-blue)]"
+      />
+      <div className="flex items-center justify-end gap-2">
+        <button
+          type="button"
+          onClick={onCancel}
+          className="rounded-full px-3 py-1 text-[11px] font-semibold text-[var(--color-text-secondary)] transition hover:text-[var(--color-text-primary)]"
+        >
+          Cancel
+        </button>
+        <button
+          type="button"
+          disabled={!canSave}
+          onClick={() => onSave(location, description)}
+          className="rounded-full bg-[var(--color-brand-blue)] px-3 py-1 text-[11px] font-semibold text-white transition disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          Save
+        </button>
       </div>
     </div>
   );

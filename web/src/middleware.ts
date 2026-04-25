@@ -16,7 +16,7 @@ import { NextResponse, type NextRequest } from 'next/server';
  * means the claim set is only as trustworthy as the shared secret.
  */
 
-const PUBLIC_PREFIXES = ['/login', '/legal', '/offline'];
+const PUBLIC_PREFIXES = ['/login', '/legal', '/offline', '/dev-reference'];
 
 /**
  * Static-asset allow-list. The old implementation used

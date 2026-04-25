@@ -8,9 +8,22 @@ import { useOutboxState } from '@/lib/pwa/use-outbox-state';
 
 /**
  * Sync-status cluster (Phase 7b amber offline pill + Phase 7d pending /
- * poisoned counters). Exported as `OfflineIndicator` for header-import
- * compatibility; despite the name it now renders up to three related
- * pills depending on connectivity + outbox state.
+ * poisoned counters + Phase 9 mobile banner variant). Exported as
+ * `OfflineIndicator` for header-import compatibility; despite the name
+ * it now renders up to three related pills depending on connectivity +
+ * outbox state.
+ *
+ * Phase 9 mobile shape parity (`OfflineBanner.swift` on iOS):
+ *   - Below the `md` breakpoint the offline pill is suppressed inside
+ *     `OfflineIndicator` and replaced by a full-width `OfflineBanner`
+ *     rendered via the exported `<OfflineBanner />` component. The
+ *     banner is positioned by `AppShell` at the top of the viewport so
+ *     it matches iOS's slide-in layout without interfering with the
+ *     desktop header pill.
+ *   - The pending/poisoned pills continue to live inside the header
+ *     cluster on every breakpoint — those are status counters, not a
+ *     connection-state callout, so a banner treatment would be over
+ *     the top on mobile.
  *
  * Render matrix (all three pills can stack; in practice only one or two
  * appear at a time):
@@ -72,11 +85,60 @@ export function OfflineIndicator() {
 
   return (
     <div className="flex items-center gap-1.5">
-      {!isOnline ? <OfflinePill pendingCount={showPendingPills ? pendingCount : 0} /> : null}
+      {/*
+       * Phase 9: hide the offline pill on phones (< md) — the
+       * `<OfflineBanner />` below renders the full-width iOS shape
+       * instead. The pill stays visible from `md` up so desktop users
+       * see the status inline in the header without a banner pushing
+       * content down.
+       */}
+      {!isOnline ? (
+        <div className="hidden md:block">
+          <OfflinePill pendingCount={showPendingPills ? pendingCount : 0} />
+        </div>
+      ) : null}
       {isOnline && showPendingPills && pendingCount > 0 ? (
         <PendingPill count={pendingCount} />
       ) : null}
       {showPendingPills && poisonedCount > 0 ? <PoisonedPill count={poisonedCount} /> : null}
+    </div>
+  );
+}
+
+/**
+ * Mobile-only full-width offline banner (Phase 9). Renders nothing on
+ * `md+` viewports — the inline header pill covers that case — and
+ * nothing at all when the browser is online. Placed by `AppShell` at
+ * the top of the viewport so it slides in above page content,
+ * matching the iOS `OfflineBanner.swift` shape.
+ */
+export function OfflineBanner() {
+  const isOnline = useOnlineStatus();
+  const { pending, loading } = useOutboxState();
+  if (isOnline) return null;
+  const pendingCount = loading ? 0 : pending.length;
+  const label =
+    pendingCount > 0
+      ? `You are offline. ${pendingCount} edit${pendingCount === 1 ? '' : 's'} queued — will sync when your connection returns.`
+      : 'You are offline. Showing cached data; changes will not sync until your connection returns.';
+  return (
+    <div
+      role="status"
+      aria-live="polite"
+      aria-label={label}
+      // `sticky top-0` keeps the banner visible once an inspector
+      // scrolls down a long job page — the AppShell header ends at
+      // top-0 on mobile (the header pill is hidden below md), so
+      // pinning the banner here puts it exactly where the pill used
+      // to live. z-30 keeps it above job-tab content without
+      // fighting the Radix overlays (z-50+).
+      className="sticky top-0 z-30 md:hidden flex w-full items-center justify-center gap-2 border-b border-[var(--color-status-processing)]/40 bg-[var(--color-status-processing)]/15 px-3 py-2 text-[12px] font-semibold text-[var(--color-status-processing)] backdrop-blur-sm"
+    >
+      <WifiOff className="h-3.5 w-3.5" strokeWidth={2.25} aria-hidden />
+      <span>
+        Offline
+        {pendingCount > 0 ? ` · ${pendingCount} queued` : ' · showing cached data'}
+      </span>
     </div>
   );
 }

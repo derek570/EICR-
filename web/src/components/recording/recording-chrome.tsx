@@ -13,10 +13,22 @@ import {
   Settings2,
   Square,
   Volume2,
+  VolumeX,
 } from 'lucide-react';
 import { useParams, useRouter } from 'next/navigation';
 import { useRecording, formatCost, formatElapsed } from '@/lib/recording-context';
 import { cn } from '@/lib/utils';
+import { ConfirmDialog } from '@/components/ui/confirm-dialog';
+import {
+  getVoiceFeedbackEnabled,
+  isTtsAvailable,
+  setVoiceFeedbackEnabled,
+  speak,
+} from '@/lib/recording/tts';
+import { VadIndicator } from './vad-indicator';
+import { ProcessingBadge } from './processing-badge';
+import { PendingDataBanner } from './pending-data-banner';
+import { AlertCard } from './alert-card';
 
 /**
  * Recording chrome — in-page indicator + control surface that renders
@@ -101,14 +113,59 @@ function RecordingRing({ state }: { state: ReturnType<typeof useRecording>['stat
  * with an explanatory aria-label rather than non-functional buttons.
  */
 function RecordingActionBar() {
-  const { state, micLevel, elapsedSec, costUsd, errorMessage, stop, pause, resume } =
-    useRecording();
+  const {
+    state,
+    micLevel,
+    elapsedSec,
+    costUsd,
+    errorMessage,
+    processingCount,
+    pendingReadings,
+    questions,
+    dismissQuestion,
+    stop,
+    pause,
+    resume,
+  } = useRecording();
   const router = useRouter();
   const params = useParams<{ id: string }>();
   const jobId = params?.id;
 
   const isActive = state === 'active';
   const isPaused = state === 'dozing' || state === 'sleeping';
+
+  // Voice feedback toggle — localStorage-persisted via the TTS helper.
+  // Initialised from storage on mount so the button reflects the
+  // inspector's last choice. SSR renders as `false`; we hydrate after
+  // mount to avoid localStorage access during render.
+  const [voiceFeedbackOn, setVoiceFeedbackOn] = React.useState(false);
+  const [ttsSupported, setTtsSupported] = React.useState(true);
+  React.useEffect(() => {
+    setVoiceFeedbackOn(getVoiceFeedbackEnabled());
+    setTtsSupported(isTtsAvailable());
+  }, []);
+  const toggleVoiceFeedback = React.useCallback(() => {
+    const next = !voiceFeedbackOn;
+    setVoiceFeedbackEnabled(next);
+    setVoiceFeedbackOn(next);
+    // One-shot audible preview so the inspector gets immediate
+    // feedback that the toggle works. `force: true` bypasses the
+    // enabled check for the OFF→ON transition; on ON→OFF we stay
+    // silent — speaking "voice feedback off" would be jarring and
+    // contradicts the preference just set.
+    if (next) speak('Voice feedback on.', { force: true });
+  }, [voiceFeedbackOn]);
+
+  // End-session confirmation — iOS presents a parent-owned alert
+  // ("End this recording session?") on the stop button. The web chrome
+  // previously skipped the confirm; the parity ledger flags this as a
+  // partial match. Wrap End behind a <ConfirmDialog>.
+  const [endConfirmOpen, setEndConfirmOpen] = React.useState(false);
+  const openEndConfirm = React.useCallback(() => setEndConfirmOpen(true), []);
+  const confirmEnd = React.useCallback(() => {
+    setEndConfirmOpen(false);
+    stop();
+  }, [stop]);
 
   const goToTab = React.useCallback(
     (slug: string) => {
@@ -119,119 +176,151 @@ function RecordingActionBar() {
   );
 
   return (
-    <div
-      role="toolbar"
-      aria-label="Recording controls"
-      className="pointer-events-none fixed inset-x-0 bottom-0 z-40 flex justify-center px-3 pb-3 md:pb-4"
-    >
-      <div className="pointer-events-auto flex w-full max-w-[1100px] flex-col gap-2 rounded-[var(--radius-xl)] border border-[var(--color-border-default)] bg-[var(--color-surface-1)]/95 px-3 py-2.5 shadow-[0_-12px_48px_rgba(0,0,0,0.55)] backdrop-blur-md md:flex-row md:items-center md:gap-3 md:px-4">
-        {/* ── Left: state pill + timer + cost ─────────────────────── */}
-        <div className="flex items-center gap-2.5">
-          <StatePill state={state} />
-          <div className="flex items-baseline gap-2">
-            <span className="font-mono text-[15px] font-semibold tabular-nums text-[var(--color-text-primary)]">
-              {formatElapsed(elapsedSec)}
-            </span>
-            <span className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[var(--color-text-tertiary)]">
-              {formatCost(costUsd)}
-            </span>
-          </div>
+    <>
+      {/* Badges + alert card float above the action bar so they survive
+          landscape reorientation without colliding with the pill cluster.
+          Kept pointer-events:auto on the AlertCard itself via the inner
+          wrapper; the outer flex is pointer-events:none so taps pass
+          through to the page. */}
+      <div className="pointer-events-none fixed inset-x-0 bottom-[96px] z-40 flex flex-col items-center gap-2 px-3 md:bottom-[104px]">
+        <div className="flex items-center gap-2">
+          <ProcessingBadge count={processingCount} />
+          <PendingDataBanner count={pendingReadings} />
         </div>
-
-        {/* ── Centre: VU meter ────────────────────────────────────── */}
-        <div className="hidden flex-1 md:block">
-          <VuMeter level={micLevel} active={isActive} />
-        </div>
-
-        {/* ── Right: iOS-parity buttons + Pause/End ───────────────── */}
-        <div className="flex items-center justify-end gap-1.5 overflow-x-auto md:gap-2">
-          {/* Voice / Defaults / Apply — visual-only on web. The handlers
-              live in iOS today; rendering them disabled keeps screen
-              parity with the iOS reference shot without shipping
-              non-functional buttons. */}
-          <ParityButton
-            label="Voice"
-            tone="muted"
-            icon={Volume2}
-            disabled
-            disabledReason="Voice prompts are iOS-only for now."
-          />
-          <ParityButton
-            label="Defaults"
-            tone="violet"
-            icon={Settings2}
-            disabled
-            disabledReason="Defaults panel is iOS-only for now."
-          />
-          <ParityButton
-            label="Apply"
-            tone="green"
-            icon={Check}
-            disabled
-            disabledReason="Apply-last-snapshot is iOS-only for now."
-          />
-          {/* CCU / Doc / Obs deep-link to the tab where the wired
-              handler already lives, so the inspector can fire the same
-              action from inside a recording session as they would from
-              the tab's action rail. */}
-          <ParityButton
-            label="CCU"
-            tone="orange"
-            icon={Camera}
-            onClick={() => goToTab('/circuits')}
-          />
-          <ParityButton
-            label="Doc"
-            tone="cyan"
-            icon={FileText}
-            onClick={() => goToTab('/circuits')}
-          />
-          <ParityButton
-            label="Obs"
-            tone="blue"
-            icon={MessageSquare}
-            onClick={() => goToTab('/observations')}
-          />
-
-          {/* End — equivalent to iOS's red square. Always available so
-              the inspector can bail out instantly. */}
-          <CircleButton
-            label="End"
-            icon={Square}
-            onClick={stop}
-            background="var(--color-status-failed)"
-          />
-          {/* Pause / Resume — pause is greyed during requesting-mic so
-              double-tapping mid-permission doesn't race the state
-              machine; resume only enables from dozing/sleeping. */}
-          {isPaused ? (
-            <CircleButton
-              label="Resume"
-              icon={Play}
-              onClick={resume}
-              background="var(--color-brand-green)"
-            />
-          ) : (
-            <CircleButton
-              label="Pause"
-              icon={Pause}
-              onClick={pause}
-              background="var(--color-status-processing)"
-              disabled={!isActive}
-            />
-          )}
-        </div>
-
-        {errorMessage ? (
-          <p
-            role="alert"
-            className="basis-full text-[12px] font-medium text-[var(--color-status-failed)]"
-          >
-            {errorMessage}
-          </p>
+        {questions.length > 0 ? (
+          <AlertCard questions={questions} onDismiss={dismissQuestion} />
         ) : null}
       </div>
-    </div>
+
+      <div
+        role="toolbar"
+        aria-label="Recording controls"
+        className="pointer-events-none fixed inset-x-0 bottom-0 z-40 flex justify-center px-3 pb-3 md:pb-4"
+      >
+        <div className="pointer-events-auto flex w-full max-w-[1100px] flex-col gap-2 rounded-[var(--radius-xl)] border border-[var(--color-border-default)] bg-[var(--color-surface-1)]/95 px-3 py-2.5 shadow-[0_-12px_48px_rgba(0,0,0,0.55)] backdrop-blur-md md:flex-row md:items-center md:gap-3 md:px-4">
+          {/* ── Left: state pill + VAD dot + timer + cost ──────────── */}
+          <div className="flex items-center gap-2.5">
+            <StatePill state={state} />
+            <VadIndicator state={state} />
+            <div className="flex items-baseline gap-2">
+              <span className="font-mono text-[15px] font-semibold tabular-nums text-[var(--color-text-primary)]">
+                {formatElapsed(elapsedSec)}
+              </span>
+              <span className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[var(--color-text-tertiary)]">
+                {formatCost(costUsd)}
+              </span>
+            </div>
+          </div>
+
+          {/* ── Centre: VU meter ────────────────────────────────────── */}
+          <div className="hidden flex-1 md:block">
+            <VuMeter level={micLevel} active={isActive} />
+          </div>
+
+          {/* ── Right: iOS-parity buttons + Pause/End ───────────────── */}
+          <div className="flex items-center justify-end gap-1.5 overflow-x-auto md:gap-2">
+            {/* Voice — Phase 8 enabled the toggle. Persists via
+                localStorage['cm-voice-feedback']; the TTS helper drives
+                SpeechSynthesis. Hidden when the runtime doesn't expose
+                SpeechSynthesis (jsdom, obscure embedded browsers) so
+                inspectors don't tap a dead control. */}
+            {ttsSupported ? (
+              <ParityButton
+                label={voiceFeedbackOn ? 'Voice' : 'Muted'}
+                tone={voiceFeedbackOn ? 'green' : 'muted'}
+                icon={voiceFeedbackOn ? Volume2 : VolumeX}
+                onClick={toggleVoiceFeedback}
+                ariaPressed={voiceFeedbackOn}
+              />
+            ) : null}
+            <ParityButton
+              label="Defaults"
+              tone="violet"
+              icon={Settings2}
+              disabled
+              disabledReason="Defaults panel is iOS-only for now."
+            />
+            <ParityButton
+              label="Apply"
+              tone="green"
+              icon={Check}
+              disabled
+              disabledReason="Apply-last-snapshot is iOS-only for now."
+            />
+            {/* CCU / Doc / Obs deep-link to the tab where the wired
+                handler already lives, so the inspector can fire the same
+                action from inside a recording session as they would from
+                the tab's action rail. */}
+            <ParityButton
+              label="CCU"
+              tone="orange"
+              icon={Camera}
+              onClick={() => goToTab('/circuits')}
+            />
+            <ParityButton
+              label="Doc"
+              tone="cyan"
+              icon={FileText}
+              onClick={() => goToTab('/circuits')}
+            />
+            <ParityButton
+              label="Obs"
+              tone="blue"
+              icon={MessageSquare}
+              onClick={() => goToTab('/observations')}
+            />
+
+            {/* End — gated behind a confirm dialog so a stray tap on
+                the bottom bar can't nuke an in-progress recording. */}
+            <CircleButton
+              label="End"
+              icon={Square}
+              onClick={openEndConfirm}
+              background="var(--color-status-failed)"
+            />
+            {/* Pause / Resume — pause is greyed during requesting-mic so
+                double-tapping mid-permission doesn't race the state
+                machine; resume only enables from dozing/sleeping. */}
+            {isPaused ? (
+              <CircleButton
+                label="Resume"
+                icon={Play}
+                onClick={resume}
+                background="var(--color-brand-green)"
+              />
+            ) : (
+              <CircleButton
+                label="Pause"
+                icon={Pause}
+                onClick={pause}
+                background="var(--color-status-processing)"
+                disabled={!isActive}
+              />
+            )}
+          </div>
+
+          {errorMessage ? (
+            <p
+              role="alert"
+              className="basis-full text-[12px] font-medium text-[var(--color-status-failed)]"
+            >
+              {errorMessage}
+            </p>
+          ) : null}
+        </div>
+      </div>
+
+      <ConfirmDialog
+        open={endConfirmOpen}
+        onOpenChange={setEndConfirmOpen}
+        title="End this recording session?"
+        description="Any audio captured so far will be saved. You can start a new session afterwards."
+        confirmLabel="End session"
+        cancelLabel="Keep recording"
+        destructive
+        onConfirm={confirmEnd}
+      />
+    </>
   );
 }
 
@@ -334,6 +423,7 @@ function ParityButton({
   onClick,
   disabled,
   disabledReason,
+  ariaPressed,
 }: {
   label: string;
   tone: ButtonTone;
@@ -341,12 +431,16 @@ function ParityButton({
   onClick?: () => void;
   disabled?: boolean;
   disabledReason?: string;
+  /** When present, adds `aria-pressed` to the button — used for toggles
+   *  (e.g. the Voice button) so screen readers can announce the state. */
+  ariaPressed?: boolean;
 }) {
   return (
     <button
       type="button"
       onClick={onClick}
       disabled={disabled}
+      aria-pressed={ariaPressed}
       aria-label={disabled && disabledReason ? `${label} (${disabledReason})` : label}
       className={cn(
         'flex shrink-0 flex-col items-center gap-0.5 rounded-2xl px-2 py-1.5 text-white transition active:scale-95 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white',
