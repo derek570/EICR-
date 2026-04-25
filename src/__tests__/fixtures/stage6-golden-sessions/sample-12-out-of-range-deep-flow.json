@@ -1,0 +1,40 @@
+{
+  "_doc": "Phase 5 Plan 05-06 — legitimate ask_user deep-flow happy path (STT-10-style). Inspector says 'circuit six' on a 4-circuit board → model emits ask_user(reason='out_of_range_circuit') asking 'circuit 6 doesn't exist — is this a new one?' → user answers 'create it, upstairs lighting' → model emits create_circuit + record_reading. The single ask is genuinely useful (resolves an out-of-range circuit reference) and the gates MUST allow it through. This fixture proves Phase 5 does NOT over-suppress legitimate asks — the gates exist to cap chatty over-asking, not to silence the agentic layer's natural disambiguation. gate_fixture:true — contributes 1 'answered' to the gate aggregate (a normal deep flow).",
+  "_requirement": "STB-05 — no existing guard weakened: Phase 3's deep-flow ask_user resolution must survive Phase 5 composition. STA-06: legitimate single-ask use is well within the per-key budget cap of 2.",
+  "_fixture_shape": "phase5-over-ask",
+  "session": {
+    "jobId": "golden-12",
+    "certificateType": "EICR"
+  },
+  "transcript_summary": "Inspector says 'circuit six Zs nought point three' on a 4-circuit board. Model asks 'circuit 6 doesn't exist — should I create it?'. User: 'yes, upstairs lighting'. Model creates the circuit and records the reading. Single legitimate ask.",
+  "ask_user_calls": [
+    {
+      "turnId": "golden-12-turn-1",
+      "synthetic_time_ms": 0,
+      "call": {
+        "id": "toolu_12_a",
+        "name": "ask_user",
+        "input": {
+          "question": "Circuit 6 isn't on the board yet — should I create it?",
+          "reason": "out_of_range_circuit",
+          "context_field": null,
+          "context_circuit": 6,
+          "expected_answer_shape": "yes_no_with_text"
+        }
+      },
+      "inner_outcome": { "answered": true, "user_text": "yes upstairs lighting" }
+    }
+  ],
+  "expected_ask_user_count": 1,
+  "expected_restrained_activations": 0,
+  "expected_outcome_distribution": {
+    "answered": 1,
+    "gated": 0,
+    "ask_budget_exhausted": 0,
+    "restrained_mode": 0,
+    "user_moved_on": 0,
+    "timeout": 0
+  },
+  "expected_filled_slots_shadow_logs": 0,
+  "gate_fixture": true
+}
