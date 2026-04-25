@@ -192,6 +192,29 @@ describe('SonnetSession', () => {
       expect(wire).not.toHaveProperty('regex_fields');
     });
 
+    it('regex hints survive the pre-connect queue (codex P2 follow-up)', async () => {
+      // Send a transcript BEFORE the WS handshake completes — the
+      // call lands in preConnectQueue. Without the queue carrying
+      // the full payload, regex_fields would be dropped on flush
+      // and the first utterance after session.start() (the most
+      // common pre-connect path in production) would miss the hint
+      // protocol entirely.
+      const session = new SonnetSession({});
+      session.connect({ sessionId: 's-r5-5', jobId: 'j-r5-5', certificateType: 'EICR' });
+      // Don't await server.connected — send while still connecting.
+      session.sendTranscript('Circuit 3 Zs is 0.44', {
+        regexHints: [{ field: 'circuit.3.measured_zs_ohm' }],
+      });
+      await server.connected;
+      // First message is session_start, second is the flushed transcript.
+      await server.nextMessage; // session_start
+      const raw = (await server.nextMessage) as string;
+      const wire = JSON.parse(raw);
+      expect(wire.type).toBe('transcript');
+      expect(wire.text).toBe('Circuit 3 Zs is 0.44');
+      expect(wire.regex_fields).toEqual([{ field: 'circuit.3.measured_zs_ohm' }]);
+    });
+
     it('postcode hint includes value (iOS contract for postcodes.io enrichment)', async () => {
       const session = new SonnetSession({});
       session.connect({ sessionId: 's-r5-4', jobId: 'j-r5-4', certificateType: 'EICR' });
