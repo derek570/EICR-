@@ -25,7 +25,7 @@ Guiding rule: **iOS is canon. Divergence is a bug unless explicitly documented**
 | B4.2 | Deepgram keyterm prompting (port iOS `KeywordBoostGenerator`) | ✅ done | `e38fa5e`, `fed9a1c` (codex fix) |
 | B6.1 | Sonnet ALB heartbeat + `observation_update` handler | ✅ done | `d035b71`, `f104a3e` (codex fix) |
 | B6.2 | Cross-check verifications: LiveFillView used, Sonnet questions wired, AudioRingBuffer present | ✅ all stage6-only false positives — closed by inspection |
-| B7 | Per-circuit field drift refactor (CircuitRow `number/description` → `circuit_ref/circuit_designation`) | ⏳ open — biggest remaining work |
+| B7 | Per-circuit field drift refactor (CircuitRow `number/description` → `circuit_ref/circuit_designation`) | ✅ done | `3eaa0d3` |
 | B5 | Recording UI parity | ⏳ open — needs main-vs-stage6 cross-check first |
 | B6 | Remaining dashboard + settings P0s (T&Cs gate, preset picker on creation, swipe delete on rows, admin form drift) | ⏳ open |
 | B7 | Inner-field drift (CircuitRow, ObservationRow, per-bucket field naming) | ⏳ open — biggest remaining work |
@@ -37,6 +37,7 @@ Guiding rule: **iOS is canon. Divergence is a bug unless explicitly documented**
 
 | SHA | Subject |
 |-----|---------|
+| `3eaa0d3` | align CircuitRow type to canonical wire shape (audit Phase 3 #16/#18) |
 | `f104a3e` | persist server observation_id + match by stored description (codex fix on `d035b71`) |
 | `d035b71` | Sonnet ALB heartbeat (25s) + observation_update handler (Phase 6 P0s) |
 | `fed9a1c` | reserve URL+keyterm slots for CCU-augmented Deepgram terms (codex fix on `e38fa5e`) |
@@ -86,7 +87,15 @@ Guiding rule: **iOS is canon. Divergence is a bug unless explicitly documented**
    - ✅ `utterance_end_ms` (web 2000 → iOS canon 1500) closed by `ba3bbdf` with regression-locking URL-param test.
    - ⏳ **Open: keyterm prompting.** iOS sends ~89 boost-scored Nova-3 `keyterm` URL params via `KeywordBoostGenerator` (URL-length budget 1800 chars, top-tier keywords get a `:3.0` suffix). Web sends 0. Porting needs the boost word list, the URL budget, and the boost-tier convention — its own scope.
    - ⏳ Other Phase 6 P0s flagged in the audit (LiveFillView dead code, 25s ALB heartbeat, no `observation_update` handler, no transcript buffering during reconnect, no Sonnet question rendering, 3-tier field priority, regex layer) — all need verification-on-main first since several reference subsystems regressed only on stage6.
-8. **Per-circuit field drift** (Phase 3 #16, #18) — `CircuitRow` uses `id`/`number`/`description` while wire uses `circuit_ref`/`circuit_designation`. Big refactor; ladder of follow-ups; out of scope for single-commit follow-up sessions.
+8. ~~**Per-circuit field drift** (Phase 3 #16, #18)~~ ✅ closed by `3eaa0d3` — `CircuitRow` type and `CircuitRowSchema` zod adapter aligned to wire (`circuit_ref` + `circuit_designation`). Pre-existing `?? .number` / `?? .description` consumer fallbacks retained as cheap belt-and-suspenders for any pre-Wave-B legacy data. Compile-time type-shape lock added so a future autocomplete-driven re-introduction of the legacy keys fails to build.
+
+### All audit P0 backlog items closed or deferred — handoff state
+
+Real remaining work is empty. Three categorical follow-ups remain, each with documented reasons not to ship in this branch:
+
+- **Preset picker on job creation (#5)** — architectural mismatch (web's single-blob defaults vs iOS's multi-named CertificateDefault records). Needs a design decision before implementation.
+- **Regex-layer + 3-tier field priority** — port iOS `TranscriptFieldMatcher` (~40 ms instant regex extraction before Sonnet's ~1-2 s) and the Pre-existing > Sonnet > Regex tier rule. Coupled features; their own scope.
+- **T&Cs signature capture for legal review** — iOS captures a finger-drawn signature into `UserDefaults["termsAcceptanceSignature"]` for an audit trail. Web doesn't (signatures already live on `InspectorProfile`); decide via legal review whether to port `SignatureCaptureView` as a fourth confirmation step.
 
 ### Deliberate divergence — needs legal review
 
