@@ -178,9 +178,13 @@ const R1R2_PATTERN = new RegExp(
   'gi'
 );
 
-// Bare R1 (treated as R1+R2 fallback per iOS):
+// Bare R1 (treated as R1+R2 fallback per iOS). The "ring R1" /
+// "ring R2" forms must NOT trigger the r1_r2_ohm fallback (codex
+// P1 R3 fix); we enforce that downstream in matchCircuitFields by
+// skipping this pattern when an explicit ring marker is present in
+// the segment, rather than by lookbehind (older iOS Safari).
 const RING_R1_PATTERN = new RegExp(
-  `\\b(?:ring\\s+)?r\\s*1\\s+(?:is\\s+)?${SPOKEN_ZERO_PREFIX}(\\d+\\.?\\d*)`,
+  `\\br\\s*1\\s+(?:is\\s+)?${SPOKEN_ZERO_PREFIX}(\\d+\\.?\\d*)`,
   'gi'
 );
 
@@ -268,6 +272,29 @@ function hasMatch(pattern: RegExp, text: string): boolean {
   return new RegExp(pattern.source, pattern.flags.replace('g', '')).test(text);
 }
 
+/** Run multiple patterns and return the FIRST capture group of the
+ *  LATEST (highest-position) match across all of them. Used by the
+ *  RCD trip-time matcher so a later flex-form correction wins over
+ *  an earlier short-form reading in the same segment. */
+function lastCaptureAcross(patterns: RegExp[], text: string): string | null {
+  let bestIndex = -1;
+  let bestValue: string | null = null;
+  for (const pattern of patterns) {
+    const flags = pattern.flags.includes('g') ? pattern.flags : `${pattern.flags}g`;
+    const localPattern = new RegExp(pattern.source, flags);
+    let m: RegExpExecArray | null;
+    // eslint-disable-next-line no-cond-assign
+    while ((m = localPattern.exec(text)) !== null) {
+      if (m[1] != null && m.index >= bestIndex) {
+        bestIndex = m.index;
+        bestValue = m[1];
+      }
+      if (m.index === localPattern.lastIndex) localPattern.lastIndex++;
+    }
+  }
+  return bestValue;
+}
+
 /** Two-decimal-place tell: a normaliser-collapsed fractional run that
  *  swallowed a following rating ("Zs point 6 0 1 6 amp" → "Zs 0.6016
  *  amp"). Matcher refuses to accept Zs / R1+R2 readings whose decimal
@@ -337,25 +364,15 @@ function matchCircuitFields(
     }
   }
 
-  const isRing = isRingCircuit(circuitRef, text, job);
+  const isRing = isRingCircuit(circuitRef, job);
 
-  // Bare "R1 <value>" → R1+R2 fallback (iOS contract).
-  if (!updates.r1_r2_ohm) {
-    const ringR1Raw = lastCapture(RING_R1_PATTERN, text);
-    if (ringR1Raw && inRange(ringR1Raw, R1R2_MIN, R1R2_MAX) && !looksLikeMergedDecimal(ringR1Raw)) {
-      updates.r1_r2_ohm = ringR1Raw;
-    }
-  }
-
-  // Bare "R2 <value>" → R1+R2 fallback.
-  if (!updates.r1_r2_ohm) {
-    const ringR2Raw = lastCapture(RING_R2_PATTERN, text);
-    if (ringR2Raw && inRange(ringR2Raw, R1R2_MIN, R1R2_MAX) && !looksLikeMergedDecimal(ringR2Raw)) {
-      updates.r1_r2_ohm = ringR2Raw;
-    }
-  }
-
-  // Ring continuity — only on ring circuits.
+  // Ring continuity FIRST (codex P1 R3 fix): explicit "ring R1" /
+  // "ring R2" land in ring_r{1,2}_ohm. The bare-R1 / bare-R2
+  // fallback below is then skipped if an explicit ring marker is
+  // present so we don't double-write the same value to r1_r2_ohm
+  // AND ring_r{1,2}_ohm. Ring fields require the JOB's circuit row
+  // to actually be a ring (designation contains "ring") — codex P2
+  // R3 fix: an inline "ring" word in the transcript is NOT enough.
   if (isRing) {
     const ringR1Raw = lastCapture(EXPLICIT_RING_R1_PATTERN, text);
     if (
@@ -383,6 +400,28 @@ function matchCircuitFields(
       !looksLikeMergedDecimal(ringR2Raw)
     ) {
       updates.ring_r2_ohm = ringR2Raw;
+    }
+  }
+
+  // Whether the segment carries an explicit "ring R1" / "ring R2"
+  // phrase. When true, the bare-R1 / bare-R2 fallbacks below skip
+  // (their match would simply re-capture the same digits and write
+  // the value to r1_r2_ohm too — see codex P1 R3 above).
+  const hasExplicitRingForm = /\bring\s+r\s*[12]\b/i.test(text);
+
+  // Bare "R1 <value>" → R1+R2 fallback (iOS contract).
+  if (!updates.r1_r2_ohm && !hasExplicitRingForm) {
+    const ringR1Raw = lastCapture(RING_R1_PATTERN, text);
+    if (ringR1Raw && inRange(ringR1Raw, R1R2_MIN, R1R2_MAX) && !looksLikeMergedDecimal(ringR1Raw)) {
+      updates.r1_r2_ohm = ringR1Raw;
+    }
+  }
+
+  // Bare "R2 <value>" → R1+R2 fallback.
+  if (!updates.r1_r2_ohm && !hasExplicitRingForm) {
+    const ringR2Raw = lastCapture(RING_R2_PATTERN, text);
+    if (ringR2Raw && inRange(ringR2Raw, R1R2_MIN, R1R2_MAX) && !looksLikeMergedDecimal(ringR2Raw)) {
+      updates.r1_r2_ohm = ringR2Raw;
     }
   }
 
@@ -421,8 +460,11 @@ function matchCircuitFields(
     }
   }
 
-  // RCD trip time.
-  const rcdRaw = lastCapture(RCD_TIME_PATTERN, text) ?? lastCapture(RCD_TIME_FLEX_PATTERN, text);
+  // RCD trip time. Codex P3 R3 fix: pick the LATER of the two
+  // pattern's last matches. Without this, a "RCD 25" earlier in
+  // the segment suppresses a "trip time ... 30" mentioned later
+  // (the inspector correcting their reading).
+  const rcdRaw = lastCaptureAcross([RCD_TIME_PATTERN, RCD_TIME_FLEX_PATTERN], text);
   if (rcdRaw && inRange(rcdRaw, RCD_MS_MIN, RCD_MS_MAX)) {
     updates.rcd_time_ms = rcdRaw;
   }
@@ -438,11 +480,13 @@ function matchCircuitFields(
   }
 }
 
-function isRingCircuit(circuitRef: string, text: string, job: JobDetail): boolean {
-  // iOS checks the circuit's stored designation + an inline "ring"
-  // word in the text. v1 web mirrors that — the matcher's window
-  // contains the local segment so the check is local.
-  if (/\bring\b/i.test(text)) return true;
+function isRingCircuit(circuitRef: string, job: JobDetail): boolean {
+  // Codex P2 R3 fix: ring fields only fire on circuits whose JOB
+  // designation contains "ring". An inline "ring" word in the
+  // transcript ("ring R1") is NOT a sufficient signal — a radial
+  // circuit's transcript can mention "ring R1" by mistake or as
+  // part of a different sentence, and we don't want ring fields
+  // populated against a circuit that isn't actually a ring.
   const circuits =
     (job.circuits as Array<{ circuit_ref?: string; circuit_designation?: string }>) ?? [];
   const row = circuits.find((c) => c.circuit_ref === circuitRef);

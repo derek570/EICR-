@@ -129,6 +129,33 @@ describe('TranscriptFieldMatcher — ring_continuity (ring R1 / Rn / R2)', () =>
     expect(result.circuitUpdates.get('5')?.ring_r1_ohm).toBeUndefined();
     expect(result.circuitUpdates.get('5')?.r1_r2_ohm).toBe('0.34');
   });
+
+  it('codex P2 R3: radial circuit + transcript saying "ring R1" does NOT populate ring fields', () => {
+    // The job has no ring designation on circuit 5, so the inline
+    // "ring" word in the transcript is NOT enough to trigger the
+    // ring branch. r1_r2_ohm fallback is also blocked by the
+    // hasExplicitRingForm guard so neither field gets the value.
+    const matcher = new TranscriptFieldMatcher();
+    const result = matcher.match('Circuit 5 ring R1 is 0.34', emptyJob());
+    expect(result.circuitUpdates.get('5')?.ring_r1_ohm).toBeUndefined();
+    expect(result.circuitUpdates.get('5')?.r1_r2_ohm).toBeUndefined();
+  });
+
+  it('codex P1 R3: explicit "ring R1" on a ring circuit populates ring_r1_ohm ONLY (not r1_r2_ohm)', () => {
+    // Without the hasExplicitRingForm guard the same value would be
+    // double-written into both ring_r1_ohm AND r1_r2_ohm.
+    const matcher = new TranscriptFieldMatcher();
+    const result = matcher.match('Circuit 5 ring R1 is 0.34', ringJob('5'));
+    expect(result.circuitUpdates.get('5')?.ring_r1_ohm).toBe('0.34');
+    expect(result.circuitUpdates.get('5')?.r1_r2_ohm).toBeUndefined();
+  });
+
+  it('codex P1 R3: explicit "ring R2" on a ring circuit populates ring_r2_ohm ONLY (not r1_r2_ohm)', () => {
+    const matcher = new TranscriptFieldMatcher();
+    const result = matcher.match('Circuit 5 ring R2 is 0.40', ringJob('5'));
+    expect(result.circuitUpdates.get('5')?.ring_r2_ohm).toBe('0.40');
+    expect(result.circuitUpdates.get('5')?.r1_r2_ohm).toBeUndefined();
+  });
 });
 
 describe('TranscriptFieldMatcher — insulation_resistance', () => {
@@ -207,6 +234,19 @@ describe('TranscriptFieldMatcher — RCD trip time', () => {
     const matcher = new TranscriptFieldMatcher();
     const result = matcher.match('Circuit 7 RCD 5000', emptyJob());
     expect(result.circuitUpdates.get('7')?.rcd_time_ms).toBeUndefined();
+  });
+
+  it('codex P3 R3: later flex-form correction wins over earlier short-form RCD reading', () => {
+    // "RCD 25" early in the segment, then "trip time ... 30" later
+    // (the inspector correcting their first reading). Pre-fix the
+    // ?? chain returned 25; the lastCaptureAcross helper now picks
+    // the latest match across both patterns.
+    const matcher = new TranscriptFieldMatcher();
+    const result = matcher.match(
+      'Circuit 7 RCD 25 ms, sorry, trip time is actually 30',
+      emptyJob()
+    );
+    expect(result.circuitUpdates.get('7')?.rcd_time_ms).toBe('30');
   });
 });
 
