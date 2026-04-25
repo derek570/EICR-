@@ -192,6 +192,149 @@ test("Plan 08-04 r3-#1 — recommendation file path with <script> payload is esc
   );
 });
 
+// ─────────────────────────────────────────────────────────────────
+// Phase 8 — Plan 08-05 r4-#1 (MAJOR) — HTML report MUST render the
+// unknown / malformed ask_user outcome warning block.
+//
+// Codex r4-#1 raised that `scripts/generate-report-html.js:550`
+// (`buildToolCallTraffic()`) only displays the frozen-enum histogram
+// — the analyzer-emitted `unknown_outcome_count` /
+// `unknown_outcomes[]` / `malformed_outcome_count` surface (added
+// across r1-#3 + r2-#2 + r3-#2) never reaches the operator. Drift is
+// invisible until the optimizer cycles, by which point days of breach
+// data may have accumulated unnoticed.
+//
+// Fix: render an attention-grabbing warning block when
+// `unknown_outcome_count > 0 || malformed_outcome_count > 0`. Pull
+// unknown values from `tool_call_traffic.ask_user.unknown_outcomes`
+// (already sanitised by analyzer per r3-#1 `safeDisplayValue`); pull
+// malformed values from `summary.warnings[]` filtering
+// `type === "malformed_ask_user_outcome"`.
+//
+// Defence-in-depth: every value still flows through `escapeHtml()` at
+// the renderer (analyzer-side strips control chars + caps length, but
+// HTML safety belongs at the render edge — same contract Plan 08-04
+// r3-#1 (renderer side) established).
+// ─────────────────────────────────────────────────────────────────
+
+// Stable identifier for the warning block — a CSS class. Tests grep
+// the rendered HTML for this marker; the renderer commits to keeping
+// it in the markup.
+const ASK_USER_DRIFT_CLASS = "ask-user-drift-warning";
+
+test("Plan 08-05 r4-#1 — unknown_outcomes renders warning block with sanitised values", () => {
+  const summary = benignSummary();
+  summary.tool_call_traffic.ask_user.unknown_outcome_count = 2;
+  summary.tool_call_traffic.ask_user.unknown_outcomes = [
+    { value: "foobar", count: 2 },
+  ];
+  const html = runRenderer({ recommendations: [], summary });
+
+  // Warning block is present.
+  assert.ok(
+    html.includes(ASK_USER_DRIFT_CLASS),
+    `Warning block (CSS class "${ASK_USER_DRIFT_CLASS}") MUST be rendered when unknown_outcome_count > 0`,
+  );
+  // Sanitised value appears in the block.
+  assert.ok(
+    html.includes("foobar"),
+    "Unknown outcome value MUST appear in the rendered warning block",
+  );
+  // Count appears too.
+  assert.ok(
+    html.includes("2"),
+    "Unknown outcome count MUST appear in the rendered warning block",
+  );
+});
+
+test("Plan 08-05 r4-#1 — malformed warnings render in the same warning block", () => {
+  const summary = benignSummary();
+  summary.tool_call_traffic.ask_user.malformed_outcome_count = 1;
+  summary.warnings = [
+    { type: "malformed_ask_user_outcome", value: "null", count: 1 },
+  ];
+  const html = runRenderer({ recommendations: [], summary });
+
+  // Warning block is present (malformed-only).
+  assert.ok(
+    html.includes(ASK_USER_DRIFT_CLASS),
+    "Warning block MUST render when malformed_outcome_count > 0",
+  );
+  // The stringified malformed value (the literal string "null") must
+  // appear — analyzer emits it stringified per r2-#2.
+  assert.ok(
+    html.includes("null"),
+    "Malformed outcome value MUST appear in the rendered warning block",
+  );
+});
+
+test("Plan 08-05 r4-#1 — both unknown AND malformed render in the warning block together", () => {
+  const summary = benignSummary();
+  summary.tool_call_traffic.ask_user.unknown_outcome_count = 3;
+  summary.tool_call_traffic.ask_user.unknown_outcomes = [
+    { value: "drift_value", count: 3 },
+  ];
+  summary.tool_call_traffic.ask_user.malformed_outcome_count = 1;
+  summary.warnings = [
+    { type: "malformed_ask_user_outcome", value: "undefined", count: 1 },
+  ];
+  const html = runRenderer({ recommendations: [], summary });
+
+  assert.ok(html.includes(ASK_USER_DRIFT_CLASS));
+  assert.ok(
+    html.includes("drift_value"),
+    "Unknown outcome value MUST appear when both unknown+malformed present",
+  );
+  assert.ok(
+    html.includes("undefined"),
+    "Malformed outcome value MUST appear when both unknown+malformed present",
+  );
+});
+
+test("Plan 08-05 r4-#1 — clean session (no unknown/malformed) renders no warning block", () => {
+  // Regression-lock: benignSummary() has counts === 0 + no malformed
+  // warnings. The warning block MUST be absent so the operator only
+  // sees the drift block when drift is actually present (no false-
+  // positive noise on healthy sessions).
+  const html = runRenderer({ recommendations: [], summary: benignSummary() });
+  assert.ok(
+    !html.includes(ASK_USER_DRIFT_CLASS),
+    "Warning block MUST NOT render on clean sessions",
+  );
+});
+
+test("Plan 08-05 r4-#1 — XSS payload in unknown_outcomes value is escaped (defence-in-depth)", () => {
+  const baseline = countLiveScriptTags(
+    runRenderer({ recommendations: [], summary: benignSummary() }),
+  );
+
+  const summary = benignSummary();
+  summary.tool_call_traffic.ask_user.unknown_outcome_count = 1;
+  summary.tool_call_traffic.ask_user.unknown_outcomes = [
+    { value: "<script>alert(1)</script>", count: 1 },
+  ];
+  const html = runRenderer({ recommendations: [], summary });
+
+  // Block renders.
+  assert.ok(html.includes(ASK_USER_DRIFT_CLASS));
+  // No new live <script> tag injected.
+  assert.equal(
+    countLiveScriptTags(html),
+    baseline,
+    "Adversarial unknown_outcomes value MUST NOT inject a live <script> tag",
+  );
+  // Escaped form is present.
+  assert.ok(
+    html.includes("&lt;script&gt;alert(1)&lt;/script&gt;"),
+    "Adversarial unknown_outcomes value MUST be HTML-escaped in the warning block",
+  );
+  // Raw form MUST NOT appear.
+  assert.ok(
+    !html.includes("<script>alert(1)</script>"),
+    "Raw <script> form MUST NOT appear in rendered HTML",
+  );
+});
+
 test("Plan 08-04 r3-#1 — empty_fields with adversarial reason MUST not render unescaped class or text", () => {
   // This test specifically targets the "missed values" section
   // (lines ~385-390 of generate-report-html.js): the loop renders
