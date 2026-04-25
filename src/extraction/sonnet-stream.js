@@ -1376,7 +1376,31 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
     // The protocolVersion field is also stamped onto the session entry
     // (see activeSessions.set below) so downstream emitters can reference
     // it without re-reading msg.
-    const toolCallsMode = process.env.SONNET_TOOL_CALLS || 'off';
+    //
+    // ── Plan 06-09 r8-#1 (MAJOR) — snapshot SONNET_TOOL_CALLS exactly
+    // ONCE per request via resolveEffectiveToolCallsMode. Pre-r8 this
+    // function read the env via two different paths: a bare
+    // `process.env.SONNET_TOOL_CALLS || 'off'` here for the policy
+    // block, AND a separate `resolveEffectiveToolCallsMode()` re-read
+    // before applyModeChange in the reconnect branch. An env flip
+    // between the two reads (production hot-reload, test harness
+    // mutation, future dotenv-reload pattern) produced a split-brain
+    // entry: policy under one mode, applyModeChange under the other.
+    // Worse, the bare `|| 'off'` and resolveEffectiveToolCallsMode
+    // applied DIFFERENT fallback policies (no allow-list vs
+    // allow-list), so even WITHOUT a mid-request env flip an invalid
+    // env value (e.g. typo) yielded different effective modes
+    // between the two reads.
+    //
+    // Post-r8: ONE call to resolveEffectiveToolCallsMode at function
+    // entry. The same `toolCallsMode` local drives the live-reject
+    // policy, the shadow-fallback policy, the reconnect-branch
+    // policy, AND is passed through to applyModeChange — single
+    // source of truth, race-proof, allow-list-applied centrally.
+    // The variable name is preserved (`toolCallsMode`) for the
+    // readability of every existing comment block; only the RHS
+    // changes from the bare env read to the resolver call.
+    const toolCallsMode = resolveEffectiveToolCallsMode();
     const protocolVersion = msg.protocol_version || null;
     if (toolCallsMode === 'live' && protocolVersion !== 'stage6') {
       logger.warn('stage6.protocol_version_mismatch_live_reject', {
@@ -1501,8 +1525,16 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
       // (toolCallsMode, protocolVersion, fallbackToLegacy) are
       // co-located adjacent to the inputs that drove the (mode × match)
       // decision.
+      //
+      // ── Plan 06-09 r8-#1 (MAJOR) — pass the function-entry snapshot
+      // (`toolCallsMode`, set at the top of this function via
+      // resolveEffectiveToolCallsMode) instead of re-reading env via
+      // a fresh resolveEffectiveToolCallsMode() call here. That
+      // re-read was the SECOND env access per request and the source
+      // of the split-brain race; the snapshot at function entry is
+      // the single source of truth for this request.
       if (existing.session) {
-        existing.session.applyModeChange(resolveEffectiveToolCallsMode());
+        existing.session.applyModeChange(toolCallsMode);
       }
       if (existing.disconnectTimer) {
         clearTimeout(existing.disconnectTimer);
@@ -2069,7 +2101,20 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
     //
     // r5-#2 covers the equivalent write-back on handleSessionStart's
     // reconnect branch — the two surfaces are symmetric.
-    const toolCallsMode = process.env.SONNET_TOOL_CALLS || 'off';
+    //
+    // ── Plan 06-09 r8-#2 (MAJOR) — snapshot SONNET_TOOL_CALLS exactly
+    // ONCE per request via resolveEffectiveToolCallsMode. Pre-r8 this
+    // function read the env via two paths: a bare
+    // `process.env.SONNET_TOOL_CALLS || 'off'` here for the policy
+    // block, AND a separate `resolveEffectiveToolCallsMode()` re-read
+    // before applyModeChange below (~line 2198). An env flip between
+    // the two reads produced a split-brain entry — same root cause
+    // as r8-#1 in handleSessionStart. Single resolved value, single
+    // source of truth, race-proof. The variable name is preserved
+    // (`toolCallsMode`) for the readability of every existing comment
+    // block; only the RHS changes from the bare env read to the
+    // resolver call.
+    const toolCallsMode = resolveEffectiveToolCallsMode();
     if (toolCallsMode === 'live' && requestedProtocolVersion !== 'stage6') {
       logger.warn('stage6.protocol_version_mismatch_live_reject_resume', {
         sessionId: clientSessionId,
@@ -2162,8 +2207,15 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
     // reaching this write, so a rejected resume's session is never
     // touched. Placed BEFORE entry.ws = ws (later in this function) so
     // the three handshake-state writes are co-located.
+    //
+    // ── Plan 06-09 r8-#2 (MAJOR) — pass the function-entry snapshot
+    // (`toolCallsMode`, set above via resolveEffectiveToolCallsMode)
+    // instead of re-reading env via a fresh resolveEffectiveToolCallsMode()
+    // call here. That re-read was the SECOND env access per request
+    // and the source of the split-brain race; the snapshot at function
+    // entry is the single source of truth for this request.
     if (entry.session) {
-      entry.session.applyModeChange(resolveEffectiveToolCallsMode());
+      entry.session.applyModeChange(toolCallsMode);
     }
 
     // Cancel any pending disconnect timer — we're live again.
