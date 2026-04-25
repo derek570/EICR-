@@ -268,6 +268,62 @@ export const ASK_USER_ANSWER_OUTCOMES = Object.freeze([
 // see freeze rationale on the constant above.
 export const ASK_USER_MODES = Object.freeze(['shadow', 'live']);
 
+// Plan 05-15 r9-#2 — closed enum for the `lifecycle` field.
+//
+// Plan 05-14 r8-#2 layered `lifecycle` as an additive optional log-row
+// field (correct decision — no wire-schema break) but forwarded the
+// value verbatim with no enum gate. A typo at the dispatcher emit site
+// ('pre-emit' with a hyphen, 'preemit', 'PRE_EMIT', case mismatch)
+// silently forks the log schema. Phase 8 dashboards splitting by
+// lifecycle would see phantom buckets and undercount the canonical
+// pre_emit / post_emit rows.
+//
+// Same discipline as ASK_USER_ANSWER_OUTCOMES (Plan 03-12 r10),
+// ASK_USER_MODES (Plan 03-12 r19), RESTRAINED_MODE_EVENTS (Plan 05-04):
+// closed enum + throw at emit site. Object.freeze applied for parity
+// with the other two enums in this module.
+//
+// Membership rationale:
+//   - 'pre_emit'  — emitted from a code path BEFORE iOS has been told
+//     about the ask (registry register / ws.send). Today the ONLY emit
+//     site is `stage6-dispatcher-ask.js`'s outer catch (line ~384) for
+//     the dispatcher_error path. Re-audited at r6 (Plan 05-12) +
+//     reconfirmed at r8-#2 (Plan 05-14): every active dispatcher_error
+//     emit site is structurally pre-emit (register rethrow at line
+//     ~297; ws.send wrapped in own try/catch which cannot escalate).
+//   - 'post_emit' — RESERVED for future code paths that emit AFTER
+//     ws.send has succeeded (post-send analytics throw, post-send
+//     registry update throw, etc.). No emit site today.
+//
+// Why 'pre_emit' / 'post_emit' (not 'pre-emit' / 'post-emit'): the
+// codebase uses snake_case for log-row enum values
+// (answer_outcome: 'shadow_mode' / 'session_terminated' /
+// 'duplicate_tool_call_id'; mode: 'shadow' / 'live'; event:
+// 'activated' / 'released'). A hyphen would be the only outlier;
+// snake_case for the enum + a typo gate that rejects hyphens is
+// the discipline-preserving choice.
+export const ASK_USER_LIFECYCLES = Object.freeze(['pre_emit', 'post_emit']);
+
+// Plan 05-15 r9-#2 — predicate helper for ASK_USER_LIFECYCLES membership.
+//
+// Same pattern as Plan 05-10 r4-#2's `isWrapperShortCircuitReason` /
+// `isPreEmitNonFireReason`: expose a read-only predicate alongside the
+// immutable membership array so external callers can ask "is this a
+// valid lifecycle string?" without importing + probing the array.
+//
+// Predicate semantics: returns true iff `value` is a string that is a
+// member of ASK_USER_LIFECYCLES. Returns false on undefined / null /
+// non-string / non-member inputs. Distinct from "should logAskUser
+// validate this field" — the validation gate inside logAskUser only
+// fires when the caller PROVIDED a non-undefined value (back-compat
+// with call sites that don't pass lifecycle).
+//
+// @param {unknown} value
+// @returns {boolean}
+export function isValidAskUserLifecycle(value) {
+  return typeof value === 'string' && ASK_USER_LIFECYCLES.includes(value);
+}
+
 const ASK_USER_QUESTION_LOG_MAX = 200;
 
 function truncateQuestion(text, max) {
@@ -328,6 +384,24 @@ export function logAskUser(logger, payload) {
   // Phase 8 analysis are typo-hardened.
   if (!ASK_USER_MODES.includes(payload.mode)) {
     throw new Error(`invalid_mode:${payload.mode}`);
+  }
+  // Plan 05-15 r9-#2 — lifecycle must be a member of ASK_USER_LIFECYCLES
+  // when provided. Optional field; no validation when caller doesn't
+  // set it (back-compat with the wide majority of call sites that don't
+  // pass lifecycle). Same idiom as the optional fields below — when set
+  // it MUST be a recognised value; when undefined the row simply omits
+  // the key.
+  //
+  // Why guard ONLY when defined (not when null too): null is treated as
+  // explicit-set-to-null which downstream consumers would interpret as
+  // "lifecycle was deliberately specified absent" — different semantics
+  // than "lifecycle was never specified". null is also not a member of
+  // the enum, so the includes() check rejects it; the only behavioural
+  // delta of the explicit `!== undefined` predicate (vs `!= null`) is
+  // an explicit `null` value would throw `invalid_lifecycle:null`
+  // rather than slip through. That throw is the desired loud surface.
+  if (payload.lifecycle !== undefined && !ASK_USER_LIFECYCLES.includes(payload.lifecycle)) {
+    throw new Error(`invalid_lifecycle:${payload.lifecycle}`);
   }
 
   const row = {
