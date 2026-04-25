@@ -203,7 +203,7 @@ export default function InspectionPage() {
     }
     const nextObservations = linked ? observations.filter((o) => o.id !== linked.id) : observations;
     updateJob({
-      inspection: { ...insp, items: nextItems },
+      inspection_schedule: { ...insp, items: nextItems },
       observations: nextObservations,
     });
     setPendingChange(null);
