@@ -163,6 +163,7 @@ import {
   createAskGateWrapper,
   wrapAskDispatcherWithGates,
   WRAPPER_SHORT_CIRCUIT_REASONS,
+  PRE_EMIT_NON_FIRE_REASONS,
 } from '../src/extraction/stage6-ask-gate-wrapper.js';
 import { createAskBudget } from '../src/extraction/stage6-ask-budget.js';
 import { createRestrainedMode } from '../src/extraction/stage6-restrained-mode.js';
@@ -175,10 +176,21 @@ import { validateAskUser } from '../src/extraction/stage6-dispatch-validation.js
 // short-circuit BEFORE the post-dispatch step). At the harness accounting
 // layer (envelopes only, no wrapper internals), all five are
 // wrapper-suppressed asks the metric should exclude.
+//
+// Plan 05-08 r2-#1 — additionally extend with PRE_EMIT_NON_FIRE_REASONS
+// (validation_error / duplicate_tool_call_id / prompt_leak_blocked).
+// These are dispatcher-local pre-emit failures: the envelope returned to
+// runToolLoop carries one of these reasons but the ask never registered
+// with pendingAsks and never emitted ask_user_started to iOS. The wrapper
+// itself now treats these as non-fires (PRE_EMIT_NON_FIRE_REASONS gate in
+// isRealFire) so askBudget + restrainedMode.recordAsk are not consumed.
+// The harness must mirror that classification or the offline aggregate
+// diverges from the runtime gate semantics.
 const HARNESS_WRAPPER_SHORT_CIRCUIT_REASONS = new Set([
   ...WRAPPER_SHORT_CIRCUIT_REASONS,
   'restrained_mode',
   'ask_budget_exhausted',
+  ...PRE_EMIT_NON_FIRE_REASONS,
 ]);
 
 const __filename = fileURLToPath(import.meta.url);

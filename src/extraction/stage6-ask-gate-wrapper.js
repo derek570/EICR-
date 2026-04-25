@@ -331,11 +331,50 @@ export const WRAPPER_SHORT_CIRCUIT_REASONS = new Set([
   // those are also "wrapper-suppressed asks" the metric should exclude.
 ]);
 
+// Plan 05-08 r2-#1 — three answer_outcomes whose envelopes signal "the ask
+// never reached iOS / never registered with pendingAsks". These are
+// dispatcher PRE-EMIT failures: validation rejection, SDK retry-replay
+// guard, and prompt-leak filter blocking the ask before any registry
+// register or ws emission happens.
+//
+// Pre-fix isRealFire returned true for these because they aren't in
+// WRAPPER_SHORT_CIRCUIT_REASONS — the wrapper then incremented askBudget
+// + restrainedMode.recordAsk for inputs the user never even saw. That
+// inverts the meaning of the budget cap (which counts "Sonnet probed the
+// user", not "Sonnet attempted to probe"). It also raises the false-
+// positive rate of the rolling-5-turn restrained-mode trigger by
+// counting phantom asks.
+//
+// Audit basis (every value here): each reason's emit site in
+// src/extraction/stage6-dispatcher-ask.js is structurally BEFORE
+// pendingAsks.register(toolCallId, …) and BEFORE the ws.send(…
+// ask_user_started …) emission, so the ask never crossed the boundary
+// to iOS. ASK_USER_ANSWER_OUTCOMES contains 13 entries (Plan 05-05);
+// every other entry either represents a real fire that DID register
+// (answered, timeout, user_moved_on, session_*, transcript_already_*)
+// or a wrapper-internal short-circuit already handled in
+// WRAPPER_SHORT_CIRCUIT_REASONS / the wrapper's pre-dispatch synth
+// branches. shadow_mode also runs after register/ws emission (Plan
+// 03-05 step 2 is post-validation + post-leak-filter) — so it counts
+// as a fire and stays out of this set.
+//
+// Exported so scripts/stage6-over-ask-exit-gate.js extends its
+// HARNESS_WRAPPER_SHORT_CIRCUIT_REASONS set with these values. Single
+// source of truth — runtime budget AND offline askCount share the
+// classifier.
+export const PRE_EMIT_NON_FIRE_REASONS = Object.freeze(
+  new Set(['validation_error', 'duplicate_tool_call_id', 'prompt_leak_blocked'])
+);
+
 function isRealFire(envelope) {
   try {
     const body = JSON.parse(envelope.content);
     if (body.answered === true) return true;
-    return !WRAPPER_SHORT_CIRCUIT_REASONS.has(body.reason);
+    if (WRAPPER_SHORT_CIRCUIT_REASONS.has(body.reason)) return false;
+    // Plan 05-08 r2-#1 — pre-emit failures are non-fires (the ask never
+    // reached iOS / never registered). Burning budget on these is wrong.
+    if (PRE_EMIT_NON_FIRE_REASONS.has(body.reason)) return false;
+    return true;
   } catch {
     // Malformed envelope from a buggy inner dispatcher — treat as real
     // fire so the budget conservatively consumes a slot. Defensive: a
