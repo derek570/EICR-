@@ -13,6 +13,8 @@ import {
 import { applyExtractionToJob } from './recording/apply-extraction';
 import { FieldSourceMap } from './recording/field-source';
 import { normalise as normaliseTranscript } from './recording/number-normaliser';
+import { TranscriptFieldMatcher } from './recording/transcript-field-matcher';
+import { applyRegexResultToJob } from './recording/apply-regex-result';
 import { AudioRingBuffer } from './recording/audio-ring-buffer';
 import { SleepManager, type SleepState } from './recording/sleep-manager';
 import { useLiveFillStore } from './recording/live-fill-state';
@@ -196,6 +198,17 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
   // will write to this same map via `applyRegexValue` once the
   // matcher is wired into onFinalTranscript.
   const fieldSourcesRef = React.useRef<FieldSourceMap>(new FieldSourceMap());
+  // Per-session regex-tier matcher (R3/R4 of REGEX_TIER_PLAN.md).
+  // Reset on every session.start() so a new session doesn't pick
+  // up sliding-window state from the prior one. Behind the
+  // NEXT_PUBLIC_REGEX_TIER_ENABLED env flag — when off, the matcher
+  // never fires and the existing 2-tier flow keeps working.
+  const fieldMatcherRef = React.useRef<TranscriptFieldMatcher>(new TranscriptFieldMatcher());
+  // Accumulated normalised transcript fed to the matcher. The
+  // matcher's sliding-window logic clips at 500 chars internally so
+  // this string growing across the session is fine — typical
+  // 30-min session is ~90k chars at most.
+  const normalisedTranscriptRef = React.useRef<string>('');
   const tickRef = React.useRef<ReturnType<typeof setInterval> | null>(null);
   // Throttle setMicLevel to ~60Hz — audio callbacks fire every ~8ms at
   // 16kHz/128 samples which is overkill for a VU meter and would flood
@@ -336,6 +349,39 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
           // tuned against the Deepgram raw form and the inspector log
           // shows the raw transcript so they can verify what they said.
           const normalised = normaliseTranscript(text);
+          // R4 of REGEX_TIER_PLAN.md — regex tier runs BEFORE Sonnet
+          // so the FieldSourceMap is stamped before any Sonnet response
+          // can land on the same field. Behind the
+          // NEXT_PUBLIC_REGEX_TIER_ENABLED env flag (default off) so
+          // the existing 2-tier flow keeps working until R6 staging
+          // soak proves the regex tier behaves.
+          if (process.env.NEXT_PUBLIC_REGEX_TIER_ENABLED === 'true') {
+            normalisedTranscriptRef.current = `${normalisedTranscriptRef.current} ${normalised}`;
+            const matchResult = fieldMatcherRef.current.match(
+              normalisedTranscriptRef.current,
+              jobRef.current
+            );
+            const applied = applyRegexResultToJob(
+              jobRef.current,
+              matchResult,
+              fieldSourcesRef.current
+            );
+            if (applied) {
+              updateJobRef.current(applied.patch);
+              // Mirror into jobRef synchronously (same pattern as
+              // the voice-command branch above) so a Sonnet
+              // extraction landing in the same React tick reads the
+              // regex-updated job and decides to overwrite-or-skip
+              // correctly.
+              jobRef.current = {
+                ...jobRef.current,
+                ...(applied.patch as Partial<typeof jobRef.current>),
+              };
+              if (applied.changedKeys.length > 0) {
+                liveFill.markUpdated(applied.changedKeys);
+              }
+            }
+          }
           // Fire the final utterance at the Sonnet session so server-side
           // multi-turn extraction can fill form fields. No-op if the WS
           // isn't open — the Sonnet client queues pre-connect messages.
@@ -719,6 +765,8 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     // protect from naive duplicate writes vs which are blank slates.
     fieldSourcesRef.current.clear();
     fieldSourcesRef.current.initializeFromJob(jobRef.current);
+    fieldMatcherRef.current.reset();
+    normalisedTranscriptRef.current = '';
     try {
       await beginMicPipeline();
       // sessionId rotated while awaiting the mic / WS handshake — drop
