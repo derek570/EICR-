@@ -60,6 +60,18 @@ import { logRestrainedMode } from './stage6-dispatcher-logger.js';
 // Reconnect deliberately PRESERVES the budget so a hang-up + reconnect
 // cannot reset the 2-ask cap (STA-06 + 05-03 Open Question #2).
 import { createAskBudget } from './stage6-ask-budget.js';
+// Stage 6 Phase 5 Plan 05-02 — filled-slots-shadow adapter. Side-effect-only
+// wrapper around the unmodified Stage 5 filterQuestionsAgainstFilledSlots
+// that the ask-gate-wrapper invokes PRE-WRAPPER on every ask_user. Logs
+// `stage6.filled_slots_would_suppress` rows that Phase 7 retirement
+// analytics joins with stage6.ask_user rows on (sessionId, tool_call_id)
+// to decide whether the legacy filter has any residual signal. The
+// activeSessions entry owns one shadow-logger per session; sessionGetter
+// reads the live entry lazily so per-turn writes to stateSnapshot are
+// always reflected. Wiring deferred from Plan 05-02 to Plan 05-05 because
+// 05-02 was scoped to the adapter module + tests; the sonnet-stream.js
+// composition step landed here (the executor's note in 05-02-SUMMARY).
+import { createFilledSlotsShadowLogger } from './stage6-filled-slots-shadow.js';
 
 // Lazy-initialised OpenAI client for observation refinement (gpt-5-search-api).
 // Kept at module scope so repeat refinements reuse the same HTTPS pool.
@@ -1667,6 +1679,20 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
       // restrainedMode/pendingAsks (the disconnectTimer fire at ~L1263
       // and the handleSessionStop bottom at ~L2788).
       askBudget: createAskBudget(),
+      // Stage 6 Phase 5 Plan 05-02 — filled-slots shadow logger. Side-effect-
+      // only adapter wrapping the Stage 5 filter; the ask-gate-wrapper invokes
+      // it PRE-WRAPPER on every ask_user (before any restrained / budget /
+      // debounce short-circuit) and emits `stage6.filled_slots_would_suppress`
+      // rows when the legacy filter would have suppressed. The wrapper IGNORES
+      // the return value — Phase 7 retirement analytics joins on (sessionId,
+      // tool_call_id). sessionGetter reads activeSessions lazily so the live
+      // stateSnapshot is always current; eviction races collapse to a logged
+      // warn + safe no-op return (see stage6-filled-slots-shadow.js Group 4).
+      // Wired here (Plan 05-05) because 05-02 was scoped to module + tests.
+      filledSlotsShadow: createFilledSlotsShadowLogger({
+        sessionGetter: () => activeSessions.get(sessionId),
+        logger,
+      }),
       // Plan 03-10 Task 1 — FIFO set of Deepgram utterance ids that iOS has
       // already routed as ask_user_answered payloads. handleTranscript checks
       // this BEFORE invoking runShadowHarness so the same utterance doesn't
@@ -2442,6 +2468,16 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         // options.restrainedMode)` guard in stage6-shadow-harness.js
         // is the truth source for when the gates fire.
         askBudget: entry.askBudget,
+        // Stage 6 Phase 5 Plan 05-02 — pass the filled-slots shadow logger
+        // through to the wrapper. The wrapper invokes it PRE-WRAPPER on
+        // every ask_user (before any short-circuit) and emits one
+        // `stage6.filled_slots_would_suppress` row per attempted ask whose
+        // legacy filter return is empty. Phase 7 retirement analytics joins
+        // these rows with stage6.ask_user on (sessionId, tool_call_id) to
+        // decide whether the legacy filter is still pulling its weight.
+        // Optional — when omitted (legacy callers), shadow-harness installs
+        // a no-op default (stage6-shadow-harness.js:306).
+        filledSlotsShadow: entry.filledSlotsShadow,
         ws,
       });
 
