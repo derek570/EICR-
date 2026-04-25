@@ -206,6 +206,59 @@ describe('FieldSourceMap — reconcileFromJob (inspector edits during session)',
   });
 });
 
+describe('FieldSourceMap — snapshot refresh on apply-rules writes', () => {
+  function emptyJob(): JobDetail {
+    return {
+      id: 'j1',
+      number: 'J-001',
+      property_address: '',
+      certificate_type: 'EICR',
+      cert_type: 'EICR',
+    } as unknown as JobDetail;
+  }
+
+  it('regex-last-wins refreshes snapshot — second write does NOT trip reconcile as a manual edit', async () => {
+    // Codex P2 on afb5441: without the snapshot refresh in
+    // applyRegexValue's regex-last-wins branch, the next reconcile
+    // would see the new regex value as a "drift" and re-stamp as
+    // preExisting, killing precedence for any field that gets two
+    // regex writes in one session.
+    const { applyRegexValue } = await import('@/lib/recording/apply-rules');
+    const map = new FieldSourceMap();
+    let stored: unknown = null;
+    const apply = (v: unknown) => () => {
+      stored = v;
+    };
+    // First regex write — empty → first-set
+    applyRegexValue({
+      key: 'circuit.3.measured_zs_ohm',
+      newValue: '0.44',
+      currentValue: '',
+      sources: map,
+      apply: apply('0.44'),
+    });
+    expect(map.get('circuit.3.measured_zs_ohm')).toBe('regex');
+    // Second regex write — same source, different value → last-wins
+    applyRegexValue({
+      key: 'circuit.3.measured_zs_ohm',
+      newValue: '0.45',
+      currentValue: '0.44',
+      sources: map,
+      apply: apply('0.45'),
+    });
+    expect(stored).toBe('0.45');
+    expect(map.get('circuit.3.measured_zs_ohm')).toBe('regex');
+    // Now reconcile against the new job state — should NOT
+    // re-stamp as preExisting (no inspector edit happened).
+    const job = {
+      ...emptyJob(),
+      circuits: [{ id: 'x', circuit_ref: '3', measured_zs_ohm: '0.45' }],
+    } as unknown as JobDetail;
+    map.reconcileFromJob(job);
+    expect(map.get('circuit.3.measured_zs_ohm')).toBe('regex');
+  });
+});
+
 describe('FieldSourceMap — key helpers', () => {
   it('circuit0Key formats section.field', () => {
     expect(circuit0Key('supply', 'ze')).toBe('supply.ze');

@@ -60,7 +60,13 @@ export function applyRegexValue(args: ApplyArgs): ApplyOutcome {
   const currentSource = sources.get(key);
   if (currentSource === 'regex' && !sameValue(newValue, currentValue)) {
     apply();
-    // Source stays 'regex' — last-wins within tier.
+    // Source stays 'regex' — last-wins within tier. Re-set with the
+    // new value so the FieldSourceMap snapshot tracks the updated
+    // ground truth. Without this, reconcileFromJob would later see
+    // a value drift between the snapshot (old regex value) and the
+    // job (new regex value) and misclassify the regex-last-wins
+    // write as an inspector edit (codex P2 follow-up on afb5441).
+    sources.set(key, 'regex', newValue);
     return { applied: true, reason: 'regex-last-wins' };
   }
   if (currentSource === 'sonnet') {
