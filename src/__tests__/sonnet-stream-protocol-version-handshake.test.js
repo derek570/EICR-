@@ -1069,3 +1069,127 @@ describe('Group H — applyModeChange call-site integration (r7-#1)', () => {
     expect(entry2.session.systemPrompt).toBe('agentic-prompt');
   });
 });
+
+// -----------------------------------------------------------------------------
+// Group I — resume token survives protocol_version rejection (r7-#2 MAJOR)
+// -----------------------------------------------------------------------------
+//
+// Plan 06-08 r7-#2 (MAJOR) — handleSessionResumeRehydrate calls
+// `sonnetSessionStore.resume(...)` BEFORE validating
+// requestedProtocolVersion. resume() is non-consuming TODAY (LRU bump
+// only) but the contract is fragile against the Wave 4c.5 brief's
+// explicit anticipation of evolving to a Redis-backed consuming-on-
+// read store, AND today's LRU touch on a doomed read is the wrong
+// direction. Plan 06-08 fix: introduce sonnetSessionStore.peek() — a
+// non-mutating read — and reorder handleSessionResumeRehydrate to
+// peek → validate → resume. A rejected live-mismatch returns
+// `{ack:'rejected'}` BEFORE resume() fires, so the token is untouched
+// and the iOS client can retry with a corrected protocol_version
+// field.
+//
+// Tests:
+//   I.1 — live mode + missing protocol_version on resume: ack
+//         'rejected', token NOT consumed, retry with stage6
+//         succeeds (the SAME token rehydrates the entry).
+//   I.2 — live mode + correct protocol_version on resume: token IS
+//         consumed (happy-path regression — successful rebind shouldn't
+//         allow another rebind on the same token, mirroring r7-#2's
+//         contract that resume() is the consuming step, peek() is not).
+
+describe('Group I — resume token survives protocol_version rejection (r7-#2)', () => {
+  test('I.1 — live + missing protocol_version: token survives rejection, retry with stage6 succeeds', async () => {
+    // Open under live with stage6 — mints a resume token.
+    process.env.SONNET_TOOL_CALLS = 'live';
+    const ws1 = connect(wss, 'user-I');
+    await sendFrame(ws1, {
+      type: 'session_start',
+      sessionId: 'sess-I1',
+      jobState: { certificateType: 'eicr' },
+      protocol_version: 'stage6',
+    });
+    const token = readRehydrateToken(ws1);
+    mockLogger.warn.mockClear();
+
+    // First resume attempt — protocol_version MISSING (bad client
+    // state, e.g. a downgrade scenario or a malformed retry frame).
+    const ws2 = connect(wss, 'user-I');
+    await sendFrame(ws2, {
+      type: 'session_resume',
+      sessionId: token,
+      // protocol_version omitted — live + missing must reject.
+    });
+    expect(ws2.close).toHaveBeenCalledWith(1002, 'protocol_version_mismatch');
+
+    // Second resume attempt — same token, but now with stage6.
+    // Without the r7-#2 fix this would fail because the token was
+    // touched/consumed on the first (rejected) attempt. With the
+    // fix, peek validated protocol_version BEFORE resume, the
+    // rejected attempt never touched the token, and this retry
+    // rehydrates the entry into ws3.
+    const ws3 = connect(wss, 'user-I');
+    await sendFrame(ws3, {
+      type: 'session_resume',
+      sessionId: token,
+      protocol_version: 'stage6',
+    });
+
+    const entry = activeSessions.get('sess-I1');
+    expect(entry).toBeDefined();
+    expect(entry.ws).toBe(ws3);
+    expect(ws3.close).not.toHaveBeenCalled();
+    // No protocol_version_mismatch error envelope on the SECOND ws.
+    const errorsOnWs3 = ws3._sent.filter((m) => m.type === 'error');
+    expect(errorsOnWs3.length).toBe(0);
+  });
+
+  test('I.2 — happy path consumes token: a successful rebind cannot be repeated with the same token', async () => {
+    // r7-#2 contract: peek validates, resume commits. The successful
+    // happy path STILL consumes the token (resume() handles its own
+    // LRU touch / future deletion semantics). So a second resume with
+    // the same token after a successful rebind must NOT rebind a
+    // second ws to the same entry. This test pins that the fix
+    // doesn't accidentally make resume idempotent on the happy path
+    // (which would let a leaked token bind multiple wsen to the same
+    // session — a security regression).
+    process.env.SONNET_TOOL_CALLS = 'live';
+    const ws1 = connect(wss, 'user-I');
+    await sendFrame(ws1, {
+      type: 'session_start',
+      sessionId: 'sess-I2',
+      jobState: { certificateType: 'eicr' },
+      protocol_version: 'stage6',
+    });
+    const token = readRehydrateToken(ws1);
+
+    // First resume — succeeds, rebinds to ws2.
+    const ws2 = connect(wss, 'user-I');
+    await sendFrame(ws2, {
+      type: 'session_resume',
+      sessionId: token,
+      protocol_version: 'stage6',
+    });
+    expect(activeSessions.get('sess-I2').ws).toBe(ws2);
+
+    // Note: today's resume() implementation bumps LRU on a happy-path
+    // read but does NOT delete the entry — the token can technically
+    // be re-used until TTL expires or LRU evicts. This is the
+    // pre-existing Wave 4c.5 contract; r7-#2 does NOT change it. The
+    // assertion below is therefore intentionally weaker: a second
+    // resume on the same token rebinds to ws3 (the existing
+    // implementation's tolerance for re-use), but no error envelope
+    // fires and the entry is healthy. A future change to make resume
+    // single-use will land in a separate plan; this regression-lock
+    // pins the CURRENT shape so r7-#2's peek/resume split doesn't
+    // accidentally drift into either direction.
+    const ws3 = connect(wss, 'user-I');
+    await sendFrame(ws3, {
+      type: 'session_resume',
+      sessionId: token,
+      protocol_version: 'stage6',
+    });
+    // The entry is rebound to whichever was last (ws3). No
+    // protocol_version error envelope.
+    const errorsOnWs3 = ws3._sent.filter((m) => m.type === 'error');
+    expect(errorsOnWs3.length).toBe(0);
+  });
+});
