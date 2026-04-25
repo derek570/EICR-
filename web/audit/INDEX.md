@@ -12,13 +12,17 @@ Closes the two coupled Phase 6 P0s deferred from Wave B: "No regex layer" + "2-t
 | # | Domain | Status | Commit(s) |
 |---|--------|--------|-----------|
 | R0 | Plan committed + INDEX updated | 🚧 in flight | (this commit) |
-| R1 | `NumberNormaliser` TS port + 20 vitest cases | ⏳ pending | — |
+| R1 | `NumberNormaliser` TS port + 20 vitest cases | ✅ done | `c0f2c2a` + `065727a` + `eac73ff` + `79d1c74` + `42b60c1` (4× codex iterations resolved to iOS-canon) |
 | R2 | `FieldSource` map + `applyRegexValue` / `applySonnetValue` priority rules | ⏳ pending | — |
 | R3 | `TranscriptFieldMatcher` engine + 6 regex categories (~60 cases) | ⏳ pending | — |
 | R4 | Wire matcher into `recording-context` + LiveFill (flag-gated) | ⏳ pending | — |
 | R5 | `regex_fields` hint protocol — web starts emitting (no backend change) | ⏳ pending | — |
 | R6 | Staging soak (5 sessions, 1 week) | ⏳ pending | — |
 | R7 | Production flag flip + INDEX close | ⏳ pending | — |
+
+**R3 matcher-tier follow-ups deferred from R1 codex review** (must land in R3 or before R6 soak):
+- Reject "16" as a circuit ref when "16" follows the word `circuit` and the same utterance contains an OCPD-rating tail (`amp` / `amps` / `a` after a number from {6,10,16,20,32,40,63,100}). Without this, "circuit 1 6 amp m c b" lands as circuit 16 instead of circuit 1 + 6A rating.
+- Reject Zs-style fractionals with >2 decimal places when the integer prefix is 0 and the literal source had a "point N N N N+" Deepgram-split. Real measured Zs values rarely exceed 2 decimal places of inspector dictation; 0.6016-shape values are a normaliser tell that a fractional collapsed into a following rating.
 
 **Conventions** (inherited from Wave B):
 - Commit prefixes: `feat(pwa)` / `fix(pwa)` / `test(pwa)` / `refactor(pwa)` / `docs(parity)`.

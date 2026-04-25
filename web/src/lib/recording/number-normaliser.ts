@@ -174,15 +174,24 @@ const HUNDRED_PATTERN = /\b(one|two|three|four|five|six|seven|eight|nine)\s+hund
 
 // "6 0 8 9 8" → "60898" — Deepgram outputs digit-by-digit when the
 // speaker says each digit individually. Matches iOS canon (any 2+
-// run). Two earlier codex passes on this branch tried to narrow this
-// pattern to address a false-merge in "circuit 1 6 amp" → "circuit
-// 16 amp", but every narrowing introduced its own regression on real
-// reading shapes (3-digit Deepgram-split fractionals; 2-digit
-// fractionals followed by ratings). The iOS pipeline solves this
-// asymmetry **in the matcher layer (R3)**, not here — the matcher
-// has the contextual signals (preceding "circuit" word, following
-// "amp" / OCPD-rating set) needed to disambiguate. Keep the
-// normaliser aggressive and let R3 handle the rest.
+// run). The iOS pipeline solves the resulting circuit-vs-rating /
+// fractional-vs-rating asymmetry in the matcher (R3 of the plan),
+// not in the normaliser — the matcher has the contextual signals
+// (preceding "circuit" / "Zs" / "point" words, following "amp" word,
+// OCPD-rating set) needed to disambiguate. Keep this aggressive and
+// let R3 + R4 own the precision.
+//
+// CODEX FINDINGS — KNOWN, ACKNOWLEDGED, DEFERRED TO R3:
+//   (1) "circuit 1 6 amp m c b" → "circuit 16 amp MCB". Matcher will
+//       reject "16" as a circuit ref when "16" follows "circuit" and
+//       precedes "amp" + an OCPD rating from {6,10,16,20,32,40,63,100}.
+//   (2) "Zs point 6 0 1 6 amp" → "Zs 0.6016 amp". Matcher's Zs
+//       extractor will reject 0.6016 as a measured-Zs (real Zs values
+//       are bounded; 4-decimal-place readings outside that range are
+//       a normaliser tell, not a real reading) and re-segment.
+// Three earlier codex iterations on this branch tried to narrow this
+// pattern in the normaliser; every narrowing introduced its own
+// regression on real reading shapes. The mutual exclusion is structural.
 const DIGIT_SEQUENCE_PATTERN = /\b\d(?:\s+\d)+\b/g;
 
 // "point 60" → "0.60" — standalone "point" before a single already-numeric
