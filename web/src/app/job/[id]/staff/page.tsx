@@ -64,18 +64,29 @@ export default function StaffPage() {
   // Errors are swallowed (the empty-state copy already explains what to
   // do); a transient API failure shouldn't blow up the whole tab. Mirrors
   // iOS `InspectorTab.onAppear` which also tolerates an empty roster.
+  //
+  // Crucially we clear the local roster on every user change *and* on a
+  // failed fetch so the picker can never render a previous account's
+  // signatories. Without this, `useCurrentUser` flipping to `null` on a
+  // 401/403 (its documented session-revoked path) would leave the prior
+  // roster visible and the inspector could click a stale id, writing
+  // another account's signatory into `job.inspector_id`. Codex review
+  // finding on `317d18d`.
   React.useEffect(() => {
-    if (!user) return;
+    if (!user) {
+      setInspectors([]);
+      return;
+    }
     let cancelled = false;
     void api.inspectorProfiles(user.id).then(
       (list) => {
         if (!cancelled) setInspectors(list);
       },
       () => {
-        // Surface upstream — the page renders the empty-state card, which
-        // points the inspector at Settings → Staff anyway. No toast here:
-        // the Staff settings page is the canonical place to debug roster
-        // fetch issues.
+        // On rejection clear the roster — see comment above. Settings →
+        // Staff is the canonical place to debug fetch issues, so we
+        // intentionally don't surface a toast here.
+        if (!cancelled) setInspectors([]);
       }
     );
     return () => {

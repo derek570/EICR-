@@ -219,6 +219,54 @@ describe('Wave B parity · Staff tab roster fetch + InspectorProfile shape', () 
     expect(harness.container.textContent).toContain('No staff profiles configured yet');
   });
 
+  it('clears the roster when the user signs out (codex P2 on 317d18d)', async () => {
+    // Mount with a signed-in user, let the roster populate, then flip
+    // `useCurrentUser` to null and re-render. Without the clear-on-
+    // user-change branch, the previous roster would stay visible and an
+    // inspector could click a stale row, writing a different account's
+    // signatory id into job.inspector_id.
+    inspectorProfilesMock.mockResolvedValueOnce([{ id: 'insp-X', name: 'Stale User' }]);
+    harness = mount();
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(harness.container.textContent).toContain('Stale User');
+
+    // Simulate a 401/403 — useCurrentUser drops to null.
+    currentUserStub = null;
+    await act(async () => {
+      harness!.root.render(<StaffPage />);
+    });
+
+    expect(harness.container.textContent).not.toContain('Stale User');
+    expect(harness.container.textContent).toContain('No staff profiles configured yet');
+  });
+
+  it('clears the roster when a re-fetch rejects after a user switch (codex P2 on 317d18d)', async () => {
+    // First mount: User A's roster lands successfully.
+    inspectorProfilesMock.mockResolvedValueOnce([{ id: 'insp-A', name: 'Alice User-A' }]);
+    harness = mount();
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(harness.container.textContent).toContain('Alice User-A');
+
+    // User switches; their fetch rejects. The picker must NOT keep
+    // showing Alice — that would let User B pick User A's signatory.
+    currentUserStub = { id: 'user-B', email: 'b@e.st', name: 'B' };
+    inspectorProfilesMock.mockRejectedValueOnce(new Error('roster fetch failed'));
+    await act(async () => {
+      harness!.root.render(<StaffPage />);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(harness.container.textContent).not.toContain('Alice User-A');
+    expect(harness.container.textContent).toContain('No staff profiles configured yet');
+  });
+
   it('writes designer_id / constructor_id / inspector_id when EIC role pickers are clicked', async () => {
     certificateTypeStub = 'EIC';
     jobStub = { id: 'job-42', certificate_type: 'EIC' };
