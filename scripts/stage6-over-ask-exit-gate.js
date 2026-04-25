@@ -474,6 +474,22 @@ export function validateFixtureInputs(loaded) {
   for (const entry of loaded) {
     const { filename, fixture, sourceDir } = entry;
 
+    // Plan 05-17 r11-#2 — validate sourceDir up front so missing /
+    // whitespace-only / non-string values throw a fixture-scoped error
+    // instead of crashing inside path.resolve() with a raw TypeError.
+    // The in-tree loadFixtures(dir) always sets sourceDir, so this
+    // guard fires only for direct callers (test harnesses, future
+    // tooling) that forget the field. Trim-and-fold matches Plan 05-11
+    // r5-#1 / Plan 05-16 r10-#2 (whitespace-only strings rejected for
+    // the same reason as missing strings). The `filename ?? '<unknown>'`
+    // fallback handles the rare case where the caller also forgot
+    // filename.
+    if (typeof sourceDir !== 'string' || sourceDir.trim().length === 0) {
+      throw new Error(
+        `fixture invalid: ${filename ?? '<unknown>'}: missing or invalid sourceDir`
+      );
+    }
+
     // TIER 1 — strict gate for any non-legacy directory
     // (canonical-path dispatch per Plan 05-17 r11-#1; pre-r11-#1 this
     // was keyed on basename equality against `'stage6-golden-sessions'`,
