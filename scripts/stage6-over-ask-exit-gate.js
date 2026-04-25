@@ -304,6 +304,39 @@ const PHASE4_DUAL_SSE_DIR = path.resolve(
 // fixtures (5 legacy zero-ask + 7 new Phase 5).
 const DEFAULT_FIXTURES_DIR = PHASE5_FIXTURES_DIR;
 
+// Plan 05-16 r10-#1 — basename whitelist for the legacy Phase-4 dual-SSE
+// directory. The strict TIER 1 gate dispatches by SOURCE-DIR BASENAME
+// rather than by exact-path equality; any directory whose basename does
+// NOT match this whitelist is treated as a Phase-5-shaped pool and gets
+// the strict gate. Pre-r10-#1 the dispatch was keyed on
+// `sourceDir === PHASE5_FIXTURES_DIR`, which Codex r10-#1 found
+// bypassable via `--fixtures-dir /tmp/copy-of-phase5/` (the resolved
+// sourceDir doesn't equal PHASE5_FIXTURES_DIR so a malformed canary
+// silently falls through `applyDefaults`).
+//
+// Why basename and not "contains phase5" or a new --strict flag: any
+// non-legacy directory becomes strict by default under the basename rule,
+// which closes the bypass loophole for any future test that uses
+// --fixtures-dir without an opt-in flag. Opt-out via the legacy basename
+// is narrow and discoverable. A copied or symlinked Phase-4 directory
+// whose basename DOES match this whitelist still gets the legacy
+// applyDefaults zero-contribution treatment — that's acceptable because
+// Phase-4 fixtures are zero-contribution by design; their absence of
+// `_fixture_shape` is what gates them.
+const LEGACY_PHASE4_DIR_BASENAME = 'stage6-golden-sessions';
+
+/**
+ * Plan 05-16 r10-#1 — return true iff `sourceDir`'s basename matches the
+ * canonical Phase-4 legacy directory. Used by validateFixtureInputs to
+ * dispatch the strict TIER 1 gate vs the legacy TIER 2 path.
+ *
+ * @param {string} sourceDir
+ * @returns {boolean}
+ */
+function isLegacyPhase4Dir(sourceDir) {
+  return path.basename(sourceDir) === LEGACY_PHASE4_DIR_BASENAME;
+}
+
 // ============================================================================
 // FIXTURE LOADER
 // ============================================================================
@@ -315,9 +348,15 @@ const DEFAULT_FIXTURES_DIR = PHASE5_FIXTURES_DIR;
  *
  * Plan 05-15 r9-#1 — every returned entry now carries a `sourceDir: dir`
  * tag. validateFixtureInputs branches on this tag to apply the strict
- * gate ONLY against PHASE5_FIXTURES_DIR-loaded entries; tmpdir / Phase-4
- * entries fall through to the legacy schema-marker path (preserving
- * back-compat with the spawn-based tests in this file's sibling test).
+ * gate against non-legacy entries; legacy Phase-4 entries (basename
+ * `stage6-golden-sessions`) fall through to the schema-marker path.
+ *
+ * Plan 05-16 r10-#1 — the dispatch in validateFixtureInputs is now
+ * basename-keyed (any directory whose basename is NOT the canonical
+ * Phase-4 legacy basename hits the strict TIER 1 gate). This loader
+ * is unchanged — it still tags every entry with the loaded-from
+ * directory; the shift is in how validateFixtureInputs interprets
+ * the tag.
  */
 function loadFixtures(dir) {
   if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) {
@@ -339,13 +378,15 @@ function loadFixtures(dir) {
 }
 
 /**
- * Plan 05-07 r1-#4 + Plan 05-15 r9-#1 — fixture schema validation gate.
+ * Plan 05-07 r1-#4 + Plan 05-15 r9-#1 + Plan 05-16 r10-#1 — fixture schema
+ * validation gate.
  *
  * Two-tier gate:
  *
- *   TIER 1 (Plan 05-15 r9-#1) — STRICT, source-directory-keyed.
+ *   TIER 1 (Plan 05-16 r10-#1) — STRICT, basename-keyed dispatch.
  *
- *     Applied to every entry whose `sourceDir === PHASE5_FIXTURES_DIR`.
+ *     Applied to every entry whose source directory's BASENAME is NOT
+ *     the canonical Phase-4 legacy basename (`stage6-golden-sessions`).
  *     Every such file MUST carry:
  *       (a) `_fixture_shape === 'phase5-over-ask'`,
  *       (b) `ask_user_calls` array (may be empty, but must be present),
@@ -355,16 +396,26 @@ function loadFixtures(dir) {
  *     Pre-r9-#1 the gate was keyed on the per-fixture `_fixture_shape`
  *     marker alone — a Phase-5 canary missing the marker silently fell
  *     through `applyDefaults` (Phase-4 backwards-compat path) and
- *     contributed zero asks instead of failing closed. Per-source-dir
- *     branching means any new file dropped into the canonical Phase-5
- *     directory without the marker (or without per-call ids/turnIds)
- *     fails loud at harness-load time.
+ *     contributed zero asks instead of failing closed. r9-#1 narrowed
+ *     the dispatch to `sourceDir === PHASE5_FIXTURES_DIR` (exact-path
+ *     equality), which Codex r10-#1 found bypassable via
+ *     `--fixtures-dir /tmp/copy-of-phase5/` — the copy's resolved
+ *     sourceDir doesn't equal PHASE5_FIXTURES_DIR, so the strict gate
+ *     never fires. r10-#1's basename-keyed dispatch closes that bypass:
+ *     any directory whose basename is NOT the legacy whitelist (i.e.
+ *     PHASE5_FIXTURES_DIR, copies of it via --fixtures-dir, the
+ *     synthetic-breach dir, tmpdir overrides) hits the strict gate. The
+ *     legacy Phase-4 dir is the ONLY whitelist; copies of it are also
+ *     legacy iff their basename matches.
  *
  *   TIER 2 (Plan 05-07 r1-#4) — LEGACY, schema-marker-keyed.
  *
- *     Applied to every entry whose `sourceDir !== PHASE5_FIXTURES_DIR`
- *     (tmpdir overrides for spawn-based tests; PHASE4_DUAL_SSE_DIR for
- *     the legacy zero-ask backwards-compat path).
+ *     Applied to every entry — runs as a SUPERSET-of-TIER-1 input
+ *     validator for non-legacy entries (whose marker contract TIER 1
+ *     already enforced) and as the marker-keyed branch for legacy
+ *     entries (Phase-4 dual-SSE fixtures whose `_fixture_shape` is
+ *     absent → skipped; any rare Phase-4 entry that DOES carry the
+ *     marker → schema-validated).
  *
  *     Branches on `_fixture_shape === 'phase5-over-ask'`:
  *       - marker present → schema-validate every ask_user_calls[].call.input
@@ -384,10 +435,9 @@ function loadFixtures(dir) {
  * fixture in one click.
  *
  * Plan 05-15 r9-#1 — exported so tests can call this directly with
- * `sourceDir: PHASE5_FIXTURES_DIR` set in each entry, exercising the
- * strict-gate branch without spawning the harness CLI (the CLI's
- * --fixtures-dir override would replace PHASE5_FIXTURES_DIR with tmpDir,
- * making the strict-gate branch unreachable from spawn).
+ * `sourceDir: PHASE5_FIXTURES_DIR` set in each entry. Plan 05-16 r10-#1
+ * — direct callers can also pass any non-legacy basename to drive the
+ * strict-gate branch (e.g. `/some/synthetic/path/copy-of-phase5`).
  *
  * @param {Array<{filename:string, fullPath:string, fixture:object, sourceDir?:string}>} loaded
  * @throws {Error} on first invalid fixture
@@ -396,18 +446,21 @@ export function validateFixtureInputs(loaded) {
   for (const entry of loaded) {
     const { filename, fixture, sourceDir } = entry;
 
-    // TIER 1 — strict gate for PHASE5_FIXTURES_DIR-loaded entries.
-    if (sourceDir === PHASE5_FIXTURES_DIR) {
+    // TIER 1 — strict gate for any non-legacy directory (basename
+    // dispatch per Plan 05-16 r10-#1; pre-r10-#1 this was keyed on
+    // exact-path equality against PHASE5_FIXTURES_DIR, which copies
+    // of the dir bypassed via --fixtures-dir).
+    if (!isLegacyPhase4Dir(sourceDir)) {
       // (a) marker MUST be present + correct.
       if (fixture._fixture_shape !== 'phase5-over-ask') {
         throw new Error(
-          `fixture invalid: ${filename}: PHASE5_FIXTURES_DIR fixture missing _fixture_shape='phase5-over-ask' marker`
+          `fixture invalid: ${filename}: non-legacy fixtures dir entry missing _fixture_shape='phase5-over-ask' marker`
         );
       }
       // (b) ask_user_calls field MUST be present + an array.
       if (!Array.isArray(fixture.ask_user_calls)) {
         throw new Error(
-          `fixture invalid: ${filename}: PHASE5_FIXTURES_DIR fixture missing ask_user_calls array`
+          `fixture invalid: ${filename}: non-legacy fixtures dir entry missing ask_user_calls array`
         );
       }
       // (c) + (d) per-call turnId + call.id MUST be non-empty strings.
@@ -427,7 +480,7 @@ export function validateFixtureInputs(loaded) {
         }
       }
       // Strict gate also runs the legacy ask_user input validator below
-      // (TIER 1 is a SUPERSET of TIER 2 for Phase-5-dir entries — the
+      // (TIER 1 is a SUPERSET of TIER 2 for non-legacy entries — the
       // r1-#4 schema gate stays load-bearing for input shape correctness).
     }
 

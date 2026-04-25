@@ -1163,6 +1163,15 @@ describe('Plan 05-15 r9-#1 — fixture validation enforced by source directory',
     // contribute zero asks via applyDefaults' backwards-compat path. The
     // r9-#1 fix MUST NOT regress that — only PHASE5_FIXTURES_DIR-loaded
     // entries get the strict gate.
+    //
+    // Plan 05-16 r10-#1 update: the strict-gate dispatch is now
+    // basename-keyed (any directory whose basename is NOT
+    // 'stage6-golden-sessions' is strict). The original test used
+    // sourceDir='/some/other/dir' (basename='dir') which the basename
+    // rule treats as strict. Updated to use a synthetic path whose
+    // basename matches the canonical Phase-4 legacy directory — same
+    // intent (Phase-4 legacy fixture passes the legacy whitelist), now
+    // expressed against the basename-keyed dispatch.
     const phase4Fixture = {
       _doc: 'Plan 05-15 r9-#1 regression lock — phase 4 dual-SSE shape',
       // No _fixture_shape marker — by design.
@@ -1175,7 +1184,7 @@ describe('Plan 05-15 r9-#1 — fixture validation enforced by source directory',
           filename: 'sample-phase4-legacy.json',
           fullPath: '/tmp/x',
           fixture: phase4Fixture,
-          sourceDir: '/some/other/dir',
+          sourceDir: '/some/synthetic/copy/stage6-golden-sessions',
         },
       ])
     ).not.toThrow();
