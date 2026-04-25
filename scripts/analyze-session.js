@@ -991,20 +991,58 @@ function analyzeSession(sessionDir) {
     }))
     .sort((a, b) => b.count - a.count);
 
-  // ask_user outcomes histogram — every frozen enum key, default 0
+  // ask_user outcomes histogram — every frozen enum key, default 0.
+  //
+  // Plan 08-02 r1-#3 (MAJOR): unknown outcomes (values NOT in the frozen
+  // ASK_USER_ANSWER_OUTCOMES enum) are surfaced via TWO side channels —
+  //   1. `unknown_outcome_count` (scalar) + `unknown_outcomes[]` (array
+  //      of `{value, count}`) within `tool_call_traffic.ask_user`.
+  //   2. `warnings[]` entry of shape
+  //      `{type: 'unknown_ask_user_outcome', value, count}` per distinct
+  //      unknown value (same surface used for SC #1 malformed_event
+  //      warnings; appended to `events._warnings` so the existing
+  //      analysis.warnings merge picks them up).
+  //
+  // The frozen-enum `outcomes` histogram itself stays exactly
+  // ASK_USER_ANSWER_OUTCOMES shape — adding `foobar`-shaped keys would
+  // break CloudWatch dashboards that split by the dimension. Unknowns
+  // go to the side channel only.
+  //
+  // Why surface them at all: the backend's `invalid_answer_outcome:`
+  // throw at the emit site (`stage6-dispatcher-logger.js`) is the FIRST
+  // gate. If a row reaches the analyzer with an unknown outcome, that's
+  // either enum drift (backend adds a new key without coordinating with
+  // the analyzer) or instrumentation failure (a row escaped the throw).
+  // Either is operationally serious. Silently dropping the row would
+  // hide the failure from the optimizer / report.
   const outcomes = {};
   for (const o of ASK_USER_ANSWER_OUTCOMES) outcomes[o] = 0;
+  const unknownOutcomeMap = new Map();
   for (const evt of askUserEvents) {
     const outcome = evt.data?.answer_outcome;
-    if (outcome && outcome in outcomes) {
+    if (!outcome) continue;
+    if (outcome in outcomes) {
       outcomes[outcome] += 1;
+    } else {
+      unknownOutcomeMap.set(outcome, (unknownOutcomeMap.get(outcome) || 0) + 1);
     }
-    // Outcomes not in the frozen enum are silently dropped — the loud
-    // surface for that case is the backend's `invalid_answer_outcome:`
-    // throw at the emit site (stage6-dispatcher-logger.js:380). If a
-    // bad outcome ever reaches the analyzer it means a row escaped the
-    // backend gate, which is a separate (more serious) bug; the
-    // analyzer's job here is to keep the dashboard shape stable.
+  }
+
+  const unknownOutcomes = [...unknownOutcomeMap.entries()].map(([value, count]) => ({
+    value,
+    count,
+  }));
+  const unknownOutcomeCount = unknownOutcomes.reduce((sum, e) => sum + e.count, 0);
+
+  // Append per-distinct-value warning entries onto the parser's warnings
+  // accumulator. `events._warnings` is created by parseJSONL() as a
+  // non-enumerable property so this re-use is safe — analyzeSession()
+  // merges `events._warnings` into the top-level `warnings` field at
+  // serialise time.
+  if (events._warnings && unknownOutcomes.length > 0) {
+    for (const { value, count } of unknownOutcomes) {
+      events._warnings.push({ type: "unknown_ask_user_outcome", value, count });
+    }
   }
 
   const toolCallTraffic = {
@@ -1013,6 +1051,8 @@ function analyzeSession(sessionDir) {
     ask_user: {
       total: askUserEvents.length,
       outcomes,
+      unknown_outcome_count: unknownOutcomeCount,
+      unknown_outcomes: unknownOutcomes,
     },
   };
 
