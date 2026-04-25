@@ -1,0 +1,675 @@
+#!/usr/bin/env node
+/**
+ * Stage 6 Phase 5 Plan 05-06 — over-ask exit-gate harness.
+ *
+ * WHAT: Offline replay harness that loads the 12 over-ask golden-session
+ * fixtures (5 pre-existing dual-SSE fixtures + 7 new Phase 5 fixtures),
+ * replays each through the FULLY-COMPOSED Phase 5 pipeline (the real
+ * createAskGateWrapper + real createAskBudget + real createRestrainedMode +
+ * real createFilledSlotsShadowLogger), captures per-session ask counts +
+ * restrained-mode activations, and computes median / p95 / activation-rate.
+ * Exits 0 if all three locked thresholds pass; exits 1 if any one breaches
+ * (Open Question #6 lock — ANY breach = fail; the three metrics are
+ * independent failure modes, so the gate is conjunctive).
+ *
+ * WHY this is the Phase 5 closure gate (ROADMAP §Phase 5 SC #8): every
+ * Phase 5 plan (05-01..05-05) shipped with unit-test coverage of its own
+ * surface; 05-06 is the integration test that exercises ALL FOUR gates
+ * (gate wrapper / budget / restrained / shadow) end-to-end against the
+ * over-ask failure modes Research §Q8 enumerated. The script's exit code
+ * is the go/no-go signal for the Phase 5 Codex STG review + phase closure.
+ *
+ * ---------------------------------------------------------------------------
+ * SCAFFOLDING SOURCE — CLONED, NEVER EDITED
+ * ---------------------------------------------------------------------------
+ * scripts/stage6-golden-divergence.js is r16+-owned per the Phase 5
+ * forbidden-file lock. This script CLONES the structural conventions of
+ * its older sibling:
+ *   - module-level CLI detection via path.resolve(process.argv[1]) ===
+ *     path.resolve(__filename)
+ *   - parseArgs() returns a shape consumed by main()
+ *   - JSON digest written to stdout (compact in --json mode, pretty
+ *     otherwise) matching the <interfaces> contract documented in
+ *     05-06-...-PLAN.md
+ *   - process.exit(0|1|2) where 0=pass, 1=breach, 2=runtime error
+ *
+ * Codex STG grep proof: `git diff stage6-phase5-base --
+ * scripts/stage6-golden-divergence.js` returns empty.
+ *
+ * ---------------------------------------------------------------------------
+ * FIXTURE COUNT — SCOPE-REDUCED FROM 20 TO 12 (Open Question #3 lock)
+ * ---------------------------------------------------------------------------
+ * The ROADMAP §Phase 5 SC #8 wording is "20-golden-session shadow run".
+ * Per Plan 05-06's Open Question #3 lock + plan-check verdict, that
+ * 20-session number becomes a PHASE 7 TARGET (real shadow-traffic
+ * captures, scrubbed) — NOT a Phase 5 engineering gate. Plan 05-06
+ * ships 12 hand-crafted fixtures: 5 pre-existing Phase 4 dual-SSE
+ * fixtures (sample-01..05, treated as zero-ask in this harness because
+ * dual-SSE fixtures don't exercise ask_user) + 7 new Phase 5 over-ask
+ * fixtures (sample-06..12).
+ *
+ * Phase 7 absorbs the 20-session aggregate via STR-03 production-shadow
+ * gate. The two gates are complementary: Phase 5 = synthetic + integration
+ * (the gates are wired correctly); Phase 7 = real-traffic statistical (the
+ * gates work on real model behaviour).
+ *
+ * ---------------------------------------------------------------------------
+ * GATE-FIXTURE PARTITION — fixtures.gate_fixture:bool
+ * ---------------------------------------------------------------------------
+ * With N=12 the 2% restrained_rate threshold cannot tolerate even ONE
+ * positive activation in the aggregate (1/12 = 8.3%). Sample-07 deliberately
+ * activates restrained mode (proves the wiring works) — including it in
+ * the aggregate gate would unconditionally breach. Same for sample-08
+ * (budget exhaustion) — its 2-ask count would skew the head of the
+ * median.
+ *
+ * Resolution: each fixture carries `gate_fixture: true|false`. The
+ * aggregate gate sums over gate_fixture:true fixtures ONLY. Smoke mode
+ * (--smoke) asserts ALL fixtures regardless.
+ *
+ * Phase 7's STR-03 prod-shadow gate operates on the 20-session pool
+ * with no partition — the aggregate IS the gate, because real prod
+ * traffic has the natural distribution Phase 5 fixtures cannot reproduce
+ * with hand-crafted seeds.
+ *
+ * ---------------------------------------------------------------------------
+ * INNER-DISPATCHER REPLAY SHAPE — minimal mock (Plan 05-06 Open Question)
+ * ---------------------------------------------------------------------------
+ * The harness composes the FOUR Phase 5 gates around a MINIMAL MOCK inner
+ * dispatcher (NOT the real Plan 03-05 createAskDispatcher). The mock
+ * accepts (call, ctx) and returns the fixture's hand-crafted `inner_outcome`
+ * wrapped as {tool_use_id, content:JSON.stringify(inner_outcome), is_error}.
+ *
+ * Why minimal-mock over real-dispatcher:
+ *   1. Faithfulness: the GATES are what we're testing. The inner dispatcher's
+ *      behaviour (timeout / user_moved_on / shadow_mode / etc) is owned by
+ *      Plan 03-05's own unit tests + the F21934D4 reproducer. Re-asserting
+ *      it here would muddy the Phase 5 gate signal.
+ *   2. Determinism: the real dispatcher needs a WS handle, a session
+ *      ws.send shim, and the pendingAsks registry — all stateful surfaces
+ *      this offline harness has no business pretending to wire.
+ *   3. Speed: synchronous mock returns instantly; the real dispatcher
+ *      awaits an iOS reply via deferred Promise.
+ *
+ * ---------------------------------------------------------------------------
+ * 60-SECOND RESTRAINED-MODE RELEASE — Option A (nowFn DI hook)
+ * ---------------------------------------------------------------------------
+ * createRestrainedMode in Plan 05-04 exposes a `nowFn: () => number`
+ * injectable wall-clock reader (per the 05-PLAN-CHECK Wave-2 prerequisite).
+ * The harness threads `nowFn: () => syntheticTime` and increments
+ * syntheticTime between asks based on the fixture's synthetic_time_ms
+ * field. Within a single fixture replay the synthetic clock never crosses
+ * the 60s boundary, so isActive() returns true for the whole fixture span
+ * and downstream asks short-circuit as designed.
+ *
+ * (The setTimeout the state machine schedules for the actual onRelease
+ * callback DOES use real timers, but with `releaseMs: 60000` and a
+ * synchronous fixture replay, the Node event loop never reaches it —
+ * destroy() is called on per-fixture teardown which clearTimeout's the
+ * pending release. No 60s wait.)
+ *
+ * ---------------------------------------------------------------------------
+ * DEBOUNCE TIMER — bypassed via delayMs: 0
+ * ---------------------------------------------------------------------------
+ * The gate wrapper closes over a 1500ms setTimeout (QUESTION_GATE_DELAY_MS)
+ * to debounce same-key duplicate asks. With ~20 sequential asks across
+ * 12 fixtures, the cumulative wait at the production tuning would push
+ * the harness past Plan 05-06's 30s budget. The harness passes
+ * `delayMs: 0` to createAskGateWrapper so each gateOrFire fires on the
+ * next microtask. The 1500ms behaviour itself is locked by
+ * stage6-ask-gate-wrapper.test.js Group 2 — Plan 05-06's harness is
+ * about gate COMPOSITION + threshold metrics, not the debounce timing.
+ *
+ * ---------------------------------------------------------------------------
+ * FORBIDDEN FILES (Plan 05-06's truth #2)
+ * ---------------------------------------------------------------------------
+ * This script MUST NOT modify ANY of:
+ *   - scripts/stage6-golden-divergence.js (r16+ owned)
+ *   - src/extraction/stage6-dispatcher-ask.js (Plan 03-05)
+ *   - src/extraction/stage6-ask-gate-wrapper.js (Plan 05-01)
+ *   - src/extraction/stage6-filled-slots-shadow.js (Plan 05-02)
+ *   - src/extraction/stage6-ask-budget.js (Plan 05-03)
+ *   - src/extraction/stage6-restrained-mode.js (Plan 05-04)
+ *   - src/extraction/stage6-dispatcher-logger.js (Plan 05-05)
+ *   - src/extraction/eicr-extraction-session.js
+ *   - src/extraction/question-gate.js
+ *   - src/extraction/filled-slots-filter.js
+ *
+ * The script imports them; it never edits them.
+ *
+ * ---------------------------------------------------------------------------
+ * EXIT CODES
+ * ---------------------------------------------------------------------------
+ *   0  → all gate thresholds passed (and, in --smoke mode, all expected_*
+ *        assertions matched).
+ *   1  → at least one gate threshold breached (or, in --smoke mode, at
+ *        least one expected_* mismatch).
+ *   2  → runtime error (fixture parse failure, factory throw, etc).
+ */
+
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+import {
+  createAskGateWrapper,
+  wrapAskDispatcherWithGates,
+} from '../src/extraction/stage6-ask-gate-wrapper.js';
+import { createAskBudget } from '../src/extraction/stage6-ask-budget.js';
+import { createRestrainedMode } from '../src/extraction/stage6-restrained-mode.js';
+import { createFilledSlotsShadowLogger } from '../src/extraction/stage6-filled-slots-shadow.js';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// ============================================================================
+// LOCKED THRESHOLDS — ROADMAP §Phase 5 SC #8 verbatim, frozen so runtime
+// drift requires a triple-update (ROADMAP + this script + 05-06-SUMMARY).
+// ============================================================================
+export const EXIT_GATE_THRESHOLDS = Object.freeze({
+  medianMax: 1,
+  p95Max: 4,
+  restrainedRateMax: 0.02,
+});
+
+// Plan 05-06 ships Phase 5 over-ask fixtures in a DEDICATED sibling
+// directory rather than co-locating with the Phase 4 dual-SSE fixtures.
+// The Phase 4 divergence harness (scripts/stage6-golden-divergence.js,
+// forbidden-file-locked) reads every *.json in stage6-golden-sessions
+// and throws on any fixture missing both `sse_events_legacy` and
+// `expected_slot_writes` (Plan 04-07 r1 anti-self-compare guard). Adding
+// Phase 5 over-ask fixtures (which don't have that shape) into the same
+// directory would break Phase 4 divergence — and editing the divergence
+// script to skip them would violate the Phase 5 forbidden-file lock.
+//
+// Resolution: stage6-phase5-golden-sessions/ for the 7 new Phase 5 fixtures.
+// The exit-gate harness aggregates BOTH directories — sample-01..05 from
+// the Phase 4 dir contribute as zero-ask fixtures (per truth #6's
+// backwards-compat default).
+const PHASE5_FIXTURES_DIR = path.resolve(
+  __dirname,
+  '..',
+  'src',
+  '__tests__',
+  'fixtures',
+  'stage6-phase5-golden-sessions'
+);
+const PHASE4_DUAL_SSE_DIR = path.resolve(
+  __dirname,
+  '..',
+  'src',
+  '__tests__',
+  'fixtures',
+  'stage6-golden-sessions'
+);
+// Default fixtures pool = Phase 5 dir as the PRIMARY source. The Phase 4
+// dual-SSE fixtures are pulled in additionally by runHarness when
+// --fixtures-dir is NOT overridden, so the canonical run aggregates 12
+// fixtures (5 legacy zero-ask + 7 new Phase 5).
+const DEFAULT_FIXTURES_DIR = PHASE5_FIXTURES_DIR;
+
+// ============================================================================
+// FIXTURE LOADER
+// ============================================================================
+
+/**
+ * Read every *.json file in `dir` (sorted) and parse. Throws on parse
+ * failure — silent skipping would let a malformed fixture slip into a
+ * 0% breach result. Mirrors the divergence-script convention.
+ */
+function loadFixtures(dir) {
+  if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) {
+    throw new Error(`fixtures dir not found: ${dir}`);
+  }
+  const out = [];
+  for (const name of fs.readdirSync(dir).sort()) {
+    if (!name.endsWith('.json')) continue;
+    const fullPath = path.join(dir, name);
+    let parsed;
+    try {
+      parsed = JSON.parse(fs.readFileSync(fullPath, 'utf8'));
+    } catch (err) {
+      throw new Error(`fixture parse failed: ${fullPath}: ${err.message}`);
+    }
+    out.push({ filename: name, fullPath, fixture: parsed });
+  }
+  return out;
+}
+
+/**
+ * Apply Phase 5 backwards-compat defaults. sample-01..05 are pre-existing
+ * Phase 4 dual-SSE fixtures with no `_fixture_shape: 'phase5-over-ask'`
+ * marker; they contribute zero asks + zero activations + zero shadow logs
+ * to the aggregate (this is the gate-friendly null contribution
+ * documented in Plan 05-06 truth #6).
+ */
+function applyDefaults(fx) {
+  const isPhase5Shape = fx._fixture_shape === 'phase5-over-ask';
+  return {
+    ...fx,
+    ask_user_calls: Array.isArray(fx.ask_user_calls) ? fx.ask_user_calls : [],
+    expected_ask_user_count:
+      typeof fx.expected_ask_user_count === 'number' ? fx.expected_ask_user_count : 0,
+    expected_restrained_activations:
+      typeof fx.expected_restrained_activations === 'number'
+        ? fx.expected_restrained_activations
+        : 0,
+    expected_outcome_distribution: fx.expected_outcome_distribution ?? {},
+    expected_filled_slots_shadow_logs:
+      typeof fx.expected_filled_slots_shadow_logs === 'number'
+        ? fx.expected_filled_slots_shadow_logs
+        : 0,
+    pre_seeded_circuits: fx.pre_seeded_circuits ?? {},
+    // Default gate_fixture: legacy fixtures without the marker are gate
+    // contributors (zero everything is benign). Phase 5 fixtures that
+    // deliberately demonstrate breach/short-circuit set this to false.
+    gate_fixture: typeof fx.gate_fixture === 'boolean' ? fx.gate_fixture : !isPhase5Shape,
+  };
+}
+
+// ============================================================================
+// PER-FIXTURE REPLAY HARNESS
+// ============================================================================
+
+/**
+ * No-op logger interface; the gate wrapper, budget, restrained-mode and
+ * shadow modules all accept any shape with .info / .warn. The harness
+ * captures rows by name into in-memory arrays for post-replay assertion.
+ */
+function createCapturingLogger() {
+  const rows = [];
+  return {
+    rows,
+    info(name, payload) {
+      rows.push({ level: 'info', name, payload });
+    },
+    warn(name, payload) {
+      rows.push({ level: 'warn', name, payload });
+    },
+    error(name, payload) {
+      rows.push({ level: 'error', name, payload });
+    },
+  };
+}
+
+/**
+ * Build a minimal mock inner dispatcher. Returns a `(call, ctx) => Promise<envelope>`
+ * function that synthesises the {tool_use_id, content, is_error} shape from a
+ * lookup table keyed by call.id. The lookup table is provided per fixture so
+ * each call's hand-crafted inner_outcome is wired to its corresponding
+ * tool_call_id.
+ *
+ * Why a Map rather than a plain object: tool_call_ids could in theory collide
+ * with Object.prototype property names. Map gives clean key namespace.
+ */
+function createInnerDispatcher(outcomesById) {
+  return async function innerDispatcher(call, _ctx) {
+    const outcome = outcomesById.get(call.id) ?? { answered: false, reason: 'no_outcome_in_fixture' };
+    return {
+      tool_use_id: call.id,
+      content: JSON.stringify(outcome),
+      is_error: false,
+    };
+  };
+}
+
+/**
+ * Replay a single fixture through a freshly-constructed Phase 5 pipeline.
+ * Returns observed metrics + a list of envelopes (one per ask emitted) for
+ * smoke-mode assertion.
+ *
+ * Pipeline assembly mirrors Plan 05-01's wrapAskDispatcherWithGates contract
+ * exactly — every gate the wrapper closes over is a real Phase 5 module.
+ */
+async function replayFixture(fx) {
+  const logger = createCapturingLogger();
+  const sessionId = fx.session?.jobId ?? fx.id ?? 'unknown';
+
+  // Synthetic clock — increments per-ask via fx.ask_user_calls[i].synthetic_time_ms.
+  // Initialised at 1ms (NOT 0) so isActive()'s `activeUntilMs > 0` guard does
+  // not false-positive on the very first activate() — activeUntilMs is set to
+  // `nowFn() + releaseMs`, and nowFn=0 → activeUntilMs=releaseMs which is >0
+  // anyway, but keeping the synthetic clock at a positive baseline avoids any
+  // implicit-zero edge case.
+  let syntheticTime = 1;
+
+  // Per-fixture gate instances — fresh state per fixture mirrors production
+  // per-session isolation (each session in sonnet-stream.js gets its own
+  // askBudget + restrainedMode in activeSessions.set).
+  const askBudget = createAskBudget();
+  let activationCount = 0;
+  const restrainedMode = createRestrainedMode({
+    onActivate: () => {
+      activationCount += 1;
+    },
+    nowFn: () => syntheticTime,
+    // releaseMs left at default 60000ms — synthetic clock never advances
+    // far enough within a fixture replay to cross it, so isActive() stays
+    // true post-activation as designed.
+  });
+
+  // Build the stateSnapshot the filled-slots-shadow logger reads. Plan 05-02
+  // expects { sessionId, stateSnapshot: { circuits: {...} } } from
+  // sessionGetter.
+  const stateSnapshot = { circuits: { ...fx.pre_seeded_circuits } };
+  const filledSlotsShadow = createFilledSlotsShadowLogger({
+    sessionGetter: () => ({ sessionId, stateSnapshot }),
+    logger,
+  });
+
+  // delayMs: 0 — bypass the 1500ms debounce. See module header section
+  // "DEBOUNCE TIMER — bypassed via delayMs: 0".
+  const gate = createAskGateWrapper({ delayMs: 0, logger, sessionId });
+
+  const outcomesById = new Map();
+  for (const entry of fx.ask_user_calls) {
+    outcomesById.set(entry.call.id, entry.inner_outcome);
+  }
+  const innerDispatcher = createInnerDispatcher(outcomesById);
+
+  const wrappedDispatcher = wrapAskDispatcherWithGates(innerDispatcher, {
+    askBudget,
+    restrainedMode,
+    gate,
+    filledSlotsShadow,
+    logger,
+    sessionId,
+  });
+
+  // Replay each call sequentially. The harness ADVANCES synthetic time
+  // BEFORE the call (so the wrapper's restrainedMode.isActive() check
+  // sees the new clock) and uses the call's turnId as the recordAsk
+  // parser input.
+  const observedEnvelopes = [];
+  for (const entry of fx.ask_user_calls) {
+    syntheticTime += Number.isFinite(entry.synthetic_time_ms) ? entry.synthetic_time_ms : 0;
+    const envelope = await wrappedDispatcher(entry.call, {
+      sessionId,
+      turnId: entry.turnId,
+    });
+    observedEnvelopes.push({ entry, envelope });
+  }
+
+  // Tear down the per-fixture gate state (Plan 05-04's Pitfall 5 — destroy
+  // clears the pending release timer; matters for Node exit cleanliness on
+  // a long-running CI).
+  gate.destroy();
+  restrainedMode.destroy();
+  askBudget.destroy();
+
+  // Compute observed metrics from envelopes + logger.rows.
+  const outcomeDistribution = {
+    answered: 0,
+    gated: 0,
+    ask_budget_exhausted: 0,
+    restrained_mode: 0,
+    user_moved_on: 0,
+    timeout: 0,
+  };
+  let answeredCount = 0;
+  for (const { envelope } of observedEnvelopes) {
+    let body;
+    try {
+      body = JSON.parse(envelope.content);
+    } catch {
+      continue;
+    }
+    if (body.answered === true) {
+      outcomeDistribution.answered += 1;
+      answeredCount += 1;
+    } else if (typeof body.reason === 'string') {
+      // Bucket the reason if we know it; else stash under a catch-all.
+      if (body.reason in outcomeDistribution) {
+        outcomeDistribution[body.reason] += 1;
+      } else {
+        outcomeDistribution[body.reason] = (outcomeDistribution[body.reason] ?? 0) + 1;
+      }
+    }
+  }
+
+  const filledSlotsShadowLogCount = logger.rows.filter(
+    (r) => r.name === 'stage6.filled_slots_would_suppress'
+  ).length;
+
+  return {
+    fixtureId: fx.id ?? sessionId,
+    askCount: answeredCount,
+    activationCount,
+    outcomeDistribution,
+    filledSlotsShadowLogCount,
+    isGateFixture: fx.gate_fixture !== false,
+  };
+}
+
+// ============================================================================
+// METRIC COMPUTATION
+// ============================================================================
+
+/**
+ * Sort-based percentile. For N=12 the cost is trivial; the simpler
+ * implementation is preferred over a quickselect for readability.
+ *
+ * Uses the "nearest-rank" method: idx = ceil(p/100 * N) - 1, clamped to
+ * [0, N-1]. This matches CloudWatch Insights' default percentile semantics
+ * (Phase 8 dashboards consume the same metric, so the offline harness and
+ * the production metric must agree on the percentile definition).
+ */
+export function percentile(arr, p) {
+  if (!Array.isArray(arr) || arr.length === 0) return 0;
+  const sorted = [...arr].sort((a, b) => a - b);
+  const idx = Math.ceil((p / 100) * sorted.length) - 1;
+  return sorted[Math.max(0, Math.min(idx, sorted.length - 1))];
+}
+
+/**
+ * Compute the breach set from observed metrics + locked thresholds.
+ * Returns an array of breach names (empty if all pass). Strict `>`
+ * comparison — at-threshold is at-limit, not a breach.
+ */
+export function computeBreaches({ median, p95, restrainedRate }) {
+  const breaches = [];
+  if (median > EXIT_GATE_THRESHOLDS.medianMax) breaches.push('median');
+  if (p95 > EXIT_GATE_THRESHOLDS.p95Max) breaches.push('p95');
+  if (restrainedRate > EXIT_GATE_THRESHOLDS.restrainedRateMax) breaches.push('restrained_rate');
+  return breaches;
+}
+
+// ============================================================================
+// SMOKE-MODE ASSERTION
+// ============================================================================
+
+/**
+ * In --smoke mode every fixture is expected to match its expected_*
+ * fields exactly. Returns an array of mismatch records (empty on full
+ * match). Caller wraps this in exit-code logic.
+ */
+function assertSmoke(fx, observed) {
+  const mismatches = [];
+  if (observed.askCount !== fx.expected_ask_user_count) {
+    mismatches.push(
+      `${fx.id ?? fx.filename}: ask_user_count expected=${fx.expected_ask_user_count} observed=${observed.askCount}`
+    );
+  }
+  if (observed.activationCount !== fx.expected_restrained_activations) {
+    mismatches.push(
+      `${fx.id ?? fx.filename}: restrained_activations expected=${fx.expected_restrained_activations} observed=${observed.activationCount}`
+    );
+  }
+  if (observed.filledSlotsShadowLogCount !== fx.expected_filled_slots_shadow_logs) {
+    mismatches.push(
+      `${fx.id ?? fx.filename}: filled_slots_shadow_logs expected=${fx.expected_filled_slots_shadow_logs} observed=${observed.filledSlotsShadowLogCount}`
+    );
+  }
+  // expected_outcome_distribution: only assert keys the fixture explicitly
+  // listed (additive). Extra observed keys are diagnostic, not a mismatch.
+  for (const [key, expectedValue] of Object.entries(fx.expected_outcome_distribution ?? {})) {
+    const observedValue = observed.outcomeDistribution[key] ?? 0;
+    if (observedValue !== expectedValue) {
+      mismatches.push(
+        `${fx.id ?? fx.filename}: outcome_distribution.${key} expected=${expectedValue} observed=${observedValue}`
+      );
+    }
+  }
+  return mismatches;
+}
+
+// ============================================================================
+// MAIN
+// ============================================================================
+
+/**
+ * Run the full harness over `fixturesDir`. Returns the JSON digest.
+ * Pure async — caller decides how to surface the digest + exit code.
+ */
+export async function runHarness({ fixturesDir, smoke = false } = {}) {
+  // CANONICAL PHASE 5 RUN: --fixtures-dir omitted → aggregate the Phase 5
+  // dir + the Phase 4 dual-SSE dir. Plan 05-06 truth #4: 5 EXISTING +
+  // 7 NEW = 12 total.
+  //
+  // OVERRIDE PATH: --fixtures-dir <path> → load ONLY that directory. Used
+  // by the smoke test for synthetic-breach replay; future Phase 7 prod-
+  // shadow flows can also point at a captured-fixtures dir.
+  let loaded;
+  if (fixturesDir) {
+    loaded = loadFixtures(fixturesDir);
+    if (loaded.length === 0) {
+      throw new Error(`no fixtures found in ${fixturesDir}`);
+    }
+  } else {
+    const phase5 = loadFixtures(PHASE5_FIXTURES_DIR);
+    const phase4 = loadFixtures(PHASE4_DUAL_SSE_DIR);
+    loaded = [...phase4, ...phase5];
+    if (loaded.length === 0) {
+      throw new Error(
+        `no fixtures found across phase4=${PHASE4_DUAL_SSE_DIR} or phase5=${PHASE5_FIXTURES_DIR}`,
+      );
+    }
+  }
+
+  const allObserved = [];
+  const smokeMismatches = [];
+  for (const { filename, fixture } of loaded) {
+    const fx = applyDefaults({ ...fixture, filename });
+    const observed = await replayFixture(fx);
+    allObserved.push({ fx, observed });
+    if (smoke) {
+      smokeMismatches.push(...assertSmoke(fx, observed));
+    }
+  }
+
+  // Aggregate metric — gate_fixture:true SUBSET only.
+  const gateObserved = allObserved.filter((o) => o.observed.isGateFixture);
+  const askCountsPerSession = gateObserved.map((o) => o.observed.askCount);
+  const totalActivations = gateObserved.reduce(
+    (sum, o) => sum + o.observed.activationCount,
+    0
+  );
+  const restrainedRate = gateObserved.length === 0 ? 0 : totalActivations / gateObserved.length;
+  const median = percentile(askCountsPerSession, 50);
+  const p95 = percentile(askCountsPerSession, 95);
+  const breaches = computeBreaches({ median, p95, restrainedRate });
+
+  // Smoke-mode: any expected_* mismatch counts as a breach. Append a
+  // sentinel so exit-code logic stays single-source.
+  if (smoke && smokeMismatches.length > 0) {
+    breaches.push('smoke_mismatch');
+  }
+
+  const exitCode = breaches.length > 0 ? 1 : 0;
+
+  return {
+    fixture_count: loaded.length,
+    gate_fixture_count: gateObserved.length,
+    smoke_mode: smoke,
+    smoke_mismatches: smokeMismatches,
+    ask_counts_per_session: askCountsPerSession,
+    median,
+    p95,
+    restrained_activation_count: totalActivations,
+    restrained_rate: restrainedRate,
+    breaches,
+    exit_code: exitCode,
+    thresholds: EXIT_GATE_THRESHOLDS,
+    // Per-fixture detail for debugging — kept terse so --json output is
+    // still grep-able.
+    sessions: allObserved.map((o) => ({
+      id: o.fx.id ?? o.fx.filename,
+      gate_fixture: o.observed.isGateFixture,
+      askCount: o.observed.askCount,
+      activationCount: o.observed.activationCount,
+      filledSlotsShadowLogCount: o.observed.filledSlotsShadowLogCount,
+      outcomeDistribution: o.observed.outcomeDistribution,
+    })),
+  };
+}
+
+// ============================================================================
+// CLI
+// ============================================================================
+
+function parseArgs(argv) {
+  // fixturesDir defaults to undefined — runHarness's "no override" branch
+  // then aggregates Phase 4 + Phase 5 dirs. Passing --fixtures-dir <path>
+  // pivots to single-dir mode (used by the smoke test for synthetic-breach).
+  const out = { fixturesDir: undefined, smoke: false, json: false };
+  for (let i = 0; i < argv.length; i += 1) {
+    const a = argv[i];
+    if (a === '--smoke') {
+      out.smoke = true;
+    } else if (a === '--json') {
+      out.json = true;
+    } else if (a === '--fixtures-dir' || a === '--dir') {
+      out.fixturesDir = path.resolve(argv[i + 1]);
+      i += 1;
+    } else if (a.startsWith('--fixtures-dir=')) {
+      out.fixturesDir = path.resolve(a.slice('--fixtures-dir='.length));
+    }
+  }
+  return out;
+}
+
+function printProgressDigest(digest) {
+  const fmt = (n) => (typeof n === 'number' ? n.toFixed(4).replace(/0+$/, '0') : String(n));
+  const lines = [
+    `Plan 05-06 — exit-gate replay`,
+    `  fixtures loaded:   ${digest.fixture_count}`,
+    `  gate aggregate:    ${digest.gate_fixture_count} (gate_fixture:true subset)`,
+    `  smoke mode:        ${digest.smoke_mode}`,
+    `  median asks:       ${fmt(digest.median)}  (threshold ≤ ${digest.thresholds.medianMax})`,
+    `  p95 asks:          ${fmt(digest.p95)}  (threshold ≤ ${digest.thresholds.p95Max})`,
+    `  restrained_rate:   ${fmt(digest.restrained_rate)}  (threshold ≤ ${digest.thresholds.restrainedRateMax})`,
+    `  breaches:          ${digest.breaches.length === 0 ? '(none)' : digest.breaches.join(', ')}`,
+    `  exit code:         ${digest.exit_code}`,
+  ];
+  if (digest.smoke_mismatches?.length) {
+    lines.push(`  smoke mismatches:`);
+    for (const m of digest.smoke_mismatches) lines.push(`    - ${m}`);
+  }
+  console.log(lines.join('\n'));
+}
+
+const invokedAsScript = (() => {
+  try {
+    return path.resolve(process.argv[1] ?? '') === path.resolve(__filename);
+  } catch {
+    return false;
+  }
+})();
+
+if (invokedAsScript) {
+  const args = parseArgs(process.argv.slice(2));
+  runHarness({ fixturesDir: args.fixturesDir, smoke: args.smoke })
+    .then((digest) => {
+      if (args.json) {
+        // Compact JSON ONLY on stdout — no progress lines. Test consumes via JSON.parse.
+        console.log(JSON.stringify(digest));
+      } else {
+        printProgressDigest(digest);
+      }
+      process.exit(digest.exit_code);
+    })
+    .catch((err) => {
+      console.error(`stage6-over-ask-exit-gate runtime error: ${err?.stack ?? err}`);
+      process.exit(2);
+    });
+}

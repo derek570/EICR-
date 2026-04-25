@@ -64,10 +64,20 @@ function runGate(extraArgs = []) {
   });
   let digest = null;
   if (typeof result.stdout === 'string') {
-    const trimmed = result.stdout.trim();
-    if (trimmed.startsWith('{')) {
+    // The script emits a single-line JSON digest on stdout in --json mode,
+    // but the legacy filterQuestionsAgainstFilledSlots backstop (imported
+    // transitively via the filled-slots-shadow logger) emits Winston log
+    // lines on stdout too when it observes a refill-style ask. Parse only
+    // the LAST line that starts with `{` — the digest is always written
+    // last by the script's CLI block.
+    const lines = result.stdout
+      .split('\n')
+      .map((l) => l.trim())
+      .filter((l) => l.startsWith('{'));
+    const lastJsonLine = lines[lines.length - 1];
+    if (lastJsonLine) {
       try {
-        digest = JSON.parse(trimmed);
+        digest = JSON.parse(lastJsonLine);
       } catch {
         digest = null;
       }
