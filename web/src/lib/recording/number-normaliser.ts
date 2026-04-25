@@ -138,15 +138,22 @@ const IMPLIED_DECIMAL_PATTERN = /\b(naught|nought|zero|oh)\s+(\d{2,3})\b/gi;
 
 const DIGIT_WORD_GROUP = 'naught|nought|zero|oh|one|two|three|four|five|six|seven|eight|nine';
 
-// "nought point two seven" → "0.27" (up to four post-point digits).
+// "nought point two seven" → "0.27" — supports 1-4 fractional digit-words.
+// iOS handles up to 3; the 4th group is a v1 web-only extension to cover
+// 4-sig-fig insulation-resistance readings like "two point one two three
+// four megohms" without dropping the trailing digit.
 const DECIMAL_PATTERN = new RegExp(
-  `\\b(${DIGIT_WORD_GROUP})\\s+point\\s+(${DIGIT_WORD_GROUP})(?:\\s+(${DIGIT_WORD_GROUP}))?(?:\\s+(${DIGIT_WORD_GROUP}))?\\b`,
+  `\\b(${DIGIT_WORD_GROUP})\\s+point\\s+(${DIGIT_WORD_GROUP})(?:\\s+(${DIGIT_WORD_GROUP}))?(?:\\s+(${DIGIT_WORD_GROUP}))?(?:\\s+(${DIGIT_WORD_GROUP}))?\\b`,
   'gi'
 );
 
-// "point two seven" → "0.27" (implied leading zero).
+// "point two seven" → "0.27" (implied leading zero). `\bpoint\b` instead
+// of a `(?<=\s|^)point` lookbehind so this loads cleanly on iOS Safari
+// pre-16.4 (which rejects lookbehind regexes at module-parse time and
+// would crash recording-context entirely on field iPads still on
+// older iPadOS — the PWA runs on inspector-supplied hardware).
 const IMPLIED_ZERO_DECIMAL_PATTERN = new RegExp(
-  `(?<=\\s|^)point\\s+(${DIGIT_WORD_GROUP})(?:\\s+(${DIGIT_WORD_GROUP}))?\\b`,
+  `\\bpoint\\s+(${DIGIT_WORD_GROUP})(?:\\s+(${DIGIT_WORD_GROUP}))?\\b`,
   'gi'
 );
 
@@ -166,14 +173,25 @@ const STANDALONE_TENS_PATTERN = /\b(twenty|thirty|forty|fifty|sixty|seventy|eigh
 const HUNDRED_PATTERN = /\b(one|two|three|four|five|six|seven|eight|nine)\s+hundred\b/gi;
 
 // "6 0 8 9 8" → "60898" — Deepgram outputs digit-by-digit when the
-// speaker says each digit individually. Collapse before pointDigit /
-// implied-decimal post-passes pick up the consolidated number.
-const DIGIT_SEQUENCE_PATTERN = /\b\d(?:\s+\d)+\b/g;
+// speaker says each digit individually. Web-only divergence from iOS:
+// require **three or more** spaced single digits before collapsing.
+// iOS collapses any 2+ run, but on web that turns "circuit 1 6 amp"
+// into "circuit 16 amp" — a real corruption path because Deepgram has
+// been observed splitting "circuit one, six amp MCB" into separate
+// digit tokens. Three-digit runs (which match real spoken postcodes /
+// IR readings / Zs values) are vanishingly unlikely to appear by
+// accident in a circuit-with-rating sentence, so this trade-off keeps
+// the IR-style "two nine nine" → "299" fix while killing the
+// circuit-vs-rating false-merge. Single-digit + spoken-unit phrases
+// like "1 amp" are unaffected — `\b\d\s+\d\s+\d\b` requires three
+// digits in a row.
+const DIGIT_SEQUENCE_PATTERN = /\b\d(?:\s+\d){2,}\b/g;
 
 // "point 60" → "0.60" — standalone "point" before already-numeric digits
 // (common after digit-sequence collapse with readings like "Zs point six
-// zero" → "Zs point 60").
-const POINT_DIGIT_PATTERN = /(?<=\s|^)point\s+(\d+)/gi;
+// zero" → "Zs point 60"). Word-boundary form (no lookbehind) for older
+// iOS Safari support — see DECIMAL_PATTERN comment for rationale.
+const POINT_DIGIT_PATTERN = /\bpoint\s+(\d+)/gi;
 
 // "Nought Point 0.87" → "0.87" — mixed zero-word + "point" + already-
 // converted decimal. Must run before POINT_DIGIT_PATTERN to prevent
@@ -226,8 +244,9 @@ export function normalise(text: string): string {
     return `${digit}00`;
   });
 
-  // 3. Spoken decimals: "nought point two seven" → "0.27" (1-3 fractional
-  // digit-words supported).
+  // 3. Spoken decimals: "nought point two seven" → "0.27" (1-4 fractional
+  // digit-words supported — see DECIMAL_PATTERN comment for the 4-digit
+  // extension above iOS).
   result = result.replace(
     DECIMAL_PATTERN,
     (
@@ -235,7 +254,8 @@ export function normalise(text: string): string {
       whole: string | undefined,
       d1: string | undefined,
       d2: string | undefined,
-      d3: string | undefined
+      d3: string | undefined,
+      d4: string | undefined
     ) => {
       const w = whole && DIGIT_WORDS[whole.toLowerCase()];
       const f1 = d1 && DIGIT_WORDS[d1.toLowerCase()];
@@ -243,8 +263,10 @@ export function normalise(text: string): string {
       let decimal = `${w}.${f1}`;
       const f2 = d2 && DIGIT_WORDS[d2.toLowerCase()];
       const f3 = d3 && DIGIT_WORDS[d3.toLowerCase()];
+      const f4 = d4 && DIGIT_WORDS[d4.toLowerCase()];
       if (f2) decimal += f2;
       if (f3) decimal += f3;
+      if (f4) decimal += f4;
       return decimal;
     }
   );

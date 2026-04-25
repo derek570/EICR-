@@ -30,6 +30,12 @@ describe('NumberNormaliser — spoken decimals', () => {
   it('"nought point four five eight" → "0.458" (3 fractional digits)', () => {
     expect(normalise('nought point four five eight')).toBe('0.458');
   });
+
+  it('"two point one two three four" → "2.1234" (4 fractional digits)', () => {
+    // Web-only extension above iOS — supports 4-sig-fig IR readings without
+    // dropping the trailing digit (codex P2 follow-up on R1).
+    expect(normalise('two point one two three four')).toBe('2.1234');
+  });
 });
 
 describe('NumberNormaliser — implied zero decimal', () => {
@@ -206,12 +212,31 @@ describe('NumberNormaliser — implied decimal ("Nought 88" → "0.88")', () => 
 });
 
 describe('NumberNormaliser — digit-sequence collapse', () => {
-  it('"2 9 9" → "299"', () => {
+  it('"2 9 9" → "299" (3 spaced digits, the canonical IR-reading form)', () => {
     expect(normalise('2 9 9')).toBe('299');
   });
 
-  it('"2 3" → "23"', () => {
-    expect(normalise('2 3')).toBe('23');
+  it('"6 0 8 9 8" → "60898" (longer postcode-style runs)', () => {
+    expect(normalise('6 0 8 9 8')).toBe('60898');
+  });
+
+  it('"2 3" stays as "2 3" — web requires 3+ digits to collapse', () => {
+    // Web-only divergence from iOS (which collapses any 2+ run). Codex P1
+    // on R1 flagged that 2-digit collapse turns "circuit 1 6 amp m c b"
+    // into "circuit 16 amp MCB", losing both the circuit number and the
+    // OCPD rating before extraction. 3+ keeps the IR-style "2 9 9" → "299"
+    // case while killing the circuit-vs-rating false-merge.
+    expect(normalise('2 3')).toBe('2 3');
+  });
+
+  it('"circuit 1 6 amp m c b" preserves "1" and "6" separately', () => {
+    // Regression lock for the codex P1 finding above. After abbreviation
+    // expansion the result is "circuit 1 6 amp MCB" — the matcher /
+    // Sonnet downstream can read both numbers as their own values.
+    const result = normalise('circuit 1 6 amp m c b');
+    expect(result).toContain('circuit 1 6 amp');
+    expect(result).toContain('MCB');
+    expect(result).not.toContain('circuit 16');
   });
 
   it('does not over-fire: "32 in" stays "32 in"', () => {
