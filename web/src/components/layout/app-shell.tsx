@@ -12,6 +12,7 @@ import { InstallButton } from '@/components/pwa/install-button';
 import { OfflineBanner, OfflineIndicator } from '@/components/pwa/offline-indicator';
 import { AlertsBell } from '@/components/dashboard/alerts-bell';
 import { useOutboxReplay } from '@/lib/pwa/outbox-replay';
+import { hasAcceptedCurrentTerms } from '@/app/terms/legal-texts-gate';
 
 /**
  * Top-nav + page frame for all authenticated screens.
@@ -27,6 +28,28 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     const u = getUser();
     if (u) setUserName(u.name || u.email);
   }, []);
+
+  /*
+   * Client-side T&Cs gate. Middleware can't read localStorage, so the
+   * cross-platform terms-accepted state must be checked once the
+   * AppShell mounts. Inspectors who haven't accepted (or whose accepted
+   * version is stale) are bounced to `/terms?next=<currentPath>` so we
+   * can return them to where they were going on success.
+   *
+   * Auth-gated routes are exempt from re-running this redirect (they
+   * have their own AppShell mount), but `/terms` itself and any future
+   * `/login`-style unauthenticated routes are not under AppShell.
+   * `/offline` is a similar exception — we want PWA users on a flaky
+   * network to see the offline page even if they haven't accepted yet.
+   */
+  React.useEffect(() => {
+    if (pathname === '/terms') return;
+    if (hasAcceptedCurrentTerms()) return;
+    const params = new URLSearchParams();
+    if (pathname && pathname !== '/dashboard') params.set('next', pathname);
+    const qs = params.toString();
+    router.replace(qs ? `/terms?${qs}` : '/terms');
+  }, [pathname, router]);
 
   /*
    * Phase 7c — drain the offline mutation outbox on mount, on `online`,
