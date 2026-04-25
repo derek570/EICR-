@@ -17,8 +17,22 @@ Closes the two coupled Phase 6 P0s deferred from Wave B: "No regex layer" + "2-t
 | R3 | `TranscriptFieldMatcher` engine + 6 regex categories (~60 cases) | ✅ done | (this commit) |
 | R4 | Wire matcher into `recording-context` + LiveFill (flag-gated) | ✅ done | (this commit) |
 | R5 | `regex_fields` hint protocol — web starts emitting (no backend change) | ✅ done | (this commit) |
-| R6 | Staging soak (5 sessions, 1 week) | ⏳ pending | — |
-| R7 | Production flag flip + INDEX close | ⏳ pending | — |
+| R6 | Staging soak (5 sessions, 1 week) | ⏳ awaiting deploy — needs `NEXT_PUBLIC_REGEX_TIER_ENABLED=true` in staging + 5 sessions with the iOS-parity audio fixtures | — |
+| R7 | Production flag flip + INDEX close | ⏳ blocked on R6 | — |
+
+**R0–R5 shipped on PR derek570/EICR-#16.** Branch `pwa-regex-tier`, 20 commits, +154 net vitest cases (542/542 passing), flag-off behaviour byte-identical to pre-PR client.
+
+**R6 acceptance checklist** (run before flipping the prod flag in R7):
+1. Deploy `pwa-regex-tier` to staging with `NEXT_PUBLIC_REGEX_TIER_ENABLED=true`.
+2. Run 5 recording sessions against the inspector's typical workflow (or the iOS-parity audio fixtures if any are checked in).
+3. Verify in Sonnet logs:
+   - `discrepancy_overwrite` fires on real disagreement (proves Sonnet-overwrites-regex chain works).
+   - `preexisting_overwrite` fires when Sonnet writes a different value over an inspector-typed field.
+   - Regex-tier writes appear in `applied.changedKeys` before any Sonnet response lands on the same field.
+4. Verify Sonnet's per-turn cost drops measurably (compare 5 sessions pre/post — the regex-hint protocol should let the server skip extracting fields the regex tier already filled).
+5. Verify no fields end up wrongly stuck on a regex value (matcher false-positives). The reconcileFromJob pass on every Sonnet turn should catch any mid-session inspector corrections.
+6. If anything is wrong: revert the flag, file a bug, fix in R6.x.
+7. If clean after 5 sessions: open R7 PR (one-line change — `NEXT_PUBLIC_REGEX_TIER_ENABLED=true` in the production task def env + INDEX close).
 
 **R3 matcher-tier follow-ups deferred from R1 codex review** (must land in R3 or before R6 soak):
 - Reject "16" as a circuit ref when "16" follows the word `circuit` and the same utterance contains an OCPD-rating tail (`amp` / `amps` / `a` after a number from {6,10,16,20,32,40,63,100}). Without this, "circuit 1 6 amp m c b" lands as circuit 16 instead of circuit 1 + 6A rating.
