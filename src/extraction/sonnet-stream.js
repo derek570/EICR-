@@ -1464,13 +1464,13 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         // equivalence).
         existing.protocolVersion = protocolVersion;
       }
-      // ── Plan 06-07 r6-#1 (BLOCK) — write the freshly-resolved
-      // toolCallsMode onto the existing session AT REBIND TIME. r5-#2
-      // (block immediately above) wrote `fallbackToLegacy` +
-      // `protocolVersion` onto the entry. r6 completes the trio so the
-      // runtime dispatch (`runShadowHarness` route + the
-      // `consumeLegacyQuestionsForUser` legacy-question gate) tracks the
-      // latest env mode at every WS-rebind surface.
+      // ── Plan 06-07 r6-#1 (BLOCK) + Plan 06-08 r7-#1 (MAJOR) —
+      // write the freshly-resolved toolCallsMode onto the existing
+      // session AT REBIND TIME. r5-#2 (block immediately above) wrote
+      // `fallbackToLegacy` + `protocolVersion` onto the entry. r6
+      // completed the trio so the runtime dispatch (`runShadowHarness`
+      // route + the `consumeLegacyQuestionsForUser` legacy-question
+      // gate) tracks the latest env mode at every WS-rebind surface.
       //
       // Without this write, the entry.session's toolCallsMode stays at
       // its construction-time value for the entry's lifetime — so an
@@ -1478,6 +1478,17 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
       // shadow → off STR-01 rollback) mid-session leaves the runtime
       // routing on the OLD path even though r5 wrote the new
       // handshake state.
+      //
+      // r7-#1 added the systemPrompt restamp: r6 only wrote the flag,
+      // but `EICRExtractionSession.systemPrompt` is also derived from
+      // toolCallsMode at construction time (eicr-extraction-session.js
+      // line 697-702) and consumed by `buildSystemBlocks()` every
+      // turn. After an off → shadow flip the harness pushed a legacy
+      // prompt + agentic snapshot hybrid. Calling
+      // `session.applyModeChange(...)` (the SOLE write surface for
+      // mid-session mode flips) restamps both `toolCallsMode` AND
+      // `systemPrompt` together so the cached prefix always matches
+      // the active mode.
       //
       // The live + mismatch policy is enforced by the top block at
       // lines ~1336-1359 which RETURNs before this reconnect branch is
@@ -1491,7 +1502,7 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
       // co-located adjacent to the inputs that drove the (mode × match)
       // decision.
       if (existing.session) {
-        existing.session.toolCallsMode = resolveEffectiveToolCallsMode();
+        existing.session.applyModeChange(resolveEffectiveToolCallsMode());
       }
       if (existing.disconnectTimer) {
         clearTimeout(existing.disconnectTimer);
@@ -2069,19 +2080,27 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
       // freshest data; no policy enforcement.
       entry.protocolVersion = requestedProtocolVersion;
     }
-    // ── Plan 06-07 r6-#1 (BLOCK) — symmetric write of the freshly-
-    // resolved toolCallsMode onto the existing session, mirroring the
-    // handleSessionStart reconnect branch. The rehydrate path is the
-    // OTHER WS-rebind surface; both must propagate the env mode so the
-    // runtime dispatch (`runShadowHarness` routing +
-    // `consumeLegacyQuestionsForUser` gate) follows it.
+    // ── Plan 06-07 r6-#1 (BLOCK) + Plan 06-08 r7-#1 (MAJOR) —
+    // symmetric write of the freshly-resolved toolCallsMode onto the
+    // existing session, mirroring the handleSessionStart reconnect
+    // branch. The rehydrate path is the OTHER WS-rebind surface; both
+    // must propagate the env mode so the runtime dispatch
+    // (`runShadowHarness` routing + `consumeLegacyQuestionsForUser`
+    // gate) follows it.
+    //
+    // r7-#1: the call goes through `session.applyModeChange(...)` (the
+    // SOLE write surface for mid-session mode flips) so `systemPrompt`
+    // is restamped alongside `toolCallsMode`. r6 only wrote the flag,
+    // missing the constructor-cached `systemPrompt` derivation
+    // (eicr-extraction-session.js:697-702) — `buildSystemBlocks()` then
+    // shipped a legacy + agentic hybrid after off → shadow flips.
     //
     // The live + mismatch reject path above (line ~2031) RETURNs before
     // reaching this write, so a rejected resume's session is never
     // touched. Placed BEFORE entry.ws = ws (later in this function) so
     // the three handshake-state writes are co-located.
     if (entry.session) {
-      entry.session.toolCallsMode = resolveEffectiveToolCallsMode();
+      entry.session.applyModeChange(resolveEffectiveToolCallsMode());
     }
 
     // Cancel any pending disconnect timer — we're live again.

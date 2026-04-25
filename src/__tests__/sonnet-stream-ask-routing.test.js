@@ -65,6 +65,18 @@ class FakeEICRExtractionSession {
     this.pause = jest.fn();
     this.resume = jest.fn();
     this.onBatchResult = null;
+    // Plan 06-08 r7-#1 — sonnet-stream.js's reconnect/resume paths
+    // call `session.applyModeChange(...)` (the SOLE write surface
+    // for mid-session mode flips). The fake mirrors a no-op
+    // implementation here because this test file's surface
+    // (ask-routing reconnect path) doesn't assert mode behaviour;
+    // the real method's contract is covered in
+    // `eicr-extraction-session-apply-mode-change.test.js`.
+    this.toolCallsMode = 'off';
+    this.applyModeChange = jest.fn((newMode) => {
+      const valid = newMode === 'off' || newMode === 'shadow' || newMode === 'live';
+      this.toolCallsMode = valid ? newMode : 'off';
+    });
   }
 }
 
@@ -1022,7 +1034,7 @@ describe('STT-08 — utterance-consumption dedupe on ask_user_answered', () => {
     });
 
     const malformedWarnings = loggerModule.warn.mock.calls.filter(
-      (c) => c[0] === 'stage6.ask_user_answered_malformed_anchor',
+      (c) => c[0] === 'stage6.ask_user_answered_malformed_anchor'
     );
     expect(malformedWarnings).toHaveLength(1);
     expect(malformedWarnings[0][1]).toMatchObject({
@@ -1032,7 +1044,7 @@ describe('STT-08 — utterance-consumption dedupe on ask_user_answered', () => {
     });
     // Falls through to legacy path: error log + content-anchor push.
     const legacyErrors = loggerModule.error.mock.calls.filter(
-      (c) => c[0] === 'stage6.ask_user_answered_legacy_no_anchor',
+      (c) => c[0] === 'stage6.ask_user_answered_legacy_no_anchor'
     );
     expect(legacyErrors).toHaveLength(1);
     expect(entry.recentAskAnswers).toHaveLength(1);
@@ -1069,7 +1081,7 @@ describe('STT-08 — utterance-consumption dedupe on ask_user_answered', () => {
     });
 
     const malformedWarnings = loggerModule.warn.mock.calls.filter(
-      (c) => c[0] === 'stage6.ask_user_answered_malformed_anchor',
+      (c) => c[0] === 'stage6.ask_user_answered_malformed_anchor'
     );
     expect(malformedWarnings).toHaveLength(1);
     expect(malformedWarnings[0][1].consumed_utterance_id_type).toBe('string');
@@ -1131,7 +1143,7 @@ describe('STT-08 — utterance-consumption dedupe on ask_user_answered', () => {
     expect(entry.recentTranscripts).toHaveLength(0);
     // Warn log records the content-match source.
     const afterTranscriptWarns = loggerModule.warn.mock.calls.filter(
-      (c) => c[0] === 'stage6.ask_user_answered_after_transcript',
+      (c) => c[0] === 'stage6.ask_user_answered_after_transcript'
     );
     expect(afterTranscriptWarns).toHaveLength(1);
     expect(afterTranscriptWarns[0][1]).toMatchObject({
@@ -1254,7 +1266,7 @@ describe('STT-08 — utterance-consumption dedupe on ask_user_answered', () => {
         timer: setTimeout(() => {}, 60000),
         askStartedAt: Date.now(),
       });
-      // eslint-disable-next-line no-await-in-loop
+
       await sendFrame(ws, {
         type: 'ask_user_answered',
         tool_call_id: id,
@@ -2299,9 +2311,7 @@ describe('Plan 03-12 STT-16 — r13 Codex remediation (user_moved_on defer hygie
     // GREEN contract: stamp was NOT placed because harness failed.
     // A later ask_user_answered with consumed_utterance_id='utt-r14-fail'
     // would therefore NOT be downgraded — the user's answer is preserved.
-    expect(
-      entry.seenTranscriptUtterances.has('utt-r14-fail'),
-    ).toBe(false);
+    expect(entry.seenTranscriptUtterances.has('utt-r14-fail')).toBe(false);
     // Error path was taken — an error frame was sent to the client.
     const errorFrames = ws._sent.filter((f) => f.type === 'error');
     expect(errorFrames.length).toBeGreaterThanOrEqual(1);

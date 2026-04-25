@@ -775,6 +775,114 @@ export class EICRExtractionSession {
     return 'off';
   }
 
+  /**
+   * Plan 06-08 r7-#1 (MAJOR) — restamp ALL mode-derived constructor-time
+   * state when SONNET_TOOL_CALLS flips mid-session.
+   *
+   * Background. Plan 06-07 r6-#1 wrote `entry.session.toolCallsMode` on
+   * reconnect/resume so the runtime path-selection in `runShadowHarness`
+   * (`stage6-shadow-harness.js:188`) and `consumeLegacyQuestionsForUser`
+   * (`sonnet-stream.js:110`) tracks the live env mode. But r6 stopped
+   * one layer short: `this.systemPrompt` is computed from `toolCallsMode`
+   * ONCE at construction time (constructor line ~697-702) and consumed
+   * by `buildSystemBlocks()` at line ~1629 every turn. After an off →
+   * shadow flip, `buildSystemBlocks` correctly switches its layout
+   * (snapshot in `system[1]` instead of in the messages array, because
+   * it re-reads `this.toolCallsMode` live), but `system[0].text` is
+   * still `EICR_SYSTEM_PROMPT` (or `EIC_SYSTEM_PROMPT`) — a legacy
+   * prompt + agentic snapshot hybrid that doesn't exist in any release
+   * of the prompt module.
+   *
+   * Audit confirmed `systemPrompt` is the SOLE constructor-cached
+   * mode-derived field on this class — every other mode-conditional
+   * (`buildSystemBlocks`, `buildMessageWindow`,
+   * `buildStateSnapshotMessage`, `buildUserMessage`) re-reads
+   * `this.toolCallsMode` per call. So this method only needs to touch
+   * two fields: `toolCallsMode` and `systemPrompt`.
+   *
+   * This method is the SOLE write surface for `this.toolCallsMode`
+   * from `sonnet-stream.js`. Both rebind sites (handleSessionStart
+   * reconnect and handleSessionResumeRehydrate) call this method
+   * instead of poking `session.toolCallsMode` directly. A future
+   * mode-derived constructor field (e.g., a Phase 7 mode-gated
+   * cache TTL) gets its restamp logic added HERE — call sites do
+   * not change.
+   *
+   * Conversation state (`conversationHistory`, `stateSnapshot`,
+   * `extractedObservations`, `costTracker`, `askedQuestions`,
+   * `circuitSchedule`, `_lastSnapshotText`, …) is preserved — only
+   * the mode flag and the prompt cache are touched. A reconnect/
+   * resume after a mode flip therefore continues the existing
+   * conversation; only the system-prompt seed for the next turn
+   * changes. The cache prefix at the Anthropic side will see a new
+   * `system[0].text` and consume a single fresh cache write — that's
+   * the cost of the mode flip, ~1.25× one turn's input tokens.
+   *
+   * @param {'off' | 'shadow' | 'live'} newMode — the freshly-resolved
+   *   effective mode. Anything else falls back to `'off'` and emits
+   *   a `stage6.apply_mode_change_invalid_value` warn so an operator
+   *   typo in `SONNET_TOOL_CALLS` is observable.
+   * @returns {void}
+   */
+  applyModeChange(newMode) {
+    // Validation mirrors `_resolveToolCallsMode` — same allow-list,
+    // same `'off'` fallback. We don't call `_resolveToolCallsMode`
+    // directly because that method ALSO reads
+    // `process.env.SONNET_TOOL_CALLS` as a fallback, and we want the
+    // caller's resolved value to be authoritative. The caller
+    // (`sonnet-stream.js`'s `resolveEffectiveToolCallsMode`) has
+    // already re-read the env via the SAME allow-list at rebind
+    // time; passing that result through avoids a redundant env read
+    // inside this method (which would be racy if the env were ever
+    // mutated between the caller's read and this method's read).
+    let resolved;
+    if (newMode === 'off' || newMode === 'shadow' || newMode === 'live') {
+      resolved = newMode;
+    } else {
+      logger.warn('stage6.apply_mode_change_invalid_value', {
+        sessionId: this.sessionId,
+        requested: newMode,
+        fallback: 'off',
+      });
+      resolved = 'off';
+    }
+    // No-op short-circuit. Avoids log noise for the common
+    // "match-mode reconnect" case where neither the env nor the
+    // prompt actually need to change. Returning early also
+    // preserves the exact `systemPrompt` object reference, which
+    // tests assert against (regression-locks "no-op truly does
+    // nothing" so a future maintainer can't mistake "always
+    // recompute" for a safe simplification — recomputing would
+    // re-trigger the Anthropic cache write).
+    if (resolved === this.toolCallsMode) {
+      return;
+    }
+    const fromMode = this.toolCallsMode;
+    this.toolCallsMode = resolved;
+    // Re-derive `systemPrompt` using the SAME ternary the
+    // constructor uses (line ~697-702). Keeping the two derivations
+    // textually synchronized — any future change to the
+    // constructor's prompt-selection logic (e.g., a Phase 7
+    // cert-agnostic agentic prompt for off mode, or a per-mode
+    // prompt variant for live) MUST be mirrored here. The
+    // off-mode-snapshot-canary at
+    // `stage6-off-mode-snapshot-canary.test.js` already pins the
+    // off-mode behaviour at CI; if that file changes its
+    // expectations we update both sites in lock-step.
+    this.systemPrompt =
+      this.toolCallsMode === 'off'
+        ? this.certType === 'eic'
+          ? EIC_SYSTEM_PROMPT
+          : EICR_SYSTEM_PROMPT
+        : EICR_AGENTIC_SYSTEM_PROMPT;
+    logger.info('stage6.apply_mode_change', {
+      sessionId: this.sessionId,
+      fromMode,
+      toMode: resolved,
+      certType: this.certType,
+    });
+  }
+
   // Extract text from a message content (handles both string and content block array formats)
   static messageText(content) {
     if (typeof content === 'string') return content;
