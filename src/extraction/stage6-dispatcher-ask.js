@@ -101,7 +101,33 @@ import { checkForPromptLeak, hashPayload } from './stage6-prompt-leak-filter.js'
  */
 export const ASK_USER_TIMEOUT_MS = 20000;
 
-export function createAskDispatcher(session, logger, turnId, pendingAsks, ws) {
+/**
+ * Stage 6 Phase 6 Plan 06-02 r1-#1 — `opts.fallbackToLegacy` gate.
+ *
+ * When the activeSessions entry has `fallbackToLegacy === true` (set by
+ * sonnet-stream.js handleSessionStart for shadow + missing
+ * protocol_version clients), the iOS client did NOT advertise stage6
+ * capability and therefore cannot decode the `ask_user_started` wire
+ * shape. Forwarding it would trip iOS's UnknownMessageTypeGuard and
+ * (more importantly) defeat the whole STI-06 fallback contract — the
+ * promise of "shadow mode quietly degrades to legacy on a stale client".
+ *
+ * Effect: live mode still REGISTERS the ask in pendingAsks (Sonnet's
+ * tool loop is blocked on this UUID either way), still WAITS for the
+ * answer, still LOGS — only the iOS-bound `ws.send` is suppressed. The
+ * legacy `questions_for_user` JSON path that was emitted earlier in the
+ * same turn already gave iOS a question to answer; we just don't tell
+ * it via the Stage 6 wire shape.
+ *
+ * Default `false` keeps every existing 5-arg call site (the dispatcher's
+ * own unit tests, `stage6-shadow-harness.js` callers prior to Plan
+ * 06-02 wiring) byte-identical.
+ *
+ * @param {object} opts
+ * @param {boolean} [opts.fallbackToLegacy=false]
+ */
+export function createAskDispatcher(session, logger, turnId, pendingAsks, ws, opts = {}) {
+  const fallbackToLegacy = opts && opts.fallbackToLegacy === true;
   return async function dispatchAskUser(call, ctx) {
     const mode = session.toolCallsMode === 'shadow' ? 'shadow' : 'live';
     const sessionId = ctx?.sessionId ?? session.sessionId;
@@ -300,7 +326,26 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws) {
         // (3c) Emit ask_user_started to iOS. Guarded on ws presence + OPEN
         // state; a send failure is swallowed (the ask still proceeds — the
         // answer path flows through a separate message routed by Plan 03-08).
-        if (ws && ws.readyState === ws.OPEN) {
+        //
+        // Plan 06-02 r1-#1 BLOCK fix: also gated on !fallbackToLegacy. When
+        // the active session was opened by an iOS client without
+        // protocol_version='stage6' AND we're in shadow mode, the legacy
+        // path already informed iOS via questions_for_user — emitting the
+        // Stage 6 wire shape here would (a) trip the iOS
+        // UnknownMessageTypeGuard, and (b) defeat the STI-06 graceful-
+        // degradation contract for stale clients. The ask still REGISTERS
+        // and WAITS — only the iOS-bound emit is suppressed. The Sonnet
+        // tool loop will resolve via the legacy `in_response_to` answer
+        // path that the legacy questions_for_user roundtrip already
+        // wires up.
+        if (fallbackToLegacy) {
+          logger.info('stage6.ask_user_started_suppressed_fallback', {
+            sessionId,
+            turnId,
+            tool_call_id: toolCallId,
+            reason: 'protocol_version_mismatch_shadow',
+          });
+        } else if (ws && ws.readyState === ws.OPEN) {
           try {
             ws.send(
               JSON.stringify({

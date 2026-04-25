@@ -285,7 +285,15 @@ export async function runShadowHarness(session, transcriptText, regexResults, op
   // both the composition branch and the cleanup hook can see it.
   let askGateForTurn = null;
   if (pendingAsks) {
-    let asks = createAskDispatcher(shadowSession, log, turnId, pendingAsks, ws);
+    // Plan 06-02 r1-#1 — thread the live activeSessions entry's
+    // `fallbackToLegacy` flag (stamped by sonnet-stream.js handleSessionStart
+    // when an iOS client connects in shadow mode without
+    // protocol_version='stage6') through to the dispatcher so it can suppress
+    // `ask_user_started` ws.send for those sessions. Default false keeps every
+    // pre-Plan-06-02 caller byte-identical.
+    let asks = createAskDispatcher(shadowSession, log, turnId, pendingAsks, ws, {
+      fallbackToLegacy: options.fallbackToLegacy === true,
+    });
     // Phase 5 — wrap with gates ONLY when the activeSessions entry threaded
     // both stateful resources through. Existing Phase 3/4 callers (and the
     // dispatcher's own unit tests) thread neither, so they keep the

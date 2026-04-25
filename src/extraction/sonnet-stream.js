@@ -1350,13 +1350,15 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         protocolVersion,
       });
       fallbackToLegacy = true;
-      // Forward-looking: downstream tool-call branches (Phase 7 work) will
-      // consume `entry.fallbackToLegacy` to skip stage6 emission for this
-      // session even when SONNET_TOOL_CALLS=shadow is in force globally.
-      // For Phase 6 itself (where shadow doesn't yet emit stage6 wire
-      // events from the bundler — see stage6-event-bundler.js header
-      // comment: "iOS still receives one extraction message per turn"),
-      // this flag is logged-only; Phase 7 plumbs the real branch.
+      // Plan 06-02 r1-#1 — `entry.fallbackToLegacy` is now consumed by
+      // `stage6-dispatcher-ask.js` (via `runShadowHarness` opts threading at
+      // line ~2557 below) to skip `ws.send('ask_user_started')` for this
+      // session. Sonnet's tool loop still REGISTERS the ask (so the
+      // dispatcher can resolve via `pendingAsks.resolve` when iOS replies
+      // through the legacy `in_response_to` path), but the iOS-bound Stage
+      // 6 wire emit is suppressed. Without that gating the BLOCK r1-#1
+      // finding stood: a stale iOS client in shadow would receive a wire
+      // shape it cannot decode, defeating STI-06's degradation contract.
     }
     // off mode: protocolVersion ignored. No log noise — by-design no-op.
 
@@ -2547,6 +2549,15 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         // Optional — when omitted (legacy callers), shadow-harness installs
         // a no-op default (stage6-shadow-harness.js:306).
         filledSlotsShadow: entry.filledSlotsShadow,
+        // Plan 06-02 r1-#1 — thread the protocol_version handshake outcome
+        // through to the harness so the ask dispatcher can suppress
+        // `ask_user_started` ws.send when the iOS client did NOT advertise
+        // stage6 capability (entry.fallbackToLegacy was set to true by
+        // handleSessionStart for shadow + missing-protocol_version clients).
+        // Without this, mismatched clients in shadow mode would still see
+        // Stage 6 wire events, defeating STI-06's graceful-degradation
+        // contract.
+        fallbackToLegacy: entry.fallbackToLegacy === true,
         ws,
       });
 
