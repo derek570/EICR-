@@ -19,7 +19,7 @@
           "reason": "out_of_range_circuit",
           "context_field": null,
           "context_circuit": 6,
-          "expected_answer_shape": "yes_no_with_text"
+          "expected_answer_shape": "yes_no"
         }
       },
       "inner_outcome": { "answered": true, "user_text": "yes upstairs lighting" }

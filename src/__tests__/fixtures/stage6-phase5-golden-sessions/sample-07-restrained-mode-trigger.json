@@ -17,9 +17,9 @@
         "input": {
           "question": "Which circuit was Ze for?",
           "reason": "ambiguous_circuit",
-          "context_field": "ze",
+          "context_field": "none",
           "context_circuit": null,
-          "expected_answer_shape": "text"
+          "expected_answer_shape": "free_text"
         }
       },
       "inner_outcome": { "answered": true, "user_text": "circuit one" }
@@ -33,9 +33,9 @@
         "input": {
           "question": "Which circuit was that R1+R2 for?",
           "reason": "ambiguous_circuit",
-          "context_field": "measured_r1_plus_r2_ohm",
+          "context_field": "r1_r2_ohm",
           "context_circuit": null,
-          "expected_answer_shape": "text"
+          "expected_answer_shape": "free_text"
         }
       },
       "inner_outcome": { "answered": true, "user_text": "circuit two" }
@@ -51,7 +51,7 @@
           "reason": "ambiguous_circuit",
           "context_field": "measured_zs_ohm",
           "context_circuit": null,
-          "expected_answer_shape": "text"
+          "expected_answer_shape": "free_text"
         }
       },
       "inner_outcome": { "answered": true, "user_text": "circuit three" }
@@ -65,9 +65,9 @@
         "input": {
           "question": "Which circuit was insulation resistance for?",
           "reason": "ambiguous_circuit",
-          "context_field": "ir_circuit_to_earth_mohm",
+          "context_field": "ir_live_earth_mohm",
           "context_circuit": null,
-          "expected_answer_shape": "text"
+          "expected_answer_shape": "free_text"
         }
       },
       "inner_outcome": { "answered": true, "user_text": "circuit four" },

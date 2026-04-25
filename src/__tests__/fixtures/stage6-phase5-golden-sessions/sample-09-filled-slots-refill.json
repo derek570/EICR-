@@ -22,7 +22,7 @@
           "reason": "out_of_range_circuit",
           "context_field": "measured_zs_ohm",
           "context_circuit": 3,
-          "expected_answer_shape": "text"
+          "expected_answer_shape": "free_text"
         }
       },
       "inner_outcome": { "answered": true, "user_text": "yes circuit three" }

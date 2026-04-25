@@ -17,9 +17,9 @@
         "input": {
           "question": "Which circuit was Ze for?",
           "reason": "ambiguous_circuit",
-          "context_field": "ze",
+          "context_field": "none",
           "context_circuit": null,
-          "expected_answer_shape": "text"
+          "expected_answer_shape": "free_text"
         }
       },
       "inner_outcome": { "answered": false, "reason": "user_moved_on" }

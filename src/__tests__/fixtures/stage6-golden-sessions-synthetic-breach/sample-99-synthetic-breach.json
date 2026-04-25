@@ -17,9 +17,9 @@
         "input": {
           "question": "Q1",
           "reason": "ambiguous_circuit",
-          "context_field": "ze",
+          "context_field": "none",
           "context_circuit": null,
-          "expected_answer_shape": "text"
+          "expected_answer_shape": "free_text"
         }
       },
       "inner_outcome": { "answered": true, "user_text": "1" }
@@ -35,7 +35,7 @@
           "reason": "ambiguous_circuit",
           "context_field": "measured_zs_ohm",
           "context_circuit": null,
-          "expected_answer_shape": "text"
+          "expected_answer_shape": "free_text"
         }
       },
       "inner_outcome": { "answered": true, "user_text": "2" }
@@ -49,9 +49,9 @@
         "input": {
           "question": "Q3",
           "reason": "ambiguous_circuit",
-          "context_field": "measured_r1_plus_r2_ohm",
+          "context_field": "r1_r2_ohm",
           "context_circuit": null,
-          "expected_answer_shape": "text"
+          "expected_answer_shape": "free_text"
         }
       },
       "inner_outcome": { "answered": true, "user_text": "3" }
@@ -65,9 +65,9 @@
         "input": {
           "question": "Q4",
           "reason": "ambiguous_circuit",
-          "context_field": "ir_circuit_to_earth_mohm",
+          "context_field": "ir_live_earth_mohm",
           "context_circuit": null,
-          "expected_answer_shape": "text"
+          "expected_answer_shape": "free_text"
         }
       },
       "inner_outcome": { "answered": true, "user_text": "4" }
@@ -81,9 +81,9 @@
         "input": {
           "question": "Q5",
           "reason": "ambiguous_circuit",
-          "context_field": "polarity_ok",
+          "context_field": "polarity_confirmed",
           "context_circuit": null,
-          "expected_answer_shape": "text"
+          "expected_answer_shape": "free_text"
         }
       },
       "inner_outcome": { "answered": true, "user_text": "5" }

@@ -8,7 +8,7 @@
   },
   "transcript_summary": "Multiple slots already filled on circuits 1-3. Model emits ask_user('did you also see X?') with reason='observation_confirmation'. Shadow logger does NOT emit would-suppress (Pitfall 6). Ask fires.",
   "pre_seeded_circuits": {
-    "1": { "measured_zs_ohm": "0.35", "measured_r1_plus_r2_ohm": "0.24" },
+    "1": { "measured_zs_ohm": "0.35", "r1_r2_ohm": "0.24" },
     "2": { "measured_zs_ohm": "0.41" },
     "3": { "measured_zs_ohm": "0.30" }
   },
@@ -24,7 +24,7 @@
           "reason": "observation_confirmation",
           "context_field": null,
           "context_circuit": null,
-          "expected_answer_shape": "text"
+          "expected_answer_shape": "free_text"
         }
       },
       "inner_outcome": { "answered": true, "user_text": "yes a bit of discolouration" }
