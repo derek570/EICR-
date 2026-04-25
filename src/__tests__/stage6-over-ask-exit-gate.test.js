@@ -849,3 +849,174 @@ describe('Plan 05-11 r5-#3 — production 1500ms debounce coverage (fake timers)
 // the surviving wire-schema name `'dispatcher_error'` is correctly
 // classified by the real harness as non-fire (askCount === 0).
 // =============================================================================
+
+// =============================================================================
+// Plan 05-14 r8-#3 — real-harness regression lock for dispatcher_error
+// non-fire classification.
+// =============================================================================
+// Codex r8-#3 MINOR: Plan 05-13 r7-#2's predicate-composition tests called
+// a LOCAL helper that copied the harness's
+// `isHarnessWrapperShortCircuitReason` composition shape. They never
+// spawned the real harness or replayed a fixture — so a regression that
+// snapshotted the wrapper's classification at the harness side
+// (re-introducing the r4-#2 footgun where Sets are module-private but a
+// snapshotted Set could mutate independently) would still pass because
+// the local helper continues to call the live wrapper predicates. The
+// only thing the inert tests proved was that the local-helper's logical
+// shape matches the wrapper's — they did NOT prove that the harness's
+// real composition path uses the wrapper's predicates at runtime.
+//
+// r8-#3 closure: replace the inert local-helper tests with a real-harness
+// fixture-replay assertion. The test uses the SAME subprocess-spawn
+// pattern as Plan 05-08 r2-#1 (lines 486-581 above):
+//   1. Build a temporary fixture in a tmpdir with a single ask_user_call
+//      whose `inner_outcome.reason === 'dispatcher_error'`.
+//   2. Spawn `node SCRIPT_PATH --json --fixtures-dir <tmpDir>`.
+//   3. Parse the digest's last JSON line.
+//   4. Assert `digest.sessions[0].askCount === 0`.
+//
+// This exercises the FULL real-harness pipeline:
+//   - loadFixtures(tmpDir) — reads the fixture from disk
+//   - validateFixtureInputs(loaded) — validateAskUser at module load
+//   - replayFixture(fx) — instantiates real askBudget + restrainedMode +
+//     gate + wrapper composition
+//   - createInnerDispatcher(outcomesById) — synthesises an envelope from
+//     the fixture's `inner_outcome`
+//   - wrappedDispatcher(call, ctx) — runs the full wrapper composition
+//     pipeline (filledSlotsShadow → restrainedMode → askBudget → gate)
+//   - isHarnessWrapperShortCircuitReason(body.reason) — the harness's
+//     real predicate composition (line 213-219 of the harness)
+//   - firedAskCount accumulator — the real metric path
+//   - JSON digest emission — the real CLI output path
+//
+// A snapshot regression at any layer in this pipeline would surface
+// here:
+//   - If the wrapper's `isPreEmitNonFireReason` were ever to return a
+//     stale Set's classification, the harness would classify the
+//     envelope as fire and `askCount` would equal 1 instead of 0.
+//   - If the harness's `isHarnessWrapperShortCircuitReason` were ever
+//     refactored to snapshot the predicate result at module load, the
+//     test would catch that too because the assertion runs against a
+//     freshly-spawned subprocess (no shared module state with the
+//     test harness).
+//
+// Why subprocess-spawn instead of dynamic-import + direct call: same
+// reasoning as Plan 05-06 (lines 11-17 of the file header) — the
+// script's exit code and JSON digest are the primary signals CI
+// consumes, and asserting via spawnSync exercises the same code path
+// CI uses (the CLI's `process.exit(...)` call, the unhandled-rejection
+// trap, the catch block). Importing `runHarness` directly would
+// bypass the exit-code path AND the predicate-composition surface.
+//
+// post-r8-#2 wire-schema state:
+//   - `'dispatcher_error'` is the canonical wire-schema name (the r7
+//     `_pre_emit` rename was reverted at r8-#2).
+//   - `'dispatcher_error'` is in `_PRE_EMIT_NON_FIRE_REASONS` →
+//     non-fire on the envelope-layer classification.
+//   - askCount === 0 for any session whose only ask returns
+//     `{answered:false, reason:'dispatcher_error'}` from the inner
+//     dispatcher.
+// =============================================================================
+
+describe('Plan 05-14 r8-#3 — harness askCount excludes dispatcher_error envelope (real-harness regression lock)', () => {
+  jest.setTimeout(30000);
+
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(REPO_ROOT, 'tmp-plan-05-14-r8-3-'));
+  });
+
+  afterEach(() => {
+    if (tmpDir && fs.existsSync(tmpDir)) {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  function buildDispatcherErrorFixture() {
+    return {
+      _doc: 'Plan 05-14 r8-#3 — single ask with inner_outcome reason=dispatcher_error (post-r8-#2 wire-schema name)',
+      _fixture_shape: 'phase5-over-ask',
+      session: { jobId: 'temp-r8-3-dispatcher-error', certificateType: 'EICR' },
+      ask_user_calls: [
+        {
+          turnId: 'temp-r8-3-dispatcher-error-turn-1',
+          synthetic_time_ms: 0,
+          call: {
+            id: 'toolu_temp_r8_3',
+            name: 'ask_user',
+            input: {
+              question: 'Q?',
+              reason: 'ambiguous_circuit',
+              context_field: 'none',
+              context_circuit: null,
+              expected_answer_shape: 'free_text',
+            },
+          },
+          inner_outcome: { answered: false, reason: 'dispatcher_error' },
+        },
+      ],
+      expected_ask_user_count: 0,
+      expected_restrained_activations: 0,
+      expected_outcome_distribution: {},
+      expected_filled_slots_shadow_logs: 0,
+      gate_fixture: false,
+    };
+  }
+
+  test('dispatcher_error envelope → askCount === 0 (real-harness fixture-replay through full predicate composition)', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, 'sample-dispatcher-error.json'),
+      JSON.stringify(buildDispatcherErrorFixture(), null, 2)
+    );
+
+    const result = spawnSync('node', [SCRIPT_PATH, '--json', '--fixtures-dir', tmpDir], {
+      encoding: 'utf8',
+      cwd: REPO_ROOT,
+    });
+
+    let digest = null;
+    if (typeof result.stdout === 'string') {
+      const lines = result.stdout
+        .split('\n')
+        .map((l) => l.trim())
+        .filter((l) => l.startsWith('{'));
+      const lastJsonLine = lines[lines.length - 1];
+      if (lastJsonLine) {
+        try {
+          digest = JSON.parse(lastJsonLine);
+        } catch {
+          digest = null;
+        }
+      }
+    }
+
+    if (!digest) {
+      throw new Error(
+        `failed to parse digest; status=${result.status}\nstdout=${result.stdout}\nstderr=${result.stderr}`
+      );
+    }
+
+    // The fixture session has exactly one ask_user_call whose inner
+    // dispatcher returns `{answered:false, reason:'dispatcher_error'}`.
+    // Post-r8-#2, the wrapper's `_PRE_EMIT_NON_FIRE_REASONS` contains
+    // `'dispatcher_error'` (matches r6 placement) → harness's
+    // `isHarnessWrapperShortCircuitReason` returns true (composition
+    // hits the `isPreEmitNonFireReason` branch) → askCount = 0.
+    //
+    // A regression that:
+    //   (a) drops `'dispatcher_error'` from `_PRE_EMIT_NON_FIRE_REASONS`
+    //       (e.g. an over-eager refactor that decides the name is
+    //       legacy and removes it), OR
+    //   (b) snapshots the harness's `isHarnessWrapperShortCircuitReason`
+    //       result at module load (re-introducing the r4-#2 footgun on
+    //       the harness side instead of the wrapper side), OR
+    //   (c) silently re-renames the wire-schema value at the
+    //       dispatcher's outer catch (e.g. another r7-style split)
+    // would surface here as `askCount === 1` (the wrapper would treat
+    // the envelope as a real fire and the harness would count it).
+    const session = digest.sessions[0];
+    expect(session).toBeDefined();
+    expect(session.askCount).toBe(0);
+  });
+});
