@@ -255,6 +255,11 @@ function applyObservations(job: JobDetail, observations: Observation[]): Observa
     const code = parseObservationCode(obs.code);
     existing.push({
       id,
+      // Persist the server-assigned `observation_id` so follow-up
+      // `observation_update` frames can patch this row by stable id
+      // even when Sonnet rewords the description between extraction
+      // and BPG4-resolved refinement.
+      ...(obs.observation_id ? { observation_id: obs.observation_id } : {}),
       code,
       description: text,
       location: obs.item_location ?? undefined,

@@ -269,10 +269,29 @@ export interface CircuitRow {
 
 export interface ObservationRow {
   id: string;
+  /**
+   * Server-assigned stable UUID from Sonnet's initial extraction.
+   * Stored so a follow-up `observation_update` (BPG4 / BS 7671 lookup
+   * refinement) can patch the right row even when Sonnet rewords the
+   * description between extraction and refinement. Null on rows that
+   * pre-date this field on the wire (legacy sessions).
+   */
+  observation_id?: string;
   code?: 'C1' | 'C2' | 'C3' | 'FI';
   description?: string;
   location?: string;
   remedial?: string;
+  /**
+   * BS 7671 / BPG4 regulation reference attached on `observation_update`
+   * refinement. Optional because the initial extraction may not carry
+   * one — the server populates this only after the BS 7671 web-search
+   * lookup resolves.
+   */
+  regulation?: string;
+  /** Free-text rationale from the refinement lookup. */
+  rationale?: string;
+  /** Refinement source identifier (e.g. "BPG4"). */
+  source?: string;
   /**
    * Filenames of photos attached to this observation. The backend stores
    * bytes in S3 under `jobs/{userId}/{folderName}/photos/{filename}` and

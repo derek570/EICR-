@@ -41,6 +41,15 @@ export interface CircuitUpdate {
 }
 
 export interface Observation {
+  /**
+   * Server-assigned stable UUID for the observation. Present on all
+   * current sessions (`src/extraction/sonnet-stream.js:226` Phase A).
+   * Stored on the row so a follow-up `observation_update` can find
+   * the originating observation even when Sonnet rewords the
+   * `observation_text` between the initial extraction and the
+   * BPG4-resolved refinement.
+   */
+  observation_id?: string;
   code?: string;
   observation_text: string;
   item_location?: string | null;
