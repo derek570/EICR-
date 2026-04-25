@@ -174,6 +174,39 @@ describe('TranscriptFieldMatcher — ring_continuity (ring R1 / Rn / R2)', () =>
     expect(result.circuitUpdates.get('5')?.r1_r2_ohm).toBeUndefined();
   });
 
+  it('codex P1 R3 follow-up #2: active-circuit follow-up keeps ring classification across utterances', () => {
+    // After the inspector says "Circuit 5 ring R1 is 0.34" against
+    // an unlabeled circuit, the matcher caches circuit 5 as a ring.
+    // A follow-up utterance like "neutrals are 0.36" (no "circuit"
+    // prefix, no "ring" word) lands on circuit 5 via the active-
+    // circuit-ref fallback — and now correctly hits ring_rn_ohm
+    // because the cache survives across calls.
+    const matcher = new TranscriptFieldMatcher();
+    const job = emptyJob({
+      circuits: [{ id: 'uuid-5', circuit_ref: '5', circuit_designation: '' }],
+    } as unknown as Partial<JobDetail>);
+    // Recording-context passes the full accumulated transcript; the
+    // matcher slides its 500-char window internally.
+    const turn1 = 'Circuit 5 ring R1 is 0.34';
+    matcher.match(turn1, job);
+    expect(matcher._knownRingCircuitsForTest().has('5')).toBe(true);
+    const turn2 = `${turn1} neutrals are 0.36`;
+    const result = matcher.match(turn2, job);
+    expect(result.circuitUpdates.get('5')?.ring_rn_ohm).toBe('0.36');
+  });
+
+  it('codex P2 R3 follow-up #2: missing circuit row → not treated as unlabeled ring', () => {
+    // Job has NO row for circuit 22. An utterance "Circuit 22 ring
+    // R1 is 0.34" must NOT populate ring_r1_ohm — that would be
+    // inventing a ring classification for a circuit the user has
+    // never registered. Falls through to bare-R1 fallback (which is
+    // also blocked by hasExplicitRingForm), so the reading drops.
+    const matcher = new TranscriptFieldMatcher();
+    const result = matcher.match('Circuit 22 ring R1 is 0.34', emptyJob());
+    expect(result.circuitUpdates.get('22')?.ring_r1_ohm).toBeUndefined();
+    expect(result.circuitUpdates.get('22')?.r1_r2_ohm).toBeUndefined();
+  });
+
   it('codex P1 R3: explicit "ring R1" on a ring circuit populates ring_r1_ohm ONLY (not r1_r2_ohm)', () => {
     // Without the hasExplicitRingForm guard the same value would be
     // double-written into both ring_r1_ohm AND r1_r2_ohm.

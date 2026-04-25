@@ -344,7 +344,8 @@ function matchCircuitFields(
   text: string,
   circuitRef: string,
   result: RegexMatchResult,
-  job: JobDetail
+  job: JobDetail,
+  knownRing: Set<string>
 ): void {
   const updates = getOrCreateCircuit(result.circuitUpdates, circuitRef);
 
@@ -364,7 +365,7 @@ function matchCircuitFields(
     }
   }
 
-  const isRing = isRingCircuit(circuitRef, text, job);
+  const isRing = isRingCircuit(circuitRef, text, job, knownRing);
 
   // Ring continuity FIRST (codex P1 R3 fix): explicit "ring R1" /
   // "ring R2" land in ring_r{1,2}_ohm. The bare-R1 / bare-R2
@@ -480,37 +481,51 @@ function matchCircuitFields(
   }
 }
 
-function isRingCircuit(circuitRef: string, text: string, job: JobDetail): boolean {
-  // The rule resolves three cases the codex review surfaced over R3
-  // (commits 0af106a → 50df760 → here):
-  //
-  // (a) Job's circuit_designation contains "ring" → ring circuit.
-  //     This is the certain case (P2 original): an inspector who
-  //     labelled the circuit a ring is expressing a ring measurement
-  //     when they say "ring R1".
-  //
-  // (b) Job's designation is BLANK (unlabeled — the common state
-  //     for fresh rows from apply-document-extraction.ts /
-  //     circuits/page.tsx newCircuit()) AND the transcript contains
-  //     an explicit "ring R1/R2" marker → trust the transcript.
-  //     Codex P1 follow-up on 50df760: without this, fresh ring
-  //     readings dropped silently before the inspector named the
-  //     circuit.
-  //
-  // (c) Job's designation is something specific that is NOT "ring"
-  //     (e.g. "Cooker", "Lights", "Sockets") → NEVER ring, even if
-  //     the transcript mentions "ring R1" (P2 original): the
-  //     authoritative signal is the user's own circuit naming.
+/** Per-session "circuits identified as ring" cache. Once a ref has
+ *  been classified as a ring (via designation OR explicit transcript
+ *  form), subsequent utterances in the same session keep that
+ *  classification — important for the active-circuit follow-up flow:
+ *  "Circuit 5 ring R1 is 0.34" then "neutrals are 0.36" within the
+ *  30s window must both land in the ring_r{1,n}_ohm fields. Cleared
+ *  on `reset()` (session boundary). */
+function isRingCircuit(
+  circuitRef: string,
+  text: string,
+  job: JobDetail,
+  knownRing: Set<string>
+): boolean {
+  // Sticky cache hit (codex P1 #2 R3 follow-up, the active-circuit-
+  // workflow case).
+  if (knownRing.has(circuitRef)) return true;
+
   const circuits =
     (job.circuits as Array<{ circuit_ref?: string; circuit_designation?: string }>) ?? [];
   const row = circuits.find((c) => c.circuit_ref === circuitRef);
-  const designation = row?.circuit_designation?.trim() ?? '';
+
+  // No row found at all → don't trust the transcript wording. iOS
+  // never invents ring/non-ring classification for circuits that
+  // don't yet exist in the job (codex P2 #2 R3 follow-up). The
+  // matcher will fall through to the bare-R1/R2 → r1_r2_ohm
+  // fallback, the conservative safe default.
+  if (!row) return false;
+
+  const designation = row.circuit_designation?.trim() ?? '';
   if (designation.length > 0) {
-    // Cases (a) + (c): trust the labelled designation.
-    return /\bring\b/i.test(designation);
+    // Case (a) + (c): trust the labelled designation.
+    if (/\bring\b/i.test(designation)) {
+      knownRing.add(circuitRef);
+      return true;
+    }
+    return false;
   }
-  // Case (b): no designation yet — trust the explicit transcript form.
-  return /\bring\s+r\s*[12]\b/i.test(text);
+  // Case (b): row exists with blank designation — trust the
+  // explicit transcript form, then cache so follow-ups within the
+  // session don't need to re-prove it.
+  if (/\bring\s+r\s*[12]\b/i.test(text)) {
+    knownRing.add(circuitRef);
+    return true;
+  }
+  return false;
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -536,6 +551,9 @@ export class TranscriptFieldMatcher {
   private lastProcessedOffset = 0;
   private activeCircuitRef: string | null = null;
   private activeCircuitRefTimestamp: number | null = null;
+  /** Per-session sticky cache of circuit refs identified as ring
+   *  circuits. See `isRingCircuit` docstring for rationale. */
+  private readonly knownRingCircuits = new Set<string>();
 
   /** Reset all sliding-window + active-circuit state. Call at
    *  session boundaries (start / stop / mic toggle) so a new
@@ -544,6 +562,7 @@ export class TranscriptFieldMatcher {
     this.lastProcessedOffset = 0;
     this.activeCircuitRef = null;
     this.activeCircuitRefTimestamp = null;
+    this.knownRingCircuits.clear();
   }
 
   /** Match patterns against a transcript window. Caller passes the
@@ -582,6 +601,13 @@ export class TranscriptFieldMatcher {
     return result;
   }
 
+  /** Test-only inspector for the per-session ring-circuit cache.
+   *  Lets the matcher's regression suite verify that classifications
+   *  carry across calls. Not part of the public production API. */
+  _knownRingCircuitsForTest(): ReadonlySet<string> {
+    return this.knownRingCircuits;
+  }
+
   private matchCircuitFieldsBySegment(
     window: string,
     result: RegexMatchResult,
@@ -611,7 +637,7 @@ export class TranscriptFieldMatcher {
       // No explicit "circuit N" in this window. Fall back to active
       // circuit ref if one is still live.
       if (this.activeCircuitRef) {
-        matchCircuitFields(window, this.activeCircuitRef, result, job);
+        matchCircuitFields(window, this.activeCircuitRef, result, job, this.knownRingCircuits);
       }
       return;
     }
@@ -625,7 +651,7 @@ export class TranscriptFieldMatcher {
       const segText = window.slice(end, segEnd);
       this.activeCircuitRef = ref;
       this.activeCircuitRefTimestamp = Date.now();
-      matchCircuitFields(segText, ref, result, job);
+      matchCircuitFields(segText, ref, result, job, this.knownRingCircuits);
     }
   }
 }
