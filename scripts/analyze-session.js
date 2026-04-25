@@ -1032,12 +1032,33 @@ function analyzeSession(sessionDir) {
   // Same defence as a `Set`-backed lookup, lighter at the call site,
   // and preserves the existing `analysis.json` shape byte-identical
   // for known-only sessions.
+  // Plan 08-03 r2-#2 (MINOR): the previous shape — `if (!outcome) continue;`
+  // — silently dropped empty-string / null / undefined outcomes. r1-#3
+  // covered enum-drift unknowns ("value not in the frozen enum") but
+  // didn't cover MALFORMED outcomes ("no value emitted at all"). The
+  // two failure modes have distinct operational signatures:
+  //   - Unknown = enum drift; backend deploy out of sync with analyzer.
+  //   - Malformed = instrumentation failure; the row escaped the
+  //     emit-site `invalid_answer_outcome` throw with NO outcome set.
+  // Both are operationally serious; both deserve their own surface so
+  // optimizer dashboards can count them separately. We stringify the
+  // malformed value via `String(outcome)` so the warnings JSON
+  // serialises with a readable label per distinct shape:
+  //   "" → "", null → "null", undefined → "undefined".
+  // Routing malformed values through the unknown-outcome surface would
+  // misattribute the failure mode (an enum-drift fix is the wrong
+  // remediation for an instrumentation failure).
   const outcomes = Object.create(null);
   for (const o of ASK_USER_ANSWER_OUTCOMES) outcomes[o] = 0;
   const unknownOutcomeMap = new Map();
+  const malformedOutcomeMap = new Map();
   for (const evt of askUserEvents) {
     const outcome = evt.data?.answer_outcome;
-    if (!outcome) continue;
+    if (outcome === "" || outcome === null || outcome === undefined) {
+      const key = String(outcome);
+      malformedOutcomeMap.set(key, (malformedOutcomeMap.get(key) || 0) + 1);
+      continue;
+    }
     if (Object.hasOwn(outcomes, outcome)) {
       outcomes[outcome] += 1;
     } else {
@@ -1051,6 +1072,12 @@ function analyzeSession(sessionDir) {
   }));
   const unknownOutcomeCount = unknownOutcomes.reduce((sum, e) => sum + e.count, 0);
 
+  const malformedOutcomes = [...malformedOutcomeMap.entries()].map(([value, count]) => ({
+    value,
+    count,
+  }));
+  const malformedOutcomeCount = malformedOutcomes.reduce((sum, e) => sum + e.count, 0);
+
   // Append per-distinct-value warning entries onto the parser's warnings
   // accumulator. `events._warnings` is created by parseJSONL() as a
   // non-enumerable property so this re-use is safe — analyzeSession()
@@ -1059,6 +1086,11 @@ function analyzeSession(sessionDir) {
   if (events._warnings && unknownOutcomes.length > 0) {
     for (const { value, count } of unknownOutcomes) {
       events._warnings.push({ type: "unknown_ask_user_outcome", value, count });
+    }
+  }
+  if (events._warnings && malformedOutcomes.length > 0) {
+    for (const { value, count } of malformedOutcomes) {
+      events._warnings.push({ type: "malformed_ask_user_outcome", value, count });
     }
   }
 
@@ -1070,6 +1102,7 @@ function analyzeSession(sessionDir) {
       outcomes,
       unknown_outcome_count: unknownOutcomeCount,
       unknown_outcomes: unknownOutcomes,
+      malformed_outcome_count: malformedOutcomeCount,
     },
   };
 
