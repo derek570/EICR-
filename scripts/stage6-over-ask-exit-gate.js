@@ -170,13 +170,17 @@ import { createRestrainedMode } from '../src/extraction/stage6-restrained-mode.j
 import { createFilledSlotsShadowLogger } from '../src/extraction/stage6-filled-slots-shadow.js';
 import { validateAskUser } from '../src/extraction/stage6-dispatch-validation.js';
 
-// Plan 05-07 r1-#1 + Plan 05-08 r2-#1 + Plan 05-10 r4-#2 — the
-// harness's "exclude from askCount" predicate composes the wrapper's
-// two predicates with the harness-local pair of synth reasons.
+// Plan 05-07 r1-#1 + Plan 05-08 r2-#1 + Plan 05-10 r4-#2 + Plan 05-11
+// r5-#2 — the harness's "exclude from askCount" predicate composes the
+// wrapper's two predicates with the harness-local pair of synth reasons.
 //
 // Members:
 //   - isWrapperShortCircuitReason(reason)  — gated / session_terminated /
-//     dispatcher_error (the wrapper's own short-circuit synth reasons).
+//     gate_dispatcher_error (the wrapper's own short-circuit synth
+//     reasons; r5-#2 split removed dispatcher_error from this set —
+//     it's now classified as a real fire because the inner dispatcher's
+//     outer catch wraps post-register + post-ws.send code paths and we
+//     can't prove pre-emit on every code path).
 //   - 'restrained_mode' / 'ask_budget_exhausted' — wrapper-emitted
 //     synth reasons that NEVER reach the wrapper's isRealFire
 //     classifier (their code paths short-circuit BEFORE the post-
@@ -193,6 +197,12 @@ import { validateAskUser } from '../src/extraction/stage6-dispatch-validation.js
 //     harness mirrors via the same predicate (single source of truth —
 //     adding a member to the wrapper's private set automatically
 //     tightens the harness too).
+//
+// Plan 05-11 r5-#2 — `dispatcher_error` reclassified as fire (post-emit
+// conservative). This predicate composition AUTOMATICALLY inherits the
+// reclassification through `isWrapperShortCircuitReason`'s removal of
+// the reason from the wrapper's private Set. No harness-side change
+// needed — the wrapper edit is the load-bearing operation.
 //
 // Plan 05-10 r4-#2 background: the wrapper used to export the two
 // underlying Sets directly. `Object.freeze(new Set([...]))` does NOT
