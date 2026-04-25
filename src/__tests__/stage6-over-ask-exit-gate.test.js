@@ -1181,3 +1181,237 @@ describe('Plan 05-15 r9-#1 — fixture validation enforced by source directory',
     ).not.toThrow();
   });
 });
+
+// =============================================================================
+// Plan 05-16 r10-#1 — strict-gate dispatch via basename, not exact-path equality
+// =============================================================================
+// Pre-fix (r9-#1): the strict TIER 1 gate fires only when
+// `entry.sourceDir === PHASE5_FIXTURES_DIR` — exact-path equality. A canary
+// dropped into a COPIED Phase-5 directory (e.g. `--fixtures-dir
+// /tmp/copy-of-phase5/`) bypasses TIER 1 entirely and falls through TIER 2
+// (legacy schema-marker gate). TIER 2 only runs validateAskUser on inputs;
+// it does NOT enforce the marker / ask_user_calls / per-call ids+turnIds
+// contract that the Phase-5 dir is supposed to enforce. Net effect: a
+// malformed fixture in a copied dir silently produces zero asks via
+// `applyDefaults` instead of failing closed.
+//
+// Post-fix (r10-#1): the strict gate fires for EVERY entry whose source
+// directory is NOT the canonical Phase-4 legacy directory (basename
+// `stage6-golden-sessions`). PHASE5_FIXTURES_DIR, --fixtures-dir overrides,
+// the synthetic-breach dir, tmpdir overrides — all hit the strict gate.
+// The Phase-4 legacy dir is whitelisted by basename (not full-path equality)
+// so the legacy zero-ask path survives.
+//
+// Why basename and not exact-path: the basename rule is symmetric (any copy
+// of the Phase-4 dir under any path still recognised as legacy iff its
+// basename matches), discoverable (one constant), and minimum-surface-area
+// (single equality check vs N exact-path branches). Adding a "contains
+// phase5" axis would be redundant — every non-legacy directory is strict
+// by default under the basename rule.
+// =============================================================================
+
+describe('Plan 05-16 r10-#1 — strict-gate dispatch via basename, not exact-path equality', () => {
+  jest.setTimeout(30000);
+
+  let tmpDir;
+
+  afterEach(() => {
+    if (tmpDir && fs.existsSync(tmpDir)) {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+    tmpDir = undefined;
+  });
+
+  function buildValidPhase5FixtureFile() {
+    return {
+      _doc: 'Plan 05-16 r10-#1 — minimal valid Phase 5 fixture',
+      _fixture_shape: 'phase5-over-ask',
+      session: { jobId: 'r10-1-valid', certificateType: 'EICR' },
+      ask_user_calls: [
+        {
+          turnId: 'r10-1-valid-turn-1',
+          synthetic_time_ms: 0,
+          call: {
+            id: 'toolu_r10_1_valid',
+            name: 'ask_user',
+            input: {
+              question: 'Q?',
+              reason: 'ambiguous_circuit',
+              context_field: 'none',
+              context_circuit: null,
+              expected_answer_shape: 'free_text',
+            },
+          },
+          inner_outcome: { answered: true, user_text: 'whatever' },
+        },
+      ],
+      expected_ask_user_count: 1,
+      expected_restrained_activations: 0,
+      expected_outcome_distribution: { answered: 1 },
+      expected_filled_slots_shadow_logs: 0,
+      gate_fixture: true,
+    };
+  }
+
+  test('--fixtures-dir <copy-of-phase5> with fixture missing _fixture_shape → exits 2 (strict gate fires by basename, not exact-path)', () => {
+    // Build a tmpdir whose basename is NOT the Phase-4 legacy basename.
+    // Anything other than 'stage6-golden-sessions' should hit the strict gate.
+    tmpDir = fs.mkdtempSync(path.join(REPO_ROOT, 'tmp-plan-05-16-r10-1-copy-of-phase5-'));
+    const fixture = buildValidPhase5FixtureFile();
+    delete fixture._fixture_shape; // canary missing the marker
+    fs.writeFileSync(
+      path.join(tmpDir, 'sample-canary-no-shape.json'),
+      JSON.stringify(fixture, null, 2)
+    );
+
+    const result = spawnSync('node', [SCRIPT_PATH, '--json', '--fixtures-dir', tmpDir], {
+      encoding: 'utf8',
+      cwd: REPO_ROOT,
+    });
+
+    // Pre-r10-#1: bypassed gate → exits 0 (treated as zero-ask via
+    // applyDefaults). Post-r10-#1: strict gate fires → exits 2 with
+    // _fixture_shape error message.
+    expect(result.status).toBe(2);
+    expect(result.stderr).toMatch(/_fixture_shape/);
+    expect(result.stderr).toMatch(/sample-canary-no-shape\.json/);
+  });
+
+  test('--fixtures-dir <copy-of-phase5> with fixture missing turnId → exits 2 (strict gate fires)', () => {
+    tmpDir = fs.mkdtempSync(path.join(REPO_ROOT, 'tmp-plan-05-16-r10-1-copy-no-turnid-'));
+    const fixture = buildValidPhase5FixtureFile();
+    delete fixture.ask_user_calls[0].turnId;
+    fs.writeFileSync(
+      path.join(tmpDir, 'sample-canary-no-turnid.json'),
+      JSON.stringify(fixture, null, 2)
+    );
+
+    const result = spawnSync('node', [SCRIPT_PATH, '--json', '--fixtures-dir', tmpDir], {
+      encoding: 'utf8',
+      cwd: REPO_ROOT,
+    });
+
+    expect(result.status).toBe(2);
+    expect(result.stderr).toMatch(/turnId/);
+    expect(result.stderr).toMatch(/sample-canary-no-turnid\.json/);
+  });
+
+  test('regression lock — tmpdir with basename "stage6-golden-sessions" stays on legacy path (no _fixture_shape required)', async () => {
+    // The ONE basename that the strict gate must whitelist as legacy.
+    // Build a parent tmpdir, then a child dir with the canonical legacy
+    // basename. Drop a Phase-4-shape fixture (no _fixture_shape) into it.
+    // Direct call to validateFixtureInputs to assert the legacy whitelist.
+    const mod = await import('../../scripts/stage6-over-ask-exit-gate.js');
+    const { validateFixtureInputs } = mod;
+
+    const phase4LegacyFixture = {
+      _doc: 'Plan 05-16 r10-#1 regression lock — phase 4 legacy dir whitelisted by basename',
+      // No _fixture_shape — by design, legacy dual-SSE shape.
+      session: { jobId: 'phase4-legacy-r10-1', certificateType: 'EICR' },
+      // No ask_user_calls — by design.
+    };
+
+    // Synthetic sourceDir whose basename matches the legacy whitelist.
+    // Full-path differs from PHASE5_FIXTURES_DIR by design.
+    const syntheticLegacyPath = '/some/synthetic/copy/stage6-golden-sessions';
+
+    expect(() =>
+      validateFixtureInputs([
+        {
+          filename: 'sample-phase4-legacy-r10-1.json',
+          fullPath: '/tmp/x',
+          fixture: phase4LegacyFixture,
+          sourceDir: syntheticLegacyPath,
+        },
+      ])
+    ).not.toThrow();
+  });
+});
+
+// =============================================================================
+// Plan 05-16 r10-#2 — strict gate rejects whitespace-only turnId/call.id
+// =============================================================================
+// Pre-fix (r9-#1): the per-call turnId/call.id checks accept any non-empty
+// string. `'   '` (whitespace), `'\t\n'` (tab+newline), and similar
+// length-positive-but-semantically-empty strings pass the gate but produce
+// downstream confusion (CloudWatch keys collide; analyzer queries can't
+// distinguish " " from "").
+//
+// Post-fix (r10-#2): both checks add `.trim().length === 0` rejection.
+// Whitespace-only values fail the gate with the same error message as
+// missing/empty values.
+// =============================================================================
+
+describe('Plan 05-16 r10-#2 — strict gate rejects whitespace-only turnId and call.id', () => {
+  jest.setTimeout(15000);
+
+  let PHASE5_FIXTURES_DIR;
+  let validateFixtureInputs;
+
+  beforeAll(async () => {
+    const mod = await import('../../scripts/stage6-over-ask-exit-gate.js');
+    PHASE5_FIXTURES_DIR = mod.PHASE5_FIXTURES_DIR;
+    validateFixtureInputs = mod.validateFixtureInputs;
+  });
+
+  function buildValidPhase5Fixture() {
+    return {
+      _doc: 'Plan 05-16 r10-#2 — minimal valid Phase 5 fixture',
+      _fixture_shape: 'phase5-over-ask',
+      session: { jobId: 'r10-2-valid', certificateType: 'EICR' },
+      ask_user_calls: [
+        {
+          turnId: 'r10-2-valid-turn-1',
+          synthetic_time_ms: 0,
+          call: {
+            id: 'toolu_r10_2_valid',
+            name: 'ask_user',
+            input: {
+              question: 'Q?',
+              reason: 'ambiguous_circuit',
+              context_field: 'none',
+              context_circuit: null,
+              expected_answer_shape: 'free_text',
+            },
+          },
+          inner_outcome: { answered: true, user_text: 'whatever' },
+        },
+      ],
+      expected_ask_user_count: 1,
+      expected_restrained_activations: 0,
+      expected_outcome_distribution: { answered: 1 },
+      expected_filled_slots_shadow_logs: 0,
+      gate_fixture: true,
+    };
+  }
+
+  test('Phase 5 fixture with whitespace-only turnId ("   ") → throws', () => {
+    const fixture = buildValidPhase5Fixture();
+    fixture.ask_user_calls[0].turnId = '   ';
+    expect(() =>
+      validateFixtureInputs([
+        {
+          filename: 'r10-2-whitespace-turn.json',
+          fullPath: '/tmp/x',
+          fixture,
+          sourceDir: PHASE5_FIXTURES_DIR,
+        },
+      ])
+    ).toThrow(/r10-2-whitespace-turn\.json.*turnId/);
+  });
+
+  test('Phase 5 fixture with whitespace-only call.id ("\\t\\n") → throws', () => {
+    const fixture = buildValidPhase5Fixture();
+    fixture.ask_user_calls[0].call.id = '\t\n';
+    expect(() =>
+      validateFixtureInputs([
+        {
+          filename: 'r10-2-whitespace-id.json',
+          fullPath: '/tmp/x',
+          fixture,
+          sourceDir: PHASE5_FIXTURES_DIR,
+        },
+      ])
+    ).toThrow(/r10-2-whitespace-id\.json.*id/);
+  });
+});
