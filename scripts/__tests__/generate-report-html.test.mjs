@@ -386,3 +386,137 @@ test("Plan 08-04 r3-#1 — empty_fields with adversarial reason MUST not render 
     "Escaped form of <script> reason MUST appear",
   );
 });
+
+// ─────────────────────────────────────────────────────────────────
+// Phase 8 — Plan 08-06 r5-#1 (MAJOR) — count fields in the drift
+// warning block MUST be numerically coerced AND HTML-escaped before
+// interpolation.
+//
+// Codex r5-#1 raised that `scripts/generate-report-html.js:688` (the
+// `header` template literal in the new `driftWarningBlock` in
+// `buildToolCallTraffic()`) interpolates `unknownOutcomeCount` /
+// `malformedOutcomeCount` raw via:
+//
+//   const unknownOutcomeCount = askUser.unknown_outcome_count || 0;
+//   const malformedOutcomeCount = askUser.malformed_outcome_count || 0;
+//   const header = `${unknownOutcomeCount} unknown, ${malformedOutcomeCount} malformed`;
+//
+// The `|| 0` fallback only catches falsy values (0, NaN, "", null,
+// undefined). A poisoned `summary.json` providing
+// `unknown_outcome_count: "<script>alert(1)</script>"` (a STRING, which
+// is truthy unless empty) bypasses the fallback AND bypasses the
+// per-entry `escapeHtml()` we apply to value slots.
+//
+// Defence-in-depth: never trust `summary.json` shape — coerce to a
+// finite number first via `Number.isFinite(...)`, AND wrap the
+// interpolated count in `escapeHtml(String(...))` even when the value
+// can't logically carry markup. Plan 08-04 r3-#1 (renderer) anchored
+// the principle "every interpolated user-data slot flows through
+// escapeHtml"; this closes the residual gap on the new r4-#1 surface.
+// ─────────────────────────────────────────────────────────────────
+
+test("Plan 08-06 r5-#1 — string-typed unknown_outcome_count is numerically coerced to 0 (no warning block, no XSS)", () => {
+  // Pre-fix: `unknown_outcome_count: "<script>alert(1)</script>"` is
+  // truthy AND non-numeric. The `|| 0` fallback lets it through; the
+  // `unknownOutcomeCount === 0 && malformedOutcomeCount === 0` gate
+  // evaluates the string against 0 via `===` (false because string
+  // vs number), so the warning block RENDERS and interpolates the
+  // hostile string into the header.
+  // Post-fix: Number.isFinite("...") === false, coerced to 0; gate
+  // evaluates to true (both 0); block does NOT render; payload never
+  // reaches the HTML body.
+  const baseline = countLiveScriptTags(
+    runRenderer({ recommendations: [], summary: benignSummary() }),
+  );
+
+  const summary = benignSummary();
+  summary.tool_call_traffic.ask_user.unknown_outcome_count = XSS_SCRIPT;
+  // Leave malformed_outcome_count at 0 so the only signal is the
+  // poisoned unknown count. (If both were poisoned, the block would
+  // render with both interpolated; we test that case in test #3.)
+  summary.tool_call_traffic.ask_user.malformed_outcome_count = 0;
+
+  const html = runRenderer({ recommendations: [], summary });
+
+  // Block MUST NOT render (string coerces to 0 by Number.isFinite gate).
+  assert.ok(
+    !html.includes(ASK_USER_DRIFT_CLASS),
+    "String-typed unknown_outcome_count MUST coerce to 0; warning block MUST NOT render",
+  );
+
+  // No new live <script> tag (raw payload never reached HTML body).
+  assert.equal(
+    countLiveScriptTags(html),
+    baseline,
+    "Poisoned count field MUST NOT inject a live <script> tag",
+  );
+
+  // Raw payload MUST NOT appear anywhere in the body.
+  assert.ok(
+    !html.includes("<script>alert(1)</script>"),
+    "Raw <script> form from poisoned count field MUST NOT appear in HTML",
+  );
+});
+
+test("Plan 08-06 r5-#1 — NaN unknown_outcome_count is numerically coerced to 0 (no warning block)", () => {
+  // NaN is falsy; `|| 0` already catches it pre-fix. This test locks
+  // the contract going forward — the `Number.isFinite` guard is the
+  // canonical check, NOT `|| 0`. Future maintainer who replaces NaN
+  // with `Number.isNaN`-tagged sentinel won't accidentally break the
+  // gate.
+  // Note: `JSON.stringify(NaN)` produces `null`, so to land actual
+  // NaN in summary.json we'd need a non-JSON path. The Number.isFinite
+  // guard catches both NaN AND Infinity AND non-numbers — this test
+  // exercises the NaN path which arrives via direct JS object
+  // injection (the renderer reads summary.json via JSON.parse so NaN
+  // never actually arrives, but the guard MUST hold for future code
+  // paths that might not go through JSON serialisation).
+  const summary = benignSummary();
+  summary.tool_call_traffic.ask_user.unknown_outcome_count = NaN;
+  summary.tool_call_traffic.ask_user.malformed_outcome_count = 0;
+
+  const html = runRenderer({ recommendations: [], summary });
+
+  assert.ok(
+    !html.includes(ASK_USER_DRIFT_CLASS),
+    "NaN unknown_outcome_count MUST coerce to 0; warning block MUST NOT render",
+  );
+});
+
+test("Plan 08-06 r5-#1 — string-typed malformed_outcome_count is also numerically coerced (no XSS via the malformed path)", () => {
+  // Same coercion contract for the malformed count. Adversarial
+  // payload uses an `<svg onload=...>` form (different attack vector
+  // from <script>) to exercise a different escape sink — defence-in-
+  // depth means the contract holds for ALL HTML-significant chars,
+  // not just <script> openers.
+  const baseline = countLiveScriptTags(
+    runRenderer({ recommendations: [], summary: benignSummary() }),
+  );
+
+  const summary = benignSummary();
+  summary.tool_call_traffic.ask_user.unknown_outcome_count = 0;
+  summary.tool_call_traffic.ask_user.malformed_outcome_count = XSS_SVG;
+  // Leave warnings empty so the malformed-warning loop has nothing to
+  // iterate even if the gate were broken.
+  summary.warnings = [];
+
+  const html = runRenderer({ recommendations: [], summary });
+
+  assert.ok(
+    !html.includes(ASK_USER_DRIFT_CLASS),
+    "String-typed malformed_outcome_count MUST coerce to 0; warning block MUST NOT render",
+  );
+
+  // Raw onload=alert form MUST NOT appear in body.
+  assert.ok(
+    !html.includes("<svg onload=alert(3)>"),
+    "Raw <svg onload=> form from poisoned count MUST NOT appear in HTML",
+  );
+
+  // Live script count unchanged.
+  assert.equal(
+    countLiveScriptTags(html),
+    baseline,
+    "Poisoned malformed_outcome_count MUST NOT inject any live tags",
+  );
+});
