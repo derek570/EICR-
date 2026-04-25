@@ -33,6 +33,7 @@ import {
   wrapAskDispatcherWithGates,
   deriveAskKey,
 } from '../extraction/stage6-ask-gate-wrapper.js';
+import { createAskBudget } from '../extraction/stage6-ask-budget.js';
 import { QUESTION_GATE_DELAY_MS } from '../extraction/question-gate.js';
 
 beforeEach(() => {
@@ -114,6 +115,70 @@ describe('deriveAskKey', () => {
     // stage6-ask-budget.js treats them identically once the key is
     // normalised.
     expect(deriveAskKey({})).toBe('_:_');
+  });
+
+  // ===========================================================================
+  // Plan 05-08 r2-#2 — null vs "none" key bypass.
+  // ===========================================================================
+  // stage6-tool-schemas.js:327 documents the context_field enum as: "...the
+  // sentinel "none" (equivalently null) for scope-less asks". An ask carrying
+  // context_field:null and a follow-up ask carrying context_field:"none"
+  // refer to the same logical scope ("no field"). Pre-fix deriveAskKey
+  // produced different keys ("_:N" vs "none:N") so per-key budget could not
+  // catch repeated scope-less asks that alternated representations.
+  //
+  // Fix scope: only the context_field side is normalised. context_circuit
+  // schema treats only `null` as the sentinel (per schema description); `0`
+  // remains a distinct integer per the existing Group 1 test
+  // ("extracts field:circuit from a normal input" at the top — `'ze:0'`).
+  // ===========================================================================
+
+  test('"none" (canonical sentinel) collapses to "_" — same as null', () => {
+    expect(deriveAskKey({ context_field: 'none', context_circuit: null })).toBe('_:_');
+    expect(deriveAskKey({ context_field: null, context_circuit: null })).toBe('_:_');
+    // Both expressions above must match for the per-key budget to bucket
+    // them together.
+    expect(deriveAskKey({ context_field: 'none', context_circuit: null })).toBe(
+      deriveAskKey({ context_field: null, context_circuit: null })
+    );
+  });
+
+  test('"none" collapses case-insensitively (NONE / None / nOnE)', () => {
+    expect(deriveAskKey({ context_field: 'NONE', context_circuit: null })).toBe('_:_');
+    expect(deriveAskKey({ context_field: 'None', context_circuit: null })).toBe('_:_');
+    expect(deriveAskKey({ context_field: 'nOnE', context_circuit: null })).toBe('_:_');
+  });
+
+  test('field collapse preserves real circuit number', () => {
+    expect(deriveAskKey({ context_field: 'none', context_circuit: 3 })).toBe('_:3');
+    expect(deriveAskKey({ context_field: null, context_circuit: 3 })).toBe('_:3');
+    expect(deriveAskKey({ context_field: 'NONE', context_circuit: 3 })).toBe(
+      deriveAskKey({ context_field: null, context_circuit: 3 })
+    );
+  });
+
+  test('real field values are unchanged (case-PRESERVING)', () => {
+    expect(deriveAskKey({ context_field: 'ze', context_circuit: 1 })).toBe('ze:1');
+    expect(deriveAskKey({ context_field: 'measured_zs_ohm', context_circuit: 6 })).toBe(
+      'measured_zs_ohm:6'
+    );
+    // No case-folding on real values — validator owns canonical case.
+    // (We deliberately don't enforce case-equivalence here for non-sentinel
+    // values; a malformed `'Ze'` should derive a DIFFERENT key from `'ze'`
+    // so the bug shows up as a per-key bucket mismatch in the analyzer.)
+    expect(deriveAskKey({ context_field: 'Ze', context_circuit: 1 })).not.toBe('ze:1');
+  });
+
+  test('regression lock — context_circuit:0 stays distinct from null (NOT collapsed)', () => {
+    // Schema documents only `null` as the sentinel for context_circuit;
+    // `0` is a valid integer with no sentinel meaning. The existing Group 1
+    // test "extracts field:circuit from a normal input" asserts
+    // {field:'ze',circuit:0} → 'ze:0'. r2-#2 is intentionally scoped to
+    // context_field only.
+    expect(deriveAskKey({ context_field: 'ze', context_circuit: 0 })).toBe('ze:0');
+    expect(deriveAskKey({ context_field: 'ze', context_circuit: 0 })).not.toBe(
+      deriveAskKey({ context_field: 'ze', context_circuit: null })
+    );
   });
 });
 
@@ -825,5 +890,75 @@ describe('Plan 05-08 r2-#1 — PRE_EMIT_NON_FIRE_REASONS treated as non-fires', 
     expect(restrainedMode.recordAsk).toHaveBeenCalledTimes(1);
 
     gate.destroy();
+  });
+});
+
+// =============================================================================
+// Group 8: Plan 05-08 r2-#2 — null/"none" alternation cannot bypass per-key budget
+// =============================================================================
+// End-to-end lock: 4 calls with context_field alternating between
+// `[null, 'none', 'NONE', null]` for the same context_circuit must all
+// land in the same `'_:N'` bucket of the REAL askBudget. With cap=2 the
+// first two calls fire the inner dispatcher and the last two
+// short-circuit with reason='ask_budget_exhausted'.
+//
+// We use the REAL createAskBudget (not the mock from makeBudget()) so the
+// counters' bucket-by-key behaviour is exercised end-to-end.
+// =============================================================================
+
+describe('Plan 05-08 r2-#2 — null/"none" alternation cannot bypass per-key budget', () => {
+  test('4-call alternation with same circuit hits same bucket; first 2 fire, last 2 short-circuit', async () => {
+    const logger = makeLogger();
+    const inner = makeInnerDispatcher();
+    const askBudget = createAskBudget({ maxAsksPerKey: 2 });
+    const restrainedMode = makeRestrained({ active: false });
+    const gate = createAskGateWrapper({ logger, sessionId: 'sess-1' });
+
+    const wrapped = wrapAskDispatcherWithGates(inner, {
+      askBudget,
+      restrainedMode,
+      gate,
+      filledSlotsShadow: () => {},
+      logger,
+      sessionId: 'sess-1',
+    });
+
+    // Same circuit number across all 4 calls; field alternates between the
+    // canonical sentinel forms. Every form MUST resolve to the same
+    // budget key '_:7'.
+    const variants = [null, 'none', 'NONE', null];
+    const results = [];
+    for (let i = 0; i < variants.length; i++) {
+      const call = makeCall(`call-${i + 1}`, variants[i], 7);
+      const ctx = makeCtx(`sess-1-turn-${i + 1}`);
+      const p = wrapped(call, ctx);
+      jest.advanceTimersByTime(QUESTION_GATE_DELAY_MS);
+
+      results.push(await p);
+    }
+
+    // First two: real fires (inner dispatcher invoked, answered:true).
+    expect(JSON.parse(results[0].content).answered).toBe(true);
+    expect(JSON.parse(results[1].content).answered).toBe(true);
+    // Last two: ask_budget_exhausted short-circuit (the wrapper's pre-
+    // dispatch check sees isExhausted('_:7') === true).
+    expect(JSON.parse(results[2].content).reason).toBe('ask_budget_exhausted');
+    expect(JSON.parse(results[3].content).reason).toBe('ask_budget_exhausted');
+
+    expect(inner).toHaveBeenCalledTimes(2);
+
+    gate.destroy();
+  });
+
+  test('regression lock — distinct REAL field values do NOT bypass each other', () => {
+    // Sanity: r2-#2's canonicalisation must NOT widen to non-sentinel
+    // values. 'ze' and 'zs' are distinct schema values and must keep
+    // distinct keys.
+    expect(deriveAskKey({ context_field: 'ze', context_circuit: 7 })).not.toBe(
+      deriveAskKey({ context_field: 'zs', context_circuit: 7 })
+    );
+    expect(deriveAskKey({ context_field: 'measured_r1_plus_r2', context_circuit: null })).not.toBe(
+      deriveAskKey({ context_field: 'measured_zs_ohm', context_circuit: null })
+    );
   });
 });
