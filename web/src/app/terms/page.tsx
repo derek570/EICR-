@@ -18,6 +18,7 @@ import { Button } from '@/components/ui/button';
 import { Dialog, DialogClose, DialogContent, DialogTitle } from '@/components/ui/dialog';
 import { HeroHeader } from '@/components/ui/hero-header';
 import { SectionCard } from '@/components/ui/section-card';
+import { sanitiseRedirect } from '@/lib/auth-redirect';
 import { cn } from '@/lib/utils';
 import { LEGAL_DOCUMENTS, type LegalDocumentId } from './legal-texts';
 import { recordTermsAcceptance } from './legal-texts-gate';
@@ -85,7 +86,13 @@ const DOCUMENT_ICONS: Record<LegalDocumentId, React.ComponentType<{ className?: 
 export default function TermsPage() {
   const router = useRouter();
   const search = useSearchParams();
-  const next = search.get('next') || '/dashboard';
+  // Sanitise the `next` query param — without this, a crafted
+  // `/terms?next=https://evil.example` or `/terms?next=//evil.example`
+  // would bounce an authenticated user off-site the moment they
+  // accept. Same class of open-redirect we already fixed on /login;
+  // reuse the shared sanitiser so both gates have one source of truth.
+  // (Codex review finding on `06caaf9`.)
+  const next = sanitiseRedirect(search.get('next'));
 
   const [readDocs, setReadDocs] = React.useState<Record<LegalDocumentId, boolean>>({
     termsAndConditions: false,

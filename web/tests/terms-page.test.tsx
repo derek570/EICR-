@@ -256,6 +256,45 @@ describe('Wave B parity · /terms acceptance gate', () => {
     expect(replaceMock).toHaveBeenCalledWith('/job/abc/circuits');
   });
 
+  it('rejects an open-redirect `next` and routes to /dashboard instead (codex P1 on 06caaf9)', async () => {
+    // A crafted `?next=https://evil.example` would let an attacker hand
+    // an authenticated user a Terms link that bounces them off-site the
+    // moment they accept. The page now runs `next` through
+    // `sanitiseRedirect`, which keeps only same-origin absolute paths.
+    searchParamsStub.set('next', 'https://evil.example/landing');
+
+    harness = mount();
+    const readButtons = Array.from(
+      harness.container.querySelectorAll<HTMLButtonElement>('button[data-doc-id]')
+    );
+    for (const btn of readButtons) {
+      await act(async () => {
+        btn.click();
+      });
+      const dialog = harness.container.querySelector('[data-testid="legal-dialog"]');
+      await act(async () => {
+        (dialog as HTMLElement).click();
+      });
+    }
+    for (const text of ['I am a qualified', 'I hold valid', 'I understand that CertMate']) {
+      const btn = Array.from(harness.container.querySelectorAll('button')).find((b) =>
+        b.textContent?.includes(text)
+      );
+      await act(async () => {
+        btn!.click();
+      });
+    }
+    const accept = findButton(harness.container, 'I Accept');
+    await act(async () => {
+      accept!.click();
+      await Promise.resolve();
+    });
+    expect(replaceMock).toHaveBeenCalledTimes(1);
+    expect(replaceMock).toHaveBeenCalledWith('/dashboard');
+    // And the protocol-relative variant — also sanitised away.
+    expect(replaceMock).not.toHaveBeenCalledWith('https://evil.example/landing');
+  });
+
   it('defaults the redirect target to /dashboard when no `next` param is provided', async () => {
     harness = mount();
 

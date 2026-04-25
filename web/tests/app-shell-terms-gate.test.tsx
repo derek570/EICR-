@@ -34,10 +34,12 @@ beforeAll(() => {
 
 const replaceMock = vi.fn<(href: string) => void>();
 let pathnameStub = '/dashboard';
+let searchStub = '';
 
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ replace: replaceMock, push: vi.fn(), back: vi.fn() }),
   usePathname: () => pathnameStub,
+  useSearchParams: () => new URLSearchParams(searchStub),
 }));
 
 import {
@@ -45,7 +47,7 @@ import {
   TERMS_VERSION,
   hasAcceptedCurrentTerms,
 } from '@/app/terms/legal-texts-gate';
-import { useRouter, usePathname } from 'next/navigation';
+import { useRouter, usePathname, useSearchParams } from 'next/navigation';
 
 /**
  * The smallest faithful reproduction of the AppShell gate effect.
@@ -54,15 +56,19 @@ import { useRouter, usePathname } from 'next/navigation';
  */
 function GateShim(): null {
   const pathname = usePathname();
+  const searchParams = useSearchParams();
   const router = useRouter();
   React.useEffect(() => {
     if (pathname === '/terms') return;
     if (hasAcceptedCurrentTerms()) return;
     const params = new URLSearchParams();
-    if (pathname && pathname !== '/dashboard') params.set('next', pathname);
+    if (pathname && pathname !== '/dashboard') {
+      const search = searchParams ? searchParams.toString() : '';
+      params.set('next', search ? `${pathname}?${search}` : pathname);
+    }
     const qs = params.toString();
     router.replace(qs ? `/terms?${qs}` : '/terms');
-  }, [pathname, router]);
+  }, [pathname, router, searchParams]);
   return null;
 }
 
@@ -82,6 +88,7 @@ beforeEach(() => {
   replaceMock.mockReset();
   window.localStorage.clear();
   pathnameStub = '/dashboard';
+  searchStub = '';
 });
 
 afterEach(() => {
@@ -132,5 +139,21 @@ describe('Wave B parity · AppShell T&Cs gate', () => {
     harness = mount();
     expect(replaceMock).toHaveBeenCalledTimes(1);
     expect(replaceMock).toHaveBeenCalledWith('/terms?next=%2Fjob%2Fxyz');
+  });
+
+  it('preserves the original query string in `next` (codex P2 on 06caaf9)', () => {
+    // Routes like /job/[id]/circuits/match-review carry resume state in
+    // their query (`?nonce=...`). Pre-fix the gate stored only pathname
+    // and the user returned to the page without their nonce, falling
+    // back to the wrong screen post-accept.
+    pathnameStub = '/job/abc/circuits/match-review';
+    searchStub = 'nonce=xyz123&session=42';
+    harness = mount();
+    expect(replaceMock).toHaveBeenCalledTimes(1);
+    const arg = replaceMock.mock.calls[0][0];
+    // URL-encoded `next` includes both pathname and the full query.
+    expect(arg).toContain('next=');
+    const decoded = decodeURIComponent(arg.split('next=')[1] ?? '');
+    expect(decoded).toBe('/job/abc/circuits/match-review?nonce=xyz123&session=42');
   });
 });
