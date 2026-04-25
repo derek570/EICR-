@@ -32,7 +32,10 @@ import {
   createAskGateWrapper,
   wrapAskDispatcherWithGates,
   deriveAskKey,
+  isWrapperShortCircuitReason,
+  isPreEmitNonFireReason,
 } from '../extraction/stage6-ask-gate-wrapper.js';
+import * as wrapperModule from '../extraction/stage6-ask-gate-wrapper.js';
 import { createAskBudget } from '../extraction/stage6-ask-budget.js';
 import { QUESTION_GATE_DELAY_MS } from '../extraction/question-gate.js';
 
@@ -1153,5 +1156,145 @@ describe('Plan 05-08 r2-#2 — null/"none" alternation cannot bypass per-key bud
     expect(deriveAskKey({ context_field: 'measured_r1_plus_r2', context_circuit: null })).not.toBe(
       deriveAskKey({ context_field: 'measured_zs_ohm', context_circuit: null })
     );
+  });
+});
+
+// =============================================================================
+// Group 9: Plan 05-10 r4-#2 — predicate helpers replace mutable Set exports
+// =============================================================================
+// Pre-r4-#2 the wrapper exported two Sets:
+//   - WRAPPER_SHORT_CIRCUIT_REASONS = new Set([...])
+//     (no Object.freeze at all — bare Set)
+//   - PRE_EMIT_NON_FIRE_REASONS = Object.freeze(new Set([...]))
+//
+// Object.freeze on a Set DOES NOT prevent .add() / .delete() — it freezes
+// the Set object's own enumerable properties + prevents extensions, but
+// the Set's internal [[SetData]] slot is unaffected. So an importer
+// could call:
+//   import { WRAPPER_SHORT_CIRCUIT_REASONS } from '...';
+//   WRAPPER_SHORT_CIRCUIT_REASONS.add('foo');
+//   // → silently changes the budget classifier in this process for
+//   //   the remainder of its lifetime; harness's
+//   //   HARNESS_WRAPPER_SHORT_CIRCUIT_REASONS spread on next harness
+//   //   run also pulls in 'foo'.
+// Or:
+//   PRE_EMIT_NON_FIRE_REASONS.delete('shadow_mode');
+//   // → silently undoes Plan 05-09 r3-#1's fix.
+//
+// Footgun, not active attack surface (we don't pass these Sets to
+// untrusted code), but the API contract is that they're constants and
+// the previous shape didn't enforce it.
+//
+// r4-#2 fix: replace exported Sets with predicate helpers
+//   isWrapperShortCircuitReason(reason: string): boolean
+//   isPreEmitNonFireReason(reason: string): boolean
+// Module-private Sets stay (immutable from outside since they're not
+// exported). The harness updates to use the predicates instead of
+// importing + spreading the Sets — single source of truth becomes the
+// predicate behaviour, not the Set's contents.
+// =============================================================================
+
+describe('Plan 05-10 r4-#2 — predicate helpers replace mutable Set exports', () => {
+  test('isWrapperShortCircuitReason exported as a function', () => {
+    expect(typeof isWrapperShortCircuitReason).toBe('function');
+  });
+
+  test('isWrapperShortCircuitReason returns true for every legacy member', () => {
+    // Legacy WRAPPER_SHORT_CIRCUIT_REASONS members (Plan 05-01 +
+    // r1-#1 audit prose):
+    expect(isWrapperShortCircuitReason('gated')).toBe(true);
+    expect(isWrapperShortCircuitReason('session_terminated')).toBe(true);
+    expect(isWrapperShortCircuitReason('dispatcher_error')).toBe(true);
+  });
+
+  test('isWrapperShortCircuitReason returns false for non-members', () => {
+    // Real-fire reasons (inner dispatcher answers; not wrapper short-
+    // circuits) MUST return false.
+    expect(isWrapperShortCircuitReason('answered')).toBe(false);
+    expect(isWrapperShortCircuitReason('user_moved_on')).toBe(false);
+    expect(isWrapperShortCircuitReason('timeout')).toBe(false);
+    // PRE_EMIT_NON_FIRE_REASONS members are NOT wrapper short-circuit
+    // reasons — they live in a separate set.
+    expect(isWrapperShortCircuitReason('validation_error')).toBe(false);
+    expect(isWrapperShortCircuitReason('shadow_mode')).toBe(false);
+    // Wrapper-emitted but post-dispatch synth (handled in
+    // wrapAskDispatcherWithGates pre-dispatch branches, not in
+    // isRealFire's classifier path):
+    expect(isWrapperShortCircuitReason('restrained_mode')).toBe(false);
+    expect(isWrapperShortCircuitReason('ask_budget_exhausted')).toBe(false);
+    // Garbage input must not throw and must return false.
+    expect(isWrapperShortCircuitReason('not-a-real-reason')).toBe(false);
+    expect(isWrapperShortCircuitReason('')).toBe(false);
+  });
+
+  test('isPreEmitNonFireReason exported as a function', () => {
+    expect(typeof isPreEmitNonFireReason).toBe('function');
+  });
+
+  test('isPreEmitNonFireReason returns true for every legacy member (incl. r3-#1 shadow_mode)', () => {
+    // Plan 05-08 r2-#1 + Plan 05-09 r3-#1 — four pre-emit reasons:
+    expect(isPreEmitNonFireReason('validation_error')).toBe(true);
+    expect(isPreEmitNonFireReason('duplicate_tool_call_id')).toBe(true);
+    expect(isPreEmitNonFireReason('prompt_leak_blocked')).toBe(true);
+    expect(isPreEmitNonFireReason('shadow_mode')).toBe(true);
+  });
+
+  test('isPreEmitNonFireReason returns false for non-members', () => {
+    expect(isPreEmitNonFireReason('answered')).toBe(false);
+    expect(isPreEmitNonFireReason('user_moved_on')).toBe(false);
+    expect(isPreEmitNonFireReason('timeout')).toBe(false);
+    expect(isPreEmitNonFireReason('gated')).toBe(false);
+    expect(isPreEmitNonFireReason('restrained_mode')).toBe(false);
+    expect(isPreEmitNonFireReason('ask_budget_exhausted')).toBe(false);
+    expect(isPreEmitNonFireReason('not-a-real-reason')).toBe(false);
+    expect(isPreEmitNonFireReason('')).toBe(false);
+  });
+
+  test('legacy Set exports REMOVED — wrapper module exports no mutable Set', () => {
+    // r4-#2 lock: the wrapper module must not export
+    // WRAPPER_SHORT_CIRCUIT_REASONS or PRE_EMIT_NON_FIRE_REASONS as
+    // Set instances any more. The wildcard import (`import *`) gives
+    // us the entire module's public surface; we assert neither name
+    // is present. Future drift that re-introduces the mutable export
+    // (e.g. a careless refactor copying the Set back to the export
+    // section) trips this assertion.
+    expect(wrapperModule.WRAPPER_SHORT_CIRCUIT_REASONS).toBeUndefined();
+    expect(wrapperModule.PRE_EMIT_NON_FIRE_REASONS).toBeUndefined();
+    // Predicates ARE on the module surface (sanity-check the
+    // wildcard import sees them).
+    expect(wrapperModule.isWrapperShortCircuitReason).toBe(isWrapperShortCircuitReason);
+    expect(wrapperModule.isPreEmitNonFireReason).toBe(isPreEmitNonFireReason);
+  });
+
+  test('regression lock — restrained_mode / ask_budget_exhausted still excluded at HARNESS layer', async () => {
+    // The wrapper module's predicates do NOT include restrained_mode /
+    // ask_budget_exhausted (those are wrapper-emitted but live in
+    // pre-dispatch branches, not in isRealFire's classifier). The
+    // HARNESS layer is what unions those into its accounting set.
+    // We assert that semantics via behaviour — a wrapper run with
+    // restrainedMode active must NOT increment counters (gated by
+    // wrapAskDispatcherWithGates' restrainedMode branch which short-
+    // circuits BEFORE the post-dispatch counter step).
+    const logger = makeLogger();
+    const inner = makeInnerDispatcher();
+    const askBudget = makeBudget();
+    const restrainedMode = makeRestrained({ active: true });
+    const gate = createAskGateWrapper({ logger, sessionId: 'sess-1' });
+
+    const wrapped = wrapAskDispatcherWithGates(inner, {
+      askBudget,
+      restrainedMode,
+      gate,
+      filledSlotsShadow: () => {},
+      logger,
+      sessionId: 'sess-1',
+    });
+
+    const result = await wrapped(makeCall('call-1', 'ze', 0), makeCtx());
+    expect(JSON.parse(result.content).reason).toBe('restrained_mode');
+    expect(askBudget.increment).not.toHaveBeenCalled();
+    expect(restrainedMode.recordAsk).not.toHaveBeenCalled();
+
+    gate.destroy();
   });
 });
