@@ -11,7 +11,7 @@ import {
   type SonnetQuestion,
 } from './recording/sonnet-session';
 import { applyExtractionToJob } from './recording/apply-extraction';
-import { FieldSourceMap } from './recording/field-source';
+import { FieldSourceMap, buildRegexHints } from './recording/field-source';
 import { normalise as normaliseTranscript } from './recording/number-normaliser';
 import { TranscriptFieldMatcher } from './recording/transcript-field-matcher';
 import { applyRegexResultToJob } from './recording/apply-regex-result';
@@ -392,7 +392,22 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
           // Fire the final utterance at the Sonnet session so server-side
           // multi-turn extraction can fill form fields. No-op if the WS
           // isn't open — the Sonnet client queues pre-connect messages.
-          sonnetRef.current?.sendTranscript(normalised);
+          // R5 of REGEX_TIER_PLAN.md: bundle the regex-hint summary so
+          // the backend's Sonnet adapter knows which fields the regex
+          // tier already filled (and skips re-asking about them). Hints
+          // are only emitted when the regex tier is enabled — flag-off
+          // sessions send identical wire payloads to the pre-R5 client.
+          const regexHints =
+            process.env.NEXT_PUBLIC_REGEX_TIER_ENABLED === 'true'
+              ? buildRegexHints(
+                  fieldSourcesRef.current,
+                  jobRef.current as unknown as Parameters<typeof buildRegexHints>[1]
+                )
+              : undefined;
+          sonnetRef.current?.sendTranscript(
+            normalised,
+            regexHints && regexHints.length > 0 ? { regexHints } : undefined
+          );
           // Each dispatched transcript is one outstanding Sonnet turn
           // until an extraction / question frame arrives to clear it.
           setProcessingCount((n) => n + 1);

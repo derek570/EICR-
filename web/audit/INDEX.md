@@ -16,7 +16,7 @@ Closes the two coupled Phase 6 P0s deferred from Wave B: "No regex layer" + "2-t
 | R2 | `FieldSource` map + `applyRegexValue` / `applySonnetValue` priority rules | ✅ done | (this commit) |
 | R3 | `TranscriptFieldMatcher` engine + 6 regex categories (~60 cases) | ✅ done | (this commit) |
 | R4 | Wire matcher into `recording-context` + LiveFill (flag-gated) | ✅ done | (this commit) |
-| R5 | `regex_fields` hint protocol — web starts emitting (no backend change) | ⏳ pending | — |
+| R5 | `regex_fields` hint protocol — web starts emitting (no backend change) | ✅ done | (this commit) |
 | R6 | Staging soak (5 sessions, 1 week) | ⏳ pending | — |
 | R7 | Production flag flip + INDEX close | ⏳ pending | — |
 

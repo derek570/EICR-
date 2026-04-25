@@ -273,3 +273,42 @@ export function circuit0Key(section: string, field: string): string {
 export function perCircuitKey(circuitRef: string | number, field: string): string {
   return `circuit.${circuitRef}.${field}`;
 }
+
+/** Hint summary entry for the `regex_fields` wire payload. Mirrors
+ *  iOS `buildRegexSummary` shape:
+ *    [{ field: "supply.ze" }, { field: "installation.postcode", value: "EC1A 1BB" }, …]
+ *  Most fields just send the field name — Sonnet looks up the
+ *  current value from its server-side state snapshot. The
+ *  `installation.postcode` exception attaches the value so the
+ *  backend can trigger postcodes.io enrichment without an extra
+ *  round-trip. v1 web doesn't ship installation matchers so the
+ *  postcode branch is plumbed-but-dormant; future-proofing for v2. */
+export interface RegexHintEntry {
+  field: string;
+  value?: string;
+}
+
+/** Build the regex-hint summary the recording client sends alongside
+ *  every transcript message. Mirrors iOS `TranscriptProcessor.
+ *  buildRegexSummary` (DeepgramRecordingViewModel.swift): filter the
+ *  source map for keys with source='regex' and emit `{field, value?}`.
+ *  Returns an empty array if no regex-tier writes have happened yet
+ *  (callers omit the field entirely on the wire). */
+export function buildRegexHints(
+  sources: FieldSourceMap,
+  job?: { installation?: { postcode?: string | null } | null } | null
+): RegexHintEntry[] {
+  const hints: RegexHintEntry[] = [];
+  for (const [key, source] of sources.entries()) {
+    if (source !== 'regex') continue;
+    const entry: RegexHintEntry = { field: key };
+    if (key === 'installation.postcode') {
+      const postcode = job?.installation?.postcode;
+      if (typeof postcode === 'string' && postcode.trim().length > 0) {
+        entry.value = postcode;
+      }
+    }
+    hints.push(entry);
+  }
+  return hints;
+}

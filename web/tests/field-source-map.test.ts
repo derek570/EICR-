@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { FieldSourceMap, circuit0Key, perCircuitKey } from '@/lib/recording/field-source';
+import {
+  FieldSourceMap,
+  buildRegexHints,
+  circuit0Key,
+  perCircuitKey,
+} from '@/lib/recording/field-source';
 import type { JobDetail } from '@/lib/types';
 
 describe('FieldSourceMap — basic getters/setters', () => {
@@ -256,6 +261,46 @@ describe('FieldSourceMap — snapshot refresh on apply-rules writes', () => {
     } as unknown as JobDetail;
     map.reconcileFromJob(job);
     expect(map.get('circuit.3.measured_zs_ohm')).toBe('regex');
+  });
+});
+
+describe('buildRegexHints (R5) — regex-tier hint summary for the wire', () => {
+  it('returns only keys with source=regex (not preExisting / sonnet)', () => {
+    const map = new FieldSourceMap();
+    map.set('supply.ze', 'regex', '0.34');
+    map.set('supply.pfc', 'preExisting', '1.5');
+    map.set('circuit.3.measured_zs_ohm', 'sonnet', '0.44');
+    map.set('circuit.5.measured_zs_ohm', 'regex', '0.50');
+    const hints = buildRegexHints(map);
+    expect(hints.map((h) => h.field).sort()).toEqual(['circuit.5.measured_zs_ohm', 'supply.ze']);
+  });
+
+  it('empty source map → empty array', () => {
+    expect(buildRegexHints(new FieldSourceMap())).toEqual([]);
+  });
+
+  it('postcode hint attaches the value (iOS contract)', () => {
+    const map = new FieldSourceMap();
+    map.set('installation.postcode', 'regex', 'EC1A 1BB');
+    const hints = buildRegexHints(map, { installation: { postcode: 'EC1A 1BB' } });
+    expect(hints).toEqual([{ field: 'installation.postcode', value: 'EC1A 1BB' }]);
+  });
+
+  it('non-postcode regex hints do NOT include value (matches iOS shape)', () => {
+    const map = new FieldSourceMap();
+    map.set('supply.ze', 'regex', '0.34');
+    map.set('circuit.3.measured_zs_ohm', 'regex', '0.44');
+    const hints = buildRegexHints(map);
+    for (const h of hints) {
+      expect(h).not.toHaveProperty('value');
+    }
+  });
+
+  it('postcode hint omits value when the job postcode is empty / missing', () => {
+    const map = new FieldSourceMap();
+    map.set('installation.postcode', 'regex', 'EC1A 1BB');
+    const hints = buildRegexHints(map, { installation: { postcode: '' } });
+    expect(hints).toEqual([{ field: 'installation.postcode' }]);
   });
 });
 

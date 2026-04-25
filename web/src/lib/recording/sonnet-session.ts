@@ -403,8 +403,24 @@ export class SonnetSession {
   }
 
   /** Feed a final Deepgram transcript into the Sonnet session. No-op if
-   *  the text is empty. Messages sent before `onopen` are queued. */
-  sendTranscript(text: string, options?: { confirmationsEnabled?: boolean }): void {
+   *  the text is empty. Messages sent before `onopen` are queued.
+   *
+   *  `regexHints`, when non-empty, attaches as `regex_fields` on the
+   *  wire payload — the regex-tier hint protocol iOS has shipped since
+   *  2026-02. The backend already understands this field; web just
+   *  starts emitting it (no backend change needed). Hints tell Sonnet
+   *  "the regex tier already filled these fields with high confidence;
+   *  only overwrite if you have a strong disagreement". Empty array
+   *  vs absent field is treated identically by the server schema, so
+   *  we omit the key entirely when there are no hints to keep
+   *  pre-existing test fixtures + wire snapshots stable. */
+  sendTranscript(
+    text: string,
+    options?: {
+      confirmationsEnabled?: boolean;
+      regexHints?: ReadonlyArray<{ field: string; value?: string }>;
+    }
+  ): void {
     const trimmed = text?.trim();
     if (!trimmed) return;
     if (!this.ws || this.state === 'connecting') {
@@ -412,11 +428,15 @@ export class SonnetSession {
       return;
     }
     if (this.state !== 'connected') return;
-    this.sendRaw({
+    const payload: Record<string, unknown> = {
       type: 'transcript',
       text: trimmed,
       confirmations_enabled: options?.confirmationsEnabled ?? false,
-    });
+    };
+    if (options?.regexHints && options.regexHints.length > 0) {
+      payload.regex_fields = options.regexHints;
+    }
+    this.sendRaw(payload);
   }
 
   /** Manual field correction — sent as a pseudo-transcript so Sonnet can

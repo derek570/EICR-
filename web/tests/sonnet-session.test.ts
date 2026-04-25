@@ -139,6 +139,82 @@ describe('SonnetSession', () => {
   });
 
   // ────────────────────────────────────────────────────────────────────────
+  // R5 — regex_fields hint protocol
+  //
+  // sendTranscript() now accepts an optional regexHints array. When
+  // non-empty, it attaches as `regex_fields` on the wire payload —
+  // matches the iOS shape the backend has accepted since 2026-02. No
+  // backend change required; web is just starting to send it.
+  // ────────────────────────────────────────────────────────────────────────
+  describe('regex_fields hint protocol (R5)', () => {
+    it('sendTranscript with regexHints attaches regex_fields to the wire payload', async () => {
+      const session = new SonnetSession({});
+      session.connect({ sessionId: 's-r5-1', jobId: 'j-r5-1', certificateType: 'EICR' });
+      await server.connected;
+      // Consume the session_start frame so the next message is our transcript.
+      await server.nextMessage;
+
+      session.sendTranscript('Circuit 3 Zs is 0.44', {
+        regexHints: [{ field: 'circuit.3.measured_zs_ohm' }],
+      });
+
+      const raw = (await server.nextMessage) as string;
+      const wire = JSON.parse(raw);
+      expect(wire.type).toBe('transcript');
+      expect(wire.text).toBe('Circuit 3 Zs is 0.44');
+      expect(wire.regex_fields).toEqual([{ field: 'circuit.3.measured_zs_ohm' }]);
+    });
+
+    it('sendTranscript with no regexHints option omits regex_fields entirely (backwards-compatible)', async () => {
+      const session = new SonnetSession({});
+      session.connect({ sessionId: 's-r5-2', jobId: 'j-r5-2', certificateType: 'EICR' });
+      await server.connected;
+      await server.nextMessage;
+
+      session.sendTranscript('Circuit 3 Zs is 0.44');
+
+      const raw = (await server.nextMessage) as string;
+      const wire = JSON.parse(raw);
+      expect(wire.type).toBe('transcript');
+      expect(wire).not.toHaveProperty('regex_fields');
+    });
+
+    it('sendTranscript with empty regexHints array omits regex_fields too (matches absence)', async () => {
+      const session = new SonnetSession({});
+      session.connect({ sessionId: 's-r5-3', jobId: 'j-r5-3', certificateType: 'EICR' });
+      await server.connected;
+      await server.nextMessage;
+
+      session.sendTranscript('Circuit 3 Zs is 0.44', { regexHints: [] });
+
+      const raw = (await server.nextMessage) as string;
+      const wire = JSON.parse(raw);
+      expect(wire).not.toHaveProperty('regex_fields');
+    });
+
+    it('postcode hint includes value (iOS contract for postcodes.io enrichment)', async () => {
+      const session = new SonnetSession({});
+      session.connect({ sessionId: 's-r5-4', jobId: 'j-r5-4', certificateType: 'EICR' });
+      await server.connected;
+      await server.nextMessage;
+
+      session.sendTranscript('postcode is EC1A 1BB', {
+        regexHints: [
+          { field: 'installation.postcode', value: 'EC1A 1BB' },
+          { field: 'circuit.3.measured_zs_ohm' },
+        ],
+      });
+
+      const raw = (await server.nextMessage) as string;
+      const wire = JSON.parse(raw);
+      expect(wire.regex_fields).toEqual([
+        { field: 'installation.postcode', value: 'EC1A 1BB' },
+        { field: 'circuit.3.measured_zs_ohm' },
+      ]);
+    });
+  });
+
+  // ────────────────────────────────────────────────────────────────────────
   // Commit B — reconnect state machine (feature-flagged)
   //
   // We stub `Math.random` to 0 so `computeBackoffDelay` collapses to 0 and
