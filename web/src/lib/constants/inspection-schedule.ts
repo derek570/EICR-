@@ -401,7 +401,39 @@ export const EIC_SCHEDULE: ScheduleItem[] = [
   { ref: '14.0', description: "Prosumer's low voltage electrical installation(s)" },
 ];
 
-/** Outcome codes for each schedule item. "—" means not yet answered. */
-export type ScheduleOutcome = '✓' | '✗' | 'N/A' | 'LIM' | 'C1' | 'C2' | 'C3' | 'FI' | '—';
+/**
+ * Outcome codes for each schedule item.
+ *
+ * Canonical wire values match the backend / shared-types
+ * `InspectionItem.outcome` enum (see `packages/shared-types/src/job.ts:82`
+ * and `config/field_schema.json:820 _outcome_options`):
+ *
+ *   `'tick' | 'N/A' | 'C1' | 'C2' | 'C3' | 'LIM'`
+ *
+ * The PWA pre-Wave-B used the display glyphs (`'✓'`, `'✗'`) directly as
+ * wire values plus an `'FI'` that doesn't belong to inspection items
+ * (FI is an observation code only — `Observation.code = 'C1'|'C2'|'C3'|'FI'`).
+ * iOS hard-decodes those drifted values to a Swift enum and crashes the
+ * whole job load when it sees `'✗'` or `'FI'` from a web-saved schedule
+ * (`try?` soft-decode silently wipes ALL ~92 schedule rows). Phase 4
+ * Gaps #9/#10 — closed by switching the wire values to canonical and
+ * mapping to glyph labels at the render layer.
+ */
+export type ScheduleOutcome = 'tick' | 'N/A' | 'C1' | 'C2' | 'C3' | 'LIM';
 
-export const OUTCOME_OPTIONS: ScheduleOutcome[] = ['✓', '✗', 'N/A', 'LIM', 'C1', 'C2', 'C3', 'FI'];
+export const OUTCOME_OPTIONS: ScheduleOutcome[] = ['tick', 'N/A', 'C1', 'C2', 'C3', 'LIM'];
+
+/**
+ * Glyph / short-label rendered on the outcome chip. Wire values are
+ * stored verbatim (including 'tick') — only the label is mapped.
+ * Keeping the label map separate so the chip and the legend can share
+ * the same mapping without duplicating it.
+ */
+export const OUTCOME_LABEL: Record<ScheduleOutcome, string> = {
+  tick: '✓',
+  'N/A': 'N/A',
+  C1: 'C1',
+  C2: 'C2',
+  C3: 'C3',
+  LIM: 'LIM',
+};

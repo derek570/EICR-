@@ -23,6 +23,7 @@ import { cn } from '@/lib/utils';
 import {
   EIC_SCHEDULE,
   EICR_SCHEDULE,
+  OUTCOME_LABEL,
   OUTCOME_OPTIONS,
   type ScheduleItem,
   type ScheduleOutcome,
@@ -33,7 +34,10 @@ import {
  *
  * For EICR the schedule is seven large sections (~90 items) tracking
  * BS 7671 Appendix 6 items. Each row has an outcome chip group
- * (✓, ✗, N/A, LIM, C1, C2, C3, FI) plus per-section progress indicator.
+ * (tick, N/A, C1, C2, C3, LIM — labels render as ✓ for tick) plus a
+ * per-section progress indicator. Wire values match the backend
+ * canonical `InspectionItem.outcome` enum exactly so a round-trip
+ * iOS↔web is lossless.
  *
  * For EIC the schedule is the 14 top-level items (§1.0 to §14.0).
  *
@@ -59,9 +63,9 @@ import {
 
 type InspectionShape = {
   items?: Record<string, ScheduleOutcome | undefined>;
-  is_tt_earthing?: boolean;
-  has_microgeneration?: boolean;
-  mark_section_7_na?: boolean;
+  isTTEarthing?: boolean;
+  hasMicrogeneration?: boolean;
+  markSection7NA?: boolean;
 };
 
 const EICR_SECTION_ICONS = [Eye, Bolt, Shield, Wrench, ClipboardCheck, BathIcon, Flame, MapPin];
@@ -82,8 +86,11 @@ function outcomeToObservationCode(
   outcome: ScheduleOutcome | undefined
 ): NonNullable<ObservationRow['code']> | null {
   if (!outcome) return null;
+  // Inspection-item outcomes are 'tick' | 'N/A' | 'C1' | 'C2' | 'C3' | 'LIM'
+  // (canonical). Only C1/C2/C3 correspond to observation codes; 'tick',
+  // 'N/A', and 'LIM' don't trigger observation creation. 'FI' is an
+  // observation-side-only code and does not appear here.
   if (outcome === 'C1' || outcome === 'C2' || outcome === 'C3') return outcome;
-  if (outcome === 'FI') return 'FI';
   return null;
 }
 
@@ -257,19 +264,19 @@ export default function InspectionPage() {
     const next = { ...items };
     if (on) {
       next['3.1'] = 'N/A';
-      next['3.2'] = '✓';
+      next['3.2'] = 'tick';
     } else {
-      next['3.1'] = '✓';
+      next['3.1'] = 'tick';
       next['3.2'] = 'N/A';
     }
-    patch({ is_tt_earthing: on, items: next });
+    patch({ isTTEarthing: on, items: next });
   };
 
   const setMicrogeneration = (on: boolean) => {
     const next = { ...items };
     const refs = ['2.0', '4.11', '4.21', '4.22'];
-    for (const r of refs) next[r] = on ? '✓' : 'N/A';
-    patch({ has_microgeneration: on, items: next });
+    for (const r of refs) next[r] = on ? 'tick' : 'N/A';
+    patch({ hasMicrogeneration: on, items: next });
   };
 
   const setSection7NA = (on: boolean) => {
@@ -279,26 +286,26 @@ export default function InspectionPage() {
     } else {
       for (const item of EICR_SCHEDULE[6].items) delete next[item.ref];
     }
-    patch({ mark_section_7_na: on, items: next });
+    patch({ markSection7NA: on, items: next });
   };
 
   const autoControlled = React.useMemo(() => {
     const refs = new Set<string>();
-    if (insp.is_tt_earthing !== undefined) {
+    if (insp.isTTEarthing !== undefined) {
       refs.add('3.1');
       refs.add('3.2');
     }
-    if (insp.has_microgeneration !== undefined) {
+    if (insp.hasMicrogeneration !== undefined) {
       refs.add('2.0');
       refs.add('4.11');
       refs.add('4.21');
       refs.add('4.22');
     }
-    if (insp.mark_section_7_na) {
+    if (insp.markSection7NA) {
       for (const item of EICR_SCHEDULE[6].items) refs.add(item.ref);
     }
     return refs;
-  }, [insp.is_tt_earthing, insp.has_microgeneration, insp.mark_section_7_na]);
+  }, [insp.isTTEarthing, insp.hasMicrogeneration, insp.markSection7NA]);
 
   const pendingItem = pendingChange ? findItem(pendingChange.ref) : null;
 
@@ -319,24 +326,24 @@ export default function InspectionPage() {
         <SectionCard accent="blue" icon={SlidersHorizontal} title="Schedule Options">
           <ToggleRow
             label="TT Earthing System"
-            hint={insp.is_tt_earthing ? '3.2 ticked, 3.1 marked N/A' : '3.1 ticked, 3.2 marked N/A'}
-            value={insp.is_tt_earthing === true}
+            hint={insp.isTTEarthing ? '3.2 ticked, 3.1 marked N/A' : '3.1 ticked, 3.2 marked N/A'}
+            value={insp.isTTEarthing === true}
             onChange={setTTEarthing}
           />
           <ToggleRow
             label="Microgeneration / Solar / Batteries"
             hint={
-              insp.has_microgeneration
+              insp.hasMicrogeneration
                 ? 'Items 2.0, 4.11, 4.21, 4.22 ticked'
                 : 'Items 2.0, 4.11, 4.21, 4.22 marked N/A'
             }
-            value={insp.has_microgeneration === true}
+            value={insp.hasMicrogeneration === true}
             onChange={setMicrogeneration}
           />
           <ToggleRow
             label="Mark all Section 7 as N/A"
             hint="Special locations not present"
-            value={insp.mark_section_7_na === true}
+            value={insp.markSection7NA === true}
             onChange={setSection7NA}
           />
         </SectionCard>
@@ -594,7 +601,7 @@ function ScheduleRow({
               )}
               style={selected ? { background: outcomeColour(opt) } : undefined}
             >
-              {opt}
+              {OUTCOME_LABEL[opt]}
             </button>
           );
         })}
@@ -709,9 +716,8 @@ function InlineObservationForm({
 
 function outcomeColour(o: ScheduleOutcome): string {
   switch (o) {
-    case '✓':
+    case 'tick':
       return 'var(--color-brand-green)';
-    case '✗':
     case 'C1':
       return 'var(--color-status-failed)';
     case 'LIM':
@@ -719,8 +725,6 @@ function outcomeColour(o: ScheduleOutcome): string {
       return 'var(--color-status-processing)';
     case 'C3':
       return 'var(--color-brand-blue)';
-    case 'FI':
-      return 'var(--color-status-limitation)';
     case 'N/A':
     default:
       return 'var(--color-text-tertiary)';
