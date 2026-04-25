@@ -863,13 +863,28 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
             // behind the one frame name preserves backward compatibility with
             // the iOS client during the rollout window.
             if (msg.sessionId) {
+              // Plan 06-06 r5-#1 — thread msg.protocol_version through so
+              // handleSessionResumeRehydrate can apply the same live/shadow
+              // policy that handleSessionStart applies. Without this, a
+              // resume frame can sneak past the STI-06 hard-rejection
+              // contract via a valid token alone.
               const {
                 sessionId: newSessionId,
                 ack,
                 activeEntryKey,
-              } = handleSessionResumeRehydrate(ws, userId, msg.sessionId);
+              } = handleSessionResumeRehydrate(
+                ws,
+                userId,
+                msg.sessionId,
+                msg.protocol_version || null
+              );
               currentSessionId = activeEntryKey;
-              ws.send(JSON.stringify({ type: 'session_ack', ...ack, sessionId: newSessionId }));
+              // r5-#1 — suppress session_ack when the rehydrate rejected the
+              // resume (live-mode mismatch). The ws is already closed (1002)
+              // and a post-close send would log noise.
+              if (ack.status !== 'rejected') {
+                ws.send(JSON.stringify({ type: 'session_ack', ...ack, sessionId: newSessionId }));
+              }
             } else if (currentSessionId && activeSessions.has(currentSessionId)) {
               const resumeEntry = activeSessions.get(currentSessionId);
               resumeEntry.session.resume();
@@ -1833,7 +1848,12 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
    * to the new socket, the same shape as `handleSessionStart`'s reconnection
    * branch does, so extraction callbacks target the live socket.
    */
-  function handleSessionResumeRehydrate(ws, userId, requestedSessionId) {
+  function handleSessionResumeRehydrate(
+    ws,
+    userId,
+    requestedSessionId,
+    requestedProtocolVersion = null
+  ) {
     const stored = sonnetSessionStore.resume(requestedSessionId, userId);
 
     // Miss → mint a fresh rehydration token with no underlying entry. The
@@ -1866,6 +1886,75 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
       });
       sonnetSessionStore.remove(requestedSessionId);
       return { sessionId: null, ack: { status: 'new' }, activeEntryKey: null };
+    }
+
+    // ── Plan 06-06 r5-#1 (MAJOR) — apply the SAME protocol_version policy
+    // on the rehydrate path that handleSessionStart applies on the
+    // fresh-connect path. Without this, a stale iOS client holding a valid
+    // resume token can re-bind an entry into live mode without advertising
+    // stage6 capability — defeating the STI-06 rejection contract.
+    //
+    // Policy table (mirrors handleSessionStart lines ~1319-1362):
+    //   - live + mismatch  → ws.close(1002) + error envelope, NO rebind.
+    //   - shadow + mismatch → warn + entry.fallbackToLegacy=true (write
+    //                        through to the existing entry, not the
+    //                        original session_start value).
+    //   - shadow + match   → entry.fallbackToLegacy=false, protocolVersion='stage6'.
+    //   - live + match     → entry.fallbackToLegacy=false, protocolVersion='stage6'.
+    //   - off + anything   → record latest protocolVersion, no policy
+    //                        enforcement (STR-01 functional equivalence).
+    //
+    // The write-back of protocolVersion + fallbackToLegacy MUST happen
+    // before `entry.ws = ws` (the live-reject path bails early so the new
+    // ws never replaces the original entry's ws).
+    //
+    // r5-#2 covers the equivalent write-back on handleSessionStart's
+    // reconnect branch — the two surfaces are symmetric.
+    const toolCallsMode = process.env.SONNET_TOOL_CALLS || 'off';
+    if (toolCallsMode === 'live' && requestedProtocolVersion !== 'stage6') {
+      logger.warn('stage6.protocol_version_mismatch_live_reject_resume', {
+        sessionId: clientSessionId,
+        requestedSessionId,
+        protocolVersion: requestedProtocolVersion,
+        mode: toolCallsMode,
+      });
+      try {
+        ws.send(
+          JSON.stringify({
+            type: 'error',
+            message: `protocol_version_mismatch: expected stage6, got ${requestedProtocolVersion ?? 'none'}`,
+            recoverable: false,
+          })
+        );
+      } catch {
+        // Half-closed socket; close still fires deterministically below.
+      }
+      try {
+        ws.close(1002, 'protocol_version_mismatch');
+      } catch {
+        // Best-effort.
+      }
+      // DO NOT touch entry.ws — the original ws is still valid until its own
+      // close handler reaps the entry. Caller suppresses session_ack on the
+      // 'rejected' status.
+      return { sessionId: null, ack: { status: 'rejected' }, activeEntryKey: null };
+    }
+    if (toolCallsMode === 'shadow' && requestedProtocolVersion !== 'stage6') {
+      logger.warn('stage6.protocol_version_mismatch_shadow_fallback_resume', {
+        sessionId: clientSessionId,
+        requestedSessionId,
+        protocolVersion: requestedProtocolVersion,
+      });
+      entry.fallbackToLegacy = true;
+      entry.protocolVersion = requestedProtocolVersion; // null when missing
+    } else if (toolCallsMode === 'shadow' || toolCallsMode === 'live') {
+      // shadow + match OR live + match — write through.
+      entry.fallbackToLegacy = false;
+      entry.protocolVersion = 'stage6';
+    } else {
+      // off mode: record the latest value so a future mode flip sees the
+      // freshest data; no policy enforcement.
+      entry.protocolVersion = requestedProtocolVersion;
     }
 
     // Cancel any pending disconnect timer — we're live again.
