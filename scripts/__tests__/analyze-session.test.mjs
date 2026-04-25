@@ -9,7 +9,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { readFileSync, existsSync, rmSync, cpSync, mkdtempSync } from "node:fs";
+import { readFileSync, existsSync, rmSync, cpSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -732,5 +732,167 @@ test("Plan 08-04 r3-#1 — sanitised values appear in warnings[] entries with sa
     rawLong,
     undefined,
     "Warnings MUST NOT carry values longer than 100 chars",
+  );
+});
+
+// ── Phase 8 — Plan 08-04 r3-#2: Non-string outcomes routed to malformed ──
+//
+// Codex r3-#2 (MINOR) raised that Plan 08-03's malformed predicate at
+// scripts/analyze-session.js:1057 matches ONLY `outcome === "" ||
+// outcome === null || outcome === undefined`. Non-string outcomes
+// (numbers, booleans, objects, arrays) fall through to the unknown
+// branch where Object.hasOwn(outcomes, outcome) coerces the key to a
+// string for property lookup — corrupting the unknown bucket silently.
+//
+// Specific failure modes pre-fix:
+// - `0` (falsy non-string) → r2-#2 branch matched it ONLY because `0`
+//   is falsy and the OLD predicate `if (!outcome)` caught it; the
+//   r2-#2 fix tightened to `=== "" || === null || === undefined` and
+//   r3-#2 surfaces that 0 now falls through to unknown.
+// - `false` → unknown bucket as the string "false" via JS coercion.
+// - `42` → unknown bucket as the string "42".
+// - `{}` → unknown bucket as the string "[object Object]" via coercion.
+// - `[]` → unknown bucket as the empty string "" via array coercion!
+//   That collides with the r2-#2 empty-string malformed surface
+//   silently — a hostile array-typed outcome corrupts the malformed
+//   count without bumping the unknown count.
+//
+// Fix: widen the malformed predicate to `typeof outcome !== "string" ||
+// outcome === ""`. Bucket key derivation flows through safeDisplayValue
+// (introduced for r3-#1) which JSON.stringifies non-strings.
+//
+// Fixture: `non-string-outcome-session/` has 7 ask_user rows —
+// 1 known (`answered`), 5 non-string (`0`, `false`, `{}`, `[]`, `42`),
+// 1 known (`gated`).
+test("Plan 08-04 r3-#2 — non-string outcomes surface as malformed_outcome_count", () => {
+  const a = runAnalyzer("non-string-outcome-session");
+  const askUser = a.tool_call_traffic.ask_user;
+
+  // 5 non-string outcomes: 0, false, {}, [], 42.
+  assert.equal(
+    askUser.malformed_outcome_count,
+    5,
+    "All 5 non-string outcomes MUST route to malformed (not unknown)",
+  );
+
+  // Backstop: no non-string outcome leaks into unknown_outcomes.
+  assert.equal(
+    askUser.unknown_outcome_count,
+    0,
+    "No non-string outcome MUST appear in unknown_outcomes",
+  );
+});
+
+test("Plan 08-04 r3-#2 — non-string outcomes appear in warnings[] with stringified value per shape", () => {
+  const a = runAnalyzer("non-string-outcome-session");
+
+  const malformedWarnings = (a.warnings || []).filter(
+    (w) => w.type === "malformed_ask_user_outcome",
+  );
+
+  // Five distinct shapes: 0, false, {}, [], 42 → "0", "false", "{}", "[]", "42".
+  // Each via JSON.stringify-then-safeDisplayValue.
+  const expectedValues = ["0", "false", "{}", "[]", "42"];
+  assert.equal(
+    malformedWarnings.length,
+    expectedValues.length,
+    `Expected ${expectedValues.length} warnings (one per distinct non-string shape)`,
+  );
+
+  for (const expected of expectedValues) {
+    const entry = malformedWarnings.find((w) => w.value === expected);
+    assert.ok(
+      entry,
+      `Warnings MUST contain a malformed_ask_user_outcome with value === ${JSON.stringify(expected)}`,
+    );
+    assert.equal(entry.count, 1, `${expected} count should be 1`);
+  }
+});
+
+test("Plan 08-04 r3-#2 — known outcomes still bucket correctly when non-string rows present", () => {
+  // Sanity check: r3-#2 widening the malformed branch must NOT regress
+  // the histogram bucketing for legitimate known outcomes.
+  const a = runAnalyzer("non-string-outcome-session");
+  const askUser = a.tool_call_traffic.ask_user;
+
+  assert.equal(askUser.outcomes.answered, 1, "answered should bucket to 1");
+  assert.equal(askUser.outcomes.gated, 1, "gated should bucket to 1");
+
+  // Histogram shape preserved — no own-property leak from non-string forms.
+  assert.ok(
+    !Object.hasOwn(askUser.outcomes, "0"),
+    'numeric "0" string MUST NOT be a histogram own-property',
+  );
+  assert.ok(
+    !Object.hasOwn(askUser.outcomes, "false"),
+    '"false" string MUST NOT be a histogram own-property',
+  );
+  assert.ok(
+    !Object.hasOwn(askUser.outcomes, "{}"),
+    '"{}" string MUST NOT be a histogram own-property',
+  );
+  assert.ok(
+    !Object.hasOwn(askUser.outcomes, "[]"),
+    '"[]" string MUST NOT be a histogram own-property',
+  );
+  assert.ok(
+    !Object.hasOwn(askUser.outcomes, "42"),
+    '"42" string MUST NOT be a histogram own-property',
+  );
+});
+
+test("Plan 08-04 r3-#2 — repeated non-string outcomes of same shape bucket together", () => {
+  // Synthetic-fixture-via-temp-write: build a fresh fixture with three
+  // identical-shape `{}` outcomes inline so the bucket-coalescing
+  // contract is locked. This is OUTSIDE the committed fixture pool
+  // because the scenario only tests the merger logic, not a separate
+  // operational signature.
+  //
+  // The runAnalyzer helper copies a committed fixture directory into a
+  // tmpdir. For this dynamic test we manually replicate that flow.
+  const dir = mkdtempSync(join(tmpdir(), "non-string-bucket-merge-"));
+  const lines = [
+    { timestamp: "2026-04-23T13:00:00.000Z", event: "session_started", category: "session", data: {} },
+    // Three identical {} outcomes — must bucket to one warning entry, count=3.
+    { timestamp: "2026-04-23T13:00:01.000Z", event: "stage6.ask_user", category: "stage6",
+      data: { sessionId: "merge-001", turnId: "t1", phase: 3, mode: "live", tool_call_id: "m1",
+        question: "Q1?", reason: "missing_context", context_field: null, context_circuit: null,
+        answer_outcome: {}, wait_duration_ms: 100 } },
+    { timestamp: "2026-04-23T13:00:02.000Z", event: "stage6.ask_user", category: "stage6",
+      data: { sessionId: "merge-001", turnId: "t2", phase: 3, mode: "live", tool_call_id: "m2",
+        question: "Q2?", reason: "missing_context", context_field: null, context_circuit: null,
+        answer_outcome: {}, wait_duration_ms: 100 } },
+    { timestamp: "2026-04-23T13:00:03.000Z", event: "stage6.ask_user", category: "stage6",
+      data: { sessionId: "merge-001", turnId: "t3", phase: 3, mode: "live", tool_call_id: "m3",
+        question: "Q3?", reason: "missing_context", context_field: null, context_circuit: null,
+        answer_outcome: {}, wait_duration_ms: 100 } },
+    { timestamp: "2026-04-23T13:05:00.000Z", event: "session_ended", category: "session", data: {} },
+  ];
+  writeFileSync(
+    join(dir, "debug_log.jsonl"),
+    lines.map((l) => JSON.stringify(l)).join("\n") + "\n",
+  );
+  // Run analyzer in-place on this dynamic dir.
+  execFileSync(process.execPath, [scriptPath, dir], { stdio: "pipe" });
+  const analysisPath = join(dir, "analysis.json");
+  assert.ok(existsSync(analysisPath));
+  const a = JSON.parse(readFileSync(analysisPath, "utf8"));
+  rmSync(dir, { recursive: true, force: true });
+
+  const askUser = a.tool_call_traffic.ask_user;
+  assert.equal(
+    askUser.malformed_outcome_count,
+    3,
+    "Three same-shape {} outcomes MUST contribute to malformed_outcome_count = 3",
+  );
+
+  const objWarning = (a.warnings || []).find(
+    (w) => w.type === "malformed_ask_user_outcome" && w.value === "{}",
+  );
+  assert.ok(objWarning, "Single {} warning entry expected");
+  assert.equal(
+    objWarning.count,
+    3,
+    'Same-shape "{}" warnings MUST coalesce to count=3',
   );
 });
