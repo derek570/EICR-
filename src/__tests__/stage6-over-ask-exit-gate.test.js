@@ -1589,3 +1589,98 @@ describe('Plan 05-17 r11-#1 — legacy whitelist requires canonical-path equalit
     ).toThrow(/sample-canary-phase5-in-legacy-named-dir\.json.*turnId/);
   });
 });
+
+// =============================================================================
+// Plan 05-17 r11-#2 — up-front sourceDir validation (fixture-scoped error)
+// =============================================================================
+// Pre-fix (r10-#1 / r11-#1): validateFixtureInputs depends on
+// entry.sourceDir but doesn't validate it before passing to
+// path.basename / path.resolve. A direct caller passing
+// { filename, fullPath, fixture } without sourceDir crashes inside the
+// path operation with raw `TypeError: The "path" argument must be of
+// type string. Received undefined` — losing the fixture-scoped error
+// context (no filename in the message, no actionable hint that
+// sourceDir is required).
+//
+// Post-fix (r11-#2): up-front check at the top of the
+// validateFixtureInputs loop:
+//
+//   `if (typeof sourceDir !== 'string' || sourceDir.trim().length === 0)
+//     throw new Error('fixture invalid: ${filename ?? "<unknown>"}: missing or invalid sourceDir');`
+//
+// before any path operations. Trim-and-fold discipline matches Plan
+// 05-11 r5-#1 / Plan 05-16 r10-#2 (whitespace-only strings rejected
+// for the same reason as missing strings). The
+// `filename ?? '<unknown>'` fallback handles the rare case where the
+// caller also forgot filename.
+// =============================================================================
+
+describe('Plan 05-17 r11-#2 — up-front sourceDir validation', () => {
+  jest.setTimeout(15000);
+
+  let validateFixtureInputs;
+
+  beforeAll(async () => {
+    const mod = await import('../../scripts/stage6-over-ask-exit-gate.js');
+    validateFixtureInputs = mod.validateFixtureInputs;
+  });
+
+  function buildAnyFixture() {
+    return {
+      _doc: 'Plan 05-17 r11-#2 — fixture content irrelevant; sourceDir gate fires first',
+      session: { jobId: 'r11-2-canary', certificateType: 'EICR' },
+    };
+  }
+
+  test('entry without sourceDir → throws fixture-scoped "missing or invalid sourceDir" error (filename present)', () => {
+    expect(() =>
+      validateFixtureInputs([
+        {
+          filename: 'r11-2-no-sourcedir.json',
+          fullPath: '/tmp/x',
+          fixture: buildAnyFixture(),
+          // sourceDir intentionally omitted
+        },
+      ])
+    ).toThrow(/r11-2-no-sourcedir\.json.*missing or invalid sourceDir/);
+  });
+
+  test('entry with whitespace-only sourceDir ("   ") → throws fixture-scoped error (consistency with r10-#2 trim discipline)', () => {
+    expect(() =>
+      validateFixtureInputs([
+        {
+          filename: 'r11-2-whitespace-sourcedir.json',
+          fullPath: '/tmp/x',
+          fixture: buildAnyFixture(),
+          sourceDir: '   ',
+        },
+      ])
+    ).toThrow(/r11-2-whitespace-sourcedir\.json.*missing or invalid sourceDir/);
+  });
+
+  test('entry with non-string sourceDir (object) → throws fixture-scoped error (typed-string contract)', () => {
+    expect(() =>
+      validateFixtureInputs([
+        {
+          filename: 'r11-2-non-string-sourcedir.json',
+          fullPath: '/tmp/x',
+          fixture: buildAnyFixture(),
+          sourceDir: { not: 'a string' },
+        },
+      ])
+    ).toThrow(/r11-2-non-string-sourcedir\.json.*missing or invalid sourceDir/);
+  });
+
+  test('entry without sourceDir AND without filename → throws "<unknown>" fallback (graceful degradation)', () => {
+    expect(() =>
+      validateFixtureInputs([
+        {
+          fullPath: '/tmp/x',
+          fixture: buildAnyFixture(),
+          // Both sourceDir and filename omitted — error message uses
+          // <unknown> fallback so callers still get an actionable hint.
+        },
+      ])
+    ).toThrow(/<unknown>.*missing or invalid sourceDir/);
+  });
+});
