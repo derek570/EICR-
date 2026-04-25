@@ -40,12 +40,31 @@ import { evaluateAlarm } from '../extraction/stage6-alarm-evaluator.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(here, '..', '..');
-const ALARMS_PATH = path.join(REPO_ROOT, 'infra', 'cloudwatch-stage6-alarms.json');
+const INFRA_DIR = path.join(REPO_ROOT, 'infra');
 
-const alarmsConfig = JSON.parse(readFileSync(ALARMS_PATH, 'utf8'));
+// Plan 08-02 r1-#2 (BLOCK): the legacy wrapper file
+// `infra/cloudwatch-stage6-alarms.json` has been split into 3 standalone
+// per-alarm files (each directly deployable via `aws cloudwatch
+// put-metric-alarm --cli-input-json file://...`). The loader below reads
+// each per-alarm file and resolves by AlarmName so the rest of this test
+// file (11 alarm-firing tests) is unchanged — they keep using
+// `findAlarm(name)`, the AlarmName-keyed lookup.
+const PER_ALARM_FILES = [
+  'cloudwatch-stage6-alarm-divergence-rate.json',
+  'cloudwatch-stage6-alarm-restrained-mode-rate.json',
+  'cloudwatch-stage6-alarm-tool-loop-cap-hit-rate.json',
+];
+
+const alarmsByName = new Map();
+for (const filename of PER_ALARM_FILES) {
+  const fullPath = path.join(INFRA_DIR, filename);
+  const alarm = JSON.parse(readFileSync(fullPath, 'utf8'));
+  alarmsByName.set(alarm.AlarmName, alarm);
+}
+
 function findAlarm(name) {
-  const a = alarmsConfig.alarms.find((x) => x.AlarmName === name);
-  if (!a) throw new Error(`Alarm not found in JSON: ${name}`);
+  const a = alarmsByName.get(name);
+  if (!a) throw new Error(`Alarm not found in per-alarm JSON files: ${name}`);
   return a;
 }
 

@@ -1,0 +1,14 @@
+{
+  "AlarmName": "stage6-divergence-rate-high",
+  "AlarmDescription": "Stage 6 shadow-mode divergence rate exceeded 10% — investigate prompt regression or schema drift between legacy and tool-call paths.",
+  "ActionsEnabled": true,
+  "MetricName": "stage6.divergence_rate",
+  "Namespace": "EICR/Stage6",
+  "Statistic": "Average",
+  "Period": 300,
+  "EvaluationPeriods": 3,
+  "DatapointsToAlarm": 3,
+  "Threshold": 0.10,
+  "ComparisonOperator": "GreaterThanThreshold",
+  "TreatMissingData": "notBreaching"
+}
