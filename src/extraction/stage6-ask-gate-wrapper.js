@@ -77,19 +77,28 @@ export function deriveAskKey(input) {
  * the dispatcher's union (stage6-dispatcher-ask.js:116) — runToolLoop
  * dispatches with `{tool_call_id,...}` while unit tests pass `{id,...}`.
  *
+ * Plan 05-07 r1-#3: `mode` is now a REQUIRED parameter (was hard-coded
+ * 'live'). Callers in createAskGateWrapper + wrapAskDispatcherWithGates
+ * pass through their own opt; both default to 'live' so existing call
+ * sites are unaffected. runShadowHarness explicitly passes 'shadow' when
+ * composing the wrapper inside the shadow path so wrapper-emitted log
+ * rows match the session's actual mode (Phase 8 dashboards split by mode
+ * — corrupting that split with hard-coded 'live' was the r1-#3 finding).
+ *
  * @param {object} call
  * @param {string} reason  Must be one of ASK_USER_ANSWER_OUTCOMES.
  * @param {object} ctx     Must carry sessionId + turnId.
  * @param {object} logger
  * @param {string} sessionId
+ * @param {'live'|'shadow'} mode  ASK_USER_MODES enum.
  * @returns {{ tool_use_id: string, content: string, is_error: false }}
  */
-function synthResultWrapped(call, reason, ctx, logger, sessionId) {
+function synthResultWrapped(call, reason, ctx, logger, sessionId, mode) {
   const toolCallId = call.tool_call_id ?? call.id;
   logAskUser(logger, {
     sessionId,
     turnId: ctx.turnId,
-    mode: 'live',
+    mode,
     tool_call_id: toolCallId,
     question: call.input?.question ?? '',
     reason: call.input?.reason ?? null,
@@ -117,12 +126,25 @@ function synthResultWrapped(call, reason, ctx, logger, sessionId) {
  * `reason='session_terminated'` so callers waiting on a turn that just
  * died are not orphaned.
  *
+ * Plan 05-07 r1-#3: `mode` opt added — defaults to 'live' so every existing
+ * caller's behaviour is unchanged. runShadowHarness passes mode:'shadow'
+ * when composing the wrapper inside the shadow path; the gate's `gated`
+ * + `dispatcher_error` + `session_terminated` short-circuit rows then
+ * carry the correct mode.
+ *
  * @param {object} opts
  * @param {number} [opts.delayMs=QUESTION_GATE_DELAY_MS]  Debounce window.
  * @param {object} opts.logger
  * @param {string} opts.sessionId
+ * @param {'live'|'shadow'} [opts.mode='live']  Mode threaded into wrapper-
+ *   emitted log rows. Defaults to 'live' for back-compat.
  */
-export function createAskGateWrapper({ delayMs = QUESTION_GATE_DELAY_MS, logger, sessionId }) {
+export function createAskGateWrapper({
+  delayMs = QUESTION_GATE_DELAY_MS,
+  logger,
+  sessionId,
+  mode = 'live',
+}) {
   /** @type {Map<string, { timer: any, pendingCall: object, pendingCtx: object, pendingResolve: Function }>} */
   const pending = new Map();
 
@@ -136,7 +158,14 @@ export function createAskGateWrapper({ delayMs = QUESTION_GATE_DELAY_MS, logger,
         clearTimeout(existing.timer);
         pending.delete(key);
         existing.pendingResolve(
-          synthResultWrapped(existing.pendingCall, 'gated', existing.pendingCtx, logger, sessionId)
+          synthResultWrapped(
+            existing.pendingCall,
+            'gated',
+            existing.pendingCtx,
+            logger,
+            sessionId,
+            mode
+          )
         );
       }
 
@@ -150,7 +179,7 @@ export function createAskGateWrapper({ delayMs = QUESTION_GATE_DELAY_MS, logger,
           // dispatchAskUser rolls every error into a logged envelope), but
           // we guard the wrapper anyway — a runtime quirk inside the
           // dispatcher must not strand the awaiter forever.
-          resolve(synthResultWrapped(call, 'dispatcher_error', ctx, logger, sessionId));
+          resolve(synthResultWrapped(call, 'dispatcher_error', ctx, logger, sessionId, mode));
         }
       }, delayMs);
 
@@ -172,7 +201,8 @@ export function createAskGateWrapper({ delayMs = QUESTION_GATE_DELAY_MS, logger,
           'session_terminated',
           entry.pendingCtx,
           logger,
-          sessionId
+          sessionId,
+          mode
         )
       );
     }
@@ -194,6 +224,11 @@ export function createAskGateWrapper({ delayMs = QUESTION_GATE_DELAY_MS, logger,
  * existing Phase 1/2/3/4 callers (which thread neither) keep their
  * pre-Phase-5 behaviour unchanged.
  *
+ * Plan 05-07 r1-#3: `mode` opt added — defaults to 'live' so every existing
+ * caller's behaviour is unchanged. runShadowHarness passes mode:'shadow'
+ * so wrapper-emitted `restrained_mode` + `ask_budget_exhausted` log rows
+ * carry the correct mode (Phase 8 dashboards split by mode).
+ *
  * @param {(call, ctx) => Promise<{tool_use_id: string, content: string, is_error: boolean}>} innerDispatcher
  * @param {object} opts
  * @param {{ isExhausted: (key:string)=>boolean, increment: (key:string)=>void }} opts.askBudget
@@ -202,11 +237,13 @@ export function createAskGateWrapper({ delayMs = QUESTION_GATE_DELAY_MS, logger,
  * @param {(call, ctx)=>void} [opts.filledSlotsShadow]  Side-effect-only logger; defaults to no-op.
  * @param {object} opts.logger
  * @param {string} opts.sessionId
+ * @param {'live'|'shadow'} [opts.mode='live']  Threaded into wrapper-emitted
+ *   log rows (`restrained_mode`, `ask_budget_exhausted`). Defaults to 'live'.
  * @returns {(call, ctx) => Promise<{tool_use_id: string, content: string, is_error: boolean}>}
  */
 export function wrapAskDispatcherWithGates(
   innerDispatcher,
-  { askBudget, restrainedMode, gate, filledSlotsShadow, logger, sessionId }
+  { askBudget, restrainedMode, gate, filledSlotsShadow, logger, sessionId, mode = 'live' }
 ) {
   return async function dispatchAskUserGated(call, ctx) {
     // (1) Shadow-log FIRST, regardless of downstream outcome.
@@ -225,14 +262,14 @@ export function wrapAskDispatcherWithGates(
     // (2) Restrained-mode short-circuit. The state machine in Plan 05-04
     // is session-wide (not per-turn), so isActive() takes no arg.
     if (restrainedMode.isActive()) {
-      return synthResultWrapped(call, 'restrained_mode', ctx, logger, sessionId);
+      return synthResultWrapped(call, 'restrained_mode', ctx, logger, sessionId, mode);
     }
 
     // (3) Per-key budget short-circuit. STA-06 cap = 2 (default in
     // stage6-ask-budget.js). Pre-fire check; the increment fires only
     // after a successful inner dispatch (step 5 below).
     if (askBudget.isExhausted(key)) {
-      return synthResultWrapped(call, 'ask_budget_exhausted', ctx, logger, sessionId);
+      return synthResultWrapped(call, 'ask_budget_exhausted', ctx, logger, sessionId, mode);
     }
 
     // (4) Debounce gate. Inside gateOrFire, the inner dispatcher runs on

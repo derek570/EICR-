@@ -294,6 +294,12 @@ export async function runShadowHarness(session, transcriptText, regexResults, op
       askGateForTurn = createAskGateWrapper({
         logger: log,
         sessionId: shadowSession.sessionId,
+        // Plan 05-07 r1-#3 — pass the session's actual mode through so
+        // wrapper-emitted `gated` / `session_terminated` / `dispatcher_error`
+        // log rows tag with mode='shadow' instead of the hard-coded 'live'.
+        // Phase 8 dashboards split by mode; corrupting that split for shadow
+        // sessions was the r1-#3 finding.
+        mode: 'shadow',
       });
       asks = wrapAskDispatcherWithGates(asks, {
         askBudget: options.askBudget,
@@ -306,6 +312,10 @@ export async function runShadowHarness(session, transcriptText, regexResults, op
         filledSlotsShadow: options.filledSlotsShadow ?? (() => {}),
         logger: log,
         sessionId: shadowSession.sessionId,
+        // Plan 05-07 r1-#3 — restrained_mode + ask_budget_exhausted rows
+        // are emitted from synthResultWrapped on the wrapper-internal
+        // short-circuit paths; thread the same shadow mode so they match.
+        mode: 'shadow',
       });
     }
     dispatcher = createToolDispatcher(writes, asks);
