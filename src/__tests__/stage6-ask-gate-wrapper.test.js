@@ -1656,6 +1656,63 @@ describe('Plan 05-11 r5-#2 — dispatcher_error / gate_dispatcher_error split', 
     gate.destroy();
   });
 
+  test('Plan 05-14 r8-#1: inner dispatcher throws → exactly ONE stage6.ask_user log row from the dispatcher (wrapper timer-catch must NOT log a duplicate)', async () => {
+    // Plan 05-14 r8-#1 closure lock. Pre-r8-#1 the wrapper's timer-
+    // catch resolved with `synthResultWrapped(...)` which calls
+    // `logAskUser(...)` as part of every wrapper synth. But the inner
+    // dispatcher's outer catch (stage6-dispatcher-ask.js line 352-364)
+    // already called `logAskUser(...)` with answer_outcome=
+    // 'dispatcher_error_pre_emit' BEFORE rethrowing. Result: TWO
+    // stage6.ask_user rows per failed ask, both carrying the same
+    // tool_call_id and answer_outcome but different wait_duration_ms
+    // (real wait from the dispatcher; 0 from the wrapper synth).
+    //
+    // r8-#1 fix: route the wrapper's timer-catch through a non-logging
+    // synthesis helper (`synthResultWithoutLog`). The wrapper still
+    // produces a properly-shaped tool_result envelope so the awaiter
+    // is not stranded — but it does NOT emit a duplicate log row.
+    //
+    // Test scope: this test uses `makeThrowingInner` which throws
+    // SYNCHRONOUSLY without going through the real dispatcher's outer
+    // catch. So this test asserts the WRAPPER side: the wrapper's
+    // timer-catch path emits ZERO stage6.ask_user rows. The dispatcher-
+    // side log row is asserted by the existing Group 8 r10 test in
+    // stage6-dispatcher-ask.test.js, which uses the real dispatcher
+    // and a register() that throws — it asserts exactly ONE row from
+    // the dispatcher's outer catch with answer_outcome=
+    // 'dispatcher_error_pre_emit'.
+    //
+    // Together the two tests cover the full pipeline: dispatcher emits
+    // exactly 1 row; wrapper emits 0 rows; total = 1 (post-r8-#1).
+    const logger = makeLogger();
+    const inner = makeThrowingInner();
+    const askBudget = makeBudget();
+    const restrainedMode = makeRestrained();
+    const gate = createAskGateWrapper({ logger, sessionId: 'sess-1' });
+
+    const wrapped = wrapAskDispatcherWithGates(inner, {
+      askBudget,
+      restrainedMode,
+      gate,
+      filledSlotsShadow: () => {},
+      logger,
+      sessionId: 'sess-1',
+    });
+
+    const promise = wrapped(makeCall('call-1', 'ze', 0), makeCtx('sess-1-turn-1'));
+    jest.advanceTimersByTime(QUESTION_GATE_DELAY_MS);
+    await promise;
+
+    const askUserRows = logger.info.mock.calls.filter((c) => c[0] === 'stage6.ask_user');
+    // r8-#1 RED: pre-fix this is 1 (the wrapper's synthResultWrapped
+    // logs from its catch). r8-#1 GREEN: this is 0 (the wrapper's
+    // catch routes through a non-logging synth helper; the real
+    // dispatcher's outer catch is the sole emitter for this path).
+    expect(askUserRows).toHaveLength(0);
+
+    gate.destroy();
+  });
+
   test('synthesised gate_dispatcher_error envelope → counters NOT incremented (wrapper-internal non-fire)', async () => {
     // gate_dispatcher_error is RESERVED for future wrapper-internal
     // catches. At r5-#2 closure there is no emit site — to test the
