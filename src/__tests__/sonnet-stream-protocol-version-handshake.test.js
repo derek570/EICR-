@@ -56,7 +56,7 @@ const mockSessionStop = jest.fn(() => ({ totals: { cost: 0 } }));
 const mockFlushBuffer = jest.fn(async () => null);
 
 class FakeEICRExtractionSession {
-  constructor(apiKey, sessionId, certType) {
+  constructor(apiKey, sessionId, certType, options = {}) {
     this.sessionId = sessionId;
     this.certType = certType;
     this.turnCount = 0;
@@ -68,6 +68,15 @@ class FakeEICRExtractionSession {
     this.pause = jest.fn();
     this.resume = jest.fn();
     this.onBatchResult = null;
+    // Plan 06-07 r6-#1 — mirror the real EICRExtractionSession's
+    // _resolveToolCallsMode behaviour so Group G can read back the
+    // construction-time / write-back value of toolCallsMode. The real
+    // class resolves from `options.toolCallsMode ?? process.env
+    // .SONNET_TOOL_CALLS ?? 'off'` and sanitises through an allow-list
+    // of 'off' | 'shadow' | 'live'. The fake mirrors that without
+    // pulling in the real class's prompt module imports.
+    const raw = options.toolCallsMode ?? process.env.SONNET_TOOL_CALLS ?? 'off';
+    this.toolCallsMode = raw === 'off' || raw === 'shadow' || raw === 'live' ? raw : 'off';
   }
 }
 
@@ -669,5 +678,201 @@ describe('Group F — session_start reconnect updates entry.protocolVersion + fa
     expect(entry.protocolVersion).toBe('stage6');
     expect(entry.fallbackToLegacy).toBe(false);
     expect(ws2.close).not.toHaveBeenCalled();
+  });
+});
+
+// -----------------------------------------------------------------------------
+// Group G — entry.session.toolCallsMode reflects effective mode after
+// reconnect/resume (r6-#1 BLOCK)
+// -----------------------------------------------------------------------------
+//
+// Plan 06-07 r6-#1 (BLOCK) — r5 fixes restamp top-level entry.protocolVersion
+// + entry.fallbackToLegacy on reconnect/resume but DON'T update
+// entry.session.toolCallsMode. The runtime uses session.toolCallsMode for
+// path selection at TWO load-bearing sites:
+//
+//   1. runShadowHarness at stage6-shadow-harness.js:188 reads
+//      session.toolCallsMode and routes to legacy fast path / Phase-6
+//      throw / shadow harness.
+//   2. consumeLegacyQuestionsForUser at sonnet-stream.js:110 reads
+//      entry?.session?.toolCallsMode === 'off' to gate ingestion of the
+//      legacy questions_for_user JSON field per STR-01.
+//
+// `entry.session.toolCallsMode` is set ONCE at session-construction time
+// by EICRExtractionSession's constructor from process.env.SONNET_TOOL_CALLS.
+// After a mid-session env flip OR an iOS firmware upgrade that flips the
+// (mode × match) handshake outcome, the entry continues to route through
+// the OLD path even though r5 wrote the new fallbackToLegacy +
+// protocolVersion values.
+//
+// Group G pins the contract: after a reconnect or resume, the entry's
+// session.toolCallsMode reflects the freshly-resolved env mode, mirroring
+// r5's protocolVersion + fallbackToLegacy write-backs.
+//
+// Test mechanics:
+//   • Set env A and session_start. Assert entry.session.toolCallsMode === A.
+//   • Flip env A → B.
+//   • Reconnect (G.1, G.2, G.5) or resume (G.3, G.4) under B.
+//   • Assert entry.session.toolCallsMode === B.
+//
+// FakeEICRExtractionSession's constructor (top of file) was extended to
+// read `options.toolCallsMode ?? process.env.SONNET_TOOL_CALLS` so the
+// initial assertion has something to read — the real class does the same.
+
+describe('Group G — entry.session.toolCallsMode tracks effective env mode after reconnect/resume (r6-#1)', () => {
+  test('G.1 — reconnect: off → shadow flip writes session.toolCallsMode=shadow', async () => {
+    // Original session created under off-mode.
+    process.env.SONNET_TOOL_CALLS = 'off';
+    const ws1 = connect(wss, 'user-G');
+    await sendFrame(ws1, {
+      type: 'session_start',
+      sessionId: 'sess-G1',
+      jobState: { certificateType: 'eicr' },
+    });
+    expect(activeSessions.get('sess-G1').session.toolCallsMode).toBe('off');
+
+    // Operator flips env: off → shadow. Inspector's iOS reconnects with
+    // protocol_version='stage6' (post-firmware-upgrade or just standard
+    // reconnect attempt). Without the r6 fix, entry.session.toolCallsMode
+    // stays 'off' and the harness short-circuits to the legacy fast path
+    // — defeating the operator's intent of engaging shadow mode.
+    process.env.SONNET_TOOL_CALLS = 'shadow';
+    const ws2 = connect(wss, 'user-G');
+    await sendFrame(ws2, {
+      type: 'session_start',
+      sessionId: 'sess-G1',
+      jobState: { certificateType: 'eicr' },
+      protocol_version: 'stage6',
+    });
+
+    const entry = activeSessions.get('sess-G1');
+    expect(entry).toBeDefined();
+    expect(entry.ws).toBe(ws2);
+    expect(entry.session.toolCallsMode).toBe('shadow');
+    // Sanity: r5's write-backs also reflect the new mode + handshake.
+    expect(entry.fallbackToLegacy).toBe(false);
+    expect(entry.protocolVersion).toBe('stage6');
+  });
+
+  test('G.2 — reconnect: shadow → off flip writes session.toolCallsMode=off (STR-01 rollback)', async () => {
+    // Original under shadow with stage6 — fallbackToLegacy=false.
+    process.env.SONNET_TOOL_CALLS = 'shadow';
+    const ws1 = connect(wss, 'user-G');
+    await sendFrame(ws1, {
+      type: 'session_start',
+      sessionId: 'sess-G2',
+      jobState: { certificateType: 'eicr' },
+      protocol_version: 'stage6',
+    });
+    expect(activeSessions.get('sess-G2').session.toolCallsMode).toBe('shadow');
+
+    // Operator flips shadow → off (STR-01 rollback). Reconnect must drop
+    // the entry's session out of shadow routing, otherwise the harness
+    // keeps running shadow even after the global rollback.
+    process.env.SONNET_TOOL_CALLS = 'off';
+    const ws2 = connect(wss, 'user-G');
+    await sendFrame(ws2, {
+      type: 'session_start',
+      sessionId: 'sess-G2',
+      jobState: { certificateType: 'eicr' },
+      protocol_version: 'stage6',
+    });
+
+    const entry = activeSessions.get('sess-G2');
+    expect(entry).toBeDefined();
+    expect(entry.ws).toBe(ws2);
+    expect(entry.session.toolCallsMode).toBe('off');
+  });
+
+  test('G.3 — resume: off → shadow flip via session_resume writes session.toolCallsMode=shadow', async () => {
+    process.env.SONNET_TOOL_CALLS = 'off';
+    const ws1 = connect(wss, 'user-G');
+    await sendFrame(ws1, {
+      type: 'session_start',
+      sessionId: 'sess-G3',
+      jobState: { certificateType: 'eicr' },
+      protocol_version: 'stage6',
+    });
+    expect(activeSessions.get('sess-G3').session.toolCallsMode).toBe('off');
+    const token = readRehydrateToken(ws1);
+
+    process.env.SONNET_TOOL_CALLS = 'shadow';
+    const ws2 = connect(wss, 'user-G');
+    await sendFrame(ws2, {
+      type: 'session_resume',
+      sessionId: token,
+      protocol_version: 'stage6',
+    });
+
+    const entry = activeSessions.get('sess-G3');
+    expect(entry).toBeDefined();
+    expect(entry.ws).toBe(ws2);
+    expect(entry.session.toolCallsMode).toBe('shadow');
+    expect(entry.fallbackToLegacy).toBe(false);
+    expect(entry.protocolVersion).toBe('stage6');
+  });
+
+  test('G.4 — resume: shadow → off flip via session_resume writes session.toolCallsMode=off', async () => {
+    process.env.SONNET_TOOL_CALLS = 'shadow';
+    const ws1 = connect(wss, 'user-G');
+    await sendFrame(ws1, {
+      type: 'session_start',
+      sessionId: 'sess-G4',
+      jobState: { certificateType: 'eicr' },
+      protocol_version: 'stage6',
+    });
+    expect(activeSessions.get('sess-G4').session.toolCallsMode).toBe('shadow');
+    const token = readRehydrateToken(ws1);
+
+    process.env.SONNET_TOOL_CALLS = 'off';
+    const ws2 = connect(wss, 'user-G');
+    await sendFrame(ws2, {
+      type: 'session_resume',
+      sessionId: token,
+      protocol_version: 'stage6',
+    });
+
+    const entry = activeSessions.get('sess-G4');
+    expect(entry).toBeDefined();
+    expect(entry.ws).toBe(ws2);
+    expect(entry.session.toolCallsMode).toBe('off');
+  });
+
+  test('G.5 — reconnect: shadow + protocol_version mismatch keeps session.toolCallsMode=shadow AND fallbackToLegacy=true', async () => {
+    // Regression-lock: toolCallsMode reflects the effective ENV mode at
+    // reconnect time, not the (mode × match) handshake outcome. The
+    // dispatcher's fallbackToLegacy gate (r1-#1) suppresses Stage 6 wire
+    // emission to mismatched clients; that's a separate concern from
+    // which routing path the harness takes.
+    process.env.SONNET_TOOL_CALLS = 'shadow';
+    const ws1 = connect(wss, 'user-G');
+    await sendFrame(ws1, {
+      type: 'session_start',
+      sessionId: 'sess-G5',
+      jobState: { certificateType: 'eicr' },
+      protocol_version: 'stage6',
+    });
+    expect(activeSessions.get('sess-G5').session.toolCallsMode).toBe('shadow');
+    expect(activeSessions.get('sess-G5').fallbackToLegacy).toBe(false);
+
+    // Reconnect under shadow but with protocol_version MISSING — r5-#2's
+    // shadow-mismatch path stamps fallbackToLegacy=true. r6 must still
+    // write toolCallsMode='shadow' (the env says shadow), so the harness
+    // routes through the shadow path AND the dispatcher's
+    // fallbackToLegacy gate suppresses the iOS-bound Stage 6 emit.
+    const ws2 = connect(wss, 'user-G');
+    await sendFrame(ws2, {
+      type: 'session_start',
+      sessionId: 'sess-G5',
+      jobState: { certificateType: 'eicr' },
+      // protocol_version omitted.
+    });
+
+    const entry = activeSessions.get('sess-G5');
+    expect(entry).toBeDefined();
+    expect(entry.ws).toBe(ws2);
+    expect(entry.session.toolCallsMode).toBe('shadow');
+    expect(entry.fallbackToLegacy).toBe(true);
+    expect(entry.protocolVersion).toBeNull();
   });
 });
