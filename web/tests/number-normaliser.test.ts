@@ -242,6 +242,18 @@ describe('NumberNormaliser — digit-sequence collapse', () => {
   it('does not over-fire: "32 in" stays "32 in"', () => {
     expect(normalise('32 in')).toBe('32 in');
   });
+
+  it('"Zs point 6 0" → "Zs 0.60" — 2-digit fractional after "point" still collapses', () => {
+    // Codex P1 follow-up to the 3+ tightening: a Deepgram-split fractional
+    // run of 2 digits after "point" must still collapse, otherwise common
+    // measurement utterances stop normalising. POINT_DIGIT_PATTERN owns
+    // this case directly; the general digit-sequence pattern stays at 3+.
+    expect(normalise('Zs point 6 0')).toBe('Zs 0.60');
+  });
+
+  it('"point 1 2 3 4" → "0.1234" — long fractional split runs collapse via POINT_DIGIT_PATTERN', () => {
+    expect(normalise('point 1 2 3 4')).toBe('0.1234');
+  });
 });
 
 describe('NumberNormaliser — mixed spoken-zero + point + numeric', () => {

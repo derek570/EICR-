@@ -189,9 +189,13 @@ const DIGIT_SEQUENCE_PATTERN = /\b\d(?:\s+\d){2,}\b/g;
 
 // "point 60" → "0.60" — standalone "point" before already-numeric digits
 // (common after digit-sequence collapse with readings like "Zs point six
-// zero" → "Zs point 60"). Word-boundary form (no lookbehind) for older
-// iOS Safari support — see DECIMAL_PATTERN comment for rationale.
-const POINT_DIGIT_PATTERN = /\bpoint\s+(\d+)/gi;
+// zero" → "Zs point 60"). The capture group now allows internal whitespace
+// so 2-digit fractional runs like "Zs point 6 0" (Deepgram-split) collapse
+// here too — DIGIT_SEQUENCE_PATTERN below requires 3+ digits to avoid the
+// circuit-vs-rating false-merge, so this pattern owns the post-"point"
+// 2-digit case. Word-boundary form (no lookbehind) for older iOS Safari
+// support — see DECIMAL_PATTERN comment for rationale.
+const POINT_DIGIT_PATTERN = /\bpoint\s+(\d(?:[\s\d]*\d)?)/gi;
 
 // "Nought Point 0.87" → "0.87" — mixed zero-word + "point" + already-
 // converted decimal. Must run before POINT_DIGIT_PATTERN to prevent
@@ -315,7 +319,12 @@ export function normalise(text: string): string {
   result = result.replace(DIGIT_SEQUENCE_PATTERN, (match) => match.replace(/\s+/g, ''));
 
   // 8b. "point 60" → "0.60" — standalone "point" before now-collapsed digits.
-  result = result.replace(POINT_DIGIT_PATTERN, (_match, digits: string) => `0.${digits}`);
+  // Internal whitespace in the captured digits is stripped so "Zs point 6 0"
+  // (Deepgram-split fractional) lands at "Zs 0.60" without needing the
+  // general digit-sequence collapse to fire on the 2-digit run.
+  result = result.replace(POINT_DIGIT_PATTERN, (_match, digits: string) => {
+    return `0.${digits.replace(/\s+/g, '')}`;
+  });
 
   // 8c. Re-apply implied decimal AFTER digit collapse: "nought 34" → "0.34".
   // Step 0a runs before digit-words convert, so transcripts like "nought
