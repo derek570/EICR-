@@ -456,6 +456,52 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
           speak(q.question);
         }
       },
+      onObservationUpdate: (update) => {
+        // BPG4 / BS 7671 lookup resolved on the server — patch the
+        // matching observation row in place. Match strategy mirrors
+        // iOS `handleObservationUpdate`:
+        //   1. Prefer `observation_id` exact match (server-assigned
+        //      stable UUID, present on all current sessions).
+        //   2. Fall back to fuzzy text match (case-insensitive
+        //      observation_text equality after trim) for legacy
+        //      sessions that pre-date the id assignment.
+        // No match → drop the update (the observation may have been
+        // deleted by the inspector between extraction + refinement).
+        const job = jobRef.current;
+        const observations = job.observations ?? [];
+        if (observations.length === 0) return;
+
+        let idx = -1;
+        if (update.observation_id) {
+          idx = observations.findIndex(
+            (o) => (o as { observation_id?: string }).observation_id === update.observation_id
+          );
+        }
+        if (idx === -1 && update.observation_text) {
+          const target = update.observation_text.trim().toLowerCase();
+          idx = observations.findIndex((o) => {
+            const text = (o as { observation_text?: string }).observation_text;
+            return typeof text === 'string' && text.trim().toLowerCase() === target;
+          });
+        }
+        if (idx === -1) return;
+
+        const next = observations.slice();
+        next[idx] = {
+          ...next[idx],
+          // Code wire-shape on the wire is iOS's enum subset
+          // (C1/C2/C3/FI). Cast through unknown to satisfy the
+          // ObservationRow union without losing the dynamic value.
+          code: update.code as 'C1' | 'C2' | 'C3' | 'FI' | undefined,
+          // ObservationRow uses `description` for the text field; the
+          // wire field is `observation_text`. Map at the boundary.
+          description: update.observation_text,
+          ...(update.regulation !== undefined ? { regulation: update.regulation } : {}),
+          ...(update.rationale !== undefined ? { rationale: update.rationale } : {}),
+          ...(update.source !== undefined ? { source: update.source } : {}),
+        };
+        updateJobRef.current({ observations: next });
+      },
       onCostUpdate: (update) => {
         // Server sends totalJobCost in USD. We keep Sonnet cost
         // separate from Deepgram so the UI ticker stays smooth between
