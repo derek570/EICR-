@@ -524,3 +524,150 @@ describe('Group E — session_resume enforces protocol_version policy (r5-#1)', 
     expect(warnCalls).not.toContain('stage6.protocol_version_mismatch_live_reject_resume');
   });
 });
+
+// -----------------------------------------------------------------------------
+// Group F — session_start reconnect updates entry.protocolVersion + fallbackToLegacy
+// -----------------------------------------------------------------------------
+//
+// Plan 06-06 r5-#2 (MAJOR) — handleSessionStart's reconnect branch at
+// sonnet-stream.js:1366 computes a NEW protocolVersion + fallbackToLegacy
+// from the inbound msg (lines 1320-1352) but never writes those values back
+// to `existing`. Two real-world surfaces break:
+//   1. Operator flipping SONNET_TOOL_CALLS=off → shadow mid-session leaves
+//      entry.fallbackToLegacy=false, leaking Stage 6 wire shapes to
+//      mismatched clients post-flip.
+//   2. iOS firmware upgrade mid-session that now advertises
+//      protocol_version='stage6' on reconnect still sees fallbackToLegacy=true
+//      on the entry, suppressing every Stage 6 emit even though the upgraded
+//      client can now decode them.
+//
+// Tests:
+//   F.1 — shadow + downgrade reconnect: entry.fallbackToLegacy must flip
+//          to true after the reconnect frame.
+//   F.2 — shadow + upgrade reconnect: entry.fallbackToLegacy must flip to
+//          false (clears the stale-client suppression).
+//   F.3 — live + downgrade reconnect: ws.close(1002), entry NOT swapped.
+//   F.4 — off + anything: latest protocolVersion recorded; no policy.
+
+describe('Group F — session_start reconnect updates entry.protocolVersion + fallbackToLegacy (r5-#2)', () => {
+  test('F.1 — shadow downgrade across reconnect: fallbackToLegacy flips to true', async () => {
+    process.env.SONNET_TOOL_CALLS = 'shadow';
+    const ws1 = connect(wss, 'user-F');
+    await sendFrame(ws1, {
+      type: 'session_start',
+      sessionId: 'sess-F1',
+      jobState: { certificateType: 'eicr' },
+      protocol_version: 'stage6',
+    });
+    expect(activeSessions.get('sess-F1').fallbackToLegacy).toBe(false);
+
+    // Reconnect under shadow with protocol_version MISSING — the same
+    // sessionId triggers handleSessionStart's reconnect branch.
+    const ws2 = connect(wss, 'user-F');
+    await sendFrame(ws2, {
+      type: 'session_start',
+      sessionId: 'sess-F1',
+      jobState: { certificateType: 'eicr' },
+      // protocol_version omitted — downgrade path.
+    });
+
+    const entry = activeSessions.get('sess-F1');
+    expect(entry).toBeDefined();
+    expect(entry.ws).toBe(ws2);
+    expect(entry.fallbackToLegacy).toBe(true);
+    expect(entry.protocolVersion).toBeNull();
+  });
+
+  test('F.2 — shadow upgrade across reconnect: fallbackToLegacy flips to false', async () => {
+    process.env.SONNET_TOOL_CALLS = 'shadow';
+    const ws1 = connect(wss, 'user-F');
+    // Open original session with protocol_version MISSING — entry has
+    // fallbackToLegacy=true.
+    await sendFrame(ws1, {
+      type: 'session_start',
+      sessionId: 'sess-F2',
+      jobState: { certificateType: 'eicr' },
+    });
+    expect(activeSessions.get('sess-F2').fallbackToLegacy).toBe(true);
+    mockLogger.warn.mockClear();
+
+    // Reconnect now advertises stage6 — the entry must flip back to
+    // fallbackToLegacy=false.
+    const ws2 = connect(wss, 'user-F');
+    await sendFrame(ws2, {
+      type: 'session_start',
+      sessionId: 'sess-F2',
+      jobState: { certificateType: 'eicr' },
+      protocol_version: 'stage6',
+    });
+
+    const entry = activeSessions.get('sess-F2');
+    expect(entry).toBeDefined();
+    expect(entry.ws).toBe(ws2);
+    expect(entry.fallbackToLegacy).toBe(false);
+    expect(entry.protocolVersion).toBe('stage6');
+  });
+
+  test('F.3 — live + downgrade reconnect: ws.close(1002), original entry not swapped', async () => {
+    process.env.SONNET_TOOL_CALLS = 'live';
+    const ws1 = connect(wss, 'user-F');
+    await sendFrame(ws1, {
+      type: 'session_start',
+      sessionId: 'sess-F3',
+      jobState: { certificateType: 'eicr' },
+      protocol_version: 'stage6',
+    });
+    expect(activeSessions.get('sess-F3').ws).toBe(ws1);
+    mockLogger.warn.mockClear();
+
+    // Reconnect with protocol_version MISSING — should hard-reject.
+    // (Existing top-of-handleSessionStart policy at lines ~1321-1345 already
+    // catches this BEFORE the reconnect branch runs, so the warn key is the
+    // shared 'stage6.protocol_version_mismatch_live_reject' rather than a
+    // reconnect-specific key. The regression value here is that the
+    // existing live policy still applies on the reconnect surface — i.e.
+    // the existing entry is preserved untouched.)
+    const ws2 = connect(wss, 'user-F');
+    await sendFrame(ws2, {
+      type: 'session_start',
+      sessionId: 'sess-F3',
+      jobState: { certificateType: 'eicr' },
+      // protocol_version omitted.
+    });
+
+    expect(ws2.close).toHaveBeenCalledWith(1002, 'protocol_version_mismatch');
+    // The original entry MUST NOT have its ws swapped to the rejected ws2.
+    const entry = activeSessions.get('sess-F3');
+    expect(entry).toBeDefined();
+    expect(entry.ws).not.toBe(ws2);
+    const warnCalls = mockLogger.warn.mock.calls.map(([msg]) => msg);
+    expect(warnCalls).toContain('stage6.protocol_version_mismatch_live_reject');
+  });
+
+  test('F.4 — off mode reconnect: latest protocolVersion recorded, no policy', async () => {
+    process.env.SONNET_TOOL_CALLS = 'off';
+    const ws1 = connect(wss, 'user-F');
+    await sendFrame(ws1, {
+      type: 'session_start',
+      sessionId: 'sess-F4',
+      jobState: { certificateType: 'eicr' },
+      // No protocol_version on first connect.
+    });
+    expect(activeSessions.get('sess-F4').protocolVersion).toBeNull();
+
+    const ws2 = connect(wss, 'user-F');
+    await sendFrame(ws2, {
+      type: 'session_start',
+      sessionId: 'sess-F4',
+      jobState: { certificateType: 'eicr' },
+      protocol_version: 'stage6',
+    });
+
+    const entry = activeSessions.get('sess-F4');
+    expect(entry).toBeDefined();
+    expect(entry.ws).toBe(ws2);
+    expect(entry.protocolVersion).toBe('stage6');
+    expect(entry.fallbackToLegacy).toBe(false);
+    expect(ws2.close).not.toHaveBeenCalled();
+  });
+});
