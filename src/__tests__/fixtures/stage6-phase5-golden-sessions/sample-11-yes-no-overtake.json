@@ -1,5 +1,5 @@
 {
-  "_doc": "Phase 5 Plan 05-06 — Phase 3 user_moved_on regression canary. The model emits ask_user; the user's next utterance overtakes the ask with unrelated content (a brand-new reading rather than answering the question). The Phase 3 dispatcher resolves with answer_outcome='user_moved_on' (a real-fire reason — the budget MUST still increment per stage6-ask-gate-wrapper.js:WRAPPER_SHORT_CIRCUIT_REASONS). Plan 05-06 verifies that the gated path PRESERVES this Phase 3 behaviour — the wrapper does NOT swallow user_moved_on into 'gated' or 'session_terminated'. Per Plan 05-06 design: gate_fixture:true — 0 successful 'answered' asks (user_moved_on is not 'answered') so the fixture contributes 0 to the median.",
+  "_doc": "Phase 5 Plan 05-06 — Phase 3 user_moved_on regression canary. The model emits ask_user; the user's next utterance overtakes the ask with unrelated content (a brand-new reading rather than answering the question). The Phase 3 dispatcher resolves with answer_outcome='user_moved_on' (a real-fire reason — the budget MUST still increment per stage6-ask-gate-wrapper.js:WRAPPER_SHORT_CIRCUIT_REASONS). Plan 05-06 verifies that the gated path PRESERVES this Phase 3 behaviour — the wrapper does NOT swallow user_moved_on into 'gated' or 'session_terminated'. Plan 05-07 r1-#1 corrected the harness's ask_user_count semantic — user_moved_on now counts as a real fire (the ask was emitted; the user's response just didn't engage). expected_ask_user_count=1 (was 0 pre-r1-#1).",
   "_requirement": "STB-05 — no existing guard weakened: Phase 3's user_moved_on lifecycle must survive composition with the Phase 5 gates. Pitfall 4 carry-over: a real-fire (non-wrapper-short-circuit) outcome consumes a budget slot.",
   "_fixture_shape": "phase5-over-ask",
   "session": {
@@ -25,7 +25,7 @@
       "inner_outcome": { "answered": false, "reason": "user_moved_on" }
     }
   ],
-  "expected_ask_user_count": 0,
+  "expected_ask_user_count": 1,
   "expected_restrained_activations": 0,
   "expected_outcome_distribution": {
     "answered": 0,

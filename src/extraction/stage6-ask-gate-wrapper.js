@@ -308,7 +308,28 @@ export function wrapAskDispatcherWithGates(
  * reach this classifier because their code paths return synth envelopes
  * BEFORE the post-dispatch step.
  */
-const WRAPPER_SHORT_CIRCUIT_REASONS = new Set(['gated', 'session_terminated', 'dispatcher_error']);
+// Plan 05-07 r1-#1 — exported so the offline exit-gate harness
+// (scripts/stage6-over-ask-exit-gate.js) can mirror the wrapper's
+// real-fire classification when computing per-session askCount. Keeping
+// the source-of-truth in this module guarantees the harness's metric
+// matches the runtime budget/restrained-window accounting; drift would
+// silently corrupt the SC #8 aggregate (the wrapper increments counters
+// only when isRealFire returns true; the harness MUST count exactly the
+// same envelopes towards askCount).
+export const WRAPPER_SHORT_CIRCUIT_REASONS = new Set([
+  'gated',
+  'session_terminated',
+  'dispatcher_error',
+  // Plan 05-07 r1-#1 also adds `restrained_mode` and `ask_budget_exhausted`
+  // to the harness's "exclude from askCount" set indirectly: those reasons
+  // never reach this classifier inside the wrapper because their code paths
+  // return synth envelopes BEFORE the post-dispatch counter step. The
+  // harness imports this constant for its own isWrapperShortCircuit
+  // helper — the harness's helper additionally treats restrained_mode +
+  // ask_budget_exhausted as wrapper short-circuits because at the harness
+  // accounting layer (which sees envelopes ONLY, not wrapper internals)
+  // those are also "wrapper-suppressed asks" the metric should exclude.
+]);
 
 function isRealFire(envelope) {
   try {

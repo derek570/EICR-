@@ -154,11 +154,24 @@ import { fileURLToPath } from 'node:url';
 import {
   createAskGateWrapper,
   wrapAskDispatcherWithGates,
+  WRAPPER_SHORT_CIRCUIT_REASONS,
 } from '../src/extraction/stage6-ask-gate-wrapper.js';
 import { createAskBudget } from '../src/extraction/stage6-ask-budget.js';
 import { createRestrainedMode } from '../src/extraction/stage6-restrained-mode.js';
 import { createFilledSlotsShadowLogger } from '../src/extraction/stage6-filled-slots-shadow.js';
 import { validateAskUser } from '../src/extraction/stage6-dispatch-validation.js';
+
+// Plan 05-07 r1-#1 — the harness's "exclude from askCount" set is the
+// wrapper's own WRAPPER_SHORT_CIRCUIT_REASONS PLUS the two reasons that
+// never reach the wrapper's isRealFire classifier (their code paths
+// short-circuit BEFORE the post-dispatch step). At the harness accounting
+// layer (envelopes only, no wrapper internals), all five are
+// wrapper-suppressed asks the metric should exclude.
+const HARNESS_WRAPPER_SHORT_CIRCUIT_REASONS = new Set([
+  ...WRAPPER_SHORT_CIRCUIT_REASONS,
+  'restrained_mode',
+  'ask_budget_exhausted',
+]);
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -442,6 +455,17 @@ async function replayFixture(fx) {
   askBudget.destroy();
 
   // Compute observed metrics from envelopes + logger.rows.
+  //
+  // Plan 05-07 r1-#1 — askCount mirrors the wrapper's real-fire semantics:
+  // every dispatched ask_user counts EXCEPT those whose envelope reason is
+  // in HARNESS_WRAPPER_SHORT_CIRCUIT_REASONS (gated / session_terminated /
+  // dispatcher_error / restrained_mode / ask_budget_exhausted). Pre-fix the
+  // metric counted only `body.answered === true` which underclassified
+  // user_moved_on / timeout / etc — the wrapper itself increments budget
+  // for those (because they ARE real asks Sonnet emitted to the user;
+  // the user just didn't engage with them). The aggregate metric must
+  // match the wrapper's accounting or the SC #8 gate diverges from the
+  // production gate semantics.
   const outcomeDistribution = {
     answered: 0,
     gated: 0,
@@ -450,7 +474,7 @@ async function replayFixture(fx) {
     user_moved_on: 0,
     timeout: 0,
   };
-  let answeredCount = 0;
+  let firedAskCount = 0;
   for (const { envelope } of observedEnvelopes) {
     let body;
     try {
@@ -460,13 +484,20 @@ async function replayFixture(fx) {
     }
     if (body.answered === true) {
       outcomeDistribution.answered += 1;
-      answeredCount += 1;
+      firedAskCount += 1;
     } else if (typeof body.reason === 'string') {
-      // Bucket the reason if we know it; else stash under a catch-all.
+      // Bucket the reason for the smoke-mode distribution check.
       if (body.reason in outcomeDistribution) {
         outcomeDistribution[body.reason] += 1;
       } else {
         outcomeDistribution[body.reason] = (outcomeDistribution[body.reason] ?? 0) + 1;
+      }
+      // Plan 05-07 r1-#1 — count this envelope toward askCount UNLESS it's
+      // a wrapper-internal short-circuit. Inner-dispatcher reasons
+      // (user_moved_on, timeout, transcript_already_extracted, etc) all
+      // count as fires; only wrapper-suppressed asks are excluded.
+      if (!HARNESS_WRAPPER_SHORT_CIRCUIT_REASONS.has(body.reason)) {
+        firedAskCount += 1;
       }
     }
   }
@@ -477,7 +508,7 @@ async function replayFixture(fx) {
 
   return {
     fixtureId: fx.id ?? sessionId,
-    askCount: answeredCount,
+    askCount: firedAskCount,
     activationCount,
     outcomeDistribution,
     filledSlotsShadowLogCount,
