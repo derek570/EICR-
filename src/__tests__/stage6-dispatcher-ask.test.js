@@ -497,23 +497,28 @@ describe('createAskDispatcher — exports', () => {
   });
 });
 
-// --- Group 8: r10 outer try/catch — dispatcher_error_pre_emit log on executor throw
+// --- Group 8: r10 outer try/catch — dispatcher_error log + lifecycle field on executor throw
 //
 // Plan 03-12 r10 MAJOR remediation. A non-duplicate throw from register()
 // (or any other unexpected failure inside the Promise executor) used to
 // propagate out of `await new Promise(...)` with ZERO stage6.ask_user row
 // emitted — analyzer lost the breadcrumb for the ask attempt entirely.
 // The new outer try/catch emits one row with answer_outcome=
-// 'dispatcher_error_pre_emit' (Plan 05-13 r7 — was 'dispatcher_error'
-// through Plan 05-12 r6) before rethrowing. The `_pre_emit` suffix
-// encodes the lifecycle position structurally — this catch only fires
-// from the line 297 register-rethrow path (clearTimeout + throw BEFORE
-// ws.send line 305), so the ask never reached iOS. r7 closes the
-// r5↔r6 same-name toggle problem permanently. These tests lock that
-// contract.
+// 'dispatcher_error' (Plan 03-12 r10 → Plan 05-12 r6 → Plan 05-13 r7
+// renamed to '_pre_emit' → Plan 05-14 r8-#2 REVERTED back to
+// 'dispatcher_error') before rethrowing. r8-#2 preserves the wire-
+// schema name as the single canonical value and layers lifecycle
+// position as an out-of-band optional log-row field
+// (`lifecycle: 'pre_emit'`). The schema audit preserved in the wrapper
+// JSDoc still applies: this catch only fires from the line 297
+// register-rethrow path (clearTimeout + throw BEFORE ws.send line 305),
+// so the ask never reached iOS — `lifecycle: 'pre_emit'` records that
+// audit conclusion at the log-row level WITHOUT breaking analyzer
+// queries that filter on the wire-schema `answer_outcome` value. These
+// tests lock that contract.
 
-describe('createAskDispatcher — r10 outer try/catch emits dispatcher_error_pre_emit row (Plan 05-13 r7 rename)', () => {
-  test('non-duplicate register() throw produces ONE stage6.ask_user row with answer_outcome=dispatcher_error_pre_emit, then rethrows', async () => {
+describe('createAskDispatcher — r10 outer try/catch emits dispatcher_error row + lifecycle:pre_emit field (Plan 05-14 r8-#2 revert of r7 rename)', () => {
+  test('non-duplicate register() throw produces ONE stage6.ask_user row with answer_outcome=dispatcher_error + lifecycle:pre_emit, then rethrows', async () => {
     const session = makeSession('live');
     const logger = makeLogger();
     const pending = createPendingAsksRegistry();
@@ -532,7 +537,7 @@ describe('createAskDispatcher — r10 outer try/catch emits dispatcher_error_pre
     ).rejects.toBe(boom);
 
     const errCalls = logger.info.mock.calls.filter(
-      (c) => c[0] === 'stage6.ask_user' && c[1].answer_outcome === 'dispatcher_error_pre_emit'
+      (c) => c[0] === 'stage6.ask_user' && c[1].answer_outcome === 'dispatcher_error'
     );
     expect(errCalls).toHaveLength(1);
     const row = errCalls[0][1];
@@ -540,6 +545,13 @@ describe('createAskDispatcher — r10 outer try/catch emits dispatcher_error_pre
     expect(row.mode).toBe('live');
     expect(row.dispatcher_error).toBe('register_invariant_broke');
     expect(row.wait_duration_ms).toBeGreaterThanOrEqual(0);
+    // Plan 05-14 r8-#2: the lifecycle field replaces r7's name-rename
+    // approach. Encodes the audit conclusion (this catch is structurally
+    // pre-emit) as out-of-band log-row metadata so analyzer queries can
+    // split on lifecycle position WITHOUT needing the closed-enum
+    // wire-schema split that r7 introduced (and that broke downstream
+    // consumers).
+    expect(row.lifecycle).toBe('pre_emit');
   });
 
   test('duplicate_tool_call_id does NOT route through the outer catch (stays as normal duplicate outcome)', async () => {
@@ -567,11 +579,17 @@ describe('createAskDispatcher — r10 outer try/catch emits dispatcher_error_pre
     });
 
     // The single row uses answer_outcome='duplicate_tool_call_id', NOT
-    // 'dispatcher_error_pre_emit' — the outer catch must not swallow
-    // this path. (Pre-Plan 05-13 r7 the comparison was against
-    // 'dispatcher_error'; the rename does not change semantics here.)
+    // 'dispatcher_error' — the outer catch must not swallow this path.
+    // (Plan 05-13 r7 briefly used 'dispatcher_error_pre_emit' here in
+    // the comparison; Plan 05-14 r8-#2 reverted to the canonical
+    // wire-schema name. The rename does not change semantics here.)
+    // The duplicate-path also does NOT carry a lifecycle field —
+    // lifecycle is reserved for the dispatcher_error path (the single
+    // emit site that needed lifecycle disambiguation per the r5↔r6
+    // toggle history).
     const rows = logger.info.mock.calls.filter((c) => c[0] === 'stage6.ask_user');
     expect(rows).toHaveLength(1);
     expect(rows[0][1].answer_outcome).toBe('duplicate_tool_call_id');
+    expect(rows[0][1]).not.toHaveProperty('lifecycle');
   });
 });

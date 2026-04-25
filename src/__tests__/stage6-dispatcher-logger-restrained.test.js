@@ -177,19 +177,28 @@ describe('Phase 5 observability contract (Plan 05-05 — STO-03)', () => {
       expect(Object.isFrozen(ASK_USER_ANSWER_OUTCOMES)).toBe(true);
     });
 
-    test('contains exactly the 17 expected values (strict-equality snapshot — Plan 05-13 r7 split)', () => {
+    test('contains exactly the 15 expected values (strict-equality snapshot — Plan 05-14 r8-#2 revert of r7 split)', () => {
       // Strict equality — order-sensitive. Order is part of the contract
       // because the source file groups values by Phase + remediation round,
       // and rearranging the order signals an intentional refactor that
       // requires reviewer eyeballs on this test.
       //
-      // Plan 05-13 r7: the legacy `dispatcher_error` (added Plan 03-12 r10)
-      // stays in the enum for back-compat with archived log rows but moves
-      // to ambiguous-legacy classification (no active emit site; isRealFire
-      // fallthrough = fire). Two NEW lifecycle-keyed values
-      // (`dispatcher_error_pre_emit` / `dispatcher_error_post_emit`) appended
-      // at the end so the active emission name encodes lifecycle position
-      // structurally — closing the r5↔r6 same-name toggle problem.
+      // Plan 05-14 r8-#2 REVERTS Plan 05-13 r7's lifecycle-keyed split.
+      // r7 introduced a BREAKING wire-schema change — the active emit
+      // site at stage6-dispatcher-ask.js:341 was renamed from
+      // `'dispatcher_error'` to `'dispatcher_error_pre_emit'`, and two
+      // new enum values were appended (`_pre_emit`, `_post_emit`).
+      // Downstream consumers (CloudWatch Insights queries, future
+      // analyzer expansions) filtering on `answer_outcome =
+      // 'dispatcher_error'` would silently match nothing post-r7. r8-#2
+      // restores the wire-schema name as the single canonical value and
+      // layers lifecycle position as a SEPARATE optional log-row field
+      // (additive, no break — same idiom as r10's `dispatcher_error`
+      // diagnostic field).
+      //
+      // The legacy `dispatcher_error` (added Plan 03-12 r10) is the
+      // active emit site post-r8 — preserved verbatim from Plan 03-12
+      // r10 through r6, then renamed at r7, then reverted at r8.
       expect([...ASK_USER_ANSWER_OUTCOMES]).toEqual([
         // STO-02 original 6 + Phase 5 reserved (rev'd into the original 6 group):
         'answered',
@@ -207,13 +216,13 @@ describe('Phase 5 observability contract (Plan 05-05 — STO-03)', () => {
         'duplicate_tool_call_id',
         // Plan 03-12 r8:
         'transcript_already_extracted',
-        // Plan 03-12 r10 (legacy at r7 — back-compat only, no active emit):
+        // Plan 03-12 r10 — single canonical value (active emit site).
+        // r7's lifecycle-keyed split was reverted at r8-#2 to preserve
+        // the wire schema; lifecycle is now carried as an optional
+        // separate field at the log-row layer.
         'dispatcher_error',
         // Plan 04-26 Layer 2:
         'prompt_leak_blocked',
-        // Plan 05-13 r7 — lifecycle-keyed split of `dispatcher_error`:
-        'dispatcher_error_pre_emit',
-        'dispatcher_error_post_emit',
       ]);
     });
 
@@ -304,6 +313,56 @@ describe('Phase 5 observability contract (Plan 05-05 — STO-03)', () => {
       expect(row).not.toHaveProperty('validation_error');
       expect(row).not.toHaveProperty('sanitisation');
       expect(row).not.toHaveProperty('dispatcher_error');
+    });
+
+    test('Plan 05-14 r8-#2: lifecycle field forwarded when caller provides it; omitted when undefined', () => {
+      // r8-#2 closure lock. Layered the lifecycle position as an
+      // optional pass-through metadata field at the log-row level so
+      // downstream analyzer queries can split on lifecycle without
+      // breaking the closed-enum wire schema. Same idiom as r10's
+      // `dispatcher_error` diagnostic field, r19's `validation_error`
+      // sub-object, and Plan 03-10 Task 2's `sanitisation` sub-object —
+      // all optional pass-throughs that surface in the row only when
+      // the caller provides them.
+      //
+      // Phase 8 dashboards split on `lifecycle` would otherwise need
+      // to read `answer_outcome` AND infer lifecycle position from
+      // surrounding context (which is exactly the r5↔r6 toggle
+      // problem r7 was trying to fix). The separate field carries the
+      // audit conclusion as a first-class metadata attribute without
+      // disturbing the closed-enum wire schema.
+      //
+      // Present-case: caller provides lifecycle:'pre_emit' → row carries
+      // lifecycle:'pre_emit'. The dispatcher's outer catch at
+      // stage6-dispatcher-ask.js line 361 emits with this lifecycle value
+      // post-r8-#2.
+      const presentLogger = mockLogger();
+      logAskUser(presentLogger, {
+        sessionId: 's-r8-2-present',
+        turnId: 's-r8-2-present-turn-1',
+        mode: 'live',
+        tool_call_id: 'toolu_lifecycle_present',
+        answer_outcome: 'dispatcher_error',
+        lifecycle: 'pre_emit',
+      });
+      const presentRow = presentLogger.info.mock.calls[0][1];
+      expect(presentRow.lifecycle).toBe('pre_emit');
+
+      // Omission-case: caller does NOT provide lifecycle → row MUST NOT
+      // carry a `lifecycle:undefined` (or any null sentinel). Phase 8
+      // queries use `filter ispresent(lifecycle)` as shorthand for
+      // "row carries explicit lifecycle metadata"; a null fallback
+      // would corrupt that filter.
+      const omittedLogger = mockLogger();
+      logAskUser(omittedLogger, {
+        sessionId: 's-r8-2-omitted',
+        turnId: 's-r8-2-omitted-turn-1',
+        mode: 'live',
+        tool_call_id: 'toolu_lifecycle_omitted',
+        answer_outcome: 'answered',
+      });
+      const omittedRow = omittedLogger.info.mock.calls[0][1];
+      expect(omittedRow).not.toHaveProperty('lifecycle');
     });
 
     test('logAskUser accepts every value in ASK_USER_ANSWER_OUTCOMES + every value in ASK_USER_MODES (closed-enum echo)', () => {

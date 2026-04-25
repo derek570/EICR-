@@ -328,7 +328,7 @@ describe('logAskUser()', () => {
     expect(row.context_circuit).toBeNull();
   });
 
-  test('ASK_USER_ANSWER_OUTCOMES exports all 17 Phase 3+ values (Plan 05-13 r7 added _pre_emit / _post_emit lifecycle split)', () => {
+  test("ASK_USER_ANSWER_OUTCOMES exports all 15 Phase 3+ values (Plan 05-14 r8-#2 revert of r7 split — wire-schema name preserved as 'dispatcher_error', lifecycle carried as a separate log-row field)", () => {
     expect(ASK_USER_ANSWER_OUTCOMES).toEqual([
       'answered',
       'timeout',
@@ -347,23 +347,17 @@ describe('logAskUser()', () => {
       // throw invalid_answer_outcome on the reverse-race path.
       'transcript_already_extracted',
       // Plan 03-12 r10 MAJOR remediation: outer try/catch in dispatchAskUser
-      // historically emitted this when the live-path Promise setup/await
-      // threw unexpectedly. LEGACY post-Plan 05-13 r7 — no active emit
-      // site (every current emit renamed to dispatcher_error_pre_emit).
-      // Stays in the enum for back-compat with archived log rows.
+      // emits this when the live-path Promise setup/await throws
+      // unexpectedly. SINGLE CANONICAL value post-Plan 05-14 r8-#2 (the
+      // r7 lifecycle-keyed split was reverted to preserve the wire
+      // schema; lifecycle position is now carried as a separate
+      // optional `lifecycle` log-row field — additive metadata, not a
+      // closed-enum split).
       'dispatcher_error',
       // Plan 04-26 Layer 2: prompt-leak filter blocked the ask_user
       // pre-register because the model's question contained system-prompt
       // disclosure content.
       'prompt_leak_blocked',
-      // Plan 05-13 r7 BLOCK remediation: lifecycle-keyed split of legacy
-      // `dispatcher_error`. `_pre_emit` is the active emit site post-r7
-      // (stage6-dispatcher-ask.js outer catch + stage6-ask-gate-wrapper.js
-      // timer-catch — both structurally pre-emit per the schema audit
-      // preserved in the wrapper JSDoc). The `_post_emit` sibling is
-      // RESERVED for future post-emit code paths.
-      'dispatcher_error_pre_emit',
-      'dispatcher_error_post_emit',
     ]);
   });
 

@@ -1393,54 +1393,35 @@ describe('Plan 05-10 r4-#2 — predicate helpers replace mutable Set exports', (
     expect(typeof isPreEmitNonFireReason).toBe('function');
   });
 
-  test('isPreEmitNonFireReason returns true for every legacy member (incl. r3-#1 shadow_mode + r7 dispatcher_error_pre_emit)', () => {
-    // Plan 05-08 r2-#1 + Plan 05-09 r3-#1 + Plan 05-13 r7 — five
-    // pre-emit reasons (r6's dispatcher_error replaced at r7 by the
-    // lifecycle-keyed `dispatcher_error_pre_emit`):
+  test('isPreEmitNonFireReason returns true for every legacy member (incl. r3-#1 shadow_mode + r6 dispatcher_error — Plan 05-14 r8-#2 reverted r7 lifecycle split)', () => {
+    // Plan 05-08 r2-#1 + Plan 05-09 r3-#1 + Plan 05-12 r6 + Plan 05-14
+    // r8-#2 — five pre-emit reasons (r7's lifecycle-keyed split was
+    // REVERTED at r8-#2 to preserve the closed-enum wire schema;
+    // lifecycle position is now carried as a SEPARATE log-row metadata
+    // field, not split across two enum values):
     expect(isPreEmitNonFireReason('validation_error')).toBe(true);
     expect(isPreEmitNonFireReason('duplicate_tool_call_id')).toBe(true);
     expect(isPreEmitNonFireReason('prompt_leak_blocked')).toBe(true);
     expect(isPreEmitNonFireReason('shadow_mode')).toBe(true);
-    // Plan 05-13 r7 — `dispatcher_error_pre_emit` ADDED. The r5↔r6
-    // toggle history (initial non-fire → r5 fire → r6 non-fire)
-    // showed that a single `dispatcher_error` name cannot carry
-    // lifecycle position. r7 splits the name: every CURRENT emit
-    // site (the outer catch in stage6-dispatcher-ask.js, structurally
-    // pre-emit per the schema audit preserved in the wrapper JSDoc)
-    // now produces `dispatcher_error_pre_emit`. The `_post_emit`
-    // sibling is RESERVED for future post-emit code paths and lives
-    // in NEITHER pre-emit set → fire by default. The legacy
-    // `dispatcher_error` name stays in the enum for back-compat
-    // with archived log rows but is no longer emitted by current
-    // code; classifier treats it as ambiguous-legacy → fire-default.
-    expect(isPreEmitNonFireReason('dispatcher_error_pre_emit')).toBe(true);
+    // Plan 05-12 r6 / Plan 05-14 r8-#2 — `dispatcher_error` is the
+    // single canonical wire-schema name post-r8-#2 (revert of r7's
+    // `_pre_emit` rename). The active emit site at
+    // `stage6-dispatcher-ask.js:361` produces `'dispatcher_error'`
+    // verbatim and adds an out-of-band `lifecycle: 'pre_emit'` field
+    // at the log-row level. The schema audit preserved in the wrapper
+    // JSDoc (above _WRAPPER_SHORT_CIRCUIT_REASONS) confirms every
+    // current emit site is structurally pre-emit, so the classifier
+    // treats `dispatcher_error` as a member of this set → non-fire.
+    expect(isPreEmitNonFireReason('dispatcher_error')).toBe(true);
   });
 
-  test('isPreEmitNonFireReason returns false for non-members', () => {
+  test('isPreEmitNonFireReason returns false for non-members (Plan 05-14 r8-#2 — wire-schema preserved)', () => {
     expect(isPreEmitNonFireReason('answered')).toBe(false);
     expect(isPreEmitNonFireReason('user_moved_on')).toBe(false);
     expect(isPreEmitNonFireReason('timeout')).toBe(false);
     expect(isPreEmitNonFireReason('gated')).toBe(false);
     expect(isPreEmitNonFireReason('restrained_mode')).toBe(false);
     expect(isPreEmitNonFireReason('ask_budget_exhausted')).toBe(false);
-    // Plan 05-13 r7 — legacy `dispatcher_error` MOVED OUT of the
-    // pre-emit set. r6 had placed it there (after r5's brief fire
-    // classification); r7 splits the name into lifecycle-keyed
-    // `dispatcher_error_pre_emit` (in the pre-emit set) and
-    // `dispatcher_error_post_emit` (NOT in the pre-emit set —
-    // fire-by-default). The legacy name stays in the enum for
-    // back-compat with archived log rows but is no longer emitted
-    // by current code; classifier treats it as ambiguous-legacy →
-    // fire-default via isRealFire's fallthrough branch (matches r5's
-    // conservative direction for unknown-lifecycle envelopes).
-    expect(isPreEmitNonFireReason('dispatcher_error')).toBe(false);
-    // Plan 05-13 r7 — `dispatcher_error_post_emit` reserved for
-    // future post-emit code paths. Lives in NEITHER pre-emit set
-    // (this one OR _WRAPPER_SHORT_CIRCUIT_REASONS) so isRealFire's
-    // default branch counts it as fire — correct for post-emit
-    // lifecycle (the user has seen ask_user_started before the
-    // throw; budget slot must consume).
-    expect(isPreEmitNonFireReason('dispatcher_error_post_emit')).toBe(false);
     //
     // Plan 05-11 r5-#2 — `gate_dispatcher_error` is wrapper-internal
     // (lives in WRAPPER_SHORT_CIRCUIT_REASONS), NOT pre-emit. The
@@ -1451,6 +1432,17 @@ describe('Plan 05-10 r4-#2 — predicate helpers replace mutable Set exports', (
     expect(isPreEmitNonFireReason('gate_dispatcher_error')).toBe(false);
     expect(isPreEmitNonFireReason('not-a-real-reason')).toBe(false);
     expect(isPreEmitNonFireReason('')).toBe(false);
+    //
+    // Plan 05-14 r8-#2 — `dispatcher_error_pre_emit` and
+    // `dispatcher_error_post_emit` no longer exist in the closed
+    // enum (the r7 split was reverted). The classifier returns
+    // false for them because they are not members of either
+    // pre-emit set — same fall-through that any unknown reason
+    // takes. We assert this explicitly so a regression that
+    // reintroduces the r7 names without updating the classifier
+    // (or vice versa) trips the lock.
+    expect(isPreEmitNonFireReason('dispatcher_error_pre_emit')).toBe(false);
+    expect(isPreEmitNonFireReason('dispatcher_error_post_emit')).toBe(false);
   });
 
   test('legacy Set exports REMOVED — wrapper module exports no mutable Set', () => {
@@ -1592,12 +1584,17 @@ describe('Plan 05-11 r5-#2 — dispatcher_error / gate_dispatcher_error split', 
     }));
   }
 
-  test('inner dispatcher throws → wrapper resolves dispatcher_error_pre_emit → counters NOT incremented (post-r7 lifecycle-keyed pre-emit non-fire)', async () => {
+  test('inner dispatcher throws → wrapper resolves dispatcher_error → counters NOT incremented (Plan 05-14 r8-#2 reverted r7 lifecycle split — wire-schema preserved)', async () => {
     // The wrapper's timer block catches inner throws and resolves the
-    // outer Promise with synthResultWrapped(call, 'dispatcher_error_pre_emit')
-    // (post-r7 — was 'dispatcher_error' through r6).
+    // outer Promise with synthResultWithoutLog(call, 'dispatcher_error')
+    // (Plan 05-14 r8-#1 + r8-#2 — was synthResultWrapped(...)
+    // with `'dispatcher_error_pre_emit'` post-r7; r8-#1 routed the
+    // catch through the non-logging helper to close the double-log
+    // bug, then r8-#2 reverted the wire-schema name back to
+    // `'dispatcher_error'` so downstream analyzer queries on the
+    // closed-enum wire-schema name keep working).
     //
-    // r1 → r5 → r6 → r7 lineage:
+    // r1 → r5 → r6 → r7 → r8 lineage:
     //   - Pre-r5-#2 (Plan 05-07 r1-#1): dispatcher_error was in
     //     _WRAPPER_SHORT_CIRCUIT_REASONS — non-fire.
     //   - r5-#2 (Plan 05-11): removed from wrapper short-circuit set,
@@ -1613,21 +1610,25 @@ describe('Plan 05-11 r5-#2 — dispatcher_error / gate_dispatcher_error split', 
     //     classification was forward-looking, not current-state-
     //     correct. r6 placed dispatcher_error in
     //     _PRE_EMIT_NON_FIRE_REASONS.
-    //   - r7 (Plan 05-13 — THIS test's classification): split the
-    //     outcome name into lifecycle-keyed values that encode
-    //     position structurally. Every CURRENT emit site (the outer
-    //     catch in stage6-dispatcher-ask.js + the wrapper's own
-    //     timer-catch propagating an inner throw) renamed to
-    //     `dispatcher_error_pre_emit`. The `_post_emit` sibling is
-    //     RESERVED for future post-emit code paths; lives in NEITHER
-    //     pre-emit set → fire by default. Legacy `dispatcher_error`
-    //     stays in the enum for back-compat with archived log rows
-    //     but moves to ambiguous-legacy classification (no active
-    //     emit site; isRealFire fallthrough = fire). Splitting the
-    //     name closes the toggle problem permanently — a future
-    //     re-audit cannot re-classify the SAME name without renaming
-    //     the emit site too (Phase 4 r28 disposition policy: targeted
-    //     forbidden-file edits permitted when proven necessary).
+    //   - r7 (Plan 05-13): split the outcome name into lifecycle-keyed
+    //     values that encode position structurally. Every CURRENT
+    //     emit site renamed to `dispatcher_error_pre_emit`. The
+    //     `_post_emit` sibling was RESERVED for future post-emit
+    //     code paths.
+    //   - r8 (Plan 05-14 — THIS test's classification): REVERTED r7's
+    //     wire-schema rename. The closed-enum split was a breaking
+    //     wire-schema change — downstream consumers (CloudWatch
+    //     Insights queries) filtering on `answer_outcome =
+    //     'dispatcher_error'` post-r7 silently match nothing. r8-#2
+    //     restores the canonical wire-schema name and layers
+    //     lifecycle position as a SEPARATE optional log-row metadata
+    //     field. The classifier returns to the r6 shape: legacy name
+    //     `'dispatcher_error'` is back in
+    //     `_PRE_EMIT_NON_FIRE_REASONS` → non-fire. The wrapper's
+    //     timer-catch path also routes through the new
+    //     `synthResultWithoutLog` helper (r8-#1) so the dispatcher's
+    //     outer catch is the sole emitter of the `stage6.ask_user`
+    //     row for the inner-throw path.
     const logger = makeLogger();
     const inner = makeThrowingInner();
     const askBudget = makeBudget();
@@ -1647,9 +1648,10 @@ describe('Plan 05-11 r5-#2 — dispatcher_error / gate_dispatcher_error split', 
     jest.advanceTimersByTime(QUESTION_GATE_DELAY_MS);
     const result = await promise;
 
-    expect(JSON.parse(result.content).reason).toBe('dispatcher_error_pre_emit');
-    // r7 reclassification: dispatcher_error_pre_emit is pre-emit
-    // non-fire. Neither counter increments — the ask never reached iOS.
+    expect(JSON.parse(result.content).reason).toBe('dispatcher_error');
+    // Plan 05-14 r8-#2 classification: `dispatcher_error` is back in
+    // `_PRE_EMIT_NON_FIRE_REASONS` (r6 placement preserved post-r8).
+    // Neither counter increments — the ask never reached iOS.
     expect(askBudget.increment).not.toHaveBeenCalled();
     expect(restrainedMode.recordAsk).not.toHaveBeenCalled();
 
@@ -1764,71 +1766,30 @@ describe('Plan 05-11 r5-#2 — dispatcher_error / gate_dispatcher_error split', 
     expect(isWrapperShortCircuitReason('dispatcher_error')).toBe(false);
   });
 
-  test('predicate: isPreEmitNonFireReason("dispatcher_error") === false (post-r7 — legacy ambiguous)', () => {
-    // r7 reclassification lock: legacy `dispatcher_error` is REMOVED
-    // from _PRE_EMIT_NON_FIRE_REASONS. The r5↔r6 toggle showed that
-    // a single name cannot carry lifecycle position. r7 splits the
-    // name into `dispatcher_error_pre_emit` (current emit site;
-    // pre-emit non-fire) and `dispatcher_error_post_emit` (reserved;
-    // fire). Legacy `dispatcher_error` stays in the enum for
-    // back-compat with archived log rows but is no longer emitted
-    // by current code; classifier treats it as ambiguous-legacy
-    // (NOT a member of either pre-emit set → fire-default via
-    // isRealFire's fallthrough branch). Conservative direction
-    // matches r5's reasoning for unknown-lifecycle envelopes.
-    expect(isPreEmitNonFireReason('dispatcher_error')).toBe(false);
-  });
-
-  test('predicate: isPreEmitNonFireReason("dispatcher_error_pre_emit") === true (Plan 05-13 r7 split — current code path)', () => {
-    // r7 split — `_pre_emit` carries the lifecycle position
-    // structurally. Every CURRENT emit site (the outer catch in
-    // stage6-dispatcher-ask.js + the wrapper's own timer-catch
-    // propagating an inner throw) produces this name. The schema
-    // audit preserved in the wrapper JSDoc audit block above
-    // _WRAPPER_SHORT_CIRCUIT_REASONS confirms: register rethrow at
-    // line 297 is BEFORE ws.send line 305; ws.send failures are
-    // caught + swallowed in an inner try/catch that never reaches
-    // the outer catch; no synchronous post-send work exists. The
-    // _pre_emit suffix encodes that audit conclusion in the name
-    // itself, so a future re-audit cannot toggle the classification
-    // without renaming the emit site too.
-    expect(isPreEmitNonFireReason('dispatcher_error_pre_emit')).toBe(true);
-  });
-
-  test('predicate: isPreEmitNonFireReason("dispatcher_error_post_emit") === false (Plan 05-13 r7 split — fire reservation)', () => {
-    // r7 split — `_post_emit` reserved for future post-emit code
-    // paths that can throw and reach the same outer catch. NOT a
-    // member of either pre-emit set → isRealFire's fallthrough
-    // returns true → budget + restrained-window slot consumed.
-    // Correct for post-emit lifecycle (the user has seen
-    // ask_user_started before the throw). At r7 closure there is
-    // NO emit site; the membership lock is pre-registered in the
-    // enum so when a future refactor introduces post-emit code, it
-    // can emit dispatcher_error_post_emit and the classifier is
-    // already wired correctly. Parallel to Plan 05-11 r5-#2's
-    // pre-registration of `gate_dispatcher_error`.
-    expect(isPreEmitNonFireReason('dispatcher_error_post_emit')).toBe(false);
-  });
-
-  test('predicate: isWrapperShortCircuitReason("dispatcher_error_pre_emit") === false (Plan 05-13 r7 — dispatcher-origin, not wrapper)', () => {
-    // r7 lock: the new `_pre_emit` name is NOT a wrapper
-    // short-circuit reason. Like the legacy dispatcher_error it
-    // replaces, it originates from the inner dispatcher's outer
-    // catch (or the wrapper's timer-catch propagating that throw),
-    // NOT from a wrapper-internal catch like gate_dispatcher_error.
-    // The membership distinction matters for future readers:
-    // _WRAPPER_SHORT_CIRCUIT_REASONS = wrapper-OWNED pre-emit
-    // (gated / session_terminated / gate_dispatcher_error);
-    // _PRE_EMIT_NON_FIRE_REASONS = inner-dispatcher pre-emit
-    // (validation_error / shadow_mode / etc + the new _pre_emit).
-    expect(isWrapperShortCircuitReason('dispatcher_error_pre_emit')).toBe(false);
-  });
-
-  test('predicate: isWrapperShortCircuitReason("dispatcher_error_post_emit") === false (Plan 05-13 r7 — fire-default)', () => {
-    // r7 lock: `_post_emit` is in NEITHER set → fire-default. NOT
-    // a wrapper short-circuit (dispatcher-origin); NOT a pre-emit
-    // non-fire (post-emit lifecycle). Both predicate locks together
-    // pin the fire classification.
-    expect(isWrapperShortCircuitReason('dispatcher_error_post_emit')).toBe(false);
+  test('predicate: isPreEmitNonFireReason("dispatcher_error") === true (Plan 05-14 r8-#2 — back in pre-emit set after r7 revert)', () => {
+    // Plan 05-14 r8-#2 classification lock — REVERTS Plan 05-13 r7's
+    // `dispatcher_error` → `dispatcher_error_pre_emit` rename.
+    //
+    // r7's wire-schema split was a BREAKING change to the closed
+    // enum `ASK_USER_ANSWER_OUTCOMES`: downstream analyzer queries
+    // (CloudWatch Insights, future analyze-session.js consumers)
+    // filtering on `answer_outcome = 'dispatcher_error'` post-r7
+    // silently matched nothing. r8-#2 restores the canonical wire-
+    // schema name as the single emitted value and layers lifecycle
+    // position as a SEPARATE optional log-row field — additive
+    // metadata, not a closed-enum split.
+    //
+    // The classifier returns to the r6 shape: `'dispatcher_error'`
+    // is back in `_PRE_EMIT_NON_FIRE_REASONS`. The schema audit
+    // preserved in the wrapper JSDoc (above
+    // `_WRAPPER_SHORT_CIRCUIT_REASONS`) still applies — every active
+    // emit site reaches the outer catch via the structurally pre-
+    // emit `register()` rethrow path at line 297 (BEFORE ws.send at
+    // line 305; ws.send failures caught + swallowed in an inner
+    // try/catch that never reaches the outer catch). The lifecycle
+    // metadata field at the log-row layer carries that audit
+    // conclusion as a first-class attribute without disturbing the
+    // wire schema.
+    expect(isPreEmitNonFireReason('dispatcher_error')).toBe(true);
   });
 });
