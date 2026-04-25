@@ -134,6 +134,13 @@ export function filterQuestionsAgainstFilledSlots(
         filledValue: String(circuits[circuit][field]).slice(0, 40),
         qType: qType.slice(0, 40),
       });
+      // Phase 8 Plan 08-01 SC #6 — emit a one-shot deletion-pending warn
+      // alongside the info-log so the operator scanning CloudWatch sees
+      // the T+4w deletion schedule inline (mirrors Phase 7's
+      // logLegacyPathInvokedOnce pattern in sonnet-stream.js:208). The
+      // info-log row stays as-is — the metric is still useful diagnostic
+      // for prompt regressions through T+4w.
+      logSuppressedRefillDeletionPendingOnce(sessionId);
       continue;
     }
     kept.push(q);
@@ -144,3 +151,46 @@ export function filterQuestionsAgainstFilledSlots(
 // Exported for test coverage of the type whitelist — the set is small and
 // stable so duplicating it in tests would just drift out of sync.
 export const __TEST_REFILL_QUESTION_TYPES = REFILL_QUESTION_TYPES;
+
+// ─────────────────────────────────────────────────────────────────
+// Phase 8 Plan 08-01 SC #6 — deletion-pending warn-log helper.
+//
+// One-shot per sessionId. Pattern mirrors logLegacyPathInvokedOnce()
+// in src/extraction/sonnet-stream.js:208 (Phase 7 commit b6c77a5).
+// Why module-level state rather than the entry-stamp pattern Phase 7
+// used: filterQuestionsAgainstFilledSlots is a pure function with no
+// access to the activeSessions entry. A module-level Set keyed on
+// sessionId is the equivalent for a stateless caller — sessions
+// terminate eventually (by GC of the activeSessions entry) and the
+// Set membership is bounded by the number of distinct sessions
+// observed by the process, which is bounded by ECS task lifetime.
+// Memory cost: ~36 bytes per session (UUID string), under any
+// realistic load this is sub-megabyte.
+//
+// Reset hook (__TEST_RESET_DELETION_PENDING_LOG_STATE) is exported
+// for tests because beforeEach can't otherwise reset the closure
+// state. Same pattern as `seenSessionsForLegacyPathInvoked` could
+// have been if Phase 7 hadn't piggy-backed on the entry. Marked
+// __TEST_ prefix so it's clearly NOT for production callers.
+// ─────────────────────────────────────────────────────────────────
+
+const _seenDeletionPendingSessions = new Set();
+
+function logSuppressedRefillDeletionPendingOnce(sessionId) {
+  if (!sessionId) return;
+  if (_seenDeletionPendingSessions.has(sessionId)) return;
+  _seenDeletionPendingSessions.add(sessionId);
+  logger.warn('stage6.suppressed_refill_question_deletion_pending', {
+    sessionId,
+    _invoked_at: new Date().toISOString(),
+    _deletion_target: 'T+4w (Phase 7 STR-05)',
+    _refs: 'REQUIREMENTS.md STO-05; ROADMAP §Phase 8 SC #6',
+  });
+}
+
+// Test-only export — DO NOT call from production code. Resets the
+// per-process one-shot state so tests can re-exercise the first-emit
+// path. Same idiom as test-only setters in question-gate.js.
+export function __TEST_RESET_DELETION_PENDING_LOG_STATE() {
+  _seenDeletionPendingSessions.clear();
+}
