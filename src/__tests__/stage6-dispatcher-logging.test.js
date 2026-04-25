@@ -388,3 +388,110 @@ describe('logAskUser()', () => {
     expect('sanitisation' in row).toBe(false);
   });
 });
+
+// =============================================================================
+// Plan 05-15 r9-#2 — ASK_USER_LIFECYCLES enum + invalid_lifecycle throw
+// =============================================================================
+// Plan 05-14 r8-#2 layered `lifecycle` as an additive optional log-row field
+// (correct decision — no wire-schema break) but forwarded the value verbatim
+// with no enum gate. A typo at the dispatcher emit site ('pre-emit' with a
+// hyphen, 'preemit', 'PRE_EMIT', case mismatch) silently forks the log
+// schema. Phase 8 dashboards splitting by lifecycle would see phantom buckets
+// and undercount the canonical pre_emit / post_emit rows.
+//
+// Same discipline the codebase enforces for answer_outcome
+// (ASK_USER_ANSWER_OUTCOMES), mode (ASK_USER_MODES), and event on
+// restrained_mode (RESTRAINED_MODE_EVENTS): closed enum + throw at emit
+// site. Adding the enum-and-throw at logAskUser is consistent with three
+// prior Phase-3+5 fixes under the exact same pattern.
+// =============================================================================
+
+describe('Plan 05-15 r9-#2 — ASK_USER_LIFECYCLES enum + invalid_lifecycle throw', () => {
+  // Use dynamic import so RED state surfaces cleanly when the new exports
+  // (ASK_USER_LIFECYCLES + isValidAskUserLifecycle) don't yet exist.
+  let ASK_USER_LIFECYCLES;
+  let isValidAskUserLifecycle;
+
+  beforeAll(async () => {
+    const mod = await import('../extraction/stage6-dispatcher-logger.js');
+    ASK_USER_LIFECYCLES = mod.ASK_USER_LIFECYCLES;
+    isValidAskUserLifecycle = mod.isValidAskUserLifecycle;
+  });
+
+  test('ASK_USER_LIFECYCLES exports the closed pair [pre_emit, post_emit] (frozen)', () => {
+    expect(ASK_USER_LIFECYCLES).toEqual(['pre_emit', 'post_emit']);
+    expect(Object.isFrozen(ASK_USER_LIFECYCLES)).toBe(true);
+  });
+
+  test('logAskUser with lifecycle: pre_emit succeeds (canonical happy path)', () => {
+    const logger = mockLogger();
+    expect(() => logAskUser(logger, validAskPayload({ lifecycle: 'pre_emit' }))).not.toThrow();
+    const row = logger.info.mock.calls[0][1];
+    expect(row.lifecycle).toBe('pre_emit');
+  });
+
+  test('logAskUser with lifecycle: post_emit succeeds (reserved future emit-site value)', () => {
+    const logger = mockLogger();
+    expect(() => logAskUser(logger, validAskPayload({ lifecycle: 'post_emit' }))).not.toThrow();
+    const row = logger.info.mock.calls[0][1];
+    expect(row.lifecycle).toBe('post_emit');
+  });
+
+  test('logAskUser with lifecycle: pre-emit (hyphen typo) throws invalid_lifecycle:pre-emit', () => {
+    const logger = mockLogger();
+    expect(() => logAskUser(logger, validAskPayload({ lifecycle: 'pre-emit' }))).toThrow(
+      /invalid_lifecycle:pre-emit/
+    );
+  });
+
+  test('logAskUser with lifecycle: preemit (no-underscore typo) throws invalid_lifecycle:preemit', () => {
+    const logger = mockLogger();
+    expect(() => logAskUser(logger, validAskPayload({ lifecycle: 'preemit' }))).toThrow(
+      /invalid_lifecycle:preemit/
+    );
+  });
+
+  test('logAskUser with lifecycle: PRE_EMIT (case mismatch) throws invalid_lifecycle:PRE_EMIT', () => {
+    const logger = mockLogger();
+    expect(() => logAskUser(logger, validAskPayload({ lifecycle: 'PRE_EMIT' }))).toThrow(
+      /invalid_lifecycle:PRE_EMIT/
+    );
+  });
+
+  test('logAskUser with lifecycle undefined (back-compat) succeeds; row omits lifecycle key', () => {
+    const logger = mockLogger();
+    // No lifecycle in payload — current call sites (callers that have not
+    // yet been updated to pass lifecycle) must remain unaffected by the
+    // new gate.
+    expect(() => logAskUser(logger, validAskPayload())).not.toThrow();
+    const row = logger.info.mock.calls[0][1];
+    expect('lifecycle' in row).toBe(false);
+  });
+
+  test("isValidAskUserLifecycle('pre_emit') === true", () => {
+    expect(isValidAskUserLifecycle('pre_emit')).toBe(true);
+  });
+
+  test("isValidAskUserLifecycle('post_emit') === true", () => {
+    expect(isValidAskUserLifecycle('post_emit')).toBe(true);
+  });
+
+  test("isValidAskUserLifecycle('pre-emit') === false (typo rejected)", () => {
+    expect(isValidAskUserLifecycle('pre-emit')).toBe(false);
+  });
+
+  test('isValidAskUserLifecycle(undefined) === false (predicate semantics: "is this a valid lifecycle string", not "is the field absent")', () => {
+    expect(isValidAskUserLifecycle(undefined)).toBe(false);
+  });
+
+  test('isValidAskUserLifecycle(null) === false', () => {
+    expect(isValidAskUserLifecycle(null)).toBe(false);
+  });
+
+  test('isValidAskUserLifecycle(non-string types) === false', () => {
+    expect(isValidAskUserLifecycle(0)).toBe(false);
+    expect(isValidAskUserLifecycle({})).toBe(false);
+    expect(isValidAskUserLifecycle([])).toBe(false);
+    expect(isValidAskUserLifecycle(true)).toBe(false);
+  });
+});
