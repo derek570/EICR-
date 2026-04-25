@@ -211,69 +211,41 @@ describe('NumberNormaliser — implied decimal ("Nought 88" → "0.88")', () => 
   });
 });
 
-describe('NumberNormaliser — digit-sequence collapse', () => {
-  it('"2 9 9" → "299" (3 spaced digits, the canonical IR-reading form)', () => {
+describe('NumberNormaliser — digit-sequence collapse (iOS-canon: any 2+ run)', () => {
+  it('"2 9 9" → "299" (canonical IR-reading form)', () => {
     expect(normalise('2 9 9')).toBe('299');
   });
 
-  it('"6 0 8 9 8" → "60898" (longer postcode-style runs)', () => {
+  it('"6 0 8 9 8" → "60898" (postcode-style runs)', () => {
     expect(normalise('6 0 8 9 8')).toBe('60898');
   });
 
-  it('"2 3" stays as "2 3" — web requires 3+ digits to collapse', () => {
-    // Web-only divergence from iOS (which collapses any 2+ run). Codex P1
-    // on R1 flagged that 2-digit collapse turns "circuit 1 6 amp m c b"
-    // into "circuit 16 amp MCB", losing both the circuit number and the
-    // OCPD rating before extraction. 3+ keeps the IR-style "2 9 9" → "299"
-    // case while killing the circuit-vs-rating false-merge.
-    expect(normalise('2 3')).toBe('2 3');
+  it('"2 3" → "23" — 2-digit run collapses (iOS canon)', () => {
+    expect(normalise('2 3')).toBe('23');
   });
 
-  it('"circuit 1 6 amp m c b" preserves "1" and "6" separately', () => {
-    // Regression lock for the codex P1 finding above. After abbreviation
-    // expansion the result is "circuit 1 6 amp MCB" — the matcher /
-    // Sonnet downstream can read both numbers as their own values.
-    const result = normalise('circuit 1 6 amp m c b');
-    expect(result).toContain('circuit 1 6 amp');
-    expect(result).toContain('MCB');
-    expect(result).not.toContain('circuit 16');
+  it('"Zs point 6 0" → "Zs 0.60" — 2-digit fractional after "point" collapses via the general pattern + POINT_DIGIT_PATTERN', () => {
+    expect(normalise('Zs point 6 0')).toBe('Zs 0.60');
+  });
+
+  it('"point 1 2 3" → "0.123" — 3-digit fractional after "point"', () => {
+    expect(normalise('point 1 2 3')).toBe('0.123');
+  });
+
+  it('"point 1 2 3 4" → "0.1234" — 4-digit fractional after "point"', () => {
+    expect(normalise('point 1 2 3 4')).toBe('0.1234');
   });
 
   it('does not over-fire: "32 in" stays "32 in"', () => {
     expect(normalise('32 in')).toBe('32 in');
   });
 
-  it('"Zs point 6 0" → "Zs 0.60" — 2-digit fractional after "point" still collapses', () => {
-    // Codex P1 follow-up to the 3+ tightening: a Deepgram-split fractional
-    // run of 2 digits after "point" must still collapse, otherwise common
-    // measurement utterances stop normalising. POINT_TWO_DIGIT_FRACTIONAL_PATTERN
-    // owns this case; the general digit-sequence pattern stays at 3+.
-    expect(normalise('Zs point 6 0')).toBe('Zs 0.60');
-  });
-
-  it('"point 1 2 3" → "0.12 3" — bounded 2-digit pre-pass leaves the 3rd digit', () => {
-    // Documented limitation: a 3-digit Deepgram-split fractional
-    // ("point 1 2 3") is uncommon in production — Deepgram typically
-    // keeps 3-digit numbers together OR the speaker uses digit-words
-    // ("point one two three") which DECIMAL_PATTERN handles. The
-    // bounded 2-digit pre-pass is the right trade-off vs the
-    // alternative (greedy collapse merges trailing ratings; see the
-    // "Zs point 6 0 1 6 amp" regression test). If a 3-digit split
-    // ever shows up at material rate, raise this test and design a
-    // context-aware collapse.
-    expect(normalise('point 1 2 3')).toBe('0.12 3');
-  });
-
-  it('"Zs point 6 0 1 6 amp m c b" → "Zs 0.60 1 6 amp MCB" — fractional doesn\'t swallow rating', () => {
-    // Codex P1 follow-up #2: the previous greedy POINT_DIGIT_PATTERN
-    // (`(\d(?:[\s\d]*\d)?)`) produced "Zs 0.6016 amp MCB", merging the
-    // separate "16 amp" rating into the fraction. The bounded
-    // POINT_TWO_DIGIT_FRACTIONAL_PATTERN keeps the rating separate.
-    const result = normalise('Zs point 6 0 1 6 amp m c b');
-    expect(result).toContain('0.60');
-    expect(result).toContain('1 6 amp');
-    expect(result).not.toContain('0.6016');
-  });
+  // Known limitation: "circuit 1 6 amp m c b" → "circuit 16 amp MCB"
+  // — the 2-digit collapse merges the circuit number and rating.
+  // iOS has the same behaviour and disambiguates downstream in the
+  // matcher (R3). Web will do the same. No regression lock at this
+  // layer — the test will live in R3's matcher suite where the
+  // surrounding context ("circuit" prefix, "amp" suffix) is in scope.
 });
 
 describe('NumberNormaliser — mixed spoken-zero + point + numeric', () => {

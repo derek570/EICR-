@@ -173,37 +173,22 @@ const STANDALONE_TENS_PATTERN = /\b(twenty|thirty|forty|fifty|sixty|seventy|eigh
 const HUNDRED_PATTERN = /\b(one|two|three|four|five|six|seven|eight|nine)\s+hundred\b/gi;
 
 // "6 0 8 9 8" → "60898" — Deepgram outputs digit-by-digit when the
-// speaker says each digit individually. Web-only divergence from iOS:
-// require **three or more** spaced single digits before collapsing.
-// iOS collapses any 2+ run, but on web that turns "circuit 1 6 amp"
-// into "circuit 16 amp" — a real corruption path because Deepgram has
-// been observed splitting "circuit one, six amp MCB" into separate
-// digit tokens. Three-digit runs (which match real spoken postcodes /
-// IR readings / Zs values) are vanishingly unlikely to appear by
-// accident in a circuit-with-rating sentence, so this trade-off keeps
-// the IR-style "two nine nine" → "299" fix while killing the
-// circuit-vs-rating false-merge. Single-digit + spoken-unit phrases
-// like "1 amp" are unaffected — `\b\d\s+\d\s+\d\b` requires three
-// digits in a row.
-const DIGIT_SEQUENCE_PATTERN = /\b\d(?:\s+\d){2,}\b/g;
+// speaker says each digit individually. Matches iOS canon (any 2+
+// run). Two earlier codex passes on this branch tried to narrow this
+// pattern to address a false-merge in "circuit 1 6 amp" → "circuit
+// 16 amp", but every narrowing introduced its own regression on real
+// reading shapes (3-digit Deepgram-split fractionals; 2-digit
+// fractionals followed by ratings). The iOS pipeline solves this
+// asymmetry **in the matcher layer (R3)**, not here — the matcher
+// has the contextual signals (preceding "circuit" word, following
+// "amp" / OCPD-rating set) needed to disambiguate. Keep the
+// normaliser aggressive and let R3 handle the rest.
+const DIGIT_SEQUENCE_PATTERN = /\b\d(?:\s+\d)+\b/g;
 
 // "point 60" → "0.60" — standalone "point" before a single already-numeric
 // digit token. Word-boundary form (no lookbehind) for older iOS Safari
 // support — see DECIMAL_PATTERN comment for rationale.
 const POINT_DIGIT_PATTERN = /\bpoint\s+(\d+)/gi;
-
-// "point 6 0" → "point 60" — Deepgram occasionally splits a 2-digit
-// fractional run into separate single-digit tokens after "point".
-// DIGIT_SEQUENCE_PATTERN requires 3+ digits to fire (to prevent the
-// "circuit 1 6 amp" → "circuit 16 amp" false-merge), so this narrow
-// pre-pass owns the post-"point" 2-digit case. Bounded to *exactly*
-// two single digits: a 3-digit pre-pass would merge a trailing rating
-// like "point 6 0 1 6 amp" → "point 601 6 amp" → "0.601 6 amp" (the
-// "1" gets swallowed). 3-digit Deepgram-split fractionals are
-// vanishingly rare in practice (Deepgram is good at keeping 3-digit
-// numbers together) and degrade gracefully via POINT_DIGIT_PATTERN
-// taking just the first numeric token if they ever land.
-const POINT_TWO_DIGIT_FRACTIONAL_PATTERN = /\bpoint\s+(\d)\s+(\d)\b/gi;
 
 // "Nought Point 0.87" → "0.87" — mixed zero-word + "point" + already-
 // converted decimal. Must run before POINT_DIGIT_PATTERN to prevent
@@ -323,15 +308,8 @@ export function normalise(text: string): string {
     return `${digit}0`;
   });
 
-  // 7c. Pre-pass: collapse exactly-two-digit fractional runs that follow
-  // "point" ("point 6 0" → "point 60"). See pattern docstring for why
-  // we bound at 2 digits.
-  result = result.replace(
-    POINT_TWO_DIGIT_FRACTIONAL_PATTERN,
-    (_match, d1: string, d2: string) => `point ${d1}${d2}`
-  );
-
-  // 8. Collapse single-digit sequences: "6 0 8 9 8" → "60898" (3+ only).
+  // 8. Collapse single-digit sequences: "6 0 8 9 8" → "60898", "6 0" → "60".
+  // Matches iOS — see pattern docstring for the matcher-tier rationale.
   result = result.replace(DIGIT_SEQUENCE_PATTERN, (match) => match.replace(/\s+/g, ''));
 
   // 8b. "point 60" → "0.60" — standalone "point" before now-collapsed digits.
