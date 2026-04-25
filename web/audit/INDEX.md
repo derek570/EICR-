@@ -18,6 +18,7 @@ Guiding rule: **iOS is canon. Divergence is a bug unless explicitly documented**
 | B3c | Defaults area | ✅ already on main (incl. cable defaults) — no work needed |
 | B3d | CCU three-mode + review sheet | ✅ already on main — no work needed |
 | B6.1 | Dashboard recent-jobs cap + Defaults tile | ✅ done | `181fc3a`, `39cb5a1` (codex fix) |
+| B5.1 | Staff tab — InspectorProfile shape + roster fetch | ✅ done | `317d18d`, `780266a` (codex fix) |
 | B4 | Deepgram + Recording config | ⏳ open — needs main-vs-stage6 cross-check first |
 | B5 | Recording UI parity | ⏳ open — needs main-vs-stage6 cross-check first |
 | B6 | Remaining dashboard + settings P0s (T&Cs gate, preset picker on creation, swipe delete on rows, admin form drift) | ⏳ open |
@@ -30,6 +31,8 @@ Guiding rule: **iOS is canon. Divergence is a bug unless explicitly documented**
 
 | SHA | Subject |
 |-----|---------|
+| `780266a` | clear Staff-tab roster on user-change / fetch-failure (codex fix on `317d18d`) |
+| `317d18d` | consolidate Staff tab to canonical InspectorProfile + wire roster fetch |
 | `39cb5a1` | dashboard recent-jobs initial cap (codex fix on `181fc3a`) |
 | `181fc3a` | dashboard recent-jobs cap + Defaults tile |
 | `5cc2022` | revert flag-key camelCase rename — iOS wire is snake_case (codex fix on `7e88133`) |
@@ -54,11 +57,12 @@ Guiding rule: **iOS is canon. Divergence is a bug unless explicitly documented**
 - **B1.1 outcome+flag** (`7e88133`) → 1 finding addressed in `5cc2022`: (P1) iOS Swift `CodingKeys` map camelCase Swift property names to **snake_case JSON keys** on the wire (`is_tt_earthing` etc.), so the rename direction was wrong. shared-types had it backwards; reverted PWA to snake_case + updated shared-types to match the actual wire shape. Real divergence was just one key — `mark_section_7_na` (extra underscore) → `mark_section7_na`.
 - **B3a** (`f8ab898`) → no separate codex review (small bucket-rename follow-up).
 - **B6.1 dashboard** (`181fc3a`) → 1 finding addressed in `39cb5a1`: (P2) removing the cap entirely was a perf regression for inspectors with hundreds of jobs. New shape: render up to 50 by default, show a "Show all N jobs" button below when truncated.
+- **B5.1 Staff tab** (`317d18d`) → 1 finding addressed in `780266a`: (P2) the new roster-fetch effect didn't clear local state on user-change or fetch-rejection, so a previous account's signatories could remain visible after a 401/403 or a failed re-fetch. Both branches now `setInspectors([])` before/after the request, collapsing the picker to its empty state and preventing wrong-account writes into `job.inspector_id`.
 
 ### Real remaining work for next session
 
-1. **InspectorProfile 3-way shape drift** (Phase 5 #5.3) — `staff/page.tsx` local `Inspector` type uses `full_name` + `mft_serial`; `web/src/lib/types.ts` `InspectorProfile` uses `name` + `mft_serial_number`; `packages/shared-types/src/job.ts` has only the 6 wire fields with no equipment block. iOS `Inspector.swift` is local-only (not on the wire); iOS `InspectorProfile.swift` is the wire shape (6 fields, single `name`). Fix: align `staff/page.tsx` local type to `web/src/lib/types.ts InspectorProfile`, drop the duplicate. Equipment fields stay in `web/src/lib/types.ts` as a PWA-local extension because the backend stores blobs verbatim, but they don't survive iOS round-trip.
-2. **Staff roster fetch** (Phase 5 #5.1) — `staff/page.tsx` reads `(job as StaffJobShape).inspectors ?? []` but nothing writes to `job.inspectors`. The roster should come from `api.inspectorProfiles(userId)`. Without this fetch, every role picker on the Staff tab is permanently empty.
+1. ~~**InspectorProfile 3-way shape drift** (Phase 5 #5.3)~~ ✅ closed by `317d18d` (Staff page now imports `InspectorProfile` from `@/lib/types`; local `Inspector` type dropped; `full_name`/`*_serial` references rewritten to `name`/`*_serial_number`).
+2. ~~**Staff roster fetch** (Phase 5 #5.1)~~ ✅ closed by `317d18d` (Staff page now fetches via `api.inspectorProfiles(user.id)` on mount; the unused `inspectors?: Inspector[]` field on the StaffJobShape was dropped). Codex P2 follow-up `780266a` clears stale state on user-change / fetch-rejection.
 3. **Phase 4 #12** (inline observation workflow on schedule taps) — already implemented on main per `inspection/page.tsx` (the `inlineFormRef` / `pendingChange` flow is present); audit was wrong because it ran against stage6.
 4. **T&Cs gate** (Phase 2 P0 #1) — backend has no T&C endpoint per backend audit Q10. iOS uses localStorage flags `termsAccepted` / `termsAcceptedVersion="1.0"` / `termsAcceptedDate`. Web port needs: a `web/src/app/terms/page.tsx` page with the T&C text + accept button writing the same localStorage keys for cross-platform consistency, AND a client-side gate in `AppShell` that redirects to `/terms` when the flag is unset (middleware can't read localStorage; gate must be client-side).
 5. **Preset picker on job creation** (Phase 2 P0 #3) — iOS shows a `PresetPickerSheet` when 1+ saved defaults exist, allowing the inspector to apply a preset on the new job. Web `createJob` POSTs immediately. Needs a sheet component + integration with the (already-shipped) Defaults area.
