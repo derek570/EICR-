@@ -299,6 +299,94 @@ describe('deriveAskKey', () => {
       deriveAskKey({ context_field: 'ze', context_circuit: null })
     );
   });
+
+  // =========================================================================
+  // Plan 05-11 r5-#1 — sentinel trim + case-fold needed.
+  // =========================================================================
+  // Codex r5 surfaced that Plan 05-10 r4-#1's case-fold uses
+  // `fieldRaw.toLowerCase() === 'none'` without trimming whitespace. So
+  // strings like " none ", "\tNONE\n", " None" derive DISTINCT wrapper
+  // keys before the validator runs. Same bypass shape as r4-#1 but via
+  // whitespace padding instead of case alternation.
+  //
+  // The validator at stage6-dispatch-validation.js:204 is
+  // `CONTEXT_FIELD_ENUM.includes(input.context_field)` — strict
+  // membership, no trim, no fold. So whitespace-padded forms are
+  // rejected upstream as `invalid_context_field` (pre-emit non-fire,
+  // no budget burn at validation), BUT the wrapper's protective
+  // debounce + per-key budget gates never fired during the
+  // pre-validation key derivation.
+  //
+  // r5-#1 fix: trim + fold the sentinel branch. Real (non-sentinel)
+  // values are NOT trimmed — trimming `'  ze  '` to `'ze'` would
+  // silently mask a typo / drift bug whose right surface is the
+  // validator's enum check. Real values stay verbatim case-preserving
+  // so a malformed `'  ze  '` derives `' ze :N'` and surfaces via the
+  // analyzer.
+  //
+  // Behaviour after r5-#1:
+  //   - 'none' / 'NONE' / 'None' (any case, no whitespace) → '_'
+  //     (UNCHANGED from r4-#1).
+  //   - ' none ' / '\tNONE\n' / '  None  ' (any case, whitespace) → '_'
+  //     (NEW — was case-folded but not trimmed).
+  //   - null / undefined → '_' (UNCHANGED).
+  //   - Real values (' ze ', 'measured_zs_ohm', etc.) → verbatim
+  //     case + whitespace preserving (UNCHANGED — sentinel-only
+  //     normalisation).
+  // =========================================================================
+
+  test('Plan 05-11 r5-#1 — " none " (leading + trailing space) collapses to "_"', () => {
+    // Whitespace-padded sentinel must collapse to the same bucket as
+    // null / 'none' / 'NONE' so the wrapper's same-key debounce +
+    // per-key budget catch padding-alternation BEFORE the validator
+    // rejects the malformed form.
+    expect(deriveAskKey({ context_field: ' none ', context_circuit: null })).toBe('_:_');
+  });
+
+  test('Plan 05-11 r5-#1 — "\\tNONE\\n" (tab + newline padding) collapses to "_"', () => {
+    expect(deriveAskKey({ context_field: '\tNONE\n', context_circuit: null })).toBe('_:_');
+  });
+
+  test('Plan 05-11 r5-#1 — " None" (leading space) collapses to "_"', () => {
+    expect(deriveAskKey({ context_field: ' None', context_circuit: null })).toBe('_:_');
+  });
+
+  test('Plan 05-11 r5-#1 — real values with whitespace are NOT trimmed (sentinel-only fold)', () => {
+    // Real (non-sentinel) values must preserve whitespace so a malformed
+    // `'  ze  '` surfaces in the analyzer rather than silently bucketing
+    // with clean 'ze'. Trimming real values here would hide a typo /
+    // drift bug whose right surface is the validator's enum check.
+    expect(deriveAskKey({ context_field: ' ze ', context_circuit: 3 })).toBe(' ze :3');
+    expect(deriveAskKey({ context_field: ' ze ', context_circuit: 3 })).not.toBe(
+      deriveAskKey({ context_field: 'ze', context_circuit: 3 })
+    );
+    // Whitespace-padded real value is also NOT case-folded.
+    expect(deriveAskKey({ context_field: ' ZE ', context_circuit: 3 })).toBe(' ZE :3');
+  });
+
+  test('Plan 05-11 r5-#1 — every padded sentinel form cross-equals (same bucket)', () => {
+    // The load-bearing claim: 4 padded sentinel variants must all hit
+    // the same '_:7' bucket so cap=2 sees them as same-key.
+    const forms = [null, ' none ', '\tNONE\n', ' None'];
+    const keys = forms.map((f) => deriveAskKey({ context_field: f, context_circuit: 7 }));
+    // All keys must equal '_:7'.
+    for (const k of keys) {
+      expect(k).toBe('_:7');
+    }
+    // Cross-equality: every form equals every other form.
+    for (let i = 0; i < forms.length - 1; i += 1) {
+      expect(keys[i]).toBe(keys[i + 1]);
+    }
+  });
+
+  test('Plan 05-11 r5-#1 — r4-#1 lock unchanged (unpadded case forms still collapse)', () => {
+    // The r4-#1 case-insensitive contract for unpadded sentinel forms
+    // remains intact post-r5-#1. The trim addition is additive: case
+    // alternation still collapses, padding alternation also collapses.
+    expect(deriveAskKey({ context_field: 'NONE', context_circuit: null })).toBe('_:_');
+    expect(deriveAskKey({ context_field: 'None', context_circuit: null })).toBe('_:_');
+    expect(deriveAskKey({ context_field: 'nOnE', context_circuit: null })).toBe('_:_');
+  });
 });
 
 // =============================================================================
@@ -1156,6 +1244,55 @@ describe('Plan 05-08 r2-#2 — null/"none" alternation cannot bypass per-key bud
     expect(deriveAskKey({ context_field: 'measured_r1_plus_r2', context_circuit: null })).not.toBe(
       deriveAskKey({ context_field: 'measured_zs_ohm', context_circuit: null })
     );
+  });
+
+  // =========================================================================
+  // Plan 05-11 r5-#1 — padded-sentinel alternation cannot bypass per-key
+  // budget end-to-end. Mirrors the r4-#1 alternation test but uses
+  // whitespace padding instead of case alternation.
+  // =========================================================================
+  test('Plan 05-11 r5-#1 — 4-call padded-sentinel alternation hits same bucket; first 2 fire, last 2 short-circuit', async () => {
+    const logger = makeLogger();
+    const inner = makeInnerDispatcher();
+    const askBudget = createAskBudget({ maxAsksPerKey: 2 });
+    const restrainedMode = makeRestrained({ active: false });
+    const gate = createAskGateWrapper({ logger, sessionId: 'sess-1' });
+
+    const wrapped = wrapAskDispatcherWithGates(inner, {
+      askBudget,
+      restrainedMode,
+      gate,
+      filledSlotsShadow: () => {},
+      logger,
+      sessionId: 'sess-1',
+    });
+
+    // 4 sentinel variants, all whitespace-padded, every one mapping
+    // to the same '_:7' bucket post-r5-#1. Pre-r5-#1 each padded
+    // form derived its own distinct key (' none :7', '\tNONE\n:7',
+    // etc.) so the per-key budget had 4 independent buckets and the
+    // 1500ms debounce never collapsed any of them — Sonnet could
+    // freely retry by alternating padding within a single turn.
+    const variants = [null, ' none ', '\tNONE\n', ' None'];
+    const results = [];
+    for (let i = 0; i < variants.length; i += 1) {
+      const call = makeCall(`call-${i + 1}`, variants[i], 7);
+      const ctx = makeCtx(`sess-1-turn-${i + 1}`);
+      const p = wrapped(call, ctx);
+      jest.advanceTimersByTime(QUESTION_GATE_DELAY_MS);
+      results.push(await p);
+    }
+
+    // First two: real fires (inner dispatcher invoked, answered:true).
+    expect(JSON.parse(results[0].content).answered).toBe(true);
+    expect(JSON.parse(results[1].content).answered).toBe(true);
+    // Last two: ask_budget_exhausted (cap=2 hit, all 4 in same bucket).
+    expect(JSON.parse(results[2].content).reason).toBe('ask_budget_exhausted');
+    expect(JSON.parse(results[3].content).reason).toBe('ask_budget_exhausted');
+
+    expect(inner).toHaveBeenCalledTimes(2);
+
+    gate.destroy();
   });
 });
 
