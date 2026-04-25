@@ -579,3 +579,250 @@ describe('Plan 05-08 r2-#1 — harness askCount excludes pre-emit non-fire reaso
     expect(session.askCount).toBe(0);
   });
 });
+
+// =============================================================================
+// Plan 05-11 r5-#3 — exit harness's debounce coverage gap.
+// =============================================================================
+// Codex r5 surfaced that scripts/stage6-over-ask-exit-gate.js uses
+// `delayMs: 0` to bypass the production 1500ms QUESTION_GATE_DELAY_MS
+// debounce window. STB-01 (the question-gate) is the gate Phase 5 is
+// supposed to wire end-to-end, but the closure check never exercises
+// it under production timing — duplicate same-key asks are eliminated
+// by speed-of-the-loop ordering, not by the production debounce
+// behaviour.
+//
+// The CLI script must keep `delayMs: 0` for runtime budget reasons
+// (12 fixtures × ~3 calls × 1500ms = 54s minimum even before any
+// other gate work — busts the 30s test budget). Instead, this
+// in-test gate exercises the real 1500ms debounce via jest's
+// fake-timer pattern (the standard `doNotFake: ['Promise',
+// 'queueMicrotask', 'nextTick']` pattern that every other wrapper-
+// touching test in the suite uses).
+//
+// The CLI digest measures aggregate threshold compliance; this
+// in-test gate measures gate composition correctness under
+// production timing. Together they cover the STB-01 contract end-
+// to-end.
+//
+// Test scenarios:
+//   1. Same-key calls within 1500ms — first resolves with reason
+//      'gated', second fires after a fresh 1500ms.
+//   2. Different-key calls each get their own 1500ms timer; both
+//      fire after their respective windows.
+//   3. Non-overlapping same-key calls (advance >1500ms between)
+//      both fire independently — debounce window only catches
+//      OVERLAPPING duplicates.
+// =============================================================================
+
+describe('Plan 05-11 r5-#3 — production 1500ms debounce coverage (fake timers)', () => {
+  // Imports run at module load time; these are top-of-file imports
+  // exposed via the harness's wrapper helpers. The real wrapper
+  // module exports `createAskGateWrapper` + `wrapAskDispatcherWithGates`
+  // and the question-gate exports `QUESTION_GATE_DELAY_MS`.
+  // We exercise the wrapper directly here (not via spawn) because
+  // jest fake timers cannot reach a child process.
+
+  beforeEach(() => {
+    jest.useFakeTimers({ doNotFake: ['Promise', 'queueMicrotask', 'nextTick'] });
+  });
+
+  afterEach(() => {
+    jest.clearAllTimers();
+    jest.useRealTimers();
+  });
+
+  function makeNoopLogger() {
+    return {
+      info: jest.fn(),
+      warn: jest.fn(),
+      error: jest.fn(),
+    };
+  }
+
+  function makeMockBudget() {
+    return {
+      isExhausted: jest.fn(() => false),
+      increment: jest.fn(),
+      getCount: jest.fn(() => 0),
+    };
+  }
+
+  function makeMockRestrained() {
+    return {
+      isActive: jest.fn(() => false),
+      recordAsk: jest.fn(),
+      destroy: jest.fn(),
+    };
+  }
+
+  function makeMockInner(outcome = { answered: true, user_text: 'ok' }) {
+    return jest.fn(async (call /* , ctx */) => ({
+      tool_use_id: call.id,
+      content: JSON.stringify(outcome),
+      is_error: false,
+    }));
+  }
+
+  function makeAskCall(id, field, circuit) {
+    return {
+      id,
+      name: 'ask_user',
+      input: {
+        question: 'Q?',
+        reason: 'ambiguous_circuit',
+        context_field: field,
+        context_circuit: circuit,
+        expected_answer_shape: 'free_text',
+      },
+    };
+  }
+
+  test('same-key calls within 1500ms: first resolves "gated"; second fires after fresh 1500ms', async () => {
+    // Lazy-import to avoid pulling the wrapper module into the spawn-
+    // based suites above (which run in a child process).
+    const { createAskGateWrapper, wrapAskDispatcherWithGates } =
+      await import('../extraction/stage6-ask-gate-wrapper.js');
+    const { QUESTION_GATE_DELAY_MS } = await import('../extraction/question-gate.js');
+
+    // Sanity-check we are running with the production 1500ms value
+    // so this regression-lock asserts the contract (a refactor that
+    // changed QUESTION_GATE_DELAY_MS to 0 or removed the import would
+    // trip this).
+    expect(QUESTION_GATE_DELAY_MS).toBe(1500);
+
+    const logger = makeNoopLogger();
+    // No `delayMs` opt — defaults to QUESTION_GATE_DELAY_MS (the
+    // production value). This is the load-bearing claim of r5-#3:
+    // exercise the gate at production timing.
+    const gate = createAskGateWrapper({ logger, sessionId: 'sess-r5-3' });
+    const inner = makeMockInner();
+    const askBudget = makeMockBudget();
+    const restrainedMode = makeMockRestrained();
+
+    const wrapped = wrapAskDispatcherWithGates(inner, {
+      askBudget,
+      restrainedMode,
+      gate,
+      filledSlotsShadow: () => {},
+      logger,
+      sessionId: 'sess-r5-3',
+    });
+
+    const ctx = { sessionId: 'sess-r5-3', turnId: 'sess-r5-3-turn-1' };
+    const call1 = makeAskCall('call-1', 'measured_zs_ohm', 7);
+    const call2 = makeAskCall('call-2', 'measured_zs_ohm', 7); // same key
+
+    const p1 = wrapped(call1, ctx);
+    // Advance partway through the 1500ms window. Sub-1500ms tick
+    // means the inner dispatcher hasn't fired yet.
+    jest.advanceTimersByTime(800);
+    const p2 = wrapped(call2, ctx);
+
+    // First call's outer Promise resolves immediately with the
+    // gated synthResult — the second call replaced it.
+    const r1 = await p1;
+    expect(JSON.parse(r1.content).reason).toBe('gated');
+    expect(JSON.parse(r1.content).answered).toBe(false);
+
+    // Inner has NOT been called yet; the 1500ms timer reset on
+    // call 2's arrival.
+    expect(inner).not.toHaveBeenCalled();
+
+    // Advance through the FRESH 1500ms window for call 2.
+    jest.advanceTimersByTime(QUESTION_GATE_DELAY_MS);
+    const r2 = await p2;
+
+    expect(inner).toHaveBeenCalledTimes(1);
+    expect(inner).toHaveBeenCalledWith(call2, ctx);
+    expect(JSON.parse(r2.content).answered).toBe(true);
+
+    gate.destroy();
+  });
+
+  test('different-key calls each get their own 1500ms timer; both fire', async () => {
+    const { createAskGateWrapper, wrapAskDispatcherWithGates } =
+      await import('../extraction/stage6-ask-gate-wrapper.js');
+    const { QUESTION_GATE_DELAY_MS } = await import('../extraction/question-gate.js');
+
+    const logger = makeNoopLogger();
+    const gate = createAskGateWrapper({ logger, sessionId: 'sess-r5-3-multi' });
+    const inner = makeMockInner();
+    const askBudget = makeMockBudget();
+    const restrainedMode = makeMockRestrained();
+
+    const wrapped = wrapAskDispatcherWithGates(inner, {
+      askBudget,
+      restrainedMode,
+      gate,
+      filledSlotsShadow: () => {},
+      logger,
+      sessionId: 'sess-r5-3-multi',
+    });
+
+    const ctx = { sessionId: 'sess-r5-3-multi', turnId: 'sess-r5-3-multi-turn-1' };
+    const call1 = makeAskCall('call-a', 'measured_zs_ohm', 4); // key 'measured_zs_ohm:4'
+    const call2 = makeAskCall('call-b', 'measured_r1_plus_r2', 4); // key 'measured_r1_plus_r2:4' — distinct
+    const call3 = makeAskCall('call-c', 'measured_zs_ohm', 9); // key 'measured_zs_ohm:9' — distinct
+
+    const p1 = wrapped(call1, ctx);
+    const p2 = wrapped(call2, ctx);
+    const p3 = wrapped(call3, ctx);
+
+    // Same 1500ms tick advances all three timers.
+    jest.advanceTimersByTime(QUESTION_GATE_DELAY_MS);
+    const [r1, r2, r3] = await Promise.all([p1, p2, p3]);
+
+    expect(JSON.parse(r1.content).answered).toBe(true);
+    expect(JSON.parse(r2.content).answered).toBe(true);
+    expect(JSON.parse(r3.content).answered).toBe(true);
+    expect(inner).toHaveBeenCalledTimes(3);
+
+    gate.destroy();
+  });
+
+  test('non-overlapping same-key calls (gap > 1500ms) BOTH fire independently', async () => {
+    // The debounce window only catches OVERLAPPING duplicates. After
+    // the first call's timer fires (1500ms), the bucket is empty and
+    // a fresh same-key call gets its own clean window.
+    const { createAskGateWrapper, wrapAskDispatcherWithGates } =
+      await import('../extraction/stage6-ask-gate-wrapper.js');
+    const { QUESTION_GATE_DELAY_MS } = await import('../extraction/question-gate.js');
+
+    const logger = makeNoopLogger();
+    const gate = createAskGateWrapper({ logger, sessionId: 'sess-r5-3-gap' });
+    const inner = makeMockInner();
+    const askBudget = makeMockBudget();
+    const restrainedMode = makeMockRestrained();
+
+    const wrapped = wrapAskDispatcherWithGates(inner, {
+      askBudget,
+      restrainedMode,
+      gate,
+      filledSlotsShadow: () => {},
+      logger,
+      sessionId: 'sess-r5-3-gap',
+    });
+
+    const ctx = { sessionId: 'sess-r5-3-gap', turnId: 'sess-r5-3-gap-turn-1' };
+    const call1 = makeAskCall('call-1', 'measured_zs_ohm', 3);
+    const call2 = makeAskCall('call-2', 'measured_zs_ohm', 3); // same key
+
+    const p1 = wrapped(call1, ctx);
+    jest.advanceTimersByTime(QUESTION_GATE_DELAY_MS);
+    const r1 = await p1;
+    expect(JSON.parse(r1.content).answered).toBe(true);
+
+    // Now the bucket is empty. A fresh same-key call gets a clean
+    // 1500ms window and fires after it.
+    const p2 = wrapped(call2, ctx);
+    jest.advanceTimersByTime(QUESTION_GATE_DELAY_MS);
+    const r2 = await p2;
+    expect(JSON.parse(r2.content).answered).toBe(true);
+
+    expect(inner).toHaveBeenCalledTimes(2);
+    expect(inner.mock.calls[0][0].id).toBe('call-1');
+    expect(inner.mock.calls[1][0].id).toBe('call-2');
+
+    gate.destroy();
+  });
+});
