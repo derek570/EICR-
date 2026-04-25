@@ -54,7 +54,8 @@ import { logAskUser } from './stage6-dispatcher-logger.js';
  * future plans (05-02 filled-slots shadow, 05-06 exit harness) keep their
  * key derivation in lockstep.
  *
- * Plan 05-08 r2-#2 + Plan 05-09 r3-#3 — context_field canonicalisation.
+ * Plan 05-08 r2-#2 / Plan 05-09 r3-#3 / Plan 05-10 r4-#1 — context_field
+ * canonicalisation.
  *   stage6-tool-schemas.js:327 documents the context_field enum as
  *   admitting BOTH `null` AND the literal string sentinel `"none"` for
  *   scope-less asks: "...or the sentinel "none" (equivalently null) for
@@ -63,30 +64,61 @@ import { logAskUser } from './stage6-dispatcher-logger.js';
  *   prompt) to alternate representations and bypass the per-key budget
  *   for the same logical question.
  *
- *   Collapse the canonical sentinel `'none'` (lowercase) to '_'. Real
- *   field values are NOT case-folded — `'Ze'` !== `'ze'`. The validator
- *   owns canonical case for real values; collapsing here would mask a
- *   typo bug whose right surface is the validator's enum check.
+ *   r2-#2 closure: collapse the canonical sentinel `'none'` (any case)
+ *   to '_'. Real field values are NOT case-folded — `'Ze'` !== `'ze'`.
+ *   The validator owns canonical case for real values; collapsing here
+ *   would mask a typo bug whose right surface is the validator's enum
+ *   check. Case-insensitivity is SENTINEL-ONLY.
  *
- *   r3-#3 narrowed the case match to verbatim lowercase. The real
- *   validator at stage6-dispatch-validation.js:204 is case-SENSITIVE:
- *     if (input.context_field !== null &&
- *         !CONTEXT_FIELD_ENUM.includes(input.context_field)) { ... }
- *   CONTEXT_FIELD_ENUM is sourced from config/stage6-context-keys.json
- *   sentinels (lowercase `"none"` + `"observation_clarify"`) + the
- *   circuit_fields keys (also all lowercase). Production never sees
- *   `'NONE'` / `'None'` because the validator rejects them upstream
- *   with `invalid_context_field`. r2-#2's case-insensitive collapse
- *   was therefore dead code that encoded a contract divergence: a
- *   future change to the validator (e.g. adding case-insensitive input
- *   acceptance) would need to be matched here, but the file pair had
- *   no surface that surfaced the divergence at compile or test time.
+ *   r3-#3 narrowed the case match to verbatim lowercase 'none' on the
+ *   argument that the real validator at stage6-dispatch-validation.js:204
+ *   is case-SENSITIVE
+ *   (`!CONTEXT_FIELD_ENUM.includes(input.context_field)` rejects
+ *   upper-case forms upstream as `invalid_context_field`) so the
+ *   case-insensitive branch in deriveAskKey was "dead code that encoded
+ *   a contract divergence".
  *
- *   r3-#3 fix: case-sensitive match. `'NONE'` / `'None'` / `'nOnE'`
- *   now derive case-preserving distinct keys (e.g. `'NONE:_'`) so a
- *   future caller bypassing the validator surfaces the bug as a
- *   per-key bucket mismatch in Phase 8 analyzer dashboards rather
- *   than silently masking it.
+ *   r4-#1 REVERSES r3-#3 because that argument was wrong. ORDER MATTERS.
+ *   wrapAskDispatcherWithGates (below in this file) calls deriveAskKey
+ *   at the line:
+ *       const key = deriveAskKey(call.input);
+ *   to compute the budget + debounce key, BEFORE the inner dispatcher's
+ *   validateAskUser runs. So under r3-#3's case-sensitive matching, a
+ *   payload alternating cases ([null,'NONE','None',null] for circuit 7)
+ *   produced 4 DISTINCT keys at the wrapper layer:
+ *     - '_:7' (null)
+ *     - '_:7' (lowercase 'none')
+ *     - 'NONE:7'
+ *     - 'None:7'
+ *   so the per-key budget had three independent buckets and the 1500ms
+ *   debounce never collapsed any of them. The validator correctly
+ *   rejected each malformed call with validation_error → wrapper
+ *   classifies as PRE_EMIT_NON_FIRE_REASONS → no budget burn → BUT the
+ *   wrapper's protective debounce + per-key budget gates were bypassed.
+ *   Sonnet had effectively obtained an unlimited debounce window for
+ *   cross-case retries within a single turn.
+ *
+ *   r4-#1 fix: case-insensitive matching for the literal sentinel string
+ *   'none'. Every case form (`'NONE'`, `'None'`, `'nOnE'`, etc.)
+ *   collapses to the canonical '_' bucket so the wrapper's same-key
+ *   debounce + per-key budget catch case-alternation BEFORE the inner
+ *   dispatcher's validator can reject. This is DEFENCE-IN-DEPTH at the
+ *   wrapper layer; it does NOT widen the validator's contract (validator
+ *   still rejects upper-case forms with invalid_context_field, the
+ *   wrapper now correctly classifies that envelope as
+ *   PRE_EMIT_NON_FIRE_REASONS → no budget burn).
+ *
+ *   The earlier dead-code argument was wrong because it conflated TWO
+ *   different concerns: (1) what inputs the validator admits as
+ *   well-formed (case-sensitive — only lowercase 'none'); (2) what
+ *   inputs the wrapper's KEY DERIVATION should bucket together
+ *   (case-insensitive — every spelling of 'none' is the same logical
+ *   scope). Concern 1 is the validator's contract; concern 2 is the
+ *   wrapper's protection contract. They operate on different axes.
+ *
+ *   Decision 05-09-D3 (Option A — narrow wrapper to validator's
+ *   verbatim contract) is REVERSED at Plan 05-10 D2 (case-insensitive
+ *   sentinel-only normalisation as defence-in-depth at the wrapper).
  *
  *   context_circuit canonicalisation is INTENTIONALLY narrower:
  *   stage6-tool-schemas.js:329 documents only `null` as the sentinel
@@ -95,23 +127,34 @@ import { logAskUser } from './stage6-dispatcher-logger.js';
  *   sentinel meaning, and the existing Group 1 test asserts that
  *   `{field:'ze', circuit:0}` derives to `'ze:0'` (not `'ze:_'`). We
  *   preserve that — collapsing `0` would silently shift every existing
- *   per-key budget bucket and is out of scope for r2-#2.
+ *   per-key budget bucket and is out of scope for r2-#2 / r4-#1.
  *
  * @param {{ context_field?: string|null, context_circuit?: number|null }} input
  * @returns {string}
  */
 export function deriveAskKey(input) {
   const fieldRaw = input?.context_field;
-  // Plan 05-08 r2-#2 + Plan 05-09 r3-#3 — collapse `null`, `undefined`,
-  // AND the literal lowercase sentinel `"none"` to '_'. Case-SENSITIVE
-  // match mirrors the validator at stage6-dispatch-validation.js:204
-  // (production never sees upper-case sentinel forms because the
-  // validator rejects them upstream with invalid_context_field). Real
-  // field values pass through with their original case preserved.
+  // Plan 05-08 r2-#2 + Plan 05-10 r4-#1 — collapse `null`, `undefined`,
+  // AND the literal sentinel `"none"` (case-INSENSITIVE) to '_'. The
+  // case-insensitivity is SENTINEL-ONLY — real (non-sentinel) field
+  // values pass through with their original case preserved so a typo
+  // bug surfaces in the analyzer rather than silently bucketing
+  // wrong-case real values together.
+  //
+  // Why case-insensitive at the wrapper layer (Plan 05-10 r4-#1):
+  // wrapAskDispatcherWithGates below in this file calls
+  // deriveAskKey() BEFORE the inner dispatcher's validateAskUser
+  // runs. Case-sensitive matching here let alternating sentinel cases
+  // ([null,'NONE','None',null]) derive distinct keys at the wrapper,
+  // bypassing the wrapper's same-key debounce + per-key budget gates
+  // even though each call was later rejected as validation_error.
+  // The validator's case-sensitivity is the validator's contract; the
+  // wrapper's case-insensitivity here is defence-in-depth on a
+  // different axis.
   let field;
   if (fieldRaw === null || fieldRaw === undefined) {
     field = '_';
-  } else if (fieldRaw === 'none') {
+  } else if (typeof fieldRaw === 'string' && fieldRaw.toLowerCase() === 'none') {
     field = '_';
   } else {
     field = fieldRaw;
