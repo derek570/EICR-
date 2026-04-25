@@ -54,11 +54,47 @@ import { logAskUser } from './stage6-dispatcher-logger.js';
  * future plans (05-02 filled-slots shadow, 05-06 exit harness) keep their
  * key derivation in lockstep.
  *
+ * Plan 05-08 r2-#2 — context_field canonicalisation.
+ *   stage6-tool-schemas.js:327 documents the context_field enum as
+ *   admitting BOTH `null` AND the literal string sentinel `"none"` for
+ *   scope-less asks: "...or the sentinel "none" (equivalently null) for
+ *   scope-less asks." Pre-fix deriveAskKey produced different keys for
+ *   the two forms ("none:N" vs "_:N"), allowing an attacker (or a buggy
+ *   prompt) to alternate representations and bypass the per-key budget
+ *   for the same logical question.
+ *
+ *   Collapse the canonical sentinel to '_' regardless of case (the schema
+ *   doesn't pin the case but lower-level validators do not enforce it
+ *   either, so any case variant is a legitimate input). Real field values
+ *   are NOT case-folded — `'Ze'` !== `'ze'`. The validator owns canonical
+ *   case for real values; collapsing here would mask a typo bug whose
+ *   right surface is the validator's enum check.
+ *
+ *   context_circuit canonicalisation is INTENTIONALLY narrower:
+ *   stage6-tool-schemas.js:329 documents only `null` as the sentinel
+ *   ("Circuit_ref this ask is scoped to, or null if the ask is board-
+ *   or installation-wide."). `0` is a valid integer with no documented
+ *   sentinel meaning, and the existing Group 1 test asserts that
+ *   `{field:'ze', circuit:0}` derives to `'ze:0'` (not `'ze:_'`). We
+ *   preserve that — collapsing `0` would silently shift every existing
+ *   per-key budget bucket and is out of scope for r2-#2.
+ *
  * @param {{ context_field?: string|null, context_circuit?: number|null }} input
  * @returns {string}
  */
 export function deriveAskKey(input) {
-  const field = input?.context_field ?? '_';
+  const fieldRaw = input?.context_field;
+  // Plan 05-08 r2-#2 — collapse `null`, `undefined`, AND the literal
+  // sentinel `"none"` (case-insensitive) to '_'. Real field values pass
+  // through with their original case preserved.
+  let field;
+  if (fieldRaw === null || fieldRaw === undefined) {
+    field = '_';
+  } else if (typeof fieldRaw === 'string' && fieldRaw.toLowerCase() === 'none') {
+    field = '_';
+  } else {
+    field = fieldRaw;
+  }
   const circuit = input?.context_circuit ?? '_';
   return `${field}:${circuit}`;
 }
