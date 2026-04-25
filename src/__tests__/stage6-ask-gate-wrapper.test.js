@@ -508,3 +508,166 @@ describe('wrapAskDispatcherWithGates — Pitfall 4: counters only on successful 
     gate.destroy();
   });
 });
+
+// =============================================================================
+// Group 6: Plan 05-07 r1-#3 — mode is threaded through wrapper short-circuits
+// =============================================================================
+// The wrapper emits one stage6.ask_user log row per attempted ask (with
+// answer_outcome set to the short-circuit reason or the inner dispatcher's
+// outcome). Plan 05-05 r19 closed the mode-typo gate with a closed enum
+// {shadow, live}. r1-#3 surfaced that the wrapper had hard-coded mode='live'
+// at synthResultWrapped, so when runShadowHarness composes the wrapper inside
+// the shadow path the rows mis-tagged shadow asks as live — Phase 8
+// dashboards split by mode, so this corrupts the split.
+//
+// Fix threads `mode` through both createAskGateWrapper opts (covers gated +
+// session_terminated + dispatcher_error paths) and wrapAskDispatcherWithGates
+// opts (covers restrained_mode + ask_budget_exhausted paths). Default 'live'
+// preserves every existing caller's behaviour. Production wiring in
+// stage6-shadow-harness.js explicitly passes mode:'shadow' so its rows
+// match the session's actual mode.
+// =============================================================================
+
+describe("Plan 05-07 r1-#3 — synthResultWrapped honours opts.mode (defaults to 'live')", () => {
+  test("createAskGateWrapper({mode:'shadow'}) → destroy()-emitted session_terminated row carries mode:'shadow'", async () => {
+    const logger = makeLogger();
+    const gate = createAskGateWrapper({ logger, sessionId: 'sess-1', mode: 'shadow' });
+    const inner = makeInnerDispatcher();
+
+    // Start a gateOrFire then immediately destroy — destroy() emits the
+    // session_terminated synthResult, which is the wrapper-internal short-
+    // circuit that carries the gate's `mode` opt.
+    const p = gate.gateOrFire(makeCall('call-1', 'ze', 0), makeCtx(), inner);
+    gate.destroy();
+    const r = await p;
+    expect(JSON.parse(r.content).reason).toBe('session_terminated');
+
+    const askUserCalls = logger.info.mock.calls.filter((c) => c[0] === 'stage6.ask_user');
+    expect(askUserCalls.length).toBeGreaterThanOrEqual(1);
+    // Every wrapper-emitted row in this scenario must carry the shadow mode.
+    for (const [, payload] of askUserCalls) {
+      expect(payload.mode).toBe('shadow');
+    }
+  });
+
+  test("wrapAskDispatcherWithGates({mode:'shadow'}) + restrainedMode active → row carries mode:'shadow'", async () => {
+    const logger = makeLogger();
+    const inner = makeInnerDispatcher();
+    const askBudget = makeBudget();
+    const restrainedMode = makeRestrained({ active: true });
+    const gate = createAskGateWrapper({ logger, sessionId: 'sess-1', mode: 'shadow' });
+
+    const wrapped = wrapAskDispatcherWithGates(inner, {
+      askBudget,
+      restrainedMode,
+      gate,
+      filledSlotsShadow: () => {},
+      logger,
+      sessionId: 'sess-1',
+      mode: 'shadow',
+    });
+
+    await wrapped(makeCall('call-1', 'ze', 0), makeCtx());
+
+    const askUserCalls = logger.info.mock.calls.filter((c) => c[0] === 'stage6.ask_user');
+    expect(askUserCalls).toHaveLength(1);
+    expect(askUserCalls[0][1].answer_outcome).toBe('restrained_mode');
+    expect(askUserCalls[0][1].mode).toBe('shadow');
+
+    gate.destroy();
+  });
+
+  test("wrapAskDispatcherWithGates({mode:'shadow'}) + budget exhausted → row carries mode:'shadow'", async () => {
+    const logger = makeLogger();
+    const inner = makeInnerDispatcher();
+    const askBudget = makeBudget({ exhausted: true });
+    const restrainedMode = makeRestrained({ active: false });
+    const gate = createAskGateWrapper({ logger, sessionId: 'sess-1', mode: 'shadow' });
+
+    const wrapped = wrapAskDispatcherWithGates(inner, {
+      askBudget,
+      restrainedMode,
+      gate,
+      filledSlotsShadow: () => {},
+      logger,
+      sessionId: 'sess-1',
+      mode: 'shadow',
+    });
+
+    await wrapped(makeCall('call-1', 'ze', 0), makeCtx());
+
+    const askUserCalls = logger.info.mock.calls.filter((c) => c[0] === 'stage6.ask_user');
+    expect(askUserCalls).toHaveLength(1);
+    expect(askUserCalls[0][1].answer_outcome).toBe('ask_budget_exhausted');
+    expect(askUserCalls[0][1].mode).toBe('shadow');
+
+    gate.destroy();
+  });
+
+  test("gated short-circuit (same-key replacement) carries mode:'shadow' when wrapper composed in shadow", async () => {
+    const logger = makeLogger();
+    const inner = makeInnerDispatcher();
+    const askBudget = makeBudget();
+    const restrainedMode = makeRestrained({ active: false });
+    const gate = createAskGateWrapper({ logger, sessionId: 'sess-1', mode: 'shadow' });
+
+    const wrapped = wrapAskDispatcherWithGates(inner, {
+      askBudget,
+      restrainedMode,
+      gate,
+      filledSlotsShadow: () => {},
+      logger,
+      sessionId: 'sess-1',
+      mode: 'shadow',
+    });
+
+    const call1 = makeCall('call-1', 'ze', 0);
+    const call2 = makeCall('call-2', 'ze', 0); // same key — replaces
+    const ctx = makeCtx();
+
+    const p1 = wrapped(call1, ctx);
+    jest.advanceTimersByTime(400);
+    const p2 = wrapped(call2, ctx);
+
+    const r1 = await p1;
+    expect(JSON.parse(r1.content).reason).toBe('gated');
+
+    jest.advanceTimersByTime(QUESTION_GATE_DELAY_MS);
+    await p2;
+
+    const askUserCalls = logger.info.mock.calls.filter((c) => c[0] === 'stage6.ask_user');
+    // The first call's gated synth-result emits a stage6.ask_user row.
+    const gatedRow = askUserCalls.find(([, p]) => p.answer_outcome === 'gated');
+    expect(gatedRow).toBeDefined();
+    expect(gatedRow[1].mode).toBe('shadow');
+
+    gate.destroy();
+  });
+
+  test("default opts → mode:'live' (regression lock — every existing caller still emits live)", async () => {
+    const logger = makeLogger();
+    const inner = makeInnerDispatcher();
+    const askBudget = makeBudget();
+    const restrainedMode = makeRestrained({ active: true });
+    // No `mode` opt on either createAskGateWrapper or wrapAskDispatcherWithGates.
+    const gate = createAskGateWrapper({ logger, sessionId: 'sess-1' });
+
+    const wrapped = wrapAskDispatcherWithGates(inner, {
+      askBudget,
+      restrainedMode,
+      gate,
+      filledSlotsShadow: () => {},
+      logger,
+      sessionId: 'sess-1',
+    });
+
+    await wrapped(makeCall('call-1', 'ze', 0), makeCtx());
+
+    const askUserCalls = logger.info.mock.calls.filter((c) => c[0] === 'stage6.ask_user');
+    expect(askUserCalls).toHaveLength(1);
+    expect(askUserCalls[0][1].answer_outcome).toBe('restrained_mode');
+    expect(askUserCalls[0][1].mode).toBe('live'); // default — every existing test relies on this
+
+    gate.destroy();
+  });
+});
