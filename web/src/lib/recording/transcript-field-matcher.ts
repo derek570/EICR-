@@ -364,7 +364,7 @@ function matchCircuitFields(
     }
   }
 
-  const isRing = isRingCircuit(circuitRef, job);
+  const isRing = isRingCircuit(circuitRef, text, job);
 
   // Ring continuity FIRST (codex P1 R3 fix): explicit "ring R1" /
   // "ring R2" land in ring_r{1,2}_ohm. The bare-R1 / bare-R2
@@ -480,18 +480,37 @@ function matchCircuitFields(
   }
 }
 
-function isRingCircuit(circuitRef: string, job: JobDetail): boolean {
-  // Codex P2 R3 fix: ring fields only fire on circuits whose JOB
-  // designation contains "ring". An inline "ring" word in the
-  // transcript ("ring R1") is NOT a sufficient signal — a radial
-  // circuit's transcript can mention "ring R1" by mistake or as
-  // part of a different sentence, and we don't want ring fields
-  // populated against a circuit that isn't actually a ring.
+function isRingCircuit(circuitRef: string, text: string, job: JobDetail): boolean {
+  // The rule resolves three cases the codex review surfaced over R3
+  // (commits 0af106a → 50df760 → here):
+  //
+  // (a) Job's circuit_designation contains "ring" → ring circuit.
+  //     This is the certain case (P2 original): an inspector who
+  //     labelled the circuit a ring is expressing a ring measurement
+  //     when they say "ring R1".
+  //
+  // (b) Job's designation is BLANK (unlabeled — the common state
+  //     for fresh rows from apply-document-extraction.ts /
+  //     circuits/page.tsx newCircuit()) AND the transcript contains
+  //     an explicit "ring R1/R2" marker → trust the transcript.
+  //     Codex P1 follow-up on 50df760: without this, fresh ring
+  //     readings dropped silently before the inspector named the
+  //     circuit.
+  //
+  // (c) Job's designation is something specific that is NOT "ring"
+  //     (e.g. "Cooker", "Lights", "Sockets") → NEVER ring, even if
+  //     the transcript mentions "ring R1" (P2 original): the
+  //     authoritative signal is the user's own circuit naming.
   const circuits =
     (job.circuits as Array<{ circuit_ref?: string; circuit_designation?: string }>) ?? [];
   const row = circuits.find((c) => c.circuit_ref === circuitRef);
-  if (!row?.circuit_designation) return false;
-  return /\bring\b/i.test(row.circuit_designation);
+  const designation = row?.circuit_designation?.trim() ?? '';
+  if (designation.length > 0) {
+    // Cases (a) + (c): trust the labelled designation.
+    return /\bring\b/i.test(designation);
+  }
+  // Case (b): no designation yet — trust the explicit transcript form.
+  return /\bring\s+r\s*[12]\b/i.test(text);
 }
 
 // ─────────────────────────────────────────────────────────────────

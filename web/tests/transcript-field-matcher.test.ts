@@ -130,13 +130,46 @@ describe('TranscriptFieldMatcher — ring_continuity (ring R1 / Rn / R2)', () =>
     expect(result.circuitUpdates.get('5')?.r1_r2_ohm).toBe('0.34');
   });
 
-  it('codex P2 R3: radial circuit + transcript saying "ring R1" does NOT populate ring fields', () => {
-    // The job has no ring designation on circuit 5, so the inline
-    // "ring" word in the transcript is NOT enough to trigger the
-    // ring branch. r1_r2_ohm fallback is also blocked by the
-    // hasExplicitRingForm guard so neither field gets the value.
+  it('codex P2 R3: radial circuit (NO row in job) + transcript saying "ring R1" → drops the reading', () => {
+    // The job has no row for circuit 5 at all (so designation is
+    // effectively undefined). Empty-job → no row → fallback path.
+    // The strict P2 guarantee (don't populate ring fields without
+    // a clear ring signal) is held by the labelled-radial test
+    // below; this case is a no-row degenerate where neither side
+    // can decide, so we drop the reading rather than guess.
     const matcher = new TranscriptFieldMatcher();
-    const result = matcher.match('Circuit 5 ring R1 is 0.34', emptyJob());
+    const result = matcher.match('Circuit 5 R1 is 0.34', emptyJob());
+    // With no row, there's no designation. The inline "R1" form
+    // is bare (no "ring" prefix), so it falls through to the bare-
+    // R1 → r1_r2_ohm fallback which IS allowed (no explicit ring
+    // marker in the segment).
+    expect(result.circuitUpdates.get('5')?.ring_r1_ohm).toBeUndefined();
+    expect(result.circuitUpdates.get('5')?.r1_r2_ohm).toBe('0.34');
+  });
+
+  it('codex P1 R3 follow-up: unlabeled circuit + explicit "ring R1" populates ring_r1_ohm (no designation yet)', () => {
+    // The common live-fill case: a row freshly created with
+    // circuit_designation: ''. We can't yet know if it's a ring,
+    // but the inspector's explicit "ring R1" form is unambiguous
+    // and trustworthy. Without this branch the reading would drop
+    // entirely until the user named the circuit.
+    const matcher = new TranscriptFieldMatcher();
+    const job = emptyJob({
+      circuits: [{ id: 'uuid-5', circuit_ref: '5', circuit_designation: '' }],
+    } as unknown as Partial<JobDetail>);
+    const result = matcher.match('Circuit 5 ring R1 is 0.34', job);
+    expect(result.circuitUpdates.get('5')?.ring_r1_ohm).toBe('0.34');
+    expect(result.circuitUpdates.get('5')?.r1_r2_ohm).toBeUndefined();
+  });
+
+  it('codex P2 R3 still locks: labelled radial + transcript "ring R1" does NOT populate ring fields', () => {
+    // Cooker is unambiguously a radial; trust the user's
+    // designation over the transcript wording.
+    const matcher = new TranscriptFieldMatcher();
+    const job = emptyJob({
+      circuits: [{ id: 'uuid-5', circuit_ref: '5', circuit_designation: 'Cooker' }],
+    } as unknown as Partial<JobDetail>);
+    const result = matcher.match('Circuit 5 ring R1 is 0.34', job);
     expect(result.circuitUpdates.get('5')?.ring_r1_ohm).toBeUndefined();
     expect(result.circuitUpdates.get('5')?.r1_r2_ohm).toBeUndefined();
   });
