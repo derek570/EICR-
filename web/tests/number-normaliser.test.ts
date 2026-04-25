@@ -246,13 +246,33 @@ describe('NumberNormaliser — digit-sequence collapse', () => {
   it('"Zs point 6 0" → "Zs 0.60" — 2-digit fractional after "point" still collapses', () => {
     // Codex P1 follow-up to the 3+ tightening: a Deepgram-split fractional
     // run of 2 digits after "point" must still collapse, otherwise common
-    // measurement utterances stop normalising. POINT_DIGIT_PATTERN owns
-    // this case directly; the general digit-sequence pattern stays at 3+.
+    // measurement utterances stop normalising. POINT_TWO_DIGIT_FRACTIONAL_PATTERN
+    // owns this case; the general digit-sequence pattern stays at 3+.
     expect(normalise('Zs point 6 0')).toBe('Zs 0.60');
   });
 
-  it('"point 1 2 3 4" → "0.1234" — long fractional split runs collapse via POINT_DIGIT_PATTERN', () => {
-    expect(normalise('point 1 2 3 4')).toBe('0.1234');
+  it('"point 1 2 3" → "0.12 3" — bounded 2-digit pre-pass leaves the 3rd digit', () => {
+    // Documented limitation: a 3-digit Deepgram-split fractional
+    // ("point 1 2 3") is uncommon in production — Deepgram typically
+    // keeps 3-digit numbers together OR the speaker uses digit-words
+    // ("point one two three") which DECIMAL_PATTERN handles. The
+    // bounded 2-digit pre-pass is the right trade-off vs the
+    // alternative (greedy collapse merges trailing ratings; see the
+    // "Zs point 6 0 1 6 amp" regression test). If a 3-digit split
+    // ever shows up at material rate, raise this test and design a
+    // context-aware collapse.
+    expect(normalise('point 1 2 3')).toBe('0.12 3');
+  });
+
+  it('"Zs point 6 0 1 6 amp m c b" → "Zs 0.60 1 6 amp MCB" — fractional doesn\'t swallow rating', () => {
+    // Codex P1 follow-up #2: the previous greedy POINT_DIGIT_PATTERN
+    // (`(\d(?:[\s\d]*\d)?)`) produced "Zs 0.6016 amp MCB", merging the
+    // separate "16 amp" rating into the fraction. The bounded
+    // POINT_TWO_DIGIT_FRACTIONAL_PATTERN keeps the rating separate.
+    const result = normalise('Zs point 6 0 1 6 amp m c b');
+    expect(result).toContain('0.60');
+    expect(result).toContain('1 6 amp');
+    expect(result).not.toContain('0.6016');
   });
 });
 

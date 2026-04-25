@@ -187,15 +187,23 @@ const HUNDRED_PATTERN = /\b(one|two|three|four|five|six|seven|eight|nine)\s+hund
 // digits in a row.
 const DIGIT_SEQUENCE_PATTERN = /\b\d(?:\s+\d){2,}\b/g;
 
-// "point 60" → "0.60" — standalone "point" before already-numeric digits
-// (common after digit-sequence collapse with readings like "Zs point six
-// zero" → "Zs point 60"). The capture group now allows internal whitespace
-// so 2-digit fractional runs like "Zs point 6 0" (Deepgram-split) collapse
-// here too — DIGIT_SEQUENCE_PATTERN below requires 3+ digits to avoid the
-// circuit-vs-rating false-merge, so this pattern owns the post-"point"
-// 2-digit case. Word-boundary form (no lookbehind) for older iOS Safari
+// "point 60" → "0.60" — standalone "point" before a single already-numeric
+// digit token. Word-boundary form (no lookbehind) for older iOS Safari
 // support — see DECIMAL_PATTERN comment for rationale.
-const POINT_DIGIT_PATTERN = /\bpoint\s+(\d(?:[\s\d]*\d)?)/gi;
+const POINT_DIGIT_PATTERN = /\bpoint\s+(\d+)/gi;
+
+// "point 6 0" → "point 60" — Deepgram occasionally splits a 2-digit
+// fractional run into separate single-digit tokens after "point".
+// DIGIT_SEQUENCE_PATTERN requires 3+ digits to fire (to prevent the
+// "circuit 1 6 amp" → "circuit 16 amp" false-merge), so this narrow
+// pre-pass owns the post-"point" 2-digit case. Bounded to *exactly*
+// two single digits: a 3-digit pre-pass would merge a trailing rating
+// like "point 6 0 1 6 amp" → "point 601 6 amp" → "0.601 6 amp" (the
+// "1" gets swallowed). 3-digit Deepgram-split fractionals are
+// vanishingly rare in practice (Deepgram is good at keeping 3-digit
+// numbers together) and degrade gracefully via POINT_DIGIT_PATTERN
+// taking just the first numeric token if they ever land.
+const POINT_TWO_DIGIT_FRACTIONAL_PATTERN = /\bpoint\s+(\d)\s+(\d)\b/gi;
 
 // "Nought Point 0.87" → "0.87" — mixed zero-word + "point" + already-
 // converted decimal. Must run before POINT_DIGIT_PATTERN to prevent
@@ -315,16 +323,19 @@ export function normalise(text: string): string {
     return `${digit}0`;
   });
 
-  // 8. Collapse single-digit sequences: "6 0 8 9 8" → "60898".
+  // 7c. Pre-pass: collapse exactly-two-digit fractional runs that follow
+  // "point" ("point 6 0" → "point 60"). See pattern docstring for why
+  // we bound at 2 digits.
+  result = result.replace(
+    POINT_TWO_DIGIT_FRACTIONAL_PATTERN,
+    (_match, d1: string, d2: string) => `point ${d1}${d2}`
+  );
+
+  // 8. Collapse single-digit sequences: "6 0 8 9 8" → "60898" (3+ only).
   result = result.replace(DIGIT_SEQUENCE_PATTERN, (match) => match.replace(/\s+/g, ''));
 
   // 8b. "point 60" → "0.60" — standalone "point" before now-collapsed digits.
-  // Internal whitespace in the captured digits is stripped so "Zs point 6 0"
-  // (Deepgram-split fractional) lands at "Zs 0.60" without needing the
-  // general digit-sequence collapse to fire on the 2-digit run.
-  result = result.replace(POINT_DIGIT_PATTERN, (_match, digits: string) => {
-    return `0.${digits.replace(/\s+/g, '')}`;
-  });
+  result = result.replace(POINT_DIGIT_PATTERN, (_match, digits: string) => `0.${digits}`);
 
   // 8c. Re-apply implied decimal AFTER digit collapse: "nought 34" → "0.34".
   // Step 0a runs before digit-words convert, so transcripts like "nought
