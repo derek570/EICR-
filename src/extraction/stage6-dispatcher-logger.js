@@ -1,4 +1,33 @@
 /**
+ * Stage 6 dispatcher logger — single-source-of-truth for extraction-path log rows.
+ *
+ * Observability contract (locked by stage6-dispatcher-logger-restrained.test.js
+ * Groups 1-4 — Plan 05-05 / STO-03 / STB-05):
+ *   - Each log row name (stage6.ask_user, stage6.restrained_mode, stage6_tool_call,
+ *     etc.) has a dedicated helper function with a closed-enum argument where
+ *     applicable.
+ *   - Phase 8 computes CloudWatch metrics at Insights query time from these rows:
+ *       stage6.ask_user_per_session_p50/p95 — via `stats percentile(...)` over
+ *         stage6.ask_user rows with answer_outcome='answered' grouped by sessionId.
+ *       stage6.restrained_mode_rate — via count_distinct(sessionId with
+ *         event='activated') / count_distinct(sessionId) over stage6.restrained_mode.
+ *   - DO NOT add percentile / count / histogram computation inside this module —
+ *     it runs inside every tool-loop turn; the emit path must stay O(ms).
+ *     Repo precedent: src/logger.js is Winston-only; metrics are derived at
+ *     query time, never at emit. Phase 5 deliberately ships ZERO PutMetricData
+ *     and ZERO EMF — log rows ARE the metric surface.
+ *   - Adding a new answer_outcome value requires updating ASK_USER_ANSWER_OUTCOMES
+ *     AND the schema-gate tests in stage6-dispatcher-logger-restrained.test.js.
+ *   - Adding a new log name requires a new exported helper + closed-enum + schema lock.
+ *
+ * Phase 5 reserved values in ASK_USER_ANSWER_OUTCOMES (locked):
+ *   gated, ask_budget_exhausted, restrained_mode
+ * Phase 5 RESTRAINED_MODE_EVENTS:
+ *   activated, released
+ *
+ * Requirements: STO-01, STO-02, STO-03, STB-05.
+ *
+ * --------------------------------------------------------------------------
  * Stage 6 Phase 2 Plan 02-02 / Phase 3 Plan 03-03 — Stage 6 log row emitters.
  *
  * Two sibling helpers share this module — intentionally co-located because
@@ -6,6 +35,7 @@
  * (scripts/analyze-session.js):
  *   - `logToolCall` → `stage6_tool_call`  (Phase 2, STO-01 / STD-11)
  *   - `logAskUser`  → `stage6.ask_user`   (Phase 3, STO-02)
+ *   - `logRestrainedMode` → `stage6.restrained_mode` (Phase 5, STO-03)
  *
  * WHAT (logToolCall): `logToolCall(logger, row)` writes exactly one
  * `logger.info` entry tagged `'stage6_tool_call'` with a fixed schema.
@@ -118,7 +148,17 @@ export function logToolCall(logger, row) {
  * leaving the session with no STO-02 breadcrumb at all. The enum must stay
  * in lockstep with every answer_outcome the dispatcher can emit.
  */
-export const ASK_USER_ANSWER_OUTCOMES = [
+// Plan 05-05 — Object.freeze applied so runtime .push/.pop cannot silently
+// widen the closed enum. The freeze is a STRUCTURAL guarantee that pairs
+// with the Group 1 schema-gate test in
+// stage6-dispatcher-logger-restrained.test.js — without freeze, a future
+// r-round could mutate the array via `.push(...)` and the closed-enum
+// gate at logAskUser line 195 would still accept the new value, but
+// Phase 8's CloudWatch Insights queries would split on a value that
+// drifted from the dashboard schema. RESTRAINED_MODE_EVENTS (Plan 05-04)
+// already shipped freeze'd; this brings ASK_USER_ANSWER_OUTCOMES +
+// ASK_USER_MODES into parity.
+export const ASK_USER_ANSWER_OUTCOMES = Object.freeze([
   // STO-02 original 6 (Phase 5 will emit restrained_mode / ask_budget_exhausted / gated — reserved now)
   'answered',
   'timeout',
@@ -143,13 +183,15 @@ export const ASK_USER_ANSWER_OUTCOMES = [
   // disclosure content. No iOS TTS emission, no registry register,
   // no STA-03 wait — just one audited row for the Phase 8 analyzer.
   'prompt_leak_blocked',
-];
+]);
 
 // Plan 03-12 r19 MINOR remediation — closed enum for the `mode` field.
 // STR-04 + Phase 8 observability queries split logs by mode; a typo at
 // any caller ('Shadow' / 'production' / 'ghost') would silently corrupt
 // the split with zero loud surface. Validate at the emit site.
-export const ASK_USER_MODES = ['shadow', 'live'];
+// Plan 05-05 — Object.freeze applied for parity with ASK_USER_ANSWER_OUTCOMES;
+// see freeze rationale on the constant above.
+export const ASK_USER_MODES = Object.freeze(['shadow', 'live']);
 
 const ASK_USER_QUESTION_LOG_MAX = 200;
 
