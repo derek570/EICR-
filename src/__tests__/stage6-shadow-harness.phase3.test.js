@@ -39,9 +39,18 @@ import { mockClient } from './helpers/mockStream.js';
 // ESM factory spies — must be registered BEFORE importing runShadowHarness.
 // ---------------------------------------------------------------------------
 
-const writeSentinel = Object.assign(async () => ({ tool_use_id: 'w', content: '{}', is_error: false }), { __tag: 'writes' });
-const askSentinel = Object.assign(async () => ({ tool_use_id: 'a', content: '{}', is_error: false }), { __tag: 'asks' });
-const composedSentinel = Object.assign(async () => ({ tool_use_id: 'c', content: '{}', is_error: false }), { __tag: 'composed' });
+const writeSentinel = Object.assign(
+  async () => ({ tool_use_id: 'w', content: '{}', is_error: false }),
+  { __tag: 'writes' }
+);
+const askSentinel = Object.assign(
+  async () => ({ tool_use_id: 'a', content: '{}', is_error: false }),
+  { __tag: 'asks' }
+);
+const composedSentinel = Object.assign(
+  async () => ({ tool_use_id: 'c', content: '{}', is_error: false }),
+  { __tag: 'composed' }
+);
 const sortSentinel = Object.assign((records) => records, { __tag: 'sort' });
 
 const createWriteDispatcherSpy = jest.fn(() => writeSentinel);
@@ -103,7 +112,10 @@ function endTurnStreamEvents(text = 'done') {
   ];
 }
 
-function makeSession(mode, legacyResult = { extracted_readings: [], observations: [], questions: [] }) {
+function makeSession(
+  mode,
+  legacyResult = { extracted_readings: [], observations: [], questions: [] }
+) {
   return {
     sessionId: 'sess-phase3',
     turnCount: 0,
@@ -264,7 +276,7 @@ describe('Phase 3 — null pendingAsks fallback', () => {
     const s = makeSession('shadow');
 
     await expect(
-      runShadowHarness(s, 'text', [], { logger, pendingAsks: null, ws: null }),
+      runShadowHarness(s, 'text', [], { logger, pendingAsks: null, ws: null })
     ).resolves.toBeDefined();
 
     expect(createAskDispatcherSpy).not.toHaveBeenCalled();
@@ -304,21 +316,23 @@ describe('Phase 3 — env-flag gating preserved', () => {
     expect(pendingAsks.size).toBe(0);
   });
 
-  test("mode='live' throws Phase-7 guard; NO dispatcher construction", async () => {
+  test("mode='live' constructs dispatchers and runs tool loop (no legacy fallback)", async () => {
+    // 2026-04-26 (Bug-B pivot): live mode runs the agentic tool loop directly.
+    // Dispatchers ARE constructed and the tool loop IS invoked; legacy is not.
     const logger = makeLogger();
     const s = makeSession('live');
 
-    await expect(
-      runShadowHarness(s, 'text', [], {
-        logger,
-        pendingAsks: makePendingAsks(),
-        ws: makeWs(),
-      }),
-    ).rejects.toThrow(/not implemented until Phase 7/);
+    await runShadowHarness(s, 'text', [], {
+      logger,
+      pendingAsks: makePendingAsks(),
+      ws: makeWs(),
+    });
 
-    expect(createWriteDispatcherSpy).not.toHaveBeenCalled();
-    expect(createAskDispatcherSpy).not.toHaveBeenCalled();
-    expect(createToolDispatcherSpy).not.toHaveBeenCalled();
-    expect(runToolLoopSpy).not.toHaveBeenCalled();
+    expect(createWriteDispatcherSpy).toHaveBeenCalledTimes(1);
+    expect(createAskDispatcherSpy).toHaveBeenCalledTimes(1);
+    expect(createToolDispatcherSpy).toHaveBeenCalledTimes(1);
+    expect(runToolLoopSpy).toHaveBeenCalledTimes(1);
+    // Legacy never called.
+    expect(s.extractFromUtterance).not.toHaveBeenCalled();
   });
 });

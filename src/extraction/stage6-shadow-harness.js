@@ -122,6 +122,173 @@ function estimateShadowCost(/* toolLoopOut */) {
 }
 
 /**
+ * 2026-04-26 (Bug-B pivot) — LIVE MODE handler.
+ *
+ * Drives the Stage 6 agentic tool loop directly with NO legacy fallback. iOS
+ * receives the bundler's projected result as the authoritative extraction
+ * payload. Trade-offs vs shadow mode:
+ *   + No prompt-vs-parser mismatch possible (single path, single prompt).
+ *   + Real problems surface immediately — no silent shadow divergence to
+ *     mask iOS-visible breakage.
+ *   - No legacy backup if Sonnet's tool calls fail. Fallback path is the
+ *     env-var rollback (`SONNET_TOOL_CALLS=off`, 2-minute ECS redeploy).
+ *
+ * Differences from shadow mode:
+ *   - Legacy `extractFromUtterance` is NOT called. The session.stateSnapshot
+ *     is mutated DIRECTLY by the tool dispatchers (no clone/compare dance).
+ *   - `stage6_divergence` is not logged (nothing to compare against).
+ *   - The bundler's `extracted_board_readings` slot is folded INTO
+ *     `extracted_readings` with `circuit: 0` so iOS Build 282 (which
+ *     decodes `extracted_readings[].circuit === 0` as supply-scoped per the
+ *     legacy contract — see DeepgramRecordingViewModel.swift:866) renders
+ *     supply readings without an iOS update.
+ *
+ * @param {Object} session  Real EICRExtractionSession (live state mutates).
+ * @param {string} transcriptText
+ * @param {Array} regexResults
+ * @param {Object} options
+ * @param {Object} log  Logger.
+ */
+async function runLiveMode(session, transcriptText, regexResults, options, log) {
+  const turnNum = (session.turnCount ?? 0) + 1;
+  const turnId = `${session.sessionId}-turn-${turnNum}`;
+
+  // Per-turn writes accumulator. Function-local — never stored on session
+  // (Pitfall #2 — cross-turn leak prevention from shadow harness).
+  const perTurnWrites = createPerTurnWrites();
+
+  // Build the dispatcher session that the tool dispatchers mutate. In LIVE
+  // mode we want mutations to land on the LIVE session, not a clone — there's
+  // no comparison and iOS state IS the live state.
+  const liveSession = {
+    sessionId: session.sessionId,
+    stateSnapshot: session.stateSnapshot,
+    extractedObservations: session.extractedObservations,
+    toolCallsMode: 'live',
+  };
+
+  // Phase 5 ask-gate composition (same as shadow mode, but reading from the
+  // live session). Falls back to write-only dispatcher if the caller didn't
+  // thread pendingAsks through (Phase 3/4 back-compat).
+  const pendingAsks = options.pendingAsks ?? null;
+  const ws = options.ws ?? null;
+  const writes = createWriteDispatcher(liveSession, log, turnId, perTurnWrites);
+  let dispatcher;
+  let sortRecords;
+  let askGateForTurn = null;
+  if (pendingAsks) {
+    let asks = createAskDispatcher(liveSession, log, turnId, pendingAsks, ws, {
+      fallbackToLegacy: options.fallbackToLegacy === true,
+    });
+    if (options.askBudget && options.restrainedMode) {
+      askGateForTurn = createAskGateWrapper({
+        logger: log,
+        sessionId: liveSession.sessionId,
+        mode: 'live',
+      });
+      asks = wrapAskDispatcherWithGates(asks, {
+        askBudget: options.askBudget,
+        restrainedMode: options.restrainedMode,
+        gate: askGateForTurn,
+        filledSlotsShadow: options.filledSlotsShadow ?? (() => {}),
+        logger: log,
+        sessionId: liveSession.sessionId,
+        mode: 'live',
+      });
+    }
+    dispatcher = createToolDispatcher(writes, asks);
+    sortRecords = createSortRecordsAsksLast();
+  } else {
+    dispatcher = writes;
+    sortRecords = undefined;
+  }
+
+  // Drive the tool loop. The agentic prompt + state snapshot live in the
+  // cached prefix per buildAgenticSystemBlocks. iOS Build 282 doesn't yet
+  // know about the new tool-call message types — for now we don't emit them
+  // mid-loop; iOS sees ONE `extraction` message at the end of the turn,
+  // built from the bundler.
+  const systemBlocks = session.buildAgenticSystemBlocks
+    ? session.buildAgenticSystemBlocks()
+    : session.buildSystemBlocks();
+
+  let toolLoopOut;
+  try {
+    toolLoopOut = await runToolLoop({
+      client: session.client,
+      model: SHADOW_MODEL,
+      system: systemBlocks,
+      messages: [{ role: 'user', content: transcriptText }],
+      tools: TOOL_SCHEMAS,
+      dispatcher,
+      ctx: { sessionId: session.sessionId, turnId },
+      logger: log,
+      sortRecords,
+    });
+  } catch (err) {
+    askGateForTurn?.destroy();
+    try {
+      log.error?.('stage6_live_error', {
+        sessionId: session.sessionId,
+        turnId,
+        phase: 'live',
+        error: err?.message ?? String(err),
+      });
+    } catch {
+      // swallow logger failure — never break extraction
+    }
+    // No legacy fallback in live mode. Return an empty extraction so
+    // iOS sees "no readings this turn" rather than crashing on undefined.
+    // The error is in CloudWatch for diagnosis; rollback path is env-flip.
+    return {
+      extracted_readings: [],
+      observations: [],
+      questions: [],
+    };
+  }
+
+  askGateForTurn?.destroy();
+
+  // Bundle the per-turn writes into the legacy iOS shape. Pass null for
+  // legacyResultShape — there's no legacy result; bundler will produce
+  // `questions: []` from that.
+  const result = bundleToolCallsIntoResult(perTurnWrites, null);
+
+  // iOS Build 282 only knows about `extracted_readings`. Fold any board-level
+  // readings (record_board_reading dispatches) into extracted_readings with
+  // `circuit: 0` so they render in the existing iOS UI without a TestFlight
+  // update. The separate `extracted_board_readings` slot stays for forward
+  // compatibility — once iOS decodes it, this fold can be removed.
+  if (Array.isArray(result.extracted_board_readings)) {
+    for (const br of result.extracted_board_readings) {
+      result.extracted_readings.push({
+        field: br.field,
+        circuit: 0,
+        value: br.value,
+        confidence: br.confidence,
+        source: br.source,
+      });
+    }
+  }
+
+  // Increment turn count to match legacy's contract
+  // (extractFromUtterance does this internally).
+  session.turnCount = turnNum;
+
+  log.info('stage6_live_extraction', {
+    sessionId: session.sessionId,
+    turnId,
+    rounds: toolLoopOut.rounds,
+    aborted: toolLoopOut.aborted ?? false,
+    abort_reason: toolLoopOut.aborted && toolLoopOut.rounds >= 8 ? 'loop_cap' : null,
+    readings: result.extracted_readings.length,
+    observations: result.observations.length,
+  });
+
+  return result;
+}
+
+/**
  * Plan 06-06 r5-#3 (MINOR) — extracted helper that builds the cloned
  * shadowSession passed into createAskDispatcher (and the write dispatcher).
  *
@@ -192,9 +359,18 @@ export async function runShadowHarness(session, transcriptText, regexResults, op
     return session.extractFromUtterance(transcriptText, regexResults, options);
   }
 
+  // 2026-04-26 (Bug-B pivot): solo-test live mode. SONNET_TOOL_CALLS=live runs
+  // ONLY the agentic tool loop — no legacy authoritative call, no shadow
+  // divergence comparison. The bundler's projected result is what iOS gets.
+  // Rationale: dual-path shadow design carries the prompt-vs-parser pairing
+  // bug (Bug B), Sonnet emitting hallucinated dotted field names that the
+  // legacy KNOWN_FIELDS receiver dropped. Skipping the legacy path entirely
+  // closes the bug structurally — there's only one path, so no mismatch is
+  // possible. Cost of pivot: no fallback if Sonnet's tool calls fail; this
+  // is acceptable for solo testing today, and `SONNET_TOOL_CALLS=off` is
+  // still a 2-minute ECS rollback to legacy if anything blocks.
   if (mode === 'live') {
-    // Phase-1 guard preserved. Phase 7 lifts this.
-    throw new Error('SONNET_TOOL_CALLS=live not implemented until Phase 7');
+    return runLiveMode(session, transcriptText, regexResults, options, log);
   }
 
   if (mode !== 'shadow') {

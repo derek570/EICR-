@@ -46,7 +46,10 @@ function endTurnStreamEvents(text = 'done') {
   ];
 }
 
-function makeSession(mode, legacyResult = { extracted_readings: [], observations: [], questions: [] }) {
+function makeSession(
+  mode,
+  legacyResult = { extracted_readings: [], observations: [], questions: [] }
+) {
   return {
     sessionId: 'sess-1',
     turnCount: 0,
@@ -147,7 +150,7 @@ describe('runShadowHarness — Phase 2', () => {
           rounds: 1,
           aborted: false,
           shadow_cost_usd: null,
-        }),
+        })
       );
       // Structural: legacy_slots and tool_slots are JSON-safe (plain object /
       // arrays), not raw Map/Set.
@@ -202,7 +205,7 @@ describe('runShadowHarness — Phase 2', () => {
           sessionId: 'sess-1',
           phase: 2,
           error: 'anthropic network blew up',
-        }),
+        })
       );
 
       // No divergence log (comparator never ran).
@@ -267,14 +270,30 @@ describe('runShadowHarness — Phase 2', () => {
   });
 
   describe("mode='live'", () => {
-    test('throws with explicit phase-7 message; legacy NOT called', async () => {
+    // 2026-04-26 (Bug-B pivot): live mode no longer throws. It runs the tool
+    // loop directly (no legacy fallback) and returns the bundler-projected
+    // result. Solo-test contract: surface real problems immediately.
+    test('runs tool loop directly; legacy NOT called; returns bundled result', async () => {
       const logger = makeLogger();
-      const s = makeSession('live');
-      await expect(runShadowHarness(s, 'text', [], { logger })).rejects.toThrow(
-        /not implemented until Phase 7/,
-      );
+      const s = makeSession('live', { extracted_readings: [], observations: [], questions: [] });
+      const result = await runShadowHarness(s, 'text', [], { logger });
+
+      // Legacy was NOT called — there's no fallback path in live mode.
       expect(s.extractFromUtterance).not.toHaveBeenCalled();
-      expect(s.client._callCount).toBe(0);
+      // The tool loop client WAS called once.
+      expect(s.client._callCount).toBe(1);
+      // Bundled result is iOS-shaped.
+      expect(result).toMatchObject({
+        extracted_readings: expect.any(Array),
+        observations: expect.any(Array),
+        questions: expect.any(Array),
+      });
+      // No divergence log fired (nothing to compare against).
+      const divCall = logger.info.mock.calls.find((c) => c[0] === 'stage6_divergence');
+      expect(divCall).toBeUndefined();
+      // A live-extraction info log DID fire so we have a CloudWatch trail.
+      const liveCall = logger.info.mock.calls.find((c) => c[0] === 'stage6_live_extraction');
+      expect(liveCall).toBeDefined();
     });
   });
 });
