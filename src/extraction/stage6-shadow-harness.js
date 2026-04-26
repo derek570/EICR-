@@ -288,11 +288,24 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
   // showed nothing because the legacy contract didn't carry "circuit
   // created" as a first-class event.
   if (Array.isArray(result.circuit_updates)) {
+    // Bug-G fix (2026-04-26): iOS Build 302's per-field dispatch in
+    // DeepgramRecordingViewModel.swift:3559 (`case "circuit_description",
+    // "designation":`) uses the LEGACY unprefixed field names, not the
+    // field_schema.json keys. The legacy backend KNOWN_FIELDS set in
+    // sonnet-stream.js:538-658 agrees. Schema-key names like
+    // `circuit_designation` / `live_csa_mm2` warn-and-skip via
+    // validateAndCorrectFields (logs `Unknown field name from Sonnet`)
+    // and never reach the iOS UI. Mapping table below uses the legacy
+    // names that BOTH the backend KNOWN_FIELDS and iOS dispatch agree
+    // on. `phase` has no legacy handler — iOS Circuit model has the
+    // field but the dispatch case doesn't exist, so dropping the fold
+    // here is the right call until Phase 6 protocol cutover.
     const META_TO_LEGACY_FIELD = {
-      designation: 'circuit_designation',
-      phase: 'phase',
-      rating_amps: 'ocpd_rating',
-      cable_csa_mm2: 'live_csa_mm2',
+      designation: 'designation', // iOS DeepgramRecordingViewModel.swift:3559
+      // phase: dropped — iOS has no per-field dispatch case. Sonnet still
+      //   sets it on the snapshot, just doesn't surface to the UI.
+      rating_amps: 'ocpd_rating', // iOS line 256
+      cable_csa_mm2: 'cable_size', // iOS line 260, maps to circuit.cableSize → liveCsaMm2
     };
     for (const op of result.circuit_updates) {
       // op shape: { op: 'create'|'rename', circuit_ref, from_ref?, meta? }
