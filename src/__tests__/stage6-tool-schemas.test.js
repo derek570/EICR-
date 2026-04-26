@@ -61,9 +61,16 @@ describe('stage6-tool-schemas', () => {
     expect(names).toEqual([...EXPECTED_TOOL_NAMES].sort());
   });
 
-  test('every tool has strict: true on its input_schema', () => {
+  test('no tool sets strict:true (Bug-E fix — Anthropic 503s on grammar compilation)', () => {
+    // Bug-E fix (2026-04-26): strict:true was removed from every tool. With
+    // 8 tools whose enums total ~150+ values, Anthropic's grammar-compilation
+    // step intermittently returns
+    // `503 overloaded_error: "Grammar compilation is temporarily unavailable"`
+    // — the call hangs ~30s then 503s. Server-side dispatcher validators
+    // (stage6-dispatch-validation.js) catch invalid values with structured
+    // validation_error tool_results so the model can self-correct.
     for (const tool of TOOL_SCHEMAS) {
-      expect(tool.strict).toBe(true);
+      expect(tool.strict).toBeUndefined();
     }
   });
 

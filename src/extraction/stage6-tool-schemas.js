@@ -92,15 +92,36 @@ export const BOARD_FIELD_ENUM = (() => {
 })();
 
 /**
- * Build an Anthropic tool definition. Centralising the shape guarantees every
- * tool gets strict:true + additionalProperties:false without opportunity for
- * per-tool drift.
+ * Build an Anthropic tool definition.
+ *
+ * Bug-E fix (2026-04-26): `strict: true` removed. Anthropic's strict mode
+ * grammar-compiles each tool's input_schema for constrained sampling, but
+ * with 8 tools whose enums total ~150+ values (record_reading.field ~30,
+ * record_board_reading.field ~50, ask_user.context_field ~50, plus anyOf
+ * branches across all the nullable fields), the compiled grammar is large
+ * enough that Anthropic intermittently returns
+ * `503 overloaded_error: "Grammar compilation is temporarily unavailable.
+ * Please try again."` — the call hangs ~30s then 503s, and iOS watchdog
+ * fires "isExtracting stuck for 30s, force-resetting" → looks like Sonnet
+ * disconnected from the user's perspective. First field test of live mode
+ * (sessionId BABA28D6-0779-4E13-86AC-2A582F18569F) hit this.
+ *
+ * Trade-off: without strict, Anthropic does NOT grammar-constrain sampling.
+ * The model can emit off-enum values (e.g. a misspelled circuit_fields
+ * key). Mitigation: the dispatcher (stage6-dispatch-validation.js +
+ * stage6-dispatchers-circuit.js) already validates every field server-side
+ * with KNOWN_FIELDS / enum / range checks and returns a structured
+ * validation_error in the tool_result. So invalid values surface as a
+ * tool-call error visible to the model (which can self-correct in a
+ * follow-up round) rather than a silent write of bad data.
+ *
+ * additionalProperties: false is preserved — the model can't sneak extra
+ * keys past the schema, even without strict.
  */
 function makeTool({ name, description, properties, required }) {
   return {
     name,
     description,
-    strict: true,
     input_schema: {
       type: 'object',
       properties,

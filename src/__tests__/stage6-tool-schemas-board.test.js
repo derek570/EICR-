@@ -81,10 +81,12 @@ describe('record_board_reading schema', () => {
     expect(TOOL_SCHEMAS[0].name).toBe('record_reading'); // unchanged
   });
 
-  test('strict:true with additionalProperties:false (mirrors STS-08)', () => {
+  test('additionalProperties:false; strict undefined post-Bug-E', () => {
+    // Bug-E fix (2026-04-26): strict:true removed across all tools — see
+    // stage6-tool-schemas.js makeTool() comment for rationale.
     const tool = getToolByName('record_board_reading');
     expect(tool).toBeDefined();
-    expect(tool.strict).toBe(true);
+    expect(tool.strict).toBeUndefined();
     expect(tool.input_schema.type).toBe('object');
     expect(tool.input_schema.additionalProperties).toBe(false);
   });
