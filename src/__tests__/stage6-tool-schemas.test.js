@@ -123,29 +123,32 @@ describe('stage6-tool-schemas', () => {
     );
   });
 
-  test('create_circuit.phase enum sourced from stage6-enumerations.json + null (STS-03 permits phase | null)', () => {
+  test('create_circuit.phase uses anyOf with enum on string branch + null branch (STS-03 permits phase | null)', () => {
+    // Bug-D fix (2026-04-26): Anthropic strict-mode rejects type-array+enum
+    // combos (`tools.N.custom: Invalid schema: Enum value 'L1' does not match
+    // declared type '['string','null']'`). Switched to anyOf so the enum
+    // lives on the typed string branch and null is its own branch. STS-03
+    // semantics preserved — phase: null is still a valid payload.
     const createCircuit = byName('create_circuit');
-    // Under strict-mode JSON Schema, enum matches the VALUE not the type. For
-    // a nullable enum field the enum array MUST include null, else a valid
-    // `phase: null` payload (explicitly permitted by STS-03) is rejected.
-    expect(createCircuit.input_schema.properties.phase.enum).toEqual([
-      ...enumerations.circuit_phase,
-      null,
+    const phase = createCircuit.input_schema.properties.phase;
+    expect(phase.type).toBeUndefined();
+    expect(Array.isArray(phase.anyOf)).toBe(true);
+    expect(phase.anyOf).toEqual([
+      { type: 'string', enum: enumerations.circuit_phase },
+      { type: 'null' },
     ]);
-    expect(createCircuit.input_schema.properties.phase.type).toEqual(['string', 'null']);
     // create_circuit requires only circuit_ref (STS-03)
     expect(createCircuit.input_schema.required).toEqual(['circuit_ref']);
   });
 
-  test('rename_circuit.phase enum sourced from stage6-enumerations.json + null (STS-04 permits phase | null)', () => {
+  test('rename_circuit.phase uses anyOf with enum on string branch + null branch (STS-04)', () => {
     const renameCircuit = byName('rename_circuit');
-    expect(renameCircuit.input_schema.properties.phase.enum).toEqual([
-      ...enumerations.circuit_phase,
-      null,
+    const phase = renameCircuit.input_schema.properties.phase;
+    expect(phase.type).toBeUndefined();
+    expect(phase.anyOf).toEqual([
+      { type: 'string', enum: enumerations.circuit_phase },
+      { type: 'null' },
     ]);
-    expect(renameCircuit.input_schema.properties.phase.type).toEqual(['string', 'null']);
-    // Plan 02-01 adds `from_ref` to the required list — without it the tool
-    // is semantically identical to create_circuit. See Plan 02-01 §Q7.
     expect(renameCircuit.input_schema.required.sort()).toEqual(['circuit_ref', 'from_ref'].sort());
   });
 
@@ -195,30 +198,29 @@ describe('stage6-tool-schemas', () => {
     );
   });
 
-  test('ask_user.context_field enum is codegenned from circuit_fields + sentinels + null (Plan 02-01 closes Phase 1 carryover)', () => {
+  test('ask_user.context_field uses anyOf with codegenned enum on string branch + null branch (Bug-D fix)', () => {
     const askUser = byName('ask_user');
     const contextField = askUser.input_schema.properties.context_field;
-    expect(contextField.type).toEqual(['string', 'null']);
-    expect(Array.isArray(contextField.enum)).toBe(true);
+    // Bug-D fix (2026-04-26): switched from type-array+enum to anyOf.
+    expect(contextField.type).toBeUndefined();
+    expect(Array.isArray(contextField.anyOf)).toBe(true);
+    expect(contextField.anyOf).toHaveLength(2);
+    const stringBranch = contextField.anyOf[0];
+    const nullBranch = contextField.anyOf[1];
+    expect(stringBranch.type).toBe('string');
+    expect(nullBranch.type).toBe('null');
 
     const circuitFieldKeys = Object.keys(fieldSchema.circuit_fields);
-    const expectedEntries = [...circuitFieldKeys, ...contextKeys.sentinels, null];
-
-    // Length is (circuit_fields count) + sentinels + 1 (null). Plan 02-01
-    // cardinality invariant — guards against drift either way.
-    expect(contextField.enum).toHaveLength(expectedEntries.length);
-
-    // Every circuit_fields key appears in the enum.
+    // The string branch enum holds circuit_fields keys + sentinels (no null —
+    // null lives on the null branch now).
+    expect(stringBranch.enum).toHaveLength(circuitFieldKeys.length + contextKeys.sentinels.length);
     for (const key of circuitFieldKeys) {
-      expect(contextField.enum).toContain(key);
+      expect(stringBranch.enum).toContain(key);
     }
-    // Both sentinels appear verbatim.
     for (const sentinel of contextKeys.sentinels) {
-      expect(contextField.enum).toContain(sentinel);
+      expect(stringBranch.enum).toContain(sentinel);
     }
-    // null is a valid enum value so the schema's type:['string','null'] is
-    // honoured under strict:true JSON Schema (enum matches VALUE not type).
-    expect(contextField.enum).toContain(null);
+    expect(stringBranch.enum).not.toContain(null);
   });
 
   test('ask_user.context_field — no hand-rolled sentinel literals in schema module (Plan 02-01 single-source-of-truth guard)', () => {

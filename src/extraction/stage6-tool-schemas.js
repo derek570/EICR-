@@ -201,21 +201,27 @@ const createCircuit = makeTool({
       description: 'Circuit reference number. Must be unique within the current board.',
     },
     designation: {
-      type: ['string', 'null'],
+      // Bug-D fix (2026-04-26): Anthropic strict-mode validates enum against
+      // the declared type and rejects type-array+enum combos with
+      // `tools.N.custom: Invalid schema: Enum value 'X' does not match
+      // declared type '['string', 'null']'`. Switched all nullable fields
+      // from `type: ['string'|'integer'|'number', 'null']` to
+      // `anyOf: [{type: 'X', ...}, {type: 'null'}]`. anyOf IS supported in
+      // strict mode (with limits — currently 16 union types per request).
+      anyOf: [{ type: 'string' }, { type: 'null' }],
       description: 'Human-readable circuit name (e.g. "Upstairs lighting"). Null if unknown.',
     },
     phase: {
-      type: ['string', 'null'],
-      enum: [...enumerations.circuit_phase, null],
+      anyOf: [{ type: 'string', enum: enumerations.circuit_phase }, { type: 'null' }],
       description:
-        'Electrical phase. L1/L2/L3 for three-phase installations, single for single-phase. Null if unknown. Strict-mode JSON Schema validates enum against the VALUE, so null must be present in both `type` and `enum` for a `phase: null` payload to pass — REQUIREMENTS STS-03 explicitly permits `phase | null`.',
+        'Electrical phase. L1/L2/L3 for three-phase installations, single for single-phase. Null if unknown.',
     },
     rating_amps: {
-      type: ['integer', 'null'],
+      anyOf: [{ type: 'integer' }, { type: 'null' }],
       description: 'OCPD rating in amps. Null if unknown.',
     },
     cable_csa_mm2: {
-      type: ['number', 'null'],
+      anyOf: [{ type: 'number' }, { type: 'null' }],
       description: 'Live conductor cross-sectional area in mm^2. Null if unknown.',
     },
   },
@@ -250,21 +256,20 @@ const renameCircuit = makeTool({
         'The NEW circuit_ref after rename. If from_ref === circuit_ref, only meta is updated.',
     },
     designation: {
-      type: ['string', 'null'],
+      // Bug-D fix (2026-04-26): see create_circuit comment above.
+      anyOf: [{ type: 'string' }, { type: 'null' }],
       description: 'New human-readable circuit name. Null to leave unchanged.',
     },
     phase: {
-      type: ['string', 'null'],
-      enum: [...enumerations.circuit_phase, null],
-      description:
-        'New electrical phase. Null to leave unchanged. Strict-mode JSON Schema validates enum against the VALUE — null must appear in both `type` and `enum` for REQUIREMENTS STS-04 `phase | null`.',
+      anyOf: [{ type: 'string', enum: enumerations.circuit_phase }, { type: 'null' }],
+      description: 'New electrical phase. Null to leave unchanged.',
     },
     rating_amps: {
-      type: ['integer', 'null'],
+      anyOf: [{ type: 'integer' }, { type: 'null' }],
       description: 'New OCPD rating in amps. Null to leave unchanged.',
     },
     cable_csa_mm2: {
-      type: ['number', 'null'],
+      anyOf: [{ type: 'number' }, { type: 'null' }],
       description: 'New live conductor cross-sectional area in mm^2. Null to leave unchanged.',
     },
   },
@@ -296,12 +301,13 @@ const recordObservation = makeTool({
       description: 'Full observation wording as it will appear on the certificate.',
     },
     circuit: {
-      type: ['integer', 'null'],
+      // Bug-D fix (2026-04-26): see create_circuit comment.
+      anyOf: [{ type: 'integer' }, { type: 'null' }],
       description:
         'Circuit_ref this observation is associated with, or null for board-wide / installation-wide observations.',
     },
     suggested_regulation: {
-      type: ['string', 'null'],
+      anyOf: [{ type: 'string' }, { type: 'null' }],
       description:
         'BS7671 regulation reference (e.g. "411.3.1.1") if the model can reliably cite one. Null otherwise — the inspector will add it during review.',
     },
@@ -362,13 +368,18 @@ const askUser = makeTool({
         'Why the ask is being made. out_of_range_circuit: inspector referenced a circuit_ref not in the schedule. ambiguous_circuit: multiple circuits match the description. contradiction: new value conflicts with an existing reading. observation_confirmation: wording ambiguous enough to warrant a check. missing_context: a required companion value is absent.',
     },
     context_field: {
-      type: ['string', 'null'],
-      enum: CONTEXT_FIELD_ENUM,
+      // Bug-D fix (2026-04-26): see create_circuit comment.
+      // CONTEXT_FIELD_ENUM already includes null; strip it from the typed
+      // branch and let the {type: 'null'} branch handle it cleanly.
+      anyOf: [
+        { type: 'string', enum: CONTEXT_FIELD_ENUM.filter((v) => v !== null) },
+        { type: 'null' },
+      ],
       description:
         'Closed namespace. Either a circuit_fields key (sourced from config/field_schema.json — e.g. "measured_zs_ohm", "circuit_designation") for field-scoped asks, or the sentinel "observation_clarify" for asks about a pending observation, or the sentinel "none" (equivalently null) for scope-less asks. The enum is codegenned from config/field_schema.json + config/stage6-context-keys.json at module load — do not hand-roll. Phase 5 ask-budget analytics bucket by this key + context_circuit; the closed enum keeps bucket cardinality bounded.',
     },
     context_circuit: {
-      type: ['integer', 'null'],
+      anyOf: [{ type: 'integer' }, { type: 'null' }],
       description:
         'Circuit_ref this ask is scoped to, or null if the ask is board- or installation-wide.',
     },
