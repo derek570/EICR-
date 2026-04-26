@@ -45,14 +45,18 @@ const EXPECTED_TOOL_NAMES = [
   'record_observation',
   'delete_observation',
   'ask_user',
+  // STS-08: record_board_reading was appended in the Bug C fix from the
+  // 2026-04-26 production analysis — supply / installation / board-level
+  // writes (Ze, address, main fuse, etc.) had no tool surface before this.
+  'record_board_reading',
 ];
 
 const byName = (name) => TOOL_SCHEMAS.find((t) => t.name === name);
 
 describe('stage6-tool-schemas', () => {
-  test('exports exactly 7 tools with the expected names', () => {
+  test('exports exactly 8 tools with the expected names', () => {
     expect(Array.isArray(TOOL_SCHEMAS)).toBe(true);
-    expect(TOOL_SCHEMAS).toHaveLength(7);
+    expect(TOOL_SCHEMAS).toHaveLength(8);
     const names = TOOL_SCHEMAS.map((t) => t.name).sort();
     expect(names).toEqual([...EXPECTED_TOOL_NAMES].sort());
   });
