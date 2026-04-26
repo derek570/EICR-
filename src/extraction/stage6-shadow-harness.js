@@ -271,6 +271,47 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
     }
   }
 
+  // Bug-F fix (2026-04-26): also fold `circuit_updates` (create_circuit /
+  // rename_circuit ops) into `extracted_readings`. iOS Build 282 doesn't
+  // decode the circuit_updates slot — under legacy, circuits were created
+  // implicitly when a `circuit_designation` reading arrived for a new
+  // circuit_ref. Mapping each create/rename op back to that legacy shape
+  // means iOS auto-creates the row and populates the meta fields without
+  // a protocol update. Field-name mapping mirrors the legacy KNOWN_FIELDS
+  // set in sonnet-stream.js (and field_schema.json circuit_fields keys):
+  //   designation       → circuit_designation
+  //   phase             → phase
+  //   rating_amps       → ocpd_rating
+  //   cable_csa_mm2     → live_csa_mm2
+  // Field test 2026-04-26 sessionId 4CDC9FC2 surfaced this — Sonnet was
+  // calling create_circuit and rename_circuit successfully but iOS UI
+  // showed nothing because the legacy contract didn't carry "circuit
+  // created" as a first-class event.
+  if (Array.isArray(result.circuit_updates)) {
+    const META_TO_LEGACY_FIELD = {
+      designation: 'circuit_designation',
+      phase: 'phase',
+      rating_amps: 'ocpd_rating',
+      cable_csa_mm2: 'live_csa_mm2',
+    };
+    for (const op of result.circuit_updates) {
+      // op shape: { op: 'create'|'rename', circuit_ref, from_ref?, meta? }
+      const ref = op.circuit_ref;
+      const meta = op.meta ?? {};
+      for (const [metaKey, legacyField] of Object.entries(META_TO_LEGACY_FIELD)) {
+        const v = meta[metaKey];
+        if (v == null) continue; // designed-as-null skips emission
+        result.extracted_readings.push({
+          field: legacyField,
+          circuit: ref,
+          value: typeof v === 'number' ? String(v) : v,
+          confidence: 1.0,
+          source: 'tool_call',
+        });
+      }
+    }
+  }
+
   // Increment turn count to match legacy's contract
   // (extractFromUtterance does this internally).
   session.turnCount = turnNum;
