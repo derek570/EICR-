@@ -2,11 +2,14 @@
 # Builds, tests, and deploys to AWS ECS
 #
 # Triggers:
-#   - Push to main    → test + build + deploy to production
+#   - Push to main    → test + build + deploy to production. Build/deploy
+#                       scope is path-aware: backend-only changes skip the
+#                       frontend Docker build (~17 min faster) and vice versa.
+#                       Detection rules live on the `detect-changes` job.
 #   - Push to develop → test + build + deploy to staging (if staging services exist)
 #   - workflow_dispatch → manual deploy (backend-only, frontend-only, or both)
 #
-# Manual deploy from CLI:
+# Manual deploy from CLI (overrides path detection):
 #   gh workflow run deploy.yml -f deploy_target=backend -f environment=production
 #   gh workflow run deploy.yml -f deploy_target=frontend -f environment=production   (builds web/ dir)
 #   gh workflow run deploy.yml -f deploy_target=both -f environment=production
@@ -47,6 +50,77 @@ env:
   ECS_SERVICE_BACKEND: eicr-backend
 
 jobs:
+  # ============================================
+  # Job 0: Detect changed paths (path-aware build skip)
+  # ============================================
+  # Outputs `target = backend | frontend | both | none` so downstream jobs can
+  # skip the half they don't need. Removes ~17 min from backend-only pushes
+  # (no frontend Docker build) and ~5 min from frontend-only pushes (no backend
+  # build). For workflow_dispatch the user-supplied `deploy_target` wins so
+  # operators can still force a both-build via `gh workflow run`.
+  #
+  # Backend-only triggers: src/**, config/**, scripts/**, docker/backend.*,
+  # ecs/task-def-backend.json. Frontend-only: web/**, docker/nextjs.*,
+  # ecs/task-def-frontend.json. Shared: package.json/package-lock.json (counts
+  # as both — npm workspaces) plus the workflow file itself.
+  detect-changes:
+    name: Detect changed paths
+    runs-on: ubuntu-latest
+    outputs:
+      target: ${{ steps.compute.outputs.target }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - name: Filter paths
+        id: filter
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            frontend:
+              - 'web/**'
+              - 'docker/nextjs.Dockerfile'
+              - 'ecs/task-def-frontend.json'
+              - 'package.json'
+              - 'package-lock.json'
+              - '.github/workflows/deploy.yml'
+            backend:
+              - 'src/**'
+              - 'config/**'
+              - 'scripts/**'
+              - 'docker/backend.Dockerfile'
+              - 'ecs/task-def-backend.json'
+              - 'package.json'
+              - 'package-lock.json'
+              - '.github/workflows/deploy.yml'
+      - name: Compute effective target
+        id: compute
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "target=${{ inputs.deploy_target }}" >> "$GITHUB_OUTPUT"
+            echo "Manual workflow_dispatch — target=${{ inputs.deploy_target }}"
+          else
+            FE='${{ steps.filter.outputs.frontend }}'
+            BE='${{ steps.filter.outputs.backend }}'
+            if [ "$FE" = "true" ] && [ "$BE" = "true" ]; then
+              echo "target=both" >> "$GITHUB_OUTPUT"
+              echo "Path filter — both changed (target=both)"
+            elif [ "$FE" = "true" ]; then
+              echo "target=frontend" >> "$GITHUB_OUTPUT"
+              echo "Path filter — frontend-only (target=frontend, skipping backend build)"
+            elif [ "$BE" = "true" ]; then
+              echo "target=backend" >> "$GITHUB_OUTPUT"
+              echo "Path filter — backend-only (target=backend, skipping frontend build)"
+            else
+              # Defensive default: nothing recognised changed (e.g. README only).
+              # Keep the workflow flexible — fall back to both rather than
+              # accidentally skipping a deploy the operator expected.
+              echo "target=both" >> "$GITHUB_OUTPUT"
+              echo "Path filter — no FE/BE paths matched (target=both, defensive)"
+            fi
+          fi
+
   # ============================================
   # Job 1: Test Node.js Backend
   # ============================================
@@ -166,7 +240,7 @@ jobs:
   build-images:
     name: Build & Scan Docker Images
     runs-on: ubuntu-24.04-arm
-    needs: [test-backend, test-frontend, security-audit]
+    needs: [detect-changes, test-backend, test-frontend, security-audit]
     if: always() && (github.event_name == 'workflow_dispatch' || (needs.test-backend.result == 'success' && needs.test-frontend.result == 'success'))
 
     steps:
@@ -177,7 +251,7 @@ jobs:
         uses: docker/setup-buildx-action@v3
 
       - name: Build Frontend Image
-        if: github.event_name != 'workflow_dispatch' || inputs.deploy_target != 'backend'
+        if: needs.detect-changes.outputs.target != 'backend'
         uses: docker/build-push-action@v5
         with:
           context: .
@@ -193,7 +267,7 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: Build Backend Image
-        if: github.event_name != 'workflow_dispatch' || inputs.deploy_target != 'frontend'
+        if: needs.detect-changes.outputs.target != 'frontend'
         uses: docker/build-push-action@v5
         with:
           context: .
@@ -206,7 +280,7 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: Scan Frontend Image (blocking on CRITICAL)
-        if: github.event_name != 'workflow_dispatch' || inputs.deploy_target != 'backend'
+        if: needs.detect-changes.outputs.target != 'backend'
         uses: aquasecurity/trivy-action@0.35.0
         with:
           image-ref: 'eicr-frontend:${{ github.sha }}'
@@ -216,7 +290,7 @@ jobs:
           ignore-unfixed: true
 
       - name: Scan Frontend Image (HIGH - advisory only)
-        if: always() && (github.event_name != 'workflow_dispatch' || inputs.deploy_target != 'backend')
+        if: always() && needs.detect-changes.outputs.target != 'backend'
         uses: aquasecurity/trivy-action@0.35.0
         with:
           image-ref: 'eicr-frontend:${{ github.sha }}'
@@ -225,7 +299,7 @@ jobs:
           severity: 'HIGH'
 
       - name: Scan Backend Image (blocking on CRITICAL)
-        if: github.event_name != 'workflow_dispatch' || inputs.deploy_target != 'frontend'
+        if: needs.detect-changes.outputs.target != 'frontend'
         uses: aquasecurity/trivy-action@0.35.0
         with:
           image-ref: 'eicr-backend:${{ github.sha }}'
@@ -235,7 +309,7 @@ jobs:
           ignore-unfixed: true
 
       - name: Scan Backend Image (HIGH - advisory only)
-        if: always() && (github.event_name != 'workflow_dispatch' || inputs.deploy_target != 'frontend')
+        if: always() && needs.detect-changes.outputs.target != 'frontend'
         uses: aquasecurity/trivy-action@0.35.0
         with:
           image-ref: 'eicr-backend:${{ github.sha }}'
@@ -249,7 +323,7 @@ jobs:
   deploy-staging:
     name: Deploy to Staging
     runs-on: ubuntu-24.04-arm
-    needs: [build-images]
+    needs: [detect-changes, build-images]
     if: |
       (github.ref == 'refs/heads/develop' && github.event_name == 'push') ||
       (github.event_name == 'workflow_dispatch' && inputs.environment == 'staging')
@@ -276,11 +350,10 @@ jobs:
       - name: Determine deploy scope
         id: scope
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "target=${{ inputs.deploy_target }}" >> "$GITHUB_OUTPUT"
-          else
-            echo "target=both" >> "$GITHUB_OUTPUT"
-          fi
+          # Read from the shared detect-changes output (covers both push and
+          # workflow_dispatch — see detect-changes job at top of file).
+          echo "target=${{ needs.detect-changes.outputs.target }}" >> "$GITHUB_OUTPUT"
+          echo "Deploy scope: ${{ needs.detect-changes.outputs.target }}"
 
       - name: Build and push Frontend to ECR (staging)
         if: steps.scope.outputs.target != 'backend'
@@ -369,7 +442,7 @@ jobs:
   deploy:
     name: Deploy to AWS ECS (Production)
     runs-on: ubuntu-24.04-arm
-    needs: [build-images]
+    needs: [detect-changes, build-images]
     if: |
       (github.ref == 'refs/heads/main' && github.event_name == 'push') ||
       (github.event_name == 'workflow_dispatch' && inputs.environment == 'production')
@@ -396,11 +469,12 @@ jobs:
       - name: Determine deploy scope
         id: scope
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "target=${{ inputs.deploy_target }}" >> "$GITHUB_OUTPUT"
-          else
-            echo "target=both" >> "$GITHUB_OUTPUT"
-          fi
+          # Read from the shared detect-changes output (covers both push and
+          # workflow_dispatch — see detect-changes job at top of file).
+          # Backend-only push skips the entire frontend build + deploy here,
+          # cutting ~17 min off the wall-clock for backend-only iterations.
+          echo "target=${{ needs.detect-changes.outputs.target }}" >> "$GITHUB_OUTPUT"
+          echo "Deploy scope: ${{ needs.detect-changes.outputs.target }}"
 
       - name: Build and push Frontend to ECR
         if: steps.scope.outputs.target != 'backend'
