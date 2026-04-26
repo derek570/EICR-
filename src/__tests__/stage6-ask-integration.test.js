@@ -16,13 +16,14 @@
  *     routing shape from Plan 03-08)
  *
  * THREE SCENARIOS mirroring the REQUIREMENTS.md entries:
- *   STT-05 — blocking round-trip (inspector answers within 20s)
- *   STT-06 — 20s timeout (inspector never answers)
+ *   STT-05 — blocking round-trip (inspector answers within ASK_USER_TIMEOUT_MS)
+ *   STT-06 — timeout (inspector never answers; registry self-resolves)
  *   STT-07 — overtake (inspector says something unrelated mid-ask)
  *
  * Requirements: STT-05, STT-06, STT-07. STO-02 asserted via stage6.ask_user
- * log row shape. STA-03 20s window asserted deterministically via jest fake
- * timers.
+ * log row shape. STA-03 timeout window asserted deterministically via jest
+ * fake timers (window value sourced from the ASK_USER_TIMEOUT_MS export, not
+ * a hard-coded literal — Bug-H bumped this 20s → 45s on 2026-04-26).
  *
  * WHY event-driven synchronisation (waitFor on mockWs.sent) rather than
  * arbitrary sleeps: the ask dispatcher does pendingAsks.register() INSIDE the
@@ -35,7 +36,7 @@
 import { jest } from '@jest/globals';
 
 import { createPendingAsksRegistry } from '../extraction/stage6-pending-asks-registry.js';
-import { createAskDispatcher } from '../extraction/stage6-dispatcher-ask.js';
+import { createAskDispatcher, ASK_USER_TIMEOUT_MS } from '../extraction/stage6-dispatcher-ask.js';
 import {
   createToolDispatcher,
   createSortRecordsAsksLast,
@@ -144,7 +145,7 @@ async function waitFor(predicate, { timeoutMs = 1000, intervalMs = 1 } = {}) {
     if (Date.now() - start > timeoutMs) {
       throw new Error(`waitFor: predicate did not become truthy within ${timeoutMs}ms`);
     }
-    // eslint-disable-next-line no-await-in-loop
+
     await new Promise((resolve) => setTimeout(resolve, intervalMs));
   }
 }
@@ -252,7 +253,7 @@ describe('STT-05 — blocking ask_user round-trip (Plan 03-09)', () => {
 
     // record_reading dispatched in round 2 — evidence: Phase 2 writes log row.
     const writeLogs = logger.info.mock.calls.filter(
-      (c) => c[0] === 'stage6_tool_call' && c[1]?.tool === 'record_reading',
+      (c) => c[0] === 'stage6_tool_call' && c[1]?.tool === 'record_reading'
     );
     expect(writeLogs).toHaveLength(1);
     expect(writeLogs[0][1]).toMatchObject({ outcome: 'ok', is_error: false });
@@ -275,7 +276,7 @@ describe('STT-05 — blocking ask_user round-trip (Plan 03-09)', () => {
 // STT-06 — 20s timeout
 // ---------------------------------------------------------------------------
 
-describe('STT-06 — ask_user 20s timeout (Plan 03-09)', () => {
+describe('STT-06 — ask_user timeout (Plan 03-09)', () => {
   test('no answer within ASK_USER_TIMEOUT_MS → registry self-resolves with reason:timeout', async () => {
     // Fake timers for setTimeout ONLY. Promises/queueMicrotask remain real
     // so `await` continues to drain microtasks naturally.
@@ -326,16 +327,16 @@ describe('STT-06 — ask_user 20s timeout (Plan 03-09)', () => {
       // inside the Promise executor; we just need microtasks to flush).
       // Using a bounded wait to avoid infinite loop on a wiring regression.
       for (let i = 0; i < 500 && pendingAsks.size === 0; i += 1) {
-        // eslint-disable-next-line no-await-in-loop
         await Promise.resolve();
       }
 
       expect(pendingAsks.size).toBe(1);
-      // 20s timer is pending.
+      // Timeout timer is pending.
       expect(jest.getTimerCount()).toBeGreaterThanOrEqual(1);
 
-      // Advance past the 20000ms timeout.
-      jest.advanceTimersByTime(20001);
+      // Advance past the timeout (sourced from the module export so this test
+      // tracks Bug-H 20s → 45s without manual edits).
+      jest.advanceTimersByTime(ASK_USER_TIMEOUT_MS + 1);
 
       const out = await loopPromise;
 
@@ -343,7 +344,7 @@ describe('STT-06 — ask_user 20s timeout (Plan 03-09)', () => {
       expect(out.aborted).toBe(false);
       expect(pendingAsks.size).toBe(0);
 
-      // Log row: answer_outcome=timeout, wait_duration_ms within [20000, 20100].
+      // Log row: answer_outcome=timeout, wait_duration_ms within [TO, TO+100].
       const askRows = logger.info.mock.calls.filter((c) => c[0] === 'stage6.ask_user');
       expect(askRows).toHaveLength(1);
       expect(askRows[0][1]).toMatchObject({
@@ -353,8 +354,8 @@ describe('STT-06 — ask_user 20s timeout (Plan 03-09)', () => {
       });
       // user_text must NOT be present on timeout rows.
       expect(askRows[0][1].user_text).toBeUndefined();
-      expect(askRows[0][1].wait_duration_ms).toBeGreaterThanOrEqual(20000);
-      expect(askRows[0][1].wait_duration_ms).toBeLessThanOrEqual(20100);
+      expect(askRows[0][1].wait_duration_ms).toBeGreaterThanOrEqual(ASK_USER_TIMEOUT_MS);
+      expect(askRows[0][1].wait_duration_ms).toBeLessThanOrEqual(ASK_USER_TIMEOUT_MS + 100);
 
       // No orphan timers — ASK_USER_TIMEOUT_MS fired its callback which
       // cleared itself via registry.resolve.

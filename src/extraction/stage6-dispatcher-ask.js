@@ -98,8 +98,19 @@ import { checkForPromptLeak, hashPayload } from './stage6-prompt-leak-filter.js'
 
 /**
  * STA-03 — exported so test override and Phase 5 tuning have a single knob.
+ *
+ * Bug-H fix (2026-04-26): bumped 20000 → 45000. Deepgram's `speech_final` /
+ * `UtteranceEnd` triggers are gated on a clean speech→silence transition
+ * which mic noise floor (HVAC hum, mic self-noise, body sounds) can
+ * indefinitely block in supposedly-quiet rooms — see Deepgram discussion
+ * https://github.com/orgs/deepgram/discussions/409. iOS only fires
+ * ask_user_answered on Deepgram's final, so the 20s timeout was tripping
+ * on perfectly normal short answers ("2", "yes") whenever Deepgram took
+ * its time finalising. 45s is generous enough that legitimate slow finals
+ * still resolve. Long-term fix is iOS firing on settled interims (next
+ * TestFlight) — at which point this can come back down to 20s.
  */
-export const ASK_USER_TIMEOUT_MS = 20000;
+export const ASK_USER_TIMEOUT_MS = 45000;
 
 /**
  * Stage 6 Phase 6 Plan 06-02 r1-#1 — `opts.fallbackToLegacy` gate.

@@ -325,7 +325,7 @@ describe('createAskDispatcher — live timeout path (STA-03)', () => {
 
       expect(pending.size).toBe(1);
 
-      jest.advanceTimersByTime(20001);
+      jest.advanceTimersByTime(45001);
 
       const res = await p;
       expect(res.is_error).toBe(false);
@@ -335,7 +335,7 @@ describe('createAskDispatcher — live timeout path (STA-03)', () => {
         expect.objectContaining({
           answer_outcome: 'timeout',
           mode: 'live',
-          wait_duration_ms: 20000,
+          wait_duration_ms: 45000,
         })
       );
     } finally {
@@ -492,8 +492,14 @@ describe('createAskDispatcher — askStartedAt captured before Promise construct
 // --- Group 7: Exported constant -------------------------------------------
 
 describe('createAskDispatcher — exports', () => {
-  test('ASK_USER_TIMEOUT_MS is 20000 (STA-03)', () => {
-    expect(ASK_USER_TIMEOUT_MS).toBe(20000);
+  test('ASK_USER_TIMEOUT_MS is 45000 (Bug-H — raised 2026-04-26 from 20000)', () => {
+    // Bug-H (2026-04-26): bumped 20000 → 45000. iOS fires ask_user_answered
+    // on Deepgram's final transcript, but `speech_final` / `UtteranceEnd`
+    // can fail to fire in quiet rooms when mic noise floor blocks the
+    // speech→silence transition (Deepgram discussion #409). 45s gives
+    // legitimate slow finals room to land. Comes back down once iOS
+    // fires on settled interims (next TestFlight).
+    expect(ASK_USER_TIMEOUT_MS).toBe(45000);
   });
 });
 
