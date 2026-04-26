@@ -312,6 +312,22 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
     }
   }
 
+  // Bug-F fix part 2 (2026-04-26): strip slots iOS Build 302's Codable
+  // decoder either rejects or doesn't recognise. iOS DOES decode
+  // `circuit_updates` but expects shape {circuit, designation, action}; ours
+  // is {op, circuit_ref, meta:{...}} (the canonical Stage 6 shape). The
+  // Swift decoder throws on the type mismatch and the WHOLE extraction
+  // message gets rejected — same symptom as "Sonnet not connected" because
+  // no readings ever land. After folding the meta into extracted_readings
+  // above, the original circuit_updates slot is no longer needed for iOS.
+  // Strip it; same for the other Stage 6-only slots iOS doesn't recognise.
+  // Once iOS decodes these natively (Phase 6 protocol cutover) this strip
+  // can be lifted along with the folds above.
+  delete result.circuit_updates;
+  delete result.extracted_board_readings;
+  delete result.cleared_readings;
+  delete result.observation_deletions;
+
   // Increment turn count to match legacy's contract
   // (extractFromUtterance does this internally).
   session.turnCount = turnNum;
