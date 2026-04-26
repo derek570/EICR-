@@ -1445,32 +1445,27 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
     // changes from the bare env read to the resolver call.
     const toolCallsMode = resolveEffectiveToolCallsMode();
     const protocolVersion = msg.protocol_version || null;
+    // 2026-04-26 (Bug-B pivot): the original live-mode handshake rejected
+    // iOS clients without `protocol_version: 'stage6'` to enforce the Phase 6
+    // protocol contract. That guard was correct under the dual-path shadow
+    // design where iOS needed to decode mid-loop tool-call events before
+    // live cutover. Under the Bug-B live-only design, iOS only needs to
+    // decode the END-OF-TURN bundled `extraction` message (legacy shape) —
+    // mid-loop tool-call events get suppressed via `fallbackToLegacy=true`
+    // on the ask dispatcher (ws.send for ask_user_started is no-oped) and
+    // the bundled extraction renders correctly on iOS Build 282 without an
+    // iOS update. So we treat live + non-stage6 the same as shadow + non-
+    // stage6: connect, set fallbackToLegacy, run the tool loop normally.
+    let fallbackToLegacy = false;
     if (toolCallsMode === 'live' && protocolVersion !== 'stage6') {
-      logger.warn('stage6.protocol_version_mismatch_live_reject', {
+      logger.info('stage6.protocol_version_mismatch_live_fallback', {
         sessionId,
         protocolVersion,
         mode: toolCallsMode,
+        note: 'live mode accepts pre-stage6 clients; per-tool-call ws events suppressed',
       });
-      try {
-        ws.send(
-          JSON.stringify({
-            type: 'error',
-            message: `protocol_version_mismatch: expected stage6, got ${protocolVersion ?? 'none'}`,
-            recoverable: false,
-          })
-        );
-      } catch {
-        // ws.send can throw on a half-closed socket; the close below still
-        // fires deterministically.
-      }
-      try {
-        ws.close(1002, 'protocol_version_mismatch');
-      } catch {
-        // Best-effort close — if it throws the socket is already gone.
-      }
-      return;
+      fallbackToLegacy = true;
     }
-    let fallbackToLegacy = false;
     if (toolCallsMode === 'shadow' && protocolVersion !== 'stage6') {
       logger.warn('stage6.protocol_version_mismatch_shadow_fallback', {
         sessionId,
@@ -1518,7 +1513,14 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
       // The write-back happens BEFORE clearTimeout(disconnectTimer) and
       // BEFORE existing.ws = ws (later in this branch) — keeping the
       // policy decision adjacent to the policy inputs.
-      if (toolCallsMode === 'shadow' && protocolVersion !== 'stage6') {
+      if (
+        (toolCallsMode === 'shadow' || toolCallsMode === 'live') &&
+        protocolVersion !== 'stage6'
+      ) {
+        // 2026-04-26 (Bug-B pivot): live + mismatch on reconnect now ALSO
+        // sets fallbackToLegacy. The top block no longer hard-rejects in
+        // live mode (see line ~1448), so this branch must handle live +
+        // mismatch the same way as shadow + mismatch.
         existing.fallbackToLegacy = true;
         existing.protocolVersion = protocolVersion; // null when missing
       } else if (toolCallsMode === 'shadow' || toolCallsMode === 'live') {
@@ -2178,41 +2180,13 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
     // block; only the RHS changes from the bare env read to the
     // resolver call.
     const toolCallsMode = resolveEffectiveToolCallsMode();
-    if (toolCallsMode === 'live' && requestedProtocolVersion !== 'stage6') {
-      logger.warn('stage6.protocol_version_mismatch_live_reject_resume', {
-        sessionId: clientSessionId,
-        requestedSessionId,
-        protocolVersion: requestedProtocolVersion,
-        mode: toolCallsMode,
-      });
-      try {
-        ws.send(
-          JSON.stringify({
-            type: 'error',
-            message: `protocol_version_mismatch: expected stage6, got ${requestedProtocolVersion ?? 'none'}`,
-            recoverable: false,
-          })
-        );
-      } catch {
-        // Half-closed socket; close still fires deterministically below.
-      }
-      try {
-        ws.close(1002, 'protocol_version_mismatch');
-      } catch {
-        // Best-effort.
-      }
-      // DO NOT touch entry.ws — the original ws is still valid until its own
-      // close handler reaps the entry. Caller suppresses session_ack on the
-      // 'rejected' status.
-      //
-      // ── Plan 06-08 r7-#2 (MAJOR) — return BEFORE the resume() commit
-      // call below. peek() did not touch the token; resume() never fires
-      // on this path; the iOS client can retry with a corrected
-      // protocol_version field. Without this ordering, a future
-      // consuming-on-read store would burn the only resume token on
-      // every rejected validation.
-      return { sessionId: null, ack: { status: 'rejected' }, activeEntryKey: null };
-    }
+    // 2026-04-26 (Bug-B pivot): live-mode resume now ALSO accepts pre-stage6
+    // clients (matching the fresh-connect handshake change at line ~1448).
+    // The previous hard-reject path was removed entirely. Both shadow +
+    // mismatch and live + mismatch are handled by the metadata-stamping
+    // block below — same downstream effect: entry.fallbackToLegacy=true
+    // suppresses mid-loop tool-call ws events; the end-of-turn bundled
+    // `extraction` message renders correctly on iOS Build 282.
 
     // ── Plan 06-08 r7-#2 (MAJOR) — policy passed. Commit the rebind by
     // calling resume(), which (today) bumps the entry to the LRU tail.
@@ -2234,11 +2208,23 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
       });
       return { sessionId: null, ack: { status: 'new' }, activeEntryKey: null };
     }
-    if (toolCallsMode === 'shadow' && requestedProtocolVersion !== 'stage6') {
-      logger.warn('stage6.protocol_version_mismatch_shadow_fallback_resume', {
+    if (
+      (toolCallsMode === 'shadow' || toolCallsMode === 'live') &&
+      requestedProtocolVersion !== 'stage6'
+    ) {
+      // 2026-04-26 (Bug-B pivot): live + mismatch ALSO sets fallbackToLegacy
+      // (was a hard reject pre-pivot). Both shadow + mismatch and
+      // live + mismatch share the same downstream effect — Stage 6 ws events
+      // suppressed; final bundled extraction message still flows to iOS.
+      const logKey =
+        toolCallsMode === 'shadow'
+          ? 'stage6.protocol_version_mismatch_shadow_fallback_resume'
+          : 'stage6.protocol_version_mismatch_live_fallback_resume';
+      logger[toolCallsMode === 'shadow' ? 'warn' : 'info'](logKey, {
         sessionId: clientSessionId,
         requestedSessionId,
         protocolVersion: requestedProtocolVersion,
+        mode: toolCallsMode,
       });
       entry.fallbackToLegacy = true;
       entry.protocolVersion = requestedProtocolVersion; // null when missing

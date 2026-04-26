@@ -292,8 +292,13 @@ describe('Group B — shadow mode falls back to legacy on mismatch', () => {
 // Group C — live mode (Phase 7+2w post-cutover)
 // -----------------------------------------------------------------------------
 
-describe('Group C — live mode hard-rejects mismatched clients', () => {
-  test('C.1 — missing protocol_version: warn + error envelope + ws.close(1002), NO entry', async () => {
+describe('Group C — live mode accepts pre-stage6 clients with fallback (Bug-B pivot 2026-04-26)', () => {
+  // Pre-pivot: live mode hard-rejected clients without `protocol_version: stage6`
+  // (commit 82e67c9). Bug-B pivot: the bundler at end of turn produces a
+  // legacy-shaped `extraction` message that pre-stage6 iOS handles correctly;
+  // mid-loop tool-call events get suppressed via `fallbackToLegacy=true`. So
+  // pre-stage6 clients can connect to live mode without an iOS update.
+  test('C.1 — missing protocol_version: connect with fallbackToLegacy=true; info-level log, no error', async () => {
     process.env.SONNET_TOOL_CALLS = 'live';
     const ws = connect(wss, 'user-C');
     await sendFrame(ws, {
@@ -301,18 +306,22 @@ describe('Group C — live mode hard-rejects mismatched clients', () => {
       sessionId: 'sess-live-missing',
       jobState: { certificateType: 'eicr' },
     });
-    expect(activeSessions.get('sess-live-missing')).toBeUndefined();
-    expect(ws.close).toHaveBeenCalledWith(1002, 'protocol_version_mismatch');
+    const entry = activeSessions.get('sess-live-missing');
+    expect(entry).toBeDefined();
+    expect(entry.fallbackToLegacy).toBe(true);
+    expect(ws.close).not.toHaveBeenCalled();
+    // No error envelope sent — connection is accepted.
     const errorEnvelopes = ws._sent.filter((m) => m.type === 'error');
-    expect(errorEnvelopes.length).toBe(1);
-    expect(errorEnvelopes[0].message).toMatch(/protocol_version_mismatch/);
-    expect(errorEnvelopes[0].message).toMatch(/expected stage6/);
-    expect(errorEnvelopes[0].recoverable).toBe(false);
+    expect(errorEnvelopes.length).toBe(0);
+    // Old reject log MUST NOT fire (pivot regression guard).
     const warnCalls = mockLogger.warn.mock.calls.map(([msg]) => msg);
-    expect(warnCalls).toContain('stage6.protocol_version_mismatch_live_reject');
+    expect(warnCalls).not.toContain('stage6.protocol_version_mismatch_live_reject');
+    // New info log fires so operators can see pre-stage6 connections.
+    const infoCalls = mockLogger.info.mock.calls.map(([msg]) => msg);
+    expect(infoCalls).toContain('stage6.protocol_version_mismatch_live_fallback');
   });
 
-  test('C.2 — wrong protocol_version: error message names the value', async () => {
+  test('C.2 — wrong protocol_version: also connects with fallbackToLegacy=true', async () => {
     process.env.SONNET_TOOL_CALLS = 'live';
     const ws = connect(wss, 'user-C');
     await sendFrame(ws, {
@@ -321,13 +330,13 @@ describe('Group C — live mode hard-rejects mismatched clients', () => {
       jobState: { certificateType: 'eicr' },
       protocol_version: 'stage99-future',
     });
-    expect(activeSessions.get('sess-live-wrong')).toBeUndefined();
-    expect(ws.close).toHaveBeenCalledWith(1002, 'protocol_version_mismatch');
-    const errorEnvelopes = ws._sent.filter((m) => m.type === 'error');
-    expect(errorEnvelopes[0].message).toMatch(/got stage99-future/);
+    const entry = activeSessions.get('sess-live-wrong');
+    expect(entry).toBeDefined();
+    expect(entry.fallbackToLegacy).toBe(true);
+    expect(ws.close).not.toHaveBeenCalled();
   });
 
-  test('C.3 — correct protocol_version: session created with metadata stamped', async () => {
+  test('C.3 — correct protocol_version: session created with fallbackToLegacy=false', async () => {
     process.env.SONNET_TOOL_CALLS = 'live';
     const ws = connect(wss, 'user-C');
     await sendFrame(ws, {
@@ -502,10 +511,13 @@ describe('Group E — session_resume enforces protocol_version policy (r5-#1)', 
     expect(warnCalls).not.toContain('stage6.protocol_version_mismatch_shadow_fallback_resume');
   });
 
-  test('E.4 — live mode: resume frame missing protocol_version → ws.close(1002), entry NOT rebound', async () => {
-    // Original session_start under live mode requires stage6 (otherwise it
-    // fails the fresh-connect policy and never mints an entry). So we open
-    // under stage6, then resume with the protocol_version omitted.
+  test('E.4 — live mode: resume frame missing protocol_version rebinds with fallbackToLegacy=true (Bug-B pivot)', async () => {
+    // Pre-pivot: live-mode resume hard-rejected mismatched clients (the
+    // entry stayed bound to the original ws and a 1002 close was sent on
+    // the new ws). Bug-B pivot: rebind succeeds with
+    // entry.fallbackToLegacy=true, mirroring the fresh-connect path. iOS
+    // Build 282 (no `protocol_version: 'stage6'`) can resume without an
+    // iOS update.
     process.env.SONNET_TOOL_CALLS = 'live';
     const ws1 = connect(wss, 'user-E');
     await sendFrame(ws1, {
@@ -516,9 +528,9 @@ describe('Group E — session_resume enforces protocol_version policy (r5-#1)', 
     });
     const entry = activeSessions.get('sess-E4');
     expect(entry).toBeDefined();
-    expect(entry.ws).toBe(ws1);
     const token = readRehydrateToken(ws1);
     mockLogger.warn.mockClear();
+    mockLogger.info.mockClear();
 
     const ws2 = connect(wss, 'user-E');
     await sendFrame(ws2, {
@@ -527,18 +539,24 @@ describe('Group E — session_resume enforces protocol_version policy (r5-#1)', 
       // No protocol_version — downgraded resume attempt.
     });
 
-    expect(ws2.close).toHaveBeenCalledWith(1002, 'protocol_version_mismatch');
+    // Connection is NOT closed.
+    expect(ws2.close).not.toHaveBeenCalled();
+    // No error envelope emitted.
     const errorEnvelopes = ws2._sent.filter((m) => m.type === 'error');
-    expect(errorEnvelopes.length).toBe(1);
-    expect(errorEnvelopes[0].message).toMatch(/protocol_version_mismatch/);
+    expect(errorEnvelopes.length).toBe(0);
 
-    // The entry must NOT have been rebound to the rejected ws.
+    // Entry IS rebound to ws2 with fallbackToLegacy stamped.
     const entryAfter = activeSessions.get('sess-E4');
     expect(entryAfter).toBeDefined();
-    expect(entryAfter.ws).not.toBe(ws2);
+    expect(entryAfter.ws).toBe(ws2);
+    expect(entryAfter.fallbackToLegacy).toBe(true);
 
+    // Old reject log MUST NOT fire (pivot regression guard).
     const warnCalls = mockLogger.warn.mock.calls.map(([msg]) => msg);
-    expect(warnCalls).toContain('stage6.protocol_version_mismatch_live_reject_resume');
+    expect(warnCalls).not.toContain('stage6.protocol_version_mismatch_live_reject_resume');
+    // New info log fires.
+    const infoCalls = mockLogger.info.mock.calls.map(([msg]) => msg);
+    expect(infoCalls).toContain('stage6.protocol_version_mismatch_live_fallback_resume');
   });
 
   test('E.5 — live mode: resume frame with protocol_version=stage6 → rehydrate succeeds, ws rebound', async () => {
@@ -654,7 +672,12 @@ describe('Group F — session_start reconnect updates entry.protocolVersion + fa
     expect(entry.protocolVersion).toBe('stage6');
   });
 
-  test('F.3 — live + downgrade reconnect: ws.close(1002), original entry not swapped', async () => {
+  test('F.3 — live + downgrade reconnect: rebinds entry with fallbackToLegacy=true (Bug-B pivot)', async () => {
+    // Pre-pivot: live + missing protocol_version on reconnect hard-rejected
+    // (1002 close, original entry preserved). Bug-B pivot: reconnect
+    // succeeds with entry.fallbackToLegacy=true so iOS Build 282 keeps
+    // working without an iOS update. The handshake regression we still
+    // care about is "entry rebound to ws2 cleanly", not "rejection".
     process.env.SONNET_TOOL_CALLS = 'live';
     const ws1 = connect(wss, 'user-F');
     await sendFrame(ws1, {
@@ -665,14 +688,8 @@ describe('Group F — session_start reconnect updates entry.protocolVersion + fa
     });
     expect(activeSessions.get('sess-F3').ws).toBe(ws1);
     mockLogger.warn.mockClear();
+    mockLogger.info.mockClear();
 
-    // Reconnect with protocol_version MISSING — should hard-reject.
-    // (Existing top-of-handleSessionStart policy at lines ~1321-1345 already
-    // catches this BEFORE the reconnect branch runs, so the warn key is the
-    // shared 'stage6.protocol_version_mismatch_live_reject' rather than a
-    // reconnect-specific key. The regression value here is that the
-    // existing live policy still applies on the reconnect surface — i.e.
-    // the existing entry is preserved untouched.)
     const ws2 = connect(wss, 'user-F');
     await sendFrame(ws2, {
       type: 'session_start',
@@ -681,13 +698,14 @@ describe('Group F — session_start reconnect updates entry.protocolVersion + fa
       // protocol_version omitted.
     });
 
-    expect(ws2.close).toHaveBeenCalledWith(1002, 'protocol_version_mismatch');
-    // The original entry MUST NOT have its ws swapped to the rejected ws2.
+    expect(ws2.close).not.toHaveBeenCalled();
+    // Entry rebound with fallbackToLegacy.
     const entry = activeSessions.get('sess-F3');
     expect(entry).toBeDefined();
-    expect(entry.ws).not.toBe(ws2);
+    expect(entry.fallbackToLegacy).toBe(true);
+    // Old reject log MUST NOT fire.
     const warnCalls = mockLogger.warn.mock.calls.map(([msg]) => msg);
-    expect(warnCalls).toContain('stage6.protocol_version_mismatch_live_reject');
+    expect(warnCalls).not.toContain('stage6.protocol_version_mismatch_live_reject');
   });
 
   test('F.4 — off mode reconnect: latest protocolVersion recorded, no policy', async () => {
@@ -1097,8 +1115,14 @@ describe('Group H — applyModeChange call-site integration (r7-#1)', () => {
 //         contract that resume() is the consuming step, peek() is not).
 
 describe('Group I — resume token survives protocol_version rejection (r7-#2)', () => {
-  test('I.1 — live + missing protocol_version: token survives rejection, retry with stage6 succeeds', async () => {
-    // Open under live with stage6 — mints a resume token.
+  test('I.1 — live + missing protocol_version: resume rebinds with fallbackToLegacy=true (Bug-B pivot)', async () => {
+    // Pre-pivot: live + missing protocol_version on resume rejected with
+    // 1002 close, leaving the token unconsumed. The "token survives
+    // rejection" contract from r7-#2 is now moot — there's no rejection
+    // to survive. Resume rebinds successfully on the first try with
+    // fallbackToLegacy=true. Token consumption is the standard happy-path
+    // (resume() consumed the token; a SECOND attempt with the same token
+    // returns null/new — see I.2 for that contract).
     process.env.SONNET_TOOL_CALLS = 'live';
     const ws1 = connect(wss, 'user-I');
     await sendFrame(ws1, {
@@ -1109,37 +1133,22 @@ describe('Group I — resume token survives protocol_version rejection (r7-#2)',
     });
     const token = readRehydrateToken(ws1);
     mockLogger.warn.mockClear();
+    mockLogger.info.mockClear();
 
-    // First resume attempt — protocol_version MISSING (bad client
-    // state, e.g. a downgrade scenario or a malformed retry frame).
     const ws2 = connect(wss, 'user-I');
     await sendFrame(ws2, {
       type: 'session_resume',
       sessionId: token,
-      // protocol_version omitted — live + missing must reject.
-    });
-    expect(ws2.close).toHaveBeenCalledWith(1002, 'protocol_version_mismatch');
-
-    // Second resume attempt — same token, but now with stage6.
-    // Without the r7-#2 fix this would fail because the token was
-    // touched/consumed on the first (rejected) attempt. With the
-    // fix, peek validated protocol_version BEFORE resume, the
-    // rejected attempt never touched the token, and this retry
-    // rehydrates the entry into ws3.
-    const ws3 = connect(wss, 'user-I');
-    await sendFrame(ws3, {
-      type: 'session_resume',
-      sessionId: token,
-      protocol_version: 'stage6',
+      // protocol_version omitted.
     });
 
+    expect(ws2.close).not.toHaveBeenCalled();
+    const errorsOnWs2 = ws2._sent.filter((m) => m.type === 'error');
+    expect(errorsOnWs2.length).toBe(0);
     const entry = activeSessions.get('sess-I1');
     expect(entry).toBeDefined();
-    expect(entry.ws).toBe(ws3);
-    expect(ws3.close).not.toHaveBeenCalled();
-    // No protocol_version_mismatch error envelope on the SECOND ws.
-    const errorsOnWs3 = ws3._sent.filter((m) => m.type === 'error');
-    expect(errorsOnWs3.length).toBe(0);
+    expect(entry.ws).toBe(ws2);
+    expect(entry.fallbackToLegacy).toBe(true);
   });
 
   test('I.2 — happy path consumes token: a successful rebind cannot be repeated with the same token', async () => {
