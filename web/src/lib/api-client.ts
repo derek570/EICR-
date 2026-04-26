@@ -1,5 +1,9 @@
 import { type ZodTypeAny } from 'zod';
 import {
+  type AdminHealthResponse,
+  type AdminQueueHealthResponse,
+  type AdminQueueStatusResponse,
+  type AdminStatsResponse,
   type AdminUser,
   ApiError,
   type CCUAnalysis,
@@ -817,6 +821,34 @@ export const api = {
    */
   adminListCompanies(): Promise<CompanyLite[]> {
     return request<CompanyLite[]>('/api/admin/users/companies/list', {}, CompanyLiteListSchema);
+  },
+
+  // ----------------------------------------------------------------
+  // Admin — system stats, health, queue (mirrors iOS AdminStatsView /
+  // AdminQueueView). These endpoints are mounted at /api/admin/* and
+  // gated by `requireAuth` only — the routes are reachable to any
+  // authenticated user, so the page itself is the role gate. The iOS
+  // AdminQueueView additionally calls `/api/tasks` for team-lead +
+  // background tasks; that endpoint does not exist on the backend
+  // (verified 2026-04-26), so the web Queue page sticks to the
+  // working `/api/admin/queue/*` shape rather than reproducing the
+  // iOS bug.
+  // ----------------------------------------------------------------
+
+  adminGetStats(): Promise<AdminStatsResponse> {
+    return request<AdminStatsResponse>('/api/admin/stats');
+  },
+
+  adminGetHealth(): Promise<AdminHealthResponse> {
+    return request<AdminHealthResponse>('/api/admin/health');
+  },
+
+  adminGetQueueStatus(): Promise<AdminQueueStatusResponse> {
+    return request<AdminQueueStatusResponse>('/api/admin/queue/status');
+  },
+
+  adminGetQueueHealth(): Promise<AdminQueueHealthResponse> {
+    return request<AdminQueueHealthResponse>('/api/admin/queue/health');
   },
 
   // ----------------------------------------------------------------
