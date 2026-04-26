@@ -30,7 +30,11 @@ import fssync from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { TOOL_SCHEMAS, CONTEXT_FIELD_ENUM } from '../extraction/stage6-tool-schemas.js';
+import {
+  TOOL_SCHEMAS,
+  CONTEXT_FIELD_ENUM,
+  BOARD_FIELD_ENUM,
+} from '../extraction/stage6-tool-schemas.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -301,16 +305,40 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       expect(validFields.has('ir_live_earth_mohm')).toBe(true);
     });
 
-    test('every `field: "X"` in the prompt is a record_reading enum member', () => {
+    test('every `field: "X"` in the prompt is a record_reading or record_board_reading enum member (per surrounding tool call)', () => {
       const validFields = getRecordReadingFieldEnum();
-      // Match `field: "snake_case_identifier"` — quoted values inside
-      // worked-example pseudocode. Double-quoted form only; the prompt
-      // uses "..." around pseudocode values throughout.
-      const matches = prompt.match(/field:\s*"([a-z_][a-z0-9_]*)"/g) || [];
-      const ids = [...new Set(matches.map((m) => m.match(/"([^"]+)"/)[1]))];
+      const validBoardFields = new Set(BOARD_FIELD_ENUM);
 
-      const invalid = ids.filter((id) => !validFields.has(id));
-      expect(invalid).toEqual([]);
+      // Match `record_board_reading({ ..., field: "X", ... })` first — the
+      // field claim there must be a BOARD_FIELD_ENUM member, not a
+      // circuit_fields member. Strip those quoted field-name tokens so
+      // the generic `field: "X"` audit below only sees the
+      // record_reading / clear_reading sites that target the
+      // circuit_fields enum.
+      const boardCallRe = /record_board_reading\s*\(\s*\{([^}]*)\}/g;
+      const boardFieldClaims = [];
+      const boardSpans = [];
+      let m;
+      while ((m = boardCallRe.exec(prompt)) !== null) {
+        boardSpans.push([m.index, m.index + m[0].length]);
+        const inner = m[1];
+        const fieldMatch = inner.match(/field:\s*"([a-z_][a-z0-9_]*)"/);
+        if (fieldMatch) boardFieldClaims.push(fieldMatch[1]);
+      }
+      const invalidBoard = [...new Set(boardFieldClaims)].filter((id) => !validBoardFields.has(id));
+      expect(invalidBoard).toEqual([]);
+
+      // Now scan every `field: "X"` outside the record_board_reading spans
+      // and require circuit-fields enum membership.
+      const isInsideBoardSpan = (idx) =>
+        boardSpans.some(([start, end]) => idx >= start && idx < end);
+      const allRe = /field:\s*"([a-z_][a-z0-9_]*)"/g;
+      const circuitClaims = [];
+      while ((m = allRe.exec(prompt)) !== null) {
+        if (!isInsideBoardSpan(m.index)) circuitClaims.push(m[1]);
+      }
+      const invalidCircuit = [...new Set(circuitClaims)].filter((id) => !validFields.has(id));
+      expect(invalidCircuit).toEqual([]);
     });
 
     test('every `context_field: "X"` in the prompt is an ask_user context_field enum member', () => {
