@@ -240,22 +240,29 @@ describe('Stage 6 Phase 2 — STT-03 multi-round integration', () => {
     expect(logger.info).not.toHaveBeenCalledWith('stage6_divergence', expect.anything());
   });
 
-  test('MINOR-2 live-mode bypass: mode=live throws Phase-7 guard, does NOT call client or legacy', async () => {
+  test('live mode runs tool loop directly; legacy NOT called; returns bundled result', async () => {
+    // 2026-04-26 (Bug-B pivot): live mode no longer throws. It runs the
+    // agentic tool loop as the authoritative extraction path with no
+    // legacy fallback. Solo-test contract — see runLiveMode in
+    // stage6-shadow-harness.js.
     const logger = makeLogger();
-    const streams = [endTurnRound('should not be reached')];
+    const streams = [endTurnRound('done')];
     const legacyResult = { extracted_readings: [], observations: [], questions: [] };
 
     const s = makeSession(streams, legacyResult, 'live');
+    const result = await runShadowHarness(s, 'text', [], { logger });
 
-    await expect(runShadowHarness(s, 'text', [], { logger })).rejects.toThrow(
-      /not implemented until Phase 7/,
-    );
-
-    // Legacy NEVER runs in live mode (throw is the first observable effect).
+    // Legacy NEVER runs in live mode.
     expect(s.extractFromUtterance).not.toHaveBeenCalled();
-    // Anthropic client NEVER called — live mode is a gate, not a silent legacy.
-    expect(s.client._callCount).toBe(0);
-    // No divergence log.
+    // Tool-loop client WAS called.
+    expect(s.client._callCount).toBe(1);
+    // Bundled iOS-shaped result.
+    expect(result).toMatchObject({
+      extracted_readings: expect.any(Array),
+      observations: expect.any(Array),
+      questions: expect.any(Array),
+    });
+    // No divergence log (nothing to compare).
     expect(logger.info).not.toHaveBeenCalledWith('stage6_divergence', expect.anything());
   });
 });

@@ -41,10 +41,14 @@ import {
   dispatchRecordObservation,
   dispatchDeleteObservation,
 } from './stage6-dispatchers-observation.js';
+import { dispatchRecordBoardReading } from './stage6-dispatchers-board.js';
 
 /**
- * Dispatch table keyed by tool name. The six write tools from REQUIREMENTS.md
- * STS-01..06. `ask_user` is Phase 3's concern.
+ * Dispatch table keyed by tool name. The six original write tools from
+ * REQUIREMENTS.md STS-01..06 plus the Phase 2-carryover `record_board_reading`
+ * (Bug C — 2026-04-26 production analysis: the original 7-tool surface had no
+ * way to write supply / installation / board-level fields). `ask_user` is
+ * Phase 3's concern and is mounted via createToolDispatcher below.
  */
 export const WRITE_DISPATCHERS = {
   record_reading: dispatchRecordReading,
@@ -53,6 +57,7 @@ export const WRITE_DISPATCHERS = {
   rename_circuit: dispatchRenameCircuit,
   record_observation: dispatchRecordObservation,
   delete_observation: dispatchDeleteObservation,
+  record_board_reading: dispatchRecordBoardReading,
 };
 
 /**

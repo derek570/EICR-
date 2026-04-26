@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import {
+  AlertTriangle,
   Boxes,
   ClipboardCheck,
   DraftingCompass,
@@ -15,21 +16,18 @@ import {
   Zap,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { useJobContext } from '@/lib/job-context';
 
 /**
- * Job tab navigation — horizontal strip (always), iOS-style.
+ * Job tab navigation — mirrors iOS JobDetailView.swift:332-355.
  *
- * Each tab renders as an icon-over-label cell with an optional small status
- * dot (green=complete, amber=warning) anchored to the top-right of the icon.
- * Active tab shows a blue label + a thin underline beneath it; inactive tabs
- * keep a muted gray label with the brand-coloured icon.
- *
- * The tab set is *unified* for EICR + EIC per iOS: Observations is NOT a
- * tab (it lives behind the Obs button in the floating action bar), and the
- * final tab is "Staff" not "Inspector". Extent & Design are always shown
- * — the backend permits them on EICR too and iOS keeps them visible.
- *
- * Reference: memory/ios_design_parity.md §"Tab set (unified)".
+ * iOS branches the tab list by certificate type. EICR has 9 tabs ending
+ * in Observations / Inspection / Staff / PDF; EIC has 10 tabs ending in
+ * Inspection / Extent / Design / Staff / PDF (no Observations — EIC is a
+ * new-installation certificate, not a periodic inspection). The earlier
+ * "unified array" implementation was wrong against iOS and meant EICR
+ * jobs surfaced phantom Extent + Design tabs while hiding Observations
+ * behind a non-tab route. Fixed by branching here.
  */
 
 type TabStatus = 'complete' | 'warning' | undefined;
@@ -46,7 +44,19 @@ type Tab = {
   status?: TabStatus;
 };
 
-const UNIFIED_TABS: Tab[] = [
+const EICR_TABS: Tab[] = [
+  { slug: '', label: 'Overview', Icon: LayoutDashboard },
+  { slug: '/installation', label: 'Installation', Icon: Settings2, status: 'complete' },
+  { slug: '/supply', label: 'Supply', Icon: Zap, status: 'complete' },
+  { slug: '/board', label: 'Board', Icon: Boxes, status: 'complete' },
+  { slug: '/circuits', label: 'Circuits', Icon: List, status: 'warning' },
+  { slug: '/observations', label: 'Observations', Icon: AlertTriangle },
+  { slug: '/inspection', label: 'Inspection', Icon: ClipboardCheck },
+  { slug: '/staff', label: 'Staff', Icon: UserCheck },
+  { slug: '/pdf', label: 'PDF', Icon: FileText },
+];
+
+const EIC_TABS: Tab[] = [
   { slug: '', label: 'Overview', Icon: LayoutDashboard },
   { slug: '/installation', label: 'Installation', Icon: Settings2, status: 'complete' },
   { slug: '/supply', label: 'Supply', Icon: Zap, status: 'complete' },
@@ -59,23 +69,18 @@ const UNIFIED_TABS: Tab[] = [
   { slug: '/pdf', label: 'PDF', Icon: FileText },
 ];
 
-/**
- * The `certificateType` prop was retained through Wave 4 as dead API
- * surface after the tab set was unified for EICR + EIC. Wave 5 drops
- * it — no consumer reads it, and the ESLint `no-unused-vars` warning
- * was the last blocker on the lint-zero acceptance gate. Call sites
- * update to stop passing it.
- */
 export function JobTabNav({ jobId }: { jobId: string }) {
   const pathname = usePathname();
+  const { certificateType } = useJobContext();
   const base = `/job/${jobId}`;
+  const tabs = certificateType === 'EIC' ? EIC_TABS : EICR_TABS;
 
   return (
     <nav
       aria-label="Job sections"
       className="flex w-full gap-0 overflow-x-auto border-b border-[var(--color-border-subtle)] bg-[var(--color-surface-0)] px-2 scrollbar-hide"
     >
-      {UNIFIED_TABS.map((tab) => {
+      {tabs.map((tab) => {
         const href = `${base}${tab.slug}`;
         const isActive =
           tab.slug === ''

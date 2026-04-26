@@ -13,6 +13,9 @@ import {
   KeyRound,
   LayoutDashboard,
   LogOut,
+  BarChart3,
+  ScrollText,
+  Server,
   ShieldCheck,
   SlidersHorizontal,
   UserPlus,
@@ -260,7 +263,9 @@ export default function SettingsHubPage() {
         </SectionGroup>
       ) : null}
 
-      {/* Administration — system admin only; landed in 6c */}
+      {/* Administration — system admin only; landed in 6c. Stats and
+          Queue added 2026-04-26 to close the iOS AdminStatsView /
+          AdminQueueView gap surfaced by the parity audit. */}
       {isSystemAdmin(user) ? (
         <SectionGroup title="ADMINISTRATION">
           <LinkCard
@@ -268,6 +273,20 @@ export default function SettingsHubPage() {
             icon={<ShieldCheck className="h-5 w-5" aria-hidden />}
             title="Manage Users"
             subtitle="Create, edit, reset passwords, unlock accounts"
+            accent="blue"
+          />
+          <LinkCard
+            href="/settings/admin/stats"
+            icon={<BarChart3 className="h-5 w-5" aria-hidden />}
+            title="System Stats"
+            subtitle="User / job / company counts, server health, memory"
+            accent="blue"
+          />
+          <LinkCard
+            href="/settings/admin/queue"
+            icon={<Server className="h-5 w-5" aria-hidden />}
+            title="Task Queue"
+            subtitle="Background job processing state"
             accent="blue"
           />
         </SectionGroup>
@@ -281,6 +300,13 @@ export default function SettingsHubPage() {
           icon={<Wrench className="h-5 w-5" aria-hidden />}
           title="Diagnostics"
           subtitle="Export state snapshot or clear local cache"
+          accent="blue"
+        />
+        <LinkCard
+          href="/settings/legal"
+          icon={<ScrollText className="h-5 w-5" aria-hidden />}
+          title="Terms & Legal"
+          subtitle="Terms, privacy policy, and licence agreement"
           accent="blue"
         />
         <LinkCard

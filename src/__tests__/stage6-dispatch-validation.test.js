@@ -33,23 +33,77 @@ import {
 } from '../extraction/stage6-dispatch-validation.js';
 
 describe('validateRecordReading', () => {
-  test('valid when circuit exists', () => {
-    expect(validateRecordReading({ circuit: 3 }, { circuits: { 3: {} } })).toBeNull();
+  test('valid when circuit exists and confidence is in range', () => {
+    expect(
+      validateRecordReading({ circuit: 3, confidence: 0.9 }, { circuits: { 3: {} } })
+    ).toBeNull();
   });
   test('rejects when circuit is absent from snapshot', () => {
-    expect(validateRecordReading({ circuit: 99 }, { circuits: { 3: {} } })).toEqual({
-      code: 'circuit_not_found',
-      field: 'circuit',
-    });
+    expect(
+      validateRecordReading({ circuit: 99, confidence: 0.9 }, { circuits: { 3: {} } })
+    ).toEqual({ code: 'circuit_not_found', field: 'circuit' });
+  });
+  // Confidence bound enforcement — moved out of input_schema (Anthropic
+  // strict-mode rejects `minimum`/`maximum` on number types).
+  test('valid at boundary confidence=0', () => {
+    expect(
+      validateRecordReading({ circuit: 3, confidence: 0 }, { circuits: { 3: {} } })
+    ).toBeNull();
+  });
+  test('valid at boundary confidence=1', () => {
+    expect(
+      validateRecordReading({ circuit: 3, confidence: 1 }, { circuits: { 3: {} } })
+    ).toBeNull();
+  });
+  test('rejects confidence < 0', () => {
+    expect(
+      validateRecordReading({ circuit: 3, confidence: -0.01 }, { circuits: { 3: {} } })
+    ).toEqual({ code: 'confidence_out_of_range', field: 'confidence' });
+  });
+  test('rejects confidence > 1', () => {
+    expect(
+      validateRecordReading({ circuit: 3, confidence: 1.01 }, { circuits: { 3: {} } })
+    ).toEqual({ code: 'confidence_out_of_range', field: 'confidence' });
+  });
+  test('rejects non-finite confidence (NaN, Infinity)', () => {
+    expect(
+      validateRecordReading({ circuit: 3, confidence: Number.NaN }, { circuits: { 3: {} } })
+    ).toEqual({ code: 'confidence_out_of_range', field: 'confidence' });
+    expect(
+      validateRecordReading(
+        { circuit: 3, confidence: Number.POSITIVE_INFINITY },
+        { circuits: { 3: {} } }
+      )
+    ).toEqual({ code: 'confidence_out_of_range', field: 'confidence' });
+  });
+  test('accepts missing/null confidence (dispatcher defaults to 1.0)', () => {
+    // Strict-mode requires confidence in the input_schema, so a real Sonnet
+    // call always supplies it. But the dispatcher defaults missing/null to
+    // 1.0 (legacy pass-through, see stage6-dispatchers-circuit.js:113), and
+    // tests using bare fixtures without confidence have always relied on
+    // that default — we keep that contract.
+    expect(validateRecordReading({ circuit: 3 }, { circuits: { 3: {} } })).toBeNull();
+    expect(
+      validateRecordReading({ circuit: 3, confidence: null }, { circuits: { 3: {} } })
+    ).toBeNull();
+  });
+  test('rejects non-numeric confidence', () => {
+    expect(
+      validateRecordReading({ circuit: 3, confidence: 'high' }, { circuits: { 3: {} } })
+    ).toEqual({ code: 'confidence_out_of_range', field: 'confidence' });
   });
 });
 
 describe('validateClearReading', () => {
   test('valid when circuit exists (field_not_set is a dispatcher-level noop, NOT a validator rejection)', () => {
-    expect(validateClearReading({ circuit: 3, field: 'Ze_ohms' }, { circuits: { 3: {} } })).toBeNull();
+    expect(
+      validateClearReading({ circuit: 3, field: 'Ze_ohms' }, { circuits: { 3: {} } })
+    ).toBeNull();
   });
   test('rejects when circuit is absent', () => {
-    expect(validateClearReading({ circuit: 99, field: 'Ze_ohms' }, { circuits: { 3: {} } })).toEqual({
+    expect(
+      validateClearReading({ circuit: 99, field: 'Ze_ohms' }, { circuits: { 3: {} } })
+    ).toEqual({
       code: 'circuit_not_found',
       field: 'circuit',
     });
@@ -67,13 +121,17 @@ describe('validateCreateCircuit', () => {
     });
   });
   test('rejects invalid_type on string rating_amps (Pitfall #5 belt-and-braces)', () => {
-    expect(validateCreateCircuit({ circuit_ref: 5, rating_amps: 'thirty' }, { circuits: {} })).toEqual({
+    expect(
+      validateCreateCircuit({ circuit_ref: 5, rating_amps: 'thirty' }, { circuits: {} })
+    ).toEqual({
       code: 'invalid_type',
       field: 'rating_amps',
     });
   });
   test('rejects invalid_type on string cable_csa_mm2', () => {
-    expect(validateCreateCircuit({ circuit_ref: 5, cable_csa_mm2: 'big' }, { circuits: {} })).toEqual({
+    expect(
+      validateCreateCircuit({ circuit_ref: 5, cable_csa_mm2: 'big' }, { circuits: {} })
+    ).toEqual({
       code: 'invalid_type',
       field: 'cable_csa_mm2',
     });
@@ -82,49 +140,83 @@ describe('validateCreateCircuit', () => {
 
 describe('validateRenameCircuit', () => {
   test('valid when from_ref exists and target circuit_ref is free', () => {
-    expect(validateRenameCircuit({ from_ref: 3, circuit_ref: 7 }, { circuits: { 3: {} } })).toBeNull();
+    expect(
+      validateRenameCircuit({ from_ref: 3, circuit_ref: 7 }, { circuits: { 3: {} } })
+    ).toBeNull();
   });
   test('rejects source_not_found when from_ref is absent', () => {
-    expect(validateRenameCircuit({ from_ref: 99, circuit_ref: 7 }, { circuits: { 3: {} } })).toEqual({
+    expect(
+      validateRenameCircuit({ from_ref: 99, circuit_ref: 7 }, { circuits: { 3: {} } })
+    ).toEqual({
       code: 'source_not_found',
       field: 'from_ref',
     });
   });
   test('rejects target_exists when circuit_ref already present and differs from from_ref', () => {
     expect(
-      validateRenameCircuit({ from_ref: 3, circuit_ref: 5 }, { circuits: { 3: {}, 5: {} } }),
+      validateRenameCircuit({ from_ref: 3, circuit_ref: 5 }, { circuits: { 3: {}, 5: {} } })
     ).toEqual({ code: 'target_exists', field: 'circuit_ref' });
   });
   test('valid when from_ref === circuit_ref (noop rename — allowed per Research §Q8)', () => {
-    expect(validateRenameCircuit({ from_ref: 3, circuit_ref: 3 }, { circuits: { 3: {} } })).toBeNull();
+    expect(
+      validateRenameCircuit({ from_ref: 3, circuit_ref: 3 }, { circuits: { 3: {} } })
+    ).toBeNull();
   });
   test('rejects invalid_type on string rating_amps', () => {
     expect(
       validateRenameCircuit(
         { from_ref: 3, circuit_ref: 3, rating_amps: 'thirty-two' },
-        { circuits: { 3: {} } },
-      ),
+        { circuits: { 3: {} } }
+      )
     ).toEqual({ code: 'invalid_type', field: 'rating_amps' });
+  });
+  // from_ref lower-bound enforcement — moved out of input_schema (Anthropic
+  // strict-mode rejects `minimum` on integer/number types).
+  test('rejects invalid_from_ref when from_ref < 1', () => {
+    expect(validateRenameCircuit({ from_ref: 0, circuit_ref: 7 }, { circuits: { 0: {} } })).toEqual(
+      { code: 'invalid_from_ref', field: 'from_ref' }
+    );
+    expect(validateRenameCircuit({ from_ref: -3, circuit_ref: 7 }, { circuits: {} })).toEqual({
+      code: 'invalid_from_ref',
+      field: 'from_ref',
+    });
+  });
+  test('rejects invalid_from_ref when from_ref is non-integer', () => {
+    expect(validateRenameCircuit({ from_ref: 1.5, circuit_ref: 7 }, { circuits: {} })).toEqual({
+      code: 'invalid_from_ref',
+      field: 'from_ref',
+    });
   });
 });
 
 describe('validateRecordObservation', () => {
   test('always returns null (no preconditions — strict:true handles enums at the API layer)', () => {
-    expect(validateRecordObservation({ code: 'C2', text: 'loose terminal' }, { extractedObservations: [] })).toBeNull();
+    expect(
+      validateRecordObservation(
+        { code: 'C2', text: 'loose terminal' },
+        { extractedObservations: [] }
+      )
+    ).toBeNull();
   });
 });
 
 describe('validateDeleteObservation (BLOCK-2 contract: always-valid)', () => {
   test('observation_id present in session → null', () => {
     const session = { extractedObservations: [{ id: 'obs_1', text: 'x', code: 'C2' }] };
-    expect(validateDeleteObservation({ observation_id: 'obs_1', reason: 'user_correction' }, session)).toBeNull();
+    expect(
+      validateDeleteObservation({ observation_id: 'obs_1', reason: 'user_correction' }, session)
+    ).toBeNull();
   });
   test('observation_id absent → still null (dispatcher handles noop outcome per Plan 02-04)', () => {
     const session = { extractedObservations: [{ id: 'obs_1', text: 'x', code: 'C2' }] };
-    expect(validateDeleteObservation({ observation_id: 'missing', reason: 'user_correction' }, session)).toBeNull();
+    expect(
+      validateDeleteObservation({ observation_id: 'missing', reason: 'user_correction' }, session)
+    ).toBeNull();
   });
   test('session.extractedObservations missing entirely → still null (validator never throws)', () => {
-    expect(validateDeleteObservation({ observation_id: 'whatever', reason: 'duplicate' }, {})).toBeNull();
+    expect(
+      validateDeleteObservation({ observation_id: 'whatever', reason: 'duplicate' }, {})
+    ).toBeNull();
   });
 });
 

@@ -458,3 +458,53 @@ export class ApiError extends Error {
     this.name = 'ApiError';
   }
 }
+
+// ----------------------------------------------------------------
+// Admin — system stats / health / queue (mirrors iOS AdminModels.swift,
+// matched against backend src/admin_api.js handler shapes).
+// ----------------------------------------------------------------
+
+export interface AdminCompanyBreakdownEntry {
+  id: string;
+  name: string;
+  is_active?: boolean;
+  user_count?: number | string;
+  job_count?: number | string;
+}
+
+export interface AdminStatsResponse {
+  status: string;
+  timestamp?: string;
+  jobs?: { total: number | string };
+  users?: { total: number | string };
+  companies?: { total: number | string; breakdown?: AdminCompanyBreakdownEntry[] };
+  uptime?: number;
+  storage?: string;
+}
+
+export interface AdminHealthResponse {
+  status: string;
+  service?: string;
+  timestamp?: string;
+  uptime?: number;
+  memory?: {
+    rss?: number;
+    heapUsed?: number;
+    heapTotal?: number;
+  };
+  database?: string;
+  storage?: string;
+  nodeVersion?: string;
+}
+
+export interface AdminQueueStatusResponse {
+  status: string;
+  queue?: Record<string, unknown>;
+  message?: string;
+}
+
+export interface AdminQueueHealthResponse {
+  status: string;
+  health?: Record<string, unknown>;
+  message?: string;
+}

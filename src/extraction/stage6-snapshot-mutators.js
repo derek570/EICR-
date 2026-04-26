@@ -45,6 +45,35 @@ export function applyReadingToSnapshot(snapshot, { circuit, field, value }) {
 }
 
 /**
+ * Write a board / supply / installation-level reading into
+ * stateSnapshot.circuits[0][field]. The `circuits[0]` bucket is the legacy
+ * "supply / board / installation" surface — see `_seedStateFromJobState`
+ * in eicr-extraction-session.js (which seeds `ze` / `pfc` etc. into
+ * circuits[0]) and the `KNOWN_FIELDS` flat set in sonnet-stream.js (which
+ * routes supply + board + installation field names through the same channel).
+ *
+ * Why circuits[0] (and not a new `snapshot.installation` namespace): the
+ * legacy parser path already stores these readings here. If the agentic tool
+ * path stored them under `snapshot.installation` instead, every shadow-mode
+ * divergence row for a board-level reading would read "extra_in_tool" /
+ * "extra_in_legacy" depending on direction, and the live cutover would have
+ * to translate the namespace at the wire boundary. Mirroring legacy keeps
+ * the slot comparator's projection trivial.
+ *
+ * Auto-creates the circuits[0] bucket if missing — same pattern as
+ * applyReadingToSnapshot. Phase 2 dispatchers (record_board_reading) layer
+ * their own field-enum validation on TOP of this atom — the strict-mode
+ * defence-in-depth check lives in the dispatcher, not here.
+ *
+ * @param {{circuits: Object}} snapshot — session.stateSnapshot reference
+ * @param {{field: string, value: string}} input
+ */
+export function applyBoardReadingToSnapshot(snapshot, { field, value }) {
+  if (!snapshot.circuits[0]) snapshot.circuits[0] = {};
+  snapshot.circuits[0][field] = value;
+}
+
+/**
  * Delete stateSnapshot.circuits[circuit][field]. Noop if circuit missing or
  * field absent on the bucket.
  *
@@ -75,7 +104,7 @@ export function clearReadingInSnapshot(snapshot, { circuit, field }) {
  */
 export function upsertCircuitMeta(
   snapshot,
-  { circuit_ref, designation, phase, rating_amps, cable_csa_mm2 },
+  { circuit_ref, designation, phase, rating_amps, cable_csa_mm2 }
 ) {
   if (!snapshot.circuits[circuit_ref]) snapshot.circuits[circuit_ref] = {};
   const target = snapshot.circuits[circuit_ref];
@@ -136,7 +165,7 @@ export function renameCircuit(snapshot, { from_ref, circuit_ref }) {
  */
 export function appendObservation(
   session,
-  { code, location, text, circuit, suggested_regulation },
+  { code, location, text, circuit, suggested_regulation }
 ) {
   const id = randomUUID();
   if (!Array.isArray(session.extractedObservations)) {
@@ -165,9 +194,7 @@ export function appendObservation(
  * @returns {{ok: true, removed: object} | {ok: false, error: {code: 'not_found'}}}
  */
 export function deleteObservation(session, { observation_id }) {
-  const arr = Array.isArray(session.extractedObservations)
-    ? session.extractedObservations
-    : [];
+  const arr = Array.isArray(session.extractedObservations) ? session.extractedObservations : [];
   const idx = arr.findIndex((o) => o.id === observation_id);
   if (idx === -1) return { ok: false, error: { code: 'not_found' } };
   const [removed] = arr.splice(idx, 1);

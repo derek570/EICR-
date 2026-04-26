@@ -35,6 +35,15 @@
  * Slot semantics:
  *   readings            : Map<"${field}::${circuit}", {value, confidence, source_turn_id}>
  *                         Last-write-wins (same-turn correction path).
+ *   boardReadings       : Map<field, {value, confidence, source_turn_id}>
+ *                         Phase 2 carryover (Bug C — 2026-04-26 production analysis):
+ *                         supply / installation / board-level writes via
+ *                         record_board_reading. Keyed by field ONLY (no circuit —
+ *                         these always live at circuits[0] in the snapshot, so
+ *                         the circuit half of the key is constant and degenerate).
+ *                         Last-write-wins on field, mirroring readings'
+ *                         same-turn correction path. Empty Map => bundler
+ *                         OMITS the `extracted_board_readings` slot.
  *   cleared             : Array<{field, circuit, reason}>
  *                         Append-only. Order-preserving for bundler stability.
  *   observations        : Array<{id, code, location, text, circuit, suggested_regulation}>
@@ -49,6 +58,7 @@
 export function createPerTurnWrites() {
   return {
     readings: new Map(),
+    boardReadings: new Map(),
     cleared: [],
     observations: [],
     deletedObservations: [],

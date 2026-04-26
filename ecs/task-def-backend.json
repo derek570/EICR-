@@ -25,14 +25,15 @@
         }
       ],
       "environment": [
-        { "name": "S3_BUCKET",       "value": "eicr-files-production" },
-        { "name": "DATABASE_TYPE",   "value": "postgresql" },
-        { "name": "AWS_REGION",      "value": "eu-west-2" },
-        { "name": "PORT",            "value": "3000" },
-        { "name": "USE_AWS_SECRETS", "value": "true" },
-        { "name": "NODE_ENV",        "value": "production" },
-        { "name": "STORAGE_TYPE",    "value": "s3" },
-        { "name": "REDIS_URL",       "value": "redis://eicr-redis-prod.k7wlgi.0001.euw2.cache.amazonaws.com:6379" }
+        { "name": "S3_BUCKET",          "value": "eicr-files-production" },
+        { "name": "DATABASE_TYPE",      "value": "postgresql" },
+        { "name": "AWS_REGION",         "value": "eu-west-2" },
+        { "name": "PORT",               "value": "3000" },
+        { "name": "USE_AWS_SECRETS",    "value": "true" },
+        { "name": "NODE_ENV",           "value": "production" },
+        { "name": "STORAGE_TYPE",       "value": "s3" },
+        { "name": "REDIS_URL",          "value": "redis://eicr-redis-prod.k7wlgi.0001.euw2.cache.amazonaws.com:6379" },
+        { "name": "SONNET_TOOL_CALLS",  "value": "live" }
       ],
       "mountPoints": [],
       "volumesFrom": [],
