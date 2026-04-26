@@ -15,12 +15,10 @@
  */
 
 import { jest } from '@jest/globals';
-import {
-  WRITE_DISPATCHERS,
-  createWriteDispatcher,
-} from '../extraction/stage6-dispatchers.js';
+import { WRITE_DISPATCHERS, createWriteDispatcher } from '../extraction/stage6-dispatchers.js';
 import * as circuitSibling from '../extraction/stage6-dispatchers-circuit.js';
 import * as observationSibling from '../extraction/stage6-dispatchers-observation.js';
+import * as boardSibling from '../extraction/stage6-dispatchers-board.js';
 import { createPerTurnWrites } from '../extraction/stage6-per-turn-writes.js';
 
 function mockLogger() {
@@ -28,16 +26,17 @@ function mockLogger() {
 }
 
 describe('barrel re-exports', () => {
-  test('WRITE_DISPATCHERS has all six keys, all async functions', () => {
+  test('WRITE_DISPATCHERS has all seven keys, all async functions', () => {
     expect(Object.keys(WRITE_DISPATCHERS).sort()).toEqual(
       [
         'clear_reading',
         'create_circuit',
         'delete_observation',
+        'record_board_reading',
         'record_observation',
         'record_reading',
         'rename_circuit',
-      ].sort(),
+      ].sort()
     );
     for (const fn of Object.values(WRITE_DISPATCHERS)) {
       expect(typeof fn).toBe('function');
@@ -51,6 +50,7 @@ describe('barrel re-exports', () => {
     expect(WRITE_DISPATCHERS.rename_circuit).toBe(circuitSibling.dispatchRenameCircuit);
     expect(WRITE_DISPATCHERS.record_observation).toBe(observationSibling.dispatchRecordObservation);
     expect(WRITE_DISPATCHERS.delete_observation).toBe(observationSibling.dispatchDeleteObservation);
+    expect(WRITE_DISPATCHERS.record_board_reading).toBe(boardSibling.dispatchRecordBoardReading);
   });
 
   test('every dispatcher returns a well-formed envelope when invoked with valid inputs', async () => {
@@ -81,7 +81,19 @@ describe('barrel re-exports', () => {
       create_circuit: { circuit_ref: 99 },
       rename_circuit: { from_ref: 3, circuit_ref: 3 }, // rename-to-self = noop-ok
       record_observation: { code: 'C2', text: 'x', location: 'y' },
-      delete_observation: { observation_id: '00000000-0000-4000-8000-000000000000', reason: 'user_correction' },
+      delete_observation: {
+        observation_id: '00000000-0000-4000-8000-000000000000',
+        reason: 'user_correction',
+      },
+      // record_board_reading writes to circuits[0]; no preconditions on session
+      // state. earth_loop_impedance_ze is a real BOARD_FIELD_ENUM member and
+      // makes the happy-path assertion meaningful.
+      record_board_reading: {
+        field: 'earth_loop_impedance_ze',
+        value: '0.86',
+        confidence: 0.95,
+        source_turn_id: 't1',
+      },
     };
     for (const [name, fn] of Object.entries(WRITE_DISPATCHERS)) {
       // Fresh session per call so create_circuit(99) etc don't collide.
@@ -93,7 +105,7 @@ describe('barrel re-exports', () => {
       const localCtx = { ...ctx, session: localSession };
       const res = await fn(
         { tool_call_id: `tu_${name}`, name, input: validInputs[name] },
-        localCtx,
+        localCtx
       );
       expect(res.tool_use_id).toBe(`tu_${name}`);
       expect(res.is_error).toBe(false);

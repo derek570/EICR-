@@ -56,12 +56,22 @@
  *   malformed inputs produce empty containers (never throws).
  * @returns {{
  *   readings: Map<string, any>,
+ *   board_readings: Map<string, any>,
  *   cleared: Set<string>,
  *   observations: Set<string>,
  *   circuit_ops: Set<string>,
  *   observation_deletions: Set<string>,
  * }}
  *   readings: key `${field}::${circuit}`, value is the reading's `value`.
+ *     Excludes circuit:0 entries — those are folded into board_readings so
+ *     the two extraction paths align on comparison even though they emit
+ *     them on different wire slots.
+ *   board_readings: key `board_reading:${field}`, value is the reading's
+ *     `value`. Populated from BOTH legacy `extracted_readings` with
+ *     `circuit === 0` AND bundler `extracted_board_readings` (no `circuit`
+ *     field — implicitly circuits[0]). The fold keeps divergence comparison
+ *     trivial: a successful round trip on the same board field appears as
+ *     a single key in both projections.
  *   cleared: `${field}::${circuit}` tuples (legacy never emits this slot).
  *   observations: `${code ?? 'none'}::${text.trim()}` tuples, UUID stripped.
  *   circuit_ops: `${op}::${circuit_ref}` tuples (create/rename/update).
@@ -69,22 +79,47 @@
  */
 export function projectSlots(result) {
   const readings = new Map();
+  const board_readings = new Map();
   const cleared = new Set();
   const observations = new Set();
   const circuit_ops = new Set();
   const observation_deletions = new Set();
 
   if (!result || typeof result !== 'object') {
-    return { readings, cleared, observations, circuit_ops, observation_deletions };
+    return { readings, board_readings, cleared, observations, circuit_ops, observation_deletions };
   }
 
-  // Readings — present in both legacy and bundler output.
+  // Readings — present in both legacy and bundler output. Legacy emits
+  // board-level readings (Ze, address, etc.) into extracted_readings with
+  // `circuit === 0`; tool path emits them into a SEPARATE
+  // extracted_board_readings array. To compare the two paths cleanly we
+  // peel circuit-0 entries OUT of `readings` and into `board_readings`.
+  // A loose 0-match (covers integer 0, the string "0", and the special
+  // pseudo-circuit values legacy historically emitted) keeps the projection
+  // forgiving against future legacy refactors.
   if (Array.isArray(result.extracted_readings)) {
     for (const r of result.extracted_readings) {
       if (!r || typeof r !== 'object') continue;
       const field = r.field ?? '';
       const circuit = r.circuit ?? '';
-      readings.set(`${field}::${circuit}`, r.value);
+      const isBoard = circuit === 0 || circuit === '0';
+      if (isBoard) {
+        board_readings.set(`board_reading:${field}`, r.value);
+      } else {
+        readings.set(`${field}::${circuit}`, r.value);
+      }
+    }
+  }
+
+  // Bundler-side board readings — the Phase 2 carryover slot (Bug C). Tool
+  // path emits these without a `circuit` field; key them under the same
+  // `board_reading:${field}` namespace so they collide with legacy's
+  // circuit-0 readings during set-diff.
+  if (Array.isArray(result.extracted_board_readings)) {
+    for (const r of result.extracted_board_readings) {
+      if (!r || typeof r !== 'object') continue;
+      const field = r.field ?? '';
+      board_readings.set(`board_reading:${field}`, r.value);
     }
   }
 
@@ -123,7 +158,7 @@ export function projectSlots(result) {
     }
   }
 
-  return { readings, cleared, observations, circuit_ops, observation_deletions };
+  return { readings, board_readings, cleared, observations, circuit_ops, observation_deletions };
 }
 
 // ---------------------------------------------------------------------------
@@ -167,7 +202,7 @@ function looseEqual(a, b) {
       return false;
     }
   }
-  // eslint-disable-next-line eqeqeq
+
   return a == b;
 }
 
@@ -185,6 +220,9 @@ function looseEqual(a, b) {
  *     readings_value_mismatch: Array<{key, legacy_value, tool_value}>,
  *     readings_only_legacy: Array<string>,
  *     readings_only_tool: Array<string>,
+ *     board_readings_value_mismatch: Array<{key, legacy_value, tool_value}>,
+ *     board_readings_only_legacy: Array<string>,
+ *     board_readings_only_tool: Array<string>,
  *     observations_diff: {added_in_tool: string[], removed_in_tool: string[]},
  *     circuit_ops_diff: {added_in_tool: string[], removed_in_tool: string[]},
  *   },
@@ -197,6 +235,22 @@ export function compareSlots(legacy, toolResult) {
   const readings_value_mismatch = mapValueMismatch(legacy_slots.readings, tool_slots.readings);
   const readings_only_legacy = setOnlyIn(legacy_slots.readings, tool_slots.readings);
   const readings_only_tool = setOnlyIn(tool_slots.readings, legacy_slots.readings);
+
+  // Board readings (Phase 2 carryover — Bug C). Same diff classes as
+  // circuit-scoped readings. The keys live in their own `board_reading:`
+  // namespace so they can never collide with circuit reading keys.
+  const board_readings_value_mismatch = mapValueMismatch(
+    legacy_slots.board_readings,
+    tool_slots.board_readings
+  );
+  const board_readings_only_legacy = setOnlyIn(
+    legacy_slots.board_readings,
+    tool_slots.board_readings
+  );
+  const board_readings_only_tool = setOnlyIn(
+    tool_slots.board_readings,
+    legacy_slots.board_readings
+  );
 
   const obs_added = setOnlyIn(tool_slots.observations, legacy_slots.observations);
   const obs_removed = setOnlyIn(legacy_slots.observations, tool_slots.observations);
@@ -212,13 +266,18 @@ export function compareSlots(legacy, toolResult) {
     readings_value_mismatch,
     readings_only_legacy,
     readings_only_tool,
+    board_readings_value_mismatch,
+    board_readings_only_legacy,
+    board_readings_only_tool,
     observations_diff: { added_in_tool: obs_added, removed_in_tool: obs_removed },
     circuit_ops_diff: { added_in_tool: ops_added, removed_in_tool: ops_removed },
   };
 
-  const hasValueMismatch = readings_value_mismatch.length > 0;
-  const hasOnlyLegacyReadings = readings_only_legacy.length > 0;
-  const hasOnlyToolReadings = readings_only_tool.length > 0;
+  const hasValueMismatch =
+    readings_value_mismatch.length > 0 || board_readings_value_mismatch.length > 0;
+  const hasOnlyLegacyReadings =
+    readings_only_legacy.length > 0 || board_readings_only_legacy.length > 0;
+  const hasOnlyToolReadings = readings_only_tool.length > 0 || board_readings_only_tool.length > 0;
   const hasObsDiff = obs_added.length > 0 || obs_removed.length > 0;
   const hasOpsDiff = ops_added.length > 0 || ops_removed.length > 0;
   const hasClearedOnlyTool = cleared_only_tool.length > 0;
@@ -238,13 +297,16 @@ export function compareSlots(legacy, toolResult) {
   // Reason priority — first match wins.
 
   // 1. value_mismatch — same slot key in both, different values. Genuine
-  //    regression signal.
+  //    regression signal. Folds circuit + board reading mismatches.
   if (hasValueMismatch) {
     return { any: true, reason: 'value_mismatch', legacy_slots, tool_slots, details };
   }
 
   // 2. dispatcher_strict_mode — ONLY difference is readings-only-legacy AND
-  //    no other divergence class. Known-expected per Research §Q4.
+  //    no other divergence class. Known-expected per Research §Q4. Folds
+  //    circuit + board readings (Phase 2 carryover keeps the same semantics:
+  //    the agentic dispatcher rejects out-of-enum board fields where legacy
+  //    silently routes them through KNOWN_FIELDS).
   if (
     hasOnlyLegacyReadings &&
     !hasOnlyToolReadings &&
@@ -256,8 +318,8 @@ export function compareSlots(legacy, toolResult) {
   }
 
   // 3. extra_in_tool — tool wrote slots legacy didn't. Covers both readings
-  //    and cleared (legacy never emits cleared, so cleared-in-tool counts
-  //    here when nothing else diverges).
+  //    (circuit + board) and cleared (legacy never emits cleared, so
+  //    cleared-in-tool counts here when nothing else diverges).
   if (hasOnlyToolReadings || hasClearedOnlyTool) {
     return { any: true, reason: 'extra_in_tool', legacy_slots, tool_slots, details };
   }

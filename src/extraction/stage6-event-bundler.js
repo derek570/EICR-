@@ -23,11 +23,13 @@ export const BUNDLER_PHASE = 2;
  * shape that iOS `ServerWebSocketService` expects.
  *
  * @param {{readings: Map<string, {value: any, confidence: number, source_turn_id?: string}>,
+ *          boardReadings: Map<string, {value: any, confidence: number, source_turn_id?: string}>,
  *          cleared: Array<{field: string, circuit: string, reason?: string}>,
  *          observations: Array<{id: string, text: string, code: string}>,
  *          deletedObservations: Array<{id: string, reason?: string}>,
  *          circuitOps: Array<{op: string, circuit_ref: string, from_ref?: string, meta?: any}>}} perTurnWrites
- *   Accumulator populated by Phase 2 dispatchers (Plans 02-03 + 02-04).
+ *   Accumulator populated by Phase 2 dispatchers (Plans 02-03 + 02-04 +
+ *   Bug-C carryover dispatcher record_board_reading).
  * @param {{questions?: Array<any>}|null|undefined} legacyResultShape
  *   The legacy extractor's result object. Only `.questions` is consumed
  *   (Phase 2 keeps legacy question-gate behaviour; tool-call ask_user is
@@ -38,12 +40,18 @@ export const BUNDLER_PHASE = 2;
  *            questions: Array<any>,
  *            cleared_readings?: Array<{field: string, circuit: string, reason?: string}>,
  *            circuit_updates?: Array<{op: string, circuit_ref: string, from_ref?: string, meta?: any}>,
- *            observation_deletions?: Array<{id: string, reason?: string}>}}
+ *            observation_deletions?: Array<{id: string, reason?: string}>,
+ *            extracted_board_readings?: Array<{field: string, value: any, confidence: number, source: 'tool_call'}>}}
  */
 export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape) {
   if (!perTurnWrites || !(perTurnWrites.readings instanceof Map)) {
     throw new TypeError('bundleToolCallsIntoResult: perTurnWrites.readings must be a Map');
   }
+  // boardReadings is optional for backwards compat with any caller that
+  // builds the accumulator manually (e.g. older test fixtures that pre-date
+  // the Bug C carryover). createPerTurnWrites() always seeds an empty Map.
+  const boardReadings =
+    perTurnWrites.boardReadings instanceof Map ? perTurnWrites.boardReadings : new Map();
   const legacy = legacyResultShape ?? {};
 
   // 1. Readings projection — Map → array. Key `${field}::${circuit}` splits
@@ -101,6 +109,33 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape) {
   }
   if (perTurnWrites.deletedObservations.length > 0) {
     result.observation_deletions = [...perTurnWrites.deletedObservations];
+  }
+
+  // 7. Phase 2 carryover slot — supply / installation / board-level writes
+  //    via record_board_reading. Same shape as extracted_readings (field +
+  //    value + confidence + source: 'tool_call') but WITHOUT a `circuit`
+  //    field — these readings always live at circuits[0] in the snapshot.
+  //    Emitting them in a SEPARATE slot (rather than merging into
+  //    extracted_readings with circuit:0) makes the Stage 6 wire shape
+  //    self-describing — a downstream consumer can tell tool_call board
+  //    writes apart from circuit writes without having to inspect every
+  //    entry's `circuit` field. The slot comparator (Plan 02-06) projects
+  //    legacy's circuit:0 readings into the same comparison Map so
+  //    divergence comparison still aligns the two paths.
+  //
+  //    Map.entries() preserves insertion order — same property the readings
+  //    Map relies on for STT-09 same-turn correction.
+  if (boardReadings.size > 0) {
+    const extracted_board_readings = [];
+    for (const [field, entry] of boardReadings) {
+      extracted_board_readings.push({
+        field,
+        value: entry.value,
+        confidence: entry.confidence,
+        source: 'tool_call',
+      });
+    }
+    result.extracted_board_readings = extracted_board_readings;
   }
 
   return result;

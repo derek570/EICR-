@@ -29,10 +29,7 @@
  */
 
 import { jest } from '@jest/globals';
-import {
-  WRITE_DISPATCHERS,
-  createWriteDispatcher,
-} from '../extraction/stage6-dispatchers.js';
+import { WRITE_DISPATCHERS, createWriteDispatcher } from '../extraction/stage6-dispatchers.js';
 import { createPerTurnWrites } from '../extraction/stage6-per-turn-writes.js';
 import { runToolLoop } from '../extraction/stage6-tool-loop.js';
 import { mockClient } from './helpers/mockStream.js';
@@ -42,16 +39,20 @@ function mockLogger() {
 }
 
 describe('WRITE_DISPATCHERS dispatch table', () => {
-  test('has exactly six keys matching REQUIREMENTS STS-01..06', () => {
+  test('has exactly seven keys matching REQUIREMENTS STS-01..06 plus record_board_reading carryover', () => {
     expect(Object.keys(WRITE_DISPATCHERS).sort()).toEqual(
       [
         'clear_reading',
         'create_circuit',
         'delete_observation',
+        // record_board_reading was added in the Bug C fix from the
+        // 2026-04-26 production analysis — supply / installation / board
+        // writes had no tool surface before this.
+        'record_board_reading',
         'record_observation',
         'record_reading',
         'rename_circuit',
-      ].sort(),
+      ].sort()
     );
   });
 
@@ -88,9 +89,15 @@ describe('createWriteDispatcher()', () => {
       {
         tool_call_id: 'tu_x',
         name: 'record_reading',
-        input: { field: 'Ze_ohms', circuit: 3, value: '0.35', confidence: 1.0, source_turn_id: 't1' },
+        input: {
+          field: 'Ze_ohms',
+          circuit: 3,
+          value: '0.35',
+          confidence: 1.0,
+          source_turn_id: 't1',
+        },
       },
-      {},
+      {}
     );
     expect(result.tool_use_id).toBe('tu_x');
     expect(result.is_error).toBe(false);
@@ -107,7 +114,7 @@ describe('createWriteDispatcher()', () => {
         phase: 2,
         tool_use_id: 'tu_x',
         round: 1,
-      }),
+      })
     );
   });
 
@@ -127,7 +134,7 @@ describe('createWriteDispatcher()', () => {
         outcome: 'rejected',
         is_error: true,
         validation_error: { code: 'unknown_tool' },
-      }),
+      })
     );
   });
 
@@ -148,9 +155,15 @@ describe('createWriteDispatcher()', () => {
       {
         tool_call_id: 'tu_1',
         name: 'record_reading',
-        input: { field: 'Zs_ohms', circuit: 3, value: '0.5', confidence: 1.0, source_turn_id: 't1' },
+        input: {
+          field: 'Zs_ohms',
+          circuit: 3,
+          value: '0.5',
+          confidence: 1.0,
+          source_turn_id: 't1',
+        },
       },
-      {},
+      {}
     );
     await d(
       {
@@ -158,12 +171,9 @@ describe('createWriteDispatcher()', () => {
         name: 'clear_reading',
         input: { field: 'Ze_ohms', circuit: 3, reason: 'user_correction' },
       },
-      {},
+      {}
     );
-    await d(
-      { tool_call_id: 'tu_3', name: 'create_circuit', input: { circuit_ref: 7 } },
-      {},
-    );
+    await d({ tool_call_id: 'tu_3', name: 'create_circuit', input: { circuit_ref: 7 } }, {});
     const rounds = logger.info.mock.calls.map((c) => c[1].round);
     expect(rounds).toEqual([1, 2, 3]);
   });
@@ -234,9 +244,7 @@ describe('scaffold integrates with Phase 1 runToolLoop (canary)', () => {
     expect(result.rounds).toBe(2);
     expect(result.stop_reason).toBe('end_turn');
     // STO-01: exactly one 'stage6_tool_call' row from the scaffold NOOP.
-    const scaffoldRows = logger.info.mock.calls.filter(
-      (c) => c[0] === 'stage6_tool_call',
-    );
+    const scaffoldRows = logger.info.mock.calls.filter((c) => c[0] === 'stage6_tool_call');
     expect(scaffoldRows.length).toBe(1);
     expect(scaffoldRows[0][1]).toMatchObject({
       tool: 'record_reading',

@@ -21,10 +21,15 @@
 import { createPerTurnWrites } from '../extraction/stage6-per-turn-writes.js';
 
 describe('createPerTurnWrites()', () => {
-  test('returns an object with the five expected fields all initially empty', () => {
+  test('returns an object with the six expected fields all initially empty', () => {
     const w = createPerTurnWrites();
     expect(w.readings).toBeInstanceOf(Map);
     expect(w.readings.size).toBe(0);
+    // boardReadings is the Phase 2 carryover slot for record_board_reading
+    // (Bug C — 2026-04-26 production analysis). Same Map shape as readings,
+    // keyed by field-only because every entry implicitly lives at circuits[0].
+    expect(w.boardReadings).toBeInstanceOf(Map);
+    expect(w.boardReadings.size).toBe(0);
     expect(Array.isArray(w.cleared)).toBe(true);
     expect(w.cleared).toHaveLength(0);
     expect(Array.isArray(w.observations)).toBe(true);
@@ -40,6 +45,7 @@ describe('createPerTurnWrites()', () => {
     const b = createPerTurnWrites();
     expect(a).not.toBe(b);
     expect(a.readings).not.toBe(b.readings);
+    expect(a.boardReadings).not.toBe(b.boardReadings);
     expect(a.cleared).not.toBe(b.cleared);
     expect(a.observations).not.toBe(b.observations);
     expect(a.deletedObservations).not.toBe(b.deletedObservations);
@@ -47,8 +53,14 @@ describe('createPerTurnWrites()', () => {
 
     // Mutating one must not affect the other.
     a.readings.set('Ze_ohms::1', { value: '0.35', confidence: 1.0, source_turn_id: 't1' });
+    a.boardReadings.set('earth_loop_impedance_ze', {
+      value: '0.86',
+      confidence: 0.95,
+      source_turn_id: 't1',
+    });
     a.cleared.push({ field: 'Zs_ohms', circuit: 1, reason: 'user_correction' });
     expect(b.readings.size).toBe(0);
+    expect(b.boardReadings.size).toBe(0);
     expect(b.cleared).toHaveLength(0);
   });
 
@@ -57,7 +69,11 @@ describe('createPerTurnWrites()', () => {
     w.readings.set('Ze_ohms::3', { value: '0.35', confidence: 1.0, source_turn_id: 't1' });
     w.readings.set('Ze_ohms::3', { value: '0.40', confidence: 1.0, source_turn_id: 't1' });
     expect(w.readings.size).toBe(1);
-    expect(w.readings.get('Ze_ohms::3')).toEqual({ value: '0.40', confidence: 1.0, source_turn_id: 't1' });
+    expect(w.readings.get('Ze_ohms::3')).toEqual({
+      value: '0.40',
+      confidence: 1.0,
+      source_turn_id: 't1',
+    });
   });
 
   test('readings value shape lock (MAJOR-1): entries carry {value, confidence, source_turn_id} — NOT field/circuit', () => {
