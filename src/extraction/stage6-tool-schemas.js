@@ -32,11 +32,12 @@ import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
 
-// eslint-disable-next-line import/no-unresolved -- JSON is co-located config.
+// JSON imports via createRequire — the project's flat ESLint config (eslint.config.js)
+// does not load eslint-plugin-import, so the previous `import/no-unresolved`
+// disable comments referenced a rule ESLint can't resolve and broke the
+// pre-commit hook. The createRequire pattern itself is unaffected.
 const fieldSchema = require('../../config/field_schema.json');
-// eslint-disable-next-line import/no-unresolved -- JSON is co-located config.
 const enumerations = require('../../config/stage6-enumerations.json');
-// eslint-disable-next-line import/no-unresolved -- JSON is co-located config.
 const contextKeys = require('../../config/stage6-context-keys.json');
 
 // Deterministic enum for ask_user.context_field (Plan 02-01 closes Phase 1
@@ -104,9 +105,14 @@ const recordReading = makeTool({
     },
     confidence: {
       type: 'number',
-      minimum: 0,
-      maximum: 1,
-      description: 'Model confidence 0.0–1.0 for this capture.',
+      // Anthropic strict-mode tools reject `minimum`/`maximum` on number/integer
+      // types (`tools.0.custom: For 'number' type, properties maximum, minimum
+      // are not supported`). Bounds are enforced by dispatchRecordReading
+      // instead — see stage6-dispatchers-circuit.js. The description carries
+      // the intent for the model so the contract is still visible at prompt
+      // time even though the schema cannot constrain it.
+      description:
+        'Model confidence 0.0–1.0 for this capture (dispatcher rejects values outside [0,1]).',
     },
     source_turn_id: {
       type: 'string',
@@ -157,13 +163,11 @@ const createCircuit = makeTool({
   properties: {
     circuit_ref: {
       type: 'integer',
-      description:
-        'Circuit reference number. Must be unique within the current board.',
+      description: 'Circuit reference number. Must be unique within the current board.',
     },
     designation: {
       type: ['string', 'null'],
-      description:
-        'Human-readable circuit name (e.g. "Upstairs lighting"). Null if unknown.',
+      description: 'Human-readable circuit name (e.g. "Upstairs lighting"). Null if unknown.',
     },
     phase: {
       type: ['string', 'null'],
@@ -193,13 +197,17 @@ const createCircuit = makeTool({
 const renameCircuit = makeTool({
   name: 'rename_circuit',
   description:
-    "Rekey an existing circuit bucket and/or update its metadata. Supply `from_ref` (the existing circuit_ref) and `circuit_ref` (the new key). If only meta is changing, from_ref === circuit_ref is a valid idempotent call. Dispatcher rejects missing from_ref or target-already-exists with a validation_error.",
+    'Rekey an existing circuit bucket and/or update its metadata. Supply `from_ref` (the existing circuit_ref) and `circuit_ref` (the new key). If only meta is changing, from_ref === circuit_ref is a valid idempotent call. Dispatcher rejects missing from_ref or target-already-exists with a validation_error.',
   properties: {
     from_ref: {
       type: 'integer',
-      minimum: 1,
+      // Anthropic strict-mode tools reject numerical constraints (`minimum`,
+      // `maximum`, `multipleOf`) on number/integer types. Lower bound (>=1)
+      // is enforced by dispatchRenameCircuit instead — see
+      // stage6-dispatchers-circuit.js. Description carries the intent for
+      // the model.
       description:
-        'The existing circuit_ref to rename from. Must already exist in stateSnapshot.circuits.',
+        'The existing circuit_ref to rename from. Must already exist in stateSnapshot.circuits and be >= 1 (dispatcher rejects 0/negative).',
     },
     circuit_ref: {
       type: 'integer',
@@ -222,8 +230,7 @@ const renameCircuit = makeTool({
     },
     cable_csa_mm2: {
       type: ['number', 'null'],
-      description:
-        'New live conductor cross-sectional area in mm^2. Null to leave unchanged.',
+      description: 'New live conductor cross-sectional area in mm^2. Null to leave unchanged.',
     },
   },
   required: ['from_ref', 'circuit_ref'],
@@ -251,8 +258,7 @@ const recordObservation = makeTool({
     },
     text: {
       type: 'string',
-      description:
-        'Full observation wording as it will appear on the certificate.',
+      description: 'Full observation wording as it will appear on the certificate.',
     },
     circuit: {
       type: ['integer', 'null'],

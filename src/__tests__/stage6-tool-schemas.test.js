@@ -26,24 +26,16 @@ const repoRoot = path.resolve(__dirname, '..', '..');
 // Load codegen inputs directly via fs so the test is independent of how the
 // module chooses to import JSON (JSON import attributes vs createRequire).
 const fieldSchema = JSON.parse(
-  fs.readFileSync(path.join(repoRoot, 'config', 'field_schema.json'), 'utf8'),
+  fs.readFileSync(path.join(repoRoot, 'config', 'field_schema.json'), 'utf8')
 );
 const enumerations = JSON.parse(
-  fs.readFileSync(
-    path.join(repoRoot, 'config', 'stage6-enumerations.json'),
-    'utf8',
-  ),
+  fs.readFileSync(path.join(repoRoot, 'config', 'stage6-enumerations.json'), 'utf8')
 );
 const contextKeys = JSON.parse(
-  fs.readFileSync(
-    path.join(repoRoot, 'config', 'stage6-context-keys.json'),
-    'utf8',
-  ),
+  fs.readFileSync(path.join(repoRoot, 'config', 'stage6-context-keys.json'), 'utf8')
 );
 
-const { TOOL_SCHEMAS, getToolByName } = await import(
-  '../extraction/stage6-tool-schemas.js'
-);
+const { TOOL_SCHEMAS, getToolByName } = await import('../extraction/stage6-tool-schemas.js');
 
 const EXPECTED_TOOL_NAMES = [
   'record_reading',
@@ -102,14 +94,28 @@ describe('stage6-tool-schemas', () => {
   test('record_reading requires all 5 fields per REQUIREMENTS STS-01', () => {
     const recordReading = byName('record_reading');
     expect(recordReading.input_schema.required.sort()).toEqual(
-      ['field', 'circuit', 'value', 'confidence', 'source_turn_id'].sort(),
+      ['field', 'circuit', 'value', 'confidence', 'source_turn_id'].sort()
     );
+  });
+
+  test('record_reading.confidence has no minimum/maximum (Anthropic strict-mode rejects them)', () => {
+    // The Anthropic API rejects `minimum`/`maximum` on number/integer types
+    // with `tools.0.custom: For 'number' type, properties maximum, minimum
+    // are not supported` — confirmed in production CloudWatch traffic. Bounds
+    // are enforced by validateRecordReading (stage6-dispatch-validation.js)
+    // instead. This test pins the absence so a regression that re-adds either
+    // keyword fails CI rather than every shadow turn 400-ing in production.
+    const confidence = byName('record_reading').input_schema.properties.confidence;
+    expect(confidence.type).toBe('number');
+    expect(confidence.minimum).toBeUndefined();
+    expect(confidence.maximum).toBeUndefined();
+    expect(typeof confidence.description).toBe('string');
   });
 
   test('clear_reading.reason enum sourced from stage6-enumerations.json', () => {
     const clearReading = byName('clear_reading');
     expect(clearReading.input_schema.properties.reason.enum).toEqual(
-      enumerations.clear_reading_reason,
+      enumerations.clear_reading_reason
     );
   });
 
@@ -122,10 +128,7 @@ describe('stage6-tool-schemas', () => {
       ...enumerations.circuit_phase,
       null,
     ]);
-    expect(createCircuit.input_schema.properties.phase.type).toEqual([
-      'string',
-      'null',
-    ]);
+    expect(createCircuit.input_schema.properties.phase.type).toEqual(['string', 'null']);
     // create_circuit requires only circuit_ref (STS-03)
     expect(createCircuit.input_schema.required).toEqual(['circuit_ref']);
   });
@@ -136,42 +139,27 @@ describe('stage6-tool-schemas', () => {
       ...enumerations.circuit_phase,
       null,
     ]);
-    expect(renameCircuit.input_schema.properties.phase.type).toEqual([
-      'string',
-      'null',
-    ]);
+    expect(renameCircuit.input_schema.properties.phase.type).toEqual(['string', 'null']);
     // Plan 02-01 adds `from_ref` to the required list — without it the tool
     // is semantically identical to create_circuit. See Plan 02-01 §Q7.
-    expect(renameCircuit.input_schema.required.sort()).toEqual(
-      ['circuit_ref', 'from_ref'].sort(),
-    );
+    expect(renameCircuit.input_schema.required.sort()).toEqual(['circuit_ref', 'from_ref'].sort());
   });
 
   test('non-nullable enums (clear_reading.reason, observation_code, ask_user.reason, expected_answer_shape) do NOT include null', () => {
     // These fields are REQUIRED per REQUIREMENTS — null is not a valid value
     // and must not appear in the enum array.
-    expect(byName('clear_reading').input_schema.properties.reason.enum).not.toContain(
-      null,
+    expect(byName('clear_reading').input_schema.properties.reason.enum).not.toContain(null);
+    expect(byName('record_observation').input_schema.properties.code.enum).not.toContain(null);
+    expect(byName('delete_observation').input_schema.properties.reason.enum).not.toContain(null);
+    expect(byName('ask_user').input_schema.properties.reason.enum).not.toContain(null);
+    expect(byName('ask_user').input_schema.properties.expected_answer_shape.enum).not.toContain(
+      null
     );
-    expect(
-      byName('record_observation').input_schema.properties.code.enum,
-    ).not.toContain(null);
-    expect(
-      byName('delete_observation').input_schema.properties.reason.enum,
-    ).not.toContain(null);
-    expect(byName('ask_user').input_schema.properties.reason.enum).not.toContain(
-      null,
-    );
-    expect(
-      byName('ask_user').input_schema.properties.expected_answer_shape.enum,
-    ).not.toContain(null);
   });
 
   test('record_observation.code enum sourced from stage6-enumerations.json', () => {
     const recordObs = byName('record_observation');
-    expect(recordObs.input_schema.properties.code.enum).toEqual(
-      enumerations.observation_code,
-    );
+    expect(recordObs.input_schema.properties.code.enum).toEqual(enumerations.observation_code);
   });
 
   test('record_observation requires all 5 STS-05 fields (Codex round-4 STG MAJOR — nullables must be required under strict:true)', () => {
@@ -183,27 +171,23 @@ describe('stage6-tool-schemas', () => {
     // (key absent) collapse into the same undefined-key state.
     const recordObs = byName('record_observation');
     expect(recordObs.input_schema.required.sort()).toEqual(
-      ['code', 'location', 'text', 'circuit', 'suggested_regulation'].sort(),
+      ['code', 'location', 'text', 'circuit', 'suggested_regulation'].sort()
     );
   });
 
   test('delete_observation.reason enum sourced from stage6-enumerations.json', () => {
     const deleteObs = byName('delete_observation');
     expect(deleteObs.input_schema.properties.reason.enum).toEqual(
-      enumerations.delete_observation_reason,
+      enumerations.delete_observation_reason
     );
-    expect(deleteObs.input_schema.required.sort()).toEqual(
-      ['observation_id', 'reason'].sort(),
-    );
+    expect(deleteObs.input_schema.required.sort()).toEqual(['observation_id', 'reason'].sort());
   });
 
   test('ask_user.reason and expected_answer_shape enums sourced from enumerations.json', () => {
     const askUser = byName('ask_user');
-    expect(askUser.input_schema.properties.reason.enum).toEqual(
-      enumerations.ask_user_reason,
-    );
+    expect(askUser.input_schema.properties.reason.enum).toEqual(enumerations.ask_user_reason);
     expect(askUser.input_schema.properties.expected_answer_shape.enum).toEqual(
-      enumerations.expected_answer_shape,
+      enumerations.expected_answer_shape
     );
   });
 
@@ -214,11 +198,7 @@ describe('stage6-tool-schemas', () => {
     expect(Array.isArray(contextField.enum)).toBe(true);
 
     const circuitFieldKeys = Object.keys(fieldSchema.circuit_fields);
-    const expectedEntries = [
-      ...circuitFieldKeys,
-      ...contextKeys.sentinels,
-      null,
-    ];
+    const expectedEntries = [...circuitFieldKeys, ...contextKeys.sentinels, null];
 
     // Length is (circuit_fields count) + sentinels + 1 (null). Plan 02-01
     // cardinality invariant — guards against drift either way.
@@ -244,7 +224,7 @@ describe('stage6-tool-schemas', () => {
     // `enum: ['observation_clarify'` literal.
     const src = fs.readFileSync(
       path.join(repoRoot, 'src', 'extraction', 'stage6-tool-schemas.js'),
-      'utf8',
+      'utf8'
     );
     expect(src).not.toMatch(/enum:\s*\[\s*['"]observation_clarify['"]/);
   });
@@ -252,7 +232,7 @@ describe('stage6-tool-schemas', () => {
   test('PHASE 2 BLOCKER comment is removed from stage6-tool-schemas.js (Plan 02-01 closes the carryover)', () => {
     const src = fs.readFileSync(
       path.join(repoRoot, 'src', 'extraction', 'stage6-tool-schemas.js'),
-      'utf8',
+      'utf8'
     );
     expect(src).not.toMatch(/PHASE 2 BLOCKER/);
   });
@@ -262,14 +242,19 @@ describe('stage6-tool-schemas', () => {
     // Required list is exactly [from_ref, circuit_ref]. Length assertion
     // catches any future drift that adds unintended required keys.
     expect(rename.input_schema.required).toHaveLength(2);
-    expect(rename.input_schema.required.sort()).toEqual(
-      ['circuit_ref', 'from_ref'].sort(),
-    );
-    // from_ref schema shape — integer, minimum 1, described.
+    expect(rename.input_schema.required.sort()).toEqual(['circuit_ref', 'from_ref'].sort());
+    // from_ref schema shape — integer, described. NB: `minimum: 1` used to
+    // live on the schema but Anthropic strict-mode tools reject numerical
+    // constraints (`tools.0.custom: For 'number' type, properties maximum,
+    // minimum are not supported`). The lower bound is now enforced server-side
+    // by validateRenameCircuit (stage6-dispatch-validation.js). This test
+    // explicitly asserts `minimum` is absent so a regression that re-adds it
+    // would fail in CI rather than blowing up in production at the API layer.
     const fromRef = rename.input_schema.properties.from_ref;
     expect(fromRef).toBeDefined();
     expect(fromRef.type).toBe('integer');
-    expect(fromRef.minimum).toBe(1);
+    expect(fromRef.minimum).toBeUndefined();
+    expect(fromRef.maximum).toBeUndefined();
     expect(typeof fromRef.description).toBe('string');
     expect(fromRef.description.length).toBeGreaterThan(10);
   });
@@ -288,27 +273,25 @@ describe('stage6-tool-schemas', () => {
   test('Plan 02-01 required-list audit: all six write tools match REQUIREMENTS.md STS-01..06 literally', () => {
     // STS-01 record_reading
     expect(byName('record_reading').input_schema.required.sort()).toEqual(
-      ['circuit', 'confidence', 'field', 'source_turn_id', 'value'].sort(),
+      ['circuit', 'confidence', 'field', 'source_turn_id', 'value'].sort()
     );
     // STS-02 clear_reading
     expect(byName('clear_reading').input_schema.required.sort()).toEqual(
-      ['circuit', 'field', 'reason'].sort(),
+      ['circuit', 'field', 'reason'].sort()
     );
     // STS-03 create_circuit
-    expect(byName('create_circuit').input_schema.required).toEqual([
-      'circuit_ref',
-    ]);
+    expect(byName('create_circuit').input_schema.required).toEqual(['circuit_ref']);
     // STS-04 rename_circuit — Plan 02-01 adds from_ref
     expect(byName('rename_circuit').input_schema.required.sort()).toEqual(
-      ['circuit_ref', 'from_ref'].sort(),
+      ['circuit_ref', 'from_ref'].sort()
     );
     // STS-05 record_observation (Phase 1 round-4 MAJOR #3 — re-asserted)
     expect(byName('record_observation').input_schema.required.sort()).toEqual(
-      ['circuit', 'code', 'location', 'suggested_regulation', 'text'].sort(),
+      ['circuit', 'code', 'location', 'suggested_regulation', 'text'].sort()
     );
     // STS-06 delete_observation
     expect(byName('delete_observation').input_schema.required.sort()).toEqual(
-      ['observation_id', 'reason'].sort(),
+      ['observation_id', 'reason'].sort()
     );
   });
 

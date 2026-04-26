@@ -53,11 +53,28 @@
 import { CONTEXT_FIELD_ENUM } from './stage6-tool-schemas.js';
 
 /**
- * record_reading: circuit must exist.
+ * record_reading: circuit must exist; confidence (when present) must be a
+ * finite number in [0, 1]. The bound used to live on the input_schema as
+ * `minimum: 0, maximum: 1` but Anthropic strict-mode tools reject those
+ * keywords on number/integer types (`tools.0.custom: For 'number' type,
+ * properties maximum, minimum are not supported`). The schema still marks
+ * confidence as required so strict-mode-compliant calls always supply it;
+ * the dispatcher defaults missing/null to 1.0 (legacy pass-through), so
+ * we only reject present-but-invalid values here.
  */
 export function validateRecordReading(input, snapshot) {
   if (!(input.circuit in snapshot.circuits)) {
     return { code: 'circuit_not_found', field: 'circuit' };
+  }
+  if (input.confidence != null) {
+    if (
+      typeof input.confidence !== 'number' ||
+      !Number.isFinite(input.confidence) ||
+      input.confidence < 0 ||
+      input.confidence > 1
+    ) {
+      return { code: 'confidence_out_of_range', field: 'confidence' };
+    }
   }
   return null;
 }
@@ -97,6 +114,13 @@ export function validateCreateCircuit(input, snapshot) {
  * numeric.
  */
 export function validateRenameCircuit(input, snapshot) {
+  // Lower bound (>=1) used to live on the input_schema as `minimum: 1` —
+  // Anthropic strict-mode tools reject numerical constraints on integer/number
+  // types, so we enforce it here. Same rationale as confidence in
+  // validateRecordReading above.
+  if (!Number.isInteger(input.from_ref) || input.from_ref < 1) {
+    return { code: 'invalid_from_ref', field: 'from_ref' };
+  }
   if (!(input.from_ref in snapshot.circuits)) {
     return { code: 'source_not_found', field: 'from_ref' };
   }
@@ -117,7 +141,7 @@ export function validateRenameCircuit(input, snapshot) {
  * at the API layer; Plan 02-04 dispatcher adds a belt-and-braces local check
  * before mutation.
  */
-// eslint-disable-next-line no-unused-vars
+
 export function validateRecordObservation(_input, _session) {
   return null;
 }
@@ -134,7 +158,7 @@ export function validateRecordObservation(_input, _session) {
  * unknown id IS meaningful (the post-state already satisfies the request,
  * so the correct answer is "noop").
  */
-// eslint-disable-next-line no-unused-vars
+
 export function validateDeleteObservation(_input, _session) {
   return null;
 }
