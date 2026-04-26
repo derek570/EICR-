@@ -13,6 +13,7 @@ import {
   KeyRound,
   LayoutDashboard,
   LogOut,
+  ScrollText,
   ShieldCheck,
   SlidersHorizontal,
   UserPlus,
@@ -281,6 +282,13 @@ export default function SettingsHubPage() {
           icon={<Wrench className="h-5 w-5" aria-hidden />}
           title="Diagnostics"
           subtitle="Export state snapshot or clear local cache"
+          accent="blue"
+        />
+        <LinkCard
+          href="/settings/legal"
+          icon={<ScrollText className="h-5 w-5" aria-hidden />}
+          title="Terms & Legal"
+          subtitle="Terms, privacy policy, and licence agreement"
           accent="blue"
         />
         <LinkCard
