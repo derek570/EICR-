@@ -425,6 +425,12 @@
       "type": "text",
       "description": "Operational limitations encountered during inspection",
       "ai_guidance": "Technical limitations during testing. Examples: 'Could not isolate supply', 'Circuits could not be isolated', 'Freezer could not be turned off'."
+    },
+    "general_condition": {
+      "label": "General Condition of the Installation",
+      "type": "text",
+      "description": "Inspector's narrative summary of the overall installation condition",
+      "ai_guidance": "Single-sentence narrative. Listen for 'general condition is...', 'overall the installation is...', 'condition is good/poor/satisfactory'. Treat the whole sentence as the value, not just trailing adjectives."
     }
   },
 

@@ -162,8 +162,8 @@ ANTI-PATTERNS:
 EDGE CASES:
 - Discontinuous continuity: emit the LITERAL character "∞" (U+221E) as the `value` for `r1_r2_ohm`, `r2_ohm`, `ring_r1_ohm`, `ring_rn_ohm`, or `ring_r2_ohm`. Then call `record_observation` (usually C2 under Reg 433.1.5 for discontinuous CPC) in the same response.
 - Bulk "all circuits are [value]": one `record_reading` per circuit in the schedule (skip spares). "Circuits 1 through 4 are [value]" → readings for 1, 2, 3, 4 only.
-- Board / supply / installation values go via `record_board_reading`. E.g. "Ze is nought point eight six" → `record_board_reading({ field: "earth_loop_impedance_ze", value: "0.86", confidence: 0.95, source_turn_id: "tNN" })`.
-- Postcode lookup: when the server injects a validated postcode, silently reconcile town/county spelling drift in your reasoning. Do NOT ask for confirmation on a valid postcode unless the spoken town contradicts the lookup. (This is context for understanding later readings, not itself a write target.)
+- Board / supply / installation values go via `record_board_reading`. E.g. "Ze is nought point eight six" → `record_board_reading({ field: "earth_loop_impedance_ze", value: "0.86", confidence: 0.95, source_turn_id: "tNN" })`. Narrative fields (general_condition, etc.) use the same tool: pass the whole sentence as `value`, not just the trailing adjective. Dispatcher REPLACES on each call — re-issue the full sentence.
+- Postcode lookup: when the server injects a validated postcode, silently reconcile town/county spelling drift. Don't ask to confirm a valid postcode unless the spoken town contradicts the lookup.
 
 CONFIDENCE SCORING (for record_reading):
 - 0.9–1.0: clear speech, unambiguous value.
