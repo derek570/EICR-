@@ -93,6 +93,23 @@ Current models used by the backend processing pipeline:
 
 **Note:** For recording, iOS fetches API keys from `GET /api/keys` and connects directly to Deepgram. Sonnet extraction runs server-side via WebSocket. For batch processing and CCU photo analysis, the backend calls AI APIs directly.
 
+## Stage 6 Agentic Extraction (live recording path)
+
+Live recording flows through the Stage 6 agentic extraction pipeline. `config/field_schema.json` is the single source of truth for every extractable field; the tool schemas (`src/extraction/stage6-tool-schemas.js`) generate `record_reading.field` / `record_board_reading.field` enums from it at module load.
+
+Sonnet's `ask_user` tool carries an OPTIONAL `pending_write` property. When the inspector says a value without enough context (e.g. "Number of points is 4" with no circuit), Sonnet attaches the buffered write to its ask. The server then:
+
+1. Holds the user's reply.
+2. Runs the deterministic answer resolver (`src/extraction/stage6-answer-resolver.js`) against the pending write + available circuits.
+3. **High-confidence match** → server auto-emits the write through the normal write path (`createAutoResolveWriteHook` in `src/extraction/stage6-dispatchers.js`). Tool result body: `match_status: "auto_resolved", resolved_writes: [...]`. Sonnet doesn't write again.
+4. **Low-confidence / ambiguous** → tool result echoes back `pending_write` + `available_circuits` + `parsed_hint`. Sonnet writes itself in the next turn.
+
+iOS apply parity is enforced by `scripts/check-ios-field-parity.mjs`, which walks `field_schema.json` and asserts every entry has a matching `case` in `applySonnetReadings`. CI exit-1 on drift.
+
+Shared value-rule semantics live in `src/extraction/value-normalise.js` (`acceptsAsWrite`, `isValidSentinel`, `isEvasionMarker`). iOS mirrors the gate; tests pin equivalence so "N/A" is treated identically on both sides.
+
+Full design rationale: [ADR-008](../adr/008-schema-driven-tools-and-server-resolved-asks.md).
+
 ## CCU Photo Extraction Pipeline
 
 `POST /api/analyze-ccu` (route: `src/routes/extraction.js`) runs a per-slot crop-and-classify VLM pipeline as the primary source of `circuits[]`, with the single-shot VLM prompt running in parallel as the authoritative source for labels and board-level metadata.
