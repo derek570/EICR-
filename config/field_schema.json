@@ -313,11 +313,12 @@
       "description": "External earth fault loop impedance",
       "ai_guidance": "Ze reading at origin. TN-C-S typically <0.35 ohm. TN-S typically <0.8 ohm. TT can be much higher."
     },
-    "zs_at_db": {
-      "label": "Zs at DB (ohm)",
+    "ze_at_db": {
+      "label": "Ze at DB (ohm)",
       "type": "text",
-      "description": "Zs measured at distribution board",
-      "ai_guidance": "Loop impedance at the board. Should be Ze + R1+R2 of main circuit."
+      "description": "External earth fault loop impedance measured at the distribution board (consumer side)",
+      "ai_guidance": "Board-level Ze reading. Use ONLY when the inspector explicitly says 'at the board' or 'at the DB' — bare 'Ze' goes to supply.earth_loop_impedance_ze instead. If the inspector says bare 'Zs' that is a per-circuit measurement (measured_zs_ohm), not a board-level value — emit ask_user to identify the circuit, never silently route to ze_at_db.",
+      "alias_for": ["zs_at_db"]
     },
     "ipf_at_db": {
       "label": "Ipf at DB (kA)",
