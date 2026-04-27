@@ -12,6 +12,7 @@
     "start": "node src/server.js",
     "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js",
     "test:coverage": "node --experimental-vm-modules node_modules/jest/bin/jest.js --coverage",
+    "check:ios-parity": "node scripts/check-ios-field-parity.mjs",
     "lint": "eslint src/ packages/ --ext .js,.ts,.tsx",
     "format": "prettier --write \"src/**/*.js\" \"packages/**/*.ts\"",
     "prepare": "husky",
