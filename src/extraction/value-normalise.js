@@ -11,12 +11,21 @@
 //   3. isEvasionMarker()  — "incomplete", "unknown", "not specified" etc.
 //                           are model-evasion strings, NOT user-intended values
 //
-// iOS reads STAGE6_VALUE_RULES via the schema-derived constants file. Backend
-// reads it directly. Drift between the two is the bug shape that produced the
-// 2026-04-27 Ivydene Road regression (iOS gate stripped "N/A" because its
+// CURRENT STATE (2026-04-27): iOS hand-mirrors these constants in
+// Sources/Recording/DeepgramRecordingViewModel.swift's `nonValueStrings` Set.
+// Drift between the two paths is the bug shape that produced the 2026-04-27
+// Ivydene Road regression (iOS gate stripped "N/A" because its
 // nonValueStrings set didn't match the backend prompt's "N/A is valid" rule).
-// Every change to the rule sets here must be reflected on the Swift side via
-// scripts/generate-ios-value-rules.mjs.
+//
+// FOLLOW-UP (not yet implemented): codegen this set into a Swift file
+// (Sources/Generated/Stage6ValueRules.swift) via a build-time script
+// (scripts/generate-ios-value-rules.mjs) so future updates to
+// STAGE6_VALUE_RULES below propagate to iOS automatically and a CI guard
+// fails on `git status` drift. Until that script exists, ANY change to the
+// rule sets here MUST be hand-mirrored on the Swift side. The
+// `nonValueStrings` Set in DeepgramRecordingViewModel.swift carries a
+// reciprocal pointer back to this file so the iOS author can find this
+// context.
 
 /**
  * Normalise a value so equivalent forms compare equal.
