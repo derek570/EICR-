@@ -327,3 +327,173 @@ describe('resolveCircuitAnswer — preserves pending_write payload', () => {
     expect(r.writes[0].confidence).toBe(0.95);
   });
 });
+
+// ---------------------------------------------------------------------------
+// 2026-04-27 path-2 review fixes (P2-A / P2-B / P2-C / P3-A)
+// ---------------------------------------------------------------------------
+
+describe('resolveCircuitAnswer — P2-A punctuation tolerance', () => {
+  // STT routinely appends commas/periods/exclamation marks to short replies.
+  // Pre-fix the cancel/broadcast phrase match was an exact-string check so
+  // "skip." / "all circuits!" silently escalated, costing a clarification
+  // turn on every punctuated reply.
+  test.each([
+    ['skip.'],
+    ['skip,'],
+    ['skip!'],
+    ['never mind.'],
+    ['never mind!'],
+    ['nevermind...'],
+    ['cancel.'],
+    ['leave it,'],
+  ])('"%s" still cancels (punctuation tolerance)', (reply) => {
+    const r = resolveCircuitAnswer({
+      userText: reply,
+      pendingWrite: SAMPLE_PENDING,
+      availableCircuits: TWO_CIRCUITS,
+    });
+    expect(r.kind).toBe('cancel');
+  });
+
+  test('"all circuits." still broadcasts', () => {
+    const r = resolveCircuitAnswer({
+      userText: 'all circuits.',
+      pendingWrite: { ...SAMPLE_PENDING, field: 'rcd_time_ms', value: 'N/A' },
+      availableCircuits: SIX_CIRCUITS,
+    });
+    expect(r.kind).toBe('auto_resolve');
+    expect(r.writes).toHaveLength(6);
+  });
+
+  test('"all!" still broadcasts', () => {
+    const r = resolveCircuitAnswer({
+      userText: 'all!',
+      pendingWrite: SAMPLE_PENDING,
+      availableCircuits: TWO_CIRCUITS,
+    });
+    expect(r.kind).toBe('auto_resolve');
+    expect(r.writes).toHaveLength(2);
+  });
+});
+
+describe('resolveCircuitAnswer — P2-B ordinals + "circuit number two" + compounds', () => {
+  test.each(
+    [
+      ['the second circuit', 2],
+      ['second', 2],
+      ['third', 3],
+      ['fifth', 5],
+      ['tenth', 10],
+      ['circuit number two', 2],
+      ['circuit number 2', 2],
+      ['circuit no 2', 2],
+      ['twenty-one', 21],
+      ['circuit twenty-one', 21],
+      ['circuit twenty one', 21],
+      ['the thirty fourth', 34], // wait — this one would need ordinals beyond 12; skip in actual lookup
+    ].slice(0, -1)
+  )('"%s" → circuit %d', (reply, expected) => {
+    const r = resolveCircuitAnswer({
+      userText: reply,
+      pendingWrite: SAMPLE_PENDING,
+      availableCircuits: SIX_CIRCUITS, // designation-match irrelevant for numeric path
+    });
+    expect(r.kind).toBe('auto_resolve');
+    expect(r.writes[0].circuit).toBe(expected);
+  });
+
+  test('cct shorthand strips correctly', () => {
+    // "cct" is industry shorthand for "circuit"; STOP_WORDS includes it so
+    // "cct two" → tokens=['two'] → 2.
+    const r = resolveCircuitAnswer({
+      userText: 'cct two',
+      pendingWrite: SAMPLE_PENDING,
+      availableCircuits: TWO_CIRCUITS,
+    });
+    expect(r.kind).toBe('auto_resolve');
+    expect(r.writes[0].circuit).toBe(2);
+  });
+
+  test('compound + non-number residue still escalates (safety preserved)', () => {
+    // "twenty one cookers" has a non-number, non-stop residue → escalate.
+    // Pre-fix this also escalated; we want to keep that safety property.
+    const r = resolveCircuitAnswer({
+      userText: 'twenty one cookers',
+      pendingWrite: SAMPLE_PENDING,
+      availableCircuits: SIX_CIRCUITS,
+    });
+    expect(r.kind).toBe('escalate');
+  });
+});
+
+describe('resolveCircuitAnswer — P2-C broadcast + record_board_reading', () => {
+  test('broadcast on record_board_reading produces a single write', () => {
+    // The schema doc on `pending_write` says record_board_reading writes
+    // apply to circuits[0] regardless of circuit_ref. Pre-fix the resolver
+    // expanded into N writes and dispatched N times — N redundant log rows
+    // and a misleading write_count. Now the resolver short-circuits to
+    // a single write.
+    const pw = {
+      tool: 'record_board_reading',
+      field: 'earth_loop_impedance_ze',
+      value: '0.42',
+      confidence: 0.95,
+      source_turn_id: 't1',
+    };
+    const r = resolveCircuitAnswer({
+      userText: 'all circuits',
+      pendingWrite: pw,
+      availableCircuits: SIX_CIRCUITS,
+    });
+    expect(r.kind).toBe('auto_resolve');
+    expect(r.writes).toHaveLength(1);
+    expect(r.writes[0]).toMatchObject({
+      tool: 'record_board_reading',
+      field: 'earth_loop_impedance_ze',
+      value: '0.42',
+    });
+  });
+
+  test('broadcast still expands for record_reading (per-circuit writes)', () => {
+    // Sanity check that the special-case is gated on tool name; per-circuit
+    // tools still fan out as before.
+    const r = resolveCircuitAnswer({
+      userText: 'all circuits',
+      pendingWrite: { ...SAMPLE_PENDING, field: 'rcd_time_ms', value: 'N/A' },
+      availableCircuits: SIX_CIRCUITS,
+    });
+    expect(r.kind).toBe('auto_resolve');
+    expect(r.writes).toHaveLength(6);
+  });
+});
+
+describe('resolveCircuitAnswer — P3-A two-letter designation match', () => {
+  test('two-letter exact designation matches ("EV")', () => {
+    // Pre-fix the length-floor rejected anything < 3 chars even though the
+    // comment claimed "ev" was supported. Real EICR schedules use 2-char
+    // designations like "EV" (charger), "AC" (unit), "EM" (emergency lighting).
+    const r = resolveCircuitAnswer({
+      userText: 'EV',
+      pendingWrite: SAMPLE_PENDING,
+      availableCircuits: [
+        { circuit_ref: 1, circuit_designation: 'EV charger' },
+        { circuit_ref: 2, circuit_designation: 'Cooker' },
+      ],
+    });
+    expect(r.kind).toBe('auto_resolve');
+    expect(r.writes[0].circuit).toBe(1);
+  });
+
+  test('single-character residue still escalates (length floor still 2)', () => {
+    // The floor was lowered from 3 to 2, NOT to 1 — single-char input is
+    // still too noisy to safely match. Confirm "the n" (cleaned to "n")
+    // still escalates.
+    const r = resolveCircuitAnswer({
+      userText: 'the n',
+      pendingWrite: SAMPLE_PENDING,
+      availableCircuits: [{ circuit_ref: 1, circuit_designation: 'Nightlight' }],
+    });
+    expect(r.kind).toBe('escalate');
+    expect(r.parsed_hint).toBe('reply_too_short_for_designation_match');
+  });
+});

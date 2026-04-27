@@ -75,6 +75,25 @@ const TENS = {
   ninety: 90,
 };
 
+// Ordinals for "the second circuit" / "third" patterns. Capped at 12 because
+// circuits beyond ~10 are rarely phrased as ordinals — speakers default to
+// cardinals ("circuit fifteen") at that point. Add more if a real session
+// reveals the gap.
+const ORDINALS = {
+  first: 1,
+  second: 2,
+  third: 3,
+  fourth: 4,
+  fifth: 5,
+  sixth: 6,
+  seventh: 7,
+  eighth: 8,
+  ninth: 9,
+  tenth: 10,
+  eleventh: 11,
+  twelfth: 12,
+};
+
 /**
  * Parse a small English number ("twenty-one", "thirty") into an integer.
  * Returns null if the input doesn't cleanly parse as a number under 100.
@@ -88,6 +107,10 @@ function parseNumberWord(word) {
     .toLowerCase()
     .replace(/[\s-]+/g, ' ');
   if (!w) return null;
+  // ORDINALS first so "second" / "third" parse as 2 / 3 when used alone.
+  // (Cardinals shadow them only on multi-word forms — "twenty second" isn't
+  // recognised; that's an acceptable gap for now.)
+  if (Object.prototype.hasOwnProperty.call(ORDINALS, w)) return ORDINALS[w];
   if (Object.prototype.hasOwnProperty.call(ONES, w)) return ONES[w];
   if (Object.prototype.hasOwnProperty.call(TENS, w)) return TENS[w];
   // "twenty one", "thirty four", etc.
@@ -100,6 +123,22 @@ function parseNumberWord(word) {
     return TENS[parts[0]] + ONES[parts[1]];
   }
   return null;
+}
+
+/**
+ * Strip leading/trailing punctuation from a lowered string. STT routinely
+ * appends commas, periods, or exclamation marks; the cancel/broadcast
+ * phrase-match used to compare exact strings and would miss "skip." or
+ * "all circuits!" — escalating instead of cancelling/broadcasting and
+ * costing the user a clarification turn.
+ *
+ * Internal whitespace and word characters are preserved.
+ *
+ * @param {string} s
+ * @returns {string}
+ */
+function stripPunct(s) {
+  return s.replace(/^[\W_]+|[\W_]+$/g, '').trim();
 }
 
 // ---------------------------------------------------------------------------
@@ -120,7 +159,16 @@ const STOP_WORDS = new Set([
   'for',
   'circuit',
   'circuits',
-  'one', // dropped only when paired with a designation (handled by structural check)
+  'cct', // industry shorthand for "circuit"
+  'number', // "circuit number two" → strip "number" to leave "two"
+  // NOTE 2026-04-27: 'one' was previously a STOP_WORD with the comment
+  // "dropped only when paired with a designation (handled by structural check)".
+  // P2-B (compound number parsing) now strips STOP_WORDS up-front in
+  // extractCircuitRef before the whole-tokens parseNumberWord call. With
+  // 'one' in STOP_WORDS, "circuit twenty-one" → tokens=['twenty'] → 20
+  // (loses the trailing 'one'). Removing 'one' from STOP_WORDS lets
+  // "twenty one" → 21 round-trip; the numeric path runs first so a bare
+  // "one" is parsed as cardinal 1 and never reaches the designation pass.
   'please',
   'yeah',
   'yep',
@@ -129,6 +177,11 @@ const STOP_WORDS = new Set([
   'uh',
   'er',
 ]);
+
+// NOTE: 'no' is intentionally a CANCEL_PHRASE (below) and NOT a STOP_WORD —
+// adding it to STOP_WORDS would make "no" cancel the cancel-detection (the
+// stripped reply would be empty, escalating instead of cancelling). Keep
+// STOP_WORDS focused on filler tokens that appear AROUND a circuit reference.
 
 // "circuit" appears in STOP_WORDS but we DELIBERATELY keep "one" out of the
 // stripper for free-form replies because "one" is also a number — context
@@ -282,14 +335,28 @@ export function resolveCircuitAnswer({ userText, pendingWrite, availableCircuits
     };
   }
   const lower = text.toLowerCase();
+  // Strip leading/trailing punctuation so "skip." / "never mind!" /
+  // "all circuits," still phrase-match. The original `lower` is preserved
+  // for the value-shape anti-pattern guards below — those checks examine
+  // the user's exact text.
+  const stripped = stripPunct(lower);
 
   // Cancel — short-circuit before anything else.
-  if (CANCEL_PHRASES.includes(lower) || CANCEL_PHRASES.some((p) => lower === p)) {
+  if (CANCEL_PHRASES.includes(stripped)) {
     return { kind: 'cancel' };
   }
 
   // Broadcast — expand pending_write into one write per circuit.
-  if (BROADCAST_PHRASES.includes(lower)) {
+  // EXCEPT for record_board_reading: a board-level write ignores circuit_ref
+  // (it lands at circuits[0] regardless), so producing N synthetic writes
+  // when the user said "all circuits" creates N redundant log rows and N
+  // misleading tool_call_ids that all dispatch the same value to the same
+  // bucket. The pending_write schema documents this contract; the resolver
+  // honours it by emitting a single write.
+  if (BROADCAST_PHRASES.includes(stripped)) {
+    if (pendingWrite.tool === 'record_board_reading') {
+      return { kind: 'auto_resolve', writes: [buildWrite(pendingWrite, 0)] };
+    }
     const circuits = Array.isArray(availableCircuits) ? availableCircuits : [];
     if (circuits.length === 0) {
       return { kind: 'escalate', parsed_hint: 'broadcast_no_circuits', available_circuits: [] };
@@ -327,12 +394,16 @@ export function resolveCircuitAnswer({ userText, pendingWrite, availableCircuits
     return { kind: 'auto_resolve', writes: [buildWrite(pendingWrite, numericRef)] };
   }
 
-  // Designation match. Require the cleaned residue to be at least 3 chars —
+  // Designation match. Require the cleaned residue to be at least 2 chars —
   // single-letter substrings produce noisy matches (a stray "n" or "a" lights
-  // up almost any designation). 3 chars filters those without sacrificing
-  // legitimate short designations like "hob" or "ev".
+  // up almost any designation). The 2-char floor is the minimum-meaningful
+  // EICR-schedule designation token ("EV" charger, "AC" unit, "EM" emergency
+  // lighting, etc.) — pre-2026-04-27 the threshold was 3 and rejected those
+  // legitimate short designations even though the comment claimed they were
+  // supported. The exact + ambiguous-substring logic below already prevents
+  // false positives; the length floor only filters truly noisy 1-char input.
   const cleaned = cleanReplyForDesignation(lower);
-  if (cleaned.length < 3) {
+  if (cleaned.length < 2) {
     return {
       kind: 'escalate',
       parsed_hint: 'reply_too_short_for_designation_match',
@@ -386,18 +457,39 @@ function extractCircuitRef(lowerText) {
     }
   }
 
-  // Word number: try to extract a single word-number.
-  const tokens = lowerText.match(/[a-z]+/g) || [];
+  // Word number. Strip stop-word tokens up front so leading "circuit" /
+  // "the" / "number" don't break the parse for "circuit twenty-one" /
+  // "the second circuit" / "circuit number two".
+  //
+  // Pre-2026-04-27 the whole-string parse received the unfiltered tokens
+  // and "circuit twenty one" → parseNumberWord('circuit twenty one') →
+  // null because the parts.length === 2 check failed. That's the bug
+  // P2-B fixes: the JSDoc claimed support for ordinals + compound number
+  // patterns that no test ever exercised.
+  const allTokens = lowerText.match(/[a-z]+/g) || [];
+  const tokens = allTokens.filter((t) => !STOP_WORDS.has(t));
   if (tokens.length === 0) return null;
-  // Try whole-string parse first ("twenty one").
+
+  // 1) Whole-tokens parse. Handles "twenty one", "twenty-one" (already
+  // split by the [a-z]+ regex), and standalone ordinals ("second").
   const whole = parseNumberWord(tokens.join(' '));
   if (whole !== null && whole >= 1 && whole <= 200) {
-    // Reject if the original reply had non-number tokens beyond stop words.
-    const nonNumberTokens = tokens.filter((t) => !STOP_WORDS.has(t) && parseNumberWord(t) === null);
-    if (nonNumberTokens.length === 0) return whole;
-    return null;
+    return whole;
   }
-  // Try single tokens.
+
+  // 2) Contiguous TENS+ONES adjacent pairs amid noise tokens. Rejects
+  // when there's a non-number residue ("twenty one cookers" → escalate).
+  for (let i = 0; i < tokens.length - 1; i++) {
+    const compound = parseNumberWord(`${tokens[i]} ${tokens[i + 1]}`);
+    if (compound !== null && compound >= 1 && compound <= 200) {
+      const otherTokens = tokens.filter((_, idx) => idx !== i && idx !== i + 1);
+      const nonNumberOthers = otherTokens.filter((t) => parseNumberWord(t) === null);
+      if (nonNumberOthers.length === 0) return compound;
+      return null;
+    }
+  }
+
+  // 3) Single ordinal/cardinal token. ORDINALS already inside parseNumberWord.
   let found = null;
   for (const t of tokens) {
     const n = parseNumberWord(t);
@@ -407,9 +499,12 @@ function extractCircuitRef(lowerText) {
     }
   }
   if (found !== null) {
-    // Ensure the rest of the tokens are just stop words ("circuit", "the", ...)
-    const nonStop = tokens.filter((t) => !STOP_WORDS.has(t) && parseNumberWord(t) === null);
-    if (nonStop.length === 0) return found;
+    // Reject if a non-number, non-stop residue remains (the user said
+    // something more than just a number — likely a designation, not a
+    // bare circuit ref). Preserves the same safety check the pre-fix
+    // code had at the bottom of this function.
+    const nonNumber = tokens.filter((t) => parseNumberWord(t) === null);
+    if (nonNumber.length === 0) return found;
     return null;
   }
   return null;
