@@ -237,5 +237,40 @@ export function validateAskUser(input) {
   if (!ASK_USER_ANSWER_SHAPES.includes(input.expected_answer_shape)) {
     return { code: 'invalid_expected_answer_shape', field: 'expected_answer_shape' };
   }
+  // pending_write is OPTIONAL — null/absent is the common case for asks that
+  // aren't resolving a buffered value (out_of_range_circuit, observation
+  // confirmation, etc.). When PRESENT it must be a fully-shaped object.
+  // The server-side answer resolver consumes these fields, so a malformed
+  // pending_write is a Sonnet contract bug we surface here rather than
+  // silently dropping during resolution.
+  if (input.pending_write !== undefined && input.pending_write !== null) {
+    const pw = input.pending_write;
+    if (typeof pw !== 'object') {
+      return { code: 'invalid_pending_write', field: 'pending_write' };
+    }
+    if (pw.tool !== 'record_reading' && pw.tool !== 'record_board_reading') {
+      return { code: 'invalid_pending_write_tool', field: 'pending_write.tool' };
+    }
+    if (typeof pw.field !== 'string' || pw.field.length === 0) {
+      return { code: 'invalid_pending_write_field', field: 'pending_write.field' };
+    }
+    if (typeof pw.value !== 'string') {
+      return { code: 'invalid_pending_write_value', field: 'pending_write.value' };
+    }
+    if (
+      typeof pw.confidence !== 'number' ||
+      !Number.isFinite(pw.confidence) ||
+      pw.confidence < 0 ||
+      pw.confidence > 1
+    ) {
+      return { code: 'invalid_pending_write_confidence', field: 'pending_write.confidence' };
+    }
+    if (typeof pw.source_turn_id !== 'string') {
+      return {
+        code: 'invalid_pending_write_source_turn_id',
+        field: 'pending_write.source_turn_id',
+      };
+    }
+  }
   return null;
 }

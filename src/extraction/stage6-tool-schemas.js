@@ -410,6 +410,54 @@ const askUser = makeTool({
       description:
         'Shape the model expects the answer to take. Drives downstream parsing hints. yes_no / number / free_text / circuit_ref.',
     },
+    pending_write: {
+      // OPTIONAL. Attach when the ask is to resolve a circuit / context for a
+      // value the inspector has ALREADY spoken. The server's deterministic
+      // matcher (stage6-answer-resolver) consults the user reply against
+      // available_circuits, and on a confident match auto-emits the buffered
+      // write — Sonnet does NOT need to remember the value across turns. On
+      // no/ambiguous match the tool_result carries `match_status:"escalated"`
+      // and the pending_write echoed back so Sonnet can write directly.
+      // record_reading writes need a circuit (server fills it from the resolved
+      // answer); record_board_reading writes apply to circuits[0] and ignore
+      // the answer's circuit_ref. Confidence/source_turn_id are inherited
+      // verbatim from this object on the auto-emitted write.
+      anyOf: [
+        {
+          type: 'object',
+          properties: {
+            tool: {
+              type: 'string',
+              enum: ['record_reading', 'record_board_reading'],
+              description:
+                'Which write tool the buffered value will be dispatched through on resolution.',
+            },
+            field: {
+              type: 'string',
+              description:
+                "The field to write. Must match the tool's field enum (validated server-side).",
+            },
+            value: {
+              type: 'string',
+              description: 'Post-normalisation value as a string.',
+            },
+            confidence: {
+              type: 'number',
+              description: 'Model confidence 0.0–1.0 for the buffered capture.',
+            },
+            source_turn_id: {
+              type: 'string',
+              description: 'Identifier of the user turn this reading came from.',
+            },
+          },
+          required: ['tool', 'field', 'value', 'confidence', 'source_turn_id'],
+          additionalProperties: false,
+        },
+        { type: 'null' },
+      ],
+      description:
+        'Optional buffered write to be auto-emitted on a confident server-side match of the user answer. Use when the ask is to resolve a circuit/context for a value the user has spoken. Set to null (or omit) when the ask is purely informational (out_of_range_circuit, observation_confirmation, etc.).',
+    },
   },
   required: ['question', 'reason', 'expected_answer_shape'],
 });

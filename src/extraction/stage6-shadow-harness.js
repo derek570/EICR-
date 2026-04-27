@@ -69,6 +69,7 @@ import { runToolLoop } from './stage6-tool-loop.js';
 import {
   createWriteDispatcher,
   createToolDispatcher,
+  createAutoResolveWriteHook,
   createSortRecordsAsksLast,
 } from './stage6-dispatchers.js';
 import { createAskDispatcher } from './stage6-dispatcher-ask.js';
@@ -173,12 +174,21 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
   const pendingAsks = options.pendingAsks ?? null;
   const ws = options.ws ?? null;
   const writes = createWriteDispatcher(liveSession, log, turnId, perTurnWrites);
+  // 2026-04-27 — bug-1B fix. Hook the ask dispatcher's server-side resolution
+  // path into the normal write infrastructure: when ask_user carries a
+  // pending_write and the user's reply matches a circuit deterministically,
+  // the ask dispatcher invokes this hook to dispatch the buffered write
+  // through perTurnWrites + state snapshot + log rows in the same shape a
+  // Sonnet-direct write would have. Closure captures liveSession so the
+  // mutation lands on the same state Sonnet sees on the next turn.
+  const liveAutoResolveWrite = createAutoResolveWriteHook(liveSession, log, turnId, perTurnWrites);
   let dispatcher;
   let sortRecords;
   let askGateForTurn = null;
   if (pendingAsks) {
     let asks = createAskDispatcher(liveSession, log, turnId, pendingAsks, ws, {
       fallbackToLegacy: options.fallbackToLegacy === true,
+      autoResolveWrite: liveAutoResolveWrite,
     });
     if (options.askBudget && options.restrainedMode) {
       askGateForTurn = createAskGateWrapper({
@@ -565,6 +575,18 @@ export async function runShadowHarness(session, transcriptText, regexResults, op
   const pendingAsks = options.pendingAsks ?? null;
   const ws = options.ws ?? null;
   const writes = createWriteDispatcher(shadowSession, log, turnId, perTurnWrites);
+  // 2026-04-27 — bug-1B fix (shadow path mirror). Same hook as live mode but
+  // bound to shadowSession so an auto-resolved write lands on the comparison
+  // snapshot. Phase 7 divergence analytics will see the resolved write the
+  // same as a Sonnet-direct write — there's no separate divergence reason for
+  // server-resolution because the verdict is deterministic from the shared
+  // resolver, not a model decision.
+  const shadowAutoResolveWrite = createAutoResolveWriteHook(
+    shadowSession,
+    log,
+    turnId,
+    perTurnWrites
+  );
   let dispatcher;
   let sortRecords;
   // Stage 6 Phase 5 Plan 05-01 — per-turn debounce gate. Lives only for the
@@ -581,6 +603,7 @@ export async function runShadowHarness(session, transcriptText, regexResults, op
     // pre-Plan-06-02 caller byte-identical.
     let asks = createAskDispatcher(shadowSession, log, turnId, pendingAsks, ws, {
       fallbackToLegacy: options.fallbackToLegacy === true,
+      autoResolveWrite: shadowAutoResolveWrite,
     });
     // Phase 5 — wrap with gates ONLY when the activeSessions entry threaded
     // both stateful resources through. Existing Phase 3/4 callers (and the

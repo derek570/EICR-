@@ -38,14 +38,18 @@ export function createPendingAsksRegistry() {
     // (pre-Phase-4 iOS or any legacy path) fell through to user_moved_on
     // and forced a re-ask every time. Restoring the field makes STA-04c
     // reachable in production.
-    register(toolCallId, {
-      contextField,
-      contextCircuit,
-      expectedAnswerShape,
-      resolve,
-      timer,
-      askStartedAt,
-    }) {
+    register(
+      toolCallId,
+      {
+        contextField,
+        contextCircuit,
+        expectedAnswerShape,
+        pendingWrite,
+        resolve,
+        timer,
+        askStartedAt,
+      }
+    ) {
       if (asks.has(toolCallId)) {
         // Plan 03-10 Task 3 (STG MAJOR #3) — stamp a discriminant `.code`
         // on the duplicate throw so the dispatcher can tell our OWN
@@ -63,6 +67,14 @@ export function createPendingAsksRegistry() {
         contextField,
         contextCircuit,
         expectedAnswerShape,
+        // Schema-driven server-side resolution (2026-04-27 — bug-1B fix).
+        // When non-null, the dispatcher hands this + the user reply +
+        // available_circuits to stage6-answer-resolver and auto-emits
+        // the buffered write on a confident match. Null for asks that
+        // are not resolving a buffered value (out_of_range_circuit,
+        // observation_confirmation, etc.) — those resume Sonnet with the
+        // legacy untrusted_user_text body.
+        pendingWrite: pendingWrite ?? null,
         askStartedAt,
       });
     },

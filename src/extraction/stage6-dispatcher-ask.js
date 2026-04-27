@@ -95,6 +95,7 @@
 import { validateAskUser } from './stage6-dispatch-validation.js';
 import { logAskUser } from './stage6-dispatcher-logger.js';
 import { checkForPromptLeak, hashPayload } from './stage6-prompt-leak-filter.js';
+import { resolveCircuitAnswer } from './stage6-answer-resolver.js';
 
 /**
  * STA-03 — exported so test override and Phase 5 tuning have a single knob.
@@ -139,6 +140,15 @@ export const ASK_USER_TIMEOUT_MS = 45000;
  */
 export function createAskDispatcher(session, logger, turnId, pendingAsks, ws, opts = {}) {
   const fallbackToLegacy = opts && opts.fallbackToLegacy === true;
+  // Optional auto-resolve hook (2026-04-27 — bug-1B fix). When provided AND the
+  // ask carried a pending_write AND the deterministic resolver returns a
+  // confident match, the dispatcher invokes this callback to dispatch the
+  // buffered write through the normal write path. Returns the resolved write
+  // record(s) for inclusion in the tool_result body. Wiring is in the composer
+  // (createToolDispatcher); legacy callers that don't pass it fall back to the
+  // pre-2026-04-27 behaviour (just echo untrusted_user_text).
+  const autoResolveWrite =
+    typeof opts?.autoResolveWrite === 'function' ? opts.autoResolveWrite : null;
   return async function dispatchAskUser(call, ctx) {
     const mode = session.toolCallsMode === 'shadow' ? 'shadow' : 'live';
     const sessionId = ctx?.sessionId ?? session.sessionId;
@@ -314,6 +324,11 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws, op
             // numeric attribution is the harder failure mode to detect
             // (poisons the slot map) than a re-ask.
             expectedAnswerShape: input.expected_answer_shape,
+            // 2026-04-27 — bug-1B fix. Buffer the pending write on the entry
+            // so the dispatcher's resolution path can hand it to the answer
+            // resolver alongside the user reply. Null when the ask is not
+            // resolving a buffered value (out_of_range_circuit, etc.).
+            pendingWrite: input.pending_write ?? null,
             resolve,
             timer,
             askStartedAt,
@@ -485,13 +500,198 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws, op
     // The registry-internal resolve payload still uses `user_text` because
     // there is no injection surface there — that value is only ever read
     // here and by the logger.
-    const body = outcome.answered
-      ? { answered: true, untrusted_user_text: outcome.user_text }
-      : { answered: false, reason: outcome.reason };
+
+    // Server-side resolution path (2026-04-27 — bug-1B fix). When the ask
+    // carried a pending_write AND we got a successful answer AND the
+    // auto-resolve hook is wired (composer-side opt-in), run the
+    // deterministic matcher against the user reply + available circuits
+    // and auto-emit any confident write so Sonnet doesn't have to remember
+    // the buffered value across turns. Three classes of resolver verdict
+    // shape three different tool_result bodies:
+    //
+    //   auto_resolve → server dispatched the writes, body carries
+    //                  resolved_writes:[...], match_status:'auto_resolved'.
+    //   cancel       → user said "skip" / "never mind"; body carries
+    //                  match_status:'cancelled', resolved_writes:[].
+    //   escalate     → ambiguous / unparseable; body echoes pending_write,
+    //                  available_circuits, parsed_hint, and the raw
+    //                  untrusted_user_text so Sonnet has full context.
+    //   no_pending_write or no autoResolveWrite hook → legacy body.
+    //
+    // The legacy body shape is preserved when there's nothing to resolve
+    // so existing call paths don't break.
+    const body = await buildResolvedBody({
+      outcome,
+      pendingWrite: input.pending_write ?? null,
+      session,
+      autoResolveWrite,
+      logger,
+      sessionId,
+      turnId,
+      toolCallId,
+    });
+
     return {
       tool_use_id: toolCallId,
       content: JSON.stringify(body),
       is_error: outcome.reason === 'duplicate_tool_call_id',
     };
   };
+}
+
+/**
+ * Shape the tool_result body. Centralised so the dispatcher's main flow stays
+ * legible and the resolution branches are testable in isolation.
+ *
+ * Returns a plain object — the caller JSON-stringifies it. All branches preserve
+ * the legacy keys (`answered`, `untrusted_user_text` / `reason`) so consumers
+ * that don't know about server-side resolution see the same shape they always
+ * have. New keys are additive.
+ */
+async function buildResolvedBody({
+  outcome,
+  pendingWrite,
+  session,
+  autoResolveWrite,
+  logger,
+  sessionId,
+  turnId,
+  toolCallId,
+}) {
+  // Non-answered outcomes (timeout / user_moved_on / shadow_mode / etc.)
+  // never trigger resolution — there's no answer text to resolve.
+  if (!outcome.answered) {
+    return { answered: false, reason: outcome.reason };
+  }
+
+  // Legacy / no-pending-write path: same body the dispatcher emitted before
+  // the bug-1B fix. Sonnet sees only the user text and decides what to do.
+  if (!pendingWrite || !autoResolveWrite) {
+    return { answered: true, untrusted_user_text: outcome.user_text };
+  }
+
+  const availableCircuits = collectAvailableCircuits(session);
+  const verdict = resolveCircuitAnswer({
+    userText: outcome.user_text,
+    pendingWrite,
+    availableCircuits,
+  });
+
+  if (verdict.kind === 'auto_resolve') {
+    // Dispatch each resolved write through the normal write path. Failures
+    // here are swallowed (logged) and downgraded to escalation — we don't
+    // want a single bad dispatch to break the answer return.
+    const dispatched = [];
+    for (const write of verdict.writes) {
+      try {
+        const result = await autoResolveWrite(write, { sessionId, turnId, toolCallId });
+        dispatched.push({
+          tool: write.tool,
+          field: write.field,
+          circuit: write.circuit,
+          value: write.value,
+          ok: result?.ok !== false,
+        });
+      } catch (err) {
+        if (logger?.warn) {
+          logger.warn('stage6.ask_user_auto_resolve_dispatch_failed', {
+            sessionId,
+            turnId,
+            tool_call_id: toolCallId,
+            field: write.field,
+            circuit: write.circuit,
+            error: err?.message || String(err),
+          });
+        }
+        dispatched.push({
+          tool: write.tool,
+          field: write.field,
+          circuit: write.circuit,
+          value: write.value,
+          ok: false,
+          error: err?.message || String(err),
+        });
+      }
+    }
+    if (logger?.info) {
+      logger.info('stage6.ask_user_auto_resolved', {
+        sessionId,
+        turnId,
+        tool_call_id: toolCallId,
+        write_count: dispatched.length,
+        all_ok: dispatched.every((d) => d.ok),
+      });
+    }
+    return {
+      answered: true,
+      untrusted_user_text: outcome.user_text,
+      auto_resolved: true,
+      match_status: 'auto_resolved',
+      resolved_writes: dispatched,
+    };
+  }
+
+  if (verdict.kind === 'cancel') {
+    if (logger?.info) {
+      logger.info('stage6.ask_user_resolution_cancelled', {
+        sessionId,
+        turnId,
+        tool_call_id: toolCallId,
+      });
+    }
+    return {
+      answered: true,
+      untrusted_user_text: outcome.user_text,
+      auto_resolved: false,
+      match_status: 'cancelled',
+      pending_write: pendingWrite,
+    };
+  }
+
+  if (verdict.kind === 'escalate') {
+    if (logger?.info) {
+      logger.info('stage6.ask_user_resolution_escalated', {
+        sessionId,
+        turnId,
+        tool_call_id: toolCallId,
+        parsed_hint: verdict.parsed_hint,
+      });
+    }
+    return {
+      answered: true,
+      untrusted_user_text: outcome.user_text,
+      auto_resolved: false,
+      match_status: 'escalated',
+      parsed_hint: verdict.parsed_hint,
+      pending_write: pendingWrite,
+      available_circuits: verdict.available_circuits,
+    };
+  }
+
+  // verdict.kind === 'no_pending_write' shouldn't reach here (we guarded
+  // above) but belt-and-braces fall back to the legacy body.
+  return { answered: true, untrusted_user_text: outcome.user_text };
+}
+
+/**
+ * Pull the (circuit_ref, designation) pairs out of stateSnapshot so the
+ * resolver can match designations against what currently exists. Skips the
+ * circuits[0] bucket (the legacy supply/board namespace) and any entry
+ * without a designation.
+ *
+ * @param {object} session
+ * @returns {Array<{circuit_ref: number, circuit_designation: string}>}
+ */
+function collectAvailableCircuits(session) {
+  const circuits = session?.stateSnapshot?.circuits;
+  if (!circuits || typeof circuits !== 'object') return [];
+  const out = [];
+  for (const [refStr, bucket] of Object.entries(circuits)) {
+    const ref = Number.parseInt(refStr, 10);
+    if (!Number.isFinite(ref) || ref < 1) continue; // 0 is the board bucket
+    const designation = (bucket?.designation ?? '').toString();
+    if (!designation) continue;
+    out.push({ circuit_ref: ref, circuit_designation: designation });
+  }
+  return out;
 }

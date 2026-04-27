@@ -146,6 +146,76 @@ export function createToolDispatcher(writes, asks) {
 }
 
 /**
+ * 2026-04-27 — bug-1B fix. Build an `autoResolveWrite(write, ctx)` hook for
+ * the ask dispatcher to invoke when its deterministic resolver returns a
+ * confident match. The hook synthesises a write tool call from the resolver
+ * verdict and dispatches it through the normal WRITE_DISPATCHERS path so
+ * perTurnWrites + state snapshot + log rows all stay consistent with a
+ * Sonnet-emitted write.
+ *
+ * The synthetic tool_call_id namespaces with `::auto::` so post-hoc log
+ * analysis can split server-resolved writes from Sonnet-direct writes if
+ * needed. Confidence and source_turn_id are carried verbatim from the
+ * resolver's pending_write — the inspector's spoken value is the ground
+ * truth, not a regenerated approximation.
+ *
+ * @param {object} session         the dispatcher session (live or shadow)
+ * @param {object} logger
+ * @param {string} turnId
+ * @param {object} perTurnWrites
+ * @returns {(write: {tool, field, circuit, value, confidence, source_turn_id}, ctx?: object) => Promise<{ok: boolean, body?: object, error?: string}>}
+ */
+export function createAutoResolveWriteHook(session, logger, turnId, perTurnWrites) {
+  let round = 0;
+  return async function autoResolveWrite(write, callCtx = {}) {
+    const fn = WRITE_DISPATCHERS[write.tool];
+    if (!fn) {
+      return { ok: false, error: 'unknown_tool' };
+    }
+    round += 1;
+    const askToolCallId = callCtx.toolCallId ?? 'unknown_ask';
+    const synthCallId = `${askToolCallId}::auto::${write.tool}::${write.field}::${
+      write.circuit ?? 'board'
+    }`;
+    const synthInput =
+      write.tool === 'record_reading'
+        ? {
+            field: write.field,
+            circuit: write.circuit,
+            value: write.value,
+            confidence: write.confidence,
+            source_turn_id: write.source_turn_id,
+          }
+        : {
+            field: write.field,
+            value: write.value,
+            confidence: write.confidence,
+            source_turn_id: write.source_turn_id,
+          };
+    const synthCall = {
+      tool_call_id: synthCallId,
+      name: write.tool,
+      input: synthInput,
+    };
+    const env = await fn(synthCall, {
+      session,
+      logger,
+      turnId,
+      perTurnWrites,
+      round,
+    });
+    let body = null;
+    try {
+      body = JSON.parse(env.content);
+    } catch {
+      // dispatcher contracts emit JSON; a parse failure is a contract bug.
+      // Leave body null and let the ok flag carry the signal.
+    }
+    return { ok: env.is_error !== true, body };
+  };
+}
+
+/**
  * Default Phase 3 sortRecords hook for runToolLoop. Moves every `ask_user`
  * record to the END of the array while preserving stream-emission
  * (index-ascending) order within each partition.

@@ -75,6 +75,12 @@ jest.unstable_mockModule('../extraction/stage6-dispatchers.js', () => ({
   createWriteDispatcher: createWriteDispatcherSpy,
   createToolDispatcher: createToolDispatcherSpy,
   createSortRecordsAsksLast: createSortRecordsAsksLastSpy,
+  // 2026-04-27 — bug-1B fix added createAutoResolveWriteHook to the
+  // dispatchers barrel. The harness imports it and threads it into
+  // createAskDispatcher.opts.autoResolveWrite. The test doesn't care about
+  // resolution mechanics here (covered by stage6-dispatcher-ask-pending-write
+  // tests), so a no-op identity stub keeps the import resolver happy.
+  createAutoResolveWriteHook: () => async () => ({ ok: true }),
   // WRITE_DISPATCHERS unused by harness; stub for any transitive import safety.
   WRITE_DISPATCHERS: {},
 }));
