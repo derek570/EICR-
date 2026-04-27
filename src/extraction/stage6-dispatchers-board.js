@@ -138,10 +138,16 @@ export async function dispatchRecordBoardReading(call, ctx) {
   // 4) track in perTurnWrites for the bundler / shadow comparator.
   // Map keyed by field-only (degenerate circuit half — every board reading
   // lives at circuits[0]). Mirrors the readings Map's value-object shape.
+  //
+  // P3-B (2026-04-27): tag synthetic auto-resolve writes so the slot
+  // comparator can filter them out (see stage6-dispatchers-circuit.js for
+  // the parallel change on per-circuit writes).
+  const autoResolved = String(call.tool_call_id ?? '').includes('::auto::');
   perTurnWrites.boardReadings.set(input.field, {
     value: input.value,
     confidence: input.confidence ?? 1.0,
     source_turn_id: input.source_turn_id,
+    auto_resolved: autoResolved || undefined,
   });
 
   // 5) log success.

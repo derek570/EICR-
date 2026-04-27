@@ -106,12 +106,21 @@ export async function dispatchRecordReading(call, ctx) {
   });
 
   // MAJOR-1 shape lock: value object carries ONLY {value, confidence,
-  // source_turn_id} — field/circuit live in the Map key. Bundler (Plan 02-05)
-  // splits the key on '::' to reconstruct them.
+  // source_turn_id, auto_resolved?} — field/circuit live in the Map key.
+  // Bundler (Plan 02-05) splits the key on '::' to reconstruct them.
+  //
+  // P3-B (2026-04-27): tag synthetic auto-resolve writes so the slot
+  // comparator can filter them out and avoid false-positive `extra_in_tool`
+  // divergences against shadow mode (where the auto-resolve hook is dead
+  // code; createAskDispatcher short-circuits before the resolution path).
+  // The synthetic tool_call_id namespace marker '::auto::' is set by
+  // createAutoResolveWriteHook in stage6-dispatchers.js.
+  const autoResolved = String(call.tool_call_id ?? '').includes('::auto::');
   perTurnWrites.readings.set(`${input.field}::${input.circuit}`, {
     value: input.value,
     confidence: input.confidence ?? 1.0,
     source_turn_id: input.source_turn_id,
+    auto_resolved: autoResolved || undefined,
   });
 
   logToolCall(logger, {

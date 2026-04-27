@@ -100,6 +100,12 @@ export function projectSlots(result) {
   if (Array.isArray(result.extracted_readings)) {
     for (const r of result.extracted_readings) {
       if (!r || typeof r !== 'object') continue;
+      // P3-B (2026-04-27) — auto-resolved synthetic writes appear ONLY in
+      // live mode (createAskDispatcher short-circuits before resolution in
+      // shadow). Skip them so they don't show up as `extra_in_tool` false
+      // positives against shadow's empty equivalent. Sonnet-direct writes
+      // are unaffected (the bundler omits the flag for those).
+      if (r.auto_resolved === true) continue;
       const field = r.field ?? '';
       const circuit = r.circuit ?? '';
       const isBoard = circuit === 0 || circuit === '0';
@@ -118,6 +124,8 @@ export function projectSlots(result) {
   if (Array.isArray(result.extracted_board_readings)) {
     for (const r of result.extracted_board_readings) {
       if (!r || typeof r !== 'object') continue;
+      // P3-B — same filter as extracted_readings above.
+      if (r.auto_resolved === true) continue;
       const field = r.field ?? '';
       board_readings.set(`board_reading:${field}`, r.value);
     }

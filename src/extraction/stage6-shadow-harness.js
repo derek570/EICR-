@@ -575,18 +575,32 @@ export async function runShadowHarness(session, transcriptText, regexResults, op
   const pendingAsks = options.pendingAsks ?? null;
   const ws = options.ws ?? null;
   const writes = createWriteDispatcher(shadowSession, log, turnId, perTurnWrites);
-  // 2026-04-27 — bug-1B fix (shadow path mirror). Same hook as live mode but
-  // bound to shadowSession so an auto-resolved write lands on the comparison
-  // snapshot. Phase 7 divergence analytics will see the resolved write the
-  // same as a Sonnet-direct write — there's no separate divergence reason for
-  // server-resolution because the verdict is deterministic from the shared
-  // resolver, not a model decision.
-  const shadowAutoResolveWrite = createAutoResolveWriteHook(
-    shadowSession,
-    log,
-    turnId,
-    perTurnWrites
-  );
+  // 2026-04-27 — auto-resolve hook is NOT threaded into shadow mode.
+  //
+  // The original 2026-04-27 path-2 wiring created a `shadowAutoResolveWrite`
+  // hook against shadowSession and passed it into createAskDispatcher's opts.
+  // Internal review found the hook never fires: createAskDispatcher
+  // short-circuits `mode === 'shadow'` BEFORE the auto-resolve resolution
+  // path, so the hook is dead code — and worse, live mode's auto-resolved
+  // writes appear in perTurnWrites.readings (and downstream comparator
+  // input) but shadow mode has no equivalent, so the slot comparator sees
+  // them as `extra_in_tool` divergences. False positives every time
+  // auto_resolve fires, polluting Phase 7 retirement analytics.
+  //
+  // Two-step fix:
+  //  1) Drop the shadow hook (this comment block; previously a
+  //     createAutoResolveWriteHook + autoResolveWrite opt).
+  //  2) Slot comparator filters readings whose tool_call_id contains the
+  //     '::auto::' synthetic-call namespace marker so live's auto-resolves
+  //     don't show up as false-positive `extra_in_tool` divergences against
+  //     shadow's empty equivalent. See stage6-slot-comparator.js for the
+  //     filter.
+  //
+  // Shadow comparator never had perfect parity with live (it cannot see
+  // ask_user round-trips at all, per the mode==='shadow' short-circuit in
+  // createAskDispatcher). Adding a one-off filter is consistent with how
+  // other shadow-only paths are handled and avoids the more invasive
+  // option of rewriting buildResolvedBody to also run shadow-side.
   let dispatcher;
   let sortRecords;
   // Stage 6 Phase 5 Plan 05-01 — per-turn debounce gate. Lives only for the
@@ -603,7 +617,10 @@ export async function runShadowHarness(session, transcriptText, regexResults, op
     // pre-Plan-06-02 caller byte-identical.
     let asks = createAskDispatcher(shadowSession, log, turnId, pendingAsks, ws, {
       fallbackToLegacy: options.fallbackToLegacy === true,
-      autoResolveWrite: shadowAutoResolveWrite,
+      // autoResolveWrite intentionally OMITTED for shadow mode — see the
+      // comment block above the createWriteDispatcher call. The dispatcher
+      // short-circuits `mode === 'shadow'` before the resolution path, so
+      // any hook here would be dead code.
     });
     // Phase 5 — wrap with gates ONLY when the activeSessions entry threaded
     // both stateful resources through. Existing Phase 3/4 callers (and the

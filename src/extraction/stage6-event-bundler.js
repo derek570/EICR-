@@ -81,13 +81,22 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape) {
       circuitStr !== '' && Number.isInteger(circuitInt) && String(circuitInt) === circuitStr
         ? circuitInt
         : circuitStr;
-    extracted_readings.push({
+    const reading = {
       field,
       circuit,
       value: entry.value,
       confidence: entry.confidence,
       source: 'tool_call',
-    });
+    };
+    // P3-B (2026-04-27) — propagate the auto_resolve marker so the slot
+    // comparator can filter synthetic writes out of shadow-vs-live diffs.
+    // Set ONLY when truthy so the JSON wire shape stays byte-identical for
+    // every Sonnet-direct write (the existing iOS decoder doesn't know this
+    // field; omitting when undefined keeps the snapshot stable).
+    if (entry.auto_resolved === true) {
+      reading.auto_resolved = true;
+    }
+    extracted_readings.push(reading);
   }
 
   // 2-3. Observations + questions — defensive copies so downstream mutation
@@ -128,12 +137,17 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape) {
   if (boardReadings.size > 0) {
     const extracted_board_readings = [];
     for (const [field, entry] of boardReadings) {
-      extracted_board_readings.push({
+      const reading = {
         field,
         value: entry.value,
         confidence: entry.confidence,
         source: 'tool_call',
-      });
+      };
+      // P3-B — same auto_resolve propagation as extracted_readings above.
+      if (entry.auto_resolved === true) {
+        reading.auto_resolved = true;
+      }
+      extracted_board_readings.push(reading);
     }
     result.extracted_board_readings = extracted_board_readings;
   }
