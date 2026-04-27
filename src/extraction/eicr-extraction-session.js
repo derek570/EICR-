@@ -40,6 +40,17 @@ const BATCH_TIMEOUT_MS = 2000; // ms to wait for more utterances before flushing
 // the 5-minute prompt cache before it expires. Costs ~$0.003 per keepalive (cache reads only).
 const CACHE_KEEPALIVE_MS = 4 * 60 * 1000; // 4 minutes
 
+// How long after a `pause()` we keep the cache warm before giving up. Stage 4c
+// (no-doze) sends `session_pause` whenever the iOS sleep state fires, which
+// happens after 60s of no-transcript silence. Inspectors regularly resume
+// within minutes (loft transit, between-test setup, brief client interruption);
+// dropping the cache the instant pause arrives means each resume pays a fresh
+// cache write (~$0.056) instead of a cache read (~$0.0045) — a 12.5×
+// difference per medium-pause cycle. 15 minutes of paused keepalives costs
+// ~$0.015 and saves ~$0.04 if the user resumes within that window. Past 15
+// min the user is genuinely away and the cache is best abandoned.
+const PAUSE_KEEPALIVE_BUDGET_MS = 15 * 60 * 1000; // 15 minutes
+
 // Number of most-recently-updated circuits to include in full detail in the state snapshot.
 // Older circuits are listed by number only (values stored server-side, not sent to API).
 //
@@ -716,6 +727,10 @@ export class EICRExtractionSession {
     this.circuitScheduleIncluded = false;
     this.isActive = false;
 
+    // Cache keepalive state — see PAUSE_KEEPALIVE_BUDGET_MS doc-comment
+    this.cacheKeepaliveHandle = null;
+    this.pauseKeepaliveDeadlineHandle = null;
+
     // Utterance batching state
     this.utteranceBuffer = []; // Buffered { transcriptText, regexResults, options }
     this.batchTimeoutHandle = null;
@@ -726,8 +741,7 @@ export class EICRExtractionSession {
     // Sonnet breaks out of JSON mode. Entries older than 60s are discarded as stale.
     this.failedUtteranceQueue = []; // Array of { text: string, timestamp: number }
 
-    // Cache keepalive — refreshes 5-min prompt cache during silence
-    this.cacheKeepaliveHandle = null;
+    // (cacheKeepaliveHandle + pauseKeepaliveDeadlineHandle initialised above)
 
     // Rolling state snapshot: accumulates all extracted values across the session.
     // Used to provide context in the sliding window without sending full history.
@@ -1096,12 +1110,34 @@ export class EICRExtractionSession {
   }
 
   pause() {
-    this._clearCacheKeepalive();
     this.costTracker.pauseRecording();
-    logger.info(`Session ${this.sessionId} Paused`);
+    // [Cache keepalive 2026-04-27] Stage 4c sends `session_pause` whenever
+    // the iOS sleep state fires (60s of no-transcript silence). Inspectors
+    // routinely resume within minutes, and dropping the cache the instant
+    // pause arrives forces every resume to pay a fresh cache write
+    // (~$0.056) instead of a cache read (~$0.0045). Instead, keep
+    // refreshing the cache for up to PAUSE_KEEPALIVE_BUDGET_MS — past that
+    // the user is genuinely away and the cache write would be wasted.
+    if (this.pauseKeepaliveDeadlineHandle) {
+      clearTimeout(this.pauseKeepaliveDeadlineHandle);
+    }
+    this.pauseKeepaliveDeadlineHandle = setTimeout(() => {
+      this._clearCacheKeepalive();
+      this.pauseKeepaliveDeadlineHandle = null;
+      logger.info(
+        `Session ${this.sessionId} Paused-keepalive budget exhausted — letting cache expire`
+      );
+    }, PAUSE_KEEPALIVE_BUDGET_MS);
+    logger.info(
+      `Session ${this.sessionId} Paused (cache kept warm for up to ${PAUSE_KEEPALIVE_BUDGET_MS / 60000} min)`
+    );
   }
 
   resume() {
+    if (this.pauseKeepaliveDeadlineHandle) {
+      clearTimeout(this.pauseKeepaliveDeadlineHandle);
+      this.pauseKeepaliveDeadlineHandle = null;
+    }
     this.costTracker.resumeRecording();
     this._resetCacheKeepalive();
     logger.info(`Session ${this.sessionId} Resumed`);
@@ -1115,6 +1151,10 @@ export class EICRExtractionSession {
       this.batchTimeoutHandle = null;
     }
     this._clearCacheKeepalive();
+    if (this.pauseKeepaliveDeadlineHandle) {
+      clearTimeout(this.pauseKeepaliveDeadlineHandle);
+      this.pauseKeepaliveDeadlineHandle = null;
+    }
     this.isActive = false;
     this.costTracker.stopRecording();
     const summary = this.costTracker.toSessionSummary();
