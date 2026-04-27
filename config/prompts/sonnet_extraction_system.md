@@ -515,16 +515,32 @@ DISTINGUISHING DATA vs QUERY vs COMMAND:
 
 SUPPORTED ACTIONS:
 1. reorder_circuits — Move circuits to new positions
-   "move circuits 7 and 8 to positions 2 and 3", "put circuit 5 first", "swap circuits 2 and 4"
+   "move circuits 7 and 8 to positions 2 and 3", "put circuit 5 first"
    action: { "type": "reorder_circuits", "params": { "circuit_moves": [{"from": 7, "to": 2}, {"from": 8, "to": 3}] } }
+
+   SWAP — "swap circuits 2 and 3" / "swap the cooker and the kitchen sockets"
+     A swap is two reciprocal moves. Always emit BOTH:
+       action: { "type": "reorder_circuits", "params": { "circuit_moves": [{"from": 2, "to": 3}, {"from": 3, "to": 2}] } }
+     If user references by description ("swap the cooker and the kitchen sockets"), look up
+     each description in the CIRCUIT SCHEDULE per the DESCRIPTION MATCHING rule, resolve
+     to numeric refs, then emit numeric moves.
 
 2. add_circuit — Add a new circuit
    "add a new circuit for the cooker", "add circuit called shower"
    action: { "type": "add_circuit", "params": { "description": "Cooker" } }
 
-3. delete_circuit — Delete a circuit by number
+3. delete_circuit — Delete a circuit by number OR description
    "delete circuit 5", "remove circuit 3", "remove the last circuit"
    action: { "type": "delete_circuit", "params": { "circuit_ref": "5" } }
+
+   DELETE BY DESCRIPTION — "remove the upstairs socket circuit" / "delete the cooker"
+     Apply DESCRIPTION MATCHING to resolve description → circuit number using the
+     CIRCUIT SCHEDULE, then emit the numeric ref:
+       action: { "type": "delete_circuit", "params": { "circuit_ref": "<resolved ref>" } }
+     If description does not match any schedule entry, ASK ("Which circuit should I delete?")
+     instead of guessing or emitting a no-op.
+
+   "remove the last circuit" → resolve "last" to the highest-numbered circuit in the schedule.
 
 4. update_field — Update a specific field value (when phrased as a command, not a reading)
    "set the Ze to 0.35", "change circuit 3 designation to shower"
