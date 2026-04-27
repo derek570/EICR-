@@ -50,7 +50,14 @@
  *   invalid_expected_answer_shape — not in ASK_USER_ANSWER_SHAPES
  */
 
-import { CONTEXT_FIELD_ENUM } from './stage6-tool-schemas.js';
+import { CONTEXT_FIELD_ENUM, BOARD_FIELD_ENUM, CIRCUIT_FIELD_ENUM } from './stage6-tool-schemas.js';
+
+// Sets for O(1) membership tests in validateAskUser's pending_write
+// cross-check. Pre-computing them here keeps the validator pure (no
+// Array.includes scans on every call) without exposing Sets across module
+// boundaries.
+const RECORD_READING_FIELDS = new Set(CIRCUIT_FIELD_ENUM);
+const RECORD_BOARD_READING_FIELDS = new Set(BOARD_FIELD_ENUM);
 
 /**
  * record_reading: circuit must exist; confidence (when present) must be a
@@ -270,6 +277,19 @@ export function validateAskUser(input) {
         code: 'invalid_pending_write_source_turn_id',
         field: 'pending_write.source_turn_id',
       };
+    }
+    // Cross-check: pending_write.field MUST be valid for pending_write.tool.
+    // Catches Sonnet attaching a board-field name with tool: "record_reading"
+    // (or vice versa) at the validation gate, BEFORE the user's clarification
+    // turn is wasted on a malformed buffered write that can't dispatch. Same
+    // bug class as 1A/1B/1C — Sonnet contract drift produces silent downstream
+    // failures; the only safe place to surface that is here, not in the
+    // resolver (where the bad pw is already in flight).
+    if (pw.tool === 'record_reading' && !RECORD_READING_FIELDS.has(pw.field)) {
+      return { code: 'invalid_pending_write_field_for_tool', field: 'pending_write.field' };
+    }
+    if (pw.tool === 'record_board_reading' && !RECORD_BOARD_READING_FIELDS.has(pw.field)) {
+      return { code: 'invalid_pending_write_field_for_tool', field: 'pending_write.field' };
     }
   }
   return null;

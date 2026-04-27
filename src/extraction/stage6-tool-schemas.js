@@ -91,6 +91,16 @@ export const BOARD_FIELD_ENUM = (() => {
   return [...new Set([...supplyKeys, ...boardKeys, ...installKeys])].sort();
 })();
 
+// Sibling export for record_reading. circuit_fields currently has no _ui_
+// entries (verified at module load); the filter is defensive against future
+// drift. Used by stage6-dispatch-validation.js to cross-check pending_write.field
+// against pending_write.tool BEFORE the user's clarification turn is wasted on
+// a Sonnet contract bug (e.g. record_reading + a board-field name).
+export const CIRCUIT_FIELD_ENUM = (() => {
+  const filterMeta = (k) => !k.startsWith('_ui_');
+  return Object.keys(fieldSchema.circuit_fields).filter(filterMeta).sort();
+})();
+
 /**
  * Build an Anthropic tool definition.
  *

@@ -380,4 +380,96 @@ describe('createAskDispatcher — pending_write validation', () => {
     expect(body).toEqual({ answered: true, untrusted_user_text: 'cooker' });
     expect(autoResolveWrite).not.toHaveBeenCalled();
   });
+
+  // P2-D — cross-check pending_write.field against pending_write.tool's enum.
+  // Pre-2026-04-27 the validator only checked individual field shapes; a Sonnet
+  // contract bug like {tool: 'record_reading', field: 'earth_loop_impedance_ze'}
+  // (board field on circuit-only tool) would pass validation, dispatch, and
+  // fail the synthetic write inside the resolver. By then the user's
+  // clarification turn was already spent and the buffered value dropped on
+  // the floor. The validator now rejects the malformed pw before the round trip.
+  test('pending_write field+tool mismatch (board field on record_reading) is rejected', async () => {
+    const session = buildSession([{ circuit_ref: 1, circuit_designation: 'Cooker' }]);
+    const pendingAsks = createPendingAsksRegistry();
+    const autoResolveWrite = jest.fn();
+    const dispatcher = createAskDispatcher(session, noopLogger(), 'turn-1', pendingAsks, null, {
+      autoResolveWrite,
+    });
+
+    const env = await dispatcher(
+      {
+        tool_call_id: 'toolu_p2d_a',
+        name: 'ask_user',
+        input: validInput({
+          pending_write: validPendingWrite({
+            tool: 'record_reading',
+            field: 'earth_loop_impedance_ze', // board field, wrong for record_reading
+          }),
+        }),
+      },
+      {}
+    );
+    expect(env.is_error).toBe(true);
+    const body = JSON.parse(env.content);
+    expect(body.code).toBe('invalid_pending_write_field_for_tool');
+    expect(autoResolveWrite).not.toHaveBeenCalled();
+  });
+
+  test('pending_write field+tool mismatch (circuit field on record_board_reading) is rejected', async () => {
+    const session = buildSession([{ circuit_ref: 1, circuit_designation: 'Cooker' }]);
+    const pendingAsks = createPendingAsksRegistry();
+    const autoResolveWrite = jest.fn();
+    const dispatcher = createAskDispatcher(session, noopLogger(), 'turn-1', pendingAsks, null, {
+      autoResolveWrite,
+    });
+
+    const env = await dispatcher(
+      {
+        tool_call_id: 'toolu_p2d_b',
+        name: 'ask_user',
+        input: validInput({
+          pending_write: validPendingWrite({
+            tool: 'record_board_reading',
+            field: 'measured_zs_ohm', // per-circuit field, wrong for board tool
+          }),
+        }),
+      },
+      {}
+    );
+    expect(env.is_error).toBe(true);
+    const body = JSON.parse(env.content);
+    expect(body.code).toBe('invalid_pending_write_field_for_tool');
+    expect(autoResolveWrite).not.toHaveBeenCalled();
+  });
+
+  test('pending_write field+tool match (record_board_reading + board field) passes validation', async () => {
+    // Sanity check — the cross-check rejects mismatches but should still
+    // accept legitimate pairings.
+    const session = buildSession([{ circuit_ref: 1, circuit_designation: 'Cooker' }]);
+    const pendingAsks = createPendingAsksRegistry();
+    const autoResolveWrite = jest.fn();
+    const dispatcher = createAskDispatcher(session, noopLogger(), 'turn-1', pendingAsks, null, {
+      autoResolveWrite,
+    });
+
+    const callPromise = dispatcher(
+      {
+        tool_call_id: 'toolu_p2d_c',
+        name: 'ask_user',
+        input: validInput({
+          pending_write: validPendingWrite({
+            tool: 'record_board_reading',
+            field: 'earth_loop_impedance_ze',
+          }),
+        }),
+      },
+      {}
+    );
+    await new Promise((r) => setImmediate(r));
+    // Resolver runs; without a real circuit match the user reply escalates,
+    // but VALIDATION must have passed (no is_error envelope).
+    pendingAsks.resolve('toolu_p2d_c', { answered: true, user_text: 'unrelated text' });
+    const env = await callPromise;
+    expect(env.is_error).toBeFalsy();
+  });
 });
