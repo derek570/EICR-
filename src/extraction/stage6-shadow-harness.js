@@ -325,14 +325,6 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
     }
   }
 
-  // Bug-I fix (2026-04-26): normalise circuit-scoped reading field names
-  // from schema-canonical to the legacy aliases iOS dispatches on. See
-  // foldCircuitFieldsToLegacy() at the bottom of this file for the full
-  // rationale, mapping table, and the pure-function unit tests.
-  if (Array.isArray(result.extracted_readings)) {
-    result.extracted_readings = foldCircuitFieldsToLegacy(result.extracted_readings);
-  }
-
   // Bug-F fix part 2 (2026-04-26): strip slots iOS Build 302's Codable
   // decoder either rejects or doesn't recognise. iOS DOES decode
   // `circuit_updates` but expects shape {circuit, designation, action}; ours
@@ -755,93 +747,4 @@ export async function runShadowHarness(session, transcriptText, regexResults, op
 
   // Step 8: iOS ALWAYS gets legacy in Phase 2.
   return legacy;
-}
-
-// ---------------------------------------------------------------------------
-// Bug-I (2026-04-26) — circuit-field name normalisation
-// ---------------------------------------------------------------------------
-//
-// CONTEXT
-//
-// Stage 6 tool schemas use field_schema.json's circuit_fields keys
-// verbatim (`measured_zs_ohm`, `r1_r2_ohm`, `polarity_confirmed`, etc.).
-// iOS `applyExtractedReadings` (DeepgramRecordingViewModel.swift:3270-
-// 3500) dispatches on the LEGACY short aliases that pre-date Stage 6
-// (`zs`, `r1_r2`, `polarity`, etc.). When the bundler emits
-// `extracted_readings` with the canonical names, iOS's switch
-// statement hits no case and the value silently never lands in the
-// certificate model.
-//
-// Bug-G (commit 7e24ccf, 2026-04-26) caught this for the create_circuit
-// meta fields (designation / rating_amps / cable_csa_mm2) but missed
-// regular `record_reading` calls. Field test 2026-04-26 session
-// FA361D70 surfaced the gap: 6 successful tool calls on the backend,
-// but on iOS only the board-scoped readings (client_name,
-// general_condition) populated — every circuit-scoped reading
-// (R1+R2=0.86 on c=1, Zs=0.32 on c=1) was dropped.
-//
-// MAPPING DERIVATION
-//
-// Each entry in CIRCUIT_FIELD_TO_LEGACY maps a field_schema.json
-// circuit_fields key to the alias iOS already accepts. iOS dispatch
-// surface was audited at the cited line numbers below. Fields where
-// iOS already accepts the schema-canonical name (e.g. `ocpd_type`,
-// `ocpd_bs_en`, `rcd_bs_en`, `wiring_type`, `number_of_points`,
-// `rcd_button_confirmed`, `afdd_button_confirmed`, `rcd_type`,
-// `rcd_operating_current_ma`, `ref_method`, `ir_test_voltage_v`)
-// are intentionally absent from the map — they pass through unchanged
-// via the `?? r.field` fallback inside the map() below.
-//
-// CIRCUIT-SCOPED ONLY
-//
-// `circuit:0` entries are board-scoped (record_board_reading folded by
-// the upstream block in runShadowHarness). iOS already accepts the
-// board field names verbatim because BOARD_FIELD_ENUM == iOS dispatch
-// surface. Skipping circuit:0 also defends against accidentally
-// rewriting a board field that happens to collide with a circuit-fields
-// key (none today, but the guard is cheap and the contract is clear).
-//
-// REMOVAL CRITERIA
-//
-// Once iOS Build N+ has explicit cases for the canonical names in the
-// applyExtractedReadings switch (e.g. `case "zs", "measured_zs_ohm":`),
-// remove the entry from this map. When the map is empty, remove the
-// helper and its caller.
-const CIRCUIT_FIELD_TO_LEGACY = {
-  measured_zs_ohm: 'zs', // iOS DeepgramRecordingViewModel.swift:3333
-  r1_r2_ohm: 'r1_r2', // iOS line 3306
-  r2_ohm: 'r2', // iOS line 3326
-  ring_r1_ohm: 'ring_continuity_r1', // iOS line 3285
-  ring_rn_ohm: 'ring_continuity_rn', // iOS line 3292
-  ring_r2_ohm: 'ring_continuity_r2', // iOS line 3299
-  ir_live_live_mohm: 'ir_live_live', // iOS line 3278
-  ir_live_earth_mohm: 'ir_live_earth', // iOS line 3271
-  polarity_confirmed: 'polarity', // iOS line 3363
-  rcd_time_ms: 'rcd_trip_time', // iOS line 3356
-  ocpd_rating_a: 'ocpd_rating', // iOS line 3384
-  cpc_csa_mm2: 'cpc_csa', // iOS line 3377
-  live_csa_mm2: 'cable_size', // iOS line 3370
-  circuit_designation: 'designation', // iOS line 3559
-};
-
-/**
- * Pure helper exported for unit testing. Maps each entry's `field` to
- * its legacy alias if one exists; otherwise returns the entry unchanged.
- * Only circuit-scoped entries (`typeof circuit === 'number' && circuit > 0`)
- * are rewritten — board-scoped (circuit:0) entries pass through.
- *
- * Returns a new array; does not mutate input. Each rewritten entry is a
- * new object (`{...r, field: legacy}`), so callers can safely retain
- * references to the original input.
- *
- * @param {Array<{field: string, circuit: number, value: any, confidence?: number, source?: string}>} readings
- * @returns {Array<typeof readings[number]>}
- */
-export function foldCircuitFieldsToLegacy(readings) {
-  if (!Array.isArray(readings)) return readings;
-  return readings.map((r) => {
-    if (!r || typeof r.circuit !== 'number' || r.circuit === 0) return r;
-    const legacy = CIRCUIT_FIELD_TO_LEGACY[r.field];
-    return legacy ? { ...r, field: legacy } : r;
-  });
 }
