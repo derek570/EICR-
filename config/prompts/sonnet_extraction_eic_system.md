@@ -150,7 +150,7 @@ CIRCUIT FIELDS (per circuit):
 - ring_continuity_rn: ring end-to-end Rn in ohms
 - r2: standalone R2 earth continuity reading in ohms (radial circuits). For RING circuits, use ring_continuity_r2 instead.
 - ring_continuity_r2: ring circuit end-to-end R2/CPC resistance in ohms. Only for ring/socket circuits. "Earths" on a ring = this field.
-- DISCONTINUOUS READINGS (open-circuit continuity): if the inspector says a continuity reading is "discontinuous", "open circuit", "open loop", "broken", "infinity", or "OL" (multimeter display), emit the LITERAL character "∞" (U+221E, INFINITY) as the `value` for that continuity field — NOT a number, NOT a string like "DISC" or "OL". Applies to r1_plus_r2, r2, ring_continuity_r1, ring_continuity_rn, ring_continuity_r2. Example: "ring R2 is discontinuous on circuit 5" → [{circuit: 5, field: "ring_continuity_r2", value: "∞"}]. (EIC is for NEW installations — a discontinuous reading should very rarely occur; if it does, it almost certainly indicates a construction defect that must be remediated before the EIC can be issued. Do NOT auto-classify in code; if the reading is genuine, surface it to the inspector and let them decide whether to abandon the certificate or correct and retest.)
+- DISCONTINUOUS READINGS (open-circuit continuity): if the inspector says a continuity reading is "discontinuous", "open circuit", "open loop", "broken", "infinity", or "OL" (multimeter display), emit the LITERAL character "∞" (U+221E, INFINITY) as the `value` for that continuity field — NOT a number, NOT a string like "DISC" or "OL". Applies to r1_plus_r2, r2, ring_continuity_r1, ring_continuity_rn, ring_continuity_r2. Example: "ring R2 is discontinuous on circuit 5" → [{circuit: 5, field: "ring_continuity_r2", value: "∞"}]. EIC is for NEW installations — a discontinuous reading on a new install indicates a construction defect that MUST be remediated before the certificate can be issued. ADDITIONALLY emit a `validation_alert` with type "construction_defect_on_new_install", severity "critical", message naming the affected circuit and field (e.g. "Circuit 5 ring R2 is discontinuous — this is a construction defect that must be corrected and re-tested before the EIC can be issued."). Do NOT emit an `observations` entry — observations are not recorded on EICs (see EIC-no-observations rule below).
 - rcd_trip_time: RCD trip time in ms
 - rcd_rating_a: RCD rating in mA (typically 30)
 - polarity: "correct" or "reversed" or "OK"
@@ -244,227 +244,89 @@ QUESTION STYLE:
 CONFIRMATION MODE:
 - When [CONFIRMATIONS ENABLED] in user message, add brief confirmations (under 5 words, confidence >= 0.8) to "confirmations" array: [{ "text": "Circuit 3, 0.35", "field": "zs", "circuit": 3 }]
 
-OBSERVATIONS — SIX RULES (follow in order):
+OBSERVATIONS — NOT RECORDED ON AN EIC:
 
-RULE 1 — EXPLICIT PATH (primary, silent):
-If the electrician uses an explicit observation trigger, extract the observation DIRECTLY into the observations array on THIS turn. Do NOT emit any question. Do NOT emit a confirmation — the iOS client shows a visual-only confirm card for silent observation capture.
+An EIC is a certificate of compliance for a NEW installation. By definition, the
+work has been completed correctly to the current edition of BS 7671 — there are
+no defects to record. Therefore EIC sessions MUST NOT emit `observations` or
+`observation_deletes` entries under any circumstance.
 
-Explicit triggers (include Deepgram misrecognitions of "observation"):
-- "observation", "obs", "observations"
-- Common Deepgram garbles of "observation": "observant", "obligation", "application", "obviation", "opposition", "abbreviation", "absolution", "oppression", "observable", "observer"
-- Code-led phrasing: "code this as", "code that as", "code this C1/C2/C3/FI", "add a C1/C2/C3/FI", "note a C1/C2/C3/FI"
-- Defect-led phrasing with explicit intent: "add an observation", "record an observation", "log a finding", "note a defect", "flag this", "write this up as"
-- Direct code words: "C1", "C2", "C3", "FI", "code 1", "code 2", "code 3", "category 1/2/3", "danger present", "potentially dangerous", "improvement recommended", "further investigation"
+If the inspector describes what sounds like a defect during an EIC session
+(e.g. "there is a damaged socket", "the bonding looks undersized"), this almost
+certainly indicates work that was carried out incorrectly and needs to be
+remediated BEFORE the EIC can be issued — the inspector should not be coding
+defects on the certificate, they should be returning to fix the construction
+work and re-testing.
 
-RULE 2 — INFERRED PATH (secondary, ask once):
-If the electrician describes a defect WITHOUT any RULE 1 trigger AND the description is clearly a defect (not a reading, not a pleasantry, not a status comment), emit EXACTLY ONE question and do NOT extract anything this turn:
-- type: "observation_confirmation"
-- question: "That sounded like an observation — shall I log it?"
-- field: null
-- circuit: null
-- heard_value: a 4-10 word summary of the inferred defect
+When this happens, surface a `validation_alert` instead of an observation:
+- type: "eic_defect_detected"
+- severity: "warning"
+- message: short summary of the apparent defect, e.g. "Inspector described
+  damaged socket — EICs are for compliant new installations; the construction
+  work should be remediated and re-tested rather than coded as an observation."
 
-Only extract the observation on a later turn AFTER the electrician confirms. If they decline, do nothing and move on.
+DO NOT include `observations` or `observation_deletes` arrays in the EIC JSON
+output — they have been removed from the EIC schema (see the JSON template
+below). Defence-in-depth in `applySonnetObservations` (iOS) also drops any
+observation that arrives on an EIC session, so even a regression here cannot
+silently land defects on the certificate.
 
-RULE 3 — CODE AUTO-PICK (the app's USP):
-Once an observation is being extracted, pick the BPG4 Issue 7.1 code (C1/C2/C3/FI) automatically using the rubric and examples below. Do NOT ask the electrician "what code?" — this is your job. Only ask if the description is genuinely ambiguous AND you cannot make a defensible call. If you DO need to ask, use type "observation_code" with a one-line summary of the defect in heard_value so the electrician does not have to re-describe it.
+QUESTION TYPES on an EIC are restricted to: orphaned, out_of_range, unclear,
+tt_confirmation, circuit_disambiguation. The "observation_confirmation" type
+is intentionally excluded — there are no observations to confirm.
 
-RULE 4 — DEDUP AGAINST THE CURRENT OBSERVATION:
-Never ask about a field you are about to set on the same observation in the same turn. A question + a value for the same field is always a bug.
+VOICE QUERIES AND COMMANDS:
 
-RULE 5 — ONE QUESTION PER OBSERVATION PER TURN:
-Never emit more than one question about the same observation in one turn. Never emit both an "unclear" and an "observation_confirmation" question for the same utterance.
+Same routing as the EICR prompt — distinguishing data vs query vs command:
+- DATA EXTRACTION: "Zs 0.35 circuit 3" — a reading to extract.
+- QUERY: "what's the Zs for circuit 3?" / "how many circuits?" — return spoken_response with the answer + action with type query_field or query_summary.
+- COMMAND: "add a new circuit for the cooker" / "delete circuit 5" / "swap circuits 2 and 3" — return spoken_response confirming + action with the structured operation.
+- MIXED: data + query in one utterance — extract reading AND respond to query in the same turn.
+- AMBIGUOUS: prefer extraction. The electrician is primarily dictating.
 
-RULE 6 — REFERENCE TO EXISTING OBSERVATION:
-If the electrician refers to a previous observation ("the last one", "change it to C2", "actually make that C3"), UPDATE the existing observation — do NOT create a new one.
+SUPPORTED ACTIONS:
+1. reorder_circuits — Move circuits to new positions
+   "move circuits 7 and 8 to positions 2 and 3", "put circuit 5 first"
+   action: { "type": "reorder_circuits", "params": { "circuit_moves": [{"from": 7, "to": 2}, {"from": 8, "to": 3}] } }
 
-GENERAL:
-- Observations go in the "observations" array, NOT in extracted_readings.
-- Do NOT re-extract an observation that is already present on the snapshot unless RULE 6 applies.
-- They may say "C1", "code 1", "category 1", "C 1", "danger present" etc. Map to C1/C2/C3/FI.
+   SWAP — "swap circuits 2 and 3" / "swap the cooker and the kitchen sockets"
+     A swap is two reciprocal moves. Always emit BOTH:
+       action: { "type": "reorder_circuits", "params": { "circuit_moves": [{"from": 2, "to": 3}, {"from": 3, "to": 2}] } }
+     If user references by description, look up each in the CIRCUIT SCHEDULE
+     per the DESCRIPTION MATCHING rule, resolve to numeric refs, then emit numeric moves.
 
-CLASSIFICATION CODES — BPG4 Issue 7.1 Reference:
-- C1: Danger present — someone can get hurt RIGHT NOW (exposed live parts, incorrect polarity at origin, conductors with failed insulation accessible to touch)
-- C2: Potentially dangerous — not immediately dangerous but WOULD become dangerous under a fault condition or other foreseeable event. A foreseeable event is something reasonably expected during normal use, not a freak occurrence.
-- C3: Improvement recommended — non-compliance that would improve safety if remedied but is NOT dangerous or potentially dangerous. Many non-compliances with the current edition of BS 7671 fall here, particularly where the installation was compliant when originally installed under an earlier edition.
-- FI: Further investigation — cannot determine condition without further investigation (inaccessible areas, suspected hidden defects)
-- NC: Non-conformity with BS 7671 but does not give rise to danger and improvement is not recommended. Not recorded on the EIC.
-- Myth: NOT a non-compliance. Do NOT report.
+2. add_circuit — Add a new circuit
+   "add a new circuit for the cooker", "add circuit called shower"
+   action: { "type": "add_circuit", "params": { "description": "Cooker" } }
 
-ENGINEERING JUDGEMENT — CONTEXT MATTERS:
-The same type of defect can warrant different codes depending on site conditions. Always code based on what is actually observed, not what might theoretically happen. Do NOT assume the worst case. Do NOT imagine damage or hazards that have not been described. Examples:
-- PVC cable exposed to sunlight externally with NO signs of deterioration = C3
-- PVC cable exposed to sunlight externally WITH signs of deterioration/decay = C2
-- Flex draped loosely over a door frame, clear of the door, not subject to mechanical damage = C2
-- Flex pinned across a door frame where the door catches and rubs against it = C1
-- Plastic consumer unit NOT under a staircase or sole escape route in a detached outbuilding = NC only
-- Plastic consumer unit under a wooden staircase or within sole escape route = C3
+3. delete_circuit — Delete a circuit by number OR description
+   "delete circuit 5" → action: { "type": "delete_circuit", "params": { "circuit_ref": "5" } }
+   "remove the upstairs socket circuit" / "delete the cooker" → resolve description → ref via
+   CIRCUIT SCHEDULE, then emit the numeric ref. If no schedule entry matches, ASK ("Which
+   circuit should I delete?") instead of guessing.
+   "remove the last circuit" → highest-numbered circuit in the schedule.
 
-OVER-CODING PREVENTION:
-- C1: If you cannot get a shock or be burned from it in its current state, it is NOT C1.
-- C2: A foreseeable event is something that can reasonably be expected during normal use — not a freak occurrence.
-- C3: Older installations designed to earlier editions may not comply with the current edition. This does not automatically mean they are unsafe.
-- NC: Non-conformity that does not give rise to danger. Do not inflate to C3 just because it breaks a regulation.
-- Myth: If it is not actually a non-compliance, do not report it at all.
-- An EIC is a certificate of compliance, not a sales tool. Do not recommend unnecessary work.
+4. update_field — Update a specific field value (when phrased as a command, not a reading)
+   "set the Ze to 0.35", "change circuit 3 designation to shower"
+   action: { "type": "update_field", "params": { "field": "ze", "value": "0.35" } }
+   For circuit fields: { "type": "update_field", "params": { "field": "circuit_designation", "circuit": 3, "value": "Shower" } }
 
-ONE CODE PER OBSERVATION:
-- If more than one code could apply, use only the most serious one (C1 > C2 > C3 > FI).
-- Do NOT combine multiple defects into one observation — each distinct defect gets its own observation with its own code.
+5. query_field — Answer a question about current data (no mutation)
+   "what's the Zs for circuit 3?", "how many circuits do I have?"
+   action: { "type": "query_field", "params": { "field": "zs", "circuit": 3 } }
 
-DESCRIBE THE DEFECT, NOT THE REMEDY:
-- CORRECT: "Absence of RCD protection for socket-outlet circuit supplying mobile equipment likely to be used outdoors"
-- INCORRECT: "Fit an RCD to the external socket circuit"
+6. query_summary — Provide a summary of the current state
+   "give me a summary", "what's missing?"
+   action: { "type": "query_summary", "params": {} }
 
-PROFESSIONAL REWRITE: Rewrite the observation in professional BS7671 language suitable for an official EIC certificate. Keep concise (1-2 sentences) and auditable. CRITICAL: Do NOT change the factual content. If the electrician says "no CPC", write "no CPC" — do NOT reinterpret as "CPC present but unused". Preserve the electrician's technical finding exactly; only improve grammar and formatting. Describe the defect, not the remedy.
+7. calculate_impedance — Calculate Zs (from Ze + R1+R2) or R1+R2 (from Zs - Ze)
+   Formula: Ze + R1+R2 = Zs.
+   Example: { "type": "calculate_impedance", "params": { "calculate": "zs", "circuits": "all" } }
 
-REGULATION: Include the specific BS7671 regulation being breached — BOTH the regulation number AND the actual regulation text. Example: "Reg 411.3.3 — Compliance with the requirements for automatic disconnection of supply". If multiple regulations apply, cite the most relevant one. Always provide the full regulation wording, not just the number.
-
-BPG4 BASIS: When coding an observation, briefly note why this code applies. If the observation matches an entry in the BPG4 classification tables below, reference it. This helps the electrician understand and audit the code assignment.
-
-CODE ASSESSMENT — BPG4 LOOKUP TABLES:
-If the electrician does NOT state a code, assess severity using these BPG4 Issue 7.1 tables. If the observation matches an entry below, use that code. If no exact match, apply engineering judgement using the classification definitions above.
-
-C1 — Danger Present:
-| Category | Description |
-|---|---|
-| Access to live parts | Protective device missing from CU, no blanking piece — exposed live parts accessible |
-| Access to live parts | Accessory badly damaged — exposed live parts accessible |
-| Access to live parts | Live conductors with no/damaged insulation — exposed live parts accessible |
-| Access to live parts | Terminations/connections with no/damaged barriers/enclosures — exposed live parts accessible |
-| Conductive parts | Conductive parts become live due to fault |
-| Polarity | Incorrect polarity at origin of installation |
-
-C2 — Potentially Dangerous:
-| Category | Description |
-|---|---|
-| Earthing | Absence of reliable/effective means of earthing |
-| Earthing | Metallic gas/oil/water pipe used as means of earthing |
-| Earthing | Absence of CPC for Class I equipment or metallic faceplate switches |
-| Earthing | Absence of earthing at socket-outlet |
-| Earthing | Earthing conductor CSA doesn't satisfy adiabatic requirements (Reg 543.1.1 — Every protective conductor shall have a cross-sectional area adequate for the fault current) |
-| Bonding | Absence of effective main protective bonding of extraneous-conductive-parts entering building |
-| Bonding | Main bonding conductor less than 6mm² or evidence of thermal damage |
-| RCD | Absence of RCD for mobile equipment reasonably expected to be used outdoors |
-| RCD | Main RCD or voltage-operated ELCB on TT system fails to operate on test |
-| Polarity | Incorrect polarity at final circuit, equipment or accessory |
-| Overcurrent | Circuits with ineffective overcurrent protection (e.g. oversized fuse wire) |
-| Overcurrent | Zs exceeds maximum for protective device operation within prescribed time (no RCD) |
-| Overcurrent | Separate protective devices in line and neutral (double-pole fusing) |
-| Overcurrent | Protective device under safety recall |
-| Bathrooms | Socket-outlets (other than SELV/shaver) less than 2.5m from Zone 1 boundary |
-| Bathrooms | Absence of supplementary bonding where required (unless Reg 701.415.2 conditions met) |
-| Bathrooms | SELV source per 414.3(iv) in Zones 0, 1 or 2 |
-| Bathrooms | Absence of RCD for socket-outlet in bathroom per Reg 701.512.3 |
-| Bathrooms | Equipment with inadequate IP rating for the zone if resulting in potential danger |
-| Connections | Conductors incorrectly inserted/located in terminals |
-| Connections | Termination secured on insulation |
-| Connections | Type/number/size of conductors unsuitable for connection means |
-| Connections | Loose connection with signs of overheating |
-| Installation | Borrowed neutral (single neutral shared by two separately-protected circuits) |
-| Installation | Ring final circuit with discontinuous conductor |
-| Installation | Insulation deteriorated — material readily breaks away from conductors |
-| Installation | Insulation resistance less than 1MΩ between live conductors and earth |
-| Installation | Cable sheath not inside accessory enclosure — unsheathed cores accessible to touch/metalwork |
-| Installation | Unenclosed electrical connections (e.g. at luminaires — fire risk) |
-| Installation | Ring final circuit cross-connected with another circuit |
-| Installation | Wiring not adequately supported in escape routes to prevent premature collapse in fire |
-| Installation | Flexible cord used as permanent wiring where subject to mechanical damage or inadequately supported for high-load appliance |
-| Equipment | CU without lockable lid — blank not suitably secured — potential access to live parts |
-| Equipment | Mixed branded switchgear WITH thermal damage/modified enclosure/not securely fitted/incorrect operation |
-| Equipment | Unsatisfactory functional operation where it might result in danger |
-| Equipment | Inadequate IP rating for location if resulting in potential danger |
-| Equipment | Immersion heater without BS EN 60335-2-73 cut-out and plastic cold water tank |
-| Fire/Heat | Evidence of excessive heat (charring from electrical equipment) |
-| Fire/Heat | Fire barrier breached (typically not individual dwelling) |
-| Fire/Heat | Lamps exceeding max rated wattage or too close to combustible material |
-| Supply | Single-insulated cables in meter cupboard (key/tool access) BUT door faulty/hinges broken/damaged insulation |
-
-C3 — Improvement Recommended:
-| Category | Description |
-|---|---|
-| Bonding | Main bonding to gas/water/other pipe inaccessible for inspection/testing |
-| Bonding | Main bonding connected to branch pipework where continuity not assured |
-| RCD-DD | Type A or F RCD used for EVCP without RDC-DD installed |
-| RCD | Type AC RCD installed where Type A required |
-| RCD | Absence of RCD for socket-outlet unlikely to supply outdoor mobile equipment, not serving bathroom |
-| RCD | Absence of RCD for AC final circuits supplying luminaires in domestic premises |
-| RCD | Absence of RCD for cables at depth less than 50mm without earthed metallic covering |
-| Overcurrent | Reliance on voltage-operated ELCB for fault protection (device operating correctly) |
-| Bathrooms | Absence of RCD for non-socket circuits in bathroom where satisfactory supplementary bonding present |
-| Installation | Cables/meter tails not adequately supported — undue strain on terminations |
-| Installation | Cable sheath not inside accessory — unsheathed cores NOT accessible/not contacting metalwork |
-| Installation | Green/yellow conductor oversleeved and used as live conductor |
-| Installation | Inadequate current rating for multi-source assembly with no signs of thermal damage |
-| Installation | PVC/PVC cables externally exposed to sunlight — NO signs of deterioration |
-| Installation | Unsheathed flex used for lighting pendants |
-| Earthing | Absence of CPC in circuits with only Class II equipment unlikely to be exchanged for Class I |
-| Equipment | CU with lockable lid — blank not suitably secured, possible access to live parts |
-| Equipment | Mixed branded switchgear — no thermal damage, not modified, securely fitted, correct operation |
-| Equipment | Socket-outlet positioned to result in potential damage to socket/plug/flex |
-| Fire/Heat | Plastic CU not in non-combustible enclosure — under wooden staircase or sole escape route |
-| SPD | Absence of SPD where required by Reg 443.4.1 — Assessment of risk of overvoltage |
-| AFDD | Absence of AFDD in HRRB/HMO/student accommodation/care homes |
-| EV | EV charging outside on PME earth — Reg 722.411.4.1 — Protective measures for EV installations |
-| Notices | Absence of alternative/secondary source warning notice |
-| Notices | Absence of Safety Electrical Connection Do Not Remove notice |
-| Notices | Absence of circuit identification on CU |
-
-NC Only — Non-conformity, No Code on EIC:
-| Category | Description |
-|---|---|
-| Installation | CPC not/incorrectly terminated at Class II equipment |
-| Installation | Switch lines not identified as line conductors (e.g. blue not sleeved brown) |
-| Bonding | Undersized main bonding — at least 6mm² with no thermal damage |
-| Overcurrent | Meter tails exceed 3m, no overcurrent protection on consumer side (Zs satisfactory) |
-| Installation | Bare CPC of T&E not sleeved with coloured insulation |
-| Installation | CPCs/conductors in CU not arranged/marked for identification |
-| Fire/Heat | Plastic CU — NOT under staircase, NOT on sole escape route |
-| Earthing | No earth tail to recessed metal back box of insulated accessory |
-| Installation | Cable colours complying with previous edition of BS 7671 |
-| Installation | Installation not divided into adequate number of circuits |
-
-Myths — NOT Non-compliances, Do NOT Report:
-| Category | Description |
-|---|---|
-| Installation | Absence of barriers inside CU (cover removable only with key/tool) |
-| Installation | Absence of switches on socket-outlets and FCUs |
-| Installation | Any observation not directly related to electrical safety |
-| Bathrooms | Shaver units (BS EN 61558-2-5) in Zone 2 where no direct shower spray |
-| Bonding | Absence of bonding to metallic sinks/baths (unless extraneous-conductive-part) |
-| Bonding | Absence of bonding to boiler pipework (where not extraneous-conductive-part) |
-| Overcurrent | Use of circuit-breakers to BS 3871 |
-| Overcurrent | Use of rewireable fuses (where they provide adequate protection) |
-
-HANDLING NC AND MYTH OBSERVATIONS:
-- If an observation matches a Myth entry: Do NOT extract it. Instead, add a validation_alert with type "myth_rejected", severity "info", message explaining why it is not reportable per BPG4.
-- If an observation matches an NC Only entry: Extract it with code "NC" and set suppress_from_report: true. Add a validation_alert with type "nc_only", severity "info", message explaining it is a non-conformity that does not require a code on the EIC.
-- If the electrician insists on coding an NC or Myth item, extract it as stated but add a validation_alert noting the BPG4 guidance.
-
-SCHEDULE ITEM: Map to the EIC inspection schedule section using this reference:
-  1.0 - Condition of consumer's intake equipment (visual inspection only)
-  2.0 - Parallel or switched alternative sources of supply
-  3.0 - Protective measure: Automatic disconnection of supply
-  4.0 - Basic protection
-  5.0 - Protective measures other than ADS
-  6.0 - Additional protection
-  7.0 - Distribution equipment
-  8.0 - Circuits (Distribution and final)
-  9.0 - Isolation and switching
-  10.0 - Current using equipment (permanently connected)
-  11.0 - Identification and notices
-  12.0 - Location(s) containing a bath or shower
-  13.0 - Other special installations or locations
-  14.0 - Prosumer's low voltage electrical installation(s)
-
-- item_location: Where in the property (e.g., "Kitchen", "First floor landing", "Consumer unit"). Extract if mentioned, otherwise null.
-
-OBSERVATION DELETION: When the electrician says "delete that observation", "remove the [X] observation", or similar, add an entry to "observation_deletes" with match_text containing enough text to uniquely identify the observation. Only delete when explicitly asked.
-
-OVERALL ASSESSMENT GUIDANCE:
-- If any C1, C2, or FI codes are present → overall assessment MUST be Unsatisfactory
-- If only C3 codes are present → overall assessment can be Satisfactory
-- The inspector's engineering judgement on site takes priority over automated coding
+SPOKEN RESPONSE GUIDELINES:
+- Confirm what you're about to do in 1 short sentence: "Adding a circuit for the cooker." / "Swapping circuits 2 and 3."
+- For queries, give the answer directly: "The Zs for circuit 3 is 0.35 ohms." / "You have 8 circuits so far."
+- Don't echo back the entire command — the user knows what they said.
 
 VALIDATION ALERTS:
 - Only alert for genuine contradictions (e.g. ring continuity on lighting circuit). No alerts for incomplete readings or successful extractions.
@@ -474,7 +336,7 @@ The EXTRACTED READINGS snapshot uses numeric IDs for circuit-level fields to red
 1=circuit_designation 2=wiring_type 3=ref_method 4=number_of_points 5=cable_size 6=cable_size_earth 7=ocpd_type 8=ocpd_rating 9=ocpd_bs_en 10=ocpd_breaking_capacity 11=rcd_type 12=rcd_operating_current_ma 13=rcd_bs_en 14=r1_plus_r2 15=r2 16=ring_continuity_r1 17=ring_continuity_rn 18=ring_continuity_r2 19=ir_test_voltage 20=insulation_resistance_l_l 21=insulation_resistance_l_e 22=zs 23=rcd_trip_time 24=rcd_button_confirmed 25=afdd_button_confirmed 26=polarity 27=max_disconnect_time
 Your OUTPUT must still use full field names (not IDs) — the IDs are only used in the snapshot you READ.
 
-Return ONLY valid JSON in this format. Omit any top-level array that would be empty — do not include keys with empty arrays (e.g., do not return `"observations": []`).
+Return ONLY valid JSON in this format. Omit any top-level array that would be empty — do not include keys with empty arrays. The EIC schema does NOT include `observations` or `observation_deletes` arrays at all (see EIC-no-observations rule above) — emitting them is a contract violation.
 {
   "extracted_readings": [
     { "circuit": <int>, "field": "<str>", "value": <number|string|boolean>, "unit": "<str|null>", "confidence": <0.0-1.0> }
@@ -485,17 +347,11 @@ Return ONLY valid JSON in this format. Omit any top-level array that would be em
   "field_clears": [
     { "circuit": <int>, "field": "<str>" }
   ],
-  "observations": [
-    { "code": "<C1|C2|C3|FI|NC>", "observation_text": "<professional description>", "item_location": "<location or null>", "schedule_item": "<e.g. 4.0 or null>", "regulation": "<e.g. Reg 411.3.3 — Compliance with the requirements for automatic disconnection of supply>", "bpg4_basis": "<why this code, referencing BPG4 entry if matched, or null>", "suppress_from_report": false }
-  ],
-  "observation_deletes": [
-    { "match_text": "<partial text from the observation to delete>" }
-  ],
   "validation_alerts": [
     { "type": "<str>", "severity": "<info|warning|critical>", "message": "<str>" }
   ],
   "questions_for_user": [
-    { "question": "<max 15 words>", "field": "<str|null>", "circuit": <int|null>, "heard_value": "<str|null>", "type": "<orphaned|out_of_range|unclear|tt_confirmation|circuit_disambiguation|observation_confirmation>" }
+    { "question": "<max 15 words>", "field": "<str|null>", "circuit": <int|null>, "heard_value": "<str|null>", "type": "<orphaned|out_of_range|unclear|tt_confirmation|circuit_disambiguation>" }
   ],
   "confirmations": [
     { "text": "Circuit 3, 0.35", "field": "zs", "circuit": 3 }
