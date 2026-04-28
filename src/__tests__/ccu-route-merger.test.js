@@ -417,6 +417,90 @@ describe('slotsToCircuits', () => {
     expect(circuits[3].rcd_type).toBe('A');
   });
 
+  test('4d. cascade BREAKS at blank slots — MCBs after a run of spares are not RCD-protected', () => {
+    // 38 Dickens Close topology (2026-04-28): RCD at left, 2 MCBs, then 3
+    // spares (blanks), then 2 more MCBs, then main switch. The MCBs BEFORE
+    // the spares inherit RCD protection; MCBs AFTER the spares do NOT.
+    // Pre-pass cascade computation breaks at the first blank.
+    const slots = [
+      // First module of 2-module RCD
+      makeSlot({
+        classification: 'rcd',
+        rcdWaveformType: 'AC',
+        sensitivity: 30,
+        ratingAmps: 80,
+        confidence: 0.9,
+      }),
+      // Second module of same RCD (collapsed by dedupe)
+      makeSlot({ classification: 'rcd', confidence: 0.85 }),
+      // 2 MCBs — should inherit RCD cascade
+      makeSlot({ classification: 'mcb', tripCurve: 'B', ratingAmps: 32, confidence: 0.9 }),
+      makeSlot({ classification: 'mcb', tripCurve: 'B', ratingAmps: 32, confidence: 0.9 }),
+      // 3 spares — cascade breaks here
+      makeSlot({ classification: 'blank', content: 'blank', confidence: 0.95 }),
+      makeSlot({ classification: 'blank', content: 'blank', confidence: 0.95 }),
+      makeSlot({ classification: 'blank', content: 'blank', confidence: 0.95 }),
+      // 2 MCBs after spares — should NOT have RCD cascade
+      makeSlot({ classification: 'mcb', tripCurve: 'B', ratingAmps: 6, confidence: 0.9 }),
+      makeSlot({ classification: 'mcb', tripCurve: 'B', ratingAmps: 6, confidence: 0.9 }),
+    ];
+
+    const circuits = slotsToCircuits({ slots, mainSwitchSide: 'right' });
+    // 1 RCD row + 4 MCBs + 3 Spares = 8 entries (RCD row is unnumbered).
+    expect(circuits).toHaveLength(8);
+
+    // Identify RCD row + numbered MCBs / spares
+    const rcdRow = circuits.find((c) => c.is_rcd_device);
+    expect(rcdRow).toBeDefined();
+    expect(rcdRow.rcd_type).toBe('AC');
+
+    const mcbs = circuits.filter((c) => c.circuit_number != null && c.label !== 'Spare');
+    expect(mcbs).toHaveLength(4);
+
+    // Right-handed scan: circuits 1-2 are the RIGHT-side MCBs (after spares,
+    // unprotected). Circuits 3-4 are the LEFT-side MCBs (RCD-protected).
+    // Find by ratingAmps — right-side MCBs are 6A, left-side are 32A.
+    const protectedMcbs = mcbs.filter((c) => c.ocpd_rating_a === '32');
+    const unprotectedMcbs = mcbs.filter((c) => c.ocpd_rating_a === '6');
+    expect(protectedMcbs).toHaveLength(2);
+    expect(unprotectedMcbs).toHaveLength(2);
+
+    for (const c of protectedMcbs) {
+      expect(c.rcd_protected).toBe(true);
+      expect(c.rcd_type).toBe('AC');
+      expect(c.rcd_rating_ma).toBe('30');
+    }
+    for (const c of unprotectedMcbs) {
+      expect(c.rcd_protected).toBe(false);
+      expect(c.rcd_type).toBeNull();
+    }
+  });
+
+  test('4e. cascade BREAKS at main_switch slot too', () => {
+    // Defensive: a main_switch in the middle of slot order (rare — usually
+    // at the end) also breaks cascade. MCBs after a main_switch do not
+    // inherit RCD protection from before it.
+    const slots = [
+      makeSlot({
+        classification: 'rcd',
+        rcdWaveformType: 'A',
+        sensitivity: 30,
+        confidence: 0.9,
+      }),
+      makeSlot({ classification: 'rcd', confidence: 0.85 }),
+      makeSlot({ classification: 'mcb', tripCurve: 'C', ratingAmps: 16, confidence: 0.9 }),
+      makeSlot({ classification: 'main_switch', poles: 2, confidence: 0.9 }),
+      makeSlot({ classification: 'mcb', tripCurve: 'C', ratingAmps: 32, confidence: 0.9 }),
+    ];
+    const circuits = slotsToCircuits({ slots, mainSwitchSide: 'left' });
+    // 1 RCD row + 2 MCBs (main_switch skipped entirely)
+    expect(circuits).toHaveLength(3);
+    const protectedMcb = circuits.find((c) => c.ocpd_rating_a === '16');
+    const unprotectedMcb = circuits.find((c) => c.ocpd_rating_a === '32');
+    expect(protectedMcb.rcd_protected).toBe(true);
+    expect(unprotectedMcb.rcd_protected).toBe(false);
+  });
+
   test('5. main_switch slot is skipped entirely', () => {
     const slots = [
       makeSlot({ classification: 'main_switch', poles: 2, confidence: 0.99 }),

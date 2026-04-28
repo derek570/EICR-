@@ -769,12 +769,14 @@ export function assembleGeometricResult(perSlotState) {
     mainSwitchWidth: prepared.mainSwitchWidth,
     lowConfidence: prepared.lowConfidence,
     disagreement: prepared.disagreement,
-    // 2026-04-28: surface Stage 2 path source + per-group bbox array so the
-    // route handler can log which Stage 2 path ran (legacy populated_area
-    // vs new groups-mode) and what the VLM returned. Useful for diagnosing
-    // missed-circuit regressions in production.
+    // 2026-04-28: surface Stage 2 path source + per-group bbox array + the
+    // separately-reported upstream RCDs. Route handler logs all three so
+    // we can A/B the legacy populated_area path vs the new groups-mode
+    // path in production. upstreamRcds was added to the prompt 2026-04-28
+    // along with the cascade-break-at-non-MCB rule in slotsToCircuits.
     stage2Source: prepared.stage2Source ?? null,
     mcbGroups: prepared.mcbGroups ?? null,
+    upstreamRcds: prepared.upstreamRcds ?? null,
     imageWidth: prepared.imageWidth,
     imageHeight: prepared.imageHeight,
     slots: cls.slots,
@@ -889,6 +891,71 @@ Return ONLY the JSON object.`;
  */
 export function slotsToCircuits({ slots, mainSwitchSide, minSlotConfidence = 0.7 }) {
   if (!Array.isArray(slots) || slots.length === 0) return null;
+
+  // --- Pre-pass: compute per-slot effective upstream RCD in PHYSICAL order
+  //
+  // Cascade flows from an RCD onto MCBs that sit physically downstream of
+  // it on the rail. The main scan below iterates in scanOrder (which can
+  // be reversed for right-handed boards to drive correct circuit
+  // numbering), but cascade computation must follow physical adjacency
+  // regardless of scan direction. Without this pre-pass, a board where
+  // the RCD sits on the LEFT and the main switch on the RIGHT (e.g. 38
+  // Dickens Close, 2026-04-28) would scan right-to-left and never see
+  // the RCD until AFTER all the MCBs it protects had already been
+  // emitted as unprotected — wrong rcd_protected flags throughout.
+  //
+  // The cascade BREAKS at any non-MCB position (blank, empty, main_switch,
+  // spd) per Derek's 2026-04-28 design: a run of spares between the RCD-
+  // protected MCBs and the unprotected MCBs is a hard boundary. MCBs
+  // after the spares are NOT inheriting RCD protection from upstream.
+  // RCDs themselves overwrite cascade with their own type/sensitivity.
+  //
+  // RCBOs are NOT considered MCBs for cascade purposes — they have their
+  // own integral RCD function and don't need upstream protection. We
+  // still compute the cascade slot-by-slot; downstream buildCircuitFromSlot
+  // is the place that decides whether to apply rcd_* fields, based on
+  // is_rcbo. So the pre-pass simply exposes _effectiveUpstreamRcd for
+  // every slot and lets buildCircuitFromSlot do the right thing.
+  let cascade = null;
+  let prevWasRcd = false;
+  for (const s of slots) {
+    const cls = (s.classification || '').toLowerCase();
+    const content = typeof s.content === 'string' ? s.content : 'device';
+    if (cls === 'rcd') {
+      const newType = s.rcdWaveformType || null;
+      const newSens = s.sensitivity != null && s.sensitivity !== '' ? String(s.sensitivity) : null;
+      if (prevWasRcd && cascade) {
+        // Adjacent RCD slot = the second module of the SAME 2-module
+        // physical RCD device. Merge fields, preferring whichever face
+        // read came back non-null (gap-fill — the second slot may carry
+        // info the first missed and vice versa). DO NOT overwrite a
+        // populated cascade with the second slot's nulls. Mirrors the
+        // existing main-loop dedupe at the rcd-pair-open branch.
+        cascade = {
+          type: cascade.type || newType,
+          sensitivity: cascade.sensitivity || newSens,
+        };
+      } else {
+        cascade = { type: newType, sensitivity: newSens };
+      }
+      prevWasRcd = true;
+    } else if (
+      cls === 'main_switch' ||
+      cls === 'spd' ||
+      cls === 'blank' ||
+      cls === 'empty' ||
+      content === 'empty'
+    ) {
+      // Cascade BREAKS at any non-MCB/RCBO position. Subsequent MCBs are
+      // not RCD-protected (until/unless another RCD slot appears).
+      cascade = null;
+      prevWasRcd = false;
+    } else {
+      // mcb / rcbo / unknown / partial → keep current cascade unchanged.
+      prevWasRcd = false;
+    }
+    s._effectiveUpstreamRcd = cascade;
+  }
 
   const scanOrder = mainSwitchSide === 'right' ? [...slots].reverse() : [...slots];
   const circuits = [];
@@ -1067,7 +1134,16 @@ export function slotsToCircuits({ slots, mainSwitchSide, minSlotConfidence = 0.7
       // we moved away from that because single-shot is the unreliable
       // whole-board reasoner we're replacing. UI surfaces low_confidence
       // so the inspector verifies.
-      circuit = buildCircuitFromSlot(slot, circuitNumber, upstreamRcd);
+      // Use the per-slot cascade computed in the physical-order pre-pass —
+      // breaks at non-MCB positions so MCBs after a run of spares are
+      // correctly unprotected. Falls back to the running `upstreamRcd` if
+      // _effectiveUpstreamRcd hasn't been set (defensive — should never
+      // happen since the pre-pass runs unconditionally above).
+      circuit = buildCircuitFromSlot(
+        slot,
+        circuitNumber,
+        slot._effectiveUpstreamRcd ?? upstreamRcd
+      );
       circuit.label = slotLabel;
       circuit.low_confidence = true;
       if (isPartial) {
@@ -1075,7 +1151,11 @@ export function slotsToCircuits({ slots, mainSwitchSide, minSlotConfidence = 0.7
         circuit.extends_side = extendsSide;
       }
     } else {
-      circuit = buildCircuitFromSlot(slot, circuitNumber, upstreamRcd);
+      circuit = buildCircuitFromSlot(
+        slot,
+        circuitNumber,
+        slot._effectiveUpstreamRcd ?? upstreamRcd
+      );
       circuit.label = slotLabel;
     }
 
@@ -1838,6 +1918,7 @@ questionsForInspector: return EMPTY array [] unless RCD type could not be determ
         extractionSource,
         stage2Source: geometricResult.stage2Source ?? null,
         mcbGroups: geometricResult.mcbGroups ?? null,
+        upstreamRcds: geometricResult.upstreamRcds ?? null,
       });
     }
 
