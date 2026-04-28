@@ -124,7 +124,21 @@ function assistantToolUseIds(assistantMsg) {
  *   tool_calls: Array<{name: string, input: any, result: any}>,
  *   aborted: boolean,
  *   messages_final: Array,
+ *   usage: {
+ *     input_tokens: number,
+ *     output_tokens: number,
+ *     cache_creation_input_tokens: number,
+ *     cache_read_input_tokens: number,
+ *   },
  * }>}
+ *
+ * The `usage` field is the summed token usage across every round's
+ * `stream.finalMessage().usage`. The shape mirrors Anthropic's
+ * `Message.usage` exactly so the caller can pass it straight to
+ * `costTracker.addSonnetUsage(toolLoopOut.usage)`. Defensive — any
+ * missing field on a per-round usage object contributes 0 to the sum
+ * (covers SDK shape drift and the cap-hit branch where the final round
+ * may not surface usage from a partial stream).
  */
 export async function runToolLoop({
   client,
@@ -155,6 +169,22 @@ export async function runToolLoop({
   let stopReason = null;
   let aborted = false;
   const allCalls = [];
+  // Per-round usage accumulator. Summed from each round's
+  // stream.finalMessage().usage (Anthropic Message.usage shape). Returned
+  // verbatim so callers can pipe it into CostTracker.addSonnetUsage. We
+  // intentionally do NOT bill per-round here — the call is one billable
+  // utterance from the session's perspective, and CostTracker.turns ===
+  // utterances is the contract every dashboard relies on (matches the
+  // legacy off-mode call site at eicr-extraction-session.js:1614 which
+  // also calls addSonnetUsage exactly once per extract()). The round
+  // count is preserved on the return value (rounds: number) for
+  // diagnostics that want per-round granularity.
+  const usage = {
+    input_tokens: 0,
+    output_tokens: 0,
+    cache_creation_input_tokens: 0,
+    cache_read_input_tokens: 0,
+  };
 
   while (rounds < maxRounds) {
     rounds += 1;
@@ -191,6 +221,21 @@ export async function runToolLoop({
     // user turn. Codex's Phase-1 STG review flagged this as MAJOR.
     const assistantMsg = await stream.finalMessage();
     messages.push({ role: 'assistant', content: assistantMsg.content });
+
+    // Sum this round's token usage into the loop accumulator. Defensive
+    // against missing fields (SDK shape drift / partial-stream rounds /
+    // mock streams that don't emit usage) — each missing field is 0.
+    // Anthropic's streaming SDK assembles the final usage from message_start
+    // (input_tokens, cache_creation_input_tokens, cache_read_input_tokens)
+    // and message_delta (output_tokens, accumulating); finalMessage() returns
+    // the post-assembly snapshot, which is what we sum here.
+    const u = assistantMsg.usage;
+    if (u) {
+      usage.input_tokens += u.input_tokens || 0;
+      usage.output_tokens += u.output_tokens || 0;
+      usage.cache_creation_input_tokens += u.cache_creation_input_tokens || 0;
+      usage.cache_read_input_tokens += u.cache_read_input_tokens || 0;
+    }
 
     // Happy-path terminator: model said end_turn (or null / unknown — treat
     // anything other than tool_use as "we are done").
@@ -342,7 +387,7 @@ export async function runToolLoop({
       try {
         const res = await dispatcher(
           { tool_call_id: rec.tool_call_id, name: rec.name, input: rec.input },
-          ctx,
+          ctx
         );
         const duration_ms = Date.now() - started;
         // STO-01: per-tool-call structured log. sessionId/turnId are
@@ -466,5 +511,6 @@ export async function runToolLoop({
     tool_calls: allCalls,
     aborted,
     messages_final: messages,
+    usage,
   };
 }

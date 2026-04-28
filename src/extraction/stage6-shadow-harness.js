@@ -355,6 +355,46 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
   // (extractFromUtterance does this internally).
   session.turnCount = turnNum;
 
+  // Cost tracking — wire the multi-round tool loop's summed usage into
+  // the session's CostTracker so cost_summary.json populates the same
+  // sonnet.{turns, cacheReads, cacheWrites, input, output, cost} fields
+  // the optimiser's analyze-session.js reads at scripts/analyze-session.js
+  // (line 322, ~costSummary.sonnet). Pre-fix this was a black hole: the
+  // legacy off-mode `extract()` path called costTracker.addSonnetUsage()
+  // at eicr-extraction-session.js:1614, but the Stage 6 live path never
+  // reached that code, so the tool-loop's API calls were billed by
+  // Anthropic but invisible to dashboards (toSessionSummary returned
+  // sonnet.turns=0 / cost=0 even after 8+ extraction rounds). The
+  // 47 Ashcroft Road session 2D391936 was the smoking-gun example.
+  // One call per loop run preserves "turns === utterances" semantics
+  // (matches legacy off-mode call site) — toolLoopOut.rounds is on the
+  // return value if a future dashboard needs per-API-call granularity.
+  // Defensive: skip if costTracker isn't on the session (test harnesses
+  // sometimes pass partial sessions); skip if usage is all zeros (mock
+  // streams without usage events) so test assertions on turn counts
+  // stay stable when fixtures don't carry usage.
+  if (
+    session.costTracker &&
+    typeof session.costTracker.addSonnetUsage === 'function' &&
+    toolLoopOut.usage &&
+    (toolLoopOut.usage.input_tokens > 0 ||
+      toolLoopOut.usage.output_tokens > 0 ||
+      toolLoopOut.usage.cache_read_input_tokens > 0 ||
+      toolLoopOut.usage.cache_creation_input_tokens > 0)
+  ) {
+    session.costTracker.addSonnetUsage(toolLoopOut.usage);
+  }
+
+  // Mirror the legacy `this.extractedReadingsCount += result.extracted_readings.length`
+  // at eicr-extraction-session.js:1474. Feeds cost_summary.extraction.readingsExtracted
+  // (added by stopSession at eicr-extraction-session.js:1161). The optimiser
+  // reads this at analyze-session.js:326 with a fallback to debug-log event
+  // counts; populating it here makes the server-authoritative path the
+  // primary signal in dashboards.
+  if (typeof session.extractedReadingsCount === 'number' && result.extracted_readings) {
+    session.extractedReadingsCount += result.extracted_readings.length;
+  }
+
   log.info('stage6_live_extraction', {
     sessionId: session.sessionId,
     turnId,
@@ -363,6 +403,14 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
     abort_reason: toolLoopOut.aborted && toolLoopOut.rounds >= 8 ? 'loop_cap' : null,
     readings: result.extracted_readings.length,
     observations: result.observations.length,
+    // Token usage logged here for per-turn CloudWatch visibility (mirrors
+    // the legacy off-mode "Turn cost" log at eicr-extraction-session.js:1618).
+    // Cumulative session totals live on session.costTracker and ride out
+    // via cost_summary.json at session end.
+    usage_input: toolLoopOut.usage?.input_tokens ?? 0,
+    usage_output: toolLoopOut.usage?.output_tokens ?? 0,
+    usage_cache_read: toolLoopOut.usage?.cache_read_input_tokens ?? 0,
+    usage_cache_write: toolLoopOut.usage?.cache_creation_input_tokens ?? 0,
   });
 
   return result;
@@ -755,6 +803,26 @@ export async function runShadowHarness(session, transcriptText, regexResults, op
   // Plan 05-01 — release per-turn gate timers on the success path BEFORE
   // bundling/divergence-log. Same idempotency contract as the catch path.
   askGateForTurn?.destroy();
+
+  // Cost tracking — shadow mode makes a real billable Anthropic call in
+  // parallel to legacy extract(). Legacy already tracks itself at
+  // eicr-extraction-session.js:1614; without this wiring the shadow leg
+  // is invisible to dashboards even though it shows up on the Anthropic
+  // bill. Same shape + defensive guards as runLiveMode (above). We do
+  // NOT bump session.extractedReadingsCount here — shadow's readings
+  // never reach iOS (Step 8 returns legacy), so they don't count toward
+  // user-visible extraction throughput.
+  if (
+    session.costTracker &&
+    typeof session.costTracker.addSonnetUsage === 'function' &&
+    toolLoopOut.usage &&
+    (toolLoopOut.usage.input_tokens > 0 ||
+      toolLoopOut.usage.output_tokens > 0 ||
+      toolLoopOut.usage.cache_read_input_tokens > 0 ||
+      toolLoopOut.usage.cache_creation_input_tokens > 0)
+  ) {
+    session.costTracker.addSonnetUsage(toolLoopOut.usage);
+  }
 
   // Step 5: bundle ONCE post-loop (Pitfall #3 — never mid-loop).
   const toolResult = bundleToolCallsIntoResult(perTurnWrites, legacy);

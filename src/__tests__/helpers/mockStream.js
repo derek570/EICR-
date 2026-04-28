@@ -44,8 +44,26 @@ export function mockStream(events) {
     async finalMessage() {
       const stateByIndex = new Map();
       let stopReason = null;
+      // Mirror Anthropic streaming SDK behaviour: usage is seeded from
+      // message_start.message.usage (input + cache tokens, output_tokens=0)
+      // and updated by message_delta.usage (output_tokens accumulating).
+      // finalMessage() returns the post-assembly snapshot. Tests that omit
+      // usage on their fixture events get `undefined` here, which the
+      // tool-loop's defensive `usage || {}`-style accumulator treats as
+      // zero — matching real-world SDK shape drift / partial streams.
+      let usage;
 
       for (const ev of events) {
+        if (ev.type === 'message_start') {
+          if (ev.message?.usage) {
+            usage = { ...ev.message.usage };
+          }
+        } else if (ev.type === 'message_delta' && ev.usage) {
+          // Anthropic's message_delta carries cumulative output_tokens
+          // (and rarely cache fields on retroactive credits); merge over
+          // whatever message_start seeded.
+          usage = { ...(usage || {}), ...ev.usage };
+        }
         if (ev.type === 'content_block_start') {
           // Clone to avoid mutating the fixture. Strip the `input: {}` placeholder
           // on tool_use — the real input comes from input_json_delta fragments.
@@ -86,7 +104,7 @@ export function mockStream(events) {
         .sort((a, b) => a - b)
         .map((i) => stateByIndex.get(i).block);
 
-      return { role: 'assistant', content, stop_reason: stopReason };
+      return { role: 'assistant', content, stop_reason: stopReason, usage };
     },
   };
 }
