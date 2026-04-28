@@ -769,6 +769,12 @@ export function assembleGeometricResult(perSlotState) {
     mainSwitchWidth: prepared.mainSwitchWidth,
     lowConfidence: prepared.lowConfidence,
     disagreement: prepared.disagreement,
+    // 2026-04-28: surface Stage 2 path source + per-group bbox array so the
+    // route handler can log which Stage 2 path ran (legacy populated_area
+    // vs new groups-mode) and what the VLM returned. Useful for diagnosing
+    // missed-circuit regressions in production.
+    stage2Source: prepared.stage2Source ?? null,
+    mcbGroups: prepared.mcbGroups ?? null,
     imageWidth: prepared.imageWidth,
     imageHeight: prepared.imageHeight,
     slots: cls.slots,
@@ -1814,6 +1820,15 @@ questionsForInspector: return EMPTY array [] unless RCD type could not be determ
         }
       }
 
+      // 2026-04-28: surfaced stage2Source + mcbGroups so we can A/B the
+      // legacy populated_area path against the new groups-mode path in
+      // production telemetry. stage2Source is 'groups' (new) or
+      // 'populated-area' (legacy); mcbGroups is the per-group bbox array
+      // when the new path ran, null otherwise. Helps diagnose
+      // "missed-circuit" regressions — if the VLM returned fewer module
+      // positions than reality, that's a groups-mode prompt issue;
+      // if it returned the right count but the merge dropped circuits,
+      // that's a slotsToCircuits issue.
       logger.info('CCU geometric extraction attached', {
         userId: req.user.id,
         moduleOrCarrierCount: analysis.geometric.moduleCount,
@@ -1821,6 +1836,8 @@ questionsForInspector: return EMPTY array [] unless RCD type could not be determ
         lowConfidence: geometricResult.lowConfidence,
         stage3Error: geometricResult.stage3Error ?? null,
         extractionSource,
+        stage2Source: geometricResult.stage2Source ?? null,
+        mcbGroups: geometricResult.mcbGroups ?? null,
       });
     }
 
