@@ -44,15 +44,6 @@ import { classifyOvertake } from './stage6-overtake-classifier.js';
 // sizes (>8192 chars) so the caller can send an error envelope back to iOS
 // instead of smuggling the abuse downstream.
 import { sanitiseUserText } from './stage6-sanitise-user-text.js';
-// Stage 6 Phase 5 Plan 05-04 — restrained-mode rolling-5-turn-window state
-// machine + lifecycle log row emitter. STA-05: ≥3 ask_user calls in any
-// rolling 5-turn window → 60s lockout (auto-released by wall-clock timer)
-// + one-shot client_diagnostic emission to iOS. Per-session instance lives
-// on the activeSessions entry; destroyed on the same 3 termination paths
-// that drain pendingAsks. Reconnect deliberately PRESERVES the state to
-// prevent "hang up + reconnect" abuse of the kill-switch.
-import { createRestrainedMode } from './stage6-restrained-mode.js';
-import { logRestrainedMode } from './stage6-dispatcher-logger.js';
 // Stage 6 Phase 5 Plan 05-03 — per-(field, circuit) ask counter. The
 // activeSessions entry owns one askBudget per session; the wrapper layer
 // (Plan 05-01) calls isExhausted(key) BEFORE invoking the inner ask
@@ -1910,69 +1901,26 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
       // (rejectAll). stage6-pending-asks-registry.js enforces Codex STG #3
       // strict ordering inside every resolution path.
       pendingAsks: createPendingAsksRegistry(),
-      // Stage 6 Phase 5 Plan 05-04 — restrained-mode rolling-5-turn-window
-      // state machine (STA-05). The wrapper (Plan 05-01) calls
-      // restrainedMode.recordAsk(turnId) AFTER each non-short-circuited ask;
-      // when ≥3 asks accumulate within any rolling 5-turn window, the
-      // onActivate callback fires ONCE per activation cycle:
-      //   1. Sends `client_diagnostic` to iOS so the app can suppress
-      //      further question TTS during the 60s lockout window. Reuses
-      //      the existing `client_diagnostic` envelope (Phase 6 owns the
-      //      iOS decoder; Swift already ignores unknown categories per r8
-      //      UnknownMessageTypeGuard discipline) — no new message type.
-      //   2. Emits one `stage6.restrained_mode` log row with event:
-      //      'activated' for Phase 8 dashboards (STO-03 metric).
-      // Auto-release after 60s via setTimeout fires onRelease, which
-      // logs the matching event:'released' row. Reconnect PRESERVES the
-      // state (handleSessionStart at ~L1255 is deliberately untouched so
-      // a hang-up-and-reconnect can't reset the kill-switch).
-      // turnId is null at the entry-callback site because the
-      // activeSessions entry constructor doesn't close over a runtime
-      // turn — Phase 8 queries join by sessionId + emittedAt timestamp
-      // to find the trigger turnId from the preceding stage6.ask_user
-      // row. Documented in 05-04-PLAN.md §Risks.
-      restrainedMode: createRestrainedMode({
-        windowTurns: 5,
-        triggerCount: 3,
-        releaseMs: 60000,
-        onActivate: () => {
-          if (ws && ws.readyState === ws.OPEN) {
-            try {
-              ws.send(
-                JSON.stringify({
-                  type: 'client_diagnostic',
-                  category: 'restrained_mode_triggered',
-                  sessionId,
-                  emittedAt: new Date().toISOString(),
-                  window_asks: 3,
-                })
-              );
-            } catch {
-              // ws.send() failure during onActivate must NEVER tear down
-              // the extraction. The state machine has already flipped
-              // to active and the log row below still fires; iOS missing
-              // one client_diagnostic is degraded but acceptable.
-            }
-          }
-          logRestrainedMode(logger, {
-            sessionId,
-            turnId: null,
-            event: 'activated',
-            triggerAskCount: 3,
-            windowTurns: 5,
-            releaseMs: 60000,
-          });
-        },
-        onRelease: () => {
-          logRestrainedMode(logger, {
-            sessionId,
-            turnId: null,
-            event: 'released',
-            windowTurns: 5,
-            releaseMs: 60000,
-          });
-        },
-      }),
+      // Stage 6 Phase 5 Plan 05-04 — restrained-mode (rolling 3-asks-in-5-turns,
+      // 60s lockout) is stubbed to always-inactive. It was a hangover from the
+      // pre-Stage-6 streaming path where Sonnet could spam clarifying questions
+      // mid-extraction; the current server-driven ask path is well-behaved
+      // enough that the cap caused more harm than benefit. Concrete trigger:
+      // session 2D391936 (47 Ashcroft Road, 2026-04-28) — two consecutive
+      // R1+R2 readings were silently dropped after the cap activated on benign
+      // warm-up disambiguations (out-of-range circuit + missing-context Zs).
+      //
+      // Why a stub rather than removing the wiring: stage6-ask-gate-wrapper.js
+      // composes its gate stack only when BOTH `askBudget` and `restrainedMode`
+      // are truthy (see header comment, ~L478). A stub keeps debounce +
+      // per-key askBudget cap (cap=2 same field/circuit) live; deleting the
+      // key would silently bypass those too.
+      //
+      // To re-enable: restore the createRestrainedMode({ windowTurns,
+      // triggerCount, releaseMs, onActivate, onRelease }) call (see
+      // stage6-restrained-mode.js for the contract) and re-import
+      // createRestrainedMode + logRestrainedMode at the top of this file.
+      restrainedMode: { isActive: () => false, recordAsk: () => {}, destroy: () => {} },
       // Stage 6 Phase 5 Plan 05-03 — per-(field, circuit) ask counter
       // (STA-06). The wrapper (Plan 05-01) calls
       // askBudget.isExhausted(deriveAskKey(call.input)) BEFORE invoking
