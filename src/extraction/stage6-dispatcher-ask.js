@@ -95,7 +95,7 @@
 import { validateAskUser } from './stage6-dispatch-validation.js';
 import { logAskUser } from './stage6-dispatcher-logger.js';
 import { checkForPromptLeak, hashPayload } from './stage6-prompt-leak-filter.js';
-import { resolveCircuitAnswer } from './stage6-answer-resolver.js';
+import { resolveCircuitAnswer, resolveValueAnswer } from './stage6-answer-resolver.js';
 
 /**
  * STA-03 — exported so test override and Phase 5 tuning have a single knob.
@@ -523,6 +523,8 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws, op
     const body = await buildResolvedBody({
       outcome,
       pendingWrite: input.pending_write ?? null,
+      contextField: input.context_field ?? null,
+      contextCircuit: input.context_circuit ?? null,
       session,
       autoResolveWrite,
       logger,
@@ -551,6 +553,8 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws, op
 async function buildResolvedBody({
   outcome,
   pendingWrite,
+  contextField,
+  contextCircuit,
   session,
   autoResolveWrite,
   logger,
@@ -562,6 +566,115 @@ async function buildResolvedBody({
   // never trigger resolution — there's no answer text to resolve.
   if (!outcome.answered) {
     return { answered: false, reason: outcome.reason };
+  }
+
+  // Bug-J fix (2026-04-28) — value-resolve.
+  // Symmetric to the circuit-resolver below: when the ask carries a
+  // concrete `context_field` + `context_circuit` (e.g. "what is R1 for
+  // kitchen sockets?"), the missing piece is a VALUE, not a circuit. Pre-
+  // fix the dispatcher returned `{answered:true, untrusted_user_text:"0.47"}`
+  // and waited for Sonnet to follow up with `record_reading` on the next
+  // turn — which the model demonstrably failed to do (session 08469BFC
+  // 2026-04-28: "Got it, zero point four seven" but readings:0). The
+  // value-resolver runs here for the same reason as the circuit-resolver:
+  // a well-formed ask collapses the answer space to a handful of
+  // deterministic shapes, and one extra Sonnet round-trip just to stamp a
+  // numeric onto a known field is wasteful AND fragile.
+  //
+  // Runs BEFORE the no-pending-write fallback so it catches asks the
+  // pre-fix path would have dropped to "legacy body".
+  if (autoResolveWrite) {
+    const valueVerdict = resolveValueAnswer({
+      userText: outcome.user_text,
+      contextField,
+      contextCircuit,
+      sourceTurnId: turnId,
+    });
+    if (valueVerdict.kind === 'auto_resolve') {
+      const dispatched = [];
+      for (const write of valueVerdict.writes) {
+        try {
+          const result = await autoResolveWrite(write, { sessionId, turnId, toolCallId });
+          dispatched.push({
+            tool: write.tool,
+            field: write.field,
+            circuit: write.circuit,
+            value: write.value,
+            ok: result?.ok !== false,
+          });
+        } catch (err) {
+          if (logger?.warn) {
+            logger.warn('stage6.ask_user_value_auto_resolve_dispatch_failed', {
+              sessionId,
+              turnId,
+              tool_call_id: toolCallId,
+              field: write.field,
+              circuit: write.circuit,
+              error: err?.message || String(err),
+            });
+          }
+          dispatched.push({
+            tool: write.tool,
+            field: write.field,
+            circuit: write.circuit,
+            value: write.value,
+            ok: false,
+            error: err?.message || String(err),
+          });
+        }
+      }
+      if (logger?.info) {
+        logger.info('stage6.ask_user_value_auto_resolved', {
+          sessionId,
+          turnId,
+          tool_call_id: toolCallId,
+          field: contextField,
+          circuit: contextCircuit,
+          write_count: dispatched.length,
+          all_ok: dispatched.every((d) => d.ok),
+        });
+      }
+      return {
+        answered: true,
+        untrusted_user_text: outcome.user_text,
+        auto_resolved: true,
+        match_status: 'value_resolved',
+        resolved_writes: dispatched,
+      };
+    }
+    if (valueVerdict.kind === 'cancel') {
+      if (logger?.info) {
+        logger.info('stage6.ask_user_value_resolution_cancelled', {
+          sessionId,
+          turnId,
+          tool_call_id: toolCallId,
+          field: contextField,
+          circuit: contextCircuit,
+        });
+      }
+      return {
+        answered: true,
+        untrusted_user_text: outcome.user_text,
+        auto_resolved: false,
+        match_status: 'cancelled',
+        context_field: contextField,
+        context_circuit: contextCircuit,
+      };
+    }
+    if (valueVerdict.kind === 'escalate') {
+      if (logger?.info) {
+        logger.info('stage6.ask_user_value_resolution_escalated', {
+          sessionId,
+          turnId,
+          tool_call_id: toolCallId,
+          field: contextField,
+          circuit: contextCircuit,
+          parsed_hint: valueVerdict.parsed_hint,
+        });
+      }
+      // Don't return yet — fall through to circuit-resolver / legacy body.
+    }
+    // `no_value_context` — fall through silently.
   }
 
   // Legacy / no-pending-write path: same body the dispatcher emitted before

@@ -531,3 +531,168 @@ function buildWrite(pendingWrite, circuitRef) {
     source_turn_id: pendingWrite.source_turn_id ?? null,
   };
 }
+
+// ---------------------------------------------------------------------------
+// Value-resolve (2026-04-28) — bug-J fix
+// ---------------------------------------------------------------------------
+//
+// Symmetric to the circuit-resolver above, but for the OPPOSITE missing piece.
+// When Sonnet asks "what is the R1 reading for kitchen sockets?" it carries
+// `context_field=ring_r1_ohm`, `context_circuit=6` — the model has the
+// schedule entry, the field, just needs a value. Pre-fix, the dispatcher
+// returned `{answered: true, untrusted_user_text: "0.47"}` to Sonnet and
+// expected the model to follow up with a `record_reading`. In session
+// 08469BFC the model just *verbally* acknowledged ("Got it, zero point four
+// seven") and never emitted the write — six readings lost in a row.
+//
+// The value-resolve pulls the same trick as the circuit-resolver: deterministic
+// matcher first, escalate when ambiguous. Legitimate reply shapes:
+//
+//   - bare numeric ("0.47", "naught point four seven" — already normalised)
+//   - "is 0.47" / "the value is 0.47"
+//   - corrected ("0.7 no 0.47" — take the LAST numeric, lower confidence)
+//   - sentinel ("LIM" / "OL" / "infinity" / "discontinuous" — emit ∞ when on
+//     a continuity field; escalate when on a non-continuity field)
+//   - cancel ("skip", "never mind") — same set as the circuit resolver
+//
+// Anything more complex (multiple distinct numerics for ONE field, free-form
+// sentences) escalates back to Sonnet with a parsed_hint. Conservative-by-
+// default — misrouting a number is a worse failure than one extra turn.
+
+const NUMERIC_PATTERN = /-?\d+(?:\.\d+)?/g;
+const DISCONTINUOUS_PHRASES = [
+  'discontinuous',
+  'disconnected',
+  'open circuit',
+  'open',
+  'infinity',
+  'infinite',
+  'overload',
+  'over load',
+  'ol',
+  'lim',
+];
+
+/**
+ * Resolve a value-disambiguation ask_user reply against the asked field +
+ * circuit. Pure function — no side effects.
+ *
+ * Possible verdicts:
+ *
+ *   { kind: 'auto_resolve', writes: [{tool, field, circuit, value, confidence, source_turn_id}] }
+ *   { kind: 'cancel' }
+ *   { kind: 'escalate', parsed_hint: string }
+ *   { kind: 'no_value_context' }   — caller falls through to circuit-resolver / legacy body
+ *
+ * @param {object} args
+ * @param {string} args.userText                  the inspector's reply
+ * @param {string|null} args.contextField         circuit_fields key, or null/sentinel
+ * @param {number|null} args.contextCircuit       circuit_ref, or null
+ * @param {string|null} args.sourceTurnId         turn id for source_turn_id stamp
+ */
+export function resolveValueAnswer({ userText, contextField, contextCircuit, sourceTurnId }) {
+  // Need both pieces to value-resolve. Sentinel field names (`none`,
+  // `observation_clarify`) are not real fields — fall through.
+  if (
+    !contextField ||
+    contextField === 'none' ||
+    contextField === 'observation_clarify' ||
+    contextCircuit === null ||
+    contextCircuit === undefined
+  ) {
+    return { kind: 'no_value_context' };
+  }
+  const text = String(userText ?? '').trim();
+  if (!text) {
+    return { kind: 'escalate', parsed_hint: 'empty_reply' };
+  }
+  const lower = text.toLowerCase();
+  const stripped = stripPunct(lower);
+
+  // Cancel — same phrase set as the circuit resolver.
+  if (CANCEL_PHRASES.includes(stripped)) {
+    return { kind: 'cancel' };
+  }
+
+  // Discontinuous / open-circuit sentinel — emit ∞ per the prompt contract
+  // (line 58 of sonnet_agentic_system.md). Only valid for ring continuity /
+  // r2 / r1+r2 fields; others escalate.
+  for (const phrase of DISCONTINUOUS_PHRASES) {
+    if (lower.includes(phrase)) {
+      const continuityFields = ['r1_r2_ohm', 'r2_ohm', 'ring_r1_ohm', 'ring_rn_ohm', 'ring_r2_ohm'];
+      if (continuityFields.includes(contextField)) {
+        return {
+          kind: 'auto_resolve',
+          writes: [
+            {
+              tool: 'record_reading',
+              field: contextField,
+              circuit: contextCircuit,
+              value: '∞',
+              confidence: 0.9,
+              source_turn_id: sourceTurnId ?? null,
+            },
+          ],
+        };
+      }
+      return {
+        kind: 'escalate',
+        parsed_hint: 'discontinuous_on_non_continuity_field',
+      };
+    }
+  }
+
+  // Numeric extraction — find every numeric in the reply.
+  const matches = text.match(NUMERIC_PATTERN);
+  if (!matches || matches.length === 0) {
+    return { kind: 'escalate', parsed_hint: 'no_numeric_in_reply' };
+  }
+  // De-dup consecutive identicals ("0.47 0.47" → ["0.47"]). Distinct
+  // numerics across the reply are NOT collapsed — that's an over-spec for a
+  // single-field ask and we'd rather escalate.
+  const distinctNumerics = [];
+  for (const m of matches) {
+    if (distinctNumerics[distinctNumerics.length - 1] !== m) {
+      distinctNumerics.push(m);
+    }
+  }
+  if (distinctNumerics.length > 1) {
+    // "0.7 no 0.47" / "actually 0.47" — correction marker between
+    // numerics → take the last. Anything else escalates.
+    const correctionMarker = /\b(no|not|actually|sorry|wait|cancel that|i meant|scratch that)\b/i;
+    if (correctionMarker.test(text)) {
+      return {
+        kind: 'auto_resolve',
+        writes: [
+          {
+            tool: 'record_reading',
+            field: contextField,
+            circuit: contextCircuit,
+            value: distinctNumerics[distinctNumerics.length - 1],
+            confidence: 0.85,
+            source_turn_id: sourceTurnId ?? null,
+          },
+        ],
+      };
+    }
+    return {
+      kind: 'escalate',
+      parsed_hint: `multiple_numerics:${distinctNumerics.join(',')}`,
+    };
+  }
+
+  // Single numeric — write it.
+  return {
+    kind: 'auto_resolve',
+    writes: [
+      {
+        tool: 'record_reading',
+        field: contextField,
+        circuit: contextCircuit,
+        value: distinctNumerics[0],
+        confidence: 0.9,
+        source_turn_id: sourceTurnId ?? null,
+      },
+    ],
+  };
+}
