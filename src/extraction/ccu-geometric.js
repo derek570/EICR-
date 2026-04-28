@@ -118,28 +118,25 @@ const MODULE_COUNT_PROMPT_GROUPS = (
 - rail_left: ${rails.rail_left}
 - rail_right: ${rails.rail_right}
 
-Identify each GROUP of MCBs/RCBOs/blanks you can actually see, tightly. A group is a contiguous run of MCBs, RCBOs, and blanking plates on the rail. Members of a group can be: MCBs, RCBOs, blanking plates (1-module plastic covers in unused slots), or short empty positions between adjacent MCBs/blanks.
+Identify each GROUP of devices on the rail, tightly. A group is a contiguous run of devices and blanks on the rail. Members of a group can be: MCBs, RCBOs, RCDs, blanking plates (1-module plastic covers in unused slots), or short empty positions between adjacent members.
 
-CRITICAL — DO NOT INCLUDE RCDs OR THE MAIN SWITCH AS MEMBERS OF ANY GROUP. Standalone RCDs (2-module devices with a TEST button, used to protect downstream MCBs) and main switches break the rail into separate groups. The MCBs/blanks BEFORE such a device are one group, the MCBs/blanks AFTER are a separate group. RCDs and main switches are reported separately, not in any group's count.
+The ONLY thing that breaks the rail into separate groups is the MAIN SWITCH itself or a clear physical separator (a vertical bus-bar shroud or an intentional gap of AT LEAST 2 modules wide). Members on either side of such a separator are independent groups. Within a group, count every module position from the leftmost member to the rightmost.
 
-GAP TOLERANCE — Many UK boards are SPLIT-LOAD: two groups of MCBs separated by a clear physical separator (a vertical bus-bar shroud, an RCD module that splits the bus, or an intentional gap of AT LEAST 2 modules). Only split into separate groups when you see one of these clear separators OR an intervening RCD/main switch. SMALL gaps (less than 2 modules wide) between adjacent MCBs/blanks ARE PART OF THE SAME GROUP — those positions are blanks/spare slots, not a split-load divider, and MUST be counted as positions within the surrounding group. Failing to count a 1-module spare position because it sits next to another spare is a known regression — count every visible position from the first MCB/blank to the last MCB/blank in each group.
+GAP TOLERANCE — Small gaps (less than 2 modules wide) between adjacent members ARE PART OF THE SAME GROUP — those positions are blanks/spare slots, NOT a split-load divider, and MUST be counted as positions within the surrounding group. Failing to count a 1-module spare position because it sits next to another spare is a known regression — count every visible position from the first member to the last member in each group.
 
 For EACH group, on the 0-1000 scale of this cropped image, report:
-- start_x: x-coordinate of the LEFT edge of the LEFTMOST member in the group (the first MCB / RCBO / blank)
-- end_x: x-coordinate of the RIGHT edge of the RIGHTMOST member in the group (the last MCB / RCBO / blank)
-- module_count: number of module positions IN THIS GROUP. A module is an 18mm-wide slot — a 1-module device (single MCB / blank) counts as 1, a 2-module device (RCBO) counts as 2. Do NOT include RCDs or main switches in any group's count.
+- start_x: x-coordinate of the LEFT edge of the LEFTMOST member in the group (the first device or blank)
+- end_x: x-coordinate of the RIGHT edge of the RIGHTMOST member in the group (the last device or blank)
+- module_count: TOTAL number of module positions IN THIS GROUP. A module is an 18mm-wide slot — a 1-module device (single MCB / blank) counts as 1, a 2-module device (RCBO / RCD) counts as 2. So a group containing one RCD + 4 MCBs + 3 blanks = 2 + 4 + 3 = 9 modules.
 
-Also identify the MAIN SWITCH separately. The main switch is typically the largest device on the rail — two modules wide (~36mm in reality), no test button, no sensitivity marking ("30mA"), NOT an RCD. It is OUTSIDE all MCB groups.
+Also identify the MAIN SWITCH separately. The main switch is typically the largest device on the rail — two modules wide (~36mm in reality), no test button, no sensitivity marking ("30mA"), NOT an RCD.
 - main_switch_center_x: x-coordinate of the main switch's CENTRE on the 0-1000 scale
 - main_switch_width: TOTAL width of the main switch on the 0-1000 scale
 
-If there is no main switch on the rail (some inline-mains rewireable boards), report main_switch_center_x and main_switch_width as null.
-
-Also identify any UPSTREAM RCDs separately. An upstream RCD is a 2-module device with a TEST button, a sensitivity rating ("30mA" / "100mA"), and NO trip curve marking. It typically sits at the start (or middle, on split-load boards) of an MCB run, protecting all downstream MCBs in that group. List ALL such RCDs you can see — there may be 0, 1, or 2 on a typical UK CU. The MCB/blank groups returned in mcb_groups MUST NOT overlap with any RCD position.
-- upstream_rcds: array of {center_x, width} on the 0-1000 scale (empty array if none).
+If there is no main switch on the rail (some inline-mains rewireable boards), report main_switch_center_x and main_switch_width as null. The main switch is NOT a member of any group.
 
 Respond with JSON only:
-{"main_switch_center_x": <int|null>, "main_switch_width": <int|null>, "upstream_rcds": [{"center_x": <int>, "width": <int>}], "mcb_groups": [{"start_x": <int>, "end_x": <int>, "module_count": <int>}]}`;
+{"main_switch_center_x": <int|null>, "main_switch_width": <int|null>, "mcb_groups": [{"start_x": <int>, "end_x": <int>, "module_count": <int>}]}`;
 
 // Stage 3 — classify the device in each crop. Each message contains N crops
 // (CCU_STAGE3_BATCH_SIZE); the VLM must return exactly N objects in the same order.
