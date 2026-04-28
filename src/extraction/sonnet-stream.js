@@ -669,6 +669,36 @@ const FIELD_CORRECTIONS = {
   ring_r1: 'ring_continuity_r1',
   ring_rn: 'ring_continuity_rn',
   ring_r2: 'ring_continuity_r2',
+  // 2026-04-28 (Bug-H sibling): Stage 6 `record_reading` emits the canonical
+  // `field_schema.json.circuit_fields` keys (r2_ohm / ring_r1_ohm /
+  // ring_rn_ohm / ring_r2_ohm / measured_zs_ohm / r1_r2_ohm /
+  // ir_live_earth_mohm / ir_live_live_mohm / ir_test_voltage_v / rcd_time_ms /
+  // ocpd_rating_a / ocpd_breaking_capacity_ka / max_disconnect_time_s /
+  // live_csa_mm2 / cpc_csa_mm2 / polarity_confirmed / circuit_designation).
+  // iOS Build 282's `applySonnetReadings` switch (DeepgramRecordingViewModel
+  // .swift:3326+) only knows the LEGACY names. Without these aliases the
+  // readings decode but land on `unmapped_field_buffered` — same end-user
+  // symptom as the observation decode failure, just one circuit at a time.
+  // Closes the field-name half of the Bug-H repro (session A354882B
+  // 2026-04-28: discontinuous ring continuity readings on circuit 2 mapped
+  // to `ring_r*_ohm` server-side, never landed on the iOS Circuit model).
+  r2_ohm: 'r2',
+  ring_r1_ohm: 'ring_continuity_r1',
+  ring_rn_ohm: 'ring_continuity_rn',
+  ring_r2_ohm: 'ring_continuity_r2',
+  measured_zs_ohm: 'zs',
+  r1_r2_ohm: 'r1_plus_r2',
+  ir_live_earth_mohm: 'insulation_resistance_l_e',
+  ir_live_live_mohm: 'insulation_resistance_l_l',
+  ir_test_voltage_v: 'ir_test_voltage',
+  rcd_time_ms: 'rcd_trip_time',
+  ocpd_rating_a: 'ocpd_rating',
+  ocpd_breaking_capacity_ka: 'ocpd_breaking_capacity',
+  max_disconnect_time_s: 'max_disconnect_time',
+  live_csa_mm2: 'cable_size',
+  cpc_csa_mm2: 'cable_size_earth',
+  polarity_confirmed: 'polarity',
+  circuit_designation: 'designation',
   max_zs: 'ocpd_max_zs_ohm',
   ocpd_max_zs: 'ocpd_max_zs_ohm',
   max_zs_ohm: 'ocpd_max_zs_ohm',

@@ -927,8 +927,12 @@ export class EICRExtractionSession {
   }
 
   /**
-   * Populate stateSnapshot.circuits with pre-existing test readings from jobState
-   * so that server-side confirmation dedup works for fields already filled on iOS.
+   * Populate stateSnapshot.circuits with pre-existing test readings AND circuit
+   * metadata (designation, OCPD, cable, RCD, …) from jobState so that
+   * server-side confirmation dedup works AND so the Stage 6 dispatcher's
+   * `validateRecordReading` / `validateRenameCircuit` can resolve circuits the
+   * inspector references by number or by label before any readings have been
+   * dictated.
    *
    * Plan 04-19 r13-#2 — every stored field key is CANONICAL
    * (matches `config/field_schema.json.circuit_fields`). The SOURCE
@@ -939,6 +943,24 @@ export class EICRExtractionSession {
    * which made the cached-prefix snapshot disagree with the
    * strict-tool `record_reading.field` enum on filled-slot
    * vocabulary. See FIELD_ID_MAP comment for the full rename list.
+   *
+   * 2026-04-28 (CCU-imported-schedule fix): pre-fix the seeder gated on
+   * `Object.keys(fields).length > 0` and only checked READING fields
+   * (zs / r1+r2 / IR / ring / rcd_time / polarity). A fresh job after a CCU
+   * extraction has 16 circuits full of metadata (Cooker, MCB, 32A, 2.5/1.5mm²)
+   * but ZERO readings — those come from inspector dictation. Result: the
+   * seeder skipped every circuit, `stateSnapshot.circuits` stayed empty, and
+   * the Stage 6 dispatcher rejected every `record_reading` / `rename_circuit`
+   * call with `source_not_found`. Sonnet then either created phantom circuits
+   * (`create_circuit { circuit_ref: 4 }`) or asked "Circuit 2 (Cooker) doesn't
+   * appear to be in the active schedule" — even though the prompt-level
+   * `circuitSchedule` text knew about Circuit 2 = Cooker. The two views of the
+   * schedule (prompt text vs. dispatcher snapshot) disagreed. Smoking-gun
+   * session: 03CE342D-3706-42A0-9BFD-1A05F685AC39 (2026-04-28, Wylex
+   * NHRS12SL, 16 circuits in iOS, zero in stateSnapshot). Fix: also seed
+   * canonical metadata keys, AND seed every circuit referenced by jobState
+   * even when no fields are present (an empty bucket is enough to flip
+   * `validateRecordReading`'s existence check from false to true).
    */
   _seedStateFromJobState(jobState) {
     if (!jobState?.circuits) return;
@@ -947,6 +969,7 @@ export class EICRExtractionSession {
       const num = parseInt(circuit.ref || circuit.circuitNumber || circuit.number);
       if (isNaN(num)) continue;
       const fields = {};
+      // Test readings (existing behaviour)
       if (circuit.measuredZsOhm || circuit.zs)
         fields.measured_zs_ohm = circuit.measuredZsOhm || circuit.zs;
       if (circuit.r1R2Ohm || circuit.r1_plus_r2)
@@ -962,11 +985,56 @@ export class EICRExtractionSession {
       if (circuit.rcdTimeMs) fields.rcd_time_ms = circuit.rcdTimeMs;
       if (circuit.polarityConfirmed || circuit.polarity)
         fields.polarity_confirmed = circuit.polarityConfirmed || circuit.polarity;
-      if (Object.keys(fields).length > 0) {
-        this.stateSnapshot.circuits[num] = { ...fields };
-        if (!this.recentCircuitOrder.includes(num)) this.recentCircuitOrder.push(num);
-        seeded++;
-      }
+      // Circuit metadata (CCU-imported, manually entered, or restored from
+      // persistence). Without these the dispatcher cannot resolve circuits the
+      // inspector hasn't yet dictated readings for. Source attribute names
+      // mirror iOS `buildJobStateForServer` AND the `circuit_*` underscore
+      // shape used by older payloads / restore paths.
+      if (circuit.designation || circuit.circuit_designation || circuit.circuit_description)
+        fields.circuit_designation =
+          circuit.designation || circuit.circuit_designation || circuit.circuit_description;
+      if (circuit.ocpdType || circuit.ocpd_type)
+        fields.ocpd_type = circuit.ocpdType || circuit.ocpd_type;
+      if (circuit.ocpdRatingA || circuit.ocpd_rating || circuit.ocpd_rating_a)
+        fields.ocpd_rating_a = circuit.ocpdRatingA || circuit.ocpd_rating || circuit.ocpd_rating_a;
+      if (circuit.ocpdBsEn || circuit.ocpd_bs_en)
+        fields.ocpd_bs_en = circuit.ocpdBsEn || circuit.ocpd_bs_en;
+      if (circuit.ocpdBreakingCapacityKa || circuit.ocpd_breaking_capacity_ka)
+        fields.ocpd_breaking_capacity_ka =
+          circuit.ocpdBreakingCapacityKa || circuit.ocpd_breaking_capacity_ka;
+      if (circuit.ocpdMaxZsOhm || circuit.maxZs || circuit.ocpd_max_zs_ohm)
+        fields.ocpd_max_zs_ohm = circuit.ocpdMaxZsOhm || circuit.maxZs || circuit.ocpd_max_zs_ohm;
+      if (circuit.rcdBsEn || circuit.rcd_bs_en)
+        fields.rcd_bs_en = circuit.rcdBsEn || circuit.rcd_bs_en;
+      if (circuit.rcdType || circuit.rcd_type)
+        fields.rcd_type = circuit.rcdType || circuit.rcd_type;
+      if (circuit.rcdOperatingCurrentMa || circuit.rcd_operating_current_ma)
+        fields.rcd_operating_current_ma =
+          circuit.rcdOperatingCurrentMa || circuit.rcd_operating_current_ma;
+      if (circuit.liveCsaMm2 || circuit.live_csa_mm2 || circuit.cable_size)
+        fields.live_csa_mm2 = circuit.liveCsaMm2 || circuit.live_csa_mm2 || circuit.cable_size;
+      if (circuit.cpcCsaMm2 || circuit.cpc_csa_mm2 || circuit.cable_size_earth)
+        fields.cpc_csa_mm2 = circuit.cpcCsaMm2 || circuit.cpc_csa_mm2 || circuit.cable_size_earth;
+      if (circuit.wiringType || circuit.wiring_type)
+        fields.wiring_type = circuit.wiringType || circuit.wiring_type;
+      if (circuit.refMethod || circuit.ref_method)
+        fields.ref_method = circuit.refMethod || circuit.ref_method;
+      if (circuit.maxDisconnectTimeS || circuit.max_disconnect_time_s)
+        fields.max_disconnect_time_s = circuit.maxDisconnectTimeS || circuit.max_disconnect_time_s;
+      if (circuit.irTestVoltageV || circuit.ir_test_voltage_v || circuit.ir_test_voltage)
+        fields.ir_test_voltage_v =
+          circuit.irTestVoltageV || circuit.ir_test_voltage_v || circuit.ir_test_voltage;
+      if (circuit.numberOfPoints || circuit.number_of_points)
+        fields.number_of_points = circuit.numberOfPoints || circuit.number_of_points;
+      // Always seed an entry for every numbered circuit in jobState — the
+      // dispatcher's existence check fires off `circuit_ref in stateSnapshot
+      // .circuits`, so an empty bucket is enough to admit `record_reading` /
+      // `rename_circuit` for that ref. Pre-fix this branch only fired when at
+      // least one field had been populated, which silently dropped pristine
+      // CCU-imported circuits.
+      this.stateSnapshot.circuits[num] = { ...fields };
+      if (!this.recentCircuitOrder.includes(num)) this.recentCircuitOrder.push(num);
+      seeded++;
     }
     // Supply-level fields (circuit 0)
     const supply =

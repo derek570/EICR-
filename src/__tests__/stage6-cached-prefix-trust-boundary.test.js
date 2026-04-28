@@ -1119,6 +1119,93 @@ describe('Plan 04-19 r13-#2 — snapshot serialisation uses canonical schema nam
     expect(bucket).not.toHaveProperty('polarity');
   });
 
+  // 2026-04-28 (CCU-imported-schedule fix) — _seedStateFromJobState must
+  // create a stateSnapshot.circuits entry for every circuit listed in
+  // jobState, not only those carrying ≥1 reading. The Stage 6 dispatcher's
+  // existence check fires `circuit_ref in stateSnapshot.circuits`; pre-fix a
+  // pristine CCU-imported circuit (designation + OCPD + cable, no readings
+  // yet) was silently skipped, so every voice-driven `record_reading`
+  // landed on a `source_not_found` reject and the model fell back to
+  // `create_circuit` or "Circuit N doesn't appear to be in the active
+  // schedule" prompts. Repro session: 03CE342D 2026-04-28.
+  test('CCU-fix — circuit with metadata only (no readings) is still seeded', () => {
+    const session = new EICRExtractionSession('k', 'sess-ccu-meta-only', 'eicr', {
+      toolCallsMode: 'shadow',
+    });
+    session._seedStateFromJobState({
+      circuits: [{ ref: 2, designation: 'Cooker', ocpdType: 'MCB', ocpdRatingA: 32 }],
+    });
+    const bucket = session.stateSnapshot.circuits[2];
+    // Pre-fix: bucket would be undefined and dispatchers would reject every
+    // write to circuit 2 with source_not_found.
+    expect(bucket).toBeDefined();
+    expect(bucket).toHaveProperty('circuit_designation', 'Cooker');
+    expect(bucket).toHaveProperty('ocpd_type', 'MCB');
+    expect(bucket).toHaveProperty('ocpd_rating_a', 32);
+    expect(session.recentCircuitOrder).toContain(2);
+  });
+
+  test('CCU-fix — circuit with no fields at all still creates an empty bucket', () => {
+    // Edge case: bare ref. The dispatcher only needs the slot to exist; an
+    // empty object satisfies the existence check. This guards against a
+    // future refactor that re-introduces the `Object.keys(fields).length>0`
+    // gate and silently regresses CCU-imported schedules.
+    const session = new EICRExtractionSession('k', 'sess-ccu-empty', 'eicr', {
+      toolCallsMode: 'shadow',
+    });
+    session._seedStateFromJobState({ circuits: [{ ref: 5 }] });
+    expect(session.stateSnapshot.circuits[5]).toEqual({});
+    expect(session.recentCircuitOrder).toContain(5);
+  });
+
+  test('CCU-fix — full CCU shape lands every circuit metadata key on its canonical name', () => {
+    const session = new EICRExtractionSession('k', 'sess-ccu-full', 'eicr', {
+      toolCallsMode: 'shadow',
+    });
+    session._seedStateFromJobState({
+      circuits: [
+        {
+          ref: 6,
+          designation: 'Sockets',
+          ocpdType: 'RCBO',
+          ocpdRatingA: 32,
+          ocpdBsEn: 'BS EN 61009',
+          ocpdBreakingCapacityKa: 6,
+          ocpdMaxZsOhm: 1.09,
+          rcdType: 'A',
+          rcdBsEn: 'BS EN 61009',
+          rcdOperatingCurrentMa: 30,
+          liveCsaMm2: 2.5,
+          cpcCsaMm2: 1.5,
+          wiringType: 'A',
+          refMethod: 'B',
+          maxDisconnectTimeS: 0.4,
+          irTestVoltageV: 500,
+          numberOfPoints: 8,
+        },
+      ],
+    });
+    const bucket = session.stateSnapshot.circuits[6];
+    expect(bucket).toMatchObject({
+      circuit_designation: 'Sockets',
+      ocpd_type: 'RCBO',
+      ocpd_rating_a: 32,
+      ocpd_bs_en: 'BS EN 61009',
+      ocpd_breaking_capacity_ka: 6,
+      ocpd_max_zs_ohm: 1.09,
+      rcd_type: 'A',
+      rcd_bs_en: 'BS EN 61009',
+      rcd_operating_current_ma: 30,
+      live_csa_mm2: 2.5,
+      cpc_csa_mm2: 1.5,
+      wiring_type: 'A',
+      ref_method: 'B',
+      max_disconnect_time_s: 0.4,
+      ir_test_voltage_v: 500,
+      number_of_points: 8,
+    });
+  });
+
   test('r13-2e — cached-prefix snapshot carries canonical polarity value via FIELD_ID_MAP compact id 26', () => {
     // End-to-end: seed via canonical name, inspect the
     // buildSystemBlocks() output. FIELD_ID_MAP[polarity_confirmed]
