@@ -779,6 +779,7 @@ export function assembleGeometricResult(perSlotState) {
     upstreamRcds: prepared.upstreamRcds ?? null,
     railBbox: prepared.railBbox ?? null,
     pitchCrossCheck: prepared.pitchCrossCheck ?? null,
+    chunkingDiag: prepared.chunkingDiag ?? null,
     imageWidth: prepared.imageWidth,
     imageHeight: prepared.imageHeight,
     slots: cls.slots,
@@ -1923,6 +1924,7 @@ questionsForInspector: return EMPTY array [] unless RCD type could not be determ
         upstreamRcds: geometricResult.upstreamRcds ?? null,
         railBbox: geometricResult.railBbox ?? null,
         pitchCrossCheck: geometricResult.pitchCrossCheck ?? null,
+        chunkingDiag: geometricResult.chunkingDiag ?? null,
       });
     }
 

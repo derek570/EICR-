@@ -999,6 +999,26 @@ async function getModuleCountFromGroups(anthropic, base64, medianRails, imageDim
     mainSwitchSide = main_switch_center_x > bboxMid ? 'right' : 'left';
   }
 
+  // Diagnostic block — surfaces the raw inputs to the geometric chunking
+  // calculation so CloudWatch shows us exactly what dimensions / pixel
+  // counts produced this slot count. Added 2026-04-28 after the first
+  // tighten-and-chunk field test (38 Dickens Close, 15:38 BST) reported
+  // moduleCount=29 against an actual 16-module board with the pitch
+  // cross-check showing 0% disagreement — meaning the math was internally
+  // consistent but the inputs were wrong. Without these values in the log
+  // we can't tell whether it's the bbox too wide, the image dimensions
+  // wrong, or both calibrations broken in the same way.
+  const chunkingDiag = {
+    imageWidth: Math.round(imageWidth),
+    imageHeight: Math.round(imageHeight),
+    railWidthPx: Math.round(railWidthPx),
+    railHeightPx: Math.round(railHeightPx),
+    pixelsPerMmFromHeight: Number(pixelsPerMmFromHeight.toFixed(2)),
+    moduleWidthPxFromHeight: Math.round(moduleWidthPxFromHeight),
+    moduleCountRaw: Number(moduleCountRaw.toFixed(2)),
+    moduleCount,
+  };
+
   return {
     geometricCount: moduleCount,
     vlmCount: moduleCount, // no separate VLM count in tighten-and-chunk
@@ -1024,6 +1044,7 @@ async function getModuleCountFromGroups(anthropic, base64, medianRails, imageDim
     upstreamRcds: null, // legacy field — RCDs identified by Stage 3 classification per slot
     railBbox: railBboxNorm, // NEW 2026-04-28 — surfaces the VLM-tightened bbox for telemetry
     pitchCrossCheck,
+    chunkingDiag, // NEW 2026-04-28 — exposes raw chunking inputs for prod diagnostics
     lowConfidence,
     usage: {
       inputTokens: sample.inputTokens,
@@ -1548,6 +1569,7 @@ export async function prepareModernGeometry(imageBuffer, options = {}) {
     mcbGroups: stage2.mcbGroups ?? null,
     railBbox: stage2.railBbox ?? null,
     pitchCrossCheck: stage2.pitchCrossCheck ?? null,
+    chunkingDiag: stage2.chunkingDiag ?? null,
     slotCentersX: stage2.slotCentersX,
     moduleWidth: stage2.moduleWidth,
     mainSwitchWidth: stage2.mainSwitchWidth,
