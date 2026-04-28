@@ -104,39 +104,69 @@ Report:
 Respond with JSON only:
 {"main_switch_center_x": <int>, "main_switch_width": <int>, "module_count_direct": <int>, "populated_area_start_x": <int>, "populated_area_end_x": <int>}`;
 
-// Stage 2 groups-mode prompt (CCU_STAGE2_GROUPS=true). Asks for per-group
-// tight bounding boxes instead of a single populated_area rectangle. The
-// VLM is told upfront that the image is a USER-CROPPED region and may
-// include extra empty space at the edges — its job is to find each MCB
-// group tightly within that region, not to extrapolate. Split-load support
-// is handled by allowing multiple groups in the response array.
+// Stage 2 tighten-and-chunk prompt (CCU_STAGE2_GROUPS=true, Derek 2026-04-28).
+// Replaces the failed groups-with-counts schema. The VLM has ONE job: return
+// the rectangle that tightly encloses every device on the DIN rail (RCD,
+// MCBs, RCBOs, blanks, main switch — everything mounted on the rail). No
+// counting, no grouping, no per-device list, no module pitch derivation.
+//
+// Backend then chunks the bbox geometrically using two hard standards:
+//   - UK domestic MCB body height = 82.5mm (±5% across all major brands)
+//   - DIN module pitch = 17.5mm
+// pixels_per_mm = rail_height_px / 82.5; module_count = round(rail_width_px /
+// (17.5 * pixels_per_mm)). Stage 3 classifies each tiled slot, so split-
+// load gaps appear as `blank` classifications, the main switch as
+// `main_switch`, etc. — all handled downstream by slotsToCircuits.
+//
+// Why this beats per-group bboxes (the previous schema):
+//   - Inconsistent VLM responses on group boundaries / counts disappear:
+//     yesterday it split into 2 groups (lost spares in the gap), this
+//     morning it merged into 1 (under-counted), the morning before that it
+//     mis-aligned start_x relative to module_count (Stage 3 cropped between
+//     devices). Now the VLM is asked to find FOUR EDGES of a single
+//     rectangle. That's a task Sonnet 4.6 nails reliably.
+//   - Module count derives from a hard physical standard (DIN 17.5mm pitch)
+//     instead of asking the VLM to count. Counting is the VLM's most
+//     unreliable behaviour; we just stop asking it to count.
+//   - Loose user framing (extra background past the device row) gets
+//     auto-tightened by the VLM in this single-bbox step. No more lost
+//     edge MCBs from rail-overshoot compounding.
+//
+// Known risk (Derek 2026-04-28): "small error compounds all the way along
+// where we could end up reading half an MCB at the end". Mitigated by
+// (1) cross-checking pixels_per_mm derived from rail height vs derived
+// from main_switch_width when present (>10% disagreement → lowConfidence
+// flagged); (2) logging per-slot positions in CloudWatch so drift is
+// visible. Long-term mitigation if drift turns out to be real: use Stage
+// 3's per-slot device-centroid feedback to re-anchor remaining slots.
 const MODULE_COUNT_PROMPT_GROUPS = (
   rails
-) => `This image is a USER-CROPPED region of a UK consumer unit, framed roughly around the MCB row by an inspector on an iOS device. The crop may include extra empty space at the edges (left/right of the MCBs, above/below for label clearance). The DIN rail bounding box on a 0-1000 scale (within this cropped image) is approximately:
+) => `This image is a USER-CROPPED region of a UK consumer unit, framed roughly around the device row by an inspector on an iOS device. The crop may include extra empty space at the edges (left/right of the devices, above/below for label clearance). The DIN rail bounding box on a 0-1000 scale (within this cropped image) is approximately:
 - rail_top: ${rails.rail_top}
 - rail_bottom: ${rails.rail_bottom}
 - rail_left: ${rails.rail_left}
 - rail_right: ${rails.rail_right}
 
-Identify each GROUP of devices on the rail, tightly. A group is a contiguous run of devices and blanks on the rail. Members of a group can be: MCBs, RCBOs, RCDs, blanking plates (1-module plastic covers in unused slots), or short empty positions between adjacent members.
+Your task: TIGHTEN this user crop to a single rectangle that encloses EVERY device mounted on the DIN rail and NOTHING ELSE. Tight on all four sides.
 
-The ONLY thing that breaks the rail into separate groups is the MAIN SWITCH itself or a clear physical separator (a vertical bus-bar shroud or an intentional gap of AT LEAST 2 modules wide). Members on either side of such a separator are independent groups. Within a group, count every module position from the leftmost member to the rightmost.
+Devices to include in the bbox: MCBs, RCBOs, RCDs, blanking plates, and the MAIN SWITCH. Treat the main switch as PART of the device row — it sits on the same rail as the MCBs and the bbox extends to its outer edge.
 
-GAP TOLERANCE — Small gaps (less than 2 modules wide) between adjacent members ARE PART OF THE SAME GROUP — those positions are blanks/spare slots, NOT a split-load divider, and MUST be counted as positions within the surrounding group. Failing to count a 1-module spare position because it sits next to another spare is a known regression — count every visible position from the first member to the last member in each group.
+Edges to pin to:
+- LEFT edge: the LEFT face of the leftmost device (whichever device sits furthest left — could be the main switch on a left-handed board, an RCD, an MCB, or a blanking plate). NOT the left edge of empty rail past the last device. NOT the user-crop edge.
+- RIGHT edge: the RIGHT face of the rightmost device. NOT empty rail past the last device.
+- TOP edge: the TOP of the device bodies (where the MCB toggle housing meets its top face). NOT the printed label strip above the row, NOT the inside of the consumer unit cover above the rail.
+- BOTTOM edge: the BOTTOM of the device bodies (where the MCB body meets its bottom face). NOT the printed label strip below, NOT the cable entry / wiring area below the rail.
 
-For EACH group, on the 0-1000 scale of this cropped image, report:
-- start_x: x-coordinate of the LEFT edge of the LEFTMOST member in the group (the first device or blank)
-- end_x: x-coordinate of the RIGHT edge of the RIGHTMOST member in the group (the last device or blank)
-- module_count: TOTAL number of module positions IN THIS GROUP. A module is an 18mm-wide slot — a 1-module device (single MCB / blank) counts as 1, a 2-module device (RCBO / RCD) counts as 2. So a group containing one RCD + 4 MCBs + 3 blanks = 2 + 4 + 3 = 9 modules.
+The bbox top-to-bottom MUST equal the MCB body height — UK domestic standards put this at ~82.5mm. The backend uses this height to calibrate pixels-per-millimetre and then divides the bbox width by the 17.5mm DIN module pitch to count slots, so getting the top/bottom tight to the MCB face (NOT to the labels) is critical. If you include label strips above/below in the bbox, the height calibration is wrong and the slot count is wrong.
 
-Also identify the MAIN SWITCH separately. The main switch is typically the largest device on the rail — two modules wide (~36mm in reality), no test button, no sensitivity marking ("30mA"), NOT an RCD.
-- main_switch_center_x: x-coordinate of the main switch's CENTRE on the 0-1000 scale
-- main_switch_width: TOTAL width of the main switch on the 0-1000 scale
+Empty rail past the last device on either end MUST be excluded — only enclose the populated section.
 
-If there is no main switch on the rail (some inline-mains rewireable boards), report main_switch_center_x and main_switch_width as null. The main switch is NOT a member of any group.
+Also report the MAIN SWITCH separately (used as a backup horizontal calibration anchor — main switches are 2 modules / 36mm wide). The main switch is the largest device on the rail, no test button, no sensitivity marking, NOT an RCD. If no main switch is visible (inline-mains rewireable boards), report null.
+
+Output 0-1000 normalised coordinates as integers.
 
 Respond with JSON only:
-{"main_switch_center_x": <int|null>, "main_switch_width": <int|null>, "mcb_groups": [{"start_x": <int>, "end_x": <int>, "module_count": <int>}]}`;
+{"rail_bbox": {"left": <int>, "right": <int>, "top": <int>, "bottom": <int>}, "main_switch_center_x": <int|null>, "main_switch_width": <int|null>}`;
 
 // Stage 3 — classify the device in each crop. Each message contains N crops
 // (CCU_STAGE3_BATCH_SIZE); the VLM must return exactly N objects in the same order.
@@ -834,153 +864,111 @@ export async function getModuleCount(imageBuffer, medianRails, imageDimensions =
  */
 async function getModuleCountFromGroups(anthropic, base64, medianRails, imageDimensions) {
   const sample = await callVlm(anthropic, base64, MODULE_COUNT_PROMPT_GROUPS(medianRails));
-  const { main_switch_center_x, main_switch_width, upstream_rcds, mcb_groups } = sample.parsed;
+  const { rail_bbox, main_switch_center_x, main_switch_width } = sample.parsed;
 
   // --- Validate VLM response -----------------------------------------------
-  if (!Array.isArray(mcb_groups) || mcb_groups.length === 0) {
-    throw new Error('getModuleCountFromGroups: VLM returned empty or missing mcb_groups');
+  // The new schema (2026-04-28 tighten-and-chunk redesign) returns a single
+  // rectangle. mcb_groups / module_count / per-device bboxes are gone — the
+  // VLM has one job: tighten the user crop to the device row.
+  if (!rail_bbox || typeof rail_bbox !== 'object') {
+    throw new Error('getModuleCountFromGroups: VLM returned missing rail_bbox');
   }
-
-  const groups = [...mcb_groups]
-    .map((g, idx) => {
-      if (!g || typeof g !== 'object') {
-        throw new Error(`getModuleCountFromGroups: mcb_groups[${idx}] is not an object`);
-      }
-      const start_x = Number(g.start_x);
-      const end_x = Number(g.end_x);
-      const module_count = Math.round(Number(g.module_count));
-      if (!Number.isFinite(start_x) || !Number.isFinite(end_x)) {
-        throw new Error(
-          `getModuleCountFromGroups: mcb_groups[${idx}] missing numeric start_x/end_x`
-        );
-      }
-      if (end_x <= start_x) {
-        throw new Error(
-          `getModuleCountFromGroups: mcb_groups[${idx}] end_x (${end_x}) must be > start_x (${start_x})`
-        );
-      }
-      if (!Number.isFinite(module_count) || module_count < 1) {
-        throw new Error(
-          `getModuleCountFromGroups: mcb_groups[${idx}] module_count (${g.module_count}) must be >= 1`
-        );
-      }
-      return { start_x, end_x, module_count };
-    })
-    .sort((a, b) => a.start_x - b.start_x);
-
-  // Parse upstream_rcds (added 2026-04-28). Optional — older deploys
-  // without the prompt change return undefined; treat as empty array.
-  // Each RCD is a 2-module device protecting downstream MCBs in its
-  // group; we generate slot crops for both module positions so Stage 3
-  // classifies them as 'rcd' and slotsToCircuits emits an RCD row +
-  // cascades rcd_* fields onto the protected MCBs.
-  const upstreamRcds = Array.isArray(upstream_rcds)
-    ? upstream_rcds
-        .map((r) => {
-          if (!r || typeof r !== 'object') return null;
-          const center_x = Number(r.center_x);
-          const width = Number(r.width);
-          if (!Number.isFinite(center_x) || !Number.isFinite(width) || width <= 0) {
-            return null;
-          }
-          return { center_x, width };
-        })
-        .filter(Boolean)
-        .sort((a, b) => a.center_x - b.center_x)
-    : [];
-
-  // --- Build slotCentersX combining MCB groups + upstream RCDs -------------
-  // Slots are generated in PHYSICAL left-to-right order so slotsToCircuits's
-  // pre-pass cascade computation (introduced 2026-04-28) sees devices in
-  // the order they sit on the rail. Each upstream RCD occupies 2 module
-  // positions (BS EN 61008-1, 2-module wide); we generate 2 slot centres
-  // per RCD so Stage 3 can classify both halves and the dedupe path in
-  // slotsToCircuits collapses them into one schedule row. Group slots are
-  // evenly spaced within (start_x, end_x). The total slot count therefore
-  // equals sum(group.module_count) + 2 * upstream_rcds.length.
-  const slotEntries = [];
-  let totalSpan = 0;
-  for (const g of groups) {
-    const pitch = (g.end_x - g.start_x) / g.module_count;
-    g.pitch = pitch;
-    totalSpan += g.end_x - g.start_x;
-    for (let i = 0; i < g.module_count; i++) {
-      slotEntries.push({ x: g.start_x + pitch * (i + 0.5) });
-    }
-  }
-  for (const r of upstreamRcds) {
-    const halfWidth = r.width / 2;
-    for (let i = 0; i < 2; i++) {
-      slotEntries.push({
-        x: r.center_x - halfWidth + halfWidth * (i + 0.5),
-      });
-    }
-  }
-  slotEntries.sort((a, b) => a.x - b.x);
-  const slotCentersX = slotEntries.map((s) => s.x);
-  const groupModuleCount = groups.reduce((sum, g) => sum + g.module_count, 0);
-  const rcdModuleCount = upstreamRcds.length * 2;
-  const totalModuleCount = groupModuleCount + rcdModuleCount;
-  // Average pitch across all visible MCBs. Fallback to main_switch_width / 2
-  // only if total span is somehow zero (defensive — shouldn't happen given
-  // the validation above).
-  // moduleWidth is computed from GROUP slots only (excluding upstream RCDs).
-  // RCDs are 2-module devices — including them in the average would inflate
-  // moduleWidth by ~10-20% and over-pad MCB crops in Stage 3. Use group
-  // module count + group total span so the value reflects genuine MCB pitch.
-  const moduleWidth =
-    groupModuleCount > 0 && totalSpan > 0
-      ? totalSpan / groupModuleCount
-      : Number.isFinite(main_switch_width) && main_switch_width > 0
-        ? main_switch_width / 2
-        : 0;
-  if (moduleWidth <= 0) {
-    throw new Error('getModuleCountFromGroups: could not determine a positive moduleWidth');
-  }
-
-  // --- Main switch side relative to MCBs ------------------------------------
-  // Side is determined by the main switch position vs the midpoint of the
-  // first-group-start to last-group-end span. Outside the MCB envelope on
-  // either edge → that's the side. Field convention: circuits are numbered
-  // STARTING from the main switch, so this drives Stage 4's numbering pass.
-  const mcbsLeft = groups[0].start_x;
-  const mcbsRight = groups[groups.length - 1].end_x;
-  const mcbsMid = (mcbsLeft + mcbsRight) / 2;
-  let mainSwitchSide = null;
+  const left = Number(rail_bbox.left);
+  const right = Number(rail_bbox.right);
+  const top = Number(rail_bbox.top);
+  const bottom = Number(rail_bbox.bottom);
   if (
-    typeof main_switch_center_x === 'number' &&
-    Number.isFinite(main_switch_center_x) &&
-    Number.isFinite(main_switch_width) &&
-    main_switch_width > 0
+    !Number.isFinite(left) ||
+    !Number.isFinite(right) ||
+    !Number.isFinite(top) ||
+    !Number.isFinite(bottom)
   ) {
-    mainSwitchSide = main_switch_center_x > mcbsMid ? 'right' : 'left';
+    throw new Error('getModuleCountFromGroups: rail_bbox edges must all be finite numbers');
   }
+  if (right <= left) {
+    throw new Error(
+      `getModuleCountFromGroups: rail_bbox right (${right}) must be > left (${left})`
+    );
+  }
+  if (bottom <= top) {
+    throw new Error(
+      `getModuleCountFromGroups: rail_bbox bottom (${bottom}) must be > top (${top})`
+    );
+  }
+  const railBboxNorm = { left, right, top, bottom };
 
-  // --- Pitch cross-check (diagnostic) --------------------------------------
-  // Same logic as the populated_area path — compare moduleWidth derived
-  // from main_switch_width / 2 against moduleWidth derived from the group
-  // bank pitch. Significant divergence flags lowConfidence; the inspector
-  // sees an amber confidence banner on iOS and double-checks the readings.
-  // The MCB body height anchor (17.5mm pitch / 82.5mm body height) is also
-  // computed if image dimensions are available.
-  const moduleWidthFromMainSwitch =
-    Number.isFinite(main_switch_width) && main_switch_width > 0 ? main_switch_width / 2 : null;
-
-  let pitchCrossCheck = null;
+  // --- Calibrate pixels-per-mm from MCB body height ------------------------
+  // The bbox top/bottom is meant to span the MCB body face — UK domestic
+  // standards put MCB bodies at ~82.5mm tall. So pixels_per_mm = bbox
+  // height / 82.5mm. DIN module pitch is a hard 17.5mm standard, so the
+  // module width in pixels = 17.5 * pixels_per_mm.
+  //
+  // Calibration accuracy depends on the VLM's bbox top/bottom landing on
+  // the actual MCB body edges (not the printed label strips). The prompt
+  // is explicit about this. The cross-check against main_switch_width
+  // below catches mis-tightening before it reaches Stage 3.
   const { imageWidth, imageHeight } = imageDimensions || {};
   if (
-    Number.isFinite(imageWidth) &&
-    imageWidth > 0 &&
-    Number.isFinite(imageHeight) &&
-    imageHeight > 0 &&
-    typeof medianRails.rail_top === 'number' &&
-    typeof medianRails.rail_bottom === 'number' &&
-    medianRails.rail_bottom > medianRails.rail_top &&
-    moduleWidthFromMainSwitch != null
+    !Number.isFinite(imageWidth) ||
+    imageWidth <= 0 ||
+    !Number.isFinite(imageHeight) ||
+    imageHeight <= 0
   ) {
-    const railHeightPx = ((medianRails.rail_bottom - medianRails.rail_top) / 1000) * imageHeight;
+    throw new Error(
+      'getModuleCountFromGroups: imageDimensions must include positive imageWidth and imageHeight'
+    );
+  }
+
+  const MCB_BODY_HEIGHT_MM = 82.5;
+  const MODULE_PITCH_MM = 17.5;
+  const railHeightPx = ((bottom - top) / 1000) * imageHeight;
+  const railWidthPx = ((right - left) / 1000) * imageWidth;
+  const pixelsPerMmFromHeight = railHeightPx / MCB_BODY_HEIGHT_MM;
+  const moduleWidthPxFromHeight = MODULE_PITCH_MM * pixelsPerMmFromHeight;
+
+  if (moduleWidthPxFromHeight <= 0) {
+    throw new Error(
+      'getModuleCountFromGroups: could not derive a positive module width from rail height'
+    );
+  }
+
+  // --- Compute module count by chunking the bbox width ---------------------
+  // Round to nearest integer — half-modules don't physically exist in UK
+  // CUs (every device is 1 or 2 modules wide on a 17.5mm pitch). The
+  // rounding is the source of "fence-post drift" risk Derek flagged
+  // 2026-04-28: if pixels_per_mm is off by 5%, a 14-module rail's
+  // computed count could land at 13 or 15. The cross-check below makes
+  // this drift visible on lowConfidence.
+  const moduleCountRaw = railWidthPx / moduleWidthPxFromHeight;
+  const moduleCount = Math.max(1, Math.round(moduleCountRaw));
+
+  // --- Tile slots across the bbox ------------------------------------------
+  // Use the COMPUTED module width (railWidthPx / moduleCount) rather than
+  // the height-derived width directly, so slot 0 sits at half-a-pitch from
+  // the left edge AND slot N-1 sits at half-a-pitch from the right edge.
+  // This is two-anchor calibration — the only slot positioning that
+  // doesn't accumulate error from one end.
+  const moduleWidthPx = railWidthPx / moduleCount;
+  const moduleWidth = (moduleWidthPx / imageWidth) * 1000; // back to 0-1000 scale
+  const slotCentersX = [];
+  for (let i = 0; i < moduleCount; i++) {
+    slotCentersX.push(left + moduleWidth * (i + 0.5));
+  }
+
+  // --- Cross-check vs main_switch_width (drift detector) -------------------
+  // Main switches are 2-module wide (~36mm) — their pixel width gives an
+  // independent calibration anchor. If pixels_per_mm derived from height
+  // disagrees with pixels_per_mm derived from main switch width by >10%,
+  // the rail bbox is mis-tightened on at least one axis. lowConfidence is
+  // surfaced so the inspector verifies. We don't try to "fix" the
+  // calibration — just flag it. The inspector decides whether to retry
+  // with a tighter framing or accept the result.
+  const moduleWidthFromMainSwitch =
+    Number.isFinite(main_switch_width) && main_switch_width > 0 ? main_switch_width / 2 : null;
+  let pitchCrossCheck = null;
+  let lowConfidence = false;
+  if (moduleWidthFromMainSwitch != null) {
     const moduleWidthPxFromMs = (moduleWidthFromMainSwitch / 1000) * imageWidth;
-    const moduleWidthPxFromHeight = 17.5 * (railHeightPx / 82.5);
     const denom = Math.max(moduleWidthPxFromMs, moduleWidthPxFromHeight, 1);
     const disagreementPct = Math.round(
       (Math.abs(moduleWidthPxFromMs - moduleWidthPxFromHeight) / denom) * 100
@@ -990,11 +978,30 @@ async function getModuleCountFromGroups(anthropic, base64, medianRails, imageDim
       fromMcbHeightPx: Math.round(moduleWidthPxFromHeight),
       disagreementPct,
     };
+    if (disagreementPct > 10) {
+      lowConfidence = true;
+    }
+  }
+
+  // --- Main switch side derivation -----------------------------------------
+  // mainSwitchSide is determined by main_switch_center_x position relative
+  // to the bbox midpoint. The main switch sits ON the rail (it's INSIDE the
+  // bbox per the prompt) so its centre tells us which end of the rail it's
+  // at. Used by slotsToCircuits to drive BS-7671 circuit numbering
+  // (circuit 1 = nearest to main switch).
+  //
+  // Future improvement: if main_switch_center_x is null but Stage 3 later
+  // classifies a slot as 'main_switch', that slot's index gives us the
+  // side. We don't have Stage 3 output here, so for now null → null.
+  let mainSwitchSide = null;
+  const bboxMid = (left + right) / 2;
+  if (typeof main_switch_center_x === 'number' && Number.isFinite(main_switch_center_x)) {
+    mainSwitchSide = main_switch_center_x > bboxMid ? 'right' : 'left';
   }
 
   return {
-    geometricCount: totalModuleCount,
-    vlmCount: totalModuleCount, // identical in groups mode — see header comment
+    geometricCount: moduleCount,
+    vlmCount: moduleCount, // no separate VLM count in tighten-and-chunk
     slotCentersX,
     disagreement: false,
     truncatedFromDisagreement: false,
@@ -1009,16 +1016,15 @@ async function getModuleCountFromGroups(anthropic, base64, medianRails, imageDim
         : null,
     moduleWidth,
     moduleWidthFromMainSwitch: moduleWidthFromMainSwitch ?? moduleWidth,
-    // Both ends of every group are tight by construction in groups mode;
-    // expose effective rail = first-group-start to last-group-end so any
-    // downstream consumer reading these fields gets a sensible answer.
-    effectiveRailLeft: mcbsLeft,
-    effectiveRailRight: mcbsRight,
-    populatedAreaStartX: mcbsLeft,
-    populatedAreaEndX: mcbsRight,
-    mcbGroups: groups, // NEW field — exposes the per-group structure for Stage 4 / debugging
-    upstreamRcds, // NEW 2026-04-28 — separately-reported RCDs (each generates 2 slot crops)
+    effectiveRailLeft: left,
+    effectiveRailRight: right,
+    populatedAreaStartX: left,
+    populatedAreaEndX: right,
+    mcbGroups: null, // legacy field — no per-group structure in tighten-and-chunk
+    upstreamRcds: null, // legacy field — RCDs identified by Stage 3 classification per slot
+    railBbox: railBboxNorm, // NEW 2026-04-28 — surfaces the VLM-tightened bbox for telemetry
     pitchCrossCheck,
+    lowConfidence,
     usage: {
       inputTokens: sample.inputTokens,
       outputTokens: sample.outputTokens,
@@ -1488,6 +1494,20 @@ export async function prepareModernGeometry(imageBuffer, options = {}) {
         pitch: scaleWidth(g.pitch),
       }));
     }
+    // Translate railBbox (tighten-and-chunk only). Y-axis is in the crop's
+    // own scale; downstream Stage 3 reads stage1.medianRails for vertical
+    // crop bounds (still in original-image scale), so the railBbox top/
+    // bottom translation is purely cosmetic for telemetry. We keep them
+    // in CROP-scale to match what the VLM actually returned and what the
+    // height calibration was computed against.
+    if (stage2.railBbox && typeof stage2.railBbox === 'object') {
+      stage2.railBbox = {
+        left: translateX(stage2.railBbox.left),
+        right: translateX(stage2.railBbox.right),
+        top: stage2.railBbox.top,
+        bottom: stage2.railBbox.bottom,
+      };
+    }
   }
 
   const usage = {
@@ -1509,10 +1529,12 @@ export async function prepareModernGeometry(imageBuffer, options = {}) {
     !!stage2.truncatedFromDisagreement ||
     Math.abs(stage2.geometricCount - stage2.vlmCount) >= 2;
 
-  // Source of Stage 2 output. 'groups' = new per-group tight-bbox path
-  // (CCU_STAGE2_GROUPS=true). 'populated-area' = legacy single-rect path.
-  // Useful for telemetry while we A/B the two paths in production.
-  const stage2Source = Array.isArray(stage2.mcbGroups) ? 'groups' : 'populated-area';
+  // Source of Stage 2 output. 'tighten-and-chunk' = 2026-04-28 redesign
+  // (CCU_STAGE2_GROUPS=true). 'populated-area' = legacy single-rect path
+  // (CCU_STAGE2_GROUPS=false / unset). Useful for telemetry while we A/B
+  // the two paths in production. The fingerprint is `railBbox` — only
+  // the new path populates it.
+  const stage2Source = stage2.railBbox ? 'tighten-and-chunk' : 'populated-area';
 
   return {
     medianRails: stage1.medianRails,
@@ -1522,8 +1544,10 @@ export async function prepareModernGeometry(imageBuffer, options = {}) {
     truncatedFromDisagreement: !!stage2.truncatedFromDisagreement,
     lowConfidence,
     stage1Source, // 'vlm' | 'roi-hint' — lets caller log the skip
-    stage2Source, // 'groups' | 'populated-area'
+    stage2Source, // 'tighten-and-chunk' | 'populated-area'
     mcbGroups: stage2.mcbGroups ?? null,
+    railBbox: stage2.railBbox ?? null,
+    pitchCrossCheck: stage2.pitchCrossCheck ?? null,
     slotCentersX: stage2.slotCentersX,
     moduleWidth: stage2.moduleWidth,
     mainSwitchWidth: stage2.mainSwitchWidth,

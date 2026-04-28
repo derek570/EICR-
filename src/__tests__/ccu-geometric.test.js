@@ -368,22 +368,30 @@ describe('getModuleCount', () => {
 });
 
 // ---------------------------------------------------------------------------
-// getModuleCount — groups mode (CCU_STAGE2_GROUPS=true)
+// getModuleCount — tighten-and-chunk mode (CCU_STAGE2_GROUPS=true)
 // ---------------------------------------------------------------------------
 //
-// New 2026-04-28 path: the VLM is asked for an array of TIGHT per-group
-// bounding boxes within a user-supplied rough crop, instead of a single
-// populated_area_start_x / end_x rectangle. Tests cover single-group
-// (normal CU), split-load (two groups separated by a gap), loose user
-// framing (groups don't fill the image), and validation errors.
+// New 2026-04-28 path (Derek's design): the VLM has ONE job — return a
+// single rectangle that tightly encloses every device on the rail (RCD,
+// MCBs, blanks, main switch). Backend then chunks the bbox geometrically
+// using the UK MCB body-height standard (82.5mm) and DIN module pitch
+// (17.5mm). No grouping decision, no module count from the VLM, no per-
+// device list. Stage 3 classifies each tiled slot, and slotsToCircuits
+// handles main_switch / blank / rcd classifications as before.
+//
+// Test math: with image 1000×1000 and bbox top=100/bottom=265 (height=165
+// normalised = 165 px), pixels_per_mm = 165/82.5 = 2.0, module_width_px =
+// 17.5*2 = 35. With bbox left=100/right=520 (width=420 px), module_count
+// = round(420/35) = 12. moduleWidth in 0-1000 norm = 420/12 = 35.
 
-describe('getModuleCount — groups mode', () => {
+describe('getModuleCount — tighten-and-chunk mode', () => {
   const medianRails = {
-    rail_top: 400,
-    rail_bottom: 600,
-    rail_left: 100,
-    rail_right: 900,
+    rail_top: 100,
+    rail_bottom: 900,
+    rail_left: 0,
+    rail_right: 1000,
   };
+  const dims1k = { imageWidth: 1000, imageHeight: 1000 };
 
   beforeEach(() => {
     process.env.CCU_STAGE2_GROUPS = 'true';
@@ -393,175 +401,175 @@ describe('getModuleCount — groups mode', () => {
     delete process.env.CCU_STAGE2_GROUPS;
   });
 
-  test('single group — main switch right, slots tile with even spacing', async () => {
-    const buf = await makeFakeJpeg();
-    // Single group [200, 800] containing 12 modules → pitch=50.
-    // Main switch on the right at 850/80 → mainSwitchSide='right'.
+  test('basic 12-module bbox → 12 slots tiled evenly across the bbox', async () => {
+    const buf = await makeFakeJpeg(1000, 1000);
+    // bbox 100→520 wide × 100→265 tall. height_px=165 → px/mm=2 →
+    // module_px=35. width_px=420 → count=round(420/35)=12.
     mockCreate.mockResolvedValueOnce(
       fakeVlmResponse({
-        main_switch_center_x: 850,
-        main_switch_width: 80,
-        mcb_groups: [{ start_x: 200, end_x: 800, module_count: 12 }],
+        rail_bbox: { left: 100, right: 520, top: 100, bottom: 265 },
+        main_switch_center_x: 500,
+        main_switch_width: 70,
       })
     );
 
-    const result = await getModuleCount(buf, medianRails);
+    const result = await getModuleCount(buf, medianRails, dims1k);
     expect(result.geometricCount).toBe(12);
     expect(result.vlmCount).toBe(12);
     expect(result.disagreement).toBe(false);
-    expect(result.truncatedFromDisagreement).toBe(false);
+    expect(result.moduleWidth).toBeCloseTo(35);
+    expect(result.effectiveRailLeft).toBe(100);
+    expect(result.effectiveRailRight).toBe(520);
+    expect(result.populatedAreaStartX).toBe(100);
+    expect(result.populatedAreaEndX).toBe(520);
+    expect(result.slotCentersX).toHaveLength(12);
+    expect(result.slotCentersX[0]).toBeCloseTo(117.5); // 100 + 35/2
+    expect(result.slotCentersX.at(-1)).toBeCloseTo(502.5); // 520 - 35/2
+    expect(result.railBbox).toEqual({ left: 100, right: 520, top: 100, bottom: 265 });
+  });
+
+  test('mainSwitchSide: main switch right of bbox midpoint → "right"', async () => {
+    const buf = await makeFakeJpeg(1000, 1000);
+    mockCreate.mockResolvedValueOnce(
+      fakeVlmResponse({
+        rail_bbox: { left: 100, right: 520, top: 100, bottom: 265 },
+        main_switch_center_x: 480, // > midpoint(310)
+        main_switch_width: 70,
+      })
+    );
+    const result = await getModuleCount(buf, medianRails, dims1k);
     expect(result.mainSwitchSide).toBe('right');
-    expect(result.mainSwitchCenterX).toBe(850);
-    expect(result.mainSwitchWidth).toBe(80);
-    expect(result.moduleWidth).toBeCloseTo(50);
-    expect(result.moduleWidthFromMainSwitch).toBeCloseTo(40); // 80 / 2
-    expect(result.effectiveRailLeft).toBe(200);
-    expect(result.effectiveRailRight).toBe(800);
-    expect(result.populatedAreaStartX).toBe(200);
-    expect(result.populatedAreaEndX).toBe(800);
-    expect(result.slotCentersX).toHaveLength(12);
-    expect(result.slotCentersX[0]).toBeCloseTo(225); // 200 + 50/2
-    expect(result.slotCentersX.at(-1)).toBeCloseTo(775); // 800 - 50/2
-    expect(result.mcbGroups).toEqual([{ start_x: 200, end_x: 800, module_count: 12, pitch: 50 }]);
   });
 
-  test('split-load — two groups separated by a gap, slots only inside groups', async () => {
-    const buf = await makeFakeJpeg();
-    // Group 1: [200, 440] / 6 modules → pitch=40
-    // Gap from 440 → 500
-    // Group 2: [500, 740] / 6 modules → pitch=40
-    // Main switch at 850 (right) — outside both groups.
+  test('mainSwitchSide: main switch left of bbox midpoint → "left"', async () => {
+    const buf = await makeFakeJpeg(1000, 1000);
     mockCreate.mockResolvedValueOnce(
       fakeVlmResponse({
-        main_switch_center_x: 850,
-        main_switch_width: 80,
-        mcb_groups: [
-          { start_x: 200, end_x: 440, module_count: 6 },
-          { start_x: 500, end_x: 740, module_count: 6 },
-        ],
+        rail_bbox: { left: 100, right: 520, top: 100, bottom: 265 },
+        main_switch_center_x: 140, // < midpoint(310)
+        main_switch_width: 70,
       })
     );
-
-    const result = await getModuleCount(buf, medianRails);
-    expect(result.geometricCount).toBe(12);
-    expect(result.slotCentersX).toHaveLength(12);
-    // First group: 220, 260, 300, 340, 380, 420
-    expect(result.slotCentersX[0]).toBeCloseTo(220);
-    expect(result.slotCentersX[5]).toBeCloseTo(420);
-    // Gap — no slots between 440 and 500.
-    // Second group: 520, 560, 600, 640, 680, 720
-    expect(result.slotCentersX[6]).toBeCloseTo(520);
-    expect(result.slotCentersX.at(-1)).toBeCloseTo(720);
-    // No slot centre falls in the [440, 500] gap.
-    expect(result.slotCentersX.every((x) => x < 440 || x > 500)).toBe(true);
-    expect(result.effectiveRailLeft).toBe(200); // first group start
-    expect(result.effectiveRailRight).toBe(740); // last group end
-    expect(result.mcbGroups).toHaveLength(2);
+    const result = await getModuleCount(buf, medianRails, dims1k);
+    expect(result.mainSwitchSide).toBe('left');
   });
 
-  test('loose user framing — group bounds inside the rail, edges ignored', async () => {
-    const buf = await makeFakeJpeg();
-    // Rail_left=100, rail_right=900 — the full user crop. But the actual
-    // MCBs only fill [350, 650]. VLM correctly ignores the empty space.
+  test('inline-mains board (no main switch) → mainSwitchSide null', async () => {
+    const buf = await makeFakeJpeg(1000, 1000);
     mockCreate.mockResolvedValueOnce(
       fakeVlmResponse({
-        main_switch_center_x: 200,
-        main_switch_width: 80,
-        mcb_groups: [{ start_x: 350, end_x: 650, module_count: 6 }],
-      })
-    );
-
-    const result = await getModuleCount(buf, medianRails);
-    expect(result.mainSwitchSide).toBe('left'); // 200 < midpoint(350,650)=500
-    expect(result.geometricCount).toBe(6);
-    expect(result.effectiveRailLeft).toBe(350); // NOT 100 — empty rail edges ignored
-    expect(result.effectiveRailRight).toBe(650);
-    expect(result.slotCentersX[0]).toBeCloseTo(375); // 350 + (50/2)
-  });
-
-  test('inline-mains board — main_switch_center_x null → mainSwitchSide null', async () => {
-    const buf = await makeFakeJpeg();
-    mockCreate.mockResolvedValueOnce(
-      fakeVlmResponse({
+        rail_bbox: { left: 100, right: 520, top: 100, bottom: 265 },
         main_switch_center_x: null,
         main_switch_width: null,
-        mcb_groups: [{ start_x: 200, end_x: 800, module_count: 10 }],
       })
     );
-
-    const result = await getModuleCount(buf, medianRails);
+    const result = await getModuleCount(buf, medianRails, dims1k);
     expect(result.mainSwitchSide).toBeNull();
     expect(result.mainSwitchCenterX).toBeNull();
     expect(result.mainSwitchWidth).toBeNull();
-    expect(result.moduleWidth).toBeCloseTo(60); // (800-200)/10
-    expect(result.geometricCount).toBe(10);
+    expect(result.geometricCount).toBe(12);
   });
 
-  test('throws when mcb_groups is empty', async () => {
-    const buf = await makeFakeJpeg();
+  test('split-load board: gaps between groups appear as blank slots in the tiling', async () => {
+    // Tighten-and-chunk doesn't try to detect gaps — they just exist as
+    // module positions inside the single bbox. Stage 3 classifies them
+    // as `blank` and slotsToCircuits emits Spare entries. So the test
+    // here is just that a wide bbox with the matching module count
+    // tiles enough slots to cover the gap.
+    const buf = await makeFakeJpeg(1000, 1000);
+    // bbox 100→520 → 12 slots. Imagine 4 MCBs + 3 blanks + 5 MCBs.
     mockCreate.mockResolvedValueOnce(
       fakeVlmResponse({
-        main_switch_center_x: 850,
-        main_switch_width: 80,
-        mcb_groups: [],
+        rail_bbox: { left: 100, right: 520, top: 100, bottom: 265 },
+        main_switch_center_x: 500,
+        main_switch_width: 70,
       })
     );
-    await expect(getModuleCount(buf, medianRails)).rejects.toThrow(/empty or missing mcb_groups/);
+    const result = await getModuleCount(buf, medianRails, dims1k);
+    expect(result.slotCentersX).toHaveLength(12); // covers the entire span
   });
 
-  test('throws when mcb_groups missing entirely', async () => {
-    const buf = await makeFakeJpeg();
+  test('lowConfidence flagged when main_switch_width disagrees with height calibration by >10%', async () => {
+    const buf = await makeFakeJpeg(1000, 1000);
+    // Height-based: module_width_px = 35. main_switch_width = 80 →
+    // module from MS = 40. Disagreement = round(|40-35|/40 * 100) = 12.5
+    // → 13% → lowConfidence.
     mockCreate.mockResolvedValueOnce(
       fakeVlmResponse({
-        main_switch_center_x: 850,
+        rail_bbox: { left: 100, right: 520, top: 100, bottom: 265 },
+        main_switch_center_x: 500,
         main_switch_width: 80,
       })
     );
-    await expect(getModuleCount(buf, medianRails)).rejects.toThrow(/empty or missing mcb_groups/);
+    const result = await getModuleCount(buf, medianRails, dims1k);
+    expect(result.lowConfidence).toBe(true);
+    expect(result.pitchCrossCheck).not.toBeNull();
+    expect(result.pitchCrossCheck.disagreementPct).toBeGreaterThan(10);
   });
 
-  test('throws when a group has end_x <= start_x', async () => {
-    const buf = await makeFakeJpeg();
+  test('lowConfidence NOT flagged when calibrations agree within 10%', async () => {
+    const buf = await makeFakeJpeg(1000, 1000);
+    // Height-based: module_width_px = 35. main_switch_width = 70 →
+    // module from MS = 35. Disagreement = 0 → lowConfidence=false.
     mockCreate.mockResolvedValueOnce(
       fakeVlmResponse({
-        main_switch_center_x: 850,
-        main_switch_width: 80,
-        mcb_groups: [{ start_x: 500, end_x: 500, module_count: 5 }],
+        rail_bbox: { left: 100, right: 520, top: 100, bottom: 265 },
+        main_switch_center_x: 500,
+        main_switch_width: 70,
       })
     );
-    await expect(getModuleCount(buf, medianRails)).rejects.toThrow(/end_x.*must be > start_x/);
+    const result = await getModuleCount(buf, medianRails, dims1k);
+    expect(result.lowConfidence).toBe(false);
+    expect(result.pitchCrossCheck.disagreementPct).toBeLessThanOrEqual(10);
   });
 
-  test('throws when a group has module_count < 1', async () => {
-    const buf = await makeFakeJpeg();
+  test('throws when rail_bbox is missing', async () => {
+    const buf = await makeFakeJpeg(1000, 1000);
     mockCreate.mockResolvedValueOnce(
       fakeVlmResponse({
-        main_switch_center_x: 850,
-        main_switch_width: 80,
-        mcb_groups: [{ start_x: 200, end_x: 400, module_count: 0 }],
+        main_switch_center_x: 500,
+        main_switch_width: 70,
       })
     );
-    await expect(getModuleCount(buf, medianRails)).rejects.toThrow(/module_count.*must be >= 1/);
+    await expect(getModuleCount(buf, medianRails, dims1k)).rejects.toThrow(/missing rail_bbox/);
   });
 
-  test('groups out-of-order in VLM response are sorted left-to-right', async () => {
-    const buf = await makeFakeJpeg();
-    // VLM returns groups in reverse order — sorter normalises them.
+  test('throws when rail_bbox right <= left', async () => {
+    const buf = await makeFakeJpeg(1000, 1000);
     mockCreate.mockResolvedValueOnce(
       fakeVlmResponse({
-        main_switch_center_x: 850,
-        main_switch_width: 80,
-        mcb_groups: [
-          { start_x: 500, end_x: 740, module_count: 6 },
-          { start_x: 200, end_x: 440, module_count: 6 },
-        ],
+        rail_bbox: { left: 500, right: 100, top: 100, bottom: 265 },
+        main_switch_center_x: null,
+        main_switch_width: null,
       })
     );
+    await expect(getModuleCount(buf, medianRails, dims1k)).rejects.toThrow(/right.*must be > left/);
+  });
 
-    const result = await getModuleCount(buf, medianRails);
-    expect(result.mcbGroups[0].start_x).toBe(200);
-    expect(result.mcbGroups[1].start_x).toBe(500);
-    expect(result.slotCentersX[0]).toBeCloseTo(220); // first slot of leftmost group
+  test('throws when rail_bbox bottom <= top', async () => {
+    const buf = await makeFakeJpeg(1000, 1000);
+    mockCreate.mockResolvedValueOnce(
+      fakeVlmResponse({
+        rail_bbox: { left: 100, right: 520, top: 265, bottom: 100 },
+        main_switch_center_x: null,
+        main_switch_width: null,
+      })
+    );
+    await expect(getModuleCount(buf, medianRails, dims1k)).rejects.toThrow(/bottom.*must be > top/);
+  });
+
+  test('throws when imageDimensions are missing', async () => {
+    const buf = await makeFakeJpeg(1000, 1000);
+    mockCreate.mockResolvedValueOnce(
+      fakeVlmResponse({
+        rail_bbox: { left: 100, right: 520, top: 100, bottom: 265 },
+        main_switch_center_x: null,
+        main_switch_width: null,
+      })
+    );
+    await expect(getModuleCount(buf, medianRails)).rejects.toThrow(
+      /imageDimensions must include positive imageWidth and imageHeight/
+    );
   });
 
   test('default OFF — populated_area path runs when CCU_STAGE2_GROUPS unset', async () => {
@@ -577,9 +585,8 @@ describe('getModuleCount — groups mode', () => {
     );
 
     const result = await getModuleCount(buf, medianRails);
-    // Legacy path doesn't set mcbGroups — that's the fingerprint of which
-    // path ran.
-    expect(result.mcbGroups).toBeUndefined();
+    // Legacy path doesn't set railBbox — that's the fingerprint of which path ran.
+    expect(result.railBbox).toBeUndefined();
     expect(result.geometricCount).toBe(17);
   });
 });
