@@ -51,6 +51,7 @@ import {
   upsertCircuitMeta,
   renameCircuit,
 } from './stage6-snapshot-mutators.js';
+import { RING_FIELDS, recordRingContinuityWrite } from './ring-continuity-timeout.js';
 import {
   validateRecordReading,
   validateClearReading,
@@ -122,6 +123,17 @@ export async function dispatchRecordReading(call, ctx) {
     source_turn_id: input.source_turn_id,
     auto_resolved: autoResolved || undefined,
   });
+
+  // Ring continuity tracking — stamp the circuit's last-write timestamp
+  // on every record_reading hitting one of the three ring fields. The
+  // server-side timeout detector (ring-continuity-timeout.js) reads
+  // these timestamps on each user turn to fire ask_user when a partial
+  // bucket has gone stale (>60s). Server-driven timeout is needed
+  // because Sonnet has no reliable way to track elapsed time across
+  // turns and the agentic prompt explicitly delegates timing here.
+  if (RING_FIELDS.includes(input.field)) {
+    recordRingContinuityWrite(session, input.circuit);
+  }
 
   logToolCall(logger, {
     sessionId: session.sessionId,
