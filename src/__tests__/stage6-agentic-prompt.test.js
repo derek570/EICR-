@@ -69,12 +69,23 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       expect(prompt.length).toBeGreaterThan(0);
     });
 
-    test('estimated tokens (Math.ceil(len/4)) <= 4000 — STQ-01 length cap', () => {
+    test('estimated tokens (Math.ceil(len/4)) <= 4400 — STQ-01 length cap (relaxed 2026-04-28)', () => {
       // Same heuristic `eicr-extraction-session.js:1160` uses for the
       // state snapshot token estimate; keeps us in the same units the
       // session already reports.
+      //
+      // Original cap was 4000 (Phase 4 Plan 04-01). Relaxed to 4400 on
+      // 2026-04-28 when the prompt absorbed three new structural rules:
+      //   - CIRCUIT NAMING (designation announcements without a value).
+      //   - ORPHANED VALUES (act/ask/log; no silent drops).
+      //   - RING CONTINUITY CARRYOVER (the ONLY multi-turn test family,
+      //     paired with a server-side 60s timeout that fires `ask_user`).
+      // These rules close the silent-drop bug class observed in session
+      // 3B5A0355 (2026-04-28 14:03 BST: "Circuit 1 is security alarm" /
+      // "Circuit 2 is water heater" returned zero tool calls because
+      // TOPIC RESTRAINT subsumed designation announcements).
       const estimate = Math.ceil(prompt.length / 4);
-      expect(estimate).toBeLessThanOrEqual(4000);
+      expect(estimate).toBeLessThanOrEqual(4400);
     });
   });
 
@@ -517,13 +528,100 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       expect(window).toEqual(expect.stringContaining('record_observation'));
     });
 
-    test('Test F — total prompt token estimate ≤ 4000 (regression lock for new section)', () => {
+    test('Test F — total prompt token estimate ≤ 4400 (regression lock for new section)', () => {
       // Group 1 already asserts this — re-assert here so a regression
       // inside the CONFIDENTIALITY section (e.g., verbose rewrite)
       // fires under the Group 9 banner instead of Group 1, making the
       // root cause obvious in the test output.
+      // Cap relaxed from 4000 to 4400 on 2026-04-28 — see Group 1 comment.
       const estimate = Math.ceil(prompt.length / 4);
-      expect(estimate).toBeLessThanOrEqual(4000);
+      expect(estimate).toBeLessThanOrEqual(4400);
+    });
+  });
+
+  // ------------------------------------------------------------------
+  // Group 10 — 2026-04-28: silent-drop fix (session 3B5A0355).
+  //
+  // Three new structural rules replaced TOPIC RESTRAINT to close a
+  // class of bugs where Sonnet emitted zero tool calls for utterances
+  // that named circuits or carried orphaned values:
+  //   - CIRCUIT NAMING: act on "Circuit N is X" immediately.
+  //   - ORPHANED VALUES: ask, never silently drop.
+  //   - RING CONTINUITY CARRYOVER: the ONLY multi-turn family;
+  //     server enforces a 60s timeout via ask_user.
+  // These tests pin the prose so a future prompt rewrite cannot
+  // regress without producing a clear failure signal.
+  // ------------------------------------------------------------------
+  describe('Group 10 — 2026-04-28 silent-drop fix (CIRCUIT NAMING + ORPHANED VALUES + RING CONTINUITY)', () => {
+    test('CIRCUIT NAMING bullet exists with create_circuit + rename_circuit + designation', () => {
+      const idx = prompt.search(/CIRCUIT NAMING/);
+      expect(idx).toBeGreaterThanOrEqual(0);
+      const window = prompt.slice(idx, idx + 700);
+      expect(window).toEqual(expect.stringContaining('create_circuit'));
+      expect(window).toEqual(expect.stringContaining('rename_circuit'));
+      expect(window).toEqual(expect.stringContaining('designation'));
+      // Garbled-form note — the regex pattern stays loose to allow
+      // the author to add/remove specific examples (e.g. "Sirkit",
+      // "Searched", "Cricket") without breaking this test, but the
+      // word "garbled" must remain so Sonnet sees the intent.
+      expect(window.toLowerCase()).toMatch(/garbled/);
+    });
+
+    test('ORPHANED VALUES section exists and prohibits silent drops', () => {
+      const idx = prompt.search(/ORPHANED VALUES/);
+      expect(idx).toBeGreaterThanOrEqual(0);
+      const window = prompt.slice(idx, idx + 800);
+      expect(window.toLowerCase()).toMatch(/never\s+silently\s+drop/);
+      expect(window).toEqual(expect.stringContaining('ask_user'));
+      // Bare-value path uses pending_write so the server can resolve
+      // the answer back to a (field, circuit). If the prompt loses
+      // pending_write here, the answer-resolver path goes cold.
+      expect(window).toEqual(expect.stringContaining('pending_write'));
+    });
+
+    test('RING CONTINUITY CARRYOVER section exists with the field mappings + 60s timeout note', () => {
+      // Anchor on the section header — the parenthesised form — so we
+      // skip the cross-reference inside CIRCUIT ROUTING ("see RING
+      // CONTINUITY CARRYOVER below") and slice from the actual section.
+      const idx = prompt.search(/RING CONTINUITY CARRYOVER\s*\(/);
+      expect(idx).toBeGreaterThanOrEqual(0);
+      const window = prompt.slice(idx, idx + 900);
+      // The carryover rule MUST name all three ring continuity fields
+      // by their canonical record_reading enum values; a typo here
+      // would route the wrong values into the wrong slots.
+      expect(window).toEqual(expect.stringContaining('ring_r1_ohm'));
+      expect(window).toEqual(expect.stringContaining('ring_rn_ohm'));
+      expect(window).toEqual(expect.stringContaining('ring_r2_ohm'));
+      // Server enforces the 60s timeout — confirm the prompt tells
+      // Sonnet to delegate timing to the server (not track it itself).
+      expect(window).toMatch(/60\s*s|60-second|sixty\s+second/i);
+      expect(window.toLowerCase()).toMatch(/server\s+(enforces|emits)/);
+    });
+
+    test('Example 6 — designation announcement worked example exists', () => {
+      const idx = prompt.search(/Example\s+6/i);
+      expect(idx).toBeGreaterThanOrEqual(0);
+      // Slice from Example 6 to the next top-level section / EOF.
+      const e6Body = prompt.slice(idx, idx + 600);
+      expect(e6Body).toEqual(expect.stringContaining('create_circuit'));
+      // Shows BOTH the new-circuit and existing-circuit branches.
+      expect(e6Body).toEqual(expect.stringContaining('rename_circuit'));
+      // Designation appears as a string literal in the example.
+      expect(e6Body.toLowerCase()).toMatch(/designation/);
+    });
+
+    test('TOPIC RESTRAINT section header is GONE — old rule cannot resurface', () => {
+      // The old TOPIC RESTRAINT header was the load-bearing line that
+      // told Sonnet to wait on naming utterances. Its replacement is
+      // ORPHANED VALUES + RING CONTINUITY CARRYOVER. If a future
+      // rewrite reintroduces the section verbatim, the silent-drop bug
+      // (3B5A0355) returns. Keep this regression-lock loud.
+      expect(prompt).not.toMatch(/^TOPIC RESTRAINT:/m);
+      // The specific bug-causing line — "Topic-only utterance ... no
+      // tool calls; wait. Values follow." — is also banned.
+      expect(prompt.toLowerCase()).not.toMatch(
+        /topic-only\s+utterance.*no\s+tool\s+calls;\s+wait\.\s+values\s+follow/
+      );
     });
   });
 });
