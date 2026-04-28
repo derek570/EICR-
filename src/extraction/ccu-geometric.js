@@ -118,14 +118,16 @@ const MODULE_COUNT_PROMPT_GROUPS = (
 - rail_left: ${rails.rail_left}
 - rail_right: ${rails.rail_right}
 
-Identify each GROUP of MCBs you can actually see, tightly. A group is a contiguous run of devices on the rail with NO visible gap between them. Devices in a group can be: MCBs, RCBOs, RCDs, blanking plates (1-module plastic covers), or short empty spaces between obviously-adjacent modules.
+Identify each GROUP of MCBs/RCBOs/blanks you can actually see, tightly. A group is a contiguous run of MCBs, RCBOs, and blanking plates on the rail. Members of a group can be: MCBs, RCBOs, blanking plates (1-module plastic covers in unused slots), or short empty positions between adjacent MCBs/blanks.
 
-Many UK boards are SPLIT-LOAD: two groups of MCBs, each behind its own RCD, separated by a visible gap (sometimes a vertical bus-bar shroud, sometimes just exposed rail). On a split-load board you will return TWO groups in the array. Do NOT merge them across the middle gap. Do NOT extrapolate empty rail past the last visible MCB at either end of a group.
+CRITICAL — DO NOT INCLUDE RCDs OR THE MAIN SWITCH AS MEMBERS OF ANY GROUP. Standalone RCDs (2-module devices with a TEST button, used to protect downstream MCBs) and main switches break the rail into separate groups. The MCBs/blanks BEFORE such a device are one group, the MCBs/blanks AFTER are a separate group. RCDs and main switches are reported separately, not in any group's count.
+
+GAP TOLERANCE — Many UK boards are SPLIT-LOAD: two groups of MCBs separated by a clear physical separator (a vertical bus-bar shroud, an RCD module that splits the bus, or an intentional gap of AT LEAST 2 modules). Only split into separate groups when you see one of these clear separators OR an intervening RCD/main switch. SMALL gaps (less than 2 modules wide) between adjacent MCBs/blanks ARE PART OF THE SAME GROUP — those positions are blanks/spare slots, not a split-load divider, and MUST be counted as positions within the surrounding group. Failing to count a 1-module spare position because it sits next to another spare is a known regression — count every visible position from the first MCB/blank to the last MCB/blank in each group.
 
 For EACH group, on the 0-1000 scale of this cropped image, report:
-- start_x: x-coordinate of the LEFT edge of the LEFTMOST device in the group
-- end_x: x-coordinate of the RIGHT edge of the RIGHTMOST device in the group
-- module_count: number of module positions IN THIS GROUP. A module is an 18mm-wide slot — a 1-module device (single MCB / blank) counts as 1, a 2-module device (RCBO / RCD) counts as 2. Do NOT include the main switch in any group's count.
+- start_x: x-coordinate of the LEFT edge of the LEFTMOST member in the group (the first MCB / RCBO / blank)
+- end_x: x-coordinate of the RIGHT edge of the RIGHTMOST member in the group (the last MCB / RCBO / blank)
+- module_count: number of module positions IN THIS GROUP. A module is an 18mm-wide slot — a 1-module device (single MCB / blank) counts as 1, a 2-module device (RCBO) counts as 2. Do NOT include RCDs or main switches in any group's count.
 
 Also identify the MAIN SWITCH separately. The main switch is typically the largest device on the rail — two modules wide (~36mm in reality), no test button, no sensitivity marking ("30mA"), NOT an RCD. It is OUTSIDE all MCB groups.
 - main_switch_center_x: x-coordinate of the main switch's CENTRE on the 0-1000 scale
@@ -133,8 +135,11 @@ Also identify the MAIN SWITCH separately. The main switch is typically the large
 
 If there is no main switch on the rail (some inline-mains rewireable boards), report main_switch_center_x and main_switch_width as null.
 
+Also identify any UPSTREAM RCDs separately. An upstream RCD is a 2-module device with a TEST button, a sensitivity rating ("30mA" / "100mA"), and NO trip curve marking. It typically sits at the start (or middle, on split-load boards) of an MCB run, protecting all downstream MCBs in that group. List ALL such RCDs you can see — there may be 0, 1, or 2 on a typical UK CU. The MCB/blank groups returned in mcb_groups MUST NOT overlap with any RCD position.
+- upstream_rcds: array of {center_x, width} on the 0-1000 scale (empty array if none).
+
 Respond with JSON only:
-{"main_switch_center_x": <int|null>, "main_switch_width": <int|null>, "mcb_groups": [{"start_x": <int>, "end_x": <int>, "module_count": <int>}]}`;
+{"main_switch_center_x": <int|null>, "main_switch_width": <int|null>, "upstream_rcds": [{"center_x": <int>, "width": <int>}], "mcb_groups": [{"start_x": <int>, "end_x": <int>, "module_count": <int>}]}`;
 
 // Stage 3 — classify the device in each crop. Each message contains N crops
 // (CCU_STAGE3_BATCH_SIZE); the VLM must return exactly N objects in the same order.
@@ -832,7 +837,7 @@ export async function getModuleCount(imageBuffer, medianRails, imageDimensions =
  */
 async function getModuleCountFromGroups(anthropic, base64, medianRails, imageDimensions) {
   const sample = await callVlm(anthropic, base64, MODULE_COUNT_PROMPT_GROUPS(medianRails));
-  const { main_switch_center_x, main_switch_width, mcb_groups } = sample.parsed;
+  const { main_switch_center_x, main_switch_width, upstream_rcds, mcb_groups } = sample.parsed;
 
   // --- Validate VLM response -----------------------------------------------
   if (!Array.isArray(mcb_groups) || mcb_groups.length === 0) {
@@ -866,24 +871,69 @@ async function getModuleCountFromGroups(anthropic, base64, medianRails, imageDim
     })
     .sort((a, b) => a.start_x - b.start_x);
 
-  // --- Derive moduleWidth, slotCentersX, total counts ----------------------
-  const slotCentersX = [];
+  // Parse upstream_rcds (added 2026-04-28). Optional — older deploys
+  // without the prompt change return undefined; treat as empty array.
+  // Each RCD is a 2-module device protecting downstream MCBs in its
+  // group; we generate slot crops for both module positions so Stage 3
+  // classifies them as 'rcd' and slotsToCircuits emits an RCD row +
+  // cascades rcd_* fields onto the protected MCBs.
+  const upstreamRcds = Array.isArray(upstream_rcds)
+    ? upstream_rcds
+        .map((r) => {
+          if (!r || typeof r !== 'object') return null;
+          const center_x = Number(r.center_x);
+          const width = Number(r.width);
+          if (!Number.isFinite(center_x) || !Number.isFinite(width) || width <= 0) {
+            return null;
+          }
+          return { center_x, width };
+        })
+        .filter(Boolean)
+        .sort((a, b) => a.center_x - b.center_x)
+    : [];
+
+  // --- Build slotCentersX combining MCB groups + upstream RCDs -------------
+  // Slots are generated in PHYSICAL left-to-right order so slotsToCircuits's
+  // pre-pass cascade computation (introduced 2026-04-28) sees devices in
+  // the order they sit on the rail. Each upstream RCD occupies 2 module
+  // positions (BS EN 61008-1, 2-module wide); we generate 2 slot centres
+  // per RCD so Stage 3 can classify both halves and the dedupe path in
+  // slotsToCircuits collapses them into one schedule row. Group slots are
+  // evenly spaced within (start_x, end_x). The total slot count therefore
+  // equals sum(group.module_count) + 2 * upstream_rcds.length.
+  const slotEntries = [];
   let totalSpan = 0;
   for (const g of groups) {
     const pitch = (g.end_x - g.start_x) / g.module_count;
     g.pitch = pitch;
     totalSpan += g.end_x - g.start_x;
     for (let i = 0; i < g.module_count; i++) {
-      slotCentersX.push(g.start_x + pitch * (i + 0.5));
+      slotEntries.push({ x: g.start_x + pitch * (i + 0.5) });
     }
   }
-  const totalModuleCount = groups.reduce((sum, g) => sum + g.module_count, 0);
+  for (const r of upstreamRcds) {
+    const halfWidth = r.width / 2;
+    for (let i = 0; i < 2; i++) {
+      slotEntries.push({
+        x: r.center_x - halfWidth + halfWidth * (i + 0.5),
+      });
+    }
+  }
+  slotEntries.sort((a, b) => a.x - b.x);
+  const slotCentersX = slotEntries.map((s) => s.x);
+  const groupModuleCount = groups.reduce((sum, g) => sum + g.module_count, 0);
+  const rcdModuleCount = upstreamRcds.length * 2;
+  const totalModuleCount = groupModuleCount + rcdModuleCount;
   // Average pitch across all visible MCBs. Fallback to main_switch_width / 2
   // only if total span is somehow zero (defensive — shouldn't happen given
   // the validation above).
+  // moduleWidth is computed from GROUP slots only (excluding upstream RCDs).
+  // RCDs are 2-module devices — including them in the average would inflate
+  // moduleWidth by ~10-20% and over-pad MCB crops in Stage 3. Use group
+  // module count + group total span so the value reflects genuine MCB pitch.
   const moduleWidth =
-    totalModuleCount > 0 && totalSpan > 0
-      ? totalSpan / totalModuleCount
+    groupModuleCount > 0 && totalSpan > 0
+      ? totalSpan / groupModuleCount
       : Number.isFinite(main_switch_width) && main_switch_width > 0
         ? main_switch_width / 2
         : 0;
@@ -970,6 +1020,7 @@ async function getModuleCountFromGroups(anthropic, base64, medianRails, imageDim
     populatedAreaStartX: mcbsLeft,
     populatedAreaEndX: mcbsRight,
     mcbGroups: groups, // NEW field — exposes the per-group structure for Stage 4 / debugging
+    upstreamRcds, // NEW 2026-04-28 — separately-reported RCDs (each generates 2 slot crops)
     pitchCrossCheck,
     usage: {
       inputTokens: sample.inputTokens,
