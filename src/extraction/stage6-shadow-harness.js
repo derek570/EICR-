@@ -94,6 +94,39 @@ import { TOOL_SCHEMAS } from './stage6-tool-schemas.js';
 const SHADOW_MODEL = 'claude-sonnet-4-6';
 
 /**
+ * Bug-H fix (2026-04-28) — rewrite Stage 6 per-turn observations into the
+ * legacy iOS-compatible wire shape. See the call site in `runShadowHarness`
+ * for the full motivation; this function is exported so the unit test can
+ * pin the exact key mapping without standing up the full harness graph.
+ *
+ * Stage 6 dispatcher emits      → iOS `SonnetObservation` decodes from
+ *   id                          →   observation_id
+ *   text                        →   observation_text   (REQUIRED on iOS)
+ *   location                    →   item_location
+ *   suggested_regulation        →   regulation
+ *   code                        →   code               (unchanged)
+ *
+ * `circuit` is preserved (server-side `refineObservationsAsync` uses it; iOS
+ * ignores unknown keys). `schedule_item` is iOS-known but never populated by
+ * Stage 6 — left absent so Swift's optional decoder treats it as nil.
+ */
+export function renameObservationsForLegacyWire(observations) {
+  if (!Array.isArray(observations)) return observations;
+  return observations.map((obs) => {
+    if (!obs || typeof obs !== 'object') return obs;
+    const renamed = {
+      observation_id: obs.observation_id ?? obs.id ?? null,
+      code: obs.code ?? null,
+      observation_text: obs.observation_text ?? obs.text ?? '',
+      item_location: obs.item_location ?? obs.location ?? null,
+      regulation: obs.regulation ?? obs.suggested_regulation ?? null,
+    };
+    if (obs.circuit !== undefined) renamed.circuit = obs.circuit;
+    return renamed;
+  });
+}
+
+/**
  * Convert the projected slot shape (Map / Set) into a JSON-safe plain object
  * for structured logging. Phase 7 analyzer reads these from CloudWatch — they
  * must round-trip through JSON.stringify.
@@ -350,6 +383,29 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
   delete result.extracted_board_readings;
   delete result.cleared_readings;
   delete result.observation_deletions;
+
+  // Bug-H fix (2026-04-28): same Codable-throw class as Bug-F, but for
+  // observations. The bundler emits per-turn observations with the canonical
+  // Stage 6 shape `{id, code, text, location, circuit, suggested_regulation}`
+  // (see stage6-dispatchers-observation.js:210). iOS `SonnetObservation` in
+  // ClaudeService.swift:140 declares `observation_text` as REQUIRED and uses
+  // wire keys `observation_id / observation_text / item_location / regulation`
+  // — none of which match the Stage 6 shape. Swift throws on the missing
+  // required key, which fails the whole `RollingExtractionResult` decode at
+  // ServerWebSocketService.swift:718, and the entire extraction message
+  // (readings + observations + everything else) is dropped silently. iOS
+  // logs `server_ws_decode_error: "Failed to decode extraction result"`;
+  // server logs `Extraction result readings:N observations:N` so it looks
+  // like everything worked. Repro session: A354882B 2026-04-28 — user said
+  // "R2 for circuit 1, ring continuity was discontinuous", server emitted
+  // 1 reading + 1 observation, iOS UI showed nothing.
+  //
+  // Same fix shape is also necessary for the BPG4 refinement path: it reads
+  // `obs.observation_text` (sonnet-stream.js:306, 323, 365, 418, 785). With
+  // the pre-fix `obs.text` shape, refinement fell back to empty string and
+  // the web-search re-coding had nothing to feed on. Renaming once at the
+  // bundle boundary fixes both consumers in one pass.
+  result.observations = renameObservationsForLegacyWire(result.observations);
 
   // Increment turn count to match legacy's contract
   // (extractFromUtterance does this internally).
