@@ -22,6 +22,29 @@ const CCU_GEOMETRIC_MAX_TOKENS = 1024;
 // Stage 3 needs a bigger response envelope — batched classifications each return a JSON object.
 const CCU_STAGE3_MAX_TOKENS = 2048;
 const CCU_GEOMETRIC_TIMEOUT_MS = Number(process.env.CCU_GEOMETRIC_TIMEOUT_MS || 60_000);
+
+// Stage 2 groups mode (2026-04-28) — reframes Stage 2's prompt to ask for an
+// array of TIGHT per-group MCB bounding boxes instead of a single
+// populated_area_start_x / end_x rectangle. Driven by the realisation that
+// with the iOS capture-then-frame UI (CCUFramingView, ccu-framing branch)
+// the user already supplies a rough crop around the MCBs — Stage 2's job
+// becomes "find each MCB tightly within this user-supplied region", which:
+//   1. Handles split-load boards natively (two groups separated by a gap;
+//      old prompt asked for one rect with "skip middle gaps" hint, which
+//      field experience says lands on the gap and loses one half of the
+//      board).
+//   2. Eliminates the rail-extent compounding bug where Stage 1's rail_right
+//      overshoots and Stage 2's populated_area extends with it, cropping
+//      into the last MCB ("losing big chunks of MCB", Derek 2026-04-28).
+//   3. Robust to loose user framing — VLM only reports groups around real
+//      devices; empty space at the box edges is ignored.
+// Default OFF so the existing populated_area path keeps running until field
+// data confirms the new path is at least as accurate. Flip via task-def env.
+// Function (not const) so tests can toggle process.env.CCU_STAGE2_GROUPS
+// without re-importing the module.
+function isCcuStage2GroupsEnabled() {
+  return (process.env.CCU_STAGE2_GROUPS || 'false').trim().toLowerCase() === 'true';
+}
 // Batch size for Stage 3 classification. 4 crops/message gave the best accuracy/cost trade-off
 // on the 3 fixture photos: fewer round-trips vs. VLM attention dilution on tiny crops. Going
 // to 6 made the VLM skip or mis-number slots on photo-1 (the MEM Memera 2000 board). Keep at 4.
@@ -80,6 +103,38 @@ Report:
 
 Respond with JSON only:
 {"main_switch_center_x": <int>, "main_switch_width": <int>, "module_count_direct": <int>, "populated_area_start_x": <int>, "populated_area_end_x": <int>}`;
+
+// Stage 2 groups-mode prompt (CCU_STAGE2_GROUPS=true). Asks for per-group
+// tight bounding boxes instead of a single populated_area rectangle. The
+// VLM is told upfront that the image is a USER-CROPPED region and may
+// include extra empty space at the edges — its job is to find each MCB
+// group tightly within that region, not to extrapolate. Split-load support
+// is handled by allowing multiple groups in the response array.
+const MODULE_COUNT_PROMPT_GROUPS = (
+  rails
+) => `This image is a USER-CROPPED region of a UK consumer unit, framed roughly around the MCB row by an inspector on an iOS device. The crop may include extra empty space at the edges (left/right of the MCBs, above/below for label clearance). The DIN rail bounding box on a 0-1000 scale (within this cropped image) is approximately:
+- rail_top: ${rails.rail_top}
+- rail_bottom: ${rails.rail_bottom}
+- rail_left: ${rails.rail_left}
+- rail_right: ${rails.rail_right}
+
+Identify each GROUP of MCBs you can actually see, tightly. A group is a contiguous run of devices on the rail with NO visible gap between them. Devices in a group can be: MCBs, RCBOs, RCDs, blanking plates (1-module plastic covers), or short empty spaces between obviously-adjacent modules.
+
+Many UK boards are SPLIT-LOAD: two groups of MCBs, each behind its own RCD, separated by a visible gap (sometimes a vertical bus-bar shroud, sometimes just exposed rail). On a split-load board you will return TWO groups in the array. Do NOT merge them across the middle gap. Do NOT extrapolate empty rail past the last visible MCB at either end of a group.
+
+For EACH group, on the 0-1000 scale of this cropped image, report:
+- start_x: x-coordinate of the LEFT edge of the LEFTMOST device in the group
+- end_x: x-coordinate of the RIGHT edge of the RIGHTMOST device in the group
+- module_count: number of module positions IN THIS GROUP. A module is an 18mm-wide slot — a 1-module device (single MCB / blank) counts as 1, a 2-module device (RCBO / RCD) counts as 2. Do NOT include the main switch in any group's count.
+
+Also identify the MAIN SWITCH separately. The main switch is typically the largest device on the rail — two modules wide (~36mm in reality), no test button, no sensitivity marking ("30mA"), NOT an RCD. It is OUTSIDE all MCB groups.
+- main_switch_center_x: x-coordinate of the main switch's CENTRE on the 0-1000 scale
+- main_switch_width: TOTAL width of the main switch on the 0-1000 scale
+
+If there is no main switch on the rail (some inline-mains rewireable boards), report main_switch_center_x and main_switch_width as null.
+
+Respond with JSON only:
+{"main_switch_center_x": <int|null>, "main_switch_width": <int|null>, "mcb_groups": [{"start_x": <int>, "end_x": <int>, "module_count": <int>}]}`;
 
 // Stage 3 — classify the device in each crop. Each message contains N crops
 // (CCU_STAGE3_BATCH_SIZE); the VLM must return exactly N objects in the same order.
@@ -447,6 +502,12 @@ export async function getModuleCount(imageBuffer, medianRails, imageDimensions =
   const anthropic = await getAnthropicClient();
   const base64 = imageBuffer.toString('base64');
 
+  // Groups-mode dispatch (CCU_STAGE2_GROUPS=true). New per-group tight-bbox
+  // schema; see MODULE_COUNT_PROMPT_GROUPS for the rationale. Default-off.
+  if (isCcuStage2GroupsEnabled()) {
+    return getModuleCountFromGroups(anthropic, base64, medianRails, imageDimensions);
+  }
+
   const sample = await callVlm(anthropic, base64, MODULE_COUNT_PROMPT(medianRails));
   const {
     main_switch_center_x,
@@ -724,6 +785,191 @@ export async function getModuleCount(imageBuffer, medianRails, imageDimensions =
       typeof populated_area_end_x === 'number' && Number.isFinite(populated_area_end_x)
         ? populated_area_end_x
         : null,
+    pitchCrossCheck,
+    usage: {
+      inputTokens: sample.inputTokens,
+      outputTokens: sample.outputTokens,
+    },
+  };
+}
+
+/**
+ * Stage 2, groups-mode (CCU_STAGE2_GROUPS=true). Calls the VLM with the
+ * MODULE_COUNT_PROMPT_GROUPS prompt and assembles a return shape compatible
+ * with the existing populated_area path's downstream consumers (so Stage 3
+ * + prepareModernGeometry don't need to know which Stage 2 path ran).
+ *
+ * Differences from the populated_area path:
+ *
+ *   * Trusts the VLM's per-group start_x/end_x as TIGHT bounds — no rail
+ *     clamp, no main-switch clamp, no populated-area tightening. The VLM
+ *     was told to find groups tightly within the user-supplied crop, and
+ *     groups are already split around middle gaps by construction.
+ *
+ *   * `slotCentersX` is built per group: each group is tiled with even
+ *     spacing using its own (end_x - start_x) / module_count pitch. Across
+ *     groups, slot order is left-to-right by group start_x. Centres in the
+ *     gap between groups are NOT generated — empty rail in the middle of
+ *     a split-load board is invisible to Stage 3.
+ *
+ *   * `moduleWidth` is the average pitch across all groups (used by Stage
+ *     3 for crop-width sizing, where one number per board is sufficient).
+ *     Per-group pitch is also returned in `mcbGroups[].pitch` for Stage 3
+ *     to use when finer cropping is needed in a follow-up.
+ *
+ *   * `mainSwitchSide` is determined by comparing main_switch_center_x to
+ *     the midpoint of (first group start_x, last group end_x). Falls back
+ *     to null if the VLM reported no main switch (inline-mains boards).
+ *
+ *   * `disagreement` and `truncatedFromDisagreement` are always false —
+ *     in groups mode the VLM's per-group count IS the count; there is no
+ *     geometric-vs-VLM cross-check to disagree on. `lowConfidence` is
+ *     surfaced from the pitch cross-check instead (main_switch_width / 2
+ *     vs measured group pitch — significant divergence still flags the
+ *     inspector to double-check).
+ *
+ * @private
+ */
+async function getModuleCountFromGroups(anthropic, base64, medianRails, imageDimensions) {
+  const sample = await callVlm(anthropic, base64, MODULE_COUNT_PROMPT_GROUPS(medianRails));
+  const { main_switch_center_x, main_switch_width, mcb_groups } = sample.parsed;
+
+  // --- Validate VLM response -----------------------------------------------
+  if (!Array.isArray(mcb_groups) || mcb_groups.length === 0) {
+    throw new Error('getModuleCountFromGroups: VLM returned empty or missing mcb_groups');
+  }
+
+  const groups = [...mcb_groups]
+    .map((g, idx) => {
+      if (!g || typeof g !== 'object') {
+        throw new Error(`getModuleCountFromGroups: mcb_groups[${idx}] is not an object`);
+      }
+      const start_x = Number(g.start_x);
+      const end_x = Number(g.end_x);
+      const module_count = Math.round(Number(g.module_count));
+      if (!Number.isFinite(start_x) || !Number.isFinite(end_x)) {
+        throw new Error(
+          `getModuleCountFromGroups: mcb_groups[${idx}] missing numeric start_x/end_x`
+        );
+      }
+      if (end_x <= start_x) {
+        throw new Error(
+          `getModuleCountFromGroups: mcb_groups[${idx}] end_x (${end_x}) must be > start_x (${start_x})`
+        );
+      }
+      if (!Number.isFinite(module_count) || module_count < 1) {
+        throw new Error(
+          `getModuleCountFromGroups: mcb_groups[${idx}] module_count (${g.module_count}) must be >= 1`
+        );
+      }
+      return { start_x, end_x, module_count };
+    })
+    .sort((a, b) => a.start_x - b.start_x);
+
+  // --- Derive moduleWidth, slotCentersX, total counts ----------------------
+  const slotCentersX = [];
+  let totalSpan = 0;
+  for (const g of groups) {
+    const pitch = (g.end_x - g.start_x) / g.module_count;
+    g.pitch = pitch;
+    totalSpan += g.end_x - g.start_x;
+    for (let i = 0; i < g.module_count; i++) {
+      slotCentersX.push(g.start_x + pitch * (i + 0.5));
+    }
+  }
+  const totalModuleCount = groups.reduce((sum, g) => sum + g.module_count, 0);
+  // Average pitch across all visible MCBs. Fallback to main_switch_width / 2
+  // only if total span is somehow zero (defensive — shouldn't happen given
+  // the validation above).
+  const moduleWidth =
+    totalModuleCount > 0 && totalSpan > 0
+      ? totalSpan / totalModuleCount
+      : Number.isFinite(main_switch_width) && main_switch_width > 0
+        ? main_switch_width / 2
+        : 0;
+  if (moduleWidth <= 0) {
+    throw new Error('getModuleCountFromGroups: could not determine a positive moduleWidth');
+  }
+
+  // --- Main switch side relative to MCBs ------------------------------------
+  // Side is determined by the main switch position vs the midpoint of the
+  // first-group-start to last-group-end span. Outside the MCB envelope on
+  // either edge → that's the side. Field convention: circuits are numbered
+  // STARTING from the main switch, so this drives Stage 4's numbering pass.
+  const mcbsLeft = groups[0].start_x;
+  const mcbsRight = groups[groups.length - 1].end_x;
+  const mcbsMid = (mcbsLeft + mcbsRight) / 2;
+  let mainSwitchSide = null;
+  if (
+    typeof main_switch_center_x === 'number' &&
+    Number.isFinite(main_switch_center_x) &&
+    Number.isFinite(main_switch_width) &&
+    main_switch_width > 0
+  ) {
+    mainSwitchSide = main_switch_center_x > mcbsMid ? 'right' : 'left';
+  }
+
+  // --- Pitch cross-check (diagnostic) --------------------------------------
+  // Same logic as the populated_area path — compare moduleWidth derived
+  // from main_switch_width / 2 against moduleWidth derived from the group
+  // bank pitch. Significant divergence flags lowConfidence; the inspector
+  // sees an amber confidence banner on iOS and double-checks the readings.
+  // The MCB body height anchor (17.5mm pitch / 82.5mm body height) is also
+  // computed if image dimensions are available.
+  const moduleWidthFromMainSwitch =
+    Number.isFinite(main_switch_width) && main_switch_width > 0 ? main_switch_width / 2 : null;
+
+  let pitchCrossCheck = null;
+  const { imageWidth, imageHeight } = imageDimensions || {};
+  if (
+    Number.isFinite(imageWidth) &&
+    imageWidth > 0 &&
+    Number.isFinite(imageHeight) &&
+    imageHeight > 0 &&
+    typeof medianRails.rail_top === 'number' &&
+    typeof medianRails.rail_bottom === 'number' &&
+    medianRails.rail_bottom > medianRails.rail_top &&
+    moduleWidthFromMainSwitch != null
+  ) {
+    const railHeightPx = ((medianRails.rail_bottom - medianRails.rail_top) / 1000) * imageHeight;
+    const moduleWidthPxFromMs = (moduleWidthFromMainSwitch / 1000) * imageWidth;
+    const moduleWidthPxFromHeight = 17.5 * (railHeightPx / 82.5);
+    const denom = Math.max(moduleWidthPxFromMs, moduleWidthPxFromHeight, 1);
+    const disagreementPct = Math.round(
+      (Math.abs(moduleWidthPxFromMs - moduleWidthPxFromHeight) / denom) * 100
+    );
+    pitchCrossCheck = {
+      fromMainSwitchPx: Math.round(moduleWidthPxFromMs),
+      fromMcbHeightPx: Math.round(moduleWidthPxFromHeight),
+      disagreementPct,
+    };
+  }
+
+  return {
+    geometricCount: totalModuleCount,
+    vlmCount: totalModuleCount, // identical in groups mode — see header comment
+    slotCentersX,
+    disagreement: false,
+    truncatedFromDisagreement: false,
+    mainSwitchSide,
+    mainSwitchCenterX:
+      typeof main_switch_center_x === 'number' && Number.isFinite(main_switch_center_x)
+        ? main_switch_center_x
+        : null,
+    mainSwitchWidth:
+      typeof main_switch_width === 'number' && Number.isFinite(main_switch_width)
+        ? main_switch_width
+        : null,
+    moduleWidth,
+    moduleWidthFromMainSwitch: moduleWidthFromMainSwitch ?? moduleWidth,
+    // Both ends of every group are tight by construction in groups mode;
+    // expose effective rail = first-group-start to last-group-end so any
+    // downstream consumer reading these fields gets a sensible answer.
+    effectiveRailLeft: mcbsLeft,
+    effectiveRailRight: mcbsRight,
+    populatedAreaStartX: mcbsLeft,
+    populatedAreaEndX: mcbsRight,
+    mcbGroups: groups, // NEW field — exposes the per-group structure for Stage 4 / debugging
     pitchCrossCheck,
     usage: {
       inputTokens: sample.inputTokens,
@@ -1180,6 +1426,20 @@ export async function prepareModernGeometry(imageBuffer, options = {}) {
     if (Array.isArray(stage2.slotCentersX)) {
       stage2.slotCentersX = stage2.slotCentersX.map(translateX);
     }
+    // Translate mcbGroups (groups-mode only — populated_area path doesn't
+    // populate this field). Each group's start_x / end_x are X coords; the
+    // pitch is a width-scale value. Re-translating via map is intentional
+    // — we leave the original group object unmutated where possible so a
+    // future refactor that wants to log "untranslated" coordinates can
+    // re-derive them.
+    if (Array.isArray(stage2.mcbGroups)) {
+      stage2.mcbGroups = stage2.mcbGroups.map((g) => ({
+        start_x: translateX(g.start_x),
+        end_x: translateX(g.end_x),
+        module_count: g.module_count,
+        pitch: scaleWidth(g.pitch),
+      }));
+    }
   }
 
   const usage = {
@@ -1201,6 +1461,11 @@ export async function prepareModernGeometry(imageBuffer, options = {}) {
     !!stage2.truncatedFromDisagreement ||
     Math.abs(stage2.geometricCount - stage2.vlmCount) >= 2;
 
+  // Source of Stage 2 output. 'groups' = new per-group tight-bbox path
+  // (CCU_STAGE2_GROUPS=true). 'populated-area' = legacy single-rect path.
+  // Useful for telemetry while we A/B the two paths in production.
+  const stage2Source = Array.isArray(stage2.mcbGroups) ? 'groups' : 'populated-area';
+
   return {
     medianRails: stage1.medianRails,
     moduleCount: stage2.geometricCount,
@@ -1209,6 +1474,8 @@ export async function prepareModernGeometry(imageBuffer, options = {}) {
     truncatedFromDisagreement: !!stage2.truncatedFromDisagreement,
     lowConfidence,
     stage1Source, // 'vlm' | 'roi-hint' — lets caller log the skip
+    stage2Source, // 'groups' | 'populated-area'
+    mcbGroups: stage2.mcbGroups ?? null,
     slotCentersX: stage2.slotCentersX,
     moduleWidth: stage2.moduleWidth,
     mainSwitchWidth: stage2.mainSwitchWidth,

@@ -368,6 +368,223 @@ describe('getModuleCount', () => {
 });
 
 // ---------------------------------------------------------------------------
+// getModuleCount — groups mode (CCU_STAGE2_GROUPS=true)
+// ---------------------------------------------------------------------------
+//
+// New 2026-04-28 path: the VLM is asked for an array of TIGHT per-group
+// bounding boxes within a user-supplied rough crop, instead of a single
+// populated_area_start_x / end_x rectangle. Tests cover single-group
+// (normal CU), split-load (two groups separated by a gap), loose user
+// framing (groups don't fill the image), and validation errors.
+
+describe('getModuleCount — groups mode', () => {
+  const medianRails = {
+    rail_top: 400,
+    rail_bottom: 600,
+    rail_left: 100,
+    rail_right: 900,
+  };
+
+  beforeEach(() => {
+    process.env.CCU_STAGE2_GROUPS = 'true';
+  });
+
+  afterEach(() => {
+    delete process.env.CCU_STAGE2_GROUPS;
+  });
+
+  test('single group — main switch right, slots tile with even spacing', async () => {
+    const buf = await makeFakeJpeg();
+    // Single group [200, 800] containing 12 modules → pitch=50.
+    // Main switch on the right at 850/80 → mainSwitchSide='right'.
+    mockCreate.mockResolvedValueOnce(
+      fakeVlmResponse({
+        main_switch_center_x: 850,
+        main_switch_width: 80,
+        mcb_groups: [{ start_x: 200, end_x: 800, module_count: 12 }],
+      })
+    );
+
+    const result = await getModuleCount(buf, medianRails);
+    expect(result.geometricCount).toBe(12);
+    expect(result.vlmCount).toBe(12);
+    expect(result.disagreement).toBe(false);
+    expect(result.truncatedFromDisagreement).toBe(false);
+    expect(result.mainSwitchSide).toBe('right');
+    expect(result.mainSwitchCenterX).toBe(850);
+    expect(result.mainSwitchWidth).toBe(80);
+    expect(result.moduleWidth).toBeCloseTo(50);
+    expect(result.moduleWidthFromMainSwitch).toBeCloseTo(40); // 80 / 2
+    expect(result.effectiveRailLeft).toBe(200);
+    expect(result.effectiveRailRight).toBe(800);
+    expect(result.populatedAreaStartX).toBe(200);
+    expect(result.populatedAreaEndX).toBe(800);
+    expect(result.slotCentersX).toHaveLength(12);
+    expect(result.slotCentersX[0]).toBeCloseTo(225); // 200 + 50/2
+    expect(result.slotCentersX.at(-1)).toBeCloseTo(775); // 800 - 50/2
+    expect(result.mcbGroups).toEqual([{ start_x: 200, end_x: 800, module_count: 12, pitch: 50 }]);
+  });
+
+  test('split-load — two groups separated by a gap, slots only inside groups', async () => {
+    const buf = await makeFakeJpeg();
+    // Group 1: [200, 440] / 6 modules → pitch=40
+    // Gap from 440 → 500
+    // Group 2: [500, 740] / 6 modules → pitch=40
+    // Main switch at 850 (right) — outside both groups.
+    mockCreate.mockResolvedValueOnce(
+      fakeVlmResponse({
+        main_switch_center_x: 850,
+        main_switch_width: 80,
+        mcb_groups: [
+          { start_x: 200, end_x: 440, module_count: 6 },
+          { start_x: 500, end_x: 740, module_count: 6 },
+        ],
+      })
+    );
+
+    const result = await getModuleCount(buf, medianRails);
+    expect(result.geometricCount).toBe(12);
+    expect(result.slotCentersX).toHaveLength(12);
+    // First group: 220, 260, 300, 340, 380, 420
+    expect(result.slotCentersX[0]).toBeCloseTo(220);
+    expect(result.slotCentersX[5]).toBeCloseTo(420);
+    // Gap — no slots between 440 and 500.
+    // Second group: 520, 560, 600, 640, 680, 720
+    expect(result.slotCentersX[6]).toBeCloseTo(520);
+    expect(result.slotCentersX.at(-1)).toBeCloseTo(720);
+    // No slot centre falls in the [440, 500] gap.
+    expect(result.slotCentersX.every((x) => x < 440 || x > 500)).toBe(true);
+    expect(result.effectiveRailLeft).toBe(200); // first group start
+    expect(result.effectiveRailRight).toBe(740); // last group end
+    expect(result.mcbGroups).toHaveLength(2);
+  });
+
+  test('loose user framing — group bounds inside the rail, edges ignored', async () => {
+    const buf = await makeFakeJpeg();
+    // Rail_left=100, rail_right=900 — the full user crop. But the actual
+    // MCBs only fill [350, 650]. VLM correctly ignores the empty space.
+    mockCreate.mockResolvedValueOnce(
+      fakeVlmResponse({
+        main_switch_center_x: 200,
+        main_switch_width: 80,
+        mcb_groups: [{ start_x: 350, end_x: 650, module_count: 6 }],
+      })
+    );
+
+    const result = await getModuleCount(buf, medianRails);
+    expect(result.mainSwitchSide).toBe('left'); // 200 < midpoint(350,650)=500
+    expect(result.geometricCount).toBe(6);
+    expect(result.effectiveRailLeft).toBe(350); // NOT 100 — empty rail edges ignored
+    expect(result.effectiveRailRight).toBe(650);
+    expect(result.slotCentersX[0]).toBeCloseTo(375); // 350 + (50/2)
+  });
+
+  test('inline-mains board — main_switch_center_x null → mainSwitchSide null', async () => {
+    const buf = await makeFakeJpeg();
+    mockCreate.mockResolvedValueOnce(
+      fakeVlmResponse({
+        main_switch_center_x: null,
+        main_switch_width: null,
+        mcb_groups: [{ start_x: 200, end_x: 800, module_count: 10 }],
+      })
+    );
+
+    const result = await getModuleCount(buf, medianRails);
+    expect(result.mainSwitchSide).toBeNull();
+    expect(result.mainSwitchCenterX).toBeNull();
+    expect(result.mainSwitchWidth).toBeNull();
+    expect(result.moduleWidth).toBeCloseTo(60); // (800-200)/10
+    expect(result.geometricCount).toBe(10);
+  });
+
+  test('throws when mcb_groups is empty', async () => {
+    const buf = await makeFakeJpeg();
+    mockCreate.mockResolvedValueOnce(
+      fakeVlmResponse({
+        main_switch_center_x: 850,
+        main_switch_width: 80,
+        mcb_groups: [],
+      })
+    );
+    await expect(getModuleCount(buf, medianRails)).rejects.toThrow(/empty or missing mcb_groups/);
+  });
+
+  test('throws when mcb_groups missing entirely', async () => {
+    const buf = await makeFakeJpeg();
+    mockCreate.mockResolvedValueOnce(
+      fakeVlmResponse({
+        main_switch_center_x: 850,
+        main_switch_width: 80,
+      })
+    );
+    await expect(getModuleCount(buf, medianRails)).rejects.toThrow(/empty or missing mcb_groups/);
+  });
+
+  test('throws when a group has end_x <= start_x', async () => {
+    const buf = await makeFakeJpeg();
+    mockCreate.mockResolvedValueOnce(
+      fakeVlmResponse({
+        main_switch_center_x: 850,
+        main_switch_width: 80,
+        mcb_groups: [{ start_x: 500, end_x: 500, module_count: 5 }],
+      })
+    );
+    await expect(getModuleCount(buf, medianRails)).rejects.toThrow(/end_x.*must be > start_x/);
+  });
+
+  test('throws when a group has module_count < 1', async () => {
+    const buf = await makeFakeJpeg();
+    mockCreate.mockResolvedValueOnce(
+      fakeVlmResponse({
+        main_switch_center_x: 850,
+        main_switch_width: 80,
+        mcb_groups: [{ start_x: 200, end_x: 400, module_count: 0 }],
+      })
+    );
+    await expect(getModuleCount(buf, medianRails)).rejects.toThrow(/module_count.*must be >= 1/);
+  });
+
+  test('groups out-of-order in VLM response are sorted left-to-right', async () => {
+    const buf = await makeFakeJpeg();
+    // VLM returns groups in reverse order — sorter normalises them.
+    mockCreate.mockResolvedValueOnce(
+      fakeVlmResponse({
+        main_switch_center_x: 850,
+        main_switch_width: 80,
+        mcb_groups: [
+          { start_x: 500, end_x: 740, module_count: 6 },
+          { start_x: 200, end_x: 440, module_count: 6 },
+        ],
+      })
+    );
+
+    const result = await getModuleCount(buf, medianRails);
+    expect(result.mcbGroups[0].start_x).toBe(200);
+    expect(result.mcbGroups[1].start_x).toBe(500);
+    expect(result.slotCentersX[0]).toBeCloseTo(220); // first slot of leftmost group
+  });
+
+  test('default OFF — populated_area path runs when CCU_STAGE2_GROUPS unset', async () => {
+    delete process.env.CCU_STAGE2_GROUPS;
+    const buf = await makeFakeJpeg();
+    // Legacy populated_area schema — should be parsed by the old path.
+    mockCreate.mockResolvedValueOnce(
+      fakeVlmResponse({
+        main_switch_center_x: 820,
+        main_switch_width: 80,
+        module_count_direct: 17,
+      })
+    );
+
+    const result = await getModuleCount(buf, medianRails);
+    // Legacy path doesn't set mcbGroups — that's the fingerprint of which
+    // path ran.
+    expect(result.mcbGroups).toBeUndefined();
+    expect(result.geometricCount).toBe(17);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // extractCcuGeometric (orchestrator)
 // ---------------------------------------------------------------------------
 
