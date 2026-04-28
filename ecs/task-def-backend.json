@@ -33,7 +33,8 @@
         { "name": "NODE_ENV",           "value": "production" },
         { "name": "STORAGE_TYPE",       "value": "s3" },
         { "name": "REDIS_URL",          "value": "redis://eicr-redis-prod.k7wlgi.0001.euw2.cache.amazonaws.com:6379" },
-        { "name": "SONNET_TOOL_CALLS",  "value": "live" }
+        { "name": "SONNET_TOOL_CALLS",  "value": "live" },
+        { "name": "CCU_STAGE2_GROUPS",  "value": "true" }
       ],
       "mountPoints": [],
       "volumesFrom": [],
