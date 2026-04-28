@@ -30,6 +30,11 @@ import { filterQuestionsAgainstFilledSlots } from './filled-slots-filter.js';
 // Stage 6 — shadow-harness wraps extractFromUtterance so SONNET_TOOL_CALLS=shadow
 // drives the stream assembler from the seam on every turn (ROADMAP Phase 1 SC #2).
 import { runShadowHarness } from './stage6-shadow-harness.js';
+// 2026-04-28 — server-side ring continuity timeout detector. See
+// `src/extraction/ring-continuity-timeout.js` for the full design rationale
+// and `.planning-stage6-agentic/handoffs/silent-drop-fix-2026-04-28/README.md`
+// for the handoff that drove this wiring.
+import { findExpiredPartial } from './ring-continuity-timeout.js';
 // Stage 6 Phase 3 — per-session blocking-ask plumbing. Plan 03-08 threads the
 // per-session PendingAsksRegistry through every call-site of runShadowHarness
 // (via `options.pendingAsks` + `options.ws`) and routes inbound iOS
@@ -2592,6 +2597,40 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
           qType: safeType || 'unknown',
           qTypeDropped: rawType && !safeType ? rawType.slice(0, 40) : undefined,
           qPreview: rawQ.slice(0, 60),
+        });
+      }
+
+      // Ring continuity timeout — 2026-04-28. The agentic prompt's
+      // RING CONTINUITY CARRYOVER section delegates the 60-second
+      // timeout to the server (Sonnet can't reliably track elapsed
+      // time across turns). On every user turn, before invoking
+      // Sonnet, check whether any circuit has a partial r1/rn/r2 fill
+      // that's older than 60s. If yes, prepend a server-issued
+      // directive to the transcript so Sonnet emits `ask_user` with
+      // the right `context_field` + `context_circuit`. The user's
+      // reply value-resolves through the existing answer-resolver
+      // path (resolveValueAnswer in stage6-answer-resolver.js).
+      //
+      // Note shape mirrors the in_response_to bracket convention so
+      // Sonnet treats it as data, not as a prompt injection. The note
+      // is server-controlled — no user-supplied content lands inside
+      // the brackets, so escape/whitelist gating isn't needed (cf.
+      // the JSON.stringify treatment of `msg.in_response_to.question`
+      // above for user-controlled question text).
+      const ringExpired = findExpiredPartial(entry.session);
+      if (ringExpired) {
+        const ringNote =
+          `[Server note: circuit ${ringExpired.circuit_ref} ring continuity is incomplete; ` +
+          `${ringExpired.missing_field} has not been recorded and 60s have elapsed since the last ` +
+          `ring write. Please ask the user for this value via ask_user with ` +
+          `context_field="${ringExpired.missing_field}", context_circuit=${ringExpired.circuit_ref}, ` +
+          `expected_answer_shape="value", reason="missing_value".] `;
+        transcriptText = `${ringNote}${transcriptText}`;
+        logger.info('stage6.ring_continuity_timeout_detected', {
+          sessionId,
+          circuit_ref: ringExpired.circuit_ref,
+          missing_field: ringExpired.missing_field,
+          last_write_ms: ringExpired.last_write_ms,
         });
       }
 
