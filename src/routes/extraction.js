@@ -770,14 +770,6 @@ export function assembleGeometricResult(perSlotState) {
     mainSwitchWidth: prepared.mainSwitchWidth,
     lowConfidence: prepared.lowConfidence,
     disagreement: prepared.disagreement,
-    // 2026-04-28: surface Stage 2 path source + per-group bbox array + the
-    // separately-reported upstream RCDs. Route handler logs all three so
-    // we can A/B the legacy populated_area path vs the new groups-mode
-    // path in production. upstreamRcds was added to the prompt 2026-04-28
-    // along with the cascade-break-at-non-MCB rule in slotsToCircuits.
-    stage2Source: prepared.stage2Source ?? null,
-    mcbGroups: prepared.mcbGroups ?? null,
-    upstreamRcds: prepared.upstreamRcds ?? null,
     railBbox: prepared.railBbox ?? null,
     pitchSource: prepared.pitchSource ?? null,
     cvPitchDiag: prepared.cvPitchDiag ?? null,
@@ -1693,15 +1685,11 @@ router.post(
           }
         }
 
-        // 2026-04-28: surfaced stage2Source + mcbGroups so we can A/B the
-        // legacy populated_area path against the new groups-mode path in
-        // production telemetry. stage2Source is 'groups' (new) or
-        // 'populated-area' (legacy); mcbGroups is the per-group bbox array
-        // when the new path ran, null otherwise. Helps diagnose
-        // "missed-circuit" regressions — if the VLM returned fewer module
-        // positions than reality, that's a groups-mode prompt issue;
-        // if it returned the right count but the merge dropped circuits,
-        // that's a slotsToCircuits issue.
+        // Stage outputs surfaced for production diagnostics: railBbox is
+        // the rectangle the VLM returned (or the user's iOS ROI when
+        // trustInputRails was set). pitchCrossCheck flags CV-vs-bbox
+        // count drift. chunkingDiag exposes the raw inputs so a missed
+        // count can be traced to bbox size, image dims, or pitch source.
         logger.info('CCU geometric extraction attached', {
           userId: req.user.id,
           moduleOrCarrierCount: analysis.geometric.moduleCount,
@@ -1709,9 +1697,6 @@ router.post(
           lowConfidence: geometricResult.lowConfidence,
           stage3Error: geometricResult.stage3Error ?? null,
           extractionSource,
-          stage2Source: geometricResult.stage2Source ?? null,
-          mcbGroups: geometricResult.mcbGroups ?? null,
-          upstreamRcds: geometricResult.upstreamRcds ?? null,
           railBbox: geometricResult.railBbox ?? null,
           pitchSource: geometricResult.pitchSource ?? null,
           cvPitchDiag: geometricResult.cvPitchDiag ?? null,

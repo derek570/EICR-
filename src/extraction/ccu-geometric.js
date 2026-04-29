@@ -24,28 +24,6 @@ const CCU_GEOMETRIC_MAX_TOKENS = 1024;
 const CCU_STAGE3_MAX_TOKENS = 2048;
 const CCU_GEOMETRIC_TIMEOUT_MS = Number(process.env.CCU_GEOMETRIC_TIMEOUT_MS || 60_000);
 
-// Stage 2 groups mode (2026-04-28) — reframes Stage 2's prompt to ask for an
-// array of TIGHT per-group MCB bounding boxes instead of a single
-// populated_area_start_x / end_x rectangle. Driven by the realisation that
-// with the iOS capture-then-frame UI (CCUFramingView, ccu-framing branch)
-// the user already supplies a rough crop around the MCBs — Stage 2's job
-// becomes "find each MCB tightly within this user-supplied region", which:
-//   1. Handles split-load boards natively (two groups separated by a gap;
-//      old prompt asked for one rect with "skip middle gaps" hint, which
-//      field experience says lands on the gap and loses one half of the
-//      board).
-//   2. Eliminates the rail-extent compounding bug where Stage 1's rail_right
-//      overshoots and Stage 2's populated_area extends with it, cropping
-//      into the last MCB ("losing big chunks of MCB", Derek 2026-04-28).
-//   3. Robust to loose user framing — VLM only reports groups around real
-//      devices; empty space at the box edges is ignored.
-// Default OFF so the existing populated_area path keeps running until field
-// data confirms the new path is at least as accurate. Flip via task-def env.
-// Function (not const) so tests can toggle process.env.CCU_STAGE2_GROUPS
-// without re-importing the module.
-function isCcuStage2GroupsEnabled() {
-  return (process.env.CCU_STAGE2_GROUPS || 'false').trim().toLowerCase() === 'true';
-}
 // CV-based module-pitch detection (Sobel-X + autocorrelation) replaces the
 // 44.5mm height-anchor calibration with direct edge analysis of the photo.
 // Default ON since 2026-04-29 (Derek field-test confidence). Set
@@ -88,80 +66,35 @@ Normalise to 0-1000 (top-left origin). Output strictly:
 {"rail_top": <int>, "rail_bottom": <int>, "rail_left": <int>, "rail_right": <int>}`,
 ];
 
-const MODULE_COUNT_PROMPT = (
-  rails
-) => `This is a UK consumer unit. The DIN rail bounding box on a 0-1000 scale is:
-- rail_top: ${rails.rail_top}
-- rail_bottom: ${rails.rail_bottom}
-- rail_left: ${rails.rail_left}
-- rail_right: ${rails.rail_right}
-
-Find the MAIN SWITCH on this board. It is typically the largest device on the rail — two modules wide (~36mm in reality). It has no test button and no sensitivity marking ("30mA" etc.). It is NOT an RCD.
-
-Also identify the horizontal bounds of the POPULATED AREA on the rail. "Populated" includes:
-- devices (MCBs, RCBOs, RCDs, main switches)
-- blanking plates (1-module plastic covers that fill unused slots)
-- empty slots in the middle of the rail that have devices or blanks further left/right — do NOT stop at middle gaps, split-load RCD boards and RCBO boards with removed circuits are common
-Only stop at the true ends of the populated area: the far-left edge of the leftmost element, and the far-right edge of the rightmost element. Exclude any exposed DIN rail past the last element at either end.
-
-Report:
-1. The x-coordinate of the main switch's CENTRE on the 0-1000 scale (main_switch_center_x).
-2. The TOTAL width of the main switch on the 0-1000 scale (main_switch_width).
-3. A direct count of how many module positions fit on the rail between rail_left and rail_right (module_count_direct). A module is an 18mm-wide slot — a single MCB is 1 module, an RCBO or RCD or main switch is 2 modules, blanks count as 1 module each.
-4. The x-coordinate of the far-LEFT edge of the populated area on the 0-1000 scale (populated_area_start_x). Leftmost device or blanking plate.
-5. The x-coordinate of the far-RIGHT edge of the populated area on the 0-1000 scale (populated_area_end_x). Rightmost device or blanking plate. Skip middle gaps — if there's a gap in the middle with more devices or blanks further right, continue past the gap to the true end.
-
-Respond with JSON only:
-{"main_switch_center_x": <int>, "main_switch_width": <int>, "module_count_direct": <int>, "populated_area_start_x": <int>, "populated_area_end_x": <int>}`;
-
-// Stage 2 tighten-and-chunk prompt (CCU_STAGE2_GROUPS=true, Derek 2026-04-28).
-// Replaces the failed groups-with-counts schema. The VLM has ONE job: return
-// the rectangle that tightly encloses every device on the DIN rail (RCD,
-// MCBs, RCBOs, blanks, main switch — everything mounted on the rail). No
-// counting, no grouping, no per-device list, no module pitch derivation.
+// Stage 2 tighten-and-chunk prompt. The VLM has ONE job: return the
+// rectangle that tightly encloses every device on the DIN rail (RCD,
+// MCBs, RCBOs, blanks, main switch — everything mounted on the rail).
+// No counting, no grouping, no per-device list, no module pitch
+// derivation, no main-switch geometry. Backend chunks the bbox
+// geometrically:
+//   - CV pitch detection (Sobel-X + length-normalised autocorrelation,
+//     ccu-cv-pitch.js) finds module pitch directly from the periodic
+//     structure in the photo — primary source.
+//   - Height-anchor fallback (MCB visible-face height = 44.5mm DIN 43880
+//     front-zone, module pitch = 17.5mm) when CV peak is low confidence.
+// Stage 3 classifies each tiled slot, so split-load gaps appear as
+// `blank` classifications, the main switch as `main_switch`, etc. — all
+// handled downstream by slotsToCircuits.
 //
-// 2026-04-29: also dropped main_switch_center_x and main_switch_width from
-// the response. Both were redundant once CV-based pitch detection (Sobel-X
-// + length-normalised autocorrelation, ccu-cv-pitch.js) became the primary
-// pitch source — the VLM's main-switch-width estimate was the noisier
-// signal in the cross-check (today's prod: VLM said pitch=50px, CV said
-// 87px on a Wylex NHRS12SL where 87 was correct). Side derivation moved
-// to (1) Stage 3's main_switch slot index, (2) Stage 1 classifier's
-// mainSwitchPosition. Removing the fields shortens the prompt and stops
-// asking the VLM a question it answers unreliably.
-//
-// Backend then chunks the bbox geometrically using two hard standards:
-//   - MCB visible-face height = 44.5mm (DIN 43880 front-zone, ±1.5mm
-//     across Wylex / Hager / Crabtree / Schneider / MK / Chint /
-//     Contactum / Eaton). NOT the 82.5mm full body — most of the body
-//     sits behind the cover plate and is invisible in the photo.
-//   - DIN module pitch = 17.5mm
-// pixels_per_mm = rail_height_px / 44.5; module_count = round(rail_width_px /
-// (17.5 * pixels_per_mm)). Stage 3 classifies each tiled slot, so split-
-// load gaps appear as `blank` classifications, the main switch as
-// `main_switch`, etc. — all handled downstream by slotsToCircuits.
-//
-// Why this beats per-group bboxes (the previous schema):
-//   - Inconsistent VLM responses on group boundaries / counts disappear:
-//     yesterday it split into 2 groups (lost spares in the gap), this
-//     morning it merged into 1 (under-counted), the morning before that it
-//     mis-aligned start_x relative to module_count (Stage 3 cropped between
-//     devices). Now the VLM is asked to find FOUR EDGES of a single
-//     rectangle. That's a task Sonnet 4.6 nails reliably.
-//   - Module count derives from a hard physical standard (DIN 17.5mm pitch)
-//     instead of asking the VLM to count. Counting is the VLM's most
-//     unreliable behaviour; we just stop asking it to count.
-//   - Loose user framing (extra background past the device row) gets
-//     auto-tightened by the VLM in this single-bbox step. No more lost
-//     edge MCBs from rail-overshoot compounding.
-//
-// Known risk (Derek 2026-04-28): "small error compounds all the way along
-// where we could end up reading half an MCB at the end". Mitigated by
-// (1) cross-checking pixels_per_mm derived from rail height vs derived
-// from main_switch_width when present (>10% disagreement → lowConfidence
-// flagged); (2) logging per-slot positions in CloudWatch so drift is
-// visible. Long-term mitigation if drift turns out to be real: use Stage
-// 3's per-slot device-centroid feedback to re-anchor remaining slots.
+// History:
+//   * Replaced an earlier groups-with-counts schema (which asked the VLM
+//     for an array of per-group bboxes + per-group counts — inconsistent
+//     responses, sometimes split into 2 groups, sometimes merged into 1).
+//   * Replaced a populated_area_start_x / end_x prompt that asked the VLM
+//     to count modules directly (counting is the VLM's least reliable
+//     behaviour, and rail_right overshoot compounded into cropping
+//     errors at the last MCB). Deleted 2026-04-29.
+//   * 2026-04-29: also dropped main_switch_center_x and main_switch_width
+//     from the response — VLM's main-switch-width was the noisier signal
+//     than CV pitch in the cross-check (prod: VLM 50px vs CV 87px on a
+//     Wylex NHRS12SL where 87 was correct). Side derivation moved to
+//     (1) Stage 3's main_switch slot index, (2) Stage 1 classifier's
+//     mainSwitchPosition.
 const MODULE_COUNT_PROMPT_GROUPS = (
   rails
 ) => `This image is a USER-CROPPED region of a UK consumer unit, framed roughly around the device row by an inspector on an iOS device. The crop may include extra empty space at the edges (left/right of the devices, above/below for label clearance). The DIN rail bounding box on a 0-1000 scale (within this cropped image) is approximately:
@@ -528,17 +461,28 @@ export async function getRailGeometry(imageBuffer) {
 // ---------------------------------------------------------------------------
 
 /**
- * Stage 2: Derive module count from main switch pitch + directly from VLM.
+ * Stage 2: Derive module count via tighten-and-chunk.
  *
- * The main switch is always 2 modules wide on UK CCUs, so:
- *   module_width = main_switch_width / 2
- *   module_count = round(rail_width / module_width)
- * We also ask the VLM directly for a count, and flag disagreement if |geo - vlm| >= 1.
+ * VLM returns ONE rectangle that tightly encloses every device on the
+ * DIN rail; backend chunks the bbox geometrically using CV-detected
+ * pitch (Sobel-X + autocorrelation, primary) or the 44.5mm DIN-43880
+ * face-height anchor (fallback when CV peak is low confidence). Stage 3
+ * classifies each tiled slot — main switch, blanks, and SPDs all
+ * surface as classifications and are filtered by slotsToCircuits.
  *
- * @param {Buffer} imageBuffer
+ * @param {Buffer} imageBuffer — full original image bytes
  * @param {{rail_top:number, rail_bottom:number, rail_left:number, rail_right:number}} medianRails
- * @returns {Promise<{geometricCount:number, vlmCount:number, slotCentersX:number[], disagreement:boolean, mainSwitchCenterX:number, mainSwitchWidth:number, usage:object}>}
- * @throws if ANTHROPIC_API_KEY missing or VLM call fails.
+ *   — rail bbox in 0-1000 normalised coords. From Stage 1's median of
+ *   3 VLM rail-bbox samples, OR from iOS railRoiHint when supplied.
+ * @param {{imageWidth:number, imageHeight:number}} imageDimensions
+ * @param {{trustInputRails?:boolean}} [options]
+ *   — when true, skip VLM rail-bbox tightening and use medianRails as
+ *   the authoritative rail bbox. iOS sets this when railRoiHint is
+ *   present (the user's framing rectangle is more reliable than a
+ *   re-tightened VLM bbox on this signal).
+ * @returns {Promise<object>} module count + slot positions + diagnostics
+ * @throws if ANTHROPIC_API_KEY missing, VLM call fails, or rail_bbox
+ *   is invalid.
  */
 export async function getModuleCount(imageBuffer, medianRails, imageDimensions = {}, options = {}) {
   if (!Buffer.isBuffer(imageBuffer)) {
@@ -555,350 +499,6 @@ export async function getModuleCount(imageBuffer, medianRails, imageDimensions =
   const anthropic = await getAnthropicClient();
   const base64 = imageBuffer.toString('base64');
 
-  // Groups-mode dispatch (CCU_STAGE2_GROUPS=true). New per-group tight-bbox
-  // schema; see MODULE_COUNT_PROMPT_GROUPS for the rationale. Default-off.
-  if (isCcuStage2GroupsEnabled()) {
-    return getModuleCountFromGroups(
-      anthropic,
-      imageBuffer,
-      base64,
-      medianRails,
-      imageDimensions,
-      options
-    );
-  }
-
-  const sample = await callVlm(anthropic, base64, MODULE_COUNT_PROMPT(medianRails));
-  const {
-    main_switch_center_x,
-    main_switch_width,
-    module_count_direct,
-    populated_area_start_x,
-    populated_area_end_x,
-  } = sample.parsed;
-
-  if (typeof main_switch_width !== 'number' || main_switch_width <= 0) {
-    throw new Error('getModuleCount: VLM returned invalid main_switch_width');
-  }
-  if (typeof module_count_direct !== 'number') {
-    throw new Error('getModuleCount: VLM returned invalid module_count_direct');
-  }
-
-  const rawRailWidth = medianRails.rail_right - medianRails.rail_left;
-  if (rawRailWidth <= 0) {
-    throw new Error('getModuleCount: rail_right must be greater than rail_left');
-  }
-
-  // Pitch estimate #1: main-switch width ÷ 2. By BS 7671 convention every UK
-  // domestic main switch is a 2-module double-pole isolator (~36mm), so this
-  // gives pitch directly. Will be refined from the bank/count quotient once
-  // the rail span is clamped and count is locked in.
-  let moduleWidth = main_switch_width / 2;
-  const moduleWidthFromMainSwitch = moduleWidth;
-
-  // Pitch estimate #2 (diagnostic): MCB visible-face height. DIN 43880 caps
-  // the front-zone protrusion (the part of the device that shows above the
-  // cover plate) at 45mm; UK domestic ranges measure 44–45mm. We use 44.5mm.
-  // Module pitch is the hard DIN standard at 17.5mm. So
-  // (17.5 / 44.5) × rail-height-in-pixels → pitch in pixels. This is
-  // independent of main_switch_width and lets us flag when the two
-  // estimates disagree — usually a sign the inspector framed rails outside
-  // the MCB face edges. Not a hard gate this session; logged as
-  // pitchCrossCheck in the return value.
-  const { imageWidth, imageHeight } = imageDimensions || {};
-  let pitchCrossCheck = null;
-  if (
-    Number.isFinite(imageWidth) &&
-    imageWidth > 0 &&
-    Number.isFinite(imageHeight) &&
-    imageHeight > 0 &&
-    typeof medianRails.rail_top === 'number' &&
-    typeof medianRails.rail_bottom === 'number' &&
-    medianRails.rail_bottom > medianRails.rail_top
-  ) {
-    const railHeightPx = ((medianRails.rail_bottom - medianRails.rail_top) / 1000) * imageHeight;
-    const moduleWidthPxFromMs = (moduleWidthFromMainSwitch / 1000) * imageWidth;
-    const moduleWidthPxFromHeight = 17.5 * (railHeightPx / 44.5);
-    const denom = Math.max(moduleWidthPxFromMs, moduleWidthPxFromHeight, 1);
-    const disagreementPct = Math.round(
-      (Math.abs(moduleWidthPxFromMs - moduleWidthPxFromHeight) / denom) * 100
-    );
-    pitchCrossCheck = {
-      fromMainSwitchPx: Math.round(moduleWidthPxFromMs),
-      fromMcbHeightPx: Math.round(moduleWidthPxFromHeight),
-      disagreementPct,
-    };
-  }
-
-  // --- Clamp rail span to the populated area -------------------------------
-  // When iOS sends a railRoiHint, the inspector may leave horizontal slack
-  // on the left/right of the MCB row (the rails overlay only constrains the
-  // VERTICAL axis — top/bottom of MCBs to the two bars). Without clamping,
-  // effectiveRailLeft/Right would still reflect the ROI edges and the
-  // refined-pitch step below would compute an artificially wide pitch,
-  // inflating every slot crop. Use the VLM's populated_area bounds (which
-  // correctly skip middle gaps for split-load / RCBO-removed boards) to
-  // tighten the rail span before the main-switch clamp applies. Both bounds
-  // are optional — fall back to medianRails verbatim if the VLM omits or
-  // returns nonsense values.
-  let effectiveRailLeft = medianRails.rail_left;
-  let effectiveRailRight = medianRails.rail_right;
-  let populatedLeftTightened = false;
-  let populatedRightTightened = false;
-  if (
-    typeof populated_area_start_x === 'number' &&
-    Number.isFinite(populated_area_start_x) &&
-    populated_area_start_x > medianRails.rail_left &&
-    populated_area_start_x < medianRails.rail_right
-  ) {
-    effectiveRailLeft = populated_area_start_x;
-    populatedLeftTightened = true;
-  }
-  if (
-    typeof populated_area_end_x === 'number' &&
-    Number.isFinite(populated_area_end_x) &&
-    populated_area_end_x < medianRails.rail_right &&
-    populated_area_end_x > effectiveRailLeft
-  ) {
-    effectiveRailRight = populated_area_end_x;
-    populatedRightTightened = true;
-  }
-
-  // --- Clamp rail span to exclude the main switch bbox ---------------------
-  // Stage 1's VLM often returns `rail_right` at the physical end of the DIN
-  // rail, which includes the main-switch region on right-handed boards (or
-  // `rail_left` at the start of the rail including the main switch on left-
-  // handed boards). Without this clamp, Stage 2 tiles the main-switch zone
-  // into phantom module slots — on a Wylex NHRS12SL that meant 18 slots for
-  // a ~12-module board, which then passed through Stage 3 as 2-4 "unknown"
-  // / "blank" phantoms sitting inside the isolator.
-  //
-  // Skip the clamp when mainSwitchCenterX is null (inline-mains rewireable
-  // boards — the Codex P1 fix handles those via mainSwitchOffset upstream),
-  // or when the main switch already sits outside the populated bounds.
-  //
-  // effectiveRailLeft / effectiveRailRight were initialised above with
-  // medianRails.rail_left / rail_right and already narrowed by the
-  // populated-area clamp. The main-switch clamp narrows them further on the
-  // side the main switch sits on.
-  let mainSwitchSide = null;
-  // Only clamp when the main-switch centre is physically INSIDE the current
-  // effective rail bounds. If the VLM places it outside (e.g. separate rail
-  // segment, Stage 1 already excluded the main-switch zone, or the
-  // populated-area clamp narrowed past it), trust that and leave the span
-  // alone.
-  const msCentreInsideRail =
-    typeof main_switch_center_x === 'number' &&
-    Number.isFinite(main_switch_center_x) &&
-    main_switch_center_x >= effectiveRailLeft &&
-    main_switch_center_x <= effectiveRailRight;
-
-  if (msCentreInsideRail) {
-    const msHalf = main_switch_width / 2;
-    const msLeft = main_switch_center_x - msHalf;
-    const msRight = main_switch_center_x + msHalf;
-    const railMid = (effectiveRailLeft + effectiveRailRight) / 2;
-    if (main_switch_center_x > railMid) {
-      mainSwitchSide = 'right';
-      if (msLeft > effectiveRailLeft) {
-        effectiveRailRight = msLeft;
-      }
-    } else {
-      mainSwitchSide = 'left';
-      if (msRight < effectiveRailRight) {
-        effectiveRailLeft = msRight;
-      }
-    }
-  }
-
-  const railWidth = effectiveRailRight - effectiveRailLeft;
-  if (railWidth <= 0) {
-    throw new Error(
-      'getModuleCount: effective rail width collapsed to zero after main-switch clamp'
-    );
-  }
-  // Use Math.floor so every generated slot's bbox (centre ± moduleWidth/2)
-  // sits fully inside the effective rail. Math.round could push the last
-  // slot's right edge past effectiveRailRight when railWidth > N·moduleWidth
-  // + moduleWidth/2 (≈40% of the time in practice), which then causes Stage 3
-  // to hallucinate a main_switch on the phantom slot because its crop
-  // extends 2.2× moduleWidth beyond the centre and reaches the real main
-  // switch face. Observed on Wylex NHRS12SL 2026-04-23 harness run 3: Stage
-  // 2 returned 16 slots but the last two (810, 860) had crops reaching into
-  // the main-switch bbox; Stage 3 tagged 14 as main_switch and 15 as blank,
-  // merger pushed "Spare" phantom onto the schedule as circuit 1.
-  let geometricCount = Math.floor(railWidth / moduleWidth);
-
-  const vlmCount = Math.round(module_count_direct);
-
-  // --- Disagreement gate ---------------------------------------------------
-  // After the clamp, if geometric and VLM counts still differ by >= 2, the
-  // rail edges are still fuzzy (typically the far-from-main-switch end —
-  // that's the only remaining unclamped edge). Truncate to the VLM count by
-  // dropping modules from the end NEAREST the main switch, which is the
-  // fuzziest region even post-clamp (main_switch_width is a VLM estimate,
-  // not a measurement). A 1-module drift is ignored — that can be genuine
-  // fence-post rounding.
-  let truncatedFromDisagreement = false;
-  if (vlmCount > 0 && geometricCount - vlmCount >= 2) {
-    geometricCount = vlmCount;
-    truncatedFromDisagreement = true;
-  }
-
-  // --- Refine pitch from bank-width / count --------------------------------
-  // Previously moduleWidth stayed at main_switch_width/2 for slot tiling,
-  // which meant slot positions were extrapolated from ONE anchor (the
-  // main-switch side) and the far slot could drift by up to half a module
-  // relative to the real bank edge. Derek, 2026-04-23: "if the main-switch
-  // measurement is half a millimetre off, 15 MCBs later we're 7.5mm out".
-  //
-  // Fix: once count is locked in, recompute moduleWidth from the clamped
-  // bank width. This pins slot 0 at half a pitch from the left edge AND
-  // the last slot at half a pitch from the right edge — a two-anchor
-  // calibration whose error doesn't compound. The original
-  // main_switch_width/2 value is still returned as moduleWidthFromMainSwitch
-  // for cross-check / diagnostic purposes.
-  //
-  // Gating (Codex 2026-04-23 P1):
-  //
-  //   Refinement is ONLY safe when BOTH ends of the bank are trustworthy.
-  //   The main-switch clamp tightens the main-switch-side edge; we also
-  //   need the OPPOSITE edge to be tight. Two sources of tightness on that
-  //   side:
-  //     - populated_area_start_x / populated_area_end_x from the VLM (the
-  //       end opposite the main switch): tightened iff the relevant
-  //       populated bound was provided AND inside the raw rail bbox.
-  //     - For boards where the main switch is absent or mainSwitchCenterX
-  //       is null (inline mains, rewireable): fall back to requiring
-  //       BOTH populated bounds to have tightened.
-  //
-  //   If the opposite end is still at the raw rail_left / rail_right
-  //   (typical when iOS ROI has horizontal slack and the VLM didn't
-  //   provide populated_area bounds), the refined pitch would stretch
-  //   across that slack and shift far-end slots — reintroducing the same
-  //   phantom slots the sprint is trying to eliminate. Keep main-switch
-  //   pitch in that case.
-  //
-  //   Also never refine when truncation fired — that explicitly distrusts
-  //   the non-main-switch-side edge.
-  const oppositeEndTightened =
-    mainSwitchSide === 'right'
-      ? populatedLeftTightened
-      : mainSwitchSide === 'left'
-        ? populatedRightTightened
-        : populatedLeftTightened && populatedRightTightened;
-  if (
-    geometricCount > 0 &&
-    !truncatedFromDisagreement &&
-    mainSwitchSide !== null &&
-    oppositeEndTightened
-  ) {
-    moduleWidth = railWidth / geometricCount;
-  } else if (
-    geometricCount > 0 &&
-    !truncatedFromDisagreement &&
-    mainSwitchSide === null &&
-    populatedLeftTightened &&
-    populatedRightTightened
-  ) {
-    // Inline / mains-less fallback: if both populated bounds were provided
-    // AND main switch wasn't localised, both ends are VLM-tightened and
-    // refinement is safe.
-    moduleWidth = railWidth / geometricCount;
-  }
-
-  const slotCentersX = [];
-  if (mainSwitchSide === 'right' || mainSwitchSide === null) {
-    // Tile from the far-from-main-switch end (left), so if we ever truncate
-    // further we lose the modules nearest the main switch (fuzziest region).
-    for (let i = 0; i < geometricCount; i++) {
-      slotCentersX.push(effectiveRailLeft + moduleWidth * (i + 0.5));
-    }
-  } else {
-    // mainSwitchSide === 'left' — tile from the right edge backwards so the
-    // nearest-to-main-switch modules are the last to be generated.
-    for (let i = 0; i < geometricCount; i++) {
-      slotCentersX.push(effectiveRailRight - moduleWidth * (i + 0.5));
-    }
-    slotCentersX.reverse(); // keep physical left-to-right ordering for callers
-  }
-
-  const disagreement = Math.abs(geometricCount - vlmCount) >= 1;
-
-  return {
-    geometricCount,
-    vlmCount,
-    slotCentersX,
-    disagreement,
-    truncatedFromDisagreement,
-    mainSwitchSide,
-    mainSwitchCenterX: typeof main_switch_center_x === 'number' ? main_switch_center_x : null,
-    mainSwitchWidth: main_switch_width,
-    moduleWidth,
-    moduleWidthFromMainSwitch,
-    effectiveRailLeft,
-    effectiveRailRight,
-    populatedAreaStartX:
-      typeof populated_area_start_x === 'number' && Number.isFinite(populated_area_start_x)
-        ? populated_area_start_x
-        : null,
-    populatedAreaEndX:
-      typeof populated_area_end_x === 'number' && Number.isFinite(populated_area_end_x)
-        ? populated_area_end_x
-        : null,
-    pitchCrossCheck,
-    usage: {
-      inputTokens: sample.inputTokens,
-      outputTokens: sample.outputTokens,
-    },
-  };
-}
-
-/**
- * Stage 2, groups-mode (CCU_STAGE2_GROUPS=true). Calls the VLM with the
- * MODULE_COUNT_PROMPT_GROUPS prompt and assembles a return shape compatible
- * with the existing populated_area path's downstream consumers (so Stage 3
- * + prepareModernGeometry don't need to know which Stage 2 path ran).
- *
- * Differences from the populated_area path:
- *
- *   * Trusts the VLM's per-group start_x/end_x as TIGHT bounds — no rail
- *     clamp, no main-switch clamp, no populated-area tightening. The VLM
- *     was told to find groups tightly within the user-supplied crop, and
- *     groups are already split around middle gaps by construction.
- *
- *   * `slotCentersX` is built per group: each group is tiled with even
- *     spacing using its own (end_x - start_x) / module_count pitch. Across
- *     groups, slot order is left-to-right by group start_x. Centres in the
- *     gap between groups are NOT generated — empty rail in the middle of
- *     a split-load board is invisible to Stage 3.
- *
- *   * `moduleWidth` is the average pitch across all groups (used by Stage
- *     3 for crop-width sizing, where one number per board is sufficient).
- *     Per-group pitch is also returned in `mcbGroups[].pitch` for Stage 3
- *     to use when finer cropping is needed in a follow-up.
- *
- *   * `mainSwitchSide` is determined by comparing main_switch_center_x to
- *     the midpoint of (first group start_x, last group end_x). Falls back
- *     to null if the VLM reported no main switch (inline-mains boards).
- *
- *   * `disagreement` and `truncatedFromDisagreement` are always false —
- *     in groups mode the VLM's per-group count IS the count; there is no
- *     geometric-vs-VLM cross-check to disagree on. `lowConfidence` is
- *     surfaced from the pitch cross-check instead (main_switch_width / 2
- *     vs measured group pitch — significant divergence still flags the
- *     inspector to double-check).
- *
- * @private
- */
-async function getModuleCountFromGroups(
-  anthropic,
-  imageBuffer,
-  base64,
-  medianRails,
-  imageDimensions,
-  options = {}
-) {
   const sample = await callVlm(anthropic, base64, MODULE_COUNT_PROMPT_GROUPS(medianRails));
   const { rail_bbox: vlmRailBbox } = sample.parsed;
 
@@ -906,8 +506,8 @@ async function getModuleCountFromGroups(
   // 2026-04-29 (Derek field test, Wylex NHRS12SL): the VLM was reliably
   // mis-tightening the rail bbox vertically — typically clipping it to the
   // dark toggle housing only and discarding the white rating-label face,
-  // halving rail-height-px. Combined with the (also wrong) MCB_BODY_HEIGHT
-  // constant of 82.5mm (full body, most of which sits BEHIND the cover
+  // halving rail-height-px. Combined with the (then-current) MCB_BODY_HEIGHT
+  // constant of 82.5mm (full body, most of which sits behind the cover
   // plate), pixels-per-mm came out at 1/4 of reality and moduleCount came
   // out 2× too high (29 vs ~15 actual). Fix: when iOS sent a railRoiHint,
   // skip the VLM tightening entirely — the user's box from the custom
@@ -926,7 +526,7 @@ async function getModuleCountFromGroups(
     bottom = medianRails.rail_bottom;
   } else {
     if (!vlmRailBbox || typeof vlmRailBbox !== 'object') {
-      throw new Error('getModuleCountFromGroups: VLM returned missing rail_bbox');
+      throw new Error('getModuleCount: VLM returned missing rail_bbox');
     }
     left = Number(vlmRailBbox.left);
     right = Number(vlmRailBbox.right);
@@ -938,19 +538,16 @@ async function getModuleCountFromGroups(
       !Number.isFinite(top) ||
       !Number.isFinite(bottom)
     ) {
-      throw new Error('getModuleCountFromGroups: rail_bbox edges must all be finite numbers');
+      throw new Error('getModuleCount: rail_bbox edges must all be finite numbers');
     }
     if (right <= left) {
-      throw new Error(
-        `getModuleCountFromGroups: rail_bbox right (${right}) must be > left (${left})`
-      );
+      throw new Error(`getModuleCount: rail_bbox right (${right}) must be > left (${left})`);
     }
     if (bottom <= top) {
-      throw new Error(
-        `getModuleCountFromGroups: rail_bbox bottom (${bottom}) must be > top (${top})`
-      );
+      throw new Error(`getModuleCount: rail_bbox bottom (${bottom}) must be > top (${top})`);
     }
   }
+
   const railBboxNorm = { left, right, top, bottom };
   const railBboxSource = trustInputRails ? 'user-roi' : 'vlm-tightened';
 
@@ -976,7 +573,7 @@ async function getModuleCountFromGroups(
     imageHeight <= 0
   ) {
     throw new Error(
-      'getModuleCountFromGroups: imageDimensions must include positive imageWidth and imageHeight'
+      'getModuleCount: imageDimensions must include positive imageWidth and imageHeight'
     );
   }
 
@@ -1026,7 +623,7 @@ async function getModuleCountFromGroups(
   }
 
   if (moduleWidthPx <= 0) {
-    throw new Error('getModuleCountFromGroups: could not derive a positive module width');
+    throw new Error('getModuleCount: could not derive a positive module width');
   }
 
   // --- Compute module count by chunking the bbox width ---------------------
@@ -1130,16 +727,12 @@ async function getModuleCountFromGroups(
     moduleWidthFromMainSwitch: moduleWidth,
     effectiveRailLeft: left,
     effectiveRailRight: right,
-    populatedAreaStartX: left,
-    populatedAreaEndX: right,
-    mcbGroups: null, // legacy field — no per-group structure in tighten-and-chunk
-    upstreamRcds: null, // legacy field — RCDs identified by Stage 3 classification per slot
-    railBbox: railBboxNorm, // NEW 2026-04-28 — surfaces the rail bbox used for telemetry
-    railBboxSource, // NEW 2026-04-29 — 'user-roi' (no VLM tightening) or 'vlm-tightened'
-    pitchSource, // NEW 2026-04-29 — 'cv-autocorr' (Sobel-X) or 'height-anchor' (44.5mm DIN face fallback)
-    cvPitchDiag, // NEW 2026-04-29 — CV detection internals (pitch, normCorr, fallback reason)
+    railBbox: railBboxNorm,
+    railBboxSource, // 'user-roi' (no VLM tightening) | 'vlm-tightened'
+    pitchSource, // 'cv-autocorr' | 'height-anchor' (44.5mm DIN face fallback)
+    cvPitchDiag, // CV detection internals (pitch, normCorr, fallback reason)
     pitchCrossCheck,
-    chunkingDiag, // NEW 2026-04-28 — exposes raw chunking inputs for prod diagnostics
+    chunkingDiag, // raw chunking inputs for prod diagnostics
     lowConfidence,
     usage: {
       inputTokens: sample.inputTokens,
@@ -1595,8 +1188,6 @@ export async function prepareModernGeometry(imageBuffer, options = {}) {
     const scaleWidth = (w) => (typeof w === 'number' && Number.isFinite(w) ? w * scale : w);
 
     stage2.mainSwitchCenterX = translateX(stage2.mainSwitchCenterX);
-    stage2.populatedAreaStartX = translateX(stage2.populatedAreaStartX);
-    stage2.populatedAreaEndX = translateX(stage2.populatedAreaEndX);
     stage2.effectiveRailLeft = translateX(stage2.effectiveRailLeft);
     stage2.effectiveRailRight = translateX(stage2.effectiveRailRight);
     stage2.mainSwitchWidth = scaleWidth(stage2.mainSwitchWidth);
@@ -1605,26 +1196,10 @@ export async function prepareModernGeometry(imageBuffer, options = {}) {
     if (Array.isArray(stage2.slotCentersX)) {
       stage2.slotCentersX = stage2.slotCentersX.map(translateX);
     }
-    // Translate mcbGroups (groups-mode only — populated_area path doesn't
-    // populate this field). Each group's start_x / end_x are X coords; the
-    // pitch is a width-scale value. Re-translating via map is intentional
-    // — we leave the original group object unmutated where possible so a
-    // future refactor that wants to log "untranslated" coordinates can
-    // re-derive them.
-    if (Array.isArray(stage2.mcbGroups)) {
-      stage2.mcbGroups = stage2.mcbGroups.map((g) => ({
-        start_x: translateX(g.start_x),
-        end_x: translateX(g.end_x),
-        module_count: g.module_count,
-        pitch: scaleWidth(g.pitch),
-      }));
-    }
-    // Translate railBbox (tighten-and-chunk only). Y-axis is in the crop's
-    // own scale; downstream Stage 3 reads stage1.medianRails for vertical
-    // crop bounds (still in original-image scale), so the railBbox top/
-    // bottom translation is purely cosmetic for telemetry. We keep them
-    // in CROP-scale to match what the VLM actually returned and what the
-    // height calibration was computed against.
+    // Translate railBbox X-axis only. Y-axis stays in crop scale because
+    // downstream Stage 3 reads stage1.medianRails for vertical crop bounds
+    // (original-image scale), and the height calibration was computed
+    // against the crop-scale top/bottom values.
     if (stage2.railBbox && typeof stage2.railBbox === 'object') {
       stage2.railBbox = {
         left: translateX(stage2.railBbox.left),
@@ -1640,26 +1215,11 @@ export async function prepareModernGeometry(imageBuffer, options = {}) {
     outputTokens: stage1.usage.outputTokens + stage2.usage.outputTokens,
   };
 
-  // Roll the Stage 2 truncation signal into top-level lowConfidence so the
-  // route handler can surface it (and iOS can render the existing lowConf
-  // banner / amber state) without needing a second flag.
-  // lowConfidence fires when: Stage 1 samples diverged (SD threshold),
-  // Stage 2 truncated geometric → VLM (big overcount that we fixed), OR
-  // geometric/VLM disagreed by 2+ modules with VLM higher (we floor-counted
-  // and undercount is suspected). The last case used to be silent — only
-  // truncation lit lowConfidence — but a 2-module delta in either direction
-  // means rail geometry is shaky and the inspector should double-check.
-  const lowConfidence =
-    stage1.lowConfidence ||
-    !!stage2.truncatedFromDisagreement ||
-    Math.abs(stage2.geometricCount - stage2.vlmCount) >= 2;
-
-  // Source of Stage 2 output. 'tighten-and-chunk' = 2026-04-28 redesign
-  // (CCU_STAGE2_GROUPS=true). 'populated-area' = legacy single-rect path
-  // (CCU_STAGE2_GROUPS=false / unset). Useful for telemetry while we A/B
-  // the two paths in production. The fingerprint is `railBbox` — only
-  // the new path populates it.
-  const stage2Source = stage2.railBbox ? 'tighten-and-chunk' : 'populated-area';
+  // lowConfidence fires when EITHER Stage 1 SD threshold tripped (rail
+  // bbox samples diverged) OR Stage 2's CV-vs-bbox count cross-check
+  // tripped (CV's own moduleCount disagreed with the bbox-derived count
+  // by >1 module — usually indicates a too-wide rail bbox).
+  const lowConfidence = stage1.lowConfidence || !!stage2.lowConfidence;
 
   return {
     medianRails: stage1.medianRails,
@@ -1669,12 +1229,10 @@ export async function prepareModernGeometry(imageBuffer, options = {}) {
     truncatedFromDisagreement: !!stage2.truncatedFromDisagreement,
     lowConfidence,
     stage1Source, // 'vlm' | 'roi-hint' — lets caller log the skip
-    stage2Source, // 'tighten-and-chunk' | 'populated-area'
-    mcbGroups: stage2.mcbGroups ?? null,
     railBbox: stage2.railBbox ?? null,
-    railBboxSource: stage2.railBboxSource ?? null, // 'user-roi' | 'vlm-tightened' (2026-04-29)
-    pitchSource: stage2.pitchSource ?? null, // 'cv-autocorr' | 'height-anchor' (2026-04-29)
-    cvPitchDiag: stage2.cvPitchDiag ?? null, // CV detection internals (2026-04-29)
+    railBboxSource: stage2.railBboxSource ?? null, // 'user-roi' | 'vlm-tightened'
+    pitchSource: stage2.pitchSource ?? null, // 'cv-autocorr' | 'height-anchor'
+    cvPitchDiag: stage2.cvPitchDiag ?? null,
     pitchCrossCheck: stage2.pitchCrossCheck ?? null,
     chunkingDiag: stage2.chunkingDiag ?? null,
     slotCentersX: stage2.slotCentersX,
@@ -1703,9 +1261,13 @@ export async function prepareModernGeometry(imageBuffer, options = {}) {
         moduleWidthFromMainSwitch: stage2.moduleWidthFromMainSwitch,
         effectiveRailLeft: stage2.effectiveRailLeft,
         effectiveRailRight: stage2.effectiveRailRight,
-        populatedAreaStartX: stage2.populatedAreaStartX,
-        populatedAreaEndX: stage2.populatedAreaEndX,
+        railBbox: stage2.railBbox ?? null,
+        railBboxSource: stage2.railBboxSource ?? null,
+        pitchSource: stage2.pitchSource ?? null,
+        cvPitchDiag: stage2.cvPitchDiag ?? null,
         pitchCrossCheck: stage2.pitchCrossCheck,
+        chunkingDiag: stage2.chunkingDiag ?? null,
+        lowConfidence: !!stage2.lowConfidence,
         disagreement: stage2.disagreement,
         truncatedFromDisagreement: !!stage2.truncatedFromDisagreement,
         usage: stage2.usage,
