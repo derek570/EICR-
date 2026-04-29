@@ -722,9 +722,54 @@ export function processRingContinuityTurn(ctx) {
         drained_pending_writes: writes.map((w) => w.field),
       });
     } else {
-      // Inspector said something we couldn't parse as a circuit (digit
-      // or designation). Exit and let Sonnet handle it normally — any
-      // pending_writes from the entry utterance are genuinely lost
+      // Couldn't resolve a circuit from this turn. Before giving up,
+      // check whether the inspector volunteered MORE field values
+      // while still waiting on the circuit naming. Common pattern
+      // (session 361A638D, 2026-04-29 10:44 BST):
+      //
+      //   T1: "ring continuity"          → script enters, asks
+      //                                     "Which circuit?"
+      //   T2: "Uh, the lives are 0.86."  → not a circuit answer; the
+      //                                     inspector has just kept
+      //                                     dictating. Queue R1=0.86,
+      //                                     stay alive, wait for the
+      //                                     circuit on a later turn.
+      //   T3: "downstairs sockets"       → designation match → resolve
+      //                                     circuit → drain queue.
+      //
+      // If the text has neither a circuit reference nor a field value,
+      // we genuinely have nothing to do — fall through to Sonnet so
+      // its prompt can reason about the utterance. The script's pending
+      // queue is discarded in that case (logged so we can size the
+      // problem in production).
+      const followUpVolunteered = extractNamedFieldValues(text);
+      if (followUpVolunteered.length > 0) {
+        // Stay in the script. Queue the values and wait silently for
+        // the circuit. (No re-ask via TTS — interrupting the inspector
+        // mid-dictation with another "Which circuit?" prompt would be
+        // disruptive. The hard timeout / next entry will handle the
+        // case where the circuit never arrives.)
+        for (const w of followUpVolunteered) {
+          // De-dup: don't queue the same field twice.
+          const alreadyQueued = (state.pending_writes ?? []).some(
+            (existing) => existing.field === w.field
+          );
+          if (alreadyQueued) continue;
+          if (!Array.isArray(state.pending_writes)) state.pending_writes = [];
+          state.pending_writes.push(w);
+        }
+        logger?.info?.('stage6.ring_continuity_script_queued_values', {
+          sessionId,
+          textPreview: text.slice(0, 80),
+          queued_fields: followUpVolunteered.map((w) => w.field),
+          pending_writes_total: state.pending_writes.length,
+        });
+        return { handled: true, fallthrough: false };
+      }
+
+      // Truly nothing to work with — text has no circuit ref, no
+      // designation match, and no field value. Exit and let Sonnet
+      // handle it. Any pending_writes from earlier turns are lost
       // (Fix C, deferred, would route them to a last-named-circuit
       // fallback). Logged for analytics / future tuning.
       logger?.info?.('stage6.ring_continuity_script_unresolvable_circuit', {

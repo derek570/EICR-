@@ -1006,6 +1006,219 @@ describe('Fix B — designation answer in active path', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Fix Y — queue follow-up values that arrive while still waiting on a
+// circuit (session 361A638D, 2026-04-29 10:44 BST: inspector said bare
+// "ring continuity", was asked "Which circuit?", then provided values
+// instead of a circuit name. Pre-fix, the script gave up and discarded
+// the values; post-fix, it queues them and stays alive until a circuit
+// resolves on a later turn.)
+// ---------------------------------------------------------------------------
+
+describe('Fix Y — values arriving while waiting on circuit', () => {
+  test('"lives are 0.86" answer queues into pending_writes (no fallthrough)', () => {
+    const session = buildSession({ 11: { designation: 'downstairs sockets' } });
+    const ws = new MockWS();
+    // Bare "ring continuity" — enters, asks "Which circuit?"
+    processRingContinuityTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'ring continuity',
+      now: 1000,
+    });
+    expect(session.ringContinuityScript.circuit_ref).toBeNull();
+    expect(session.ringContinuityScript.pending_writes).toEqual([]);
+    ws.sent.length = 0;
+
+    // Inspector keeps dictating instead of answering — "lives are 0.86".
+    const out = processRingContinuityTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'Uh, the lives are 0.86.',
+      now: 2000,
+    });
+    expect(out).toEqual({ handled: true, fallthrough: false });
+    // Script is STILL active.
+    expect(session.ringContinuityScript.active).toBe(true);
+    // R1 queued.
+    expect(session.ringContinuityScript.pending_writes).toEqual([
+      { field: 'ring_r1_ohm', value: '0.86' },
+    ]);
+    // No new TTS — silent queue (re-asking would interrupt the inspector).
+    expect(ws.sent).toEqual([]);
+  });
+
+  test('multiple value-only turns accumulate in pending_writes', () => {
+    const session = buildSession();
+    const ws = new MockWS();
+    processRingContinuityTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'ring continuity',
+      now: 1000,
+    });
+    processRingContinuityTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'lives 0.86',
+      now: 2000,
+    });
+    processRingContinuityTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'neutrals 0.43',
+      now: 3000,
+    });
+    expect(session.ringContinuityScript.pending_writes).toEqual([
+      { field: 'ring_r1_ohm', value: '0.86' },
+      { field: 'ring_rn_ohm', value: '0.43' },
+    ]);
+  });
+
+  test('subsequent designation answer drains accumulated pending_writes', () => {
+    const session = buildSession({ 11: { designation: 'downstairs sockets' } });
+    const ws = new MockWS();
+    processRingContinuityTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'ring continuity',
+      now: 1000,
+    });
+    processRingContinuityTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'Uh, the lives are 0.86.',
+      now: 2000,
+    });
+    ws.sent.length = 0;
+    // Now the inspector finally names the circuit by designation.
+    const out = processRingContinuityTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'the downstairs sockets',
+      now: 3000,
+    });
+    expect(out).toEqual({ handled: true, fallthrough: false });
+    expect(session.stateSnapshot.circuits[11].ring_r1_ohm).toBe('0.86');
+    expect(session.ringContinuityScript.circuit_ref).toBe(11);
+    expect(session.ringContinuityScript.pending_writes).toEqual([]);
+    // Two emits: extraction (R1 drained), ask for Rn.
+    expect(ws.sent).toHaveLength(2);
+    expect(ws.sent[0].type).toBe('extraction');
+    expect(ws.sent[1].context_field).toBe('ring_rn_ohm');
+  });
+
+  test('does not double-queue the same field across turns', () => {
+    const session = buildSession();
+    const ws = new MockWS();
+    processRingContinuityTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'ring continuity',
+      now: 1000,
+    });
+    processRingContinuityTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'lives 0.86',
+      now: 2000,
+    });
+    // Inspector re-states (slip of the tongue or transcript echo).
+    processRingContinuityTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'lives 0.99',
+      now: 3000,
+    });
+    // First value wins — duplicate entry is skipped.
+    expect(session.ringContinuityScript.pending_writes).toEqual([
+      { field: 'ring_r1_ohm', value: '0.86' },
+    ]);
+  });
+
+  test('value-only turn with no field word still falls through (genuinely unresolvable)', () => {
+    const session = buildSession({ 5: { designation: 'cooker' } });
+    const ws = new MockWS();
+    processRingContinuityTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'ring continuity',
+      now: 1000,
+    });
+    ws.sent.length = 0;
+    // Bare digit "0.86" — no field word, no circuit identifier.
+    const out = processRingContinuityTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: '0.86',
+      now: 2000,
+    });
+    expect(out).toEqual({
+      handled: true,
+      fallthrough: true,
+      transcriptText: '0.86',
+    });
+    expect(session.ringContinuityScript).toBeFalsy();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Session 361A638D full repro — end-to-end with Fix Y in place
+// ---------------------------------------------------------------------------
+
+describe('Session 361A638D repro — Fix Y salvages bare-entry + value-first', () => {
+  test('bare "ring continuity" → "lives 0.86" → "downstairs sockets" → R1 lands', () => {
+    const session = buildSession({ 11: { designation: 'Downstairs Sockets' } });
+    const ws = new MockWS();
+
+    // T1: "ring continuity" alone.
+    processRingContinuityTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'ring continuity',
+      now: 1000,
+    });
+
+    // T2: inspector keeps dictating instead of naming the circuit.
+    processRingContinuityTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'Uh, the lives are 0.86.',
+      now: 2000,
+    });
+    expect(session.ringContinuityScript.pending_writes).toEqual([
+      { field: 'ring_r1_ohm', value: '0.86' },
+    ]);
+
+    // T3: inspector finally names the circuit (the answer that
+    // session 361A638D's Sonnet recovery eventually got, but which the
+    // script gave up on too early to consume).
+    processRingContinuityTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'The downstairs sockets.',
+      now: 3000,
+    });
+    expect(session.stateSnapshot.circuits[11].ring_r1_ohm).toBe('0.86');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Session 74201B27 full repro — end-to-end with Fixes A + B in place
 // ---------------------------------------------------------------------------
 
