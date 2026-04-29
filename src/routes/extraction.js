@@ -1629,30 +1629,39 @@ router.post(
           }
 
           // Merger: slot classifications + Stage 4 labels → circuits[].
-          // Single-shot is NOT consulted — its circuits[] stay in analysis only
-          // as historical context until the merger overwrites them here, at
-          // which point the primary-source swap is complete.
           //
-          // NUMBERING NOTE (Codex P1 2026-04-22): when a rewireable board has
-          // the main switch INLINE with the carrier row (Stage 1's
-          // `mainSwitchSide === 'none'`), the classifier / single-shot's
-          // `main_switch_position` also report 'none'. But Stage 2 independently
-          // identifies whether the inline main switch occupies the LEFT or
-          // RIGHT edge slot via `mainSwitchOffset` ('left-edge' | 'right-edge').
-          // Use that as the first fallback so BS 7671 main-switch-outward
-          // numbering still works on inline boards.
-          const offsetSide =
-            geometricResult.mainSwitchOffset === 'right-edge'
-              ? 'right'
-              : geometricResult.mainSwitchOffset === 'left-edge'
-                ? 'left'
-                : null;
-          const mainSwitchSide =
-            (geometricResult.mainSwitchSide !== 'none' && geometricResult.mainSwitchSide) ||
-            offsetSide ||
-            boardClassification?.mainSwitchPosition ||
-            analysis.main_switch_position ||
-            'none';
+          // mainSwitchSide drives BS 7671 circuit numbering (circuit 1 =
+          // nearest the main switch). Three independent sources, in
+          // priority order:
+          //
+          //   1. Stage 3 found a `main_switch` slot — slot index gives the
+          //      side directly (modern boards always tag the device row
+          //      this way; rewireable inline-mains boards do too).
+          //   2. Stage 2 mainSwitchOffset (rewireable pipeline only —
+          //      identifies which carrier-row edge the integrated
+          //      switch-fuse occupies on inline-mains boards).
+          //   3. Stage 1 classifier's mainSwitchPosition.
+          //
+          // Stage 2's mainSwitchSide is no longer in the chain (the
+          // groups-mode prompt no longer asks for main_switch_center_x as
+          // of 2026-04-29).
+          let mainSwitchSide = 'none';
+          const stage3MainSwitchSlot = (analysis.slots || []).find(
+            (s) => s?.classification === 'main_switch'
+          );
+          if (stage3MainSwitchSlot) {
+            const halfwayIdx = (analysis.slots.length - 1) / 2;
+            mainSwitchSide = stage3MainSwitchSlot.slotIndex >= halfwayIdx ? 'right' : 'left';
+          } else if (geometricResult.mainSwitchOffset === 'right-edge') {
+            mainSwitchSide = 'right';
+          } else if (geometricResult.mainSwitchOffset === 'left-edge') {
+            mainSwitchSide = 'left';
+          } else if (
+            boardClassification?.mainSwitchPosition === 'left' ||
+            boardClassification?.mainSwitchPosition === 'right'
+          ) {
+            mainSwitchSide = boardClassification.mainSwitchPosition;
+          }
 
           const mergedCircuits = slotsToCircuits({
             slots: analysis.slots,
@@ -1663,18 +1672,24 @@ router.post(
             analysis.circuits = mergedCircuits;
             extractionSource = 'geometric-merged';
 
-            // POST-MERGE ENRICHMENT (Codex P2 2026-04-22): applyBsEnFallback,
-            // normaliseCircuitLabels and (conditionally) lookupMissingRcdTypes
-            // ran upstream against the single-shot circuits[] that we've just
-            // replaced. Re-apply the cheap local enrichers so any gaps the
-            // Stage 3 classifier left are filled by the same lookup tables
-            // that single-shot relied on. We DO NOT re-invoke
-            // lookupMissingRcdTypes here — Stage 3's per-slot classifier is
-            // the authority for rcd_type via direct waveform reading; running
-            // the web-search lookup again would burn VLM spend on top of
-            // already-classified slots.
+            // Cheap local enrichers — same lookup tables single-shot
+            // used to rely on, now feeding Stage 3 output instead.
+            // lookupMissingRcdTypes runs separately below (post-merge,
+            // post-defaults).
             analysis = applyBsEnFallback(analysis);
             analysis = normaliseCircuitLabels(analysis);
+          }
+
+          // SPD presence: Stage 3 is the authority. If any slot was
+          // classified as 'spd', override the classifier's hint to true.
+          // Conversely if Stage 3 found NO spd slot, trust Stage 3 over
+          // the classifier (Stage 3 examined every slot crop individually
+          // — the classifier did a single board-level look). Only fall
+          // back to the classifier value when Stage 3 produced no slots
+          // at all.
+          if (Array.isArray(analysis.slots) && analysis.slots.length > 0) {
+            const stage3FoundSpd = analysis.slots.some((s) => s?.classification === 'spd');
+            analysis.spd_present = stage3FoundSpd;
           }
         }
 
