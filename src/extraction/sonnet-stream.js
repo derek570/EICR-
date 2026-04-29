@@ -35,6 +35,13 @@ import { runShadowHarness } from './stage6-shadow-harness.js';
 // and `.planning-stage6-agentic/handoffs/silent-drop-fix-2026-04-28/README.md`
 // for the handoff that drove this wiring.
 import { findExpiredPartial } from './ring-continuity-timeout.js';
+// 2026-04-29 — server-driven ring continuity script. Bypasses Sonnet for the
+// duration of an R1/Rn/R2 micro-conversation, fixing the Flux-fragmentation
+// loss surfaced by session B107472D (06:23, 2026-04-29) where "Neutrals are."
+// → "0.43." landed in two separate turns and Sonnet routed the bare value
+// to a generic missing-field ask. Sits BEFORE the 60s timeout check below
+// so the script's per-circuit state is the source of truth while active.
+import { processRingContinuityTurn } from './ring-continuity-script.js';
 // Stage 6 Phase 3 — per-session blocking-ask plumbing. Plan 03-08 threads the
 // per-session PendingAsksRegistry through every call-site of runShadowHarness
 // (via `options.pendingAsks` + `options.ws`) and routes inbound iOS
@@ -2598,6 +2605,56 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
           qTypeDropped: rawType && !safeType ? rawType.slice(0, 40) : undefined,
           qPreview: rawQ.slice(0, 60),
         });
+      }
+
+      // Ring continuity script — 2026-04-29. Server-driven micro-
+      // conversation that captures R1/Rn/R2 deterministically when the
+      // inspector says "ring continuity for circuit N". Sits BEFORE the
+      // 60s timeout check below because the script's `last_turn_at`
+      // timestamp is what `findExpiredPartial` would otherwise interpret
+      // as a stale partial fill. While the script is active, Sonnet is
+      // bypassed entirely — same wire output to iOS, no LLM round-trip.
+      // See `src/extraction/ring-continuity-script.js` for design.
+      //
+      // Three return shapes:
+      //   1. handled=false                       → script not active and
+      //                                             no entry trigger; fall
+      //                                             through to the rest of
+      //                                             this turn (Sonnet flow).
+      //   2. handled=true, fallthrough=false     → script consumed the
+      //                                             turn; skip Sonnet,
+      //                                             clear the watchdog,
+      //                                             and `return`.
+      //   3. handled=true, fallthrough=true      → script exited via topic
+      //                                             switch / unresolvable
+      //                                             circuit answer; pass
+      //                                             the (possibly cleaned)
+      //                                             transcript on to Sonnet.
+      const ringScriptOutcome = processRingContinuityTurn({
+        ws,
+        session: entry.session,
+        sessionId,
+        transcriptText,
+        logger,
+      });
+      if (ringScriptOutcome.handled && !ringScriptOutcome.fallthrough) {
+        // Script handled the turn end-to-end. Return — the finally block
+        // at line ~3290 clears the watchdog, flips isExtracting, and
+        // drains pendingTranscripts against the LIVE entry.ws (handling
+        // the reconnect-mid-turn case the r19 MAJOR remediation fixed).
+        // No Sonnet call, no shadow harness, no question-gate pass on
+        // this turn. The script already emitted the wire events iOS
+        // needs (`extraction` + `ask_user_started`).
+        return;
+      }
+      if (ringScriptOutcome.handled && ringScriptOutcome.fallthrough) {
+        // Topic switch or unresolvable circuit-answer. Use the script's
+        // returned transcript (currently identical to input — kept in
+        // the contract so future cleanup doesn't churn callers) and
+        // continue to the normal Sonnet path.
+        if (typeof ringScriptOutcome.transcriptText === 'string') {
+          transcriptText = ringScriptOutcome.transcriptText;
+        }
       }
 
       // Ring continuity timeout — 2026-04-28. The agentic prompt's
