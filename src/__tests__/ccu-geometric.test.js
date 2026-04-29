@@ -183,6 +183,34 @@ describe('getRailGeometry', () => {
     const result = await getRailGeometry(buf);
     expect(result.medianRails.rail_top).toBe(400);
   });
+
+  // 2026-04-30 production regression: VLM occasionally returned its primary
+  // JSON object plus a second concatenated object (or trailing prose) on a
+  // new line. The old extractor sliced from first `{` to last `}` and
+  // handed both objects to JSON.parse, which threw "Unexpected non-
+  // whitespace character after JSON at position 70" — failing every CCU
+  // request for ~7 minutes against a Wylex NHRS12SL board. The walker
+  // should stop at the first balanced close brace and ignore everything
+  // after it.
+  test('parses correctly when VLM appends trailing JSON / prose after the primary object', async () => {
+    const buf = await makeFakeJpeg();
+    const trailingText =
+      '{"rail_top":400,"rail_bottom":600,"rail_left":100,"rail_right":900}\n\n{"main_switch_center_x": 850, "main_switch_width": 60}';
+    mockCreate
+      .mockResolvedValueOnce({
+        content: [{ type: 'text', text: trailingText }],
+        usage: { input_tokens: 50, output_tokens: 20 },
+      })
+      .mockResolvedValueOnce(
+        fakeVlmResponse({ rail_top: 400, rail_bottom: 600, rail_left: 100, rail_right: 900 })
+      )
+      .mockResolvedValueOnce(
+        fakeVlmResponse({ rail_top: 400, rail_bottom: 600, rail_left: 100, rail_right: 900 })
+      );
+    const result = await getRailGeometry(buf);
+    expect(result.medianRails.rail_top).toBe(400);
+    expect(result.medianRails.rail_left).toBe(100);
+  });
 });
 
 // ---------------------------------------------------------------------------
