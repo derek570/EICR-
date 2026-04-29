@@ -16,8 +16,9 @@
  *   4. No regex hits — shape-aware (Plan 03-11 Task 2):
  *      4a. Pending ask with expectedAnswerShape === 'yes_no' AND the text
  *          matches the yes/no vocabulary → {kind: 'answers', ...}
- *      4b. Pending ask with expectedAnswerShape === 'free_text' AND the
- *          trimmed text is non-empty → {kind: 'answers', ...}
+ *      4b. Pending ask with expectedAnswerShape === 'circuit_ref' AND
+ *          extractCircuitRef parses the text to a 1..200 integer (single-
+ *          number guard, decimal-rejection guard) → {kind: 'answers', ...}
  *      4c. Otherwise → {kind: 'user_moved_on'} (fail-safe default)
  *
  * Open Question #4 resolution: when the utterance produces no regex hits, the
@@ -47,9 +48,23 @@
  * through to user_moved_on (conservative default). Phase 4's iOS
  * contract routes free_text answers via the direct ask_user_answered
  * channel with consumed_utterance_id — the transcript-overtake path
- * is not the authoritative route for free_text. Only yes_no retains
- * the shape-aware short-circuit because its vocabulary is bounded
- * (see YES_NO_VOCABULARY below) and false-positives are near-impossible.
+ * is not the authoritative route for free_text.
+ *
+ * 2026-04-29 — circuit_ref branch added. Field-test session 17C4135E lost
+ * an IR live-to-earth reading because the disambiguation ask
+ * ("I've got two circuits both called Upstairs Sockets — circuit 1 or
+ * circuit 2?") had expectedAnswerShape='circuit_ref', and the user's
+ * "circuit 2." reply produced no value-regex hit, so step 4 fell
+ * through to user_moved_on. The transcript channel's rejectAll fired
+ * before iOS's explicit ask_user_answered could resolve the same
+ * tool_call_id, dropping the answer. circuit_ref is now shape-aware in
+ * step 3 using extractCircuitRef from stage6-answer-resolver, which
+ * already enforces the safety rails Open Question #4 cares about:
+ * single-number guard rejects "circuit 2 ze 0.34" (a value statement),
+ * decimal guard rejects "0.4" (a value, not a circuit ref), 1..200
+ * range guard rejects "circuit 250". `number`-shaped asks remain
+ * conservative — bare "2" is genuinely ambiguous between value and
+ * circuit ref when the question is about a numeric reading.
  *
  * Duck-typed pendingAsks: the parameter only needs .size and .entries().
  * Both the real PendingAsksRegistry (Plan 03-01) and a plain Map work —
@@ -57,6 +72,8 @@
  *
  * Requirement: STA-04.
  */
+
+import { extractCircuitRef } from './stage6-answer-resolver.js';
 
 // Plan 03-11 Task 2 — yes/no vocabulary. Lowercased, trailing punctuation
 // stripped by the caller before matching. Kept inline (not a config export)
@@ -98,8 +115,8 @@ function normaliseForYesNo(text) {
   return text
     .trim()
     .toLowerCase()
-    .replace(/^[\s"'`.,;:!?(){}\[\]-]+/, '')
-    .replace(/[\s"'`.,;:!?(){}\[\]-]+$/, '');
+    .replace(/^[\s"'`.,;:!?(){}[\]-]+/, '')
+    .replace(/[\s"'`.,;:!?(){}[\]-]+$/, '');
 }
 
 export function classifyOvertake(newText, regexResults, pendingAsks) {
@@ -136,17 +153,27 @@ export function classifyOvertake(newText, regexResults, pendingAsks) {
     }
   }
 
-  // 3. No regex hits — Plan 03-11 Task 2 shape-aware branch, narrowed by
-  //    Plan 03-12 r6 to yes_no only. Walk pending asks in insertion order
-  //    (oldest first). The first pending yes_no ask whose text matches the
-  //    YES_NO_VOCABULARY wins. number / circuit_ref / free_text / undefined
-  //    shapes never match here — they fall through to the conservative
-  //    user_moved_on default, preserving the Open Question #4 ruling for
-  //    asks where false attribution is expensive.
+  // 3. No regex hits — Plan 03-11 Task 2 shape-aware branch. Walk pending
+  //    asks in insertion order (oldest first). First match wins.
+  //
+  //    yes_no  → text against YES_NO_VOCABULARY (bounded set)
+  //    circuit_ref → extractCircuitRef (single-number, 1..200, no decimals)
+  //
+  //    number / free_text / undefined shapes never match here — they fall
+  //    through to the conservative user_moved_on default, preserving the
+  //    Open Question #4 ruling for asks where false attribution is
+  //    expensive (a bare "2" reply to a number ask is genuinely ambiguous
+  //    between "value" and "circuit ref"; a "2" reply to a circuit_ref ask
+  //    is not).
   const yesNoNormalised = normaliseForYesNo(newText);
+  const lowerNewText = typeof newText === 'string' ? newText.toLowerCase() : '';
   for (const [id, entry] of pendingAsks.entries()) {
     if (entry.expectedAnswerShape === 'yes_no') {
       if (YES_NO_VOCABULARY.has(yesNoNormalised)) {
+        return { kind: 'answers', toolCallId: id, userText: newText };
+      }
+    } else if (entry.expectedAnswerShape === 'circuit_ref') {
+      if (extractCircuitRef(lowerNewText) !== null) {
         return { kind: 'answers', toolCallId: id, userText: newText };
       }
     }

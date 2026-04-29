@@ -117,6 +117,48 @@ describe('resolveCircuitAnswer — numeric replies', () => {
     });
     expect(r.kind).toBe('escalate');
   });
+
+  // 2026-04-29 — STT routinely terminates short answers with a sentence
+  // period ("circuit 2."). Pre-fix, the digit-match regex's decimal-rejection
+  // lookahead `(?![\d.])` treated the trailing "." as a decimal separator
+  // and rejected the whole match, escalating instead of auto-resolving.
+  // Field-test session 17C4135E (job_1777459894020) lost a 299 MΩ live-to-
+  // earth IR reading partly because of this gap (the classifier hit it
+  // first on the same input, but the resolver had the same blind spot —
+  // the user could have arrived here via a different route and lost the
+  // answer the same way).
+  test('"circuit 2." (trailing period) auto-resolves (2026-04-29 fix)', () => {
+    const r = resolveCircuitAnswer({
+      userText: 'circuit 2.',
+      pendingWrite: SAMPLE_PENDING,
+      availableCircuits: TWO_CIRCUITS,
+    });
+    expect(r.kind).toBe('auto_resolve');
+    expect(r.writes[0].circuit).toBe(2);
+  });
+
+  test('"2." (bare digit + period) auto-resolves', () => {
+    const r = resolveCircuitAnswer({
+      userText: '2.',
+      pendingWrite: SAMPLE_PENDING,
+      availableCircuits: TWO_CIRCUITS,
+    });
+    expect(r.kind).toBe('auto_resolve');
+    expect(r.writes[0].circuit).toBe(2);
+  });
+
+  test('"0.4" still escalates after trailing-period fix (decimal guard intact)', () => {
+    // Regression guard: the trailing-strip must NOT relax the decimal
+    // rejection. "0.4" has the dot mid-string, not trailing — the strip
+    // leaves it untouched and the digit regex's internal `(?![\d.])` /
+    // `[^\d.]` guards still reject.
+    const r = resolveCircuitAnswer({
+      userText: '0.4',
+      pendingWrite: SAMPLE_PENDING,
+      availableCircuits: TWO_CIRCUITS,
+    });
+    expect(r.kind).toBe('escalate');
+  });
 });
 
 describe('resolveCircuitAnswer — designation match (the bug-1B repro)', () => {

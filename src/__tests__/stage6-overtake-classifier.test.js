@@ -75,7 +75,7 @@ describe('classifyOvertake — exact (field, circuit) match', () => {
     const verdict = classifyOvertake(
       'point four five',
       [{ field: 'ze', circuit: null, value: 0.45 }],
-      mockPending([['ask_1', { contextField: 'ze', contextCircuit: null }]]),
+      mockPending([['ask_1', { contextField: 'ze', contextCircuit: null }]])
     );
     expect(verdict).toEqual({
       kind: 'answers',
@@ -88,7 +88,7 @@ describe('classifyOvertake — exact (field, circuit) match', () => {
     const verdict = classifyOvertake(
       'one point oh eight',
       [{ field: 'zs', circuit: 3, value: 1.08 }],
-      mockPending([['ask_zs_3', { contextField: 'zs', contextCircuit: 3 }]]),
+      mockPending([['ask_zs_3', { contextField: 'zs', contextCircuit: 3 }]])
     );
     expect(verdict.kind).toBe('answers');
     expect(verdict.toolCallId).toBe('ask_zs_3');
@@ -102,7 +102,7 @@ describe('classifyOvertake — exact (field, circuit) match', () => {
       mockPending([
         ['ask_ze', { contextField: 'ze', contextCircuit: null }],
         ['ask_pfc_2', { contextField: 'pfc', contextCircuit: 2 }],
-      ]),
+      ])
     );
     expect(verdict.kind).toBe('answers');
     expect(verdict.toolCallId).toBe('ask_pfc_2');
@@ -115,7 +115,7 @@ describe('classifyOvertake — exact (field, circuit) match', () => {
         { field: 'ze', circuit: null, value: 0.45 },
         { field: 'zs', circuit: null, value: 1.0 },
       ],
-      mockPending([['ask_ze', { contextField: 'ze', contextCircuit: null }]]),
+      mockPending([['ask_ze', { contextField: 'ze', contextCircuit: null }]])
     );
     // First regex hit matches ze/null → answers returned before the zs hit is
     // evaluated as "new field" in step 2. Locks decision-tree order.
@@ -133,7 +133,7 @@ describe('classifyOvertake — different-field regex hit', () => {
     const verdict = classifyOvertake(
       'zs circuit one is one oh eight',
       [{ field: 'zs', circuit: 1, value: 1.08 }],
-      mockPending([['ask_ze', { contextField: 'ze', contextCircuit: null }]]),
+      mockPending([['ask_ze', { contextField: 'ze', contextCircuit: null }]])
     );
     expect(verdict).toEqual({ kind: 'user_moved_on' });
   });
@@ -145,7 +145,7 @@ describe('classifyOvertake — different-field regex hit', () => {
         { field: 'zs', circuit: 1, value: 1.08 },
         { field: 'pfc', circuit: 2, value: 0.2 },
       ],
-      mockPending([['ask_ze', { contextField: 'ze', contextCircuit: null }]]),
+      mockPending([['ask_ze', { contextField: 'ze', contextCircuit: null }]])
     );
     expect(verdict.kind).toBe('user_moved_on');
   });
@@ -157,7 +157,7 @@ describe('classifyOvertake — different-field regex hit', () => {
     const verdict = classifyOvertake(
       'ze three is point five',
       [{ field: 'ze', circuit: 3, value: 0.5 }],
-      mockPending([['ask_ze_5', { contextField: 'ze', contextCircuit: 5 }]]),
+      mockPending([['ask_ze_5', { contextField: 'ze', contextCircuit: 5 }]])
     );
     expect(verdict.kind).toBe('user_moved_on');
   });
@@ -172,7 +172,7 @@ describe('classifyOvertake — no regex hits (fail-safe default)', () => {
     const verdict = classifyOvertake(
       'yes',
       [],
-      mockPending([['ask_ze', { contextField: 'ze', contextCircuit: null }]]),
+      mockPending([['ask_ze', { contextField: 'ze', contextCircuit: null }]])
     );
     // Conservative default per Open Question #4 — we do NOT assume "yes" answers
     // the oldest pending ask. Caller will rejectAll and let the user restate.
@@ -183,7 +183,7 @@ describe('classifyOvertake — no regex hits (fail-safe default)', () => {
     const verdict = classifyOvertake(
       'yeah I think we should probably just move on and come back to that later',
       [],
-      mockPending([['ask_ze', { contextField: 'ze', contextCircuit: null }]]),
+      mockPending([['ask_ze', { contextField: 'ze', contextCircuit: null }]])
     );
     expect(verdict.kind).toBe('user_moved_on');
   });
@@ -192,7 +192,7 @@ describe('classifyOvertake — no regex hits (fail-safe default)', () => {
     const verdict = classifyOvertake(
       'anything',
       undefined,
-      mockPending([['ask_ze', { contextField: 'ze', contextCircuit: null }]]),
+      mockPending([['ask_ze', { contextField: 'ze', contextCircuit: null }]])
     );
     expect(verdict.kind).toBe('user_moved_on');
   });
@@ -210,7 +210,7 @@ describe('classifyOvertake — mixed match + new field', () => {
         { field: 'ze', circuit: null, value: 0.45 },
         { field: 'pfc', circuit: 1, value: 0.2 },
       ],
-      mockPending([['ask_ze', { contextField: 'ze', contextCircuit: null }]]),
+      mockPending([['ask_ze', { contextField: 'ze', contextCircuit: null }]])
     );
     // Decision-tree order: step 1 (exact match) returns BEFORE step 2 (new-
     // field signal) gets a chance. If this ever returns user_moved_on, the
@@ -229,7 +229,7 @@ describe('classifyOvertake — mixed match + new field', () => {
       mockPending([
         ['ask_ze', { contextField: 'ze', contextCircuit: null }],
         ['ask_pfc', { contextField: 'pfc', contextCircuit: 1 }],
-      ]),
+      ])
     );
     // Outer loop iterates regex results first; inner loop iterates pending.
     // First regex hit (ze) matches ask_ze → returned before pfc is considered.
@@ -249,7 +249,7 @@ describe('classifyOvertake — duck-typed pendingAsks interface', () => {
     const verdict = classifyOvertake(
       'ze point four five',
       [{ field: 'ze', circuit: null, value: 0.45 }],
-      map,
+      map
     );
     expect(verdict.kind).toBe('answers');
     expect(verdict.toolCallId).toBe('ask_ze');
@@ -290,7 +290,7 @@ describe('classifyOvertake — STA-04c shape-aware no-regex branch', () => {
             expectedAnswerShape: 'yes_no',
           },
         ],
-      ]),
+      ])
     );
     expect(verdict).toEqual({ kind: 'answers', toolCallId: 'ask_confirm', userText: 'yes' });
   });
@@ -304,23 +304,20 @@ describe('classifyOvertake — STA-04c shape-aware no-regex branch', () => {
           'ask_confirm',
           { contextField: null, contextCircuit: null, expectedAnswerShape: 'yes_no' },
         ],
-      ]),
+      ])
     );
     expect(verdict.kind).toBe('answers');
     expect(verdict.toolCallId).toBe('ask_confirm');
   });
 
-  test("STA-04c-yes-variants: yes_no ask accepts yeah/yep/nope/correct + trailing punctuation", () => {
+  test('STA-04c-yes-variants: yes_no ask accepts yeah/yep/nope/correct + trailing punctuation', () => {
     for (const text of ['yeah', 'yep.', 'Nope!', 'Correct', 'negative', '  YES  ']) {
       const verdict = classifyOvertake(
         text,
         [],
         mockPending([
-          [
-            'ask_v',
-            { contextField: null, contextCircuit: null, expectedAnswerShape: 'yes_no' },
-          ],
-        ]),
+          ['ask_v', { contextField: null, contextCircuit: null, expectedAnswerShape: 'yes_no' }],
+        ])
       );
       expect(verdict.kind).toBe('answers');
     }
@@ -333,11 +330,8 @@ describe('classifyOvertake — STA-04c shape-aware no-regex branch', () => {
         text,
         [],
         mockPending([
-          [
-            'ask_mw',
-            { contextField: null, contextCircuit: null, expectedAnswerShape: 'yes_no' },
-          ],
-        ]),
+          ['ask_mw', { contextField: null, contextCircuit: null, expectedAnswerShape: 'yes_no' }],
+        ])
       );
       expect(verdict.kind).toBe('answers');
     }
@@ -356,7 +350,7 @@ describe('classifyOvertake — STA-04c shape-aware no-regex branch', () => {
             expectedAnswerShape: 'number',
           },
         ],
-      ]),
+      ])
     );
     expect(verdict.kind).toBe('user_moved_on');
   });
@@ -383,7 +377,7 @@ describe('classifyOvertake — STA-04c shape-aware no-regex branch', () => {
             expectedAnswerShape: 'free_text',
           },
         ],
-      ]),
+      ])
     );
     // Was `answers` pre-r6. Now `user_moved_on` — free_text must come through
     // the direct ask_user_answered channel, not transcript overtake.
@@ -403,7 +397,7 @@ describe('classifyOvertake — STA-04c shape-aware no-regex branch', () => {
             expectedAnswerShape: 'free_text',
           },
         ],
-      ]),
+      ])
     );
     // Filler speech must never satisfy a free_text ask via overtake — rejectAll
     // and let Sonnet re-ask. This is the exact case r6 flagged.
@@ -419,7 +413,7 @@ describe('classifyOvertake — STA-04c shape-aware no-regex branch', () => {
           'ask_desc',
           { contextField: null, contextCircuit: null, expectedAnswerShape: 'free_text' },
         ],
-      ]),
+      ])
     );
     expect(verdict.kind).toBe('user_moved_on');
   });
@@ -445,7 +439,7 @@ describe('classifyOvertake — STA-04c shape-aware no-regex branch', () => {
             expectedAnswerShape: 'yes_no',
           },
         ],
-      ]),
+      ])
     );
     expect(verdict.kind).toBe('answers');
     expect(verdict.toolCallId).toBe('ask_confirm');
@@ -457,7 +451,7 @@ describe('classifyOvertake — STA-04c shape-aware no-regex branch', () => {
       [],
       // No expectedAnswerShape — represents pre-Plan-03-11 entries or a
       // dispatcher bug. Fallback remains conservative.
-      mockPending([['ask_legacy', { contextField: 'ze', contextCircuit: null }]]),
+      mockPending([['ask_legacy', { contextField: 'ze', contextCircuit: null }]])
     );
     expect(verdict.kind).toBe('user_moved_on');
   });
@@ -471,8 +465,190 @@ describe('classifyOvertake — STA-04c shape-aware no-regex branch', () => {
           'ask_confirm',
           { contextField: null, contextCircuit: null, expectedAnswerShape: 'yes_no' },
         ],
-      ]),
+      ])
     );
     expect(verdict.kind).toBe('user_moved_on');
+  });
+
+  // ---------------------------------------------------------------------------
+  // STA-04c-circuit-ref — circuit_ref shape branch (added 2026-04-29).
+  //
+  // Field-test session 17C4135E (job_1777459894020) lost a 299 MΩ live-to-
+  // earth IR reading because the disambiguation ask had
+  // expectedAnswerShape='circuit_ref' and the user's "circuit 2." reply
+  // produced no value-regex hit, falling through to user_moved_on.
+  // rejectAll fired before the iOS ask_user_answered channel could resolve
+  // the same tool_call_id, dropping the answer. circuit_ref is now a
+  // shape-aware short-circuit using extractCircuitRef from
+  // stage6-answer-resolver — same parser the dispatcher's escalation path
+  // uses, so accept/reject decisions stay consistent across both routes.
+  // ---------------------------------------------------------------------------
+
+  test('STA-04c-circuit-ref-bare-digit: circuit_ref ask + "2" → answers', () => {
+    const verdict = classifyOvertake(
+      '2',
+      [],
+      mockPending([
+        [
+          'ask_disambig',
+          {
+            contextField: 'ir_live_earth_mohm',
+            contextCircuit: null,
+            expectedAnswerShape: 'circuit_ref',
+          },
+        ],
+      ])
+    );
+    expect(verdict).toEqual({ kind: 'answers', toolCallId: 'ask_disambig', userText: '2' });
+  });
+
+  test('STA-04c-circuit-ref-prefixed-digit: circuit_ref ask + "circuit 2." → answers (the field-test repro)', () => {
+    const verdict = classifyOvertake(
+      'circuit 2.',
+      [],
+      mockPending([
+        [
+          'ask_disambig',
+          {
+            contextField: 'ir_live_earth_mohm',
+            contextCircuit: null,
+            expectedAnswerShape: 'circuit_ref',
+          },
+        ],
+      ])
+    );
+    expect(verdict.kind).toBe('answers');
+    expect(verdict.toolCallId).toBe('ask_disambig');
+    expect(verdict.userText).toBe('circuit 2.');
+  });
+
+  test('STA-04c-circuit-ref-word: circuit_ref ask + "two" → answers', () => {
+    const verdict = classifyOvertake(
+      'two',
+      [],
+      mockPending([
+        [
+          'ask_disambig',
+          { contextField: null, contextCircuit: null, expectedAnswerShape: 'circuit_ref' },
+        ],
+      ])
+    );
+    expect(verdict.kind).toBe('answers');
+  });
+
+  test('STA-04c-circuit-ref-ordinal: circuit_ref ask + "the second circuit" → answers', () => {
+    // Documented supported shape per extractCircuitRef JSDoc. "the second one"
+    // is NOT supported because "second"→2 and "one"→1 conflict in the
+    // single-ordinal scan and return null — leaving that case to user_moved_on
+    // is correct (a re-ask is cheaper than a wrong-circuit attribution).
+    const verdict = classifyOvertake(
+      'the second circuit',
+      [],
+      mockPending([
+        [
+          'ask_disambig',
+          { contextField: null, contextCircuit: null, expectedAnswerShape: 'circuit_ref' },
+        ],
+      ])
+    );
+    expect(verdict.kind).toBe('answers');
+  });
+
+  test('STA-04c-circuit-ref-decimal-rejected: circuit_ref ask + "0.4" → user_moved_on (decimal guard)', () => {
+    const verdict = classifyOvertake(
+      '0.4',
+      [],
+      mockPending([
+        [
+          'ask_disambig',
+          { contextField: null, contextCircuit: null, expectedAnswerShape: 'circuit_ref' },
+        ],
+      ])
+    );
+    expect(verdict.kind).toBe('user_moved_on');
+  });
+
+  test('STA-04c-circuit-ref-multi-number-rejected: circuit_ref ask + "circuit 2 ze 0.34" → user_moved_on (single-number guard)', () => {
+    // The multi-number guard is the safety rail that distinguishes a circuit-
+    // ref answer from a value statement that happens to mention a circuit.
+    // Note: a regex matcher running on "ze 0.34" would normally hit step 2
+    // first — this test exercises the classifier's own guard in isolation.
+    const verdict = classifyOvertake(
+      'circuit 2 ze 0.34',
+      [],
+      mockPending([
+        [
+          'ask_disambig',
+          { contextField: null, contextCircuit: null, expectedAnswerShape: 'circuit_ref' },
+        ],
+      ])
+    );
+    expect(verdict.kind).toBe('user_moved_on');
+  });
+
+  test('STA-04c-circuit-ref-out-of-range: circuit_ref ask + "circuit 250" → user_moved_on (1..200 guard)', () => {
+    const verdict = classifyOvertake(
+      'circuit 250',
+      [],
+      mockPending([
+        [
+          'ask_disambig',
+          { contextField: null, contextCircuit: null, expectedAnswerShape: 'circuit_ref' },
+        ],
+      ])
+    );
+    expect(verdict.kind).toBe('user_moved_on');
+  });
+
+  test('STA-04c-circuit-ref-non-numeric: circuit_ref ask + "let me think" → user_moved_on', () => {
+    const verdict = classifyOvertake(
+      'let me think',
+      [],
+      mockPending([
+        [
+          'ask_disambig',
+          { contextField: null, contextCircuit: null, expectedAnswerShape: 'circuit_ref' },
+        ],
+      ])
+    );
+    expect(verdict.kind).toBe('user_moved_on');
+  });
+
+  test('STA-04c-circuit-ref-number-shape-still-conservative: number ask + "2" → user_moved_on (bare "2" is ambiguous when the question asks for a value)', () => {
+    // Locks the deliberate asymmetry: circuit_ref accepts "2", but number
+    // does not. A bare "2" reply to a value question is genuinely ambiguous
+    // (could be a value or a circuit ref) — Open Question #4 keeps it
+    // conservative.
+    const verdict = classifyOvertake(
+      '2',
+      [],
+      mockPending([
+        [
+          'ask_value',
+          {
+            contextField: 'measured_zs_ohm',
+            contextCircuit: 5,
+            expectedAnswerShape: 'number',
+          },
+        ],
+      ])
+    );
+    expect(verdict.kind).toBe('user_moved_on');
+  });
+
+  test('STA-04c-circuit-ref-mixed-shapes: yes_no + circuit_ref pending, "2" → answers the circuit_ref', () => {
+    const verdict = classifyOvertake(
+      '2',
+      [],
+      mockPending([
+        ['ask_yn', { contextField: null, contextCircuit: null, expectedAnswerShape: 'yes_no' }],
+        [
+          'ask_cr',
+          { contextField: null, contextCircuit: null, expectedAnswerShape: 'circuit_ref' },
+        ],
+      ])
+    );
+    expect(verdict.kind).toBe('answers');
+    expect(verdict.toolCallId).toBe('ask_cr');
   });
 });

@@ -443,10 +443,21 @@ export function resolveCircuitAnswer({ userText, pendingWrite, availableCircuits
  * @param {string} lowerText
  * @returns {number|null}
  */
-function extractCircuitRef(lowerText) {
+export function extractCircuitRef(lowerText) {
+  // Strip trailing sentence punctuation up front. STT routinely appends "."
+  // to short answers ("circuit 2."), and the digit-match regex's
+  // decimal-rejection lookahead `(?![\d.])` treats a trailing "." as a
+  // decimal-point separator — wrongly rejecting "circuit 2." while
+  // correctly rejecting "0.4". Stripping ONLY the trailing run preserves
+  // the decimal guard (".4", "0.4", "1.23" still fail because the dot is
+  // internal, not trailing) while letting sentence-ending punctuation
+  // through. Mirrors stripPunct's intent without the leading-strip
+  // (callers already lower-case; leading word chars are what we want to
+  // see).
+  const trimmed = lowerText.replace(/[.,!?;:\s]+$/, '');
   // Strict digit match: a single integer 1..200, optionally preceded by
   // "circuit" / "circuit number". Reject decimals.
-  const digit = lowerText.match(/(?:^|[^\d.])(\d{1,3})(?![\d.])/);
+  const digit = trimmed.match(/(?:^|[^\d.])(\d{1,3})(?![\d.])/);
   if (digit) {
     const n = Number.parseInt(digit[1], 10);
     if (n >= 1 && n <= 200) {
