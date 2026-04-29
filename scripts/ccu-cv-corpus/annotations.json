@@ -1,0 +1,15 @@
+{
+  "_README": "Ground-truth annotations per extractionId. groundTruth = total visible module slots in the photo (RCD = 2, main switch = 2, blanks counted as 1 each). null = needs review. Add notes when count is non-obvious.",
+  "annotations": {
+    "1777441303200-92evuu": {
+      "groundTruth": 16,
+      "notes": "Wylex NHRS12SL split-load. Recounted from labels: 1 small leftmost MCB + 2× NSB16 + 3× NSB32 + RCD(2) + 1× PSB32-C + 5× NSB06 + main_switch(2) = 16. Initial guess of 15 missed the leftmost MCB.",
+      "verifiedBy": "claude-recounted-2026-04-29"
+    },
+    "1777454064331-nxw2u3": {
+      "groundTruth": 16,
+      "notes": "Hager (model null). Counted: RCD(2) + 4 left MCBs + 3 blanks + 5 right MCBs + main_switch(2) = 16. Verified with Derek 2026-04-29.",
+      "verifiedBy": "derek"
+    }
+  }
+}

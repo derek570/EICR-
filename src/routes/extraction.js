@@ -778,6 +778,8 @@ export function assembleGeometricResult(perSlotState) {
     mcbGroups: prepared.mcbGroups ?? null,
     upstreamRcds: prepared.upstreamRcds ?? null,
     railBbox: prepared.railBbox ?? null,
+    pitchSource: prepared.pitchSource ?? null,
+    cvPitchDiag: prepared.cvPitchDiag ?? null,
     pitchCrossCheck: prepared.pitchCrossCheck ?? null,
     chunkingDiag: prepared.chunkingDiag ?? null,
     imageWidth: prepared.imageWidth,
@@ -1813,6 +1815,8 @@ questionsForInspector: return EMPTY array [] unless RCD type could not be determ
         mainSwitchSide: geometricResult.mainSwitchSide ?? null,
         imageWidth: geometricResult.imageWidth,
         imageHeight: geometricResult.imageHeight,
+        pitchSource: geometricResult.pitchSource ?? null,
+        cvPitchDiag: geometricResult.cvPitchDiag ?? null,
       };
 
       // Expose per-slot classifications to iOS (LiveFillState.slotCrops).
@@ -1923,6 +1927,8 @@ questionsForInspector: return EMPTY array [] unless RCD type could not be determ
         mcbGroups: geometricResult.mcbGroups ?? null,
         upstreamRcds: geometricResult.upstreamRcds ?? null,
         railBbox: geometricResult.railBbox ?? null,
+        pitchSource: geometricResult.pitchSource ?? null,
+        cvPitchDiag: geometricResult.cvPitchDiag ?? null,
         pitchCrossCheck: geometricResult.pitchCrossCheck ?? null,
         chunkingDiag: geometricResult.chunkingDiag ?? null,
       });

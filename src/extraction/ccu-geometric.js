@@ -16,6 +16,7 @@
 
 import sharp from 'sharp';
 import { applyDeviceLookup } from './device-lookup-table.js';
+import { detectModulePitchCv } from './ccu-cv-pitch.js';
 
 const CCU_GEOMETRIC_MODEL = (process.env.CCU_GEOMETRIC_MODEL || 'claude-sonnet-4-6').trim();
 const CCU_GEOMETRIC_MAX_TOKENS = 1024;
@@ -44,6 +45,15 @@ const CCU_GEOMETRIC_TIMEOUT_MS = Number(process.env.CCU_GEOMETRIC_TIMEOUT_MS || 
 // without re-importing the module.
 function isCcuStage2GroupsEnabled() {
   return (process.env.CCU_STAGE2_GROUPS || 'false').trim().toLowerCase() === 'true';
+}
+// CV-based module-pitch detection (Sobel-X + autocorrelation) replaces the
+// 44.5mm height-anchor calibration with direct edge analysis of the photo.
+// Default ON since 2026-04-29 (Derek field-test confidence). Set
+// CCU_CV_PITCH=false on the task-def to roll back without redeploy. When
+// CV detection has low confidence (small board, low contrast), the
+// height-anchor path runs as fallback.
+function isCcuCvPitchEnabled() {
+  return (process.env.CCU_CV_PITCH || 'true').trim().toLowerCase() === 'true';
 }
 // Batch size for Stage 3 classification. 4 crops/message gave the best accuracy/cost trade-off
 // on the 3 fixture photos: fewer round-trips vs. VLM attention dilution on tiny crops. Going
@@ -540,7 +550,14 @@ export async function getModuleCount(imageBuffer, medianRails, imageDimensions =
   // Groups-mode dispatch (CCU_STAGE2_GROUPS=true). New per-group tight-bbox
   // schema; see MODULE_COUNT_PROMPT_GROUPS for the rationale. Default-off.
   if (isCcuStage2GroupsEnabled()) {
-    return getModuleCountFromGroups(anthropic, base64, medianRails, imageDimensions, options);
+    return getModuleCountFromGroups(
+      anthropic,
+      imageBuffer,
+      base64,
+      medianRails,
+      imageDimensions,
+      options
+    );
   }
 
   const sample = await callVlm(anthropic, base64, MODULE_COUNT_PROMPT(medianRails));
@@ -868,6 +885,7 @@ export async function getModuleCount(imageBuffer, medianRails, imageDimensions =
  */
 async function getModuleCountFromGroups(
   anthropic,
+  imageBuffer,
   base64,
   medianRails,
   imageDimensions,
@@ -960,58 +978,94 @@ async function getModuleCountFromGroups(
   const MODULE_PITCH_MM = 17.5;
   const railHeightPx = ((bottom - top) / 1000) * imageHeight;
   const railWidthPx = ((right - left) / 1000) * imageWidth;
-  const pixelsPerMmFromHeight = railHeightPx / MCB_FACE_HEIGHT_MM;
-  const moduleWidthPxFromHeight = MODULE_PITCH_MM * pixelsPerMmFromHeight;
 
-  if (moduleWidthPxFromHeight <= 0) {
-    throw new Error(
-      'getModuleCountFromGroups: could not derive a positive module width from rail height'
-    );
+  // --- Pitch detection: CV first, height-anchor fallback ------------------
+  // 2026-04-29 (Derek field-test): the height-anchor path (44.5mm DIN
+  // 43880 face) is sensitive to the user's box being 100% accurate
+  // vertically. A 6%-too-short box on the Wylex Nano photo gave count=17
+  // for an actual 16-module board. Direct CV pitch detection (Sobel-X +
+  // length-normalised autocorrelation) finds the actual periodicity in
+  // the photo and is independent of user framing accuracy.
+  //
+  // CV-first when CCU_CV_PITCH=true (default ON). Fall back to the
+  // height anchor when CV returns null (low confidence, small board, or
+  // disabled by env). Both paths surface as `pitchSource` for telemetry.
+  let moduleWidthPxFromHeight = MODULE_PITCH_MM * (railHeightPx / MCB_FACE_HEIGHT_MM);
+  let moduleWidthPx = moduleWidthPxFromHeight;
+  let pitchSource = 'height-anchor';
+  let cvPitchDiag = null;
+  if (isCcuCvPitchEnabled() && Buffer.isBuffer(imageBuffer)) {
+    const railBboxPx = {
+      left: (left / 1000) * imageWidth,
+      right: (right / 1000) * imageWidth,
+      top: (top / 1000) * imageHeight,
+      bottom: (bottom / 1000) * imageHeight,
+    };
+    try {
+      const cv = await detectModulePitchCv(imageBuffer, railBboxPx);
+      cvPitchDiag = {
+        pitchPx: cv?.pitchPx ?? null,
+        normCorr: cv?.normCorr ?? 0,
+        moduleCountFromCv: cv?.moduleCount ?? null,
+        railWidthPx: cv?.railWidthPx ?? null,
+        reason: cv?.reason ?? null,
+      };
+      if (cv && cv.pitchPx > 0 && cv.moduleCount != null) {
+        moduleWidthPx = cv.pitchPx;
+        pitchSource = 'cv-autocorr';
+      }
+    } catch (err) {
+      cvPitchDiag = { error: String(err?.message || err) };
+    }
+  }
+
+  if (moduleWidthPx <= 0) {
+    throw new Error('getModuleCountFromGroups: could not derive a positive module width');
   }
 
   // --- Compute module count by chunking the bbox width ---------------------
   // Round to nearest integer — half-modules don't physically exist in UK
-  // CUs (every device is 1 or 2 modules wide on a 17.5mm pitch). The
-  // rounding is the source of "fence-post drift" risk Derek flagged
-  // 2026-04-28: if pixels_per_mm is off by 5%, a 14-module rail's
-  // computed count could land at 13 or 15. The cross-check below makes
-  // this drift visible on lowConfidence.
-  const moduleCountRaw = railWidthPx / moduleWidthPxFromHeight;
+  // CUs (every device is 1 or 2 modules wide on a 17.5mm pitch). When
+  // pitchSource='cv-autocorr', the rounding error is bounded by ±0.5
+  // pixels at the autocorrelation lag resolution (1.2% on typical 80px
+  // pitch → 0.2 module margin on a 16-module board → robust). When
+  // pitchSource='height-anchor', the cross-check against
+  // main_switch_width below catches >10% disagreement.
+  const moduleCountRaw = railWidthPx / moduleWidthPx;
   const moduleCount = Math.max(1, Math.round(moduleCountRaw));
 
   // --- Tile slots across the bbox ------------------------------------------
-  // Use the COMPUTED module width (railWidthPx / moduleCount) rather than
-  // the height-derived width directly, so slot 0 sits at half-a-pitch from
+  // Use the COMPUTED module width (railWidthPx / moduleCount) for tiling
+  // rather than the raw pitch source, so slot 0 sits at half-a-pitch from
   // the left edge AND slot N-1 sits at half-a-pitch from the right edge.
   // This is two-anchor calibration — the only slot positioning that
   // doesn't accumulate error from one end.
-  const moduleWidthPx = railWidthPx / moduleCount;
-  const moduleWidth = (moduleWidthPx / imageWidth) * 1000; // back to 0-1000 scale
+  const tilePitchPx = railWidthPx / moduleCount;
+  const moduleWidth = (tilePitchPx / imageWidth) * 1000; // back to 0-1000 scale
   const slotCentersX = [];
   for (let i = 0; i < moduleCount; i++) {
     slotCentersX.push(left + moduleWidth * (i + 0.5));
   }
 
   // --- Cross-check vs main_switch_width (drift detector) -------------------
-  // Main switches are 2-module wide (~36mm) — their pixel width gives an
-  // independent calibration anchor. If pixels_per_mm derived from height
-  // disagrees with pixels_per_mm derived from main switch width by >10%,
-  // the rail bbox is mis-tightened on at least one axis. lowConfidence is
-  // surfaced so the inspector verifies. We don't try to "fix" the
-  // calibration — just flag it. The inspector decides whether to retry
-  // with a tighter framing or accept the result.
+  // Main switches are exactly 2-module wide (BS 7671 double-pole isolator,
+  // 2 × 17.5mm). Their pixel width gives an independent pitch anchor.
+  // Compare against the actual pitch we tiled at and flag disagreement >10%
+  // as lowConfidence — usually a sign the rail bbox or main_switch bbox is
+  // off, OR the main switch on this board isn't standard 2-mod (rare).
   const moduleWidthFromMainSwitch =
     Number.isFinite(main_switch_width) && main_switch_width > 0 ? main_switch_width / 2 : null;
   let pitchCrossCheck = null;
   let lowConfidence = false;
   if (moduleWidthFromMainSwitch != null) {
     const moduleWidthPxFromMs = (moduleWidthFromMainSwitch / 1000) * imageWidth;
-    const denom = Math.max(moduleWidthPxFromMs, moduleWidthPxFromHeight, 1);
+    const denom = Math.max(moduleWidthPxFromMs, moduleWidthPx, 1);
     const disagreementPct = Math.round(
-      (Math.abs(moduleWidthPxFromMs - moduleWidthPxFromHeight) / denom) * 100
+      (Math.abs(moduleWidthPxFromMs - moduleWidthPx) / denom) * 100
     );
     pitchCrossCheck = {
       fromMainSwitchPx: Math.round(moduleWidthPxFromMs),
+      fromActualPitchPx: Math.round(moduleWidthPx),
       fromMcbHeightPx: Math.round(moduleWidthPxFromHeight),
       disagreementPct,
     };
@@ -1050,8 +1104,10 @@ async function getModuleCountFromGroups(
     imageHeight: Math.round(imageHeight),
     railWidthPx: Math.round(railWidthPx),
     railHeightPx: Math.round(railHeightPx),
-    pixelsPerMmFromHeight: Number(pixelsPerMmFromHeight.toFixed(2)),
+    pixelsPerMmFromHeight: Number((railHeightPx / MCB_FACE_HEIGHT_MM).toFixed(2)),
     moduleWidthPxFromHeight: Math.round(moduleWidthPxFromHeight),
+    moduleWidthPxUsed: Math.round(moduleWidthPx),
+    pitchSource,
     moduleCountRaw: Number(moduleCountRaw.toFixed(2)),
     moduleCount,
   };
@@ -1081,6 +1137,8 @@ async function getModuleCountFromGroups(
     upstreamRcds: null, // legacy field — RCDs identified by Stage 3 classification per slot
     railBbox: railBboxNorm, // NEW 2026-04-28 — surfaces the rail bbox used for telemetry
     railBboxSource, // NEW 2026-04-29 — 'user-roi' (no VLM tightening) or 'vlm-tightened'
+    pitchSource, // NEW 2026-04-29 — 'cv-autocorr' (Sobel-X) or 'height-anchor' (44.5mm DIN face fallback)
+    cvPitchDiag, // NEW 2026-04-29 — CV detection internals (pitch, normCorr, fallback reason)
     pitchCrossCheck,
     chunkingDiag, // NEW 2026-04-28 — exposes raw chunking inputs for prod diagnostics
     lowConfidence,
