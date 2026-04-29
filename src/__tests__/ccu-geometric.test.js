@@ -374,13 +374,16 @@ describe('getModuleCount', () => {
 // New 2026-04-28 path (Derek's design): the VLM has ONE job — return a
 // single rectangle that tightly encloses every device on the rail (RCD,
 // MCBs, blanks, main switch). Backend then chunks the bbox geometrically
-// using the UK MCB body-height standard (82.5mm) and DIN module pitch
-// (17.5mm). No grouping decision, no module count from the VLM, no per-
-// device list. Stage 3 classifies each tiled slot, and slotsToCircuits
-// handles main_switch / blank / rcd classifications as before.
+// using the MCB visible-face standard (44.5mm — DIN 43880 front-zone
+// protrusion, NOT the 82.5mm full body — 2026-04-29 calibration fix
+// after the Wylex NHRS12SL field-test reported 29 modules for a real
+// ~15-module board) and DIN module pitch (17.5mm). No grouping decision,
+// no module count from the VLM, no per-device list. Stage 3 classifies
+// each tiled slot, and slotsToCircuits handles main_switch / blank / rcd
+// classifications as before.
 //
-// Test math: with image 1000×1000 and bbox top=100/bottom=265 (height=165
-// normalised = 165 px), pixels_per_mm = 165/82.5 = 2.0, module_width_px =
+// Test math: with image 1000×1000 and bbox top=100/bottom=189 (height=89
+// normalised = 89 px), pixels_per_mm = 89/44.5 = 2.0, module_width_px =
 // 17.5*2 = 35. With bbox left=100/right=520 (width=420 px), module_count
 // = round(420/35) = 12. moduleWidth in 0-1000 norm = 420/12 = 35.
 
@@ -407,7 +410,7 @@ describe('getModuleCount — tighten-and-chunk mode', () => {
     // module_px=35. width_px=420 → count=round(420/35)=12.
     mockCreate.mockResolvedValueOnce(
       fakeVlmResponse({
-        rail_bbox: { left: 100, right: 520, top: 100, bottom: 265 },
+        rail_bbox: { left: 100, right: 520, top: 100, bottom: 189 },
         main_switch_center_x: 500,
         main_switch_width: 70,
       })
@@ -425,14 +428,14 @@ describe('getModuleCount — tighten-and-chunk mode', () => {
     expect(result.slotCentersX).toHaveLength(12);
     expect(result.slotCentersX[0]).toBeCloseTo(117.5); // 100 + 35/2
     expect(result.slotCentersX.at(-1)).toBeCloseTo(502.5); // 520 - 35/2
-    expect(result.railBbox).toEqual({ left: 100, right: 520, top: 100, bottom: 265 });
+    expect(result.railBbox).toEqual({ left: 100, right: 520, top: 100, bottom: 189 });
   });
 
   test('mainSwitchSide: main switch right of bbox midpoint → "right"', async () => {
     const buf = await makeFakeJpeg(1000, 1000);
     mockCreate.mockResolvedValueOnce(
       fakeVlmResponse({
-        rail_bbox: { left: 100, right: 520, top: 100, bottom: 265 },
+        rail_bbox: { left: 100, right: 520, top: 100, bottom: 189 },
         main_switch_center_x: 480, // > midpoint(310)
         main_switch_width: 70,
       })
@@ -445,7 +448,7 @@ describe('getModuleCount — tighten-and-chunk mode', () => {
     const buf = await makeFakeJpeg(1000, 1000);
     mockCreate.mockResolvedValueOnce(
       fakeVlmResponse({
-        rail_bbox: { left: 100, right: 520, top: 100, bottom: 265 },
+        rail_bbox: { left: 100, right: 520, top: 100, bottom: 189 },
         main_switch_center_x: 140, // < midpoint(310)
         main_switch_width: 70,
       })
@@ -458,7 +461,7 @@ describe('getModuleCount — tighten-and-chunk mode', () => {
     const buf = await makeFakeJpeg(1000, 1000);
     mockCreate.mockResolvedValueOnce(
       fakeVlmResponse({
-        rail_bbox: { left: 100, right: 520, top: 100, bottom: 265 },
+        rail_bbox: { left: 100, right: 520, top: 100, bottom: 189 },
         main_switch_center_x: null,
         main_switch_width: null,
       })
@@ -480,7 +483,7 @@ describe('getModuleCount — tighten-and-chunk mode', () => {
     // bbox 100→520 → 12 slots. Imagine 4 MCBs + 3 blanks + 5 MCBs.
     mockCreate.mockResolvedValueOnce(
       fakeVlmResponse({
-        rail_bbox: { left: 100, right: 520, top: 100, bottom: 265 },
+        rail_bbox: { left: 100, right: 520, top: 100, bottom: 189 },
         main_switch_center_x: 500,
         main_switch_width: 70,
       })
@@ -496,7 +499,7 @@ describe('getModuleCount — tighten-and-chunk mode', () => {
     // → 13% → lowConfidence.
     mockCreate.mockResolvedValueOnce(
       fakeVlmResponse({
-        rail_bbox: { left: 100, right: 520, top: 100, bottom: 265 },
+        rail_bbox: { left: 100, right: 520, top: 100, bottom: 189 },
         main_switch_center_x: 500,
         main_switch_width: 80,
       })
@@ -513,7 +516,7 @@ describe('getModuleCount — tighten-and-chunk mode', () => {
     // module from MS = 35. Disagreement = 0 → lowConfidence=false.
     mockCreate.mockResolvedValueOnce(
       fakeVlmResponse({
-        rail_bbox: { left: 100, right: 520, top: 100, bottom: 265 },
+        rail_bbox: { left: 100, right: 520, top: 100, bottom: 189 },
         main_switch_center_x: 500,
         main_switch_width: 70,
       })
@@ -538,7 +541,7 @@ describe('getModuleCount — tighten-and-chunk mode', () => {
     const buf = await makeFakeJpeg(1000, 1000);
     mockCreate.mockResolvedValueOnce(
       fakeVlmResponse({
-        rail_bbox: { left: 500, right: 100, top: 100, bottom: 265 },
+        rail_bbox: { left: 500, right: 100, top: 100, bottom: 189 },
         main_switch_center_x: null,
         main_switch_width: null,
       })
@@ -558,11 +561,58 @@ describe('getModuleCount — tighten-and-chunk mode', () => {
     await expect(getModuleCount(buf, medianRails, dims1k)).rejects.toThrow(/bottom.*must be > top/);
   });
 
+  test('trustInputRails=true: uses medianRails as bbox, ignores VLM rail_bbox', async () => {
+    // 2026-04-29: when iOS sent a railRoiHint, prepareModernGeometry passes
+    // trustInputRails=true so we skip VLM rail-bbox tightening (the VLM was
+    // mis-tightening vertically and halving rail height → doubling moduleCount).
+    // The VLM is still called for main_switch info; its rail_bbox is ignored.
+    const buf = await makeFakeJpeg(1000, 1000);
+    const userBoxRails = {
+      rail_top: 100,
+      rail_bottom: 189, // height_px=89 → pitch=35 (under new 44.5mm constant)
+      rail_left: 100,
+      rail_right: 520, // width_px=420 → 12 modules
+    };
+    // VLM "tightens" wrong (clips half the height) but we should ignore it.
+    mockCreate.mockResolvedValueOnce(
+      fakeVlmResponse({
+        rail_bbox: { left: 100, right: 520, top: 100, bottom: 144 }, // half height
+        main_switch_center_x: 500,
+        main_switch_width: 70,
+      })
+    );
+
+    const result = await getModuleCount(buf, userBoxRails, dims1k, {
+      trustInputRails: true,
+    });
+
+    // Used userBoxRails (89 px height), NOT VLM's 44 px height.
+    expect(result.geometricCount).toBe(12);
+    expect(result.railBboxSource).toBe('user-roi');
+    expect(result.railBbox).toEqual({ left: 100, right: 520, top: 100, bottom: 189 });
+    // Main switch info still came from VLM.
+    expect(result.mainSwitchCenterX).toBe(500);
+    expect(result.mainSwitchWidth).toBe(70);
+  });
+
+  test('trustInputRails=false (default): uses VLM rail_bbox as before', async () => {
+    const buf = await makeFakeJpeg(1000, 1000);
+    mockCreate.mockResolvedValueOnce(
+      fakeVlmResponse({
+        rail_bbox: { left: 100, right: 520, top: 100, bottom: 189 },
+        main_switch_center_x: 500,
+        main_switch_width: 70,
+      })
+    );
+    const result = await getModuleCount(buf, medianRails, dims1k);
+    expect(result.railBboxSource).toBe('vlm-tightened');
+  });
+
   test('throws when imageDimensions are missing', async () => {
     const buf = await makeFakeJpeg(1000, 1000);
     mockCreate.mockResolvedValueOnce(
       fakeVlmResponse({
-        rail_bbox: { left: 100, right: 520, top: 100, bottom: 265 },
+        rail_bbox: { left: 100, right: 520, top: 100, bottom: 189 },
         main_switch_center_x: null,
         main_switch_width: null,
       })

@@ -111,9 +111,12 @@ Respond with JSON only:
 // counting, no grouping, no per-device list, no module pitch derivation.
 //
 // Backend then chunks the bbox geometrically using two hard standards:
-//   - UK domestic MCB body height = 82.5mm (±5% across all major brands)
+//   - MCB visible-face height = 44.5mm (DIN 43880 front-zone, ±1.5mm
+//     across Wylex / Hager / Crabtree / Schneider / MK / Chint /
+//     Contactum / Eaton). NOT the 82.5mm full body — most of the body
+//     sits behind the cover plate and is invisible in the photo.
 //   - DIN module pitch = 17.5mm
-// pixels_per_mm = rail_height_px / 82.5; module_count = round(rail_width_px /
+// pixels_per_mm = rail_height_px / 44.5; module_count = round(rail_width_px /
 // (17.5 * pixels_per_mm)). Stage 3 classifies each tiled slot, so split-
 // load gaps appear as `blank` classifications, the main switch as
 // `main_switch`, etc. — all handled downstream by slotsToCircuits.
@@ -157,7 +160,7 @@ Edges to pin to:
 - TOP edge: the TOP of the device bodies (where the MCB toggle housing meets its top face). NOT the printed label strip above the row, NOT the inside of the consumer unit cover above the rail.
 - BOTTOM edge: the BOTTOM of the device bodies (where the MCB body meets its bottom face). NOT the printed label strip below, NOT the cable entry / wiring area below the rail.
 
-The bbox top-to-bottom MUST equal the MCB body height — UK domestic standards put this at ~82.5mm. The backend uses this height to calibrate pixels-per-millimetre and then divides the bbox width by the 17.5mm DIN module pitch to count slots, so getting the top/bottom tight to the MCB face (NOT to the labels) is critical. If you include label strips above/below in the bbox, the height calibration is wrong and the slot count is wrong.
+The bbox top-to-bottom MUST span the FULL VISIBLE FACE of the MCB — top of the toggle housing down to the bottom of the rating-label face printed on the same molded body. The face is what protrudes through the cover plate; ~44.5mm per DIN 43880. INCLUDE the printed label face on the device — it's part of the molded body and the bottom edge of the face. EXCLUDE only the printed paper labels on the consumer-unit casing above/below the device row (those sit on the cover plate, not on the MCB).
 
 Empty rail past the last device on either end MUST be excluded — only enclose the populated section.
 
@@ -519,7 +522,7 @@ export async function getRailGeometry(imageBuffer) {
  * @returns {Promise<{geometricCount:number, vlmCount:number, slotCentersX:number[], disagreement:boolean, mainSwitchCenterX:number, mainSwitchWidth:number, usage:object}>}
  * @throws if ANTHROPIC_API_KEY missing or VLM call fails.
  */
-export async function getModuleCount(imageBuffer, medianRails, imageDimensions = {}) {
+export async function getModuleCount(imageBuffer, medianRails, imageDimensions = {}, options = {}) {
   if (!Buffer.isBuffer(imageBuffer)) {
     throw new Error('getModuleCount: imageBuffer must be a Buffer');
   }
@@ -537,7 +540,7 @@ export async function getModuleCount(imageBuffer, medianRails, imageDimensions =
   // Groups-mode dispatch (CCU_STAGE2_GROUPS=true). New per-group tight-bbox
   // schema; see MODULE_COUNT_PROMPT_GROUPS for the rationale. Default-off.
   if (isCcuStage2GroupsEnabled()) {
-    return getModuleCountFromGroups(anthropic, base64, medianRails, imageDimensions);
+    return getModuleCountFromGroups(anthropic, base64, medianRails, imageDimensions, options);
   }
 
   const sample = await callVlm(anthropic, base64, MODULE_COUNT_PROMPT(medianRails));
@@ -568,14 +571,15 @@ export async function getModuleCount(imageBuffer, medianRails, imageDimensions =
   let moduleWidth = main_switch_width / 2;
   const moduleWidthFromMainSwitch = moduleWidth;
 
-  // Pitch estimate #2 (diagnostic): MCB body height. UK domestic MCB bodies
-  // converge at ~82.5mm across Hager / Crabtree / Wylex / Schneider / MK /
-  // Chint (±5%), and module pitch is a hard DIN standard at 17.5mm. So
-  // (17.5 / 82.5) × rail-height-in-pixels → pitch in pixels. This is
+  // Pitch estimate #2 (diagnostic): MCB visible-face height. DIN 43880 caps
+  // the front-zone protrusion (the part of the device that shows above the
+  // cover plate) at 45mm; UK domestic ranges measure 44–45mm. We use 44.5mm.
+  // Module pitch is the hard DIN standard at 17.5mm. So
+  // (17.5 / 44.5) × rail-height-in-pixels → pitch in pixels. This is
   // independent of main_switch_width and lets us flag when the two
   // estimates disagree — usually a sign the inspector framed rails outside
-  // the MCB body edges, or the board uses non-standard gear. Not a hard
-  // gate this session; logged as pitchCrossCheck in the return value.
+  // the MCB face edges. Not a hard gate this session; logged as
+  // pitchCrossCheck in the return value.
   const { imageWidth, imageHeight } = imageDimensions || {};
   let pitchCrossCheck = null;
   if (
@@ -589,7 +593,7 @@ export async function getModuleCount(imageBuffer, medianRails, imageDimensions =
   ) {
     const railHeightPx = ((medianRails.rail_bottom - medianRails.rail_top) / 1000) * imageHeight;
     const moduleWidthPxFromMs = (moduleWidthFromMainSwitch / 1000) * imageWidth;
-    const moduleWidthPxFromHeight = 17.5 * (railHeightPx / 82.5);
+    const moduleWidthPxFromHeight = 17.5 * (railHeightPx / 44.5);
     const denom = Math.max(moduleWidthPxFromMs, moduleWidthPxFromHeight, 1);
     const disagreementPct = Math.round(
       (Math.abs(moduleWidthPxFromMs - moduleWidthPxFromHeight) / denom) * 100
@@ -862,51 +866,84 @@ export async function getModuleCount(imageBuffer, medianRails, imageDimensions =
  *
  * @private
  */
-async function getModuleCountFromGroups(anthropic, base64, medianRails, imageDimensions) {
+async function getModuleCountFromGroups(
+  anthropic,
+  base64,
+  medianRails,
+  imageDimensions,
+  options = {}
+) {
   const sample = await callVlm(anthropic, base64, MODULE_COUNT_PROMPT_GROUPS(medianRails));
-  const { rail_bbox, main_switch_center_x, main_switch_width } = sample.parsed;
+  const { rail_bbox: vlmRailBbox, main_switch_center_x, main_switch_width } = sample.parsed;
 
-  // --- Validate VLM response -----------------------------------------------
-  // The new schema (2026-04-28 tighten-and-chunk redesign) returns a single
-  // rectangle. mcb_groups / module_count / per-device bboxes are gone — the
-  // VLM has one job: tighten the user crop to the device row.
-  if (!rail_bbox || typeof rail_bbox !== 'object') {
-    throw new Error('getModuleCountFromGroups: VLM returned missing rail_bbox');
-  }
-  const left = Number(rail_bbox.left);
-  const right = Number(rail_bbox.right);
-  const top = Number(rail_bbox.top);
-  const bottom = Number(rail_bbox.bottom);
-  if (
-    !Number.isFinite(left) ||
-    !Number.isFinite(right) ||
-    !Number.isFinite(top) ||
-    !Number.isFinite(bottom)
-  ) {
-    throw new Error('getModuleCountFromGroups: rail_bbox edges must all be finite numbers');
-  }
-  if (right <= left) {
-    throw new Error(
-      `getModuleCountFromGroups: rail_bbox right (${right}) must be > left (${left})`
-    );
-  }
-  if (bottom <= top) {
-    throw new Error(
-      `getModuleCountFromGroups: rail_bbox bottom (${bottom}) must be > top (${top})`
-    );
+  // --- Choose rail bbox source --------------------------------------------
+  // 2026-04-29 (Derek field test, Wylex NHRS12SL): the VLM was reliably
+  // mis-tightening the rail bbox vertically — typically clipping it to the
+  // dark toggle housing only and discarding the white rating-label face,
+  // halving rail-height-px. Combined with the (also wrong) MCB_BODY_HEIGHT
+  // constant of 82.5mm (full body, most of which sits BEHIND the cover
+  // plate), pixels-per-mm came out at 1/4 of reality and moduleCount came
+  // out 2× too high (29 vs ~15 actual). Fix: when iOS sent a railRoiHint,
+  // skip the VLM tightening entirely — the user's box from the custom
+  // camera already brackets the visible MCB row tightly. Still call the
+  // VLM for main_switch_center_x / main_switch_width (we need them for
+  // circuit numbering side and the cross-check); just throw away its
+  // rail_bbox. When NO ROI hint was provided (e.g. legacy uploads), we
+  // still trust the VLM tightening as the only signal we have.
+  const trustInputRails = options.trustInputRails === true;
+  let left;
+  let right;
+  let top;
+  let bottom;
+  if (trustInputRails) {
+    left = medianRails.rail_left;
+    right = medianRails.rail_right;
+    top = medianRails.rail_top;
+    bottom = medianRails.rail_bottom;
+  } else {
+    if (!vlmRailBbox || typeof vlmRailBbox !== 'object') {
+      throw new Error('getModuleCountFromGroups: VLM returned missing rail_bbox');
+    }
+    left = Number(vlmRailBbox.left);
+    right = Number(vlmRailBbox.right);
+    top = Number(vlmRailBbox.top);
+    bottom = Number(vlmRailBbox.bottom);
+    if (
+      !Number.isFinite(left) ||
+      !Number.isFinite(right) ||
+      !Number.isFinite(top) ||
+      !Number.isFinite(bottom)
+    ) {
+      throw new Error('getModuleCountFromGroups: rail_bbox edges must all be finite numbers');
+    }
+    if (right <= left) {
+      throw new Error(
+        `getModuleCountFromGroups: rail_bbox right (${right}) must be > left (${left})`
+      );
+    }
+    if (bottom <= top) {
+      throw new Error(
+        `getModuleCountFromGroups: rail_bbox bottom (${bottom}) must be > top (${top})`
+      );
+    }
   }
   const railBboxNorm = { left, right, top, bottom };
+  const railBboxSource = trustInputRails ? 'user-roi' : 'vlm-tightened';
 
-  // --- Calibrate pixels-per-mm from MCB body height ------------------------
-  // The bbox top/bottom is meant to span the MCB body face — UK domestic
-  // standards put MCB bodies at ~82.5mm tall. So pixels_per_mm = bbox
-  // height / 82.5mm. DIN module pitch is a hard 17.5mm standard, so the
-  // module width in pixels = 17.5 * pixels_per_mm.
+  // --- Calibrate pixels-per-mm from MCB face height ------------------------
+  // The bbox top/bottom spans the visible MCB FACE — the part that
+  // protrudes through the consumer-unit cover plate. DIN 43880 caps the
+  // front-zone protrusion at 45 mm and every UK domestic MCB range
+  // (Wylex NSB / Hager MCN/MTN / Crabtree / Schneider iC60 / MK Sentry /
+  // Chint / Contactum / Eaton Memshield) lands at 44–45 mm measured. We
+  // use 44.5 mm. DIN module pitch is the hard 17.5 mm standard.
   //
-  // Calibration accuracy depends on the VLM's bbox top/bottom landing on
-  // the actual MCB body edges (not the printed label strips). The prompt
-  // is explicit about this. The cross-check against main_switch_width
-  // below catches mis-tightening before it reaches Stage 3.
+  // Earlier versions of this calibration used 82.5 mm — that's the FULL
+  // body height (cover-plate-cutout edge to terminal block), almost half
+  // of which sits behind the cover and is invisible in the photo. Using
+  // 82.5 mm with bbox-height-of-the-visible-face produced moduleCount
+  // ~2× reality. Field-confirmed 2026-04-29 against a measured spares
+  // box.
   const { imageWidth, imageHeight } = imageDimensions || {};
   if (
     !Number.isFinite(imageWidth) ||
@@ -919,11 +956,11 @@ async function getModuleCountFromGroups(anthropic, base64, medianRails, imageDim
     );
   }
 
-  const MCB_BODY_HEIGHT_MM = 82.5;
+  const MCB_FACE_HEIGHT_MM = 44.5;
   const MODULE_PITCH_MM = 17.5;
   const railHeightPx = ((bottom - top) / 1000) * imageHeight;
   const railWidthPx = ((right - left) / 1000) * imageWidth;
-  const pixelsPerMmFromHeight = railHeightPx / MCB_BODY_HEIGHT_MM;
+  const pixelsPerMmFromHeight = railHeightPx / MCB_FACE_HEIGHT_MM;
   const moduleWidthPxFromHeight = MODULE_PITCH_MM * pixelsPerMmFromHeight;
 
   if (moduleWidthPxFromHeight <= 0) {
@@ -1042,7 +1079,8 @@ async function getModuleCountFromGroups(anthropic, base64, medianRails, imageDim
     populatedAreaEndX: right,
     mcbGroups: null, // legacy field — no per-group structure in tighten-and-chunk
     upstreamRcds: null, // legacy field — RCDs identified by Stage 3 classification per slot
-    railBbox: railBboxNorm, // NEW 2026-04-28 — surfaces the VLM-tightened bbox for telemetry
+    railBbox: railBboxNorm, // NEW 2026-04-28 — surfaces the rail bbox used for telemetry
+    railBboxSource, // NEW 2026-04-29 — 'user-roi' (no VLM tightening) or 'vlm-tightened'
     pitchCrossCheck,
     chunkingDiag, // NEW 2026-04-28 — exposes raw chunking inputs for prod diagnostics
     lowConfidence,
@@ -1463,10 +1501,19 @@ export async function prepareModernGeometry(imageBuffer, options = {}) {
   }
 
   const t1 = Date.now();
-  const stage2 = await getModuleCount(stage2Image, stage2Rails, {
-    imageWidth: stage2Width,
-    imageHeight: stage2Height,
-  });
+  const stage2 = await getModuleCount(
+    stage2Image,
+    stage2Rails,
+    { imageWidth: stage2Width, imageHeight: stage2Height },
+    // 2026-04-29: when iOS sent a railRoiHint, the user has already drawn a
+    // tight box around the visible MCB row. Skip the VLM rail-bbox
+    // tightening step in groups-mode — the VLM has been mis-tightening
+    // vertically (clipping the white rating-label face off the device,
+    // halving rail height, doubling moduleCount). We still call the VLM
+    // because we need main_switch_center_x / main_switch_width; we just
+    // ignore its rail_bbox and use the user's box directly.
+    { trustInputRails: !!options.railRoiHint }
+  );
   const stage2Ms = Date.now() - t1;
 
   // --- Translate Stage 2 X-axis outputs back to original image coords ----
