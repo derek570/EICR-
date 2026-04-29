@@ -4,8 +4,8 @@
  * Anthropic SDK is mocked at module level. Tests cover:
  *   - Stage 1 median correctness across 3 samples
  *   - Stage 1 lowConfidence SD threshold (5% of image width, 0-1000 scale)
- *   - Stage 2 geometricCount = round(rail_width / (main_switch_width/2))
- *   - Stage 2 disagreement flag (|geo - vlm| >= 1)
+ *   - Stage 2 tighten-and-chunk: rail_bbox + CV-derived pitch
+ *   - Stage 2 disagreement flag (legacy populated-area path: |geo - vlm| >= 1)
  *   - extractCcuGeometric combined shape
  *   - Throws on missing ANTHROPIC_API_KEY
  */
@@ -431,39 +431,15 @@ describe('getModuleCount — tighten-and-chunk mode', () => {
     expect(result.railBbox).toEqual({ left: 100, right: 520, top: 100, bottom: 189 });
   });
 
-  test('mainSwitchSide: main switch right of bbox midpoint → "right"', async () => {
+  test('mainSwitchSide always null in tighten-and-chunk path (derivation moved downstream)', async () => {
+    // 2026-04-29: Stage 2 no longer asks the VLM for main_switch_center_x /
+    // main_switch_width. Side derivation is now done by the route handler
+    // from (1) Stage 3's main_switch slot index, (2) Stage 1 classifier's
+    // mainSwitchPosition. Stage 2's contract is rail-bbox-only.
     const buf = await makeFakeJpeg(1000, 1000);
     mockCreate.mockResolvedValueOnce(
       fakeVlmResponse({
         rail_bbox: { left: 100, right: 520, top: 100, bottom: 189 },
-        main_switch_center_x: 480, // > midpoint(310)
-        main_switch_width: 70,
-      })
-    );
-    const result = await getModuleCount(buf, medianRails, dims1k);
-    expect(result.mainSwitchSide).toBe('right');
-  });
-
-  test('mainSwitchSide: main switch left of bbox midpoint → "left"', async () => {
-    const buf = await makeFakeJpeg(1000, 1000);
-    mockCreate.mockResolvedValueOnce(
-      fakeVlmResponse({
-        rail_bbox: { left: 100, right: 520, top: 100, bottom: 189 },
-        main_switch_center_x: 140, // < midpoint(310)
-        main_switch_width: 70,
-      })
-    );
-    const result = await getModuleCount(buf, medianRails, dims1k);
-    expect(result.mainSwitchSide).toBe('left');
-  });
-
-  test('inline-mains board (no main switch) → mainSwitchSide null', async () => {
-    const buf = await makeFakeJpeg(1000, 1000);
-    mockCreate.mockResolvedValueOnce(
-      fakeVlmResponse({
-        rail_bbox: { left: 100, right: 520, top: 100, bottom: 189 },
-        main_switch_center_x: null,
-        main_switch_width: null,
       })
     );
     const result = await getModuleCount(buf, medianRails, dims1k);
@@ -492,38 +468,24 @@ describe('getModuleCount — tighten-and-chunk mode', () => {
     expect(result.slotCentersX).toHaveLength(12); // covers the entire span
   });
 
-  test('lowConfidence flagged when main_switch_width disagrees with height calibration by >10%', async () => {
+  test('lowConfidence false + pitchCrossCheck null when CV detector returns no count (fake JPEG)', async () => {
+    // 2026-04-29: cross-check replaced. Old gate compared main_switch_width/2
+    // (a noisy VLM number) against height-anchor pitch — both unreliable.
+    // New gate compares CV's moduleCountFromCv against the bbox-derived
+    // moduleCount; only fires when both signals are present and disagree
+    // by >1. On the synthetic JPEGs used in these tests the CV detector
+    // returns low-confidence (no periodic structure to find) so
+    // moduleCountFromCv is undefined and the gate is silent — confirms
+    // we don't false-positive when CV is unavailable.
     const buf = await makeFakeJpeg(1000, 1000);
-    // Height-based: module_width_px = 35. main_switch_width = 80 →
-    // module from MS = 40. Disagreement = round(|40-35|/40 * 100) = 12.5
-    // → 13% → lowConfidence.
     mockCreate.mockResolvedValueOnce(
       fakeVlmResponse({
         rail_bbox: { left: 100, right: 520, top: 100, bottom: 189 },
-        main_switch_center_x: 500,
-        main_switch_width: 80,
-      })
-    );
-    const result = await getModuleCount(buf, medianRails, dims1k);
-    expect(result.lowConfidence).toBe(true);
-    expect(result.pitchCrossCheck).not.toBeNull();
-    expect(result.pitchCrossCheck.disagreementPct).toBeGreaterThan(10);
-  });
-
-  test('lowConfidence NOT flagged when calibrations agree within 10%', async () => {
-    const buf = await makeFakeJpeg(1000, 1000);
-    // Height-based: module_width_px = 35. main_switch_width = 70 →
-    // module from MS = 35. Disagreement = 0 → lowConfidence=false.
-    mockCreate.mockResolvedValueOnce(
-      fakeVlmResponse({
-        rail_bbox: { left: 100, right: 520, top: 100, bottom: 189 },
-        main_switch_center_x: 500,
-        main_switch_width: 70,
       })
     );
     const result = await getModuleCount(buf, medianRails, dims1k);
     expect(result.lowConfidence).toBe(false);
-    expect(result.pitchCrossCheck.disagreementPct).toBeLessThanOrEqual(10);
+    expect(result.pitchCrossCheck).toBeNull();
   });
 
   test('throws when rail_bbox is missing', async () => {
@@ -577,8 +539,6 @@ describe('getModuleCount — tighten-and-chunk mode', () => {
     mockCreate.mockResolvedValueOnce(
       fakeVlmResponse({
         rail_bbox: { left: 100, right: 520, top: 100, bottom: 144 }, // half height
-        main_switch_center_x: 500,
-        main_switch_width: 70,
       })
     );
 
@@ -590,9 +550,10 @@ describe('getModuleCount — tighten-and-chunk mode', () => {
     expect(result.geometricCount).toBe(12);
     expect(result.railBboxSource).toBe('user-roi');
     expect(result.railBbox).toEqual({ left: 100, right: 520, top: 100, bottom: 189 });
-    // Main switch info still came from VLM.
-    expect(result.mainSwitchCenterX).toBe(500);
-    expect(result.mainSwitchWidth).toBe(70);
+    // Stage 2 no longer asks the VLM for main switch geometry — those
+    // fields are always null (side derivation moved downstream).
+    expect(result.mainSwitchCenterX).toBeNull();
+    expect(result.mainSwitchWidth).toBeNull();
   });
 
   test('trustInputRails=false (default): uses VLM rail_bbox as before', async () => {

@@ -120,6 +120,16 @@ Respond with JSON only:
 // MCBs, RCBOs, blanks, main switch — everything mounted on the rail). No
 // counting, no grouping, no per-device list, no module pitch derivation.
 //
+// 2026-04-29: also dropped main_switch_center_x and main_switch_width from
+// the response. Both were redundant once CV-based pitch detection (Sobel-X
+// + length-normalised autocorrelation, ccu-cv-pitch.js) became the primary
+// pitch source — the VLM's main-switch-width estimate was the noisier
+// signal in the cross-check (today's prod: VLM said pitch=50px, CV said
+// 87px on a Wylex NHRS12SL where 87 was correct). Side derivation moved
+// to (1) Stage 3's main_switch slot index, (2) Stage 1 classifier's
+// mainSwitchPosition. Removing the fields shortens the prompt and stops
+// asking the VLM a question it answers unreliably.
+//
 // Backend then chunks the bbox geometrically using two hard standards:
 //   - MCB visible-face height = 44.5mm (DIN 43880 front-zone, ±1.5mm
 //     across Wylex / Hager / Crabtree / Schneider / MK / Chint /
@@ -174,12 +184,10 @@ The bbox top-to-bottom MUST span the FULL VISIBLE FACE of the MCB — top of the
 
 Empty rail past the last device on either end MUST be excluded — only enclose the populated section.
 
-Also report the MAIN SWITCH separately (used as a backup horizontal calibration anchor — main switches are 2 modules / 36mm wide). The main switch is the largest device on the rail, no test button, no sensitivity marking, NOT an RCD. If no main switch is visible (inline-mains rewireable boards), report null.
-
 Output 0-1000 normalised coordinates as integers.
 
 Respond with JSON only:
-{"rail_bbox": {"left": <int>, "right": <int>, "top": <int>, "bottom": <int>}, "main_switch_center_x": <int|null>, "main_switch_width": <int|null>}`;
+{"rail_bbox": {"left": <int>, "right": <int>, "top": <int>, "bottom": <int>}}`;
 
 // Stage 3 — classify the device in each crop. Each message contains N crops
 // (CCU_STAGE3_BATCH_SIZE); the VLM must return exactly N objects in the same order.
@@ -892,7 +900,7 @@ async function getModuleCountFromGroups(
   options = {}
 ) {
   const sample = await callVlm(anthropic, base64, MODULE_COUNT_PROMPT_GROUPS(medianRails));
-  const { rail_bbox: vlmRailBbox, main_switch_center_x, main_switch_width } = sample.parsed;
+  const { rail_bbox: vlmRailBbox } = sample.parsed;
 
   // --- Choose rail bbox source --------------------------------------------
   // 2026-04-29 (Derek field test, Wylex NHRS12SL): the VLM was reliably
@@ -903,11 +911,9 @@ async function getModuleCountFromGroups(
   // plate), pixels-per-mm came out at 1/4 of reality and moduleCount came
   // out 2× too high (29 vs ~15 actual). Fix: when iOS sent a railRoiHint,
   // skip the VLM tightening entirely — the user's box from the custom
-  // camera already brackets the visible MCB row tightly. Still call the
-  // VLM for main_switch_center_x / main_switch_width (we need them for
-  // circuit numbering side and the cross-check); just throw away its
-  // rail_bbox. When NO ROI hint was provided (e.g. legacy uploads), we
-  // still trust the VLM tightening as the only signal we have.
+  // camera already brackets the visible MCB row tightly. When NO ROI hint
+  // was provided (e.g. legacy uploads), we still trust the VLM tightening
+  // as the only signal we have.
   const trustInputRails = options.trustInputRails === true;
   let left;
   let right;
@@ -1047,48 +1053,47 @@ async function getModuleCountFromGroups(
     slotCentersX.push(left + moduleWidth * (i + 0.5));
   }
 
-  // --- Cross-check vs main_switch_width (drift detector) -------------------
-  // Main switches are exactly 2-module wide (BS 7671 double-pole isolator,
-  // 2 × 17.5mm). Their pixel width gives an independent pitch anchor.
-  // Compare against the actual pitch we tiled at and flag disagreement >10%
-  // as lowConfidence — usually a sign the rail bbox or main_switch bbox is
-  // off, OR the main switch on this board isn't standard 2-mod (rare).
-  const moduleWidthFromMainSwitch =
-    Number.isFinite(main_switch_width) && main_switch_width > 0 ? main_switch_width / 2 : null;
+  // --- Cross-check vs CV's independent count (drift detector) --------------
+  // 2026-04-29: replaced the main_switch_width / 2 cross-check now that
+  // Stage 2's prompt no longer asks for main switch geometry. Two
+  // independent module-count signals available here:
+  //   1. moduleCount = round(railWidthPx / pitch)  — bbox + pitch chunking
+  //   2. cvPitchDiag.moduleCountFromCv             — CV's own count
+  //                                                  (railWidthPx / cv.pitchPx)
+  // These derive the SAME way when CV pitch is the source of truth, so on
+  // the cv-autocorr path they agree exactly and this gate doesn't fire. On
+  // the height-anchor fallback path they diverge meaningfully if the user
+  // box was vertically off — that's the case worth flagging. lowConfidence
+  // also surfaces when Stage 3's downstream classification disagrees with
+  // moduleCount (handled at merger level — count of non-blank slots vs
+  // moduleCount), but that gate lives in the route handler since Stage 3
+  // hasn't run yet at this point in the pipeline.
   let pitchCrossCheck = null;
   let lowConfidence = false;
-  if (moduleWidthFromMainSwitch != null) {
-    const moduleWidthPxFromMs = (moduleWidthFromMainSwitch / 1000) * imageWidth;
-    const denom = Math.max(moduleWidthPxFromMs, moduleWidthPx, 1);
-    const disagreementPct = Math.round(
-      (Math.abs(moduleWidthPxFromMs - moduleWidthPx) / denom) * 100
-    );
+  if (cvPitchDiag && Number.isFinite(cvPitchDiag.moduleCountFromCv)) {
+    const cvCount = cvPitchDiag.moduleCountFromCv;
+    const drift = Math.abs(cvCount - moduleCount);
     pitchCrossCheck = {
-      fromMainSwitchPx: Math.round(moduleWidthPxFromMs),
       fromActualPitchPx: Math.round(moduleWidthPx),
       fromMcbHeightPx: Math.round(moduleWidthPxFromHeight),
-      disagreementPct,
+      moduleCountFromBbox: moduleCount,
+      moduleCountFromCv: cvCount,
+      countDrift: drift,
     };
-    if (disagreementPct > 10) {
+    // Drift of 1 module is within rounding tolerance; >1 means the bbox
+    // and CV are seeing different things — usually a too-wide bbox.
+    if (drift > 1) {
       lowConfidence = true;
     }
   }
 
-  // --- Main switch side derivation -----------------------------------------
-  // mainSwitchSide is determined by main_switch_center_x position relative
-  // to the bbox midpoint. The main switch sits ON the rail (it's INSIDE the
-  // bbox per the prompt) so its centre tells us which end of the rail it's
-  // at. Used by slotsToCircuits to drive BS-7671 circuit numbering
-  // (circuit 1 = nearest to main switch).
-  //
-  // Future improvement: if main_switch_center_x is null but Stage 3 later
-  // classifies a slot as 'main_switch', that slot's index gives us the
-  // side. We don't have Stage 3 output here, so for now null → null.
-  let mainSwitchSide = null;
-  const bboxMid = (left + right) / 2;
-  if (typeof main_switch_center_x === 'number' && Number.isFinite(main_switch_center_x)) {
-    mainSwitchSide = main_switch_center_x > bboxMid ? 'right' : 'left';
-  }
+  // mainSwitchSide is now derived downstream by the route handler from
+  // (1) Stage 3's main_switch slot index, (2) Stage 1 classifier's
+  // mainSwitchPosition. Stage 2 no longer reports it because the VLM was
+  // unreliable on main_switch_center_x — under-sized the device,
+  // misplaced the centre, or both. Returning null preserves the existing
+  // shape; the fallback chain at extraction.js handles it.
+  const mainSwitchSide = null;
 
   // Diagnostic block — surfaces the raw inputs to the geometric chunking
   // calculation so CloudWatch shows us exactly what dimensions / pixel
@@ -1119,16 +1124,10 @@ async function getModuleCountFromGroups(
     disagreement: false,
     truncatedFromDisagreement: false,
     mainSwitchSide,
-    mainSwitchCenterX:
-      typeof main_switch_center_x === 'number' && Number.isFinite(main_switch_center_x)
-        ? main_switch_center_x
-        : null,
-    mainSwitchWidth:
-      typeof main_switch_width === 'number' && Number.isFinite(main_switch_width)
-        ? main_switch_width
-        : null,
+    mainSwitchCenterX: null,
+    mainSwitchWidth: null,
     moduleWidth,
-    moduleWidthFromMainSwitch: moduleWidthFromMainSwitch ?? moduleWidth,
+    moduleWidthFromMainSwitch: moduleWidth,
     effectiveRailLeft: left,
     effectiveRailRight: right,
     populatedAreaStartX: left,
