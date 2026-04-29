@@ -112,30 +112,32 @@ Full design rationale: [ADR-008](../adr/008-schema-driven-tools-and-server-resol
 
 ## CCU Photo Extraction Pipeline
 
-`POST /api/analyze-ccu` (route: `src/routes/extraction.js`) runs a per-slot crop-and-classify VLM pipeline as the primary source of `circuits[]`, with the single-shot VLM prompt running in parallel as the authoritative source for labels and board-level metadata.
+`POST /api/analyze-ccu` (route: `src/routes/extraction.js`) runs a per-slot crop-and-classify VLM pipeline. The single-shot Sonnet prompt that previously ran in parallel as a "second opinion" was retired 2026-04-29 — its only unique outputs were the five board-level metadata fields, all of which now come from the (extended) classifier.
 
 Sequence:
 
-1. **Board-technology classifier** — one small VLM call (`claude-sonnet-4-6`, ~200 max tokens, ~3 s). Returns `{board_technology, main_switch_position}`. Routes the rest of the pipeline. Cost: ~$0.01. Source: `classifyBoardTechnology` in `src/routes/extraction.js`.
-2. **Geometric pipeline** — three-stage per-slot extraction, dispatched based on classifier result:
-   - **Modern** (MCB/RCBO boards): `src/extraction/ccu-geometric.js` — Stage 1 finds DIN-rail bbox (3 parallel VLM samples, median); Stage 2 derives module count from main-switch pitch; Stage 3 crops each slot and classifies (`mcb|rcbo|rcd|main_switch|spd|blank|unknown`) in batches of 4 crops per VLM call.
-   - **Rewireable fuse** (BS 3036): `src/extraction/ccu-geometric-rewireable.js` — Stage 1 finds the carrier-bank panel bbox (no DIN rail); Stage 2 counts the carrier slots within that bank; Stage 3 classifies each crop as `rewireable|cartridge|blank`, reads the carrier body colour, and applies the BS 3036 colour code (white=5A, blue=15A, yellow=20A, red=30A, green=45A).
+1. **Board classifier (Stage 1, board-level metadata)** — one VLM call (`claude-sonnet-4-6`, ~400 max tokens, ~5 s). Returns `{board_technology, main_switch_position, board_manufacturer, board_model, main_switch_rating, spd_present, confidence}`. Cost: ~$0.01. Source: `classifyBoardTechnology` in `src/routes/extraction.js`. Extending this prompt to cover board-level metadata replaced the 46 s single-shot call without adding a new round-trip.
+2. **Geometric pipeline** — three-stage per-slot extraction, dispatched on `board_technology`:
+   - **Modern** (MCB/RCBO boards): `src/extraction/ccu-geometric.js`. Stage 1 finds the DIN-rail bbox (uses iOS `railRoiHint` if provided, else 3 parallel VLM samples → median). Stage 2 chunks the bbox into modules using CV-based pitch detection (Sobel-X + autocorrelation; `src/extraction/ccu-cv-pitch.js`); falls back to the 44.5 mm DIN-43880 face-height anchor if the CV peak is low confidence. The Stage 2 prompt now returns only the rail bbox (`{rail_bbox: {…}}`) — `main_switch_width`/`main_switch_center_x` were dropped 2026-04-29 because CV pitch is more reliable than the VLM's main-switch estimate. Stage 3 crops each slot and classifies (`mcb|rcbo|rcd|main_switch|spd|blank|unknown`) in batches of 4 crops per VLM call.
+   - **Rewireable fuse** (BS 3036): `src/extraction/ccu-geometric-rewireable.js`. Stage 1 finds the carrier-bank panel bbox (no DIN rail); Stage 2 counts the carrier slots within that bank; Stage 3 classifies each crop as `rewireable|cartridge|blank`, reads the carrier body colour, and applies the BS 3036 colour code (white=5A, blue=15A, yellow=20A, red=30A, green=45A).
    - **Cartridge fuse / mixed** — routed to the rewireable pipeline; Stage 3 tags BS 1361 / BS 88-2 carriers as `cartridge` and reads the printed rating directly.
-3. **Single-shot prompt** — the pre-existing ~11k-char 4-step-methodology prompt runs in parallel with Step 2. It is the authoritative source for circuit **labels**, main switch, SPD, board manufacturer/model, confidence message, and `questionsForInspector`.
-4. **Merge** — `slotsToCircuits` in `extraction.js` builds `circuits[]` from the Stage 3 slot classifications: circuit 1 is nearest the main switch (BS 7671), labels are pasted in from single-shot by circuit number, and any slot with confidence < 0.7 (or `classification: "unknown"`) falls back to the single-shot value at that position.
-5. **Post-processing** — `applyBsEnFallback`, `normaliseCircuitLabels`, `lookupMissingRcdTypes` (web-search for RCD waveform type via `gpt-5-search-api` when Stage 3 missed it and the board manufacturer is known), main-switch default fills.
-6. **Response shape** includes `circuits[]` (primary), `slots[]` (per-slot classifications + base64 crops for iOS tap-to-correct UI), `geometric` (panel/rail geometry), `extraction_source: "geometric-merged" | "single-shot"`, plus the pre-existing fields.
+3. **Stage 4 label pass** — `extractSlotLabels` (`src/extraction/ccu-label-pass.js`) crops a wider Y-band around each slot and reads the strip / sticker / handwritten label by VLM. Runs in parallel with Stage 3 via `Promise.all`. The merger filters `main_switch`/`spd`/`blank` out of `circuits[]` so labels read on those positions never surface.
+4. **Merge** — `slotsToCircuits` in `extraction.js` builds `circuits[]` from Stage 3 classifications + Stage 4 labels. Circuit 1 is nearest the main switch (BS 7671); side comes from (1) Stage 3's `main_switch` slot index, (2) rewireable Stage 2's `mainSwitchOffset` for inline-mains boards, (3) Stage 1 classifier's `main_switch_position`. SPD presence is derived from Stage 3 (any slot classified `spd`); the classifier's `spd_present` is a pre-merger fallback only.
+5. **Post-merge enrichment** — `applyBsEnFallback`, `normaliseCircuitLabels`, `lookupMissingRcdTypes` (web-search for RCD waveform type via `gpt-5-search-api` when Stage 3 missed it and the board manufacturer is known); main-switch BS-EN/poles/voltage defaults; SPD-from-main-switch fallback for the supply-characteristics block.
+6. **Response shape** — `circuits[]` (primary), `slots[]` (per-slot classifications + base64 crops for iOS tap-to-correct UI), `geometric` (panel/rail geometry, pitch source, CV diagnostics), `board_classification` (mirror of classifier output), `extraction_source: "geometric-merged" | "classifier-only"` (the latter only when Stage 3/4 produced no slots[]), plus the pre-existing top-level fields.
 
-| Pipeline Step | Model | Cost |
-|---|---|---|
-| Classifier | `claude-sonnet-4-6` | ~$0.01 |
-| Geometric Stage 1 (rails/panel) | `claude-sonnet-4-6` ×3 | ~$0.02 |
-| Geometric Stage 2 (count) | `claude-sonnet-4-6` | ~$0.01 |
-| Geometric Stage 3 (classify N slots) | `claude-sonnet-4-6` ×ceil(N/4) | ~$0.02-0.03 |
-| Single-shot prompt | `claude-sonnet-4-6` | ~$0.03 |
-| **Total per extraction** | | **~$0.08–0.09** |
+| Pipeline Step | Model | Wall-clock | Cost |
+|---|---|---|---|
+| Classifier (board metadata) | `claude-sonnet-4-6` | ~5 s | ~$0.01 |
+| Geometric Stage 1 (rails/panel) | `claude-sonnet-4-6` ×3 | parallel ~3 s | ~$0.02 |
+| Geometric Stage 2 (rail bbox) | `claude-sonnet-4-6` | ~3 s | ~$0.01 |
+| Geometric Stage 3 (classify N slots) | `claude-sonnet-4-6` ×ceil(N/4) | ~10–15 s | ~$0.02 |
+| Stage 4 label pass | `claude-sonnet-4-6` | ~20 s (long pole) | ~$0.01 |
+| **Total per extraction** | | **~21 s** | **~$0.04** |
 
-**Kill switch**: `CCU_GEOMETRIC_V1=false` on the task-def disables the per-slot path entirely — single-shot runs alone (pre-sprint behaviour). Default (env var unset or set to anything other than `false`) is **ON**. Flip the flag at the task-def to roll back without redeploying.
+Compare with pre-2026-04-29 totals (~47 s, ~$0.10) — the saving comes entirely from removing single-shot, which was the wall-clock long pole running in parallel with the per-slot pipeline.
+
+**Failure mode**: classifier or `prepareGeometry` failure now returns 502 (no single-shot safety net). Stage 3 / Stage 4 failures are non-fatal — `extraction_source: "classifier-only"` is shipped with empty `circuits[]` plus the board metadata.
 
 ## AWS Configuration
 

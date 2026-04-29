@@ -862,6 +862,135 @@ describe('classifyBoardTechnology', () => {
     expect(result.usage.inputTokens).toBe(150);
     expect(result.usage.outputTokens).toBe(30);
   });
+
+  test('19. extracts board_manufacturer + board_model from classifier response', async () => {
+    // 2026-04-29: classifier extended to take over single-shot's role for
+    // board metadata. Verify it parses + returns the new fields.
+    const fakeResponse = {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify({
+            board_technology: 'modern',
+            main_switch_position: 'right',
+            board_manufacturer: 'Wylex',
+            board_model: 'NHRS12SL',
+            main_switch_rating: '100',
+            spd_present: false,
+            confidence: 0.9,
+          }),
+        },
+      ],
+      usage: { input_tokens: 130, output_tokens: 50 },
+    };
+
+    const fakeAnthropic = makeFakeAnthropic(fakeResponse);
+    const result = await classifyBoardTechnology(
+      'base64data==',
+      fakeAnthropic,
+      'claude-sonnet-4-6'
+    );
+
+    expect(result.boardManufacturer).toBe('Wylex');
+    expect(result.boardModel).toBe('NHRS12SL');
+    expect(result.mainSwitchRating).toBe('100');
+    expect(result.spdPresent).toBe(false);
+  });
+
+  test('20. normalises main_switch_rating to digits ("100A" → "100", "80 amp" → "80")', async () => {
+    const fakeResponse = {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify({
+            board_technology: 'modern',
+            main_switch_position: 'left',
+            board_manufacturer: 'Hager',
+            board_model: 'VML112',
+            main_switch_rating: '100A AC22A', // VLMs often append units / category
+            spd_present: true,
+            confidence: 0.85,
+          }),
+        },
+      ],
+      usage: { input_tokens: 120, output_tokens: 40 },
+    };
+
+    const fakeAnthropic = makeFakeAnthropic(fakeResponse);
+    const result = await classifyBoardTechnology(
+      'base64data==',
+      fakeAnthropic,
+      'claude-sonnet-4-6'
+    );
+
+    expect(result.mainSwitchRating).toBe('100');
+    expect(result.spdPresent).toBe(true);
+  });
+
+  test('21. handles missing/null board metadata gracefully (returns nulls, not undefined)', async () => {
+    // VLM may legitimately not see manufacturer/model on a covered or
+    // damaged board. Classifier must return null (not omit the fields)
+    // so downstream code uses analysis.board_manufacturer === null
+    // checks rather than === undefined.
+    const fakeResponse = {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify({
+            board_technology: 'modern',
+            main_switch_position: 'left',
+            board_manufacturer: null,
+            board_model: null,
+            main_switch_rating: null,
+            spd_present: false,
+            confidence: 0.7,
+          }),
+        },
+      ],
+      usage: { input_tokens: 100, output_tokens: 30 },
+    };
+
+    const fakeAnthropic = makeFakeAnthropic(fakeResponse);
+    const result = await classifyBoardTechnology(
+      'base64data==',
+      fakeAnthropic,
+      'claude-sonnet-4-6'
+    );
+
+    expect(result.boardManufacturer).toBeNull();
+    expect(result.boardModel).toBeNull();
+    expect(result.mainSwitchRating).toBeNull();
+    expect(result.spdPresent).toBe(false);
+  });
+
+  test('22. spd_present coerces non-boolean truthy to false (only `true` boolean counts)', async () => {
+    // Strict boolean coercion — protects against the VLM returning the
+    // string "false" or 0/1, which would silently pass through as a
+    // truthy value in JS without the === true check.
+    const fakeResponse = {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify({
+            board_technology: 'modern',
+            main_switch_position: 'left',
+            spd_present: 'false', // string, not boolean
+            confidence: 0.8,
+          }),
+        },
+      ],
+      usage: { input_tokens: 100, output_tokens: 30 },
+    };
+
+    const fakeAnthropic = makeFakeAnthropic(fakeResponse);
+    const result = await classifyBoardTechnology(
+      'base64data==',
+      fakeAnthropic,
+      'claude-sonnet-4-6'
+    );
+
+    expect(result.spdPresent).toBe(false);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1205,101 +1334,9 @@ describe('analyze-ccu route — Stage 3 || Stage 4 parallel dispatch', () => {
     expect(labelStartIdx).toBeLessThan(labelResolveIdx);
   });
 
-  test('single-shot is kicked off BEFORE awaiting the classifier (Codex P2)', async () => {
-    // Stage 3 + Stage 4 resolve immediately — we only care about single-shot
-    // overlap with the classifier here.
-    classifyModernSlotsMock.mockResolvedValue({
-      slots: [{ slotIndex: 0, classification: 'mcb', ratingAmps: 32, confidence: 0.9 }],
-      stage3Error: null,
-      timings: { stage3Ms: 0 },
-      usage: { inputTokens: 0, outputTokens: 0 },
-      stageOutputs: { stage3: { slots: [], error: null, batchCount: 0, batchSize: 4 } },
-    });
-    mockExtractSlotLabels.mockResolvedValue({
-      labels: [],
-      usage: { inputTokens: 0, outputTokens: 0 },
-      batchCount: 0,
-      skippedSlotIndices: [],
-      timings: { cropMs: 0, vlmMs: 0, totalMs: 0 },
-    });
-
-    const callOrder = [];
-
-    // Both classifier and single-shot wait 50ms. If single-shot only starts
-    // after awaiting the classifier, its 'start' would appear AFTER the
-    // classifier's 'resolve' — we assert the opposite: single-shot starts
-    // before classifier resolves.
-    mockAnthropicMessagesCreate.mockImplementation(async (args) => {
-      const userText = args.messages?.[0]?.content?.find((b) => b.type === 'text')?.text || '';
-      // Classifier prompt is short (~1KB), single-shot is ~5KB.
-      const isClassifier = userText.length < 2000;
-      const kind = isClassifier ? 'classifier' : 'single-shot';
-
-      callOrder.push({ name: `${kind}-start`, t: Date.now() });
-      await new Promise((r) => setTimeout(r, 50));
-      callOrder.push({ name: `${kind}-resolve`, t: Date.now() });
-
-      if (isClassifier) {
-        return {
-          content: [
-            {
-              type: 'text',
-              text: '{"board_technology":"modern","main_switch_position":"left","confidence":0.9}',
-            },
-          ],
-          usage: { input_tokens: 100, output_tokens: 30 },
-          stop_reason: 'end_turn',
-        };
-      }
-      return {
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify({
-              board_manufacturer: null,
-              board_model: null,
-              board_technology: 'modern',
-              main_switch_rating: '100',
-              main_switch_position: 'left',
-              main_switch_type: 'Isolator',
-              main_switch_poles: 'DP',
-              spd_present: false,
-              circuits: [],
-              confidence: { overall: 0.9, image_quality: 'clear', uncertain_fields: [] },
-              questionsForInspector: [],
-            }),
-          },
-        ],
-        usage: { input_tokens: 2000, output_tokens: 500 },
-        stop_reason: 'end_turn',
-      };
-    });
-
-    const token = jwt.sign({ userId: 'user-1', email: 'u@x' }, process.env.JWT_SECRET, {
-      expiresIn: '24h',
-    });
-    const sharp = (await import('sharp')).default;
-    const fakeJpeg = await sharp({
-      create: { width: 10, height: 10, channels: 3, background: { r: 200, g: 200, b: 200 } },
-    })
-      .jpeg()
-      .toBuffer();
-
-    const res = await supertest(app)
-      .post('/api/analyze-ccu')
-      .set('Authorization', `Bearer ${token}`)
-      .attach('photo', fakeJpeg, 'test.jpg');
-
-    expect(res.status).toBe(200);
-
-    // Verify the critical Codex P2 invariant: single-shot started BEFORE
-    // the classifier resolved. If single-shot was awaiting classifier
-    // completion, the order would be classifier-start → classifier-resolve
-    // → single-shot-start.
-    const classifierResolveIdx = callOrder.findIndex((c) => c.name === 'classifier-resolve');
-    const singleShotStartIdx = callOrder.findIndex((c) => c.name === 'single-shot-start');
-    expect(classifierResolveIdx).toBeGreaterThanOrEqual(0);
-    expect(singleShotStartIdx).toBeGreaterThanOrEqual(0);
-    expect(singleShotStartIdx).toBeLessThan(classifierResolveIdx);
-  });
+  // Removed 2026-04-29: single-shot was retired. The "Codex P2 invariant"
+  // (single-shot started in parallel with the classifier) no longer applies
+  // because there is no single-shot to overlap with. The classifier is now
+  // awaited up front before Stage 2/3/4 dispatch — see analyze-ccu route
+  // handler in src/routes/extraction.js.
 });
