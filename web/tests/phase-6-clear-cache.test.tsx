@@ -181,7 +181,7 @@ describe('Phase 6 · clear cache flow', () => {
     // Dialog is visible.
     expect(harness.container.textContent).toContain('Clear cache?');
     act(() => {
-      findButton(harness.container, 'Cancel')!.click();
+      findButton(harness!.container, 'Cancel')!.click();
     });
     expect(clearAuthMock).not.toHaveBeenCalled();
     expect(locationHrefCalls).toEqual([]);
@@ -212,7 +212,8 @@ describe('Phase 6 · clear cache flow', () => {
     expect(clearAuthMock).toHaveBeenCalledTimes(1);
     expect(locationHrefCalls).toContain('/login');
     expect(
-      (navigator.serviceWorker as unknown as { getRegistrations: vi.Mock }).getRegistrations
+      (navigator.serviceWorker as unknown as { getRegistrations: ReturnType<typeof vi.fn> })
+        .getRegistrations
     ).toHaveBeenCalled();
   });
 });

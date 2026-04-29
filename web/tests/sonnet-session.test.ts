@@ -233,9 +233,16 @@ describe('SonnetSession', () => {
       // to keep the test deterministic — each successful reconnect
       // prints `attempt=0` in the subsequent close log, proving the
       // counter was reset on onopen.
+      //
+      // [2026-04-29] Use the controlled scheduler so the reconnect
+      // tick fires AFTER the new mock server is up — same pattern as
+      // the test above. Without it the real setTimeout(0) raced ahead
+      // of `new WS(SONNET_URL)` under CI load and the session went
+      // into a second backoff cycle, blowing past the 5s test timeout.
+      const sched = makeControlledScheduler();
       const onError = vi.fn();
       const info = vi.spyOn(console, 'info').mockImplementation(() => {});
-      const session = new SonnetSession({ onError });
+      const session = new SonnetSession({ onError }, sched);
       session.connect({ sessionId: 's', jobId: 'j', certificateType: 'EICR' });
       await server.connected;
 
@@ -245,6 +252,7 @@ describe('SonnetSession', () => {
       server.close({ code: 1006, reason: 'abnormal', wasClean: false });
       await server.closed;
       const next = new WS(SONNET_URL);
+      sched.flush();
       await next.connected;
 
       next.close({ code: 1006, reason: 'abnormal', wasClean: false });
