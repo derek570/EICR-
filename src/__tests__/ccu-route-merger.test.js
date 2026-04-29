@@ -862,6 +862,135 @@ describe('classifyBoardTechnology', () => {
     expect(result.usage.inputTokens).toBe(150);
     expect(result.usage.outputTokens).toBe(30);
   });
+
+  test('19. extracts board_manufacturer + board_model from classifier response', async () => {
+    // 2026-04-29: classifier extended to take over single-shot's role for
+    // board metadata. Verify it parses + returns the new fields.
+    const fakeResponse = {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify({
+            board_technology: 'modern',
+            main_switch_position: 'right',
+            board_manufacturer: 'Wylex',
+            board_model: 'NHRS12SL',
+            main_switch_rating: '100',
+            spd_present: false,
+            confidence: 0.9,
+          }),
+        },
+      ],
+      usage: { input_tokens: 130, output_tokens: 50 },
+    };
+
+    const fakeAnthropic = makeFakeAnthropic(fakeResponse);
+    const result = await classifyBoardTechnology(
+      'base64data==',
+      fakeAnthropic,
+      'claude-sonnet-4-6'
+    );
+
+    expect(result.boardManufacturer).toBe('Wylex');
+    expect(result.boardModel).toBe('NHRS12SL');
+    expect(result.mainSwitchRating).toBe('100');
+    expect(result.spdPresent).toBe(false);
+  });
+
+  test('20. normalises main_switch_rating to digits ("100A" → "100", "80 amp" → "80")', async () => {
+    const fakeResponse = {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify({
+            board_technology: 'modern',
+            main_switch_position: 'left',
+            board_manufacturer: 'Hager',
+            board_model: 'VML112',
+            main_switch_rating: '100A AC22A', // VLMs often append units / category
+            spd_present: true,
+            confidence: 0.85,
+          }),
+        },
+      ],
+      usage: { input_tokens: 120, output_tokens: 40 },
+    };
+
+    const fakeAnthropic = makeFakeAnthropic(fakeResponse);
+    const result = await classifyBoardTechnology(
+      'base64data==',
+      fakeAnthropic,
+      'claude-sonnet-4-6'
+    );
+
+    expect(result.mainSwitchRating).toBe('100');
+    expect(result.spdPresent).toBe(true);
+  });
+
+  test('21. handles missing/null board metadata gracefully (returns nulls, not undefined)', async () => {
+    // VLM may legitimately not see manufacturer/model on a covered or
+    // damaged board. Classifier must return null (not omit the fields)
+    // so downstream code uses analysis.board_manufacturer === null
+    // checks rather than === undefined.
+    const fakeResponse = {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify({
+            board_technology: 'modern',
+            main_switch_position: 'left',
+            board_manufacturer: null,
+            board_model: null,
+            main_switch_rating: null,
+            spd_present: false,
+            confidence: 0.7,
+          }),
+        },
+      ],
+      usage: { input_tokens: 100, output_tokens: 30 },
+    };
+
+    const fakeAnthropic = makeFakeAnthropic(fakeResponse);
+    const result = await classifyBoardTechnology(
+      'base64data==',
+      fakeAnthropic,
+      'claude-sonnet-4-6'
+    );
+
+    expect(result.boardManufacturer).toBeNull();
+    expect(result.boardModel).toBeNull();
+    expect(result.mainSwitchRating).toBeNull();
+    expect(result.spdPresent).toBe(false);
+  });
+
+  test('22. spd_present coerces non-boolean truthy to false (only `true` boolean counts)', async () => {
+    // Strict boolean coercion — protects against the VLM returning the
+    // string "false" or 0/1, which would silently pass through as a
+    // truthy value in JS without the === true check.
+    const fakeResponse = {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify({
+            board_technology: 'modern',
+            main_switch_position: 'left',
+            spd_present: 'false', // string, not boolean
+            confidence: 0.8,
+          }),
+        },
+      ],
+      usage: { input_tokens: 100, output_tokens: 30 },
+    };
+
+    const fakeAnthropic = makeFakeAnthropic(fakeResponse);
+    const result = await classifyBoardTechnology(
+      'base64data==',
+      fakeAnthropic,
+      'claude-sonnet-4-6'
+    );
+
+    expect(result.spdPresent).toBe(false);
+  });
 });
 
 // ---------------------------------------------------------------------------
