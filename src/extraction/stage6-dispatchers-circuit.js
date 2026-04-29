@@ -52,6 +52,7 @@ import {
   renameCircuit,
 } from './stage6-snapshot-mutators.js';
 import { RING_FIELDS, recordRingContinuityWrite } from './ring-continuity-timeout.js';
+import { IR_FIELDS, recordIrWrite } from './insulation-resistance-timeout.js';
 import {
   validateRecordReading,
   validateClearReading,
@@ -133,6 +134,13 @@ export async function dispatchRecordReading(call, ctx) {
   // turns and the agentic prompt explicitly delegates timing here.
   if (RING_FIELDS.includes(input.field)) {
     recordRingContinuityWrite(session, input.circuit);
+  }
+  // Insulation resistance tracking — same pattern. The 60s detector
+  // (insulation-resistance-timeout.js) re-asks LL or LE if the bucket
+  // has gone stale (1 of 2 filled, >60s since last write) regardless
+  // of whether the IR script ever ran for this circuit.
+  if (IR_FIELDS.includes(input.field)) {
+    recordIrWrite(session, input.circuit);
   }
 
   logToolCall(logger, {

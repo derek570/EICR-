@@ -35,6 +35,7 @@ import { runShadowHarness } from './stage6-shadow-harness.js';
 // and `.planning-stage6-agentic/handoffs/silent-drop-fix-2026-04-28/README.md`
 // for the handoff that drove this wiring.
 import { findExpiredPartial } from './ring-continuity-timeout.js';
+import { findExpiredPartial as findExpiredIrPartial } from './insulation-resistance-timeout.js';
 // 2026-04-29 — server-driven ring continuity script. Bypasses Sonnet for the
 // duration of an R1/Rn/R2 micro-conversation, fixing the Flux-fragmentation
 // loss surfaced by session B107472D (06:23, 2026-04-29) where "Neutrals are."
@@ -42,6 +43,7 @@ import { findExpiredPartial } from './ring-continuity-timeout.js';
 // to a generic missing-field ask. Sits BEFORE the 60s timeout check below
 // so the script's per-circuit state is the source of truth while active.
 import { processRingContinuityTurn } from './ring-continuity-script.js';
+import { processInsulationResistanceTurn } from './insulation-resistance-script.js';
 // Stage 6 Phase 3 — per-session blocking-ask plumbing. Plan 03-08 threads the
 // per-session PendingAsksRegistry through every call-site of runShadowHarness
 // (via `options.pendingAsks` + `options.ws`) and routes inbound iOS
@@ -2657,6 +2659,32 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         }
       }
 
+      // Insulation resistance script — 2026-04-29. Same shape as the ring
+      // continuity script: server-driven micro-conversation that captures
+      // L-L and L-E readings (and the test voltage if not already set)
+      // deterministically when the inspector says "insulation resistance
+      // for circuit N". Sits AFTER the ring script call so the entry
+      // patterns are mutually exclusive — ring's "ring continuity" trigger
+      // beats IR's "insulation resistance" trigger when both somehow
+      // appear (they shouldn't), and IR's topic-switch list includes ring
+      // patterns so an inspector mid-ring can't accidentally re-enter IR.
+      // See `src/extraction/insulation-resistance-script.js` for design.
+      const irScriptOutcome = processInsulationResistanceTurn({
+        ws,
+        session: entry.session,
+        sessionId,
+        transcriptText,
+        logger,
+      });
+      if (irScriptOutcome.handled && !irScriptOutcome.fallthrough) {
+        return;
+      }
+      if (irScriptOutcome.handled && irScriptOutcome.fallthrough) {
+        if (typeof irScriptOutcome.transcriptText === 'string') {
+          transcriptText = irScriptOutcome.transcriptText;
+        }
+      }
+
       // Ring continuity timeout — 2026-04-28. The agentic prompt's
       // RING CONTINUITY CARRYOVER section delegates the 60-second
       // timeout to the server (Sonnet can't reliably track elapsed
@@ -2688,6 +2716,31 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
           circuit_ref: ringExpired.circuit_ref,
           missing_field: ringExpired.missing_field,
           last_write_ms: ringExpired.last_write_ms,
+        });
+      }
+
+      // Insulation resistance partial-fill timeout — same shape as the
+      // ring detector above. Fires when a circuit has 1 of the 2 IR
+      // readings filled and >60s have elapsed since the last write,
+      // covering cases the IR script doesn't (cancel mid-flow, topic
+      // switch before completion, hard-timeout exit). Only one Sonnet-
+      // facing note is prepended per turn; if both ring and IR are
+      // expired, the ring note runs first (above) and IR fires on a
+      // later turn — overlap is rare in practice.
+      const irExpired = findExpiredIrPartial(entry.session);
+      if (irExpired) {
+        const irNote =
+          `[Server note: circuit ${irExpired.circuit_ref} insulation resistance is incomplete; ` +
+          `${irExpired.missing_field} has not been recorded and 60s have elapsed since the last ` +
+          `IR write. Please ask the user for this value via ask_user with ` +
+          `context_field="${irExpired.missing_field}", context_circuit=${irExpired.circuit_ref}, ` +
+          `expected_answer_shape="value", reason="missing_value".] `;
+        transcriptText = `${irNote}${transcriptText}`;
+        logger.info('stage6.insulation_resistance_timeout_detected', {
+          sessionId,
+          circuit_ref: irExpired.circuit_ref,
+          missing_field: irExpired.missing_field,
+          last_write_ms: irExpired.last_write_ms,
         });
       }
 
