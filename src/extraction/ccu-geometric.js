@@ -1673,6 +1673,9 @@ export async function prepareModernGeometry(imageBuffer, options = {}) {
     stage2Source, // 'tighten-and-chunk' | 'populated-area'
     mcbGroups: stage2.mcbGroups ?? null,
     railBbox: stage2.railBbox ?? null,
+    railBboxSource: stage2.railBboxSource ?? null, // 'user-roi' | 'vlm-tightened' (2026-04-29)
+    pitchSource: stage2.pitchSource ?? null, // 'cv-autocorr' | 'height-anchor' (2026-04-29)
+    cvPitchDiag: stage2.cvPitchDiag ?? null, // CV detection internals (2026-04-29)
     pitchCrossCheck: stage2.pitchCrossCheck ?? null,
     chunkingDiag: stage2.chunkingDiag ?? null,
     slotCentersX: stage2.slotCentersX,
