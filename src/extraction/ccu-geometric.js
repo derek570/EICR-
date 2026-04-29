@@ -204,17 +204,89 @@ function extractJson(text) {
     throw new Error('VLM returned empty response');
   }
   let jsonStr = text.trim();
-  const fenceMatch = jsonStr.match(/```json\s*([\s\S]*?)```/);
-  if (fenceMatch) {
-    jsonStr = fenceMatch[1].trim();
-  } else {
-    const firstBrace = jsonStr.indexOf('{');
-    const lastBrace = jsonStr.lastIndexOf('}');
-    if (firstBrace !== -1 && lastBrace > firstBrace) {
-      jsonStr = jsonStr.slice(firstBrace, lastBrace + 1);
+
+  // Prefer a fenced block. Accept either ```json ... ``` (preferred) or a
+  // bare ``` ... ``` fence — the model sometimes drops the language tag.
+  const labelledFence = jsonStr.match(/```json\s*([\s\S]*?)```/i);
+  const bareFence = jsonStr.match(/```\s*([\s\S]*?)```/);
+  if (labelledFence) {
+    jsonStr = labelledFence[1].trim();
+  } else if (bareFence) {
+    jsonStr = bareFence[1].trim();
+  }
+
+  // Locate the first JSON value (object or array) and walk forward
+  // tracking string state + brace/bracket depth, so we stop exactly at
+  // the matching close. The previous heuristic (firstBrace..lastBrace)
+  // greedily included anything after the JSON — newlines, prose, even a
+  // second concatenated object — and tripped V8's "Unexpected non-
+  // whitespace character after JSON" once the model emitted anything
+  // past its primary response. Walking the structure means we don't care
+  // what follows.
+  const firstObj = jsonStr.indexOf('{');
+  const firstArr = jsonStr.indexOf('[');
+  let start;
+  if (firstObj === -1) start = firstArr;
+  else if (firstArr === -1) start = firstObj;
+  else start = Math.min(firstObj, firstArr);
+
+  if (start === -1) {
+    throw new Error(`VLM response contained no JSON value (got: ${truncateForLog(text)})`);
+  }
+
+  const open = jsonStr[start];
+  const close = open === '{' ? '}' : ']';
+  let depth = 0;
+  let inString = false;
+  let escape = false;
+  let end = -1;
+  for (let i = start; i < jsonStr.length; i++) {
+    const ch = jsonStr[i];
+    if (escape) {
+      escape = false;
+      continue;
+    }
+    if (inString) {
+      if (ch === '\\') escape = true;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') {
+      inString = true;
+    } else if (ch === '{' || ch === '[') {
+      depth++;
+    } else if (ch === '}' || ch === ']') {
+      depth--;
+      if (depth === 0) {
+        if (ch !== close) {
+          throw new Error(
+            `VLM response had mismatched brackets at position ${i} (got: ${truncateForLog(text)})`
+          );
+        }
+        end = i;
+        break;
+      }
     }
   }
-  return JSON.parse(jsonStr);
+
+  if (end === -1) {
+    throw new Error(`VLM response had unterminated JSON value (got: ${truncateForLog(text)})`);
+  }
+
+  const candidate = jsonStr.slice(start, end + 1);
+  try {
+    return JSON.parse(candidate);
+  } catch (err) {
+    throw new Error(
+      `VLM response was not valid JSON: ${err.message} (candidate: ${truncateForLog(candidate)}; raw: ${truncateForLog(text)})`
+    );
+  }
+}
+
+function truncateForLog(s) {
+  if (typeof s !== 'string') return String(s);
+  const oneLine = s.replace(/\s+/g, ' ').trim();
+  return oneLine.length > 240 ? `${oneLine.slice(0, 240)}…` : oneLine;
 }
 
 function median(values) {
@@ -923,18 +995,12 @@ export async function classifySlots(_imageBuffer, slotCrops, opts = {}) {
       .map((b) => b.text)
       .join('');
 
-    // Parse array response. Strip fences and find the outer [...] block.
+    // Parse array response. Reuse the balanced-walk extractor so trailing
+    // prose / extra blocks / unfenced multi-object responses don't trip
+    // the parser the way a naive firstBracket..lastBracket slice did.
     let arr;
     try {
-      let jsonStr = text.trim();
-      const fence = jsonStr.match(/```json\s*([\s\S]*?)```/);
-      if (fence) jsonStr = fence[1].trim();
-      const firstBracket = jsonStr.indexOf('[');
-      const lastBracket = jsonStr.lastIndexOf(']');
-      if (firstBracket !== -1 && lastBracket > firstBracket) {
-        jsonStr = jsonStr.slice(firstBracket, lastBracket + 1);
-      }
-      arr = JSON.parse(jsonStr);
+      arr = extractJson(text);
       if (!Array.isArray(arr)) throw new Error('not an array');
     } catch (err) {
       throw new Error(`classifySlots: failed to parse VLM array response: ${err.message}`);
