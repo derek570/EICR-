@@ -25,9 +25,28 @@ jest.unstable_mockModule('../storage.js', () => ({
   uploadJson: jest.fn().mockResolvedValue(true),
   uploadFile: jest.fn().mockResolvedValue(true),
   uploadBytes: jest.fn().mockResolvedValue(true),
+  uploadText: jest.fn().mockResolvedValue(true),
+  downloadText: jest.fn().mockResolvedValue(''),
+  isUsingS3: jest.fn().mockReturnValue(false),
   getSignedUrl: jest.fn().mockResolvedValue('https://example.com/signed'),
   getJsonObject: jest.fn().mockResolvedValue(null),
   listObjects: jest.fn().mockResolvedValue([]),
+}));
+
+// Mock queue.js so the new idempotency middleware (wired into /analyze-ccu)
+// doesn't pull in BullMQ + IORedis + their transitive deps during these
+// route-merger tests. Returning isRedisAvailable=false makes the middleware
+// a no-op, which is what we want here — these tests cover Stage 3/4 + merger
+// behaviour, not idempotency.
+jest.unstable_mockModule('../queue.js', () => ({
+  getConnection: jest.fn().mockReturnValue({
+    set: jest.fn().mockResolvedValue('OK'),
+    get: jest.fn().mockResolvedValue(null),
+    del: jest.fn().mockResolvedValue(1),
+  }),
+  isRedisAvailable: jest.fn().mockReturnValue(false),
+  enqueueJob: jest.fn().mockResolvedValue(undefined),
+  startWorker: jest.fn().mockResolvedValue(undefined),
 }));
 
 jest.unstable_mockModule('../logger.js', () => ({
