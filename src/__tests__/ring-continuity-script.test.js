@@ -1281,3 +1281,153 @@ describe('Session 74201B27 repro — Fixes A+B salvage the dictation', () => {
     expect(session.ringContinuityScript).toBeFalsy();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Entry-time designation lookup (2026-04-29, session 6754FE6E)
+// ---------------------------------------------------------------------------
+//
+// The entry regex's circuit-capture group only matches `circuit\s*\d+`, so
+// "ring continuity for upstairs sockets, neutrals are 0.32" used to enter
+// with circuit_ref=null and ask "Which circuit is the ring continuity for?"
+// — even though the designation was right there in the trigger sentence.
+// The fix runs findCircuitByDesignation against the entry text so the
+// disambiguation question is skipped when the answer is unambiguous.
+describe('entry-time designation lookup', () => {
+  test('"Ring continuity for upstairs sockets, neutrals are 0.32" resolves immediately and writes Rn', () => {
+    const session = buildSession({
+      2: { designation: 'Upstairs Sockets' },
+    });
+    const ws = new MockWS();
+    const out = processRingContinuityTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'Ring continuity for upstairs sockets, neutrals are 0.32.',
+      now: 1000,
+    });
+    expect(out).toEqual({ handled: true, fallthrough: false });
+    // Circuit resolved at entry — no "Which circuit?" question fired.
+    expect(session.ringContinuityScript.circuit_ref).toBe(2);
+    expect(session.ringContinuityScript.pending_writes).toEqual([]);
+    // Rn written immediately, not queued.
+    expect(session.stateSnapshot.circuits[2].ring_rn_ohm).toBe('0.32');
+    // Two emits: extraction for Rn, then ask for the next missing (R1).
+    expect(ws.sent).toHaveLength(2);
+    expect(ws.sent[0].type).toBe('extraction');
+    expect(ws.sent[0].result.readings).toEqual([
+      { field: 'ring_rn_ohm', circuit: 2, value: '0.32', confidence: 1.0, source: 'ring_script' },
+    ]);
+    expect(ws.sent[1]).toMatchObject({
+      type: 'ask_user_started',
+      reason: 'missing_value',
+      context_field: 'ring_r1_ohm',
+      context_circuit: 2,
+    });
+    expect(ws.sent[1].question).toMatch(/lives/i);
+  });
+
+  test('entry-only designation ("Ring continuity for upstairs sockets") still resolves circuit and asks for first missing', () => {
+    const session = buildSession({
+      2: { designation: 'Upstairs Sockets' },
+    });
+    const ws = new MockWS();
+    processRingContinuityTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'Ring continuity for upstairs sockets.',
+      now: 1000,
+    });
+    expect(session.ringContinuityScript.circuit_ref).toBe(2);
+    // Single emit: ask for R1 (no value to write yet).
+    expect(ws.sent).toHaveLength(1);
+    expect(ws.sent[0].context_field).toBe('ring_r1_ohm');
+    expect(ws.sent[0].context_circuit).toBe(2);
+  });
+
+  test('ambiguous designation at entry falls back to "Which circuit?" prompt', () => {
+    const session = buildSession({
+      1: { designation: 'downstairs sockets' },
+      2: { designation: 'upstairs sockets' },
+    });
+    const ws = new MockWS();
+    processRingContinuityTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      // "sockets" alone matches BOTH designations — findCircuitByDesignation
+      // returns null, so we fall through to the legacy "Which circuit?" path.
+      transcriptText: 'Ring continuity for sockets, neutrals are 0.32.',
+      now: 1000,
+    });
+    expect(session.ringContinuityScript.circuit_ref).toBeNull();
+    // Rn queued because circuit unresolved.
+    expect(session.ringContinuityScript.pending_writes).toEqual([
+      { field: 'ring_rn_ohm', value: '0.32' },
+    ]);
+    expect(ws.sent[0].question).toMatch(/which circuit/i);
+  });
+
+  test('explicit "circuit N" digit on entry still wins over designation lookup', () => {
+    // Defensive: if the inspector said BOTH a digit and a designation that
+    // happens to map to a different circuit, the digit wins. Designation
+    // lookup is only attempted when the regex didn't capture a digit.
+    const session = buildSession({
+      2: { designation: 'Upstairs Sockets' },
+      5: { designation: 'Garage' },
+    });
+    const ws = new MockWS();
+    processRingContinuityTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'Ring continuity for circuit 5, the upstairs sockets one.',
+      now: 1000,
+    });
+    expect(session.ringContinuityScript.circuit_ref).toBe(5);
+  });
+
+  test('logs textPreview + entry_designation_matched on script_entered', () => {
+    const session = buildSession({
+      2: { designation: 'Upstairs Sockets' },
+    });
+    const ws = new MockWS();
+    const calls = [];
+    const logger = {
+      info: (msg, fields) => calls.push({ msg, fields }),
+    };
+    processRingContinuityTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'Ring continuity for upstairs sockets, neutrals are 0.32.',
+      now: 1000,
+      logger,
+    });
+    const entered = calls.find((c) => c.msg === 'stage6.ring_continuity_script_entered');
+    expect(entered).toBeDefined();
+    expect(entered.fields.entry_designation_matched).toBe(true);
+    expect(entered.fields.circuit_ref).toBe(2);
+    expect(entered.fields.textPreview).toMatch(/Ring continuity for upstairs sockets/);
+  });
+
+  test('script_entered logs entry_designation_matched=false when entry already had a digit', () => {
+    const session = buildSession();
+    const ws = new MockWS();
+    const calls = [];
+    const logger = {
+      info: (msg, fields) => calls.push({ msg, fields }),
+    };
+    processRingContinuityTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'Ring continuity for circuit 13.',
+      now: 1000,
+      logger,
+    });
+    const entered = calls.find((c) => c.msg === 'stage6.ring_continuity_script_entered');
+    expect(entered.fields.entry_designation_matched).toBe(false);
+    expect(entered.fields.circuit_ref).toBe(13);
+  });
+});

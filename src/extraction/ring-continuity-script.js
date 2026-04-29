@@ -140,7 +140,7 @@ const TOPIC_SWITCH_PATTERNS = [
   /\b(?:zs|z\s*s|ze|z\s*e)\s+(?:is|=|of|at)\b/i, // "Zs is 0.62", "Ze of 0.18"
   /\bcircuit\s+\d+\s+is\b/i, // "circuit 5 is the cooker"
   /\bR\s*1\s*\+\s*R\s*2\b/i, // "R1+R2"
-  /\binsulation\s+resistance\b/i,
+  /\b(?:insulation|installation)\s+resistance\b/i,
   /\bRCD\s+(?:trip|test|time)\b/i,
   /\bpolarity\b/i,
 ];
@@ -512,7 +512,27 @@ export function processRingContinuityTurn(ctx) {
     // Honour any pre-existing partial fill on this circuit (e.g. R1
     // already written from a prior turn) so the script picks up where
     // the inspector left off rather than overwriting.
-    const circuitRef = entry.circuit_ref;
+    //
+    // Entry-time designation lookup (2026-04-29, session 6754FE6E): the
+    // entry regex's circuit-capture group only matches the literal word
+    // "circuit" + digits. An inspector saying "ring continuity for
+    // upstairs sockets, neutrals are 0.32" matches the head but the
+    // "for upstairs sockets" portion is invisible to the capture group,
+    // so circuit_ref comes back null and the script asks "Which
+    // circuit?" — even though the designation was right there in the
+    // entry sentence. Fix: when the regex didn't capture a digit, try
+    // findCircuitByDesignation against the entry text. The same helper
+    // already runs in the active path's resolve block; calling it one
+    // turn earlier removes the unnecessary disambiguation prompt.
+    let circuitRef = entry.circuit_ref;
+    let entryDesignationMatched = false;
+    if (circuitRef === null) {
+      const designationMatch = findCircuitByDesignation(session, text);
+      if (designationMatch !== null) {
+        circuitRef = designationMatch;
+        entryDesignationMatched = true;
+      }
+    }
     const existing = circuitRef ? readExistingRingValues(session, circuitRef) : {};
 
     // Did the entry utterance also volunteer one or more field values?
@@ -560,9 +580,11 @@ export function processRingContinuityTurn(ctx) {
     logger?.info?.('stage6.ring_continuity_script_entered', {
       sessionId,
       circuit_ref: circuitRef,
+      entry_designation_matched: entryDesignationMatched,
       pre_existing_filled: Object.keys(existing).filter((f) => RING_FIELDS.includes(f)),
       volunteered_writes: writes.map((w) => w.field),
       pending_writes: session.ringContinuityScript.pending_writes.map((w) => w.field),
+      textPreview: text.slice(0, 80),
     });
 
     // What do we ask next?
@@ -613,6 +635,7 @@ export function processRingContinuityTurn(ctx) {
       sessionId,
       circuit_ref: state.circuit_ref,
       filled,
+      textPreview: text.slice(0, 80),
     });
     safeSend(
       ws,
@@ -638,6 +661,7 @@ export function processRingContinuityTurn(ctx) {
       from_ref: state.circuit_ref,
       to_ref: newRef,
       partial_filled_on_old: Object.keys(state.values).length,
+      textPreview: text.slice(0, 80),
     });
     // Clear old state — the 60s timeout module's per-circuit state
     // covers any partial fill on the old circuit. Then re-run entry
@@ -653,6 +677,7 @@ export function processRingContinuityTurn(ctx) {
       sessionId,
       circuit_ref: state.circuit_ref,
       filled: Object.keys(state.values).length,
+      textPreview: text.slice(0, 80),
     });
     clearScript(session);
     return { handled: true, fallthrough: true, transcriptText };
@@ -720,6 +745,7 @@ export function processRingContinuityTurn(ctx) {
           (f) => !writes.some((w) => w.field === f)
         ),
         drained_pending_writes: writes.map((w) => w.field),
+        textPreview: text.slice(0, 80),
       });
     } else {
       // Couldn't resolve a circuit from this turn. Before giving up,
