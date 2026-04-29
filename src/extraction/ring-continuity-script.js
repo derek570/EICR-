@@ -294,12 +294,21 @@ function extractNamedFieldValues(text) {
  * Initialise script state on the session. Idempotent — replaces any
  * existing state. Safe to call as part of entry handling even if a stale
  * state object is hanging around from a prior cancelled run.
+ *
+ * `pending_writes` (added 2026-04-29 — Fix A from session 74201B27):
+ * holds field/value pairs the inspector volunteered while the script
+ * had no `circuit_ref` yet. Drained when the circuit resolves (digit or
+ * designation match in the active path's circuit-resolution block).
+ * Discarded if the circuit never resolves and the script exits via
+ * fallthrough — that data class is genuinely unrecoverable without
+ * Fix C's last-named-circuit fallback (deliberately deferred).
  */
 function initScript(session, circuit_ref, now) {
   session.ringContinuityScript = {
     active: true,
     circuit_ref,
     values: {},
+    pending_writes: [],
     entered_at: now,
     last_turn_at: now,
   };
@@ -507,8 +516,17 @@ export function processRingContinuityTurn(ctx) {
     const existing = circuitRef ? readExistingRingValues(session, circuitRef) : {};
 
     // Did the entry utterance also volunteer one or more field values?
-    // ("Ring continuity for circuit 13. Lives are 0.43.")
-    const volunteered = circuitRef ? extractNamedFieldValues(text) : [];
+    // ("Ring continuity for circuit 13. Lives are 0.43." OR — the case
+    // Fix A unblocks — "Ring continuity is lives are 0.75." with no
+    // circuit named, where the inspector dictated the R1 reading
+    // upfront and we ask for the circuit on the next turn.)
+    //
+    // Bug A (session 74201B27, 2026-04-29): the original code guarded
+    // this extract on `circuitRef`, so volunteered values landed on
+    // the floor whenever the entry utterance carried readings without
+    // a circuit number. ALWAYS extract; let the queue (pending_writes)
+    // hold the values until the circuit resolves.
+    const volunteered = extractNamedFieldValues(text);
 
     initScript(session, circuitRef, now);
     // Seed values from existing snapshot AND from any volunteered fields.
@@ -523,8 +541,16 @@ export function processRingContinuityTurn(ctx) {
       // inspector may be re-stating; we don't overwrite without an
       // explicit clear.
       if (session.ringContinuityScript.values[w.field] !== undefined) continue;
-      applyWrite(session, circuitRef, w.field, w.value, now);
-      writes.push(w);
+      if (circuitRef !== null) {
+        // Circuit known → write immediately, same as before Fix A.
+        applyWrite(session, circuitRef, w.field, w.value, now);
+        writes.push(w);
+      } else {
+        // Circuit not yet known → queue. The active path's
+        // circuit-resolution block drains pending_writes once a digit
+        // or designation answer lands.
+        session.ringContinuityScript.pending_writes.push(w);
+      }
     }
 
     if (writes.length > 0) {
@@ -536,6 +562,7 @@ export function processRingContinuityTurn(ctx) {
       circuit_ref: circuitRef,
       pre_existing_filled: Object.keys(existing).filter((f) => RING_FIELDS.includes(f)),
       volunteered_writes: writes.map((w) => w.field),
+      pending_writes: session.ringContinuityScript.pending_writes.map((w) => w.field),
     });
 
     // What do we ask next?
@@ -631,22 +658,126 @@ export function processRingContinuityTurn(ctx) {
     return { handled: true, fallthrough: true, transcriptText };
   }
 
-  // 4. Did the user volunteer one or more named-field values?
-  const named = extractNamedFieldValues(text);
+  // 4. Resolve circuit FIRST if pending. Digit answer ("circuit 1" /
+  //    "1") preferred; designation answer ("downstairs sockets") falls
+  //    out via Fix B's findCircuitByDesignation. If neither resolves,
+  //    the script can't move forward — exit with fallthrough so Sonnet
+  //    sees the same transcript on its normal path.
+  //
+  //    Reordered 2026-04-29: previously this block ran AFTER the value-
+  //    extraction block, which meant a "Circuit 1, neutrals 0.43" answer
+  //    would silently drop the named-field portion (the writes-loop
+  //    skipped because state.circuit_ref was still null). Resolving
+  //    first lets the value loop fire on the same turn that resolved
+  //    the circuit.
   const writes = [];
-  if (state.circuit_ref !== null) {
-    for (const w of named) {
-      if (state.values[w.field] !== undefined) continue; // don't overwrite
-      applyWrite(session, state.circuit_ref, w.field, w.value, now);
-      writes.push(w);
+  let drainedFromPending = false;
+  let circuitResolvedThisTurn = false;
+  if (state.circuit_ref === null) {
+    const m = text.match(/\bcircuit\s*(\d{1,3})\b|^\s*(\d{1,3})\s*\.?\s*$/i);
+    let ref = m ? Number(m[1] ?? m[2]) : NaN;
+
+    // Fix B (2026-04-29, session 74201B27): designation lookup. If the
+    // inspector answered "downstairs sockets" rather than "circuit 1",
+    // search the snapshot for a unique designation match.
+    if (!Number.isInteger(ref) || ref <= 0) {
+      const designationMatch = findCircuitByDesignation(session, text);
+      if (designationMatch !== null) {
+        ref = designationMatch;
+        logger?.info?.('stage6.ring_continuity_script_designation_match', {
+          sessionId,
+          circuit_ref: ref,
+          textPreview: text.slice(0, 80),
+        });
+      }
+    }
+
+    if (Number.isInteger(ref) && ref > 0) {
+      state.circuit_ref = ref;
+      circuitResolvedThisTurn = true;
+      const existing = readExistingRingValues(session, ref);
+      for (const [f, v] of Object.entries(existing)) {
+        if (RING_FIELDS.includes(f) && v !== '' && v !== null && v !== undefined) {
+          state.values[f] = v;
+        }
+      }
+      // Drain pending_writes onto the now-resolved circuit. Skip any
+      // field already filled (existing snapshot win or the inspector
+      // said it twice between entry and resolution).
+      if (Array.isArray(state.pending_writes) && state.pending_writes.length > 0) {
+        for (const w of state.pending_writes) {
+          if (state.values[w.field] !== undefined) continue;
+          applyWrite(session, ref, w.field, w.value, now);
+          writes.push(w);
+          drainedFromPending = true;
+        }
+        state.pending_writes = [];
+      }
+      logger?.info?.('stage6.ring_continuity_script_circuit_resolved', {
+        sessionId,
+        circuit_ref: ref,
+        pre_existing_filled: Object.keys(state.values).filter(
+          (f) => !writes.some((w) => w.field === f)
+        ),
+        drained_pending_writes: writes.map((w) => w.field),
+      });
+    } else {
+      // Inspector said something we couldn't parse as a circuit (digit
+      // or designation). Exit and let Sonnet handle it normally — any
+      // pending_writes from the entry utterance are genuinely lost
+      // (Fix C, deferred, would route them to a last-named-circuit
+      // fallback). Logged for analytics / future tuning.
+      logger?.info?.('stage6.ring_continuity_script_unresolvable_circuit', {
+        sessionId,
+        textPreview: text.slice(0, 80),
+        discarded_pending_writes: Array.isArray(state.pending_writes)
+          ? state.pending_writes.map((w) => w.field)
+          : [],
+      });
+      clearScript(session);
+      return { handled: true, fallthrough: true, transcriptText };
     }
   }
 
-  // 5. If no named fields matched, treat a bare value as the currently-
-  //    expected field. (This is the "Neutrals are." → "0.43." case from
-  //    session B107472D — the bare value lands as Rn because `expecting`
-  //    advanced past R1 already.)
-  if (writes.length === 0 && state.circuit_ref !== null) {
+  // 5. Did the user volunteer one or more named-field values on THIS
+  //    turn? Runs AFTER circuit resolution above, so a "Circuit 1,
+  //    neutrals 0.43" answer applies the Rn write on the same turn.
+  const named = extractNamedFieldValues(text);
+  for (const w of named) {
+    if (state.values[w.field] !== undefined) continue; // don't overwrite
+    applyWrite(session, state.circuit_ref, w.field, w.value, now);
+    writes.push(w);
+  }
+
+  // 6. If no named fields matched on this turn (and pending didn't
+  //    cover everything), treat a bare value as the currently-expected
+  //    field. (This is the "Neutrals are." → "0.43." case from session
+  //    B107472D — the bare value lands as Rn because `expecting`
+  //    advanced past R1 already. Also covers the "Note tools are 0.75"
+  //    Deepgram-garbled case from session 74201B27 — even when the
+  //    field word is mangled, the bare numeric still lands on the next
+  //    missing slot.)
+  //
+  //    Suppress the bare-value fallback when:
+  //    a) we just drained pending writes from an entry-without-circuit
+  //       answer turn (the utterance has already been consumed by the
+  //       resolver — e.g. "downstairs sockets" → designation match →
+  //       c1 → drained R1), OR
+  //    b) circuit_ref was JUST resolved from this turn's text. The
+  //       digit that resolved the circuit ("circuit 13" / bare "13")
+  //       would otherwise re-parse as bareValue="13" and write
+  //       ring_r1_ohm=13 — clearly nonsensical. Same logic for the
+  //       designation path: "downstairs sockets" alone won't parse,
+  //       but "circuit 13, 0.43" is genuinely ambiguous (could be R1
+  //       or just punctuation), so we conservatively suppress and
+  //       require the user to use a field word ("lives 0.43") for
+  //       same-turn value disambiguation.
+  if (
+    !drainedFromPending &&
+    !circuitResolvedThisTurn &&
+    named.length === 0 &&
+    state.circuit_ref !== null
+  ) {
     const bareValue = parseValue(text);
     if (bareValue !== null) {
       const expected = nextMissingField(state.values);
@@ -659,38 +790,6 @@ export function processRingContinuityTurn(ctx) {
 
   if (writes.length > 0) {
     safeSend(ws, buildExtractionPayload(state.circuit_ref, writes));
-  }
-
-  // 6. Did the inspector also (or only) say a circuit number on a "which
-  //    circuit?" pending state? If `state.circuit_ref` is null and the
-  //    transcript carries a parseable digit-only utterance, treat it as
-  //    the circuit answer.
-  if (state.circuit_ref === null) {
-    const m = text.match(/\bcircuit\s*(\d{1,3})\b|^\s*(\d{1,3})\s*\.?\s*$/i);
-    const ref = m ? Number(m[1] ?? m[2]) : NaN;
-    if (Number.isInteger(ref) && ref > 0) {
-      state.circuit_ref = ref;
-      const existing = readExistingRingValues(session, ref);
-      for (const [f, v] of Object.entries(existing)) {
-        if (RING_FIELDS.includes(f) && v !== '' && v !== null && v !== undefined) {
-          state.values[f] = v;
-        }
-      }
-      logger?.info?.('stage6.ring_continuity_script_circuit_resolved', {
-        sessionId,
-        circuit_ref: ref,
-        pre_existing_filled: Object.keys(state.values),
-      });
-    } else {
-      // Inspector said something we couldn't parse as a circuit — exit
-      // and let Sonnet handle it normally.
-      logger?.info?.('stage6.ring_continuity_script_unresolvable_circuit', {
-        sessionId,
-        textPreview: text.slice(0, 80),
-      });
-      clearScript(session);
-      return { handled: true, fallthrough: true, transcriptText };
-    }
   }
 
   // 7. Are we done?
@@ -712,6 +811,78 @@ export function processRingContinuityTurn(ctx) {
     })
   );
   return { handled: true, fallthrough: false };
+}
+
+/**
+ * Look up a circuit by its designation in the snapshot. Used when the
+ * inspector answers a "Which circuit is the ring continuity for?" prompt
+ * by NAME ("downstairs sockets") rather than NUMBER ("circuit 1").
+ *
+ * Background — Bug B from session 74201B27 (2026-04-29 09:33 BST): the
+ * inspector created circuit 1 with designation "downstairs sockets",
+ * then said "Ring continuity is lives are 0.75". The script asked
+ * "Which circuit?" and they answered with the designation
+ * ("downstairs sockets") — the natural way to refer to the circuit they
+ * had just named. The original parser only accepted digit form
+ * ("circuit 1" or bare "1") so the script gave up and the R1 reading
+ * was lost.
+ *
+ * The agentic system prompt at `config/prompts/sonnet_agentic_system.md:47`
+ * already documents the "DESCRIPTION MATCHING: schedule match → use"
+ * pattern for Sonnet's own circuit lookups; this helper applies the same
+ * idea to the script's own answer parser.
+ *
+ * Match rules:
+ *   - Lowercase + collapse whitespace on BOTH sides.
+ *   - Bidirectional substring match: the user's text may be a longer
+ *     sentence containing the designation ("it's the downstairs sockets
+ *     one"), or a shorter prefix of the designation ("downstairs" when
+ *     the canonical name is "downstairs sockets"). Either way is a
+ *     legitimate designation reference; users don't always recite the
+ *     full canonical name.
+ *   - Returns the circuit_ref if exactly ONE designation matches.
+ *   - Returns null if zero or two-plus circuits match (ambiguous).
+ *   - Skips circuit 0 — that bucket is the supply / installation slot,
+ *     not a real circuit.
+ *
+ * @param {object} session     EICRExtractionSession instance.
+ * @param {string} text        User's transcript text.
+ * @returns {number | null}    circuit_ref if unambiguous, else null.
+ */
+function findCircuitByDesignation(session, text) {
+  if (typeof text !== 'string' || !text) return null;
+  const snapshot = session?.stateSnapshot;
+  if (!snapshot?.circuits) return null;
+  const normalised = text.toLowerCase().replace(/\s+/g, ' ').trim();
+  if (!normalised) return null;
+
+  const circuits = snapshot.circuits;
+  const entries = Array.isArray(circuits)
+    ? circuits.map((c) => [c?.circuit_ref, c])
+    : Object.entries(circuits);
+
+  const matches = [];
+  for (const [refKey, bucket] of entries) {
+    if (!bucket || typeof bucket !== 'object') continue;
+    const ref = Number(refKey);
+    // circuit 0 is the supply / installation bucket — not askable.
+    if (!Number.isInteger(ref) || ref <= 0) continue;
+    const designation = bucket.designation;
+    if (typeof designation !== 'string' || !designation.trim()) continue;
+    const normDes = designation.toLowerCase().replace(/\s+/g, ' ').trim();
+    if (!normDes) continue;
+    // Bidirectional substring — user may say more or less than the
+    // canonical designation. Both directions are intentional reference
+    // forms ("the downstairs sockets one" or "downstairs" → "downstairs
+    // sockets").
+    if (normalised.includes(normDes) || normDes.includes(normalised)) {
+      matches.push(ref);
+    }
+  }
+  // Deduplicate (in case the iteration produced a circuit twice via
+  // string + number key collision).
+  const unique = Array.from(new Set(matches));
+  return unique.length === 1 ? unique[0] : null;
 }
 
 /**
@@ -776,6 +947,7 @@ export const __testing__ = {
   extractNamedFieldValues,
   nextMissingField,
   readExistingRingValues,
+  findCircuitByDesignation,
   initScript,
   clearScript,
   buildScriptAsk,
