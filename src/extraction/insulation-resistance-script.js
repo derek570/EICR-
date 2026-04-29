@@ -84,10 +84,20 @@ const VOLTAGE_PROMPT = 'What was the test voltage?';
  * unrelated speech.
  *
  * Garbled Deepgram variants of "resistance" tolerated up to similar shape.
+ *
+ * Head-word alternation `(?:insulation|installation)` (2026-04-29, session
+ * 6754FE6E): Deepgram routinely mishears "insulation" as "installation"
+ * — both end in "-stallation"-shaped acoustics and "installation
+ * resistance" is a phrase the model favours from training data. Without
+ * this alternation, the IR script never enters and the IR walk-through
+ * is skipped entirely (the failure mode that left a half-filled IR row
+ * in session 6754FE6E). Acceptable false-positive surface: someone
+ * narrating about an actual installation alongside the word "resistance"
+ * — vanishingly unlikely in mid-test dictation.
  */
 const IR_ENTRY_PATTERNS = [
-  // 1. Full: "insulation resistance" + optional "circuit N"
-  /\binsulation\s+(?:resistance|res(?:istance|istence|istense)?)\b(?:[^.?!]{0,50}?\bcircuit\s*(\d{1,3})\b)?/i,
+  // 1. Full: "insulation/installation resistance" + optional "circuit N"
+  /\b(?:insulation|installation)\s+(?:resistance|res(?:istance|istence|istense)?)\b(?:[^.?!]{0,50}?\bcircuit\s*(\d{1,3})\b)?/i,
   // 2. Terse: "IR for circuit N" — requires "circuit N" trailer.
   /^(?:\s*(?:so|right|ok(?:ay)?|now)[\s,]+)?\bi\s*r\b[^.?!]{0,30}?\bcircuit\s*(\d{1,3})\b/i,
 ];
@@ -210,6 +220,11 @@ export function parseValue(text) {
   }
 
   // 2. Saturation sentinels — meter is over-range. Canonical ">999".
+  //    DELIBERATELY EXCLUDED: "LIM" / "limit" / "limitation". These are
+  //    EICR conventions for "test not performed due to access/safety
+  //    limitation" — they are NOT saturation readings and must never be
+  //    written as a numeric IR value. A separate limitation-handling
+  //    flow (out of scope here) is the right place for that signal.
   if (
     /\b(?:infinite|infinity|off\s*scale|out\s*of\s*range|o\s*l|max(?:ed)?(?:\s+out)?)\b/i.test(text)
   ) {
@@ -564,7 +579,26 @@ export function processInsulationResistanceTurn(ctx) {
     const entry = detectEntry(text);
     if (!entry.matched) return { handled: false };
 
-    const circuitRef = entry.circuit_ref;
+    // Entry-time designation lookup (2026-04-29, mirrors ring-continuity-
+    // script.js fix from session 6754FE6E): the entry regex's circuit-
+    // capture group only matches the literal word "circuit" + digits.
+    // An inspector saying "insulation resistance for upstairs sockets,
+    // live to live is 200" matches the head but the "for upstairs
+    // sockets" portion is invisible to the capture group, so the script
+    // would ask "Which circuit?" — even though the designation was right
+    // there. When the regex didn't capture a digit, run
+    // findCircuitByDesignation against the entry text. The same helper
+    // already runs in the active path's resolve block; calling it one
+    // turn earlier removes the unnecessary disambiguation prompt.
+    let circuitRef = entry.circuit_ref;
+    let entryDesignationMatched = false;
+    if (circuitRef === null) {
+      const designationMatch = findCircuitByDesignation(session, text);
+      if (designationMatch !== null) {
+        circuitRef = designationMatch;
+        entryDesignationMatched = true;
+      }
+    }
     const existing = circuitRef ? readExistingIrValues(session, circuitRef) : {};
     const volunteered = extractNamedFieldValues(text);
 
@@ -596,11 +630,13 @@ export function processInsulationResistanceTurn(ctx) {
     logger?.info?.('stage6.insulation_resistance_script_entered', {
       sessionId,
       circuit_ref: circuitRef,
+      entry_designation_matched: entryDesignationMatched,
       pre_existing_filled: Object.keys(existing).filter((f) =>
         [...IR_FIELDS, VOLTAGE_FIELD].includes(f)
       ),
       volunteered_writes: writes.map((w) => w.field),
       pending_writes: session.insulationResistanceScript.pending_writes.map((w) => w.field),
+      textPreview: text.slice(0, 80),
     });
 
     if (circuitRef === null) {
@@ -659,6 +695,7 @@ export function processInsulationResistanceTurn(ctx) {
       sessionId,
       circuit_ref: state.circuit_ref,
       filled,
+      textPreview: text.slice(0, 80),
     });
     safeSend(
       ws,
@@ -684,6 +721,7 @@ export function processInsulationResistanceTurn(ctx) {
       from_ref: state.circuit_ref,
       to_ref: newRef,
       partial_filled_on_old: Object.keys(state.values).filter((f) => IR_FIELDS.includes(f)).length,
+      textPreview: text.slice(0, 80),
     });
     clearScript(session);
     return processInsulationResistanceTurn({ ...ctx, now });
@@ -695,6 +733,7 @@ export function processInsulationResistanceTurn(ctx) {
       sessionId,
       circuit_ref: state.circuit_ref,
       filled: Object.keys(state.values).filter((f) => IR_FIELDS.includes(f)).length,
+      textPreview: text.slice(0, 80),
     });
     clearScript(session);
     return { handled: true, fallthrough: true, transcriptText };
@@ -751,6 +790,7 @@ export function processInsulationResistanceTurn(ctx) {
           (f) => !writes.some((w) => w.field === f)
         ),
         drained_pending_writes: writes.map((w) => w.field),
+        textPreview: text.slice(0, 80),
       });
     } else {
       // Couldn't resolve a circuit. Mirror ring's "queue values, stay

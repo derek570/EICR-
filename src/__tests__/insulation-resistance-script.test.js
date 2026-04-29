@@ -782,3 +782,295 @@ describe('__testing__ exports are stable', () => {
     expect(__testing__.VOLTAGE_FIELD).toBe('ir_test_voltage_v');
   });
 });
+
+// ---------------------------------------------------------------------------
+// "installation" Deepgram garbling tolerance (2026-04-29, session 6754FE6E)
+// ---------------------------------------------------------------------------
+//
+// Deepgram routinely mishears "insulation resistance" → "installation
+// resistance". Without the head-word alternation in IR_ENTRY_PATTERNS, the
+// IR script never enters and the IR walk-through is skipped — the failure
+// mode that left a half-filled IR row in session 6754FE6E.
+describe('"installation" Deepgram garbling tolerance', () => {
+  test('detectEntry accepts "installation resistance for circuit 3"', () => {
+    expect(detectEntry('Installation resistance for circuit 3.')).toEqual({
+      matched: true,
+      circuit_ref: 3,
+    });
+  });
+
+  test('detectEntry accepts "installation resistance" without circuit', () => {
+    expect(detectEntry('Installation resistance.')).toEqual({
+      matched: true,
+      circuit_ref: null,
+    });
+  });
+
+  test('full session repro — "installation resistance for upstairs sockets" enters and resolves', () => {
+    const session = buildSession({
+      2: { designation: 'Upstairs Sockets' },
+    });
+    const ws = new MockWS();
+    const out = processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'Installation resistance for upstairs sockets.',
+      now: 1000,
+    });
+    expect(out).toEqual({ handled: true, fallthrough: false });
+    expect(session.insulationResistanceScript.circuit_ref).toBe(2);
+    // First emit: ask for live-to-live (the canonical first IR reading).
+    expect(ws.sent[0].context_field).toBe('ir_live_live_mohm');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// "LIM" / "Limitation" must NOT parse as a value.
+// ---------------------------------------------------------------------------
+//
+// EICR convention: when an inspector says "LIM" / "limit" / "limitation",
+// they mean the test could not be performed (access / safety constraint).
+// It is NOT a saturation reading. Mapping it to ">999" would silently
+// record a passing IR test that never happened. parseValue must return
+// null for these forms so a separate limitation-handling flow can pick
+// up the signal without poisoning the numeric value.
+describe('LIM / limitation must NOT parse as a saturation value', () => {
+  test('parseValue("LIM") → null (not a value)', () => {
+    expect(parseValue('LIM')).toBeNull();
+  });
+
+  test('parseValue("limit") → null (not a value)', () => {
+    expect(parseValue('limit')).toBeNull();
+  });
+
+  test('parseValue("limitation") → null (not a value)', () => {
+    expect(parseValue('limitation')).toBeNull();
+  });
+
+  test('extractNamedFieldValues("live to live LIM") → no IR write', () => {
+    expect(extractNamedFieldValues('live to live LIM')).toEqual([]);
+  });
+
+  test('extractNamedFieldValues("live to earth limitation") → no IR write', () => {
+    expect(extractNamedFieldValues('live to earth limitation')).toEqual([]);
+  });
+
+  test('numeric readings still parse fine alongside lim-shaped words', () => {
+    // Sanity: removing the LIM sentinel must not break numeric parsing.
+    expect(parseValue('200')).toBe('200');
+    expect(parseValue('greater than 999')).toBe('>999');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Entry-time designation lookup (2026-04-29, session 6754FE6E)
+// ---------------------------------------------------------------------------
+//
+// Mirrors the ring-continuity-script.js fix. The entry regex's circuit-
+// capture group only matches `circuit\s*\d+`, so an entry sentence
+// containing a designation but no circuit number used to ask "Which
+// circuit?" — even though the designation was in the trigger text.
+describe('IR entry-time designation lookup', () => {
+  test('"Insulation resistance for upstairs sockets, live to live 200" resolves immediately', () => {
+    const session = buildSession({
+      2: { designation: 'Upstairs Sockets' },
+    });
+    const ws = new MockWS();
+    const out = processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'Insulation resistance for upstairs sockets, live to live 200.',
+      now: 1000,
+    });
+    expect(out).toEqual({ handled: true, fallthrough: false });
+    expect(session.insulationResistanceScript.circuit_ref).toBe(2);
+    expect(session.insulationResistanceScript.pending_writes).toEqual([]);
+    // L-L written immediately, then ask for L-E.
+    expect(session.stateSnapshot.circuits[2].ir_live_live_mohm).toBe('200');
+    expect(ws.sent).toHaveLength(2);
+    expect(ws.sent[0].type).toBe('extraction');
+    expect(ws.sent[0].result.readings).toEqual([
+      {
+        field: 'ir_live_live_mohm',
+        circuit: 2,
+        value: '200',
+        confidence: 1.0,
+        source: 'ir_script',
+      },
+    ]);
+    expect(ws.sent[1]).toMatchObject({
+      type: 'ask_user_started',
+      reason: 'missing_value',
+      context_field: 'ir_live_earth_mohm',
+      context_circuit: 2,
+    });
+  });
+
+  test('entry-only designation ("IR for downstairs sockets") resolves circuit and asks for L-L', () => {
+    const session = buildSession({
+      1: { designation: 'Downstairs Sockets' },
+    });
+    const ws = new MockWS();
+    processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'Insulation resistance for downstairs sockets.',
+      now: 1000,
+    });
+    expect(session.insulationResistanceScript.circuit_ref).toBe(1);
+    expect(ws.sent).toHaveLength(1);
+    expect(ws.sent[0].context_field).toBe('ir_live_live_mohm');
+    expect(ws.sent[0].context_circuit).toBe(1);
+  });
+
+  test('ambiguous designation at entry falls back to "Which circuit?"', () => {
+    const session = buildSession({
+      1: { designation: 'downstairs sockets' },
+      2: { designation: 'upstairs sockets' },
+    });
+    const ws = new MockWS();
+    processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'Insulation resistance for sockets, live to live 200.',
+      now: 1000,
+    });
+    expect(session.insulationResistanceScript.circuit_ref).toBeNull();
+    expect(session.insulationResistanceScript.pending_writes).toEqual([
+      { field: 'ir_live_live_mohm', value: '200' },
+    ]);
+    expect(ws.sent[0].question).toMatch(/which circuit/i);
+  });
+
+  test('explicit circuit digit at entry still wins over designation lookup', () => {
+    const session = buildSession({
+      2: { designation: 'Upstairs Sockets' },
+      5: { designation: 'Garage' },
+    });
+    const ws = new MockWS();
+    processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'Insulation resistance for circuit 5, the upstairs sockets one.',
+      now: 1000,
+    });
+    expect(session.insulationResistanceScript.circuit_ref).toBe(5);
+  });
+
+  test('logs textPreview + entry_designation_matched=true on script_entered', () => {
+    const session = buildSession({
+      2: { designation: 'Upstairs Sockets' },
+    });
+    const ws = new MockWS();
+    const calls = [];
+    const logger = {
+      info: (msg, fields) => calls.push({ msg, fields }),
+    };
+    processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'Insulation resistance for upstairs sockets.',
+      now: 1000,
+      logger,
+    });
+    const entered = calls.find((c) => c.msg === 'stage6.insulation_resistance_script_entered');
+    expect(entered).toBeDefined();
+    expect(entered.fields.entry_designation_matched).toBe(true);
+    expect(entered.fields.circuit_ref).toBe(2);
+    expect(entered.fields.textPreview).toMatch(/Insulation resistance for upstairs sockets/);
+  });
+
+  test('logs entry_designation_matched=false when entry already had a digit', () => {
+    const session = buildSession();
+    const ws = new MockWS();
+    const calls = [];
+    const logger = {
+      info: (msg, fields) => calls.push({ msg, fields }),
+    };
+    processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'Insulation resistance for circuit 7.',
+      now: 1000,
+      logger,
+    });
+    const entered = calls.find((c) => c.msg === 'stage6.insulation_resistance_script_entered');
+    expect(entered.fields.entry_designation_matched).toBe(false);
+    expect(entered.fields.circuit_ref).toBe(7);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Session 6754FE6E end-to-end repro: garbled "installation" + entry-time
+// designation. Walks the full IR conversation that previously only got
+// one reading written. (LIM is deliberately NOT mapped to a value — see
+// the "LIM / limitation must NOT parse" describe block above.)
+// ---------------------------------------------------------------------------
+describe('Session 6754FE6E end-to-end repro', () => {
+  test('"Installation resistance for upstairs sockets" → walk-through completes', () => {
+    const session = buildSession({
+      2: { designation: 'Upstairs Sockets' },
+    });
+    const ws = new MockWS();
+
+    // Turn 1: garbled entry with designation. Without the entry-time
+    // designation fix this would ask "Which circuit?"; without the
+    // "installation" head-word alternation the script wouldn't enter
+    // at all and the IR walk-through would never run.
+    processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'Installation resistance for upstairs sockets.',
+      now: 1000,
+    });
+    expect(session.insulationResistanceScript.active).toBe(true);
+    expect(session.insulationResistanceScript.circuit_ref).toBe(2);
+
+    // Turn 2: live-to-live answer.
+    processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: '200',
+      now: 2000,
+    });
+    expect(session.stateSnapshot.circuits[2].ir_live_live_mohm).toBe('200');
+
+    // Turn 3: live-to-earth answer.
+    processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'live to earth 200',
+      now: 3000,
+    });
+    expect(session.stateSnapshot.circuits[2].ir_live_earth_mohm).toBe('200');
+
+    // Turn 4: voltage answer (script asks for it after both readings if
+    // ir_test_voltage_v wasn't already populated).
+    processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: '500',
+      now: 4000,
+    });
+
+    // Walk-through complete: both readings written, voltage captured,
+    // script cleared.
+    expect(session.stateSnapshot.circuits[2]).toMatchObject({
+      ir_live_live_mohm: '200',
+      ir_live_earth_mohm: '200',
+      ir_test_voltage_v: '500',
+    });
+    expect(session.insulationResistanceScript).toBeFalsy();
+  });
+});
