@@ -798,25 +798,30 @@ export function assembleGeometricResult(perSlotState) {
 }
 
 /**
- * Small, fast VLM call that returns only board_technology + main_switch_position.
+ * Small, fast VLM call that returns board-level metadata (no per-circuit data).
  *
- * Purpose: route the subsequent per-slot geometric pipeline (modern vs rewireable).
- * Running this in parallel to the big single-shot prompt keeps total latency flat
- * — the classifier returns in ~3s and lets us kick off the correct geometric
- * extractor while single-shot is still running. Single-shot is the authoritative
- * source of board_technology in the final response; this cheap call is ONLY used
- * for geometric pipeline routing and is discarded afterwards.
+ * Returns: board_technology (routes the per-slot pipeline modern vs rewireable),
+ * main_switch_position (drives BS-7671 circuit numbering), board_manufacturer +
+ * board_model (used for RCD-type lookup against the manufacturer datasheet),
+ * main_switch_rating (cert field), spd_present (cert field; cross-checked against
+ * Stage 3 slot classifications which can also flag an SPD by its module shape).
+ *
+ * Single-shot Sonnet was retired 2026-04-29 — it ran a 130-line full-board prompt
+ * for ~46s every extraction to produce these same five fields plus a circuits[]
+ * that the per-slot merger immediately overwrote anyway. Folding board metadata
+ * into this small fast classifier (~5s) drops wall-clock from ~47s → ~21s and
+ * cost from ~$0.10 → ~$0.04 per extraction.
  *
  * @param {string} base64 — base64-encoded JPEG
  * @param {object} anthropic — Anthropic client
  * @param {string} model — model id (e.g. claude-sonnet-4-6)
- * @returns {Promise<{boardTechnology:string, mainSwitchPosition:string, confidence:number, usage:{inputTokens:number,outputTokens:number}}>}
+ * @returns {Promise<{boardTechnology:string, mainSwitchPosition:string, boardManufacturer:(string|null), boardModel:(string|null), mainSwitchRating:(string|null), spdPresent:boolean, confidence:number, usage:{inputTokens:number,outputTokens:number}}>}
  */
 export async function classifyBoardTechnology(base64, anthropic, model) {
-  const prompt = `Look at this UK fuseboard photo. Return ONLY a JSON object:
-{"board_technology": "modern" | "rewireable_fuse" | "cartridge_fuse" | "mixed", "main_switch_position": "left" | "right" | "none", "confidence": 0.0-1.0}
+  const prompt = `Look at this UK fuseboard photo and extract board-level metadata. Return ONLY a JSON object:
+{"board_technology": "modern" | "rewireable_fuse" | "cartridge_fuse" | "mixed", "main_switch_position": "left" | "right" | "none", "board_manufacturer": string|null, "board_model": string|null, "main_switch_rating": string|null, "spd_present": boolean, "confidence": 0.0-1.0}
 
-Definitions:
+board_technology:
 - "modern" — MCBs/RCBOs on DIN rail with toggle levers. ANY board with at least one toggle-style MCB showing a trip-curve letter (B/C/D) IS modern.
 - "rewireable_fuse" — pull-out fuse carriers with semi-enclosed fuse wire (BS 3036). Wylex/MEM/Crabtree/Bill/Ashley. Carrier BODIES are colour-coded (white/blue/yellow/red/green) — the red "push to remove" tab at the top of every Wylex carrier is NOT a rating indicator. No toggles, no curve letters, no test buttons on circuit devices.
 - "cartridge_fuse" — pull-out carriers that contain a cylindrical ceramic HBC cartridge (BS 1361 / BS 88). No rewireable fuse wire visible; cartridge face usually stamped with amp rating.
@@ -824,11 +829,21 @@ Definitions:
 
 main_switch_position: which side of the circuit devices the main isolator / pull-out switch-fuse sits — "left", "right", or "none" (if inline with the circuit row with no clear handedness).
 
+board_manufacturer: brand printed on the cover or main switch (e.g. "Wylex", "Hager", "MK", "Crabtree", "Schneider", "BG", "Eaton", "Contactum", "Chint", "Lewden"). Null if not legible.
+
+board_model: model code printed on the cover or label (e.g. "NHRS12SL", "VML112", "LN5512", "CUCRB12W"). Null if not legible.
+
+main_switch_rating: amp rating of the main switch / isolator as a number-only string (e.g. "100", "80", "63"). Read from the device face — "100A AC22A", "WS100", etc. Null if unreadable.
+
+spd_present: true if a Surge Protection Device module is visible on the rail (status indicator window, no toggle, typically 2-3 modules wide, often labelled "SPD" or with a green/red status indicator). False otherwise. Rewireable-fuse boards almost never have an SPD.
+
+confidence: your overall confidence in the metadata you extracted, 0.0-1.0.
+
 Return ONLY the JSON object.`;
 
   const response = await anthropic.messages.create({
     model,
-    max_tokens: 200,
+    max_tokens: 400,
     messages: [
       {
         role: 'user',
@@ -856,9 +871,29 @@ Return ONLY the JSON object.`;
   }
 
   const parsed = JSON.parse(raw);
+  // Normalise main_switch_rating to a numeric string ("100A" → "100", "80 amp" → "80").
+  // EICR cert field expects amps as a bare number; the prompt asks for a number-only
+  // string but VLMs sometimes append units. Strip non-digits, drop empties.
+  const rawRating =
+    typeof parsed.main_switch_rating === 'string' ? parsed.main_switch_rating.trim() : null;
+  let mainSwitchRating = null;
+  if (rawRating) {
+    const digits = rawRating.match(/\d+/);
+    if (digits) mainSwitchRating = digits[0];
+  }
   return {
     boardTechnology: parsed.board_technology || 'modern',
     mainSwitchPosition: parsed.main_switch_position || 'none',
+    boardManufacturer:
+      typeof parsed.board_manufacturer === 'string' && parsed.board_manufacturer.trim()
+        ? parsed.board_manufacturer.trim()
+        : null,
+    boardModel:
+      typeof parsed.board_model === 'string' && parsed.board_model.trim()
+        ? parsed.board_model.trim()
+        : null,
+    mainSwitchRating,
+    spdPresent: parsed.spd_present === true,
     confidence: typeof parsed.confidence === 'number' ? parsed.confidence : 0,
     usage: {
       inputTokens: response.usage?.input_tokens || 0,
