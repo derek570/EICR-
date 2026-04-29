@@ -1362,329 +1362,157 @@ router.post(
 
       const base64 = Buffer.from(imageBytes).toString('base64');
 
-      // Per-slot primary pipeline (sprint 2026-04-22 + Codex P2 fix 2026-04-22):
+      // Per-slot pipeline (sprint 2026-04-22, single-shot retired 2026-04-29):
       //   1. Build the Anthropic client ONCE up front.
-      //   2. Kick off the single-shot VLM promise IMMEDIATELY so it runs in
-      //      parallel with everything else (Codex P2: previously single-shot
-      //      couldn't start until after `await classifyBoardTechnology` resolved
-      //      — wasted ~3s of serial wait on every request). Single-shot is the
-      //      authoritative source for board-level metadata (main switch, SPD,
-      //      board manufacturer/model, confidence message, questionsForInspector);
-      //      its circuits[] is OVERWRITTEN by the merger when per-slot classifications
-      //      are available.
-      //   3. Run the cheap board_technology classifier (returns in ~3s) to pick
-      //      the geometric pipeline.
-      //   4. Kick off the matching PREPARE pipeline (Stage 1 + 2 only) —
+      //   2. Run the board classifier — extended on 2026-04-29 to return
+      //      board_manufacturer, board_model, main_switch_rating and
+      //      spd_present alongside its original board_technology +
+      //      main_switch_position. Single-shot's only unique outputs were
+      //      these fields (everything else duplicated per-slot work) and
+      //      single-shot was the wall-clock long pole at ~46s; extending
+      //      this fast call to ~5s replaced it without a new round-trip.
+      //   3. Kick off the matching PREPARE pipeline (Stage 1 + 2 only) —
       //      modern -> prepareModernGeometry, rewireable/cartridge/mixed ->
-      //      prepareRewireableGeometry. "mixed" uses the rewireable path because
-      //      that module also handles retrofitted RCD main switches.
-      //   5. After geometry is prepared, dispatch Stage 3 (classifyXXXSlots) and
-      //      Stage 4 (extractSlotLabels) IN PARALLEL via Promise.all — saves
-      //      ~10-15s on wide boards vs. running them sequentially as before.
+      //      prepareRewireableGeometry. "mixed" uses the rewireable path
+      //      because that module also handles retrofitted RCD main switches.
+      //   4. After geometry is prepared, dispatch Stage 3 (classifyXXXSlots)
+      //      and Stage 4 (extractSlotLabels) IN PARALLEL via Promise.all.
+      //   5. Build the `analysis` object from classifier output + slots[]
+      //      via slotsToCircuits, then run the BS-EN / label normalisation
+      //      / RCD-type-lookup enrichers as before.
       //
-      // Kill switch: CCU_GEOMETRIC_V1=false in the task-def disables the whole
-      // per-slot path and falls back to pure single-shot, preserving the pre-sprint
-      // behaviour. Default (env unset or "true") is per-slot ON.
-      const perSlotEnabled = process.env.CCU_GEOMETRIC_V1 !== 'false';
+      // Failure mode: per-slot is now the ONLY path, so prepare/classify
+      // failures bubble up as 502s. There's no single-shot safety net any
+      // more — better to fail loudly than ship circuit data we don't trust.
+      // Wall-clock target ~21s (Stage 4 long pole), cost ~$0.04/extraction.
 
-      // Build the Anthropic SDK client ONCE; reuse for classifier + single-shot.
+      // Build the Anthropic SDK client ONCE; reuse for classifier + per-slot.
       const Anthropic = (await import('@anthropic-ai/sdk')).default;
       const anthropic = new Anthropic({ apiKey: anthropicKey });
 
-      const prompt = `You are an expert UK electrician extracting devices from a consumer unit photo for an EICR certificate. Follow these 4 steps IN ORDER. Return ONLY valid JSON.
-
-## STEP 1: FIND MAIN SWITCH AND CLASSIFY BOARD
-
-### 1a. Main switch
-Look for the device labelled "MAIN SWITCH" on the board (printed text on the board cover, or on the device itself). It is typically the largest device, often 2 modules wide.
-CRITICAL — Confirm it is NOT an RCD/RCCB: the main switch has NO test button, NO "30mA" or sensitivity marking, and NO "RCD"/"RCCB" text on it. Do NOT identify the main switch by toggle colour — RCDs also have red/orange toggles and WILL be misidentified if you rely on colour alone.
-Record: rating (amps), type (Isolator/Switch Disconnector/Switch-Fuse/Rotary Isolator/RCD/RCCB), poles (DP/TP/TPN/4P), BS/EN number, voltage if visible. Note its position on the board (left/right).
-Identify board manufacturer and model if visible (e.g. "Hager", "MK", "Wylex").
-
-On older rewireable-fuse boards the main switch is often a **pull-out switch-fuse** (Wylex-style, integrated with neutral bar) or a **rotary isolator** (MEM). Rating typically 60A/80A/100A. BS/EN is often BS 5419 (legacy) or BS EN 60947-3; set null if not printed. Use main_switch_type "Switch-Fuse" or "Rotary Isolator" accordingly.
-
-### 1b. Board technology
-Classify the board's overcurrent-protection technology. Set board_technology to exactly one of:
-- **"modern"** — toggle-style MCBs / RCBOs on DIN rail, ~18mm modules each. Any board with even one MCB/RCBO is NOT rewireable.
-- **"rewireable_fuse"** — every protective device is a **pull-out fuse carrier** (no toggles). Carriers are typically colour-coded on the body or the fuse-shield tab. Commonly Wylex (bakelite or plastic), MEM, Crabtree, Bill, Ashley. Devices to the protection standard BS 3036 (semi-enclosed rewireable fuse wire).
-- **"cartridge_fuse"** — pull-out carriers that contain a cylindrical HBC cartridge (not rewireable fuse wire). Standard BS 1361 or BS 88-2/88-3.
-- **"mixed"** — combination (e.g. rewireable carriers plus a retrofitted 30mA RCD main switch, or a board where some ways are MCBs and some are fuse carriers).
-
-If unsure between rewireable and cartridge, look at the carrier contents: visible twisted fuse wire = rewireable (BS 3036), cylindrical ceramic/metal cartridge = BS 1361/88-2. If a carrier is closed and you cannot tell, prefer rewireable_fuse for classic domestic Wylex/MEM boards and add a question for the inspector.
-
-### 1c. SPD
-Also check for an SPD module (status indicator window, no toggle, 2-3 modules wide). If present: set spd_present=true and extract type/rating/BS EN/short circuit kA. If absent: spd_present=false. Do NOT copy main switch data into SPD fields — they are completely different components. Rewireable-fuse boards almost never have an SPD.
-
-## STEP 2: SEQUENTIAL DEVICE SCAN
-
-Starting from the device immediately next to the main switch, scan outward one device at a time. For split boards (main switch in middle), scan non-RCD side first, then RCD side. Number circuits sequentially — circuit 1 is nearest the main switch, incrementing outward. Skip standalone RCDs when numbering — they are NOT circuits. Ignore printed circuit numbers on the board (often wrong).
-
-Use the classification rules that match the board_technology from Step 1b.
-
-### 2a. MODERN BOARDS (board_technology = "modern")
-For each position, classify as exactly ONE of:
-- **MCB**: Single-width (18mm), has toggle lever, NO test button. Record type curve (B/C/D) and amp rating from device face.
-- **RCBO**: Double-width (36mm), has BOTH toggle lever AND test button, plus RCD waveform symbol. Record curve, rating, RCD type (count waveform lines: 1=AC, 2=A, 3=B; S or F if letter-marked), and sensitivity (mA). Set is_rcbo=true, rcd_protected=true.
-- **RCD/RCCB**: Double-width, has test button, has sensitivity marking (e.g. 30mA), but NO type curve letter (B/C/D). This is NOT a circuit — do NOT number it. Store its RCD type + sensitivity; apply them to ALL subsequent circuits until the next RCD is encountered.
-- **Blank/Spare**: Flat cover plate, no toggle lever, no device behind it. Record as label:"Spare", ocpd_type:null, ocpd_rating_a:null. NEVER fabricate device data for empty slots.
-- **Spare MCB**: Real MCB with toggle + rating but no label. Record with label:"Spare" and real ocpd_type/rating from the device face.
-
-### 2b. REWIREABLE / CARTRIDGE FUSE BOARDS (board_technology = "rewireable_fuse" | "cartridge_fuse")
-There are NO toggles, NO curve letters, and NO test buttons on the circuit devices. Each way is a pull-out fuse carrier. Classify each position as exactly ONE of:
-- **Fuse carrier (rewireable, BS 3036)** — body or shield tab is COLOUR-CODED. This is the primary signal for the amp rating:
-  - **White = 5A** (typical: lighting)
-  - **Blue = 15A** (typical: immersion heater, old radial)
-  - **Yellow = 20A** (typical: radial)
-  - **Red = 30A** (typical: ring final, legacy cooker)
-  - **Green = 45A** (typical: cooker, shower)
-  If a rating is also printed on the carrier face or carrier tab, it must match the colour. If they disagree, set ocpd_rating_a=null and raise a question for the inspector. Set ocpd_type="Rew", ocpd_bs_en="BS 3036", ocpd_breaking_capacity_ka=null (rewireable fuses have no kA rating).
-- **Fuse carrier (HBC cartridge, BS 1361 / BS 88-2)** — carrier holds a cylindrical ceramic cartridge; face usually stamped with the rating (e.g. 30A, 45A) and often a BS 1361 or BS 88 mark. Set ocpd_type="HRC", ocpd_bs_en="BS 1361" (domestic) or "BS 88-2" (commercial) as appropriate, ocpd_breaking_capacity_ka from device face or null.
-- **Blank/Spare way** — empty carrier socket with no carrier fitted, or blank cover. Record as label:"Spare", ocpd_type:null, ocpd_rating_a:null, ocpd_bs_en:null.
-- **Spare fuse** — fitted carrier with a valid colour/rating but no circuit label. Record with label:"Spare" and real ocpd_type/ocpd_rating_a.
-
-For every circuit on a rewireable or cartridge board, set is_rcbo=false. Set rcd_protected=false and rcd_type=null UNLESS an upstream RCD is clearly visible (e.g. a retrofitted 30mA RCD main switch or an RCD banked ahead of a group of ways); in that case apply the upstream RCD's type and sensitivity to the circuits it protects, same as the modern-board rule.
-
-Do NOT assign a curve letter (B/C/D) to any rewireable or cartridge fuse — ocpd_type is "Rew" or "HRC", never B/C/D.
-
-### 2c. MIXED BOARDS (board_technology = "mixed")
-Apply 2a rules to positions that are MCBs/RCBOs and 2b rules to positions that are fuse carriers. Classify each position on its own merits.
-
-### B6 vs B16 WARNING
-On many MCBs (especially Legrand) the gap between "B" and "6" mimics "B16". Count digits: single "6"=B6 (6A, typical for lighting/smoke), two digits "16"=B16 (16A, typical for sockets). If you read B16 on a lighting or smoke alarm circuit, it is almost certainly B6 — re-examine.
-
-### Amp ratings
-ALWAYS read from the device face. Never assume from circuit name ("Shower" ≠ 40A, "Cooker" ≠ 32A). If not legible, set to null.
-
-### RCD type determination
-1. Read waveform symbol on device: 1 line=AC, 2 lines=A, 3 lines=B, letter S=S, letter F=F. If any hint of a second line below the sine wave, it is Type A not AC.
-2. If symbol not visible, look up by manufacturer+model prefix (Hager ADA=A, ADN=AC; MK H79xx=AC, H68xx=A; BG CURB=AC, CUCRB=A; Wylex WRS=AC, WRSA=A).
-3. If both fail, set rcd_type=null. Never return "RCD" or "RCBO" as rcd_type — only AC, A, B, F, S, or null.
-
-### BS/EN numbers
-Read from device. If not visible, look up: MCB=60898-1, RCBO=61009-1, RCD=61008. Only null if device is unidentifiable.
-
-## STEP 3: LABEL PASS
-
-After all hardware is locked in, scan for labels above/below each device: strip labels, handwritten text, stickers, and circuit details cards (secondary source only — often outdated).
-Match labels to devices by physical proximity. Ignore printed circuit numbers (often wrong). If a label is faded or unclear, set to null — never guess or copy from adjacent positions.
-
-Normalise labels to EICR standard terms (title case):
-Imm/Immersion→Water Heater, Smokes/Smoke/S/D/S/Det→Smoke Alarm, Lts/Ltg→Lights, Skt/Skts→Sockets (keep prefix e.g. "Kitchen Sockets"), CKR→Cooker, Shwr→Shower, Blr→Boiler, FF/F/F→Fridge Freezer, CH→Central Heating, UFH→Underfloor Heating, W/M→Washing Machine, T/D→Tumble Dryer, EV/EVCP→Electric Vehicle.
-A circuit with a visible MCB/RCBO and a readable label is NOT "Spare".
-
-## STEP 4: OUTPUT
-
-Return ONLY valid JSON matching this exact schema:
-{
-  "board_manufacturer": "string or null",
-  "board_model": "string or null",
-  "board_technology": "modern|rewireable_fuse|cartridge_fuse|mixed",
-  "main_switch_rating": "string — amps",
-  "main_switch_position": "left or right",
-  "main_switch_bs_en": "string or null",
-  "main_switch_type": "Isolator|Switch Disconnector|Switch-Fuse|Rotary Isolator|RCD|RCCB or null",
-  "main_switch_poles": "DP|TP|TPN|4P",
-  "main_switch_current": "string — amps",
-  "main_switch_voltage": "string or null",
-  "spd_present": false,
-  "spd_bs_en": "string or null",
-  "spd_type": "string or null",
-  "spd_rated_current_a": "string or null",
-  "spd_short_circuit_ka": "string or null",
-  "confidence": {
-    "overall": 0.85,
-    "image_quality": "clear|partially_readable|poor",
-    "uncertain_fields": ["circuits[2].ocpd_bs_en"],
-    "message": "Brief note about any reading difficulties or looked-up values"
-  },
-  "questionsForInspector": ["Question 1?", "Question 2?"],
-  "circuits": [
-    {
-      "circuit_number": 1,
-      "label": "Kitchen Sockets or null",
-      "ocpd_type": "B|C|D|Rew|HRC or null (null ONLY for blank positions with no physical device)",
-      "ocpd_rating_a": "32 or null",
-      "ocpd_bs_en": "60898-1|61009-1|BS 3036|BS 1361|BS 88-2 or null",
-      "ocpd_breaking_capacity_ka": "6 or null (null for rewireable fuses — they have no kA rating)",
-      "is_rcbo": false,
-      "rcd_protected": true,
-      "rcd_type": "AC|A|B|F|S or null",
-      "rcd_rating_ma": "30 or null",
-      "rcd_bs_en": "61008 or null"
-    }
-  ]
-}
-
-Device type mapping: RCBO→is_rcbo:true, rcd_protected:true, rcd_type from device waveform; MCB behind standalone RCD→is_rcbo:false, rcd_protected:true, rcd_type/sensitivity from upstream RCD; plain MCB (no RCD upstream)→is_rcbo:false, rcd_protected:false, rcd_type:null; rewireable/cartridge fuse (no upstream RCD)→is_rcbo:false, rcd_protected:false, rcd_type:null, ocpd_type "Rew" or "HRC"; rewireable/cartridge fuse behind retrofitted RCD→is_rcbo:false, rcd_protected:true, rcd_type/sensitivity from upstream RCD; blank→all ocpd fields null.
-
-Confidence: overall 0.0-1.0, image_quality clear/partially_readable/poor, uncertain_fields lists guessed/looked-up field paths, message notes reading difficulties and lookups.
-
-questionsForInspector: return EMPTY array [] unless RCD type could not be determined for a circuit. Questions are read aloud via TTS — keep extremely short and conversational. Never ask about BS/EN, ratings, board info, SPD, or labels you already extracted.`;
-
-      // --- Single-shot kickoff (Codex P2 fix 2026-04-22) ---
-      // Start the single-shot VLM call BEFORE awaiting the classifier. Today the
-      // classifier takes ~3s and the single-shot takes ~25-30s; running them in
-      // parallel means single-shot often finishes while Stage 3 is still running,
-      // instead of starting ~3s late on every request. The AbortController timeout
-      // still applies — AbortError bubbles out of the same try/catch below.
-      const abortController = new AbortController();
-      const timeoutId = setTimeout(() => abortController.abort(), CCU_EXTRACTION_TIMEOUT_MS);
+      // --- Stage 1: classifier (board metadata) ---
+      // Extended 2026-04-29 to also produce board_manufacturer, board_model,
+      // main_switch_rating and spd_present (previously only single-shot
+      // produced those). ~5s, ~$0.01.
       const anthropicStartMs = Date.now();
-      const singleShotPromise = anthropic.messages.create(
-        {
-          model,
-          max_tokens: 4096,
-          messages: [
-            {
-              role: 'user',
-              content: [
-                {
-                  type: 'image',
-                  source: { type: 'base64', media_type: 'image/jpeg', data: base64 },
-                },
-                { type: 'text', text: prompt },
-              ],
-            },
-          ],
-        },
-        { signal: abortController.signal }
-      );
-
-      // --- Classifier + per-slot geometric pipeline (kicked off in parallel) ---
-      // Concurrently with single-shot:
-      //   - Run the board_technology classifier (~3s).
-      //   - Once it returns, kick off the matching prepareXXXGeometry (Stages 1+2).
-      //   - Once geometry is ready, dispatch Stage 3 (classifyXXXSlots) and
-      //     Stage 4 (extractSlotLabels) in parallel via Promise.all.
-      //
-      // Wrapped in an async IIFE so single-shot continues running unobstructed
-      // regardless of how the per-slot side goes. All failures inside this block
-      // are logged non-fatal and resolve to a null result — the response still
-      // ships with single-shot circuits[] as a safety net.
-      let boardClassification = null;
-      const perSlotPromise = (async () => {
-        if (!perSlotEnabled) return null;
-
-        try {
-          boardClassification = await classifyBoardTechnology(base64, anthropic, model);
-          logger.info('CCU board_technology classifier', {
-            userId: req.user.id,
-            boardTechnology: boardClassification.boardTechnology,
-            mainSwitchPosition: boardClassification.mainSwitchPosition,
-            confidence: boardClassification.confidence,
-          });
-        } catch (err) {
-          logger.warn('CCU board_technology classifier failed — defaulting to modern path', {
-            userId: req.user.id,
-            error: err.message,
-          });
-          boardClassification = null;
-        }
-
-        const chooseRewireable =
-          boardClassification?.boardTechnology === 'rewireable_fuse' ||
-          boardClassification?.boardTechnology === 'cartridge_fuse' ||
-          boardClassification?.boardTechnology === 'mixed';
-
-        let prepared;
-        try {
-          prepared = chooseRewireable
-            ? await prepareRewireableGeometry(imageBytes)
-            : await prepareModernGeometry(imageBytes, { railRoiHint });
-        } catch (err) {
-          logger.warn('CCU geometric prepare failed (non-fatal)', {
-            userId: req.user.id,
-            path: chooseRewireable ? 'rewireable' : 'modern',
-            error: err.message,
-          });
-          return null;
-        }
-
-        // --- Stage 3 || Stage 4 in parallel (PR latency saver) ---
-        // Stage 4 used to be gated on Stage 3's output (it used slot classifications
-        // as a skip hint for main_switch/spd/blank). Dropping the skip is cheaper
-        // than a ~10-15s serial cost on wide boards — labeling an extra 1-2 slots
-        // per request is fine because the merger skips main_switch/spd classifications
-        // by design, so the extra labels never surface in circuits[].
-        const panelTopNorm = prepared.panelBounds?.top ?? prepared.medianRails?.rail_top ?? null;
-        const panelBottomNorm =
-          prepared.panelBounds?.bottom ?? prepared.medianRails?.rail_bottom ?? null;
-
-        // Coordinate-space detection (Codex P1 commit f2e304d): modern pipeline's
-        // slotCentersX/moduleWidth are 0-1000 normalised, rewireable's are PIXELS.
-        // extractSlotLabels requires PIXELS. Convert for modern, pass-through for
-        // rewireable. Detection via `carrierPitchPx` (rewireable) vs `moduleWidth`
-        // (modern) — same heuristic as the post-label merge site (pipeline result
-        // detects via `carrierPitch` there; here we use `carrierPitchPx` on the
-        // prepared object which is the pre-wrapper name).
-        const isRewireablePipeline = typeof prepared.carrierPitchPx === 'number';
-        const imageWidthForConvert = prepared.imageWidth || 0;
-        const convertNormToPx = (v) =>
-          typeof v === 'number' && imageWidthForConvert > 0
-            ? Math.round((v / 1000) * imageWidthForConvert)
-            : null;
-
-        const labelGeom = {
-          slotCentersX: isRewireablePipeline
-            ? prepared.slotCentersX
-            : (prepared.slotCentersX || []).map((v) => convertNormToPx(v)),
-          slotPitchPx: isRewireablePipeline
-            ? prepared.carrierPitchPx
-            : convertNormToPx(prepared.moduleWidth),
-          panelTopNorm,
-          panelBottomNorm,
-          imageWidth: prepared.imageWidth,
-          imageHeight: prepared.imageHeight,
-          // SKIP HINT DROPPED: In the parallel flow we don't have Stage 3 output
-          // when Stage 4 starts. Running label-read on all slots (including
-          // main_switch / spd / blank) is ~1-2 extra VLM slots per board —
-          // cheaper than the 10-15s serial stage3→stage4 we save. The merger
-          // filters main_switch/spd out anyway so the extra labels never surface.
-          slotsForSkipHint: null,
-        };
-
-        const labelGeomValid =
-          Number.isFinite(labelGeom.slotPitchPx) &&
-          Number.isFinite(labelGeom.panelTopNorm) &&
-          Number.isFinite(labelGeom.panelBottomNorm);
-
-        const classifyFn = isRewireablePipeline ? classifyRewireableSlots : classifyModernSlots;
-        const classifyPromise = classifyFn(imageBytes, prepared).catch((err) => {
-          logger.warn('CCU per-slot classify failed (non-fatal)', {
-            userId: req.user.id,
-            path: isRewireablePipeline ? 'rewireable' : 'modern',
-            error: err.message,
-          });
-          return null;
-        });
-        const labelPromise = labelGeomValid
-          ? extractSlotLabels(imageBytes, labelGeom).catch((err) => {
-              logger.warn('CCU stage4 label pass failed (non-fatal)', {
-                userId: req.user.id,
-                error: err.message,
-              });
-              return { __error: err.message };
-            })
-          : Promise.resolve(null);
-
-        const [classified, labelPassResult] = await Promise.all([classifyPromise, labelPromise]);
-
-        return {
-          prepared,
-          classified,
-          labelPassResult,
-          chooseRewireable,
-          isRewireablePipeline,
-          labelGeomValid,
-        };
-      })();
-
-      let response;
+      let boardClassification;
+      let classifierUsage = { inputTokens: 0, outputTokens: 0 };
       try {
-        response = await singleShotPromise;
-      } finally {
-        clearTimeout(timeoutId);
+        boardClassification = await classifyBoardTechnology(base64, anthropic, model);
+        classifierUsage = boardClassification.usage || classifierUsage;
+        logger.info('CCU board_technology classifier', {
+          userId: req.user.id,
+          boardTechnology: boardClassification.boardTechnology,
+          mainSwitchPosition: boardClassification.mainSwitchPosition,
+          boardManufacturer: boardClassification.boardManufacturer,
+          boardModel: boardClassification.boardModel,
+          mainSwitchRating: boardClassification.mainSwitchRating,
+          spdPresent: boardClassification.spdPresent,
+          confidence: boardClassification.confidence,
+        });
+      } catch (err) {
+        logger.error('CCU board classifier failed — no per-slot path possible', {
+          userId: req.user.id,
+          error: err.message,
+        });
+        return res.status(502).json({
+          error: `Board classification failed: ${err.message}. Try a clearer photo or retry.`,
+        });
       }
+
+      // --- Stage 2: prepare geometry (Stage 1 of geometric pipeline + bbox) ---
+      const chooseRewireable =
+        boardClassification.boardTechnology === 'rewireable_fuse' ||
+        boardClassification.boardTechnology === 'cartridge_fuse' ||
+        boardClassification.boardTechnology === 'mixed';
+
+      let prepared;
+      try {
+        prepared = chooseRewireable
+          ? await prepareRewireableGeometry(imageBytes)
+          : await prepareModernGeometry(imageBytes, { railRoiHint });
+      } catch (err) {
+        logger.error('CCU geometric prepare failed', {
+          userId: req.user.id,
+          path: chooseRewireable ? 'rewireable' : 'modern',
+          error: err.message,
+        });
+        return res.status(502).json({
+          error: `Could not detect device row in photo: ${err.message}. Frame the consumer unit so all MCBs are visible and retry.`,
+        });
+      }
+
+      // --- Stage 3 || Stage 4 in parallel ---
+      // Stage 4 used to be gated on Stage 3 output (skip hint for
+      // main_switch/spd/blank); dropping the skip costs ~1-2 extra label
+      // crops vs. saving ~10-15s of serial wait, so we run both in parallel.
+      // The merger filters main_switch/spd by classification anyway so extra
+      // labels never surface in circuits[].
+      const panelTopNorm = prepared.panelBounds?.top ?? prepared.medianRails?.rail_top ?? null;
+      const panelBottomNorm =
+        prepared.panelBounds?.bottom ?? prepared.medianRails?.rail_bottom ?? null;
+
+      // Coordinate-space detection (Codex P1 commit f2e304d): modern
+      // pipeline's slotCentersX/moduleWidth are 0-1000 normalised,
+      // rewireable's are PIXELS. extractSlotLabels requires PIXELS. Convert
+      // for modern, pass-through for rewireable. Detection via
+      // carrierPitchPx (rewireable) vs moduleWidth (modern).
+      const isRewireablePipeline = typeof prepared.carrierPitchPx === 'number';
+      const imageWidthForConvert = prepared.imageWidth || 0;
+      const convertNormToPx = (v) =>
+        typeof v === 'number' && imageWidthForConvert > 0
+          ? Math.round((v / 1000) * imageWidthForConvert)
+          : null;
+
+      const labelGeom = {
+        slotCentersX: isRewireablePipeline
+          ? prepared.slotCentersX
+          : (prepared.slotCentersX || []).map((v) => convertNormToPx(v)),
+        slotPitchPx: isRewireablePipeline
+          ? prepared.carrierPitchPx
+          : convertNormToPx(prepared.moduleWidth),
+        panelTopNorm,
+        panelBottomNorm,
+        imageWidth: prepared.imageWidth,
+        imageHeight: prepared.imageHeight,
+        slotsForSkipHint: null,
+      };
+
+      const labelGeomValid =
+        Number.isFinite(labelGeom.slotPitchPx) &&
+        Number.isFinite(labelGeom.panelTopNorm) &&
+        Number.isFinite(labelGeom.panelBottomNorm);
+
+      const classifyFn = isRewireablePipeline ? classifyRewireableSlots : classifyModernSlots;
+      const classifyPromise = classifyFn(imageBytes, prepared).catch((err) => {
+        logger.warn('CCU per-slot classify failed (non-fatal)', {
+          userId: req.user.id,
+          path: isRewireablePipeline ? 'rewireable' : 'modern',
+          error: err.message,
+        });
+        return null;
+      });
+      const labelPromise = labelGeomValid
+        ? extractSlotLabels(imageBytes, labelGeom).catch((err) => {
+            logger.warn('CCU stage4 label pass failed (non-fatal)', {
+              userId: req.user.id,
+              error: err.message,
+            });
+            return { __error: err.message };
+          })
+        : Promise.resolve(null);
+
+      const [classified, labelPassResult] = await Promise.all([classifyPromise, labelPromise]);
+
+      const perSlotState = {
+        prepared,
+        classified,
+        labelPassResult,
+        chooseRewireable,
+        isRewireablePipeline,
+        labelGeomValid,
+      };
+
       const anthropicElapsedMs = Date.now() - anthropicStartMs;
       logger.info('CCU Anthropic API call timing', {
         userId: req.user.id,
@@ -1693,147 +1521,45 @@ questionsForInspector: return EMPTY array [] unless RCD type could not be determ
         elapsedSec: (anthropicElapsedMs / 1000).toFixed(1),
       });
 
-      // Extract text content (skip thinking blocks)
-      const textBlocks = (response.content || []).filter((b) => b.type === 'text');
-      const content = textBlocks.map((b) => b.text).join('') || '';
-      const promptTokens = response.usage?.input_tokens || 0;
-      const completionTokens = response.usage?.output_tokens || 0;
-      const stopReason = response.stop_reason || 'unknown';
-
-      logger.info('CCU analysis complete', {
-        userId: req.user.id,
-        model,
-        promptTokens,
-        completionTokens,
-        responseLength: content.length,
-        stopReason,
-        rawContentPreview: content.slice(0, 500),
-      });
-
-      if (stopReason === 'max_tokens') {
-        logger.error('CCU analysis truncated by token limit', {
-          userId: req.user.id,
-          model,
-          completionTokens,
-          responseLength: content.length,
-        });
-        return res.status(502).json({
-          error: `Response truncated (${completionTokens} tokens). The model hit its output limit. Try a clearer photo or retry.`,
-        });
-      }
-
-      // Extract JSON from response — Claude may include reasoning text before the JSON
-      let jsonStr = content;
-      // Try to find a JSON code block first (in case model still wraps in code block)
-      const jsonBlockMatch = jsonStr.match(/```json\s*([\s\S]*?)```/);
-      if (jsonBlockMatch) {
-        jsonStr = jsonBlockMatch[1].trim();
-      } else {
-        // Find the first { and last } to extract the JSON object
-        const firstBrace = jsonStr.indexOf('{');
-        const lastBrace = jsonStr.lastIndexOf('}');
-        if (firstBrace !== -1 && lastBrace > firstBrace) {
-          jsonStr = jsonStr.slice(firstBrace, lastBrace + 1);
-        }
-      }
-      jsonStr = jsonStr.trim();
-
-      let analysis = JSON.parse(jsonStr);
-
-      analysis = applyBsEnFallback(analysis);
-      analysis = normaliseCircuitLabels(analysis);
-
-      // Pass 2: Web search for missing RCD types — Opus may still miss some.
-      // Use gpt-5-search-api to look up the actual RCD type from datasheets.
-      // We still need an OpenAI client for this web search step.
-      const openaiKey = process.env.OPENAI_API_KEY;
-      if (openaiKey) {
-        const rcdStartMs = Date.now();
-        const OpenAI = (await import('openai')).default;
-        const openai = new OpenAI({ apiKey: openaiKey });
-        analysis = await lookupMissingRcdTypes(analysis, openai, logger, req.user.id);
-        const rcdElapsedMs = Date.now() - rcdStartMs;
-        logger.info('CCU RCD type lookup timing', {
-          userId: req.user.id,
-          elapsedMs: rcdElapsedMs,
-          elapsedSec: (rcdElapsedMs / 1000).toFixed(1),
-        });
-      }
-
-      if (!analysis.main_switch_current && analysis.main_switch_rating) {
-        analysis.main_switch_current = analysis.main_switch_rating;
-      }
-      if (!analysis.main_switch_bs_en) {
-        analysis.main_switch_bs_en = '60947-3';
-      }
-      if (!analysis.main_switch_poles) {
-        analysis.main_switch_poles = 'DP';
-      }
-      if (!analysis.main_switch_voltage) {
-        analysis.main_switch_voltage = '230';
-      }
-
-      // Populate Supply Protective Device fields from main switch data as fallback.
-      // In most domestic installations the CU main switch rating is the relevant value
-      // for the "Supply Protective Device" section on the EICR form. These fields use
-      // the supply_characteristics schema keys (spd_rated_current, spd_bs_en, etc.)
-      // which are distinct from the CU surge-protector fields (spd_rated_current_a, etc.).
-      if (!analysis.spd_rated_current && analysis.main_switch_current) {
-        analysis.spd_rated_current = analysis.main_switch_current;
-      }
-      if (!analysis.spd_bs_en && analysis.main_switch_bs_en) {
-        analysis.spd_bs_en = analysis.main_switch_bs_en;
-      }
-      if (!analysis.spd_type_supply && analysis.main_switch_type) {
-        analysis.spd_type_supply = analysis.main_switch_type;
-      }
-
-      // Sonnet 4.6 pricing: $3/1M input, $15/1M output
-      const inputCost = (promptTokens * 0.003) / 1000;
-      const outputCost = (completionTokens * 0.015) / 1000;
-      analysis.gptVisionCost = {
-        cost_usd: parseFloat((inputCost + outputCost).toFixed(6)),
-        input_tokens: promptTokens,
-        output_tokens: completionTokens,
-        image_count: 1,
+      // --- Build analysis from classifier + per-slot output ---
+      // The single-shot Sonnet call (retired 2026-04-29) used to populate
+      // this object directly from a 4096-token JSON response. Now we
+      // assemble it from Stage 1 board metadata + Stage 3/4 (which fill
+      // analysis.circuits via slotsToCircuits below). Field names match
+      // the legacy single-shot contract — iOS, web, and downstream
+      // enrichers (applyBsEnFallback, normaliseCircuitLabels,
+      // lookupMissingRcdTypes) all expect the same keys.
+      let analysis = {
+        board_manufacturer: boardClassification.boardManufacturer,
+        board_model: boardClassification.boardModel,
+        board_technology: boardClassification.boardTechnology,
+        main_switch_position: boardClassification.mainSwitchPosition,
+        main_switch_rating: boardClassification.mainSwitchRating,
+        main_switch_current: boardClassification.mainSwitchRating,
+        main_switch_bs_en: null,
+        main_switch_type: null,
+        main_switch_poles: null,
+        main_switch_voltage: null,
+        spd_present: boardClassification.spdPresent,
+        spd_bs_en: null,
+        spd_type: null,
+        spd_rated_current_a: null,
+        spd_short_circuit_ka: null,
+        confidence: {
+          overall: boardClassification.confidence,
+          image_quality: 'partially_readable',
+          uncertain_fields: [],
+          message: null,
+        },
+        questionsForInspector: [],
+        circuits: [],
       };
 
-      const labelledCircuits = (analysis.circuits || []).filter(
-        (c) => c.label && c.label !== 'null'
-      ).length;
-      const totalCircuits = analysis.circuits?.length || 0;
-
-      logger.info('CCU analysis parsed', {
-        userId: req.user.id,
-        model,
-        boardManufacturer: analysis.board_manufacturer,
-        boardModel: analysis.board_model,
-        circuitCount: totalCircuits,
-        labelledCircuits,
-        labelCoverage: totalCircuits > 0 ? `${labelledCircuits}/${totalCircuits}` : '0/0',
-        circuitLabels: (analysis.circuits || []).map((c) => c.label || null),
-        circuitRcdTypes: (analysis.circuits || []).map((c) => c.rcd_type || null),
-        mainSwitchCurrent: analysis.main_switch_current,
-        spdPresent: analysis.spd_present,
-        confidenceOverall: analysis.confidence?.overall,
-        confidenceQuality: analysis.confidence?.image_quality,
-        uncertainFieldCount: analysis.confidence?.uncertain_fields?.length || 0,
-        confidenceMessage: analysis.confidence?.message,
-        costUsd: analysis.gptVisionCost.cost_usd,
-      });
-
-      // Sprint 2026-04-22 + PR: the per-slot pipeline (classifier + prepare +
-      // Stage3 || Stage4) has been running in parallel with single-shot since
-      // the top of the handler. Await whatever's still outstanding, assemble
-      // the `geometricResult` shape the rest of this block expects (identical
-      // to the old `extractCcuGeometric` / `extractCcuRewireable` return), and
-      // merge slot classifications + Stage 4 labels into analysis.circuits[].
-      const perSlotState = await perSlotPromise;
-      let extractionSource = 'single-shot';
-
-      // Reassemble `geometricResult` from prepared + classified halves so the
-      // rest of the request path (sidecar upload, circuit merge, logging) sees
-      // the same object it did before the prepare/classify split.
+      // Per-slot is the only source now (single-shot retired 2026-04-29).
+      // Assemble geometricResult from the prepared + classified halves
+      // already gathered above so the sidecar / merger / logging paths see
+      // the same shape they did before the prepare/classify split.
+      let extractionSource = 'classifier-only';
       const geometricResult = perSlotState ? assembleGeometricResult(perSlotState) : null;
 
       if (geometricResult) {
@@ -1864,11 +1590,11 @@ questionsForInspector: return EMPTY array [] unless RCD type could not be determ
         if (Array.isArray(geometricResult.slots) && geometricResult.slots.length > 0) {
           analysis.slots = geometricResult.slots;
 
-          // Stage 4 label-pass result was fetched in parallel with Stage 3 inside
-          // perSlotPromise (see top of handler). It's either:
-          //   - an object with .labels[] (success)
-          //   - { __error: msg } (VLM threw; we logged it up there)
-          //   - null (labelGeom was invalid; we warned up there)
+          // Stage 4 label-pass result was fetched in parallel with Stage 3
+          // via Promise.all earlier in the handler. Three possible shapes:
+          //   - { labels: [...], usage: {...}, timings: {...} } — success
+          //   - { __error: msg } — VLM threw; we already logged it
+          //   - null — labelGeom was invalid; we already warned
           const labelPassResult = perSlotState.labelPassResult;
           if (
             labelPassResult &&
@@ -1979,6 +1705,106 @@ questionsForInspector: return EMPTY array [] unless RCD type could not be determ
         });
       }
 
+      // --- Post-merge enrichment + defaults ---
+      // RCD type lookup (gpt-5-search-api): fills rcd_type for circuits where
+      // Stage 3 couldn't read the waveform symbol. Skipped if OPENAI_API_KEY
+      // is unset (dev / sandbox). Stage 3 is the authority for waveform-read
+      // RCD types; this only fills gaps from missing/illegible markings.
+      const openaiKey = process.env.OPENAI_API_KEY;
+      if (openaiKey) {
+        const rcdStartMs = Date.now();
+        const OpenAI = (await import('openai')).default;
+        const openai = new OpenAI({ apiKey: openaiKey });
+        analysis = await lookupMissingRcdTypes(analysis, openai, logger, req.user.id);
+        const rcdElapsedMs = Date.now() - rcdStartMs;
+        logger.info('CCU RCD type lookup timing', {
+          userId: req.user.id,
+          elapsedMs: rcdElapsedMs,
+          elapsedSec: (rcdElapsedMs / 1000).toFixed(1),
+        });
+      }
+
+      // Main-switch field defaults — only fields the classifier doesn't
+      // attempt (BS-EN, poles, voltage). UK domestic CUs are 99% DP @ 230V
+      // with the modern BS-EN 60947-3 isolator standard, so these defaults
+      // are correct for the overwhelming majority of jobs.
+      if (!analysis.main_switch_current && analysis.main_switch_rating) {
+        analysis.main_switch_current = analysis.main_switch_rating;
+      }
+      if (!analysis.main_switch_bs_en) {
+        analysis.main_switch_bs_en = '60947-3';
+      }
+      if (!analysis.main_switch_poles) {
+        analysis.main_switch_poles = 'DP';
+      }
+      if (!analysis.main_switch_voltage) {
+        analysis.main_switch_voltage = '230';
+      }
+
+      // Supply Protective Device fallback: in most domestic installations the
+      // CU main switch rating is the relevant value for the EICR form's
+      // "Supply Protective Device" section. These keys (spd_rated_current,
+      // spd_bs_en, spd_type_supply) are the supply_characteristics schema —
+      // distinct from the CU surge-protector fields (spd_rated_current_a etc.)
+      // that the classifier writes via spd_present.
+      if (!analysis.spd_rated_current && analysis.main_switch_current) {
+        analysis.spd_rated_current = analysis.main_switch_current;
+      }
+      if (!analysis.spd_bs_en && analysis.main_switch_bs_en) {
+        analysis.spd_bs_en = analysis.main_switch_bs_en;
+      }
+      if (!analysis.spd_type_supply && analysis.main_switch_type) {
+        analysis.spd_type_supply = analysis.main_switch_type;
+      }
+
+      // Cost: classifier (Stage 1) + Stage 3 + Stage 4 token usage.
+      // Sonnet 4.6 pricing: $3/1M input, $15/1M output.
+      const stage3Usage = geometricResult?.usage || { inputTokens: 0, outputTokens: 0 };
+      const stage4Usage = perSlotState?.labelPassResult?.usage || {
+        inputTokens: 0,
+        outputTokens: 0,
+      };
+      const totalInputTokens =
+        (classifierUsage.inputTokens || 0) +
+        (stage3Usage.inputTokens || 0) +
+        (stage4Usage.inputTokens || 0);
+      const totalOutputTokens =
+        (classifierUsage.outputTokens || 0) +
+        (stage3Usage.outputTokens || 0) +
+        (stage4Usage.outputTokens || 0);
+      const inputCost = (totalInputTokens * 0.003) / 1000;
+      const outputCost = (totalOutputTokens * 0.015) / 1000;
+      analysis.gptVisionCost = {
+        cost_usd: parseFloat((inputCost + outputCost).toFixed(6)),
+        input_tokens: totalInputTokens,
+        output_tokens: totalOutputTokens,
+        image_count: 1,
+      };
+
+      const labelledCircuitCount = (analysis.circuits || []).filter(
+        (c) => c.label && c.label !== 'null'
+      ).length;
+      const totalCircuitCount = analysis.circuits?.length || 0;
+
+      logger.info('CCU analysis parsed', {
+        userId: req.user.id,
+        model,
+        boardManufacturer: analysis.board_manufacturer,
+        boardModel: analysis.board_model,
+        circuitCount: totalCircuitCount,
+        labelledCircuits: labelledCircuitCount,
+        labelCoverage:
+          totalCircuitCount > 0 ? `${labelledCircuitCount}/${totalCircuitCount}` : '0/0',
+        circuitLabels: (analysis.circuits || []).map((c) => c.label || null),
+        circuitRcdTypes: (analysis.circuits || []).map((c) => c.rcd_type || null),
+        mainSwitchCurrent: analysis.main_switch_current,
+        spdPresent: analysis.spd_present,
+        confidenceOverall: analysis.confidence?.overall,
+        confidenceQuality: analysis.confidence?.image_quality,
+        costUsd: analysis.gptVisionCost.cost_usd,
+        extractionSource,
+      });
+
       analysis.extraction_source = extractionSource;
       analysis.board_classification = boardClassification
         ? {
@@ -1993,7 +1819,6 @@ questionsForInspector: return EMPTY array [] unless RCD type could not be determ
         userId: req.user.id,
         totalElapsedMs,
         totalElapsedSec: (totalElapsedMs / 1000).toFixed(1),
-        perSlotEnabled,
         geometricSuccess: Boolean(geometricResult),
         extractionSource,
       });
@@ -2014,8 +1839,8 @@ questionsForInspector: return EMPTY array [] unless RCD type could not be determ
           model,
           totalElapsedMs,
           anthropicElapsedMs,
-          promptTokens,
-          completionTokens,
+          promptTokens: totalInputTokens,
+          completionTokens: totalOutputTokens,
           timestamp: new Date().toISOString(),
         },
       }).catch((err) => {
