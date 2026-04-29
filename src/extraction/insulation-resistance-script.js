@@ -220,16 +220,13 @@ export function parseValue(text) {
   }
 
   // 2. Saturation sentinels — meter is over-range. Canonical ">999".
-  //    `lim` / `limit` added 2026-04-29 (session 6754FE6E) — UK megger
-  //    meters (Megger MFT, Kewtech KT64, Fluke 1664) display "LIM" or
-  //    "LIMIT" when the reading exceeds the configured test range, and
-  //    inspectors say it verbatim. The Deepgram vocabulary doesn't bias
-  //    against the shape so transcripts arrive as literal "LIM" / "LIMIT".
-  //    Same canonical mapping as the other saturation forms — `>999`.
+  //    DELIBERATELY EXCLUDED: "LIM" / "limit" / "limitation". These are
+  //    EICR conventions for "test not performed due to access/safety
+  //    limitation" — they are NOT saturation readings and must never be
+  //    written as a numeric IR value. A separate limitation-handling
+  //    flow (out of scope here) is the right place for that signal.
   if (
-    /\b(?:infinite|infinity|off\s*scale|out\s*of\s*range|o\s*l|lim(?:it)?|max(?:ed)?(?:\s+out)?)\b/i.test(
-      text
-    )
+    /\b(?:infinite|infinity|off\s*scale|out\s*of\s*range|o\s*l|max(?:ed)?(?:\s+out)?)\b/i.test(text)
   ) {
     return '>999';
   }
@@ -277,7 +274,7 @@ export function extractNamedFieldValues(text) {
   if (typeof text !== 'string' || !text) return [];
   const out = [];
   const valueGroup =
-    '>\\s*\\d+(?:\\.\\d+)?|>\\s*\\.\\d+|greater\\s+(?:than|then)\\s+\\d+(?:\\.\\d+)?|greater\\s+(?:than|then)\\s+\\.\\d+|more\\s+than\\s+\\d+(?:\\.\\d+)?|more\\s+than\\s+\\.\\d+|over\\s+\\d+(?:\\.\\d+)?|above\\s+\\d+(?:\\.\\d+)?|infinite|infinity|off\\s*scale|out\\s*of\\s*range|o\\s*l|lim(?:it)?|max(?:ed)?(?:\\s+out)?|\\d*\\.?\\d+';
+    '>\\s*\\d+(?:\\.\\d+)?|>\\s*\\.\\d+|greater\\s+(?:than|then)\\s+\\d+(?:\\.\\d+)?|greater\\s+(?:than|then)\\s+\\.\\d+|more\\s+than\\s+\\d+(?:\\.\\d+)?|more\\s+than\\s+\\.\\d+|over\\s+\\d+(?:\\.\\d+)?|above\\s+\\d+(?:\\.\\d+)?|infinite|infinity|off\\s*scale|out\\s*of\\s*range|o\\s*l|max(?:ed)?(?:\\s+out)?|\\d*\\.?\\d+';
   // Field words (case-insensitive). The negative lookahead on "L L"-style
   // shorthand keeps it from biting on "L1" or letters inside other words.
   const patterns = [

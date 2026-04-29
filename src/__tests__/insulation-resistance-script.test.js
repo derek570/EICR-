@@ -826,45 +826,40 @@ describe('"installation" Deepgram garbling tolerance', () => {
 });
 
 // ---------------------------------------------------------------------------
-// LIM saturation sentinel (2026-04-29, session 6754FE6E)
+// "LIM" / "Limitation" must NOT parse as a value.
 // ---------------------------------------------------------------------------
 //
-// UK megger meters (Megger MFT, Kewtech KT64, Fluke 1664) display "LIM" or
-// "LIMIT" when the reading exceeds the configured test range. Inspectors
-// say it verbatim. Same canonical mapping as other saturation forms — `>999`.
-describe('LIM saturation sentinel', () => {
-  test('parseValue("LIM") → ">999"', () => {
-    expect(parseValue('LIM')).toBe('>999');
+// EICR convention: when an inspector says "LIM" / "limit" / "limitation",
+// they mean the test could not be performed (access / safety constraint).
+// It is NOT a saturation reading. Mapping it to ">999" would silently
+// record a passing IR test that never happened. parseValue must return
+// null for these forms so a separate limitation-handling flow can pick
+// up the signal without poisoning the numeric value.
+describe('LIM / limitation must NOT parse as a saturation value', () => {
+  test('parseValue("LIM") → null (not a value)', () => {
+    expect(parseValue('LIM')).toBeNull();
   });
 
-  test('parseValue("lim") (lowercase) → ">999"', () => {
-    expect(parseValue('lim')).toBe('>999');
+  test('parseValue("limit") → null (not a value)', () => {
+    expect(parseValue('limit')).toBeNull();
   });
 
-  test('parseValue("LIMIT") → ">999"', () => {
-    expect(parseValue('LIMIT')).toBe('>999');
+  test('parseValue("limitation") → null (not a value)', () => {
+    expect(parseValue('limitation')).toBeNull();
   });
 
-  test('parseValue("limit") (lowercase) → ">999"', () => {
-    expect(parseValue('limit')).toBe('>999');
+  test('extractNamedFieldValues("live to live LIM") → no IR write', () => {
+    expect(extractNamedFieldValues('live to live LIM')).toEqual([]);
   });
 
-  test('extractNamedFieldValues("live to live LIM") → L-L >999', () => {
-    expect(extractNamedFieldValues('live to live LIM')).toEqual([
-      { field: 'ir_live_live_mohm', value: '>999' },
-    ]);
+  test('extractNamedFieldValues("live to earth limitation") → no IR write', () => {
+    expect(extractNamedFieldValues('live to earth limitation')).toEqual([]);
   });
 
-  test('extractNamedFieldValues("live to earth LIMIT") → L-E >999', () => {
-    expect(extractNamedFieldValues('live to earth LIMIT')).toEqual([
-      { field: 'ir_live_earth_mohm', value: '>999' },
-    ]);
-  });
-
-  test('does not collide with "limousine" or unrelated word stems', () => {
-    // Word boundary guards the saturation sentinel — "limit" matches but
-    // longer-stem words containing "lim" do not.
-    expect(parseValue('limousine 200')).toBe('200');
+  test('numeric readings still parse fine alongside lim-shaped words', () => {
+    // Sanity: removing the LIM sentinel must not break numeric parsing.
+    expect(parseValue('200')).toBe('200');
+    expect(parseValue('greater than 999')).toBe('>999');
   });
 });
 
@@ -1013,41 +1008,41 @@ describe('IR entry-time designation lookup', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Session 6754FE6E end-to-end repro: garbled "installation" + LIM saturation
-// + entry-time designation. Walks the full IR conversation that previously
-// only got one reading written.
+// Session 6754FE6E end-to-end repro: garbled "installation" + entry-time
+// designation. Walks the full IR conversation that previously only got
+// one reading written. (LIM is deliberately NOT mapped to a value — see
+// the "LIM / limitation must NOT parse" describe block above.)
 // ---------------------------------------------------------------------------
 describe('Session 6754FE6E end-to-end repro', () => {
-  test('"Installation resistance for upstairs sockets. The live to live is LIM." → walk-through completes', () => {
+  test('"Installation resistance for upstairs sockets" → walk-through completes', () => {
     const session = buildSession({
       2: { designation: 'Upstairs Sockets' },
     });
     const ws = new MockWS();
 
-    // Turn 1: garbled entry with designation + L-L value mid-sentence.
-    // The value is gated behind " is " (letter filler) so the named-field
-    // extractor doesn't grab it on entry — that's expected; the script
-    // will ask "What's the live-to-live?" next, and the user's "LIM"
-    // reply will parse via parseValue's saturation sentinel.
+    // Turn 1: garbled entry with designation. Without the entry-time
+    // designation fix this would ask "Which circuit?"; without the
+    // "installation" head-word alternation the script wouldn't enter
+    // at all and the IR walk-through would never run.
     processInsulationResistanceTurn({
       ws,
       session,
       sessionId: SESSION_ID,
-      transcriptText: 'Installation resistance for upstairs sockets. The live to live is LIM.',
+      transcriptText: 'Installation resistance for upstairs sockets.',
       now: 1000,
     });
     expect(session.insulationResistanceScript.active).toBe(true);
     expect(session.insulationResistanceScript.circuit_ref).toBe(2);
 
-    // Turn 2: bare "LIM" answer to "What's the live-to-live?".
+    // Turn 2: live-to-live answer.
     processInsulationResistanceTurn({
       ws,
       session,
       sessionId: SESSION_ID,
-      transcriptText: 'LIM',
+      transcriptText: '200',
       now: 2000,
     });
-    expect(session.stateSnapshot.circuits[2].ir_live_live_mohm).toBe('>999');
+    expect(session.stateSnapshot.circuits[2].ir_live_live_mohm).toBe('200');
 
     // Turn 3: live-to-earth answer.
     processInsulationResistanceTurn({
@@ -1072,7 +1067,7 @@ describe('Session 6754FE6E end-to-end repro', () => {
     // Walk-through complete: both readings written, voltage captured,
     // script cleared.
     expect(session.stateSnapshot.circuits[2]).toMatchObject({
-      ir_live_live_mohm: '>999',
+      ir_live_live_mohm: '200',
       ir_live_earth_mohm: '200',
       ir_test_voltage_v: '500',
     });
