@@ -51,6 +51,7 @@ import { findExpiredPartial as findExpiredIrPartial } from './insulation-resista
 import {
   processRingContinuityTurn,
   processInsulationResistanceTurn,
+  processProtectiveDeviceTurn,
 } from './dialogue-engine/index.js';
 // Stage 6 Phase 3 — per-session blocking-ask plumbing. Plan 03-08 threads the
 // per-session PendingAsksRegistry through every call-site of runShadowHarness
@@ -2690,6 +2691,29 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
       if (irScriptOutcome.handled && irScriptOutcome.fallthrough) {
         if (typeof irScriptOutcome.transcriptText === 'string') {
           transcriptText = irScriptOutcome.transcriptText;
+        }
+      }
+
+      // Protective-device script (PR2) — RCBO / OCPD / RCD as a
+      // single dialogue family. Same wire-shape contract as ring +
+      // IR; entry triggers are mutually exclusive via topic-switch
+      // lists and `\bRCBO\b` / `\bRCD\b` word boundaries. RCBO is
+      // checked first so direct-RCBO entry wins over OCPD's broader
+      // trigger; OCPD and RCD pivot to RCBO via the BS-EN 61009
+      // derivation on their bs_en slots.
+      const pdScriptOutcome = processProtectiveDeviceTurn({
+        ws,
+        session: entry.session,
+        sessionId,
+        transcriptText,
+        logger,
+      });
+      if (pdScriptOutcome.handled && !pdScriptOutcome.fallthrough) {
+        return;
+      }
+      if (pdScriptOutcome.handled && pdScriptOutcome.fallthrough) {
+        if (typeof pdScriptOutcome.transcriptText === 'string') {
+          transcriptText = pdScriptOutcome.transcriptText;
         }
       }
 

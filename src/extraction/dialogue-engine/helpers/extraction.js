@@ -36,12 +36,15 @@ export function extractNamedFieldValues(text, slots) {
  * Returns the slot object (not just the field name) so callers can
  * read its question / parser / flags directly.
  *
- * Skips slots flagged `countsTowardCompletion: false`? No — every
- * declared slot needs to be filled before completion. Use cancellation
- * tally separately.
+ * `skippedSet` — optional Set of slot field names that the inspector
+ * has explicitly skipped via a per-slot skip verb ("don't know",
+ * "skip that"). Skipped slots are treated as "done" for iteration
+ * purposes so the script moves past them. PR2 OCPD/RCD/RCBO use
+ * this; ring/IR pass undefined and behave as before.
  */
-export function nextMissingSlot(values, slots) {
+export function nextMissingSlot(values, slots, skippedSet) {
   for (const slot of slots) {
+    if (skippedSet?.has?.(slot.field)) continue;
     const v = values[slot.field];
     if (v === undefined || v === null || v === '') return slot;
   }
