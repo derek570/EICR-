@@ -909,19 +909,22 @@ export function enterScriptByName({
   }
 
   // Apply or queue Sonnet's volunteered writes. Mirrors runEntry's
-  // logic so byte-identical state results from regex entry + Sonnet
-  // entry on the same utterance shape.
+  // logic exactly — including derivation processing — so byte-identical
+  // state results from regex entry + Sonnet entry on the same utterance
+  // shape. Critically, applyWriteWithDerivations is what fires the
+  // OCPD/RCD → RCBO pivot when a seed write is `BS EN 61009`. Skipping
+  // it (an earlier draft did) was a Codex-flagged regression: an
+  // utterance like "OCPD on circuit 4, BS EN 61009" would stay in OCPD
+  // and ask the next OCPD slot instead of switching to the RCBO flow.
   const appliedWrites = [];
+  let pivotTo = null;
   for (const w of validWrites) {
     if (state.values[w.field] !== undefined) continue; // skip already-filled
     if (resolvedCircuitRef !== null) {
-      // Circuit known — write through to snapshot AND state.values.
-      // Uses applyWrite (not applyWriteWithDerivations) because the
-      // pivot path requires a transcript context which we don't have
-      // here; pivots are still detected on subsequent active-path
-      // turns via the schema's normal derivation rules.
-      applyWrite(session, schema, resolvedCircuitRef, w.field, w.value, now);
+      const slot = schema.slots.find((s) => s.field === w.field);
+      const r = applyWriteWithDerivations(session, schema, slot, resolvedCircuitRef, w.value, now);
       appliedWrites.push(w);
+      if (r.pivotTo) pivotTo = r.pivotTo;
     } else {
       // Circuit unknown — queue. The active path drains pending_writes
       // once a digit or designation answer lands.
@@ -936,6 +939,35 @@ export function enterScriptByName({
       ws,
       buildExtractionPayload(resolvedCircuitRef, appliedWrites, schema.extractionSource)
     );
+  }
+
+  // Pivot — derivation requested a schema transition (e.g. ocpd_bs_en
+  // = "BS EN 61009" pivots OCPD → RCBO). Mirrors runEntry's pivot
+  // handling at engine.js:293. runPivot clears the current state,
+  // initialises the target schema, mirrors any derived values, and
+  // emits the next ask itself — so this branch RETURNS early and the
+  // normal first-ask emission below is skipped.
+  if (pivotTo) {
+    runPivot({
+      ws,
+      session,
+      sessionId,
+      schemas,
+      fromSchema: schema,
+      toSchemaName: pivotTo,
+      logger,
+      now,
+    });
+    return {
+      ok: true,
+      status: 'entered',
+      schema: pivotTo,
+      circuit_ref: resolvedCircuitRef,
+      seeded_writes: appliedWrites.map((w) => w.field),
+      queued_writes: [],
+      dropped_fields: droppedFields,
+      pivoted: true,
+    };
   }
 
   logger?.info?.(`${schema.logEventPrefix}_entered`, {

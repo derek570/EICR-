@@ -361,6 +361,36 @@ describe('enterScriptByName — engine back door', () => {
     expect(session.stateSnapshot.circuits[4].ring_r2_ohm).toBeUndefined();
   });
 
+  test('OCPD seed with BS EN 61009 pivots to RCBO (Codex re-review fix)', () => {
+    // Codex re-review caught that the earlier fix called applyWrite
+    // (no derivations) instead of applyWriteWithDerivations on
+    // server-entered scripts. Result: an utterance like "OCPD on
+    // circuit 4, BS EN 61009" would stay in OCPD and ask the next
+    // OCPD slot instead of pivoting to RCBO. Regex entry handles
+    // this correctly via runEntry's derivation chain — server entry
+    // must mirror that.
+    const ws = new FakeWS();
+    const session = buildSession({ 4: {} });
+    const result = enterScriptByName({
+      session,
+      sessionId: 'sess_test',
+      schemas: ALL_DIALOGUE_SCHEMAS,
+      schemaName: 'ocpd',
+      circuit_ref: 4,
+      pending_writes: [{ field: 'ocpd_bs_en', value: 'BS EN 61009' }],
+      ws,
+      now: 1000,
+    });
+    expect(result.ok).toBe(true);
+    expect(result.pivoted).toBe(true);
+    expect(result.schema).toBe('rcbo');
+    // Active script is now RCBO, not OCPD.
+    expect(session.dialogueScriptState.schemaName).toBe('rcbo');
+    // Both bs_en columns mirrored (RCBO writes ocpd_bs_en + rcd_bs_en).
+    expect(session.stateSnapshot.circuits[4].ocpd_bs_en).toBe('BS EN 61009');
+    expect(session.stateSnapshot.circuits[4].rcd_bs_en).toBe('BS EN 61009');
+  });
+
   test('all-slots-filled via pending_writes triggers immediate finishScript', () => {
     // Inspector dictates a complete ring family in one breath.
     const ws = new FakeWS();
