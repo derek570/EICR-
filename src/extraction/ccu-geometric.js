@@ -170,6 +170,33 @@ For EACH crop, report THREE things:
      — toggle + curve letter visible but rest cut → "mcb"
      — too ambiguous → "unknown"
 
+   DISAMBIGUATION — RCD vs RCBO when only test button + toggle are visible:
+     A 2-pole RCD spans TWO module slots and prints all its rating /
+     branding on ONE half (usually the left, with the test button). The
+     OTHER half shows just a toggle, a coloured stripe and the
+     manufacturer's wordmark — NO rating number, NO trip-curve letter,
+     NO mA value on the device face itself.
+       • If a crop has a test button AND/OR a toggle, BUT NO numbers or
+         curve-letter on the device face, AND any silkscreen or label
+         strip BELOW the rail reads "RCD" / "RCD Protected" /
+         "rated current" / similar, classify it as "rcd" (NOT "rcbo").
+         RCBOs always print their rating + curve on every visible face;
+         a missing rating + RCD silkscreen is a strong RCD signal.
+       • If you see numbers + curve letter (e.g. "B40", "C32 6kA") on
+         the device face itself, that's an RCBO — RCBOs combine RCD +
+         MCB and DO show their amp rating on the body.
+
+   DISAMBIGUATION — mostly-empty crops with edge bleed:
+     When ≥ 60 % of the crop is a blanking plate or featureless plastic
+     filler in an unused slot, and any device fragments visible at the
+     crop edges have NO readable rating number, NO trip-curve letter
+     and NO manufacturer text, classify content as "blank" — confidently.
+     The edge bleed alone is not enough to call something an "mcb" — a
+     real MCB classification requires the centred device to contribute
+     readable identifying marks. Only return "empty" when there is
+     genuinely exposed DIN rail with no plate visible at all (very rare
+     and a safety defect).
+
 For MCBs and RCBOs:
 - manufacturer      — brand stamped on the face ("Hager", "MK", "Wylex", "MEM", "Crabtree", "Eaton", "Schneider", "BG", "Fusebox", "Contactum"). null if illegible.
 - model             — product family if printed ("Memera 2000", "Design 10"). null if not shown.
