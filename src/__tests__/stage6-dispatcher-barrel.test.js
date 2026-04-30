@@ -19,6 +19,7 @@ import { WRITE_DISPATCHERS, createWriteDispatcher } from '../extraction/stage6-d
 import * as circuitSibling from '../extraction/stage6-dispatchers-circuit.js';
 import * as observationSibling from '../extraction/stage6-dispatchers-observation.js';
 import * as boardSibling from '../extraction/stage6-dispatchers-board.js';
+import * as scriptSibling from '../extraction/stage6-dispatchers-script.js';
 import { createPerTurnWrites } from '../extraction/stage6-per-turn-writes.js';
 
 function mockLogger() {
@@ -26,7 +27,7 @@ function mockLogger() {
 }
 
 describe('barrel re-exports', () => {
-  test('WRITE_DISPATCHERS has all seven keys, all async functions', () => {
+  test('WRITE_DISPATCHERS has all eight keys, all async functions', () => {
     expect(Object.keys(WRITE_DISPATCHERS).sort()).toEqual(
       [
         'clear_reading',
@@ -36,6 +37,7 @@ describe('barrel re-exports', () => {
         'record_observation',
         'record_reading',
         'rename_circuit',
+        'start_dialogue_script',
       ].sort()
     );
     for (const fn of Object.values(WRITE_DISPATCHERS)) {
@@ -51,6 +53,7 @@ describe('barrel re-exports', () => {
     expect(WRITE_DISPATCHERS.record_observation).toBe(observationSibling.dispatchRecordObservation);
     expect(WRITE_DISPATCHERS.delete_observation).toBe(observationSibling.dispatchDeleteObservation);
     expect(WRITE_DISPATCHERS.record_board_reading).toBe(boardSibling.dispatchRecordBoardReading);
+    expect(WRITE_DISPATCHERS.start_dialogue_script).toBe(scriptSibling.dispatchStartDialogueScript);
   });
 
   test('every dispatcher returns a well-formed envelope when invoked with valid inputs', async () => {
@@ -93,6 +96,16 @@ describe('barrel re-exports', () => {
         value: '0.86',
         confidence: 0.95,
         source_turn_id: 't1',
+      },
+      // start_dialogue_script (2026-04-30 Silvertown follow-up): minimal valid
+      // input — schema=ring_continuity is in ALL_DIALOGUE_SCHEMA_NAMES, circuit
+      // is null so no snapshot lookup is needed, source_turn_id+reason satisfy
+      // the required list.
+      start_dialogue_script: {
+        schema: 'ring_continuity',
+        circuit: null,
+        source_turn_id: 't1',
+        reason: 'barrel-test happy-path',
       },
     };
     for (const [name, fn] of Object.entries(WRITE_DISPATCHERS)) {

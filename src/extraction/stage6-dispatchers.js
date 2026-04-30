@@ -42,6 +42,7 @@ import {
   dispatchDeleteObservation,
 } from './stage6-dispatchers-observation.js';
 import { dispatchRecordBoardReading } from './stage6-dispatchers-board.js';
+import { dispatchStartDialogueScript } from './stage6-dispatchers-script.js';
 
 /**
  * Dispatch table keyed by tool name. The six original write tools from
@@ -58,6 +59,13 @@ export const WRITE_DISPATCHERS = {
   record_observation: dispatchRecordObservation,
   delete_observation: dispatchDeleteObservation,
   record_board_reading: dispatchRecordBoardReading,
+  // 2026-04-30 (Silvertown follow-up): Sonnet-driven entry to the
+  // dialogue engine for structured walk-throughs the engine's regex
+  // missed. Treated as a "write" by the composer (it mutates
+  // session.dialogueScriptState) — it does NOT invoke the ask
+  // dispatcher path, so it doesn't pause Sonnet's turn the way
+  // ask_user does.
+  start_dialogue_script: dispatchStartDialogueScript,
 };
 
 /**

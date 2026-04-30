@@ -74,10 +74,12 @@ describe('record_board_reading schema', () => {
   test('exists in TOOL_SCHEMAS at index 7 (preserves existing tool indices)', () => {
     // Original 7 tools (record_reading…ask_user) must keep their indices
     // because logging / metric tagging in Phase 5+ relies on stable order.
-    // record_board_reading is appended.
-    expect(TOOL_SCHEMAS).toHaveLength(8);
+    // record_board_reading is appended at 7; start_dialogue_script at 8
+    // (2026-04-30 Silvertown follow-up).
+    expect(TOOL_SCHEMAS).toHaveLength(9);
     expect(TOOL_SCHEMAS[7]).toBeDefined();
     expect(TOOL_SCHEMAS[7].name).toBe('record_board_reading');
+    expect(TOOL_SCHEMAS[8].name).toBe('start_dialogue_script');
     expect(TOOL_SCHEMAS[0].name).toBe('record_reading'); // unchanged
   });
 

@@ -264,7 +264,11 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
       messages: [{ role: 'user', content: transcriptText }],
       tools: TOOL_SCHEMAS,
       dispatcher,
-      ctx: { sessionId: session.sessionId, turnId },
+      // 2026-04-30 (Silvertown follow-up): thread `ws` into ctx so the
+      // start_dialogue_script dispatcher can hand it to the engine's
+      // enterScriptByName for first-ask emission. Other dispatchers
+      // ignore ctx.ws — additive, not breaking.
+      ctx: { sessionId: session.sessionId, turnId, ws },
       logger: log,
       sortRecords,
     });
