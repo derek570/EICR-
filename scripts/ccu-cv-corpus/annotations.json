@@ -10,6 +10,11 @@
       "groundTruth": 16,
       "notes": "Hager (model null). Counted: RCD(2) + 4 left MCBs + 3 blanks + 5 right MCBs + main_switch(2) = 16. Verified with Derek 2026-04-29.",
       "verifiedBy": "derek"
+    },
+    "1777540559865-3boowk": {
+      "groundTruth": 20,
+      "notes": "Protek 20-module rail, 2026-04-30. Physical layout: left RCD(2) + Cooker/CH/Lights1F(3) + Spare(1) + 80A RCD(2) + Shower/Sockets/LightsGF/B06-MCB(4) + Spare(1) + Garden Room/C63(2) + main_switch(2) + SPD(2) = 19. Plus one extra blank/spare position not visible at first glance brings it to 20 (Derek-confirmed 2026-04-30 after re-counting). Earlier annotation of 18 was wrong — was reasoning from the prod's flawed 14-circuit list rather than counting physical modules on the rail. The harness using 17.5 mm DIN pitch + tightened 174-px-tall user box gives 19; the Δ-1 to truth comes from the user box being ~70 px short horizontally (rail extends beyond what the user drew on each side by < 5 %, just inside the 2 % per-edge fine-tune envelope).",
+      "verifiedBy": "derek-2026-04-30"
     }
   }
 }
