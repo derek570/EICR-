@@ -15,9 +15,12 @@
 import { processDialogueTurn } from './engine.js';
 import { ringContinuitySchema } from './schemas/ring-continuity.js';
 import { insulationResistanceSchema } from './schemas/insulation-resistance.js';
+import { ocpdSchema } from './schemas/ocpd.js';
+import { rcdSchema } from './schemas/rcd.js';
+import { rcboSchema } from './schemas/rcbo.js';
 
 export { processDialogueTurn };
-export { ringContinuitySchema, insulationResistanceSchema };
+export { ringContinuitySchema, insulationResistanceSchema, ocpdSchema, rcdSchema, rcboSchema };
 
 /**
  * Drop-in replacement for the legacy `processRingContinuityTurn`.
@@ -34,4 +37,20 @@ export function processRingContinuityTurn(ctx) {
  */
 export function processInsulationResistanceTurn(ctx) {
   return processDialogueTurn({ ...ctx, schemas: [insulationResistanceSchema] });
+}
+
+/**
+ * Protective-device family wrapper. Runs RCBO + OCPD + RCD as a
+ * single registry — RCBO is listed first so its specific trigger
+ * ("RCBO") wins over OCPD's broader "MCB|breaker|OCPD" trigger
+ * when both could match. The schemas pivot among each other via the
+ * BS-EN-61009 derivation: enter via OCPD, fill bs_en=61009, pivot
+ * to RCBO. The engine reads the schemas list to find the pivot
+ * target.
+ */
+export function processProtectiveDeviceTurn(ctx) {
+  return processDialogueTurn({
+    ...ctx,
+    schemas: [rcboSchema, ocpdSchema, rcdSchema],
+  });
 }

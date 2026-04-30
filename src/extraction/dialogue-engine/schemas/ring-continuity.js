@@ -58,11 +58,16 @@ const slots = [
 ];
 
 const triggers = [
-  // Pattern 1 ("full") matches "ring continuity/final" with an optional
-  // circuit number anywhere within ~50 characters of the trigger phrase.
-  /\bring\s+(?:continu(?:ity|ance|ancy|ed|e)|final)\b(?:[^.?!]{0,50}?\bcircuit\s*(\d{1,3})\b)?/i,
+  // Pattern 1 ("full") matches "ring/bring/wing continuity/final" with an
+  // optional circuit number anywhere within ~50 characters of the trigger
+  // phrase. The "bring" / "wing" alternation tolerates Deepgram's habit of
+  // misrendering the leading "r" sound — field repros: 2026-04-30 sessions
+  // 2801896A ("Bring continuity for upstairs sockets") and BD8AB009 ("Wing
+  // continuity for upstairs sockets"). Same garble class as the
+  // (?:insulation|installation) alternation in the IR schema.
+  /\b(?:ring|bring|wing)\s+(?:continu(?:ity|ance|ancy|ed|e)|final)\b(?:[^.?!]{0,50}?\bcircuit\s*(\d{1,3})\b)?/i,
   // Pattern 2 ("terse") matches "ring on circuit N" with optional leading filler.
-  /^(?:\s*(?:so|right|ok(?:ay)?|now)[\s,]+)?\bring\b[^.?!]{0,30}?\bcircuit\s*(\d{1,3})\b/i,
+  /^(?:\s*(?:so|right|ok(?:ay)?|now)[\s,]+)?\b(?:ring|bring|wing)\b[^.?!]{0,30}?\bcircuit\s*(\d{1,3})\b/i,
 ];
 
 const cancelTriggers = [
@@ -72,7 +77,13 @@ const cancelTriggers = [
 const topicSwitchTriggers = [
   /\b(?:zs|z\s*s|ze|z\s*e)\s+(?:is|=|of|at)\b/i,
   /\bcircuit\s+\d+\s+is\b/i,
-  /\bR\s*1\s*\+\s*R\s*2\b/i,
+  // R1+R2 — the composite r1_r2_ohm reading. Accept both literal "+" and
+  // the spoken "plus" form, since Deepgram normalises spoken "plus" to
+  // the word "plus" rather than the symbol. Field repro: 2026-04-30
+  // session BD8AB009 ("R1 plus R2 is 47") wrote "1" to ring_r2_ohm
+  // because the topic switch missed and the ohms parser ate the "1"
+  // from "R1".
+  /\bR\s*1\s*(?:\+|\s+plus\s+)\s*R\s*2\b/i,
   /\binsulation\s+resistance\b/i,
   /\bRCD\s+(?:trip|test|time)\b/i,
   /\bpolarity\b/i,

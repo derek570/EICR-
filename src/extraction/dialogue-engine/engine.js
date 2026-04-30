@@ -39,6 +39,7 @@ import {
   buildExtractionPayload,
   safeSend,
 } from './helpers/wire-emit.js';
+import { applyDerivations } from './helpers/derivations.js';
 
 /**
  * Process one transcript turn against all registered schemas. Walks the
@@ -88,7 +89,17 @@ export function processDialogueTurn(ctx) {
         clearScriptState(session);
         // Fall through to entry detection below.
       } else {
-        return runActivePath({ ws, session, sessionId, text, transcriptText, schema, logger, now });
+        return runActivePath({
+          ws,
+          session,
+          sessionId,
+          text,
+          transcriptText,
+          schema,
+          schemas,
+          logger,
+          now,
+        });
       }
     }
   }
@@ -97,7 +108,7 @@ export function processDialogueTurn(ctx) {
   for (const schema of schemas) {
     const entry = detectEntry(text, schema);
     if (!entry.matched) continue;
-    return runEntry({ ws, session, sessionId, text, schema, entry, logger, now });
+    return runEntry({ ws, session, sessionId, text, schema, schemas, entry, logger, now });
   }
 
   return { handled: false };
@@ -156,6 +167,7 @@ function initScriptState(session, schema, circuit_ref, now) {
     circuit_ref,
     values: {},
     pending_writes: [],
+    skipped_slots: new Set(),
     entered_at: now,
     last_turn_at: now,
   };
@@ -168,7 +180,7 @@ function initScriptState(session, schema, circuit_ref, now) {
  * volunteered values from the entry utterance, then asks for the next
  * missing slot.
  */
-function runEntry({ ws, session, sessionId, text, schema, entry, logger, now }) {
+function runEntry({ ws, session, sessionId, text, schema, schemas, entry, logger, now }) {
   let circuitRef = entry.circuit_ref;
   let entryDesignationMatched = false;
   if (circuitRef === null) {
@@ -194,12 +206,18 @@ function runEntry({ ws, session, sessionId, text, schema, entry, logger, now }) 
   }
 
   // Apply or queue volunteered values from the entry utterance.
+  // Track any pivot request from a derivation (e.g., "OCPD on circuit
+  // 5 BS EN 61009" enters OCPD with circuit and bs_en, derivation
+  // pivots to RCBO mid-entry).
   const writes = [];
+  let pivotTo = null;
   for (const w of volunteered) {
     if (state.values[w.field] !== undefined) continue;
     if (circuitRef !== null) {
-      applyWrite(session, schema, circuitRef, w.field, w.value, now);
+      const slot = schema.slots.find((s) => s.field === w.field);
+      const r = applyWriteWithDerivations(session, schema, slot, circuitRef, w.value, now);
       writes.push(w);
+      if (r.pivotTo) pivotTo = r.pivotTo;
     } else {
       // Circuit not yet known → queue. The active path drains
       // pending_writes once a digit or designation answer lands.
@@ -240,15 +258,50 @@ function runEntry({ ws, session, sessionId, text, schema, entry, logger, now }) 
     return { handled: true, fallthrough: false };
   }
 
+  // Pivot — entry-time derivation requested a schema transition.
+  if (pivotTo) {
+    return runPivot({
+      ws,
+      session,
+      sessionId,
+      schemas,
+      fromSchema: schema,
+      toSchemaName: pivotTo,
+      logger,
+      now,
+    });
+  }
+
   return askNextOrFinish({ ws, session, sessionId, schema, logger, now });
 }
 
 /**
- * Active path: a script is already in progress on this session. Walks
- * cancel → different-entry → topic-switch → circuit-resolution →
- * value-extraction → ask-next-or-finish, in that order.
+ * Apply a write to the snapshot AND run any slot derivations. Returns
+ * { pivotTo } so the caller can defer pivot handling to a clean point
+ * in the active-path flow (after all in-utterance writes have landed).
  */
-function runActivePath({ ws, session, sessionId, text, transcriptText, schema, logger, now }) {
+function applyWriteWithDerivations(session, schema, slot, circuit_ref, value, now) {
+  applyWrite(session, schema, circuit_ref, slot.field, value, now);
+  return applyDerivations({ session, schema, slot, value });
+}
+
+/**
+ * Active path: a script is already in progress on this session. Walks
+ * cancel → different-entry → topic-switch → per-slot-skip →
+ * circuit-resolution → value-extraction → ask-next-or-finish, in that
+ * order.
+ */
+function runActivePath({
+  ws,
+  session,
+  sessionId,
+  text,
+  transcriptText,
+  schema,
+  schemas,
+  logger,
+  now,
+}) {
   const state = session.dialogueScriptState;
   state.last_turn_at = now;
 
@@ -394,10 +447,29 @@ function runActivePath({ ws, session, sessionId, text, transcriptText, schema, l
   }
 
   // 5. Identify the slot we're currently expecting (next missing).
-  //    If the schema declares a `currentExpectedSlot` hook (used by IR
-  //    to enforce voltage-only parsing in the voltage phase), call it
-  //    instead of the default.
-  const currentSlot = nextMissingSlot(state.values, schema.slots);
+  const currentSlot = nextMissingSlot(state.values, schema.slots, state.skipped_slots);
+
+  // 5a. Per-slot skip — schemas that opt in (PR2 OCPD/RCD/RCBO) let
+  //     the inspector say "skip that" / "I don't know" to mark the
+  //     CURRENT slot as deliberately blank and move on, without
+  //     cancelling the whole script. Detected ONLY when there's a
+  //     current slot to skip; if all slots are filled the cancel
+  //     verbs (whole-script) take the same words via topicSwitchTriggers
+  //     anyway.
+  if (
+    currentSlot &&
+    Array.isArray(schema.skipSlotTriggers) &&
+    matchesAny(text, schema.skipSlotTriggers)
+  ) {
+    state.skipped_slots.add(currentSlot.field);
+    logger?.info?.(`${schema.logEventPrefix}_slot_skipped`, {
+      sessionId,
+      circuit_ref: state.circuit_ref,
+      field: currentSlot.field,
+      textPreview: text.slice(0, 80),
+    });
+    return askNextOrFinish({ ws, session, sessionId, schema, logger, now });
+  }
 
   // 6. Schema-specific exclusive-parser hook (for IR voltage phase):
   //    when the current expected slot has `exclusiveWhenExpected: true`,
@@ -406,7 +478,7 @@ function runActivePath({ ws, session, sessionId, text, transcriptText, schema, l
   if (currentSlot && currentSlot.exclusiveWhenExpected) {
     const value = currentSlot.parser(text);
     if (value !== null && value !== undefined) {
-      applyWrite(session, schema, state.circuit_ref, currentSlot.field, value, now);
+      applyWriteWithDerivations(session, schema, currentSlot, state.circuit_ref, value, now);
       writes.push({ field: currentSlot.field, value });
     }
     if (writes.length > 0) {
@@ -417,12 +489,15 @@ function runActivePath({ ws, session, sessionId, text, transcriptText, schema, l
   }
 
   // 7. Named-field extraction — multiple slots can fill from one
-  //    utterance ("circuit 1, neutrals 0.43" already-resolved variant).
+  //    utterance. Track any pivot request from a derivation.
+  let pivotTo = null;
   const named = extractNamedFieldValues(text, schema.slots);
   for (const w of named) {
     if (state.values[w.field] !== undefined) continue;
-    applyWrite(session, schema, state.circuit_ref, w.field, w.value, now);
+    const slot = schema.slots.find((s) => s.field === w.field);
+    const r = applyWriteWithDerivations(session, schema, slot, state.circuit_ref, w.value, now);
     writes.push(w);
+    if (r.pivotTo) pivotTo = r.pivotTo;
   }
 
   // 8. Bare-value fallback. If no named matched on this turn, treat a
@@ -443,8 +518,16 @@ function runActivePath({ ws, session, sessionId, text, transcriptText, schema, l
   ) {
     const bareValue = currentSlot.parser(text);
     if (bareValue !== null && bareValue !== undefined) {
-      applyWrite(session, schema, state.circuit_ref, currentSlot.field, bareValue, now);
+      const r = applyWriteWithDerivations(
+        session,
+        schema,
+        currentSlot,
+        state.circuit_ref,
+        bareValue,
+        now
+      );
       writes.push({ field: currentSlot.field, value: bareValue });
+      if (r.pivotTo) pivotTo = r.pivotTo;
     }
   }
 
@@ -452,7 +535,69 @@ function runActivePath({ ws, session, sessionId, text, transcriptText, schema, l
     safeSend(ws, buildExtractionPayload(state.circuit_ref, writes, schema.extractionSource));
   }
 
+  // 9. Pivot — if a derivation requested a schema transition (e.g.,
+  //    OCPD's bs_en slot fills with "BS EN 61009" → pivot to RCBO),
+  //    close the current script's state, open the target's, carry
+  //    over filled values, and ask the next missing slot for the new
+  //    schema. This happens AFTER the writes emit so the wire shape
+  //    shows the OCPD-side write before the RCBO ask.
+  if (pivotTo) {
+    return runPivot({
+      ws,
+      session,
+      sessionId,
+      schemas,
+      fromSchema: schema,
+      toSchemaName: pivotTo,
+      logger,
+      now,
+    });
+  }
+
   return askNextOrFinish({ ws, session, sessionId, schema, logger, now });
+}
+
+/**
+ * Pivot from one schema to another. Carries over circuit_ref + any
+ * filled values that the target schema's slot list covers (via
+ * `readExistingValues` against the snapshot — derivation `sets` and
+ * `mirrors` already wrote to the snapshot, so the target picks them
+ * up automatically). Then asks the next missing slot for the new
+ * schema.
+ */
+function runPivot({ ws, session, sessionId, schemas, fromSchema, toSchemaName, logger, now }) {
+  const target = schemas.find((s) => s.name === toSchemaName);
+  if (!target) {
+    logger?.warn?.(`${fromSchema.logEventPrefix}_pivot_target_missing`, {
+      sessionId,
+      from: fromSchema.name,
+      to: toSchemaName,
+    });
+    // Defensive — caller's schemas list missing the pivot target.
+    // Fall through to ask the next missing on the source schema.
+    return askNextOrFinish({ ws, session, sessionId, schema: fromSchema, logger, now });
+  }
+  const previous = session.dialogueScriptState;
+  const circuit_ref = previous?.circuit_ref ?? null;
+  logger?.info?.(`${fromSchema.logEventPrefix}_pivot`, {
+    sessionId,
+    from: fromSchema.name,
+    to: toSchemaName,
+    circuit_ref,
+  });
+  initScriptState(session, target, circuit_ref, now);
+  const state = session.dialogueScriptState;
+  // Hydrate the target's values from any snapshot fields its slots
+  // cover. Includes anything the source schema wrote during this
+  // turn (the derivations' sets+mirrors landed before pivot).
+  const slotFields = target.slots.map((s) => s.field);
+  const existing = circuit_ref ? readExistingValues(session, circuit_ref, slotFields) : {};
+  for (const [f, v] of Object.entries(existing)) {
+    if (slotFields.includes(f) && v !== '' && v !== null && v !== undefined) {
+      state.values[f] = v;
+    }
+  }
+  return askNextOrFinish({ ws, session, sessionId, schema: target, logger, now });
 }
 
 /**
@@ -461,7 +606,7 @@ function runActivePath({ ws, session, sessionId, text, transcriptText, schema, l
  */
 function askNextOrFinish({ ws, session, sessionId, schema, logger, now }) {
   const state = session.dialogueScriptState;
-  const nextSlot = nextMissingSlot(state.values, schema.slots);
+  const nextSlot = nextMissingSlot(state.values, schema.slots, state.skipped_slots);
   if (!nextSlot) {
     finishScript({ ws, session, sessionId, schema, logger, now });
     return { handled: true, fallthrough: false };
