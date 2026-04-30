@@ -125,6 +125,15 @@ export async function dispatchStartDialogueScript(call, ctx) {
       seeded_writes: result.seeded_writes ?? [],
       queued_writes: result.queued_writes ?? [],
       dropped_fields: result.dropped_fields ?? [],
+      // 2026-04-30 (Codex P2): when a seed write triggers a derivation
+      // pivot (e.g. ocpd_bs_en="BS EN 61009" pivots OCPD → RCBO), the
+      // `schema` field above already reports the NEW schema name, but
+      // Sonnet may need to know that a pivot happened (vs. a direct
+      // entry on the new schema) to reason about subsequent slots.
+      // `pivoted: false` is reported on the no-pivot path so the
+      // envelope shape stays consistent — Sonnet can rely on the
+      // field's presence rather than its truthiness.
+      pivoted: result.pivoted === true,
     },
     false
   );

@@ -623,6 +623,61 @@ describe('dispatchStartDialogueScript — tool dispatcher', () => {
     expect(ws.sent[0].question).toBe('Which circuit is the ring continuity for?');
   });
 
+  test('propagates pivoted:true through the tool envelope (Codex P2)', async () => {
+    // When a seed BS EN 61009 write pivots OCPD → RCBO, the dispatcher
+    // must surface that fact through the envelope — Sonnet can't tell
+    // pivot-from-OCPD apart from direct-RCBO-entry just from the
+    // `schema` field, and analytics needs the signal for transition
+    // metrics.
+    const ws = new FakeWS();
+    const session = buildSession({ 4: {} });
+    const ctx = buildCtx(session, ws);
+
+    const res = await dispatchStartDialogueScript(
+      {
+        tool_call_id: 'tu_pivot',
+        name: 'start_dialogue_script',
+        input: {
+          schema: 'ocpd',
+          circuit: 4,
+          source_turn_id: 'turn-pivot',
+          reason: 'engine missed OCPD garble; user said BS EN 61009',
+          pending_writes: [{ field: 'ocpd_bs_en', value: 'BS EN 61009' }],
+        },
+      },
+      ctx
+    );
+    expect(res.is_error).toBe(false);
+    const body = JSON.parse(res.content);
+    expect(body.pivoted).toBe(true);
+    expect(body.schema).toBe('rcbo');
+    expect(body.seeded_writes).toEqual(['ocpd_bs_en']);
+  });
+
+  test('pivoted:false on the normal no-pivot path (envelope shape consistent)', async () => {
+    const ws = new FakeWS();
+    const session = buildSession({ 4: {} });
+    const ctx = buildCtx(session, ws);
+
+    const res = await dispatchStartDialogueScript(
+      {
+        tool_call_id: 'tu_normal',
+        name: 'start_dialogue_script',
+        input: {
+          schema: 'ring_continuity',
+          circuit: 4,
+          source_turn_id: 'turn-normal',
+          reason: 'engine missed wing-garble',
+          pending_writes: [{ field: 'ring_r1_ohm', value: '0.32' }],
+        },
+      },
+      ctx
+    );
+    expect(res.is_error).toBe(false);
+    const body = JSON.parse(res.content);
+    expect(body.pivoted).toBe(false);
+  });
+
   test('falls back to session.activeWs when ctx.ws is absent', async () => {
     // Future plumbing might stash the WS on the session instead of
     // threading via ctx — defence-in-depth so we don't break that path.
