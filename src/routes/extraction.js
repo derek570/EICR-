@@ -138,7 +138,7 @@ const BS_EN_LOOKUP = {
  * Acts as a safety net after Claude Vision — catches common UK abbreviations
  * and shorthand that the model may return verbatim instead of normalising.
  */
-function normaliseCircuitLabels(analysis) {
+export function normaliseCircuitLabels(analysis) {
   if (!analysis?.circuits) return analysis;
 
   // Map of patterns (lowercase) to normalised label.
@@ -238,7 +238,7 @@ function normaliseCircuitLabels(analysis) {
 /**
  * Apply fallback BS/EN numbers to circuits based on device type
  */
-function applyBsEnFallback(analysis) {
+export function applyBsEnFallback(analysis) {
   if (!analysis?.circuits) return analysis;
 
   for (const circuit of analysis.circuits) {
