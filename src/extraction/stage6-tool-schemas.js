@@ -31,6 +31,7 @@
  */
 
 import { createRequire } from 'node:module';
+import { ALL_DIALOGUE_SCHEMA_NAMES } from './dialogue-engine/index.js';
 
 const require = createRequire(import.meta.url);
 
@@ -524,9 +525,99 @@ const recordBoardReading = makeTool({
 });
 
 // ---------------------------------------------------------------------------
+// start_dialogue_script — Sonnet-driven entry into the slot-filling engine.
+// Added 2026-04-30 (Silvertown Road follow-up).
+//
+// Why this tool exists: the dialogue engine
+// (src/extraction/dialogue-engine/) drives ring continuity / insulation
+// resistance / OCPD / RCD / RCBO walk-throughs via per-schema regex entry
+// triggers. Deepgram garbles ("instellation resistance" instead of
+// "insulation resistance", session 842A3289 14 Silvertown Road 2026-04-30)
+// can dodge the regex, in which case the engine never enters and Sonnet
+// silently degrades to a one-shot record_reading that lands the value on
+// an arbitrary leg / circuit. This tool is the LLM-fallback: when Sonnet
+// understands the inspector is starting a structured walk-through and
+// the engine's regex hasn't caught it, Sonnet calls this and the
+// dispatcher (stage6-dispatchers-script.js) hands control to the engine.
+//
+// Why the schema enum is sourced from ALL_DIALOGUE_SCHEMA_NAMES (not
+// hard-coded): adding a sixth schema to the engine should automatically
+// widen the tool surface. Single source of truth — same pattern as the
+// circuit_fields / supply_characteristics_fields enum derivations above.
+//
+// `pending_writes` parameter (added 2026-04-30, Codex review P1#2):
+// Sonnet supplies any volunteered slot values from the SAME utterance
+// that triggered this tool ("ring continuity lives are 0.32" →
+// pending_writes:[{field:'ring_r1_ohm',value:'0.32'}]). The engine
+// applies them when circuit is known, else queues them and drains
+// when the circuit answer lands. Without this, the inspector's first
+// reading would be lost on every Sonnet-entered script (regression
+// vs the regex entry path's volunteered-value preservation).
+// Sonnet must NOT also call record_reading for the same value — the
+// system prompt enforces this; the engine is the authoritative
+// writer once the script is active.
+//
+// Idempotency: the dispatcher returns ok:true with status:'already_active'
+// if a script is in flight, so Sonnet calling defensively (e.g.
+// alongside the engine's own regex entry) does no damage.
+// ---------------------------------------------------------------------------
+const startDialogueScript = makeTool({
+  name: 'start_dialogue_script',
+  description:
+    "Trigger a structured slot-filling walk-through for a multi-step test the engine's regex did not catch (Deepgram garbled the trigger phrase, or the inspector paraphrased). Use ONLY when you understand the user is starting one of the listed walk-throughs AND the engine has not already entered it (no `Got it. R1 ... Rn ... R2` confirmation, no `What are the lives?` prompt visible, etc.). The server initialises the script state and asks the inspector for the next missing slot. Idempotent — emits ok:true with status:'already_active' when a script is already running, so calling defensively is safe. Do NOT use for one-shot readings (single Zs, single PFC, etc.) — those are record_reading.",
+  properties: {
+    schema: {
+      type: 'string',
+      enum: ALL_DIALOGUE_SCHEMA_NAMES,
+      description:
+        'Which structured walk-through to start. ring_continuity = R1/Rn/R2 ohms; insulation_resistance = L-L/L-E/voltage; ocpd = BS/curve/amps/kA; rcd = BS/type/mA; rcbo = combined OCPD+RCD with BS-EN 61009 pivot.',
+    },
+    circuit: {
+      type: ['integer', 'null'],
+      description:
+        "circuit_ref the test is for, if the inspector named a number. Null when the inspector named the load by designation or didn't name it — the engine asks 'Which circuit?' itself. Pass null rather than guessing.",
+    },
+    source_turn_id: {
+      type: 'string',
+      description:
+        'Identifier of the user turn this entry came from; used for log correlation with the engine state machine.',
+    },
+    reason: {
+      type: 'string',
+      description:
+        'One-line explanation for triggering the script (audit / debugging aid). E.g., "user said insellation resistance — engine garble miss" or "inspector started ring test on a renamed circuit".',
+    },
+    pending_writes: {
+      type: 'array',
+      description:
+        'Volunteered slot values from the SAME utterance that started this script. E.g., for "ring continuity lives are 0.32 on circuit 4" pass [{"field":"ring_r1_ohm","value":"0.32"}]. The engine applies these to the named circuit (or queues them until circuit is resolved). Each `field` MUST be a slot field of the chosen schema (e.g. ring_r1_ohm/ring_rn_ohm/ring_r2_ohm for ring_continuity); unknown fields are dropped. CRITICAL: do NOT also emit record_reading for the same values — the engine is the authoritative writer once a script is active. Empty array if the inspector said only the entry phrase with no values.',
+      items: {
+        type: 'object',
+        properties: {
+          field: {
+            type: 'string',
+            description:
+              'A slot field key for the chosen schema. ring_continuity: ring_r1_ohm/ring_rn_ohm/ring_r2_ohm. insulation_resistance: ir_live_live_mohm/ir_live_earth_mohm/test_voltage_v. ocpd: ocpd_bs_en/ocpd_type/ocpd_rating/ocpd_kA. rcd: rcd_bs_en/rcd_type/rcd_ma. rcbo: combination of OCPD + RCD slots.',
+          },
+          value: {
+            type: 'string',
+            description:
+              'Post-normalised value as a string (decimals like "0.32", integers like "32", BS-EN codes like "60898-1", etc.). Same shape the record_reading tool would carry.',
+          },
+        },
+        required: ['field', 'value'],
+        additionalProperties: false,
+      },
+    },
+  },
+  required: ['schema', 'source_turn_id', 'reason'],
+});
+
+// ---------------------------------------------------------------------------
 // Exports — declared in a fixed order so callers can rely on it for logging /
-// metric tagging. record_board_reading is appended at index 7 so the existing
-// indices for the original 7 tools do not shift.
+// metric tagging. record_board_reading was appended at index 7 (Phase 2 Bug C);
+// start_dialogue_script appends at index 8 so the existing indices for the
+// earlier tools do not shift.
 // ---------------------------------------------------------------------------
 export const TOOL_SCHEMAS = [
   recordReading,
@@ -537,6 +628,7 @@ export const TOOL_SCHEMAS = [
   deleteObservation,
   askUser,
   recordBoardReading,
+  startDialogueScript,
 ];
 
 /**

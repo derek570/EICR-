@@ -49,14 +49,19 @@ const EXPECTED_TOOL_NAMES = [
   // 2026-04-26 production analysis — supply / installation / board-level
   // writes (Ze, address, main fuse, etc.) had no tool surface before this.
   'record_board_reading',
+  // 2026-04-30 Silvertown follow-up: Sonnet-driven entry to the dialogue
+  // engine for structured walk-throughs the engine's regex missed
+  // (Deepgram garbles, paraphrases). Initialises session.dialogueScriptState
+  // and emits the first slot ask. See stage6-dispatchers-script.js.
+  'start_dialogue_script',
 ];
 
 const byName = (name) => TOOL_SCHEMAS.find((t) => t.name === name);
 
 describe('stage6-tool-schemas', () => {
-  test('exports exactly 8 tools with the expected names', () => {
+  test('exports exactly 9 tools with the expected names', () => {
     expect(Array.isArray(TOOL_SCHEMAS)).toBe(true);
-    expect(TOOL_SCHEMAS).toHaveLength(8);
+    expect(TOOL_SCHEMAS).toHaveLength(9);
     const names = TOOL_SCHEMAS.map((t) => t.name).sort();
     expect(names).toEqual([...EXPECTED_TOOL_NAMES].sort());
   });

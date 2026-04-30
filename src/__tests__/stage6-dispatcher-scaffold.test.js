@@ -39,7 +39,7 @@ function mockLogger() {
 }
 
 describe('WRITE_DISPATCHERS dispatch table', () => {
-  test('has exactly seven keys matching REQUIREMENTS STS-01..06 plus record_board_reading carryover', () => {
+  test('has exactly eight keys matching REQUIREMENTS STS-01..06 + record_board_reading + start_dialogue_script', () => {
     expect(Object.keys(WRITE_DISPATCHERS).sort()).toEqual(
       [
         'clear_reading',
@@ -52,6 +52,10 @@ describe('WRITE_DISPATCHERS dispatch table', () => {
         'record_observation',
         'record_reading',
         'rename_circuit',
+        // start_dialogue_script (2026-04-30 Silvertown follow-up) — Sonnet-
+        // driven entry to the dialogue engine for structured walk-throughs
+        // the engine's regex missed (Deepgram garbles, paraphrases).
+        'start_dialogue_script',
       ].sort()
     );
   });

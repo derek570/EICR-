@@ -204,6 +204,11 @@ const REQUIREMENT_PATTERNS = [
 const STRUCTURAL_PHRASES = [
   { id: 'assistant-intro', value: 'You are an EICR inspection assistant' },
   { id: 'seven-tools', value: 'You have 7 tools' },
+  // 2026-04-30 (Silvertown follow-up): the prompt now says "TOOLS (9):"
+  // so the most likely leak phrasing shifts to "You have 9 tools". Old
+  // ID kept for back-compat with CloudWatch dashboards filtering on
+  // filter_reason='seven-tools'.
+  { id: 'nine-tools', value: 'You have 9 tools' },
   { id: 'no-free-text-json', value: 'Do not emit free-text JSON' },
   { id: 'silent-writes', value: 'Prefer silent writes' },
   { id: 'corrections-are-writes', value: 'Corrections are writes' },

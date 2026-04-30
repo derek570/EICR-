@@ -29,7 +29,14 @@ const slots = [
     label: 'BS number',
     question: "What's the BS number?",
     parser: parseBsCode,
-    namedExtractor: /\bBS(?:\s*EN)?\s*(\d{4,5}(?:[-\s]*\d)?)/i,
+    // Accepts both clean `BS 60898` / `BS EN 60898` and Flux's
+    // letter-splitting `a b s 60898` / `a. b. s. e. n. 60898` forms.
+    // Defensive duplicate of `normaliseBsInput` in
+    // parsers/bs-code.js — applied here too because
+    // `extractNamedFieldValues` runs the regex against raw text before
+    // calling the parser. iOS NumberNormaliser collapses both forms
+    // for the iOS path, so this only fires on web / test inputs.
+    namedExtractor: /\b(?:a\.?\s+)?b\.?\s*s\.?(?:\s+e\.?\s+n\.?|\s*EN)?\s*(\d{4,5}(?:[-\s]*\d)?)/i,
     acceptsBareValue: true,
     derivations: [
       // Pure MCB BS code — no derivation. The schema asks for ocpd_type

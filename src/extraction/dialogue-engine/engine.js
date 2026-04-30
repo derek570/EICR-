@@ -158,7 +158,35 @@ function clearScriptState(session) {
 }
 
 /**
+ * Build the re-ask question for the "couldn't resolve circuit" recovery
+ * path. Quotes the user's failed answer back so the second attempt is
+ * unambiguous: "What's the circuit number for the upstairs sockets?"
+ *
+ * Schemas may override via `schema.retryCircuitQuestion(text)`. Default
+ * works for every walk-through because the load reference (the user's
+ * text) is the schema-agnostic part of the question.
+ *
+ * Empty / whitespace-only text falls back to the schema's regular
+ * `whichCircuitQuestion` — there's nothing useful to quote back.
+ */
+function buildCircuitRetryQuestion(schema, designationAttempt) {
+  const trimmed = typeof designationAttempt === 'string' ? designationAttempt.trim() : '';
+  if (typeof schema.retryCircuitQuestion === 'function') {
+    const out = schema.retryCircuitQuestion(trimmed);
+    if (typeof out === 'string' && out.length > 0) return out;
+  }
+  if (trimmed.length === 0) return schema.whichCircuitQuestion;
+  return `What's the circuit number for the ${trimmed}?`;
+}
+
+/**
  * Initialise the dialogue state for a freshly-entered script.
+ *
+ * `circuit_retry_attempted` and `last_designation_attempt` (added 2026-04-30
+ * after the 14 Silvertown Road repro — session 842A3289) drive the
+ * "re-ask once before discarding pending_writes" recovery path in the
+ * active-path handler below. See the comment on the unresolvable-circuit
+ * branch for the failure mode they fix.
  */
 function initScriptState(session, schema, circuit_ref, now) {
   session.dialogueScriptState = {
@@ -170,6 +198,12 @@ function initScriptState(session, schema, circuit_ref, now) {
     skipped_slots: new Set(),
     entered_at: now,
     last_turn_at: now,
+    circuit_retry_attempted: false,
+    last_designation_attempt: null,
+    // entered_via_pivot is set true only by runPivot; default false on
+    // every direct entry path (regex / runEntry / enterScriptByName).
+    entered_via_pivot: false,
+    pivoted_from: null,
   };
 }
 
@@ -433,13 +467,71 @@ function runActivePath({
         });
         return { handled: true, fallthrough: false };
       }
-      // Nothing to work with — exit and let Sonnet handle.
+      // First miss: re-ask once before discarding pending_writes. Save
+      // the user's text so the re-ask can quote it back ("What's the
+      // circuit number for the upstairs sockets?") and flag the retry
+      // so a SECOND unresolvable answer falls through as before.
+      //
+      // Why re-ask instead of immediate fallthrough: 2026-04-30 14
+      // Silvertown Road repro (session 842A3289). The inspector said
+      // "Ring continuity lives are 0.32" → script enters with R1=0.32
+      // queued and asks "Which circuit?". Inspector answers "upstairs
+      // socket." (Deepgram dropped the trailing 's'). At THAT moment
+      // circuit 4 had no `circuit_designation` on the snapshot —
+      // Sonnet's `rename_circuit(4 → "upstairs sockets")` didn't land
+      // for another 14s. The lookup returned null, the engine
+      // discarded R1=0.32, and the inspector had to redo the entire
+      // ring continuity test. Re-asking lets the engine recover when
+      // the snapshot is empty / stale or when Deepgram garbled the
+      // designation slightly. Two attempts before conceding to Sonnet
+      // matches the legacy "Fix C deferred" TODO from the original
+      // ring-continuity-script.js (line 798–800 in the legacy file).
+      //
+      // Why a flag (not a counter): one retry is enough to catch the
+      // designation-not-yet-written race without dragging the
+      // conversation. If the inspector is genuinely off-topic, the
+      // second answer falls through to Sonnet just like before — same
+      // exit log row + same discarded_pending_writes payload, plus a
+      // `retry_attempted: true` field so CloudWatch can split first-
+      // miss-recoveries from genuine fallthroughs.
+      if (!state.circuit_retry_attempted) {
+        state.circuit_retry_attempted = true;
+        const trimmed = text.trim();
+        state.last_designation_attempt = trimmed.slice(0, 60);
+        logger?.info?.(`${schema.logEventPrefix}_circuit_retry`, {
+          sessionId,
+          textPreview: text.slice(0, 80),
+          pending_writes: Array.isArray(state.pending_writes)
+            ? state.pending_writes.map((w) => w.field)
+            : [],
+        });
+        const retryQuestion = buildCircuitRetryQuestion(schema, state.last_designation_attempt);
+        safeSend(
+          ws,
+          buildScriptAsk({
+            toolCallIdPrefix: schema.toolCallIdPrefix,
+            sessionId,
+            circuit_ref: null,
+            missing_field: null,
+            whichCircuitQuestion: retryQuestion,
+            slotQuestion: null,
+            now,
+            kind: 'which_circuit',
+          })
+        );
+        return { handled: true, fallthrough: false };
+      }
+
+      // Second miss: original behaviour. Discard pending_writes and
+      // fall through to Sonnet. The `retry_attempted: true` field on
+      // the log row distinguishes this from a first-turn fallthrough.
       logger?.info?.(`${schema.logEventPrefix}_unresolvable_circuit`, {
         sessionId,
         textPreview: text.slice(0, 80),
         discarded_pending_writes: Array.isArray(state.pending_writes)
           ? state.pending_writes.map((w) => w.field)
           : [],
+        retry_attempted: true,
       });
       clearScriptState(session);
       return { handled: true, fallthrough: true, transcriptText };
@@ -587,6 +679,14 @@ function runPivot({ ws, session, sessionId, schemas, fromSchema, toSchemaName, l
   });
   initScriptState(session, target, circuit_ref, now);
   const state = session.dialogueScriptState;
+  // 2026-04-30 (Codex P2 follow-up): tag the post-pivot state so
+  // subsequent enterScriptByName calls hitting the already_active path
+  // can report the provenance accurately. Without this, a defensive
+  // Sonnet retry while RCBO is active (after an OCPD→RCBO pivot)
+  // would receive `pivoted:false` from the dispatcher — wrong, the
+  // active script DID arrive via pivot.
+  state.entered_via_pivot = true;
+  state.pivoted_from = fromSchema.name;
   // Hydrate the target's values from any snapshot fields its slots
   // cover. Includes anything the source schema wrote during this
   // turn (the derivations' sets+mirrors landed before pivot).
@@ -659,6 +759,304 @@ function finishScript({ ws, session, sessionId, schema, logger, now }) {
 function matchesAny(text, patterns) {
   if (typeof text !== 'string' || !text || !Array.isArray(patterns)) return false;
   return patterns.some((p) => p.test(text));
+}
+
+/**
+ * Server-driven script entry — the back door for the Sonnet
+ * `start_dialogue_script` tool (Plan: Silvertown follow-up 2026-04-30).
+ *
+ * Why this exists: the engine's regex entry triggers (each schema's
+ * `triggers` list) inevitably miss garbles and paraphrases that
+ * Sonnet's LLM understanding catches. Rather than chase every
+ * Deepgram mishearing into the regex (the long tail is unbounded),
+ * Sonnet emits a tool call when it recognises a structured walk-
+ * through entry the engine missed; the dispatcher (in
+ * stage6-dispatchers-script.js) calls this function to set up the
+ * script state, and the next user turn flows through the active path
+ * normally.
+ *
+ * Differs from `runEntry`:
+ *   - Caller supplies `schemaName` (string) instead of providing the
+ *     schema directly via the entry-detection loop.
+ *   - There is NO transcript text to parse for designations or named-
+ *     field values — Sonnet has already extracted what it could and
+ *     either passed `circuit_ref` or expects the engine to ask.
+ *   - Idempotent: returns `{ ok: true, status: 'already_active' }`
+ *     when a script is in flight, so calling defensively from Sonnet
+ *     is safe.
+ *   - Returns a structured outcome object instead of the
+ *     `{handled, fallthrough}` shape — the dispatcher converts to a
+ *     tool_result envelope.
+ *
+ * Wire emission: the function still calls `safeSend(ws, ...)` to emit
+ * the first ask (which-circuit or which-slot) so the inspector hears
+ * the question on the SAME response Sonnet is closing. If `ws` is
+ * absent (test path), the ask is captured in the return payload but
+ * not sent.
+ *
+ * @param {object} args
+ * @param {object} args.session
+ * @param {string} args.sessionId
+ * @param {Array}  args.schemas      Registered schema list to look up by name.
+ * @param {string} args.schemaName   One of: ring_continuity, insulation_resistance, ocpd, rcd, rcbo.
+ * @param {?number} [args.circuit_ref]  If known (Sonnet caught a digit), seeds state.circuit_ref.
+ * @param {Array<{field: string, value: string}>} [args.pending_writes]
+ *        Sonnet-extracted volunteered values from the same utterance ("ring
+ *        continuity lives are 0.32" → [{field: 'ring_r1_ohm', value: '0.32'}]).
+ *        Without this, the value Sonnet heard would be lost — the existing
+ *        regex-driven entry preserved volunteered values via
+ *        extractNamedFieldValues; this preserves the same property when
+ *        Sonnet enters via the LLM-fallback path. Each entry is silently
+ *        dropped if its `field` is not a slot of the chosen schema (defence
+ *        against Sonnet hallucinating a field name) — the rest of the entry
+ *        still proceeds. Validation logged via the schema's normal
+ *        `_seeded_writes` event.
+ * @param {object} [args.ws]
+ * @param {object} [args.logger]
+ * @param {number} [args.now]
+ * @returns {{ok: boolean, status?: string, schema?: string, circuit_ref?: ?number, seeded_writes?: string[], error?: object}}
+ */
+export function enterScriptByName({
+  session,
+  sessionId,
+  schemas,
+  schemaName,
+  circuit_ref = null,
+  pending_writes = [],
+  ws = null,
+  logger = null,
+  now = Date.now(),
+}) {
+  if (!session) return { ok: false, error: { code: 'no_session' } };
+  if (!Array.isArray(schemas) || schemas.length === 0) {
+    return { ok: false, error: { code: 'no_schemas' } };
+  }
+  const schema = schemas.find((s) => s.name === schemaName);
+  if (!schema) {
+    return { ok: false, error: { code: 'unknown_schema', schema: schemaName } };
+  }
+
+  // Idempotency: if a script is already in flight, return an
+  // already_active envelope. Sonnet may emit this tool defensively
+  // alongside the engine's own regex entry — we MUST NOT clear
+  // existing state and re-enter (would lose values + reset the
+  // retry-budget flag from Fix 1).
+  const existing = session.dialogueScriptState;
+  if (existing?.active) {
+    logger?.info?.('stage6.dialogue_script_already_active', {
+      sessionId,
+      requested_schema: schemaName,
+      active_schema: existing.schemaName,
+      active_circuit_ref: existing.circuit_ref,
+      entered_via_pivot: existing.entered_via_pivot === true,
+    });
+    return {
+      ok: true,
+      status: 'already_active',
+      schema: existing.schemaName,
+      circuit_ref: existing.circuit_ref,
+      // Surface the existing script's pivot provenance so the
+      // dispatcher's envelope reports `pivoted` correctly even on the
+      // defensive-retry path. Codex P2: the prior dispatcher coerced
+      // missing → false, which lied when a defensive retry hit RCBO
+      // that had been entered via OCPD → RCBO pivot earlier.
+      pivoted: existing.entered_via_pivot === true,
+    };
+  }
+
+  // Validate circuit_ref if supplied. Null is allowed — engine asks.
+  let resolvedCircuitRef = null;
+  if (circuit_ref !== null && circuit_ref !== undefined) {
+    if (!Number.isInteger(circuit_ref) || circuit_ref <= 0) {
+      return {
+        ok: false,
+        error: { code: 'invalid_circuit_ref', circuit_ref },
+      };
+    }
+    // Reject unknown circuit (mirror dispatchRecordReading semantics —
+    // strict-mode forces Sonnet to call create_circuit explicitly if
+    // it wants a new one, rather than silently creating via this back
+    // door).
+    const circuits = session.stateSnapshot?.circuits;
+    const exists =
+      (circuits && typeof circuits === 'object' && circuits[circuit_ref]) ||
+      (Array.isArray(circuits) && circuits.some((c) => Number(c?.circuit_ref) === circuit_ref));
+    if (!exists) {
+      return {
+        ok: false,
+        error: { code: 'unknown_circuit', circuit_ref },
+      };
+    }
+    resolvedCircuitRef = circuit_ref;
+  }
+
+  // Validate Sonnet-supplied volunteered values against the schema's
+  // slot fields. Drop any entry with an unknown field — Sonnet should
+  // not be hallucinating field names (the agentic prompt enumerates
+  // them), but defence-in-depth here keeps a single bad entry from
+  // poisoning the whole entry. Empty / non-string values also dropped.
+  const slotFields = schema.slots.map((s) => s.field);
+  const validWrites = [];
+  const droppedFields = [];
+  if (Array.isArray(pending_writes)) {
+    for (const w of pending_writes) {
+      if (
+        !w ||
+        typeof w.field !== 'string' ||
+        !slotFields.includes(w.field) ||
+        typeof w.value !== 'string' ||
+        w.value.length === 0
+      ) {
+        if (w?.field) droppedFields.push(w.field);
+        continue;
+      }
+      validWrites.push({ field: w.field, value: w.value });
+    }
+  }
+
+  // Initialise state. Seed values from the existing snapshot so a
+  // partial fill is honoured (mirrors runEntry's skip-already-filled).
+  initScriptState(session, schema, resolvedCircuitRef, now);
+  const state = session.dialogueScriptState;
+  if (resolvedCircuitRef !== null) {
+    const existingValues = readExistingValues(session, resolvedCircuitRef, slotFields);
+    for (const [f, v] of Object.entries(existingValues)) {
+      if (slotFields.includes(f) && v !== '' && v !== null && v !== undefined) {
+        state.values[f] = v;
+      }
+    }
+  }
+
+  // Apply or queue Sonnet's volunteered writes. Mirrors runEntry's
+  // logic exactly — including derivation processing — so byte-identical
+  // state results from regex entry + Sonnet entry on the same utterance
+  // shape. Critically, applyWriteWithDerivations is what fires the
+  // OCPD/RCD → RCBO pivot when a seed write is `BS EN 61009`. Skipping
+  // it (an earlier draft did) was a Codex-flagged regression: an
+  // utterance like "OCPD on circuit 4, BS EN 61009" would stay in OCPD
+  // and ask the next OCPD slot instead of switching to the RCBO flow.
+  const appliedWrites = [];
+  let pivotTo = null;
+  for (const w of validWrites) {
+    if (state.values[w.field] !== undefined) continue; // skip already-filled
+    if (resolvedCircuitRef !== null) {
+      const slot = schema.slots.find((s) => s.field === w.field);
+      const r = applyWriteWithDerivations(session, schema, slot, resolvedCircuitRef, w.value, now);
+      appliedWrites.push(w);
+      if (r.pivotTo) pivotTo = r.pivotTo;
+    } else {
+      // Circuit unknown — queue. The active path drains pending_writes
+      // once a digit or designation answer lands.
+      state.pending_writes.push(w);
+    }
+  }
+
+  // Wire-emit the applied extractions so iOS sees the values land
+  // immediately. Mirrors runEntry's emit at engine.js:259.
+  if (appliedWrites.length > 0) {
+    safeSend(
+      ws,
+      buildExtractionPayload(resolvedCircuitRef, appliedWrites, schema.extractionSource)
+    );
+  }
+
+  // Pivot — derivation requested a schema transition (e.g. ocpd_bs_en
+  // = "BS EN 61009" pivots OCPD → RCBO). Mirrors runEntry's pivot
+  // handling at engine.js:293. runPivot clears the current state,
+  // initialises the target schema, mirrors any derived values, and
+  // emits the next ask itself — so this branch RETURNS early and the
+  // normal first-ask emission below is skipped.
+  if (pivotTo) {
+    runPivot({
+      ws,
+      session,
+      sessionId,
+      schemas,
+      fromSchema: schema,
+      toSchemaName: pivotTo,
+      logger,
+      now,
+    });
+    return {
+      ok: true,
+      status: 'entered',
+      schema: pivotTo,
+      circuit_ref: resolvedCircuitRef,
+      seeded_writes: appliedWrites.map((w) => w.field),
+      queued_writes: [],
+      dropped_fields: droppedFields,
+      pivoted: true,
+    };
+  }
+
+  logger?.info?.(`${schema.logEventPrefix}_entered`, {
+    sessionId,
+    circuit_ref: resolvedCircuitRef,
+    entry_designation_matched: false,
+    pre_existing_filled: Object.keys(state.values).filter(
+      (f) => !appliedWrites.some((w) => w.field === f)
+    ),
+    volunteered_writes: appliedWrites.map((w) => w.field),
+    pending_writes: state.pending_writes.map((w) => w.field),
+    dropped_fields: droppedFields,
+    textPreview: '[server-entered via start_dialogue_script]',
+    server_entered: true,
+  });
+
+  // Emit the appropriate first ask. If circuit unknown → which_circuit;
+  // otherwise next missing slot. With pending_writes possibly already
+  // filling the first N slots, we ask about the first slot that is
+  // still empty (could be slot[0] if no writes, or a later slot if
+  // Sonnet seeded values for the early slots).
+  if (resolvedCircuitRef === null) {
+    safeSend(
+      ws,
+      buildScriptAsk({
+        toolCallIdPrefix: schema.toolCallIdPrefix,
+        sessionId,
+        circuit_ref: null,
+        missing_field: null,
+        whichCircuitQuestion: schema.whichCircuitQuestion,
+        slotQuestion: null,
+        now,
+        kind: 'which_circuit',
+      })
+    );
+  } else {
+    const nextSlot = nextMissingSlot(state.values, schema.slots, state.skipped_slots);
+    if (nextSlot) {
+      safeSend(
+        ws,
+        buildScriptAsk({
+          toolCallIdPrefix: schema.toolCallIdPrefix,
+          sessionId,
+          circuit_ref: resolvedCircuitRef,
+          missing_field: nextSlot.field,
+          whichCircuitQuestion: schema.whichCircuitQuestion,
+          slotQuestion: nextSlot.question,
+          now,
+          kind: 'value',
+        })
+      );
+    } else {
+      // All slots filled (snapshot pre-fill + seeded writes) — finish
+      // immediately. Reachable when Sonnet's pending_writes complete
+      // an already-partial snapshot, or when an inspector dictates a
+      // full reading family in one breath ("ring continuity for circuit
+      // 4 lives 0.32 neutrals 0.31 cpc 0.55") and all three slots seed.
+      finishScript({ ws, session, sessionId, schema, logger, now });
+    }
+  }
+
+  return {
+    ok: true,
+    status: 'entered',
+    schema: schema.name,
+    circuit_ref: resolvedCircuitRef,
+    seeded_writes: appliedWrites.map((w) => w.field),
+    queued_writes: state.pending_writes ? state.pending_writes.map((w) => w.field) : [],
+    dropped_fields: droppedFields,
+  };
 }
 
 // Test-only exports for unit tests.
