@@ -46,10 +46,54 @@ const PATTERNS = [
   { re: /\b4293\b/, canonical: 'BS 4293' },
 ];
 
+/**
+ * Pre-normalises common Flux artefacts that survive the iOS
+ * NumberNormaliser layer when input doesn't go through it (web
+ * frontend, tests, future clients). Defensive — iOS NumberNormaliser
+ * already collapses these for the iOS path.
+ *
+ *   1. Letter-splitting: "a b s 60898" / "a. b. s. 60898" → "BS 60898"
+ *      and "a b s e n 61009" → "BS EN 61009". Production session
+ *      9FC3A6F1 (2026-04-30) — speakers say "BS" but Flux sometimes
+ *      emits the letters separately.
+ *   2. Zero-word inside digit run: "6 zero 8 9 8" → "60898". Same
+ *      session — speakers say "Six zero eight nine eight" naturally;
+ *      the standalone-digit-word converter leaves "zero" intact (idiom
+ *      guard), and the digit-collapse pass needs zero-word tolerance
+ *      to cross it.
+ *
+ * Tightly scoped — only fires on well-formed digit runs and the
+ * three-letter "a b s" pattern, so doesn't corrupt prose containing
+ * "abs" / "absolute" / "zero" alone.
+ */
+function normaliseBsInput(text) {
+  // 1. Letter-splitting → "BS" / "BS EN"
+  text = text.replace(/\ba\.?\s+b\.?\s+s\.?(?:\s+e\.?\s+n\.?)?(?![a-z])/gi, (m) =>
+    m.toLowerCase().includes('e') ? 'BS EN' : 'BS'
+  );
+  // 2. Zero-word inside digit run → "0", then collapse spaces.
+  // Multi-digit tokens are admitted on both ends so partial runs from
+  // any upstream collapse re-fold here.
+  text = text.replace(/\b\d+(?:\s+(?:\d+|zero|oh|nought|naught))+\b/gi, (m) =>
+    m
+      .split(/\s+/)
+      .map((tok) => {
+        const lower = tok.toLowerCase();
+        if (lower === 'zero' || lower === 'oh' || lower === 'nought' || lower === 'naught') {
+          return '0';
+        }
+        return tok;
+      })
+      .join('')
+  );
+  return text;
+}
+
 export function parseBsCode(text) {
   if (typeof text !== 'string' || !text) return null;
+  const normalised = normaliseBsInput(text);
   for (const p of PATTERNS) {
-    const m = text.match(p.re);
+    const m = normalised.match(p.re);
     if (m) {
       return p.build ? p.build(m) : p.canonical;
     }
