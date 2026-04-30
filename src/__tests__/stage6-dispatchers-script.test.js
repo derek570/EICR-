@@ -143,6 +143,7 @@ describe('enterScriptByName — engine back door', () => {
       status: 'already_active',
       schema: 'ring_continuity', // returns the ALREADY-active schema
       circuit_ref: 4,
+      pivoted: false, // ring entered directly, not via pivot
     });
     // Engine state untouched.
     expect(session.dialogueScriptState.schemaName).toBe('ring_continuity');
@@ -652,6 +653,50 @@ describe('dispatchStartDialogueScript — tool dispatcher', () => {
     expect(body.pivoted).toBe(true);
     expect(body.schema).toBe('rcbo');
     expect(body.seeded_writes).toEqual(['ocpd_bs_en']);
+  });
+
+  test('pivoted:true preserved on already_active retry after a prior pivot (Codex P2 round 2)', async () => {
+    // Defensive Sonnet retry while RCBO is active (after OCPD → RCBO
+    // pivot earlier in the turn). The dispatcher MUST NOT coerce the
+    // missing flag to false — that would tell Sonnet/analytics no
+    // pivot happened, which is wrong.
+    const ws = new FakeWS();
+    const session = buildSession({ 4: {} });
+    // Set up: enter OCPD with BS EN 61009 → engine pivots to RCBO.
+    enterScriptByName({
+      session,
+      sessionId: 'sess_test',
+      schemas: ALL_DIALOGUE_SCHEMAS,
+      schemaName: 'ocpd',
+      circuit_ref: 4,
+      pending_writes: [{ field: 'ocpd_bs_en', value: 'BS EN 61009' }],
+      ws,
+      now: 1000,
+    });
+    expect(session.dialogueScriptState.schemaName).toBe('rcbo');
+    expect(session.dialogueScriptState.entered_via_pivot).toBe(true);
+
+    // Now Sonnet defensively retries (e.g. on the next round it isn't
+    // sure the engine entered).
+    const ctx = buildCtx(session, ws);
+    const res = await dispatchStartDialogueScript(
+      {
+        tool_call_id: 'tu_retry',
+        name: 'start_dialogue_script',
+        input: {
+          schema: 'rcbo',
+          circuit: 4,
+          source_turn_id: 'turn-retry',
+          reason: 'defensive retry — not sure if engine entered',
+        },
+      },
+      ctx
+    );
+    expect(res.is_error).toBe(false);
+    const body = JSON.parse(res.content);
+    expect(body.status).toBe('already_active');
+    expect(body.schema).toBe('rcbo');
+    expect(body.pivoted).toBe(true); // preserves the earlier pivot
   });
 
   test('pivoted:false on the normal no-pivot path (envelope shape consistent)', async () => {

@@ -200,6 +200,10 @@ function initScriptState(session, schema, circuit_ref, now) {
     last_turn_at: now,
     circuit_retry_attempted: false,
     last_designation_attempt: null,
+    // entered_via_pivot is set true only by runPivot; default false on
+    // every direct entry path (regex / runEntry / enterScriptByName).
+    entered_via_pivot: false,
+    pivoted_from: null,
   };
 }
 
@@ -675,6 +679,14 @@ function runPivot({ ws, session, sessionId, schemas, fromSchema, toSchemaName, l
   });
   initScriptState(session, target, circuit_ref, now);
   const state = session.dialogueScriptState;
+  // 2026-04-30 (Codex P2 follow-up): tag the post-pivot state so
+  // subsequent enterScriptByName calls hitting the already_active path
+  // can report the provenance accurately. Without this, a defensive
+  // Sonnet retry while RCBO is active (after an OCPD→RCBO pivot)
+  // would receive `pivoted:false` from the dispatcher — wrong, the
+  // active script DID arrive via pivot.
+  state.entered_via_pivot = true;
+  state.pivoted_from = fromSchema.name;
   // Hydrate the target's values from any snapshot fields its slots
   // cover. Includes anything the source schema wrote during this
   // turn (the derivations' sets+mirrors landed before pivot).
@@ -836,12 +848,19 @@ export function enterScriptByName({
       requested_schema: schemaName,
       active_schema: existing.schemaName,
       active_circuit_ref: existing.circuit_ref,
+      entered_via_pivot: existing.entered_via_pivot === true,
     });
     return {
       ok: true,
       status: 'already_active',
       schema: existing.schemaName,
       circuit_ref: existing.circuit_ref,
+      // Surface the existing script's pivot provenance so the
+      // dispatcher's envelope reports `pivoted` correctly even on the
+      // defensive-retry path. Codex P2: the prior dispatcher coerced
+      // missing → false, which lied when a defensive retry hit RCBO
+      // that had been entered via OCPD → RCBO pivot earlier.
+      pivoted: existing.entered_via_pivot === true,
     };
   }
 
