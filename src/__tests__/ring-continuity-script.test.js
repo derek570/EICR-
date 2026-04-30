@@ -911,6 +911,31 @@ describe('Fix B — findCircuitByDesignation (via __testing__)', () => {
     };
     expect(findCircuitByDesignation(session, 'downstairs sockets')).toBe(1);
   });
+
+  // 2026-04-30 (session BBE66264, 59 Chucklesville Road): the seeder writes
+  // `circuit_designation` (canonical schema key per field_schema.json), but
+  // the lookup checked only `bucket.designation`. Production sessions
+  // therefore always missed a designation match — the script asked
+  // "Which circuit?" even when the inspector's utterance contained the
+  // canonical name. Pre-fix this test would have failed; the prior tests
+  // pass only because they use the legacy `designation` key in the
+  // fixture.
+  test('canonical seeded shape (circuit_designation) resolves', () => {
+    const session = buildSession({
+      1: { circuit_designation: 'Cooker' },
+      2: { circuit_designation: 'Upstairs Sockets', ring_r1_ohm: '0.83', ring_rn_ohm: '0.82' },
+    });
+    expect(findCircuitByDesignation(session, 'ring continuity for upstairs sockets.')).toBe(2);
+  });
+
+  test('canonical key takes precedence over legacy when both present', () => {
+    const session = buildSession({
+      1: { circuit_designation: 'Cooker', designation: 'Old Name' },
+    });
+    // Both keys agree on a single circuit so this should resolve;
+    // exercising the precedence path documents intent.
+    expect(findCircuitByDesignation(session, 'cooker')).toBe(1);
+  });
 });
 
 describe('Fix B — designation answer in active path', () => {

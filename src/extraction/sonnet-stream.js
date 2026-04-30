@@ -42,8 +42,16 @@ import { findExpiredPartial as findExpiredIrPartial } from './insulation-resista
 // → "0.43." landed in two separate turns and Sonnet routed the bare value
 // to a generic missing-field ask. Sits BEFORE the 60s timeout check below
 // so the script's per-circuit state is the source of truth while active.
-import { processRingContinuityTurn } from './ring-continuity-script.js';
-import { processInsulationResistanceTurn } from './insulation-resistance-script.js';
+// Dialogue script engine — replaces the per-domain ring + IR scripts
+// with a single slot-filling engine driven by per-domain schemas. The
+// drop-in wrappers preserve the call-site contract; the schemas live
+// in src/extraction/dialogue-engine/schemas/. PR1 ports ring + IR;
+// PR2 will add OCPD / RCD / RCBO. The legacy *-script.js files stay
+// alongside this PR until a follow-up commit deletes them.
+import {
+  processRingContinuityTurn,
+  processInsulationResistanceTurn,
+} from './dialogue-engine/index.js';
 // Stage 6 Phase 3 — per-session blocking-ask plumbing. Plan 03-08 threads the
 // per-session PendingAsksRegistry through every call-site of runShadowHarness
 // (via `options.pendingAsks` + `options.ws`) and routes inbound iOS
