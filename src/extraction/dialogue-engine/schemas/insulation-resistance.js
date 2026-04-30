@@ -78,8 +78,14 @@ const cancelTriggers = [
 const topicSwitchTriggers = [
   /\b(?:zs|z\s*s|ze|z\s*e)\s+(?:is|=|of|at)\b/i,
   /\bcircuit\s+\d+\s+is\b/i,
-  /\bR\s*1\s*\+\s*R\s*2\b/i,
-  /\bring\s+(?:continu(?:ity|ance|ancy|ed|e)|final)\b/i,
+  // R1+R2 — accept both literal "+" and the spoken "plus" form. See
+  // ring-continuity.js for the field repro that motivated this.
+  /\bR\s*1\s*(?:\+|\s+plus\s+)\s*R\s*2\b/i,
+  // Ring entries — same trigger vocabulary as ring-continuity.js's
+  // own triggers, including the (?:ring|bring|wing) Deepgram-garble
+  // alternation. Without this an inspector saying "Wing continuity"
+  // mid-IR would not exit IR cleanly.
+  /\b(?:ring|bring|wing)\s+(?:continu(?:ity|ance|ancy|ed|e)|final)\b/i,
   /\bRCD\s+(?:trip|test|time)\b/i,
   /\bpolarity\b/i,
   // Bare ring-field words — when said in isolation in IR mode, the

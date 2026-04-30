@@ -366,6 +366,105 @@ describe('engine — insulation resistance', () => {
   });
 });
 
+describe('engine — Deepgram garble tolerance (2026-04-30)', () => {
+  test('"Bring continuity for upstairs sockets" enters ring (session 2801896A)', () => {
+    const ws = new FakeWS();
+    const session = buildSession({
+      2: { circuit_designation: 'Upstairs Sockets' },
+    });
+    const out = processRingContinuityTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'Bring continuity for upstairs sockets.',
+      now: 1000,
+    });
+    expect(out).toEqual({ handled: true, fallthrough: false });
+    expect(ws.sent[0].context_circuit).toBe(2);
+    expect(ws.sent[0].question).toBe('What are the lives?');
+  });
+
+  test('"Wing continuity for upstairs sockets" enters ring (session BD8AB009)', () => {
+    const ws = new FakeWS();
+    const session = buildSession({
+      2: { circuit_designation: 'Upstairs Sockets' },
+    });
+    const out = processRingContinuityTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'Wing continuity for upstairs sockets.',
+      now: 1000,
+    });
+    expect(out).toEqual({ handled: true, fallthrough: false });
+    expect(ws.sent[0].context_circuit).toBe(2);
+  });
+
+  test('"R1 plus R2 is 47" mid-script is a topic switch (session BD8AB009)', () => {
+    const ws = new FakeWS();
+    const session = buildSession({ 2: { circuit_designation: 'Upstairs Sockets' } });
+    processRingContinuityTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'Ring continuity for circuit 2.',
+      now: 1000,
+    });
+    processRingContinuityTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'Lives are 0.06.',
+      now: 2000,
+    });
+    processRingContinuityTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: '0.06',
+      now: 3000,
+    });
+    // Now the engine has asked "What's the CPC?" — the user instead says
+    // "R1 plus R2 is 47", which is the composite reading. Engine MUST
+    // topic-switch out (not write "1" via bare-value parsing of "R1").
+    const out = processRingContinuityTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'R1 plus R2 is 47',
+      now: 4000,
+    });
+    expect(out).toEqual({
+      handled: true,
+      fallthrough: true,
+      transcriptText: 'R1 plus R2 is 47',
+    });
+    // The CPC slot must NOT have been written.
+    expect(session.stateSnapshot.circuits[2].ring_r2_ohm).toBeUndefined();
+    expect(session.dialogueScriptState).toBeNull();
+  });
+
+  test('"R1 + R2 is 47" with literal "+" still works (back-compat)', () => {
+    const ws = new FakeWS();
+    const session = buildSession({ 2: { circuit_designation: 'Upstairs Sockets' } });
+    processRingContinuityTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'Ring continuity for circuit 2.',
+      now: 1000,
+    });
+    const out = processRingContinuityTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'R1+R2 is 47',
+      now: 2000,
+    });
+    expect(out.fallthrough).toBe(true);
+  });
+});
+
 describe('engine — schema isolation', () => {
   test('ring active state is preserved when IR wrapper is invoked', () => {
     const ws = new FakeWS();
