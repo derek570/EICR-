@@ -23,8 +23,8 @@ const VOLTAGE_FIELD = 'ir_test_voltage_v';
 const slots = [
   {
     field: 'ir_live_live_mohm',
-    label: 'L-L',
-    question: 'What is live to live?',
+    label: 'live-to-live',
+    question: "What's the live-to-live?",
     parser: parseMegaohms,
     // "live to live", "line to line", "L to L", "L L" / "LL" / "L-L" / "L.L".
     namedExtractor: new RegExp(
@@ -36,8 +36,8 @@ const slots = [
   },
   {
     field: 'ir_live_earth_mohm',
-    label: 'L-E',
-    question: 'What is live to earth?',
+    label: 'live-to-earth',
+    question: "What's the live-to-earth?",
     parser: parseMegaohms,
     namedExtractor: new RegExp(
       `\\b(?:live\\s+to\\s+earth|line\\s+to\\s+earth|l\\s+to\\s+e|l[\\s.-]*e)\\b[^\\d∞>a-z]{0,30}?(${MEGAOHMS_VALUE_GROUP})`,

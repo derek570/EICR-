@@ -253,7 +253,7 @@ describe('engine — insulation resistance', () => {
     expect(ws.sent[0]).toMatchObject({
       type: 'ask_user_started',
       tool_call_id: 'srv-irs-sess_test-13-ir_live_live_mohm-1000',
-      question: 'What is live to live?',
+      question: "What's the live-to-live?",
       context_field: 'ir_live_live_mohm',
       context_circuit: 13,
     });
