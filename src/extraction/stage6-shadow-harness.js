@@ -206,7 +206,11 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
   // thread pendingAsks through (Phase 3/4 back-compat).
   const pendingAsks = options.pendingAsks ?? null;
   const ws = options.ws ?? null;
-  const writes = createWriteDispatcher(liveSession, log, turnId, perTurnWrites);
+  // Pass `ws` through createWriteDispatcher's extraCtx so the
+  // start_dialogue_script dispatcher (added 2026-04-30 Silvertown
+  // follow-up) can hand it to enterScriptByName for first-ask emission.
+  // Other dispatchers in the table ignore it.
+  const writes = createWriteDispatcher(liveSession, log, turnId, perTurnWrites, { ws });
   // 2026-04-27 — bug-1B fix. Hook the ask dispatcher's server-side resolution
   // path into the normal write infrastructure: when ask_user carries a
   // pending_write and the user's reply matches a circuit deterministically,
@@ -264,11 +268,7 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
       messages: [{ role: 'user', content: transcriptText }],
       tools: TOOL_SCHEMAS,
       dispatcher,
-      // 2026-04-30 (Silvertown follow-up): thread `ws` into ctx so the
-      // start_dialogue_script dispatcher can hand it to the engine's
-      // enterScriptByName for first-ask emission. Other dispatchers
-      // ignore ctx.ws — additive, not breaking.
-      ctx: { sessionId: session.sessionId, turnId, ws },
+      ctx: { sessionId: session.sessionId, turnId },
       logger: log,
       sortRecords,
     });

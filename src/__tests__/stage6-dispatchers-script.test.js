@@ -70,11 +70,14 @@ describe('enterScriptByName — engine back door', () => {
       logger: null,
       now: 1000,
     });
-    expect(result).toEqual({
+    expect(result).toMatchObject({
       ok: true,
       status: 'entered',
       schema: 'insulation_resistance',
       circuit_ref: 4,
+      seeded_writes: [],
+      queued_writes: [],
+      dropped_fields: [],
     });
     expect(session.dialogueScriptState.active).toBe(true);
     expect(session.dialogueScriptState.schemaName).toBe('insulation_resistance');
@@ -230,6 +233,166 @@ describe('enterScriptByName — engine back door', () => {
     expect(ws.sent[0].question).toBe("What's the CPC?");
   });
 
+  test('seeds Sonnet-volunteered values via pending_writes when circuit known', () => {
+    // Codex P1#2: Sonnet hears "ring continuity for circuit 4 lives 0.32"
+    // → Deepgram garbles "ring" but Sonnet recovers via LLM understanding.
+    // Sonnet calls start_dialogue_script with circuit=4 + pending_writes
+    // for R1=0.32. Engine writes R1 immediately, asks for R_n next.
+    const ws = new FakeWS();
+    const session = buildSession({ 4: {} });
+    const result = enterScriptByName({
+      session,
+      sessionId: 'sess_test',
+      schemas: ALL_DIALOGUE_SCHEMAS,
+      schemaName: 'ring_continuity',
+      circuit_ref: 4,
+      pending_writes: [{ field: 'ring_r1_ohm', value: '0.32' }],
+      ws,
+      now: 1000,
+    });
+    expect(result.ok).toBe(true);
+    expect(result.seeded_writes).toEqual(['ring_r1_ohm']);
+    expect(result.queued_writes).toEqual([]);
+    // Snapshot received the write.
+    expect(session.stateSnapshot.circuits[4].ring_r1_ohm).toBe('0.32');
+    // First wire emit: extraction payload for R1.
+    expect(ws.sent[0]).toMatchObject({
+      type: 'extraction',
+      result: {
+        readings: [
+          {
+            field: 'ring_r1_ohm',
+            circuit: 4,
+            value: '0.32',
+            source: 'ring_script',
+          },
+        ],
+      },
+    });
+    // Second wire emit: ask for R_n (next missing slot).
+    expect(ws.sent[1].context_field).toBe('ring_rn_ohm');
+    expect(ws.sent[1].question).toBe('What are the neutrals?');
+  });
+
+  test('queues Sonnet-volunteered values via pending_writes when circuit unknown', () => {
+    // The Silvertown shape: "ring continuity lives are 0.32" with no
+    // circuit number. Sonnet calls start_dialogue_script with circuit=null
+    // + pending_writes. Engine asks "Which circuit?", queues R1.
+    const ws = new FakeWS();
+    const session = buildSession({ 4: {} });
+    const result = enterScriptByName({
+      session,
+      sessionId: 'sess_test',
+      schemas: ALL_DIALOGUE_SCHEMAS,
+      schemaName: 'ring_continuity',
+      circuit_ref: null,
+      pending_writes: [{ field: 'ring_r1_ohm', value: '0.32' }],
+      ws,
+      now: 1000,
+    });
+    expect(result.ok).toBe(true);
+    expect(result.seeded_writes).toEqual([]); // not written yet
+    expect(result.queued_writes).toEqual(['ring_r1_ohm']);
+    // Nothing on the snapshot yet.
+    expect(session.stateSnapshot.circuits[4].ring_r1_ohm).toBeUndefined();
+    // pending_writes is in state, ready for circuit answer.
+    expect(session.dialogueScriptState.pending_writes).toEqual([
+      { field: 'ring_r1_ohm', value: '0.32' },
+    ]);
+    // First (and only) wire emit: which-circuit ask.
+    expect(ws.sent).toHaveLength(1);
+    expect(ws.sent[0].question).toBe('Which circuit is the ring continuity for?');
+  });
+
+  test('drains queued pending_writes onto the circuit when user answers', () => {
+    // Continuation of the previous test. After server-entry with queued
+    // R1, inspector says "circuit 4". Engine resolves circuit, drains R1.
+    const ws = new FakeWS();
+    const session = buildSession({ 4: {} });
+    enterScriptByName({
+      session,
+      sessionId: 'sess_test',
+      schemas: ALL_DIALOGUE_SCHEMAS,
+      schemaName: 'ring_continuity',
+      circuit_ref: null,
+      pending_writes: [{ field: 'ring_r1_ohm', value: '0.32' }],
+      ws,
+      now: 1000,
+    });
+    processRingContinuityTurn({
+      ws,
+      session,
+      sessionId: 'sess_test',
+      transcriptText: '4',
+      now: 2000,
+    });
+    expect(session.stateSnapshot.circuits[4].ring_r1_ohm).toBe('0.32');
+    expect(session.dialogueScriptState.pending_writes).toEqual([]);
+    // Engine asked for R_n.
+    expect(ws.sent.at(-1).context_field).toBe('ring_rn_ohm');
+  });
+
+  test('drops unknown / malformed pending_writes entries (defence in depth)', () => {
+    const ws = new FakeWS();
+    const session = buildSession({ 4: {} });
+    const result = enterScriptByName({
+      session,
+      sessionId: 'sess_test',
+      schemas: ALL_DIALOGUE_SCHEMAS,
+      schemaName: 'ring_continuity',
+      circuit_ref: 4,
+      pending_writes: [
+        { field: 'ring_r1_ohm', value: '0.32' }, // valid → applied
+        { field: 'not_a_field', value: '0.43' }, // unknown → dropped
+        { field: 'ir_live_live_mohm', value: '200' }, // wrong schema → dropped
+        { field: 'ring_r2_ohm', value: '' }, // empty value → dropped
+        null, // garbage → dropped
+        { value: '0.5' }, // missing field → dropped
+      ],
+      ws,
+      now: 1000,
+    });
+    expect(result.seeded_writes).toEqual(['ring_r1_ohm']);
+    expect(result.dropped_fields).toEqual(['not_a_field', 'ir_live_live_mohm', 'ring_r2_ohm']);
+    // Only the valid write landed on the snapshot.
+    expect(session.stateSnapshot.circuits[4]).toMatchObject({
+      ring_r1_ohm: '0.32',
+    });
+    expect(session.stateSnapshot.circuits[4].ring_r2_ohm).toBeUndefined();
+  });
+
+  test('all-slots-filled via pending_writes triggers immediate finishScript', () => {
+    // Inspector dictates a complete ring family in one breath.
+    const ws = new FakeWS();
+    const session = buildSession({ 4: {} });
+    enterScriptByName({
+      session,
+      sessionId: 'sess_test',
+      schemas: ALL_DIALOGUE_SCHEMAS,
+      schemaName: 'ring_continuity',
+      circuit_ref: 4,
+      pending_writes: [
+        { field: 'ring_r1_ohm', value: '0.32' },
+        { field: 'ring_rn_ohm', value: '0.31' },
+        { field: 'ring_r2_ohm', value: '0.55' },
+      ],
+      ws,
+      now: 1000,
+    });
+    // All three writes landed.
+    expect(session.stateSnapshot.circuits[4]).toMatchObject({
+      ring_r1_ohm: '0.32',
+      ring_rn_ohm: '0.31',
+      ring_r2_ohm: '0.55',
+    });
+    // finishScript ran — completion info emitted, state cleared.
+    expect(session.dialogueScriptState).toBeNull();
+    expect(ws.sent.at(-1)).toMatchObject({
+      reason: 'info',
+      question: expect.stringContaining('Got it'),
+    });
+  });
+
   test('handoff: server-entered IR script handles the next user turn cleanly', () => {
     // Silvertown-style scenario for IR. Sonnet calls start_dialogue_script
     // because Deepgram garbled "instellation resistance". Engine state set
@@ -287,11 +450,14 @@ describe('dispatchStartDialogueScript — tool dispatcher', () => {
     expect(res.tool_use_id).toBe('tu_1');
     expect(res.is_error).toBe(false);
     const body = JSON.parse(res.content);
-    expect(body).toEqual({
+    expect(body).toMatchObject({
       ok: true,
       status: 'entered',
       schema: 'insulation_resistance',
       circuit_ref: 4,
+      seeded_writes: [],
+      queued_writes: [],
+      dropped_fields: [],
     });
     // Side effect: engine state set up + first ask emitted.
     expect(session.dialogueScriptState.schemaName).toBe('insulation_resistance');

@@ -545,13 +545,17 @@ const recordBoardReading = makeTool({
 // widen the tool surface. Single source of truth — same pattern as the
 // circuit_fields / supply_characteristics_fields enum derivations above.
 //
-// Why NO seed_values parameter: kept minimal for v1. Sonnet's separate
-// record_reading tool calls already capture any value Sonnet extracted,
-// and the dispatcher rejects record_reading with a missing circuit, so
-// Sonnet's natural fallback when it can't fill the circuit is to call
-// start_dialogue_script first and let the engine collect the inputs.
-// Adding a seed_values parameter would invite double-writes (Sonnet's
-// record_reading + the engine's slot-fill) for the same value.
+// `pending_writes` parameter (added 2026-04-30, Codex review P1#2):
+// Sonnet supplies any volunteered slot values from the SAME utterance
+// that triggered this tool ("ring continuity lives are 0.32" →
+// pending_writes:[{field:'ring_r1_ohm',value:'0.32'}]). The engine
+// applies them when circuit is known, else queues them and drains
+// when the circuit answer lands. Without this, the inspector's first
+// reading would be lost on every Sonnet-entered script (regression
+// vs the regex entry path's volunteered-value preservation).
+// Sonnet must NOT also call record_reading for the same value — the
+// system prompt enforces this; the engine is the authoritative
+// writer once the script is active.
 //
 // Idempotency: the dispatcher returns ok:true with status:'already_active'
 // if a script is in flight, so Sonnet calling defensively (e.g.
@@ -582,6 +586,28 @@ const startDialogueScript = makeTool({
       type: 'string',
       description:
         'One-line explanation for triggering the script (audit / debugging aid). E.g., "user said insellation resistance — engine garble miss" or "inspector started ring test on a renamed circuit".',
+    },
+    pending_writes: {
+      type: 'array',
+      description:
+        'Volunteered slot values from the SAME utterance that started this script. E.g., for "ring continuity lives are 0.32 on circuit 4" pass [{"field":"ring_r1_ohm","value":"0.32"}]. The engine applies these to the named circuit (or queues them until circuit is resolved). Each `field` MUST be a slot field of the chosen schema (e.g. ring_r1_ohm/ring_rn_ohm/ring_r2_ohm for ring_continuity); unknown fields are dropped. CRITICAL: do NOT also emit record_reading for the same values — the engine is the authoritative writer once a script is active. Empty array if the inspector said only the entry phrase with no values.',
+      items: {
+        type: 'object',
+        properties: {
+          field: {
+            type: 'string',
+            description:
+              'A slot field key for the chosen schema. ring_continuity: ring_r1_ohm/ring_rn_ohm/ring_r2_ohm. insulation_resistance: ir_live_live_mohm/ir_live_earth_mohm/test_voltage_v. ocpd: ocpd_bs_en/ocpd_type/ocpd_rating/ocpd_kA. rcd: rcd_bs_en/rcd_type/rcd_ma. rcbo: combination of OCPD + RCD slots.',
+          },
+          value: {
+            type: 'string',
+            description:
+              'Post-normalised value as a string (decimals like "0.32", integers like "32", BS-EN codes like "60898-1", etc.). Same shape the record_reading tool would carry.',
+          },
+        },
+        required: ['field', 'value'],
+        additionalProperties: false,
+      },
     },
   },
   required: ['schema', 'source_turn_id', 'reason'],

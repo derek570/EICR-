@@ -69,12 +69,23 @@ export const WRITE_DISPATCHERS = {
 };
 
 /**
- * Factory binding per-turn context. Returns a (call, _ctx) closure matching
+ * Factory binding per-turn context. Returns a (call, ctx) closure matching
  * the Phase 1 runToolLoop dispatcher contract. Unknown tool names produce an
  * error envelope + log row rather than throwing.
+ *
+ * `extraCtx` (added 2026-04-30 Silvertown follow-up): per-turn, dispatcher-
+ * agnostic fields runToolLoop's ctx wants every dispatcher to see — currently
+ * just `ws` for the start_dialogue_script dispatcher's first-ask emission.
+ * Spread into the per-call ctx AFTER the standard fields so dispatchers can
+ * read them but never accidentally shadow {session, logger, turnId,
+ * perTurnWrites, round}. Keep this a tight allow-list, not a passthrough of
+ * the entire runToolLoop ctx — implicit coupling between the loop and every
+ * dispatcher would be hard to revoke once it set in.
  */
-export function createWriteDispatcher(session, logger, turnId, perTurnWrites) {
+export function createWriteDispatcher(session, logger, turnId, perTurnWrites, extraCtx = {}) {
   let round = 0;
+  // Defensive copy so a mutating caller can't change ctx fields mid-turn.
+  const safeExtra = { ...extraCtx };
   return async (call, _ctx) => {
     round += 1;
     const fn = WRITE_DISPATCHERS[call.name];
@@ -96,7 +107,7 @@ export function createWriteDispatcher(session, logger, turnId, perTurnWrites) {
         is_error: true,
       };
     }
-    return fn(call, { session, logger, turnId, perTurnWrites, round });
+    return fn(call, { ...safeExtra, session, logger, turnId, perTurnWrites, round });
   };
 }
 

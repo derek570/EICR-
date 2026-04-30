@@ -788,10 +788,21 @@ function matchesAny(text, patterns) {
  * @param {Array}  args.schemas      Registered schema list to look up by name.
  * @param {string} args.schemaName   One of: ring_continuity, insulation_resistance, ocpd, rcd, rcbo.
  * @param {?number} [args.circuit_ref]  If known (Sonnet caught a digit), seeds state.circuit_ref.
+ * @param {Array<{field: string, value: string}>} [args.pending_writes]
+ *        Sonnet-extracted volunteered values from the same utterance ("ring
+ *        continuity lives are 0.32" → [{field: 'ring_r1_ohm', value: '0.32'}]).
+ *        Without this, the value Sonnet heard would be lost — the existing
+ *        regex-driven entry preserved volunteered values via
+ *        extractNamedFieldValues; this preserves the same property when
+ *        Sonnet enters via the LLM-fallback path. Each entry is silently
+ *        dropped if its `field` is not a slot of the chosen schema (defence
+ *        against Sonnet hallucinating a field name) — the rest of the entry
+ *        still proceeds. Validation logged via the schema's normal
+ *        `_seeded_writes` event.
  * @param {object} [args.ws]
  * @param {object} [args.logger]
  * @param {number} [args.now]
- * @returns {{ok: boolean, status?: string, schema?: string, circuit_ref?: ?number, error?: object}}
+ * @returns {{ok: boolean, status?: string, schema?: string, circuit_ref?: ?number, seeded_writes?: string[], error?: object}}
  */
 export function enterScriptByName({
   session,
@@ -799,6 +810,7 @@ export function enterScriptByName({
   schemas,
   schemaName,
   circuit_ref = null,
+  pending_writes = [],
   ws = null,
   logger = null,
   now = Date.now(),
@@ -859,12 +871,35 @@ export function enterScriptByName({
     resolvedCircuitRef = circuit_ref;
   }
 
+  // Validate Sonnet-supplied volunteered values against the schema's
+  // slot fields. Drop any entry with an unknown field — Sonnet should
+  // not be hallucinating field names (the agentic prompt enumerates
+  // them), but defence-in-depth here keeps a single bad entry from
+  // poisoning the whole entry. Empty / non-string values also dropped.
+  const slotFields = schema.slots.map((s) => s.field);
+  const validWrites = [];
+  const droppedFields = [];
+  if (Array.isArray(pending_writes)) {
+    for (const w of pending_writes) {
+      if (
+        !w ||
+        typeof w.field !== 'string' ||
+        !slotFields.includes(w.field) ||
+        typeof w.value !== 'string' ||
+        w.value.length === 0
+      ) {
+        if (w?.field) droppedFields.push(w.field);
+        continue;
+      }
+      validWrites.push({ field: w.field, value: w.value });
+    }
+  }
+
   // Initialise state. Seed values from the existing snapshot so a
   // partial fill is honoured (mirrors runEntry's skip-already-filled).
   initScriptState(session, schema, resolvedCircuitRef, now);
   const state = session.dialogueScriptState;
   if (resolvedCircuitRef !== null) {
-    const slotFields = schema.slots.map((s) => s.field);
     const existingValues = readExistingValues(session, resolvedCircuitRef, slotFields);
     for (const [f, v] of Object.entries(existingValues)) {
       if (slotFields.includes(f) && v !== '' && v !== null && v !== undefined) {
@@ -873,24 +908,55 @@ export function enterScriptByName({
     }
   }
 
+  // Apply or queue Sonnet's volunteered writes. Mirrors runEntry's
+  // logic so byte-identical state results from regex entry + Sonnet
+  // entry on the same utterance shape.
+  const appliedWrites = [];
+  for (const w of validWrites) {
+    if (state.values[w.field] !== undefined) continue; // skip already-filled
+    if (resolvedCircuitRef !== null) {
+      // Circuit known — write through to snapshot AND state.values.
+      // Uses applyWrite (not applyWriteWithDerivations) because the
+      // pivot path requires a transcript context which we don't have
+      // here; pivots are still detected on subsequent active-path
+      // turns via the schema's normal derivation rules.
+      applyWrite(session, schema, resolvedCircuitRef, w.field, w.value, now);
+      appliedWrites.push(w);
+    } else {
+      // Circuit unknown — queue. The active path drains pending_writes
+      // once a digit or designation answer lands.
+      state.pending_writes.push(w);
+    }
+  }
+
+  // Wire-emit the applied extractions so iOS sees the values land
+  // immediately. Mirrors runEntry's emit at engine.js:259.
+  if (appliedWrites.length > 0) {
+    safeSend(
+      ws,
+      buildExtractionPayload(resolvedCircuitRef, appliedWrites, schema.extractionSource)
+    );
+  }
+
   logger?.info?.(`${schema.logEventPrefix}_entered`, {
     sessionId,
     circuit_ref: resolvedCircuitRef,
     entry_designation_matched: false,
-    pre_existing_filled: Object.keys(state.values),
-    volunteered_writes: [],
-    pending_writes: [],
+    pre_existing_filled: Object.keys(state.values).filter(
+      (f) => !appliedWrites.some((w) => w.field === f)
+    ),
+    volunteered_writes: appliedWrites.map((w) => w.field),
+    pending_writes: state.pending_writes.map((w) => w.field),
+    dropped_fields: droppedFields,
     textPreview: '[server-entered via start_dialogue_script]',
     server_entered: true,
   });
 
   // Emit the appropriate first ask. If circuit unknown → which_circuit;
-  // otherwise next missing slot (which is the first slot, since values
-  // were just seeded). finishScript path is unreachable on a fresh
-  // entry (a script with all slots already filled would have hit the
-  // skip-already-filled branch in runEntry — which doesn't apply here
-  // because the snapshot can't have all-filled values without
-  // duplicating an already-completed test).
+  // otherwise next missing slot. With pending_writes possibly already
+  // filling the first N slots, we ask about the first slot that is
+  // still empty (could be slot[0] if no writes, or a later slot if
+  // Sonnet seeded values for the early slots).
   if (resolvedCircuitRef === null) {
     safeSend(
       ws,
@@ -922,7 +988,11 @@ export function enterScriptByName({
         })
       );
     } else {
-      // All slots already filled on the snapshot — finish immediately.
+      // All slots filled (snapshot pre-fill + seeded writes) — finish
+      // immediately. Reachable when Sonnet's pending_writes complete
+      // an already-partial snapshot, or when an inspector dictates a
+      // full reading family in one breath ("ring continuity for circuit
+      // 4 lives 0.32 neutrals 0.31 cpc 0.55") and all three slots seed.
       finishScript({ ws, session, sessionId, schema, logger, now });
     }
   }
@@ -932,6 +1002,9 @@ export function enterScriptByName({
     status: 'entered',
     schema: schema.name,
     circuit_ref: resolvedCircuitRef,
+    seeded_writes: appliedWrites.map((w) => w.field),
+    queued_writes: state.pending_writes ? state.pending_writes.map((w) => w.field) : [],
+    dropped_fields: droppedFields,
   };
 }
 

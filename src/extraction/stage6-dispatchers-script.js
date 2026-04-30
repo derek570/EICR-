@@ -71,6 +71,7 @@ export async function dispatchStartDialogueScript(call, ctx) {
     schemas: ALL_DIALOGUE_SCHEMAS,
     schemaName: input.schema,
     circuit_ref: input.circuit ?? null,
+    pending_writes: Array.isArray(input.pending_writes) ? input.pending_writes : [],
     ws: targetWs,
     logger,
     now: Date.now(),
@@ -121,6 +122,9 @@ export async function dispatchStartDialogueScript(call, ctx) {
       status: result.status,
       schema: result.schema,
       circuit_ref: result.circuit_ref,
+      seeded_writes: result.seeded_writes ?? [],
+      queued_writes: result.queued_writes ?? [],
+      dropped_fields: result.dropped_fields ?? [],
     },
     false
   );
