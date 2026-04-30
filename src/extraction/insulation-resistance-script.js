@@ -477,7 +477,13 @@ function findCircuitByDesignation(session, text) {
     if (!bucket || typeof bucket !== 'object') continue;
     const ref = Number(refKey);
     if (!Number.isInteger(ref) || ref <= 0) continue;
-    const designation = bucket.designation;
+    // Canonical schema key is `circuit_designation` (per
+    // `_seedStateFromJobState` in eicr-extraction-session.js, which mirrors
+    // `field_schema.json.circuit_fields`). Fall back to bare `designation`
+    // for legacy in-memory shapes. Same root cause as the ring-continuity
+    // fix landed alongside this — see ring-continuity-script.js
+    // findCircuitByDesignation for the production repro narrative.
+    const designation = bucket.circuit_designation || bucket.designation;
     if (typeof designation !== 'string' || !designation.trim()) continue;
     const normDes = designation.toLowerCase().replace(/\s+/g, ' ').trim();
     if (!normDes) continue;

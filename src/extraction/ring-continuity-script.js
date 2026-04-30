@@ -938,7 +938,18 @@ function findCircuitByDesignation(session, text) {
     const ref = Number(refKey);
     // circuit 0 is the supply / installation bucket — not askable.
     if (!Number.isInteger(ref) || ref <= 0) continue;
-    const designation = bucket.designation;
+    // Canonical schema key is `circuit_designation` (per
+    // `_seedStateFromJobState` in eicr-extraction-session.js, which mirrors
+    // `field_schema.json.circuit_fields`). Fall back to bare `designation`
+    // for legacy in-memory shapes that haven't been canonicalised yet.
+    // 2026-04-30 (session BBE66264, 59 Chucklesville Road) repro: the iOS
+    // session_start payload seeded this circuit with `circuit_designation:
+    // "Upstairs Sockets"` but the lookup checked only `bucket.designation`
+    // — always undefined post-seed — so "ring continuity for upstairs
+    // sockets" entered the script with circuit_ref=null and asked "Which
+    // circuit?" even though the designation was right there in the
+    // utterance.
+    const designation = bucket.circuit_designation || bucket.designation;
     if (typeof designation !== 'string' || !designation.trim()) continue;
     const normDes = designation.toLowerCase().replace(/\s+/g, ' ').trim();
     if (!normDes) continue;
