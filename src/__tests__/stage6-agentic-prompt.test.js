@@ -69,7 +69,7 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       expect(prompt.length).toBeGreaterThan(0);
     });
 
-    test('estimated tokens (Math.ceil(len/4)) <= 4400 — STQ-01 length cap (relaxed 2026-04-28)', () => {
+    test('estimated tokens (Math.ceil(len/4)) <= 4500 — STQ-01 length cap (relaxed 2026-05-01)', () => {
       // Same heuristic `eicr-extraction-session.js:1160` uses for the
       // state snapshot token estimate; keeps us in the same units the
       // session already reports.
@@ -84,8 +84,17 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       // 3B5A0355 (2026-04-28 14:03 BST: "Circuit 1 is security alarm" /
       // "Circuit 2 is water heater" returned zero tool calls because
       // TOPIC RESTRAINT subsumed designation announcements).
+      //
+      // Relaxed again to 4500 on 2026-05-01 when the start_dialogue_script
+      // entry rule was tightened: the prompt now flips Sonnet's bias from
+      // "regex usually catches these — call only when entry is clear" to
+      // "CALL INSTEAD OF record_reading for a slot field" with the new
+      // garble example "instance or" added (session E88FDA7A on 2026-04-30
+      // showed Sonnet defaulting to record_reading + ask_user for the
+      // "instance or resistance" Deepgram garble even though the tool
+      // existed). 100-token headroom (~$0.0000003 / cert in cached prefix).
       const estimate = Math.ceil(prompt.length / 4);
-      expect(estimate).toBeLessThanOrEqual(4400);
+      expect(estimate).toBeLessThanOrEqual(4500);
     });
   });
 
@@ -528,14 +537,15 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       expect(window).toEqual(expect.stringContaining('record_observation'));
     });
 
-    test('Test F — total prompt token estimate ≤ 4400 (regression lock for new section)', () => {
+    test('Test F — total prompt token estimate ≤ 4500 (regression lock for new section)', () => {
       // Group 1 already asserts this — re-assert here so a regression
       // inside the CONFIDENTIALITY section (e.g., verbose rewrite)
       // fires under the Group 9 banner instead of Group 1, making the
       // root cause obvious in the test output.
-      // Cap relaxed from 4000 to 4400 on 2026-04-28 — see Group 1 comment.
+      // Cap relaxed from 4000 to 4400 on 2026-04-28, then to 4500 on
+      // 2026-05-01 — see Group 1 comment.
       const estimate = Math.ceil(prompt.length / 4);
-      expect(estimate).toBeLessThanOrEqual(4400);
+      expect(estimate).toBeLessThanOrEqual(4500);
     });
   });
 
