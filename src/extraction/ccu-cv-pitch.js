@@ -27,11 +27,27 @@
 import sharp from 'sharp';
 
 // Lag range for the autocorrelation peak hunt. UK domestic MCBs are 17.5mm
-// pitch, which at typical phone-shot CCU photos works out to roughly 50–110
-// pixels per module. Lower bound 40 leaves room for very wide-angle shots;
-// upper bound 200 covers extreme close-ups.
+// pitch, which at typical phone-shot CCU photos works out to roughly
+// 50-300 pixels per module depending on capture resolution.
+//
+// Lower bound 40 leaves room for very wide-angle shots.
+//
+// Upper bound used to be a hard 200, but high-resolution phone uploads
+// (e.g. 5973×1119, 16.8 px/mm) put the real pitch at ~290 px — well above
+// 200 — so the autocorrelator could only find noise inside [40, 200] and
+// fell through to the low-confidence path on every prod attempt of the
+// 2026-04-30 06:18-06:21 BST Hager job. Confirmed by harness test: at 3.5×
+// the corpus photo (5600 px wide, 257 px true pitch), normCorr collapses
+// from ~0.5 to 0.13 because the right peak is invisible.
+//
+// Fix: cap is now a function of rail width (rail / MIN_CYCLES, 4 cycles
+// minimum). The MAX_LAG_CEILING below is a safety floor — even on absurdly
+// large rails we won't search past 800 px (would be 45 mm/module physical,
+// well outside any real DIN board). Performance is fine; autocorrelation
+// is O((maxLag - minLag) × signalLength); 5161 wide × 1290 lags = ~6.6M
+// ops, single-digit ms.
 const MIN_LAG = 40;
-const MAX_LAG = 200;
+const MAX_LAG_CEILING = 800;
 
 // Confidence floor below which we should NOT trust the CV result and fall
 // back to the height anchor. Tuned empirically: clean photos with periodic
@@ -95,7 +111,11 @@ export async function detectModulePitchCv(imageBuffer, railBboxPx) {
   // periodic structure (period is 50+ px, much wider than 3).
   const smoothed = movingAverage3(colSums);
 
-  const ac = autocorrPeak(smoothed, MIN_LAG, Math.min(MAX_LAG, Math.floor(cropW / MIN_CYCLES)));
+  const ac = autocorrPeak(
+    smoothed,
+    MIN_LAG,
+    Math.min(MAX_LAG_CEILING, Math.floor(cropW / MIN_CYCLES))
+  );
 
   if (ac.normCorr < NORM_CORR_FLOOR) {
     return {
