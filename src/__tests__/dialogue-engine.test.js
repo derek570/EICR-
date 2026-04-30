@@ -206,6 +206,178 @@ describe('engine — ring continuity', () => {
     expect(session.dialogueScriptState).toBeNull();
   });
 
+  test('Silvertown repro — first unresolvable circuit answer re-asks instead of discarding R1', () => {
+    // 2026-04-30 14 Silvertown Road (session 842A3289): inspector said
+    // "Ring continuity lives are 0.32" → script entered, R1=0.32 queued,
+    // asked "Which circuit?". Inspector answered "upstairs socket"
+    // (Deepgram dropped the trailing 's'). Snapshot didn't yet have
+    // circuit 4's designation set, so designation lookup returned null.
+    // OLD behaviour: discarded R1=0.32 + fallthrough to Sonnet.
+    // NEW behaviour: re-ask once with the user's text quoted back, keep
+    //                R1=0.32 in pending_writes, keep script alive.
+    const ws = new FakeWS();
+    const session = buildSession({ 4: {} }); // no designation on circuit 4 yet
+    processRingContinuityTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'Ring continuity lives are 0.32.',
+      now: 1000,
+    });
+    // Sanity: entry asked "which circuit?" and queued R1.
+    expect(ws.sent[0].question).toBe('Which circuit is the ring continuity for?');
+    expect(session.dialogueScriptState.pending_writes).toEqual([
+      { field: 'ring_r1_ohm', value: '0.32' },
+    ]);
+    expect(session.dialogueScriptState.circuit_retry_attempted).toBe(false);
+
+    const out = processRingContinuityTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'upstairs socket.',
+      now: 2000,
+    });
+
+    // Engine stays alive — Sonnet stays muted.
+    expect(out).toEqual({ handled: true, fallthrough: false });
+    expect(session.dialogueScriptState).not.toBeNull();
+    expect(session.dialogueScriptState.circuit_retry_attempted).toBe(true);
+    expect(session.dialogueScriptState.last_designation_attempt).toBe('upstairs socket.');
+
+    // R1 was NOT discarded — still queued for the resolved circuit.
+    expect(session.dialogueScriptState.pending_writes).toEqual([
+      { field: 'ring_r1_ohm', value: '0.32' },
+    ]);
+
+    // Re-ask quotes the user's text back so the second attempt is unambiguous.
+    expect(ws.sent.at(-1)).toMatchObject({
+      type: 'ask_user_started',
+      reason: 'missing_context',
+      context_field: null,
+      context_circuit: null,
+      expected_answer_shape: 'value',
+      question: "What's the circuit number for the upstairs socket.?",
+    });
+  });
+
+  test('Silvertown repro — second answer with circuit number drains pending_writes', () => {
+    // Continuation of the above. Inspector hears the re-ask "What's the
+    // circuit number for the upstairs socket?" and answers "4". R1=0.32
+    // must land on circuit 4 and the script must move on to ask R_n.
+    const ws = new FakeWS();
+    const session = buildSession({ 4: {} });
+    processRingContinuityTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'Ring continuity lives are 0.32.',
+      now: 1000,
+    });
+    processRingContinuityTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'upstairs socket.',
+      now: 2000,
+    });
+
+    const out = processRingContinuityTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: '4.',
+      now: 3000,
+    });
+
+    expect(out).toEqual({ handled: true, fallthrough: false });
+    // R1 wrote through to circuit 4 — no inspector re-dictation needed.
+    expect(session.stateSnapshot.circuits[4].ring_r1_ohm).toBe('0.32');
+    // Script moved on to next slot (Rn).
+    expect(ws.sent.at(-1).question).toBe('What are the neutrals?');
+    expect(ws.sent.at(-1).context_field).toBe('ring_rn_ohm');
+    expect(ws.sent.at(-1).context_circuit).toBe(4);
+  });
+
+  test('second consecutive unresolvable answer falls through to Sonnet (current behaviour preserved)', () => {
+    // The retry budget is one. If the second answer is also unresolvable,
+    // fall through as before — Sonnet is the safety net. The log row
+    // gets a `retry_attempted: true` field so CloudWatch can split first-
+    // miss recoveries from genuine fallthroughs.
+    const ws = new FakeWS();
+    const session = buildSession({ 4: {} });
+    processRingContinuityTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'Ring continuity lives are 0.32.',
+      now: 1000,
+    });
+    processRingContinuityTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'upstairs socket.',
+      now: 2000,
+    });
+
+    // Logger spy to verify the discard log carries retry_attempted.
+    const logged = [];
+    const logger = {
+      info: (event, payload) => logged.push({ event, payload }),
+    };
+
+    const out = processRingContinuityTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'um, the cooker?',
+      logger,
+      now: 3000,
+    });
+
+    expect(out).toEqual({
+      handled: true,
+      fallthrough: true,
+      transcriptText: 'um, the cooker?',
+    });
+    expect(session.dialogueScriptState).toBeNull();
+    const discardRow = logged.find(
+      (r) => r.event === 'stage6.ring_continuity_script_unresolvable_circuit'
+    );
+    expect(discardRow).toBeDefined();
+    expect(discardRow.payload.retry_attempted).toBe(true);
+    expect(discardRow.payload.discarded_pending_writes).toEqual(['ring_r1_ohm']);
+  });
+
+  test('retry path also fires for IR (engine-shared, schema-agnostic)', () => {
+    // Fix 1 lives in the engine, not in any schema, so every schema that
+    // reaches the unresolvable-circuit branch benefits. This test pins
+    // the IR analogue of the Silvertown repro.
+    const ws = new FakeWS();
+    const session = buildSession({ 4: {} });
+    processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'Insulation resistance live to live 200.',
+      now: 1000,
+    });
+    expect(session.dialogueScriptState.pending_writes.length).toBeGreaterThan(0);
+
+    const out = processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'upstairs socket.',
+      now: 2000,
+    });
+    expect(out).toEqual({ handled: true, fallthrough: false });
+    expect(session.dialogueScriptState).not.toBeNull();
+    expect(session.dialogueScriptState.circuit_retry_attempted).toBe(true);
+    expect(ws.sent.at(-1).question).toBe("What's the circuit number for the upstairs socket.?");
+  });
+
   test('cancel emits info and clears state, no fallthrough', () => {
     const ws = new FakeWS();
     const session = buildSession({ 13: {} });
