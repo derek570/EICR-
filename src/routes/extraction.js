@@ -15,6 +15,7 @@ import logger from '../logger.js';
 import sharp from 'sharp';
 import { createFileFilter, IMAGE_MIMES, handleUploadError } from '../utils/upload.js';
 import { prepareModernGeometry, classifyModernSlots } from '../extraction/ccu-geometric.js';
+import { tightenAndChunk } from '../extraction/ccu-box-tighten.js';
 import {
   prepareRewireableGeometry,
   classifyRewireableSlots,
@@ -34,6 +35,111 @@ logger.info('CCU extraction config', {
   maxUploadBytes: CCU_MAX_UPLOAD_BYTES,
   maxUploadMB: CCU_MAX_UPLOAD_BYTES / (1024 * 1024),
 });
+
+/**
+ * Convert the box-tightener output (`tightenAndChunk`) into the same shape
+ * `prepareModernGeometry` returns, so downstream Stage 3/4/merger code is
+ * unchanged. Coordinates are 0-1000 normalised over the source image.
+ */
+function adaptTightenerToPrepared(t) {
+  const { imageWidth, imageHeight, railFace, moduleCount, pitchPx, slotCentersPx } = t;
+  const xToNorm = (x) => (x / imageWidth) * 1000;
+  const yToNorm = (y) => (y / imageHeight) * 1000;
+  return {
+    medianRails: {
+      rail_top: yToNorm(railFace.top),
+      rail_bottom: yToNorm(railFace.bottom),
+      rail_left: xToNorm(railFace.left),
+      rail_right: xToNorm(railFace.right),
+    },
+    moduleCount,
+    vlmCount: moduleCount,
+    disagreement: 0,
+    truncatedFromDisagreement: false,
+    lowConfidence: !t.refinement.accepted,
+    stage1Source: 'roi-hint',
+    railBbox: {
+      left: xToNorm(railFace.left),
+      right: xToNorm(railFace.right),
+      top: yToNorm(railFace.top),
+      bottom: yToNorm(railFace.bottom),
+    },
+    railBboxSource: 'box-tightener',
+    pitchSource: 'box-tightener',
+    cvPitchDiag: {
+      pitchPx,
+      moduleCountFromCv: moduleCount,
+      railWidthPx: railFace.right - railFace.left,
+      reason: t.refinement.accepted ? null : 'no-multi-anchor-refinement',
+    },
+    pitchCrossCheck: null,
+    chunkingDiag: {
+      imageWidth,
+      imageHeight,
+      railWidthPx: railFace.right - railFace.left,
+      railHeightPx: railFace.bottom - railFace.top,
+      pitchSource: 'box-tightener',
+      moduleCountRaw: (railFace.right - railFace.left) / Math.max(1, t.initialPitchPx),
+      moduleCount,
+      moduleWidthPxUsed: pitchPx,
+      initialPitchPx: t.initialPitchPx,
+      refinement: t.refinement,
+    },
+    slotCentersX: slotCentersPx.map(xToNorm),
+    moduleWidth: (pitchPx / imageWidth) * 1000,
+    mainSwitchWidth: null,
+    mainSwitchCenterX: null,
+    mainSwitchSide: null,
+    imageWidth,
+    imageHeight,
+    panelBounds: null,
+    stageOutputs: {
+      // Box-tightener doesn't produce stage1/2 raw outputs, but the
+      // route handler reads `stageOutputs.stage1.medianRails` for label-
+      // pass crops. Synthesize a minimal shape pointing back at our
+      // medianRails so downstream code doesn't NPE.
+      stage1: {
+        medianRails: {
+          rail_top: yToNorm(railFace.top),
+          rail_bottom: yToNorm(railFace.bottom),
+          rail_left: xToNorm(railFace.left),
+          rail_right: xToNorm(railFace.right),
+        },
+        panelBounds: null,
+        boardManufacturer: null,
+        boardModel: null,
+        mainSwitchPosition: null,
+        mainSwitchRating: null,
+        spdPresent: null,
+        boardTechnology: null,
+        confidence: t.refinement.accepted ? 0.85 : 0.6,
+        usage: { inputTokens: 0, outputTokens: 0 },
+        lowConfidence: !t.refinement.accepted,
+        source: 'box-tightener',
+      },
+      stage2: {
+        geometricCount: moduleCount,
+        vlmCount: moduleCount,
+        disagreement: 0,
+        slotCentersX: slotCentersPx.map(xToNorm),
+        moduleWidth: (pitchPx / imageWidth) * 1000,
+        mainSwitchWidth: null,
+        mainSwitchCenterX: null,
+        mainSwitchSide: null,
+        usage: { inputTokens: 0, outputTokens: 0 },
+        railBbox: {
+          left: xToNorm(railFace.left),
+          right: xToNorm(railFace.right),
+          top: yToNorm(railFace.top),
+          bottom: yToNorm(railFace.bottom),
+        },
+        railBboxSource: 'box-tightener',
+        pitchSource: 'box-tightener',
+        cvPitchDiag: { pitchPx, moduleCountFromCv: moduleCount },
+      },
+    },
+  };
+}
 
 const upload = multer({
   storage: multer.diskStorage({
@@ -1418,11 +1524,43 @@ router.post(
         boardClassification.boardTechnology === 'cartridge_fuse' ||
         boardClassification.boardTechnology === 'mixed';
 
+      // Feature flag: CCU_BOX_TIGHTEN switches the modern-board geometry
+      // path to the new box-tightener + multi-anchor pitch refinement
+      // (src/extraction/ccu-box-tighten.js). Only fires on the modern
+      // path AND when a railRoiHint is present (algorithm needs the
+      // user box as a starting point). Default ON. Falls back to the
+      // existing prepareModernGeometry on any tightener error so an
+      // algorithm bug can never block extraction.
+      const boxTightenEnabled = (process.env.CCU_BOX_TIGHTEN ?? 'true').toLowerCase() === 'true';
       let prepared;
+      let preparedSource = 'modern-vlm';
       try {
-        prepared = chooseRewireable
-          ? await prepareRewireableGeometry(imageBytes)
-          : await prepareModernGeometry(imageBytes, { railRoiHint });
+        if (chooseRewireable) {
+          prepared = await prepareRewireableGeometry(imageBytes);
+          preparedSource = 'rewireable';
+        } else if (boxTightenEnabled && railRoiHint) {
+          try {
+            const tightened = await tightenAndChunk(imageBytes, railRoiHint);
+            prepared = adaptTightenerToPrepared(tightened);
+            preparedSource = 'box-tightener';
+            logger.info('CCU box-tightener used', {
+              userId: req.user.id,
+              moduleCount: tightened.moduleCount,
+              pitchPx: Math.round(tightened.pitchPx * 10) / 10,
+              initialPitchPx: tightened.initialPitchPx,
+              refinementAccepted: tightened.refinement.accepted,
+              pairCount: tightened.refinement.pairCount,
+            });
+          } catch (tightenErr) {
+            logger.warn('CCU box-tightener failed; falling back to modern VLM', {
+              userId: req.user.id,
+              error: tightenErr.message,
+            });
+            prepared = await prepareModernGeometry(imageBytes, { railRoiHint });
+          }
+        } else {
+          prepared = await prepareModernGeometry(imageBytes, { railRoiHint });
+        }
       } catch (err) {
         logger.error('CCU geometric prepare failed', {
           userId: req.user.id,
