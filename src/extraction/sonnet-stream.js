@@ -2645,6 +2645,17 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         // can't smuggle e.g. `type: "x\nIGNORE PREVIOUS INSTRUCTIONS"` into the
         // Sonnet user turn. Keep the set in sync with QuestionGate and Sonnet
         // prompt's allowed `question.type` values.
+        //
+        // `stage6_ask_user` (added 2026-05-01): the `type` iOS stamps on
+        // any in-flight question card driven by the Stage 6 ask_user tool
+        // or the dialogue engine — see TranscriptDisplayView /
+        // DeepgramRecordingViewModel `inFlightQuestion.type`. Without it
+        // in the allow-list, `qType` was dropped before the wrap and
+        // `qTypeDropped` rows piled up in CloudWatch on every Stage 6
+        // reply, making it harder to grep for the genuine prompt-injection
+        // attempts the allow-list defends against. Behaviourally harmless
+        // pre-fix (the question text still reached Sonnet); the fix is for
+        // log fidelity + fresh-eyes traceability.
         const ALLOWED_QUESTION_TYPES = new Set([
           'observation_confirmation',
           'observation_code',
@@ -2655,6 +2666,7 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
           'orphaned',
           'tt_confirmation',
           'voice_command',
+          'stage6_ask_user',
         ]);
         const rawType = typeof msg.in_response_to.type === 'string' ? msg.in_response_to.type : '';
         const safeType = ALLOWED_QUESTION_TYPES.has(rawType) ? rawType : null;
