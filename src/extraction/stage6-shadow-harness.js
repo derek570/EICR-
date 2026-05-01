@@ -107,8 +107,10 @@ const SHADOW_MODEL = 'claude-sonnet-4-6';
  *   code                        →   code               (unchanged)
  *
  * `circuit` is preserved (server-side `refineObservationsAsync` uses it; iOS
- * ignores unknown keys). `schedule_item` is iOS-known but never populated by
- * Stage 6 — left absent so Swift's optional decoder treats it as nil.
+ * ignores unknown keys). `schedule_item` is iOS-known and now populated by
+ * Stage 6 (2026-05-01 restoration) — passes through to iOS so the
+ * `ObservationScheduleLinker` can auto-tick the matching Schedule of
+ * Inspection row.
  */
 export function renameObservationsForLegacyWire(observations) {
   if (!Array.isArray(observations)) return observations;
@@ -120,6 +122,7 @@ export function renameObservationsForLegacyWire(observations) {
       observation_text: obs.observation_text ?? obs.text ?? '',
       item_location: obs.item_location ?? obs.location ?? null,
       regulation: obs.regulation ?? obs.suggested_regulation ?? null,
+      schedule_item: obs.schedule_item ?? null,
     };
     if (obs.circuit !== undefined) renamed.circuit = obs.circuit;
     return renamed;

@@ -30,6 +30,7 @@ describe('renameObservationsForLegacyWire', () => {
         location: 'Gas meter cupboard',
         circuit: 4,
         suggested_regulation: 'Reg 411.3.1.2',
+        schedule_item: '5.4',
       },
     ];
 
@@ -42,10 +43,27 @@ describe('renameObservationsForLegacyWire', () => {
         observation_text: 'Bonding clamp missing on copper gas pipe at meter',
         item_location: 'Gas meter cupboard',
         regulation: 'Reg 411.3.1.2',
+        schedule_item: '5.4',
         // circuit preserved — refineObservationsAsync uses it; iOS ignores.
         circuit: 4,
       },
     ]);
+  });
+
+  test('schedule_item passes through to iOS wire shape (2026-05-01 BPG4 restoration)', () => {
+    // iOS ObservationScheduleLinker.swift auto-ticks the matching Schedule
+    // of Inspection row when this field is set on a per-extraction
+    // observation. Pre-fix Stage 6 dropped the field, so the schedule tab
+    // showed every row at default outcome even when defects clearly mapped
+    // to specific sections.
+    const renamed = renameObservationsForLegacyWire([
+      { id: 'a', code: 'C2', text: 'No RCD on outdoor sockets', schedule_item: '5.12.1' },
+      { id: 'b', code: 'C3', text: 'Labels missing', schedule_item: null },
+      { id: 'c', code: 'C2', text: 'No section applies' /* schedule_item undefined */ },
+    ]);
+    expect(renamed[0].schedule_item).toBe('5.12.1');
+    expect(renamed[1].schedule_item).toBeNull();
+    expect(renamed[2].schedule_item).toBeNull(); // undefined → null fallback
   });
 
   test('observation_text is ALWAYS present (empty string fallback) so iOS REQUIRED-key decode does not throw', () => {
@@ -61,6 +79,7 @@ describe('renameObservationsForLegacyWire', () => {
     expect(renamed[0]).toHaveProperty('observation_id', 'x');
     expect(renamed[0]).toHaveProperty('item_location', null);
     expect(renamed[0]).toHaveProperty('regulation', null);
+    expect(renamed[0]).toHaveProperty('schedule_item', null);
   });
 
   test('passthrough: already-renamed observations survive idempotently', () => {

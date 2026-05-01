@@ -69,7 +69,7 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       expect(prompt.length).toBeGreaterThan(0);
     });
 
-    test('estimated tokens (Math.ceil(len/4)) <= 4500 — STQ-01 length cap (relaxed 2026-05-01)', () => {
+    test('estimated tokens (Math.ceil(len/4)) <= 4700 — STQ-01 length cap (relaxed 2026-05-01)', () => {
       // Same heuristic `eicr-extraction-session.js:1160` uses for the
       // state snapshot token estimate; keeps us in the same units the
       // session already reports.
@@ -85,16 +85,17 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       // "Circuit 2 is water heater" returned zero tool calls because
       // TOPIC RESTRAINT subsumed designation announcements).
       //
-      // Relaxed again to 4500 on 2026-05-01 when the start_dialogue_script
-      // entry rule was tightened: the prompt now flips Sonnet's bias from
-      // "regex usually catches these — call only when entry is clear" to
-      // "CALL INSTEAD OF record_reading for a slot field" with the new
-      // garble example "instance or" added (session E88FDA7A on 2026-04-30
-      // showed Sonnet defaulting to record_reading + ask_user for the
-      // "instance or resistance" Deepgram garble even though the tool
-      // existed). 100-token headroom (~$0.0000003 / cert in cached prefix).
+      // Relaxed to 4500 on 2026-05-01 (am) when the start_dialogue_script
+      // entry rule was tightened with the "instance or" garble example.
+      //
+      // Relaxed to 4700 on 2026-05-01 (pm) when the BPG4 pipeline was
+      // restored: the SCHEDULE OF INSPECTION block adds the
+      // schedule_item field instruction plus 8 example mappings (3.6,
+      // 4.1, 4.3, 4.4, 4.5, 4.9, 5.4, 5.12.1) so iOS's
+      // ObservationScheduleLinker can auto-tick the matching row.
+      // ~200-token bump; 100-token headroom kept.
       const estimate = Math.ceil(prompt.length / 4);
-      expect(estimate).toBeLessThanOrEqual(4500);
+      expect(estimate).toBeLessThanOrEqual(4700);
     });
   });
 
@@ -537,15 +538,15 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       expect(window).toEqual(expect.stringContaining('record_observation'));
     });
 
-    test('Test F — total prompt token estimate ≤ 4500 (regression lock for new section)', () => {
+    test('Test F — total prompt token estimate ≤ 4700 (regression lock for new section)', () => {
       // Group 1 already asserts this — re-assert here so a regression
       // inside the CONFIDENTIALITY section (e.g., verbose rewrite)
       // fires under the Group 9 banner instead of Group 1, making the
       // root cause obvious in the test output.
       // Cap relaxed from 4000 to 4400 on 2026-04-28, then to 4500 on
-      // 2026-05-01 — see Group 1 comment.
+      // 2026-05-01 (am), then to 4700 on 2026-05-01 (pm) — see Group 1.
       const estimate = Math.ceil(prompt.length / 4);
-      expect(estimate).toBeLessThanOrEqual(4500);
+      expect(estimate).toBeLessThanOrEqual(4700);
     });
   });
 

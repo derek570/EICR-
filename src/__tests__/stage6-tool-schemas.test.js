@@ -181,17 +181,27 @@ describe('stage6-tool-schemas', () => {
     expect(recordObs.input_schema.properties.code.enum).toEqual(enumerations.observation_code);
   });
 
-  test('record_observation requires all 5 STS-05 fields (Codex round-4 STG MAJOR — nullables must be required under strict:true)', () => {
+  test('record_observation requires all 6 STS-05 fields (Codex round-4 STG MAJOR — nullables must be required under strict:true)', () => {
     // Under strict:true, non-required fields may be omitted entirely. A
     // nullable field like `circuit: integer | null` or `suggested_regulation:
     // string | null` that the dispatcher needs to interpret unambiguously
     // MUST be required, with null as a valid value for "not applicable" —
     // otherwise "installation-wide" (explicit null) and "model forgot"
     // (key absent) collapse into the same undefined-key state.
+    // schedule_item added 2026-05-01 with the same nullable-but-required
+    // contract — null when no Schedule of Inspection section applies.
     const recordObs = byName('record_observation');
     expect(recordObs.input_schema.required.sort()).toEqual(
-      ['code', 'location', 'text', 'circuit', 'suggested_regulation'].sort()
+      ['code', 'location', 'text', 'circuit', 'suggested_regulation', 'schedule_item'].sort()
     );
+  });
+
+  test('record_observation.schedule_item is nullable string (BS7671 SoI section number)', () => {
+    const recordObs = byName('record_observation');
+    const prop = recordObs.input_schema.properties.schedule_item;
+    expect(prop).toBeDefined();
+    // anyOf: [{type:'string'}, {type:'null'}] — same shape as suggested_regulation.
+    expect(prop.anyOf).toEqual([{ type: 'string' }, { type: 'null' }]);
   });
 
   test('delete_observation.reason enum sourced from stage6-enumerations.json', () => {
@@ -304,8 +314,9 @@ describe('stage6-tool-schemas', () => {
       ['circuit_ref', 'from_ref'].sort()
     );
     // STS-05 record_observation (Phase 1 round-4 MAJOR #3 — re-asserted)
+    // schedule_item added 2026-05-01 (BPG4 pipeline restoration).
     expect(byName('record_observation').input_schema.required.sort()).toEqual(
-      ['circuit', 'code', 'location', 'suggested_regulation', 'text'].sort()
+      ['circuit', 'code', 'location', 'schedule_item', 'suggested_regulation', 'text'].sort()
     );
     // STS-06 delete_observation
     expect(byName('delete_observation').input_schema.required.sort()).toEqual(

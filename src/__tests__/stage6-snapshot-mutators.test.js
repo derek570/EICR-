@@ -22,8 +22,7 @@ import {
 } from '../extraction/stage6-snapshot-mutators.js';
 
 // UUIDv4 shape — appendObservation MUST use crypto.randomUUID().
-const UUID_V4_RE =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const UUID_V4_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 const emptySnapshot = () => ({ circuits: {} });
 const emptySession = () => ({ extractedObservations: [] });
@@ -160,6 +159,7 @@ describe('appendObservation', () => {
       text: 'damaged socket',
       circuit: null,
       suggested_regulation: null,
+      schedule_item: null,
     });
   });
 

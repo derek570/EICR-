@@ -205,6 +205,7 @@ export async function dispatchRecordObservation(call, ctx) {
     location: input.location ?? null,
     circuit: input.circuit ?? null,
     suggested_regulation: input.suggested_regulation ?? null,
+    schedule_item: input.schedule_item ?? null,
   });
 
   perTurnWrites.observations.push({
@@ -214,6 +215,7 @@ export async function dispatchRecordObservation(call, ctx) {
     location: input.location ?? null,
     circuit: input.circuit ?? null,
     suggested_regulation: input.suggested_regulation ?? null,
+    schedule_item: input.schedule_item ?? null,
   });
 
   logToolCall(logger, {

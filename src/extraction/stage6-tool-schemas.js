@@ -343,15 +343,25 @@ const recordObservation = makeTool({
       description:
         'BS7671 regulation reference (e.g. "411.3.1.1") if the model can reliably cite one. Null otherwise — the inspector will add it during review.',
     },
+    schedule_item: {
+      anyOf: [{ type: 'string' }, { type: 'null' }],
+      description:
+        'BS7671 Schedule of Inspection section number this observation maps to (e.g. "5.4" for bonding, "4.4" for fire-rated CU, "4.9" for circuit labelling, "5.12.1" for RCD on sockets, "4.3" for cable entry / IP rating, "4.5" for damaged enclosure). Null when no schedule section cleanly applies.',
+    },
   },
-  // STS-05 lists all 5 fields in the strict tool shape. Under strict:true,
+  // STS-05 lists all 6 fields in the strict tool shape. Under strict:true,
   // non-required fields may be omitted — so a nullable field that the
   // dispatcher needs to interpret unambiguously MUST be required, with null
   // as a valid value for "not applicable". Otherwise "model forgot" and
   // "installation-wide / no specific regulation" collapse into the same
   // undefined-key state. Codex round-4 STG MAJOR #3 — mirror of the round-1
   // MAJOR #4 fix applied to `phase | null` on create_circuit/rename_circuit.
-  required: ['code', 'location', 'text', 'circuit', 'suggested_regulation'],
+  // schedule_item added 2026-05-01 (Stage C restoration of the BPG4 pipeline
+  // — the legacy extract_chunk.js path emitted schedule_item; iOS still has
+  // ObservationScheduleLinker.swift wired to auto-tick the matching schedule
+  // row, but Stage 6's record_observation schema dropped it during the
+  // tool-schema migration so iOS never received a value to link).
+  required: ['code', 'location', 'text', 'circuit', 'suggested_regulation', 'schedule_item'],
 });
 
 // ---------------------------------------------------------------------------

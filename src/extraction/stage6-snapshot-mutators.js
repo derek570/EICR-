@@ -165,7 +165,7 @@ export function renameCircuit(snapshot, { from_ref, circuit_ref }) {
  */
 export function appendObservation(
   session,
-  { code, location, text, circuit, suggested_regulation }
+  { code, location, text, circuit, suggested_regulation, schedule_item }
 ) {
   const id = randomUUID();
   if (!Array.isArray(session.extractedObservations)) {
@@ -178,6 +178,7 @@ export function appendObservation(
     text,
     circuit: circuit ?? null,
     suggested_regulation: suggested_regulation ?? null,
+    schedule_item: schedule_item ?? null,
   });
   return { id };
 }
