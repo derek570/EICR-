@@ -11,6 +11,16 @@ import { tightenAndChunk } from '../extraction/ccu-box-tighten.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CORPUS = path.resolve(__dirname, '../../scripts/ccu-cv-corpus');
 
+// The corpus is ~211 MB of S3-fetched photos + manifest, intentionally
+// gitignored (see scripts/ccu-cv-corpus/.gitignore). Local devs pull it
+// via build-manifest.mjs; CI runs in a fresh checkout where it doesn't
+// exist. Skip the corpus-driven cases when the manifest is missing
+// rather than failing CI — the registry-style edge-case tests below
+// still run, and the algorithm has unit coverage via prepareModernGeometry
+// in ccu-geometric.test.js.
+const CORPUS_AVAILABLE = fs.existsSync(path.join(CORPUS, 'manifest.json'));
+const describeIfCorpus = CORPUS_AVAILABLE ? describe : describe.skip;
+
 function loadCorpusBoard(extractionId) {
   const manifest = JSON.parse(fs.readFileSync(path.join(CORPUS, 'manifest.json'), 'utf8'));
   const entry = manifest.entries.find((e) => e.extractionId === extractionId);
@@ -19,7 +29,7 @@ function loadCorpusBoard(extractionId) {
   return { entry, photo };
 }
 
-describe('ccu-box-tighten — corpus integration', () => {
+describeIfCorpus('ccu-box-tighten — corpus integration', () => {
   // The annotated corpus has Wylex (16 modules, GT) and Hager (16 modules, GT).
   // Protek 20-module ground truth lives in the harness corpus too — verify
   // that the algorithm produces consistent counts across all three.
