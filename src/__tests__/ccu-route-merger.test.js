@@ -164,6 +164,7 @@ let classifyBoardTechnology;
 let slotsToCircuits;
 let buildCircuitFromSlot;
 let assembleGeometricResult;
+let adaptTightenerToPrepared;
 let classifyModernSlotsMock;
 let prepareModernGeometryMock;
 
@@ -173,6 +174,7 @@ beforeAll(async () => {
   slotsToCircuits = mod.slotsToCircuits;
   buildCircuitFromSlot = mod.buildCircuitFromSlot;
   assembleGeometricResult = mod.assembleGeometricResult;
+  adaptTightenerToPrepared = mod.adaptTightenerToPrepared;
 
   // Grab references to the mocked prepare/classify functions so the
   // parallel-dispatch test can override their implementations per-test.
@@ -1254,6 +1256,57 @@ describe('assembleGeometricResult', () => {
     expect(result.schemaVersion).toBe('ccu-geometric-v1');
     expect(result.slots).toBeNull();
     expect(result.stage3Error).toMatch(/null/);
+  });
+
+  // Regression: every prod CCU request was 500ing with
+  // `Cannot read properties of undefined (reading 'inputTokens')` because
+  // adaptTightenerToPrepared() returned a shape missing top-level `usage`
+  // and `timings` — which assembleGeometricResult reads at
+  // `prepared.usage.inputTokens` and `prepared.timings.stage1Ms`. Both real
+  // prepare functions (prepareModernGeometry, prepareRewireableGeometry)
+  // include them; the box-tightener adapter forgot. Lock the contract by
+  // driving the adapter -> assembler chain with a realistic tightener output.
+  test('box-tightener path: adapter output has the fields assembleGeometricResult reads', () => {
+    const tightenerOutput = {
+      imageWidth: 2000,
+      imageHeight: 1500,
+      railFace: { top: 600, bottom: 800, left: 200, right: 1800 },
+      moduleCount: 16,
+      pitchPx: 100,
+      initialPitchPx: 100,
+      slotCentersPx: Array.from({ length: 16 }, (_, i) => 250 + i * 100),
+      refinement: { accepted: true, pairCount: 4 },
+    };
+    const prepared = adaptTightenerToPrepared(tightenerOutput);
+
+    // Top-level usage + timings must exist for assembleGeometricResult to not
+    // NPE — these are the exact field paths it reads.
+    expect(prepared.usage).toEqual({ inputTokens: 0, outputTokens: 0 });
+    expect(prepared.timings).toEqual({ stage1Ms: 0, stage2Ms: 0 });
+
+    const classified = {
+      slots: [{ slotIndex: 0, classification: 'mcb' }],
+      stage3Error: null,
+      timings: { stage3Ms: 12000 },
+      usage: { inputTokens: 1500, outputTokens: 200 },
+      stageOutputs: { stage3: { slots: [], error: null } },
+    };
+
+    // The bug repro: this throws on main with
+    // "Cannot read properties of undefined (reading 'inputTokens')".
+    const result = assembleGeometricResult({
+      prepared,
+      classified,
+      isRewireablePipeline: false,
+    });
+
+    expect(result.schemaVersion).toBe('ccu-geometric-v1');
+    expect(result.usage.inputTokens).toBe(1500);
+    expect(result.usage.outputTokens).toBe(200);
+    expect(result.timings.stage1Ms).toBe(0);
+    expect(result.timings.stage2Ms).toBe(0);
+    expect(result.timings.stage3Ms).toBe(12000);
+    expect(result.timings.totalMs).toBe(12000);
   });
 });
 
