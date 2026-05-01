@@ -963,6 +963,109 @@ describe('classifyBoardTechnology', () => {
     expect(result.spdPresent).toBe(false);
   });
 
+  test('22a. board-model override: Wylex NHRS12SL labelled "mixed" is forced to modern (2026-05-01 prod repro)', async () => {
+    // Reproduces the 2026-05-01 prod incident: VLM returned the precise
+    // model code AND a wrong technology bucket.  The route handler must
+    // trust the model identification.
+    const fakeResponse = {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify({
+            board_technology: 'mixed',
+            main_switch_position: 'right',
+            board_manufacturer: 'Wylex',
+            board_model: 'NHRS12SL',
+            main_switch_rating: '100',
+            spd_present: false,
+            confidence: 0.92,
+          }),
+        },
+      ],
+      usage: { input_tokens: 130, output_tokens: 50 },
+    };
+
+    const fakeAnthropic = makeFakeAnthropic(fakeResponse);
+    const result = await classifyBoardTechnology(
+      'base64data==',
+      fakeAnthropic,
+      'claude-sonnet-4-6'
+    );
+
+    expect(result.boardTechnology).toBe('modern');
+    expect(result.technologyOverride).not.toBeNull();
+    expect(result.technologyOverride.fromVlm).toBe('mixed');
+    expect(result.technologyOverride.toTechnology).toBe('modern');
+    expect(result.technologyOverride.appliedBy).toBe('model-prefix-match');
+    expect(result.technologyOverride.series).toMatch(/Wylex NH/);
+  });
+
+  test('22b. board-model override: VLM-issued "modern" passes through unchanged (no override)', async () => {
+    // The override is one-way — a correctly-labelled modern board must
+    // not have technologyOverride populated; downstream telemetry uses
+    // null to mean "VLM agreed with itself".
+    const fakeResponse = {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify({
+            board_technology: 'modern',
+            main_switch_position: 'left',
+            board_manufacturer: 'Hager',
+            board_model: 'VML112',
+            main_switch_rating: '100',
+            spd_present: false,
+            confidence: 0.9,
+          }),
+        },
+      ],
+      usage: { input_tokens: 120, output_tokens: 40 },
+    };
+
+    const fakeAnthropic = makeFakeAnthropic(fakeResponse);
+    const result = await classifyBoardTechnology(
+      'base64data==',
+      fakeAnthropic,
+      'claude-sonnet-4-6'
+    );
+
+    expect(result.boardTechnology).toBe('modern');
+    expect(result.technologyOverride).toBeNull();
+  });
+
+  test('22c. board-model override: genuine rewireable model is NOT forced to modern', async () => {
+    // Conservative-by-design: the registry should never override a real
+    // rewireable board.  An unknown / non-modern model leaves the VLM's
+    // technology label intact.
+    const fakeResponse = {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify({
+            board_technology: 'rewireable_fuse',
+            main_switch_position: 'right',
+            board_manufacturer: 'Wylex',
+            board_model: 'S5', // genuine pull-out fuse carrier board
+            main_switch_rating: '60',
+            spd_present: false,
+            confidence: 0.88,
+          }),
+        },
+      ],
+      usage: { input_tokens: 110, output_tokens: 40 },
+    };
+
+    const fakeAnthropic = makeFakeAnthropic(fakeResponse);
+    const result = await classifyBoardTechnology(
+      'base64data==',
+      fakeAnthropic,
+      'claude-sonnet-4-6'
+    );
+
+    expect(result.boardTechnology).toBe('rewireable_fuse');
+    expect(result.technologyOverride).toBeNull();
+  });
+
   test('22. spd_present coerces non-boolean truthy to false (only `true` boolean counts)', async () => {
     // Strict boolean coercion — protects against the VLM returning the
     // string "false" or 0/1, which would silently pass through as a
