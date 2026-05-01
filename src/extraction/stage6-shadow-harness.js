@@ -194,12 +194,22 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
   // Build the dispatcher session that the tool dispatchers mutate. In LIVE
   // mode we want mutations to land on the LIVE session, not a clone — there's
   // no comparison and iOS state IS the live state.
-  const liveSession = {
-    sessionId: session.sessionId,
-    stateSnapshot: session.stateSnapshot,
-    extractedObservations: session.extractedObservations,
-    toolCallsMode: 'live',
-  };
+  //
+  // Field test 2026-05-01 session DFA7FDBF — a previous version of this block
+  // built a fresh `{sessionId, stateSnapshot, extractedObservations,
+  // toolCallsMode:'live'}` literal. `stateSnapshot` and `extractedObservations`
+  // were reference-copied so mutations through them propagated, but a NEW
+  // top-level property assignment — specifically `dialogueScriptState` set by
+  // `enterScriptByName` from the `start_dialogue_script` tool — landed on the
+  // per-turn literal and was thrown away when the turn ended. Next turn, the
+  // engine read `entry.session.dialogueScriptState`, found undefined, and
+  // returned handled:false. The walk-through asked "Which circuit?" once and
+  // then the answer fell through to Sonnet because the active-state memory
+  // was on a binned object. Aliasing `session` directly is the minimal fix —
+  // matches what the comment above (and the pre-clone original) always
+  // intended. Cross-turn regression coverage in
+  // stage6-dialogue-script-state-persists.test.js.
+  const liveSession = session;
 
   // Phase 5 ask-gate composition (same as shadow mode, but reading from the
   // live session). Falls back to write-only dispatcher if the caller didn't

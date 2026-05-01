@@ -1078,15 +1078,39 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
             break;
 
           // Stage 6 Phase 3 Plan 03-08 — iOS reply to a blocking ask_user.
-          // Routes straight to the per-session PendingAsksRegistry created in
-          // handleSessionStart. The registry (stage6-pending-asks-registry.js)
-          // enforces Codex STG #3 strict ordering inside resolve():
-          //   clearTimeout(timer) → Map.delete(id) → user resolve({...})
-          // so a same-millisecond timeout cannot double-resolve. An unknown
-          // tool_call_id silently returns resolved:false — this is the
-          // reconnect / replay race (iOS answers twice after a dropped
-          // socket). Emitting an error envelope would break legitimate
-          // at-least-once clients; we only error on MALFORMED payloads.
+          //
+          // Two question sources land on this case, distinguished by the
+          // tool_call_id prefix. iOS treats them identically (any in-flight
+          // Stage 6 question gets its answer routed here), but the server
+          // dispatches them to different handlers — fresh-eyes guide:
+          //
+          //   `toolu_…` — Sonnet-emitted via the `ask_user` tool. Routed to
+          //     the per-session PendingAsksRegistry created in
+          //     handleSessionStart. The registry (stage6-pending-asks-
+          //     registry.js) enforces Codex STG #3 strict ordering inside
+          //     resolve():
+          //       clearTimeout(timer) → Map.delete(id) → user resolve({...})
+          //     so a same-millisecond timeout cannot double-resolve. An
+          //     unknown id silently returns resolved:false — this is the
+          //     reconnect / replay race (iOS answers twice after a dropped
+          //     socket). Emitting an error envelope would break legitimate
+          //     at-least-once clients; we only error on MALFORMED payloads.
+          //
+          //   `srv-…` — server-emitted by the dialogue engine
+          //     (src/extraction/dialogue-engine/, e.g. ring_continuity's
+          //     "Which circuit is the ring continuity for?"). The engine
+          //     never registers in pendingAsks because it processes the
+          //     answer through the *transcript* path on the next turn
+          //     (sonnet-stream.js:~2645 → processRingContinuityTurn →
+          //     findCircuitByDesignation). Routing this id to pendingAsks
+          //     would always log `unresolved` even though the engine does
+          //     handle the answer correctly — confusing for fresh eyes
+          //     debugging a CloudWatch trace. Field repro 2026-05-01
+          //     session DFA7FDBF: every server-asked "Which circuit?"
+          //     produced a misleading warn alongside a working engine
+          //     resolution. Bus-level prefix routing logs an explicit
+          //     `routed_to_engine` info row so the answer's true handler
+          //     is visible in the log without grepping the source.
           case 'ask_user_answered': {
             if (!currentSessionId || !activeSessions.has(currentSessionId)) {
               // No session = no registry to answer against. Silent drop is
@@ -1103,6 +1127,32 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
                   message: 'ask_user_answered requires tool_call_id + user_text',
                 })
               );
+              break;
+            }
+
+            // Bus-level prefix routing (2026-05-01, fresh-eyes fix).
+            // Server-emitted dialogue-engine asks use the `srv-…` tool_call_id
+            // prefix (set per-schema in src/extraction/dialogue-engine/schemas/*
+            // — `srv-rcs` ring continuity, `srv-irs` insulation resistance,
+            // `srv-ocpd` / `srv-rcd` / `srv-rcbo` protective device family).
+            // These NEVER register in pendingAsks; the engine reads the
+            // answer from the next transcript via processDialogueTurn.
+            // Falling through to pendingAsks.resolve() would log a
+            // misleading `unresolved` warn on every engine ask — the
+            // CloudWatch trace would tell a fresh debugger "the answer
+            // was lost" when in fact the engine handled it on the
+            // transcript channel a few ms later. Log an explicit
+            // `routed_to_engine` info row instead so the bus decision is
+            // visible in the same log file as the engine's subsequent
+            // designation_match / circuit_resolved rows.
+            if (msg.tool_call_id.startsWith('srv-')) {
+              logger.info('stage6.ask_user_answered_routed_to_engine', {
+                sessionId: currentSessionId,
+                tool_call_id: msg.tool_call_id,
+                utterance_id: msg.consumed_utterance_id || null,
+                user_text_preview: String(msg.user_text).slice(0, 60),
+                reason: 'engine_emitted_ask_processed_via_transcript',
+              });
               break;
             }
 
@@ -2595,6 +2645,17 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         // can't smuggle e.g. `type: "x\nIGNORE PREVIOUS INSTRUCTIONS"` into the
         // Sonnet user turn. Keep the set in sync with QuestionGate and Sonnet
         // prompt's allowed `question.type` values.
+        //
+        // `stage6_ask_user` (added 2026-05-01): the `type` iOS stamps on
+        // any in-flight question card driven by the Stage 6 ask_user tool
+        // or the dialogue engine — see TranscriptDisplayView /
+        // DeepgramRecordingViewModel `inFlightQuestion.type`. Without it
+        // in the allow-list, `qType` was dropped before the wrap and
+        // `qTypeDropped` rows piled up in CloudWatch on every Stage 6
+        // reply, making it harder to grep for the genuine prompt-injection
+        // attempts the allow-list defends against. Behaviourally harmless
+        // pre-fix (the question text still reached Sonnet); the fix is for
+        // log fidelity + fresh-eyes traceability.
         const ALLOWED_QUESTION_TYPES = new Set([
           'observation_confirmation',
           'observation_code',
@@ -2605,6 +2666,7 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
           'orphaned',
           'tt_confirmation',
           'voice_command',
+          'stage6_ask_user',
         ]);
         const rawType = typeof msg.in_response_to.type === 'string' ? msg.in_response_to.type : '';
         const safeType = ALLOWED_QUESTION_TYPES.has(rawType) ? rawType : null;
