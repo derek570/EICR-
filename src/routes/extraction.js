@@ -42,7 +42,7 @@ logger.info('CCU extraction config', {
  * `prepareModernGeometry` returns, so downstream Stage 3/4/merger code is
  * unchanged. Coordinates are 0-1000 normalised over the source image.
  */
-function adaptTightenerToPrepared(t) {
+export function adaptTightenerToPrepared(t) {
   const { imageWidth, imageHeight, railFace, moduleCount, pitchPx, slotCentersPx } = t;
   const xToNorm = (x) => (x / imageWidth) * 1000;
   const yToNorm = (y) => (y / imageHeight) * 1000;
@@ -59,6 +59,13 @@ function adaptTightenerToPrepared(t) {
     truncatedFromDisagreement: false,
     lowConfidence: !t.refinement.accepted,
     stage1Source: 'roi-hint',
+    // Top-level usage + timings — assembleGeometricResult reads these directly
+    // (prepared.usage.inputTokens, prepared.timings.stage1Ms). The box-tightener
+    // is pure CV so usage is zero; tightener wall-clock isn't currently surfaced
+    // here, so stage1/stage2Ms are zero. The Anthropic-call timing log fired
+    // by the route handler captures the real wall-clock cost of the pipeline.
+    usage: { inputTokens: 0, outputTokens: 0 },
+    timings: { stage1Ms: 0, stage2Ms: 0 },
     railBbox: {
       left: xToNorm(railFace.left),
       right: xToNorm(railFace.right),
