@@ -319,6 +319,13 @@ async function refineObservationsAsync(entry, sessionId, observations) {
         });
         continue;
       }
+      // observation_text on the update is the AUTHORITATIVE text iOS will
+      // render. When the refiner returned a professional rewrite, send that;
+      // otherwise fall back to the inspector's original dictation so iOS still
+      // has a non-empty fuzzy-match key. iOS's handleObservationUpdate replaces
+      // the row's observationText with this value (see Sources/Recording/
+      // DeepgramRecordingViewModel.swift handleObservationUpdate).
+      const updateText = refined.professional_text || obs.observation_text || obs.description || '';
       currentWs.send(
         JSON.stringify({
           type: 'observation_update',
@@ -326,9 +333,15 @@ async function refineObservationsAsync(entry, sessionId, observations) {
           // the exact row even if Sonnet has since re-worded the observation
           // text (fuzzy match becomes fallback only).
           observation_id: obs.observation_id || null,
-          observation_text: obs.observation_text || obs.description || '',
+          observation_text: updateText,
+          // 2026-05-01 — original_text carries the inspector's pre-rewrite
+          // dictation so iOS's fuzzy-match fallback can still pair the
+          // update to the row even after the visible text has changed.
+          // iOS ignores unknown keys, so this is forward-compatible.
+          original_text: obs.observation_text || obs.description || '',
           code: refined.code,
           regulation: refined.regulation,
+          schedule_item: refined.schedule_item,
           rationale: refined.rationale,
           source: refined.source,
         })
@@ -343,7 +356,9 @@ async function refineObservationsAsync(entry, sessionId, observations) {
         sessionId,
         observationId: (obs.observation_id || '').slice(0, 8),
         code: refined.code,
-        textPreview: (obs.observation_text || '').slice(0, 60),
+        scheduleItem: refined.schedule_item || null,
+        rewroteText: refined.professional_text !== null,
+        textPreview: updateText.slice(0, 60),
       });
     } catch (err) {
       logger.warn('Observation refinement iteration failed', {
@@ -381,13 +396,17 @@ async function replayPendingRefinements(entry, sessionId) {
       // Cached result from a mid-refine socket drop — send directly.
       if (!entry.ws || entry.ws.readyState !== entry.ws.OPEN) return;
       try {
+        const replayText =
+          refined.professional_text || obs.observation_text || obs.description || '';
         entry.ws.send(
           JSON.stringify({
             type: 'observation_update',
             observation_id: obs.observation_id || null,
-            observation_text: obs.observation_text || obs.description || '',
+            observation_text: replayText,
+            original_text: obs.observation_text || obs.description || '',
             code: refined.code,
             regulation: refined.regulation,
+            schedule_item: refined.schedule_item,
             rationale: refined.rationale,
             source: refined.source,
           })
