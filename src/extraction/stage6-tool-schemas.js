@@ -346,7 +346,7 @@ const recordObservation = makeTool({
     schedule_item: {
       anyOf: [{ type: 'string' }, { type: 'null' }],
       description:
-        'BS7671 Schedule of Inspection section number this observation maps to (e.g. "5.4" for bonding, "4.4" for fire-rated CU, "4.9" for circuit labelling, "5.12.1" for RCD on sockets, "4.3" for cable entry / IP rating, "4.5" for damaged enclosure). Null when no schedule section cleanly applies.',
+        'BS 7671 Schedule of Inspection section number this observation maps to. The COMPLETE Schedule of Inspections is appended to the system prompt — read it and pick the section whose description most precisely matches this defect. Value MUST be a section ref taken verbatim from that list. Null when no schedule section cleanly applies.',
     },
   },
   // STS-05 lists all 6 fields in the strict tool shape. Under strict:true,

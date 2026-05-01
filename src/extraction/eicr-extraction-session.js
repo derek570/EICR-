@@ -683,10 +683,28 @@ export const EIC_SYSTEM_PROMPT = fssync.readFileSync(
 // Cert-specific detail (cable types, OCPD defaults, NICEIC phrasing) flows
 // into the session via the circuit schedule + cached state snapshot — the
 // prompt itself stays compact and cert-agnostic so cache reuse is maximal.
-export const EICR_AGENTIC_SYSTEM_PROMPT = fssync.readFileSync(
+//
+// Schedule of Inspections appendix (2026-05-02): the BS 7671 EICR Schedule
+// (99 inspection items) is concatenated onto every send. Field test on
+// 2026-05-01 (session 0FA1BCA0) showed the model picking "4.5" (CU
+// enclosure damage) for a cracked SOCKET-OUTLET — the prompt's old
+// "Common mappings" steering examples ("4.5 for damaged enclosure")
+// caused indiscriminate reuse. Replaced with the full schedule + a
+// directive to look up each observation against it. The whole schedule
+// rides in the cached prefix so it's paid for once per 5min, not per
+// turn. iOS's canonical copy lives at
+// `Sources/PDF/EICRHTMLTemplate.swift` (InspectionItem2 entries) — both
+// must be edited together.
+const _AGENTIC_BASE_PROMPT = fssync.readFileSync(
   path.join(__dirname, '..', '..', 'config', 'prompts', 'sonnet_agentic_system.md'),
   'utf8'
 );
+const _SCHEDULE_OF_INSPECTION_EICR = fssync.readFileSync(
+  path.join(__dirname, '..', '..', 'config', 'prompts', 'schedule-of-inspection-bs7671-eicr.md'),
+  'utf8'
+);
+export const EICR_AGENTIC_SYSTEM_PROMPT =
+  _AGENTIC_BASE_PROMPT.trimEnd() + '\n\n' + _SCHEDULE_OF_INSPECTION_EICR;
 
 export class EICRExtractionSession {
   constructor(apiKey, sessionId, certType = 'eicr', options = {}) {

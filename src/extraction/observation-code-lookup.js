@@ -1,9 +1,10 @@
 // observation-code-lookup.js
 //
-// Refines an observation in three dimensions using `gpt-5-search-api`:
+// Refines an observation in four dimensions using `gpt-5-search-api`:
 //   1. BPG4 Issue 7.1 classification code (C1/C2/C3/FI)
 //   2. BS 7671 regulation citation (number + wording)
-//   3. Schedule of Inspection section (`schedule_item`, e.g. "5.4" for bonding)
+//   3. Schedule of Inspection section (`schedule_item`) — picked verbatim
+//      from the appended BS 7671 Schedule of Inspections list
 //   4. Professional rewrite of the observation text in BS 7671 language
 //
 // The app's USP is that the electrician dictates "observation: <defect>" in
@@ -28,7 +29,27 @@
 //
 // Called from src/extraction/sonnet-stream.js.
 
+import fssync from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
 import logger from '../logger.js';
+
+// BS 7671 Schedule of Inspections — single canonical copy on the server.
+// Loaded once at module init and inlined into the refinement prompt below.
+// The previous "Common mappings" example block (3.6 / 4.5 / 5.12.1 etc.)
+// caused the model to indiscriminately reuse those refs — observed
+// 2026-05-01 in session 0FA1BCA0 where a cracked socket-outlet got
+// schedule_item "4.5" (CU enclosure damage) instead of the correct "5.18"
+// (Condition of accessories). The fix is to give the model the WHOLE
+// schedule and ask it to read+pick, rather than seed it with a handful of
+// mappings that act as anchors.
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const SCHEDULE_OF_INSPECTION = fssync.readFileSync(
+  path.join(__dirname, '..', '..', 'config', 'prompts', 'schedule-of-inspection-bs7671-eicr.md'),
+  'utf8'
+);
 
 export const VALID_CODES = new Set(['C1', 'C2', 'C3', 'FI']);
 
@@ -93,14 +114,13 @@ export async function refineObservation(openai, obs, context = {}) {
     '        foreseeable event.',
     '      - C3: Improvement recommended. Non-compliance, not dangerous.',
     '      - FI: Further investigation required to determine condition.',
-    '  (3) REGULATION — the specific BS 7671 regulation breached (number + wording),',
-    '      e.g. "Reg 411.3.3 — Additional protection: socket-outlets up to 32A".',
-    '  (4) SCHEDULE_ITEM — the BS 7671 Schedule of Inspection section number this',
-    '      defect maps to. Common mappings: 3.6 bonding-conductor sizing, 4.1',
-    '      poor workmanship, 4.3 cable entries / IP rating, 4.4 fire-rated CU,',
-    '      4.5 damaged enclosure / scorching, 4.9 circuit labelling, 5.4 main',
-    '      bonding, 5.12.1 RCD additional protection on sockets. Return null if',
-    '      no section cleanly applies.',
+    '  (3) REGULATION — the specific BS 7671 regulation breached as a number plus the regulation wording.',
+    '  (4) SCHEDULE_ITEM — a section ref taken VERBATIM from the BS 7671',
+    '      Schedule of Inspections appended below. Read the appended list',
+    '      for every observation and pick the section whose description',
+    '      most precisely matches the defect. The value must be a ref from',
+    '      that list (no inventions, no abbreviations). Return null if no',
+    '      section cleanly applies.',
     '',
     'Rules:',
     '- Do NOT over-code. Older installations compliant with an earlier edition are usually C3 or lower.',
@@ -109,8 +129,11 @@ export async function refineObservation(openai, obs, context = {}) {
     '- Regulation must be a specific BS 7671 number plus the regulation wording.',
     "- professional_text must NEVER add facts the inspector didn't state. Faithful rewrite only.",
     '',
-    'Return ONLY a JSON object (no prose) shaped exactly like:',
-    '{"professional_text":"...","code":"C2","regulation":"Reg 411.3.3 — Additional protection: socket-outlets...","schedule_item":"5.12.1","rationale":"Short reason","source":"BPG4 Issue 7.1 table reference or URL"}',
+    'Return ONLY a JSON object (no prose) shaped like (the schedule_item value shown is illustrative ONLY — pick one from the appended list that fits THIS observation):',
+    '{"professional_text":"<rewritten sentence>","code":"C2","regulation":"<reg number + wording>","schedule_item":"<ref from appended list or null>","rationale":"<short reason>","source":"<BPG4 Issue 7.1 table reference or URL>"}',
+    '',
+    '--- BS 7671 SCHEDULE OF INSPECTIONS (canonical list — pick schedule_item from here) ---',
+    SCHEDULE_OF_INSPECTION,
   ]
     .filter(Boolean)
     .join('\n');

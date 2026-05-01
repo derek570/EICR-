@@ -46,6 +46,19 @@ const PROMPT_PATH = path.join(
   'prompts',
   'sonnet_agentic_system.md'
 );
+// 2026-05-02 — the BS 7671 EICR Schedule of Inspections is appended to
+// every system prompt at module init in eicr-extraction-session.js. The
+// content invariants below run against the BASE markdown so author intent
+// stays test-locked, but the token-budget assertion below must reflect
+// the COMBINED prompt the model actually sees.
+const SCHEDULE_PATH = path.join(
+  __dirname,
+  '..',
+  '..',
+  'config',
+  'prompts',
+  'schedule-of-inspection-bs7671-eicr.md'
+);
 
 // STQ-05 VERBATIM sentence. Emdash character (U+2014), not double-hyphen.
 // If the author edits a single character of this sentence, the test
@@ -55,9 +68,15 @@ const STQ_05_VERBATIM =
 
 describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
   let prompt;
+  let schedule;
+  let combinedPrompt;
 
   beforeAll(() => {
     prompt = fssync.readFileSync(PROMPT_PATH, 'utf8');
+    schedule = fssync.readFileSync(SCHEDULE_PATH, 'utf8');
+    // Mirror the concatenation done in eicr-extraction-session.js so the
+    // budget check sees the same byte stream the model does.
+    combinedPrompt = prompt.trimEnd() + '\n\n' + schedule;
   });
 
   // ------------------------------------------------------------------
@@ -69,7 +88,17 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       expect(prompt.length).toBeGreaterThan(0);
     });
 
-    test('estimated tokens (Math.ceil(len/4)) <= 4700 — STQ-01 length cap (relaxed 2026-05-01)', () => {
+    test('loads the BS 7671 schedule appendix without throwing', () => {
+      expect(typeof schedule).toBe('string');
+      expect(schedule.length).toBeGreaterThan(0);
+      // Spot-check a couple of refs that anchor the schedule's structure.
+      // Used by future regression detection if the appendix is silently
+      // truncated; doesn't pin specific wording.
+      expect(schedule).toEqual(expect.stringContaining('5.18'));
+      expect(schedule).toEqual(expect.stringContaining('4.5'));
+    });
+
+    test('combined prompt + schedule estimated tokens (Math.ceil(len/4)) <= 7500 — STQ-01 length cap (relaxed 2026-05-02)', () => {
       // Same heuristic `eicr-extraction-session.js:1160` uses for the
       // state snapshot token estimate; keeps us in the same units the
       // session already reports.
@@ -80,22 +109,26 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       //   - ORPHANED VALUES (act/ask/log; no silent drops).
       //   - RING CONTINUITY CARRYOVER (the ONLY multi-turn test family,
       //     paired with a server-side 60s timeout that fires `ask_user`).
-      // These rules close the silent-drop bug class observed in session
-      // 3B5A0355 (2026-04-28 14:03 BST: "Circuit 1 is security alarm" /
-      // "Circuit 2 is water heater" returned zero tool calls because
-      // TOPIC RESTRAINT subsumed designation announcements).
       //
       // Relaxed to 4500 on 2026-05-01 (am) when the start_dialogue_script
       // entry rule was tightened with the "instance or" garble example.
       //
       // Relaxed to 4700 on 2026-05-01 (pm) when the BPG4 pipeline was
-      // restored: the SCHEDULE OF INSPECTION block adds the
-      // schedule_item field instruction plus 8 example mappings (3.6,
-      // 4.1, 4.3, 4.4, 4.5, 4.9, 5.4, 5.12.1) so iOS's
-      // ObservationScheduleLinker can auto-tick the matching row.
-      // ~200-token bump; 100-token headroom kept.
-      const estimate = Math.ceil(prompt.length / 4);
-      expect(estimate).toBeLessThanOrEqual(4700);
+      // restored — adding the SCHEDULE OF INSPECTION block + 8 example
+      // mappings to drive iOS's ObservationScheduleLinker.
+      //
+      // 2026-05-02: example mappings stripped. Field test 2026-05-01
+      // (session 0FA1BCA0) showed the model anchoring on "4.5 for damaged
+      // enclosure" and applying it to a cracked SOCKET-OUTLET (correct
+      // ref: 5.18 — Condition of accessories). Replaced the 8 examples
+      // with the COMPLETE BS 7671 EICR Schedule of Inspections (99 items)
+      // appended at module init. The cap is now measured against the
+      // combined prompt so this test sees what the model sees. Combined
+      // ~7012 tokens; cap 7500 leaves ~500-token headroom for future
+      // schedule-item refinements while making any unbounded growth in
+      // either file fail loudly.
+      const estimate = Math.ceil(combinedPrompt.length / 4);
+      expect(estimate).toBeLessThanOrEqual(7500);
     });
   });
 
