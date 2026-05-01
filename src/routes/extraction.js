@@ -16,6 +16,7 @@ import sharp from 'sharp';
 import { createFileFilter, IMAGE_MIMES, handleUploadError } from '../utils/upload.js';
 import { prepareModernGeometry, classifyModernSlots } from '../extraction/ccu-geometric.js';
 import { tightenAndChunk } from '../extraction/ccu-box-tighten.js';
+import { inferTechnologyFromModel } from '../extraction/board-model-registry.js';
 import {
   prepareRewireableGeometry,
   classifyRewireableSlots,
@@ -913,7 +914,13 @@ export function assembleGeometricResult(perSlotState) {
  * @param {string} base64 — base64-encoded JPEG
  * @param {object} anthropic — Anthropic client
  * @param {string} model — model id (e.g. claude-sonnet-4-6)
- * @returns {Promise<{boardTechnology:string, mainSwitchPosition:string, boardManufacturer:(string|null), boardModel:(string|null), mainSwitchRating:(string|null), spdPresent:boolean, confidence:number, usage:{inputTokens:number,outputTokens:number}}>}
+ * @returns {Promise<{boardTechnology:string, technologyOverride:(null|{appliedBy:string,fromVlm:string,toTechnology:string,series:string,matchedPattern:string}), mainSwitchPosition:string, boardManufacturer:(string|null), boardModel:(string|null), mainSwitchRating:(string|null), spdPresent:boolean, confidence:number, usage:{inputTokens:number,outputTokens:number}}>}
+ *
+ * If `boardTechnology` was forced from a VLM-issued `rewireable_fuse |
+ * cartridge_fuse | mixed` to `modern` because the `boardModel` matched a
+ * known DIN-rail consumer-unit series (see board-model-registry.js),
+ * `technologyOverride` is populated with provenance for diagnostic logging.
+ * Otherwise it is null.
  */
 export async function classifyBoardTechnology(base64, anthropic, model) {
   const prompt = `Look at this UK fuseboard photo and extract board-level metadata. Return ONLY a JSON object:
@@ -979,17 +986,47 @@ Return ONLY the JSON object.`;
     const digits = rawRating.match(/\d+/);
     if (digits) mainSwitchRating = digits[0];
   }
+
+  const boardManufacturer =
+    typeof parsed.board_manufacturer === 'string' && parsed.board_manufacturer.trim()
+      ? parsed.board_manufacturer.trim()
+      : null;
+  const boardModel =
+    typeof parsed.board_model === 'string' && parsed.board_model.trim()
+      ? parsed.board_model.trim()
+      : null;
+
+  // Model-prefix override: the same VLM call returns both a fuzzy
+  // `board_technology` label and a precise `board_model` string. When they
+  // disagree (2026-05-01: Wylex NHRS12SL labelled "mixed" with conf 0.92,
+  // routing into the rewireable pipeline and producing zero RCD-protected
+  // circuits on a high-integrity board) we trust the model identification.
+  // The override only ever forces "modern" — it cannot downgrade a
+  // VLM-issued "modern" or upgrade an unmatched model. See
+  // src/extraction/board-model-registry.js for the supported series.
+  const vlmTechnology = parsed.board_technology || 'modern';
+  let boardTechnology = vlmTechnology;
+  let technologyOverride = null;
+  if (vlmTechnology !== 'modern') {
+    const inferred = inferTechnologyFromModel({ boardModel, boardManufacturer });
+    if (inferred && inferred.technology === 'modern') {
+      boardTechnology = 'modern';
+      technologyOverride = {
+        appliedBy: 'model-prefix-match',
+        fromVlm: vlmTechnology,
+        toTechnology: 'modern',
+        series: inferred.series,
+        matchedPattern: inferred.matchedPattern,
+      };
+    }
+  }
+
   return {
-    boardTechnology: parsed.board_technology || 'modern',
+    boardTechnology,
+    technologyOverride,
     mainSwitchPosition: parsed.main_switch_position || 'none',
-    boardManufacturer:
-      typeof parsed.board_manufacturer === 'string' && parsed.board_manufacturer.trim()
-        ? parsed.board_manufacturer.trim()
-        : null,
-    boardModel:
-      typeof parsed.board_model === 'string' && parsed.board_model.trim()
-        ? parsed.board_model.trim()
-        : null,
+    boardManufacturer,
+    boardModel,
     mainSwitchRating,
     spdPresent: parsed.spd_present === true,
     confidence: typeof parsed.confidence === 'number' ? parsed.confidence : 0,
@@ -1501,6 +1538,7 @@ router.post(
         logger.info('CCU board_technology classifier', {
           userId: req.user.id,
           boardTechnology: boardClassification.boardTechnology,
+          technologyOverride: boardClassification.technologyOverride,
           mainSwitchPosition: boardClassification.mainSwitchPosition,
           boardManufacturer: boardClassification.boardManufacturer,
           boardModel: boardClassification.boardModel,
