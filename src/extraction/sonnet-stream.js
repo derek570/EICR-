@@ -1078,15 +1078,39 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
             break;
 
           // Stage 6 Phase 3 Plan 03-08 — iOS reply to a blocking ask_user.
-          // Routes straight to the per-session PendingAsksRegistry created in
-          // handleSessionStart. The registry (stage6-pending-asks-registry.js)
-          // enforces Codex STG #3 strict ordering inside resolve():
-          //   clearTimeout(timer) → Map.delete(id) → user resolve({...})
-          // so a same-millisecond timeout cannot double-resolve. An unknown
-          // tool_call_id silently returns resolved:false — this is the
-          // reconnect / replay race (iOS answers twice after a dropped
-          // socket). Emitting an error envelope would break legitimate
-          // at-least-once clients; we only error on MALFORMED payloads.
+          //
+          // Two question sources land on this case, distinguished by the
+          // tool_call_id prefix. iOS treats them identically (any in-flight
+          // Stage 6 question gets its answer routed here), but the server
+          // dispatches them to different handlers — fresh-eyes guide:
+          //
+          //   `toolu_…` — Sonnet-emitted via the `ask_user` tool. Routed to
+          //     the per-session PendingAsksRegistry created in
+          //     handleSessionStart. The registry (stage6-pending-asks-
+          //     registry.js) enforces Codex STG #3 strict ordering inside
+          //     resolve():
+          //       clearTimeout(timer) → Map.delete(id) → user resolve({...})
+          //     so a same-millisecond timeout cannot double-resolve. An
+          //     unknown id silently returns resolved:false — this is the
+          //     reconnect / replay race (iOS answers twice after a dropped
+          //     socket). Emitting an error envelope would break legitimate
+          //     at-least-once clients; we only error on MALFORMED payloads.
+          //
+          //   `srv-…` — server-emitted by the dialogue engine
+          //     (src/extraction/dialogue-engine/, e.g. ring_continuity's
+          //     "Which circuit is the ring continuity for?"). The engine
+          //     never registers in pendingAsks because it processes the
+          //     answer through the *transcript* path on the next turn
+          //     (sonnet-stream.js:~2645 → processRingContinuityTurn →
+          //     findCircuitByDesignation). Routing this id to pendingAsks
+          //     would always log `unresolved` even though the engine does
+          //     handle the answer correctly — confusing for fresh eyes
+          //     debugging a CloudWatch trace. Field repro 2026-05-01
+          //     session DFA7FDBF: every server-asked "Which circuit?"
+          //     produced a misleading warn alongside a working engine
+          //     resolution. Bus-level prefix routing logs an explicit
+          //     `routed_to_engine` info row so the answer's true handler
+          //     is visible in the log without grepping the source.
           case 'ask_user_answered': {
             if (!currentSessionId || !activeSessions.has(currentSessionId)) {
               // No session = no registry to answer against. Silent drop is
@@ -1103,6 +1127,32 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
                   message: 'ask_user_answered requires tool_call_id + user_text',
                 })
               );
+              break;
+            }
+
+            // Bus-level prefix routing (2026-05-01, fresh-eyes fix).
+            // Server-emitted dialogue-engine asks use the `srv-…` tool_call_id
+            // prefix (set per-schema in src/extraction/dialogue-engine/schemas/*
+            // — `srv-rcs` ring continuity, `srv-irs` insulation resistance,
+            // `srv-ocpd` / `srv-rcd` / `srv-rcbo` protective device family).
+            // These NEVER register in pendingAsks; the engine reads the
+            // answer from the next transcript via processDialogueTurn.
+            // Falling through to pendingAsks.resolve() would log a
+            // misleading `unresolved` warn on every engine ask — the
+            // CloudWatch trace would tell a fresh debugger "the answer
+            // was lost" when in fact the engine handled it on the
+            // transcript channel a few ms later. Log an explicit
+            // `routed_to_engine` info row instead so the bus decision is
+            // visible in the same log file as the engine's subsequent
+            // designation_match / circuit_resolved rows.
+            if (msg.tool_call_id.startsWith('srv-')) {
+              logger.info('stage6.ask_user_answered_routed_to_engine', {
+                sessionId: currentSessionId,
+                tool_call_id: msg.tool_call_id,
+                utterance_id: msg.consumed_utterance_id || null,
+                user_text_preview: String(msg.user_text).slice(0, 60),
+                reason: 'engine_emitted_ask_processed_via_transcript',
+              });
               break;
             }
 

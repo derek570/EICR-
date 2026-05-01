@@ -408,6 +408,97 @@ describe('Group B — inbound ask_user_answered routing', () => {
     expect(err.message).toMatch(/ask_user_answered requires/);
     expect(resolveSpy).not.toHaveBeenCalled();
   });
+
+  // 2026-05-01 — bus-level prefix routing for server-emitted dialogue-engine
+  // asks. Field repro: session DFA7FDBF-86DB-4E7A-9E4F-70217CF2C028.
+  // The dialogue engine emits its "Which circuit is the ring continuity for?"
+  // ask with a `srv-rcs-…` tool_call_id. iOS routes any in-flight question's
+  // answer through this case regardless of source. Without prefix routing
+  // the answer fell through to pendingAsks.resolve() — which never knew about
+  // the engine's id — and CloudWatch surfaced a misleading
+  // `stage6.ask_user_answered_unresolved` warn on every engine ask. The
+  // engine processes the answer correctly via the transcript channel on the
+  // next turn; the bus just needs to recognise the prefix and short-circuit
+  // with a self-explanatory log row.
+  test('srv-rcs-… tool_call_id is routed to engine — pendingAsks.resolve NOT called, info log emitted', async () => {
+    const ws = connect(wss, 'user-1');
+    await sendFrame(ws, {
+      type: 'session_start',
+      sessionId: 'sess-A',
+      jobState: { certificateType: 'eicr' },
+    });
+    const entry = activeSessions.get('sess-A');
+    expect(entry.pendingAsks).toBeDefined();
+    const resolveSpy = jest.spyOn(entry.pendingAsks, 'resolve');
+    ws._sent.length = 0;
+
+    const loggerModule = (await import('../logger.js')).default;
+    loggerModule.info.mockClear();
+    loggerModule.warn.mockClear();
+
+    await sendFrame(ws, {
+      type: 'ask_user_answered',
+      tool_call_id: 'srv-rcs-sess-A-which-1777619402903',
+      user_text: 'downstairs sockets',
+      consumed_utterance_id: '477C1FB4-6AF8-48FE-B687-59425DDE492B',
+    });
+
+    // The Sonnet pendingAsks registry was NOT consulted — the engine owns
+    // this answer.
+    expect(resolveSpy).not.toHaveBeenCalled();
+    // No error envelope and no `_unresolved` warn — silent + clear is the
+    // whole point of the bus routing.
+    expect(ws._sent.find((m) => m.type === 'error')).toBeUndefined();
+    const unresolvedWarn = loggerModule.warn.mock.calls.find(
+      (c) => c[0] === 'stage6.ask_user_answered_unresolved'
+    );
+    expect(unresolvedWarn).toBeUndefined();
+    // The bus decision is logged with enough context to follow the answer
+    // into the engine on the next turn.
+    const routedInfo = loggerModule.info.mock.calls.find(
+      (c) => c[0] === 'stage6.ask_user_answered_routed_to_engine'
+    );
+    expect(routedInfo).toBeDefined();
+    expect(routedInfo[1]).toMatchObject({
+      sessionId: 'sess-A',
+      tool_call_id: 'srv-rcs-sess-A-which-1777619402903',
+      utterance_id: '477C1FB4-6AF8-48FE-B687-59425DDE492B',
+      user_text_preview: 'downstairs sockets',
+      reason: 'engine_emitted_ask_processed_via_transcript',
+    });
+
+    resolveSpy.mockRestore();
+  });
+
+  // Same routing for the other dialogue-engine schemas. We only check one
+  // representative non-rcs prefix — the implementation uses startsWith('srv-')
+  // so all five (rcs/irs/ocpd/rcd/rcbo) share the same bus path.
+  test('srv-irs-… (insulation resistance) tool_call_id is routed to engine', async () => {
+    const ws = connect(wss, 'user-1');
+    await sendFrame(ws, {
+      type: 'session_start',
+      sessionId: 'sess-A',
+      jobState: { certificateType: 'eicr' },
+    });
+    const entry = activeSessions.get('sess-A');
+    const resolveSpy = jest.spyOn(entry.pendingAsks, 'resolve');
+    ws._sent.length = 0;
+
+    const loggerModule = (await import('../logger.js')).default;
+    loggerModule.info.mockClear();
+
+    await sendFrame(ws, {
+      type: 'ask_user_answered',
+      tool_call_id: 'srv-irs-sess-A-which-1234567890',
+      user_text: 'circuit four',
+    });
+
+    expect(resolveSpy).not.toHaveBeenCalled();
+    expect(
+      loggerModule.info.mock.calls.find((c) => c[0] === 'stage6.ask_user_answered_routed_to_engine')
+    ).toBeDefined();
+    resolveSpy.mockRestore();
+  });
 });
 
 // -----------------------------------------------------------------------------
