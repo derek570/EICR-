@@ -915,15 +915,18 @@ describe('engine — tryResumePausedScript (post-Sonnet-turn hook)', () => {
       paused_designation_hint: null,
       paused_at: null,
       circuit_ref: 2,
-      ambiguous_bare_value: { value: '299', source: 'megaohm' },
+      // Commit 4: bare value moved into awaiting_disambiguation; the
+      // resume hook now asks "Was 299 L-L or L-E?" before continuing.
+      // The L-L vs L-E disambiguation tests below cover the answer
+      // routing.
+      ambiguous_bare_value: null,
+      awaiting_disambiguation: { value: '299', source: 'megaohm' },
     });
-    // Engine asks the next missing slot — currently L-L (Commit 4 will
-    // intercept here with a disambiguation question instead).
     expect(wsAfter.sent.at(-1)).toMatchObject({
       type: 'ask_user_started',
-      question: "What's the live-to-live?",
+      question: 'Was 299 megaohms live-to-live or live-to-earth?',
       context_circuit: 2,
-      context_field: 'ir_live_live_mohm',
+      context_field: '_ir_disambiguate_bare',
     });
   });
 
@@ -1104,6 +1107,214 @@ describe('engine — tryResumePausedScript (post-Sonnet-turn hook)', () => {
     });
     expect(out).toEqual({ resumed: false, reason: 'paused_timeout' });
     expect(session.dialogueScriptState).toBeNull();
+  });
+});
+
+describe('engine — IR L-L vs L-E disambiguation after resume (commit 4)', () => {
+  function pauseIrForCookerAndResume({ session, snapshotForCooker = {} }, now = 4000) {
+    const wsPause = new FakeWS();
+    processInsulationResistanceTurn({
+      ws: wsPause,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'Insulation resistance for the cooker is 299 milligrams.',
+      now: 1000,
+    });
+    processInsulationResistanceTurn({
+      ws: wsPause,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'unresolvable 1',
+      now: 2000,
+    });
+    processInsulationResistanceTurn({
+      ws: wsPause,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'cooker circuit',
+      now: 3000,
+    });
+    expect(session.dialogueScriptState.paused).toBe(true);
+
+    session.stateSnapshot.circuits[2] = {
+      circuit_designation: 'Cooker',
+      ...snapshotForCooker,
+    };
+    const wsResume = new FakeWS();
+    const out = tryResumePausedScript({
+      session,
+      ws: wsResume,
+      schemas: ALL_DIALOGUE_SCHEMAS,
+      circuitUpdates: [{ op: 'create', circuit_ref: 2, meta: { designation: 'Cooker' } }],
+      now,
+    });
+    expect(out).toEqual({ resumed: true, circuit_ref: 2 });
+    return wsResume;
+  }
+
+  test('both L-L and L-E empty → asks disambiguation question', () => {
+    const session = buildSession({ 1: { circuit_designation: 'Upstairs Sockets' } });
+    const ws = pauseIrForCookerAndResume({ session });
+
+    expect(session.dialogueScriptState.awaiting_disambiguation).toEqual({
+      value: '299',
+      source: 'megaohm',
+    });
+    expect(session.dialogueScriptState.ambiguous_bare_value).toBeNull();
+    expect(ws.sent.at(-1)).toMatchObject({
+      type: 'ask_user_started',
+      question: 'Was 299 megaohms live-to-live or live-to-earth?',
+      context_circuit: 2,
+      context_field: '_ir_disambiguate_bare',
+    });
+  });
+
+  test('user answers "live to live" → 299 lands in ir_live_live_mohm, asks L-E next', () => {
+    const session = buildSession({});
+    pauseIrForCookerAndResume({ session });
+
+    const ws2 = new FakeWS();
+    const out = processInsulationResistanceTurn({
+      ws: ws2,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'live to live',
+      now: 5000,
+    });
+    expect(out).toEqual({ handled: true, fallthrough: false });
+    expect(session.stateSnapshot.circuits[2]).toMatchObject({
+      circuit_designation: 'Cooker',
+      ir_live_live_mohm: '299',
+    });
+    expect(session.dialogueScriptState.awaiting_disambiguation).toBeNull();
+    // After resolution, walk-through proceeds to the next missing slot.
+    expect(ws2.sent.at(-1)).toMatchObject({
+      type: 'ask_user_started',
+      question: "What's the live-to-earth?",
+      context_field: 'ir_live_earth_mohm',
+      context_circuit: 2,
+    });
+  });
+
+  test('user answers "L-E" → 299 lands in ir_live_earth_mohm, asks L-L next', () => {
+    const session = buildSession({});
+    pauseIrForCookerAndResume({ session });
+
+    const ws2 = new FakeWS();
+    processInsulationResistanceTurn({
+      ws: ws2,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'L-E',
+      now: 5000,
+    });
+    expect(session.stateSnapshot.circuits[2]).toMatchObject({
+      ir_live_earth_mohm: '299',
+    });
+    expect(ws2.sent.at(-1)).toMatchObject({
+      question: "What's the live-to-live?",
+      context_field: 'ir_live_live_mohm',
+    });
+  });
+
+  test('user answers "neither" → bare value discarded, asks L-L next', () => {
+    const session = buildSession({});
+    pauseIrForCookerAndResume({ session });
+
+    const ws2 = new FakeWS();
+    processInsulationResistanceTurn({
+      ws: ws2,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'neither',
+      now: 5000,
+    });
+    expect(session.stateSnapshot.circuits[2]).not.toHaveProperty('ir_live_live_mohm');
+    expect(session.stateSnapshot.circuits[2]).not.toHaveProperty('ir_live_earth_mohm');
+    expect(session.dialogueScriptState.awaiting_disambiguation).toBeNull();
+    expect(ws2.sent.at(-1)).toMatchObject({
+      question: "What's the live-to-live?",
+    });
+  });
+
+  test('unparseable answer → re-asks once, then drops on second unparseable', () => {
+    const session = buildSession({});
+    pauseIrForCookerAndResume({ session });
+
+    const ws2 = new FakeWS();
+    processInsulationResistanceTurn({
+      ws: ws2,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'um, what?',
+      now: 5000,
+    });
+    expect(session.dialogueScriptState.awaiting_disambiguation).toBeTruthy();
+    expect(session.dialogueScriptState.disambiguation_retry_attempted).toBe(true);
+    expect(ws2.sent.at(-1).question).toBe('Was 299 megaohms live-to-live or live-to-earth?');
+
+    const ws3 = new FakeWS();
+    processInsulationResistanceTurn({
+      ws: ws3,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'still nonsense',
+      now: 6000,
+    });
+    expect(session.dialogueScriptState.awaiting_disambiguation).toBeNull();
+    // Walk-through continues — next missing slot is L-L (nothing was saved).
+    expect(ws3.sent.at(-1)).toMatchObject({
+      question: "What's the live-to-live?",
+    });
+  });
+
+  test('L-L slot already filled → auto-assigns 299 to L-E without asking', () => {
+    const session = buildSession({});
+    const ws = pauseIrForCookerAndResume({
+      session,
+      snapshotForCooker: { ir_live_live_mohm: '500' },
+    });
+    // No question — auto-assigned.
+    expect(session.stateSnapshot.circuits[2]).toMatchObject({
+      ir_live_live_mohm: '500',
+      ir_live_earth_mohm: '299',
+    });
+    expect(session.dialogueScriptState.awaiting_disambiguation).toBeNull();
+    // Last emit is the next-slot ask (voltage).
+    expect(ws.sent.at(-1)).toMatchObject({
+      question: 'What was the test voltage?',
+    });
+  });
+
+  test('L-E slot already filled → auto-assigns 299 to L-L without asking', () => {
+    const session = buildSession({});
+    pauseIrForCookerAndResume({
+      session,
+      snapshotForCooker: { ir_live_earth_mohm: '888' },
+    });
+    expect(session.stateSnapshot.circuits[2]).toMatchObject({
+      ir_live_earth_mohm: '888',
+      ir_live_live_mohm: '299',
+    });
+    expect(session.dialogueScriptState.awaiting_disambiguation).toBeNull();
+  });
+
+  test('both L-L and L-E already filled → bare value discarded silently', () => {
+    const session = buildSession({});
+    const ws = pauseIrForCookerAndResume({
+      session,
+      snapshotForCooker: { ir_live_live_mohm: '500', ir_live_earth_mohm: '600' },
+    });
+    expect(session.stateSnapshot.circuits[2]).toMatchObject({
+      ir_live_live_mohm: '500',
+      ir_live_earth_mohm: '600',
+    });
+    expect(session.dialogueScriptState.ambiguous_bare_value).toBeNull();
+    expect(session.dialogueScriptState.awaiting_disambiguation).toBeNull();
+    // Walk-through proceeds straight to voltage.
+    expect(ws.sent.at(-1)).toMatchObject({
+      question: 'What was the test voltage?',
+    });
   });
 });
 

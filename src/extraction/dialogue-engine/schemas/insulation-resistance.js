@@ -126,6 +126,28 @@ export const insulationResistanceSchema = {
   // continuity does NOT opt in — Silvertown repro tests guard the
   // existing clear-and-fallthrough behaviour there.
   resumeAfterCircuitCreation: true,
+  // L-L vs L-E disambiguation for the bare-entry value. When the
+  // resume path lands with `ambiguous_bare_value` set AND both
+  // L-L and L-E slots are still empty, the engine asks the question
+  // returned by `bareDisambiguationQuestion` and routes the user's
+  // reply through `disambiguateBareValue`. Reuses the same regex
+  // vocabulary as the slot namedExtractors so any phrasing that
+  // would have tagged a value at entry also disambiguates here.
+  bareDisambiguationQuestion: (value) => `Was ${value} megaohms live-to-live or live-to-earth?`,
+  disambiguateBareValue: (text) => {
+    if (typeof text !== 'string' || !text) return null;
+    if (/\b(?:live\s+to\s+live|line\s+to\s+line|l\s+to\s+l|l[\s.-]*l)\b/i.test(text)) {
+      return { field: 'ir_live_live_mohm' };
+    }
+    if (/\b(?:live\s+to\s+earth|line\s+to\s+earth|l\s+to\s+e|l[\s.-]*e)\b/i.test(text)) {
+      return { field: 'ir_live_earth_mohm' };
+    }
+    // Inspector wants out of the disambiguation — drop the bare value.
+    if (/\b(?:neither|nothing|forget\s+(?:it|that)|skip|cancel|never\s+mind)\b/i.test(text)) {
+      return { discard: true };
+    }
+    return null;
+  },
   cancelMessage: ({ filled, total }) =>
     `Insulation resistance cancelled. ${filled} of ${total} saved.`,
   cancelMessageEmpty: 'Insulation resistance cancelled.',

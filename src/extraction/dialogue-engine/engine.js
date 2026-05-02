@@ -238,6 +238,12 @@ function initScriptState(session, schema, circuit_ref, now) {
     paused: false,
     paused_designation_hint: null,
     paused_at: null,
+    // Disambiguation phase: set by tryResumePausedScript when an
+    // ambiguous bare value needs L-L vs L-E routing. The active-path
+    // pre-slot check intercepts the next user reply, runs
+    // schema.disambiguateBareValue(text), assigns the value to the
+    // chosen slot, then continues to askNextOrFinish.
+    awaiting_disambiguation: null,
   };
 }
 
@@ -411,6 +417,95 @@ function runActivePath({
 }) {
   const state = session.dialogueScriptState;
   state.last_turn_at = now;
+
+  // 0. Disambiguation reply — when the resume hook asked "Was 299
+  //    L-L or L-E?", intercept the answer here BEFORE cancel /
+  //    different-entry / topic-switch detection. The user's reply is
+  //    a routing answer ("live to live"), not a cancel verb or topic
+  //    pivot, so the normal active-path checks would mis-classify
+  //    them. Schema's disambiguateBareValue returns either
+  //    { field } (assign + continue), { discard: true } (drop the
+  //    bare value + continue), or null (unparseable — re-ask once,
+  //    then discard on second miss).
+  if (state.awaiting_disambiguation && typeof schema.disambiguateBareValue === 'function') {
+    const bare = state.awaiting_disambiguation;
+    const verdict = schema.disambiguateBareValue(text);
+    if (verdict && verdict.field) {
+      // Belt-and-braces: don't overwrite if the inspector somehow
+      // filled the chosen slot in the meantime (rare but possible if
+      // a parallel write landed).
+      if (state.values[verdict.field] == null) {
+        applyWrite(session, schema, state.circuit_ref, verdict.field, bare.value, now);
+        state.values[verdict.field] = bare.value;
+        safeSend(
+          ws,
+          buildExtractionPayload(
+            state.circuit_ref,
+            [{ field: verdict.field, value: bare.value }],
+            schema.extractionSource
+          )
+        );
+      }
+      logger?.info?.(`${schema.logEventPrefix}_disambiguation_resolved`, {
+        sessionId,
+        circuit_ref: state.circuit_ref,
+        bare_value: bare.value,
+        target_field: verdict.field,
+        textPreview: text.slice(0, 80),
+      });
+      state.awaiting_disambiguation = null;
+      state.disambiguation_retry_attempted = false;
+      return askNextOrFinish({ ws, session, sessionId, schema, logger, now });
+    }
+    if (verdict && verdict.discard) {
+      logger?.info?.(`${schema.logEventPrefix}_disambiguation_discarded_by_user`, {
+        sessionId,
+        circuit_ref: state.circuit_ref,
+        bare_value: bare.value,
+        textPreview: text.slice(0, 80),
+      });
+      state.awaiting_disambiguation = null;
+      state.disambiguation_retry_attempted = false;
+      return askNextOrFinish({ ws, session, sessionId, schema, logger, now });
+    }
+    // Unparseable. Re-ask once, then drop the bare value on a second
+    // miss so the script doesn't loop forever.
+    if (!state.disambiguation_retry_attempted) {
+      state.disambiguation_retry_attempted = true;
+      logger?.info?.(`${schema.logEventPrefix}_disambiguation_retry`, {
+        sessionId,
+        circuit_ref: state.circuit_ref,
+        textPreview: text.slice(0, 80),
+      });
+      safeSend(
+        ws,
+        buildScriptAsk({
+          toolCallIdPrefix: schema.toolCallIdPrefix,
+          sessionId,
+          circuit_ref: state.circuit_ref,
+          missing_field: '_ir_disambiguate_bare',
+          whichCircuitQuestion: null,
+          slotQuestion:
+            typeof schema.bareDisambiguationQuestion === 'function'
+              ? schema.bareDisambiguationQuestion(bare.value)
+              : `Live-to-live or live-to-earth?`,
+          now,
+          kind: 'value',
+        })
+      );
+      return { handled: true, fallthrough: false };
+    }
+    logger?.info?.(`${schema.logEventPrefix}_disambiguation_dropped`, {
+      sessionId,
+      circuit_ref: state.circuit_ref,
+      bare_value: bare.value,
+      reason: 'second_unparseable',
+      textPreview: text.slice(0, 80),
+    });
+    state.awaiting_disambiguation = null;
+    state.disambiguation_retry_attempted = false;
+    return askNextOrFinish({ ws, session, sessionId, schema, logger, now });
+  }
 
   // 1. Cancel — preserve writes, clear state, announce.
   if (matchesAny(text, schema.cancelTriggers)) {
@@ -1305,12 +1400,97 @@ export function tryResumePausedScript({
     circuit_op: matchingOp.op,
   });
 
-  // Ask the next missing slot (or emit the completion message via
-  // askNextOrFinish if every slot is already filled). Commit 4 changes
-  // this branch: when ambiguous_bare_value is set, a disambiguation
-  // question fires first ("Was 299 live-to-live or live-to-earth?")
-  // and the answer drains the bare value into the right slot before
-  // the walk-through continues.
+  // Disambiguation pre-step for an ambiguous bare value captured at
+  // entry. Three branches:
+  //
+  //   (1) Both L-L and L-E are still empty → can't infer which slot the
+  //       bare value belongs to; ask the inspector. State flips into
+  //       `awaiting_disambiguation` mode and the active path's pre-slot
+  //       check (added below) routes the next reply through the
+  //       schema's `disambiguateBareValue`.
+  //   (2) Exactly ONE of L-L/L-E is already filled (existing snapshot
+  //       value or a drained pending_write) → auto-assign the bare
+  //       value to the OTHER slot and continue. No question needed
+  //       because there's only one possible target.
+  //   (3) Both L-L and L-E filled → the bare value is redundant.
+  //       Discard with a log; the script continues to whatever's
+  //       still missing (probably voltage).
+  //
+  // Schema gates: `bareDisambiguationQuestion` + `disambiguateBareValue`
+  // must be functions for branch (1) to fire; otherwise fall through
+  // to the standard askNextOrFinish.
+  if (
+    state.ambiguous_bare_value !== null &&
+    typeof schema.bareDisambiguationQuestion === 'function' &&
+    typeof schema.disambiguateBareValue === 'function'
+  ) {
+    const llFilled = state.values.ir_live_live_mohm != null;
+    const leFilled = state.values.ir_live_earth_mohm != null;
+    const bare = state.ambiguous_bare_value;
+
+    if (!llFilled && !leFilled) {
+      // Branch (1): true ambiguity — ask.
+      state.awaiting_disambiguation = bare;
+      state.ambiguous_bare_value = null;
+      const question = schema.bareDisambiguationQuestion(bare.value);
+      logger?.info?.(`${schema.logEventPrefix}_disambiguation_asked`, {
+        sessionId: session.sessionId,
+        circuit_ref: matchedRef,
+        bare_value: bare.value,
+      });
+      safeSend(
+        ws,
+        buildScriptAsk({
+          toolCallIdPrefix: schema.toolCallIdPrefix,
+          sessionId: session.sessionId,
+          circuit_ref: matchedRef,
+          missing_field: '_ir_disambiguate_bare',
+          whichCircuitQuestion: null,
+          slotQuestion: question,
+          now,
+          kind: 'value',
+        })
+      );
+      return { resumed: true, circuit_ref: matchedRef };
+    }
+
+    if (llFilled !== leFilled) {
+      // Branch (2): exactly one filled — auto-assign the bare value to
+      // the other slot. No user question.
+      const targetField = llFilled ? 'ir_live_earth_mohm' : 'ir_live_live_mohm';
+      applyWrite(session, schema, matchedRef, targetField, bare.value, now);
+      state.values[targetField] = bare.value;
+      state.ambiguous_bare_value = null;
+      logger?.info?.(`${schema.logEventPrefix}_disambiguation_auto_assigned`, {
+        sessionId: session.sessionId,
+        circuit_ref: matchedRef,
+        bare_value: bare.value,
+        target_field: targetField,
+        reason: llFilled ? 'll_already_filled' : 'le_already_filled',
+      });
+      safeSend(
+        ws,
+        buildExtractionPayload(
+          matchedRef,
+          [{ field: targetField, value: bare.value }],
+          schema.extractionSource
+        )
+      );
+      askNextOrFinish({ ws, session, sessionId: session.sessionId, schema, logger, now });
+      return { resumed: true, circuit_ref: matchedRef };
+    }
+
+    // Branch (3): both filled — bare value is redundant. Discard and
+    // proceed.
+    logger?.info?.(`${schema.logEventPrefix}_disambiguation_discarded`, {
+      sessionId: session.sessionId,
+      circuit_ref: matchedRef,
+      bare_value: bare.value,
+      reason: 'both_slots_already_filled',
+    });
+    state.ambiguous_bare_value = null;
+  }
+
   askNextOrFinish({ ws, session, sessionId: session.sessionId, schema, logger, now });
 
   return { resumed: true, circuit_ref: matchedRef };
