@@ -82,7 +82,7 @@ export function JobHeader() {
           className="pointer-events-none absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 truncate text-center text-[17px] font-semibold text-[var(--color-text-primary)]"
           style={{ maxWidth: 'calc(100% - 120px)' }}
         >
-          {job.address || 'Untitled job'}
+          {job.address?.trim() || jobFallbackTitle(job.created_at)}
         </h1>
 
         {/* 3-dot menu — Phase C parity port (iOS JobDetailView toolbar).
@@ -135,6 +135,26 @@ export function JobHeader() {
       />
     </header>
   );
+}
+
+/**
+ * "Job - <date>, <HH:MM>" — iOS canon fallback when a job has no
+ * address yet (IMG_6296 reference 2026-05-02). Most fresh rows go
+ * through this branch because inspectors create jobs the moment
+ * they arrive on site, before they've dictated an address.
+ */
+function jobFallbackTitle(createdAt: string | undefined): string {
+  if (!createdAt) return 'New job';
+  const d = new Date(createdAt);
+  return `Job - ${d.toLocaleDateString(undefined, {
+    day: 'numeric',
+    month: 'long',
+    year: 'numeric',
+  })}, ${d.toLocaleTimeString(undefined, {
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  })}`;
 }
 
 function MenuItem({
