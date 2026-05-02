@@ -17,6 +17,7 @@ import {
 } from 'lucide-react';
 import { useParams, useRouter } from 'next/navigation';
 import { useRecording, formatCost, formatElapsed } from '@/lib/recording-context';
+import { useJobContext } from '@/lib/job-context';
 import { cn } from '@/lib/utils';
 import { ConfirmDialog } from '@/components/ui/confirm-dialog';
 import {
@@ -25,6 +26,8 @@ import {
   setVoiceFeedbackEnabled,
   speak,
 } from '@/lib/recording/tts';
+import { applyPresetToJob } from '@/lib/defaults/service';
+import { ApplyDefaultsSheet } from '@/components/defaults/apply-defaults-sheet';
 import { VadIndicator } from './vad-indicator';
 import { ProcessingBadge } from './processing-badge';
 import { PendingDataBanner } from './pending-data-banner';
@@ -175,6 +178,19 @@ function RecordingActionBar() {
     [router, jobId]
   );
 
+  // Defaults / Apply — Phase B (2026-05-03) port of iOS
+  // RecordingOverlay.swift handlers. iOS shows the Defaults manager
+  // and the preset picker as full-screen sheets. The PWA opens the
+  // Apply sheet inline so recording stays live; "Defaults" navigates
+  // to /settings/defaults — the inspector rarely edits presets while
+  // recording, and pausing first via the Pause button is one tap.
+  const { job, updateJob } = useJobContext();
+  const [applyOpen, setApplyOpen] = React.useState(false);
+  const onOpenDefaults = React.useCallback(() => {
+    router.push('/settings/defaults');
+  }, [router]);
+  const onOpenApply = React.useCallback(() => setApplyOpen(true), []);
+
   return (
     <>
       {/* Badges + alert card float above the action bar so they survive
@@ -237,16 +253,9 @@ function RecordingActionBar() {
               label="Defaults"
               tone="violet"
               icon={Settings2}
-              disabled
-              disabledReason="Defaults panel is iOS-only for now."
+              onClick={onOpenDefaults}
             />
-            <ParityButton
-              label="Apply"
-              tone="green"
-              icon={Check}
-              disabled
-              disabledReason="Apply-last-snapshot is iOS-only for now."
-            />
+            <ParityButton label="Apply" tone="green" icon={Check} onClick={onOpenApply} />
             {/* CCU / Doc / Obs deep-link to the tab where the wired
                 handler already lives, so the inspector can fire the same
                 action from inside a recording session as they would from
@@ -319,6 +328,22 @@ function RecordingActionBar() {
         cancelLabel="Keep recording"
         destructive
         onConfirm={confirmEnd}
+      />
+
+      {/* Apply preset to job — Phase B (2026-05-03). Mirrors iOS
+          ApplyDefaultsSheet.swift. The applier is non-destructive
+          (only-fill-empty) so tapping Apply mid-job never overwrites
+          a value the inspector typed; it only fills the holes. */}
+      <ApplyDefaultsSheet
+        open={applyOpen}
+        certificateType={job.certificate_type ?? 'EICR'}
+        onClose={() => setApplyOpen(false)}
+        onApply={(preset) => {
+          const patch = applyPresetToJob(preset, job);
+          if (Object.keys(patch).length > 0) {
+            updateJob(patch);
+          }
+        }}
       />
     </>
   );

@@ -12,6 +12,7 @@ import {
   Search,
   Settings,
   Shield,
+  SlidersHorizontal,
   UserCheck,
 } from 'lucide-react';
 import { api } from '@/lib/api-client';
@@ -298,6 +299,15 @@ export default function DashboardPage() {
           Setup &amp; Tools
         </h2>
         <div className="grid gap-2 sm:grid-cols-2">
+          {/*
+           * iOS canon ordering (DashboardView.swift L593-630):
+           *   Defaults | Company / Staff | Settings / Tour | Log Out
+           * Defaults tile was hidden during the Phase 6 partial port;
+           * Phase B (2026-05-03) restores it now that the Defaults
+           * manager is fully wired (presets + cable sizes editor + apply
+           * flow at /settings/defaults).
+           */}
+          <SetupTile icon={SlidersHorizontal} label="Defaults" href="/settings/defaults" />
           <SetupTile icon={Building2} label="Company" href="/settings/company" />
           <SetupTile icon={UserCheck} label="Staff" href="/settings/staff" />
           <SetupTile icon={Settings} label="Settings" href="/settings" />
@@ -310,8 +320,6 @@ export default function DashboardPage() {
            *     point. The tile appears regardless of the `seen` flag
            *     so returning users can re-run on demand (matches the
            *     iOS "Tour" tile which is always visible).
-           * Defaults tile (iOS `DashboardView.swift:L593-L595`) is
-           * intentionally hidden — the Defaults page is Phase 6 work.
            */}
           <SetupTile
             icon={Compass}

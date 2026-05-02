@@ -126,10 +126,19 @@ export function useUserDefaults(userId: string | undefined): UseUserDefaultsResu
       // 2. Network fetch — overwrites cache if different.
       try {
         const fresh = await api.userDefaults(userId);
-        const normalised: UserDefaults =
-          fresh && typeof fresh === 'object' && !Array.isArray(fresh)
-            ? (fresh as UserDefaults)
-            : {};
+        // The blob is now a heterogeneous object (Phase B added
+        // `presets` and `cable_defaults` arrays alongside the legacy
+        // flat string-keyed circuit-field defaults). Filter to the
+        // string entries here so Circuits' `applyDefaultsToCircuits`
+        // can keep treating the map as `Record<string, string>`.
+        const normalised: UserDefaults = {};
+        if (fresh && typeof fresh === 'object' && !Array.isArray(fresh)) {
+          for (const [key, value] of Object.entries(fresh)) {
+            if (typeof value === 'string') {
+              normalised[key] = value;
+            }
+          }
+        }
         if (userIdRef.current === userId) {
           setDefaults(normalised);
         }
@@ -159,7 +168,28 @@ export function useUserDefaults(userId: string | undefined): UseUserDefaultsResu
       if (!userId) throw new Error('No signed-in user');
       setError(null);
       try {
-        await api.saveUserDefaults(userId, next);
+        // Read the current full blob, splice the string-defaults
+        // section, write back. Avoids stomping `presets` /
+        // `cable_defaults` (Phase B) when the Circuits page saves a
+        // flat-defaults edit.
+        let merged: Record<string, unknown> = { ...next };
+        try {
+          const existing = await api.userDefaults(userId);
+          if (existing && typeof existing === 'object' && !Array.isArray(existing)) {
+            // Preserve any non-string keys (presets, cable_defaults, etc.).
+            for (const [k, v] of Object.entries(existing)) {
+              if (typeof v !== 'string' && !(k in next)) {
+                merged[k] = v;
+              }
+            }
+          }
+        } catch {
+          // If the read fails, fall back to writing only the flat map
+          // — better than blocking the save. Phase B writers read+write
+          // their own keys directly, so this only matters for the
+          // legacy Circuits "Apply Defaults" path.
+        }
+        await api.saveUserDefaults(userId, merged);
         setDefaults(next);
         await writeCachedDefaults(userId, next);
       } catch (err) {

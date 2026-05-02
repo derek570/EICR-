@@ -913,28 +913,47 @@ export const api = {
   // ----------------------------------------------------------------
 
   /**
-   * Fetch user-scoped circuit-field defaults.
-   * `GET /api/settings/:userId/defaults` returns `{}` when nothing has
-   * been saved yet (backend returns the empty object rather than 404 so
-   * the page can render without a special-case branch). Values are the
-   * raw JSON the PUT wrote — no server-side merge with the schema, so
-   * the caller is responsible for combining with
-   * `packages/shared-utils/src/circuit-defaults-schema.ts` defaults if
-   * it wants the full effective map.
+   * Fetch the user defaults blob.
+   *
+   * Wire shape (extended for Phase B — Defaults full port 2026-05-03):
+   * ```
+   * {
+   *   // Phase 5 — flat circuit-field defaults applied via "Apply
+   *   // Defaults" on the Circuits tab. Top-level keys remain string
+   *   // values for backward compatibility with the existing reader.
+   *   ocpd_type: "B", ocpd_rating_a: "32", …
+   *
+   *   // Phase B — full preset library (mirrors iOS
+   *   // CertificateDefault[] persisted in GRDB) and cable-size table
+   *   // (CableDefault[]). Co-locating with the flat defaults keeps the
+   *   // S3 blob count to one per user.
+   *   presets: CertificateDefaultPreset[],
+   *   cable_defaults: CableDefault[],
+   * }
+   * ```
+   *
+   * Returns `{}` when nothing has been saved yet (backend returns the
+   * empty object rather than 404). The caller decides which keys to
+   * read; `Record<string, unknown>` keeps both the flat-defaults and
+   * the namespaced sub-objects type-safe at the call site.
    */
-  userDefaults(userId: string): Promise<Record<string, string>> {
-    return request<Record<string, string>>(`/api/settings/${encodeURIComponent(userId)}/defaults`);
+  userDefaults(userId: string): Promise<Record<string, unknown>> {
+    return request<Record<string, unknown>>(`/api/settings/${encodeURIComponent(userId)}/defaults`);
   },
 
   /**
-   * Replace user-scoped circuit-field defaults. Full-blob PUT (no
-   * server-side merge). Mirrors `updateInspectorProfiles` — the caller
-   * owns the merge, we just persist. Empty values are preserved so the
+   * Replace the user defaults blob. Full-blob PUT (no server-side
+   * merge). Mirrors `updateInspectorProfiles` — the caller owns the
+   * merge, we just persist. Empty values are preserved so the
    * inspector can deliberately clear a default by blanking the input.
+   *
+   * Phase B: signature relaxed to `Record<string, unknown>` so the
+   * Defaults manager can persist the namespaced `presets` /
+   * `cable_defaults` arrays alongside the flat field defaults.
    */
   saveUserDefaults(
     userId: string,
-    defaults: Record<string, string>
+    defaults: Record<string, unknown>
   ): Promise<{ success: boolean }> {
     return request(
       `/api/settings/${encodeURIComponent(userId)}/defaults`,
