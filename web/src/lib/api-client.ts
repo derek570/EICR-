@@ -292,6 +292,83 @@ export const api = {
   },
 
   /**
+   * Recording session lifecycle — iOS canon
+   * (CertMateUnified/Sources/ViewModels/DeepgramRecordingViewModel.swift).
+   * iOS opens a backend session at mic-on, posts CCU photos against it
+   * for debug-report capture, and closes the session on End. The PWA
+   * adopted the same lifecycle in Phase E (2026-05-03) so:
+   *
+   *   - both clients produce identical session rows in RDS
+   *   - debug-report (`GET /api/job/{userId}/{jobId}/debug`) works for
+   *     web-recorded jobs the same way as iOS-recorded jobs
+   *   - CCU photos captured during a recording are tied to the
+   *     session for forensic replay
+   *
+   * The PWA does NOT post audio chunks via the session — Deepgram +
+   * Sonnet WebSockets remain the data channel. The session endpoints
+   * are pure lifecycle markers.
+   */
+
+  /**
+   * Open a backend recording session. Returns a `sessionId` the
+   * client uses for subsequent /photo and /finish calls.
+   * `POST /api/recording/start` body: `{address?, jobId?}`.
+   */
+  recordingStart(payload: {
+    jobId?: string;
+    address?: string;
+  }): Promise<{ sessionId: string; jobId: string | null; message?: string }> {
+    return request<{ sessionId: string; jobId: string | null; message?: string }>(
+      '/api/recording/start',
+      { method: 'POST', body: JSON.stringify(payload) }
+    );
+  },
+
+  /**
+   * Attach a photo to the current recording session for the
+   * debug-report audit trail. Mirrors iOS DeepgramRecordingViewModel
+   * `submitPhoto`. Multipart field name "photo"; `audioSeconds` is
+   * the elapsed recording time in seconds when the photo was taken
+   * (drives the timeline marker in the debug viewer).
+   */
+  recordingPhoto(
+    sessionId: string,
+    photo: Blob,
+    audioSeconds: number
+  ): Promise<{ success: boolean }> {
+    const fd = new FormData();
+    fd.append('photo', photo);
+    fd.append('audioSeconds', String(audioSeconds));
+    return request<{ success: boolean }>(`/api/recording/${encodeURIComponent(sessionId)}/photo`, {
+      method: 'POST',
+      body: fd,
+    });
+  },
+
+  /**
+   * Close a backend recording session. iOS sends accumulated jobData
+   * here so the server can persist a Whisper-driven extraction; the
+   * PWA delivers extractions through the Sonnet WebSocket already, so
+   * the body is minimal — just the certificate type + address marker
+   * for the session row.
+   */
+  recordingFinish(
+    sessionId: string,
+    payload: {
+      address?: string;
+      certificateType?: string;
+    }
+  ): Promise<{ success: boolean; jobId?: string }> {
+    return request<{ success: boolean; jobId?: string }>(
+      `/api/recording/${encodeURIComponent(sessionId)}/finish`,
+      {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      }
+    );
+  },
+
+  /**
    * Analyse a consumer-unit photo via GPT Vision + optional RCD-type
    * web-search pass. Backend returns board metadata, main-switch +
    * SPD fields, a circuits array, and `questionsForInspector`. Single

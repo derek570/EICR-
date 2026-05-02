@@ -97,6 +97,13 @@ export type RecordingSnapshot = {
   pendingReadings: number;
   /** Error string when `state === 'error'`. */
   errorMessage: string | null;
+  /** Phase E — backend recording session id from POST /api/recording/start.
+   *  `null` until the backend responds (which it usually does <50ms after
+   *  start()). Consumers that want to attach photos via
+   *  `/api/recording/{sessionId}/photo` should fall back to plain
+   *  `/api/analyze-ccu` when this is null so a slow start endpoint
+   *  doesn't block CCU capture. */
+  backendSessionId: string | null;
 };
 
 export type RecordingActions = {
@@ -185,6 +192,15 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
   // Monotonic session id — used when requesting a scoped Deepgram token
   // and (Phase 4d) as the Sonnet extraction session id.
   const sessionIdRef = React.useRef<string>('');
+  // Phase E (2026-05-03) — backend recording session id, returned from
+  // POST /api/recording/start and used to:
+  //   (a) close the session on stop via /api/recording/{sessionId}/finish
+  //   (b) attach CCU photos via /api/recording/{sessionId}/photo so the
+  //       debug-report viewer sees them on the timeline
+  // Distinct from `sessionIdRef.current` which is purely client-side
+  // for cross-tap correlation. iOS uses one id (the backend's) for both.
+  const backendSessionIdRef = React.useRef<string | null>(null);
+  const [backendSessionId, setBackendSessionId] = React.useState<string | null>(null);
   const tickRef = React.useRef<ReturnType<typeof setInterval> | null>(null);
   // Throttle setMicLevel to ~60Hz — audio callbacks fire every ~8ms at
   // 16kHz/128 samples which is overkill for a VU meter and would flood
@@ -688,6 +704,32 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     // dead session — we bail and tear down the accidental resources.
     const sessionId = `sess_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
     sessionIdRef.current = sessionId;
+    // Phase E — open a backend recording session in parallel with the
+    // mic pipeline. Fire-and-forget: if the call fails (network blip,
+    // server hot-reload), recording continues without a backend
+    // session — debug-report won't capture the timeline but the
+    // Sonnet WS extraction is unaffected. Mirrors iOS, which logs and
+    // moves on if /recording/start 5xxs.
+    backendSessionIdRef.current = null;
+    setBackendSessionId(null);
+    void api
+      .recordingStart({
+        jobId: jobRef.current?.id,
+        address: jobRef.current?.address ?? undefined,
+      })
+      .then((resp) => {
+        // Late-arriving response from a session we've already torn
+        // down (rapid stop()) — drop it silently.
+        if (sessionIdRef.current !== sessionId) return;
+        backendSessionIdRef.current = resp.sessionId;
+        setBackendSessionId(resp.sessionId);
+      })
+      .catch((err) => {
+        if (sessionIdRef.current !== sessionId) return;
+        // Don't surface to the user — recording works without it.
+        // Log for the debug-report (collected on its own channel).
+        console.warn('[recording] /recording/start failed:', err);
+      });
     try {
       await beginMicPipeline();
       // sessionId rotated while awaiting the mic / WS handshake — drop
@@ -745,6 +787,23 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     // enough — any string-compare against a real sessionId will differ.
     if (statusRef.current === 'idle') return;
     sessionIdRef.current = '';
+    // Phase E — close the backend session asynchronously. Fire-and-
+    // forget so a slow finish() call doesn't block the UI rolling
+    // back to idle. iOS does the same. Snapshot the id BEFORE
+    // clearing so the request still goes out with the right path.
+    const finishingId = backendSessionIdRef.current;
+    backendSessionIdRef.current = null;
+    setBackendSessionId(null);
+    if (finishingId) {
+      void api
+        .recordingFinish(finishingId, {
+          address: jobRef.current?.address ?? undefined,
+          certificateType: jobRef.current?.certificate_type ?? undefined,
+        })
+        .catch((err) => {
+          console.warn('[recording] /recording/{id}/finish failed:', err);
+        });
+    }
     clearTick();
     teardownMic();
     teardownDeepgram();
@@ -869,6 +928,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
       processingCount,
       pendingReadings,
       errorMessage,
+      backendSessionId,
       start,
       stop,
       pause,
@@ -888,6 +948,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
       processingCount,
       pendingReadings,
       errorMessage,
+      backendSessionId,
       start,
       stop,
       pause,
