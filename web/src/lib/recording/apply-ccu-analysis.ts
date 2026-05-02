@@ -42,6 +42,18 @@ import type { CircuitMatch } from '@certmate/shared-utils';
  *  normalisation behaves identically across platforms. */
 const VALID_RCD_TYPES = new Set(['AC', 'A', 'B', 'F', 'S', 'A-S', 'B-S', 'B+']);
 
+/**
+ * Filter out the standalone-RCD schedule rows that the per-slot merger
+ * emits (2-module BS EN 61008-1 devices with `circuit_number: null`
+ * and `is_rcd_device: true`). They represent a device, not a numbered
+ * circuit — the BS EN they carry is already applied at the
+ * board-SPD/main-switch level. iOS does the same in
+ * `FuseboardAnalysis.circuitsForSchedule`.
+ */
+function circuitsForSchedule(circuits: CCUAnalysisCircuit[]): CCUAnalysisCircuit[] {
+  return circuits.filter((c) => c.is_rcd_device !== true && c.circuit_number != null);
+}
+
 /** Test-reading fields that, if populated on a matched-but-now-missing
  *  circuit, cause the row to be preserved at the end of the list
  *  instead of being dropped. Matches the iOS checklist. */
@@ -151,6 +163,11 @@ function buildBoardPatch(
   // `board_model` when the user hasn't supplied a separate display name.
   writeField('board_model', analysis.board_model);
   writeField('name', analysis.board_model);
+  // `board_technology` was added to the response 2026-04-22 (per-slot
+  // pipeline). Persist on the board so PDF / Defaults / circuit
+  // editors can branch on rewireable boards (BS 3036 fuses get
+  // different OCPD defaults to BS 60898 MCBs).
+  writeField('board_technology', analysis.board_technology);
 
   // Main switch.
   const switchCurrent = analysis.main_switch_current ?? analysis.main_switch_rating;
@@ -236,7 +253,7 @@ function buildCircuitsPatchNamesOnly(
   analysis: CCUAnalysis,
   boardId: string
 ): CircuitRow[] | null {
-  const incoming = analysis.circuits ?? [];
+  const incoming = circuitsForSchedule(analysis.circuits ?? []);
   if (incoming.length === 0) return null;
 
   const allCircuits = (job.circuits ?? []) as CircuitRow[];
@@ -301,7 +318,7 @@ function buildCircuitsPatchFullCapture(
   analysis: CCUAnalysis,
   boardId: string
 ): CircuitRow[] | null {
-  const incoming = analysis.circuits ?? [];
+  const incoming = circuitsForSchedule(analysis.circuits ?? []);
   if (incoming.length === 0) return null;
 
   const allCircuits = (job.circuits ?? []) as CircuitRow[];
@@ -481,7 +498,7 @@ function buildNewCircuit(analysed: CCUAnalysisCircuit, boardId: string): Circuit
  *  RCD-protected circuit whose type we couldn't resolve. iOS does
  *  this in FuseboardAnalysisApplier.swift. */
 function buildMissingRcdQuestions(analysis: CCUAnalysis): string[] {
-  const missing = (analysis.circuits ?? [])
+  const missing = circuitsForSchedule(analysis.circuits ?? [])
     .filter((c) => c.rcd_protected === true && !normaliseRcdType(c.rcd_type))
     .map((c) => String(c.circuit_number));
   if (missing.length === 0) return [];

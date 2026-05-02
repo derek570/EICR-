@@ -314,7 +314,9 @@ export interface InspectorInfo {
  * about, so unknown additions are inert until wired up.
  */
 export interface CCUAnalysisCircuit {
-  circuit_number: number;
+  /** Optional — the per-slot pipeline emits standalone-RCD schedule
+   *  rows with `circuit_number: null` and `is_rcd_device: true`. */
+  circuit_number?: number | null;
   label?: string | null;
   ocpd_type?: 'B' | 'C' | 'D' | null;
   ocpd_rating_a?: string | null;
@@ -325,11 +327,64 @@ export interface CCUAnalysisCircuit {
   rcd_type?: 'AC' | 'A' | 'B' | 'F' | 'S' | null;
   rcd_rating_ma?: string | null;
   rcd_bs_en?: string | null;
+  /** Set on standalone-RCD schedule rows so consumers can skip them. */
+  is_rcd_device?: boolean;
+}
+
+/** Slot bbox in original-photo pixel coordinates. */
+export interface CCUSlotBBox {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+/**
+ * Per-slot classification from the Stage 3 crop-and-classify pipeline
+ * (backend `src/extraction/ccu-geometric*.js`). Populated when the
+ * per-slot primary path succeeds. The Stage 4 label-pass adds
+ * `label`/`labelRaw`/`labelConfidence` when it succeeds.
+ */
+export interface CCUSlot {
+  slotIndex: number;
+  /** mcb | rcbo | rcd | rewireable | cartridge | blank | empty | unknown | main_switch | spd */
+  classification?: string | null;
+  manufacturer?: string | null;
+  model?: string | null;
+  ratingAmps?: number | null;
+  poles?: number | null;
+  tripCurve?: string | null;
+  sensitivity?: number | null;
+  rcdWaveformType?: string | null;
+  bsEn?: string | null;
+  /** Rewireable/cartridge only — BS 3036 colour code. */
+  bodyColour?: string | null;
+  confidence?: number | null;
+  bbox?: CCUSlotBBox | null;
+  crop?: { bbox?: CCUSlotBBox | null; base64?: string | null } | null;
+  /** Stage 4 label-pass output. */
+  label?: string | null;
+  labelRaw?: string | null;
+  labelConfidence?: number | null;
 }
 
 export interface CCUAnalysis {
   board_manufacturer?: string | null;
   board_model?: string | null;
+  /** Overcurrent-protection technology classifier — drives downstream
+   *  defaults (rewireable boards have no kA breaking capacity, no RCD
+   *  protection unless explicitly fitted, BS EN 3036 instead of 60898). */
+  board_technology?: 'modern' | 'rewireable_fuse' | 'cartridge_fuse' | 'mixed' | null;
+  /** Set when the board-model classifier overrides a VLM-issued
+   *  rewireable / cartridge classification because the model string
+   *  matches a known modern series. Telemetry only. */
+  technology_override?: {
+    appliedBy?: string;
+    fromVlm?: string;
+    toTechnology?: string;
+    series?: string;
+    matchedPattern?: string;
+  } | null;
   main_switch_rating?: string | null;
   main_switch_bs_en?: string | null;
   main_switch_type?: string | null;
@@ -346,6 +401,10 @@ export interface CCUAnalysis {
   spd_rated_current?: string | null;
   spd_type_supply?: string | null;
   circuits?: CCUAnalysisCircuit[];
+  /** Per-slot classifications from the Stage 3 pipeline. */
+  slots?: CCUSlot[] | null;
+  /** "geometric-merged" | "single-shot" | "classifier-only". */
+  extraction_source?: string | null;
   questionsForInspector?: string[];
   confidence?: {
     overall?: number;

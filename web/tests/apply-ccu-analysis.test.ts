@@ -112,3 +112,128 @@ describe('applyCcuAnalysisToJob — P0-3 multi-board scoping', () => {
     expect(row.spd_type).toBe('Type 2');
   });
 });
+
+/**
+ * 2026-05-03 regression — per-slot pipeline contract (backend 2026-04-22+).
+ *
+ * The /api/analyze-ccu response gained `slots[]`, `extraction_source`,
+ * `board_technology`, and standalone-RCD schedule rows
+ * (`circuit_number: null` + `is_rcd_device: true`). iOS decodes them in
+ * Sources/Models/FuseboardAnalysis.swift; the PWA's Zod schema was
+ * `.passthrough()`-permissive but the apply helper was unaware. Two
+ * concrete bugs that motivated this test:
+ *
+ *   1. A standalone-RCD row with `circuit_number: null` was reaching
+ *      `String(analysed.circuit_number)` → 'null', which then created a
+ *      ghost circuit row labelled "circuit null" the inspector had to
+ *      delete by hand. iOS filters via `circuitsForSchedule`.
+ *   2. `board_technology` was being dropped on the floor — a rewireable
+ *      board's UI continued to default to BS 60898 MCB OCPDs because
+ *      nothing branched on the technology marker.
+ */
+describe('applyCcuAnalysisToJob — per-slot pipeline contract', () => {
+  it('filters out standalone-RCD schedule rows (is_rcd_device + circuit_number=null)', () => {
+    const job = makeJob([{ id: 'b1', designation: 'DB1' }]);
+    const analysis: CCUAnalysis = {
+      board_manufacturer: 'Hager',
+      board_model: 'VML',
+      board_technology: 'modern',
+      circuits: [
+        { circuit_number: 1, label: 'Lights', ocpd_type: 'B', ocpd_rating_a: '6' },
+        // Standalone RCD — must be skipped, not turned into a ghost row.
+        {
+          circuit_number: null,
+          label: 'RCD 30mA',
+          rcd_type: 'A',
+          rcd_rating_ma: '30',
+          is_rcd_device: true,
+        },
+        { circuit_number: 2, label: 'Sockets', ocpd_type: 'B', ocpd_rating_a: '32' },
+      ],
+    };
+
+    const result = applyCcuAnalysisToJob(job, analysis, { targetBoardId: 'b1' });
+    const circuits = result.patch.circuits as Array<Record<string, unknown>>;
+
+    expect(circuits).toHaveLength(2);
+    expect(circuits.map((c) => c.circuit_ref)).toEqual(['1', '2']);
+    // Verify no row labelled "RCD 30mA" leaked through with circuit_ref 'null'.
+    expect(circuits.find((c) => c.circuit_ref === 'null')).toBeUndefined();
+    expect(circuits.find((c) => c.circuit_designation === 'RCD 30mA')).toBeUndefined();
+  });
+
+  it('persists board_technology onto the patched board so downstream defaults can branch', () => {
+    const job = makeJob([{ id: 'b1', designation: 'DB1' }]);
+    const analysis: CCUAnalysis = {
+      board_manufacturer: 'Wylex',
+      board_model: 'Standard',
+      board_technology: 'rewireable_fuse',
+      circuits: [],
+    };
+
+    const result = applyCcuAnalysisToJob(job, analysis, { targetBoardId: 'b1' });
+    const patchedBoards = result.patch.boards as Array<Record<string, unknown>>;
+    expect(patchedBoards[0].board_technology).toBe('rewireable_fuse');
+  });
+
+  it('decodes a realistic per-slot response (slots, extraction_source, technology) without throwing', () => {
+    const job = makeJob([]);
+    // Shape mirrors a real prod response (extracted from
+    // ccu-3of3-2026-04-30-23-25/wylex-count16-truth16.jpg). We don't
+    // assert on slots[] directly — they're carried through `.passthrough()`
+    // and only consumed by future per-slot UI. Test ensures the merge
+    // pipeline doesn't choke on the extra keys.
+    const analysis: CCUAnalysis = {
+      board_manufacturer: 'Wylex',
+      board_model: 'NH10',
+      board_technology: 'modern',
+      extraction_source: 'geometric-merged',
+      main_switch_position: 'right',
+      main_switch_current: '100A',
+      spd_present: false,
+      slots: [
+        {
+          slotIndex: 0,
+          classification: 'main_switch',
+          ratingAmps: 100,
+          confidence: 0.92,
+          bbox: { x: 100, y: 200, w: 60, h: 80 },
+        },
+        {
+          slotIndex: 1,
+          classification: 'rcbo',
+          ratingAmps: 32,
+          rcdWaveformType: 'A',
+          sensitivity: 30,
+          bsEn: '61009-1',
+          confidence: 0.86,
+          label: 'Sockets',
+          labelConfidence: 0.78,
+        },
+      ],
+      circuits: [
+        {
+          circuit_number: 1,
+          label: 'Sockets',
+          ocpd_type: 'B',
+          ocpd_rating_a: '32',
+          is_rcbo: true,
+          rcd_protected: true,
+          rcd_type: 'A',
+          rcd_rating_ma: '30',
+        },
+      ],
+    };
+
+    const result = applyCcuAnalysisToJob(job, analysis);
+    expect(result.patch.boards).toBeDefined();
+    expect(result.patch.circuits).toHaveLength(1);
+    // The raw analysis (slots and all) is persisted under
+    // ccu_analysis_by_board for the audit trail / future per-slot UI.
+    const byBoard = result.patch.ccu_analysis_by_board as Record<string, Record<string, unknown>>;
+    const stored = Object.values(byBoard)[0];
+    expect(stored.slots).toBeDefined();
+    expect(stored.extraction_source).toBe('geometric-merged');
+    expect(stored.board_technology).toBe('modern');
+  });
+});
