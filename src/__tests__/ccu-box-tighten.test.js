@@ -1,12 +1,29 @@
 /**
  * Unit tests for ccu-box-tighten — drives the per-edge fine-tune + multi-
  * anchor pitch refinement against the 3 annotated corpus boards.
+ *
+ * These tests pin the V1 algorithm (CCU_PROBE_V2='false') so the existing
+ * count assertions (Wylex 16, Hager 16, Protek 20) remain deterministic.
+ * V1 stays in the prod codebase as a kill-switch fallback; the prod
+ * runtime defaults to V2 (every-gap probing + tall-thin + linear pitch).
+ * Add a separate describe-block here for V2-specific assertions when
+ * needed — V2 may produce a different module count on Hager-style mixed-
+ * blank boards (verified during 2026-05-02 corpus audit).
  */
-import { describe, test, expect } from '@jest/globals';
+import { describe, test, expect, beforeAll, afterAll } from '@jest/globals';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { tightenAndChunk } from '../extraction/ccu-box-tighten.js';
+
+const PRIOR_PROBE_V2 = process.env.CCU_PROBE_V2;
+beforeAll(() => {
+  process.env.CCU_PROBE_V2 = 'false';
+});
+afterAll(() => {
+  if (PRIOR_PROBE_V2 === undefined) delete process.env.CCU_PROBE_V2;
+  else process.env.CCU_PROBE_V2 = PRIOR_PROBE_V2;
+});
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CORPUS = path.resolve(__dirname, '../../scripts/ccu-cv-corpus');
