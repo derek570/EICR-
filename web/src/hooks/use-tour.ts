@@ -9,6 +9,15 @@ import {
   type TourState,
 } from '@/lib/tour/state';
 import { DASHBOARD_TOUR_STEPS, DASHBOARD_TOUR_TOTAL, type TourStep } from '@/lib/tour/steps';
+import { speak as speakNarration, isTtsAvailable, cancelSpeech } from '@/lib/recording/tts';
+
+/**
+ * Inter-step delay matching iOS `TourManager.interStepDelay`. The
+ * narration finishes; we wait this long; then auto-advance. Gives the
+ * inspector time to look at the highlighted area before the next
+ * spotlight moves.
+ */
+const INTER_STEP_DELAY_MS = 2_500;
 
 /**
  * Guided-tour controller (Phase 3).
@@ -47,6 +56,23 @@ export interface UseTourOptions {
   autoStartOnFirstRun?: boolean;
   /** Override the step list. Defaults to the dashboard tour. */
   steps?: readonly TourStep[];
+  /**
+   * If true (Phase D), each step's `narration` text is spoken via
+   * Web Speech API SpeechSynthesis when the step becomes active.
+   * Auto-advance fires once the speech finishes + `INTER_STEP_DELAY_MS`.
+   * Falls back gracefully when SpeechSynthesis isn't available
+   * (advance is timer-driven from a body-length estimate).
+   *
+   * The voice-feedback toggle (shared with the recording bar's
+   * Voice button) gates this — if the inspector has muted the bot,
+   * narration stays silent but auto-advance still runs.
+   */
+  narrate?: boolean;
+  /**
+   * Persisted state key. Default `'dashboard'`. Job-detail tour uses
+   * `'job'` so seen/disabled flags don't bleed across surfaces.
+   */
+  stateKey?: 'dashboard' | 'job';
 }
 
 export interface TourController {
@@ -81,7 +107,12 @@ const DEFAULT_TOUR_STATE: TourState = {
 };
 
 export function useTour(options: UseTourOptions = {}): TourController {
-  const { autoStartOnFirstRun = false, steps = DASHBOARD_TOUR_STEPS } = options;
+  const {
+    autoStartOnFirstRun = false,
+    steps = DASHBOARD_TOUR_STEPS,
+    narrate = false,
+    stateKey = 'dashboard',
+  } = options;
 
   const [persisted, setPersisted] = React.useState<TourState>(DEFAULT_TOUR_STATE);
   const [active, setActive] = React.useState(false);
@@ -99,10 +130,50 @@ export function useTour(options: UseTourOptions = {}): TourController {
     autoStartRef.current = autoStartOnFirstRun;
   }, [autoStartOnFirstRun]);
 
+  // For the job-detail tour, use localStorage instead of the shared
+  // IDB store (the IDB store is the dashboard's single-key blob — we
+  // don't want job-tour seen/disabled flags to bleed into it).
+  const isJob = stateKey === 'job';
+  const localKey = `cm-tour-${stateKey}`; // cm-tour-dashboard | cm-tour-job
+
+  const readPersisted = React.useCallback(async (): Promise<TourState> => {
+    if (!isJob) return readTourState();
+    if (typeof window === 'undefined') return DEFAULT_TOUR_STATE;
+    try {
+      const raw = window.localStorage.getItem(localKey);
+      if (!raw) return DEFAULT_TOUR_STATE;
+      const parsed = JSON.parse(raw);
+      return {
+        seen: Boolean(parsed?.seen),
+        disabled: Boolean(parsed?.disabled),
+      };
+    } catch {
+      return DEFAULT_TOUR_STATE;
+    }
+  }, [isJob, localKey]);
+
+  const writePersisted = React.useCallback(
+    async (patch: Partial<TourState>) => {
+      if (!isJob) {
+        await updateTourState(patch);
+        return;
+      }
+      if (typeof window === 'undefined') return;
+      const current = await readPersisted();
+      const next = { ...current, ...patch };
+      try {
+        window.localStorage.setItem(localKey, JSON.stringify(next));
+      } catch {
+        // Ignore quota errors — worst case the tour offers itself again.
+      }
+    },
+    [isJob, localKey, readPersisted]
+  );
+
   // Hydrate from IDB + subscribe to cross-tab flag changes.
   React.useEffect(() => {
     let cancelled = false;
-    void readTourState().then((s) => {
+    void readPersisted().then((s) => {
       if (cancelled) return;
       setPersisted(s);
       setHydrated(true);
@@ -111,28 +182,90 @@ export function useTour(options: UseTourOptions = {}): TourController {
         // doesn't double-trigger. Intentional fire-and-forget: the
         // worst case on IDB failure is the tour auto-starts once
         // more next session — harmless.
-        void updateTourState({ seen: true });
+        void writePersisted({ seen: true });
         setActive(true);
         setStepIndex(0);
         setPaused(false);
       }
     });
-    const unsub = subscribeTourChanges(() => {
-      void readTourState().then((s) => {
-        if (cancelled) return;
-        setPersisted(s);
-      });
-    });
+    // Only subscribe to cross-tab updates for the dashboard
+    // (IDB-backed) tour. The job-tour's localStorage updates fire
+    // a 'storage' event in other tabs but we don't currently care —
+    // the job-tour mounts per-job so cross-tab sync isn't a feature.
+    const unsub = !isJob
+      ? subscribeTourChanges(() => {
+          void readPersisted().then((s) => {
+            if (cancelled) return;
+            setPersisted(s);
+          });
+        })
+      : () => {};
     return () => {
       cancelled = true;
       unsub();
     };
-  }, []);
+  }, [readPersisted, writePersisted, isJob]);
 
   const currentStep = React.useMemo<TourStep | null>(() => {
     if (!active) return null;
     return steps[stepIndex] ?? null;
   }, [active, stepIndex, steps]);
+
+  // Phase D — TTS narration + auto-advance. Speaks the active step's
+  // narration via Web Speech API, then schedules the next step
+  // INTER_STEP_DELAY_MS after the speech ends. Pause cancels both.
+  // Falls back to a body-length-estimate timer when SpeechSynthesis
+  // isn't available (jsdom tests, embedded browsers).
+  const advanceTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const clearAdvance = React.useCallback(() => {
+    if (advanceTimerRef.current) {
+      clearTimeout(advanceTimerRef.current);
+      advanceTimerRef.current = null;
+    }
+  }, []);
+  React.useEffect(() => {
+    // Stop narration + cancel pending advance whenever the active /
+    // paused / step changes. The new effect body re-arms based on the
+    // current step.
+    cancelSpeech();
+    clearAdvance();
+    if (!narrate || !active || paused || !currentStep) return;
+    const text = currentStep.narration ?? currentStep.body;
+    if (!text) return;
+
+    const onSpeechDone = () => {
+      // Re-check inside the timer that the tour is still on this
+      // step before auto-advancing — paused / nexted / stopped during
+      // speech all need to short-circuit.
+      advanceTimerRef.current = setTimeout(() => {
+        if (!active || paused) return;
+        setStepIndex((i) => {
+          if (i + 1 >= steps.length) {
+            // Last step finished — auto-stop without flipping disabled.
+            setActive(false);
+            setPaused(false);
+            void writePersisted({ disabled: false, seen: true });
+            return 0;
+          }
+          return i + 1;
+        });
+      }, INTER_STEP_DELAY_MS);
+    };
+
+    if (isTtsAvailable()) {
+      speakNarration(text, { force: true, onEnd: onSpeechDone });
+    } else {
+      // Estimate read time: ~14 chars/sec. Cap at 14s so a
+      // verbose step doesn't keep the user waiting forever.
+      const estMs = Math.min(14_000, Math.max(2_500, text.length * 70));
+      advanceTimerRef.current = setTimeout(onSpeechDone, estMs);
+    }
+
+    return () => {
+      cancelSpeech();
+      clearAdvance();
+    };
+  }, [narrate, active, paused, currentStep, steps.length, writePersisted, clearAdvance]);
 
   const start = React.useCallback(() => {
     setStepIndex(0);
@@ -141,19 +274,23 @@ export function useTour(options: UseTourOptions = {}): TourController {
     // A manual start also clears `disabled` so the same surface can
     // auto-launch next time (parity with the iOS "re-enable tour"
     // behaviour off the settings page).
-    void updateTourState({ disabled: false, seen: true });
-  }, []);
+    void writePersisted({ disabled: false, seen: true });
+  }, [writePersisted]);
 
   const stop = React.useCallback(() => {
+    cancelSpeech();
+    clearAdvance();
     setActive(false);
     setPaused(false);
     // Flip disabled on an explicit stop; the user has opted out
     // until they manually re-enable. seen stays true — no need to
     // reset that.
-    void updateTourState({ disabled: true, seen: true });
-  }, []);
+    void writePersisted({ disabled: true, seen: true });
+  }, [writePersisted, clearAdvance]);
 
   const next = React.useCallback(() => {
+    cancelSpeech();
+    clearAdvance();
     setStepIndex((i) => {
       if (i + 1 >= steps.length) {
         // Auto-stop on completion — NOT via `stop()` because the
@@ -162,24 +299,34 @@ export function useTour(options: UseTourOptions = {}): TourController {
         // the flag.
         setActive(false);
         setPaused(false);
-        void updateTourState({ disabled: false, seen: true });
+        void writePersisted({ disabled: false, seen: true });
         return 0;
       }
       return i + 1;
     });
-  }, [steps.length]);
+  }, [steps.length, writePersisted, clearAdvance]);
 
   const prev = React.useCallback(() => {
+    cancelSpeech();
+    clearAdvance();
     setStepIndex((i) => Math.max(0, i - 1));
-  }, []);
+  }, [clearAdvance]);
 
-  const pause = React.useCallback(() => setPaused(true), []);
+  const pause = React.useCallback(() => {
+    cancelSpeech();
+    clearAdvance();
+    setPaused(true);
+  }, [clearAdvance]);
   const resume = React.useCallback(() => setPaused(false), []);
 
   const reset = React.useCallback(async () => {
-    await resetTourState();
+    if (!isJob) {
+      await resetTourState();
+    } else if (typeof window !== 'undefined') {
+      window.localStorage.removeItem(localKey);
+    }
     setPersisted(DEFAULT_TOUR_STATE);
-  }, []);
+  }, [isJob, localKey]);
 
   return {
     active,

@@ -2,10 +2,11 @@
 
 import * as React from 'react';
 import { useRouter } from 'next/navigation';
-import { ArrowLeft, Info } from 'lucide-react';
+import { ArrowLeft, Compass, Info } from 'lucide-react';
 import { HeroHeader } from '@/components/ui/hero-header';
 import { SectionCard } from '@/components/ui/section-card';
 import { Button } from '@/components/ui/button';
+import { resetTourState } from '@/lib/tour/state';
 
 /**
  * About page — iOS `SettingsHubView.swift` Version row + the
@@ -125,6 +126,32 @@ export default function AboutPage() {
             validation.
           </li>
         </ul>
+      </SectionCard>
+
+      <SectionCard
+        accent="blue"
+        title="Guided tour"
+        subtitle="Replay the introductory walk-through. Mirrors the iOS Tour toggle on the dashboard."
+      >
+        <div className="flex flex-col gap-2">
+          <Button
+            variant="secondary"
+            onClick={async () => {
+              await resetTourState();
+              if (typeof window !== 'undefined') {
+                window.localStorage.removeItem('cm-tour-job');
+              }
+              router.push('/dashboard');
+            }}
+            className="gap-2"
+          >
+            <Compass className="h-4 w-4" aria-hidden />
+            Replay tour
+          </Button>
+          <p className="text-[12px] text-[var(--color-text-secondary)]">
+            Resets the &quot;seen&quot; flag for both the dashboard and job-detail tours.
+          </p>
+        </div>
       </SectionCard>
 
       <SectionCard

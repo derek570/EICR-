@@ -189,7 +189,10 @@ export default function DashboardPage() {
   // Phase 3 — guided tour controller. Auto-starts on first visit, and
   // the "Start tour" tile below hands off to `tour.start()` so the
   // same state machine runs whether the tour is auto or manual.
-  const tour = useTour({ autoStartOnFirstRun: true });
+  // Phase D — narrate=true enables Web Speech API narration on each
+  // step plus auto-advance once the speech ends. iOS canon: the
+  // dashboard tour is fully narrated (TourManager.dashboardSteps).
+  const tour = useTour({ autoStartOnFirstRun: true, narrate: true });
 
   return (
     <main

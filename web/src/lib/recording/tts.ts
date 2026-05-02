@@ -118,12 +118,24 @@ function pickVoice(): SpeechSynthesisVoice | null {
  * one-shot preview when the user first taps the Voice toggle ON so they
  * get audible feedback that it's working.
  */
-export function speak(text: string, options?: { force?: boolean; lang?: string }): void {
+export function speak(
+  text: string,
+  options?: { force?: boolean; lang?: string; onEnd?: () => void }
+): void {
   if (!isTtsAvailable()) return;
   const enabled = options?.force ? true : getVoiceFeedbackEnabled();
-  if (!enabled) return;
+  if (!enabled) {
+    // If muted but the caller specifically wants the end callback (the
+    // tour controller drives auto-advance off it), fire immediately so
+    // the tour doesn't stall on a muted device.
+    options?.onEnd?.();
+    return;
+  }
   const trimmed = text?.trim();
-  if (!trimmed) return;
+  if (!trimmed) {
+    options?.onEnd?.();
+    return;
+  }
   try {
     // Cancel whatever is speaking — keeps the speech current rather than
     // letting it backlog stale confirmations behind fresh ones.
@@ -135,9 +147,17 @@ export function speak(text: string, options?: { force?: boolean; lang?: string }
     utterance.volume = 1.0;
     const voice = pickVoice();
     if (voice) utterance.voice = voice;
+    if (options?.onEnd) {
+      utterance.onend = () => options.onEnd?.();
+      // Some browsers fire `onerror` instead of `onend` on cancel; the
+      // tour controller calls cancelSpeech() on every step change so a
+      // missing end-event would stall auto-advance. `onerror` fallback.
+      utterance.onerror = () => options.onEnd?.();
+    }
     window.speechSynthesis.speak(utterance);
   } catch {
     // Swallow — TTS failures should never interrupt recording.
+    options?.onEnd?.();
   }
 }
 
