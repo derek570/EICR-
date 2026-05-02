@@ -653,6 +653,215 @@ describe('engine — IR bare-value capture at entry (session C3963EA1)', () => {
   });
 });
 
+describe('engine — IR pause-on-second-miss for resume hook (session C3963EA1)', () => {
+  test('second-miss with ambiguous_bare_value pauses (does NOT clear)', () => {
+    const ws = new FakeWS();
+    // No "cooker" circuit exists yet — the field-test repro.
+    const session = buildSession({ 1: { circuit_designation: 'Upstairs Sockets' } });
+
+    // Turn 1: entry with bare 299, no circuit. Engine asks "which circuit?".
+    processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'Insulation resistance for the cooker is 299 milligrams.',
+      now: 1000,
+    });
+    expect(session.dialogueScriptState.ambiguous_bare_value).toEqual({
+      value: '299',
+      source: 'megaohm',
+    });
+
+    // Turn 2: user answers "bigger circuit" — unresolvable, retry fires.
+    processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'bigger circuit.',
+      now: 2000,
+    });
+    expect(session.dialogueScriptState.circuit_retry_attempted).toBe(true);
+    expect(session.dialogueScriptState.active).toBe(true);
+
+    // Turn 3: second miss "cooker circuit" — under old behaviour state
+    // would be cleared and 299 lost. New behaviour pauses the script
+    // with the bare value preserved for the resume hook.
+    const out = processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'cooker circuit',
+      now: 3000,
+    });
+    expect(out).toEqual({ handled: true, fallthrough: true, transcriptText: 'cooker circuit' });
+    expect(session.dialogueScriptState).toMatchObject({
+      active: false,
+      paused: true,
+      paused_designation_hint: 'cooker circuit',
+      paused_at: 3000,
+      ambiguous_bare_value: { value: '299', source: 'megaohm' },
+      schemaName: 'insulation_resistance',
+    });
+  });
+
+  test('second-miss with NO resumable context falls through and clears (existing behaviour)', () => {
+    const ws = new FakeWS();
+    // No bare value in entry, no named values either — script is just
+    // empty waiting for the inspector to name a circuit.
+    const session = buildSession({ 1: { circuit_designation: 'Upstairs Sockets' } });
+    processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      // Trigger only — no bare value, no L-L/L-E tag.
+      transcriptText: 'Insulation resistance.',
+      now: 1000,
+    });
+    expect(session.dialogueScriptState.ambiguous_bare_value).toBeNull();
+    expect(session.dialogueScriptState.pending_writes).toEqual([]);
+
+    processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'bigger circuit.',
+      now: 2000,
+    });
+    const out = processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'cooker circuit',
+      now: 3000,
+    });
+    // Existing fallthrough behaviour preserved when there's nothing to resume.
+    expect(out).toEqual({ handled: true, fallthrough: true, transcriptText: 'cooker circuit' });
+    expect(session.dialogueScriptState).toBeNull();
+  });
+
+  test('paused state survives a non-IR turn (engine returns handled:false)', () => {
+    const ws = new FakeWS();
+    const session = buildSession({});
+    processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'Insulation resistance for the cooker is 299 megaohms.',
+      now: 1000,
+    });
+    processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'something unresolvable',
+      now: 2000,
+    });
+    processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'something else unresolvable',
+      now: 3000,
+    });
+    // Now paused. A subsequent off-topic utterance must NOT enter the
+    // active path (active=false) and must not clear the paused state.
+    const out = processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'random off-topic chatter.',
+      now: 4000,
+    });
+    expect(out).toEqual({ handled: false });
+    expect(session.dialogueScriptState).toMatchObject({
+      paused: true,
+      ambiguous_bare_value: { value: '299', source: 'megaohm' },
+    });
+  });
+
+  test('paused state cleared after hardTimeoutMs sweep', () => {
+    const ws = new FakeWS();
+    const session = buildSession({});
+    processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'Insulation resistance for the cooker is 299 megaohms.',
+      now: 1000,
+    });
+    processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'something unresolvable',
+      now: 2000,
+    });
+    processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'something else unresolvable',
+      now: 3000,
+    });
+    expect(session.dialogueScriptState.paused).toBe(true);
+
+    // IR schema hardTimeoutMs is 180_000. Wait past that.
+    const out = processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'unrelated text long after the pause.',
+      now: 3000 + 180_001,
+    });
+    expect(out).toEqual({ handled: false });
+    expect(session.dialogueScriptState).toBeNull();
+  });
+
+  test('fresh IR utterance after pause overwrites paused state with new entry', () => {
+    const ws = new FakeWS();
+    const session = buildSession({ 5: { circuit_designation: 'Lights' } });
+    // Pause with bare 299 for an unresolvable cooker.
+    processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'Insulation resistance for the cooker is 299 megaohms.',
+      now: 1000,
+    });
+    processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'unresolvable 1',
+      now: 2000,
+    });
+    processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'unresolvable 2',
+      now: 3000,
+    });
+    expect(session.dialogueScriptState.paused).toBe(true);
+
+    // Inspector pivots to a different circuit — fresh IR entry overwrites
+    // the paused state. (Old paused state is implicitly abandoned.)
+    processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'Insulation resistance for circuit 5.',
+      now: 4000,
+    });
+    expect(session.dialogueScriptState).toMatchObject({
+      active: true,
+      paused: false,
+      circuit_ref: 5,
+      ambiguous_bare_value: null,
+    });
+  });
+});
+
 describe('engine — Deepgram garble tolerance (2026-04-30)', () => {
   test('"Bring continuity for upstairs sockets" enters ring (session 2801896A)', () => {
     const ws = new FakeWS();

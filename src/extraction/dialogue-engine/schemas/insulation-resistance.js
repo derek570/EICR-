@@ -118,6 +118,14 @@ export const insulationResistanceSchema = {
   // circuit didn't exist when 299 was spoken).
   bareEntryParser: parseBareMegaohmsWithUnit,
   bareEntrySource: 'megaohm',
+  // Opt in to the engine's pause-and-resume path. When the user names
+  // a circuit that doesn't exist yet ("Insulation resistance for the
+  // cooker..."), the engine pauses the IR script after the second
+  // unresolvable answer (instead of clearing) and a stage6 dispatcher
+  // hook resumes it once Sonnet creates a matching circuit. Ring
+  // continuity does NOT opt in — Silvertown repro tests guard the
+  // existing clear-and-fallthrough behaviour there.
+  resumeAfterCircuitCreation: true,
   cancelMessage: ({ filled, total }) =>
     `Insulation resistance cancelled. ${filled} of ${total} saved.`,
   cancelMessageEmpty: 'Insulation resistance cancelled.',

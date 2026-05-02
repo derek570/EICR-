@@ -64,6 +64,25 @@ export function processDialogueTurn(ctx) {
 
   const state = session.dialogueScriptState;
 
+  // Paused-state hard-timeout sweep — paused scripts (active=false)
+  // sit waiting for the resume hook to wake them after Sonnet creates
+  // a matching circuit. If too much time has passed, the inspector
+  // has clearly moved on and any later matching create_circuit (e.g.
+  // an unrelated kitchen circuit) shouldn't accidentally resume the
+  // stale IR session. Reuse the schema's hardTimeoutMs so the
+  // tolerance matches the active-path sweep.
+  if (state && state.paused && !state.active) {
+    const schema = schemas.find((s) => s.name === state.schemaName);
+    if (schema && now - (state.paused_at ?? 0) > schema.hardTimeoutMs) {
+      logger?.info?.(`${schema.logEventPrefix}_paused_hard_timeout`, {
+        sessionId,
+        ms_since_paused: now - (state.paused_at ?? 0),
+        ambiguous_bare_value: state.ambiguous_bare_value?.value ?? null,
+      });
+      clearScriptState(session);
+    }
+  }
+
   // Active path: one script is in progress; only its handlers run.
   if (state?.active) {
     const schema = schemas.find((s) => s.name === state.schemaName);
@@ -209,6 +228,16 @@ function initScriptState(session, schema, circuit_ref, now) {
     // bareEntryParser populates this in runEntry; the resume path asks a
     // disambiguation question before draining it into the right slot.
     ambiguous_bare_value: null,
+    // Pause/resume markers — set by the second-miss fallthrough when
+    // there's preserved context worth waking up later (ambiguous bare
+    // value or queued pending_writes). `paused: true` + `active: false`
+    // means the engine's entry-detection treats this as no-script-active
+    // (so a fresh utterance can start a new script) but the resume hook
+    // (post-Sonnet-turn, on create_circuit) can find this state and
+    // re-enter the script with the new circuit_ref bound.
+    paused: false,
+    paused_designation_hint: null,
+    paused_at: null,
   };
 }
 
@@ -566,9 +595,56 @@ function runActivePath({
         return { handled: true, fallthrough: false };
       }
 
-      // Second miss: original behaviour. Discard pending_writes and
-      // fall through to Sonnet. The `retry_attempted: true` field on
-      // the log row distinguishes this from a first-turn fallthrough.
+      // Second miss: fall through to Sonnet. Two behaviours:
+      //
+      // (a) Pause-and-preserve — when the schema opts in via
+      //     `resumeAfterCircuitCreation: true` AND there's context
+      //     worth resuming later (an ambiguous bare value from entry
+      //     or queued pending_writes from named extractors). The
+      //     resume hook (post-Sonnet-turn, in stage6 dispatcher)
+      //     checks paused state on every create_circuit /
+      //     rename_circuit and re-enters the script with the new
+      //     circuit_ref bound when designation matches. `active:
+      //     false` so the engine's entry-detection treats this as
+      //     inactive — a brand-new utterance can still start fresh.
+      //
+      // (b) Existing behaviour — clear state and fall through. Used
+      //     for schemas that haven't opted in (e.g. ring continuity —
+      //     Silvertown repro deliberately discards on second miss),
+      //     or when there's nothing meaningful to resume. The
+      //     `retry_attempted: true` log field distinguishes this from
+      //     a first-turn fallthrough either way.
+      //
+      // The pause path was added 2026-05-02 after field session
+      // C3963EA1 (cooker circuit). Inspector said "Insulation
+      // resistance for the cooker is 299 milligrams" before the cooker
+      // circuit existed. Clear-and-fall-through silently discarded the
+      // 299. With pause-and-preserve, Sonnet handles circuit creation
+      // and the IR script picks back up with circuit_ref=2 and
+      // ambiguous_bare_value still in state, ready for the L-L vs L-E
+      // disambiguation step.
+      const hasResumableContext =
+        state.ambiguous_bare_value !== null ||
+        (Array.isArray(state.pending_writes) && state.pending_writes.length > 0);
+
+      if (schema.resumeAfterCircuitCreation === true && hasResumableContext) {
+        state.active = false;
+        state.paused = true;
+        state.paused_designation_hint = text.trim().slice(0, 60);
+        state.paused_at = now;
+        logger?.info?.(`${schema.logEventPrefix}_paused_for_sonnet`, {
+          sessionId,
+          textPreview: text.slice(0, 80),
+          paused_designation_hint: state.paused_designation_hint,
+          ambiguous_bare_value: state.ambiguous_bare_value?.value ?? null,
+          preserved_pending_writes: Array.isArray(state.pending_writes)
+            ? state.pending_writes.map((w) => w.field)
+            : [],
+          retry_attempted: true,
+        });
+        return { handled: true, fallthrough: true, transcriptText };
+      }
+
       logger?.info?.(`${schema.logEventPrefix}_unresolvable_circuit`, {
         sessionId,
         textPreview: text.slice(0, 80),
