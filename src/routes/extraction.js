@@ -409,26 +409,108 @@ export function applyBsEnFallback(analysis) {
   return analysis;
 }
 
+// Confidence threshold for the secondary "uniform low-confidence" trigger
+// in lookupMissingRcdTypes. The waveform glyph (BS EN 61008/61009 Type
+// AC/A/F/B symbol) on the device face is sub-millimetre — much smaller
+// than rating/curve text. The VLM frequently reports a value with mediocre
+// confidence rather than honouring the prompt's "null if unclear" rule.
+// 0.85 was picked from the 2026-05-02 Crabtree field case where every
+// slot read "AC" at 0.65–0.92 (avg 0.79) and the ground truth was Type A.
+export const RCD_WAVEFORM_VERIFY_CONFIDENCE_THRESHOLD = 0.85;
+
 /**
- * Web search pass for missing RCD types.
- * For circuits where GPT Vision couldn't determine the RCD type from the
- * waveform symbol or its training data, use gpt-5-search-api to look up
- * the manufacturer datasheet and determine the correct type.
- * Only fires when there are circuits with null rcd_type but known model info.
+ * Compute the average per-slot confidence over the slots that actually
+ * carry an RCD waveform reading (RCBOs and standalone RCDs with a
+ * non-null rcdWaveformType). Returns null when there aren't enough
+ * RCD-bearing slots to make uniformity a meaningful signal.
  */
-async function lookupMissingRcdTypes(analysis, openai, logger, userId) {
+function summariseRcdWaveformReads(slots) {
+  if (!Array.isArray(slots)) return null;
+  const rcdSlots = slots.filter(
+    (s) =>
+      s && (s.classification === 'rcbo' || s.classification === 'rcd') && s.rcdWaveformType != null
+  );
+  if (rcdSlots.length < 2) return null;
+  const values = rcdSlots.map((s) => s.rcdWaveformType);
+  const uniqueValues = new Set(values);
+  const avgConfidence =
+    rcdSlots.reduce((a, s) => a + (typeof s.confidence === 'number' ? s.confidence : 0), 0) /
+    rcdSlots.length;
+  return {
+    count: rcdSlots.length,
+    uniqueValues,
+    uniformValue: uniqueValues.size === 1 ? values[0] : null,
+    avgConfidence,
+  };
+}
+
+/**
+ * Web search pass to fill / verify RCD types.
+ *
+ * Two triggers, both routed through the same gpt-5-search-api lookup:
+ *
+ * 1. `missing` — original behaviour. Stage 3 returned null `rcdWaveformType`
+ *    on at least one RCD-protected circuit (waveform symbol genuinely
+ *    illegible). The search fills nulls.
+ *
+ * 2. `uniform_low_conf` — secondary verification trigger. Stage 3 returned
+ *    the SAME rcdWaveformType on every RCD-bearing slot AND the average
+ *    per-slot confidence was below RCD_WAVEFORM_VERIFY_CONFIDENCE_THRESHOLD.
+ *    This is the signature of a fleet-wide VLM default rather than 11
+ *    confident reads — the glyph is sub-millimetre and the model tends to
+ *    fall back to "AC" rather than null. The search verifies against the
+ *    datasheet and OVERRIDES the suspect uniform value if the verified
+ *    type differs.
+ *
+ * Both require a known board manufacturer (the search is keyed on it).
+ */
+export async function lookupMissingRcdTypes(analysis, openai, logger, userId) {
   const circuits = analysis.circuits || [];
   const manufacturer = analysis.board_manufacturer;
+  const slots = Array.isArray(analysis.slots) ? analysis.slots : [];
 
-  // Collect circuits needing RCD type lookup — must have a model/manufacturer
-  // and be RCD-protected (RCBO or behind an RCD) but missing the type
-  const needsLookup = circuits.filter((c) => c.rcd_protected && !c.rcd_type && manufacturer);
+  // Manufacturer is required for either trigger — without it the search
+  // has nothing to key on.
+  if (!manufacturer) {
+    logger.info('RCD type lookup skipped — no manufacturer', {
+      userId,
+      totalCircuits: circuits.length,
+      rcdProtectedCount: circuits.filter((c) => c.rcd_protected).length,
+    });
+    return analysis;
+  }
 
-  if (needsLookup.length === 0) {
+  // Primary trigger: any RCD-protected circuit with null rcd_type.
+  const missingType = circuits.filter((c) => c.rcd_protected && !c.rcd_type);
+
+  // Secondary trigger: detect the "Stage 3 defaulted to a single value
+  // across the whole board with mediocre confidence" signature. We compute
+  // this regardless of whether the primary trigger fired — useful in the
+  // log output for both branches and as a fallback when no nulls remain.
+  const summary = summariseRcdWaveformReads(slots);
+  const isUniformLowConf =
+    summary != null &&
+    summary.uniformValue != null &&
+    summary.avgConfidence < RCD_WAVEFORM_VERIFY_CONFIDENCE_THRESHOLD;
+
+  let trigger;
+  let needsLookup;
+  if (missingType.length > 0) {
+    trigger = 'missing';
+    needsLookup = missingType;
+  } else if (isUniformLowConf) {
+    trigger = 'uniform_low_conf';
+    // Verify ALL RCD-protected circuits — they all share the same suspect
+    // uniform value, so any override applies to the whole fleet.
+    needsLookup = circuits.filter((c) => c.rcd_protected);
+  } else {
     logger.info('RCD type lookup skipped — all RCD-protected circuits already have types', {
       userId,
       totalCircuits: circuits.length,
       rcdProtectedCount: circuits.filter((c) => c.rcd_protected).length,
+      rcdSlotCount: summary?.count ?? 0,
+      avgConfidence: summary ? Number(summary.avgConfidence.toFixed(3)) : null,
+      uniformValue: summary?.uniformValue ?? null,
     });
     return analysis;
   }
@@ -447,9 +529,17 @@ async function lookupMissingRcdTypes(analysis, openai, logger, userId) {
   // Also check if there's a standalone RCD protecting these circuits
   const hasStandaloneRcd = needsLookup.some((c) => !c.is_rcbo && c.rcd_protected);
 
+  // When the secondary trigger fires we tell the search what Stage 3 read
+  // and how confident it was — gives the search a concrete claim to verify
+  // rather than a blank-slate query.
+  const verificationContext =
+    trigger === 'uniform_low_conf' && summary
+      ? `\nThe vision model read Type ${summary.uniformValue} on all ${summary.count} RCD devices but with low confidence (avg ${summary.avgConfidence.toFixed(2)}) — the BS EN 61008/61009 waveform glyph on the device face was likely too small to read reliably. Please verify against the manufacturer's published spec; if the published type is different, reply with the published type.`
+      : '';
+
   const searchPrompt = `I have a UK consumer unit: ${manufacturer} ${boardModel}.
 It contains ${needsLookup.length} RCD-protected circuits where I need to determine the RCD type.
-${hasStandaloneRcd ? 'Some circuits are protected by a standalone RCD/RCCB in the board.' : 'The circuits use RCBOs (combined MCB+RCD).'}
+${hasStandaloneRcd ? 'Some circuits are protected by a standalone RCD/RCCB in the board.' : 'The circuits use RCBOs (combined MCB+RCD).'}${verificationContext}
 
 Circuits needing RCD type: ${deviceDescriptions.join(', ')}.
 
@@ -465,6 +555,9 @@ If you cannot determine the type, reply: {"rcd_type": null, "source": "not found
       manufacturer,
       boardModel,
       circuitsNeedingLookup: needsLookup.length,
+      trigger,
+      stage3UniformValue: summary?.uniformValue ?? null,
+      stage3AvgConfidence: summary ? Number(summary.avgConfidence.toFixed(3)) : null,
       deviceDescriptions,
     });
 
@@ -494,31 +587,46 @@ If you cannot determine the type, reply: {"rcd_type": null, "source": "not found
     const rcdType = searchResult.rcd_type?.toUpperCase()?.trim();
 
     if (rcdType && validTypes.includes(rcdType)) {
-      // Apply the looked-up type to all circuits that need it
+      let filled = 0;
+      let overridden = 0;
       for (const c of needsLookup) {
         if (!c.rcd_type) {
           c.rcd_type = rcdType;
+          filled += 1;
+        } else if (trigger === 'uniform_low_conf' && c.rcd_type !== rcdType) {
+          // Override the suspect uniform Stage 3 read with the verified
+          // datasheet value. Only happens on the secondary trigger — the
+          // primary `missing` trigger preserves existing reads.
+          c.rcd_type = rcdType;
+          overridden += 1;
         }
       }
       logger.info('RCD type web search found type', {
         userId,
         rcdType,
         source: searchResult.source || 'unknown',
+        trigger,
+        filled,
+        overridden,
+        previousValue: trigger === 'uniform_low_conf' ? (summary?.uniformValue ?? null) : null,
       });
     }
 
-    // Count how many we filled
-    const filled = needsLookup.filter((c) => c.rcd_type).length;
+    // Count how many ended up with the looked-up type — for the primary
+    // trigger this matches "filled" above; for uniform_low_conf it matches
+    // "overridden" plus any pre-existing-equal circuits.
+    const totalWithType = needsLookup.filter((c) => c.rcd_type).length;
     logger.info('RCD type web search applied', {
       userId,
-      filled,
+      trigger,
+      filled: totalWithType,
       total: needsLookup.length,
     });
 
     // Prune stale questionsForInspector — GPT adds RCD type questions BEFORE
     // this web search pass runs. If we resolved those types, the questions are
     // now stale and would cause unnecessary TTS interruptions on the iOS app.
-    if (filled > 0 && Array.isArray(analysis.questionsForInspector)) {
+    if (totalWithType > 0 && Array.isArray(analysis.questionsForInspector)) {
       const before = analysis.questionsForInspector.length;
       const stillMissing = circuits.filter((c) => c.rcd_protected && !c.rcd_type);
       if (stillMissing.length === 0) {
@@ -538,9 +646,10 @@ If you cannot determine the type, reply: {"rcd_type": null, "source": "not found
       }
     }
   } catch (err) {
-    // Non-fatal — log and continue with null rcd_types
+    // Non-fatal — log and continue with whatever rcd_types Stage 3 produced
     logger.warn('RCD type web search failed (non-fatal)', {
       userId,
+      trigger,
       error: err.message,
     });
   }
