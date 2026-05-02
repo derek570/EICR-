@@ -571,15 +571,24 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       expect(window).toEqual(expect.stringContaining('record_observation'));
     });
 
-    test('Test F — total prompt token estimate ≤ 4700 (regression lock for new section)', () => {
-      // Group 1 already asserts this — re-assert here so a regression
-      // inside the CONFIDENTIALITY section (e.g., verbose rewrite)
-      // fires under the Group 9 banner instead of Group 1, making the
-      // root cause obvious in the test output.
-      // Cap relaxed from 4000 to 4400 on 2026-04-28, then to 4500 on
-      // 2026-05-01 (am), then to 4700 on 2026-05-01 (pm) — see Group 1.
+    test('Test F — base markdown token estimate ≤ 5000 (regression lock for CONFIDENTIALITY section bloat)', () => {
+      // Group 1 asserts the COMBINED (base + schedule) cap. This test is
+      // narrower — it locks the BASE markdown alone so verbose growth in
+      // the CONFIDENTIALITY section (which has historically been the most
+      // edit-prone block) fires under Group 9's banner.
+      //
+      // Cap history (base markdown alone):
+      //   - 4000 (Phase 4 Plan 04-01).
+      //   - 4400 (2026-04-28: silent-drop fix structural rules).
+      //   - 4500 (2026-05-01 am: start_dialogue_script garble example).
+      //   - 4700 (2026-05-01 pm: BPG4 pipeline restoration with 8
+      //     schedule_item example mappings).
+      //   - 5000 (2026-05-02: schedule_item example mappings stripped
+      //     from inline prompt and the BPG4 quick-reference replaced
+      //     with criteria-style framing — net +~100 tokens. New cap
+      //     allows ~125-token headroom for future criteria refinements).
       const estimate = Math.ceil(prompt.length / 4);
-      expect(estimate).toBeLessThanOrEqual(4700);
+      expect(estimate).toBeLessThanOrEqual(5000);
     });
   });
 
