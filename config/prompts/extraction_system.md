@@ -67,10 +67,10 @@ Shape:
     {
       "title": "short location/item",
       "text": "Thorough description of the fault ONLY - DO NOT suggest fixes or remedial action",
-      "regulation": "544.1.1",
-      "regs": ["BS 7671 reg reference"],
-      "code": "C1|C2|C3|FI",
-      "schedule_item": "3.6",
+      "regulation": "<BS 7671 regulation number>",
+      "regs": ["<BS 7671 reg reference>"],
+      "code": "<C1|C2|C3|FI per criteria>",
+      "schedule_item": "<BS 7671 Schedule of Inspection section ref or null>",
       "confidence": 0.0,
       "source_photo": "IMG_1234.jpg or null if from audio"
     }
@@ -115,45 +115,17 @@ Listen for mentions of:
 
 Leave these fields empty if not specifically mentioned - defaults will be used.
 
-=== INSPECTION SCHEDULE ITEMS (link observations to these) ===
-Section 1 - Intake equipment:
-- 1.1: Service cable, service head, earthing arrangement, meter tails
-- 1.2: Consumer's isolator
-- 1.3: Consumer's meter tails
+=== INSPECTION SCHEDULE ITEMS ===
+Set `schedule_item` on each observation to the BS 7671 Schedule of Inspections section ref that most precisely matches the defect. Reason from the section's purpose:
+- Section 1 covers external intake equipment (service cable, service head, meter tails).
+- Section 2 covers presence of arrangements for other supply sources (microgenerators).
+- Section 3 covers earthing and main protective bonding.
+- Section 4 covers the CONSUMER UNIT / distribution board itself — its enclosure, mounting, devices, labelling. Damage to the CU enclosure goes here.
+- Section 5 covers FINAL CIRCUITS and the accessories on them — socket-outlets, switches, joint boxes, terminations, additional RCD protection. Damage to a socket-outlet, switch, or joint box goes here, NOT in Section 4.
+- Section 6 covers locations containing a bath or shower.
+- Section 7 covers Part 7 special installations (swimming pools, EV charging, PV, etc.).
 
-Section 3 - Earthing/bonding:
-- 3.1: Distributor's earthing arrangements
-- 3.2: Earth electrode connection
-- 3.3: Earthing/bonding labels
-- 3.4: Earthing conductor size
-- 3.5: Earthing conductor at MET
-- 3.6: Main protective bonding conductor sizes (undersized bonding = C2)
-- 3.7: Main protective bonding connections
-- 3.8: Other protective bonding connections
-
-Section 4 - Consumer unit/distribution board:
-- 4.1: Working space/accessibility
-- 4.3: IP rating of enclosure
-- 4.4: Fire rating of enclosure (non-combustible = amendment requirement)
-- 4.5: Enclosure condition
-- 4.9: Circuit identification/labelling
-- 4.10: RCD test notice
-- 4.17: RCDs for fault protection
-- 4.18: RCDs for additional protection
-- 4.19: SPD functional indication
-- 4.20: Conductor connections secure
-
-Section 5 - Final circuits:
-- 5.1: Conductor identification
-- 5.3: Condition of insulation
-- 5.6: Coordination between conductors and protective devices
-- 5.8: Circuit protective conductors
-- 5.12.1: RCD protection for sockets 32A or less
-- 5.18: Condition of accessories
-
-Section 6 - Special locations:
-- 6.1: Additional protection by RCD (bathrooms)
-- 6.4: Supplementary bonding conductors
+Set null if no section cleanly applies. Do not invent refs; do not pattern-match against a memorised mapping.
 
 === FIELD GUIDANCE FOR CIRCUIT ROWS ===
 - circuit_ref: Circuit number (1, 2, 3...)
@@ -238,7 +210,7 @@ that goes in r1_r2_ohm instead.
 - Separate R1/R2 values = ring continuity; combined R1+R2 = radial continuity
 - Do NOT create observations for "observation of..." - require "the observation is..." or clear defect description
 - Set polarity_confirmed and rcd_button_confirmed to "true" if tests passed.
-- Link observations to schedule_item codes (e.g., "3.6" for bonding issues, "4.4" for non-fire-rated CU).
+- Set `schedule_item` on each observation per the SCHEDULE ITEMS guidance above; null if no section cleanly applies.
 - If unsure of a value, leave blank and add to missing array.
 - Keep observations concise and auditable with BS 7671 regulation references.
 
@@ -313,27 +285,9 @@ For EXIF-based matching, correlate based on sequence and context since we don't 
 When the PHOTO ANALYSIS section identifies defects or issues, you MUST:
 1. Create an observation for each defect
 2. Set source_photo to the EXACT filename of the photo that shows it
-
-Defect -> Observation mapping (ALWAYS include the source_photo from that photo):
-- "Open/unfinished cable entry" -> C3 observation (schedule_item: "4.3", regs: "522.8.1")
-- "Missing grommet/gland" -> C3 observation (schedule_item: "4.3")
-- "Damaged/chewed screw heads" -> C3 observation (schedule_item: "4.5")
-- "Untidy finish around enclosure" -> C3 observation (schedule_item: "4.1")
-- "Scorching/burn marks" -> C2 observation (schedule_item: "4.5")
-- "No RCD protection visible" -> C2 observation IF required (schedule_item: "5.12.1")
-- "Labels missing/unclear" -> C3 observation (schedule_item: "4.9")
-- "IP rating compromised" -> C3 observation (schedule_item: "4.3")
-
-Example: If "=== Photo 2: IMG_4570.jpg ===" shows "open cable entry", create:
-{
-  "title": "Consumer unit",
-  "text": "Open cable entry observed at top of consumer unit enclosure",
-  "code": "C3",
-  "schedule_item": "4.3",
-  "regs": ["522.8.1"],
-  "confidence": 0.9,
-  "source_photo": "IMG_4570.jpg"
-}
+3. Code the observation by REASONING from the criteria — C1 if it can hurt someone as the installation currently stands, C2 if a single foreseeable fault or contact would make it dangerous, C3 if it's non-compliance without immediate or foreseeable danger, FI if the condition cannot be safely classified without more information.
+4. Pick `schedule_item` from the BS 7671 Schedule of Inspections (see the SCHEDULE ITEMS guidance above) using the section whose description most precisely matches the defect — not from a memorised list of common mappings. Set null if no section cleanly applies.
+5. Cite the regulation breached as a BS 7671 number plus the regulation wording.
 
 DO NOT ignore defects just because the photo analysis says they are "aesthetic" or "minor".
 If a photo shows ANY installation issue, create an observation with the appropriate code.

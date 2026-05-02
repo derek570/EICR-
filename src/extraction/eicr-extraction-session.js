@@ -795,16 +795,25 @@ export class EICRExtractionSession {
    * constructor — do not invoke at runtime (Research §Pitfall 4). Accepts an
    * explicit override (constructor options) that supersedes the env var; both
    * channels share the same validation + fallback behaviour.
+   *
+   * Default flipped from 'off' → 'live' on 2026-05-02. The off path is the
+   * STR-01 rollback to the legacy free-text-JSON extraction; production has
+   * run on 'live' since the Stage 6 cutover (~2026-04-21) and no field test
+   * has needed the rollback for ~2 weeks. Defaulting new processes to 'live'
+   * means an environment that forgets to set SONNET_TOOL_CALLS gets the
+   * production behaviour rather than silently falling back to a path that's
+   * no longer being maintained. The off path stays available — set
+   * SONNET_TOOL_CALLS=off explicitly if rollback is needed.
    */
   _resolveToolCallsMode(override) {
-    const raw = override ?? process.env.SONNET_TOOL_CALLS ?? 'off';
+    const raw = override ?? process.env.SONNET_TOOL_CALLS ?? 'live';
     if (raw === 'off' || raw === 'shadow' || raw === 'live') return raw;
     logger.warn('stage6.invalid_tool_calls_mode', {
       value: raw,
-      fallback: 'off',
+      fallback: 'live',
       sessionId: this.sessionId,
     });
-    return 'off';
+    return 'live';
   }
 
   /**

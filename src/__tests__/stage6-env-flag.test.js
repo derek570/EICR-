@@ -38,9 +38,7 @@ jest.unstable_mockModule('../logger.js', () => ({
   },
 }));
 
-const { EICRExtractionSession } = await import(
-  '../extraction/eicr-extraction-session.js'
-);
+const { EICRExtractionSession } = await import('../extraction/eicr-extraction-session.js');
 
 const ORIG_ENV = process.env.SONNET_TOOL_CALLS;
 
@@ -59,10 +57,10 @@ describe('Stage 6 env-flag plumbing (STR-01)', () => {
     }
   });
 
-  it('defaults to "off" when no env var and no options are provided', () => {
+  it('defaults to "live" when no env var and no options are provided (2026-05-02 — was "off" before the rollback path was retired as the default)', () => {
     delete process.env.SONNET_TOOL_CALLS;
     const s = new EICRExtractionSession('fake-key', 'sess-default', 'eicr');
-    expect(s.toolCallsMode).toBe('off');
+    expect(s.toolCallsMode).toBe('live');
     expect(mockWarn).not.toHaveBeenCalled();
   });
 
@@ -88,58 +86,54 @@ describe('Stage 6 env-flag plumbing (STR-01)', () => {
     expect(s.toolCallsMode).toBe('live');
   });
 
-  it('falls back to "off" and logs a warn for invalid env values', () => {
+  it('falls back to "live" and logs a warn for invalid env values (2026-05-02 — fallback flipped from "off")', () => {
     process.env.SONNET_TOOL_CALLS = 'garbage';
     const s = new EICRExtractionSession('fake-key', 'sess-invalid-env', 'eicr');
-    expect(s.toolCallsMode).toBe('off');
+    expect(s.toolCallsMode).toBe('live');
     expect(mockWarn).toHaveBeenCalledTimes(1);
     expect(mockWarn).toHaveBeenCalledWith(
       'stage6.invalid_tool_calls_mode',
-      expect.objectContaining({ value: 'garbage', fallback: 'off' })
+      expect.objectContaining({ value: 'garbage', fallback: 'live' })
     );
   });
 
-  it('falls back to "off" and logs a warn for invalid option override values', () => {
+  it('falls back to "live" and logs a warn for invalid option override values', () => {
     delete process.env.SONNET_TOOL_CALLS;
     const s = new EICRExtractionSession('fake-key', 'sess-invalid-opt', 'eicr', {
       toolCallsMode: 'nonsense',
     });
-    expect(s.toolCallsMode).toBe('off');
+    expect(s.toolCallsMode).toBe('live');
     expect(mockWarn).toHaveBeenCalledTimes(1);
     expect(mockWarn).toHaveBeenCalledWith(
       'stage6.invalid_tool_calls_mode',
-      expect.objectContaining({ value: 'nonsense', fallback: 'off' })
+      expect.objectContaining({ value: 'nonsense', fallback: 'live' })
     );
   });
 
   it('env mutation AFTER construction does NOT change session.toolCallsMode (Pitfall 4)', () => {
     delete process.env.SONNET_TOOL_CALLS;
     const s = new EICRExtractionSession('fake-key', 'sess-latched', 'eicr');
-    expect(s.toolCallsMode).toBe('off');
+    expect(s.toolCallsMode).toBe('live');
 
     // Mutate env post-construction — flag must NOT drift.
-    process.env.SONNET_TOOL_CALLS = 'live';
-    expect(s.toolCallsMode).toBe('off');
+    process.env.SONNET_TOOL_CALLS = 'off';
+    expect(s.toolCallsMode).toBe('live');
   });
 
   it('existing 3-arg construction still works (backward compatibility)', () => {
     delete process.env.SONNET_TOOL_CALLS;
-    expect(
-      () => new EICRExtractionSession('fake-key', 'sess-3arg', 'eicr')
-    ).not.toThrow();
+    expect(() => new EICRExtractionSession('fake-key', 'sess-3arg', 'eicr')).not.toThrow();
     const s = new EICRExtractionSession('fake-key', 'sess-3arg', 'eicr');
-    expect(s.toolCallsMode).toBe('off');
+    expect(s.toolCallsMode).toBe('live');
     expect(s.sessionId).toBe('sess-3arg');
     expect(s.certType).toBe('eicr');
   });
 
   it('existing 2-arg construction (as used by test suite) still works', () => {
     delete process.env.SONNET_TOOL_CALLS;
-    expect(
-      () => new EICRExtractionSession('fake-key', 'sess-2arg')
-    ).not.toThrow();
+    expect(() => new EICRExtractionSession('fake-key', 'sess-2arg')).not.toThrow();
     const s = new EICRExtractionSession('fake-key', 'sess-2arg');
-    expect(s.toolCallsMode).toBe('off');
+    expect(s.toolCallsMode).toBe('live');
     expect(s.certType).toBe('eicr'); // default
   });
 });

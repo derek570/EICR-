@@ -21,8 +21,8 @@ Board: name, location, manufacturer, phases, earthing_arrangement, ze, zs_at_db,
 Installation: client_name, address, postcode, premises_description, date_of_inspection (DD/MM/YYYY), date_of_previous_inspection (DD/MM/YYYY), next_inspection_years, extent, agreed_limitations, agreed_with, operational_limitations
 Supply: earthing_arrangement, live_conductors, nominal_voltage_u, nominal_frequency, prospective_fault_current, earth_loop_impedance_ze, spd_type_supply, spd_rated_current, bonding_conductor_csa, earthing_conductor_csa, main_switch_conductor_csa
 Observations: code(C1/C2/C3/FI), item_location, observation_text, schedule_item, regulation
-Rewrite observation_text in professional BS7671 language. Include the regulation reference breached (e.g. "544.1.1"). Set schedule_item to the inspection schedule section (e.g. "5.4" for bonding, "4.4" for enclosure fire rating).
-Observations must always have a code (C1/C2/C3/FI — default C2 if unsure) and schedule_item (BS7671 section number — e.g. "5.4" for bonding, "4.4" for enclosures, "4.9" for labelling). Never leave code or schedule_item empty.
+Rewrite observation_text in professional BS7671 language. Include the regulation reference breached. Set schedule_item to the BS7671 Schedule of Inspections section ref that most precisely matches the defect; null if no section cleanly applies.
+For code: pick C1/C2/C3/FI by REASONING about the specific defect — C1 if it can hurt someone as the installation currently stands, C2 if a single foreseeable fault or contact would make it dangerous, C3 if it's non-compliance without immediate or foreseeable danger, FI if the condition cannot be safely classified without more information. Do not default to a fixed code when uncertain — pick the criterion that fits.
 
 === BONDING & EARTHING SIZE EXTRACTION ===
 Listen for these phrases and extract to supply_characteristics:

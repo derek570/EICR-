@@ -161,12 +161,14 @@ function consumeLegacyQuestionsForUser(entry) {
  *
  * @returns {'off' | 'shadow' | 'live'} The effective toolCallsMode
  *   given the current value of process.env.SONNET_TOOL_CALLS. Defaults
- *   'off' when unset or invalid.
+ *   'live' when unset or invalid (was 'off' until 2026-05-02 — see the
+ *   matching change in EICRExtractionSession._resolveToolCallsMode for
+ *   the rationale).
  */
 function resolveEffectiveToolCallsMode() {
-  const raw = process.env.SONNET_TOOL_CALLS ?? 'off';
+  const raw = process.env.SONNET_TOOL_CALLS ?? 'live';
   if (raw === 'off' || raw === 'shadow' || raw === 'live') return raw;
-  return 'off';
+  return 'live';
 }
 
 /**

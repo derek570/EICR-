@@ -128,32 +128,56 @@ describe('EICRExtractionSession', () => {
       expect(msg).toContain('zs');
     });
 
-    test('should include circuit schedule on first call', () => {
-      session.circuitSchedule = 'Circuit 1: Lights';
-      const msg = session.buildUserMessage('test');
+    // The next four tests assert the OFF-mode buildUserMessage shape —
+    // schedule + already-asked-questions + already-created-observations
+    // are inlined in each user message. In shadow/live (the production
+    // default since 2026-05-02) those rides happen via the cached prefix
+    // (buildSystemBlocks / buildStateSnapshotMessage), so the user
+    // message stays minimal. Keeping these tests pinned to off-mode
+    // locks the rollback path's wire shape — they convert into deletion
+    // candidates only when the off-mode infrastructure itself is
+    // removed.
+    test('should include circuit schedule on first call (off-mode)', () => {
+      const offSession = new EICRExtractionSession('test-api-key', 'test-off-schedule', 'eicr', {
+        toolCallsMode: 'off',
+      });
+      offSession.circuitSchedule = 'Circuit 1: Lights';
+      const msg = offSession.buildUserMessage('test');
       expect(msg).toContain('CIRCUIT SCHEDULE');
       expect(msg).toContain('Circuit 1: Lights');
     });
 
-    test('should not include circuit schedule on second call', () => {
-      session.circuitSchedule = 'Circuit 1: Lights';
-      session.buildUserMessage('first');
-      const msg = session.buildUserMessage('second');
+    test('should not include circuit schedule on second call (off-mode)', () => {
+      const offSession = new EICRExtractionSession(
+        'test-api-key',
+        'test-off-schedule-second',
+        'eicr',
+        { toolCallsMode: 'off' }
+      );
+      offSession.circuitSchedule = 'Circuit 1: Lights';
+      offSession.buildUserMessage('first');
+      const msg = offSession.buildUserMessage('second');
       expect(msg).not.toContain('CIRCUIT SCHEDULE');
     });
 
-    test('should include already-asked questions', () => {
-      session.askedQuestions = ['zs:1', 'r1_plus_r2:2'];
-      const msg = session.buildUserMessage('test');
+    test('should include already-asked questions (off-mode)', () => {
+      const offSession = new EICRExtractionSession('test-api-key', 'test-off-asked', 'eicr', {
+        toolCallsMode: 'off',
+      });
+      offSession.askedQuestions = ['zs:1', 'r1_plus_r2:2'];
+      const msg = offSession.buildUserMessage('test');
       expect(msg).toContain('Already asked (skip)');
       expect(msg).toContain('zs:1');
     });
 
-    test('should include already-created observations', () => {
-      session.extractedObservations = [
+    test('should include already-created observations (off-mode)', () => {
+      const offSession = new EICRExtractionSession('test-api-key', 'test-off-obs', 'eicr', {
+        toolCallsMode: 'off',
+      });
+      offSession.extractedObservations = [
         { id: 'test-id', text: 'missing earth bond at kitchen', code: 'C2' },
       ];
-      const msg = session.buildUserMessage('test');
+      const msg = offSession.buildUserMessage('test');
       expect(msg).toContain('Observations already created');
       expect(msg).toContain('missing earth bond');
     });

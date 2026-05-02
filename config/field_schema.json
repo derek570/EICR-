@@ -833,7 +833,7 @@
       "C3": "Improvement recommended",
       "LIM": "Limitation - unable to inspect"
     },
-    "_ai_guidance": "The inspection schedule is a checklist of BS7671 items. Each item gets an outcome. Link observations to specific schedule items using the schedule_item field. Common items to flag: 3.6 (bonding size), 4.4 (fire-rated CU), 4.9 (circuit labelling), 5.12.1 (RCD protection for sockets)."
+    "_ai_guidance": "The inspection schedule is a checklist of BS 7671 items. Each item gets an outcome. Link observations to the schedule item whose description most precisely matches the defect via the schedule_item field; refer to the BS 7671 Schedule of Inspections list rather than memorised mappings."
   },
 
   "observation_fields": {

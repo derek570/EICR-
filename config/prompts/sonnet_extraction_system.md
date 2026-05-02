@@ -485,13 +485,7 @@ HANDLING NC AND MYTH OBSERVATIONS:
 - If an observation matches an NC Only entry: Extract it with code "NC" and set suppress_from_report: true. Add a validation_alert with type "nc_only", severity "info", message explaining it is a non-conformity that does not require a code on the EICR.
 - If the electrician insists on coding an NC or Myth item, extract it as stated but add a validation_alert noting the BPG4 guidance.
 
-SCHEDULE ITEM: Map to the EICR inspection schedule section using this reference:
-  1.x - External intake equipment (service cable, earthing arrangement, meter tails)
-  3.x - Earthing/bonding (3.1 distributor earthing, 3.2 electrode, 3.3 labels, 3.4-3.5 earthing conductor, 3.6-3.8 bonding)
-  4.x - Consumer unit/distribution board (4.1 access, 4.2 fixing, 4.3 IP rating, 4.4 fire rating, 4.5 damage, 4.6-4.7 main switch, 4.8 MCB/RCD operation, 4.9 labelling, 4.10 RCD notice, 4.13 devices, 4.15-4.16 cable entry, 4.17-4.18 RCDs, 4.19 SPD, 4.20 connections)
-  5.x - Final circuits (5.1 conductor ID, 5.2 cable support, 5.3 insulation, 5.5-5.7 cable sizing/protection, 5.8 CPCs, 5.12 RCD additional protection, 5.17 terminations, 5.18 accessories)
-  6.x - Bath/shower locations (6.1 RCD, 6.4 supplementary bonding, 6.5 socket distance, 6.6-6.8 IP rating/zones)
-  7.x - Special installations (swimming pools, EV charging, PV, etc.)
+SCHEDULE ITEM: Set `schedule_item` to the BS 7671 Schedule of Inspection section ref that most precisely matches the defect. Reason from the section's purpose, not from a memorised list of common mappings — Section 4 covers the consumer unit / distribution board itself (its enclosure, mounting, devices), Section 5 covers final circuits and the accessories on them (socket-outlets, switches, joint boxes, terminations), Section 6 covers bath/shower locations, Section 7 covers Part 7 special installations. If no section cleanly applies, set null.
 
 - item_location: Where in the property (e.g., "Kitchen", "First floor landing", "Consumer unit"). Extract if mentioned, otherwise null.
 
@@ -588,7 +582,7 @@ Return ONLY valid JSON in this format. Omit any top-level array that would be em
     { "circuit": <int>, "field": "<str>" }
   ],
   "observations": [
-    { "code": "<C1|C2|C3|FI|NC>", "observation_text": "<professional description>", "item_location": "<location or null>", "schedule_item": "<e.g. 4.4 or null>", "regulation": "<e.g. Reg 411.3.3 — Compliance with the requirements for automatic disconnection of supply>", "bpg4_basis": "<why this code, referencing BPG4 entry if matched, or null>", "suppress_from_report": false }
+    { "code": "<C1|C2|C3|FI|NC per criteria>", "observation_text": "<professional description>", "item_location": "<location or null>", "schedule_item": "<BS 7671 Schedule of Inspection section ref or null>", "regulation": "<BS 7671 regulation number + wording>", "bpg4_basis": "<why this code, referencing BPG4 entry if matched, or null>", "suppress_from_report": false }
   ],
   "observation_deletes": [
     { "match_text": "<partial text from the observation to delete>" }
