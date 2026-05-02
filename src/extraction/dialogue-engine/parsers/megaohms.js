@@ -65,3 +65,35 @@ export function parseMegaohms(text) {
  */
 export const MEGAOHMS_VALUE_GROUP =
   '>\\s*\\d+(?:\\.\\d+)?|>\\s*\\.\\d+|greater\\s+(?:than|then)\\s+\\d+(?:\\.\\d+)?|greater\\s+(?:than|then)\\s+\\.\\d+|more\\s+than\\s+\\d+(?:\\.\\d+)?|more\\s+than\\s+\\.\\d+|over\\s+\\d+(?:\\.\\d+)?|above\\s+\\d+(?:\\.\\d+)?|infinite|infinity|off\\s*scale|out\\s*of\\s*range|o\\s*l|max(?:ed)?(?:\\s+out)?|\\d*\\.?\\d+';
+
+/**
+ * Match a bare megaohms value at IR script entry — a number or sentinel
+ * followed by a megaohm-unit suffix. The unit requirement is what
+ * prevents false positives on circuit numbers ("Insulation resistance
+ * for circuit 5" must NOT be parsed as 5 MΩ).
+ *
+ * Recognised units (loose to tolerate Deepgram garble):
+ *   - megaohms / megaohm / mega ohm / mega-ohm / mega ohms
+ *   - milligrams / milli grams / millies — Deepgram's most common
+ *     mishearing of "megaohms" in the field (session C3963EA1 was
+ *     "299 milligrams" meaning 299 MΩ)
+ *   - megs / mΩ / MΩ
+ *
+ * Used by IR schema's `bareEntryParser` to capture a single composite
+ * IR figure ("the IR for the cooker is 299") that the named-extractors
+ * can't tag to L-L vs L-E. The engine stashes the value in
+ * `state.ambiguous_bare_value` so a later disambiguation step can ask
+ * which slot it belongs to.
+ *
+ * Returns the canonicalised megaohm string (via parseMegaohms) or null.
+ */
+export function parseBareMegaohmsWithUnit(text) {
+  if (typeof text !== 'string' || !text) return null;
+  const re = new RegExp(
+    `(${MEGAOHMS_VALUE_GROUP})\\s*(?:m(?:ega)?\\s*[- ]?\\s*ohms?|mΩ|milli\\s*grams?|millies?|megs?)`,
+    'i'
+  );
+  const m = text.match(re);
+  if (!m) return null;
+  return parseMegaohms(m[1]);
+}

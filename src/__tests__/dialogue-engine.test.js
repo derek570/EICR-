@@ -538,6 +538,121 @@ describe('engine — insulation resistance', () => {
   });
 });
 
+describe('engine — IR bare-value capture at entry (session C3963EA1)', () => {
+  test('captures "299 milligrams" when circuit_ref unresolved at entry', () => {
+    const ws = new FakeWS();
+    // Cooker circuit doesn't exist yet — repro of the field failure.
+    const session = buildSession({ 1: { circuit_designation: 'Upstairs Sockets' } });
+    const out = processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'Insulation resistance for the cooker is 299 milligrams.',
+      now: 1000,
+    });
+    expect(out).toEqual({ handled: true, fallthrough: false });
+    // Engine asks which circuit (no circuit_ref bound).
+    expect(ws.sent[0]).toMatchObject({
+      type: 'ask_user_started',
+      question: 'Which circuit is the insulation resistance for?',
+    });
+    // Bare value is stashed for the resume path to consume.
+    expect(session.dialogueScriptState).toMatchObject({
+      active: true,
+      circuit_ref: null,
+      ambiguous_bare_value: { value: '299', source: 'megaohm' },
+    });
+  });
+
+  test('accepts "megaohms" / "MΩ" / "megs" units', () => {
+    for (const utterance of [
+      'Insulation resistance for the kitchen is 200 megaohms.',
+      'Insulation resistance for the kitchen is 200 MΩ.',
+      'Insulation resistance for the kitchen is 200 megs.',
+    ]) {
+      const ws = new FakeWS();
+      const session = buildSession({});
+      processInsulationResistanceTurn({
+        ws,
+        session,
+        sessionId: SESSION_ID,
+        transcriptText: utterance,
+        now: 1000,
+      });
+      expect(session.dialogueScriptState.ambiguous_bare_value).toEqual({
+        value: '200',
+        source: 'megaohm',
+      });
+    }
+  });
+
+  test('captures saturation sentinel "greater than 999 megaohms"', () => {
+    const ws = new FakeWS();
+    const session = buildSession({});
+    processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'Insulation resistance for the cooker is greater than 999 megaohms.',
+      now: 1000,
+    });
+    expect(session.dialogueScriptState.ambiguous_bare_value).toEqual({
+      value: '>999',
+      source: 'megaohm',
+    });
+  });
+
+  test('does NOT misinterpret "circuit 5" as 5 MΩ — unit suffix required', () => {
+    const ws = new FakeWS();
+    const session = buildSession({});
+    processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      // No unit on the bare number; only "circuit 5" reference.
+      transcriptText: 'Insulation resistance for circuit 5.',
+      now: 1000,
+    });
+    // circuit_ref bound from the trigger regex; bare-value capture skipped
+    // (resolved-circuit path doesn't capture, plus there's no megaohm unit).
+    expect(session.dialogueScriptState.ambiguous_bare_value).toBeNull();
+  });
+
+  test('does NOT capture when L-L tag is present (named extractor wins)', () => {
+    const ws = new FakeWS();
+    const session = buildSession({});
+    processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'Insulation resistance for the cooker live to live 200 megaohms.',
+      now: 1000,
+    });
+    // Named extraction queued L-L=200; bare capture should NOT also fire
+    // (it gates on writes.length === 0).
+    expect(session.dialogueScriptState.ambiguous_bare_value).toBeNull();
+    expect(session.dialogueScriptState.pending_writes).toEqual([
+      { field: 'ir_live_live_mohm', value: '200' },
+    ]);
+  });
+
+  test('does NOT capture when circuit_ref resolves at entry', () => {
+    const ws = new FakeWS();
+    const session = buildSession({ 13: { circuit_designation: 'Cooker' } });
+    processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'Insulation resistance for the cooker is 299 megaohms.',
+      now: 1000,
+    });
+    // Resolved-circuit path runs the existing walk-through; bare capture
+    // is gated on circuit_ref === null.
+    expect(session.dialogueScriptState.circuit_ref).toBe(13);
+    expect(session.dialogueScriptState.ambiguous_bare_value).toBeNull();
+  });
+});
+
 describe('engine — Deepgram garble tolerance (2026-04-30)', () => {
   test('"Bring continuity for upstairs sockets" enters ring (session 2801896A)', () => {
     const ws = new FakeWS();

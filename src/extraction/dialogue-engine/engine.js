@@ -204,6 +204,11 @@ function initScriptState(session, schema, circuit_ref, now) {
     // every direct entry path (regex / runEntry / enterScriptByName).
     entered_via_pivot: false,
     pivoted_from: null,
+    // Composite-figure capture: a bare value the named-extractors couldn't
+    // tag to a slot ("the IR for the cooker is 299"). The schema's
+    // bareEntryParser populates this in runEntry; the resume path asks a
+    // disambiguation question before draining it into the right slot.
+    ambiguous_bare_value: null,
   };
 }
 
@@ -263,6 +268,44 @@ function runEntry({ ws, session, sessionId, text, schema, schemas, entry, logger
     safeSend(ws, buildExtractionPayload(circuitRef, writes, schema.extractionSource));
   }
 
+  // Composite-figure capture: when circuit_ref couldn't be resolved at
+  // entry AND the named extractors didn't find a tagged value, try the
+  // schema's bareEntryParser. For IR this catches "the IR for the
+  // cooker is 299 milligrams" — a single value the inspector tossed out
+  // before naming the circuit. Stashed in state for the resume path to
+  // disambiguate (L-L vs L-E) once the circuit lands.
+  //
+  // Limited to the unresolved-circuit path because that's the failure
+  // mode field-tested in session C3963EA1 (2026-05-02). Resolved-circuit
+  // entries with bare values flow through the existing slot-by-slot
+  // walk-through unchanged.
+  //
+  // Gating note: `writes` only ever populates when circuitRef !== null
+  // (resolved-circuit path applies named values immediately). On the
+  // unresolved path, named values land in `state.pending_writes` —
+  // both must be empty for the bare parser to fire, otherwise an
+  // utterance like "live to live 200 megaohms" (L-L tagged) would
+  // also stash 200 as ambiguous.
+  if (
+    circuitRef === null &&
+    writes.length === 0 &&
+    state.pending_writes.length === 0 &&
+    typeof schema.bareEntryParser === 'function'
+  ) {
+    const bare = schema.bareEntryParser(text);
+    if (bare !== null && bare !== undefined) {
+      state.ambiguous_bare_value = {
+        value: bare,
+        source: schema.bareEntrySource ?? 'bare',
+      };
+      logger?.info?.(`${schema.logEventPrefix}_bare_value_captured`, {
+        sessionId,
+        source: schema.bareEntrySource ?? 'bare',
+        textPreview: text.slice(0, 80),
+      });
+    }
+  }
+
   logger?.info?.(`${schema.logEventPrefix}_entered`, {
     sessionId,
     circuit_ref: circuitRef,
@@ -270,6 +313,7 @@ function runEntry({ ws, session, sessionId, text, schema, schemas, entry, logger
     pre_existing_filled: Object.keys(existing).filter((f) => slotFields.includes(f)),
     volunteered_writes: writes.map((w) => w.field),
     pending_writes: state.pending_writes.map((w) => w.field),
+    ambiguous_bare_value: state.ambiguous_bare_value?.value ?? null,
     textPreview: text.slice(0, 80),
   });
 

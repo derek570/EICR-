@@ -14,7 +14,11 @@
  * byte-identically to the legacy script.
  */
 
-import { parseMegaohms, MEGAOHMS_VALUE_GROUP } from '../parsers/megaohms.js';
+import {
+  parseMegaohms,
+  parseBareMegaohmsWithUnit,
+  MEGAOHMS_VALUE_GROUP,
+} from '../parsers/megaohms.js';
 import { parseVoltage } from '../parsers/voltage.js';
 import { IR_FIELDS, recordIrWrite, clearIrState } from '../../insulation-resistance-timeout.js';
 
@@ -104,6 +108,16 @@ export const insulationResistanceSchema = {
   extractionSource: 'ir_script',
   logEventPrefix: 'stage6.insulation_resistance_script',
   whichCircuitQuestion: 'Which circuit is the insulation resistance for?',
+  // Capture a single composite IR figure at entry — "the IR for the
+  // cooker is 299 milligrams". Named extractors only fire on L-L / L-E
+  // tags, so a bare value with no tag was previously discarded. The
+  // engine stashes the parsed value in `state.ambiguous_bare_value`
+  // and the resume path asks "Was that L-L or L-E?" before continuing
+  // the walk-through. Captured ONLY when circuit_ref is null at entry
+  // (the case the field-test repro hits — session C3963EA1, cooker
+  // circuit didn't exist when 299 was spoken).
+  bareEntryParser: parseBareMegaohmsWithUnit,
+  bareEntrySource: 'megaohm',
   cancelMessage: ({ filled, total }) =>
     `Insulation resistance cancelled. ${filled} of ${total} saved.`,
   cancelMessageEmpty: 'Insulation resistance cancelled.',
