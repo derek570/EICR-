@@ -2,24 +2,21 @@
 
 import * as React from 'react';
 import { useRouter } from 'next/navigation';
-import { ChevronLeft } from 'lucide-react';
+import { ChevronLeft, MoreVertical, SlidersHorizontal, Check, Compass } from 'lucide-react';
 import { useJobContext } from '@/lib/job-context';
+import { ApplyDefaultsSheet } from '@/components/defaults/apply-defaults-sheet';
+import { applyPresetToJob } from '@/lib/defaults/service';
 
 /**
  * iOS-style job detail header:
  *
- *    [ < Back ]         <address>
+ *    [ < Back ]         <address>                            [ ⋯ ]
  *
  * - Back button on the left (chevron + "Back" text), tinted brand blue.
  * - Centred title showing the job address (truncated on narrow screens).
- *
- * Pre-deploy: the 3-dot overflow menu that iOS carries on the right has
- * been removed for web — its handler was a `console.log` stub and there
- * are no wired menu actions yet (rename / delete / export all live on
- * the Dashboard or in separate tabs on web). Shipping a button that
- * only logs would be a lint-zero regression AND a user-visible dead
- * control. Re-introduce when the actions land; a Phase-6 follow-up is
- * tracked in the rebuild plan.
+ * - 3-dot overflow menu on the right (Phase C parity port of iOS
+ *   JobDetailView.swift's toolbar menu): Edit Default Values, Apply
+ *   Defaults to Job, Guided Tour.
  *
  * Save-status indicator sits beneath the centred title as a small pill
  * so it remains visible without fighting the iOS header symmetry. Now
@@ -28,7 +25,46 @@ import { useJobContext } from '@/lib/job-context';
  */
 export function JobHeader() {
   const router = useRouter();
-  const { job, isDirty, isSaving, saveError } = useJobContext();
+  const { job, isDirty, isSaving, saveError, updateJob } = useJobContext();
+  const [menuOpen, setMenuOpen] = React.useState(false);
+  const [applyOpen, setApplyOpen] = React.useState(false);
+
+  // Click-outside dismissal — iOS dismisses the toolbar menu on any
+  // tap outside the popover. Using a click listener captured at the
+  // document level so taps on the buttons inside still bubble first.
+  const menuRef = React.useRef<HTMLDivElement | null>(null);
+  React.useEffect(() => {
+    if (!menuOpen) return;
+    const onDoc = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+        setMenuOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', onDoc);
+    return () => document.removeEventListener('mousedown', onDoc);
+  }, [menuOpen]);
+
+  const onEditDefaults = () => {
+    setMenuOpen(false);
+    router.push('/settings/defaults');
+  };
+  const onApplyDefaults = () => {
+    setMenuOpen(false);
+    setApplyOpen(true);
+  };
+  const onGuidedTour = () => {
+    setMenuOpen(false);
+    // Tour kick-off — Phase D will fully rewire this; for now we drop
+    // the marker that resets `cm-tour-job-seen` so the existing
+    // useTour hook re-runs on next mount.
+    if (typeof window !== 'undefined') {
+      window.localStorage.removeItem('cm-tour-job-seen');
+      // Reload so any tour root that mounts on the job layout reads
+      // the cleared flag and starts. Phase D will replace this with
+      // a controlled tour controller.
+      window.location.reload();
+    }
+  };
 
   return (
     <header className="flex flex-col border-b border-[var(--color-border-subtle)] bg-[var(--color-surface-0)]/80 px-2 py-2 backdrop-blur md:px-4">
@@ -48,12 +84,80 @@ export function JobHeader() {
         >
           {job.address || 'Untitled job'}
         </h1>
+
+        {/* 3-dot menu — Phase C parity port (iOS JobDetailView toolbar).
+            Anchored right; popover absolute-positioned beneath. */}
+        <div ref={menuRef} className="ml-auto relative">
+          <button
+            type="button"
+            aria-label="Job options"
+            aria-haspopup="menu"
+            aria-expanded={menuOpen}
+            onClick={() => setMenuOpen((v) => !v)}
+            className="inline-flex h-9 w-9 items-center justify-center rounded-[var(--radius-md)] text-[var(--color-text-primary)] transition hover:bg-[var(--color-surface-2)] focus-visible:outline-2 focus-visible:outline-[var(--color-brand-blue)]"
+          >
+            <MoreVertical className="h-5 w-5" aria-hidden />
+          </button>
+          {menuOpen ? (
+            <div
+              role="menu"
+              className="absolute right-0 top-full z-30 mt-1 w-56 overflow-hidden rounded-[var(--radius-md)] border border-[var(--color-border-subtle)] bg-[var(--color-surface-1)] shadow-[0_8px_24px_rgba(0,0,0,0.4)]"
+            >
+              <MenuItem icon={<SlidersHorizontal className="h-4 w-4" />} onClick={onEditDefaults}>
+                Edit Default Values
+              </MenuItem>
+              <MenuItem icon={<Check className="h-4 w-4" />} onClick={onApplyDefaults}>
+                Apply Defaults to Job
+              </MenuItem>
+              <MenuItem icon={<Compass className="h-4 w-4" />} onClick={onGuidedTour}>
+                Guided Tour
+              </MenuItem>
+            </div>
+          ) : null}
+        </div>
       </div>
 
       <div className="flex justify-center pb-1">
         <SaveStatus isDirty={isDirty} isSaving={isSaving} saveError={saveError} />
       </div>
+
+      {/* Apply Defaults sheet — same component the recording bar uses. */}
+      <ApplyDefaultsSheet
+        open={applyOpen}
+        certificateType={job.certificate_type ?? 'EICR'}
+        onClose={() => setApplyOpen(false)}
+        onApply={(preset) => {
+          const patch = applyPresetToJob(preset, job);
+          if (Object.keys(patch).length > 0) {
+            updateJob(patch);
+          }
+        }}
+      />
     </header>
+  );
+}
+
+function MenuItem({
+  icon,
+  onClick,
+  children,
+}: {
+  icon: React.ReactNode;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      role="menuitem"
+      onClick={onClick}
+      className="flex w-full items-center gap-3 px-3 py-2.5 text-left text-[14px] text-[var(--color-text-primary)] transition hover:bg-[var(--color-surface-3)] focus-visible:bg-[var(--color-surface-3)] focus-visible:outline-none"
+    >
+      <span className="text-[var(--color-brand-blue)]" aria-hidden>
+        {icon}
+      </span>
+      <span className="flex-1">{children}</span>
+    </button>
   );
 }
 

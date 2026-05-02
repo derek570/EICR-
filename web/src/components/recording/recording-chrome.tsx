@@ -233,51 +233,57 @@ function RecordingActionBar() {
             <VuMeter level={micLevel} active={isActive} />
           </div>
 
-          {/* ── Right: iOS-parity buttons + Pause/End ───────────────── */}
+          {/* ── Right: iOS-parity buttons + Pause/End ─────────────────
+              iPhone canon (IMG_6296): only CCU / End / Pause are
+              visible. iPad / landscape (IMG_6295): full set Voice /
+              Defaults / Apply / CCU / Doc / Obs / End / Pause.
+              `cm-bar-extra` hides at < md so the phone-portrait bar
+              isn't crammed with overflow-scrolling pills. */}
           <div className="flex items-center justify-end gap-1.5 overflow-x-auto md:gap-2">
-            {/* Voice — Phase 8 enabled the toggle. Persists via
-                localStorage['cm-voice-feedback']; the TTS helper drives
-                SpeechSynthesis. Hidden when the runtime doesn't expose
-                SpeechSynthesis (jsdom, obscure embedded browsers) so
-                inspectors don't tap a dead control. */}
+            {/* Voice / Defaults / Apply — iPad-only per iOS canon. */}
             {ttsSupported ? (
-              <ParityButton
-                label={voiceFeedbackOn ? 'Voice' : 'Muted'}
-                tone={voiceFeedbackOn ? 'green' : 'muted'}
-                icon={voiceFeedbackOn ? Volume2 : VolumeX}
-                onClick={toggleVoiceFeedback}
-                ariaPressed={voiceFeedbackOn}
-              />
+              <div className="hidden md:contents">
+                <ParityButton
+                  label={voiceFeedbackOn ? 'Voice' : 'Muted'}
+                  tone={voiceFeedbackOn ? 'green' : 'muted'}
+                  icon={voiceFeedbackOn ? Volume2 : VolumeX}
+                  onClick={toggleVoiceFeedback}
+                  ariaPressed={voiceFeedbackOn}
+                />
+              </div>
             ) : null}
-            <ParityButton
-              label="Defaults"
-              tone="violet"
-              icon={Settings2}
-              onClick={onOpenDefaults}
-            />
-            <ParityButton label="Apply" tone="green" icon={Check} onClick={onOpenApply} />
-            {/* CCU / Doc / Obs deep-link to the tab where the wired
-                handler already lives, so the inspector can fire the same
-                action from inside a recording session as they would from
-                the tab's action rail. */}
+            <div className="hidden md:contents">
+              <ParityButton
+                label="Defaults"
+                tone="violet"
+                icon={Settings2}
+                onClick={onOpenDefaults}
+              />
+              <ParityButton label="Apply" tone="green" icon={Check} onClick={onOpenApply} />
+            </div>
+            {/* CCU is always visible — primary mid-recording action on
+                phone too (large orange circle in IMG_6296). */}
             <ParityButton
               label="CCU"
               tone="orange"
               icon={Camera}
               onClick={() => goToTab('/circuits')}
             />
-            <ParityButton
-              label="Doc"
-              tone="cyan"
-              icon={FileText}
-              onClick={() => goToTab('/circuits')}
-            />
-            <ParityButton
-              label="Obs"
-              tone="blue"
-              icon={MessageSquare}
-              onClick={() => goToTab('/observations')}
-            />
+            {/* Doc / Obs — iPad-only per iOS canon. */}
+            <div className="hidden md:contents">
+              <ParityButton
+                label="Doc"
+                tone="cyan"
+                icon={FileText}
+                onClick={() => goToTab('/circuits')}
+              />
+              <ParityButton
+                label="Obs"
+                tone="blue"
+                icon={MessageSquare}
+                onClick={() => goToTab('/observations')}
+              />
+            </div>
 
             {/* End — gated behind a confirm dialog so a stray tap on
                 the bottom bar can't nuke an in-progress recording. */}
