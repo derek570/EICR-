@@ -85,6 +85,7 @@ import { createPerTurnWrites } from './stage6-per-turn-writes.js';
 import { bundleToolCallsIntoResult, BUNDLER_PHASE } from './stage6-event-bundler.js';
 import { compareSlots } from './stage6-slot-comparator.js';
 import { TOOL_SCHEMAS } from './stage6-tool-schemas.js';
+import { tryResumePausedScript, ALL_DIALOGUE_SCHEMAS } from './dialogue-engine/index.js';
 
 /**
  * Sonnet model literal used by shadow-mode tool loop. Mirrors the literal at
@@ -382,6 +383,40 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
           source: 'tool_call',
         });
       }
+    }
+  }
+
+  // Resume any paused dialogue script that was waiting for Sonnet to
+  // create / rename the circuit it was anchored to. Field repro:
+  // session C3963EA1 — inspector said "Insulation resistance for the
+  // cooker is 299 milligrams" before the cooker circuit existed.
+  // Engine paused IR (commit 2) with ambiguous_bare_value=299 and
+  // paused_designation_hint="cooker circuit". Sonnet then handled
+  // circuit creation and produced circuit_updates=[{op:'create',
+  // circuit_ref:2, meta:{designation:'Cooker'}}]. tryResumePausedScript
+  // designation-matches against the hint, binds state.circuit_ref=2,
+  // drains pending writes, and asks the next missing slot. Disambig
+  // for the bare 299 (L-L vs L-E?) lands in the follow-up commit.
+  //
+  // CRITICAL ordering: must run BEFORE `delete result.circuit_updates`
+  // below — the resume helper reads the array to confirm the matched
+  // ref came from THIS turn's create/rename op (not an unrelated
+  // pre-existing circuit). Errors in the resume path are caught and
+  // logged so iOS still gets the result envelope.
+  if (Array.isArray(result.circuit_updates) && result.circuit_updates.length > 0) {
+    try {
+      tryResumePausedScript({
+        session,
+        ws,
+        schemas: ALL_DIALOGUE_SCHEMAS,
+        circuitUpdates: result.circuit_updates,
+        logger: log,
+      });
+    } catch (e) {
+      log.warn('stage6.dialogue_resume_error', {
+        sessionId: session.sessionId,
+        error: e?.message ?? String(e),
+      });
     }
   }
 

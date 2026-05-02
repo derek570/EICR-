@@ -13,8 +13,10 @@ import {
   processRingContinuityTurn,
   processInsulationResistanceTurn,
   processDialogueTurn,
+  tryResumePausedScript,
   ringContinuitySchema,
   insulationResistanceSchema,
+  ALL_DIALOGUE_SCHEMAS,
 } from '../extraction/dialogue-engine/index.js';
 
 const SESSION_ID = 'sess_test';
@@ -859,6 +861,249 @@ describe('engine — IR pause-on-second-miss for resume hook (session C3963EA1)'
       circuit_ref: 5,
       ambiguous_bare_value: null,
     });
+  });
+});
+
+describe('engine — tryResumePausedScript (post-Sonnet-turn hook)', () => {
+  // Helper: pause an IR script for "cooker" with bare 299 captured.
+  function pauseIrForCooker(session, ws) {
+    processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'Insulation resistance for the cooker is 299 milligrams.',
+      now: 1000,
+    });
+    processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'bigger circuit.',
+      now: 2000,
+    });
+    processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'cooker circuit',
+      now: 3000,
+    });
+    expect(session.dialogueScriptState.paused).toBe(true);
+  }
+
+  test('resumes when create_circuit produces a designation-matching circuit', () => {
+    const ws = new FakeWS();
+    const session = buildSession({ 1: { circuit_designation: 'Upstairs Sockets' } });
+    pauseIrForCooker(session, ws);
+
+    // Sonnet creates the cooker circuit (matching the paused hint).
+    session.stateSnapshot.circuits[2] = { circuit_designation: 'Cooker' };
+
+    const wsAfter = new FakeWS();
+    const out = tryResumePausedScript({
+      session,
+      ws: wsAfter,
+      schemas: ALL_DIALOGUE_SCHEMAS,
+      circuitUpdates: [{ op: 'create', circuit_ref: 2, meta: { designation: 'Cooker' } }],
+      now: 4000,
+    });
+
+    expect(out).toEqual({ resumed: true, circuit_ref: 2 });
+    expect(session.dialogueScriptState).toMatchObject({
+      active: true,
+      paused: false,
+      paused_designation_hint: null,
+      paused_at: null,
+      circuit_ref: 2,
+      ambiguous_bare_value: { value: '299', source: 'megaohm' },
+    });
+    // Engine asks the next missing slot — currently L-L (Commit 4 will
+    // intercept here with a disambiguation question instead).
+    expect(wsAfter.sent.at(-1)).toMatchObject({
+      type: 'ask_user_started',
+      question: "What's the live-to-live?",
+      context_circuit: 2,
+      context_field: 'ir_live_live_mohm',
+    });
+  });
+
+  test('resumes via rename_circuit op too', () => {
+    const ws = new FakeWS();
+    const session = buildSession({ 1: { circuit_designation: 'Upstairs Sockets' } });
+    pauseIrForCooker(session, ws);
+
+    // Sonnet renamed an existing circuit 7 to Cooker.
+    session.stateSnapshot.circuits[7] = { circuit_designation: 'Cooker' };
+
+    const wsAfter = new FakeWS();
+    const out = tryResumePausedScript({
+      session,
+      ws: wsAfter,
+      schemas: ALL_DIALOGUE_SCHEMAS,
+      circuitUpdates: [{ op: 'rename', circuit_ref: 7, meta: { designation: 'Cooker' } }],
+      now: 4000,
+    });
+
+    expect(out).toEqual({ resumed: true, circuit_ref: 7 });
+    expect(session.dialogueScriptState.circuit_ref).toBe(7);
+  });
+
+  test('does NOT resume when the new circuit designation is unrelated', () => {
+    const ws = new FakeWS();
+    const session = buildSession({ 1: { circuit_designation: 'Upstairs Sockets' } });
+    pauseIrForCooker(session, ws);
+
+    // Sonnet created a circuit for something completely different.
+    session.stateSnapshot.circuits[2] = { circuit_designation: 'Garage' };
+
+    const wsAfter = new FakeWS();
+    const out = tryResumePausedScript({
+      session,
+      ws: wsAfter,
+      schemas: ALL_DIALOGUE_SCHEMAS,
+      circuitUpdates: [{ op: 'create', circuit_ref: 2, meta: { designation: 'Garage' } }],
+      now: 4000,
+    });
+
+    expect(out).toEqual({ resumed: false, reason: 'no_designation_match' });
+    expect(session.dialogueScriptState.paused).toBe(true);
+    expect(wsAfter.sent).toEqual([]);
+  });
+
+  test("does NOT resume when matched ref isn't in this turn's circuit_updates", () => {
+    const ws = new FakeWS();
+    const session = buildSession({ 1: { circuit_designation: 'Upstairs Sockets' } });
+    pauseIrForCooker(session, ws);
+
+    // After the pause, two circuits get added before the resume hook runs:
+    //   - Sonnet (this turn) created circuit 5 (Garage)
+    //   - A separate path (e.g. CCU import on a previous turn) added a Cooker
+    //     to the snapshot
+    // The hint matches Cooker (circuit 9), but the only op THIS turn was for
+    // Garage (circuit 5). Guard fires so we don't claim Garage's create as
+    // the resume trigger when the designation actually maps elsewhere.
+    session.stateSnapshot.circuits[5] = { circuit_designation: 'Garage' };
+    session.stateSnapshot.circuits[9] = { circuit_designation: 'Cooker' };
+
+    const wsAfter = new FakeWS();
+    const out = tryResumePausedScript({
+      session,
+      ws: wsAfter,
+      schemas: ALL_DIALOGUE_SCHEMAS,
+      circuitUpdates: [{ op: 'create', circuit_ref: 5, meta: { designation: 'Garage' } }],
+      now: 4000,
+    });
+
+    // Designation match on circuit 9 (Cooker) — but op was for 5.
+    // Guard fires: matched_ref_not_in_circuit_updates.
+    expect(out).toEqual({ resumed: false, reason: 'matched_ref_not_in_circuit_updates' });
+    expect(session.dialogueScriptState.paused).toBe(true);
+  });
+
+  test('does NOT resume when no paused script exists', () => {
+    const session = buildSession({});
+    const out = tryResumePausedScript({
+      session,
+      ws: new FakeWS(),
+      schemas: ALL_DIALOGUE_SCHEMAS,
+      circuitUpdates: [{ op: 'create', circuit_ref: 1, meta: { designation: 'Cooker' } }],
+      now: 1000,
+    });
+    expect(out).toEqual({ resumed: false, reason: 'no_paused_script' });
+  });
+
+  test('does NOT resume when circuit_updates is empty', () => {
+    const ws = new FakeWS();
+    const session = buildSession({});
+    pauseIrForCooker(session, ws);
+
+    const out = tryResumePausedScript({
+      session,
+      ws: new FakeWS(),
+      schemas: ALL_DIALOGUE_SCHEMAS,
+      circuitUpdates: [],
+      now: 4000,
+    });
+    expect(out).toEqual({ resumed: false, reason: 'no_circuit_updates' });
+    expect(session.dialogueScriptState.paused).toBe(true);
+  });
+
+  test('drains queued pending_writes onto the resumed circuit and emits extraction payload', () => {
+    const ws = new FakeWS();
+    const session = buildSession({ 1: { circuit_designation: 'Upstairs Sockets' } });
+    // Pause path with a NAMED L-L value (not bare): "live to live 200" is queued
+    // as pending_writes for ir_live_live_mohm. After the cooker circuit is
+    // created, the resume hook should drain that write onto circuit 2.
+    processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'Insulation resistance for the cooker live to live 200 megaohms.',
+      now: 1000,
+    });
+    expect(session.dialogueScriptState.pending_writes).toEqual([
+      { field: 'ir_live_live_mohm', value: '200' },
+    ]);
+    processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'unresolvable 1',
+      now: 2000,
+    });
+    processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'cooker circuit',
+      now: 3000,
+    });
+    expect(session.dialogueScriptState.paused).toBe(true);
+    expect(session.dialogueScriptState.pending_writes).toHaveLength(1);
+
+    // Sonnet creates Cooker.
+    session.stateSnapshot.circuits[2] = { circuit_designation: 'Cooker' };
+
+    const wsAfter = new FakeWS();
+    const out = tryResumePausedScript({
+      session,
+      ws: wsAfter,
+      schemas: ALL_DIALOGUE_SCHEMAS,
+      circuitUpdates: [{ op: 'create', circuit_ref: 2, meta: { designation: 'Cooker' } }],
+      now: 4000,
+    });
+
+    expect(out).toEqual({ resumed: true, circuit_ref: 2 });
+    // Pending write drained onto circuit 2 in the snapshot.
+    expect(session.stateSnapshot.circuits[2]).toMatchObject({
+      circuit_designation: 'Cooker',
+      ir_live_live_mohm: '200',
+    });
+    expect(session.dialogueScriptState.pending_writes).toEqual([]);
+    // Extraction payload + next-slot ask emitted.
+    expect(wsAfter.sent.find((m) => m.type === 'extraction')).toBeDefined();
+    expect(wsAfter.sent.at(-1)).toMatchObject({
+      type: 'ask_user_started',
+      question: "What's the live-to-earth?",
+    });
+  });
+
+  test('does NOT resume after hardTimeoutMs has elapsed', () => {
+    const ws = new FakeWS();
+    const session = buildSession({});
+    pauseIrForCooker(session, ws);
+    session.stateSnapshot.circuits[2] = { circuit_designation: 'Cooker' };
+
+    // 180_001ms past the pause moment (3000) — over the IR hard timeout.
+    const out = tryResumePausedScript({
+      session,
+      ws: new FakeWS(),
+      schemas: ALL_DIALOGUE_SCHEMAS,
+      circuitUpdates: [{ op: 'create', circuit_ref: 2, meta: { designation: 'Cooker' } }],
+      now: 3000 + 180_001,
+    });
+    expect(out).toEqual({ resumed: false, reason: 'paused_timeout' });
+    expect(session.dialogueScriptState).toBeNull();
   });
 });
 

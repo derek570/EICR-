@@ -1179,6 +1179,143 @@ export function enterScriptByName({
   };
 }
 
+/**
+ * Resume a paused dialogue script after Sonnet creates/renames a circuit
+ * that matches the script's `paused_designation_hint`. Called by the
+ * stage6 dispatcher hook after `runLiveMode` finishes a Sonnet turn,
+ * with the per-turn `circuit_updates` list passed in. No-op if no
+ * paused state exists, the schema didn't opt in, the pause has timed
+ * out, or the hint doesn't designation-match one of the just-created
+ * circuits.
+ *
+ * On successful resume:
+ *   - state.circuit_ref bound to the matched ref
+ *   - state.active flipped back to true, paused flags cleared
+ *   - existing snapshot values on the new circuit seeded into state.values
+ *   - pending_writes drained onto the new circuit (extraction_payload
+ *     emitted to iOS for each)
+ *   - next missing slot asked via askNextOrFinish (the disambiguation
+ *     step for ambiguous_bare_value lands in a follow-up commit)
+ *
+ * Designation matching uses the same `findCircuitByDesignation` helper
+ * that runEntry / runActivePath use, so the matcher is byte-identical
+ * to what an inline circuit-name answer would have hit.
+ *
+ * Returns `{ resumed: true, circuit_ref }` on success, otherwise
+ * `{ resumed: false, reason }` for telemetry.
+ */
+export function tryResumePausedScript({
+  session,
+  ws,
+  schemas,
+  circuitUpdates,
+  logger,
+  now = Date.now(),
+}) {
+  const state = session?.dialogueScriptState;
+  if (!state || !state.paused) return { resumed: false, reason: 'no_paused_script' };
+  if (!Array.isArray(schemas) || schemas.length === 0) {
+    return { resumed: false, reason: 'no_schemas' };
+  }
+  if (!Array.isArray(circuitUpdates) || circuitUpdates.length === 0) {
+    return { resumed: false, reason: 'no_circuit_updates' };
+  }
+  const schema = schemas.find((s) => s.name === state.schemaName);
+  if (!schema) return { resumed: false, reason: 'schema_unknown' };
+  if (schema.resumeAfterCircuitCreation !== true) {
+    return { resumed: false, reason: 'schema_no_opt_in' };
+  }
+
+  // Stale-pause sweep — defense in depth (processDialogueTurn also sweeps
+  // at the top of every turn). Belt-and-braces because the dispatcher hook
+  // may fire on a turn that doesn't go through processDialogueTurn first.
+  if (now - (state.paused_at ?? 0) > schema.hardTimeoutMs) {
+    logger?.info?.(`${schema.logEventPrefix}_paused_hard_timeout_at_resume`, {
+      sessionId: session.sessionId,
+      ms_since_paused: now - (state.paused_at ?? 0),
+    });
+    clearScriptState(session);
+    return { resumed: false, reason: 'paused_timeout' };
+  }
+
+  const designationHint = state.paused_designation_hint;
+  if (typeof designationHint !== 'string' || designationHint.length === 0) {
+    return { resumed: false, reason: 'no_designation_hint' };
+  }
+  const matchedRef = findCircuitByDesignation(session, designationHint);
+  if (matchedRef === null) {
+    return { resumed: false, reason: 'no_designation_match' };
+  }
+
+  // Confirm matchedRef is among the just-created / renamed circuits —
+  // guards against accidentally resuming on a pre-existing circuit that
+  // happens to designation-match (it would have matched at entry-time
+  // and never paused in the first place; if we still get here, Sonnet
+  // edited a different circuit and we shouldn't claim its create as
+  // the resume trigger).
+  const matchingOp = circuitUpdates.find(
+    (op) => (op?.op === 'create' || op?.op === 'rename') && op?.circuit_ref === matchedRef
+  );
+  if (!matchingOp) {
+    return { resumed: false, reason: 'matched_ref_not_in_circuit_updates' };
+  }
+
+  const previouslyPausedHint = designationHint;
+  const previouslyPausedAt = state.paused_at;
+
+  // Re-arm script for the active path on the bound circuit.
+  state.active = true;
+  state.paused = false;
+  state.paused_designation_hint = null;
+  state.paused_at = null;
+  state.circuit_ref = matchedRef;
+  state.last_turn_at = now;
+  state.circuit_retry_attempted = false;
+  state.last_designation_attempt = null;
+
+  const slotFields = schema.slots.map((s) => s.field);
+  const existing = readExistingValues(session, matchedRef, slotFields);
+  for (const [f, v] of Object.entries(existing)) {
+    if (slotFields.includes(f) && v !== '' && v !== null && v !== undefined) {
+      state.values[f] = v;
+    }
+  }
+
+  const drainedWrites = [];
+  if (Array.isArray(state.pending_writes) && state.pending_writes.length > 0) {
+    for (const w of state.pending_writes) {
+      if (state.values[w.field] !== undefined) continue;
+      applyWrite(session, schema, matchedRef, w.field, w.value, now);
+      drainedWrites.push(w);
+    }
+    state.pending_writes = [];
+  }
+
+  if (drainedWrites.length > 0) {
+    safeSend(ws, buildExtractionPayload(matchedRef, drainedWrites, schema.extractionSource));
+  }
+
+  logger?.info?.(`${schema.logEventPrefix}_resumed_after_circuit_create`, {
+    sessionId: session.sessionId,
+    circuit_ref: matchedRef,
+    matched_via_designation: previouslyPausedHint,
+    ms_since_paused: now - previouslyPausedAt,
+    drained_pending_writes: drainedWrites.map((w) => w.field),
+    ambiguous_bare_value: state.ambiguous_bare_value?.value ?? null,
+    circuit_op: matchingOp.op,
+  });
+
+  // Ask the next missing slot (or emit the completion message via
+  // askNextOrFinish if every slot is already filled). Commit 4 changes
+  // this branch: when ambiguous_bare_value is set, a disambiguation
+  // question fires first ("Was 299 live-to-live or live-to-earth?")
+  // and the answer drains the bare value into the right slot before
+  // the walk-through continues.
+  askNextOrFinish({ ws, session, sessionId: session.sessionId, schema, logger, now });
+
+  return { resumed: true, circuit_ref: matchedRef };
+}
+
 // Test-only exports for unit tests.
 export const __testing__ = {
   detectEntry,
