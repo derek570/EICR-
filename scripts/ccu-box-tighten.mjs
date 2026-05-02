@@ -125,6 +125,122 @@ async function sobelXColSum(buffer, width, height, yLo = 1, yHi = null) {
   return cols;
 }
 
+// ---------------------------------------------------------------------------
+// Probe detectors (A and B) — replace the legacy column-sum-on-bottom-40 %
+// approach that locked onto test buttons + rating-label text edges instead
+// of the actual inter-device seam on Crabtree boards.
+// ---------------------------------------------------------------------------
+
+/**
+ * Detector A — TALL-THIN filter.
+ *
+ * Real device-to-device seams run UNBROKEN from rail-top to rail-bottom. Test
+ * buttons, rating-label text, and toggle slits all live in only a fraction
+ * of the rail face. Score each column by the PRODUCT of three column-sum-of
+ * -|Sobel-X| signals: full height × top 10 % × bottom 10 %. A column that
+ * has no signal in any one band multiplies through to ~0; a column with
+ * signal across the whole height multiplies to a high product. The product
+ * is then normalised and treated as the column's "tall-thin score".
+ */
+async function tallThinScore(buffer, width, height) {
+  const grey = await sharp(buffer).greyscale().blur(0.5).raw().toBuffer();
+  const fullCols = new Float32Array(width);
+  const topCols = new Float32Array(width);
+  const botCols = new Float32Array(width);
+  const topEnd = Math.max(2, Math.floor(height * 0.10));
+  const botStart = Math.min(height - 2, Math.ceil(height * 0.90));
+  for (let yy = 1; yy < height - 1; yy++) {
+    const off = yy * width;
+    for (let xx = 1; xx < width - 1; xx++) {
+      const i = off + xx;
+      const gx =
+        -grey[i - width - 1] + grey[i - width + 1] +
+        -2 * grey[i - 1]    + 2 * grey[i + 1] +
+        -grey[i + width - 1] + grey[i + width + 1];
+      const a = Math.abs(gx);
+      fullCols[xx] += a;
+      if (yy <= topEnd) topCols[xx] += a;
+      if (yy >= botStart) botCols[xx] += a;
+    }
+  }
+  // Normalise each band to [0,1] so the product isn't dominated by absolute
+  // gradient magnitude — what matters is presence-of-signal in all three.
+  const nm = (arr) => {
+    let max = 0;
+    for (const v of arr) if (v > max) max = v;
+    if (max <= 0) return arr;
+    const out = new Float32Array(arr.length);
+    for (let i = 0; i < arr.length; i++) out[i] = arr[i] / max;
+    return out;
+  };
+  const full = nm(fullCols), top = nm(topCols), bot = nm(botCols);
+  const score = new Float32Array(width);
+  for (let i = 0; i < width; i++) score[i] = full[i] * top[i] * bot[i];
+  return score;
+}
+
+/**
+ * Detector B — DARK-VALLEY filter.
+ *
+ * The gap between two clipped-on DIN devices reveals the underlying rail
+ * (metallic grey, often shadowed) — that gap appears as a NARROW DARK
+ * COLUMN flanked by the bright body plastic of both devices. Score each
+ * column by how much darker its median-brightness is than the local
+ * neighbourhood (excluding self). Real seams: deep valley. Test buttons:
+ * dark in middle but only span ~10 % of rail height, so the column-median
+ * is barely darker than a body-plastic column.
+ */
+async function darkValleyScore(buffer, width, height) {
+  const grey = await sharp(buffer).greyscale().blur(0.5).raw().toBuffer();
+  // Per-column median brightness (uses the FULL strip height — a real seam
+  // is dark across most of the column).
+  const colBright = new Float32Array(width);
+  const samples = new Float32Array(height);
+  for (let xx = 0; xx < width; xx++) {
+    for (let yy = 0; yy < height; yy++) samples[yy] = grey[yy * width + xx];
+    // Quick median via sort copy (height small enough for this not to matter).
+    const sorted = Array.from(samples).sort((a, b) => a - b);
+    colBright[xx] = sorted[Math.floor(sorted.length / 2)];
+  }
+  // Valley score = (mean brightness of neighbourhood) − (this column's
+  // brightness). Positive when this column is darker than its surroundings.
+  // Neighbourhood radius scales with strip width (covers 1-2 device-width
+  // candidate so we can compare the seam against true body-plastic).
+  const radius = Math.max(3, Math.floor(width * 0.20));
+  const score = new Float32Array(width);
+  for (let i = 0; i < width; i++) {
+    let sum = 0, count = 0;
+    for (let j = i - radius; j <= i + radius; j++) {
+      if (j < 0 || j >= width || j === i) continue;
+      sum += colBright[j];
+      count++;
+    }
+    const nbrMean = count > 0 ? sum / count : 0;
+    score[i] = Math.max(0, nbrMean - colBright[i]);
+  }
+  return score;
+}
+
+/**
+ * Find the strongest peak in `signal` plus the second-largest local maximum
+ * and the mean. Shared by both detectors so the SNR / sharpness math stays
+ * identical and the two are directly comparable.
+ */
+function peakStats(signal) {
+  let peakI = 0, peakV = -Infinity, secondV = -Infinity, sum = 0;
+  const n = signal.length;
+  for (let i = 1; i < n - 1; i++) {
+    const v = signal[i];
+    sum += v;
+    if (v > peakV) { secondV = peakV; peakV = v; peakI = i; }
+    else if (v > secondV) { secondV = v; }
+  }
+  const mean = sum / Math.max(1, n - 2);
+  const snr = mean > 0 ? peakV / mean : 0;
+  const sharpness = secondV > 0 ? peakV / secondV : (peakV > 0 ? 5 : 0);
+  return { peakI, peakV, secondV, mean, snr, sharpness };
+}
+
 function smooth3(signal) {
   const out = new Float32Array(signal.length);
   out[0] = signal[0];
@@ -385,20 +501,28 @@ export async function tightenBox(imageBuffer, userBox) {
   let refinedPitchPx = initialPitchPx;
   let refinedModuleCount = initialModuleCount;
   let pitchDiag = null;
+  // A/B detector outputs are computed in parallel; the harness picks one to
+  // drive the slot grid (Detector A = tall-thin filter by default — see
+  // PRIMARY_DETECTOR below). Both sets of refined positions / pitches are
+  // surfaced in pitchDiag for side-by-side comparison.
+  const PRIMARY_DETECTOR = (process.env.PROBE_DETECTOR || 'A').toUpperCase();
   if (initialModuleCount >= 8) {
-    // Strip half-width = 25 % of initial pitch. Wide enough to reach the
-    // actual MCB edge even when the initial 17.5 mm formula is ~5–10 % off
-    // the manufacturer's true pitch (Protek HDM at ~16.5 mm vs 17.5 mm
-    // produces ~3 px/module compounding error — at idx 4 that's already
-    // 12 px, beyond a 10 % strip). Narrow enough that adjacent module
-    // boundaries don't fit inside the same strip (½ pitch is the absolute
-    // ceiling — at 25 % we have 25 % of pitch headroom on either side).
+    // Strip half-width = 25 % of initial pitch. Both detectors operate on
+    // the FULL rail face height (not just the bottom 40 % the legacy
+    // Sobel-X approach used) — Detector A *requires* the full height to
+    // distinguish full-column features (seams) from short ones (test
+    // buttons, rating-label text); Detector B's column-median equally
+    // benefits from sampling the whole device face.
     const stripHalfWidth = Math.max(8, Math.round(initialPitchPx * 0.25));
-    const stripTop = newTopY + Math.round(newFaceHeight * 0.60);
-    const stripHeight = newFaceHeight - Math.round(newFaceHeight * 0.60);
+    const stripTop = newTopY;
+    const stripHeight = newFaceHeight;
 
-    // Boundary indices to probe: 1, 2, 3, 4 (left side) and N-4, N-3, N-2, N-1 (right side).
-    const boundaryIndices = [1, 2, 3, 4, initialModuleCount - 4, initialModuleCount - 3, initialModuleCount - 2, initialModuleCount - 1];
+    // Step 2: probe EVERY interior gap, idx 1 through N-1. The previous
+    // 8-position scheme ([1..4, N-4..N-1]) starved the algorithm on any
+    // rail with fewer-than-8 modules and gave it no signal in the middle
+    // of the rail where perspective stretch needs the most evidence.
+    const boundaryIndices = [];
+    for (let i = 1; i < initialModuleCount; i++) boundaryIndices.push(i);
 
     const probes = await Promise.all(
       boundaryIndices.map(async (idx) => {
@@ -406,102 +530,313 @@ export async function tightenBox(imageBuffer, userBox) {
         const stripX0 = Math.max(0, Math.round(predictedX - stripHalfWidth));
         const stripX1 = Math.min(W, Math.round(predictedX + stripHalfWidth));
         const stripW = stripX1 - stripX0;
+        const blank = { refinedX: predictedX, snr: 0, sharpness: 0, confident: false };
         if (stripW < 4 || stripHeight < 4) {
-          return { idx, predictedX, refinedX: predictedX, snr: 0, sharpness: 0, centred: 0, confident: false };
+          return { idx, predictedX, a: blank, b: blank, centred: 0 };
         }
         const stripBuf = await sharp(imageBuffer)
           .extract({ left: stripX0, top: stripTop, width: stripW, height: stripHeight })
           .toBuffer();
-        const colSig = smooth3(await sobelXColSum(stripBuf, stripW, stripHeight));
-        // Single-pass: find peak + second-largest local max + mean.
-        let peakI = 0, peakV = -Infinity, secondV = -Infinity, sum = 0;
-        for (let i = 1; i < stripW - 1; i++) {
-          const v = colSig[i];
-          sum += v;
-          if (v > peakV) { secondV = peakV; peakV = v; peakI = i; }
-          else if (v > secondV) { secondV = v; }
-        }
-        const mean = sum / Math.max(1, stripW - 2);
-        const refinedX = stripX0 + peakI;
-        const snr = mean > 0 ? peakV / mean : 0;
-        const sharpness = secondV > 0 ? peakV / secondV : (peakV > 0 ? 5 : 0);
-        const centred = 1 - Math.abs(refinedX - predictedX) / stripHalfWidth;
-        const confident = snr >= 1.4 && sharpness >= 1.05;
-        return { idx, predictedX, refinedX, snr, sharpness, centred, confident };
+        // Run BOTH detectors on the same strip in parallel.
+        const [sigA, sigB] = await Promise.all([
+          tallThinScore(stripBuf, stripW, stripHeight).then(smooth3),
+          darkValleyScore(stripBuf, stripW, stripHeight).then(smooth3),
+        ]);
+        const sa = peakStats(sigA);
+        const sb = peakStats(sigB);
+        const a = {
+          refinedX: stripX0 + sa.peakI,
+          snr: sa.snr,
+          sharpness: sa.sharpness,
+          // Detector A's product score amplifies sharpness — use a slightly
+          // looser sharpness floor (1.03) but keep the SNR floor at 1.4
+          // since the absolute magnitude story is similar.
+          confident: sa.snr >= 1.4 && sa.sharpness >= 1.03,
+        };
+        const b = {
+          refinedX: stripX0 + sb.peakI,
+          snr: sb.snr,
+          sharpness: sb.sharpness,
+          // Detector B's score is brightness-difference (0–255 scale typical
+          // peak 5–30); the SNR / sharpness ratios behave like edge ratios
+          // so the same 1.4 / 1.03 floors are reasonable as a starting
+          // point. Tighten in a follow-up if A/B comparison reveals false
+          // positives at the boundaries of the floor.
+          confident: sb.snr >= 1.4 && sb.sharpness >= 1.03,
+        };
+        return { idx, predictedX, a, b };
       })
     );
 
-    // Pitch from same-side pairs only — cross-rail pairs (left-probe paired
-    // with right-probe) average their span over many modules, which masks
-    // any cumulative pitch bias and gives the formula's predicted pitch back
-    // (e.g. on Protek, pairs spanning 12+ modules from idx 3 → idx 15-18
-    // landed at ~70 px because both endpoints had similar systematic offset
-    // and the long-span average cancelled the bias). Same-side pairs see
-    // ONLY the local pitch, which is what we actually want.
+    // Step 2: consistency-checked anchor model per detector.
     //
-    // Pairs whose implied pitch falls outside ±25 % of the initial pitch
-    // are discarded as outliers (typical cause: probe landed in the middle
-    // of a 2-module RCD where there is no real boundary).
-    const confident = probes.filter((p) => p.confident);
-    const leftConfident = confident.filter((p) => p.idx <= 4);
-    const rightConfident = confident.filter((p) => p.idx >= initialModuleCount - 4);
-    const sameSidePairs = [];
-    for (const group of [leftConfident, rightConfident]) {
-      for (let i = 0; i < group.length; i++) {
-        for (let j = i + 1; j < group.length; j++) {
-          const a = group[i], b = group[j];
-          const span = b.idx - a.idx;
-          if (span <= 0) continue;
-          const p = (b.refinedX - a.refinedX) / span;
-          const drift = Math.abs(p - initialPitchPx) / initialPitchPx;
-          if (drift > 0.25) continue;
-          sameSidePairs.push({
-            from: a.idx,
-            to: b.idx,
-            pitch: p,
-            side: a.idx <= 4 ? 'L' : 'R',
-          });
+    // 1. Collect every confident probe with (idx, refined x).
+    // 2. Compute a working pitch from short-span (≤3) adjacent pair-pitches.
+    // 3. Iteratively reject probes whose refined position deviates more
+    //    than ±15 % of working pitch from the position predicted by
+    //    "anchor at rightmost retained probe + walk leftward at working
+    //    pitch". Repeat until stable.
+    // 4. Output:
+    //      • retained anchors (idx + refined x) — used as the grid pinning points
+    //      • pitchL  (local pitch from leftmost two retained probes)
+    //      • pitchR  (local pitch from rightmost two retained probes)
+    //      • candidatePitchPx (mean of pitchL + pitchR — for module-count rounding)
+    //
+    // pitchL ≠ pitchR captures perspective stretch directly. The grid
+    // builder uses both ends and interpolates linearly between them.
+    const buildAnchorModel = (key) => {
+      const all = probes
+        .filter((p) => p[key].confident)
+        .map((p) => ({
+          idx: p.idx,
+          x: p[key].refinedX,
+          snr: p[key].snr,
+          sharpness: p[key].sharpness,
+        }))
+        .sort((u, v) => u.idx - v.idx);
+      const allIdx = all.map((p) => p.idx);
+
+      if (all.length < 2) {
+        return {
+          confidentCount: all.length,
+          retainedIdx: allIdx,
+          rejectedIdx: [],
+          pairs: [],
+          candidatePitchPx: all.length === 1 ? initialPitchPx : null,
+          pitchL: initialPitchPx,
+          pitchR: initialPitchPx,
+          anchorL: all[0] ? { idx: all[0].idx, x: all[0].x } : null,
+          anchorR: all[0] ? { idx: all[0].idx, x: all[0].x } : null,
+          drift: null,
+          accepted: all.length === 1,
+        };
+      }
+
+      // Iterative outlier rejection — but never below a safety floor of
+      // max(4, 50 % of confident probes). On boards where probes don't
+      // agree well (Hager-style 16-module mixed-device rails, where 2-
+      // module devices like RCDs / main switches make many probes land on
+      // non-seam features), aggressive rejection can collapse to 2 anchors
+      // and produce a worse result than no rejection. The safety floor
+      // means we either reject confidently or fall back to the full set
+      // and let the linear-pitch fit absorb the spread.
+      const MIN_RETAINED = Math.max(4, Math.floor(all.length * 0.5));
+      let retained = [...all];
+      for (let iter = 0; iter < 5; iter++) {
+        if (retained.length < 2) break;
+        // Working pitch = median of short-span (≤3) pair pitches among
+        // retained probes. Restricting span ≤ 3 keeps the working pitch
+        // *local* — it doesn't average across the whole rail (which would
+        // mask perspective stretch).
+        const shortPairs = [];
+        for (let i = 0; i < retained.length - 1; i++) {
+          for (let j = i + 1; j < retained.length; j++) {
+            const span = retained[j].idx - retained[i].idx;
+            if (span > 0 && span <= 3) {
+              shortPairs.push((retained[j].x - retained[i].x) / span);
+            }
+          }
+        }
+        if (shortPairs.length === 0) break;
+        const sortedShortPairs = [...shortPairs].sort((u, v) => u - v);
+        const workingPitch = sortedShortPairs[Math.floor(sortedShortPairs.length / 2)];
+
+        // Anchor at the rightmost retained probe; walk leftward at
+        // workingPitch. A retained probe whose refined x deviates from this
+        // expected position by more than 15 % of pitch is rejected.
+        const anchor = retained[retained.length - 1];
+        const tol = workingPitch * 0.15;
+        const next = retained.filter((p) => {
+          const expected = anchor.x + (p.idx - anchor.idx) * workingPitch;
+          return Math.abs(p.x - expected) <= tol;
+        });
+        if (next.length === retained.length) break; // converged
+        if (next.length < MIN_RETAINED) break; // safety floor — keep current retained
+        retained = next;
+      }
+
+      const retainedIdx = retained.map((p) => p.idx);
+      const rejectedIdx = allIdx.filter((i) => !retainedIdx.includes(i));
+
+      // Compute final pitches: pitchL = median of short-span (≤3) pair
+      // pitches among the LEFT-HALF of retained probes; pitchR similarly
+      // for the right half. Using medians (rather than just the leftmost-
+      // adjacent pair) makes the end-pitch estimate robust to single bad
+      // probes — Hager-style mixed-device boards in particular have a
+      // single dodgy probe (idx 1 falling on a 2-module RCD body, etc.)
+      // that derails any "use leftmost pair" heuristic.
+      //
+      // Step 2.1 — BLANK / MULTI-MODULE detection:
+      // Pairs whose implied pitch is less than 60 % of the running median
+      // are flagged as "anomalously short" — the signature of either a
+      // blank slot between two probes (the (6,7)=35 case on Hager) or a
+      // probe locked onto a feature inside a 2-module device (RCD body,
+      // main switch). The probes involved in those anomalous pairs go
+      // onto a "blank-suspect" list, and they are excluded from the
+      // half-medians used for pitchL/pitchR. This protects the pitch
+      // estimate from being dragged toward smaller values by the noisy
+      // mid-rail region without losing the probes for the consistency
+      // check (which still uses them to validate the linear model).
+      const ANOMALOUS_PAIR_RATIO = 0.60;
+      const collectShortPairs = (subset) => {
+        const pairs = [];
+        for (let i = 0; i < subset.length - 1; i++) {
+          for (let j = i + 1; j < subset.length; j++) {
+            const span = subset[j].idx - subset[i].idx;
+            if (span > 0 && span <= 3) {
+              pairs.push({
+                from: subset[i].idx, to: subset[j].idx, span,
+                pitch: (subset[j].x - subset[i].x) / span,
+              });
+            }
+          }
+        }
+        return pairs;
+      };
+      // Find blank-suspect probes ACROSS THE WHOLE retained set first —
+      // a single pass on all retained data so the suspect list is shared
+      // by left-half and right-half pitch calculations.
+      const allShortPairs = collectShortPairs(retained);
+      const blankSuspectIdx = new Set();
+      if (allShortPairs.length >= 3) {
+        const sortedAll = [...allShortPairs.map((p) => p.pitch)].sort((u, v) => u - v);
+        const initialMedian = sortedAll[Math.floor(sortedAll.length / 2)];
+        const threshold = initialMedian * ANOMALOUS_PAIR_RATIO;
+        for (const p of allShortPairs) {
+          if (p.pitch < threshold) {
+            blankSuspectIdx.add(p.from);
+            blankSuspectIdx.add(p.to);
+          }
         }
       }
-    }
-    const pairwisePitches = sameSidePairs.map((p) => p.pitch);
-    let candidatePitch = null;
-    if (pairwisePitches.length > 0) {
-      const sorted = [...pairwisePitches].sort((a, b) => a - b);
-      candidatePitch = sorted[Math.floor(sorted.length / 2)];
-    }
-    // Sanity check vs the height-anchor estimate (drift > 25 % means
-    // something went badly wrong — fall back).
-    const drift = candidatePitch != null
-      ? Math.abs(candidatePitch - initialPitchPx) / initialPitchPx
-      : null;
-    const accepted = drift != null && drift <= 0.25;
-    if (accepted) {
-      refinedPitchPx = candidatePitch;
+      const cleanRetained = retained.filter((p) => !blankSuspectIdx.has(p.idx));
+      // Use cleanRetained for pitch fitting if it still has ≥4 probes;
+      // otherwise fall back to all retained (the blank filter would
+      // have eaten too much signal — better to have noisy pitch than
+      // none).
+      const pitchSource = cleanRetained.length >= 4 ? cleanRetained : retained;
+
+      const medianShortPairPitch = (subset) => {
+        const pairs = collectShortPairs(subset).map((p) => p.pitch);
+        if (pairs.length === 0) return null;
+        const sorted = pairs.sort((u, v) => u - v);
+        return sorted[Math.floor(sorted.length / 2)];
+      };
+      let pitchL, pitchR;
+      if (pitchSource.length >= 4) {
+        // Split into halves by position (not by count) so a board that
+        // has all clean probes clustered on one side still gets a
+        // meaningful split.
+        const midIdx = (pitchSource[0].idx + pitchSource[pitchSource.length - 1].idx) / 2;
+        const leftHalf = pitchSource.filter((p) => p.idx <= midIdx);
+        const rightHalf = pitchSource.filter((p) => p.idx >= midIdx);
+        pitchL = medianShortPairPitch(leftHalf) ?? medianShortPairPitch(pitchSource) ?? initialPitchPx;
+        pitchR = medianShortPairPitch(rightHalf) ?? medianShortPairPitch(pitchSource) ?? initialPitchPx;
+      } else if (pitchSource.length === 2 || pitchSource.length === 3) {
+        const fallback = medianShortPairPitch(pitchSource) ?? initialPitchPx;
+        pitchL = fallback;
+        pitchR = fallback;
+      } else {
+        pitchL = pitchR = initialPitchPx;
+      }
+
+      // Detect uniform vs perspective-stretched: if pitchL and pitchR
+      // agree to within 5 % use a single pitch (uniform model); otherwise
+      // keep them split (linear model).
+      const stretch = pitchL > 0 && pitchR > 0
+        ? Math.abs(pitchR - pitchL) / ((pitchL + pitchR) / 2)
+        : 0;
+      const isStretched = stretch > 0.05;
+      // Candidate pitch for module-count rounding: average of pitchL and
+      // pitchR when stretched, else just pitchL (=pitchR since they agree).
+      const candidate = isStretched
+        ? (pitchL + pitchR) / 2
+        : pitchL;
+
+      // Pair-pitches for diagnostic display (all retained pairs ≤ span 3).
+      const pairs = [];
+      for (let i = 0; i < retained.length - 1; i++) {
+        for (let j = i + 1; j < retained.length; j++) {
+          const span = retained[j].idx - retained[i].idx;
+          if (span > 0 && span <= 3) {
+            pairs.push({
+              from: retained[i].idx,
+              to: retained[j].idx,
+              pitch: (retained[j].x - retained[i].x) / span,
+            });
+          }
+        }
+      }
+
+      const drift = Math.abs(candidate - initialPitchPx) / initialPitchPx;
+      // Accept if the candidate is within ±25 % of initial AND we have at
+      // least 2 retained anchors after consistency check.
+      const accepted = retained.length >= 2 && drift <= 0.25;
+
+      return {
+        confidentCount: all.length,
+        retainedIdx,
+        rejectedIdx,
+        pairs,
+        candidatePitchPx: candidate,
+        pitchL,
+        pitchR,
+        anchorL: retained.length > 0 ? { idx: retained[0].idx, x: retained[0].x } : null,
+        anchorR: retained.length > 0 ? { idx: retained[retained.length - 1].idx, x: retained[retained.length - 1].x } : null,
+        drift,
+        accepted,
+      };
+    };
+    const aResult = buildAnchorModel('a');
+    const bResult = buildAnchorModel('b');
+
+    // Apply the primary detector's candidate pitch (default A; override
+    // with PROBE_DETECTOR=B). The other is logged for comparison only.
+    const primary = PRIMARY_DETECTOR === 'B' ? bResult : aResult;
+    if (primary.accepted) {
+      refinedPitchPx = primary.candidatePitchPx;
       refinedModuleCount = Math.max(1, Math.round(newFaceWidth / refinedPitchPx));
     }
+
+    const summariseDet = (r) => ({
+      confidentCount: r.confidentCount,
+      retainedIdx: r.retainedIdx,
+      rejectedIdx: r.rejectedIdx,
+      pairs: r.pairs.map((p) => ({
+        from: p.from, to: p.to, pitch: Math.round(p.pitch * 10) / 10,
+      })),
+      candidatePitchPx: r.candidatePitchPx != null ? Math.round(r.candidatePitchPx * 10) / 10 : null,
+      pitchL: r.pitchL != null ? Math.round(r.pitchL * 10) / 10 : null,
+      pitchR: r.pitchR != null ? Math.round(r.pitchR * 10) / 10 : null,
+      anchorL: r.anchorL ? { idx: r.anchorL.idx, x: Math.round(r.anchorL.x) } : null,
+      anchorR: r.anchorR ? { idx: r.anchorR.idx, x: Math.round(r.anchorR.x) } : null,
+      drift: r.drift != null ? Math.round(r.drift * 1000) / 1000 : null,
+      accepted: r.accepted,
+    });
     pitchDiag = {
+      primaryDetector: PRIMARY_DETECTOR,
       stripHalfWidthPx: stripHalfWidth,
+      stripBand: 'full-rail-face',
+      probedAllGaps: true,
       probes: probes.map((p) => ({
         idx: p.idx,
         predicted: Math.round(p.predictedX),
-        refined: Math.round(p.refinedX),
-        snr: Math.round(p.snr * 100) / 100,
-        sharpness: Math.round(p.sharpness * 100) / 100,
-        centred: Math.round(p.centred * 100) / 100,
-        confident: p.confident,
+        a: {
+          refined: Math.round(p.a.refinedX),
+          snr: Math.round(p.a.snr * 100) / 100,
+          sharpness: Math.round(p.a.sharpness * 100) / 100,
+          confident: p.a.confident,
+        },
+        b: {
+          refined: Math.round(p.b.refinedX),
+          snr: Math.round(p.b.snr * 100) / 100,
+          sharpness: Math.round(p.b.sharpness * 100) / 100,
+          confident: p.b.confident,
+        },
       })),
-      confidentCount: confident.length,
-      leftConfidentCount: leftConfident.length,
-      rightConfidentCount: rightConfident.length,
-      pairwisePitchesPx: pairwisePitches.map((p) => Math.round(p * 10) / 10),
-      sameSidePairs: sameSidePairs.map((p) => ({
-        from: p.from, to: p.to, pitch: Math.round(p.pitch * 10) / 10, side: p.side,
-      })),
-      candidatePitchPx: candidatePitch != null ? Math.round(candidatePitch * 10) / 10 : null,
+      a: summariseDet(aResult),
+      b: summariseDet(bResult),
       initialPitchPx: Math.round(initialPitchPx * 10) / 10,
-      driftFromHeight: drift != null ? Math.round(drift * 1000) / 1000 : null,
-      accepted,
     };
   }
   // Two-anchor tiling using the refined pitch — boundaries still land on
@@ -655,52 +990,180 @@ async function writeProbeOverlay(imageBuffer, result, outPath, expectedCount = n
     x0: tightenedBox.x * W, y0: tightenedBox.y * H,
     x1: (tightenedBox.x + tightenedBox.w) * W, y1: (tightenedBox.y + tightenedBox.h) * H,
   };
-  const stripBandY0 = diag.faceTopPx + (diag.faceBottomPx - diag.faceTopPx) * 0.60;
-  const stripBandY1 = diag.faceBottomPx;
+  // A/B overlay — three visual bands so probe markers and slot grids never
+  // get visually confused:
+  //
+  //   Band 1: PROBE markers — saturated solid lines + label
+  //     A confident ✓: bright GREEN, top-half vertical line
+  //     A rejected  ✗: dim ORANGE, label + 12 px tick only (no full line —
+  //                    so a rejected probe never reads as a grid candidate)
+  //     B confident ✓: bright CYAN, bottom-half vertical line
+  //     B rejected  ✗: dim MAGENTA, label + 12 px tick only
+  //
+  //   Band 2: SLOT GRIDS — pale dashed full-height lines, clearly distinct
+  //                       hue from the probe colours so the eye doesn't
+  //                       conflate them with rejected probes
+  //     Grid A: pale LIME-WHITE  rgb(220,255,200)
+  //     Grid B: pale GOLD-WHITE  rgb(255,235,180)
+  //
+  //   Band 3: PREDICTED initial-pitch positions — thin dashed RED reference
+  const COLOR_A_OK = 'rgb(40,210,80)';
+  const COLOR_A_FAIL = 'rgb(255,170,40)';
+  const COLOR_B_OK = 'rgb(80,200,255)';
+  const COLOR_B_FAIL = 'rgb(220,140,255)';
+  const COLOR_PRED = 'rgb(230,60,60)';
+  const COLOR_GRID_A = 'rgb(220,255,200)';
+  const COLOR_GRID_B = 'rgb(255,235,180)';
 
-  // Build per-probe SVG fragments. Predicted = red dashed; refined = solid
-  // bright-green if confident, orange if not. Label above the rail with the
-  // line index + SNR + sharpness.
+  // Per-probe markers. A on top half, B on bottom half so they don't overlap
+  // when both lock onto the same column. Failed probes shrink to a short
+  // tick + label only (no full half-height line) so they're clearly out
+  // of the running for a grid position.
+  const midY = (tightPx.y0 + tightPx.y1) / 2;
+  const TICK_LEN = 14;
   const probeFragments = pitchRefinement.probes.map((p) => {
     const predX = p.predicted;
-    const refX = p.refined;
-    const colour = p.confident ? 'rgb(40,210,80)' : 'rgb(255,140,40)';
-    const labelY = tightPx.y0 - 28;
+    const aColor = p.a.confident ? COLOR_A_OK : COLOR_A_FAIL;
+    const bColor = p.b.confident ? COLOR_B_OK : COLOR_B_FAIL;
+    // A marker — full half-height if confident, short tick if not.
+    const aMarker = p.a.confident
+      ? `<line x1="${p.a.refined}" y1="${tightPx.y0}" x2="${p.a.refined}" y2="${midY}" stroke="${aColor}" stroke-width="3"/>`
+      : `<line x1="${p.a.refined}" y1="${tightPx.y0}" x2="${p.a.refined}" y2="${tightPx.y0 + TICK_LEN}" stroke="${aColor}" stroke-width="2" stroke-dasharray="2,2" opacity="0.65"/>`;
+    const bMarker = p.b.confident
+      ? `<line x1="${p.b.refined}" y1="${midY}" x2="${p.b.refined}" y2="${tightPx.y1}" stroke="${bColor}" stroke-width="3"/>`
+      : `<line x1="${p.b.refined}" y1="${tightPx.y1 - TICK_LEN}" x2="${p.b.refined}" y2="${tightPx.y1}" stroke="${bColor}" stroke-width="2" stroke-dasharray="2,2" opacity="0.65"/>`;
     return `
-      <line x1="${predX}" y1="${tightPx.y0}" x2="${predX}" y2="${tightPx.y1}" stroke="rgb(220,50,50)" stroke-width="1.5" stroke-dasharray="3,4" opacity="0.7"/>
-      <line x1="${refX}" y1="${tightPx.y0}" x2="${refX}" y2="${tightPx.y1}" stroke="${colour}" stroke-width="3"/>
-      <text x="${refX}" y="${labelY}" font-family="-apple-system,Helvetica,sans-serif" font-size="14" font-weight="700" fill="${colour}" text-anchor="middle">${p.idx} ${p.confident ? '✓' : '✗'}</text>
-      <text x="${refX}" y="${tightPx.y1 + 28}" font-family="-apple-system,Helvetica,sans-serif" font-size="11" fill="${colour}" text-anchor="middle">snr=${p.snr.toFixed(2)} sh=${p.sharpness.toFixed(2)}</text>
+      <line x1="${predX}" y1="${tightPx.y0}" x2="${predX}" y2="${tightPx.y1}" stroke="${COLOR_PRED}" stroke-width="1" stroke-dasharray="2,5" opacity="0.45"/>
+      ${aMarker}
+      ${bMarker}
+      <text x="${p.a.refined}" y="${tightPx.y0 - 30}" font-family="-apple-system,Helvetica,sans-serif" font-size="13" font-weight="700" fill="${aColor}" text-anchor="middle">A:${p.idx}${p.a.confident ? '✓' : '✗'}</text>
+      <text x="${p.a.refined}" y="${tightPx.y0 - 14}" font-family="-apple-system,Helvetica,sans-serif" font-size="10" fill="${aColor}" text-anchor="middle">${p.a.snr.toFixed(2)}/${p.a.sharpness.toFixed(2)}</text>
+      <text x="${p.b.refined}" y="${tightPx.y1 + 16}" font-family="-apple-system,Helvetica,sans-serif" font-size="13" font-weight="700" fill="${bColor}" text-anchor="middle">B:${p.idx}${p.b.confident ? '✓' : '✗'}</text>
+      <text x="${p.b.refined}" y="${tightPx.y1 + 32}" font-family="-apple-system,Helvetica,sans-serif" font-size="10" fill="${bColor}" text-anchor="middle">${p.b.snr.toFixed(2)}/${p.b.sharpness.toFixed(2)}</text>
     `;
   }).join('\n');
 
-  // Highlight the bottom-40 % strip band that was actually searched.
+  // Slot grids — pale near-white tinted lines, distinct from the saturated
+  // probe markers and from rejected-probe ticks.
+  //
+  // Step 1 grid anchoring: instead of laying a uniform tile down from
+  // faceLeftPx (the old behaviour, which produced gold/lime lines drifting
+  // through the middle of devices on the left end of a perspective-stretched
+  // Crabtree), the grid is now ANCHORED on the rightmost two confident
+  // probes for that detector.
+  //   • Right-side pitch = (refined_b − refined_a) / (idx_b − idx_a)
+  //     where a/b are the two highest-idx confident probes.
+  //   • Anchor point = refined_b at idx_b.
+  //   • Lines walk leftward at that pitch from the anchor.
+  // This guarantees the right-side grid lines pass through the known-good
+  // probe positions. The left side will only be correct insofar as the
+  // local right-side pitch matches the rail's whole-row pitch — which it
+  // *won't* under perspective stretch (Crabtree right ≈ 106, left ≈ 85).
+  // That mismatch is the visual evidence we need to motivate step 2
+  // (consistency-checked all-position probing).
+  //
+  // Fallbacks:
+  //   • <2 confident probes  → lay the grid uniform from faceLeftPx
+  //                            (legacy behaviour, last resort).
+  //   • Anchor pitch outside ±25 % of candidate pitch → reject anchor,
+  //                            fall back to uniform. (Catches a degenerate
+  //                            case where the two rightmost confidents
+  //                            happen to be both wrong in the same way.)
+  // Step 2 grid lay-down: linear pitch interpolation between left and right
+  // anchors (the consistency-checked retained probes from buildAnchorModel).
+  //
+  //   • If both anchorL and anchorR exist with anchorL.idx < anchorR.idx:
+  //       Between them: pitch(j) = pitchL + (pitchR - pitchL) × (j - anchorL.idx) / (anchorR.idx - anchorL.idx)
+  //       Position(i) integrates pitch from anchorL leftward / rightward.
+  //       Outside [anchorL.idx, anchorR.idx]: extrapolate at end-pitch.
+  //   • Single anchor: uniform pitch from that anchor (step-1 behaviour).
+  //   • No anchor: uniform pitch from faceLeftPx (legacy fallback).
+  const buildGrid = (det, colour) => {
+    if (!det.candidatePitchPx) return { lines: '', mode: 'none' };
+    const faceWidth = diag.faceRightPx - diag.faceLeftPx;
+    const aL = det.anchorL, aR = det.anchorR;
+    const haveTwo = aL && aR && aL.idx !== aR.idx;
+    const haveOne = !haveTwo && aL;
+    const pitchL = det.pitchL;
+    const pitchR = det.pitchR;
+
+    // Position-of-slot-boundary i — closed form for the integral of a
+    // linear pitch function between anchors, with constant-pitch
+    // extrapolation outside.
+    const positionOf = (i) => {
+      if (haveTwo) {
+        const span = aR.idx - aL.idx;
+        if (i <= aL.idx) return aL.x - (aL.idx - i) * pitchL;
+        if (i >= aR.idx) return aR.x + (i - aR.idx) * pitchR;
+        const di = i - aL.idx;
+        const slope = (pitchR - pitchL) / span;
+        // Sum_{k=0..di-1} (pitchL + slope * k) = di * pitchL + slope * di*(di-1)/2
+        return aL.x + di * pitchL + slope * di * (di - 1) / 2;
+      }
+      if (haveOne) return aL.x + (i - aL.idx) * det.candidatePitchPx;
+      return diag.faceLeftPx + det.candidatePitchPx * i;
+    };
+
+    const count = Math.max(1, Math.round(faceWidth / det.candidatePitchPx));
+    const lines = [];
+    for (let i = 0; i <= count; i++) {
+      const x = positionOf(i);
+      lines.push(
+        `<line x1="${x}" y1="${tightPx.y0}" x2="${x}" y2="${tightPx.y1}" stroke="${colour}" stroke-width="1.5" stroke-dasharray="6,3" opacity="0.75"/>`
+      );
+    }
+    return {
+      lines: lines.join('\n'),
+      mode: haveTwo ? 'linear' : (haveOne ? 'single-anchor' : 'fallback'),
+      pitchL, pitchR, aL, aR,
+    };
+  };
+  const gridARes = buildGrid(pitchRefinement.a, COLOR_GRID_A);
+  const gridBRes = buildGrid(pitchRefinement.b, COLOR_GRID_B);
+  const gridA = gridARes.lines;
+  const gridB = gridBRes.lines;
+
+  // Highlight the full-rail-face strip band that was actually searched.
   const bandFragment = `
-    <rect x="${tightPx.x0}" y="${stripBandY0}" width="${tightPx.x1 - tightPx.x0}" height="${stripBandY1 - stripBandY0}"
-          fill="rgba(80,180,255,0.10)" stroke="rgba(80,180,255,0.45)" stroke-width="1" stroke-dasharray="4,4"/>
+    <rect x="${tightPx.x0}" y="${diag.faceTopPx}" width="${tightPx.x1 - tightPx.x0}" height="${diag.faceBottomPx - diag.faceTopPx}"
+          fill="rgba(140,140,200,0.05)" stroke="rgba(140,140,200,0.30)" stroke-width="1" stroke-dasharray="4,4"/>
   `;
 
-  const captionParts = [
-    `count=${moduleCount}${expectedCount != null ? ` vs GT=${expectedCount}` : ''}`,
-    `initial pitch ${pitchRefinement.initialPitchPx}px → refined ${pitchRefinement.candidatePitchPx ?? '—'}px`,
-    `confident ${pitchRefinement.confidentCount}/${pitchRefinement.probes.length}`,
-    `pairs ${pitchRefinement.pairwisePitchesPx.length}`,
-    pitchRefinement.accepted ? '✓ accepted' : '✗ rejected',
-  ];
-  const caption = captionParts.join('  ·  ');
+  const probeCount = pitchRefinement.probes.length;
+  const describeGrid = (det, gridRes) => {
+    if (gridRes.mode === 'linear') {
+      return `LINEAR  pitchL=${det.pitchL?.toFixed(1)}px → pitchR=${det.pitchR?.toFixed(1)}px  anchors idx${det.anchorL.idx}/${det.anchorR.idx}  retained=${det.retainedIdx.length}/${det.confidentCount} rejected=${det.rejectedIdx.length}`;
+    }
+    if (gridRes.mode === 'single-anchor') {
+      return `SINGLE-ANCHOR  pitch=${det.candidatePitchPx}px  anchor=idx${det.anchorL?.idx}  retained=${det.retainedIdx.length}/${det.confidentCount}`;
+    }
+    return `FALLBACK  pitch=${det.candidatePitchPx ?? '—'}px  no consistent anchors`;
+  };
+  const aLine = `det.A tall-thin: ${describeGrid(pitchRefinement.a, gridARes)}  ${pitchRefinement.a.accepted ? '✓' : '✗'}`;
+  const bLine = `det.B dark-valley: ${describeGrid(pitchRefinement.b, gridBRes)}  ${pitchRefinement.b.accepted ? '✓' : '✗'}`;
+  const headerLine = `count=${moduleCount}${expectedCount != null ? ` vs GT=${expectedCount} ${moduleCount === expectedCount ? '✓' : 'Δ' + (moduleCount - expectedCount)}` : ''}  ·  initial=${pitchRefinement.initialPitchPx}px  ·  primary=${pitchRefinement.primaryDetector}`;
 
   const svg = `
     <svg width="${W}" height="${H}" xmlns="http://www.w3.org/2000/svg">
       <rect x="${tightPx.x0}" y="${tightPx.y0}" width="${tightPx.x1 - tightPx.x0}" height="${tightPx.y1 - tightPx.y0}"
-            fill="none" stroke="rgb(40,210,80)" stroke-width="3"/>
+            fill="none" stroke="rgb(80,80,90)" stroke-width="2"/>
       ${bandFragment}
+      ${gridA}
+      ${gridB}
       ${probeFragments}
-      <rect x="0" y="${H - 56}" width="${W}" height="56" fill="rgba(20,20,20,0.85)"/>
-      <text x="16" y="${H - 28}" font-family="-apple-system,Helvetica,sans-serif" font-size="20" font-weight="700" fill="rgb(40,210,80)">refined ✓</text>
-      <text x="170" y="${H - 28}" font-family="-apple-system,Helvetica,sans-serif" font-size="20" font-weight="700" fill="rgb(255,140,40)">refined ✗ (low confidence)</text>
-      <text x="600" y="${H - 28}" font-family="-apple-system,Helvetica,sans-serif" font-size="20" fill="rgb(220,50,50)">predicted (dashed)</text>
-      <text x="900" y="${H - 28}" font-family="-apple-system,Helvetica,sans-serif" font-size="20" fill="rgb(80,180,255)">strip band (cyan)</text>
-      <text x="16" y="${H - 8}" font-family="-apple-system,Helvetica,sans-serif" font-size="16" fill="rgb(220,220,220)">${caption}</text>
+      <rect x="0" y="${H - 110}" width="${W}" height="110" fill="rgba(15,15,18,0.92)"/>
+      <text x="16" y="${H - 86}" font-family="-apple-system,Helvetica,sans-serif" font-size="16" font-weight="700" fill="${COLOR_A_OK}">A — TALL-THIN  ·  top-half markers</text>
+      <text x="${W / 2 + 16}" y="${H - 86}" font-family="-apple-system,Helvetica,sans-serif" font-size="16" font-weight="700" fill="${COLOR_B_OK}">B — DARK-VALLEY  ·  bottom-half markers</text>
+      <text x="16" y="${H - 66}" font-family="-apple-system,Helvetica,sans-serif" font-size="13" fill="${COLOR_A_OK}">${aLine}</text>
+      <text x="${W / 2 + 16}" y="${H - 66}" font-family="-apple-system,Helvetica,sans-serif" font-size="13" fill="${COLOR_B_OK}">${bLine}</text>
+      <text x="16" y="${H - 44}" font-family="-apple-system,Helvetica,sans-serif" font-size="12" fill="${COLOR_A_OK}">probe ✓ green solid</text>
+      <text x="170" y="${H - 44}" font-family="-apple-system,Helvetica,sans-serif" font-size="12" fill="${COLOR_A_FAIL}">probe ✗ orange tick (rejected, label only)</text>
+      <text x="500" y="${H - 44}" font-family="-apple-system,Helvetica,sans-serif" font-size="12" fill="${COLOR_GRID_A}">grid A pale-lime dashed</text>
+      <text x="${W / 2 + 16}" y="${H - 44}" font-family="-apple-system,Helvetica,sans-serif" font-size="12" fill="${COLOR_B_OK}">probe ✓ cyan solid</text>
+      <text x="${W / 2 + 170}" y="${H - 44}" font-family="-apple-system,Helvetica,sans-serif" font-size="12" fill="${COLOR_B_FAIL}">probe ✗ magenta tick</text>
+      <text x="${W / 2 + 500}" y="${H - 44}" font-family="-apple-system,Helvetica,sans-serif" font-size="12" fill="${COLOR_GRID_B}">grid B pale-gold dashed</text>
+      <text x="16" y="${H - 22}" font-family="-apple-system,Helvetica,sans-serif" font-size="12" fill="${COLOR_PRED}">predicted-from-initial-pitch (red dashed)</text>
+      <text x="16" y="${H - 6}" font-family="-apple-system,Helvetica,sans-serif" font-size="14" font-weight="700" fill="rgb(230,230,230)">${headerLine}</text>
     </svg>
   `;
   await sharp(imageBuffer)
@@ -820,23 +1283,36 @@ for (const id of filtered) {
     );
     if (r.pitchRefinement) {
       const p = r.pitchRefinement;
-      const lPairs = (p.sameSidePairs || []).filter((s) => s.side === 'L').length;
-      const rPairs = (p.sameSidePairs || []).filter((s) => s.side === 'R').length;
-      console.log(
-        `      pitch refine: initial=${p.initialPitchPx}px → candidate=${p.candidatePitchPx}px ` +
-        `(L:${p.leftConfidentCount} probes/${lPairs} pairs, R:${p.rightConfidentCount} probes/${rPairs} pairs, ` +
-        `drift ${p.driftFromHeight != null ? (p.driftFromHeight * 100).toFixed(1) + '%' : '—'}) ` +
-        `${p.accepted ? 'applied ✓' : 'rejected'}  initialN=${r.initialModuleCount} → finalN=${r.moduleCount}`
-      );
-      const summary = p.probes.map((pr) =>
-        `${pr.idx}:${pr.refined - pr.predicted >= 0 ? '+' : ''}${pr.refined - pr.predicted}` +
-        `(snr=${pr.snr.toFixed(2)},sh=${pr.sharpness.toFixed(2)})${pr.confident ? '✓' : '✗'}`
-      ).join('  ');
-      console.log(`      probes: ${summary}`);
-      if (p.sameSidePairs && p.sameSidePairs.length > 0) {
-        const pairSummary = p.sameSidePairs.map((s) => `${s.side}${s.from}→${s.to}=${s.pitch}px`).join(' ');
-        console.log(`      pairs:  ${pairSummary}`);
-      }
+      const renderDetector = (label, det) => {
+        const star = label === p.primaryDetector ? '★' : ' ';
+        const k = label.toLowerCase();
+        const retSet = new Set(det.retainedIdx);
+        const rejSet = new Set(det.rejectedIdx);
+        console.log(
+          `      ${star} det.${label}: pitch L=${det.pitchL ?? '—'}px R=${det.pitchR ?? '—'}px ` +
+          `(candidate ${det.candidatePitchPx ?? '—'}, drift ${det.drift != null ? (det.drift * 100).toFixed(1) + '%' : '—'}) ` +
+          `confident=${det.confidentCount}/${p.probes.length} retained=${det.retainedIdx.length} rejected=${det.rejectedIdx.length}  ` +
+          `${det.accepted ? 'applied ✓' : 'rejected'}`
+        );
+        const anc = (det.anchorL && det.anchorR && det.anchorL.idx !== det.anchorR.idx)
+          ? `anchorL=idx${det.anchorL.idx}@${det.anchorL.x}px anchorR=idx${det.anchorR.idx}@${det.anchorR.x}px`
+          : (det.anchorL ? `single anchor @ idx${det.anchorL.idx}` : 'no anchors');
+        console.log(`        ${anc}`);
+        const probesLine = p.probes.map((pr) => {
+          const status = pr[k].confident
+            ? (retSet.has(pr.idx) ? '✓' : (rejSet.has(pr.idx) ? '✗rej' : '✓'))
+            : '✗';
+          return `${pr.idx}:${pr[k].refined - pr.predicted >= 0 ? '+' : ''}${pr[k].refined - pr.predicted}${status}`;
+        }).join(' ');
+        console.log(`        probes: ${probesLine}`);
+        if (det.pairs.length > 0) {
+          const pairSummary = det.pairs.slice(0, 8).map((s) => `${s.from}→${s.to}=${s.pitch}px`).join(' ');
+          console.log(`        pairs:  ${pairSummary}${det.pairs.length > 8 ? ` ...(${det.pairs.length})` : ''}`);
+        }
+      };
+      console.log(`      A/B PROBE — primary=${p.primaryDetector}  initialN=${r.initialModuleCount} → finalN=${r.moduleCount}  strip=${p.stripBand}  probed=${p.probes.length} gaps`);
+      renderDetector('A', p.a);
+      renderDetector('B', p.b);
     }
     const outName = `${id}_${v.tag}.jpg`;
     await writeOverlay(photoBytes, r, path.join(DEBUG_DIR, outName), gt);
