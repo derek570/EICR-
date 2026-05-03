@@ -60,11 +60,15 @@ export default function JobOverviewPage() {
 
   return (
     <div
-      className="mx-auto flex w-full flex-col gap-5 px-4 py-5 md:px-8 md:py-7"
+      className="mx-auto flex w-full flex-col gap-5 px-4 py-5 landscape:gap-2 landscape:px-2 landscape:py-2 md:px-8 md:py-7"
       style={{ maxWidth: '1280px' }}
     >
-      {/* ── Hero strip ─────────────────────────────────────────── */}
-      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+      {/* ── Hero strip ───────────────────────────────────────────
+          Landscape (incl. landscape phone): 5 boxes side-by-side,
+          mirroring iOS LiveFillView landscape layout (5x HStack with
+          .frame(maxWidth: .infinity)). Portrait phone keeps the
+          1-col stack; tablet portrait keeps 2-col, desktop 5-col. */}
+      <div className="grid gap-3 landscape:grid-cols-5 landscape:gap-1.5 md:grid-cols-2 xl:grid-cols-5">
         <HeroBox
           icon={User}
           title="Client"
@@ -124,7 +128,7 @@ export default function JobOverviewPage() {
       </div>
 
       {/* ── General Condition + Purpose of Report ──────────────── */}
-      <div className="grid gap-3 md:grid-cols-2">
+      <div className="grid gap-3 landscape:grid-cols-2 landscape:gap-1.5 md:grid-cols-2">
         <SummaryCard
           icon={ShieldCheck}
           title="General Condition"
@@ -197,15 +201,17 @@ function HeroBox({
   return (
     <Link
       href={href}
-      className="group flex flex-col gap-2 rounded-[var(--radius-lg)] border border-[var(--color-border-subtle)] bg-[var(--color-surface-2)] px-4 py-3 transition hover:border-[var(--color-border-default)] hover:bg-[var(--color-surface-3)]"
+      className="group flex flex-col gap-2 rounded-[var(--radius-lg)] border border-[var(--color-border-subtle)] bg-[var(--color-surface-2)] px-4 py-3 transition landscape:gap-1 landscape:rounded-[var(--radius-md)] landscape:px-2 landscape:py-1.5 hover:border-[var(--color-border-default)] hover:bg-[var(--color-surface-3)]"
     >
-      <div className="flex items-center gap-2 text-[var(--color-brand-blue)]">
-        <Icon className="h-4 w-4" strokeWidth={2.25} aria-hidden />
-        <span className="text-[13px] font-semibold uppercase tracking-[0.06em]">{title}</span>
+      <div className="flex items-center gap-2 text-[var(--color-brand-blue)] landscape:gap-1">
+        <Icon className="h-4 w-4 landscape:h-3 landscape:w-3" strokeWidth={2.25} aria-hidden />
+        <span className="text-[13px] font-semibold uppercase tracking-[0.06em] landscape:text-[10px] landscape:tracking-[0.04em]">
+          {title}
+        </span>
       </div>
-      <dl className="flex flex-col gap-0.5 text-[12.5px] leading-snug">
+      <dl className="flex flex-col gap-0.5 text-[12.5px] leading-snug landscape:text-[10.5px] landscape:leading-tight">
         {rows.map(([label, value]) => (
-          <div key={label} className="flex items-baseline gap-2">
+          <div key={label} className="flex items-baseline gap-2 landscape:gap-1">
             <dt className="shrink-0 text-[var(--color-text-tertiary)]">{label}:</dt>
             <dd
               className={
@@ -241,17 +247,19 @@ function SummaryCard({
   return (
     <Link
       href={href}
-      className="flex flex-col gap-2 rounded-[var(--radius-lg)] border border-[var(--color-border-subtle)] bg-[var(--color-surface-2)] px-4 py-3 transition hover:border-[var(--color-border-default)] hover:bg-[var(--color-surface-3)]"
+      className="flex flex-col gap-2 rounded-[var(--radius-lg)] border border-[var(--color-border-subtle)] bg-[var(--color-surface-2)] px-4 py-3 transition landscape:gap-1 landscape:rounded-[var(--radius-md)] landscape:px-2 landscape:py-1.5 hover:border-[var(--color-border-default)] hover:bg-[var(--color-surface-3)]"
     >
-      <div className="flex items-center gap-2 text-[var(--color-brand-blue)]">
-        <Icon className="h-4 w-4" strokeWidth={2.25} aria-hidden />
-        <span className="text-[13px] font-semibold uppercase tracking-[0.06em]">{title}</span>
+      <div className="flex items-center gap-2 text-[var(--color-brand-blue)] landscape:gap-1">
+        <Icon className="h-4 w-4 landscape:h-3 landscape:w-3" strokeWidth={2.25} aria-hidden />
+        <span className="text-[13px] font-semibold uppercase tracking-[0.06em] landscape:text-[10px] landscape:tracking-[0.04em]">
+          {title}
+        </span>
       </div>
       <p
         className={
           body
-            ? 'text-[13.5px] leading-snug text-[var(--color-text-primary)]'
-            : 'text-[13px] italic leading-snug text-[var(--color-text-tertiary)]'
+            ? 'text-[13.5px] leading-snug text-[var(--color-text-primary)] landscape:text-[10.5px] landscape:leading-tight'
+            : 'text-[13px] italic leading-snug text-[var(--color-text-tertiary)] landscape:text-[10px] landscape:leading-tight'
         }
       >
         {body ?? empty}
@@ -273,16 +281,20 @@ function SummaryCard({
 function CircuitsPanel({ circuits, href }: { circuits: CircuitRow[]; href: string }) {
   return (
     <section className="flex flex-col gap-2 rounded-[var(--radius-lg)] border border-[var(--color-border-subtle)] bg-[var(--color-surface-2)] px-4 py-3">
-      <header className="flex items-center justify-between">
-        <div className="flex items-center gap-2 text-[var(--color-brand-blue)]">
-          <CircuitBoard className="h-4 w-4" strokeWidth={2.25} aria-hidden />
-          <span className="text-[13px] font-semibold uppercase tracking-[0.06em]">
+      <header className="flex items-center justify-between landscape:gap-1">
+        <div className="flex items-center gap-2 text-[var(--color-brand-blue)] landscape:gap-1">
+          <CircuitBoard
+            className="h-4 w-4 landscape:h-3 landscape:w-3"
+            strokeWidth={2.25}
+            aria-hidden
+          />
+          <span className="text-[13px] font-semibold uppercase tracking-[0.06em] landscape:text-[10px] landscape:tracking-[0.04em]">
             Circuits ({circuits.length})
           </span>
         </div>
         <Link
           href={href}
-          className="text-[12px] font-semibold text-[var(--color-brand-blue)] hover:underline"
+          className="text-[12px] font-semibold text-[var(--color-brand-blue)] landscape:text-[10px] hover:underline"
         >
           Open tab →
         </Link>
@@ -366,17 +378,21 @@ function CircuitTableRow({ circuit }: { circuit: CircuitRow }) {
  */
 function WideCircuitsPanel({ circuits, href }: { circuits: CircuitRow[]; href: string }) {
   return (
-    <section className="flex flex-col gap-2 rounded-[var(--radius-lg)] border border-[var(--color-border-subtle)] bg-[var(--color-surface-2)] px-4 py-3">
-      <header className="flex items-center justify-between">
-        <div className="flex items-center gap-2 text-[var(--color-brand-blue)]">
-          <CircuitBoard className="h-4 w-4" strokeWidth={2.25} aria-hidden />
-          <span className="text-[13px] font-semibold uppercase tracking-[0.06em]">
+    <section className="flex flex-col gap-2 rounded-[var(--radius-lg)] border border-[var(--color-border-subtle)] bg-[var(--color-surface-2)] px-4 py-3 landscape:gap-1 landscape:rounded-[var(--radius-md)] landscape:px-2 landscape:py-1.5">
+      <header className="flex items-center justify-between landscape:gap-1">
+        <div className="flex items-center gap-2 text-[var(--color-brand-blue)] landscape:gap-1">
+          <CircuitBoard
+            className="h-4 w-4 landscape:h-3 landscape:w-3"
+            strokeWidth={2.25}
+            aria-hidden
+          />
+          <span className="text-[13px] font-semibold uppercase tracking-[0.06em] landscape:text-[10px] landscape:tracking-[0.04em]">
             Circuits ({circuits.length})
           </span>
         </div>
         <Link
           href={href}
-          className="text-[12px] font-semibold text-[var(--color-brand-blue)] hover:underline"
+          className="text-[12px] font-semibold text-[var(--color-brand-blue)] landscape:text-[10px] hover:underline"
         >
           Open tab →
         </Link>
@@ -386,68 +402,73 @@ function WideCircuitsPanel({ circuits, href }: { circuits: CircuitRow[]; href: s
           No circuits yet — capture a CCU photo or dictate to populate the board.
         </p>
       ) : (
-        <div className="overflow-x-auto">
-          <table className="w-full min-w-[1100px] border-collapse text-[11.5px]">
+        // Landscape (incl. landscape phone) drops the 1100px floor so the
+        // full 29-col schedule shrinks to fit the viewport (iOS parity:
+        // LiveCircuitGrid renders without horizontal scroll on phone
+        // landscape). Desktop keeps the comfortable 1100px min-width via
+        // the lg: breakpoint so wide displays don't scrunch unnecessarily.
+        <div className="overflow-x-auto landscape:overflow-x-visible">
+          <table className="w-full min-w-[1100px] border-collapse text-[11.5px] landscape:min-w-0 landscape:table-fixed landscape:text-[8.5px]">
             <thead>
               {/* Group header — mirrors iOS (Circuit / Cond / Dt / OCPD / RCD / Ring / Cont / IR / Test) */}
-              <tr className="text-[10px] uppercase tracking-[0.08em] text-[var(--color-brand-blue)]">
-                <th colSpan={2} className="py-1 text-left font-semibold">
+              <tr className="text-[10px] uppercase tracking-[0.08em] text-[var(--color-brand-blue)] landscape:text-[7.5px] landscape:tracking-[0.04em]">
+                <th colSpan={2} className="py-1 text-left font-semibold landscape:py-0.5">
                   Circuit
                 </th>
-                <th colSpan={3} className="py-1 text-left font-semibold">
+                <th colSpan={3} className="py-1 text-left font-semibold landscape:py-0.5">
                   Cond
                 </th>
-                <th colSpan={2} className="py-1 text-left font-semibold">
+                <th colSpan={2} className="py-1 text-left font-semibold landscape:py-0.5">
                   Dt
                 </th>
-                <th colSpan={5} className="py-1 text-left font-semibold">
+                <th colSpan={5} className="py-1 text-left font-semibold landscape:py-0.5">
                   OCPD
                 </th>
-                <th colSpan={4} className="py-1 text-left font-semibold">
+                <th colSpan={4} className="py-1 text-left font-semibold landscape:py-0.5">
                   RCD
                 </th>
-                <th colSpan={3} className="py-1 text-left font-semibold">
+                <th colSpan={3} className="py-1 text-left font-semibold landscape:py-0.5">
                   Ring
                 </th>
-                <th colSpan={2} className="py-1 text-left font-semibold">
+                <th colSpan={2} className="py-1 text-left font-semibold landscape:py-0.5">
                   Cont
                 </th>
-                <th colSpan={3} className="py-1 text-left font-semibold">
+                <th colSpan={3} className="py-1 text-left font-semibold landscape:py-0.5">
                   IR
                 </th>
-                <th colSpan={4} className="py-1 text-left font-semibold">
+                <th colSpan={4} className="py-1 text-left font-semibold landscape:py-0.5">
                   Test
                 </th>
               </tr>
-              <tr className="border-b border-[var(--color-border-subtle)] text-left text-[10px] uppercase tracking-[0.05em] text-[var(--color-text-tertiary)]">
-                <th className="py-1 pr-1 font-semibold">#</th>
-                <th className="py-1 pr-2 font-semibold">Desig</th>
-                <th className="py-1 pr-1 font-semibold">WT</th>
-                <th className="py-1 pr-1 font-semibold">RM</th>
-                <th className="py-1 pr-1 font-semibold">Pts</th>
-                <th className="py-1 pr-1 font-semibold">L</th>
-                <th className="py-1 pr-1 font-semibold">C</th>
-                <th className="py-1 pr-1 font-semibold">BS</th>
-                <th className="py-1 pr-1 font-semibold">Ty</th>
-                <th className="py-1 pr-1 font-semibold">A</th>
-                <th className="py-1 pr-1 font-semibold">kA</th>
-                <th className="py-1 pr-1 font-semibold">Zs</th>
-                <th className="py-1 pr-1 font-semibold">Ty</th>
-                <th className="py-1 pr-1 font-semibold">mA</th>
-                <th className="py-1 pr-1 font-semibold">ms</th>
-                <th className="py-1 pr-1 font-semibold">ΔT</th>
-                <th className="py-1 pr-1 font-semibold">r1</th>
-                <th className="py-1 pr-1 font-semibold">rn</th>
-                <th className="py-1 pr-1 font-semibold">r2</th>
-                <th className="py-1 pr-1 font-semibold">R1+R2</th>
-                <th className="py-1 pr-1 font-semibold">R2</th>
-                <th className="py-1 pr-1 font-semibold">V</th>
-                <th className="py-1 pr-1 font-semibold">L-L</th>
-                <th className="py-1 pr-1 font-semibold">L-E</th>
-                <th className="py-1 pr-1 font-semibold">P</th>
-                <th className="py-1 pr-1 font-semibold">Zs</th>
-                <th className="py-1 pr-1 font-semibold">ms</th>
-                <th className="py-1 pr-1 font-semibold">Rc</th>
+              <tr className="border-b border-[var(--color-border-subtle)] text-left text-[10px] uppercase tracking-[0.05em] text-[var(--color-text-tertiary)] landscape:text-[7.5px] landscape:tracking-[0.02em]">
+                <th className="py-1 pr-1 font-semibold landscape:py-0.5 landscape:pr-0.5">#</th>
+                <th className="py-1 pr-2 font-semibold landscape:py-0.5 landscape:pr-1">Desig</th>
+                <th className="py-1 pr-1 font-semibold landscape:py-0.5 landscape:pr-0.5">WT</th>
+                <th className="py-1 pr-1 font-semibold landscape:py-0.5 landscape:pr-0.5">RM</th>
+                <th className="py-1 pr-1 font-semibold landscape:py-0.5 landscape:pr-0.5">Pts</th>
+                <th className="py-1 pr-1 font-semibold landscape:py-0.5 landscape:pr-0.5">L</th>
+                <th className="py-1 pr-1 font-semibold landscape:py-0.5 landscape:pr-0.5">C</th>
+                <th className="py-1 pr-1 font-semibold landscape:py-0.5 landscape:pr-0.5">BS</th>
+                <th className="py-1 pr-1 font-semibold landscape:py-0.5 landscape:pr-0.5">Ty</th>
+                <th className="py-1 pr-1 font-semibold landscape:py-0.5 landscape:pr-0.5">A</th>
+                <th className="py-1 pr-1 font-semibold landscape:py-0.5 landscape:pr-0.5">kA</th>
+                <th className="py-1 pr-1 font-semibold landscape:py-0.5 landscape:pr-0.5">Zs</th>
+                <th className="py-1 pr-1 font-semibold landscape:py-0.5 landscape:pr-0.5">Ty</th>
+                <th className="py-1 pr-1 font-semibold landscape:py-0.5 landscape:pr-0.5">mA</th>
+                <th className="py-1 pr-1 font-semibold landscape:py-0.5 landscape:pr-0.5">ms</th>
+                <th className="py-1 pr-1 font-semibold landscape:py-0.5 landscape:pr-0.5">ΔT</th>
+                <th className="py-1 pr-1 font-semibold landscape:py-0.5 landscape:pr-0.5">r1</th>
+                <th className="py-1 pr-1 font-semibold landscape:py-0.5 landscape:pr-0.5">rn</th>
+                <th className="py-1 pr-1 font-semibold landscape:py-0.5 landscape:pr-0.5">r2</th>
+                <th className="py-1 pr-1 font-semibold landscape:py-0.5 landscape:pr-0.5">R1+R2</th>
+                <th className="py-1 pr-1 font-semibold landscape:py-0.5 landscape:pr-0.5">R2</th>
+                <th className="py-1 pr-1 font-semibold landscape:py-0.5 landscape:pr-0.5">V</th>
+                <th className="py-1 pr-1 font-semibold landscape:py-0.5 landscape:pr-0.5">L-L</th>
+                <th className="py-1 pr-1 font-semibold landscape:py-0.5 landscape:pr-0.5">L-E</th>
+                <th className="py-1 pr-1 font-semibold landscape:py-0.5 landscape:pr-0.5">P</th>
+                <th className="py-1 pr-1 font-semibold landscape:py-0.5 landscape:pr-0.5">Zs</th>
+                <th className="py-1 pr-1 font-semibold landscape:py-0.5 landscape:pr-0.5">ms</th>
+                <th className="py-1 pr-1 font-semibold landscape:py-0.5 landscape:pr-0.5">Rc</th>
                 <th className="py-1 font-semibold">Af</th>
               </tr>
             </thead>
@@ -472,13 +493,22 @@ function WideCircuitRow({ circuit }: { circuit: CircuitRow }) {
     return String(x);
   };
   const num = (key: string) => (
-    <td className="py-1 pr-1 text-right font-mono tabular-nums">{v(key)}</td>
+    <td className="py-1 pr-1 text-right font-mono tabular-nums landscape:py-0.5 landscape:pr-0.5">
+      {v(key)}
+    </td>
   );
-  const txt = (key: string) => <td className="py-1 pr-1">{v(key)}</td>;
+  const txt = (key: string) => (
+    <td className="py-1 pr-1 landscape:py-0.5 landscape:pr-0.5 landscape:truncate">{v(key)}</td>
+  );
   return (
     <tr className="border-t border-[var(--color-border-subtle)]/60 text-[var(--color-text-primary)]">
-      <td className="py-1 pr-1 font-mono text-[var(--color-brand-blue)]">{String(ref)}</td>
-      <td className="max-w-[160px] truncate py-1 pr-2" title={designation ?? ''}>
+      <td className="py-1 pr-1 font-mono text-[var(--color-brand-blue)] landscape:py-0.5 landscape:pr-0.5">
+        {String(ref)}
+      </td>
+      <td
+        className="max-w-[160px] truncate py-1 pr-2 landscape:max-w-[80px] landscape:py-0.5 landscape:pr-1"
+        title={designation ?? ''}
+      >
         {designation ?? <span className="italic text-[var(--color-text-tertiary)]">Unnamed</span>}
       </td>
       {/* Cond */}
