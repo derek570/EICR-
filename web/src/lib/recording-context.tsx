@@ -14,7 +14,13 @@ import { applyExtractionToJob } from './recording/apply-extraction';
 import { AudioRingBuffer } from './recording/audio-ring-buffer';
 import { SleepManager, type SleepState } from './recording/sleep-manager';
 import { useLiveFillStore } from './recording/live-fill-state';
-import { cancelSpeech, confirmationToSentence, speak } from './recording/tts';
+import {
+  cancelSpeech,
+  confirmationToSentence,
+  getConfirmationModeEnabled,
+  speak,
+  speakConfirmation,
+} from './recording/tts';
 import { api } from './api-client';
 import { useJobContext } from './job-context';
 import { applyVoiceCommand, parseVoiceCommand, type VoiceCommandJob } from '@certmate/shared-utils';
@@ -336,7 +342,18 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
           // Fire the final utterance at the Sonnet session so server-side
           // multi-turn extraction can fill form fields. No-op if the WS
           // isn't open — the Sonnet client queues pre-connect messages.
-          sonnetRef.current?.sendTranscript(text);
+          //
+          // `confirmationsEnabled` mirrors iOS (DeepgramRecordingViewModel.
+          // swift:1863): the same boolean that gates client-side
+          // `speakConfirmation` is forwarded to the backend so Sonnet
+          // only generates a confirmations[] array when the user wants
+          // them. Reading the storage value here (rather than caching it
+          // in a React state) means flipping the toggle mid-recording
+          // takes effect on the very next utterance without a re-render
+          // round-trip.
+          sonnetRef.current?.sendTranscript(text, {
+            confirmationsEnabled: getConfirmationModeEnabled(),
+          });
           // Each dispatched transcript is one outstanding Sonnet turn
           // until an extraction / question frame arrives to clear it.
           setProcessingCount((n) => n + 1);
@@ -410,13 +427,20 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
           liveFill.markUpdated(applied.changedKeys);
         }
       }
-      // Speak the first confirmation (if any). We deliberately speak
-      // only the first to avoid backlogging stacked readings behind
-      // stale news — iOS does the same.
+      // Speak the first confirmation (if any) through the
+      // confirmation-mode-gated path — mirrors iOS where
+      // speakBriefConfirmation is the only TTS entry point gated by
+      // the user toggle (AlertManager.swift:889). Sonnet should also
+      // be honouring the matching `confirmations_enabled` wire flag
+      // and not emitting confirmations when the toggle is off, but
+      // we belt-and-brace here so a regression on either side fails
+      // safe (silent) rather than surprising the inspector with
+      // unexpected speech. Only the first is spoken so stacked
+      // readings don't backlog stale news.
       const first = result.confirmations?.[0];
       if (first) {
         const sentence = confirmationToSentence(first);
-        if (sentence) speak(sentence);
+        if (sentence) speakConfirmation(sentence);
       }
       // Surface validation alerts in the pending-readings counter so
       // the inspector sees them in the recording chrome even if they

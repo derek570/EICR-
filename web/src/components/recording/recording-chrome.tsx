@@ -21,10 +21,10 @@ import { useJobContext } from '@/lib/job-context';
 import { cn } from '@/lib/utils';
 import { ConfirmDialog } from '@/components/ui/confirm-dialog';
 import {
-  getVoiceFeedbackEnabled,
+  getConfirmationModeEnabled,
   isTtsAvailable,
-  setVoiceFeedbackEnabled,
-  speak,
+  setConfirmationModeEnabled,
+  speakConfirmation,
 } from '@/lib/recording/tts';
 import { applyPresetToJob } from '@/lib/defaults/service';
 import { ApplyDefaultsSheet } from '@/components/defaults/apply-defaults-sheet';
@@ -137,26 +137,30 @@ function RecordingActionBar() {
   const isActive = state === 'active';
   const isPaused = state === 'dozing' || state === 'sleeping';
 
-  // Voice feedback toggle — localStorage-persisted via the TTS helper.
+  // Confirmation-mode toggle — localStorage-persisted via the TTS
+  // helper. Mirrors iOS `confirmationModeEnabled` (RecordingOverlay.
+  // swift:74). The pill stays visually labelled "Voice" / "Muted" for
+  // parity with iOS where the on-screen label is the same misnomer
+  // ("Voice"); the aria-label below makes its actual scope explicit.
   // Initialised from storage on mount so the button reflects the
   // inspector's last choice. SSR renders as `false`; we hydrate after
   // mount to avoid localStorage access during render.
   const [voiceFeedbackOn, setVoiceFeedbackOn] = React.useState(false);
   const [ttsSupported, setTtsSupported] = React.useState(true);
   React.useEffect(() => {
-    setVoiceFeedbackOn(getVoiceFeedbackEnabled());
+    setVoiceFeedbackOn(getConfirmationModeEnabled());
     setTtsSupported(isTtsAvailable());
   }, []);
   const toggleVoiceFeedback = React.useCallback(() => {
     const next = !voiceFeedbackOn;
-    setVoiceFeedbackEnabled(next);
+    setConfirmationModeEnabled(next);
     setVoiceFeedbackOn(next);
     // One-shot audible preview so the inspector gets immediate
     // feedback that the toggle works. `force: true` bypasses the
     // enabled check for the OFF→ON transition; on ON→OFF we stay
-    // silent — speaking "voice feedback off" would be jarring and
+    // silent — speaking "confirmations off" would be jarring and
     // contradicts the preference just set.
-    if (next) speak('Voice feedback on.', { force: true });
+    if (next) speakConfirmation('Confirmations on.', { force: true });
   }, [voiceFeedbackOn]);
 
   // End-session confirmation — iOS presents a parent-owned alert
@@ -249,6 +253,11 @@ function RecordingActionBar() {
                   icon={voiceFeedbackOn ? Volume2 : VolumeX}
                   onClick={toggleVoiceFeedback}
                   ariaPressed={voiceFeedbackOn}
+                  ariaLabel={
+                    voiceFeedbackOn
+                      ? 'Disable spoken reading confirmations'
+                      : 'Enable spoken reading confirmations'
+                  }
                 />
               </div>
             ) : null}
@@ -455,6 +464,7 @@ function ParityButton({
   disabled,
   disabledReason,
   ariaPressed,
+  ariaLabel,
 }: {
   label: string;
   tone: ButtonTone;
@@ -465,14 +475,20 @@ function ParityButton({
   /** When present, adds `aria-pressed` to the button — used for toggles
    *  (e.g. the Voice button) so screen readers can announce the state. */
   ariaPressed?: boolean;
+  /** Override aria-label when the visible `label` is a friendly short
+   *  form (e.g. "Voice") whose actual scope ("toggle reading
+   *  confirmations") needs spelling out for assistive tech. */
+  ariaLabel?: string;
 }) {
+  const resolvedLabel =
+    ariaLabel ?? (disabled && disabledReason ? `${label} (${disabledReason})` : label);
   return (
     <button
       type="button"
       onClick={onClick}
       disabled={disabled}
       aria-pressed={ariaPressed}
-      aria-label={disabled && disabledReason ? `${label} (${disabledReason})` : label}
+      aria-label={resolvedLabel}
       className={cn(
         'flex shrink-0 flex-col items-center gap-0.5 rounded-2xl px-2 py-1.5 text-white transition active:scale-95 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white',
         disabled && 'cursor-not-allowed opacity-45'
