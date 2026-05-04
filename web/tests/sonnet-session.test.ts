@@ -501,6 +501,82 @@ describe('SonnetSession', () => {
     });
   });
 
+  // ────────────────────────────────────────────────────────────────────────
+  // Stage 6 protocol_version handshake — Farm Close prod incident fix
+  // (sess_moqvdgjl_fo6w, 2026-05-04). Without these the backend treats us
+  // as a pre-Stage 6 client, sets fallbackToLegacy=true, and SUPPRESSES
+  // ask_user_started — leaving the inspector staring at a quiet UI while
+  // Sonnet waits for an answer that never arrives.
+  // ────────────────────────────────────────────────────────────────────────
+  describe('Stage 6 protocol handshake', () => {
+    it('advertises protocol_version="stage6" on session_start', async () => {
+      const session = new SonnetSession({});
+      session.connect({ sessionId: 'client-s', jobId: 'j', certificateType: 'EICR' });
+      await server.connected;
+      const raw = await server.nextMessage;
+      const frame = JSON.parse(raw as string) as { type: string; protocol_version?: string };
+      expect(frame.type).toBe('session_start');
+      expect(frame.protocol_version).toBe('stage6');
+    });
+
+    it('advertises protocol_version="stage6" on session_resume', async () => {
+      process.env.NEXT_PUBLIC_RECORDING_RECONNECT_ENABLED = 'true';
+      vi.spyOn(Math, 'random').mockReturnValue(0);
+      try {
+        const sched = makeControlledScheduler();
+        const session = new SonnetSession({}, sched);
+        session.connect({ sessionId: 'client-s', jobId: 'j', certificateType: 'EICR' });
+        await server.connected;
+        await server.nextMessage; // drain session_start
+        server.send(JSON.stringify({ type: 'session_ack', status: 'new', sessionId: 'srv-xyz' }));
+        await Promise.resolve();
+        server.close({ code: 1006, reason: 'abnormal', wasClean: false });
+        await server.closed;
+
+        const next = new WS(SONNET_URL);
+        sched.flush();
+        await next.connected;
+        const raw = await next.nextMessage;
+        const frame = JSON.parse(raw as string) as {
+          type: string;
+          protocol_version?: string;
+        };
+        expect(frame.type).toBe('session_resume');
+        expect(frame.protocol_version).toBe('stage6');
+      } finally {
+        delete process.env.NEXT_PUBLIC_RECORDING_RECONNECT_ENABLED;
+      }
+    });
+
+    it('maps inbound ask_user_started onto onQuestion (parity with iOS)', async () => {
+      const onQuestion = vi.fn();
+      const session = new SonnetSession({ onQuestion });
+      session.connect({ sessionId: 'client-s', jobId: 'j', certificateType: 'EICR' });
+      await server.connected;
+      await server.nextMessage; // drain session_start
+
+      server.send(
+        JSON.stringify({
+          type: 'ask_user_started',
+          tool_call_id: 'toolu_01ABC',
+          question: "Should I create circuit 1, and what's the designation?",
+          reason: 'out_of_range_circuit',
+          context_field: 'measured_zs_ohm',
+          context_circuit: 1,
+          expected_answer_shape: 'designation',
+        })
+      );
+      await Promise.resolve();
+
+      expect(onQuestion).toHaveBeenCalledTimes(1);
+      const arg = onQuestion.mock.calls[0][0];
+      expect(arg.question).toBe("Should I create circuit 1, and what's the designation?");
+      expect(arg.question_type).toBe('out_of_range_circuit');
+      expect(arg.field).toBe('measured_zs_ohm');
+      expect(arg.circuit).toBe(1);
+    });
+  });
+
   describe('backoff math', () => {
     it('produces non-negative delays within the cap for any jitter seed', () => {
       for (let attempt = 1; attempt <= 10; attempt++) {
