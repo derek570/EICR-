@@ -657,6 +657,274 @@ If you cannot determine the type, reply: {"rcd_type": null, "source": "not found
   return analysis;
 }
 
+// Cluster-floor for the outlier detector. Five same-manufacturer, same-
+// type confident reads is the smallest cluster where "this slot
+// disagrees with the rest of the board" is a statistically meaningful
+// signal. A 4-vs-1 split on a tiny board could just as easily be a real
+// mixed schedule (older device retained mid-bank, which the user has
+// flagged as common in UK domestic re-wires). Lowering this would catch
+// more false positives; raising it would miss real outliers on smaller
+// boards. Keeping it at 5 leaves small boards untouched.
+export const RCD_OUTLIER_CLUSTER_FLOOR = 5;
+
+/**
+ * Detect RCD waveform-type outliers within a same-manufacturer cluster.
+ *
+ * The Stage 3 per-slot VLM occasionally mis-reads the BS EN 61008/61009
+ * waveform glyph on ONE device face on an otherwise-uniform board (the
+ * symbol is sub-millimetre and even confident reads can flip A↔AC). The
+ * existing `uniform_low_conf` lookup gate misses this case because the
+ * cluster's reads all came back at high confidence.
+ *
+ * This detector finds slots whose `rcdWaveformType` disagrees with the
+ * rest of the board WHEN the rest of the board is a same-manufacturer
+ * confident cluster. It does NOT auto-correct — the caller's job is to
+ * flag the outlier circuit `low_confidence:true` and surface a question
+ * for the inspector to verify on-device.
+ *
+ * Manufacturer-clustering is the load-bearing assumption: a genuinely
+ * older AC-type RCBO retrofitted into an A-type board nearly always
+ * comes from a DIFFERENT manufacturer (the inspector grabbed whatever
+ * was in the van), so it lands in its own size-1 cluster and never
+ * crosses the cluster floor. Same-manufacturer disagreement, on the
+ * other hand, almost always means one slot was misread.
+ *
+ * Returns an array of outlier descriptors. Empty if no eligible
+ * cluster + outlier was found.
+ */
+export function detectRcdWaveformOutliers(slots, opts = {}) {
+  const minClusterSize = opts.minClusterSize ?? RCD_OUTLIER_CLUSTER_FLOOR;
+  const minConfidence = opts.minConfidence ?? RCD_WAVEFORM_VERIFY_CONFIDENCE_THRESHOLD;
+
+  if (!Array.isArray(slots)) return [];
+
+  const eligible = slots.filter(
+    (s) =>
+      s &&
+      (s.classification === 'rcbo' || s.classification === 'rcd') &&
+      typeof s.rcdWaveformType === 'string' &&
+      s.rcdWaveformType.length > 0 &&
+      typeof s.manufacturer === 'string' &&
+      s.manufacturer.trim().length > 0 &&
+      (s.confidence ?? 0) >= minConfidence
+  );
+
+  if (eligible.length < minClusterSize + 1) return [];
+
+  const groups = new Map();
+  for (const s of eligible) {
+    const key = s.manufacturer.trim().toLowerCase();
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(s);
+  }
+
+  const outliers = [];
+  for (const group of groups.values()) {
+    if (group.length < minClusterSize + 1) continue;
+
+    const counts = new Map();
+    for (const s of group) {
+      counts.set(s.rcdWaveformType, (counts.get(s.rcdWaveformType) ?? 0) + 1);
+    }
+    if (counts.size < 2) continue;
+
+    let majorityValue = null;
+    let majorityCount = 0;
+    for (const [v, c] of counts) {
+      if (c > majorityCount) {
+        majorityValue = v;
+        majorityCount = c;
+      }
+    }
+    if (majorityCount < minClusterSize) continue;
+
+    for (const s of group) {
+      if (s.rcdWaveformType !== majorityValue) {
+        outliers.push({
+          slot: s,
+          slotIndex: s.slotIndex ?? null,
+          slotValue: s.rcdWaveformType,
+          slotConfidence: s.confidence ?? null,
+          slotRatingText: s.ratingText ?? null,
+          slotLabel: s.label ?? null,
+          majorityValue,
+          majorityCount,
+          manufacturer: s.manufacturer.trim(),
+        });
+      }
+    }
+  }
+
+  return outliers;
+}
+
+/**
+ * Verify RCD waveform-type outliers against the manufacturer's spec sheet
+ * and flag the affected circuits for inspector review. NEVER auto-corrects
+ * the outlier value — the inspector decides.
+ *
+ * Pipeline:
+ *   1. detectRcdWaveformOutliers identifies any same-manufacturer outlier
+ *      (caller-injected slots[] is already populated).
+ *   2. For each manufacturer-group with outliers, fire ONE web-search
+ *      lookup against gpt-5-search-api with a per-slot prompt: "10 slots
+ *      read X, this one read Y — what does the datasheet say?" The
+ *      response indicates which value the datasheet supports for the
+ *      outlier device (`applies_to: outlier|all|unknown`).
+ *   3. Whatever the lookup returns, flag the matching circuit:
+ *        - circuit.low_confidence = true
+ *        - circuit.rcd_type_outlier = true
+ *        - circuit.rcd_type_majority_value = <the majority value>
+ *        - circuit.rcd_type_datasheet = <lookup answer or null>
+ *      Append a question to questionsForInspector so the iOS review screen
+ *      surfaces it. Leave circuit.rcd_type UNCHANGED — manual confirmation
+ *      only.
+ *
+ * Skipped silently when OPENAI_API_KEY is unset (dev/sandbox) or the
+ * detector returns no outliers — same lifecycle as lookupMissingRcdTypes.
+ */
+export async function flagRcdWaveformOutliers(analysis, openai, logger, userId) {
+  const slots = Array.isArray(analysis.slots) ? analysis.slots : [];
+  const circuits = Array.isArray(analysis.circuits) ? analysis.circuits : [];
+
+  const outliers = detectRcdWaveformOutliers(slots);
+  if (outliers.length === 0) return analysis;
+
+  // Group outliers by manufacturer so we can batch the lookup — usually
+  // 1 outlier per board, but if a board ever had two slots disagreeing
+  // with the same majority cluster, batching saves a search call.
+  const byManufacturer = new Map();
+  for (const o of outliers) {
+    const key = o.manufacturer.toLowerCase();
+    if (!byManufacturer.has(key)) byManufacturer.set(key, []);
+    byManufacturer.get(key).push(o);
+  }
+
+  const boardModel = analysis.board_model || '';
+
+  for (const [, group] of byManufacturer) {
+    const first = group[0];
+    const manufacturer = first.manufacturer;
+    const majorityValue = first.majorityValue;
+    const majorityCount = first.majorityCount;
+    const outlierLines = group
+      .map((o) => {
+        const labelPart = o.slotLabel ? ` labelled "${o.slotLabel}"` : '';
+        const ratingPart = o.slotRatingText ? `, ${o.slotRatingText}` : '';
+        return `  - ${manufacturer} RCBO${ratingPart}${labelPart}: read as Type ${o.slotValue}`;
+      })
+      .join('\n');
+
+    const searchPrompt = `I have a UK consumer unit: ${manufacturer} ${boardModel}.
+Most of the RCBOs on this board (${majorityCount} devices) were read by a vision model as RCD Type ${majorityValue}. ${group.length === 1 ? 'One device disagreed' : `${group.length} devices disagreed`}:
+${outlierLines}
+
+This is most likely a mis-read of the BS EN 61008/61009 waveform glyph on the disagreeing device's face — the symbol is sub-millimetre and easy to confuse. Please search the ${manufacturer} ${boardModel} consumer unit datasheet to verify the published RCD Type for the disagreeing device. If the datasheet covers the whole board uniformly, return that single Type with applies_to="all". If the datasheet shows the disagreeing device as a different Type from the majority (which can happen if it's an older spec retained in stock), return that Type with applies_to="outlier".
+
+Reply ONLY with valid JSON:
+{"type": "AC"|"A"|"B"|"F"|"S"|null, "applies_to": "all"|"outlier"|"unknown", "source": "brief description"}`;
+
+    let datasheetType = null;
+    let appliesTo = 'unknown';
+    let sourceText = null;
+
+    try {
+      logger.info('RCD waveform outlier lookup starting', {
+        userId,
+        manufacturer,
+        boardModel,
+        majorityValue,
+        majorityCount,
+        outlierCount: group.length,
+        outlierValues: group.map((o) => o.slotValue),
+      });
+
+      const searchResponse = await openai.chat.completions.create({
+        model: 'gpt-5-search-api',
+        web_search_options: {},
+        messages: [{ role: 'user', content: searchPrompt }],
+      });
+
+      const searchContent = searchResponse.choices?.[0]?.message?.content || '';
+      const searchTokens = searchResponse.usage?.completion_tokens || 0;
+      const jsonMatch = searchContent.match(/\{[\s\S]*?\}/);
+      const parsed = jsonMatch ? JSON.parse(jsonMatch[0]) : {};
+      const validTypes = ['AC', 'A', 'B', 'F', 'S'];
+      const candidate = parsed.type?.toUpperCase()?.trim();
+      datasheetType = candidate && validTypes.includes(candidate) ? candidate : null;
+      appliesTo = ['all', 'outlier', 'unknown'].includes(parsed.applies_to)
+        ? parsed.applies_to
+        : 'unknown';
+      sourceText = typeof parsed.source === 'string' ? parsed.source : null;
+
+      logger.info('RCD waveform outlier lookup complete', {
+        userId,
+        manufacturer,
+        datasheetType,
+        appliesTo,
+        source: sourceText,
+        searchTokens,
+      });
+    } catch (err) {
+      // Non-fatal — flagging proceeds without datasheet steer.
+      logger.warn('RCD waveform outlier lookup failed (non-fatal)', {
+        userId,
+        manufacturer,
+        error: err.message,
+      });
+    }
+
+    // Apply flags to each outlier's circuit. Mapping is by slot_index —
+    // both the slot and the circuit carry it after the merger pass.
+    for (const o of group) {
+      const circuit = circuits.find(
+        (c) => c.slot_index != null && c.slot_index === o.slotIndex && !c.is_rcd_device
+      );
+      if (!circuit) {
+        logger.warn('RCD outlier flag: matching circuit not found', {
+          userId,
+          slotIndex: o.slotIndex,
+          slotValue: o.slotValue,
+        });
+        continue;
+      }
+
+      circuit.low_confidence = true;
+      circuit.rcd_type_outlier = true;
+      circuit.rcd_type_majority_value = o.majorityValue;
+      circuit.rcd_type_datasheet = datasheetType;
+      // rcd_type intentionally untouched — never auto-correct.
+
+      let questionText;
+      if (datasheetType && appliesTo === 'all') {
+        questionText = `${circuit.label || `Circuit ${circuit.circuit_number}`}: this device was read as RCD Type ${o.slotValue}, but the other ${o.majorityCount} ${manufacturer} RCBOs on this board read as Type ${o.majorityValue} and the ${manufacturer} ${boardModel || ''} datasheet confirms Type ${datasheetType}. Please verify the waveform symbol on the device face.`;
+      } else if (datasheetType && appliesTo === 'outlier') {
+        questionText = `${circuit.label || `Circuit ${circuit.circuit_number}`}: this device was read as RCD Type ${o.slotValue} (the other ${o.majorityCount} ${manufacturer} RCBOs read as Type ${o.majorityValue}). The ${manufacturer} datasheet shows Type ${datasheetType} for this rating, so the read may be correct — please verify on the device face.`;
+      } else {
+        questionText = `${circuit.label || `Circuit ${circuit.circuit_number}`}: this device was read as RCD Type ${o.slotValue}, but the other ${o.majorityCount} ${manufacturer} RCBOs on this board read as Type ${o.majorityValue}. Please double-check the waveform symbol on the device face.`;
+      }
+
+      if (!Array.isArray(analysis.questionsForInspector)) {
+        analysis.questionsForInspector = [];
+      }
+      analysis.questionsForInspector.push(questionText);
+
+      logger.info('RCD waveform outlier flagged', {
+        userId,
+        slotIndex: o.slotIndex,
+        circuitNumber: circuit.circuit_number,
+        label: circuit.label,
+        slotValue: o.slotValue,
+        majorityValue: o.majorityValue,
+        datasheetType,
+        appliesTo,
+      });
+    }
+  }
+
+  return analysis;
+}
+
 /**
  * Sonnet chunked audio extraction (Deepgram transcription + Claude Sonnet extraction)
  * POST /api/recording/sonnet-extract
@@ -1489,6 +1757,7 @@ export function slotsToCircuits({
     if (content === 'empty' || cls === 'empty') {
       circuits.push({
         circuit_number: circuitNumber,
+        slot_index: slot.slotIndex ?? null,
         label: 'Exposed rail (no device, no blank)',
         ocpd_type: null,
         ocpd_rating_a: null,
@@ -1563,6 +1832,7 @@ export function slotsToCircuits({
         // the RCD row on every real-world board.
         circuits.push({
           circuit_number: null,
+          slot_index: slot.slotIndex ?? null,
           label: 'RCD',
           is_rcd_device: true,
           ocpd_type: null,
@@ -1647,6 +1917,12 @@ export function slotsToCircuits({
       circuit.low_confidence = true;
       circuit.rating_hallucination_detected = true;
     }
+
+    // Traceability: keep the slot's physical position on the rail. Used
+    // by post-merge passes (e.g. flagRcdWaveformOutliers) to map circuits
+    // back to their source slot without re-deriving the mainSwitchSide-
+    // aware reverse mapping. Optional on iOS — additive decode.
+    circuit.slot_index = slot.slotIndex ?? null;
 
     circuits.push(circuit);
     circuitNumber++;
@@ -2204,6 +2480,12 @@ router.post(
         const OpenAI = (await import('openai')).default;
         const openai = new OpenAI({ apiKey: openaiKey });
         analysis = await lookupMissingRcdTypes(analysis, openai, logger, req.user.id);
+        // Outlier detection runs AFTER the missing/uniform-low-conf passes
+        // — those existing triggers can fill nulls or correct fleet-wide
+        // mis-reads first, leaving this final pass to handle the residual
+        // case where one slot disagrees with an otherwise-uniform same-
+        // manufacturer cluster. Flags only; never auto-corrects.
+        analysis = await flagRcdWaveformOutliers(analysis, openai, logger, req.user.id);
         const rcdElapsedMs = Date.now() - rcdStartMs;
         logger.info('CCU RCD type lookup timing', {
           userId: req.user.id,
