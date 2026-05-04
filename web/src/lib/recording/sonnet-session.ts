@@ -183,6 +183,25 @@ const RECONNECT_CAP_MS = 10_000;
 /** Max attempts before we fire a terminal error and stop. */
 const RECONNECT_MAX_ATTEMPTS = 5;
 
+/**
+ * Stage 6 protocol capability advertisement.
+ *
+ * Backend `sonnet-stream.js` (handleSessionStart, line ~1562) reads this
+ * field on the inbound `session_start` / `session_resume` frame. When it's
+ * `'stage6'` AND the server is in `live` mode (production default since
+ * commit c3023dd, 2026-05-02), the per-tool-call WS events (notably
+ * `ask_user_started`) are emitted on the wire. When absent, the server sets
+ * `fallbackToLegacy=true` and SUPPRESSES those events — which silently
+ * stalled the Farm Close prod session (sess_moqvdgjl_fo6w, 2026-05-04):
+ * Sonnet asked "Should I create circuit 1?" but the question never reached
+ * the UI, so the inspector stared at a quiet recorder for 24s before giving
+ * up. iOS advertises the same value (ServerWebSocketService.swift:396).
+ *
+ * Bumping this requires a coordinated backend release — see the iOS source
+ * comment for the additive scope at this protocol version.
+ */
+const STAGE6_PROTOCOL_VERSION = 'stage6';
+
 export class SonnetSession {
   private ws: WebSocket | null = null;
   private state: SonnetConnectionState = 'disconnected';
@@ -309,7 +328,17 @@ export class SonnetSession {
       // session, which is the pre-4c.5 behaviour.
       const isReconnect = this.hasConnectedOnce && this.sessionId != null;
       if (isReconnect) {
-        this.sendRaw({ type: 'session_resume', sessionId: this.sessionId });
+        // Advertise the Stage 6 capability on resume too — the backend
+        // re-applies the same protocol_version policy on rehydrate as on
+        // start (see sonnet-stream.js handleSessionResumeRehydrate, Plan
+        // 06-06 r5-#1). Without it, a resume frame would silently downgrade
+        // the entry to fallbackToLegacy=true, suppressing ask_user_started
+        // and other per-tool-call WS events.
+        this.sendRaw({
+          type: 'session_resume',
+          sessionId: this.sessionId,
+          protocol_version: STAGE6_PROTOCOL_VERSION,
+        });
       } else {
         const options = this.startOptions;
         if (options) {
@@ -319,6 +348,13 @@ export class SonnetSession {
             jobId: options.jobId,
             certificateType: options.certificateType,
             jobState: options.jobState,
+            // iOS advertises the same value (ServerWebSocketService.swift:396).
+            // Without this field the backend treats us as a pre-Stage 6 client
+            // and sets fallbackToLegacy=true, which suppresses
+            // ask_user_started events — leaving the user staring at a quiet
+            // UI while Sonnet waits for an answer that never arrives. See
+            // Farm Close prod incident, sess_moqvdgjl_fo6w, 2026-05-04.
+            protocol_version: STAGE6_PROTOCOL_VERSION,
           });
         }
       }
@@ -581,6 +617,29 @@ export class SonnetSession {
         const { type: _t, ...rest } = json;
         void _t;
         this.callbacks.onQuestion?.(rest as unknown as SonnetQuestion);
+        break;
+      }
+      case 'ask_user_started': {
+        // Stage 6 per-tool-call ask. iOS handles this in its own delegate
+        // pathway (ServerWebSocketService.swift:802); on web we map it onto
+        // the same SonnetQuestion shape that `question` uses so
+        // recording-context.tsx's existing onQuestion path renders it
+        // identically (TTS + alert card stack). The server does NOT also
+        // emit a legacy `question` for this ask — pre-Stage 6 sessions
+        // received the question via `questions_for_user`, which the tool-
+        // call path leaves empty. Without this case the question is lost
+        // and the inspector waits in silence (Farm Close prod incident,
+        // 2026-05-04, sess_moqvdgjl_fo6w).
+        const question = (json.question as string) ?? '';
+        if (!question) break;
+        const mapped: SonnetQuestion = {
+          question_type: (json.reason as string) || 'ask_user',
+          question,
+          field: (json.context_field as string | null | undefined) ?? null,
+          circuit:
+            typeof json.context_circuit === 'number' ? (json.context_circuit as number) : null,
+        };
+        this.callbacks.onQuestion?.(mapped);
         break;
       }
       case 'voice_command_response': {

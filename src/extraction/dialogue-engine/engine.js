@@ -25,6 +25,7 @@
 import {
   parseCircuitDigit,
   findCircuitByDesignation,
+  findCircuitsByDesignation,
   readExistingValues,
 } from './helpers/circuit-resolution.js';
 import {
@@ -37,6 +38,7 @@ import {
   buildScriptAsk,
   buildScriptInfo,
   buildExtractionPayload,
+  buildDisambiguationQuestion,
   safeSend,
 } from './helpers/wire-emit.js';
 import { applyDerivations } from './helpers/derivations.js';
@@ -244,6 +246,16 @@ function initScriptState(session, schema, circuit_ref, now) {
     // schema.disambiguateBareValue(text), assigns the value to the
     // chosen slot, then continues to askNextOrFinish.
     awaiting_disambiguation: null,
+    // Designation disambiguation — set when the entry or
+    // circuit-resolution path matched ≥2 circuits with the same
+    // designation (CCU often stamps three "Sockets" or two "Lighting"
+    // rows from a single sticker). The engine asks "Which 'sockets' —
+    // circuit 2, 4 or 7?"; the next active-turn validates the user's
+    // digit answer is in this list, or runs a designation match
+    // restricted to these refs ("the kitchen one" → unique). One retry
+    // before falling through to Sonnet, mirroring circuit_retry.
+    pending_designation_candidates: null,
+    designation_disambiguation_retry_attempted: false,
   };
 }
 
@@ -257,11 +269,26 @@ function initScriptState(session, schema, circuit_ref, now) {
 function runEntry({ ws, session, sessionId, text, schema, schemas, entry, logger, now }) {
   let circuitRef = entry.circuit_ref;
   let entryDesignationMatched = false;
+  // Designation lookup at entry time. Three outcomes:
+  //   - 1 candidate → resolve circuit immediately (existing behaviour).
+  //   - 2+ candidates with a shared designation → CCU stamped multiple
+  //     circuits with the same label ("Sockets" × 3). Circuit stays
+  //     unresolved; the disambiguation ask below quotes the shared
+  //     label and lists the candidate refs.
+  //   - 0 candidates → existing fallthrough (engine asks "Which
+  //     circuit?" generically; ANY digit/designation can resolve).
+  // Only attempted when the entry regex didn't capture a digit, so a
+  // "ring continuity for circuit 4" still wins via the digit path.
+  let designationCandidates = [];
+  let designationSharedLabel = null;
   if (circuitRef === null) {
-    const designationMatch = findCircuitByDesignation(session, text);
-    if (designationMatch !== null) {
-      circuitRef = designationMatch;
+    const lookup = findCircuitsByDesignation(session, text);
+    if (lookup.candidates.length === 1) {
+      circuitRef = lookup.matched;
       entryDesignationMatched = true;
+    } else if (lookup.candidates.length >= 2) {
+      designationCandidates = lookup.candidates;
+      designationSharedLabel = lookup.sharedDesignation;
     }
   }
 
@@ -271,6 +298,9 @@ function runEntry({ ws, session, sessionId, text, schema, schemas, entry, logger
 
   initScriptState(session, schema, circuitRef, now);
   const state = session.dialogueScriptState;
+  if (designationCandidates.length >= 2) {
+    state.pending_designation_candidates = designationCandidates;
+  }
 
   // Seed values from existing snapshot — skip-already-filled relies on this.
   for (const [f, v] of Object.entries(existing)) {
@@ -345,6 +375,7 @@ function runEntry({ ws, session, sessionId, text, schema, schemas, entry, logger
     sessionId,
     circuit_ref: circuitRef,
     entry_designation_matched: entryDesignationMatched,
+    designation_candidates: designationCandidates.length >= 2 ? designationCandidates : [],
     pre_existing_filled: Object.keys(existing).filter((f) => slotFields.includes(f)),
     volunteered_writes: writes.map((w) => w.field),
     pending_writes: state.pending_writes.map((w) => w.field),
@@ -354,7 +385,13 @@ function runEntry({ ws, session, sessionId, text, schema, schemas, entry, logger
 
   // What do we ask next?
   if (circuitRef === null) {
-    // Entry without a circuit. Ask which one.
+    // 2+ candidates with the same designation → quote the shared label
+    // back. Sole-match would have set circuitRef above; zero matches
+    // falls through to the schema's generic question.
+    const whichQuestion =
+      designationCandidates.length >= 2
+        ? buildDisambiguationQuestion(designationSharedLabel, designationCandidates)
+        : schema.whichCircuitQuestion;
     safeSend(
       ws,
       buildScriptAsk({
@@ -362,7 +399,7 @@ function runEntry({ ws, session, sessionId, text, schema, schemas, entry, logger
         sessionId,
         circuit_ref: null,
         missing_field: null,
-        whichCircuitQuestion: schema.whichCircuitQuestion,
+        whichCircuitQuestion: whichQuestion,
         slotQuestion: null,
         now,
         kind: 'which_circuit',
@@ -568,19 +605,58 @@ function runActivePath({
   }
 
   // 4. Resolve circuit FIRST if pending. Digit answer preferred,
-  //    designation answer falls out via findCircuitByDesignation.
+  //    designation answer falls out via findCircuitsByDesignation.
+  //
+  //    When `pending_designation_candidates` is set, the previous turn
+  //    asked "Which 'sockets' — circuit 2, 4 or 7?". This turn must
+  //    pick from that closed set:
+  //      - digit answer → must be in the candidate list, else reject
+  //        and run one retry. Stops "circuit 5" landing on a circuit
+  //        that wasn't even an option.
+  //      - non-digit answer → restrict the designation match to the
+  //        candidate set. "the kitchen one" against [2, 4, 7] picks
+  //        the one whose designation contains "kitchen", if unique.
+  const candidateSet =
+    Array.isArray(state.pending_designation_candidates) &&
+    state.pending_designation_candidates.length >= 2
+      ? state.pending_designation_candidates
+      : null;
   const writes = [];
   let drainedFromPending = false;
   let circuitResolvedThisTurn = false;
   if (state.circuit_ref === null) {
     let ref = parseCircuitDigit(text);
+    if (ref !== null && candidateSet && !candidateSet.includes(ref)) {
+      // Digit answer outside the offered set. Reject and re-ask once.
+      // Falls through to the existing `circuit_retry_attempted` block
+      // below by clearing the digit and treating this turn as
+      // unresolvable. Logged separately so CloudWatch can flag
+      // inspectors who consistently pick out-of-set numbers.
+      logger?.info?.(`${schema.logEventPrefix}_designation_disambiguation_out_of_set`, {
+        sessionId,
+        offered: candidateSet,
+        rejected: ref,
+        textPreview: text.slice(0, 80),
+      });
+      ref = null;
+    }
     if (ref === null) {
-      const designationMatch = findCircuitByDesignation(session, text);
-      if (designationMatch !== null) {
-        ref = designationMatch;
+      // Designation match. When a candidate set is offered, narrow the
+      // search to those refs so a noisy designation ("kitchen" when
+      // "kitchen" is also somewhere outside the candidate set) doesn't
+      // pull a non-candidate ref. When no candidate set, full lookup
+      // (existing behaviour).
+      const lookup = findCircuitsByDesignation(
+        session,
+        text,
+        candidateSet ? { restrictToRefs: candidateSet } : {}
+      );
+      if (lookup.matched !== null) {
+        ref = lookup.matched;
         logger?.info?.(`${schema.logEventPrefix}_designation_match`, {
           sessionId,
           circuit_ref: ref,
+          restricted: candidateSet ? candidateSet : null,
           textPreview: text.slice(0, 80),
         });
       }
@@ -588,6 +664,9 @@ function runActivePath({
     if (ref !== null) {
       state.circuit_ref = ref;
       circuitResolvedThisTurn = true;
+      // Clear the candidate set — disambiguation done.
+      state.pending_designation_candidates = null;
+      state.designation_disambiguation_retry_attempted = false;
       const slotFields = schema.slots.map((s) => s.field);
       const existing = readExistingValues(session, ref, slotFields);
       for (const [f, v] of Object.entries(existing)) {
@@ -669,11 +748,52 @@ function runActivePath({
         logger?.info?.(`${schema.logEventPrefix}_circuit_retry`, {
           sessionId,
           textPreview: text.slice(0, 80),
+          pending_designation_candidates: candidateSet,
           pending_writes: Array.isArray(state.pending_writes)
             ? state.pending_writes.map((w) => w.field)
             : [],
         });
-        const retryQuestion = buildCircuitRetryQuestion(schema, state.last_designation_attempt);
+        // When we're still in disambiguation mode, repeat the
+        // candidate list rather than asking a freeform "What's the
+        // circuit number for the kitchen sockets?" — the inspector
+        // already heard a candidate list once and the re-ask should
+        // stay anchored to the same options. Re-derive the shared
+        // designation from the snapshot (cheap; the candidate set is
+        // small) so we keep the quoted-label form.
+        let retryQuestion;
+        if (candidateSet) {
+          // Pull a representative designation from any candidate; if
+          // they share, the helper will quote it back.
+          const sharedLookup = findCircuitsByDesignation(session, '', {
+            restrictToRefs: candidateSet,
+          });
+          // sharedLookup ignores empty text; fall back to scanning
+          // the snapshot directly for the first candidate's designation.
+          let sharedLabel = sharedLookup.sharedDesignation;
+          if (!sharedLabel) {
+            const snap = session?.stateSnapshot?.circuits;
+            const firstRef = candidateSet[0];
+            const bucket = Array.isArray(snap)
+              ? snap.find((c) => Number(c?.circuit_ref) === Number(firstRef))
+              : (snap?.[firstRef] ?? snap?.[String(firstRef)]);
+            const des = bucket?.circuit_designation || bucket?.designation || null;
+            sharedLabel = des ? des.toLowerCase().trim() : null;
+            // Only quote it back if every candidate actually shares it.
+            if (sharedLabel) {
+              const all = candidateSet.every((r) => {
+                const b = Array.isArray(snap)
+                  ? snap.find((c) => Number(c?.circuit_ref) === Number(r))
+                  : (snap?.[r] ?? snap?.[String(r)]);
+                const d = b?.circuit_designation || b?.designation || '';
+                return d.toLowerCase().trim() === sharedLabel;
+              });
+              if (!all) sharedLabel = null;
+            }
+          }
+          retryQuestion = buildDisambiguationQuestion(sharedLabel, candidateSet);
+        } else {
+          retryQuestion = buildCircuitRetryQuestion(schema, state.last_designation_attempt);
+        }
         safeSend(
           ws,
           buildScriptAsk({

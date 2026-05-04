@@ -380,6 +380,190 @@ describe('engine — ring continuity', () => {
     expect(ws.sent.at(-1).question).toBe("What's the circuit number for the upstairs socket.?");
   });
 
+  // ------------------------------------------------------------------
+  // Designation disambiguation — CCU-populated boards routinely stamp
+  // multiple circuits with the same generic label ("Sockets" × 3, etc.)
+  // because the printed sticker is short. Inspector says "ring continuity
+  // for the kitchen sockets" — three circuits match. The pre-fix engine
+  // returned null and asked the generic "Which circuit?", losing the
+  // queued R1=0.32 if the inspector then stumbled over the digit. Repro:
+  // session 2DCCD937 (2026-05-03, 14 The Farm Close Road) — see CloudWatch
+  // for the production trace these tests pin.
+  // ------------------------------------------------------------------
+  test('disambiguation: 3 identical "Sockets" → "Which sockets — circuit 2, 4 or 7?"', () => {
+    const ws = new FakeWS();
+    const session = buildSession({
+      1: { circuit_designation: 'Cooker' },
+      2: { circuit_designation: 'Sockets' },
+      4: { circuit_designation: 'Sockets' },
+      7: { circuit_designation: 'Sockets' },
+    });
+    const out = processRingContinuityTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'Ring continuity for the kitchen sockets. The lives are 0.32.',
+      now: 1000,
+    });
+    expect(out).toEqual({ handled: true, fallthrough: false });
+    // Disambiguation prompt: quotes the shared label, lists the refs.
+    expect(ws.sent.at(-1).question).toBe("Which 'sockets' — circuit 2, 4 or 7?");
+    expect(ws.sent.at(-1).reason).toBe('missing_context');
+    // Volunteered R1 is queued, not lost — drains on resolution.
+    expect(session.dialogueScriptState.pending_writes).toEqual([
+      { field: 'ring_r1_ohm', value: '0.32' },
+    ]);
+    expect(session.dialogueScriptState.pending_designation_candidates).toEqual([2, 4, 7]);
+  });
+
+  test('disambiguation: 2 identical labels emit "X or Y" (no oxford comma)', () => {
+    const ws = new FakeWS();
+    const session = buildSession({
+      2: { circuit_designation: 'Lighting' },
+      5: { circuit_designation: 'Lighting' },
+    });
+    processRingContinuityTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'Ring continuity for the upstairs lighting.',
+      now: 1000,
+    });
+    expect(ws.sent.at(-1).question).toBe("Which 'lighting' — circuit 2 or 5?");
+  });
+
+  test('disambiguation: digit answer in candidate list resolves and drains queued R1', () => {
+    const ws = new FakeWS();
+    const session = buildSession({
+      2: { circuit_designation: 'Sockets' },
+      4: { circuit_designation: 'Sockets' },
+      7: { circuit_designation: 'Sockets' },
+    });
+    processRingContinuityTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'Ring continuity for the kitchen sockets. The lives are 0.32.',
+      now: 1000,
+    });
+    const out = processRingContinuityTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: '4.',
+      now: 2000,
+    });
+    expect(out).toEqual({ handled: true, fallthrough: false });
+    // R1=0.32 wrote through to the chosen circuit — no inspector
+    // re-dictation needed (the bug from session 2DCCD937).
+    expect(session.stateSnapshot.circuits[4].ring_r1_ohm).toBe('0.32');
+    // Script moved on to next slot (Rn).
+    expect(ws.sent.at(-1).question).toBe('What are the neutrals?');
+    expect(ws.sent.at(-1).context_circuit).toBe(4);
+    // Candidate set cleared.
+    expect(session.dialogueScriptState.pending_designation_candidates).toBeNull();
+  });
+
+  test('disambiguation: digit answer outside candidate set is rejected and re-asked', () => {
+    const ws = new FakeWS();
+    const session = buildSession({
+      1: { circuit_designation: 'Cooker' },
+      2: { circuit_designation: 'Sockets' },
+      4: { circuit_designation: 'Sockets' },
+    });
+    processRingContinuityTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'Ring continuity for the sockets.',
+      now: 1000,
+    });
+    expect(ws.sent.at(-1).question).toBe("Which 'sockets' — circuit 2 or 4?");
+
+    // Inspector mis-speaks "1" — Cooker, NOT one of the offered options.
+    const logged = [];
+    const out = processRingContinuityTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: '1.',
+      logger: { info: (e, p) => logged.push({ event: e, payload: p }) },
+      now: 2000,
+    });
+    expect(out).toEqual({ handled: true, fallthrough: false });
+    // Re-ask still scoped to the same candidate set.
+    expect(ws.sent.at(-1).question).toBe("Which 'sockets' — circuit 2 or 4?");
+    // Candidate set still set.
+    expect(session.dialogueScriptState.pending_designation_candidates).toEqual([2, 4]);
+    // The retry flag flipped — a SECOND out-of-set will fall through.
+    expect(session.dialogueScriptState.circuit_retry_attempted).toBe(true);
+    // Out-of-set rejection is logged so CloudWatch can flag chronic mis-picks.
+    expect(
+      logged.some(
+        (r) =>
+          r.event === 'stage6.ring_continuity_script_designation_disambiguation_out_of_set' &&
+          r.payload.rejected === 1 &&
+          r.payload.offered.toString() === [2, 4].toString()
+      )
+    ).toBe(true);
+  });
+
+  test('disambiguation: free-text answer narrows via designation match restricted to candidates', () => {
+    // Inspector mentions two distinct circuit names in one entry
+    // ("ring continuity for the cooker and shower"). Both designations
+    // are substrings of the utterance, so 2 candidates surface with
+    // distinct labels → generic "Which one — circuit X or Y?". The
+    // inspector then answers "the cooker", and the active-path
+    // designation match (restricted to [2, 4]) finds a unique hit.
+    const ws = new FakeWS();
+    const session = buildSession({
+      2: { circuit_designation: 'Cooker' },
+      4: { circuit_designation: 'Shower' },
+    });
+    processRingContinuityTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'Ring continuity for the cooker and shower.',
+      now: 1000,
+    });
+    // Distinct designations → generic form.
+    expect(ws.sent.at(-1).question).toBe('Which one — circuit 2 or 4?');
+
+    const out = processRingContinuityTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'the cooker',
+      now: 2000,
+    });
+    expect(out).toEqual({ handled: true, fallthrough: false });
+    expect(session.dialogueScriptState.circuit_ref).toBe(2);
+    expect(ws.sent.at(-1).question).toBe('What are the lives?');
+    expect(ws.sent.at(-1).context_circuit).toBe(2);
+  });
+
+  test('disambiguation: unique designation pre-fix path still resolves immediately', () => {
+    // Smoke-test that a SINGLE-match designation continues to resolve at
+    // entry without entering the disambiguation branch (the existing
+    // behaviour the test file asserted before this change).
+    const ws = new FakeWS();
+    const session = buildSession({
+      1: { circuit_designation: 'Cooker' },
+      2: { circuit_designation: 'Upstairs Sockets' },
+    });
+    processRingContinuityTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'Ring continuity for upstairs sockets.',
+      now: 1000,
+    });
+    expect(ws.sent.at(-1).question).toBe('What are the lives?');
+    expect(ws.sent.at(-1).context_circuit).toBe(2);
+    expect(session.dialogueScriptState.pending_designation_candidates).toBeNull();
+  });
+
   test('cancel emits info and clears state, no fallthrough', () => {
     const ws = new FakeWS();
     const session = buildSession({ 13: {} });

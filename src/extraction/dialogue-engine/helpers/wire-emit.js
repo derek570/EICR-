@@ -53,6 +53,44 @@ export function buildScriptAsk({
 }
 
 /**
+ * Phrase a disambiguation prompt for an ambiguous designation match.
+ * Quotes the shared designation back to the inspector and lists the
+ * candidate circuit refs ("Which 'sockets' — circuit 2, 4 or 7?").
+ *
+ * `sharedDesignation` is the lowercased canonical text shared by every
+ * candidate; pass null when candidates have distinct designations and
+ * the engine wants the generic "Which one — circuit X or Y?" form.
+ * `candidates` must be a sorted array of two or more positive ints.
+ */
+export function buildDisambiguationQuestion(sharedDesignation, candidates) {
+  if (!Array.isArray(candidates) || candidates.length < 2) {
+    return 'Which circuit?';
+  }
+  const list = formatCircuitList(candidates);
+  if (typeof sharedDesignation === 'string' && sharedDesignation.trim()) {
+    return `Which '${sharedDesignation.trim()}' — circuit ${list}?`;
+  }
+  return `Which one — circuit ${list}?`;
+}
+
+/**
+ * Format an int list for natural-sounding TTS:
+ *   [2, 4]        → "2 or 4"
+ *   [2, 4, 7]     → "2, 4 or 7"
+ *   [2, 4, 7, 10] → "2, 4, 7 or 10"
+ *
+ * Oxford-comma-free because the TTS reads more naturally without it
+ * and the inspector only needs to hear the digits clearly.
+ */
+function formatCircuitList(refs) {
+  if (refs.length === 1) return String(refs[0]);
+  if (refs.length === 2) return `${refs[0]} or ${refs[1]}`;
+  const head = refs.slice(0, -1).join(', ');
+  const tail = refs[refs.length - 1];
+  return `${head} or ${tail}`;
+}
+
+/**
  * Build a completion / cancellation TTS payload. Piggybacks on
  * `ask_user_started` with `expected_answer_shape: 'none'` because that's
  * the wire shape iOS already plays through ElevenLabs; iOS treats the
