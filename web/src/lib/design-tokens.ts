@@ -78,5 +78,6 @@ export const cmHeights = {
 /** Recording lifecycle state used by SleepManager-equivalent. */
 export type RecordingState = 'idle' | 'listening' | 'speaking' | 'trailing';
 
-/** Session power state. */
-export type PowerState = 'active' | 'dozing' | 'sleeping';
+/** Session power state — Stage 4c collapsed model (Doze tier removed
+ *  2026-04-27, mirroring iOS SleepManager.swift). */
+export type PowerState = 'active' | 'sleeping';

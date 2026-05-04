@@ -40,14 +40,12 @@ import { applyVoiceCommand, parseVoiceCommand, type VoiceCommandJob } from '@cer
  * into the active `JobDetail` via `updateJob`. VAD sleep/wake (Phase
  * 4e) still to come.
  *
- * State machine — mirrors iOS `RecordingSessionCoordinator`:
+ * State machine — mirrors iOS `RecordingSessionCoordinator` (Stage 4c
+ * 2-tier model, 2026-04-27):
  *
  *   idle ──► requesting-mic ──► active ──► stopped (back to idle)
  *                                ▲  │
- *                          wake  │  ▼ 60s silence
- *                                dozing
- *                                   │
- *                                   ▼ 5m dozing
+ *                          wake  │  ▼ 60s no-final / manual pause
  *                                sleeping
  *
  *   error — surfaced when permission is denied or a WS drops.
@@ -58,7 +56,7 @@ import { applyVoiceCommand, parseVoiceCommand, type VoiceCommandJob } from '@cer
  * the "Listening…" placeholder and the transcript log stays empty.
  */
 
-export type RecordingState = 'idle' | 'requesting-mic' | 'active' | 'dozing' | 'sleeping' | 'error';
+export type RecordingState = 'idle' | 'requesting-mic' | 'active' | 'sleeping' | 'error';
 
 export type TranscriptUtterance = {
   id: string;
@@ -205,7 +203,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
   const sonnetRef = React.useRef<SonnetSession | null>(null);
   // Phase 4e — 3-second pre-wake PCM ring buffer + state machine driving
   // doze/sleep transitions. The ring buffer is always written while the
-  // mic is live so a wake from dozing/sleeping can replay the words the
+  // mic is live so a wake from sleeping can replay the words the
   // inspector spoke _just before_ VAD fired.
   const ringBufferRef = React.useRef<AudioRingBuffer | null>(null);
   const sleepManagerRef = React.useRef<SleepManager | null>(null);
@@ -564,6 +562,11 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         // ordering at AlertManager.swift:717 (playAttentionTone()
         // immediately before speakAlertMessage()).
         if (isNew && q.question) {
+          // Switch the sleep timer to the 75s question-answer window
+          // so the inspector has time to hear, think, and reply
+          // without the standard 60s timer dropping us into sleep
+          // mid-thought. Mirrors iOS SleepManager.swift:68.
+          sleepManagerRef.current?.onQuestionAsked();
           playAttentionTone();
           speak(q.question);
         }
@@ -882,22 +885,19 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
    *  doze/wake cycles internally and only stops on `stop()`. */
   const buildSleepManager = React.useCallback(() => {
     const mgr = new SleepManager({
-      onEnterDozing: () => {
-        // Tell the server to pause cost tracking BEFORE pausing the
-        // Deepgram stream (iOS fix 4c75ccf). Pause keeps the WS alive
-        // with KeepAlive frames so wake re-latches in <100ms.
-        sonnetRef.current?.pause();
-        deepgramRef.current?.pause();
-        clearTick();
-        setMicLevel(0);
-        setState('dozing');
-      },
       onEnterSleeping: () => {
-        // Full disconnect after 30min dozing — matches iOS. The mic
-        // stream keeps running so the ring buffer still captures pre-
-        // wake audio for the replay on next speech.
+        // Stage 4c collapsed model — direct active → sleeping after
+        // the 60s no-final timer (or via manual pause). Mirrors iOS
+        // SleepManager.swift:21–24. Tell Sonnet to pause cost
+        // tracking, fully disconnect Deepgram, and stop the elapsed-
+        // tick. The mic stream keeps running so the ring buffer
+        // still captures pre-wake audio for the replay on next
+        // speech.
+        sonnetRef.current?.pause();
         teardownDeepgram();
         teardownSonnet();
+        clearTick();
+        setMicLevel(0);
         setState('sleeping');
       },
       onWake: (from) => {
@@ -1058,16 +1058,17 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
    *  and the mic keeps filling the ring buffer so resume can replay. */
   const pause = React.useCallback(() => {
     // Synchronous guard via statusRef so pause()+pause() doesn't
-    // double-emit the doze transition (and so a late resume() closure
-    // from a pre-stop session can't flip `dozing → active` on a freshly
+    // double-emit the sleep transition (and so a late resume() closure
+    // from a pre-stop session can't flip sleeping → active on a freshly
     // restarted session).
     if (statusRef.current !== 'active') return;
-    sonnetRef.current?.pause();
-    deepgramRef.current?.pause();
-    clearTick();
-    setMicLevel(0);
-    setState('dozing');
-  }, [setState, clearTick]);
+    // Stage 4c collapse: manual pause is the same effect as the 60s
+    // timer firing. SleepManager owns the transition so the WS
+    // teardown + state mutation flow through onEnterSleeping
+    // identically to the auto-doze path. Mirrors iOS where pause is
+    // a thin wrapper over `enterSleeping()`.
+    sleepManagerRef.current?.enterSleeping();
+  }, []);
 
   /** Manual resume — mirrors the wake path. If Deepgram was torn down
    *  (sleeping), reopen it; otherwise just unpause and replay the ring
@@ -1078,8 +1079,8 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     // Synchronous guard. resume() is legal only from the paused/sleeping
     // states — anything else (including a late retry from the overlay
     // while we've already rotated to a fresh session) must no-op.
-    if (statusRef.current !== 'dozing' && statusRef.current !== 'sleeping') return;
-    const fromSleeping = statusRef.current === 'sleeping';
+    if (statusRef.current !== 'sleeping') return;
+    const fromSleeping = true;
     // Snapshot sessionId so the late-resolving openDeepgram / beginMic
     // paths below can detect if a stop() raced them.
     const sessionId = sessionIdRef.current;

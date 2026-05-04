@@ -58,12 +58,6 @@ describe('VadIndicator', () => {
     expect(status?.textContent).toMatch(/Active/i);
   });
 
-  it('renders Dozing during the paused state', () => {
-    mounted = mount(<VadIndicator state="dozing" />);
-    const status = mounted.container.querySelector('[role="status"]');
-    expect(status?.getAttribute('aria-label')).toBe('VAD Dozing');
-  });
-
   it('renders Sleeping during the sleeping state', () => {
     mounted = mount(<VadIndicator state="sleeping" />);
     const status = mounted.container.querySelector('[role="status"]');

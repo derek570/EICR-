@@ -79,13 +79,11 @@ function RecordingRing({ state }: { state: ReturnType<typeof useRecording>['stat
   const colour =
     state === 'error'
       ? 'var(--color-status-failed)'
-      : state === 'dozing'
-        ? 'var(--color-status-processing)'
-        : state === 'sleeping'
-          ? 'var(--color-status-limitation)'
-          : state === 'requesting-mic'
-            ? 'var(--color-status-processing)'
-            : 'var(--color-status-failed)';
+      : state === 'sleeping'
+        ? 'var(--color-status-limitation)'
+        : state === 'requesting-mic'
+          ? 'var(--color-status-processing)'
+          : 'var(--color-status-failed)';
   return (
     <div
       aria-hidden
@@ -137,7 +135,7 @@ function RecordingActionBar() {
   const jobId = params?.id;
 
   const isActive = state === 'active';
-  const isPaused = state === 'dozing' || state === 'sleeping';
+  const isPaused = state === 'sleeping';
 
   // Confirmation-mode toggle — localStorage-persisted via the TTS
   // helper. Mirrors iOS `confirmationModeEnabled` (RecordingOverlay.
@@ -380,10 +378,8 @@ function StatePill({ state }: { state: ReturnType<typeof useRecording>['state'] 
         return { label: 'Requesting mic', colour: 'var(--color-status-processing)', Icon: Mic };
       case 'active':
         return { label: 'Listening', colour: 'var(--color-brand-green)', Icon: Mic };
-      case 'dozing':
-        return { label: 'Paused', colour: 'var(--color-status-processing)', Icon: MicOff };
       case 'sleeping':
-        return { label: 'Sleeping', colour: 'var(--color-status-limitation)', Icon: MicOff };
+        return { label: 'Paused', colour: 'var(--color-status-limitation)', Icon: MicOff };
       case 'error':
         return { label: 'Error', colour: 'var(--color-status-failed)', Icon: MicOff };
       default:
