@@ -571,6 +571,113 @@ const recordBoardReading = makeTool({
 // if a script is in flight, so Sonnet calling defensively (e.g.
 // alongside the engine's own regex entry) does no damage.
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// delete_circuit — remove a circuit from the schedule.
+// Added 2026-05-04 after field test 07635782 showed the inspector saying
+// "delete circuit 2" twice with no effect (the tool didn't exist; Sonnet's
+// only path was to apologise via ask_user). The leftover bucket then stole
+// later designation lookups — when the inspector said "R1+R2 of the cooker"
+// downstream, Sonnet routed it to circuit 2 instead of the cooker (circuit 1)
+// because circuit 2 was the most-recently-active context.
+//
+// Idempotency: an absent circuit_ref returns ok:true with deleted:false (same
+// pattern as delete_observation). Validator only rejects refs ≤ 0 — circuit_ref
+// 0 is the supply bucket, which this tool MUST NOT touch.
+// ---------------------------------------------------------------------------
+const deleteCircuit = makeTool({
+  name: 'delete_circuit',
+  description:
+    'Remove a circuit row from stateSnapshot.circuits. Use when the inspector explicitly says to delete / remove a circuit by ref ("delete circuit 5", "remove circuit 11"). Idempotent — deleting an absent circuit returns ok:true with deleted:false. Dispatcher rejects circuit_ref < 1 (the supply bucket at index 0 is off-limits to this tool).',
+  properties: {
+    circuit_ref: {
+      type: 'integer',
+      description: 'Circuit reference number to delete. Must be >= 1 (supply at 0 is protected).',
+    },
+  },
+  required: ['circuit_ref'],
+});
+
+// ---------------------------------------------------------------------------
+// calculate_zs — derive measured_zs_ohm = Ze + (R1+R2) for circuits where the
+// inputs exist. Added 2026-05-04 — field test 07635782 had the inspector say
+// "calculate the Zs for all available circuits" three times; Sonnet had no
+// tool to call and silently produced empty turns.
+//
+// Selector contract (shared with calculate_r1_plus_r2 — see
+// validateCalculateSelector): EXACTLY ONE of circuit_ref / circuit_refs / all
+// must be provided. The dispatcher walks the chosen circuits, applies the
+// formula where both Ze (from circuits[0].earth_loop_impedance_ze) and the
+// circuit's r1_r2_ohm are present, skips circuits missing either input, and
+// NEVER overwrites an existing measured_zs_ohm (a meter reading always wins).
+// ---------------------------------------------------------------------------
+const calculateZs = makeTool({
+  name: 'calculate_zs',
+  description:
+    'Calculate measured_zs_ohm = Ze + (R1+R2) for one or more circuits. Use when the inspector asks to derive Zs from continuity ("calculate the Zs for circuit 5", "calculate Zs for all circuits"). Skips circuits where measured_zs_ohm is already set (meter readings are never overwritten) and circuits missing Ze or r1_r2_ohm. Returns a per-circuit summary of {computed[], skipped[]} so Sonnet can read back what landed.',
+  properties: {
+    circuit_ref: {
+      anyOf: [{ type: 'integer' }, { type: 'null' }],
+      description:
+        'Single circuit to calculate. Use when the inspector named one ref. Mutually exclusive with circuit_refs and all.',
+    },
+    circuit_refs: {
+      anyOf: [{ type: 'array', items: { type: 'integer' } }, { type: 'null' }],
+      description:
+        'Batch of circuits ("circuits 1, 3, and 5"). Mutually exclusive with circuit_ref and all.',
+    },
+    all: {
+      type: 'boolean',
+      description:
+        'Calculate for every circuit with the required inputs ("calculate Zs for all available circuits"). Mutually exclusive with circuit_ref and circuit_refs. Default false.',
+    },
+  },
+  required: ['all'],
+});
+
+// ---------------------------------------------------------------------------
+// calculate_r1_plus_r2 — derive r1_r2_ohm via one of two formulas:
+//   - method='zs_minus_ze'    → r1_r2 = Zs - Ze   (radial backout, default)
+//   - method='ring_continuity' → r1_r2 = (ring_r1 + ring_r2) / 4  (ring final)
+//
+// Added 2026-05-04 alongside calculate_zs. The two methods are kept distinct
+// (rather than auto-picking) because both can be valid for ring final
+// circuits with both ring continuity values AND a measured Zs — the inspector
+// has to choose. Sonnet's contract: when ring_r1_ohm AND ring_r2_ohm are
+// present on a circuit and the inspector hasn't named a method, ASK FIRST
+// via ask_user ("Circuit X has ring values R1=… and R2=… — calculate R1+R2
+// from those, or from Zs minus Ze?") and pass the chosen method here.
+//
+// Same selector contract as calculate_zs. Same never-overwrite rule:
+// circuits with r1_r2_ohm already set are skipped.
+// ---------------------------------------------------------------------------
+const calculateR1PlusR2 = makeTool({
+  name: 'calculate_r1_plus_r2',
+  description:
+    'Calculate r1_r2_ohm for one or more circuits via either Zs minus Ze (radial backout) or the ring-continuity formula (R1+R2)/4. Use when the inspector asks to derive R1+R2. RING-FINAL RULE: if a circuit has both ring_r1_ohm and ring_r2_ohm populated AND the inspector hasn\'t said which method to use, you MUST emit ask_user FIRST ("Circuit X is a ring with R1=... and R2=... — should I calculate R1+R2 from those values, or from Zs minus Ze?") then call this tool with the inspector\'s chosen method. Skips circuits where r1_r2_ohm is already set and circuits missing the required inputs for the chosen method. Returns {computed[], skipped[]}.',
+  properties: {
+    method: {
+      type: 'string',
+      enum: ['zs_minus_ze', 'ring_continuity'],
+      description:
+        "'zs_minus_ze': r1_r2 = measured_zs_ohm - Ze (works for any circuit with a measured Zs and Ze populated). 'ring_continuity': r1_r2 = (ring_r1_ohm + ring_r2_ohm) / 4 (works only for ring final circuits with both ring values populated).",
+    },
+    circuit_ref: {
+      anyOf: [{ type: 'integer' }, { type: 'null' }],
+      description: 'Single circuit. Mutually exclusive with circuit_refs and all.',
+    },
+    circuit_refs: {
+      anyOf: [{ type: 'array', items: { type: 'integer' } }, { type: 'null' }],
+      description: 'Batch of circuits. Mutually exclusive with circuit_ref and all.',
+    },
+    all: {
+      type: 'boolean',
+      description:
+        'Calculate for every circuit with the required inputs for the chosen method. Mutually exclusive with circuit_ref and circuit_refs. Default false.',
+    },
+  },
+  required: ['method', 'all'],
+});
+
 const startDialogueScript = makeTool({
   name: 'start_dialogue_script',
   description:
@@ -639,6 +746,14 @@ export const TOOL_SCHEMAS = [
   askUser,
   recordBoardReading,
   startDialogueScript,
+  // 2026-05-04 (field test 07635782) — three tools added in one batch:
+  // delete_circuit closes the gap that made the leftover circuit 2 steal the
+  // designation lookup for "the cooker"; calculate_zs / calculate_r1_plus_r2
+  // close the gap where "calculate Zs" produced empty turns. Appended at the
+  // end so existing TOOL_SCHEMAS indices stay stable.
+  deleteCircuit,
+  calculateZs,
+  calculateR1PlusR2,
 ];
 
 /**

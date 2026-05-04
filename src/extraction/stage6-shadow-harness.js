@@ -420,6 +420,32 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
     }
   }
 
+  // 2026-05-04 — delete_circuit translation. Stage 6's circuitOps shape for
+  // a delete is `{op:'delete', circuit_ref}`. iOS's CircuitUpdate Codable
+  // expects `{circuit, designation, action}` and will throw the entire
+  // extraction message away on shape mismatch (same Bug-F class). Since the
+  // create/rename path folds meta into extracted_readings and then strips
+  // the array entirely, deletes have nowhere to land — extracted_readings
+  // is for FIELD writes, not row removals.
+  //
+  // Collect the deletes BEFORE the strip below, then re-emit them as
+  // legacy-shape entries AFTER the strip. designation:'' is a placeholder
+  // (iOS ignores it for deletes — see applyCircuitUpdates handler).
+  // Capturing first lets us preserve the strip's invariant ("no Stage 6
+  // shape on the wire to iOS") while still surfacing the delete intent.
+  const legacyShapeDeletes = [];
+  if (Array.isArray(result.circuit_updates)) {
+    for (const op of result.circuit_updates) {
+      if (op && op.op === 'delete' && Number.isInteger(op.circuit_ref)) {
+        legacyShapeDeletes.push({
+          circuit: op.circuit_ref,
+          designation: '',
+          action: 'delete',
+        });
+      }
+    }
+  }
+
   // Bug-F fix part 2 (2026-04-26): strip slots iOS Build 302's Codable
   // decoder either rejects or doesn't recognise. iOS DOES decode
   // `circuit_updates` but expects shape {circuit, designation, action}; ours
@@ -435,6 +461,14 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
   delete result.extracted_board_readings;
   delete result.cleared_readings;
   delete result.observation_deletions;
+
+  // Re-emit deletes in the legacy iOS shape AFTER the strip so the iOS
+  // CircuitUpdate decoder accepts them. Only set the slot if there are any —
+  // an empty array would be benign for current iOS but pointlessly noisy
+  // in session logs.
+  if (legacyShapeDeletes.length > 0) {
+    result.circuit_updates = legacyShapeDeletes;
+  }
 
   // Bug-H fix (2026-04-28): same Codable-throw class as Bug-F, but for
   // observations. The bundler emits per-turn observations with the canonical
