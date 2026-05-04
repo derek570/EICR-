@@ -13,6 +13,13 @@ import {
 import { applyExtractionToJob, applyObservationUpdate } from './recording/apply-extraction';
 import { AudioRingBuffer } from './recording/audio-ring-buffer';
 import { SleepManager, type SleepState } from './recording/sleep-manager';
+import { SileroVAD } from './recording/silero-vad';
+import {
+  createVadAccumulator,
+  dispatchSamplesToVad,
+  resetVadAccumulator,
+  type VadAccumulator,
+} from './recording/vad-accumulator';
 import { useLiveFillStore } from './recording/live-fill-state';
 import {
   cancelSpeech,
@@ -143,6 +150,20 @@ const Ctx = React.createContext<RecordingCtx | null>(null);
 // Sonnet token costs in on top.
 const DEEPGRAM_USD_PER_MIN = 0.0077;
 
+/** T20 — Silero VAD master enable. Defaults OFF so this branch can ship
+ *  without changing live wake-gate behaviour; flipping
+ *  `NEXT_PUBLIC_SILERO_VAD=1` in `.env.production` (or via the ECS task
+ *  def env block) hot-swaps every new session to the Silero path
+ *  without a code change. The handoff calls for a one-week soak window
+ *  comparing the false-wake CloudWatch counter between the RMS and
+ *  Silero paths before defaulting ON; until then this guard keeps the
+ *  RMS path primary even though the Silero plumbing is fully present.
+ *
+ *  Read once at module load — runtime mid-session toggling isn't
+ *  supported (and shouldn't be — recording context wires up state
+ *  refs at session start that wouldn't reconfigure cleanly). */
+const SILERO_VAD_ENABLED = process.env.NEXT_PUBLIC_SILERO_VAD === '1';
+
 export function RecordingProvider({ children }: { children: React.ReactNode }) {
   const { job, updateJob } = useJobContext();
   const liveFill = useLiveFillStore();
@@ -207,6 +228,21 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
   // inspector spoke _just before_ VAD fired.
   const ringBufferRef = React.useRef<AudioRingBuffer | null>(null);
   const sleepManagerRef = React.useRef<SleepManager | null>(null);
+  // T20 — Silero v5 ONNX VAD wake gate. Loaded at session start, fed
+  // 512-sample chunks (32ms @ 16kHz) by the accumulator below. When
+  // `null`, the SleepManager falls back to its RMS path
+  // (`processAudioLevel`); when set, every 512-sample chunk drives
+  // `processVadFrame(score)` instead. The reset() in teardown is
+  // idempotent so leaving the wrapper alive across sessions is safe,
+  // but we deliberately rebuild it per-session to mirror iOS's
+  // session-start lifecycle and to avoid carrying inter-session state
+  // across long-running tabs.
+  const sileroRef = React.useRef<SileroVAD | null>(null);
+  // Rolling 512-sample buffer for VAD inference. Implementation lives
+  // in `recording/vad-accumulator.ts` so unit tests can drive it
+  // without a full provider mount; we just hold the mutable state
+  // payload here.
+  const vadAccumulatorRef = React.useRef<VadAccumulator>(createVadAccumulator());
   // Monotonic session id — used when requesting a scoped Deepgram token
   // and (Phase 4d) as the Sonnet extraction session id.
   const sessionIdRef = React.useRef<string>('');
@@ -264,6 +300,13 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     sleepManagerRef.current = null;
     ringBufferRef.current?.reset();
     ringBufferRef.current = null;
+    // VAD wrapper goes with the sleep state machine — neither serves
+    // any purpose without the other. Reset() drains in-flight inference
+    // before zeroing the recurrent state so a stale stateN doesn't
+    // land on top after teardown.
+    sileroRef.current?.reset();
+    sileroRef.current = null;
+    resetVadAccumulator(vadAccumulatorRef.current);
   }, []);
 
   // Belt-and-braces cleanup if the provider unmounts while a session is
@@ -768,12 +811,31 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         // the VAD fire.
         ringBufferRef.current?.writeFloat32(samples16k);
         deepgramRef.current?.sendSamples(samples16k);
+        // T20 — feed the VAD chunk accumulator. Only run while sleeping;
+        // the SleepManager ignores VAD frames in `active` (the timer is
+        // what drives sleep entry there) so doing inference on every
+        // active-state frame would be ~2ms of WASM compute per 32ms
+        // burned for nothing. While sleeping we DO want every chunk so
+        // the wake gate fires as soon as the inspector starts speaking.
+        const silero = sileroRef.current;
+        const sleep = sleepManagerRef.current;
+        if (silero && sleep && sleep.currentState === 'sleeping') {
+          dispatchSamplesToVad(samples16k, silero, sleep, vadAccumulatorRef.current);
+        }
       },
       onLevel: (level) => {
         const now = performance.now();
-        // ~60Hz UI cap, but the SleepManager sees every sample so the
-        // wake heuristic isn't under-sampled.
-        sleepManagerRef.current?.processAudioLevel(level);
+        // SleepManager's RMS fallback path — only reachable if the
+        // Silero load failed at session start (offline first run + no
+        // PWA cache, ORT crash, model 404). When silero is loaded, the
+        // primary `processVadFrame` path in onSamples drives the wake
+        // gate and this RMS feed is a no-op (the SleepManager just
+        // ignores frames whose state already matched). We still call
+        // unconditionally so a mid-session Silero failure (rare) leaves
+        // the RMS fallback running.
+        if (!sileroRef.current?.loaded) {
+          sleepManagerRef.current?.processAudioLevel(level);
+        }
         if (now - lastLevelPushRef.current < 16) return;
         lastLevelPushRef.current = now;
         setMicLevel(level);
@@ -961,6 +1023,32 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         // Log for the debug-report (collected on its own channel).
         console.warn('[recording] /recording/start failed:', err);
       });
+    // T20 — kick off Silero VAD load in parallel with mic permission +
+    // WS handshake. Fetch + WASM init typically lands in 50–200ms cold
+    // (and effectively 0 once Serwist's `models` cache fills), well
+    // inside the time the user spends acknowledging the permission
+    // prompt. Don't await: a slow load shouldn't gate the recording UX,
+    // and if it eventually fails we already have the RMS fallback in
+    // onLevel. If the session is torn down before load() resolves, the
+    // wrapper is dropped on the floor — sileroRef.current is the source
+    // of truth, so a stale assignment can't reactivate inference.
+    if (SILERO_VAD_ENABLED) {
+      const vad = new SileroVAD();
+      void vad
+        .load()
+        .then(() => {
+          if (sessionIdRef.current !== sessionId) return;
+          sileroRef.current = vad;
+        })
+        .catch((err) => {
+          if (sessionIdRef.current !== sessionId) return;
+          // Drop to RMS for this session. Console-warn only — the
+          // SleepManager's RMS path is already armed via onLevel,
+          // so the inspector loses the noise-rejection benefit but
+          // still gets functional wake-from-sleep.
+          console.warn('[recording] SileroVAD load failed; falling back to RMS wake gate:', err);
+        });
+    }
     try {
       await beginMicPipeline();
       // sessionId rotated while awaiting the mic / WS handshake — drop

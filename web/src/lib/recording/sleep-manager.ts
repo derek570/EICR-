@@ -32,11 +32,24 @@
  *     replay) races with the standard timeout otherwise, causing a
  *     "Sorry, could you repeat that?" loop.
  *
- * VAD wake gate is RMS-only today; Silero v5 ONNX is tracked as the
- * follow-up T20. iOS uses 0.80 probability over 12 / 30 frames; the
- * RMS proxy (≥0.02 for 12 consecutive ~16ms frames ≈ 200ms) catches
- * sustained speech but false-wakes on tool noise. Swap to Silero in
- * processAudioFrame when onnxruntime-web lands.
+ * VAD wake gate has two paths — the recording-context.tsx caller
+ * picks one based on whether Silero loaded successfully:
+ *
+ *   • `processVadFrame(score)` — Silero v5 ONNX path. Compares the
+ *     speech probability against `vadWakeThreshold` (0.80, iOS canon).
+ *     This is the primary path; the SileroVAD wrapper at
+ *     `silero-vad.ts` runs the model and feeds the probability in.
+ *   • `processAudioLevel(rms)` — RMS fallback. Compares raw mic
+ *     amplitude against `wakeRmsThreshold` (0.02). Used only when
+ *     Silero load() failed (offline first-run + uncached, ORT crash,
+ *     SHA mismatch). False-wakes on tool noise; documented hazard
+ *     but better than no wake-from-sleep at all.
+ *
+ * Both paths share the same 12-of-30-frames accumulator + 2s post-
+ * sleep cooldown semantics, so the state machine downstream (timer
+ * arm, post-wake grace, onWake fan-out) doesn't care which scored.
+ * Caller is expected to use ONE path per session — feeding both at
+ * once would double-count frames against the wake gate.
  */
 
 export type SleepState = 'active' | 'sleeping';
@@ -63,14 +76,20 @@ export interface SleepManagerConfig {
   /** Seconds during the post-wake grace window. Default 90s
    *  (iOS `postWakeGraceTimeout`). */
   postWakeGraceSec?: number;
-  /** RMS threshold that counts as "speech" for the wake heuristic.
-   *  Default 0.02 ≈ -34 dBFS. Approximation of iOS's Silero 0.80
-   *  probability gate; will be replaced when Silero ONNX lands. */
+  /** RMS threshold that counts as "speech" for the RMS fallback wake
+   *  heuristic. Default 0.02 ≈ -34 dBFS. Used by `processAudioLevel`. */
   wakeRmsThreshold?: number;
-  /** Consecutive mic-level callbacks above `wakeRmsThreshold`
-   *  required to wake. At ~60Hz this defaults to ~200ms. iOS uses 12
-   *  VAD frames in a 30-frame window at 32ms/frame (~400ms) with
-   *  Silero. */
+  /** Silero speech-probability threshold (0..1) for the primary wake
+   *  path. Default 0.80 (iOS `SileroVAD.wakeThreshold`). Used by
+   *  `processVadFrame`. */
+  vadWakeThreshold?: number;
+  /** Consecutive frames above the active threshold required to wake.
+   *  Default 12. iOS uses 12 frames in a 30-frame window at 32ms/frame
+   *  (~384ms of sustained speech). The Silero path matches the iOS
+   *  cadence exactly; the RMS path runs at ~60Hz mic callbacks so 12
+   *  frames is closer to ~200ms — coarser, but the consequences of a
+   *  short over/under-window are smaller than the cost of two
+   *  divergent constants on top of two divergent score functions. */
   wakeFramesRequired?: number;
   /** Cooldown after entering sleep during which wake is suppressed.
    *  Default 2s — gives the AGC / mic envelope time to drain. */
@@ -82,6 +101,7 @@ const DEFAULTS: Required<SleepManagerConfig> = {
   questionAnswerTimeoutSec: 75,
   postWakeGraceSec: 90,
   wakeRmsThreshold: 0.02,
+  vadWakeThreshold: 0.8,
   wakeFramesRequired: 12,
   postSleepCooldownMs: 2000,
 };
@@ -185,21 +205,33 @@ export class SleepManager {
     }
   }
 
-  /** Feed each mic-level RMS sample in so the wake heuristic can fire.
-   *  No-op while in `active`. */
+  /** Feed each mic-level RMS sample in so the RMS fallback wake
+   *  heuristic can fire. No-op while in `active` or while the
+   *  post-sleep cooldown is in flight. Used only when the Silero
+   *  primary path failed to load (offline first run, ORT crash). */
   processAudioLevel(rms: number): void {
+    this.applyWakeScore(rms, this.cfg.wakeRmsThreshold);
+  }
+
+  /** Feed a Silero VAD speech probability ([0..1]) per 32ms frame.
+   *  Wakes after `wakeFramesRequired` consecutive scores ≥
+   *  `vadWakeThreshold`. iOS canon path. */
+  processVadFrame(score: number): void {
+    this.applyWakeScore(score, this.cfg.vadWakeThreshold);
+  }
+
+  private applyWakeScore(score: number, threshold: number): void {
     if (this.state === 'active') return;
     if (performance.now() < this.cooldownUntilMs) {
       this.consecutiveSpeechFrames = 0;
       return;
     }
-
-    if (rms >= this.cfg.wakeRmsThreshold) {
+    if (score >= threshold) {
       this.consecutiveSpeechFrames++;
       if (this.consecutiveSpeechFrames >= this.cfg.wakeFramesRequired) {
         this.consecutiveSpeechFrames = 0;
-        // Set the post-wake-grace flag BEFORE the state transition so
-        // the no-transcript timer arms with the 90s window when active
+        // Set post-wake-grace BEFORE the state transition so the
+        // no-transcript timer arms with the 90s window when active
         // resumes. Cleared on the next final (onSpeechActivity).
         this.isPostWakeGrace = true;
         this.setState('active');
