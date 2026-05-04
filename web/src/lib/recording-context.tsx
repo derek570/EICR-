@@ -10,7 +10,7 @@ import {
   type SonnetConnectionState,
   type SonnetQuestion,
 } from './recording/sonnet-session';
-import { applyExtractionToJob } from './recording/apply-extraction';
+import { applyExtractionToJob, applyObservationUpdate } from './recording/apply-extraction';
 import { AudioRingBuffer } from './recording/audio-ring-buffer';
 import { SleepManager, type SleepState } from './recording/sleep-manager';
 import { useLiveFillStore } from './recording/live-fill-state';
@@ -524,6 +524,141 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         if (isNew && q.question) {
           speak(q.question);
         }
+      },
+      onFieldCorrected: (msg) => {
+        // Stage 6 STI-05 — clear the slot Sonnet asked us to forget. Route
+        // through the existing field_clears extraction path so the
+        // mutation + flash fire through the same single code path as
+        // bundled field_clears (mirrors iOS handleFieldCorrected which
+        // delegates to the same Stage6FieldClearer used by the bundled
+        // path). The next record_reading typically lands ms later via
+        // the normal extraction frame.
+        const synthetic: ExtractionResult = {
+          readings: [],
+          field_clears: [{ circuit: msg.circuit, field: msg.field }],
+        };
+        const applied = applyExtractionToJob(jobRef.current, synthetic);
+        if (applied) {
+          updateJobRef.current(applied.patch);
+          jobRef.current = {
+            ...jobRef.current,
+            ...(applied.patch as Partial<typeof jobRef.current>),
+          };
+          if (applied.changedKeys.length > 0) {
+            liveFill.markUpdated(applied.changedKeys);
+          }
+        }
+      },
+      onCircuitCreated: (msg) => {
+        // Stage 6 STI-06 — ensure the row exists. Route through the
+        // circuit_updates path so both create + designation rename use
+        // the same code (mirrors iOS where both create_circuit and
+        // rename_circuit fire Stage6CircuitCreated/Updated events).
+        const synthetic: ExtractionResult = {
+          readings: [],
+          circuit_updates: [
+            {
+              circuit: msg.circuit_ref,
+              designation: msg.designation ?? '',
+              action: 'create',
+            },
+          ],
+        };
+        const applied = applyExtractionToJob(jobRef.current, synthetic);
+        if (applied) {
+          updateJobRef.current(applied.patch);
+          jobRef.current = {
+            ...jobRef.current,
+            ...(applied.patch as Partial<typeof jobRef.current>),
+          };
+          if (applied.changedKeys.length > 0) {
+            liveFill.markUpdated(applied.changedKeys);
+          }
+        }
+      },
+      onCircuitUpdated: (msg) => {
+        // Stage 6 STI-07 — rename. Same wire shape as create; treat as
+        // a rename action so the existing logic preserves any
+        // already-typed designation only when the server isn't asking
+        // for an explicit overwrite.
+        if (!msg.designation) return;
+        const synthetic: ExtractionResult = {
+          readings: [],
+          circuit_updates: [
+            {
+              circuit: msg.circuit_ref,
+              designation: msg.designation,
+              action: 'rename',
+            },
+          ],
+        };
+        const applied = applyExtractionToJob(jobRef.current, synthetic);
+        if (applied) {
+          updateJobRef.current(applied.patch);
+          jobRef.current = {
+            ...jobRef.current,
+            ...(applied.patch as Partial<typeof jobRef.current>),
+          };
+          if (applied.changedKeys.length > 0) {
+            liveFill.markUpdated(applied.changedKeys);
+          }
+        }
+      },
+      onObservationDeleted: (msg) => {
+        // Stage 6 STI-08 — remove the observation row that Sonnet
+        // deleted server-side. Match by server_id; silent no-op if the
+        // row was never created on this client (common: a delete races
+        // ahead of the initial extraction). Mirrors iOS where the row
+        // is dropped from job.observations.
+        const before =
+          (jobRef.current.observations as { id: string; server_id?: string }[] | undefined) ?? [];
+        const next = before.filter((o) => o.server_id !== msg.observation_id);
+        if (next.length === before.length) return;
+        updateJobRef.current({ observations: next });
+        jobRef.current = {
+          ...jobRef.current,
+          observations: next,
+        };
+        liveFill.markUpdated(['observations']);
+      },
+      onToolCallStarted: (msg) => {
+        // Decode-only on iOS — log so prod traces show the tool loop
+        // shape. No UI surface today; Phase 7 will add a progress
+        // affordance ("Recording Zs for circuit 3…").
+        console.info(
+          `[stage6] tool_call_started tool=${msg.tool_name} id=${msg.tool_call_id} preview=${
+            msg.input_preview ?? ''
+          }`
+        );
+      },
+      onToolCallCompleted: (msg) => {
+        console.info(
+          `[stage6] tool_call_completed tool=${msg.tool_name} outcome=${msg.outcome} duration_ms=${
+            msg.duration_ms ?? ''
+          }`
+        );
+      },
+      onObservationUpdate: (update) => {
+        // BPG4 / regulation refinement of a previously-extracted
+        // observation. Mirrors iOS handleObservationUpdate
+        // (DeepgramRecordingViewModel.swift:4954). Patches the matching
+        // row by server_id (preferred) → fuzzy text → CREATE-from-miss.
+        // Server may also stamp schedule_item which feeds the inspection
+        // schedule auto-tick on next save.
+        const next = applyObservationUpdate(jobRef.current, update);
+        if (!next) return;
+        updateJobRef.current({ observations: next });
+        // Keep jobRef in lock-step so a rapid second update reads the
+        // patched array, not the stale React snapshot.
+        jobRef.current = {
+          ...jobRef.current,
+          observations: next,
+        };
+        // Flash the observations section so the inspector sees the
+        // refinement land. We don't have per-row flash keys here (the
+        // section flash is enough — the row text itself is the
+        // affordance) so emit a section-level key.
+        liveFill.markUpdated(['observations']);
       },
       onCostUpdate: (update) => {
         // Server sends totalJobCost in USD. We keep Sonnet cost

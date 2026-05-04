@@ -41,11 +41,101 @@ export interface CircuitUpdate {
 }
 
 export interface Observation {
+  /** Server-assigned stable UUID. Captured into `ObservationRow.server_id`
+   *  so a follow-up `observation_update` (BPG4 refinement) can patch the
+   *  exact row even after Sonnet rewords the text. Mirrors iOS
+   *  Observation.serverId (DeepgramRecordingViewModel.swift). */
+  observation_id?: string | null;
   code?: string;
   observation_text: string;
   item_location?: string | null;
   schedule_item?: string | null;
   regulation?: string | null;
+}
+
+/**
+ * Refinement update for a previously-extracted observation. The server
+ * emits this AFTER the initial extraction, once the BPG4 / regulation
+ * refiner has produced the professional rewrite. Mirrors the iOS
+ * `ObservationUpdate` Codable struct (ServerWebSocketService.swift:93).
+ *
+ * Wire shape:
+ *   { type: 'observation_update', observation_id, observation_text,
+ *     original_text, code, regulation, schedule_item, rationale, source }
+ *
+ * iOS handleObservationUpdate (DeepgramRecordingViewModel.swift:4954)
+ * patches the matching row by:
+ *   1. server_id (preferred — exact match)
+ *   2. fuzzy text match on original_text (or observation_text for older
+ *      servers): >70 % word-Set overlap
+ *   3. CREATE-from-miss: if no row matches, append a new observation.
+ */
+export interface ObservationUpdate {
+  observation_id?: string | null;
+  observation_text: string;
+  original_text?: string | null;
+  code: string;
+  regulation?: string | null;
+  schedule_item?: string | null;
+  rationale?: string | null;
+  source?: string | null;
+}
+
+/**
+ * Stage 6 Phase 6+ wire messages — granular per-tool-call events
+ * supplementing the legacy bundled `extraction`. iOS counterparts in
+ * `Stage6Messages.swift` and the consumer wiring at
+ * `DeepgramRecordingViewModel.serverDidReceive*`. Phase 7 may
+ * eventually replace the bundled extraction with these as the primary
+ * update channel; for now they're additive and the consumer can apply
+ * eagerly (snappier UI) or just log.
+ *
+ * Forward-compat: every field beyond the required ones is optional.
+ * Unknown wire fields are silently ignored — Phase 7+8 add fields
+ * without requiring coordinated client releases.
+ */
+export interface Stage6ToolCallStarted {
+  tool_call_id: string;
+  tool_name: string;
+  input_preview?: string | null;
+}
+
+export interface Stage6ToolCallCompleted {
+  tool_call_id: string;
+  tool_name: string;
+  outcome: string;
+  duration_ms?: number | null;
+}
+
+/** STI-05 — emitted when `clear_reading` dispatches. iOS clears the
+ *  matching slot on the live grid so the inspector sees the previous
+ *  value disappear before the next `record_reading` lands ms later. */
+export interface Stage6FieldCorrected {
+  circuit: number;
+  field: string;
+  previous_value?: string | null;
+  reason?: string | null;
+}
+
+/** STI-06 — emitted when `create_circuit` dispatches. iOS appends to
+ *  the live grid. */
+export interface Stage6CircuitCreated {
+  circuit_ref: number;
+  designation?: string | null;
+  rating_amps?: number | null;
+}
+
+/** STI-07 — emitted when `rename_circuit` dispatches. */
+export interface Stage6CircuitUpdated {
+  circuit_ref: number;
+  designation?: string | null;
+  rating_amps?: number | null;
+}
+
+/** STI-08 — emitted when `delete_observation` dispatches. */
+export interface Stage6ObservationDeleted {
+  observation_id: string;
+  reason?: string | null;
 }
 
 export interface ValidationAlert {
@@ -131,6 +221,22 @@ export interface SonnetSessionCallbacks {
   onQuestion?: (q: SonnetQuestion) => void;
   onVoiceCommandResponse?: (payload: VoiceCommandResponse) => void;
   onCostUpdate?: (update: CostUpdate) => void;
+  /** Refinement of a prior observation — server's BPG4 pass produced
+   *  the professional text. iOS counterpart:
+   *  serverDidReceiveObservationUpdate. */
+  onObservationUpdate?: (update: ObservationUpdate) => void;
+  /** Stage 6 Phase 6+ per-tool-call events. iOS counterparts at
+   *  DeepgramRecordingViewModel.serverDidReceive*. Default is log-only;
+   *  consumer can attach behaviour for the events that have UI
+   *  semantics today (field_corrected, circuit_created, circuit_updated,
+   *  observation_deleted). tool_call_started/completed are decode-only
+   *  on iOS — Phase 7 will wire them to a progress UI. */
+  onToolCallStarted?: (msg: Stage6ToolCallStarted) => void;
+  onToolCallCompleted?: (msg: Stage6ToolCallCompleted) => void;
+  onFieldCorrected?: (msg: Stage6FieldCorrected) => void;
+  onCircuitCreated?: (msg: Stage6CircuitCreated) => void;
+  onCircuitUpdated?: (msg: Stage6CircuitUpdated) => void;
+  onObservationDeleted?: (msg: Stage6ObservationDeleted) => void;
   onError?: (err: Error, recoverable: boolean) => void;
 }
 
@@ -894,6 +1000,107 @@ export class SonnetSession {
           tool_call_id: toolCallId,
         };
         this.callbacks.onQuestion?.(mapped);
+        break;
+      }
+      case 'observation_update': {
+        // BPG4 / regulation refinement of a prior observation. iOS
+        // applies this in handleObservationUpdate (DeepgramRecordingViewModel.
+        // swift:4954). Server emits AFTER the initial extraction, once
+        // the refiner has produced the professional rewrite + regulation
+        // hits + schedule_item. Optional fields may be null on older
+        // servers; the consumer handles absence cleanly.
+        const update: ObservationUpdate = {
+          observation_id: (json.observation_id as string | null | undefined) ?? null,
+          observation_text: typeof json.observation_text === 'string' ? json.observation_text : '',
+          original_text: (json.original_text as string | null | undefined) ?? null,
+          code: typeof json.code === 'string' ? json.code : '',
+          regulation: (json.regulation as string | null | undefined) ?? null,
+          schedule_item: (json.schedule_item as string | null | undefined) ?? null,
+          rationale: (json.rationale as string | null | undefined) ?? null,
+          source: (json.source as string | null | undefined) ?? null,
+        };
+        // Defensive: skip if the server somehow emitted an empty payload.
+        if (!update.observation_text && !update.code) break;
+        this.callbacks.onObservationUpdate?.(update);
+        break;
+      }
+      case 'tool_call_started': {
+        // Phase 6 stub on iOS too — decode + log. No UI surface yet.
+        const tcId = typeof json.tool_call_id === 'string' ? json.tool_call_id : '';
+        const tName = typeof json.tool_name === 'string' ? json.tool_name : '';
+        if (!tcId || !tName) break;
+        const msg: Stage6ToolCallStarted = {
+          tool_call_id: tcId,
+          tool_name: tName,
+          input_preview: (json.input_preview as string | null | undefined) ?? null,
+        };
+        this.callbacks.onToolCallStarted?.(msg);
+        break;
+      }
+      case 'tool_call_completed': {
+        const tcId = typeof json.tool_call_id === 'string' ? json.tool_call_id : '';
+        const tName = typeof json.tool_name === 'string' ? json.tool_name : '';
+        const outcome = typeof json.outcome === 'string' ? json.outcome : '';
+        if (!tcId || !tName) break;
+        const msg: Stage6ToolCallCompleted = {
+          tool_call_id: tcId,
+          tool_name: tName,
+          outcome,
+          duration_ms: typeof json.duration_ms === 'number' ? json.duration_ms : null,
+        };
+        this.callbacks.onToolCallCompleted?.(msg);
+        break;
+      }
+      case 'field_corrected': {
+        // Stage 6 STI-05 — `clear_reading` dispatched server-side. iOS
+        // mutates the underlying job model via Stage6FieldClearer (see
+        // DeepgramRecordingViewModel.handleFieldCorrected). On the PWA
+        // we route through the existing field_clears extraction path
+        // (apply-extraction.ts) — same code that handles bundled
+        // field_clears today, so the clear lands as a single mutation
+        // and the LiveFillView flash fires identically.
+        const circuit = typeof json.circuit === 'number' ? json.circuit : null;
+        const field = typeof json.field === 'string' ? json.field : '';
+        if (circuit == null || !field) break;
+        const msg: Stage6FieldCorrected = {
+          circuit,
+          field,
+          previous_value: (json.previous_value as string | null | undefined) ?? null,
+          reason: (json.reason as string | null | undefined) ?? null,
+        };
+        this.callbacks.onFieldCorrected?.(msg);
+        break;
+      }
+      case 'circuit_created': {
+        const ref = typeof json.circuit_ref === 'number' ? json.circuit_ref : null;
+        if (ref == null) break;
+        const msg: Stage6CircuitCreated = {
+          circuit_ref: ref,
+          designation: (json.designation as string | null | undefined) ?? null,
+          rating_amps: typeof json.rating_amps === 'number' ? json.rating_amps : null,
+        };
+        this.callbacks.onCircuitCreated?.(msg);
+        break;
+      }
+      case 'circuit_updated': {
+        const ref = typeof json.circuit_ref === 'number' ? json.circuit_ref : null;
+        if (ref == null) break;
+        const msg: Stage6CircuitUpdated = {
+          circuit_ref: ref,
+          designation: (json.designation as string | null | undefined) ?? null,
+          rating_amps: typeof json.rating_amps === 'number' ? json.rating_amps : null,
+        };
+        this.callbacks.onCircuitUpdated?.(msg);
+        break;
+      }
+      case 'observation_deleted': {
+        const id = typeof json.observation_id === 'string' ? json.observation_id : '';
+        if (!id) break;
+        const msg: Stage6ObservationDeleted = {
+          observation_id: id,
+          reason: (json.reason as string | null | undefined) ?? null,
+        };
+        this.callbacks.onObservationDeleted?.(msg);
         break;
       }
       case 'voice_command_response': {
