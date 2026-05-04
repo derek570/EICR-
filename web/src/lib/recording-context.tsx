@@ -341,7 +341,8 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
           }
           // Fire the final utterance at the Sonnet session so server-side
           // multi-turn extraction can fill form fields. No-op if the WS
-          // isn't open — the Sonnet client queues pre-connect messages.
+          // isn't open — the Sonnet client queues messages while
+          // disconnected.
           //
           // `confirmationsEnabled` mirrors iOS (DeepgramRecordingViewModel.
           // swift:1863): the same boolean that gates client-side
@@ -351,9 +352,37 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
           // in a React state) means flipping the toggle mid-recording
           // takes effect on the very next utterance without a re-render
           // round-trip.
+          //
+          // `utteranceId` is a per-final UUID that doubles as the
+          // dedupe anchor at the backend (sonnet-stream.js:2092). It's
+          // stamped on every transcript so any subsequent Stage 6 ask
+          // can echo it back as `consumed_utterance_id` and hit the
+          // fast-path Set lookup at sonnet-stream.js:1013.
+          //
+          // Stage 6 STI-04 — if a Stage 6 ask is in flight (toolCallId
+          // captured from an `ask_user_started` payload), the wire
+          // ordering MUST be transcript→ask_user_answered with the
+          // SAME utteranceId so the backend's seenTranscriptUtterances
+          // Set is populated before the ask's lookup runs. Mirrors
+          // DeepgramRecordingViewModel.swift:1820–1883.
+          //
+          // The `consume…` call is read-and-clear; if no ask is in
+          // flight we just send the transcript. Idempotency for split
+          // hesitation finals ("uh" → "cooker" in two finals) lives
+          // inside SonnetSession's firedToolCallIds Set — only the
+          // first non-empty final after an ask emits the answer.
+          const utteranceId =
+            typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+              ? crypto.randomUUID()
+              : `u_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+          const inFlightToolCallId = sonnetRef.current?.consumeInFlightToolCallId() ?? null;
           sonnetRef.current?.sendTranscript(text, {
             confirmationsEnabled: getConfirmationModeEnabled(),
+            utteranceId,
           });
+          if (inFlightToolCallId) {
+            sonnetRef.current?.sendAskUserAnswered(inFlightToolCallId, text, utteranceId);
+          }
           // Each dispatched transcript is one outstanding Sonnet turn
           // until an extraction / question frame arrives to clear it.
           setProcessingCount((n) => n + 1);
