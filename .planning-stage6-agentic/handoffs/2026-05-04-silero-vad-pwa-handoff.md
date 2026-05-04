@@ -4,12 +4,11 @@
 **Branch:** `pwa-ios-parity-overnight`
 **Status (code):** SHIPPED on branch — all 6 implementation steps
 landed across 3 commits (`fe774bb`, `ced407f`, `709debc`). 468/468
-web vitest cases green; production build clean. Behaviour gated
-behind `NEXT_PUBLIC_SILERO_VAD` env flag (defaults OFF) so the
-branch can merge to `main` without changing live wake-gate
-behaviour.
-**Status (rollout):** OPEN — soak + flag flip remain. See
-"Remaining work" at the bottom of this doc.
+web vitest cases green; production build clean.
+**Status (rollout):** Default flipped ON by user instruction
+(skipping the planned one-week soak). The env flag is now an
+emergency kill switch — set `NEXT_PUBLIC_SILERO_VAD=0` at build
+time to revert.
 
 **Implementation SHA pins:**
 - iOS-canon model: `silero_vad.onnx`,
@@ -402,17 +401,18 @@ single env var change.
    `tests/sleep-manager-vad.test.ts`). 468/468 vitest green.
    (`ced407f` + `709debc`)
 7. ⏳ CloudWatch metrics for false-wake count (compare prev RMS path
-   to Silero path) populated for a one-week soak.
-8. ⏳ Feature flag flipped ON after the soak window passes — single
-   env var commit.
+   to Silero path). NOT populated — soak skipped on the code flip;
+   counters still worth wiring so a regression has telemetry.
+8. ✅ Default flipped ON in code (recording-context.tsx) by user
+   instruction. Kill switch is `NEXT_PUBLIC_SILERO_VAD=0` build-arg.
 9. ⏳ iOS bundle SHA256 matches web SHA256 — currently true
    (`1a153a22…` matches both); CI guard not yet added.
 
-## Remaining work (not blocking merge)
+## Remaining work (post-flip)
 
-The branch is mergeable as-is — flag default OFF means production
-behaviour is unchanged. Three follow-ups remain before T20 can be
-truly closed:
+The flag is ON in production from the next deploy of this branch.
+Two follow-ups remain — neither blocks the cutover, both are
+defence-in-depth for the soak window we skipped:
 
 1. **Add the SHA-match CI guard.** A small step in the deploy
    workflow that diffs `web/public/models/silero_vad.onnx` SHA256
@@ -425,13 +425,8 @@ truly closed:
    - `recording.wake.cooldown_suppressed` — incremented when a wake
      would have fired but cooldown was active.
    Wire them into the recording-context onWake / suppressed paths.
-   Goal: dashboard the per-deploy false-wake rate so the flag flip
-   is decided by data, not vibes.
-
-3. **Flip `NEXT_PUBLIC_SILERO_VAD=1` in production env** after the
-   soak shows the Silero path's wake rate is materially below the
-   RMS path's (single env var commit, no code change). Roll back is
-   a single env var change.
+   Goal: dashboard the per-deploy false-wake rate so a regression
+   surfaces in data before it surfaces as inspector complaints.
 
 ---
 

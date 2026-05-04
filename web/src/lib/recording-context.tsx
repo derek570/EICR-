@@ -150,19 +150,21 @@ const Ctx = React.createContext<RecordingCtx | null>(null);
 // Sonnet token costs in on top.
 const DEEPGRAM_USD_PER_MIN = 0.0077;
 
-/** T20 — Silero VAD master enable. Defaults OFF so this branch can ship
- *  without changing live wake-gate behaviour; flipping
- *  `NEXT_PUBLIC_SILERO_VAD=1` in `.env.production` (or via the ECS task
- *  def env block) hot-swaps every new session to the Silero path
- *  without a code change. The handoff calls for a one-week soak window
- *  comparing the false-wake CloudWatch counter between the RMS and
- *  Silero paths before defaulting ON; until then this guard keeps the
- *  RMS path primary even though the Silero plumbing is fully present.
+/** T20 — Silero VAD master enable. Defaults ON; the env var is now an
+ *  emergency kill switch — set `NEXT_PUBLIC_SILERO_VAD=0` at build
+ *  time (Dockerfile build-arg or `web/.env.production`) to disable
+ *  the Silero path and revert every session to the RMS gate.
+ *
+ *  Originally landed defaulting OFF behind a soak window; flipped ON
+ *  by direct user instruction skipping the soak. If a regression
+ *  shows up in field use (false sleep, battery drain on a specific
+ *  iOS version, model load failure pattern), redeploy with the kill
+ *  switch set to '0' — single env var change, no code redeploy.
  *
  *  Read once at module load — runtime mid-session toggling isn't
  *  supported (and shouldn't be — recording context wires up state
  *  refs at session start that wouldn't reconfigure cleanly). */
-const SILERO_VAD_ENABLED = process.env.NEXT_PUBLIC_SILERO_VAD === '1';
+const SILERO_VAD_ENABLED = process.env.NEXT_PUBLIC_SILERO_VAD !== '0';
 
 export function RecordingProvider({ children }: { children: React.ReactNode }) {
   const { job, updateJob } = useJobContext();
