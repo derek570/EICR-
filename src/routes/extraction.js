@@ -1154,6 +1154,163 @@ Return ONLY the JSON object.`;
 }
 
 /**
+ * Score a slot's plausibility as the genuine main switch within a run of
+ * Stage-3-classified main_switch slots.
+ *
+ * Six signals, summed:
+ *   +2 — slot.ratingText digits match the classifier's main_switch_rating
+ *        (e.g. slot reads "100A", classifier said "100" — strongest positive)
+ *   +1 — slot.ratingText is non-null at all (any face read is a positive)
+ *   +1 — slot.confidence ≥ 0.7 (Stage 3 self-rated as non-partial)
+ *   +1 — slot.bsEn matches the BS EN 60947 family (switch-disconnector standard)
+ *   +1 — Stage 4 label looks main-switch-like AND labelConfidence ≥ 0.85
+ *   −2 — Stage 4 label is something else (appliance / circuit name) AND
+ *        labelConfidence ≥ 0.85 — strongest negative: a confident appliance
+ *        name is the loudest "this is not the main switch" signal we have
+ *
+ * Higher is more plausible. The score is purely ordinal — we sort the run
+ * and demote the bottom (runLength - expectedSize) slots; absolute values
+ * never matter outside that comparison.
+ */
+function scoreMainSwitchPlausibility(slot, expectedRatingDigits) {
+  let score = 0;
+
+  const ratingText = slot.ratingText != null ? String(slot.ratingText) : '';
+  const slotRatingDigits = ratingText.match(/\d+/)?.[0] ?? null;
+  if (expectedRatingDigits && slotRatingDigits === expectedRatingDigits) {
+    score += 2;
+  }
+  if (slotRatingDigits) {
+    score += 1;
+  }
+
+  if ((slot.confidence ?? 0) >= 0.7) {
+    score += 1;
+  }
+
+  const bsEnNorm = (slot.bsEn || '').toLowerCase().replace(/\s+/g, '');
+  if (bsEnNorm.includes('60947')) {
+    score += 1;
+  }
+
+  const labelRaw = slot.label != null ? String(slot.label).trim() : '';
+  const labelConf = slot.labelConfidence ?? 0;
+  if (labelRaw.length > 0 && labelConf >= 0.85) {
+    const looksLikeMainSwitch = /^(mains?\s*switch|isolator|switch[-\s]?fuse|main|\d+\s*a)$/i.test(
+      labelRaw
+    );
+    if (looksLikeMainSwitch) {
+      score += 1;
+    } else {
+      score -= 2;
+    }
+  }
+
+  return score;
+}
+
+/**
+ * Trim spurious main_switch classifications from oversized contiguous runs.
+ *
+ * Mutates `slots` in place: any slot demoted from main_switch has its
+ * `classification` rewritten to 'unknown' (so the cascade pre-pass and main
+ * scan loop both treat it as a circuit), with `_originalClassification` and
+ * `_demotedFromMainSwitch` flags preserved for audit/iOS.
+ *
+ * Run length is the count of contiguous main_switch slots. Expected size is:
+ *   1. `expectedPoles` if a sane integer 1-4 (caller-supplied from the
+ *      board classifier — currently always null, plumbed for future use).
+ *   2. The mode of the run's per-slot `poles` values, if at least 2 slots
+ *      agree on the same 1-4 integer.
+ *   3. UK-domestic default = 2.
+ *
+ * Runs whose length is ≤ expected size are left untouched. Oversized runs
+ * are scored slot-by-slot; the bottom (runLength - expected) slots get
+ * demoted. Ties broken by `mainSwitchSide`: when scores are equal, the
+ * slots PHYSICALLY FURTHEST from the side where the main switch is
+ * supposed to live are demoted first (mainSwitchSide 'right' → demote
+ * leftmost; 'left' → demote rightmost). This matches the dominant bleed
+ * direction observed in production: the genuine isolator anchors itself
+ * on its real side, and Stage 3's leak grows AWAY from it.
+ */
+function trimSpuriousMainSwitchClusterRuns(slots, expectedRating, expectedPoles, mainSwitchSide) {
+  if (!Array.isArray(slots) || slots.length === 0) return;
+
+  const ratingDigits = expectedRating ? (String(expectedRating).match(/\d+/)?.[0] ?? null) : null;
+
+  const runs = [];
+  let i = 0;
+  while (i < slots.length) {
+    if ((slots[i].classification || '').toLowerCase() === 'main_switch') {
+      const start = i;
+      while (i < slots.length && (slots[i].classification || '').toLowerCase() === 'main_switch') {
+        i++;
+      }
+      runs.push({ start, end: i - 1 });
+    } else {
+      i++;
+    }
+  }
+
+  for (const run of runs) {
+    const runSlots = slots.slice(run.start, run.end + 1);
+    const runLength = runSlots.length;
+
+    let expected;
+    if (Number.isInteger(expectedPoles) && expectedPoles >= 1 && expectedPoles <= 4) {
+      expected = expectedPoles;
+    } else {
+      const polesCounts = new Map();
+      for (const s of runSlots) {
+        const p = s.poles;
+        if (Number.isInteger(p) && p >= 1 && p <= 4) {
+          polesCounts.set(p, (polesCounts.get(p) ?? 0) + 1);
+        }
+      }
+      let modePoles = null;
+      let modeCount = 0;
+      for (const [p, count] of polesCounts) {
+        if (count > modeCount) {
+          modePoles = p;
+          modeCount = count;
+        }
+      }
+      expected = modeCount >= 2 ? modePoles : 2;
+    }
+
+    if (runLength <= expected) continue;
+
+    const scored = runSlots.map((slot, idx) => ({
+      absIdx: run.start + idx,
+      score: scoreMainSwitchPlausibility(slot, ratingDigits),
+      slot,
+    }));
+
+    // Sort by score desc, then by physical-distance-from-the-real-side as
+    // a tie-breaker. When scores are equal we want the slot furthest from
+    // the main-switch side to land at the BOTTOM of the keep-list (i.e.
+    // get sliced into the demote bucket).
+    //   mainSwitchSide='right' → keep rightmost first  → sort absIdx DESC
+    //   mainSwitchSide='left'  → keep leftmost first   → sort absIdx ASC
+    //   mainSwitchSide unknown → arbitrary but deterministic: keep leftmost
+    //                            (matches the slightly-more-common LHS
+    //                            isolator on UK split-load boards)
+    const tieBreakAscending = mainSwitchSide !== 'right';
+    scored.sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score;
+      return tieBreakAscending ? a.absIdx - b.absIdx : b.absIdx - a.absIdx;
+    });
+
+    const toDemote = scored.slice(expected);
+    for (const d of toDemote) {
+      d.slot._originalClassification = d.slot.classification;
+      d.slot.classification = 'unknown';
+      d.slot._demotedFromMainSwitch = true;
+    }
+  }
+}
+
+/**
  * Build an EICR-schema `circuits[]` array from per-slot VLM classifications.
  *
  * Per-slot is the sole source of truth for circuit-level data:
@@ -1181,8 +1338,41 @@ Return ONLY the JSON object.`;
  *
  * @returns {Array|null} circuits array, or null if slots is empty/invalid.
  */
-export function slotsToCircuits({ slots, mainSwitchSide, minSlotConfidence = 0.7 }) {
+export function slotsToCircuits({
+  slots,
+  mainSwitchSide,
+  minSlotConfidence = 0.7,
+  mainSwitchRating = null,
+  mainSwitchPoles = null,
+}) {
   if (!Array.isArray(slots) || slots.length === 0) return null;
+
+  // --- Pre-pass 0: trim spurious main_switch classifications
+  //
+  // Stage 3's per-slot VLM, when given a single-module crop centred near a
+  // wide main switch (lever isolators, rotary bezels, double-pole RCBOs
+  // sitting adjacent to the isolator), can confidently mis-classify the
+  // adjacent circuit slot as part of the main switch. Visual cues bleed in:
+  // diagonal lever travel, red plastic, the cosmetic bezel of the rotary
+  // base, or — as on the Elucian CU1SPD275 (extraction 1777921959918-zlhiha
+  // captured 2026-05-04) — an MCB faceplate that ALSO has a red plastic
+  // strip and looks visually different from the surrounding RCBOs.
+  //
+  // Without this trim, the "skip cls === 'main_switch'" rule downstream
+  // silently drops the genuine circuit (e.g. "Ovens" at slot 11 of that
+  // capture, classified main_switch alongside the real 2-pole isolator
+  // at slots 12-13). The user sees the schedule short by one circuit.
+  //
+  // The pre-pass walks contiguous main_switch runs, computes an expected
+  // run length (caller-supplied poles, modal poles across the run, or 2 as
+  // the UK domestic default), scores each slot's plausibility as a real
+  // main switch, and demotes the lowest-scoring overflow slots. Demoted
+  // slots have `classification` rewritten to 'unknown' so both this
+  // pre-pass's later cascade computation AND the main scan loop's existing
+  // low-confidence branch handle them naturally — they emerge as circuits
+  // with the slot's Stage 4 label, low_confidence:true, and is_partial_crop
+  // set. `_originalClassification` is preserved for audit/iOS.
+  trimSpuriousMainSwitchClusterRuns(slots, mainSwitchRating, mainSwitchPoles, mainSwitchSide);
 
   // --- Pre-pass: compute per-slot effective upstream RCD in PHYSICAL order
   //
@@ -1950,6 +2140,12 @@ router.post(
           const mergedCircuits = slotsToCircuits({
             slots: analysis.slots,
             mainSwitchSide,
+            mainSwitchRating: boardClassification?.mainSwitchRating ?? null,
+            // mainSwitchPoles is null-by-design here — the classifier doesn't
+            // currently return a pole count. Plumbed through for future use;
+            // until then the trim pre-pass falls back to modal poles across
+            // the run, then to the UK domestic default of 2.
+            mainSwitchPoles: null,
           });
 
           if (mergedCircuits && mergedCircuits.length > 0) {
