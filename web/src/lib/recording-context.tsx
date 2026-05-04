@@ -18,6 +18,7 @@ import {
   cancelSpeech,
   confirmationToSentence,
   getConfirmationModeEnabled,
+  isWithinTtsWindow,
   speak,
   speakConfirmation,
 } from './recording/tts';
@@ -286,6 +287,24 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         },
         onFinalTranscript: (text, confidence) => {
           setInterim('');
+          // Mic-feedback gate (iOS parity) — discard finals that
+          // arrived while the device's own TTS was audible. Without
+          // this, the speaker plays "Should I create circuit 1?", the
+          // mic picks it up, Deepgram emits a transcript, and Sonnet
+          // processes the question as if the inspector said it. iOS
+          // closes this loop at AlertManager.swift:854 (ttsAudioOverlaps)
+          // by tracking the audio window and discarding overlapping
+          // transcripts. The PWA tracks a coarser window (start=>end +
+          // 300ms cooldown) inside tts.ts; that's enough to suppress
+          // the bulk of the loopback because Deepgram's own endpointing
+          // already groups TTS-induced speech into a single utterance
+          // that finishes near the same moment TTS does.
+          if (isWithinTtsWindow()) {
+            console.info(
+              `[recording] final suppressed inside TTS window text="${text.slice(0, 60)}"`
+            );
+            return;
+          }
           setTranscript((prev) => {
             const next: TranscriptUtterance[] = [
               ...prev,

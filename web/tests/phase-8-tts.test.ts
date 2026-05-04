@@ -21,10 +21,13 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  __resetTtsWindowForTests,
   cancelSpeech,
   confirmationToSentence,
   getConfirmationModeEnabled,
+  getTtsAudioWindow,
   isTtsAvailable,
+  isWithinTtsWindow,
   setConfirmationModeEnabled,
   speak,
   speakConfirmation,
@@ -69,6 +72,7 @@ beforeEach(() => {
   (window as unknown as { SpeechSynthesisUtterance: unknown }).SpeechSynthesisUtterance =
     SpeechSynthesisUtteranceShim;
   window.localStorage.clear();
+  __resetTtsWindowForTests();
 });
 
 afterEach(() => {
@@ -172,6 +176,56 @@ describe('cancelSpeech', () => {
   it('delegates to speechSynthesis.cancel', () => {
     cancelSpeech();
     expect(shim.cancel).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('TTS audio window (mic-feedback gate)', () => {
+  it('reports null before any speak() call', () => {
+    expect(getTtsAudioWindow()).toBeNull();
+    expect(isWithinTtsWindow()).toBe(false);
+  });
+
+  it('opens the window with endMs=null while speaking', () => {
+    speak('hello');
+    const w = getTtsAudioWindow();
+    expect(w).not.toBeNull();
+    expect(w?.endMs).toBeNull();
+    expect(isWithinTtsWindow()).toBe(true);
+  });
+
+  it('closes the window when the utterance ends', () => {
+    speak('hello');
+    // Drive the synthesizer's onend by replaying the queued utterance
+    // — our shim doesn't auto-fire onend, so simulate by calling onend
+    // directly on the spoken utterance.
+    const utterance = shim.spoken[0] as unknown as {
+      onend?: () => void;
+    };
+    utterance.onend?.();
+    const w = getTtsAudioWindow();
+    expect(w?.endMs).not.toBeNull();
+    // Inside the 300ms cooldown the gate still suppresses.
+    expect(isWithinTtsWindow(300)).toBe(true);
+  });
+
+  it('lets transcripts through after the cooldown elapses', () => {
+    speak('hello');
+    const utterance = shim.spoken[0] as unknown as {
+      onend?: () => void;
+    };
+    utterance.onend?.();
+    // Pretend 400ms passed by passing an explicit nowMs — beats faking
+    // timers + having the test wait. The default cooldown is 300ms so
+    // 400ms past endMs releases the gate.
+    const w = getTtsAudioWindow()!;
+    expect(isWithinTtsWindow(300, w.endMs! + 400)).toBe(false);
+  });
+
+  it('cancelSpeech() closes the window so the gate releases on teardown', () => {
+    speak('hello');
+    cancelSpeech();
+    const w = getTtsAudioWindow();
+    expect(w?.endMs).not.toBeNull();
   });
 });
 

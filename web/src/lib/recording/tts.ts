@@ -148,6 +148,52 @@ interface SpeakOptions {
 }
 
 /**
+ * TTS audio window — wall-clock { startMs, endMs } for the most-recent
+ * utterance the wrapper dispatched. Mirrors iOS
+ * `AlertManager.ttsAudioStartAt` / `ttsAudioEndAt`
+ * (AlertManager.swift:113–119). The recording-context queries this via
+ * `getTtsAudioWindow()` to discard final transcripts that arrived
+ * while the device's own TTS was audible — without that gate the mic
+ * picks up the spoken question/response and Deepgram emits a
+ * transcript that loops back into Sonnet as if the inspector said it.
+ *
+ * Closed-window contract: while TTS is actively speaking the field is
+ * `{ startMs, endMs: null }`. Once the utterance finishes (or the
+ * synthesizer fires `onerror`/`onpause`) the field becomes
+ * `{ startMs, endMs }` and stays that way until either the next
+ * `dispatch()` overwrites it or `cancelSpeech()` clears it. The 300ms
+ * post-end cooldown lives at the consumer because callers want to
+ * decide their own grace policy (mirrors iOS AlertManager.swift:127
+ * where the cooldown is also a consumer-side decision).
+ */
+let ttsWindow: { startMs: number; endMs: number | null } | null = null;
+
+/**
+ * Read the TTS audio window. Returns null when no utterance has been
+ * dispatched yet — equivalent to "TTS is silent, transcripts can flow
+ * through unconditionally". Callers that want to detect "currently
+ * speaking" check `endMs === null`; callers that want to gate on a
+ * post-end cooldown compare `now - endMs < cooldownMs`.
+ */
+export function getTtsAudioWindow(): { startMs: number; endMs: number | null } | null {
+  return ttsWindow;
+}
+
+/**
+ * Returns true iff a transcript that arrived at `nowMs` (default
+ * `Date.now()`) overlaps either the active TTS audio OR the
+ * `cooldownMs` cooldown window after TTS finished. Default cooldown
+ * is 300ms, matching iOS's `audioPlayer` 300ms cooldown
+ * (AlertManager.swift:127). Used by recording-context's
+ * `onFinalTranscript` handler to discard mic-self-feedback transcripts.
+ */
+export function isWithinTtsWindow(cooldownMs = 300, nowMs = Date.now()): boolean {
+  if (!ttsWindow) return false;
+  if (ttsWindow.endMs == null) return true; // currently speaking
+  return nowMs - ttsWindow.endMs < cooldownMs;
+}
+
+/**
  * Internal: queue an utterance unconditionally. `speak` and
  * `speakConfirmation` both go through this; the only difference is the
  * preference gate on the confirmation entry point.
@@ -169,13 +215,46 @@ function dispatch(text: string, options?: SpeakOptions): void {
     utterance.volume = 1.0;
     const voice = pickVoice();
     if (voice) utterance.voice = voice;
-    if (options?.onEnd) {
-      utterance.onend = () => options.onEnd?.();
-      // Some browsers fire `onerror` instead of `onend` on cancel; the
-      // tour controller calls cancelSpeech() on every step change so a
-      // missing end-event would stall auto-advance. `onerror` fallback.
-      utterance.onerror = () => options.onEnd?.();
-    }
+
+    // Open the TTS window. iOS opens it inside `markTTSStarted()` at the
+    // moment audio actually plays; on web we approximate by stamping it
+    // when `speak()` is dispatched — the difference is bounded by the
+    // browser's queue latency (a few ms in practice). The mic-feedback
+    // gate uses this START time as the lower bound when discarding
+    // transcripts.
+    const openedAt = Date.now();
+    ttsWindow = { startMs: openedAt, endMs: null };
+
+    const closeWindow = () => {
+      // Only close if we still own this window — a fresh dispatch will
+      // have overwritten it with a new startMs already, in which case
+      // overwriting endMs would corrupt the new window's "currently
+      // speaking" signal.
+      if (ttsWindow && ttsWindow.startMs === openedAt) {
+        ttsWindow = { startMs: openedAt, endMs: Date.now() };
+      }
+    };
+
+    utterance.onstart = () => {
+      // Re-stamp startMs at the actual playback moment for tighter
+      // alignment with iOS — synthesis can hold the utterance for tens
+      // of ms before audio begins, especially on iOS Safari after a
+      // voiceschanged event.
+      if (ttsWindow && ttsWindow.endMs == null) {
+        ttsWindow = { startMs: Date.now(), endMs: null };
+      }
+    };
+    utterance.onend = () => {
+      closeWindow();
+      options?.onEnd?.();
+    };
+    // Some browsers fire `onerror` instead of `onend` on cancel; the
+    // tour controller calls cancelSpeech() on every step change so a
+    // missing end-event would stall auto-advance. `onerror` fallback.
+    utterance.onerror = () => {
+      closeWindow();
+      options?.onEnd?.();
+    };
     window.speechSynthesis.speak(utterance);
   } catch {
     // Swallow — TTS failures should never interrupt recording.
@@ -231,14 +310,28 @@ export function speakConfirmation(text: string, options?: SpeakOptions): void {
 }
 
 /**
+ * Test-only — wipe the TTS audio window so a fresh test reads `null`
+ * from `getTtsAudioWindow()`. Production callers don't need this; the
+ * window is naturally overwritten by each `dispatch()` call. Kept
+ * underscore-prefixed to discourage accidental production use.
+ */
+export function __resetTtsWindowForTests(): void {
+  ttsWindow = null;
+}
+
+/**
  * Cancel any in-flight speech. Called on recording stop so the last
  * confirmation doesn't trail on after the inspector has ended the
- * session.
+ * session. Also closes the TTS audio window so the cooldown gate
+ * doesn't keep suppressing transcripts after teardown.
  */
 export function cancelSpeech(): void {
   if (!isTtsAvailable()) return;
   try {
     window.speechSynthesis.cancel();
+    if (ttsWindow && ttsWindow.endMs == null) {
+      ttsWindow = { startMs: ttsWindow.startMs, endMs: Date.now() };
+    }
   } catch {
     // ignore
   }
