@@ -22,6 +22,7 @@ import {
   speak,
   speakConfirmation,
 } from './recording/tts';
+import { playAttentionTone, playConfirmationChime } from './recording/tones';
 import { api } from './api-client';
 import { useJobContext } from './job-context';
 import { applyVoiceCommand, parseVoiceCommand, type VoiceCommandJob } from '@certmate/shared-utils';
@@ -121,6 +122,18 @@ export type RecordingActions = {
   /** Dismiss a question from the queue without sending a correction.
    *  Used when the inspector taps the × on a question bubble. */
   dismissQuestion: (index: number) => void;
+  /** Accept a Stage 6 ask_user question via tap (mirrors iOS
+   *  handleTapResponse(accepted: true), AlertManager.swift:610). Sends
+   *  `ask_user_answered` with user_text="yes" through the same wire
+   *  path a spoken "yes" would, plays the confirmation chime, and
+   *  speaks "Updated". No-op for legacy questions without a
+   *  tool_call_id. */
+  acceptQuestion: (index: number) => void;
+  /** Reject a Stage 6 ask_user question via tap (handleTapResponse(
+   *  accepted: false)). Sends `ask_user_answered` with user_text="no"
+   *  and speaks "Okay, keeping it." No chime — iOS line 788 mirrors
+   *  this (rejection is silent except for TTS). */
+  rejectQuestion: (index: number) => void;
 };
 
 type RecordingCtx = RecordingSnapshot & RecordingActions;
@@ -353,6 +366,12 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
               }
             }
             if (outcome.response) {
+              // Confirmation chime before the spoken response — same
+              // ordering as iOS resolveWithCorrection
+              // (AlertManager.swift:552 chime then speakResponse).
+              // Only fires for commands that produced a patch (queries
+              // shouldn't chime — they're read-only).
+              if (outcome.patch) playConfirmationChime();
               speak(outcome.response);
             }
             sleepManagerRef.current?.onSpeechActivity();
@@ -539,8 +558,13 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         }
         // Speak only newly-appearing questions. Re-asks are suppressed
         // by the dedup above, matching iOS where the AlertCardView
-        // doesn't re-announce a queued question.
+        // doesn't re-announce a queued question. The attention tone
+        // plays BEFORE TTS to give the inspector a half-second of
+        // warning that something needs their attention — same iOS
+        // ordering at AlertManager.swift:717 (playAttentionTone()
+        // immediately before speakAlertMessage()).
         if (isNew && q.question) {
+          playAttentionTone();
           speak(q.question);
         }
       },
@@ -1113,8 +1137,169 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     teardownSleep,
   ]);
 
-  const dismissQuestion = React.useCallback((index: number) => {
-    setQuestions((prev) => prev.filter((_, i) => i !== index));
+  // Auto-dismiss timer registry — keyed by question text (the same key
+  // the dedup logic in onQuestion uses). Mirrors iOS's per-alert
+  // autoDismissTask (AlertManager.swift:151) which fires 15s AFTER
+  // TTS finishes for interactive alerts. The PWA uses a coarser
+  // 15-from-arrival because we don't track per-question TTS-finish
+  // events; in practice the inspector either responds within 5s or
+  // doesn't respond at all, so the extra grace from arrival-vs-TTS-
+  // end timing is minor.
+  //
+  // Why a ref of Map (not state): timer handles are imperative and
+  // changing them shouldn't trigger a re-render. Cleared on dismiss
+  // (manual or auto) so we don't leak handles when the inspector
+  // dismisses faster than the timeout fires.
+  const dismissTimersRef = React.useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+
+  /** Per-question timeout in ms. Mirrors iOS's three-tier policy
+   *  (interactive 15s / informational 4s / visual-only 6s,
+   *  AlertManager.swift:1295/1308/758). Only the interactive tier
+   *  exists today on the PWA — every onQuestion is ask-shaped — but
+   *  the switch is here so adding informational/visual paths later
+   *  is a one-line change. */
+  const autoDismissMsFor = React.useCallback((q: SonnetQuestion): number => {
+    // Visual-only / informational shapes don't fire onQuestion today,
+    // so this branch is dead but kept for forward-compat.
+    if (q.question_type === 'visual_only') return 6000;
+    if (q.question_type === 'informational') return 4000;
+    return 15000;
+  }, []);
+
+  const cancelDismissTimer = React.useCallback((key: string) => {
+    const existing = dismissTimersRef.current.get(key);
+    if (existing) {
+      clearTimeout(existing);
+      dismissTimersRef.current.delete(key);
+    }
+  }, []);
+
+  const dismissQuestion = React.useCallback(
+    (index: number) => {
+      setQuestions((prev) => {
+        const removed = prev[index];
+        if (removed?.question) cancelDismissTimer(removed.question);
+        return prev.filter((_, i) => i !== index);
+      });
+    },
+    [cancelDismissTimer]
+  );
+
+  /**
+   * Tap-accept on a question — mirrors iOS handleTapResponse(accepted:
+   * true) (AlertManager.swift:610 + line 785 "Updated"). Wires the
+   * accept through the same `ask_user_answered` channel a spoken "yes"
+   * would, so the backend's tool-call resolver sees one canonical
+   * answer shape regardless of whether the inspector tapped or spoke.
+   * Plays the confirmation chime BEFORE TTS — same iOS ordering at
+   * line 784–785.
+   *
+   * Idempotency: SonnetSession's firedToolCallIds Set already guards
+   * against double-emit, so a second tap on the same question is a
+   * silent no-op on the wire.
+   *
+   * Rejected (no tool_call_id): legacy questions don't have a wire
+   * back path — fall back to a silent dismiss.
+   */
+  const acceptQuestion = React.useCallback(
+    (index: number) => {
+      const target = questions[index];
+      if (!target) return;
+      const toolCallId = target.tool_call_id;
+      if (toolCallId && sonnetRef.current) {
+        const utteranceId =
+          typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+            ? crypto.randomUUID()
+            : `u_${Date.now()}_tap`;
+        // Send a placeholder transcript so the wire ordering invariant
+        // holds (transcript-then-ask) — the backend's seenTranscript
+        // Utterances Set must be populated before the ask answer
+        // arrives, otherwise the fast-path dedupe misses and we burn
+        // the fuzzy fallback. Empty user_text would defeat the
+        // anchor; "yes" is the canonical positive shape.
+        sonnetRef.current.sendTranscript('yes', {
+          confirmationsEnabled: getConfirmationModeEnabled(),
+          utteranceId,
+        });
+        sonnetRef.current.sendAskUserAnswered(toolCallId, 'yes', utteranceId);
+      }
+      playConfirmationChime();
+      speak('Updated');
+      // Drop the question from the queue + clear the auto-dismiss
+      // timer.
+      setQuestions((prev) => {
+        if (target.question) cancelDismissTimer(target.question);
+        return prev.filter((_, i) => i !== index);
+      });
+    },
+    [cancelDismissTimer, questions]
+  );
+
+  const rejectQuestion = React.useCallback(
+    (index: number) => {
+      const target = questions[index];
+      if (!target) return;
+      const toolCallId = target.tool_call_id;
+      if (toolCallId && sonnetRef.current) {
+        const utteranceId =
+          typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+            ? crypto.randomUUID()
+            : `u_${Date.now()}_tap`;
+        sonnetRef.current.sendTranscript('no', {
+          confirmationsEnabled: getConfirmationModeEnabled(),
+          utteranceId,
+        });
+        sonnetRef.current.sendAskUserAnswered(toolCallId, 'no', utteranceId);
+      }
+      // No chime on reject — iOS line 788 only speaks the response.
+      speak('Okay, keeping it.');
+      setQuestions((prev) => {
+        if (target.question) cancelDismissTimer(target.question);
+        return prev.filter((_, i) => i !== index);
+      });
+    },
+    [cancelDismissTimer, questions]
+  );
+
+  // Schedule the auto-dismiss whenever a NEW question lands at the
+  // tail of the questions queue. Driven off the questions state (not
+  // onQuestion) so a re-render race that drops a question mid-fire
+  // can't leak its timer; the cleanup loop below also clears any
+  // stragglers when the question text disappears from the queue.
+  React.useEffect(() => {
+    const known = new Set(questions.map((q) => q.question));
+    // Drop timers whose question is no longer in the queue.
+    for (const [key, handle] of dismissTimersRef.current.entries()) {
+      if (!known.has(key)) {
+        clearTimeout(handle);
+        dismissTimersRef.current.delete(key);
+      }
+    }
+    // Schedule one for any newly-added question.
+    questions.forEach((q, idx) => {
+      if (!q.question) return;
+      if (dismissTimersRef.current.has(q.question)) return;
+      const ms = autoDismissMsFor(q);
+      const handle = setTimeout(() => {
+        dismissTimersRef.current.delete(q.question);
+        // Re-resolve the index by text in case the queue shifted
+        // between schedule and fire (a manual dismiss earlier in the
+        // list would have changed the absolute index).
+        setQuestions((prev) => prev.filter((p) => p.question !== q.question));
+      }, ms);
+      dismissTimersRef.current.set(q.question, handle);
+      void idx;
+    });
+  }, [questions, autoDismissMsFor]);
+
+  // Cleanup on unmount — drop any pending timers so we don't fire
+  // setQuestions after the provider has gone.
+  React.useEffect(() => {
+    const timers = dismissTimersRef.current;
+    return () => {
+      for (const handle of timers.values()) clearTimeout(handle);
+      timers.clear();
+    };
   }, []);
 
   // Total user-facing cost — Deepgram streaming + Sonnet tokens. Kept
@@ -1141,6 +1326,8 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
       pause,
       resume,
       dismissQuestion,
+      acceptQuestion,
+      rejectQuestion,
     }),
     [
       state,

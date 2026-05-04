@@ -126,6 +126,8 @@ function RecordingActionBar() {
     pendingReadings,
     questions,
     dismissQuestion,
+    acceptQuestion,
+    rejectQuestion,
     stop,
     pause,
     resume,
@@ -208,7 +210,12 @@ function RecordingActionBar() {
           <PendingDataBanner count={pendingReadings} />
         </div>
         {questions.length > 0 ? (
-          <AlertCard questions={questions} onDismiss={dismissQuestion} />
+          <AlertCard
+            questions={questions}
+            onDismiss={dismissQuestion}
+            onAccept={acceptQuestion}
+            onReject={rejectQuestion}
+          />
         ) : null}
       </div>
 

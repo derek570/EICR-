@@ -755,7 +755,11 @@ function applyReorderCircuits(
   }));
   return {
     patch: { circuits: renumbered },
-    response: `Moved circuit ${command.from} to position ${command.to}.`,
+    // iOS canon: "Moved to circuit N" (AlertManager.swift:581) — the
+    // shorter phrasing reads more naturally over TTS than the verbose
+    // "Moved circuit X to position Y." Pre-fix the PWA used the
+    // verbose form; aligned here so both clients speak the same line.
+    response: `Moved to circuit ${command.to}.`,
     changedKeys: ['circuits'],
   };
 }
