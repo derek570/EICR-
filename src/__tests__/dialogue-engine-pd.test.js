@@ -526,3 +526,129 @@ describe('topic switch from OCPD', () => {
     expect(session.dialogueScriptState).toBeNull();
   });
 });
+
+describe('OCPD breaking-capacity allowed-value gate (2026-05-04, field test 07635782)', () => {
+  // Field test 07635782 (08:24 BST 2026-05-04): inspector said "six" for
+  // breaking capacity, the engine had moved on, Deepgram heard the next
+  // utterance as "66" → 66 kA landed on the cert. The slot now declares
+  // allowedValues: ['1.5','3','4.5','6','10','16','20','25','36','50','80'];
+  // anything else falls through to a re-ask.
+
+  function reachBreakingCapacitySlot(session, ws) {
+    processProtectiveDeviceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'MCB on circuit 5.',
+      now: 1000,
+    });
+    processProtectiveDeviceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'BS EN 60898',
+      now: 2000,
+    });
+    processProtectiveDeviceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'B',
+      now: 3000,
+    });
+    processProtectiveDeviceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: '32 amps',
+      now: 4000,
+    });
+    expect(ws.sent.at(-1).context_field).toBe('ocpd_breaking_capacity_ka');
+  }
+
+  test('rejects 66 (not on the BS-EN ratings ladder) and re-asks', () => {
+    const ws = new FakeWS();
+    const session = buildSession({ 5: {} });
+    reachBreakingCapacitySlot(session, ws);
+
+    processProtectiveDeviceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: '66',
+      now: 5000,
+    });
+
+    // No write happened; engine re-asks the same slot.
+    expect(session.stateSnapshot.circuits[5].ocpd_breaking_capacity_ka).toBeUndefined();
+    expect(ws.sent.at(-1).context_field).toBe('ocpd_breaking_capacity_ka');
+    expect(ws.sent.at(-1).question).toBe("What's the breaking capacity in kA?");
+    // Script still active — inspector can answer with a valid value.
+    expect(session.dialogueScriptState).not.toBeNull();
+  });
+
+  test("rejects 66 in named form (e.g. '66 kA')", () => {
+    const ws = new FakeWS();
+    const session = buildSession({ 5: {} });
+    reachBreakingCapacitySlot(session, ws);
+
+    processProtectiveDeviceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: '66 kA',
+      now: 5000,
+    });
+    expect(session.stateSnapshot.circuits[5].ocpd_breaking_capacity_ka).toBeUndefined();
+    expect(ws.sent.at(-1).context_field).toBe('ocpd_breaking_capacity_ka');
+  });
+
+  test('accepts 6 (on the ladder) and finishes the script', () => {
+    const ws = new FakeWS();
+    const session = buildSession({ 5: {} });
+    reachBreakingCapacitySlot(session, ws);
+
+    processProtectiveDeviceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: '6',
+      now: 5000,
+    });
+    expect(session.stateSnapshot.circuits[5].ocpd_breaking_capacity_ka).toBe('6');
+    // Script completed — finish message emitted.
+    expect(session.dialogueScriptState).toBeNull();
+  });
+
+  test('accepts 1.5 (half-step on the ladder)', () => {
+    const ws = new FakeWS();
+    const session = buildSession({ 5: {} });
+    reachBreakingCapacitySlot(session, ws);
+
+    processProtectiveDeviceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: '1.5',
+      now: 5000,
+    });
+    expect(session.stateSnapshot.circuits[5].ocpd_breaking_capacity_ka).toBe('1.5');
+    expect(session.dialogueScriptState).toBeNull();
+  });
+
+  test('rejects 100 (off-ladder, even though parser would accept)', () => {
+    const ws = new FakeWS();
+    const session = buildSession({ 5: {} });
+    reachBreakingCapacitySlot(session, ws);
+
+    processProtectiveDeviceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: '100',
+      now: 5000,
+    });
+    expect(session.stateSnapshot.circuits[5].ocpd_breaking_capacity_ka).toBeUndefined();
+    expect(ws.sent.at(-1).context_field).toBe('ocpd_breaking_capacity_ka');
+  });
+});
