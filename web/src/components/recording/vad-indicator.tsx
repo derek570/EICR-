@@ -7,10 +7,10 @@ import type { RecordingState } from '@/lib/recording-context';
  * VAD indicator — small coloured dot + label next to the state pill.
  *
  * Mirrors iOS `VADIndicatorView` (CertMateUnified/Sources/Views/Recording/
- * VADIndicatorView.swift): green when actively listening, amber while
- * dozing, grey when the session has entered full sleep. Pulses the outer
- * ring while speech is active so the inspector can glance-verify the mic
- * is actually open.
+ * VADIndicatorView.swift): green when actively listening, grey when the
+ * session has entered sleep (Stage 4c collapsed model — Doze tier
+ * removed 2026-04-27). Pulses the outer ring while speech is active so
+ * the inspector can glance-verify the mic is actually open.
  *
  * Why a separate component from the existing `<StatePill>`:
  *   - iOS renders two things: a state pill (compact label with icon) AND
@@ -28,8 +28,6 @@ export function VadIndicator({ state }: { state: RecordingState }) {
     switch (state) {
       case 'active':
         return { colour: 'var(--color-brand-green)', label: 'Active', pulsing: true };
-      case 'dozing':
-        return { colour: 'var(--color-status-processing)', label: 'Dozing', pulsing: false };
       case 'sleeping':
         return { colour: 'var(--color-status-limitation)', label: 'Sleeping', pulsing: false };
       case 'requesting-mic':

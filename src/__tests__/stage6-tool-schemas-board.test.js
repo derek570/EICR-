@@ -75,11 +75,15 @@ describe('record_board_reading schema', () => {
     // Original 7 tools (record_reading…ask_user) must keep their indices
     // because logging / metric tagging in Phase 5+ relies on stable order.
     // record_board_reading is appended at 7; start_dialogue_script at 8
-    // (2026-04-30 Silvertown follow-up).
-    expect(TOOL_SCHEMAS).toHaveLength(9);
+    // (2026-04-30 Silvertown follow-up). delete_circuit (9), calculate_zs
+    // (10), and calculate_r1_plus_r2 (11) appended 2026-05-04.
+    expect(TOOL_SCHEMAS).toHaveLength(12);
     expect(TOOL_SCHEMAS[7]).toBeDefined();
     expect(TOOL_SCHEMAS[7].name).toBe('record_board_reading');
     expect(TOOL_SCHEMAS[8].name).toBe('start_dialogue_script');
+    expect(TOOL_SCHEMAS[9].name).toBe('delete_circuit');
+    expect(TOOL_SCHEMAS[10].name).toBe('calculate_zs');
+    expect(TOOL_SCHEMAS[11].name).toBe('calculate_r1_plus_r2');
     expect(TOOL_SCHEMAS[0].name).toBe('record_reading'); // unchanged
   });
 

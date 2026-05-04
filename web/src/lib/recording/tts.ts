@@ -2,9 +2,22 @@
 
 /**
  * Text-to-speech wrapper — thin shim over the browser's SpeechSynthesis
- * API. Mirrors the iOS `AlertManager` TTS hook: short confirmations
- * ("Set polarity to pass on circuit 3") + Sonnet question read-aloud
- * (e.g. "Ring continuity on circuit 3?") during recording.
+ * API. Mirrors the iOS `AlertManager` TTS model exactly:
+ *
+ *   - `speak()` is the always-on path. iOS speaks ask_user prompts,
+ *     validation alerts, voice-command responses ("Got it, X", "Moved
+ *     to circuit X"), critical notifications, and tour narration via
+ *     `speakAlertMessage` / `speakResponse` / `speakCriticalNotification`
+ *     / `speakTourNarration` — none of which are gated by any user
+ *     toggle. Mute happens at the system volume, not in-app.
+ *
+ *   - `speakConfirmation()` is the only path the user can mute. iOS
+ *     gates `speakBriefConfirmation()` ("Set Zs to 0.44 on circuit 3")
+ *     behind `confirmationModeEnabled` (UserDefaults
+ *     `confirmationModeEnabled`). The same flag is also sent to the
+ *     backend as `confirmations_enabled: true|false` on every
+ *     transcript so Sonnet only emits confirmation strings when the
+ *     user wants them — see DeepgramRecordingViewModel.swift:1863.
  *
  * Why a singleton + cancel-before-queue:
  *   - The inspector may produce rapid-fire confirmations (each Sonnet
@@ -17,21 +30,28 @@
  *     this keeps diffing trivial in tests.
  *
  * iOS Safari quirk: `speechSynthesis.getVoices()` returns an empty list
- * until the browser has warmed the voices cache. Calling it on first
- * enable coaxes the `voiceschanged` event to fire, after which a later
- * speak() call produces audible output. Without the preload, the first
- * confirmation is silent on iOS.
+ * until the browser has warmed the voices cache. Calling it on the
+ * confirmation-toggle ON transition coaxes the `voiceschanged` event to
+ * fire, after which a later speak() call produces audible output.
  *
  * Availability: guarded behind `isTtsAvailable()`. SSR + non-browser
  * contexts (jsdom without speechSynthesis polyfill) return false so the
  * caller can bail cleanly.
  *
- * Persistence: `getVoiceFeedbackEnabled` / `setVoiceFeedbackEnabled`
- * read/write `localStorage['cm-voice-feedback']`. The key is namespaced
- * so parallel CertMate subsystems can't collide with a plain "tts" flag.
+ * Persistence: `getConfirmationModeEnabled` / `setConfirmationModeEnabled`
+ * read/write `localStorage['cm-confirmation-mode']`. The key is
+ * namespaced so parallel CertMate subsystems can't collide. A one-shot
+ * migration on first read lifts any pre-existing value from the legacy
+ * `cm-voice-feedback` key (which used to gate ALL speech, before this
+ * file matched the iOS scope).
  */
 
-const STORAGE_KEY = 'cm-voice-feedback';
+const STORAGE_KEY = 'cm-confirmation-mode';
+/** Pre-parity name. Read once on first access for users who toggled
+ *  voice feedback on under the old all-or-nothing semantics; their
+ *  preference still applies under the new (narrower) confirmation
+ *  toggle. Removed in a future cleanup. */
+const LEGACY_STORAGE_KEY = 'cm-voice-feedback';
 
 /**
  * Returns true iff the runtime has the SpeechSynthesis API. Used by
@@ -46,26 +66,39 @@ export function isTtsAvailable(): boolean {
 }
 
 /**
- * Read the persisted voice-feedback preference. Defaults to `false` when
- * storage has no entry — matches iOS where the toggle is off until the
- * inspector explicitly enables it.
+ * Read the persisted confirmation-mode preference. Defaults to `false`
+ * when storage has no entry — matches iOS where the toggle is off until
+ * the inspector explicitly enables it.
+ *
+ * Migration: if the new key is unset and the legacy `cm-voice-feedback`
+ * key has a value, lift it across once and rewrite under the new key.
+ * That preserves the choice of any user who already toggled voice
+ * feedback on under the old all-or-nothing semantics — the new
+ * confirmation-only scope is strictly narrower so there's no surprise.
  */
-export function getVoiceFeedbackEnabled(): boolean {
+export function getConfirmationModeEnabled(): boolean {
   if (typeof window === 'undefined') return false;
   try {
-    return window.localStorage.getItem(STORAGE_KEY) === 'true';
+    const current = window.localStorage.getItem(STORAGE_KEY);
+    if (current !== null) return current === 'true';
+    const legacy = window.localStorage.getItem(LEGACY_STORAGE_KEY);
+    if (legacy !== null) {
+      window.localStorage.setItem(STORAGE_KEY, legacy);
+      return legacy === 'true';
+    }
+    return false;
   } catch {
     return false;
   }
 }
 
 /**
- * Persist the voice-feedback preference. Writes `"true"` / `"false"` so
- * the stored value round-trips through `JSON.parse` in any diagnostic
- * dashboard. Swallows storage errors (quota exceeded, disabled cookies)
- * since TTS-off is a safe fallback.
+ * Persist the confirmation-mode preference. Writes `"true"` / `"false"`
+ * so the stored value round-trips through `JSON.parse` in any
+ * diagnostic dashboard. Swallows storage errors (quota exceeded,
+ * disabled cookies) since confirmation-off is a safe fallback.
  */
-export function setVoiceFeedbackEnabled(enabled: boolean): void {
+export function setConfirmationModeEnabled(enabled: boolean): void {
   if (typeof window === 'undefined') return;
   try {
     window.localStorage.setItem(STORAGE_KEY, enabled ? 'true' : 'false');
@@ -94,7 +127,6 @@ function pickVoice(): SpeechSynthesisVoice | null {
   try {
     const voices = window.speechSynthesis.getVoices();
     if (voices.length === 0) return null;
-    // Prefer en-GB, fall back to en-US, then any en-*, then the first.
     return (
       voices.find((v) => v.lang === 'en-GB') ??
       voices.find((v) => v.lang === 'en-US') ??
@@ -106,31 +138,67 @@ function pickVoice(): SpeechSynthesisVoice | null {
   }
 }
 
+interface SpeakOptions {
+  /** Bypass any internal preference check. Used by `speakConfirmation`
+   *  for the ON-transition preview so the inspector hears their toggle
+   *  work even though the new value hasn't been re-read yet. */
+  force?: boolean;
+  lang?: string;
+  onEnd?: () => void;
+}
+
 /**
- * Speak a short confirmation. Cancels any in-flight utterance so rapid
- * confirmations don't stack — matches iOS behaviour where a later Sonnet
- * turn's confirmation replaces the previous one in the TTS queue.
+ * TTS audio window — wall-clock { startMs, endMs } for the most-recent
+ * utterance the wrapper dispatched. Mirrors iOS
+ * `AlertManager.ttsAudioStartAt` / `ttsAudioEndAt`
+ * (AlertManager.swift:113–119). The recording-context queries this via
+ * `getTtsAudioWindow()` to discard final transcripts that arrived
+ * while the device's own TTS was audible — without that gate the mic
+ * picks up the spoken question/response and Deepgram emits a
+ * transcript that loops back into Sonnet as if the inspector said it.
  *
- * Silently no-ops when TTS is unavailable or disabled — callers can
- * dispatch without guarding and trust this to do the right thing.
- *
- * The `force` flag overrides the "enabled" preference — used for the
- * one-shot preview when the user first taps the Voice toggle ON so they
- * get audible feedback that it's working.
+ * Closed-window contract: while TTS is actively speaking the field is
+ * `{ startMs, endMs: null }`. Once the utterance finishes (or the
+ * synthesizer fires `onerror`/`onpause`) the field becomes
+ * `{ startMs, endMs }` and stays that way until either the next
+ * `dispatch()` overwrites it or `cancelSpeech()` clears it. The 300ms
+ * post-end cooldown lives at the consumer because callers want to
+ * decide their own grace policy (mirrors iOS AlertManager.swift:127
+ * where the cooldown is also a consumer-side decision).
  */
-export function speak(
-  text: string,
-  options?: { force?: boolean; lang?: string; onEnd?: () => void }
-): void {
-  if (!isTtsAvailable()) return;
-  const enabled = options?.force ? true : getVoiceFeedbackEnabled();
-  if (!enabled) {
-    // If muted but the caller specifically wants the end callback (the
-    // tour controller drives auto-advance off it), fire immediately so
-    // the tour doesn't stall on a muted device.
-    options?.onEnd?.();
-    return;
-  }
+let ttsWindow: { startMs: number; endMs: number | null } | null = null;
+
+/**
+ * Read the TTS audio window. Returns null when no utterance has been
+ * dispatched yet — equivalent to "TTS is silent, transcripts can flow
+ * through unconditionally". Callers that want to detect "currently
+ * speaking" check `endMs === null`; callers that want to gate on a
+ * post-end cooldown compare `now - endMs < cooldownMs`.
+ */
+export function getTtsAudioWindow(): { startMs: number; endMs: number | null } | null {
+  return ttsWindow;
+}
+
+/**
+ * Returns true iff a transcript that arrived at `nowMs` (default
+ * `Date.now()`) overlaps either the active TTS audio OR the
+ * `cooldownMs` cooldown window after TTS finished. Default cooldown
+ * is 300ms, matching iOS's `audioPlayer` 300ms cooldown
+ * (AlertManager.swift:127). Used by recording-context's
+ * `onFinalTranscript` handler to discard mic-self-feedback transcripts.
+ */
+export function isWithinTtsWindow(cooldownMs = 300, nowMs = Date.now()): boolean {
+  if (!ttsWindow) return false;
+  if (ttsWindow.endMs == null) return true; // currently speaking
+  return nowMs - ttsWindow.endMs < cooldownMs;
+}
+
+/**
+ * Internal: queue an utterance unconditionally. `speak` and
+ * `speakConfirmation` both go through this; the only difference is the
+ * preference gate on the confirmation entry point.
+ */
+function dispatch(text: string, options?: SpeakOptions): void {
   const trimmed = text?.trim();
   if (!trimmed) {
     options?.onEnd?.();
@@ -138,7 +206,7 @@ export function speak(
   }
   try {
     // Cancel whatever is speaking — keeps the speech current rather than
-    // letting it backlog stale confirmations behind fresh ones.
+    // letting it backlog stale lines.
     window.speechSynthesis.cancel();
     const utterance = new window.SpeechSynthesisUtterance(trimmed);
     utterance.lang = options?.lang ?? 'en-GB';
@@ -147,13 +215,46 @@ export function speak(
     utterance.volume = 1.0;
     const voice = pickVoice();
     if (voice) utterance.voice = voice;
-    if (options?.onEnd) {
-      utterance.onend = () => options.onEnd?.();
-      // Some browsers fire `onerror` instead of `onend` on cancel; the
-      // tour controller calls cancelSpeech() on every step change so a
-      // missing end-event would stall auto-advance. `onerror` fallback.
-      utterance.onerror = () => options.onEnd?.();
-    }
+
+    // Open the TTS window. iOS opens it inside `markTTSStarted()` at the
+    // moment audio actually plays; on web we approximate by stamping it
+    // when `speak()` is dispatched — the difference is bounded by the
+    // browser's queue latency (a few ms in practice). The mic-feedback
+    // gate uses this START time as the lower bound when discarding
+    // transcripts.
+    const openedAt = Date.now();
+    ttsWindow = { startMs: openedAt, endMs: null };
+
+    const closeWindow = () => {
+      // Only close if we still own this window — a fresh dispatch will
+      // have overwritten it with a new startMs already, in which case
+      // overwriting endMs would corrupt the new window's "currently
+      // speaking" signal.
+      if (ttsWindow && ttsWindow.startMs === openedAt) {
+        ttsWindow = { startMs: openedAt, endMs: Date.now() };
+      }
+    };
+
+    utterance.onstart = () => {
+      // Re-stamp startMs at the actual playback moment for tighter
+      // alignment with iOS — synthesis can hold the utterance for tens
+      // of ms before audio begins, especially on iOS Safari after a
+      // voiceschanged event.
+      if (ttsWindow && ttsWindow.endMs == null) {
+        ttsWindow = { startMs: Date.now(), endMs: null };
+      }
+    };
+    utterance.onend = () => {
+      closeWindow();
+      options?.onEnd?.();
+    };
+    // Some browsers fire `onerror` instead of `onend` on cancel; the
+    // tour controller calls cancelSpeech() on every step change so a
+    // missing end-event would stall auto-advance. `onerror` fallback.
+    utterance.onerror = () => {
+      closeWindow();
+      options?.onEnd?.();
+    };
     window.speechSynthesis.speak(utterance);
   } catch {
     // Swallow — TTS failures should never interrupt recording.
@@ -162,14 +263,75 @@ export function speak(
 }
 
 /**
+ * Always-on speech path. Speaks regardless of the confirmation-mode
+ * toggle — used for ask_user prompts, validation alerts, voice-command
+ * responses, and tour narration. Mirrors iOS `speakAlertMessage` /
+ * `speakResponse` / `speakTourNarration` which run unconditionally
+ * through `speakWithTTS`.
+ *
+ * Silently no-ops when TTS is unavailable (SSR, non-browser, or a
+ * runtime without SpeechSynthesis). The `onEnd` callback fires
+ * synchronously in that case so callers (the tour controller) don't
+ * stall.
+ */
+export function speak(text: string, options?: SpeakOptions): void {
+  if (!isTtsAvailable()) {
+    options?.onEnd?.();
+    return;
+  }
+  dispatch(text, options);
+}
+
+/**
+ * Confirmation-mode-gated speech path. Only speaks when the inspector
+ * has the confirmation-mode toggle ON (or the caller passes
+ * `force: true` for the toggle preview). Mirrors iOS
+ * `speakBriefConfirmation` which is the sole gated path on iOS.
+ *
+ * Server-side gating is paired with this client-side gating: the
+ * matching `confirmations_enabled: true|false` flag is sent to the
+ * backend on every `transcript` so Sonnet only emits confirmations the
+ * client is willing to speak.
+ */
+export function speakConfirmation(text: string, options?: SpeakOptions): void {
+  if (!isTtsAvailable()) {
+    options?.onEnd?.();
+    return;
+  }
+  const enabled = options?.force ? true : getConfirmationModeEnabled();
+  if (!enabled) {
+    // Muted — fire the end callback synchronously so any caller waiting
+    // on speech end (none today, but symmetric with `speak`) doesn't
+    // stall.
+    options?.onEnd?.();
+    return;
+  }
+  dispatch(text, options);
+}
+
+/**
+ * Test-only — wipe the TTS audio window so a fresh test reads `null`
+ * from `getTtsAudioWindow()`. Production callers don't need this; the
+ * window is naturally overwritten by each `dispatch()` call. Kept
+ * underscore-prefixed to discourage accidental production use.
+ */
+export function __resetTtsWindowForTests(): void {
+  ttsWindow = null;
+}
+
+/**
  * Cancel any in-flight speech. Called on recording stop so the last
  * confirmation doesn't trail on after the inspector has ended the
- * session.
+ * session. Also closes the TTS audio window so the cooldown gate
+ * doesn't keep suppressing transcripts after teardown.
  */
 export function cancelSpeech(): void {
   if (!isTtsAvailable()) return;
   try {
     window.speechSynthesis.cancel();
+    if (ttsWindow && ttsWindow.endMs == null) {
+      ttsWindow = { startMs: ttsWindow.startMs, endMs: Date.now() };
+    }
   } catch {
     // ignore
   }

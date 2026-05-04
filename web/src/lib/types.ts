@@ -266,10 +266,22 @@ export interface CircuitRow {
 
 export interface ObservationRow {
   id: string;
+  /** Server-assigned UUID for the observation, captured from Sonnet's
+   *  initial extraction (`observation_id` on the wire). Lets a follow-up
+   *  `observation_update` patch the exact row even after the visible text
+   *  has been rewritten by BPG4 refinement. Mirrors iOS
+   *  `JobObservation.serverId`. Nil for rows created outside a recording
+   *  (CCU analysis, manual entry). */
+  server_id?: string;
   code?: 'C1' | 'C2' | 'C3' | 'FI';
   description?: string;
   location?: string;
   remedial?: string;
+  /** BS 7671 regulation citation (e.g. "411.3.2"). Populated by the
+   *  server's regulation refiner — sent on the initial extraction's
+   *  observations[] AND on observation_update payloads. iOS
+   *  counterpart: `Observation.regulation`. */
+  regulation?: string;
   /**
    * Filenames of photos attached to this observation. The backend stores
    * bytes in S3 under `jobs/{userId}/{folderName}/photos/{filename}` and

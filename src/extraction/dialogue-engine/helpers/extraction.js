@@ -23,9 +23,17 @@ export function extractNamedFieldValues(text, slots) {
     const m = text.match(slot.namedExtractor);
     if (m && m[1] !== undefined) {
       const val = slot.parser(m[1]);
-      if (val !== null && val !== undefined) {
-        out.push({ field: slot.field, value: val });
+      if (val === null || val === undefined) continue;
+      // 2026-05-04 (field test 07635782 follow-up): per-slot allowed-value
+      // gate. Same semantics as the engine's bare-value gate — out-of-set
+      // values are dropped here (named extraction won't write the field)
+      // so the engine re-asks the slot. Without this guard a named-form
+      // mistranscription ("66 kA") would slip through the named path
+      // even when the bare-value path would catch it.
+      if (Array.isArray(slot.allowedValues) && !slot.allowedValues.includes(val)) {
+        continue;
       }
+      out.push({ field: slot.field, value: val });
     }
   }
   return out;

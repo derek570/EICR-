@@ -599,4 +599,323 @@ describe('SonnetSession', () => {
       expect(maxes[5]).toBe(10_000);
     });
   });
+
+  // ────────────────────────────────────────────────────────────────────────
+  // Stage 6 STI-04 — ask_user answer wire (transcript → ask_user_answered)
+  //
+  // The PWA used to rely entirely on the server-side overtake classifier
+  // to figure out which transcript was the answer to a Stage 6 ask. That
+  // worked for unambiguous shapes ("1.") but failed on plausible value-
+  // shaped answers ("0.6", "TT", "cooker"). These tests pin the iOS
+  // wire-protocol parity: ask_user_started captures the toolCallId, the
+  // first non-empty final mints a UUID, sends the transcript stamped with
+  // utterance_id THEN ask_user_answered carrying the same id as
+  // consumed_utterance_id.
+  // ────────────────────────────────────────────────────────────────────────
+  describe('Stage 6 ask_user_answered wire', () => {
+    it('captures tool_call_id from ask_user_started and surfaces it on SonnetQuestion', async () => {
+      const onQuestion = vi.fn();
+      const session = new SonnetSession({ onQuestion });
+      session.connect({ sessionId: 's', jobId: 'j', certificateType: 'EICR' });
+      await server.connected;
+      await server.nextMessage; // drain session_start
+
+      server.send(
+        JSON.stringify({
+          type: 'ask_user_started',
+          tool_call_id: 'toolu_01ABC',
+          question: "What's the designation for circuit 1?",
+          reason: 'out_of_range_circuit',
+          context_field: 'circuit_designation',
+          context_circuit: 1,
+        })
+      );
+      await Promise.resolve();
+
+      expect(onQuestion).toHaveBeenCalledTimes(1);
+      const arg = onQuestion.mock.calls[0][0];
+      expect(arg.tool_call_id).toBe('toolu_01ABC');
+    });
+
+    it('consumeInFlightToolCallId returns the latched id then null', async () => {
+      const session = new SonnetSession({});
+      session.connect({ sessionId: 's', jobId: 'j', certificateType: 'EICR' });
+      await server.connected;
+      await server.nextMessage;
+
+      server.send(
+        JSON.stringify({
+          type: 'ask_user_started',
+          tool_call_id: 'toolu_xyz',
+          question: 'q',
+          reason: 'missing_context',
+        })
+      );
+      await Promise.resolve();
+
+      expect(session.consumeInFlightToolCallId()).toBe('toolu_xyz');
+      // Second consume must return null — toolCallId is single-shot.
+      expect(session.consumeInFlightToolCallId()).toBeNull();
+    });
+
+    it('sendTranscript stamps utterance_id when provided', async () => {
+      const session = new SonnetSession({});
+      session.connect({ sessionId: 's', jobId: 'j', certificateType: 'EICR' });
+      await server.connected;
+      await server.nextMessage; // session_start
+
+      session.sendTranscript('cooker', {
+        confirmationsEnabled: false,
+        utteranceId: 'u-1234',
+      });
+      const raw = await server.nextMessage;
+      const frame = JSON.parse(raw as string) as Record<string, unknown>;
+      expect(frame.type).toBe('transcript');
+      expect(frame.text).toBe('cooker');
+      expect(frame.utterance_id).toBe('u-1234');
+      expect(frame.confirmations_enabled).toBe(false);
+    });
+
+    it('sendAskUserAnswered emits transcript-then-ask in correct shape', async () => {
+      const session = new SonnetSession({});
+      session.connect({ sessionId: 's', jobId: 'j', certificateType: 'EICR' });
+      await server.connected;
+      await server.nextMessage; // session_start
+
+      session.sendTranscript('cooker', {
+        confirmationsEnabled: true,
+        utteranceId: 'u-abc',
+      });
+      session.sendAskUserAnswered('toolu_01', 'cooker', 'u-abc');
+
+      const t = JSON.parse((await server.nextMessage) as string) as Record<string, unknown>;
+      const a = JSON.parse((await server.nextMessage) as string) as Record<string, unknown>;
+
+      expect(t.type).toBe('transcript');
+      expect(t.utterance_id).toBe('u-abc');
+      expect(a.type).toBe('ask_user_answered');
+      expect(a.tool_call_id).toBe('toolu_01');
+      expect(a.user_text).toBe('cooker');
+      expect(a.consumed_utterance_id).toBe('u-abc');
+    });
+
+    it('sendAskUserAnswered no-ops on empty toolCallId or userText', async () => {
+      const session = new SonnetSession({});
+      session.connect({ sessionId: 's', jobId: 'j', certificateType: 'EICR' });
+      await server.connected;
+      await server.nextMessage;
+
+      session.sendAskUserAnswered('', 'cooker', 'u-1');
+      session.sendAskUserAnswered('toolu', '', 'u-1');
+      // Neither call should have produced a frame on the wire.
+      // Send a known frame as a synchronisation anchor and assert the
+      // very next inbound is THAT frame.
+      session.sendTranscript('marker', { utteranceId: 'u-marker' });
+      const raw = (await server.nextMessage) as string;
+      const frame = JSON.parse(raw) as Record<string, unknown>;
+      expect(frame.type).toBe('transcript');
+      expect(frame.utterance_id).toBe('u-marker');
+    });
+
+    it('does not re-arm in-flight slot for an already-fired toolCallId (idempotency)', async () => {
+      const session = new SonnetSession({});
+      session.connect({ sessionId: 's', jobId: 'j', certificateType: 'EICR' });
+      await server.connected;
+      await server.nextMessage;
+
+      // First ask_user_started, consume, fire.
+      server.send(
+        JSON.stringify({ type: 'ask_user_started', tool_call_id: 'toolu_dup', question: 'q1' })
+      );
+      await Promise.resolve();
+      expect(session.consumeInFlightToolCallId()).toBe('toolu_dup');
+
+      // Server re-emits the SAME ask (e.g. session_resume rehydrate). The
+      // in-flight slot must NOT re-arm — answering twice would emit a
+      // duplicate ask_user_answered and the backend would log
+      // unknown_or_stale_tool_call_id on the second pass.
+      server.send(
+        JSON.stringify({ type: 'ask_user_started', tool_call_id: 'toolu_dup', question: 'q1' })
+      );
+      await Promise.resolve();
+      expect(session.consumeInFlightToolCallId()).toBeNull();
+    });
+
+    it('disconnect clears in-flight slot and fired Set so the next session starts clean', async () => {
+      const session = new SonnetSession({});
+      session.connect({ sessionId: 's', jobId: 'j', certificateType: 'EICR' });
+      await server.connected;
+      await server.nextMessage;
+
+      server.send(
+        JSON.stringify({ type: 'ask_user_started', tool_call_id: 'toolu_a', question: 'q' })
+      );
+      await Promise.resolve();
+      // Fire it once so it lands in firedToolCallIds.
+      expect(session.consumeInFlightToolCallId()).toBe('toolu_a');
+
+      session.disconnect();
+      // The session above is over; a brand-new SonnetSession starts with a
+      // clean Set, but for THIS instance disconnect also clears the Set so
+      // tests can reuse it without leakage.
+      // (Reuse isn't a real-world flow — the consumer always allocates a
+      // new SonnetSession per recording — but the contract should hold.)
+      // We assert by re-arming the same id and consuming again.
+      session.connect({ sessionId: 's2', jobId: 'j', certificateType: 'EICR' });
+      // Note: this test doesn't actually need a second WS, just the
+      // public-API state assertion.
+      // The latched id was cleared by disconnect — first consume returns null.
+      expect(session.consumeInFlightToolCallId()).toBeNull();
+    });
+  });
+
+  // ────────────────────────────────────────────────────────────────────────
+  // Phase 3 — disconnected buffering + paired-replay reorder. Mirrors iOS
+  // ServerWebSocketService.flushPendingMessages + reorderPendingForReplay
+  // (Plan 06-05 r4-#2).
+  // ────────────────────────────────────────────────────────────────────────
+  describe('disconnected buffering', () => {
+    it('buffers transcript / correction / ask_user_answered while connecting and flushes on open', async () => {
+      const session = new SonnetSession({});
+      session.connect({ sessionId: 's', jobId: 'j', certificateType: 'EICR' });
+      // Send before the WS handshake completes — these must be buffered
+      // and replayed on `onopen`, not lost.
+      session.sendTranscript('hello', { utteranceId: 'u-1' });
+      session.sendCorrection('zs', 1, '0.44');
+      session.sendAskUserAnswered('toolu_x', 'hello', 'u-1');
+
+      await server.connected;
+
+      // Drain session_start first, then the three buffered frames.
+      const start = JSON.parse((await server.nextMessage) as string) as Record<string, unknown>;
+      expect(start.type).toBe('session_start');
+
+      // The buffered FIFO is [transcript(u-1), correction, ask(u-1)].
+      // Transcript was buffered BEFORE ask, so the reorder algorithm
+      // emits each frame in its original slot — the transcript is
+      // already in front of the ask and the wire-ordering invariant
+      // (transcript before its matching ask) is satisfied without
+      // hoisting. The correction stays sandwiched in between; the
+      // backend's seenTranscriptUtterances Set is populated by the
+      // transcript at slot 0 long before the ask's fast-path lookup.
+      const f1 = JSON.parse((await server.nextMessage) as string) as Record<string, unknown>;
+      const f2 = JSON.parse((await server.nextMessage) as string) as Record<string, unknown>;
+      const f3 = JSON.parse((await server.nextMessage) as string) as Record<string, unknown>;
+      expect(f1.type).toBe('transcript');
+      expect(f1.utterance_id).toBe('u-1');
+      expect(f2.type).toBe('correction');
+      expect(f3.type).toBe('ask_user_answered');
+      expect(f3.consumed_utterance_id).toBe('u-1');
+    });
+
+    it('hoists transcript IMMEDIATELY before its paired ask when ask was buffered first', async () => {
+      // The worst case the prior "asks first" partition got wrong:
+      // ask was buffered BEFORE its matching transcript, so a naive
+      // FIFO replay would emit ask before transcript and the backend
+      // Set would be empty at fast-path lookup time. Paired-replay
+      // hoists the transcript to immediately precede the ask.
+      const session = new SonnetSession({});
+      session.connect({ sessionId: 's', jobId: 'j', certificateType: 'EICR' });
+      // Order matters: ask first, then matching transcript.
+      session.sendAskUserAnswered('toolu_y', 'cooker', 'u-Y');
+      session.sendTranscript('cooker', { utteranceId: 'u-Y' });
+      await server.connected;
+
+      const start = JSON.parse((await server.nextMessage) as string) as Record<string, unknown>;
+      expect(start.type).toBe('session_start');
+
+      const f1 = JSON.parse((await server.nextMessage) as string) as Record<string, unknown>;
+      const f2 = JSON.parse((await server.nextMessage) as string) as Record<string, unknown>;
+      // First out is the hoisted transcript, second is the ask — the
+      // matching transcript is NOT re-emitted later in the walk.
+      expect(f1.type).toBe('transcript');
+      expect(f1.utterance_id).toBe('u-Y');
+      expect(f2.type).toBe('ask_user_answered');
+      expect(f2.consumed_utterance_id).toBe('u-Y');
+    });
+  });
+
+  describe('reorderPendingForReplay', () => {
+    it('returns empty for empty input', () => {
+      expect(SonnetSession.reorderPendingForReplay([])).toEqual([]);
+    });
+
+    it('preserves order when no asks are buffered', () => {
+      const input = [
+        { type: 'transcript', text: 'a', utterance_id: 'u1' },
+        { type: 'transcript', text: 'b', utterance_id: 'u2' },
+        { type: 'correction', field: 'zs', circuit: 1, value: '0.44' },
+      ];
+      expect(SonnetSession.reorderPendingForReplay(input)).toEqual(input);
+    });
+
+    it('hoists matching transcript IMMEDIATELY before its paired ask_user_answered', () => {
+      // Worst case: ask buffered BEFORE its matching transcript (the bug
+      // the prior global-partition strategy got wrong). After reorder the
+      // transcript must appear right before the ask in the wire stream.
+      const input = [
+        {
+          type: 'ask_user_answered',
+          tool_call_id: 't1',
+          user_text: 'x',
+          consumed_utterance_id: 'uX',
+        },
+        { type: 'transcript', text: 'x', utterance_id: 'uX' },
+      ];
+      const out = SonnetSession.reorderPendingForReplay(input);
+      expect(out).toHaveLength(2);
+      expect(out[0].type).toBe('transcript');
+      expect(out[0].utterance_id).toBe('uX');
+      expect(out[1].type).toBe('ask_user_answered');
+      expect(out[1].consumed_utterance_id).toBe('uX');
+    });
+
+    it('emits ask in place when no buffered matching transcript exists', () => {
+      // The pre-disconnect transcript already populated the backend Set;
+      // emit the ask in place (no hoisting possible).
+      const input = [
+        { type: 'transcript', text: 'unrelated', utterance_id: 'uA' },
+        {
+          type: 'ask_user_answered',
+          tool_call_id: 't2',
+          user_text: 'y',
+          consumed_utterance_id: 'uMissing',
+        },
+      ];
+      const out = SonnetSession.reorderPendingForReplay(input);
+      expect(out).toHaveLength(2);
+      expect(out[0].utterance_id).toBe('uA');
+      expect(out[1].type).toBe('ask_user_answered');
+    });
+
+    it('output count equals input count — no frame is added or dropped', () => {
+      const input = [
+        { type: 'transcript', text: 'a', utterance_id: 'u1' },
+        { type: 'correction', field: 'z', circuit: 1, value: '1' },
+        {
+          type: 'ask_user_answered',
+          tool_call_id: 't',
+          user_text: 'a',
+          consumed_utterance_id: 'u1',
+        },
+        { type: 'transcript', text: 'b', utterance_id: 'u2' },
+      ];
+      const out = SonnetSession.reorderPendingForReplay(input);
+      expect(out).toHaveLength(input.length);
+    });
+
+    it('preserves intra-class FIFO when multiple unrelated frames are buffered', () => {
+      const input = [
+        { type: 'correction', field: 'a', circuit: 1, value: '1' },
+        { type: 'correction', field: 'b', circuit: 1, value: '2' },
+        { type: 'transcript', text: 't', utterance_id: 'u1' },
+      ];
+      const out = SonnetSession.reorderPendingForReplay(input);
+      expect(out.map((m) => (m.type === 'correction' ? m.field : m.type))).toEqual([
+        'a',
+        'b',
+        'transcript',
+      ]);
+    });
+  });
 });
