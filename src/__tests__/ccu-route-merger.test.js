@@ -647,6 +647,14 @@ describe('slotsToCircuits', () => {
     expect(circuits[0].label).toBe('Ovens');
     expect(circuits[0].low_confidence).toBe(true);
     expect(circuits[0].is_partial_crop).toBe(true);
+    // Neighbour-bleed recovery: the demoted slot's right neighbour is a
+    // main_switch, so the fallback derived from the surviving RCBO (slot 0,
+    // curve B) populates ocpd_type. Rating stays null — real boards mix
+    // amperages so this one field requires inspector confirmation.
+    expect(circuits[0].partial_neighbour_recovery).toBe(true);
+    expect(circuits[0].ocpd_type).toBe('B');
+    expect(circuits[0].ocpd_rating_a).toBeNull();
+    expect(circuits[0].is_rcbo).toBe(true);
     expect(circuits[1].circuit_number).toBe(2);
     expect(circuits[1].ocpd_type).toBe('B');
 
@@ -657,6 +665,177 @@ describe('slotsToCircuits', () => {
     expect(slots[1].classification).toBe('unknown');
     expect(slots[2]._demotedFromMainSwitch).toBeUndefined();
     expect(slots[3]._demotedFromMainSwitch).toBeUndefined();
+  });
+
+  test('5h. partial-extends-right slot adjacent to main_switch recovers via board pattern (2026-05-05 Elucian CU1SPD275 prod repro)', () => {
+    // Mirrors extraction 1777981112580-xewcrp (2026-05-05 11:37) where Ovens
+    // at slot 11 came back with EVERY device field null because Stage 3 saw
+    // bleed-through from the 2-pole main switch starting at slot 12. Stage 4
+    // still read "Ovens" from the silkscreen. Without this recovery the row
+    // appears in the schedule as bare label + nulls; with it the inspector
+    // sees curve, BS EN, RCBO family and Type-A 30 mA RCD pre-populated and
+    // only needs to confirm the rating.
+    const cleanRcbo = (slotIndex, label, ratingAmps) =>
+      makeSlot({
+        slotIndex,
+        classification: 'rcbo',
+        content: 'device',
+        extends: 'none',
+        tripCurve: 'B',
+        ratingAmps,
+        poles: 1,
+        sensitivity: 30,
+        rcdWaveformType: 'A',
+        bsEn: 'BS EN 61009-1',
+        confidence: 0.92,
+        label,
+      });
+
+    const slots = [
+      cleanRcbo(0, 'Loft Socket', 20),
+      cleanRcbo(1, 'Lounge Tv Socket', 20),
+      cleanRcbo(2, 'Rear Bed Sockets', 20),
+      cleanRcbo(3, 'Bathroom Underfloor Heating', 20),
+      cleanRcbo(4, 'Front Left Bed Sockets', 20),
+      cleanRcbo(5, 'Front Rhs Bed Sockets', 20),
+      cleanRcbo(6, 'Kitchen Sockets', 32),
+      cleanRcbo(7, 'Garage Sockets', 20),
+      cleanRcbo(8, 'Master Bed Sockets', 20),
+      cleanRcbo(9, 'Utility Sockets', 32),
+      cleanRcbo(10, 'Hob', 32),
+      // Slot 11: the bug. Stage 3 saw the main switch's body protruding
+      // into the right edge of the 2.2× crop, mis-classified the centred
+      // Ovens RCBO as a partial 2-pole device, returned all device fields
+      // null (anti-hallucination rule) but kept Stage 4's label.
+      makeSlot({
+        slotIndex: 11,
+        classification: 'unknown',
+        content: 'partial',
+        extends: 'right',
+        tripCurve: null,
+        ratingAmps: null,
+        poles: 2,
+        sensitivity: null,
+        rcdWaveformType: null,
+        bsEn: null,
+        confidence: 0.65,
+        label: 'Ovens',
+      }),
+      // Slots 12-13: 2-pole main switch (the source of the bleed).
+      makeSlot({
+        slotIndex: 12,
+        classification: 'main_switch',
+        content: 'partial',
+        extends: 'right',
+        poles: 2,
+        ratingAmps: 100,
+        bsEn: 'BS EN 60947-3',
+        confidence: 0.65,
+        label: 'Mains Switch',
+      }),
+      makeSlot({
+        slotIndex: 13,
+        classification: 'main_switch',
+        content: 'partial',
+        extends: 'both',
+        poles: 2,
+        ratingAmps: 100,
+        bsEn: 'BS EN 60947-3',
+        confidence: 0.6,
+      }),
+      // Slot 14: SPD (skipped by merger).
+      makeSlot({
+        slotIndex: 14,
+        classification: 'spd',
+        content: 'device',
+        extends: 'none',
+        poles: 1,
+        ratingAmps: null,
+        bsEn: 'BS EN61643-11',
+        confidence: 0.92,
+      }),
+    ];
+
+    const circuits = slotsToCircuits({
+      slots,
+      mainSwitchSide: 'right',
+      mainSwitchRating: '100',
+      mainSwitchPoles: 2,
+    });
+
+    expect(circuits).toHaveLength(12);
+
+    // Right-handed scan: circuit 1 is the slot nearest the main switch,
+    // i.e. slot 11 (Ovens). It's the partial slot — we recover via
+    // neighbour-bleed fallback rather than emitting bare nulls.
+    const ovens = circuits[0];
+    expect(ovens.circuit_number).toBe(1);
+    expect(ovens.label).toBe('Ovens');
+    expect(ovens.is_partial_crop).toBe(true);
+    expect(ovens.extends_side).toBe('right');
+    expect(ovens.partial_neighbour_recovery).toBe(true);
+    expect(ovens.low_confidence).toBe(true);
+
+    // Recovered from board majority (11 surviving RCBOs, all curve B,
+    // BS EN 61009-1, 30 mA Type A).
+    expect(ovens.ocpd_type).toBe('B');
+    expect(ovens.ocpd_bs_en).toBe('BS EN 61009-1');
+    expect(ovens.ocpd_breaking_capacity_ka).toBe('6');
+    expect(ovens.is_rcbo).toBe(true);
+    expect(ovens.rcd_protected).toBe(true);
+    expect(ovens.rcd_type).toBe('A');
+    expect(ovens.rcd_rating_ma).toBe('30');
+    expect(ovens.rcd_bs_en).toBe('61009');
+
+    // Rating intentionally null — boards mix amperages, can't safely guess.
+    expect(ovens.ocpd_rating_a).toBeNull();
+
+    // Sanity: clean slots emit unchanged.
+    const hob = circuits[1];
+    expect(hob.label).toBe('Hob');
+    expect(hob.ocpd_rating_a).toBe('32');
+    expect(hob.partial_neighbour_recovery).toBeUndefined();
+  });
+
+  test('5i. partial-extends without a multi-module neighbour does NOT trigger fallback', () => {
+    // Defensive: a slot can be content="partial" for reasons other than
+    // bleed from a 2-module device (out-of-frame, glare, edge-of-image
+    // clipping). The fallback must only fire when the extends-direction
+    // neighbour is a confirmed main_switch or rcd. Here the right
+    // neighbour is another MCB — we keep the existing low_confidence
+    // behaviour (slot's own reading + low_confidence flag).
+    const slots = [
+      makeSlot({
+        slotIndex: 0,
+        classification: 'mcb',
+        content: 'partial',
+        extends: 'right',
+        tripCurve: 'B',
+        ratingAmps: 32,
+        confidence: 0.6,
+        label: 'Lights',
+      }),
+      makeSlot({
+        slotIndex: 1,
+        classification: 'mcb',
+        content: 'device',
+        extends: 'none',
+        tripCurve: 'C',
+        ratingAmps: 16,
+        confidence: 0.9,
+        label: 'Sockets',
+      }),
+    ];
+
+    const circuits = slotsToCircuits({ slots, mainSwitchSide: 'left' });
+
+    expect(circuits).toHaveLength(2);
+    expect(circuits[0].partial_neighbour_recovery).toBeUndefined();
+    expect(circuits[0].is_partial_crop).toBe(true);
+    // Slot's own reading is preserved (not overwritten by fallback).
+    expect(circuits[0].ocpd_type).toBe('B');
+    expect(circuits[0].ocpd_rating_a).toBe('32');
+    expect(circuits[0].low_confidence).toBe(true);
   });
 
   test('5c. three-slot main_switch run with NO classifier rating — label penalty alone trims', () => {
