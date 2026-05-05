@@ -790,7 +790,37 @@ export async function flagRcdWaveformOutliers(analysis, openai, logger, userId) 
   const slots = Array.isArray(analysis.slots) ? analysis.slots : [];
   const circuits = Array.isArray(analysis.circuits) ? analysis.circuits : [];
 
-  const outliers = detectRcdWaveformOutliers(slots);
+  const rawOutliers = detectRcdWaveformOutliers(slots);
+  if (rawOutliers.length === 0) return analysis;
+
+  // Suppress outliers already resolved by the upstream RCD-type lookup.
+  // applyRcdTypeLookup runs BEFORE this pass and stamps circuit.rcd_type
+  // from the manufacturer/model datasheet (high-confidence override on a
+  // model hit, manufacturer-default fallback otherwise). When the lookup
+  // has already pulled an outlier slot's circuit onto the majority value,
+  // the per-slot Stage 3 disagreement is moot — flagging it generates a
+  // pointless inspector question (verbatim production repro 2026-05-05
+  // 15:05 on a 13-RCBO Elucian board: 5 outlier reads of "AC" all got
+  // stamped to "A" by the lookup, but the outlier flagger then asked the
+  // inspector to verify all 5 anyway, producing 5 TTS prompts even after
+  // the inspector had set the value via the UI).
+  const outliers = rawOutliers.filter((o) => {
+    const circuit = circuits.find(
+      (c) => c.slot_index != null && c.slot_index === o.slotIndex && !c.is_rcd_device
+    );
+    if (!circuit) return true;
+    const postLookupType = typeof circuit.rcd_type === 'string' ? circuit.rcd_type : null;
+    if (postLookupType && postLookupType === o.majorityValue) return false;
+    return true;
+  });
+  if (outliers.length < rawOutliers.length && logger) {
+    logger.info('RCD waveform outliers suppressed by upstream lookup', {
+      userId,
+      raw: rawOutliers.length,
+      remaining: outliers.length,
+      suppressed: rawOutliers.length - outliers.length,
+    });
+  }
   if (outliers.length === 0) return analysis;
 
   // Group outliers by manufacturer so we can batch the lookup — usually

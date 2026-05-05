@@ -736,6 +736,67 @@ describe('flagRcdWaveformOutliers', () => {
     }
   });
 
+  test('outlier already resolved by upstream lookup table → suppressed (no question, no datasheet call)', async () => {
+    // 2026-05-05 prod repro: a 13-RCBO Elucian board where Stage 3 read
+    // 8 slots as Type A and 5 as Type AC. applyRcdTypeLookup runs first
+    // and stamps every circuit.rcd_type to "A" from the manufacturer
+    // datasheet. The detector still sees disagreement at the slot.rcdWaveformType
+    // layer (Stage 3 reads), but the disagreement is moot — the inspector
+    // is shown rcd_type="A" everywhere. Without this filter, we'd push 5
+    // pointless TTS prompts to a session whose UI already shows the
+    // correct answer.
+    const analysis = makeOutlierAnalysis();
+    // Slot still reads AC (Stage 3's mistake) but the lookup has already
+    // set the circuit's rcd_type to "A" matching the majority.
+    expect(analysis.slots[10].rcdWaveformType).toBe('AC');
+    analysis.circuits[10].rcd_type = 'A';
+    const openai = makeOpenAi('{"type": "A", "applies_to": "all"}');
+    const logger = makeLogger();
+
+    const out = await flagRcdWaveformOutliers(analysis, openai, logger, 'user-1');
+
+    // No datasheet call (the disagreement was already resolved upstream)
+    expect(openai.chat.completions.create).not.toHaveBeenCalled();
+    // No questions pushed
+    expect(out.questionsForInspector).toEqual([]);
+    // Circuit untouched — no outlier flag, no low_confidence
+    const c = out.circuits.find((x) => x.label === 'Bathroom Underfloor Heating');
+    expect(c.rcd_type).toBe('A');
+    expect(c.rcd_type_outlier).toBeUndefined();
+    expect(c.low_confidence).toBeUndefined();
+    // Diagnostic logged so the suppression is visible in CloudWatch
+    expect(logger.info).toHaveBeenCalledWith(
+      'RCD waveform outliers suppressed by upstream lookup',
+      expect.objectContaining({ raw: 1, remaining: 0, suppressed: 1 })
+    );
+  });
+
+  test('mixed: some outliers resolved by lookup, others still disagree → only the unresolved ones flag', async () => {
+    const analysis = makeOutlierAnalysis();
+    // Two outliers in the data: slot 10 (Bathroom UFH) and slot 9 (Garage Sockets).
+    analysis.slots[9].rcdWaveformType = 'AC';
+    analysis.circuits[9].label = 'Garage Sockets';
+    // Lookup resolved slot 9's circuit ('A' match) but NOT slot 10's
+    // (still 'AC' — e.g., the lookup confidence policy left this one
+    // alone for some manufacturer-specific reason).
+    analysis.circuits[9].rcd_type = 'A';
+    expect(analysis.circuits[10].rcd_type).toBe('AC');
+    const openai = makeOpenAi('{"type": "A", "applies_to": "all"}');
+    const logger = makeLogger();
+
+    const out = await flagRcdWaveformOutliers(analysis, openai, logger, 'user-1');
+
+    // Datasheet call still happens — there's an unresolved outlier left.
+    expect(openai.chat.completions.create).toHaveBeenCalledTimes(1);
+    expect(out.questionsForInspector).toHaveLength(1);
+    expect(out.questionsForInspector[0]).toContain('Bathroom Underfloor Heating');
+    // Only the unresolved outlier was flagged
+    const garage = out.circuits.find((x) => x.label === 'Garage Sockets');
+    const ufh = out.circuits.find((x) => x.label === 'Bathroom Underfloor Heating');
+    expect(garage.rcd_type_outlier).toBeUndefined();
+    expect(ufh.rcd_type_outlier).toBe(true);
+  });
+
   test('multiple outliers from same manufacturer → ONE batched lookup call', async () => {
     const analysis = makeOutlierAnalysis();
     // Add a second outlier — slot 9 changes from A to AC, circuit 10 to match.
