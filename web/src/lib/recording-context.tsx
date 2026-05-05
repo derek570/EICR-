@@ -10,11 +10,26 @@ import {
   type SonnetConnectionState,
   type SonnetQuestion,
 } from './recording/sonnet-session';
-import { applyExtractionToJob } from './recording/apply-extraction';
+import { applyExtractionToJob, applyObservationUpdate } from './recording/apply-extraction';
 import { AudioRingBuffer } from './recording/audio-ring-buffer';
 import { SleepManager, type SleepState } from './recording/sleep-manager';
+import { SileroVAD } from './recording/silero-vad';
+import {
+  createVadAccumulator,
+  dispatchSamplesToVad,
+  resetVadAccumulator,
+  type VadAccumulator,
+} from './recording/vad-accumulator';
 import { useLiveFillStore } from './recording/live-fill-state';
-import { cancelSpeech, confirmationToSentence, speak } from './recording/tts';
+import {
+  cancelSpeech,
+  confirmationToSentence,
+  getConfirmationModeEnabled,
+  isWithinTtsWindow,
+  speak,
+  speakConfirmation,
+} from './recording/tts';
+import { playAttentionTone, playConfirmationChime } from './recording/tones';
 import { api } from './api-client';
 import { useJobContext } from './job-context';
 import { applyVoiceCommand, parseVoiceCommand, type VoiceCommandJob } from '@certmate/shared-utils';
@@ -32,14 +47,12 @@ import { applyVoiceCommand, parseVoiceCommand, type VoiceCommandJob } from '@cer
  * into the active `JobDetail` via `updateJob`. VAD sleep/wake (Phase
  * 4e) still to come.
  *
- * State machine — mirrors iOS `RecordingSessionCoordinator`:
+ * State machine — mirrors iOS `RecordingSessionCoordinator` (Stage 4c
+ * 2-tier model, 2026-04-27):
  *
  *   idle ──► requesting-mic ──► active ──► stopped (back to idle)
  *                                ▲  │
- *                          wake  │  ▼ 60s silence
- *                                dozing
- *                                   │
- *                                   ▼ 5m dozing
+ *                          wake  │  ▼ 60s no-final / manual pause
  *                                sleeping
  *
  *   error — surfaced when permission is denied or a WS drops.
@@ -50,7 +63,7 @@ import { applyVoiceCommand, parseVoiceCommand, type VoiceCommandJob } from '@cer
  * the "Listening…" placeholder and the transcript log stays empty.
  */
 
-export type RecordingState = 'idle' | 'requesting-mic' | 'active' | 'dozing' | 'sleeping' | 'error';
+export type RecordingState = 'idle' | 'requesting-mic' | 'active' | 'sleeping' | 'error';
 
 export type TranscriptUtterance = {
   id: string;
@@ -114,6 +127,18 @@ export type RecordingActions = {
   /** Dismiss a question from the queue without sending a correction.
    *  Used when the inspector taps the × on a question bubble. */
   dismissQuestion: (index: number) => void;
+  /** Accept a Stage 6 ask_user question via tap (mirrors iOS
+   *  handleTapResponse(accepted: true), AlertManager.swift:610). Sends
+   *  `ask_user_answered` with user_text="yes" through the same wire
+   *  path a spoken "yes" would, plays the confirmation chime, and
+   *  speaks "Updated". No-op for legacy questions without a
+   *  tool_call_id. */
+  acceptQuestion: (index: number) => void;
+  /** Reject a Stage 6 ask_user question via tap (handleTapResponse(
+   *  accepted: false)). Sends `ask_user_answered` with user_text="no"
+   *  and speaks "Okay, keeping it." No chime — iOS line 788 mirrors
+   *  this (rejection is silent except for TTS). */
+  rejectQuestion: (index: number) => void;
 };
 
 type RecordingCtx = RecordingSnapshot & RecordingActions;
@@ -124,6 +149,22 @@ const Ctx = React.createContext<RecordingCtx | null>(null);
 // cost in real time so the hero readout feels live; Phase 4d will splice
 // Sonnet token costs in on top.
 const DEEPGRAM_USD_PER_MIN = 0.0077;
+
+/** T20 — Silero VAD master enable. Defaults ON; the env var is now an
+ *  emergency kill switch — set `NEXT_PUBLIC_SILERO_VAD=0` at build
+ *  time (Dockerfile build-arg or `web/.env.production`) to disable
+ *  the Silero path and revert every session to the RMS gate.
+ *
+ *  Originally landed defaulting OFF behind a soak window; flipped ON
+ *  by direct user instruction skipping the soak. If a regression
+ *  shows up in field use (false sleep, battery drain on a specific
+ *  iOS version, model load failure pattern), redeploy with the kill
+ *  switch set to '0' — single env var change, no code redeploy.
+ *
+ *  Read once at module load — runtime mid-session toggling isn't
+ *  supported (and shouldn't be — recording context wires up state
+ *  refs at session start that wouldn't reconfigure cleanly). */
+const SILERO_VAD_ENABLED = process.env.NEXT_PUBLIC_SILERO_VAD !== '0';
 
 export function RecordingProvider({ children }: { children: React.ReactNode }) {
   const { job, updateJob } = useJobContext();
@@ -185,10 +226,25 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
   const sonnetRef = React.useRef<SonnetSession | null>(null);
   // Phase 4e — 3-second pre-wake PCM ring buffer + state machine driving
   // doze/sleep transitions. The ring buffer is always written while the
-  // mic is live so a wake from dozing/sleeping can replay the words the
+  // mic is live so a wake from sleeping can replay the words the
   // inspector spoke _just before_ VAD fired.
   const ringBufferRef = React.useRef<AudioRingBuffer | null>(null);
   const sleepManagerRef = React.useRef<SleepManager | null>(null);
+  // T20 — Silero v5 ONNX VAD wake gate. Loaded at session start, fed
+  // 512-sample chunks (32ms @ 16kHz) by the accumulator below. When
+  // `null`, the SleepManager falls back to its RMS path
+  // (`processAudioLevel`); when set, every 512-sample chunk drives
+  // `processVadFrame(score)` instead. The reset() in teardown is
+  // idempotent so leaving the wrapper alive across sessions is safe,
+  // but we deliberately rebuild it per-session to mirror iOS's
+  // session-start lifecycle and to avoid carrying inter-session state
+  // across long-running tabs.
+  const sileroRef = React.useRef<SileroVAD | null>(null);
+  // Rolling 512-sample buffer for VAD inference. Implementation lives
+  // in `recording/vad-accumulator.ts` so unit tests can drive it
+  // without a full provider mount; we just hold the mutable state
+  // payload here.
+  const vadAccumulatorRef = React.useRef<VadAccumulator>(createVadAccumulator());
   // Monotonic session id — used when requesting a scoped Deepgram token
   // and (Phase 4d) as the Sonnet extraction session id.
   const sessionIdRef = React.useRef<string>('');
@@ -246,6 +302,13 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     sleepManagerRef.current = null;
     ringBufferRef.current?.reset();
     ringBufferRef.current = null;
+    // VAD wrapper goes with the sleep state machine — neither serves
+    // any purpose without the other. Reset() drains in-flight inference
+    // before zeroing the recurrent state so a stale stateN doesn't
+    // land on top after teardown.
+    sileroRef.current?.reset();
+    sileroRef.current = null;
+    resetVadAccumulator(vadAccumulatorRef.current);
   }, []);
 
   // Belt-and-braces cleanup if the provider unmounts while a session is
@@ -280,6 +343,24 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         },
         onFinalTranscript: (text, confidence) => {
           setInterim('');
+          // Mic-feedback gate (iOS parity) — discard finals that
+          // arrived while the device's own TTS was audible. Without
+          // this, the speaker plays "Should I create circuit 1?", the
+          // mic picks it up, Deepgram emits a transcript, and Sonnet
+          // processes the question as if the inspector said it. iOS
+          // closes this loop at AlertManager.swift:854 (ttsAudioOverlaps)
+          // by tracking the audio window and discarding overlapping
+          // transcripts. The PWA tracks a coarser window (start=>end +
+          // 300ms cooldown) inside tts.ts; that's enough to suppress
+          // the bulk of the loopback because Deepgram's own endpointing
+          // already groups TTS-induced speech into a single utterance
+          // that finishes near the same moment TTS does.
+          if (isWithinTtsWindow()) {
+            console.info(
+              `[recording] final suppressed inside TTS window text="${text.slice(0, 60)}"`
+            );
+            return;
+          }
           setTranscript((prev) => {
             const next: TranscriptUtterance[] = [
               ...prev,
@@ -328,6 +409,12 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
               }
             }
             if (outcome.response) {
+              // Confirmation chime before the spoken response — same
+              // ordering as iOS resolveWithCorrection
+              // (AlertManager.swift:552 chime then speakResponse).
+              // Only fires for commands that produced a patch (queries
+              // shouldn't chime — they're read-only).
+              if (outcome.patch) playConfirmationChime();
               speak(outcome.response);
             }
             sleepManagerRef.current?.onSpeechActivity();
@@ -335,8 +422,48 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
           }
           // Fire the final utterance at the Sonnet session so server-side
           // multi-turn extraction can fill form fields. No-op if the WS
-          // isn't open — the Sonnet client queues pre-connect messages.
-          sonnetRef.current?.sendTranscript(text);
+          // isn't open — the Sonnet client queues messages while
+          // disconnected.
+          //
+          // `confirmationsEnabled` mirrors iOS (DeepgramRecordingViewModel.
+          // swift:1863): the same boolean that gates client-side
+          // `speakConfirmation` is forwarded to the backend so Sonnet
+          // only generates a confirmations[] array when the user wants
+          // them. Reading the storage value here (rather than caching it
+          // in a React state) means flipping the toggle mid-recording
+          // takes effect on the very next utterance without a re-render
+          // round-trip.
+          //
+          // `utteranceId` is a per-final UUID that doubles as the
+          // dedupe anchor at the backend (sonnet-stream.js:2092). It's
+          // stamped on every transcript so any subsequent Stage 6 ask
+          // can echo it back as `consumed_utterance_id` and hit the
+          // fast-path Set lookup at sonnet-stream.js:1013.
+          //
+          // Stage 6 STI-04 — if a Stage 6 ask is in flight (toolCallId
+          // captured from an `ask_user_started` payload), the wire
+          // ordering MUST be transcript→ask_user_answered with the
+          // SAME utteranceId so the backend's seenTranscriptUtterances
+          // Set is populated before the ask's lookup runs. Mirrors
+          // DeepgramRecordingViewModel.swift:1820–1883.
+          //
+          // The `consume…` call is read-and-clear; if no ask is in
+          // flight we just send the transcript. Idempotency for split
+          // hesitation finals ("uh" → "cooker" in two finals) lives
+          // inside SonnetSession's firedToolCallIds Set — only the
+          // first non-empty final after an ask emits the answer.
+          const utteranceId =
+            typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+              ? crypto.randomUUID()
+              : `u_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+          const inFlightToolCallId = sonnetRef.current?.consumeInFlightToolCallId() ?? null;
+          sonnetRef.current?.sendTranscript(text, {
+            confirmationsEnabled: getConfirmationModeEnabled(),
+            utteranceId,
+          });
+          if (inFlightToolCallId) {
+            sonnetRef.current?.sendAskUserAnswered(inFlightToolCallId, text, utteranceId);
+          }
           // Each dispatched transcript is one outstanding Sonnet turn
           // until an extraction / question frame arrives to clear it.
           setProcessingCount((n) => n + 1);
@@ -410,13 +537,20 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
           liveFill.markUpdated(applied.changedKeys);
         }
       }
-      // Speak the first confirmation (if any). We deliberately speak
-      // only the first to avoid backlogging stacked readings behind
-      // stale news — iOS does the same.
+      // Speak the first confirmation (if any) through the
+      // confirmation-mode-gated path — mirrors iOS where
+      // speakBriefConfirmation is the only TTS entry point gated by
+      // the user toggle (AlertManager.swift:889). Sonnet should also
+      // be honouring the matching `confirmations_enabled` wire flag
+      // and not emitting confirmations when the toggle is off, but
+      // we belt-and-brace here so a regression on either side fails
+      // safe (silent) rather than surprising the inspector with
+      // unexpected speech. Only the first is spoken so stacked
+      // readings don't backlog stale news.
       const first = result.confirmations?.[0];
       if (first) {
         const sentence = confirmationToSentence(first);
-        if (sentence) speak(sentence);
+        if (sentence) speakConfirmation(sentence);
       }
       // Surface validation alerts in the pending-readings counter so
       // the inspector sees them in the recording chrome even if they
@@ -467,10 +601,155 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         }
         // Speak only newly-appearing questions. Re-asks are suppressed
         // by the dedup above, matching iOS where the AlertCardView
-        // doesn't re-announce a queued question.
+        // doesn't re-announce a queued question. The attention tone
+        // plays BEFORE TTS to give the inspector a half-second of
+        // warning that something needs their attention — same iOS
+        // ordering at AlertManager.swift:717 (playAttentionTone()
+        // immediately before speakAlertMessage()).
         if (isNew && q.question) {
+          // Switch the sleep timer to the 75s question-answer window
+          // so the inspector has time to hear, think, and reply
+          // without the standard 60s timer dropping us into sleep
+          // mid-thought. Mirrors iOS SleepManager.swift:68.
+          sleepManagerRef.current?.onQuestionAsked();
+          playAttentionTone();
           speak(q.question);
         }
+      },
+      onFieldCorrected: (msg) => {
+        // Stage 6 STI-05 — clear the slot Sonnet asked us to forget. Route
+        // through the existing field_clears extraction path so the
+        // mutation + flash fire through the same single code path as
+        // bundled field_clears (mirrors iOS handleFieldCorrected which
+        // delegates to the same Stage6FieldClearer used by the bundled
+        // path). The next record_reading typically lands ms later via
+        // the normal extraction frame.
+        const synthetic: ExtractionResult = {
+          readings: [],
+          field_clears: [{ circuit: msg.circuit, field: msg.field }],
+        };
+        const applied = applyExtractionToJob(jobRef.current, synthetic);
+        if (applied) {
+          updateJobRef.current(applied.patch);
+          jobRef.current = {
+            ...jobRef.current,
+            ...(applied.patch as Partial<typeof jobRef.current>),
+          };
+          if (applied.changedKeys.length > 0) {
+            liveFill.markUpdated(applied.changedKeys);
+          }
+        }
+      },
+      onCircuitCreated: (msg) => {
+        // Stage 6 STI-06 — ensure the row exists. Route through the
+        // circuit_updates path so both create + designation rename use
+        // the same code (mirrors iOS where both create_circuit and
+        // rename_circuit fire Stage6CircuitCreated/Updated events).
+        const synthetic: ExtractionResult = {
+          readings: [],
+          circuit_updates: [
+            {
+              circuit: msg.circuit_ref,
+              designation: msg.designation ?? '',
+              action: 'create',
+            },
+          ],
+        };
+        const applied = applyExtractionToJob(jobRef.current, synthetic);
+        if (applied) {
+          updateJobRef.current(applied.patch);
+          jobRef.current = {
+            ...jobRef.current,
+            ...(applied.patch as Partial<typeof jobRef.current>),
+          };
+          if (applied.changedKeys.length > 0) {
+            liveFill.markUpdated(applied.changedKeys);
+          }
+        }
+      },
+      onCircuitUpdated: (msg) => {
+        // Stage 6 STI-07 — rename. Same wire shape as create; treat as
+        // a rename action so the existing logic preserves any
+        // already-typed designation only when the server isn't asking
+        // for an explicit overwrite.
+        if (!msg.designation) return;
+        const synthetic: ExtractionResult = {
+          readings: [],
+          circuit_updates: [
+            {
+              circuit: msg.circuit_ref,
+              designation: msg.designation,
+              action: 'rename',
+            },
+          ],
+        };
+        const applied = applyExtractionToJob(jobRef.current, synthetic);
+        if (applied) {
+          updateJobRef.current(applied.patch);
+          jobRef.current = {
+            ...jobRef.current,
+            ...(applied.patch as Partial<typeof jobRef.current>),
+          };
+          if (applied.changedKeys.length > 0) {
+            liveFill.markUpdated(applied.changedKeys);
+          }
+        }
+      },
+      onObservationDeleted: (msg) => {
+        // Stage 6 STI-08 — remove the observation row that Sonnet
+        // deleted server-side. Match by server_id; silent no-op if the
+        // row was never created on this client (common: a delete races
+        // ahead of the initial extraction). Mirrors iOS where the row
+        // is dropped from job.observations.
+        const before =
+          (jobRef.current.observations as { id: string; server_id?: string }[] | undefined) ?? [];
+        const next = before.filter((o) => o.server_id !== msg.observation_id);
+        if (next.length === before.length) return;
+        updateJobRef.current({ observations: next });
+        jobRef.current = {
+          ...jobRef.current,
+          observations: next,
+        };
+        liveFill.markUpdated(['observations']);
+      },
+      onToolCallStarted: (msg) => {
+        // Decode-only on iOS — log so prod traces show the tool loop
+        // shape. No UI surface today; Phase 7 will add a progress
+        // affordance ("Recording Zs for circuit 3…").
+        console.info(
+          `[stage6] tool_call_started tool=${msg.tool_name} id=${msg.tool_call_id} preview=${
+            msg.input_preview ?? ''
+          }`
+        );
+      },
+      onToolCallCompleted: (msg) => {
+        console.info(
+          `[stage6] tool_call_completed tool=${msg.tool_name} outcome=${msg.outcome} duration_ms=${
+            msg.duration_ms ?? ''
+          }`
+        );
+      },
+      onObservationUpdate: (update) => {
+        // BPG4 / regulation refinement of a previously-extracted
+        // observation. Mirrors iOS handleObservationUpdate
+        // (DeepgramRecordingViewModel.swift:4954). Patches the matching
+        // row by server_id (preferred) → fuzzy text → CREATE-from-miss.
+        // Server may also stamp schedule_item which feeds the inspection
+        // schedule auto-tick on next save.
+        const next = applyObservationUpdate(jobRef.current, update);
+        if (!next) return;
+        updateJobRef.current({ observations: next });
+        // Keep jobRef in lock-step so a rapid second update reads the
+        // patched array, not the stale React snapshot.
+        jobRef.current = {
+          ...jobRef.current,
+          observations: next,
+        };
+        // Flash the observations section so the inspector sees the
+        // refinement land. We don't have per-row flash keys here (the
+        // section flash is enough — the row text itself is the
+        // affordance) so emit a section-level key.
+        liveFill.markUpdated(['observations']);
       },
       onCostUpdate: (update) => {
         // Server sends totalJobCost in USD. We keep Sonnet cost
@@ -534,12 +813,31 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         // the VAD fire.
         ringBufferRef.current?.writeFloat32(samples16k);
         deepgramRef.current?.sendSamples(samples16k);
+        // T20 — feed the VAD chunk accumulator. Only run while sleeping;
+        // the SleepManager ignores VAD frames in `active` (the timer is
+        // what drives sleep entry there) so doing inference on every
+        // active-state frame would be ~2ms of WASM compute per 32ms
+        // burned for nothing. While sleeping we DO want every chunk so
+        // the wake gate fires as soon as the inspector starts speaking.
+        const silero = sileroRef.current;
+        const sleep = sleepManagerRef.current;
+        if (silero && sleep && sleep.currentState === 'sleeping') {
+          dispatchSamplesToVad(samples16k, silero, sleep, vadAccumulatorRef.current);
+        }
       },
       onLevel: (level) => {
         const now = performance.now();
-        // ~60Hz UI cap, but the SleepManager sees every sample so the
-        // wake heuristic isn't under-sampled.
-        sleepManagerRef.current?.processAudioLevel(level);
+        // SleepManager's RMS fallback path — only reachable if the
+        // Silero load failed at session start (offline first run + no
+        // PWA cache, ORT crash, model 404). When silero is loaded, the
+        // primary `processVadFrame` path in onSamples drives the wake
+        // gate and this RMS feed is a no-op (the SleepManager just
+        // ignores frames whose state already matched). We still call
+        // unconditionally so a mid-session Silero failure (rare) leaves
+        // the RMS fallback running.
+        if (!sileroRef.current?.loaded) {
+          sleepManagerRef.current?.processAudioLevel(level);
+        }
         if (now - lastLevelPushRef.current < 16) return;
         lastLevelPushRef.current = now;
         setMicLevel(level);
@@ -651,22 +949,19 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
    *  doze/wake cycles internally and only stops on `stop()`. */
   const buildSleepManager = React.useCallback(() => {
     const mgr = new SleepManager({
-      onEnterDozing: () => {
-        // Tell the server to pause cost tracking BEFORE pausing the
-        // Deepgram stream (iOS fix 4c75ccf). Pause keeps the WS alive
-        // with KeepAlive frames so wake re-latches in <100ms.
-        sonnetRef.current?.pause();
-        deepgramRef.current?.pause();
-        clearTick();
-        setMicLevel(0);
-        setState('dozing');
-      },
       onEnterSleeping: () => {
-        // Full disconnect after 30min dozing — matches iOS. The mic
-        // stream keeps running so the ring buffer still captures pre-
-        // wake audio for the replay on next speech.
+        // Stage 4c collapsed model — direct active → sleeping after
+        // the 60s no-final timer (or via manual pause). Mirrors iOS
+        // SleepManager.swift:21–24. Tell Sonnet to pause cost
+        // tracking, fully disconnect Deepgram, and stop the elapsed-
+        // tick. The mic stream keeps running so the ring buffer
+        // still captures pre-wake audio for the replay on next
+        // speech.
+        sonnetRef.current?.pause();
         teardownDeepgram();
         teardownSonnet();
+        clearTick();
+        setMicLevel(0);
         setState('sleeping');
       },
       onWake: (from) => {
@@ -730,6 +1025,32 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         // Log for the debug-report (collected on its own channel).
         console.warn('[recording] /recording/start failed:', err);
       });
+    // T20 — kick off Silero VAD load in parallel with mic permission +
+    // WS handshake. Fetch + WASM init typically lands in 50–200ms cold
+    // (and effectively 0 once Serwist's `models` cache fills), well
+    // inside the time the user spends acknowledging the permission
+    // prompt. Don't await: a slow load shouldn't gate the recording UX,
+    // and if it eventually fails we already have the RMS fallback in
+    // onLevel. If the session is torn down before load() resolves, the
+    // wrapper is dropped on the floor — sileroRef.current is the source
+    // of truth, so a stale assignment can't reactivate inference.
+    if (SILERO_VAD_ENABLED) {
+      const vad = new SileroVAD();
+      void vad
+        .load()
+        .then(() => {
+          if (sessionIdRef.current !== sessionId) return;
+          sileroRef.current = vad;
+        })
+        .catch((err) => {
+          if (sessionIdRef.current !== sessionId) return;
+          // Drop to RMS for this session. Console-warn only — the
+          // SleepManager's RMS path is already armed via onLevel,
+          // so the inspector loses the noise-rejection benefit but
+          // still gets functional wake-from-sleep.
+          console.warn('[recording] SileroVAD load failed; falling back to RMS wake gate:', err);
+        });
+    }
     try {
       await beginMicPipeline();
       // sessionId rotated while awaiting the mic / WS handshake — drop
@@ -827,16 +1148,17 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
    *  and the mic keeps filling the ring buffer so resume can replay. */
   const pause = React.useCallback(() => {
     // Synchronous guard via statusRef so pause()+pause() doesn't
-    // double-emit the doze transition (and so a late resume() closure
-    // from a pre-stop session can't flip `dozing → active` on a freshly
+    // double-emit the sleep transition (and so a late resume() closure
+    // from a pre-stop session can't flip sleeping → active on a freshly
     // restarted session).
     if (statusRef.current !== 'active') return;
-    sonnetRef.current?.pause();
-    deepgramRef.current?.pause();
-    clearTick();
-    setMicLevel(0);
-    setState('dozing');
-  }, [setState, clearTick]);
+    // Stage 4c collapse: manual pause is the same effect as the 60s
+    // timer firing. SleepManager owns the transition so the WS
+    // teardown + state mutation flow through onEnterSleeping
+    // identically to the auto-doze path. Mirrors iOS where pause is
+    // a thin wrapper over `enterSleeping()`.
+    sleepManagerRef.current?.enterSleeping();
+  }, []);
 
   /** Manual resume — mirrors the wake path. If Deepgram was torn down
    *  (sleeping), reopen it; otherwise just unpause and replay the ring
@@ -847,8 +1169,8 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     // Synchronous guard. resume() is legal only from the paused/sleeping
     // states — anything else (including a late retry from the overlay
     // while we've already rotated to a fresh session) must no-op.
-    if (statusRef.current !== 'dozing' && statusRef.current !== 'sleeping') return;
-    const fromSleeping = statusRef.current === 'sleeping';
+    if (statusRef.current !== 'sleeping') return;
+    const fromSleeping = true;
     // Snapshot sessionId so the late-resolving openDeepgram / beginMic
     // paths below can detect if a stop() raced them.
     const sessionId = sessionIdRef.current;
@@ -906,8 +1228,169 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     teardownSleep,
   ]);
 
-  const dismissQuestion = React.useCallback((index: number) => {
-    setQuestions((prev) => prev.filter((_, i) => i !== index));
+  // Auto-dismiss timer registry — keyed by question text (the same key
+  // the dedup logic in onQuestion uses). Mirrors iOS's per-alert
+  // autoDismissTask (AlertManager.swift:151) which fires 15s AFTER
+  // TTS finishes for interactive alerts. The PWA uses a coarser
+  // 15-from-arrival because we don't track per-question TTS-finish
+  // events; in practice the inspector either responds within 5s or
+  // doesn't respond at all, so the extra grace from arrival-vs-TTS-
+  // end timing is minor.
+  //
+  // Why a ref of Map (not state): timer handles are imperative and
+  // changing them shouldn't trigger a re-render. Cleared on dismiss
+  // (manual or auto) so we don't leak handles when the inspector
+  // dismisses faster than the timeout fires.
+  const dismissTimersRef = React.useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+
+  /** Per-question timeout in ms. Mirrors iOS's three-tier policy
+   *  (interactive 15s / informational 4s / visual-only 6s,
+   *  AlertManager.swift:1295/1308/758). Only the interactive tier
+   *  exists today on the PWA — every onQuestion is ask-shaped — but
+   *  the switch is here so adding informational/visual paths later
+   *  is a one-line change. */
+  const autoDismissMsFor = React.useCallback((q: SonnetQuestion): number => {
+    // Visual-only / informational shapes don't fire onQuestion today,
+    // so this branch is dead but kept for forward-compat.
+    if (q.question_type === 'visual_only') return 6000;
+    if (q.question_type === 'informational') return 4000;
+    return 15000;
+  }, []);
+
+  const cancelDismissTimer = React.useCallback((key: string) => {
+    const existing = dismissTimersRef.current.get(key);
+    if (existing) {
+      clearTimeout(existing);
+      dismissTimersRef.current.delete(key);
+    }
+  }, []);
+
+  const dismissQuestion = React.useCallback(
+    (index: number) => {
+      setQuestions((prev) => {
+        const removed = prev[index];
+        if (removed?.question) cancelDismissTimer(removed.question);
+        return prev.filter((_, i) => i !== index);
+      });
+    },
+    [cancelDismissTimer]
+  );
+
+  /**
+   * Tap-accept on a question — mirrors iOS handleTapResponse(accepted:
+   * true) (AlertManager.swift:610 + line 785 "Updated"). Wires the
+   * accept through the same `ask_user_answered` channel a spoken "yes"
+   * would, so the backend's tool-call resolver sees one canonical
+   * answer shape regardless of whether the inspector tapped or spoke.
+   * Plays the confirmation chime BEFORE TTS — same iOS ordering at
+   * line 784–785.
+   *
+   * Idempotency: SonnetSession's firedToolCallIds Set already guards
+   * against double-emit, so a second tap on the same question is a
+   * silent no-op on the wire.
+   *
+   * Rejected (no tool_call_id): legacy questions don't have a wire
+   * back path — fall back to a silent dismiss.
+   */
+  const acceptQuestion = React.useCallback(
+    (index: number) => {
+      const target = questions[index];
+      if (!target) return;
+      const toolCallId = target.tool_call_id;
+      if (toolCallId && sonnetRef.current) {
+        const utteranceId =
+          typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+            ? crypto.randomUUID()
+            : `u_${Date.now()}_tap`;
+        // Send a placeholder transcript so the wire ordering invariant
+        // holds (transcript-then-ask) — the backend's seenTranscript
+        // Utterances Set must be populated before the ask answer
+        // arrives, otherwise the fast-path dedupe misses and we burn
+        // the fuzzy fallback. Empty user_text would defeat the
+        // anchor; "yes" is the canonical positive shape.
+        sonnetRef.current.sendTranscript('yes', {
+          confirmationsEnabled: getConfirmationModeEnabled(),
+          utteranceId,
+        });
+        sonnetRef.current.sendAskUserAnswered(toolCallId, 'yes', utteranceId);
+      }
+      playConfirmationChime();
+      speak('Updated');
+      // Drop the question from the queue + clear the auto-dismiss
+      // timer.
+      setQuestions((prev) => {
+        if (target.question) cancelDismissTimer(target.question);
+        return prev.filter((_, i) => i !== index);
+      });
+    },
+    [cancelDismissTimer, questions]
+  );
+
+  const rejectQuestion = React.useCallback(
+    (index: number) => {
+      const target = questions[index];
+      if (!target) return;
+      const toolCallId = target.tool_call_id;
+      if (toolCallId && sonnetRef.current) {
+        const utteranceId =
+          typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+            ? crypto.randomUUID()
+            : `u_${Date.now()}_tap`;
+        sonnetRef.current.sendTranscript('no', {
+          confirmationsEnabled: getConfirmationModeEnabled(),
+          utteranceId,
+        });
+        sonnetRef.current.sendAskUserAnswered(toolCallId, 'no', utteranceId);
+      }
+      // No chime on reject — iOS line 788 only speaks the response.
+      speak('Okay, keeping it.');
+      setQuestions((prev) => {
+        if (target.question) cancelDismissTimer(target.question);
+        return prev.filter((_, i) => i !== index);
+      });
+    },
+    [cancelDismissTimer, questions]
+  );
+
+  // Schedule the auto-dismiss whenever a NEW question lands at the
+  // tail of the questions queue. Driven off the questions state (not
+  // onQuestion) so a re-render race that drops a question mid-fire
+  // can't leak its timer; the cleanup loop below also clears any
+  // stragglers when the question text disappears from the queue.
+  React.useEffect(() => {
+    const known = new Set(questions.map((q) => q.question));
+    // Drop timers whose question is no longer in the queue.
+    for (const [key, handle] of dismissTimersRef.current.entries()) {
+      if (!known.has(key)) {
+        clearTimeout(handle);
+        dismissTimersRef.current.delete(key);
+      }
+    }
+    // Schedule one for any newly-added question.
+    questions.forEach((q, idx) => {
+      if (!q.question) return;
+      if (dismissTimersRef.current.has(q.question)) return;
+      const ms = autoDismissMsFor(q);
+      const handle = setTimeout(() => {
+        dismissTimersRef.current.delete(q.question);
+        // Re-resolve the index by text in case the queue shifted
+        // between schedule and fire (a manual dismiss earlier in the
+        // list would have changed the absolute index).
+        setQuestions((prev) => prev.filter((p) => p.question !== q.question));
+      }, ms);
+      dismissTimersRef.current.set(q.question, handle);
+      void idx;
+    });
+  }, [questions, autoDismissMsFor]);
+
+  // Cleanup on unmount — drop any pending timers so we don't fire
+  // setQuestions after the provider has gone.
+  React.useEffect(() => {
+    const timers = dismissTimersRef.current;
+    return () => {
+      for (const handle of timers.values()) clearTimeout(handle);
+      timers.clear();
+    };
   }, []);
 
   // Total user-facing cost — Deepgram streaming + Sonnet tokens. Kept
@@ -934,6 +1417,8 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
       pause,
       resume,
       dismissQuestion,
+      acceptQuestion,
+      rejectQuestion,
     }),
     [
       state,

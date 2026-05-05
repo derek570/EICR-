@@ -657,6 +657,274 @@ If you cannot determine the type, reply: {"rcd_type": null, "source": "not found
   return analysis;
 }
 
+// Cluster-floor for the outlier detector. Five same-manufacturer, same-
+// type confident reads is the smallest cluster where "this slot
+// disagrees with the rest of the board" is a statistically meaningful
+// signal. A 4-vs-1 split on a tiny board could just as easily be a real
+// mixed schedule (older device retained mid-bank, which the user has
+// flagged as common in UK domestic re-wires). Lowering this would catch
+// more false positives; raising it would miss real outliers on smaller
+// boards. Keeping it at 5 leaves small boards untouched.
+export const RCD_OUTLIER_CLUSTER_FLOOR = 5;
+
+/**
+ * Detect RCD waveform-type outliers within a same-manufacturer cluster.
+ *
+ * The Stage 3 per-slot VLM occasionally mis-reads the BS EN 61008/61009
+ * waveform glyph on ONE device face on an otherwise-uniform board (the
+ * symbol is sub-millimetre and even confident reads can flip A↔AC). The
+ * existing `uniform_low_conf` lookup gate misses this case because the
+ * cluster's reads all came back at high confidence.
+ *
+ * This detector finds slots whose `rcdWaveformType` disagrees with the
+ * rest of the board WHEN the rest of the board is a same-manufacturer
+ * confident cluster. It does NOT auto-correct — the caller's job is to
+ * flag the outlier circuit `low_confidence:true` and surface a question
+ * for the inspector to verify on-device.
+ *
+ * Manufacturer-clustering is the load-bearing assumption: a genuinely
+ * older AC-type RCBO retrofitted into an A-type board nearly always
+ * comes from a DIFFERENT manufacturer (the inspector grabbed whatever
+ * was in the van), so it lands in its own size-1 cluster and never
+ * crosses the cluster floor. Same-manufacturer disagreement, on the
+ * other hand, almost always means one slot was misread.
+ *
+ * Returns an array of outlier descriptors. Empty if no eligible
+ * cluster + outlier was found.
+ */
+export function detectRcdWaveformOutliers(slots, opts = {}) {
+  const minClusterSize = opts.minClusterSize ?? RCD_OUTLIER_CLUSTER_FLOOR;
+  const minConfidence = opts.minConfidence ?? RCD_WAVEFORM_VERIFY_CONFIDENCE_THRESHOLD;
+
+  if (!Array.isArray(slots)) return [];
+
+  const eligible = slots.filter(
+    (s) =>
+      s &&
+      (s.classification === 'rcbo' || s.classification === 'rcd') &&
+      typeof s.rcdWaveformType === 'string' &&
+      s.rcdWaveformType.length > 0 &&
+      typeof s.manufacturer === 'string' &&
+      s.manufacturer.trim().length > 0 &&
+      (s.confidence ?? 0) >= minConfidence
+  );
+
+  if (eligible.length < minClusterSize + 1) return [];
+
+  const groups = new Map();
+  for (const s of eligible) {
+    const key = s.manufacturer.trim().toLowerCase();
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(s);
+  }
+
+  const outliers = [];
+  for (const group of groups.values()) {
+    if (group.length < minClusterSize + 1) continue;
+
+    const counts = new Map();
+    for (const s of group) {
+      counts.set(s.rcdWaveformType, (counts.get(s.rcdWaveformType) ?? 0) + 1);
+    }
+    if (counts.size < 2) continue;
+
+    let majorityValue = null;
+    let majorityCount = 0;
+    for (const [v, c] of counts) {
+      if (c > majorityCount) {
+        majorityValue = v;
+        majorityCount = c;
+      }
+    }
+    if (majorityCount < minClusterSize) continue;
+
+    for (const s of group) {
+      if (s.rcdWaveformType !== majorityValue) {
+        outliers.push({
+          slot: s,
+          slotIndex: s.slotIndex ?? null,
+          slotValue: s.rcdWaveformType,
+          slotConfidence: s.confidence ?? null,
+          slotRatingText: s.ratingText ?? null,
+          slotLabel: s.label ?? null,
+          majorityValue,
+          majorityCount,
+          manufacturer: s.manufacturer.trim(),
+        });
+      }
+    }
+  }
+
+  return outliers;
+}
+
+/**
+ * Verify RCD waveform-type outliers against the manufacturer's spec sheet
+ * and flag the affected circuits for inspector review. NEVER auto-corrects
+ * the outlier value — the inspector decides.
+ *
+ * Pipeline:
+ *   1. detectRcdWaveformOutliers identifies any same-manufacturer outlier
+ *      (caller-injected slots[] is already populated).
+ *   2. For each manufacturer-group with outliers, fire ONE web-search
+ *      lookup against gpt-5-search-api with a per-slot prompt: "10 slots
+ *      read X, this one read Y — what does the datasheet say?" The
+ *      response indicates which value the datasheet supports for the
+ *      outlier device (`applies_to: outlier|all|unknown`).
+ *   3. Whatever the lookup returns, flag the matching circuit:
+ *        - circuit.low_confidence = true
+ *        - circuit.rcd_type_outlier = true
+ *        - circuit.rcd_type_majority_value = <the majority value>
+ *        - circuit.rcd_type_datasheet = <lookup answer or null>
+ *      Append a question to questionsForInspector so the iOS review screen
+ *      surfaces it. Leave circuit.rcd_type UNCHANGED — manual confirmation
+ *      only.
+ *
+ * Skipped silently when OPENAI_API_KEY is unset (dev/sandbox) or the
+ * detector returns no outliers — same lifecycle as lookupMissingRcdTypes.
+ */
+export async function flagRcdWaveformOutliers(analysis, openai, logger, userId) {
+  const slots = Array.isArray(analysis.slots) ? analysis.slots : [];
+  const circuits = Array.isArray(analysis.circuits) ? analysis.circuits : [];
+
+  const outliers = detectRcdWaveformOutliers(slots);
+  if (outliers.length === 0) return analysis;
+
+  // Group outliers by manufacturer so we can batch the lookup — usually
+  // 1 outlier per board, but if a board ever had two slots disagreeing
+  // with the same majority cluster, batching saves a search call.
+  const byManufacturer = new Map();
+  for (const o of outliers) {
+    const key = o.manufacturer.toLowerCase();
+    if (!byManufacturer.has(key)) byManufacturer.set(key, []);
+    byManufacturer.get(key).push(o);
+  }
+
+  const boardModel = analysis.board_model || '';
+
+  for (const [, group] of byManufacturer) {
+    const first = group[0];
+    const manufacturer = first.manufacturer;
+    const majorityValue = first.majorityValue;
+    const majorityCount = first.majorityCount;
+    const outlierLines = group
+      .map((o) => {
+        const labelPart = o.slotLabel ? ` labelled "${o.slotLabel}"` : '';
+        const ratingPart = o.slotRatingText ? `, ${o.slotRatingText}` : '';
+        return `  - ${manufacturer} RCBO${ratingPart}${labelPart}: read as Type ${o.slotValue}`;
+      })
+      .join('\n');
+
+    const searchPrompt = `I have a UK consumer unit: ${manufacturer} ${boardModel}.
+Most of the RCBOs on this board (${majorityCount} devices) were read by a vision model as RCD Type ${majorityValue}. ${group.length === 1 ? 'One device disagreed' : `${group.length} devices disagreed`}:
+${outlierLines}
+
+This is most likely a mis-read of the BS EN 61008/61009 waveform glyph on the disagreeing device's face — the symbol is sub-millimetre and easy to confuse. Please search the ${manufacturer} ${boardModel} consumer unit datasheet to verify the published RCD Type for the disagreeing device. If the datasheet covers the whole board uniformly, return that single Type with applies_to="all". If the datasheet shows the disagreeing device as a different Type from the majority (which can happen if it's an older spec retained in stock), return that Type with applies_to="outlier".
+
+Reply ONLY with valid JSON:
+{"type": "AC"|"A"|"B"|"F"|"S"|null, "applies_to": "all"|"outlier"|"unknown", "source": "brief description"}`;
+
+    let datasheetType = null;
+    let appliesTo = 'unknown';
+    let sourceText = null;
+
+    try {
+      logger.info('RCD waveform outlier lookup starting', {
+        userId,
+        manufacturer,
+        boardModel,
+        majorityValue,
+        majorityCount,
+        outlierCount: group.length,
+        outlierValues: group.map((o) => o.slotValue),
+      });
+
+      const searchResponse = await openai.chat.completions.create({
+        model: 'gpt-5-search-api',
+        web_search_options: {},
+        messages: [{ role: 'user', content: searchPrompt }],
+      });
+
+      const searchContent = searchResponse.choices?.[0]?.message?.content || '';
+      const searchTokens = searchResponse.usage?.completion_tokens || 0;
+      const jsonMatch = searchContent.match(/\{[\s\S]*?\}/);
+      const parsed = jsonMatch ? JSON.parse(jsonMatch[0]) : {};
+      const validTypes = ['AC', 'A', 'B', 'F', 'S'];
+      const candidate = parsed.type?.toUpperCase()?.trim();
+      datasheetType = candidate && validTypes.includes(candidate) ? candidate : null;
+      appliesTo = ['all', 'outlier', 'unknown'].includes(parsed.applies_to)
+        ? parsed.applies_to
+        : 'unknown';
+      sourceText = typeof parsed.source === 'string' ? parsed.source : null;
+
+      logger.info('RCD waveform outlier lookup complete', {
+        userId,
+        manufacturer,
+        datasheetType,
+        appliesTo,
+        source: sourceText,
+        searchTokens,
+      });
+    } catch (err) {
+      // Non-fatal — flagging proceeds without datasheet steer.
+      logger.warn('RCD waveform outlier lookup failed (non-fatal)', {
+        userId,
+        manufacturer,
+        error: err.message,
+      });
+    }
+
+    // Apply flags to each outlier's circuit. Mapping is by slot_index —
+    // both the slot and the circuit carry it after the merger pass.
+    for (const o of group) {
+      const circuit = circuits.find(
+        (c) => c.slot_index != null && c.slot_index === o.slotIndex && !c.is_rcd_device
+      );
+      if (!circuit) {
+        logger.warn('RCD outlier flag: matching circuit not found', {
+          userId,
+          slotIndex: o.slotIndex,
+          slotValue: o.slotValue,
+        });
+        continue;
+      }
+
+      circuit.low_confidence = true;
+      circuit.rcd_type_outlier = true;
+      circuit.rcd_type_majority_value = o.majorityValue;
+      circuit.rcd_type_datasheet = datasheetType;
+      // rcd_type intentionally untouched — never auto-correct.
+
+      let questionText;
+      if (datasheetType && appliesTo === 'all') {
+        questionText = `${circuit.label || `Circuit ${circuit.circuit_number}`}: this device was read as RCD Type ${o.slotValue}, but the other ${o.majorityCount} ${manufacturer} RCBOs on this board read as Type ${o.majorityValue} and the ${manufacturer} ${boardModel || ''} datasheet confirms Type ${datasheetType}. Please verify the waveform symbol on the device face.`;
+      } else if (datasheetType && appliesTo === 'outlier') {
+        questionText = `${circuit.label || `Circuit ${circuit.circuit_number}`}: this device was read as RCD Type ${o.slotValue} (the other ${o.majorityCount} ${manufacturer} RCBOs read as Type ${o.majorityValue}). The ${manufacturer} datasheet shows Type ${datasheetType} for this rating, so the read may be correct — please verify on the device face.`;
+      } else {
+        questionText = `${circuit.label || `Circuit ${circuit.circuit_number}`}: this device was read as RCD Type ${o.slotValue}, but the other ${o.majorityCount} ${manufacturer} RCBOs on this board read as Type ${o.majorityValue}. Please double-check the waveform symbol on the device face.`;
+      }
+
+      if (!Array.isArray(analysis.questionsForInspector)) {
+        analysis.questionsForInspector = [];
+      }
+      analysis.questionsForInspector.push(questionText);
+
+      logger.info('RCD waveform outlier flagged', {
+        userId,
+        slotIndex: o.slotIndex,
+        circuitNumber: circuit.circuit_number,
+        label: circuit.label,
+        slotValue: o.slotValue,
+        majorityValue: o.majorityValue,
+        datasheetType,
+        appliesTo,
+      });
+    }
+  }
+
+  return analysis;
+}
+
 /**
  * Sonnet chunked audio extraction (Deepgram transcription + Claude Sonnet extraction)
  * POST /api/recording/sonnet-extract
@@ -1154,6 +1422,163 @@ Return ONLY the JSON object.`;
 }
 
 /**
+ * Score a slot's plausibility as the genuine main switch within a run of
+ * Stage-3-classified main_switch slots.
+ *
+ * Six signals, summed:
+ *   +2 — slot.ratingText digits match the classifier's main_switch_rating
+ *        (e.g. slot reads "100A", classifier said "100" — strongest positive)
+ *   +1 — slot.ratingText is non-null at all (any face read is a positive)
+ *   +1 — slot.confidence ≥ 0.7 (Stage 3 self-rated as non-partial)
+ *   +1 — slot.bsEn matches the BS EN 60947 family (switch-disconnector standard)
+ *   +1 — Stage 4 label looks main-switch-like AND labelConfidence ≥ 0.85
+ *   −2 — Stage 4 label is something else (appliance / circuit name) AND
+ *        labelConfidence ≥ 0.85 — strongest negative: a confident appliance
+ *        name is the loudest "this is not the main switch" signal we have
+ *
+ * Higher is more plausible. The score is purely ordinal — we sort the run
+ * and demote the bottom (runLength - expectedSize) slots; absolute values
+ * never matter outside that comparison.
+ */
+function scoreMainSwitchPlausibility(slot, expectedRatingDigits) {
+  let score = 0;
+
+  const ratingText = slot.ratingText != null ? String(slot.ratingText) : '';
+  const slotRatingDigits = ratingText.match(/\d+/)?.[0] ?? null;
+  if (expectedRatingDigits && slotRatingDigits === expectedRatingDigits) {
+    score += 2;
+  }
+  if (slotRatingDigits) {
+    score += 1;
+  }
+
+  if ((slot.confidence ?? 0) >= 0.7) {
+    score += 1;
+  }
+
+  const bsEnNorm = (slot.bsEn || '').toLowerCase().replace(/\s+/g, '');
+  if (bsEnNorm.includes('60947')) {
+    score += 1;
+  }
+
+  const labelRaw = slot.label != null ? String(slot.label).trim() : '';
+  const labelConf = slot.labelConfidence ?? 0;
+  if (labelRaw.length > 0 && labelConf >= 0.85) {
+    const looksLikeMainSwitch = /^(mains?\s*switch|isolator|switch[-\s]?fuse|main|\d+\s*a)$/i.test(
+      labelRaw
+    );
+    if (looksLikeMainSwitch) {
+      score += 1;
+    } else {
+      score -= 2;
+    }
+  }
+
+  return score;
+}
+
+/**
+ * Trim spurious main_switch classifications from oversized contiguous runs.
+ *
+ * Mutates `slots` in place: any slot demoted from main_switch has its
+ * `classification` rewritten to 'unknown' (so the cascade pre-pass and main
+ * scan loop both treat it as a circuit), with `_originalClassification` and
+ * `_demotedFromMainSwitch` flags preserved for audit/iOS.
+ *
+ * Run length is the count of contiguous main_switch slots. Expected size is:
+ *   1. `expectedPoles` if a sane integer 1-4 (caller-supplied from the
+ *      board classifier — currently always null, plumbed for future use).
+ *   2. The mode of the run's per-slot `poles` values, if at least 2 slots
+ *      agree on the same 1-4 integer.
+ *   3. UK-domestic default = 2.
+ *
+ * Runs whose length is ≤ expected size are left untouched. Oversized runs
+ * are scored slot-by-slot; the bottom (runLength - expected) slots get
+ * demoted. Ties broken by `mainSwitchSide`: when scores are equal, the
+ * slots PHYSICALLY FURTHEST from the side where the main switch is
+ * supposed to live are demoted first (mainSwitchSide 'right' → demote
+ * leftmost; 'left' → demote rightmost). This matches the dominant bleed
+ * direction observed in production: the genuine isolator anchors itself
+ * on its real side, and Stage 3's leak grows AWAY from it.
+ */
+function trimSpuriousMainSwitchClusterRuns(slots, expectedRating, expectedPoles, mainSwitchSide) {
+  if (!Array.isArray(slots) || slots.length === 0) return;
+
+  const ratingDigits = expectedRating ? (String(expectedRating).match(/\d+/)?.[0] ?? null) : null;
+
+  const runs = [];
+  let i = 0;
+  while (i < slots.length) {
+    if ((slots[i].classification || '').toLowerCase() === 'main_switch') {
+      const start = i;
+      while (i < slots.length && (slots[i].classification || '').toLowerCase() === 'main_switch') {
+        i++;
+      }
+      runs.push({ start, end: i - 1 });
+    } else {
+      i++;
+    }
+  }
+
+  for (const run of runs) {
+    const runSlots = slots.slice(run.start, run.end + 1);
+    const runLength = runSlots.length;
+
+    let expected;
+    if (Number.isInteger(expectedPoles) && expectedPoles >= 1 && expectedPoles <= 4) {
+      expected = expectedPoles;
+    } else {
+      const polesCounts = new Map();
+      for (const s of runSlots) {
+        const p = s.poles;
+        if (Number.isInteger(p) && p >= 1 && p <= 4) {
+          polesCounts.set(p, (polesCounts.get(p) ?? 0) + 1);
+        }
+      }
+      let modePoles = null;
+      let modeCount = 0;
+      for (const [p, count] of polesCounts) {
+        if (count > modeCount) {
+          modePoles = p;
+          modeCount = count;
+        }
+      }
+      expected = modeCount >= 2 ? modePoles : 2;
+    }
+
+    if (runLength <= expected) continue;
+
+    const scored = runSlots.map((slot, idx) => ({
+      absIdx: run.start + idx,
+      score: scoreMainSwitchPlausibility(slot, ratingDigits),
+      slot,
+    }));
+
+    // Sort by score desc, then by physical-distance-from-the-real-side as
+    // a tie-breaker. When scores are equal we want the slot furthest from
+    // the main-switch side to land at the BOTTOM of the keep-list (i.e.
+    // get sliced into the demote bucket).
+    //   mainSwitchSide='right' → keep rightmost first  → sort absIdx DESC
+    //   mainSwitchSide='left'  → keep leftmost first   → sort absIdx ASC
+    //   mainSwitchSide unknown → arbitrary but deterministic: keep leftmost
+    //                            (matches the slightly-more-common LHS
+    //                            isolator on UK split-load boards)
+    const tieBreakAscending = mainSwitchSide !== 'right';
+    scored.sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score;
+      return tieBreakAscending ? a.absIdx - b.absIdx : b.absIdx - a.absIdx;
+    });
+
+    const toDemote = scored.slice(expected);
+    for (const d of toDemote) {
+      d.slot._originalClassification = d.slot.classification;
+      d.slot.classification = 'unknown';
+      d.slot._demotedFromMainSwitch = true;
+    }
+  }
+}
+
+/**
  * Build an EICR-schema `circuits[]` array from per-slot VLM classifications.
  *
  * Per-slot is the sole source of truth for circuit-level data:
@@ -1181,8 +1606,41 @@ Return ONLY the JSON object.`;
  *
  * @returns {Array|null} circuits array, or null if slots is empty/invalid.
  */
-export function slotsToCircuits({ slots, mainSwitchSide, minSlotConfidence = 0.7 }) {
+export function slotsToCircuits({
+  slots,
+  mainSwitchSide,
+  minSlotConfidence = 0.7,
+  mainSwitchRating = null,
+  mainSwitchPoles = null,
+}) {
   if (!Array.isArray(slots) || slots.length === 0) return null;
+
+  // --- Pre-pass 0: trim spurious main_switch classifications
+  //
+  // Stage 3's per-slot VLM, when given a single-module crop centred near a
+  // wide main switch (lever isolators, rotary bezels, double-pole RCBOs
+  // sitting adjacent to the isolator), can confidently mis-classify the
+  // adjacent circuit slot as part of the main switch. Visual cues bleed in:
+  // diagonal lever travel, red plastic, the cosmetic bezel of the rotary
+  // base, or — as on the Elucian CU1SPD275 (extraction 1777921959918-zlhiha
+  // captured 2026-05-04) — an MCB faceplate that ALSO has a red plastic
+  // strip and looks visually different from the surrounding RCBOs.
+  //
+  // Without this trim, the "skip cls === 'main_switch'" rule downstream
+  // silently drops the genuine circuit (e.g. "Ovens" at slot 11 of that
+  // capture, classified main_switch alongside the real 2-pole isolator
+  // at slots 12-13). The user sees the schedule short by one circuit.
+  //
+  // The pre-pass walks contiguous main_switch runs, computes an expected
+  // run length (caller-supplied poles, modal poles across the run, or 2 as
+  // the UK domestic default), scores each slot's plausibility as a real
+  // main switch, and demotes the lowest-scoring overflow slots. Demoted
+  // slots have `classification` rewritten to 'unknown' so both this
+  // pre-pass's later cascade computation AND the main scan loop's existing
+  // low-confidence branch handle them naturally — they emerge as circuits
+  // with the slot's Stage 4 label, low_confidence:true, and is_partial_crop
+  // set. `_originalClassification` is preserved for audit/iOS.
+  trimSpuriousMainSwitchClusterRuns(slots, mainSwitchRating, mainSwitchPoles, mainSwitchSide);
 
   // --- Pre-pass: compute per-slot effective upstream RCD in PHYSICAL order
   //
@@ -1299,6 +1757,7 @@ export function slotsToCircuits({ slots, mainSwitchSide, minSlotConfidence = 0.7
     if (content === 'empty' || cls === 'empty') {
       circuits.push({
         circuit_number: circuitNumber,
+        slot_index: slot.slotIndex ?? null,
         label: 'Exposed rail (no device, no blank)',
         ocpd_type: null,
         ocpd_rating_a: null,
@@ -1373,6 +1832,7 @@ export function slotsToCircuits({ slots, mainSwitchSide, minSlotConfidence = 0.7
         // the RCD row on every real-world board.
         circuits.push({
           circuit_number: null,
+          slot_index: slot.slotIndex ?? null,
           label: 'RCD',
           is_rcd_device: true,
           ocpd_type: null,
@@ -1457,6 +1917,12 @@ export function slotsToCircuits({ slots, mainSwitchSide, minSlotConfidence = 0.7
       circuit.low_confidence = true;
       circuit.rating_hallucination_detected = true;
     }
+
+    // Traceability: keep the slot's physical position on the rail. Used
+    // by post-merge passes (e.g. flagRcdWaveformOutliers) to map circuits
+    // back to their source slot without re-deriving the mainSwitchSide-
+    // aware reverse mapping. Optional on iOS — additive decode.
+    circuit.slot_index = slot.slotIndex ?? null;
 
     circuits.push(circuit);
     circuitNumber++;
@@ -1950,6 +2416,12 @@ router.post(
           const mergedCircuits = slotsToCircuits({
             slots: analysis.slots,
             mainSwitchSide,
+            mainSwitchRating: boardClassification?.mainSwitchRating ?? null,
+            // mainSwitchPoles is null-by-design here — the classifier doesn't
+            // currently return a pole count. Plumbed through for future use;
+            // until then the trim pre-pass falls back to modal poles across
+            // the run, then to the UK domestic default of 2.
+            mainSwitchPoles: null,
           });
 
           if (mergedCircuits && mergedCircuits.length > 0) {
@@ -2008,6 +2480,12 @@ router.post(
         const OpenAI = (await import('openai')).default;
         const openai = new OpenAI({ apiKey: openaiKey });
         analysis = await lookupMissingRcdTypes(analysis, openai, logger, req.user.id);
+        // Outlier detection runs AFTER the missing/uniform-low-conf passes
+        // — those existing triggers can fill nulls or correct fleet-wide
+        // mis-reads first, leaving this final pass to handle the residual
+        // case where one slot disagrees with an otherwise-uniform same-
+        // manufacturer cluster. Flags only; never auto-corrects.
+        analysis = await flagRcdWaveformOutliers(analysis, openai, logger, req.user.id);
         const rcdElapsedMs = Date.now() - rcdStartMs;
         logger.info('CCU RCD type lookup timing', {
           userId: req.user.id,

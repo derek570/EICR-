@@ -27,17 +27,20 @@ function mockLogger() {
 }
 
 describe('barrel re-exports', () => {
-  test('WRITE_DISPATCHERS has all eight keys, all async functions', () => {
+  test('WRITE_DISPATCHERS has all eleven keys, all async functions', () => {
     expect(Object.keys(WRITE_DISPATCHERS).sort()).toEqual(
       [
         'clear_reading',
         'create_circuit',
+        'delete_circuit',
         'delete_observation',
         'record_board_reading',
         'record_observation',
         'record_reading',
         'rename_circuit',
         'start_dialogue_script',
+        'calculate_zs',
+        'calculate_r1_plus_r2',
       ].sort()
     );
     for (const fn of Object.values(WRITE_DISPATCHERS)) {
@@ -54,6 +57,9 @@ describe('barrel re-exports', () => {
     expect(WRITE_DISPATCHERS.delete_observation).toBe(observationSibling.dispatchDeleteObservation);
     expect(WRITE_DISPATCHERS.record_board_reading).toBe(boardSibling.dispatchRecordBoardReading);
     expect(WRITE_DISPATCHERS.start_dialogue_script).toBe(scriptSibling.dispatchStartDialogueScript);
+    expect(WRITE_DISPATCHERS.delete_circuit).toBe(circuitSibling.dispatchDeleteCircuit);
+    expect(WRITE_DISPATCHERS.calculate_zs).toBe(circuitSibling.dispatchCalculateZs);
+    expect(WRITE_DISPATCHERS.calculate_r1_plus_r2).toBe(circuitSibling.dispatchCalculateR1PlusR2);
   });
 
   test('every dispatcher returns a well-formed envelope when invoked with valid inputs', async () => {
@@ -107,6 +113,20 @@ describe('barrel re-exports', () => {
         source_turn_id: 't1',
         reason: 'barrel-test happy-path',
       },
+      // 2026-05-04 — three new tools added in one batch.
+      // delete_circuit: minimal valid input is just circuit_ref. The seeded
+      // session has circuit 3, but ref 99 is also valid (validator only
+      // rejects non-int / <1; absent ref returns ok:true with deleted:false).
+      delete_circuit: { circuit_ref: 3 },
+      // calculate_zs: 'all' selector with the seeded circuit 3 — but circuit 3
+      // has no r1_r2_ohm in the seeded snapshot so the result will be ok:true
+      // with empty computed[] and a 'no_r1_r2' skip. ok:true is what the
+      // assertion below checks for.
+      calculate_zs: { all: true },
+      // calculate_r1_plus_r2: 'all' + ring_continuity method. Same shape —
+      // seeded circuit has no ring values so it'll skip with no_ring_r1; still
+      // ok:true overall.
+      calculate_r1_plus_r2: { method: 'ring_continuity', all: true },
     };
     for (const [name, fn] of Object.entries(WRITE_DISPATCHERS)) {
       // Fresh session per call so create_circuit(99) etc don't collide.

@@ -77,6 +77,23 @@ const slots = [
     parser: parseKa,
     namedExtractor: /\b(\d+(?:\.\d+)?)\s*kA\b/i,
     acceptsBareValue: true,
+    // 2026-05-04 (field test 07635782): the inspector said "six" for
+    // breaking capacity, the engine accepted it as the rating answer
+    // (the question hadn't moved on yet), then asked the breaking-
+    // capacity question, and Deepgram heard the next utterance as
+    // "66". The parser was OK with it (range 1..200) and 66 kA landed
+    // on the cert. No real MCB has a 66 kA breaking capacity.
+    //
+    // This list is the BS-EN 60898 / BS 88 published rating ladder:
+    //   1.5 / 3 / 4.5 / 6 / 10 — domestic MCBs (BS-EN 60898)
+    //   16 / 20 / 25 — commercial MCBs / RCBOs
+    //   36 / 50 / 80 — HRC fuses (BS 88 family) and industrial breakers
+    // Anything off this ladder is dropped + re-asked. parseKa returns
+    // canonical strings ("6" not "6.0"), so equality is direct.
+    //
+    // Strings (not numbers) so the array can include the half-step
+    // ratings (1.5, 4.5) without float-equality risk.
+    allowedValues: ['1.5', '3', '4.5', '6', '10', '16', '20', '25', '36', '50', '80'],
   },
 ];
 

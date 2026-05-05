@@ -3,7 +3,7 @@
  *
  * Mirrors the iOS `DeepgramService.swift` protocol so the two clients
  * behave identically — same URL parameters (nova-3 / linear16 / 16kHz /
- * en-GB / interim_results / endpointing=300 / utterance_end_ms=2000 /
+ * en-GB / interim_results / endpointing=300 / utterance_end_ms=1000 /
  * vad_events=true). Auth differs by transport: iOS sets an
  * `Authorization: Bearer <jwt>` header on the WS upgrade; browsers can't
  * set upgrade headers so we pass the same JWT as the `bearer` subprotocol
@@ -483,7 +483,18 @@ export class DeepgramService {
       language: 'en-GB',
       interim_results: 'true',
       endpointing: '300',
-      utterance_end_ms: '2000',
+      // utterance_end_ms 1000 (NOT the legacy 2000): mirrors iOS canon
+      // (DeepgramService.swift:751). Lowered from 1500→1000 on
+      // 2026-04-26 (Bug-H follow-up) because the inspector's
+      // transcript bar would otherwise sit grey for the full
+      // utterance_end_ms window in noisy rooms — speech_final
+      // sometimes fails to fire and Deepgram falls back to this
+      // silence timer. 1000ms is the production value live in iOS;
+      // the rules/mistakes.md note "Keep web and iOS Deepgram
+      // configs in sync" (utterance_end_ms is explicitly listed
+      // there) is the load-bearing reason this constant lives in
+      // both clients with the SAME value.
+      utterance_end_ms: '1000',
       vad_events: 'true',
     });
     return `wss://api.deepgram.com/v1/listen?${params.toString()}`;

@@ -944,7 +944,37 @@ function runActivePath({
     currentSlot.acceptsBareValue !== false
   ) {
     const bareValue = currentSlot.parser(text);
-    if (bareValue !== null && bareValue !== undefined) {
+    // 2026-05-04 (field test 07635782 follow-up): per-slot allowed-value
+    // gate. The OCPD breaking-capacity slot now declares the realistic kA
+    // set ([1.5, 3, 4.5, 6, 10, 16, 20, 25, 36, 50, 80] — see
+    // schemas/ocpd.js). When the inspector said "six" the engine accepted
+    // it, then asked the breaking-capacity question, and Deepgram heard
+    // the next answer as "66" — a kA value that doesn't exist for any
+    // real MCB. The parser was OK with it (range 1..200) and it landed
+    // on the cert. With this gate the engine treats out-of-set values
+    // like a parser-failure: log + drop + re-ask. Set membership is
+    // string-equality on the parser's canonical output so "6" and "6.0"
+    // compare correctly (parseKa returns "6" not "6.0").
+    if (
+      bareValue !== null &&
+      bareValue !== undefined &&
+      Array.isArray(currentSlot.allowedValues) &&
+      !currentSlot.allowedValues.includes(bareValue)
+    ) {
+      // Optional logger — same defensive pattern as runPivot uses
+      // (some unit tests construct sessions without a logger). Drop
+      // silently into the re-ask path if no logger is wired.
+      logger?.info?.(`${schema.logEventPrefix}_slot_value_out_of_set`, {
+        sessionId,
+        circuit_ref: state.circuit_ref,
+        field: currentSlot.field,
+        rejected_value: bareValue,
+        allowed_count: currentSlot.allowedValues.length,
+        textPreview: text.slice(0, 80),
+      });
+      // Fall through with bareValue cleared — engine re-asks the same
+      // slot on the next turn (no write, no pivot).
+    } else if (bareValue !== null && bareValue !== undefined) {
       const r = applyWriteWithDerivations(
         session,
         schema,

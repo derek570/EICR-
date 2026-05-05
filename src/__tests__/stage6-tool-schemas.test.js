@@ -54,14 +54,21 @@ const EXPECTED_TOOL_NAMES = [
   // (Deepgram garbles, paraphrases). Initialises session.dialogueScriptState
   // and emits the first slot ask. See stage6-dispatchers-script.js.
   'start_dialogue_script',
+  // 2026-05-04 (field test 07635782): three tools added in one batch.
+  // delete_circuit closed the gap that left "delete circuit 2" silently
+  // dropped; calculate_zs / calculate_r1_plus_r2 closed the gap where
+  // "calculate the Zs" produced empty turns.
+  'delete_circuit',
+  'calculate_zs',
+  'calculate_r1_plus_r2',
 ];
 
 const byName = (name) => TOOL_SCHEMAS.find((t) => t.name === name);
 
 describe('stage6-tool-schemas', () => {
-  test('exports exactly 9 tools with the expected names', () => {
+  test('exports exactly 12 tools with the expected names', () => {
     expect(Array.isArray(TOOL_SCHEMAS)).toBe(true);
-    expect(TOOL_SCHEMAS).toHaveLength(9);
+    expect(TOOL_SCHEMAS).toHaveLength(12);
     const names = TOOL_SCHEMAS.map((t) => t.name).sort();
     expect(names).toEqual([...EXPECTED_TOOL_NAMES].sort());
   });

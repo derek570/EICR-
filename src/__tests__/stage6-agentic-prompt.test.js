@@ -127,8 +127,15 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       // ~7012 tokens; cap 7500 leaves ~500-token headroom for future
       // schedule-item refinements while making any unbounded growth in
       // either file fail loudly.
+      //
+      // 2026-05-04: relaxed to 8100 to absorb the +3 new tools
+      // (delete_circuit, calculate_zs, calculate_r1_plus_r2) plus their
+      // worked examples. Each tool adds ~100-150 tokens (definition +
+      // example + ring-final ask-first rule). Three tools ≈ +500
+      // tokens; cap moved by +600 to keep ~100-token headroom. Field
+      // test 2026-05-04 session 07635782 surfaced all three.
       const estimate = Math.ceil(combinedPrompt.length / 4);
-      expect(estimate).toBeLessThanOrEqual(7500);
+      expect(estimate).toBeLessThanOrEqual(8100);
     });
   });
 
@@ -451,7 +458,13 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       // Direct regression lock on the specific typo Codex flagged. If a
       // future refactor re-introduces this string, this test fires loudly
       // rather than waiting for the full-enum audit to catch it.
-      expect(prompt.includes('r1_plus_r2')).toBe(false);
+      //
+      // 2026-05-04 — `calculate_r1_plus_r2` (the tool name) is permitted;
+      // the regression target is the broken FIELD alias `r1_plus_r2`
+      // standalone. Strip the tool name before the check so the regression
+      // lock stays tight without false-positiving on the new tool.
+      const stripped = prompt.replace(/calculate_r1_plus_r2/g, '');
+      expect(stripped.includes('r1_plus_r2')).toBe(false);
     });
 
     test('prompt does NOT reference `address`/`client_address` as a record_reading field or ask_user context_field', () => {
@@ -587,8 +600,12 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       //     from inline prompt and the BPG4 quick-reference replaced
       //     with criteria-style framing — net +~100 tokens. New cap
       //     allows ~125-token headroom for future criteria refinements).
+      //   - 5600 (2026-05-04: +3 tools landed — delete_circuit,
+      //     calculate_zs, calculate_r1_plus_r2 — with worked examples
+      //     and the ring-final ask-first rule. Field test 07635782
+      //     surfaced the gaps). Cap mirrors Group 1's +600 bump.
       const estimate = Math.ceil(prompt.length / 4);
-      expect(estimate).toBeLessThanOrEqual(5000);
+      expect(estimate).toBeLessThanOrEqual(5600);
     });
   });
 

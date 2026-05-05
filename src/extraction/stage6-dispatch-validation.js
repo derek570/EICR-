@@ -170,6 +170,71 @@ export function validateDeleteObservation(_input, _session) {
   return null;
 }
 
+/**
+ * delete_circuit: ALWAYS valid for circuit_ref ≥ 1.
+ *
+ * Same noop-on-absence semantics as delete_observation — if the circuit isn't
+ * present, the post-state already satisfies the request and the dispatcher
+ * returns ok:true with deleted:false. The validator only rejects structurally
+ * invalid input (non-integer or ref ≤ 0; circuit_ref 0 is the supply bucket,
+ * which the delete_circuit tool MUST NOT touch — the supply data lives there
+ * for the entire job life and is the wrong abstraction layer for this tool).
+ */
+export function validateDeleteCircuit(input, _snapshot) {
+  if (!Number.isInteger(input.circuit_ref) || input.circuit_ref < 1) {
+    return { code: 'invalid_circuit_ref', field: 'circuit_ref' };
+  }
+  return null;
+}
+
+/**
+ * calculate_zs / calculate_r1_plus_r2 share the same selector shape:
+ *   - circuit_ref: int|null         → single circuit (when non-null)
+ *   - circuit_refs: int[]|null      → batch (when non-empty array)
+ *   - all: bool                     → every circuit with required inputs
+ *
+ * EXACTLY ONE of these three selectors must be set. The dispatcher then walks
+ * the chosen circuits, applies the formula where prerequisites are met, skips
+ * (without error) where they aren't, and never overwrites an existing value.
+ */
+export function validateCalculateSelector(input) {
+  const hasRef = Number.isInteger(input.circuit_ref) && input.circuit_ref >= 1;
+  const hasRefs =
+    Array.isArray(input.circuit_refs) &&
+    input.circuit_refs.length > 0 &&
+    input.circuit_refs.every((r) => Number.isInteger(r) && r >= 1);
+  const hasAll = input.all === true;
+  const setCount = (hasRef ? 1 : 0) + (hasRefs ? 1 : 0) + (hasAll ? 1 : 0);
+  if (setCount === 0) {
+    return { code: 'missing_selector', field: 'circuit_ref' };
+  }
+  if (setCount > 1) {
+    return { code: 'conflicting_selector', field: 'circuit_ref' };
+  }
+  return null;
+}
+
+/**
+ * calculate_r1_plus_r2: selector + method enum check.
+ * Method must be 'zs_minus_ze' (default radial backout) or 'ring_continuity'
+ * (the (R1+R2)/4 ring-final formula).
+ */
+export function validateCalculateR1PlusR2(input, _snapshot) {
+  const selErr = validateCalculateSelector(input);
+  if (selErr) return selErr;
+  if (input.method !== 'zs_minus_ze' && input.method !== 'ring_continuity') {
+    return { code: 'invalid_method', field: 'method' };
+  }
+  return null;
+}
+
+/**
+ * calculate_zs: selector check only (single formula: Zs = Ze + R1+R2).
+ */
+export function validateCalculateZs(input, _snapshot) {
+  return validateCalculateSelector(input);
+}
+
 // ---------------------------------------------------------------------------
 // Phase 3 Plan 03-02 — ask_user (STS-07) runtime defensive validator.
 //

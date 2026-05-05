@@ -147,6 +147,33 @@ export function renameCircuit(snapshot, { from_ref, circuit_ref }) {
 }
 
 /**
+ * Remove a circuit bucket entirely. Used by the Stage 6 delete_circuit tool —
+ * field-test 2026-05-04 (session 07635782) showed the inspector saying "delete
+ * circuit 2" twice with no effect because the tool didn't exist; the bucket
+ * lingered and stole subsequent designation lookups (see "the cooker" → wrong
+ * circuit downstream).
+ *
+ * Edge cases:
+ *  - circuit_ref absent in snapshot.circuits → {ok:true, deleted:false}.
+ *    Same noop pattern as deleteObservation: the post-state already
+ *    satisfies the request, so the dispatcher reports success.
+ *  - circuit_ref === 0 (supply bucket) → caller-level concern; this atom
+ *    deletes whatever key it's given. The dispatcher / validator must
+ *    refuse refs ≤ 0 before reaching here.
+ *
+ * @param {{circuits: Object}} snapshot
+ * @param {{circuit_ref: number}} input
+ * @returns {{ok: true, deleted: boolean}}
+ */
+export function deleteCircuit(snapshot, { circuit_ref }) {
+  if (!snapshot.circuits || !(circuit_ref in snapshot.circuits)) {
+    return { ok: true, deleted: false };
+  }
+  delete snapshot.circuits[circuit_ref];
+  return { ok: true, deleted: true };
+}
+
+/**
  * Append an observation to session.extractedObservations with a fresh
  * crypto.randomUUID(). The atom owns id generation — callers never pass an
  * id in. Initialises session.extractedObservations if absent.

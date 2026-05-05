@@ -39,7 +39,7 @@ function mockLogger() {
 }
 
 describe('WRITE_DISPATCHERS dispatch table', () => {
-  test('has exactly eight keys matching REQUIREMENTS STS-01..06 + record_board_reading + start_dialogue_script', () => {
+  test('has exactly eleven keys matching REQUIREMENTS STS-01..06 + record_board_reading + start_dialogue_script + delete_circuit + calculate_zs + calculate_r1_plus_r2', () => {
     expect(Object.keys(WRITE_DISPATCHERS).sort()).toEqual(
       [
         'clear_reading',
@@ -56,6 +56,13 @@ describe('WRITE_DISPATCHERS dispatch table', () => {
         // driven entry to the dialogue engine for structured walk-throughs
         // the engine's regex missed (Deepgram garbles, paraphrases).
         'start_dialogue_script',
+        // 2026-05-04 (field test 07635782): three tools in one batch.
+        // delete_circuit closes the gap that left "delete circuit 2"
+        // silently dropped; calculate_zs / calculate_r1_plus_r2 close the
+        // gap where "calculate the Zs" produced empty turns.
+        'delete_circuit',
+        'calculate_zs',
+        'calculate_r1_plus_r2',
       ].sort()
     );
   });
@@ -70,7 +77,11 @@ describe('WRITE_DISPATCHERS dispatch table', () => {
     for (const [name, fn] of Object.entries(WRITE_DISPATCHERS)) {
       expect(typeof fn).toBe('function');
       expect(fn.constructor.name).toBe('AsyncFunction');
-      expect(name).toMatch(/^[a-z_]+$/);
+      // Tool names are snake_case + may carry digits (e.g. calculate_r1_plus_r2,
+      // record_board_reading). The regex was originally `[a-z_]+` only;
+      // 2026-05-04 added calculate_r1_plus_r2 which fails that. Allow digits
+      // but keep the no-uppercase / no-special-char floor to catch typos.
+      expect(name).toMatch(/^[a-z][a-z0-9_]*$/);
     }
   });
 });

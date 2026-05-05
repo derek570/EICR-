@@ -74,8 +74,13 @@ jest.unstable_mockModule('../db.js', () => ({
   logAction: jest.fn(),
 }));
 
-const { lookupMissingRcdTypes, RCD_WAVEFORM_VERIFY_CONFIDENCE_THRESHOLD } =
-  await import('../routes/extraction.js');
+const {
+  lookupMissingRcdTypes,
+  RCD_WAVEFORM_VERIFY_CONFIDENCE_THRESHOLD,
+  RCD_OUTLIER_CLUSTER_FLOOR,
+  detectRcdWaveformOutliers,
+  flagRcdWaveformOutliers,
+} = await import('../routes/extraction.js');
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -388,5 +393,422 @@ describe('lookupMissingRcdTypes — questionsForInspector pruning', () => {
     await lookupMissingRcdTypes(analysis, openai, logger, 'user-1');
 
     expect(analysis.questionsForInspector).toEqual(['What RCD type for the kitchen circuit?']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// detectRcdWaveformOutliers (pure function)
+// ---------------------------------------------------------------------------
+
+/** Same-manufacturer slot with explicit slotIndex — for outlier-detection tests. */
+function rcboOutlierSlot(slotIndex, opts = {}) {
+  return {
+    slotIndex,
+    classification: 'rcbo',
+    manufacturer: opts.manufacturer ?? 'Elucian',
+    model: null,
+    ratingAmps: opts.ratingAmps ?? 20,
+    ratingText: opts.ratingText ?? 'B20A',
+    poles: 1,
+    tripCurve: 'B',
+    sensitivity: 30,
+    rcdWaveformType: opts.rcdWaveformType ?? 'A',
+    bsEn: 'BS EN 61009-1',
+    confidence: opts.confidence ?? 0.93,
+    label: opts.label ?? null,
+  };
+}
+
+describe('detectRcdWaveformOutliers', () => {
+  test('11-RCBO board with 10×A + 1×AC, all same manufacturer → returns the single outlier', () => {
+    // 2026-05-04 Elucian CU1SPD275 repro shape.
+    const slots = [];
+    for (let i = 0; i < 10; i++) slots.push(rcboOutlierSlot(i, { rcdWaveformType: 'A' }));
+    slots.push(
+      rcboOutlierSlot(3, {
+        rcdWaveformType: 'AC',
+        label: 'Bathroom Underfloor Heating',
+        confidence: 0.95,
+      })
+    );
+
+    const out = detectRcdWaveformOutliers(slots);
+
+    expect(out).toHaveLength(1);
+    expect(out[0].slotValue).toBe('AC');
+    expect(out[0].majorityValue).toBe('A');
+    expect(out[0].majorityCount).toBe(10);
+    expect(out[0].manufacturer).toBe('Elucian');
+    expect(out[0].slotIndex).toBe(3);
+    expect(out[0].slotLabel).toBe('Bathroom Underfloor Heating');
+  });
+
+  test('different-manufacturer outlier (legitimate retrofit) → NOT flagged', () => {
+    // Inspector swapped one bad RCBO out for a Wylex AC retained from
+    // stock. Older device genuinely has Type AC; the rest of the board
+    // is a uniform Elucian Type A. Must NOT flag — that's what the
+    // user means by "old device in the middle of the pack".
+    const slots = [];
+    for (let i = 0; i < 10; i++)
+      slots.push(rcboOutlierSlot(i, { manufacturer: 'Elucian', rcdWaveformType: 'A' }));
+    slots.push(
+      rcboOutlierSlot(5, {
+        manufacturer: 'Wylex',
+        rcdWaveformType: 'AC',
+        confidence: 0.95,
+      })
+    );
+
+    expect(detectRcdWaveformOutliers(slots)).toEqual([]);
+  });
+
+  test('cluster floor: 4 same-manufacturer + 1 outlier → no outliers (below RCD_OUTLIER_CLUSTER_FLOOR=5)', () => {
+    expect(RCD_OUTLIER_CLUSTER_FLOOR).toBe(5);
+    const slots = [];
+    for (let i = 0; i < 4; i++) slots.push(rcboOutlierSlot(i, { rcdWaveformType: 'A' }));
+    slots.push(rcboOutlierSlot(4, { rcdWaveformType: 'AC' }));
+
+    expect(detectRcdWaveformOutliers(slots)).toEqual([]);
+  });
+
+  test('low-confidence outlier (< 0.85) is filtered before clustering — no outliers returned', () => {
+    // Below the 0.85 confidence floor, the outlier read isn't credible
+    // enough to trust as a contradicting signal. The "uniform_low_conf"
+    // path in lookupMissingRcdTypes handles fleet-wide low-confidence
+    // cases; this detector is for the specific case where reads are
+    // confident but disagree.
+    const slots = [];
+    for (let i = 0; i < 10; i++) slots.push(rcboOutlierSlot(i, { rcdWaveformType: 'A' }));
+    slots.push(rcboOutlierSlot(10, { rcdWaveformType: 'AC', confidence: 0.6 }));
+
+    expect(detectRcdWaveformOutliers(slots)).toEqual([]);
+  });
+
+  test('low-confidence cluster slots are filtered (cluster shrinks below floor)', () => {
+    // 5 confident Type-A reads + 5 low-confidence Type-A reads + 1
+    // confident Type-AC. After confidence filter, cluster is 5; the
+    // outlier brings total eligible to 6, cluster majority 5 ≥ floor.
+    const slots = [];
+    for (let i = 0; i < 5; i++) slots.push(rcboOutlierSlot(i, { rcdWaveformType: 'A' }));
+    for (let i = 5; i < 10; i++)
+      slots.push(rcboOutlierSlot(i, { rcdWaveformType: 'A', confidence: 0.5 }));
+    slots.push(rcboOutlierSlot(10, { rcdWaveformType: 'AC' }));
+
+    const out = detectRcdWaveformOutliers(slots);
+    expect(out).toHaveLength(1);
+    expect(out[0].majorityCount).toBe(5);
+  });
+
+  test('unanimous high-confidence cluster → no outliers', () => {
+    const slots = [];
+    for (let i = 0; i < 11; i++) slots.push(rcboOutlierSlot(i, { rcdWaveformType: 'A' }));
+
+    expect(detectRcdWaveformOutliers(slots)).toEqual([]);
+  });
+
+  test('two-outlier case: 9×A + 2×AC same manufacturer → both returned', () => {
+    const slots = [];
+    for (let i = 0; i < 9; i++) slots.push(rcboOutlierSlot(i, { rcdWaveformType: 'A' }));
+    slots.push(rcboOutlierSlot(9, { rcdWaveformType: 'AC' }));
+    slots.push(rcboOutlierSlot(10, { rcdWaveformType: 'AC' }));
+
+    const out = detectRcdWaveformOutliers(slots);
+    expect(out).toHaveLength(2);
+    expect(out.every((o) => o.majorityValue === 'A')).toBe(true);
+    expect(out.every((o) => o.majorityCount === 9)).toBe(true);
+  });
+
+  test('manufacturer comparison is case- and whitespace-insensitive', () => {
+    const slots = [];
+    slots.push(rcboOutlierSlot(0, { manufacturer: 'Elucian', rcdWaveformType: 'A' }));
+    slots.push(rcboOutlierSlot(1, { manufacturer: 'elucian', rcdWaveformType: 'A' }));
+    slots.push(rcboOutlierSlot(2, { manufacturer: ' Elucian ', rcdWaveformType: 'A' }));
+    slots.push(rcboOutlierSlot(3, { manufacturer: 'ELUCIAN', rcdWaveformType: 'A' }));
+    slots.push(rcboOutlierSlot(4, { manufacturer: 'Elucian', rcdWaveformType: 'A' }));
+    slots.push(rcboOutlierSlot(5, { manufacturer: 'Elucian', rcdWaveformType: 'AC' }));
+
+    const out = detectRcdWaveformOutliers(slots);
+    expect(out).toHaveLength(1);
+    expect(out[0].majorityCount).toBe(5);
+  });
+
+  test('handles empty/invalid input gracefully', () => {
+    expect(detectRcdWaveformOutliers([])).toEqual([]);
+    expect(detectRcdWaveformOutliers(null)).toEqual([]);
+    expect(detectRcdWaveformOutliers(undefined)).toEqual([]);
+  });
+
+  test('non-RCBO/RCD slots (mcb, blank, main_switch, spd) are ignored', () => {
+    const slots = [];
+    for (let i = 0; i < 10; i++) slots.push(rcboOutlierSlot(i, { rcdWaveformType: 'A' }));
+    // An MCB whose rcdWaveformType is somehow set to AC must NOT be
+    // counted as an outlier (MCBs don't have RCD function).
+    slots.push({
+      slotIndex: 10,
+      classification: 'mcb',
+      manufacturer: 'Elucian',
+      rcdWaveformType: 'AC',
+      confidence: 0.95,
+      ratingText: 'B32A',
+    });
+
+    expect(detectRcdWaveformOutliers(slots)).toEqual([]);
+  });
+
+  test('slot without manufacturer string is excluded from clustering', () => {
+    const slots = [];
+    for (let i = 0; i < 10; i++) slots.push(rcboOutlierSlot(i, { rcdWaveformType: 'A' }));
+    slots.push({
+      slotIndex: 10,
+      classification: 'rcbo',
+      manufacturer: null,
+      rcdWaveformType: 'AC',
+      confidence: 0.95,
+    });
+
+    expect(detectRcdWaveformOutliers(slots)).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// flagRcdWaveformOutliers (lookup + flag, never auto-correct)
+// ---------------------------------------------------------------------------
+
+/** Build an analysis fixture matching the 2026-05-04 Elucian shape. */
+function makeOutlierAnalysis(opts = {}) {
+  const slots = [];
+  const circuits = [];
+  for (let i = 0; i < 10; i++) {
+    slots.push(rcboOutlierSlot(i, { rcdWaveformType: 'A' }));
+    circuits.push({
+      circuit_number: i + 1,
+      slot_index: i,
+      label: `Circuit ${i + 1}`,
+      ocpd_type: 'B',
+      ocpd_rating_a: '20',
+      ocpd_bs_en: 'BS EN 61009-1',
+      is_rcbo: true,
+      rcd_protected: true,
+      rcd_type: 'A',
+      rcd_rating_ma: '30',
+      rcd_bs_en: '61009',
+    });
+  }
+  slots.push(
+    rcboOutlierSlot(10, {
+      rcdWaveformType: 'AC',
+      label: 'Bathroom Underfloor Heating',
+      confidence: 0.95,
+    })
+  );
+  circuits.push({
+    circuit_number: 11,
+    slot_index: 10,
+    label: 'Bathroom Underfloor Heating',
+    ocpd_type: 'B',
+    ocpd_rating_a: '20',
+    ocpd_bs_en: 'BS EN 61009-1',
+    is_rcbo: true,
+    rcd_protected: true,
+    rcd_type: 'AC',
+    rcd_rating_ma: '30',
+    rcd_bs_en: '61009',
+  });
+
+  return {
+    board_manufacturer: 'Elucian',
+    board_model: 'CU1SPD275',
+    slots,
+    circuits,
+    questionsForInspector: opts.preExistingQuestions ?? [],
+  };
+}
+
+describe('flagRcdWaveformOutliers', () => {
+  test('datasheet says applies_to=all → flag outlier WITHOUT rewriting rcd_type', async () => {
+    const analysis = makeOutlierAnalysis();
+    const openai = makeOpenAi(
+      '{"type": "A", "applies_to": "all", "source": "Elucian CU1SPD275 product datasheet"}'
+    );
+    const logger = makeLogger();
+
+    const out = await flagRcdWaveformOutliers(analysis, openai, logger, 'user-1');
+
+    const flagged = out.circuits.find((c) => c.label === 'Bathroom Underfloor Heating');
+    // CRITICAL INVARIANT: rcd_type is NEVER auto-corrected, even when the
+    // datasheet says applies_to=all and Stage 3 was almost certainly wrong.
+    // The inspector has the final say; we surface uncertainty, we don't
+    // overwrite it.
+    expect(flagged.rcd_type).toBe('AC');
+    expect(flagged.low_confidence).toBe(true);
+    expect(flagged.rcd_type_outlier).toBe(true);
+    expect(flagged.rcd_type_majority_value).toBe('A');
+    expect(flagged.rcd_type_datasheet).toBe('A');
+
+    // Other 10 circuits untouched.
+    for (let i = 0; i < 10; i++) {
+      expect(out.circuits[i].rcd_type).toBe('A');
+      expect(out.circuits[i].rcd_type_outlier).toBeUndefined();
+      expect(out.circuits[i].low_confidence).toBeUndefined();
+    }
+
+    // Question added to inspector queue, mentioning the datasheet steer.
+    expect(out.questionsForInspector).toHaveLength(1);
+    expect(out.questionsForInspector[0]).toContain('Bathroom Underfloor Heating');
+    expect(out.questionsForInspector[0]).toContain('Type AC');
+    expect(out.questionsForInspector[0]).toContain('Type A');
+    expect(out.questionsForInspector[0]).toMatch(/datasheet/i);
+  });
+
+  test('datasheet says applies_to=outlier → flag with "may be correct, please verify" message', async () => {
+    const analysis = makeOutlierAnalysis();
+    const openai = makeOpenAi(
+      '{"type": "AC", "applies_to": "outlier", "source": "Elucian legacy spec"}'
+    );
+    const logger = makeLogger();
+
+    const out = await flagRcdWaveformOutliers(analysis, openai, logger, 'user-1');
+
+    const flagged = out.circuits.find((c) => c.label === 'Bathroom Underfloor Heating');
+    expect(flagged.rcd_type).toBe('AC'); // still untouched
+    expect(flagged.rcd_type_outlier).toBe(true);
+    expect(flagged.rcd_type_datasheet).toBe('AC');
+
+    // Question text differentiates this case — datasheet supports the outlier.
+    expect(out.questionsForInspector[0]).toMatch(/may be correct/i);
+    expect(out.questionsForInspector[0]).toContain('Type AC');
+  });
+
+  test('inconclusive lookup (type=null) → flag with generic verification prompt', async () => {
+    const analysis = makeOutlierAnalysis();
+    const openai = makeOpenAi('{"type": null, "applies_to": "unknown", "source": "not found"}');
+    const logger = makeLogger();
+
+    const out = await flagRcdWaveformOutliers(analysis, openai, logger, 'user-1');
+
+    const flagged = out.circuits.find((c) => c.label === 'Bathroom Underfloor Heating');
+    expect(flagged.rcd_type).toBe('AC');
+    expect(flagged.rcd_type_outlier).toBe(true);
+    expect(flagged.rcd_type_majority_value).toBe('A');
+    expect(flagged.rcd_type_datasheet).toBeNull();
+    expect(out.questionsForInspector[0]).toMatch(/double-check/i);
+    expect(out.questionsForInspector[0]).not.toMatch(/datasheet/i);
+  });
+
+  test('lookup throws → flagging still happens with no datasheet steer (non-fatal)', async () => {
+    const analysis = makeOutlierAnalysis();
+    const openai = {
+      chat: {
+        completions: {
+          create: jest.fn().mockRejectedValue(new Error('search timeout')),
+        },
+      },
+    };
+    const logger = makeLogger();
+
+    const out = await flagRcdWaveformOutliers(analysis, openai, logger, 'user-1');
+
+    const flagged = out.circuits.find((c) => c.label === 'Bathroom Underfloor Heating');
+    expect(flagged.rcd_type).toBe('AC'); // never auto-corrected
+    expect(flagged.rcd_type_outlier).toBe(true);
+    expect(flagged.rcd_type_datasheet).toBeNull();
+    expect(out.questionsForInspector).toHaveLength(1);
+    expect(logger.warn).toHaveBeenCalledWith(
+      'RCD waveform outlier lookup failed (non-fatal)',
+      expect.objectContaining({ manufacturer: 'Elucian' })
+    );
+  });
+
+  test('no outliers → no lookup call, no flags, no questions', async () => {
+    const analysis = makeOutlierAnalysis();
+    // Make slot 10 agree with the rest — no outlier any more.
+    analysis.slots[10].rcdWaveformType = 'A';
+    analysis.circuits[10].rcd_type = 'A';
+    const openai = makeOpenAi('{"type": "A", "applies_to": "all"}');
+    const logger = makeLogger();
+
+    const out = await flagRcdWaveformOutliers(analysis, openai, logger, 'user-1');
+
+    expect(openai.chat.completions.create).not.toHaveBeenCalled();
+    expect(out.questionsForInspector).toEqual([]);
+    for (const c of out.circuits) {
+      expect(c.rcd_type_outlier).toBeUndefined();
+    }
+  });
+
+  test('multiple outliers from same manufacturer → ONE batched lookup call', async () => {
+    const analysis = makeOutlierAnalysis();
+    // Add a second outlier — slot 9 changes from A to AC, circuit 10 to match.
+    analysis.slots[9].rcdWaveformType = 'AC';
+    analysis.circuits[9].rcd_type = 'AC';
+    analysis.circuits[9].label = 'Garage Sockets';
+    const openai = makeOpenAi('{"type": "A", "applies_to": "all"}');
+    const logger = makeLogger();
+
+    const out = await flagRcdWaveformOutliers(analysis, openai, logger, 'user-1');
+
+    // Single batched search call, regardless of outlier count.
+    expect(openai.chat.completions.create).toHaveBeenCalledTimes(1);
+
+    const flagged1 = out.circuits.find((c) => c.label === 'Bathroom Underfloor Heating');
+    const flagged2 = out.circuits.find((c) => c.label === 'Garage Sockets');
+    expect(flagged1.rcd_type_outlier).toBe(true);
+    expect(flagged2.rcd_type_outlier).toBe(true);
+    expect(out.questionsForInspector).toHaveLength(2);
+  });
+
+  test('preserves pre-existing questionsForInspector (appends, does not overwrite)', async () => {
+    const analysis = makeOutlierAnalysis({
+      preExistingQuestions: ['Is the main switch a 100A isolator?'],
+    });
+    const openai = makeOpenAi('{"type": "A", "applies_to": "all"}');
+    const logger = makeLogger();
+
+    const out = await flagRcdWaveformOutliers(analysis, openai, logger, 'user-1');
+
+    expect(out.questionsForInspector).toHaveLength(2);
+    expect(out.questionsForInspector[0]).toBe('Is the main switch a 100A isolator?');
+    expect(out.questionsForInspector[1]).toContain('Bathroom Underfloor Heating');
+  });
+
+  test('initialises questionsForInspector when missing', async () => {
+    const analysis = makeOutlierAnalysis();
+    delete analysis.questionsForInspector;
+    const openai = makeOpenAi('{"type": "A", "applies_to": "all"}');
+    const logger = makeLogger();
+
+    const out = await flagRcdWaveformOutliers(analysis, openai, logger, 'user-1');
+
+    expect(Array.isArray(out.questionsForInspector)).toBe(true);
+    expect(out.questionsForInspector).toHaveLength(1);
+  });
+
+  test('maps outlier slot to circuit by slot_index, not by RCD-row position', async () => {
+    // Defensive against a circuit table that includes RCD own-rows
+    // (is_rcd_device:true with no circuit_number) interleaved with
+    // regular circuits. The lookup-by-slot-index must find the
+    // RCBO circuit, NOT an RCD own-row that happened to land at the
+    // same array position.
+    const analysis = makeOutlierAnalysis();
+    // Splice an RCD own-row in between — slot_index doesn't matter for
+    // own-rows in this fixture, just confirming the find() filter
+    // (!c.is_rcd_device) skips them.
+    analysis.circuits.splice(5, 0, {
+      circuit_number: null,
+      slot_index: 99,
+      label: 'RCD',
+      is_rcd_device: true,
+      rcd_type: 'A',
+    });
+
+    const openai = makeOpenAi('{"type": "A", "applies_to": "all"}');
+    const logger = makeLogger();
+    const out = await flagRcdWaveformOutliers(analysis, openai, logger, 'user-1');
+
+    const rcdRow = out.circuits.find((c) => c.is_rcd_device);
+    expect(rcdRow.rcd_type_outlier).toBeUndefined();
+
+    const flagged = out.circuits.find((c) => c.label === 'Bathroom Underfloor Heating');
+    expect(flagged.rcd_type_outlier).toBe(true);
   });
 });

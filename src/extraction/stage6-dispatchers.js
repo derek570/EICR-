@@ -36,6 +36,9 @@ import {
   dispatchClearReading,
   dispatchCreateCircuit,
   dispatchRenameCircuit,
+  dispatchDeleteCircuit,
+  dispatchCalculateZs,
+  dispatchCalculateR1PlusR2,
 } from './stage6-dispatchers-circuit.js';
 import {
   dispatchRecordObservation,
@@ -66,6 +69,17 @@ export const WRITE_DISPATCHERS = {
   // dispatcher path, so it doesn't pause Sonnet's turn the way
   // ask_user does.
   start_dialogue_script: dispatchStartDialogueScript,
+  // 2026-05-04 (field test 07635782): three tools added in one batch.
+  // delete_circuit closes the gap surfaced when "delete circuit 2" said
+  // twice did nothing (the leftover bucket then stole "the cooker"
+  // designation lookup). calculate_zs / calculate_r1_plus_r2 close the
+  // gap where "calculate the Zs for circuit N" produced empty turns
+  // because the model had no tool to call. All three are circuit-shaped
+  // writes; the composer routes them through `writes` like the other
+  // record/create/rename/delete tools.
+  delete_circuit: dispatchDeleteCircuit,
+  calculate_zs: dispatchCalculateZs,
+  calculate_r1_plus_r2: dispatchCalculateR1PlusR2,
 };
 
 /**

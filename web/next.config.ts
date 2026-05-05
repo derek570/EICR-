@@ -33,6 +33,16 @@ const withSerwist = withSerwistInit({
   cacheOnNavigation: false,
   reloadOnOnline: false,
   disable: process.env.NODE_ENV === 'development',
+  // Default `["**/*"]` would pull `public/models/silero_vad.onnx` (2.2MB)
+  // into the cold-install precache. The Silero model is only needed once
+  // the inspector starts a recording, so the runtime CacheFirst rule in
+  // `sw.ts` (rule #5, cacheName 'models') is the right home — first
+  // recording downloads + caches it; subsequent installs / cold loads
+  // never see the bytes unless the user actually records. Keeping
+  // top-level files (favicons, manifest icons, audio-worklet-processor.js)
+  // and the icons/ directory in the precache so the install offer +
+  // PWA shell still work offline on first load.
+  globPublicPatterns: ['*', 'icons/**'],
 });
 
 const nextConfig: NextConfig = {
@@ -42,6 +52,15 @@ const nextConfig: NextConfig = {
   // mandatory for the production image — without it, the Docker build
   // fails in buildx with "/app/web/.next/standalone: not found".
   output: 'standalone',
+  // T20 Silero VAD: `onnxruntime-web` ships Node-only fallbacks
+  // (`fs`, `path`, `worker_threads`) inside its CJS entrypoint that
+  // Webpack's RSC/SSR bundler will eagerly trace even though we only
+  // import it from a "use client" module via dynamic import. Marking
+  // it external for the server build skips that trace and avoids
+  // "Module not found: Can't resolve 'fs'" at build time. Client
+  // bundle still gets the full `dist/ort.bundle.min.mjs` (WASM inline,
+  // no separate .wasm files to host).
+  serverExternalPackages: ['onnxruntime-web'],
 };
 
 export default withSerwist(nextConfig);

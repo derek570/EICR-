@@ -237,7 +237,13 @@ function applyCircuitReadings(
 
 /** Fold new observations into the existing array. Dedupes by
  *  case-insensitive `observation_text` so Sonnet re-asking about the
- *  same defect doesn't create duplicates. */
+ *  same defect doesn't create duplicates.
+ *
+ *  Captures `observation_id` (server-assigned UUID) into row.server_id
+ *  so a follow-up `observation_update` (BPG4 refinement) can patch the
+ *  exact row even after the visible text changes. Also captures
+ *  `regulation` for the same reason — pre-refinement extractions may
+ *  include it, and post-refinement updates reliably will. */
 function applyObservations(job: JobDetail, observations: Observation[]): ObservationRow[] | null {
   if (observations.length === 0) return null;
   const existing = [...((job.observations as ObservationRow[] | undefined) ?? [])];
@@ -253,15 +259,136 @@ function applyObservations(job: JobDetail, observations: Observation[]): Observa
     seen.add(key);
     const id = globalThis.crypto?.randomUUID?.() ?? `obs-${Date.now()}-${existing.length + 1}`;
     const code = parseObservationCode(obs.code);
-    existing.push({
+    const row: ObservationRow = {
       id,
       code,
       description: text,
       location: obs.item_location ?? undefined,
-    });
+    };
+    if (obs.observation_id) row.server_id = obs.observation_id;
+    if (obs.regulation) row.regulation = obs.regulation;
+    if (obs.schedule_item) row.schedule_item = obs.schedule_item;
+    existing.push(row);
     changed = true;
   }
   return changed ? existing : null;
+}
+
+/**
+ * Apply a Sonnet `observation_update` (BPG4 refinement) to the job's
+ * observations[]. Mirrors iOS handleObservationUpdate
+ * (DeepgramRecordingViewModel.swift:4954) byte-for-byte:
+ *
+ *   1. Try `server_id` match first (preferred — exact identity).
+ *   2. Fall back to fuzzy text match on `original_text` (or
+ *      `observation_text` for older servers): >70 % word-Set overlap.
+ *   3. CREATE-from-miss: if no row matches, append a new observation
+ *      from the update payload (text + code + regulation +
+ *      schedule_item). This handles the case where the initial
+ *      extraction was de-duplicated/dropped on the client but the
+ *      refinement still needs to land on the cert. Pre-fix that
+ *      observation simply vanished.
+ *
+ * Returns the updated array (with the patched / created row) or null
+ * if no change was applicable (invalid code on a CREATE-from-miss).
+ */
+export function applyObservationUpdate(
+  job: JobDetail,
+  update: {
+    observation_id?: string | null;
+    observation_text: string;
+    original_text?: string | null;
+    code: string;
+    regulation?: string | null;
+    schedule_item?: string | null;
+  }
+): ObservationRow[] | null {
+  const existing = [...((job.observations as ObservationRow[] | undefined) ?? [])];
+  const fuzzyKey = (update.original_text ?? update.observation_text ?? '').toLowerCase().trim();
+  let matchIndex = -1;
+  if (update.observation_id) {
+    matchIndex = existing.findIndex((o) => o.server_id === update.observation_id);
+  }
+  if (matchIndex < 0 && fuzzyKey.length > 0) {
+    // Last-match wins — newer observations are at the end of the array,
+    // which is what iOS does (`lastIndex(where:)`). Avoids patching an
+    // older row when the inspector raised the same defect twice in a
+    // long session.
+    const targetWords = new Set(fuzzyKey.split(/\s+/).filter(Boolean));
+    if (targetWords.size > 0) {
+      for (let i = existing.length - 1; i >= 0; i--) {
+        const existingText = (existing[i].description ?? '').toLowerCase().trim();
+        if (existingText === fuzzyKey) {
+          matchIndex = i;
+          break;
+        }
+        const existingWords = new Set(existingText.split(/\s+/).filter(Boolean));
+        let overlap = 0;
+        for (const w of targetWords) if (existingWords.has(w)) overlap += 1;
+        // >70 % word overlap (iOS canon — set-based so duplicates don't
+        // double-count). Avoids false-positives on short generic phrases.
+        if (overlap / targetWords.size > 0.7) {
+          matchIndex = i;
+          break;
+        }
+      }
+    }
+  }
+  const code = parseObservationCode(update.code);
+  if (matchIndex < 0) {
+    // CREATE-from-miss. Skip if the code is unrecognised — without a
+    // valid observation_code we can't render the row in the cert.
+    if (!code) return null;
+    const id = globalThis.crypto?.randomUUID?.() ?? `obs-${Date.now()}-${existing.length + 1}`;
+    const newRow: ObservationRow = {
+      id,
+      code,
+      description: update.observation_text.trim() || (update.original_text ?? '').trim(),
+    };
+    if (update.observation_id) newRow.server_id = update.observation_id;
+    if (update.regulation) newRow.regulation = update.regulation;
+    if (update.schedule_item) newRow.schedule_item = update.schedule_item;
+    existing.push(newRow);
+    return existing;
+  }
+  // UPDATE existing row. Code/regulation always overwrite when non-empty
+  // because the refinement is authoritative for those fields. Text
+  // overwrites only when it's non-empty AND different (older servers
+  // echo the original — no-op edit avoids polluting history). Mirrors
+  // the guards at iOS lines 5051–5072.
+  const before = existing[matchIndex];
+  let changed = false;
+  const next: ObservationRow = { ...before };
+  if (code && code !== before.code) {
+    next.code = code;
+    changed = true;
+  }
+  if (update.regulation && update.regulation !== before.regulation) {
+    next.regulation = update.regulation;
+    changed = true;
+  }
+  const trimmedText = update.observation_text.trim();
+  if (
+    trimmedText.length > 0 &&
+    trimmedText.toLowerCase() !== (before.description ?? '').toLowerCase().trim()
+  ) {
+    next.description = trimmedText;
+    changed = true;
+  }
+  if (update.schedule_item && update.schedule_item !== before.schedule_item) {
+    next.schedule_item = update.schedule_item;
+    changed = true;
+  }
+  // Stamp the server_id when the existing row was created without one
+  // (e.g. the initial extraction lost the id). Future updates can then
+  // use the fast id path.
+  if (update.observation_id && !before.server_id) {
+    next.server_id = update.observation_id;
+    changed = true;
+  }
+  if (!changed) return null;
+  existing[matchIndex] = next;
+  return existing;
 }
 
 export function parseObservationCode(

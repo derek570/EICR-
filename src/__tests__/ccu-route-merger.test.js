@@ -536,6 +536,417 @@ describe('slotsToCircuits', () => {
     expect(circuits[0].ocpd_type).toBe('B');
   });
 
+  test('5a. two-slot main_switch run with classifier rating match — both skipped (no false trim)', () => {
+    // Genuine 2-pole main switch: 2-slot run, rating matches the classifier,
+    // BS EN family matches. Cluster size matches expected (2). Don't trim.
+    const slots = [
+      makeSlot({ classification: 'mcb', tripCurve: 'B', ratingAmps: 32, confidence: 0.9 }),
+      makeSlot({
+        classification: 'main_switch',
+        poles: 2,
+        ratingAmps: 100,
+        ratingText: '100A',
+        bsEn: 'BS EN 60947-3',
+        label: 'Mains Switch',
+        labelConfidence: 0.9,
+        confidence: 0.65,
+      }),
+      makeSlot({
+        classification: 'main_switch',
+        poles: 2,
+        ratingAmps: 100,
+        ratingText: '100A',
+        bsEn: 'BS EN 60947-3',
+        label: null,
+        labelConfidence: 0.4,
+        confidence: 0.65,
+      }),
+    ];
+
+    const circuits = slotsToCircuits({
+      slots,
+      mainSwitchSide: 'right',
+      mainSwitchRating: '100',
+    });
+
+    // Just the MCB — both main_switch slots stayed skipped.
+    expect(circuits).toHaveLength(1);
+    expect(circuits[0].circuit_number).toBe(1);
+    expect(circuits[0].ocpd_type).toBe('B');
+    // No demotion took place.
+    expect(slots[1]._demotedFromMainSwitch).toBeUndefined();
+    expect(slots[2]._demotedFromMainSwitch).toBeUndefined();
+  });
+
+  test('5b. three-slot main_switch run with appliance-labelled outlier — outlier demoted with low_confidence', () => {
+    // 2026-05-04 Elucian CU1SPD275 repro: Stage 3 mis-classifies the
+    // adjacent "Ovens" RCBO/MCB as part of the main_switch cluster because
+    // the red lever and the unusual MCB faceplate confuse the per-slot
+    // crop. Stage 4 still reads the silkscreen label "Ovens" (high
+    // confidence). Trim must demote that slot back to a circuit so the
+    // schedule isn't short by one.
+    const slots = [
+      makeSlot({ classification: 'rcbo', tripCurve: 'B', ratingAmps: 20, confidence: 0.9 }),
+      // Spurious — no rating face read, low Stage 3 confidence, but a
+      // confident appliance label from Stage 4 (the bug's smoking gun).
+      makeSlot({
+        classification: 'main_switch',
+        content: 'partial',
+        extends: 'right',
+        poles: 2,
+        ratingAmps: null,
+        ratingText: null,
+        bsEn: null,
+        label: 'Ovens',
+        labelConfidence: 0.93,
+        confidence: 0.6,
+      }),
+      // Real main switch, slot 1 of the 2-pole pair — face-readable.
+      makeSlot({
+        classification: 'main_switch',
+        content: 'partial',
+        extends: 'both',
+        poles: 2,
+        ratingAmps: 100,
+        ratingText: '100A',
+        bsEn: 'BS EN60947-3',
+        label: 'Mains Switch',
+        labelConfidence: 0.85,
+        confidence: 0.65,
+      }),
+      // Real main switch, slot 2.
+      makeSlot({
+        classification: 'main_switch',
+        content: 'partial',
+        extends: 'both',
+        poles: 2,
+        ratingAmps: 100,
+        ratingText: '100A',
+        bsEn: 'BS EN60947-3',
+        label: null,
+        labelConfidence: 0.4,
+        confidence: 0.65,
+      }),
+    ];
+
+    const circuits = slotsToCircuits({
+      slots,
+      mainSwitchSide: 'right',
+      mainSwitchRating: '100',
+    });
+
+    // RCBO + demoted Ovens = 2 circuits. The two genuine main_switch slots
+    // stayed skipped.
+    expect(circuits).toHaveLength(2);
+
+    // The demoted slot landed in `circuits[]` at low confidence with its
+    // Stage 4 label. circuit numbering is right-to-left (mainSwitchSide
+    // 'right'), so the demoted slot — which is physically left of the
+    // main switch but right of the RCBO — gets circuit_number 1.
+    expect(circuits[0].circuit_number).toBe(1);
+    expect(circuits[0].label).toBe('Ovens');
+    expect(circuits[0].low_confidence).toBe(true);
+    expect(circuits[0].is_partial_crop).toBe(true);
+    expect(circuits[1].circuit_number).toBe(2);
+    expect(circuits[1].ocpd_type).toBe('B');
+
+    // Audit: only the appliance-labelled slot demoted; the two real main
+    // switch slots stayed classified as main_switch.
+    expect(slots[1]._demotedFromMainSwitch).toBe(true);
+    expect(slots[1]._originalClassification).toBe('main_switch');
+    expect(slots[1].classification).toBe('unknown');
+    expect(slots[2]._demotedFromMainSwitch).toBeUndefined();
+    expect(slots[3]._demotedFromMainSwitch).toBeUndefined();
+  });
+
+  test('5c. three-slot main_switch run with NO classifier rating — label penalty alone trims', () => {
+    // Defensive: classifier didn't return mainSwitchRating (rare — Stage 1
+    // failed to read the dial). The +2 rating-match weight is inert. The
+    // label-penalty signal alone should still demote the appliance-named
+    // outlier.
+    const slots = [
+      makeSlot({
+        classification: 'main_switch',
+        poles: 2,
+        ratingAmps: null,
+        ratingText: null,
+        label: 'Cooker',
+        labelConfidence: 0.9,
+        confidence: 0.6,
+      }),
+      makeSlot({
+        classification: 'main_switch',
+        poles: 2,
+        ratingAmps: null,
+        ratingText: null,
+        bsEn: 'BS EN 60947-3',
+        label: 'Mains Switch',
+        labelConfidence: 0.9,
+        confidence: 0.6,
+      }),
+      makeSlot({
+        classification: 'main_switch',
+        poles: 2,
+        ratingAmps: null,
+        ratingText: null,
+        bsEn: 'BS EN 60947-3',
+        label: null,
+        labelConfidence: 0.3,
+        confidence: 0.6,
+      }),
+    ];
+
+    const circuits = slotsToCircuits({
+      slots,
+      mainSwitchSide: 'right',
+      // mainSwitchRating intentionally omitted.
+    });
+
+    expect(circuits).toHaveLength(1);
+    expect(circuits[0].label).toBe('Cooker');
+    expect(circuits[0].low_confidence).toBe(true);
+    expect(slots[0]._demotedFromMainSwitch).toBe(true);
+    expect(slots[1]._demotedFromMainSwitch).toBeUndefined();
+    expect(slots[2]._demotedFromMainSwitch).toBeUndefined();
+  });
+
+  test('5d. three-slot main_switch run with NO discriminating signals — falls back to position tie-break', () => {
+    // All slots score zero (no ratings, no labels, no BS EN, low conf).
+    // Expected size is 2 (default). Tie-break = demote the rightmost slot.
+    const slots = [
+      makeSlot({
+        classification: 'main_switch',
+        poles: 2,
+        ratingAmps: null,
+        ratingText: null,
+        confidence: 0.6,
+      }),
+      makeSlot({
+        classification: 'main_switch',
+        poles: 2,
+        ratingAmps: null,
+        ratingText: null,
+        confidence: 0.6,
+      }),
+      makeSlot({
+        classification: 'main_switch',
+        poles: 2,
+        ratingAmps: null,
+        ratingText: null,
+        confidence: 0.6,
+      }),
+    ];
+
+    slotsToCircuits({ slots, mainSwitchSide: 'right' });
+
+    // mainSwitchSide='right' → real isolator anchors at the right end of
+    // the cluster, so the LEFTMOST slot is the likely-spurious bleed and
+    // gets demoted. (If mainSwitchSide were 'left' the tie-break would
+    // demote the rightmost; covered by 5d-bis below.)
+    expect(slots[0]._demotedFromMainSwitch).toBe(true);
+    expect(slots[1]._demotedFromMainSwitch).toBeUndefined();
+    expect(slots[2]._demotedFromMainSwitch).toBeUndefined();
+  });
+
+  test('5d-bis. tie-break inverts when mainSwitchSide is LEFT', () => {
+    const slots = [
+      makeSlot({ classification: 'main_switch', poles: 2, confidence: 0.6 }),
+      makeSlot({ classification: 'main_switch', poles: 2, confidence: 0.6 }),
+      makeSlot({ classification: 'main_switch', poles: 2, confidence: 0.6 }),
+    ];
+
+    slotsToCircuits({ slots, mainSwitchSide: 'left' });
+
+    // Real isolator at the LEFT of the cluster → rightmost slot is the
+    // likely bleed, gets demoted.
+    expect(slots[0]._demotedFromMainSwitch).toBeUndefined();
+    expect(slots[1]._demotedFromMainSwitch).toBeUndefined();
+    expect(slots[2]._demotedFromMainSwitch).toBe(true);
+  });
+
+  test('5e. explicit mainSwitchPoles=3 lets a 3-slot run pass untrimmed', () => {
+    // Future-proofing: if the classifier ever supplies a 3-pole isolator,
+    // a 3-slot run is correct and must not be trimmed.
+    const slots = [
+      makeSlot({
+        classification: 'main_switch',
+        poles: 3,
+        ratingAmps: 100,
+        ratingText: '100A',
+        confidence: 0.65,
+      }),
+      makeSlot({
+        classification: 'main_switch',
+        poles: 3,
+        ratingAmps: 100,
+        ratingText: '100A',
+        confidence: 0.65,
+      }),
+      makeSlot({
+        classification: 'main_switch',
+        poles: 3,
+        ratingAmps: 100,
+        ratingText: '100A',
+        confidence: 0.65,
+      }),
+    ];
+
+    slotsToCircuits({
+      slots,
+      mainSwitchSide: 'right',
+      mainSwitchRating: '100',
+      mainSwitchPoles: 3,
+    });
+
+    expect(slots[0]._demotedFromMainSwitch).toBeUndefined();
+    expect(slots[1]._demotedFromMainSwitch).toBeUndefined();
+    expect(slots[2]._demotedFromMainSwitch).toBeUndefined();
+  });
+
+  test('5f. four-slot run with two appliance-labelled outliers — both demoted', () => {
+    const slots = [
+      makeSlot({
+        classification: 'main_switch',
+        poles: 2,
+        label: 'Cooker',
+        labelConfidence: 0.92,
+        confidence: 0.6,
+      }),
+      makeSlot({
+        classification: 'main_switch',
+        poles: 2,
+        ratingAmps: 100,
+        ratingText: '100A',
+        bsEn: 'BS EN 60947-3',
+        label: 'Mains Switch',
+        labelConfidence: 0.9,
+        confidence: 0.65,
+      }),
+      makeSlot({
+        classification: 'main_switch',
+        poles: 2,
+        ratingAmps: 100,
+        ratingText: '100A',
+        bsEn: 'BS EN 60947-3',
+        label: null,
+        labelConfidence: 0.4,
+        confidence: 0.65,
+      }),
+      makeSlot({
+        classification: 'main_switch',
+        poles: 2,
+        label: 'Shower',
+        labelConfidence: 0.9,
+        confidence: 0.6,
+      }),
+    ];
+
+    slotsToCircuits({
+      slots,
+      mainSwitchSide: 'right',
+      mainSwitchRating: '100',
+    });
+
+    expect(slots[0]._demotedFromMainSwitch).toBe(true);
+    expect(slots[1]._demotedFromMainSwitch).toBeUndefined();
+    expect(slots[2]._demotedFromMainSwitch).toBeUndefined();
+    expect(slots[3]._demotedFromMainSwitch).toBe(true);
+  });
+
+  test('5g. demoted main_switch slot does NOT break upstream-RCD cascade', () => {
+    // Cascade pre-pass uses cls === 'main_switch' as a cascade-break
+    // signal (a real isolator separates the RCD-protected and unprotected
+    // sections). A DEMOTED slot must not trip that break — it's a
+    // circuit, not a switch boundary. After demotion, classification
+    // is rewritten to 'unknown' which the cascade pre-pass treats as
+    // cascade-neutral.
+    const slots = [
+      // Standalone RCD upstream (will cascade to the right).
+      makeSlot({
+        classification: 'rcd',
+        rcdWaveformType: 'A',
+        sensitivity: 30,
+        ratingAmps: 80,
+        bsEn: 'BS EN 61008-1',
+        confidence: 0.9,
+      }),
+      makeSlot({
+        classification: 'rcd',
+        rcdWaveformType: 'A',
+        sensitivity: 30,
+        ratingAmps: 80,
+        bsEn: 'BS EN 61008-1',
+        confidence: 0.9,
+      }),
+      // Bog-standard MCB downstream of the RCD — should be cascaded.
+      makeSlot({
+        classification: 'mcb',
+        tripCurve: 'B',
+        ratingAmps: 32,
+        confidence: 0.9,
+      }),
+      // Spurious main_switch slot mid-board (classifier bled the lever
+      // colour into an MCB face). With a confident appliance label, the
+      // trim demotes it — and because demotion rewrites classification
+      // to 'unknown', the cascade pre-pass keeps cascading the RCD
+      // through to the next MCB.
+      makeSlot({
+        classification: 'main_switch',
+        poles: 2,
+        ratingAmps: null,
+        label: 'Hob',
+        labelConfidence: 0.92,
+        confidence: 0.6,
+      }),
+      // Real main switch (2 slots).
+      makeSlot({
+        classification: 'main_switch',
+        poles: 2,
+        ratingAmps: 100,
+        ratingText: '100A',
+        bsEn: 'BS EN 60947-3',
+        label: 'Mains Switch',
+        labelConfidence: 0.9,
+        confidence: 0.65,
+      }),
+      makeSlot({
+        classification: 'main_switch',
+        poles: 2,
+        ratingAmps: 100,
+        ratingText: '100A',
+        bsEn: 'BS EN 60947-3',
+        confidence: 0.65,
+      }),
+    ];
+
+    const circuits = slotsToCircuits({
+      slots,
+      mainSwitchSide: 'right',
+      mainSwitchRating: '100',
+    });
+
+    // 1 RCD own-row (the two RCD slots collapse) + the MCB + the demoted
+    // "Hob" circuit = 3 entries. The two genuine main_switch slots stay
+    // skipped.
+    expect(circuits).toHaveLength(3);
+
+    const rcdRow = circuits.find((c) => c.is_rcd_device);
+    expect(rcdRow).toBeDefined();
+
+    const hobRow = circuits.find((c) => c.label === 'Hob');
+    expect(hobRow).toBeDefined();
+    expect(hobRow.low_confidence).toBe(true);
+    // Hob inherits cascaded RCD protection — the demoted slot didn't
+    // break the cascade.
+    expect(hobRow.rcd_protected).toBe(true);
+    expect(hobRow.rcd_type).toBe('A');
+
+    // The MCB before the demoted slot also stays cascaded.
+    const mcbRow = circuits.find((c) => c.ocpd_type === 'B');
+    expect(mcbRow.rcd_protected).toBe(true);
+    expect(mcbRow.rcd_type).toBe('A');
+  });
+
   test('6. spd slot is skipped entirely', () => {
     const slots = [
       makeSlot({ classification: 'mcb', tripCurve: 'B', ratingAmps: 32, confidence: 0.9 }),
