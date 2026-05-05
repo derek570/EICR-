@@ -15,7 +15,29 @@
       "pending": "Auto-promoted from rcd-lookup-pending without human review (avoid in production)."
     },
     "manufacturer_key_normalisation": "lowercase, alphanumeric only, '_' separator (see normaliseManufacturer in src/extraction/rcd-type-lookup.js).",
-    "model_key_normalisation": "uppercase, whitespace stripped, '_' / '-' / digits / letters preserved (see normaliseModel)."
+    "model_key_normalisation": "uppercase, whitespace stripped, '_' / '-' / digits / letters preserved (see normaliseModel).",
+    "matched_via_values": {
+      "exact": "Direct manufacturer + model key match.",
+      "alias": "Manufacturer key was resolved through manufacturer_aliases (e.g. 'Click Scolmore' → 'Elucian').",
+      "confusable": "Model key didn't match directly but a single-character confusable substitution did (e.g. 'CU1SPD27S' → 'CU1SPD275'). Common Stage 1 OCR errors: S↔5, O↔0, I↔1, B↔8, G↔6, Z↔2."
+    }
+  },
+  "manufacturer_aliases": {
+    "click_scolmore": "elucian",
+    "click": "elucian",
+    "scolmore": "elucian",
+    "bg_electrical": "bg",
+    "bg_nexus": "bg",
+    "british_general": "bg",
+    "schneider_electric": "schneider",
+    "square_d": "schneider",
+    "merlin_gerin": "schneider",
+    "crabtree": "eaton",
+    "memshield": "eaton",
+    "cudis_electrical": "cudis",
+    "europa_components": "fusebox",
+    "cpn": "fusebox",
+    "geyer_electric": "proteus"
   },
   "manufacturer_defaults": {
     "elucian": {
