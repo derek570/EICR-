@@ -1583,8 +1583,9 @@ export function promoteLabelMatchedMainSwitch(slots, opts = {}) {
  * Trim spurious main_switch classifications from oversized contiguous runs.
  *
  * Mutates `slots` in place: any slot demoted from main_switch has its
- * `classification` rewritten to 'unknown' (so the cascade pre-pass and main
- * scan loop both treat it as a circuit), with `_originalClassification` and
+ * `classification` rewritten to 'unknown' (so the main scan loop treats it
+ * as a low-confidence circuit row, riding the current phase rather than
+ * triggering any phase change), with `_originalClassification` and
  * `_demotedFromMainSwitch` flags preserved for audit/iOS.
  *
  * Run length is the count of contiguous main_switch slots. Expected size is:
@@ -1685,26 +1686,35 @@ function trimSpuriousMainSwitchClusterRuns(slots, expectedRating, expectedPoles,
  *
  * Per-slot is the sole source of truth for circuit-level data:
  *   - Device fields (ocpd_*, rcd_*, is_rcbo) come from Stage 3 classification.
- *   - Labels come from Stage 4 (`slot.label`) — a separate per-crop label-
- *     reading pass that looks at a wider-Y crop around each slot. Stage 4
- *     uses the crop-and-classify principle instead of forcing the single-
- *     shot LLM to reason about the whole board at once, which is inherently
- *     unreliable (confirmed 2026-04-22 on a Wylex rewireable — single-shot
- *     mislabeled the Shower carrier even after count was right).
- *   - Single-shot is NOT consulted here. Its output remains the source of
- *     board-level metadata (main switch, SPD, board manufacturer, overall
- *     confidence, questionsForInspector) only — anything that genuinely
- *     requires whole-board context.
- *
- * Low-confidence or "unknown" slots are emitted with the slot's best-effort
- * reading and a `low_confidence: true` marker. UI consumers surface that as
- * "confirm this row" rather than silently overwriting with an equally-
- * unreliable whole-board guess. The paired `slots[]` entry on the response
- * carries the numeric confidence score for fine-grained reliability UI.
+ *   - Labels come from Stage 4 (`slot.label`) — a per-crop label-reading
+ *     pass that looks at a wider-Y crop around each slot.
+ *   - Low-confidence or "unknown" slots emit the slot's best-effort reading
+ *     with `low_confidence: true`. UI surfaces this for inspector verification.
  *
  * Circuit numbering follows BS 7671: circuit 1 is the device nearest the
  * main switch, numbering OUTWARD. When `mainSwitchSide === 'right'` we
  * iterate the physical-order slot array in reverse.
+ *
+ * RCD protection — Derek's 2026-05-05 two-phase rule:
+ *   - Walking outward from the main switch, MCBs start unprotected (phase 1).
+ *   - First non-MCB-non-RCBO device on the outward walk (a blank with an RCD
+ *     present anywhere on the board, OR an RCD itself) flips state to phase 2.
+ *   - Phase-2 MCBs are RCD-protected, with type/sensitivity copied from the
+ *     most-recently-seen RCD's face read. Each new RCD overrides the
+ *     reference (dual-RCD split-load).
+ *   - RCBOs are always self-protected from THIS device's face read.
+ *   - Spares (blank classification) ALWAYS emit rcd_protected=false,
+ *     regardless of phase.
+ *   - RCDs are NOT emitted as schedule rows — they exist only as the
+ *     reference source for phase-2 MCBs. Their type/sensitivity propagates
+ *     onto every protected circuit row.
+ *   - main_switch / spd slots are not emitted.
+ *
+ * Replaces the previous physical-L→R cascade pre-pass which mis-fired on
+ * the 2026-05-05 Wylex NHRS12SL extraction (the cascade walked left-to-right
+ * regardless of which side the main switch was on, so right-handed boards
+ * got cascade computed in the wrong direction relative to the inspector's
+ * "outward from main switch" mental model).
  *
  * @returns {Array|null} circuits array, or null if slots is empty/invalid.
  */
@@ -1744,118 +1754,113 @@ export function slotsToCircuits({
   // set. `_originalClassification` is preserved for audit/iOS.
   trimSpuriousMainSwitchClusterRuns(slots, mainSwitchRating, mainSwitchPoles, mainSwitchSide);
 
-  // --- Pre-pass: compute per-slot effective upstream RCD in PHYSICAL order
+  // --- Pre-pass: build the outward-from-main-switch RCD reference list.
   //
-  // Cascade flows from an RCD onto MCBs that sit physically downstream of
-  // it on the rail. The main scan below iterates in scanOrder (which can
-  // be reversed for right-handed boards to drive correct circuit
-  // numbering), but cascade computation must follow physical adjacency
-  // regardless of scan direction. Without this pre-pass, a board where
-  // the RCD sits on the LEFT and the main switch on the RIGHT (e.g. 38
-  // Dickens Close, 2026-04-28) would scan right-to-left and never see
-  // the RCD until AFTER all the MCBs it protects had already been
-  // emitted as unprotected — wrong rcd_protected flags throughout.
+  // Derek's 2026-05-05 spec replaces the previous physical-L→R cascade with
+  // a two-phase walk that follows the same outward order as schedule
+  // numbering (BS 7671 — circuit 1 nearest the main switch). Three things
+  // matter for the main loop:
   //
-  // The cascade BREAKS at any non-MCB position (blank, empty, main_switch,
-  // spd) per Derek's 2026-04-28 design: a run of spares between the RCD-
-  // protected MCBs and the unprotected MCBs is a hard boundary. MCBs
-  // after the spares are NOT inheriting RCD protection from upstream.
-  // RCDs themselves overwrite cascade with their own type/sensitivity.
-  //
-  // RCBOs are NOT considered MCBs for cascade purposes — they have their
-  // own integral RCD function and don't need upstream protection. We
-  // still compute the cascade slot-by-slot; downstream buildCircuitFromSlot
-  // is the place that decides whether to apply rcd_* fields, based on
-  // is_rcbo. So the pre-pass simply exposes _effectiveUpstreamRcd for
-  // every slot and lets buildCircuitFromSlot do the right thing.
-  let cascade = null;
-  let prevWasRcd = false;
-  for (const s of slots) {
-    const cls = (s.classification || '').toLowerCase();
-    const content = typeof s.content === 'string' ? s.content : 'device';
-    if (cls === 'rcd') {
-      const newType = s.rcdWaveformType || null;
-      const newSens = s.sensitivity != null && s.sensitivity !== '' ? String(s.sensitivity) : null;
-      if (prevWasRcd && cascade) {
-        // Adjacent RCD slot = the second module of the SAME 2-module
-        // physical RCD device. Merge fields, preferring whichever face
-        // read came back non-null (gap-fill — the second slot may carry
-        // info the first missed and vice versa). DO NOT overwrite a
-        // populated cascade with the second slot's nulls. Mirrors the
-        // existing main-loop dedupe at the rcd-pair-open branch.
-        cascade = {
-          type: cascade.type || newType,
-          sensitivity: cascade.sensitivity || newSens,
-        };
-      } else {
-        cascade = { type: newType, sensitivity: newSens };
-      }
-      prevWasRcd = true;
-    } else if (
-      cls === 'main_switch' ||
-      cls === 'spd' ||
-      cls === 'blank' ||
-      cls === 'empty' ||
-      content === 'empty'
-    ) {
-      // Cascade BREAKS at any non-MCB/RCBO position. Subsequent MCBs are
-      // not RCD-protected (until/unless another RCD slot appears).
-      cascade = null;
-      prevWasRcd = false;
-    } else {
-      // mcb / rcbo / unknown / partial → keep current cascade unchanged.
-      prevWasRcd = false;
-    }
-    s._effectiveUpstreamRcd = cascade;
-  }
-
+  //   1. hasAnyRcd — does the board contain any RCD slot at all? Decides
+  //      whether a blank can act as a phase-1→phase-2 boundary.
+  //   2. rcdEntries — one entry per *physical* RCD device, in scan order,
+  //      with its own face read (type / sensitivity / rating / bsEn).
+  //      Two adjacent rcd slots are the same physical 2-module device and
+  //      gap-fill into one entry (preferring whichever module's face read
+  //      came back non-null).
+  //   3. rcdScanIndices — sorted scan-order indices of every rcd slot.
+  //      Used to look up the *next* RCD when phase 2 was triggered by a
+  //      blank but no RCD has been seen yet (38 Dickens Close topology:
+  //      RCD at the FAR end of the board, MCBs+blanks between).
   const scanOrder = mainSwitchSide === 'right' ? [...slots].reverse() : [...slots];
+
+  let hasAnyRcd = false;
+  const rcdEntries = [];
+  const rcdEntryIdxByScanIdx = new Map();
+  let prevWasRcd = false;
+  for (let i = 0; i < scanOrder.length; i++) {
+    const cls = (scanOrder[i].classification || '').toLowerCase();
+    if (cls !== 'rcd') {
+      prevWasRcd = false;
+      continue;
+    }
+    hasAnyRcd = true;
+    const s = scanOrder[i];
+    if (prevWasRcd) {
+      const prev = rcdEntries[rcdEntries.length - 1];
+      if (!prev.type && s.rcdWaveformType) prev.type = s.rcdWaveformType;
+      if (!prev.sensitivity && s.sensitivity != null && s.sensitivity !== '') {
+        prev.sensitivity = String(s.sensitivity);
+      }
+      if (!prev.rating && s.ratingAmps != null && s.ratingAmps !== '') {
+        prev.rating = String(s.ratingAmps);
+      }
+      if (!prev.bsEn && s.bsEn) prev.bsEn = s.bsEn;
+      rcdEntryIdxByScanIdx.set(i, rcdEntries.length - 1);
+    } else {
+      rcdEntries.push({
+        type: s.rcdWaveformType || null,
+        sensitivity: s.sensitivity != null && s.sensitivity !== '' ? String(s.sensitivity) : null,
+        rating: s.ratingAmps != null && s.ratingAmps !== '' ? String(s.ratingAmps) : null,
+        bsEn: s.bsEn || null,
+      });
+      rcdEntryIdxByScanIdx.set(i, rcdEntries.length - 1);
+    }
+    prevWasRcd = true;
+  }
+  const rcdScanIndices = Array.from(rcdEntryIdxByScanIdx.keys()).sort((a, b) => a - b);
+
+  // Main pass: emit schedule rows in scan order (outward from main switch).
+  //
+  // Phase walk (Derek's 2026-05-05 spec):
+  //   - Phase 1 (default): MCBs unprotected.
+  //   - Phase 2: MCBs protected by the most-recently-seen upstream RCD.
+  //   - RCBOs anywhere are self-protected from THIS device's face read.
+  //   - Blanks emit "Spare" with rcd_protected=false regardless of phase
+  //     (Derek's "spares stay non RCD protected" rule).
+  //   - RCDs are NOT emitted as schedule rows. They update the upstream
+  //     reference and flip phase to 2.
+  //
+  // Phase transitions:
+  //   - First blank (cls='blank') AND board has any RCD anywhere
+  //     → flip phase to 2 starting at NEXT slot.
+  //   - Any RCD slot → flip phase to 2, update reference.
+  //
+  // Phase-2 reference resolution: a phase-2 MCB sitting BEFORE any RCD in
+  // scan order (because phase 2 was triggered by a blank) backfills its
+  // reference from the first upcoming RCD. That covers the 38 Dickens Close
+  // topology (RCD at the FAR end of the board, MCBs+blanks between it and
+  // the main switch) without forcing the cascade to walk physical L→R as
+  // it did before.
   const circuits = [];
   let circuitNumber = 1;
+  let phase = 'phase1';
   let upstreamRcd = null;
 
-  for (const slot of scanOrder) {
+  for (let i = 0; i < scanOrder.length; i++) {
+    const slot = scanOrder[i];
     const cls = (slot.classification || '').toLowerCase();
     const content = typeof slot.content === 'string' ? slot.content : 'device';
     const extendsSide = typeof slot.extends === 'string' ? slot.extends : 'none';
 
+    // 1. main_switch / spd: not emitted, no phase change.
     if (cls === 'main_switch' || cls === 'spd') continue;
 
-    // Neighbour reconciliation for partial-crop RCD slots.
-    //
-    // Original intent: catch slots where a 2-module RCD's second half is
-    // classified as content="partial" with extends pointing at the
-    // already-emitted row, drop it silently instead of emitting a phantom
-    // low-confidence duplicate.
-    //
-    // Codex review 2026-04-23 flagged two correctness traps in my earlier
-    // version of this guard:
-    //   1. Scan direction: `circuits[circuits.length - 1]` is the physical-
-    //      left neighbour only when scanOrder is left-to-right. On right-
-    //      handed boards scanOrder is reversed, so extends="left" (physical
-    //      left) points at the NEXT slot not the previous one.
-    //   2. "Previous row's family" couldn't be reliably derived from the
-    //      emitted circuit's fields (ocpd_type stores trip curve, not
-    //      device family), so the match check was unsafe for non-RCD rows.
-    //
-    // Both concerns are satisfied by restricting to cls="rcd": the existing
-    // RCD-pair dedupe below (via _rcdPairOpen) already merges the second
-    // 'rcd' slot into the first by MERGING readings (better than dropping),
-    // regardless of scan direction. So anything we'd have dropped here
-    // would be cleanly handled one branch down, and non-rcd cases never
-    // needed this guard in the first place (MCBs / RCBOs are 1-module in
-    // UK domestic; main_switch / spd are skipped above; empty / blank are
-    // handled elsewhere). No standalone partial-dedupe needed.
-    //
-    // Keeping content + extendsSide in scope so the downstream "low
-    // confidence / partial" branch can still flag partial slots for the
-    // inspector's UI.
+    // 2. RCD: not emitted; updates reference + flips phase.
+    if (cls === 'rcd') {
+      const entryIdx = rcdEntryIdxByScanIdx.get(i);
+      if (entryIdx != null) {
+        const ent = rcdEntries[entryIdx];
+        upstreamRcd = { type: ent.type, sensitivity: ent.sensitivity };
+      }
+      phase = 'phase2';
+      continue;
+    }
 
-    // Exposed DIN rail (no device, no blanking plate). This is a safety
-    // defect — live parts potentially accessible, IP4X violation. Emit as
-    // a Spare row labelled "Exposed rail" with low_confidence=true so the
-    // inspector's iOS editor flags it for a C2/C3 observation. Schema
-    // added 2026-04-23 with the new content discriminator.
+    // 3. Exposed rail (no device, no blanking plate). IP4X safety defect —
+    // emit so the inspector flags it for C2/C3. Doesn't trigger phase 2
+    // (electrically meaningless boundary; live exposed rail can be on
+    // either bus segment).
     if (content === 'empty' || cls === 'empty') {
       circuits.push({
         circuit_number: circuitNumber,
@@ -1877,91 +1882,30 @@ export function slotsToCircuits({
       continue;
     }
 
-    if (cls === 'rcd') {
-      // Standalone RCD — two roles:
-      //   1. Cascade its type/sensitivity to the circuits it protects
-      //      (all subsequent non-RCBO circuits until the next RCD).
-      //   2. Emit an own-row in the schedule so TradeCert's Schedule of Test
-      //      Results shows the RCD's BS EN + rating/sensitivity alongside the
-      //      MCBs it protects. `is_rcd_device: true` flags this row; it has
-      //      no circuit_number. iOS decoders treat rows where is_rcd_device
-      //      is truthy as a non-circuit schedule entry.
-      //
-      // DEDUPE: an RCD is ALWAYS 2 modules wide on UK boards (BS EN 61008-1),
-      // so Stage 3 classifies two consecutive slots as "rcd" for the same
-      // physical device. Only the FIRST slot of the pair emits a schedule
-      // row; subsequent adjacent 'rcd' slots refresh the cascade (in case
-      // the device face was only readable on the second slot) but do not
-      // produce duplicate rows. If a non-rcd slot sits between two rcd
-      // slots we treat them as two genuinely separate RCDs and emit two
-      // rows — rare in practice but matches what the inspector sees.
-      const nextUpstreamRcd = {
-        type: slot.rcdWaveformType || null,
-        sensitivity:
-          slot.sensitivity != null && slot.sensitivity !== '' ? String(slot.sensitivity) : null,
-      };
-
-      const lastPushed = circuits[circuits.length - 1];
-      const lastWasThisRcdPair = lastPushed?.is_rcd_device && lastPushed?._rcdPairOpen === true;
-
-      if (lastWasThisRcdPair) {
-        // Second slot of the same physical RCD — gap-fill any field the
-        // first slot's VLM read couldn't recover (face-skew can leave one
-        // module's reading stronger than the other) and close the pair.
-        if (!lastPushed.ocpd_rating_a && slot.ratingAmps != null) {
-          lastPushed.ocpd_rating_a = String(slot.ratingAmps);
-        }
-        if (!lastPushed.rcd_type && nextUpstreamRcd.type) {
-          lastPushed.rcd_type = nextUpstreamRcd.type;
-        }
-        if (!lastPushed.rcd_rating_ma && nextUpstreamRcd.sensitivity) {
-          lastPushed.rcd_rating_ma = nextUpstreamRcd.sensitivity;
-        }
-        delete lastPushed._rcdPairOpen;
-        // Refresh cascade with the merged best-available values.
-        upstreamRcd = {
-          type: lastPushed.rcd_type || null,
-          sensitivity: lastPushed.rcd_rating_ma || null,
-        };
+    // 4. mcb / rcbo / unknown / partial / rewireable / cartridge / blank.
+    //    Determine the upstream RCD reference for this slot.
+    //
+    //    For phase-2 MCBs that appear before any RCD in scan order, look
+    //    ahead to the first upcoming RCD. The lookup is O(rcdScanIndices)
+    //    which is at most ~3 entries on real UK boards (single-RCD or
+    //    dual-RCD split-load).
+    let slotUpstreamRcd = null;
+    if (phase === 'phase2') {
+      if (upstreamRcd) {
+        slotUpstreamRcd = upstreamRcd;
       } else {
-        upstreamRcd = nextUpstreamRcd;
-        // The RCD's schedule row ALWAYS carries the label "RCD". Stage 4's
-        // label-pass reads the handwritten strip above/below each slot,
-        // which reliably picks up bleed-in labels from neighbouring MCBs
-        // (the RCD strip section itself has no handwriting — the strip
-        // header already labels it as "RCD protected"). Defaulting to
-        // slot.label would leak "Sockets" / "Kitchen Sockets" etc. into
-        // the RCD row on every real-world board.
-        circuits.push({
-          circuit_number: null,
-          slot_index: slot.slotIndex ?? null,
-          label: 'RCD',
-          is_rcd_device: true,
-          ocpd_type: null,
-          ocpd_rating_a:
-            slot.ratingAmps != null && slot.ratingAmps !== '' ? String(slot.ratingAmps) : null,
-          ocpd_bs_en: slot.bsEn || 'BS EN 61008-1',
-          ocpd_breaking_capacity_ka: null,
-          is_rcbo: false,
-          rcd_protected: false,
-          rcd_type: upstreamRcd.type,
-          rcd_rating_ma: upstreamRcd.sensitivity,
-          rcd_bs_en: slot.bsEn || 'BS EN 61008-1',
-          // Internal marker stripped below; used only to merge the immediate
-          // next 'rcd' slot into this row.
-          _rcdPairOpen: true,
-        });
+        const nextScanIdx = rcdScanIndices.find((x) => x > i);
+        if (nextScanIdx != null) {
+          const ent = rcdEntries[rcdEntryIdxByScanIdx.get(nextScanIdx)];
+          slotUpstreamRcd = { type: ent.type, sensitivity: ent.sensitivity };
+        }
       }
-      continue;
     }
 
     // Partial crops (VLM saw only part of a wider device) are hallucination
     // hazards — the model can pattern-match a half-RCD to "B32 MCB" with
-    // confidence. Force low_confidence on any content="partial" slot so the
-    // inspector verifies, and tag `is_partial_crop` for UI awareness (iOS
-    // can surface a specific "this crop was clipped" message). The merger
-    // still emits the slot's best reading — we don't drop it, because if
-    // the neighbour wasn't classified we'd lose the circuit entirely.
+    // confidence. Force low_confidence on any content="partial" slot so
+    // the inspector verifies, and tag is_partial_crop for UI awareness.
     const isPartial = content === 'partial';
     const confident = !isPartial && (slot.confidence ?? 0) >= minSlotConfidence;
     const slotLabel =
@@ -1984,27 +1928,10 @@ export function slotsToCircuits({
       };
     } else if (cls === 'unknown' || !confident) {
       // Low-confidence / unknown / partial slot: emit the slot's best
-      // reading and mark low_confidence. DO NOT fall back to single-shot —
-      // we moved away from that because single-shot is the unreliable
-      // whole-board reasoner we're replacing. DO NOT fill device fields
-      // from board-majority pattern either — the user explicitly does NOT
-      // want any guessed values. UK domestic boards regularly mix C-curve
-      // with B-curve (motors, fridge-freezers, hot tubs, water heaters)
-      // and Type AC with Type A (legacy circuits next to new), so a
-      // "majority is right" assumption is wrong on any non-trivial board.
-      // UI surfaces low_confidence + is_partial_crop + extends_side so
-      // the inspector verifies / fills the row by hand. Better blank
-      // than guessed wrong.
-      // Use the per-slot cascade computed in the physical-order pre-pass —
-      // breaks at non-MCB positions so MCBs after a run of spares are
-      // correctly unprotected. Falls back to the running `upstreamRcd` if
-      // _effectiveUpstreamRcd hasn't been set (defensive — should never
-      // happen since the pre-pass runs unconditionally above).
-      circuit = buildCircuitFromSlot(
-        slot,
-        circuitNumber,
-        slot._effectiveUpstreamRcd ?? upstreamRcd
-      );
+      // reading and mark low_confidence. NO fallback to single-shot or
+      // board-majority guessing — Derek's 2026-05-05 rule: blank > guessed
+      // wrong, because UK boards mix C/B-curve and AC/A waveforms.
+      circuit = buildCircuitFromSlot(slot, circuitNumber, slotUpstreamRcd);
       circuit.label = slotLabel;
       circuit.low_confidence = true;
       if (isPartial) {
@@ -2012,11 +1939,7 @@ export function slotsToCircuits({
         circuit.extends_side = extendsSide;
       }
     } else {
-      circuit = buildCircuitFromSlot(
-        slot,
-        circuitNumber,
-        slot._effectiveUpstreamRcd ?? upstreamRcd
-      );
+      circuit = buildCircuitFromSlot(slot, circuitNumber, slotUpstreamRcd);
       circuit.label = slotLabel;
     }
 
@@ -2035,13 +1958,13 @@ export function slotsToCircuits({
 
     circuits.push(circuit);
     circuitNumber++;
-  }
 
-  // Strip any lingering `_rcdPairOpen` flag (the RCD was the last slot, so
-  // the pair was never closed by a matching second module — still a valid
-  // row, just internal book-keeping we don't want to leak to iOS).
-  for (const c of circuits) {
-    if (c._rcdPairOpen !== undefined) delete c._rcdPairOpen;
+    // Phase transition: a blank with at least one RCD anywhere on the board
+    // flips us into phase 2 from the NEXT slot. The blank itself stays
+    // unprotected (Derek's "spares stay non RCD protected" rule).
+    if (cls === 'blank' && hasAnyRcd && phase === 'phase1') {
+      phase = 'phase2';
+    }
   }
 
   return circuits;

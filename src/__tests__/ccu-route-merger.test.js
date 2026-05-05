@@ -294,7 +294,13 @@ describe('slotsToCircuits', () => {
     expect(circuits[3].ocpd_rating_a).toBe('100');
   });
 
-  test('4. standalone RCD emits an own-row AND cascades rcd_* fields to subsequent MCBs', () => {
+  test('4. standalone RCD propagates rcd_* fields to phase-2 MCBs (RCD itself NOT in schedule)', () => {
+    // Derek's 2026-05-05 spec: RCDs are not emitted as schedule rows.
+    // Walking outward from the LEFT main switch:
+    //   slot 0 (MCB B32) — phase 1 → unprotected.
+    //   slot 1 (RCD)     — flips phase to 2, sets reference. NOT emitted.
+    //   slot 2 (MCB B16) — phase 2 → protected with AC/30.
+    //   slot 3 (MCB B6)  — phase 2 → protected with AC/30.
     const slots = [
       makeSlot({ classification: 'mcb', tripCurve: 'B', ratingAmps: 32, confidence: 0.9 }),
       makeSlot({
@@ -311,44 +317,42 @@ describe('slotsToCircuits', () => {
 
     const circuits = slotsToCircuits({ slots, mainSwitchSide: 'left', singleShotCircuits: [] });
 
-    // 3 MCB rows + 1 RCD own-row = 4 entries total
-    expect(circuits).toHaveLength(4);
+    // 3 MCB rows total — RCD does NOT emit a schedule row.
+    expect(circuits).toHaveLength(3);
 
-    // MCB before the RCD (circuit 1) — NOT rcd_protected
+    // No row should carry is_rcd_device (it's a deprecated marker now).
+    expect(circuits.some((c) => c.is_rcd_device)).toBe(false);
+
+    // MCB before the RCD (circuit 1) — NOT rcd_protected.
     expect(circuits[0].circuit_number).toBe(1);
     expect(circuits[0].rcd_protected).toBe(false);
     expect(circuits[0].rcd_bs_en).toBeNull();
-    expect(circuits[0].is_rcd_device).toBeUndefined();
+    expect(circuits[0].rcd_type).toBeNull();
 
-    // RCD own-row — no circuit_number, BS EN 61008-1, 80A 30mA AC
-    expect(circuits[1].is_rcd_device).toBe(true);
-    expect(circuits[1].circuit_number).toBeNull();
-    expect(circuits[1].ocpd_rating_a).toBe('80');
+    // MCBs after the RCD (circuits 2 and 3) — protected with the RCD's
+    // own face read.
+    expect(circuits[1].circuit_number).toBe(2);
+    expect(circuits[1].rcd_protected).toBe(true);
     expect(circuits[1].rcd_type).toBe('AC');
     expect(circuits[1].rcd_rating_ma).toBe('30');
-    expect(circuits[1].rcd_bs_en).toBe('BS EN 61008-1');
+    expect(circuits[1].rcd_bs_en).toBe('61008');
 
-    // MCBs after the RCD (circuits 2 and 3) — ARE rcd_protected
-    expect(circuits[2].circuit_number).toBe(2);
+    expect(circuits[2].circuit_number).toBe(3);
     expect(circuits[2].rcd_protected).toBe(true);
     expect(circuits[2].rcd_type).toBe('AC');
     expect(circuits[2].rcd_rating_ma).toBe('30');
     expect(circuits[2].rcd_bs_en).toBe('61008');
-
-    expect(circuits[3].circuit_number).toBe(3);
-    expect(circuits[3].rcd_protected).toBe(true);
-    expect(circuits[3].rcd_type).toBe('AC');
-    expect(circuits[3].rcd_rating_ma).toBe('30');
-    expect(circuits[3].rcd_bs_en).toBe('61008');
   });
 
-  test('4b. two adjacent rcd slots (one 2-module physical device) collapse to ONE row', () => {
+  test('4b. two adjacent rcd slots are one physical device; gap-fill applies to phase-2 reference', () => {
     // An RCD is always 2 modules wide on UK boards — Stage 3 classifies both
-    // module-halves as "rcd". The merger must emit a single schedule row for
-    // the pair, not two.
+    // module-halves as "rcd". With Derek's 2026-05-05 rule the device is no
+    // longer emitted as a schedule row, but the pair's face reads are
+    // gap-filled into a single phase-2 reference so a downstream MCB still
+    // inherits the BEST available type/sensitivity values.
     const slots = [
       makeSlot({ classification: 'mcb', tripCurve: 'B', ratingAmps: 32, confidence: 0.9 }),
-      // First rcd slot — strong face read (rating, bsEn).
+      // First rcd slot — strong face read.
       makeSlot({
         classification: 'rcd',
         rcdWaveformType: 'AC',
@@ -357,12 +361,11 @@ describe('slotsToCircuits', () => {
         bsEn: 'BS EN 61008-1',
         confidence: 0.9,
       }),
-      // Second rcd slot — weaker read, BUT carries rcdWaveformType which the
-      // first slot missed. Gap-fill from here should win over the first
-      // slot's null.
+      // Second rcd slot — weaker read with all fields null. Gap-fill must
+      // NOT overwrite the first slot's populated values.
       makeSlot({
         classification: 'rcd',
-        rcdWaveformType: null, // still null here
+        rcdWaveformType: null,
         sensitivity: null,
         ratingAmps: null,
         confidence: 0.8,
@@ -372,24 +375,23 @@ describe('slotsToCircuits', () => {
 
     const circuits = slotsToCircuits({ slots, mainSwitchSide: 'left' });
 
-    // 2 MCBs + 1 collapsed RCD row = 3 entries
-    expect(circuits).toHaveLength(3);
-    // _rcdPairOpen must not leak to callers.
-    expect(circuits[1]._rcdPairOpen).toBeUndefined();
-    // Circuit numbers don't jump — RCD row is unnumbered.
+    // 2 MCBs only — the 2-module RCD does NOT emit a schedule row.
+    expect(circuits).toHaveLength(2);
+    expect(circuits.some((c) => c.is_rcd_device)).toBe(false);
+    // Circuit numbering walks past the RCD without a gap.
     expect(circuits[0].circuit_number).toBe(1);
-    expect(circuits[1].is_rcd_device).toBe(true);
-    expect(circuits[1].circuit_number).toBeNull();
-    expect(circuits[2].circuit_number).toBe(2);
-    // The downstream MCB still gets the cascaded RCD protection.
-    expect(circuits[2].rcd_protected).toBe(true);
-    expect(circuits[2].rcd_type).toBe('AC');
+    expect(circuits[1].circuit_number).toBe(2);
+    // Downstream MCB inherits AC/30 from the gap-filled pair reference.
+    expect(circuits[1].rcd_protected).toBe(true);
+    expect(circuits[1].rcd_type).toBe('AC');
+    expect(circuits[1].rcd_rating_ma).toBe('30');
   });
 
-  test('4c. two rcd slots separated by a non-rcd slot emit TWO rcd rows', () => {
-    // Paranoia case: two genuinely separate physical RCDs with an MCB between
-    // them. Must NOT collapse — even though both are "rcd", they are
-    // different devices.
+  test('4c. dual-RCD split-load — each new RCD overrides the phase-2 reference', () => {
+    // Two genuinely separate physical RCDs with an MCB between them. Per
+    // Derek's 2026-05-05 spec, neither RCD emits a schedule row; each one
+    // updates the upstream reference, so each downstream MCB inherits its
+    // OWN RCD's type/sensitivity.
     const slots = [
       makeSlot({
         classification: 'rcd',
@@ -406,7 +408,7 @@ describe('slotsToCircuits', () => {
         confidence: 0.9,
       }),
       makeSlot({ classification: 'mcb', tripCurve: 'B', ratingAmps: 32, confidence: 0.9 }),
-      // A genuinely second RCD after an MCB — not part of the first pair.
+      // A genuinely second RCD after the MCB.
       makeSlot({
         classification: 'rcd',
         rcdWaveformType: 'A',
@@ -426,23 +428,30 @@ describe('slotsToCircuits', () => {
 
     const circuits = slotsToCircuits({ slots, mainSwitchSide: 'left' });
 
-    // 2 RCDs + 2 MCBs = 4 rows (each RCD is a 2-module dedupe → 1 row each).
-    expect(circuits).toHaveLength(4);
-    expect(circuits[0].is_rcd_device).toBe(true);
+    // Just the 2 MCBs — neither RCD pair emits a row.
+    expect(circuits).toHaveLength(2);
+    expect(circuits.some((c) => c.is_rcd_device)).toBe(false);
+    // First MCB — inherits the FIRST RCD's reading (AC).
+    expect(circuits[0].circuit_number).toBe(1);
+    expect(circuits[0].rcd_protected).toBe(true);
     expect(circuits[0].rcd_type).toBe('AC');
-    expect(circuits[1].circuit_number).toBe(1);
-    expect(circuits[1].rcd_type).toBe('AC');
-    expect(circuits[2].is_rcd_device).toBe(true);
-    expect(circuits[2].rcd_type).toBe('A'); // different RCD, different waveform
-    expect(circuits[3].circuit_number).toBe(2);
-    expect(circuits[3].rcd_type).toBe('A');
+    // Second MCB — phase 2 reference updated to the second RCD (A).
+    expect(circuits[1].circuit_number).toBe(2);
+    expect(circuits[1].rcd_protected).toBe(true);
+    expect(circuits[1].rcd_type).toBe('A');
   });
 
-  test('4d. cascade BREAKS at blank slots — MCBs after a run of spares are not RCD-protected', () => {
-    // 38 Dickens Close topology (2026-04-28): RCD at left, 2 MCBs, then 3
-    // spares (blanks), then 2 more MCBs, then main switch. The MCBs BEFORE
-    // the spares inherit RCD protection; MCBs AFTER the spares do NOT.
-    // Pre-pass cascade computation breaks at the first blank.
+  test('4d. 38 Dickens Close — two-phase walk + blank-as-boundary + look-ahead RCD reference', () => {
+    // 38 Dickens Close topology (2026-04-28): main switch on the RIGHT,
+    // then 2 unprotected MCBs, then 3 blanks, then 2 protected MCBs, then
+    // RCD at the FAR LEFT. Walking outward (right → left):
+    //   - 2× MCB 6A:    phase 1, unprotected.
+    //   - blank ×3:     emit "Spare" unprotected. First blank flips state
+    //                   to phase 2 (RCD detected on board).
+    //   - 2× MCB 32A:   phase 2, but no RCD seen yet on the outward walk —
+    //                   look ahead to the upcoming RCD pair → AC/30.
+    //   - RCD pair:     not emitted.
+    // Total: 7 rows (was 8 with the old is_rcd_device row).
     const slots = [
       // First module of 2-module RCD
       makeSlot({
@@ -467,15 +476,11 @@ describe('slotsToCircuits', () => {
     ];
 
     const circuits = slotsToCircuits({ slots, mainSwitchSide: 'right' });
-    // 1 RCD row + 4 MCBs + 3 Spares = 8 entries (RCD row is unnumbered).
-    expect(circuits).toHaveLength(8);
+    // 4 MCBs + 3 Spares = 7 entries. RCD does not emit.
+    expect(circuits).toHaveLength(7);
+    expect(circuits.some((c) => c.is_rcd_device)).toBe(false);
 
-    // Identify RCD row + numbered MCBs / spares
-    const rcdRow = circuits.find((c) => c.is_rcd_device);
-    expect(rcdRow).toBeDefined();
-    expect(rcdRow.rcd_type).toBe('AC');
-
-    const mcbs = circuits.filter((c) => c.circuit_number != null && c.label !== 'Spare');
+    const mcbs = circuits.filter((c) => c.label !== 'Spare' && c.ocpd_type != null);
     expect(mcbs).toHaveLength(4);
 
     // Right-handed scan: circuits 1-2 are the RIGHT-side MCBs (after spares,
@@ -497,10 +502,13 @@ describe('slotsToCircuits', () => {
     }
   });
 
-  test('4e. cascade BREAKS at main_switch slot too', () => {
-    // Defensive: a main_switch in the middle of slot order (rare — usually
-    // at the end) also breaks cascade. MCBs after a main_switch do not
-    // inherit RCD protection from before it.
+  test('4e. main_switch slot mid-row does NOT break phase 2 (Derek 2026-05-05 spec)', () => {
+    // Edge case: a main_switch slot appearing mid-rail. The new two-phase
+    // rule treats main_switch as silent — skipped from emission, no phase
+    // change. Once phase 2 is reached (via an RCD seen earlier on the
+    // outward walk), every subsequent MCB stays protected even across a
+    // main_switch slot. This is the deliberate behaviour change vs. the
+    // pre-2026-05-05 cascade pre-pass which broke at main_switch.
     const slots = [
       makeSlot({
         classification: 'rcd',
@@ -514,12 +522,16 @@ describe('slotsToCircuits', () => {
       makeSlot({ classification: 'mcb', tripCurve: 'C', ratingAmps: 32, confidence: 0.9 }),
     ];
     const circuits = slotsToCircuits({ slots, mainSwitchSide: 'left' });
-    // 1 RCD row + 2 MCBs (main_switch skipped entirely)
-    expect(circuits).toHaveLength(3);
-    const protectedMcb = circuits.find((c) => c.ocpd_rating_a === '16');
-    const unprotectedMcb = circuits.find((c) => c.ocpd_rating_a === '32');
-    expect(protectedMcb.rcd_protected).toBe(true);
-    expect(unprotectedMcb.rcd_protected).toBe(false);
+    // 2 MCBs only — RCD pair + main_switch are all skipped from emission.
+    expect(circuits).toHaveLength(2);
+    expect(circuits.some((c) => c.is_rcd_device)).toBe(false);
+    const c16 = circuits.find((c) => c.ocpd_rating_a === '16');
+    const c32 = circuits.find((c) => c.ocpd_rating_a === '32');
+    expect(c16.rcd_protected).toBe(true);
+    expect(c16.rcd_type).toBe('A');
+    // Both MCBs are in phase 2 — main_switch did not break the protection.
+    expect(c32.rcd_protected).toBe(true);
+    expect(c32.rcd_type).toBe('A');
   });
 
   test('5. main_switch slot is skipped entirely', () => {
@@ -1036,13 +1048,17 @@ describe('slotsToCircuits', () => {
     expect(slots[3]._demotedFromMainSwitch).toBe(true);
   });
 
-  test('5g. demoted main_switch slot does NOT break upstream-RCD cascade', () => {
-    // Cascade pre-pass uses cls === 'main_switch' as a cascade-break
-    // signal (a real isolator separates the RCD-protected and unprotected
-    // sections). A DEMOTED slot must not trip that break — it's a
-    // circuit, not a switch boundary. After demotion, classification
-    // is rewritten to 'unknown' which the cascade pre-pass treats as
-    // cascade-neutral.
+  test('5g. demoted main_switch slot emits as a low-confidence circuit row', () => {
+    // Demotion rewrites the spurious main_switch slot's classification to
+    // 'unknown'. With Derek's 2026-05-05 two-phase rule, 'unknown' is
+    // neither a phase-1 nor a phase-2 trigger — it just rides the current
+    // phase. In this fixture the RCD sits at the FAR end (left), the main
+    // switch at the right; walking outward the demoted "Hob" slot sits in
+    // phase 1 (no RCD seen yet on the outward path), so it's UNPROTECTED.
+    // Pre-2026-05-05 the cascade pre-pass walked physical L→R and the
+    // demoted slot inherited cascade from the RCD; that's no longer how
+    // protection is computed. The test now locks in the demotion mechanics
+    // (label preserved, low_confidence set) under the new rule.
     const slots = [
       // Standalone RCD upstream (will cascade to the right).
       makeSlot({
@@ -1108,26 +1124,29 @@ describe('slotsToCircuits', () => {
       mainSwitchRating: '100',
     });
 
-    // 1 RCD own-row (the two RCD slots collapse) + the MCB + the demoted
-    // "Hob" circuit = 3 entries. The two genuine main_switch slots stay
-    // skipped.
-    expect(circuits).toHaveLength(3);
-
-    const rcdRow = circuits.find((c) => c.is_rcd_device);
-    expect(rcdRow).toBeDefined();
+    // The MCB + the demoted "Hob" circuit = 2 entries. Both 2-module RCD
+    // slots and both genuine main_switch slots are skipped from the
+    // schedule.
+    expect(circuits).toHaveLength(2);
+    expect(circuits.some((c) => c.is_rcd_device)).toBe(false);
 
     const hobRow = circuits.find((c) => c.label === 'Hob');
     expect(hobRow).toBeDefined();
     expect(hobRow.low_confidence).toBe(true);
-    // Hob inherits cascaded RCD protection — the demoted slot didn't
-    // break the cascade.
-    expect(hobRow.rcd_protected).toBe(true);
-    expect(hobRow.rcd_type).toBe('A');
+    // Hob is on the main-switch side of the rail, before any RCD on the
+    // outward walk → phase 1, unprotected.
+    expect(hobRow.rcd_protected).toBe(false);
 
-    // The MCB before the demoted slot also stays cascaded.
+    // The B-curve MCB sits between the demoted slot and the RCD —
+    // also phase 1 on the outward walk, also unprotected.
     const mcbRow = circuits.find((c) => c.ocpd_type === 'B');
-    expect(mcbRow.rcd_protected).toBe(true);
-    expect(mcbRow.rcd_type).toBe('A');
+    expect(mcbRow.rcd_protected).toBe(false);
+
+    // Demotion mechanics still verified: only the appliance-labelled slot
+    // had its classification rewritten to 'unknown'.
+    expect(slots[3]._demotedFromMainSwitch).toBe(true);
+    expect(slots[3]._originalClassification).toBe('main_switch');
+    expect(slots[3].classification).toBe('unknown');
   });
 
   test('6. spd slot is skipped entirely', () => {
