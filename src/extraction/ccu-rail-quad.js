@@ -308,6 +308,22 @@ export function sampleGradient(grid, width, height, x, y) {
 }
 
 /**
+ * Maximum phase offset as a fraction of pitch. Phases beyond this cap are
+ * almost certainly the matched filter snapping to a label / toggle-slit /
+ * mid-module gradient that's stronger than the actual boundary gradient,
+ * not a real overshoot of the line-fitter. The line-fitter's left-edge
+ * accuracy is empirically within ~10% of pitch on real photos, so anything
+ * beyond ~12% suggests a false maximum and the safer fallback is 0
+ * (uniform `(i + 0.5) / N` placement).
+ *
+ * 2026-05-05 production data points used to calibrate:
+ *   - Working photo (10:02): phase = 5 samples = 7% of pitch → applied.
+ *   - Failing photo (10:56): phase = 15 samples = 22% of pitch → over-
+ *     shifted, dropped Ovens. Cap rejects this and falls back to phase=0.
+ */
+const PHASE_CAP_FRACTION = 0.12;
+
+/**
  * Find the phase offset of a periodic signal at a known period.
  *
  * Autocorrelation tells us the dominant PERIOD (pitch in samples) but
@@ -320,35 +336,57 @@ export function sampleGradient(grid, width, height, x, y) {
  * For our use case, the rectified column-sum has strong gradient peaks
  * at module BOUNDARIES (where one device ends and the next begins).
  * To place slot centres correctly, we need to find which offset in
- * [0, P) aligns a comb of P-spaced positions to the actual gradient
- * peaks in the signal.
+ * [-cap, +cap] aligns a comb of P-spaced positions to the actual
+ * gradient peaks in the signal.
+ *
+ * SEARCH WINDOW IS BOUNDED — `[-cap·P, +cap·P]` not `[0, P)`. The cap
+ * (12% of pitch by default) prevents the matched filter from latching
+ * onto a non-boundary feature (a label rule, a body seam, a toggle slit)
+ * that scores higher than the actual boundaries. Without this, a single
+ * photo with strong intra-module gradients can produce a 22%-of-pitch
+ * shift that pushes the rightmost slot's wide Stage 3 crop into the next
+ * device — see commit fc1602a's revert. The cap is symmetric (negative
+ * and positive offsets allowed) because line-fitter error can go either
+ * way: rail edge picked too far left → negative phase; too far right →
+ * positive phase.
  *
  * Algorithm:
- *   For every integer offset in [0, P):
- *     Sum signal[offset + k·P] for k = 0, 1, ..., until off the end
+ *   For every integer offset in [-floor(cap·P), +floor(cap·P)]:
+ *     Sum signal[offset + k·P] for valid k
  *   Pick the offset that maximises that sum.
- *
- * This is essentially a 1-D matched filter against an idealised comb
- * of dirac peaks. It's robust to a single missing or weak boundary
- * (the average across all matches dominates) and runs in O(N) time.
  *
  * Returns the offset that places module BOUNDARIES at
  * `offset + k·pitchSamples` for k = 0, 1, ..., moduleCount.
  * Module CENTRES are then `offset + (i + 0.5)·pitchSamples`.
+ *
+ * @param {Float32Array} signal — the rectified column-sum
+ * @param {number} pitchSamples — period from autocorrelation
+ * @param {{ capFraction?: number }} [opts] — override the default cap
+ *        (mostly for tests)
  */
-export function findBoundaryPhase(signal, pitchSamples) {
+export function findBoundaryPhase(signal, pitchSamples, opts = {}) {
   if (!Number.isFinite(pitchSamples) || pitchSamples <= 0) return 0;
   const P = Math.round(pitchSamples);
   const N = signal.length;
+  const cap = Math.max(1, Math.floor(P * (opts.capFraction ?? PHASE_CAP_FRACTION)));
   let bestOffset = 0;
   let bestScore = -Infinity;
-  for (let offset = 0; offset < P; offset++) {
+  for (let offset = -cap; offset <= cap; offset++) {
     let score = 0;
-    for (let k = 0; offset + k * P < N; k++) {
-      score += signal[offset + k * P];
+    let count = 0;
+    for (let k = 0; ; k++) {
+      const idx = offset + k * P;
+      if (idx >= N) break;
+      if (idx >= 0) {
+        score += signal[idx];
+        count += 1;
+      }
     }
-    if (score > bestScore) {
-      bestScore = score;
+    // Normalise by number of in-range samples so negative-offset windows
+    // (which lose a sample at the left) aren't penalised vs positive ones.
+    const normalised = count > 0 ? score / count : 0;
+    if (normalised > bestScore) {
+      bestScore = normalised;
       bestOffset = offset;
     }
   }
@@ -548,32 +586,34 @@ export async function tightenAndChunkQuad(imageBuffer, userBox, opts = {}) {
     );
   }
 
-  // 7. Slot centres at uniform u in [0, 1], v = 0.5 (rail centerline).
+  // 7. Slot centres — bounded phase-lock to actual device boundaries.
   //
-  //    A phase-lock pass shipped briefly on 2026-05-05 (commit 0356357)
-  //    that snapped slot boundaries to actual gradient peaks via
-  //    `findBoundaryPhase`. It was REVERTED hours later after a tester
-  //    extraction reproduced 22%-of-pitch phase shift on a real Elucian
-  //    photo and dropped the rightmost RCBO (Ovens) out of the schedule.
+  //    Bilinear interpolation of uniform `u = (i + 0.5) / N` already places
+  //    centres on real-world-uniform positions across the rail (because
+  //    DIN module pitch is uniform). But the line-fitter's edges can be
+  //    a few % off, which translates to a small phase error in the
+  //    rectified signal. Phase-lock corrects it: matched filter against
+  //    the rectified column-sum finds the offset that aligns module
+  //    BOUNDARIES to actual gradient peaks; slot CENTRES are then
+  //    `phaseOffset + (i + 0.5) × pitchSamples`.
   //
-  //    Root-cause: a uniform phase shift assumes the line-fitter's LEFT
-  //    edge is wrong but the RIGHT edge is correct. In reality both
-  //    edges have comparable accuracy, so shifting every slot by the
-  //    LEFT error makes the RIGHT end progressively wronger and
-  //    eventually pushes the rightmost RCBO's wide Stage 3 crop into
-  //    main-switch territory. The proper fix is per-slot peak anchoring
-  //    (not a single global shift) — TODO when we have a wider corpus
-  //    to verify against.
-  //
-  //    `findBoundaryPhase` is still invoked below for diagnostic
-  //    telemetry (phaseOffsetSamples / phaseShiftPx in quadDiag) but
-  //    the result no longer affects slot placement.
+  //    findBoundaryPhase is BOUNDED — searches only ±12% of pitch around
+  //    zero (PHASE_CAP_FRACTION). Without that bound the matched filter
+  //    can latch onto a non-boundary gradient (a label rule, a toggle
+  //    slit, a body seam) that scores higher than the actual boundaries
+  //    and shift everything by ~22% of pitch — that bug shipped briefly
+  //    on 2026-05-05 (commit 0356357) and dropped the rightmost RCBO
+  //    out of the schedule. The bounded search keeps the small
+  //    correction (Derek's overlay test 2026-05-05 had phase = 7% of
+  //    pitch — well within cap, applied → cyan lines on device centres)
+  //    while rejecting the runaway false maxima.
   const pitchSamples = waysOverrideApplied ? RECT_SAMPLES / moduleCount : ac.lag;
   const phaseOffset = findBoundaryPhase(rectColSum, pitchSamples);
 
   const slotCentersPx = [];
   for (let i = 0; i < moduleCount; i++) {
-    const u = (i + 0.5) / moduleCount;
+    const sampleX = phaseOffset + (i + 0.5) * pitchSamples;
+    const u = Math.min(1, Math.max(0, sampleX / RECT_SAMPLES));
     const p = bilinearQuad(cropLocalCorners, u, 0.5);
     slotCentersPx.push(cropX0 + p.x);
   }

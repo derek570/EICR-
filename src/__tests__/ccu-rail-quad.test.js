@@ -343,20 +343,55 @@ describe('findBoundaryPhase', () => {
     expect(findBoundaryPhase(sig, 32)).toBe(0);
   });
 
-  test('finds correct phase when peaks are offset', () => {
-    // Comb signal: peaks at 7, 39, 71, ... (phase = 7)
+  test('finds small positive phase (within default cap)', () => {
+    // Phase = 3 samples = 9% of pitch=32 — within 12% cap → applied.
     const sig = new Float32Array(256);
-    for (let i = 7; i < sig.length; i += 32) sig[i] = 100;
-    expect(findBoundaryPhase(sig, 32)).toBe(7);
+    for (let i = 3; i < sig.length; i += 32) sig[i] = 100;
+    expect(findBoundaryPhase(sig, 32)).toBe(3);
   });
 
-  test('robust to one missing peak', () => {
-    // Peaks at every 32 starting at 5, but skip the one at 5+32=37
+  test('finds small negative phase', () => {
+    // Phase = -2 (line-fitter overshot to the right). Peaks at -2 (out
+    // of range, so first valid is at +30), 30, 62, 94, ... Comb at
+    // offset=-2 collects samples at 30, 62, 94, ... + skips the
+    // out-of-range -2.
     const sig = new Float32Array(256);
-    for (let i = 5; i < sig.length; i += 32) {
-      if (i !== 37) sig[i] = 100;
+    for (let i = 30; i < sig.length; i += 32) sig[i] = 100;
+    // Negative-phase comb at offset=-2 hits samples 30, 62, 94, … =
+    // exactly where the peaks are.
+    expect(findBoundaryPhase(sig, 32)).toBe(-2);
+  });
+
+  test('CAPS phase at +12% of pitch when matched filter wants more', () => {
+    // Plant a strong false-maximum at offset=10 samples = 31% of pitch.
+    // Without the cap the matched filter would lock to it; with the
+    // 12% cap the search range is ±3 samples, so result is the best
+    // offset within [-3, +3] — which is 0 (since real signal has no
+    // periodic gradient there). The exact returned value depends on
+    // whether ANY in-range offset has signal, but the absolute value
+    // must be ≤ floor(0.12 * 32) = 3.
+    const sig = new Float32Array(256);
+    for (let i = 10; i < sig.length; i += 32) sig[i] = 100; // 31% phase
+    const result = findBoundaryPhase(sig, 32);
+    expect(Math.abs(result)).toBeLessThanOrEqual(3);
+    expect(result).not.toBe(10); // would have been 10 without the cap
+  });
+
+  test('explicit capFraction overrides default', () => {
+    // With capFraction=0.5, the cap permits offset 10 (31% of pitch).
+    const sig = new Float32Array(256);
+    for (let i = 10; i < sig.length; i += 32) sig[i] = 100;
+    expect(findBoundaryPhase(sig, 32, { capFraction: 0.5 })).toBe(10);
+  });
+
+  test('robust to one missing peak (within cap)', () => {
+    // Peaks at every 32 starting at 2 (6% of pitch — within cap), but
+    // skip the one at 2+32=34
+    const sig = new Float32Array(256);
+    for (let i = 2; i < sig.length; i += 32) {
+      if (i !== 34) sig[i] = 100;
     }
-    expect(findBoundaryPhase(sig, 32)).toBe(5);
+    expect(findBoundaryPhase(sig, 32)).toBe(2);
   });
 
   test('returns 0 on invalid pitch', () => {
@@ -368,9 +403,9 @@ describe('findBoundaryPhase', () => {
 
   test('handles non-integer pitch by rounding', () => {
     const sig = new Float32Array(256);
-    for (let i = 4; i < sig.length; i += 32) sig[i] = 100;
+    for (let i = 1; i < sig.length; i += 32) sig[i] = 100; // 3% phase
     // Pitch passed as 31.7 → rounds to 32
-    expect(findBoundaryPhase(sig, 31.7)).toBe(4);
+    expect(findBoundaryPhase(sig, 31.7)).toBe(1);
   });
 });
 
@@ -385,8 +420,12 @@ describeIfCorpus('tightenAndChunkQuad — phase lock changes slot positions', ()
   test('phaseShiftPx is non-zero on a board with leading rail margin', async () => {
     const { entry, photo } = loadCorpusBoard('1777441303200-92evuu'); // Wylex
     const result = await tightenAndChunkQuad(photo, entry.userBox);
-    expect(result.refinement.quadDiag.phaseOffsetSamples).toBeGreaterThanOrEqual(0);
-    expect(result.refinement.quadDiag.phaseShiftPx).toBeGreaterThanOrEqual(0);
+    // Phase can now be negative (line-fitter overshot right) or positive
+    // (overshot left) — either is fine, but bounded by the 12% cap.
+    const pitchSamples = result.refinement.quadDiag.rectPitchSamples;
+    expect(Math.abs(result.refinement.quadDiag.phaseOffsetSamples)).toBeLessThanOrEqual(
+      Math.ceil(pitchSamples * 0.12)
+    );
     // count is still correct after phase lock
     expect(result.moduleCount).toBe(16);
   }, 30_000);
