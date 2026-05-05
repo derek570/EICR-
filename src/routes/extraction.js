@@ -3119,6 +3119,27 @@ Extract EVERY legible value into the JSON schema below. The schema field names m
 6. If the image shows multiple boards or multiple pages of circuits, include ALL circuits.
 7. Return ONLY the JSON object. No markdown fences, no commentary, no leading/trailing text.
 
+## CIRCUIT COVERAGE — READ CAREFULLY
+The schedule of test results is the most important part of the document. It is laid out as a TABLE with one ROW per circuit. Every legible row is a separate \`circuits[]\` entry — there is NO upper limit and NO need to keep the output short.
+
+- If the table has 16 rows of circuits, \`circuits\` MUST contain 16 objects.
+- The schema below shows ONE example circuit ONLY — that is a format demo, not a quota. Do not stop after one or two circuits.
+- Walk the table TOP TO BOTTOM. For each row, emit one object — even if some test reading cells in that row are blank or hard to read (just omit those specific keys, not the whole circuit).
+- Any row with a circuit number, a designation, or any visible reading (Zs, R1+R2, IR, RCD time, etc.) gets its own circuits[] entry.
+- A blank cell ≠ skip the circuit. A blank cell = omit that one key.
+- If two boards are shown (e.g. a main DB plus a sub-main board), include circuits from both — preserve their original numbering.
+
+## CLIENT vs PROPERTY ADDRESS — DO NOT CONFLATE
+EICRs typically show two distinct things: the client/owner being billed, and the property address being inspected. Often they are the same person and the same address; sometimes they are different (landlord client / tenant property). Map them like this:
+
+- \`client_name\` is ONLY a PERSON or COMPANY NAME. Examples: "Mr J Smith", "Acme Property Lettings Ltd". NEVER put a postal address in this field.
+- \`address\` is ONLY the STREET LINE of the installation premises. Examples: "12 Acacia Avenue", "Flat 4, Brunswick House". NEVER include the postcode, town, or county here — they each have their own keys.
+- \`postcode\` is the UK postcode alone, e.g. "SL6 4QH".
+- \`town\` and \`county\` are bare locality names, e.g. "Maidenhead", "Berkshire".
+- \`occupier_name\` is only filled when the cert explicitly names a different occupier from the client.
+
+If the cert has a single combined address block like "Mr J Smith, 12 Acacia Avenue, Maidenhead, Berkshire, SL6 4QH", split it across the five keys above — do NOT dump the whole thing into \`client_name\` or into \`address\`.
+
 ## ENUM REFERENCE (use these exact strings)
 - earthing_arrangement: "TN-C-S" | "TN-S" | "TT" | "IT"
 - ocpd_type: "B" | "C" | "D" | "Rew" | "HRC" (Rew = BS 3036 rewireable, HRC = BS 1361/88 cartridge)
@@ -3362,6 +3383,30 @@ Return ONLY this JSON. Omit any key whose value is not legibly present in the im
       hasBoard: Object.keys(formData.board_info).length > 0,
       costUsd: parseFloat((inputCost + outputCost).toFixed(6)),
     });
+
+    // Diagnostic dump — captures the parsed JSON so we can audit prompt
+    // accuracy from CloudWatch without round-tripping through the user.
+    // Truncated to keep CloudWatch event size sane (~16KB events). Drops
+    // the per-circuit detail if the response is enormous, but always keeps
+    // installation_details / supply / board / circuit_refs / observations
+    // shape so misrouted-field bugs are visible.
+    try {
+      const refsPreview = (formData.circuits || []).map((c) => ({
+        ref: c?.circuit_ref,
+        designation: c?.circuit_designation,
+      }));
+      logger.info('Document extraction dump', {
+        userId: req.user.id,
+        installation_details: formData.installation_details,
+        supply_characteristics: formData.supply_characteristics,
+        board_info: formData.board_info,
+        circuit_refs_designations: refsPreview,
+        observations: formData.observations,
+        first_circuit_full: formData.circuits?.[0] || null,
+      });
+    } catch {
+      /* logging failure must never affect the response */
+    }
 
     res.json({ success: true, formData });
   } catch (error) {
