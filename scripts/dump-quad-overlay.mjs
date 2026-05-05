@@ -30,6 +30,7 @@ import path from 'node:path';
 import sharp from 'sharp';
 import { tightenAndChunkQuad } from '../src/extraction/ccu-rail-quad.js';
 import { cropSlot } from '../src/extraction/ccu-geometric.js';
+import { cropSlotLabelZone } from '../src/extraction/ccu-label-pass.js';
 
 // ---------------------------------------------------------------------------
 // Args
@@ -105,25 +106,40 @@ fs.writeFileSync(
 // Build the SVG overlay
 // ---------------------------------------------------------------------------
 
-// Slot crop math mirrors `cropSlot` in ccu-geometric.js: 20% horizontal pad
-// of the module pitch, 30% vertical pad of the rail height, both clamped
-// to image bounds.
+// Two crop tiers — Stage 3 (classification) is intentionally wide to
+// capture 2-pole devices; Stage 4 (label OCR) is tight to avoid
+// neighbour-label bleed.
+//   Stage 3: halfWidth = pitch * 0.5 * 2.2  → total = 2.2× pitch
+//   Stage 4: halfWidth = pitch * 0.6        → total = 1.2× pitch
 const W = meta.width;
 const H = meta.height;
 const pitchPx = tightened.pitchPx;
 const railTop = tightened.railFace.top;
 const railBot = tightened.railFace.bottom;
 const railHeight = railBot - railTop;
-const padX = 0.20 * pitchPx;
-const padY = 0.30 * railHeight;
+const stage3HalfX = pitchPx * 0.5 * 2.2;
+const stage4HalfX = pitchPx * 0.6;
+const stage3HalfY = (railHeight / 2) * 1.3; // 30% vertical pad on rail centerline
+const stage4HalfY = railHeight * 0.55; // label pass is taller (labels live above/below)
 
-const cropRects = tightened.slotCentersPx.map((cx, idx) => {
-  const x0 = Math.max(0, Math.round(cx - pitchPx / 2 - padX));
-  const x1 = Math.min(W, Math.round(cx + pitchPx / 2 + padX));
-  const y0 = Math.max(0, Math.round(railTop - padY));
-  const y1 = Math.min(H, Math.round(railBot + padY));
+const stage3Rects = tightened.slotCentersPx.map((cx, idx) => {
+  const cy = (railTop + railBot) / 2;
+  const x0 = Math.max(0, Math.round(cx - stage3HalfX));
+  const x1 = Math.min(W, Math.round(cx + stage3HalfX));
+  const y0 = Math.max(0, Math.round(cy - stage3HalfY));
+  const y1 = Math.min(H, Math.round(cy + stage3HalfY));
   return { idx, x0, y0, w: x1 - x0, h: y1 - y0, cx };
 });
+const stage4Rects = tightened.slotCentersPx.map((cx, idx) => {
+  const cy = (railTop + railBot) / 2;
+  const x0 = Math.max(0, Math.round(cx - stage4HalfX));
+  const x1 = Math.min(W, Math.round(cx + stage4HalfX));
+  const y0 = Math.max(0, Math.round(cy - stage4HalfY));
+  const y1 = Math.min(H, Math.round(cy + stage4HalfY));
+  return { idx, x0, y0, w: x1 - x0, h: y1 - y0, cx };
+});
+// Aliased for the rest of the file (label rendering uses Stage 3 bounds).
+const cropRects = stage3Rects;
 
 const q = tightened.quadrilateral;
 const slotLineColor = '#00ffff';
@@ -139,11 +155,19 @@ const svg = `<?xml version="1.0" encoding="UTF-8"?>
   <polygon points="${q.tl.x},${q.tl.y} ${q.tr.x},${q.tr.y} ${q.br.x},${q.br.y} ${q.bl.x},${q.bl.y}"
            fill="none" stroke="${quadColor}" stroke-width="6" stroke-dasharray="20,8" />
 
-  <!-- Slot crop rectangles (orange) -->
-  ${cropRects
+  <!-- Stage 3 classification crop rectangles (orange, wide — 2.2× pitch) -->
+  ${stage3Rects
     .map(
       (r) =>
         `<rect x="${r.x0}" y="${r.y0}" width="${r.w}" height="${r.h}" fill="none" stroke="${cropRectColor}" stroke-width="3" />`
+    )
+    .join('\n  ')}
+
+  <!-- Stage 4 label-pass crop rectangles (lime, tight — 1.2× pitch) -->
+  ${stage4Rects
+    .map(
+      (r) =>
+        `<rect x="${r.x0}" y="${r.y0}" width="${r.w}" height="${r.h}" fill="none" stroke="#00ff00" stroke-width="3" />`
     )
     .join('\n  ')}
 
@@ -151,7 +175,7 @@ const svg = `<?xml version="1.0" encoding="UTF-8"?>
   ${tightened.slotCentersPx
     .map(
       (cx) =>
-        `<line x1="${cx}" y1="${railTop - padY}" x2="${cx}" y2="${railBot + padY}" stroke="${slotLineColor}" stroke-width="2" stroke-dasharray="6,6" />`
+        `<line x1="${cx}" y1="${railTop - stage3HalfY}" x2="${cx}" y2="${railBot + stage3HalfY}" stroke="${slotLineColor}" stroke-width="2" stroke-dasharray="6,6" />`
     )
     .join('\n  ')}
 
@@ -200,13 +224,38 @@ const geom = {
   imageHeight: H,
 };
 
+// Stage 4 label-pass uses a different geom shape (slotPitchPx, panelTop/BottomNorm)
+const labelGeom = {
+  slotCentersX: tightened.slotCentersPx, // pixels, not normalised — see ccu-label-pass
+  slotPitchPx: pitchPx,
+  panelTopNorm: (railTop / H) * 1000,
+  panelBottomNorm: (railBot / H) * 1000,
+  imageWidth: W,
+  imageHeight: H,
+};
+
 let cropCount = 0;
 for (let i = 0; i < tightened.moduleCount; i++) {
-  const { buffer, bbox } = await cropSlot(photo, i, geom);
-  const filename = `slot-${String(i).padStart(2, '0')}.jpg`;
-  fs.writeFileSync(path.join(outDir, filename), buffer);
+  // Stage 3 — classification crop (wide, 2.2× pitch)
+  const { buffer: bufClassify, bbox: bboxClassify } = await cropSlot(photo, i, geom);
+  fs.writeFileSync(
+    path.join(outDir, `slot-${String(i).padStart(2, '0')}-classify.jpg`),
+    bufClassify
+  );
+  // Stage 4 — label-pass crop (tight, 1.2× pitch)
+  try {
+    const { buffer: bufLabel } = await cropSlotLabelZone(photo, i, labelGeom);
+    fs.writeFileSync(
+      path.join(outDir, `slot-${String(i).padStart(2, '0')}-label.jpg`),
+      bufLabel
+    );
+  } catch (err) {
+    console.warn(`[crop] slot ${i} label-pass error: ${err.message}`);
+  }
   cropCount += 1;
-  console.log(`[crop] slot ${i} → ${filename}  bbox=${bbox.w}×${bbox.h} @ (${bbox.x},${bbox.y})`);
+  console.log(
+    `[crop] slot ${i} — classify ${bboxClassify.w}×${bboxClassify.h} (${(bboxClassify.w / pitchPx).toFixed(2)}× pitch), label ${Math.round(stage4HalfX * 2)}×${Math.round(stage4HalfY * 2)} (${((stage4HalfX * 2) / pitchPx).toFixed(2)}× pitch)`
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -233,13 +282,31 @@ const indexHtml = `<!doctype html>
     ${tightened.waysOverrideApplied ? '· ways-override' : ''}
   </div>
   <img src="overlay.png" alt="overlay">
-  <h2>Per-slot crops (what Stage 4 sees)</h2>
+  <p style="color:#aaa; font-size:14px; margin-top: 12px;">
+    <span style="color:#ff8800">orange</span> = Stage 3 classification crop (2.2× pitch — wide so 2-pole devices fit) ·
+    <span style="color:#00ff00">green</span> = Stage 4 label-pass crop (1.2× pitch — tight to avoid neighbour bleed) ·
+    <span style="color:#ff00ff">magenta</span> = rail quadrilateral ·
+    <span style="color:#00ffff">cyan</span> = slot centres
+  </p>
+  <h2>Stage 3 classification crops (what the device-classifier sees, 2.2× pitch)</h2>
   <div class="grid">
     ${cropRects
       .map(
         (r, i) => `
     <div class="slot">
-      <img src="slot-${String(i).padStart(2, '0')}.jpg">
+      <img src="slot-${String(i).padStart(2, '0')}-classify.jpg">
+      <div class="idx">slot ${i}</div>
+    </div>`
+      )
+      .join('')}
+  </div>
+  <h2>Stage 4 label crops (what the OCR sees, 1.2× pitch)</h2>
+  <div class="grid">
+    ${cropRects
+      .map(
+        (r, i) => `
+    <div class="slot">
+      <img src="slot-${String(i).padStart(2, '0')}-label.jpg">
       <div class="idx">slot ${i}</div>
     </div>`
       )

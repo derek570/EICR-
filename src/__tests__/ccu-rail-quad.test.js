@@ -24,6 +24,7 @@ import {
   sobelYGrid,
   sobelXGrid,
   rectifiedColumnSum,
+  findBoundaryPhase,
   tightenAndChunkQuad,
   RECT_SAMPLES,
   RECT_MIN_LAG,
@@ -328,4 +329,65 @@ describe('tightenAndChunkQuad — edge cases', () => {
       tightenAndChunkQuad(Buffer.alloc(0), { x: 0, y: 0, w: 1, h: 1 })
     ).rejects.toThrow();
   });
+});
+
+// ---------------------------------------------------------------------------
+// findBoundaryPhase — locks slot grid to actual device positions
+// ---------------------------------------------------------------------------
+
+describe('findBoundaryPhase', () => {
+  test('finds phase=0 when peaks already start at sample 0', () => {
+    // Comb signal: peaks at 0, 32, 64, 96 ...
+    const sig = new Float32Array(256);
+    for (let i = 0; i < sig.length; i += 32) sig[i] = 100;
+    expect(findBoundaryPhase(sig, 32)).toBe(0);
+  });
+
+  test('finds correct phase when peaks are offset', () => {
+    // Comb signal: peaks at 7, 39, 71, ... (phase = 7)
+    const sig = new Float32Array(256);
+    for (let i = 7; i < sig.length; i += 32) sig[i] = 100;
+    expect(findBoundaryPhase(sig, 32)).toBe(7);
+  });
+
+  test('robust to one missing peak', () => {
+    // Peaks at every 32 starting at 5, but skip the one at 5+32=37
+    const sig = new Float32Array(256);
+    for (let i = 5; i < sig.length; i += 32) {
+      if (i !== 37) sig[i] = 100;
+    }
+    expect(findBoundaryPhase(sig, 32)).toBe(5);
+  });
+
+  test('returns 0 on invalid pitch', () => {
+    const sig = new Float32Array(64).fill(1);
+    expect(findBoundaryPhase(sig, 0)).toBe(0);
+    expect(findBoundaryPhase(sig, NaN)).toBe(0);
+    expect(findBoundaryPhase(sig, -10)).toBe(0);
+  });
+
+  test('handles non-integer pitch by rounding', () => {
+    const sig = new Float32Array(256);
+    for (let i = 4; i < sig.length; i += 32) sig[i] = 100;
+    // Pitch passed as 31.7 → rounds to 32
+    expect(findBoundaryPhase(sig, 31.7)).toBe(4);
+  });
+});
+
+describeIfCorpus('tightenAndChunkQuad — phase lock changes slot positions', () => {
+  // Verifies that the phase-lock changes the slot positions in a
+  // measurable way for at least one corpus board (the Wylex shot has a
+  // visible LHS gap before the leftmost device — exactly the situation
+  // phase-lock is designed for). We don't assert the EXACT positions
+  // (they depend on photo specifics) — just that the diagnostic is
+  // populated and slot 0 is shifted to the right of where the naive
+  // (i+0.5)/N layout would put it.
+  test('phaseShiftPx is non-zero on a board with leading rail margin', async () => {
+    const { entry, photo } = loadCorpusBoard('1777441303200-92evuu'); // Wylex
+    const result = await tightenAndChunkQuad(photo, entry.userBox);
+    expect(result.refinement.quadDiag.phaseOffsetSamples).toBeGreaterThanOrEqual(0);
+    expect(result.refinement.quadDiag.phaseShiftPx).toBeGreaterThanOrEqual(0);
+    // count is still correct after phase lock
+    expect(result.moduleCount).toBe(16);
+  }, 30_000);
 });

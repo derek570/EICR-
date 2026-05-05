@@ -308,6 +308,54 @@ export function sampleGradient(grid, width, height, x, y) {
 }
 
 /**
+ * Find the phase offset of a periodic signal at a known period.
+ *
+ * Autocorrelation tells us the dominant PERIOD (pitch in samples) but
+ * gives no information about WHERE in the signal the periodic structure
+ * starts. Two signals can have identical autocorrelation peaks but
+ * different start positions — a "comb" of peaks at samples
+ * [0, P, 2P, 3P, ...] and one at [10, 10+P, 10+2P, ...] both
+ * autocorrelate at lag P with full strength.
+ *
+ * For our use case, the rectified column-sum has strong gradient peaks
+ * at module BOUNDARIES (where one device ends and the next begins).
+ * To place slot centres correctly, we need to find which offset in
+ * [0, P) aligns a comb of P-spaced positions to the actual gradient
+ * peaks in the signal.
+ *
+ * Algorithm:
+ *   For every integer offset in [0, P):
+ *     Sum signal[offset + k·P] for k = 0, 1, ..., until off the end
+ *   Pick the offset that maximises that sum.
+ *
+ * This is essentially a 1-D matched filter against an idealised comb
+ * of dirac peaks. It's robust to a single missing or weak boundary
+ * (the average across all matches dominates) and runs in O(N) time.
+ *
+ * Returns the offset that places module BOUNDARIES at
+ * `offset + k·pitchSamples` for k = 0, 1, ..., moduleCount.
+ * Module CENTRES are then `offset + (i + 0.5)·pitchSamples`.
+ */
+export function findBoundaryPhase(signal, pitchSamples) {
+  if (!Number.isFinite(pitchSamples) || pitchSamples <= 0) return 0;
+  const P = Math.round(pitchSamples);
+  const N = signal.length;
+  let bestOffset = 0;
+  let bestScore = -Infinity;
+  for (let offset = 0; offset < P; offset++) {
+    let score = 0;
+    for (let k = 0; offset + k * P < N; k++) {
+      score += signal[offset + k * P];
+    }
+    if (score > bestScore) {
+      bestScore = score;
+      bestOffset = offset;
+    }
+  }
+  return bestOffset;
+}
+
+/**
  * Compute the perspective-corrected column-sum across the rectified rail.
  * For each of `RECT_SAMPLES` uniformly-spaced u values, integrate the
  * |Sobel-X| gradient along the v-axis line from the top edge to the bottom
@@ -500,11 +548,32 @@ export async function tightenAndChunkQuad(imageBuffer, userBox, opts = {}) {
     );
   }
 
-  // 7. Slot centres at uniform u in [0, 1], v = 0.5 (rail centerline).
-  //    Map crop-local back to image coords by adding the crop offset.
+  // 7a. Phase-lock the slot grid to actual device boundaries.
+  //
+  //     Autocorrelation gave us the period (pitch) but no phase — slot 0
+  //     could equally well start at u=0 or at u=0.3 of a pitch in. The
+  //     line-fitted corners can over-shoot the actual device row by a
+  //     fraction of a pitch (busbar housing, plastic surround, the trim
+  //     strip above the SPD), and a uniform `(i + 0.5) / N` layout puts
+  //     all slot centres at the same incorrect phase — slot 12 lands on
+  //     slot 13's actual centre, etc.
+  //
+  //     Find the offset in [0, pitchSamples) that aligns a comb of
+  //     pitch-spaced positions to the actual gradient peaks in the
+  //     rectified column-sum. That's where module BOUNDARIES are. Slot
+  //     CENTRES are halfway between consecutive boundaries.
+  const pitchSamples = waysOverrideApplied ? RECT_SAMPLES / moduleCount : ac.lag;
+  const phaseOffset = findBoundaryPhase(rectColSum, pitchSamples);
+
+  // 7b. Lay slot centres at phase-locked u-positions.
+  //     Slot i centre = phaseOffset + (i + 0.5) * pitchSamples (rectified
+  //     samples), then convert to u ∈ [0, 1] for bilinear evaluation.
+  //     Clamp u to [0, 1] for safety; in practice phase shouldn't push
+  //     slot 0 below 0 or slot N-1 above 1 by more than a fraction.
   const slotCentersPx = [];
   for (let i = 0; i < moduleCount; i++) {
-    const u = (i + 0.5) / moduleCount;
+    const sampleX = phaseOffset + (i + 0.5) * pitchSamples;
+    const u = Math.min(1, Math.max(0, sampleX / RECT_SAMPLES));
     const p = bilinearQuad(cropLocalCorners, u, 0.5);
     slotCentersPx.push(cropX0 + p.x);
   }
@@ -564,6 +633,13 @@ export async function tightenAndChunkQuad(imageBuffer, userBox, opts = {}) {
         rightEdge: pickLineDiag(rightLine),
         rectNormCorr: Math.round(ac.normCorr * 1000) / 1000,
         rectPitchSamples: ac.lag,
+        phaseOffsetSamples: phaseOffset,
+        // Phase shift in image-pixel units — useful diagnostic. If this
+        // sits well above ~10% of pitch, the line-fitted left edge is
+        // over-shooting the actual leftmost device boundary by that much
+        // and the slot grid would have been mis-aligned without phase
+        // correction.
+        phaseShiftPx: Math.round((phaseOffset / RECT_SAMPLES) * faceWidthCrop * 10) / 10,
       },
     },
   };
