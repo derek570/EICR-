@@ -2414,26 +2414,87 @@ router.post(
         Number.isFinite(labelGeom.panelTopNorm) &&
         Number.isFinite(labelGeom.panelBottomNorm);
 
-      const classifyFn = isRewireablePipeline ? classifyRewireableSlots : classifyModernSlots;
-      const classifyPromise = classifyFn(imageBytes, prepared).catch((err) => {
-        logger.warn('CCU per-slot classify failed (non-fatal)', {
-          userId: req.user.id,
-          path: isRewireablePipeline ? 'rewireable' : 'modern',
-          error: err.message,
-        });
-        return null;
-      });
-      const labelPromise = labelGeomValid
-        ? extractSlotLabels(imageBytes, labelGeom).catch((err) => {
-            logger.warn('CCU stage4 label pass failed (non-fatal)', {
-              userId: req.user.id,
-              error: err.message,
-            });
-            return { __error: err.message };
-          })
-        : Promise.resolve(null);
+      // Feature flag for the sliding-window cut-over (2026-05-05).
+      // Enable by setting CCU_SLIDING_WINDOW=true on the task definition.
+      // Default OFF: an explicit env-var flip turns on the new path
+      // without a code rollback if anything goes wrong in the field.
+      // Sliding-window REPLACES Stage 3 + Stage 4 + the per-slot batch
+      // loops; everything downstream (assembleGeometricResult,
+      // slotsToCircuits, applyRcdTypeLookup, applyBsEnFallback,
+      // normaliseCircuitLabels, lookupMissingRcdTypes,
+      // flagRcdWaveformOutliers) keeps working unchanged because the
+      // sliding-window result is reshaped into the same {slots, labels,
+      // usage, timings} contract the per-slot pipeline produces.
+      const slidingWindowEnabled =
+        (process.env.CCU_SLIDING_WINDOW || 'false').toLowerCase() === 'true';
 
-      const [classified, labelPassResult] = await Promise.all([classifyPromise, labelPromise]);
+      let classified, labelPassResult;
+      if (slidingWindowEnabled) {
+        const { extractViaSlidingWindow } = await import('../extraction/ccu-sliding-window.js');
+        try {
+          const swResult = await extractViaSlidingWindow({
+            imageBuffer: imageBytes,
+            prepared,
+            isRewireable: isRewireablePipeline,
+            anthropic,
+            model,
+            imgW: prepared.imageWidth,
+            imgH: prepared.imageHeight,
+            boardManufacturer: boardClassification.boardManufacturer,
+            logger,
+            userId: req.user.id,
+          });
+          classified = {
+            slots: swResult.slots,
+            usage: swResult.usage,
+            timings: swResult.timings,
+            lowConfidence: swResult.lowConfidence,
+            stage3Error: swResult.stage3Error,
+            stageOutputs: swResult.stageOutputs,
+          };
+          // Synthesise a Stage-4-shaped label-pass result so the
+          // downstream merger sees the labels via labelPassResult.labels
+          // exactly the way it did with extractSlotLabels.
+          labelPassResult = {
+            labels: swResult.labels,
+            usage: { inputTokens: 0, outputTokens: 0 },
+            timings: { vlmMs: 0 },
+            skippedSlotIndices: swResult.skippedSlotIndices,
+          };
+        } catch (err) {
+          logger.warn('CCU sliding-window extraction failed (falling back to per-slot)', {
+            userId: req.user.id,
+            error: err.message,
+          });
+          // Fall back to the per-slot path on any sliding-window error
+          // so a transient VLM/network failure doesn't take the whole
+          // endpoint down — the per-slot path is still tested and known.
+          classified = null;
+          labelPassResult = null;
+        }
+      }
+
+      if (!classified) {
+        const classifyFn = isRewireablePipeline ? classifyRewireableSlots : classifyModernSlots;
+        const classifyPromise = classifyFn(imageBytes, prepared).catch((err) => {
+          logger.warn('CCU per-slot classify failed (non-fatal)', {
+            userId: req.user.id,
+            path: isRewireablePipeline ? 'rewireable' : 'modern',
+            error: err.message,
+          });
+          return null;
+        });
+        const labelPromise = labelGeomValid
+          ? extractSlotLabels(imageBytes, labelGeom).catch((err) => {
+              logger.warn('CCU stage4 label pass failed (non-fatal)', {
+                userId: req.user.id,
+                error: err.message,
+              });
+              return { __error: err.message };
+            })
+          : Promise.resolve(null);
+        [classified, labelPassResult] = await Promise.all([classifyPromise, labelPromise]);
+      }
 
       const perSlotState = {
         prepared,
