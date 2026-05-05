@@ -647,14 +647,15 @@ describe('slotsToCircuits', () => {
     expect(circuits[0].label).toBe('Ovens');
     expect(circuits[0].low_confidence).toBe(true);
     expect(circuits[0].is_partial_crop).toBe(true);
-    // Neighbour-bleed recovery: the demoted slot's right neighbour is a
-    // main_switch, so the fallback derived from the surviving RCBO (slot 0,
-    // curve B) populates ocpd_type. Rating stays null — real boards mix
-    // amperages so this one field requires inspector confirmation.
-    expect(circuits[0].partial_neighbour_recovery).toBe(true);
-    expect(circuits[0].ocpd_type).toBe('B');
+    // No assumption-based fill (2026-05-05): the demoted slot's device
+    // fields stay null — real UK boards regularly mix C-curve and B-curve
+    // (motors, hot tubs, water heaters) and Type A and Type AC, so a
+    // "majority is right" guess from board-majority is unsafe. Better
+    // blank than guessed wrong.
+    expect(circuits[0].partial_neighbour_recovery).toBeUndefined();
+    expect(circuits[0].ocpd_type).toBeNull();
     expect(circuits[0].ocpd_rating_a).toBeNull();
-    expect(circuits[0].is_rcbo).toBe(true);
+    expect(circuits[0].is_rcbo).toBe(false);
     expect(circuits[1].circuit_number).toBe(2);
     expect(circuits[1].ocpd_type).toBe('B');
 
@@ -667,14 +668,20 @@ describe('slotsToCircuits', () => {
     expect(slots[3]._demotedFromMainSwitch).toBeUndefined();
   });
 
-  test('5h. partial-extends-right slot adjacent to main_switch recovers via board pattern (2026-05-05 Elucian CU1SPD275 prod repro)', () => {
+  test('5h. partial-extends-right slot adjacent to main_switch emits null device fields with low_confidence + is_partial_crop tags (2026-05-05 Elucian CU1SPD275 prod repro)', () => {
     // Mirrors extraction 1777981112580-xewcrp (2026-05-05 11:37) where Ovens
     // at slot 11 came back with EVERY device field null because Stage 3 saw
     // bleed-through from the 2-pole main switch starting at slot 12. Stage 4
-    // still read "Ovens" from the silkscreen. Without this recovery the row
-    // appears in the schedule as bare label + nulls; with it the inspector
-    // sees curve, BS EN, RCBO family and Type-A 30 mA RCD pre-populated and
-    // only needs to confirm the rating.
+    // still read "Ovens" from the silkscreen.
+    //
+    // Earlier in the day a fix attempted to recover device fields from
+    // board-majority. User feedback (2026-05-05 ~15:30): NO assumption-
+    // based filling — UK boards regularly mix C-curve with B-curve for
+    // motors / hot tubs / water heaters and Type AC with Type A on
+    // legacy circuits. Blank is preferred over a wrong guess. The row
+    // emits with the slot's best (null) reading + low_confidence +
+    // is_partial_crop + extends_side. iOS surfaces this as a row that
+    // needs manual fill.
     const cleanRcbo = (slotIndex, label, ratingAmps) =>
       makeSlot({
         slotIndex,
@@ -766,29 +773,26 @@ describe('slotsToCircuits', () => {
     expect(circuits).toHaveLength(12);
 
     // Right-handed scan: circuit 1 is the slot nearest the main switch,
-    // i.e. slot 11 (Ovens). It's the partial slot — we recover via
-    // neighbour-bleed fallback rather than emitting bare nulls.
+    // i.e. slot 11 (Ovens). It's the partial slot — emit with null device
+    // fields, NOT board-majority guesses.
     const ovens = circuits[0];
     expect(ovens.circuit_number).toBe(1);
     expect(ovens.label).toBe('Ovens');
     expect(ovens.is_partial_crop).toBe(true);
     expect(ovens.extends_side).toBe('right');
-    expect(ovens.partial_neighbour_recovery).toBe(true);
     expect(ovens.low_confidence).toBe(true);
+    expect(ovens.partial_neighbour_recovery).toBeUndefined();
 
-    // Recovered from board majority (11 surviving RCBOs, all curve B,
-    // BS EN 61009-1, 30 mA Type A).
-    expect(ovens.ocpd_type).toBe('B');
-    expect(ovens.ocpd_bs_en).toBe('BS EN 61009-1');
-    expect(ovens.ocpd_breaking_capacity_ka).toBe('6');
-    expect(ovens.is_rcbo).toBe(true);
-    expect(ovens.rcd_protected).toBe(true);
-    expect(ovens.rcd_type).toBe('A');
-    expect(ovens.rcd_rating_ma).toBe('30');
-    expect(ovens.rcd_bs_en).toBe('61009');
-
-    // Rating intentionally null — boards mix amperages, can't safely guess.
+    // ALL device fields null — no guessing from board-majority pattern.
+    expect(ovens.ocpd_type).toBeNull();
     expect(ovens.ocpd_rating_a).toBeNull();
+    expect(ovens.ocpd_bs_en).toBeNull();
+    expect(ovens.ocpd_breaking_capacity_ka).toBeNull();
+    expect(ovens.is_rcbo).toBe(false);
+    expect(ovens.rcd_protected).toBe(false);
+    expect(ovens.rcd_type).toBeNull();
+    expect(ovens.rcd_rating_ma).toBeNull();
+    expect(ovens.rcd_bs_en).toBeNull();
 
     // Sanity: clean slots emit unchanged.
     const hob = circuits[1];

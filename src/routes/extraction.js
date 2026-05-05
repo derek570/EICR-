@@ -1813,10 +1813,6 @@ export function slotsToCircuits({
   const circuits = [];
   let circuitNumber = 1;
   let upstreamRcd = null;
-  // Lazy: computed only when the first partial-neighbour-bleed slot needs
-  // recovery (most boards have none). `undefined` = not computed yet,
-  // `null` = computed and no clean reference slots available.
-  let partialBleedFallback;
 
   for (const slot of scanOrder) {
     const cls = (slot.classification || '').toLowerCase();
@@ -1990,75 +1986,30 @@ export function slotsToCircuits({
       // Low-confidence / unknown / partial slot: emit the slot's best
       // reading and mark low_confidence. DO NOT fall back to single-shot —
       // we moved away from that because single-shot is the unreliable
-      // whole-board reasoner we're replacing. UI surfaces low_confidence
-      // so the inspector verifies.
+      // whole-board reasoner we're replacing. DO NOT fill device fields
+      // from board-majority pattern either — the user explicitly does NOT
+      // want any guessed values. UK domestic boards regularly mix C-curve
+      // with B-curve (motors, fridge-freezers, hot tubs, water heaters)
+      // and Type AC with Type A (legacy circuits next to new), so a
+      // "majority is right" assumption is wrong on any non-trivial board.
+      // UI surfaces low_confidence + is_partial_crop + extends_side so
+      // the inspector verifies / fills the row by hand. Better blank
+      // than guessed wrong.
       // Use the per-slot cascade computed in the physical-order pre-pass —
       // breaks at non-MCB positions so MCBs after a run of spares are
       // correctly unprotected. Falls back to the running `upstreamRcd` if
       // _effectiveUpstreamRcd hasn't been set (defensive — should never
       // happen since the pre-pass runs unconditionally above).
-      //
-      // Neighbour-bleed recovery (2026-05-05): when Stage 3 returns
-      // content="partial" with extends pointing at a confirmed multi-module
-      // device (main_switch or rcd), the partial reading is bleed-through
-      // from the larger neighbour's body protruding into this crop's edge,
-      // not a real partial device. The actual single-module device IS
-      // centred in the crop — the VLM just got distracted by the
-      // dominant 2-pole face. Recover by stamping the board's majority
-      // device pattern (curve, BS EN, RCBO/MCB family, RCD type) so the
-      // inspector sees the row pre-populated rather than blank. Rating is
-      // intentionally left null because real boards mix 16/20/32A across
-      // the schedule — that one field requires inspector confirmation.
-      let neighbourBleedApplied = false;
-      if (isPartial && (extendsSide === 'left' || extendsSide === 'right')) {
-        const myIdx = Number.isFinite(slot.slotIndex) ? slot.slotIndex : slots.indexOf(slot);
-        const targetIdx = myIdx + (extendsSide === 'right' ? 1 : -1);
-        let neighbour = slots.find((s) => s?.slotIndex === targetIdx);
-        if (!neighbour && targetIdx >= 0 && targetIdx < slots.length) {
-          neighbour = slots[targetIdx];
-        }
-        const neighbourCls = String(neighbour?.classification || '').toLowerCase();
-        if (neighbour && (neighbourCls === 'main_switch' || neighbourCls === 'rcd')) {
-          if (partialBleedFallback === undefined) {
-            partialBleedFallback = derivePartialNeighbourFallback(slots);
-          }
-          if (partialBleedFallback) {
-            const fb = partialBleedFallback;
-            const cascadeRcd = slot._effectiveUpstreamRcd ?? upstreamRcd;
-            const rcdProtected = fb.is_rcbo || !!cascadeRcd;
-            circuit = {
-              circuit_number: circuitNumber,
-              label: null,
-              ocpd_type: fb.ocpd_type,
-              ocpd_rating_a: null,
-              ocpd_bs_en: fb.ocpd_bs_en,
-              ocpd_breaking_capacity_ka: fb.ocpd_breaking_capacity_ka,
-              is_rcbo: fb.is_rcbo,
-              rcd_protected: rcdProtected,
-              rcd_type: fb.is_rcbo ? fb.rcd_type : (cascadeRcd?.type ?? null),
-              rcd_rating_ma: fb.is_rcbo ? fb.rcd_rating_ma : (cascadeRcd?.sensitivity ?? null),
-              rcd_bs_en: fb.is_rcbo ? '61009' : cascadeRcd ? '61008' : null,
-            };
-            neighbourBleedApplied = true;
-          }
-        }
-      }
-
-      if (!neighbourBleedApplied) {
-        circuit = buildCircuitFromSlot(
-          slot,
-          circuitNumber,
-          slot._effectiveUpstreamRcd ?? upstreamRcd
-        );
-      }
+      circuit = buildCircuitFromSlot(
+        slot,
+        circuitNumber,
+        slot._effectiveUpstreamRcd ?? upstreamRcd
+      );
       circuit.label = slotLabel;
       circuit.low_confidence = true;
       if (isPartial) {
         circuit.is_partial_crop = true;
         circuit.extends_side = extendsSide;
-      }
-      if (neighbourBleedApplied) {
-        circuit.partial_neighbour_recovery = true;
       }
     } else {
       circuit = buildCircuitFromSlot(
@@ -2094,75 +2045,6 @@ export function slotsToCircuits({
   }
 
   return circuits;
-}
-
-/**
- * Derive a fallback device pattern from the board's clean MCB/RCBO slots.
- *
- * Used by `slotsToCircuits` to recover device fields on a slot whose Stage 3
- * reading was nulled out by neighbour-bleed (the slot abuts a 2-module device
- * like a main switch or RCD; the wide 2.2× crop captures the larger device's
- * body and the VLM picks IT as the "centred" device, returning content:
- * "partial" with extends pointing at the multi-module neighbour). The slot is
- * almost certainly a single-module MCB/RCBO matching the rest of the board —
- * the only thing we can't safely guess is its rating, since real-world boards
- * mix 16/20/32A across the schedule.
- *
- * Strategy: pick the most-common ocpd_type / bs_en / rcd_* across non-partial
- * MCB/RCBO slots. is_rcbo is set true if at least half the clean slots are
- * RCBOs (treats split-load and full-RCBO boards correctly: on split-load,
- * the bled-into MCB on the upstream side of an RCD inherits the RCD's
- * cascade in the existing path anyway, but the type/curve still uses board
- * majority). Returns null if no clean reference slots are available.
- */
-function derivePartialNeighbourFallback(slots) {
-  const cleanRefs = slots.filter((s) => {
-    if (!s) return false;
-    const cls = String(s.classification || '').toLowerCase();
-    if (cls !== 'mcb' && cls !== 'rcbo') return false;
-    if (s.content === 'partial') return false;
-    return true;
-  });
-  if (cleanRefs.length === 0) return null;
-
-  const tally = (values) => {
-    const counts = new Map();
-    for (const v of values) {
-      if (v == null || v === '') continue;
-      counts.set(v, (counts.get(v) || 0) + 1);
-    }
-    let best = null;
-    let bestCount = 0;
-    for (const [v, c] of counts) {
-      if (c > bestCount) {
-        best = v;
-        bestCount = c;
-      }
-    }
-    return best;
-  };
-
-  const rcboCount = cleanRefs.filter(
-    (s) => String(s.classification || '').toLowerCase() === 'rcbo'
-  ).length;
-  const isRcboBoard = rcboCount / cleanRefs.length >= 0.5;
-
-  return {
-    sampleCount: cleanRefs.length,
-    is_rcbo: isRcboBoard,
-    ocpd_type: tally(cleanRefs.map((s) => s.tripCurve)),
-    ocpd_bs_en: tally(cleanRefs.map((s) => s.bsEn)) || (isRcboBoard ? '61009-1' : '60898-1'),
-    ocpd_breaking_capacity_ka: '6',
-    rcd_type: isRcboBoard ? tally(cleanRefs.map((s) => s.rcdWaveformType)) : null,
-    rcd_rating_ma: isRcboBoard
-      ? tally(
-          cleanRefs.map((s) =>
-            s.sensitivity != null && s.sensitivity !== '' ? String(s.sensitivity) : null
-          )
-        )
-      : null,
-    rcd_bs_en: isRcboBoard ? '61009' : null,
-  };
 }
 
 /**
