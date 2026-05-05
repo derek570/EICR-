@@ -986,131 +986,145 @@ export async function classifySlots(_imageBuffer, slotCrops, opts = {}) {
   const resultsBySlotIndex = new Map();
   const usage = { inputTokens: 0, outputTokens: 0 };
 
-  for (const batch of batches) {
-    const slotIndices = batch.map((b) => b.slotIndex);
-    const base64s = batch.map((b) => b.buffer.toString('base64'));
+  // Batches run in PARALLEL via Promise.all. Each batch's VLM call is
+  // independent — the slotIndex range a batch covers doesn't overlap any
+  // other batch — so concurrent dispatch is safe. Within each async fn,
+  // resultsBySlotIndex.set and usage += are synchronous statements with no
+  // await between read and write, so JS's single-threaded execution gives
+  // us atomicity for free (no Map.set racing with another Map.set, and no
+  // torn += reads). Failure mode: if any batch rejects, Promise.all
+  // rejects with the first error; in-flight peers complete but their
+  // results are discarded — same observable behaviour as the previous
+  // sequential loop, just with marginally more wasted cost on failure.
+  await Promise.all(
+    batches.map(async (batch) => {
+      const slotIndices = batch.map((b) => b.slotIndex);
+      const base64s = batch.map((b) => b.buffer.toString('base64'));
 
-    const abortController = new AbortController();
-    const timeoutId = setTimeout(() => abortController.abort(), CCU_GEOMETRIC_TIMEOUT_MS);
-    let response;
-    try {
-      response = await anthropic.messages.create(
-        {
-          model,
-          max_tokens: CCU_STAGE3_MAX_TOKENS,
-          messages: [
-            {
-              role: 'user',
-              content: [
-                ...base64s.map((data) => ({
-                  type: 'image',
-                  source: { type: 'base64', media_type: 'image/jpeg', data },
-                })),
-                { type: 'text', text: SLOT_CLASSIFY_PROMPT(slotIndices) },
-              ],
-            },
-          ],
-        },
-        { signal: abortController.signal }
-      );
-    } finally {
-      clearTimeout(timeoutId);
-    }
-
-    const text = (response.content || [])
-      .filter((b) => b.type === 'text')
-      .map((b) => b.text)
-      .join('');
-
-    // Parse array response. Reuse the balanced-walk extractor so trailing
-    // prose / extra blocks / unfenced multi-object responses don't trip
-    // the parser the way a naive firstBracket..lastBracket slice did.
-    let arr;
-    try {
-      arr = extractJson(text);
-      if (!Array.isArray(arr)) throw new Error('not an array');
-    } catch (err) {
-      throw new Error(`classifySlots: failed to parse VLM array response: ${err.message}`);
-    }
-
-    const u = response.usage || {};
-    usage.inputTokens += u.input_tokens || 0;
-    usage.outputTokens += u.output_tokens || 0;
-
-    // Match by echoed slot_index if present, else fall back to positional order.
-    for (let i = 0; i < batch.length; i++) {
-      const crop = batch[i];
-      const vlmItem = arr.find((x) => x && x.slot_index === crop.slotIndex) || arr[i] || {};
-      // Validate the new content/extends fields (2026-04-23 schema). Older
-      // VLM responses (or responses where the model ignored the new fields)
-      // won't include them — fall back to defaults that preserve the old
-      // behaviour: content inferred from classification, extends="none".
-      const rawContent = typeof vlmItem.content === 'string' ? vlmItem.content : null;
-      const content = ['device', 'blank', 'empty', 'partial'].includes(rawContent)
-        ? rawContent
-        : vlmItem.classification === 'blank'
-          ? 'blank'
-          : vlmItem.classification === 'empty'
-            ? 'empty'
-            : 'device';
-      const rawExtends = typeof vlmItem.extends === 'string' ? vlmItem.extends : null;
-      const extendsSide = ['none', 'left', 'right', 'both'].includes(rawExtends)
-        ? rawExtends
-        : 'none';
-
-      // OCR cross-check on ratings. Hallucinated ratings have no textual
-      // evidence in the pixels — a half-RCD crop confidently "reading"
-      // B32 won't have "32" anywhere in the transcribed rating_text.
-      // When disagreement is detected, null out the rating rather than
-      // silently accepting a fabricated number. Only applies when BOTH
-      // rating_text and ratingAmps are provided and the text is a string;
-      // older VLM responses without rating_text pass through unaffected.
-      //
-      // Strict check: does rating_text contain the digit sequence of
-      // ratingAmps? Tolerant to whitespace and adjacent characters
-      // (rating_text="B32" contains "32"; rating_text="C 40" contains
-      // "40"; rating_text="32 A" contains "32"). Handles the Wylex
-      // suffix-curve convention ("NSB32-C", "PSB32-C") which the prompt
-      // explicitly supports.
-      let ratingAmps =
-        typeof vlmItem.ratingAmps === 'number' ? vlmItem.ratingAmps : (vlmItem.ratingAmps ?? null);
-      let ratingHallucinationDetected = false;
-      if (ratingAmps != null && typeof vlmItem.rating_text === 'string') {
-        const textDigits = vlmItem.rating_text.replace(/\D+/g, ' ');
-        const ratingDigits = String(ratingAmps);
-        const tokens = textDigits.split(/\s+/).filter(Boolean);
-        const anyTokenMatches = tokens.some((tok) => tok === ratingDigits);
-        if (!anyTokenMatches) {
-          // Rating text doesn't contain the claimed rating — this is the
-          // classic half-RCD-as-B32 hallucination. Reject the rating.
-          ratingAmps = null;
-          ratingHallucinationDetected = true;
-        }
+      const abortController = new AbortController();
+      const timeoutId = setTimeout(() => abortController.abort(), CCU_GEOMETRIC_TIMEOUT_MS);
+      let response;
+      try {
+        response = await anthropic.messages.create(
+          {
+            model,
+            max_tokens: CCU_STAGE3_MAX_TOKENS,
+            messages: [
+              {
+                role: 'user',
+                content: [
+                  ...base64s.map((data) => ({
+                    type: 'image',
+                    source: { type: 'base64', media_type: 'image/jpeg', data },
+                  })),
+                  { type: 'text', text: SLOT_CLASSIFY_PROMPT(slotIndices) },
+                ],
+              },
+            ],
+          },
+          { signal: abortController.signal }
+        );
+      } finally {
+        clearTimeout(timeoutId);
       }
 
-      resultsBySlotIndex.set(crop.slotIndex, {
-        slotIndex: crop.slotIndex,
-        content,
-        extends: extendsSide,
-        classification: vlmItem.classification || (content === 'empty' ? 'empty' : 'unknown'),
-        manufacturer: vlmItem.manufacturer ?? null,
-        model: vlmItem.model ?? null,
-        ratingAmps,
-        ratingText: typeof vlmItem.rating_text === 'string' ? vlmItem.rating_text : null,
-        ratingHallucinationDetected,
-        poles: typeof vlmItem.poles === 'number' ? vlmItem.poles : null,
-        tripCurve: vlmItem.tripCurve ?? null,
-        sensitivity: typeof vlmItem.sensitivity === 'number' ? vlmItem.sensitivity : null,
-        rcdWaveformType: vlmItem.rcdWaveformType ?? null,
-        bsEn: vlmItem.bsEn ?? null,
-        confidence: typeof vlmItem.confidence === 'number' ? vlmItem.confidence : 0,
-        crop: {
-          bbox: crop.bbox,
-          base64: crop.buffer.toString('base64'),
-        },
-      });
-    }
-  }
+      const text = (response.content || [])
+        .filter((b) => b.type === 'text')
+        .map((b) => b.text)
+        .join('');
+
+      // Parse array response. Reuse the balanced-walk extractor so trailing
+      // prose / extra blocks / unfenced multi-object responses don't trip
+      // the parser the way a naive firstBracket..lastBracket slice did.
+      let arr;
+      try {
+        arr = extractJson(text);
+        if (!Array.isArray(arr)) throw new Error('not an array');
+      } catch (err) {
+        throw new Error(`classifySlots: failed to parse VLM array response: ${err.message}`);
+      }
+
+      const u = response.usage || {};
+      usage.inputTokens += u.input_tokens || 0;
+      usage.outputTokens += u.output_tokens || 0;
+
+      // Match by echoed slot_index if present, else fall back to positional order.
+      for (let i = 0; i < batch.length; i++) {
+        const crop = batch[i];
+        const vlmItem = arr.find((x) => x && x.slot_index === crop.slotIndex) || arr[i] || {};
+        // Validate the new content/extends fields (2026-04-23 schema). Older
+        // VLM responses (or responses where the model ignored the new fields)
+        // won't include them — fall back to defaults that preserve the old
+        // behaviour: content inferred from classification, extends="none".
+        const rawContent = typeof vlmItem.content === 'string' ? vlmItem.content : null;
+        const content = ['device', 'blank', 'empty', 'partial'].includes(rawContent)
+          ? rawContent
+          : vlmItem.classification === 'blank'
+            ? 'blank'
+            : vlmItem.classification === 'empty'
+              ? 'empty'
+              : 'device';
+        const rawExtends = typeof vlmItem.extends === 'string' ? vlmItem.extends : null;
+        const extendsSide = ['none', 'left', 'right', 'both'].includes(rawExtends)
+          ? rawExtends
+          : 'none';
+
+        // OCR cross-check on ratings. Hallucinated ratings have no textual
+        // evidence in the pixels — a half-RCD crop confidently "reading"
+        // B32 won't have "32" anywhere in the transcribed rating_text.
+        // When disagreement is detected, null out the rating rather than
+        // silently accepting a fabricated number. Only applies when BOTH
+        // rating_text and ratingAmps are provided and the text is a string;
+        // older VLM responses without rating_text pass through unaffected.
+        //
+        // Strict check: does rating_text contain the digit sequence of
+        // ratingAmps? Tolerant to whitespace and adjacent characters
+        // (rating_text="B32" contains "32"; rating_text="C 40" contains
+        // "40"; rating_text="32 A" contains "32"). Handles the Wylex
+        // suffix-curve convention ("NSB32-C", "PSB32-C") which the prompt
+        // explicitly supports.
+        let ratingAmps =
+          typeof vlmItem.ratingAmps === 'number'
+            ? vlmItem.ratingAmps
+            : (vlmItem.ratingAmps ?? null);
+        let ratingHallucinationDetected = false;
+        if (ratingAmps != null && typeof vlmItem.rating_text === 'string') {
+          const textDigits = vlmItem.rating_text.replace(/\D+/g, ' ');
+          const ratingDigits = String(ratingAmps);
+          const tokens = textDigits.split(/\s+/).filter(Boolean);
+          const anyTokenMatches = tokens.some((tok) => tok === ratingDigits);
+          if (!anyTokenMatches) {
+            // Rating text doesn't contain the claimed rating — this is the
+            // classic half-RCD-as-B32 hallucination. Reject the rating.
+            ratingAmps = null;
+            ratingHallucinationDetected = true;
+          }
+        }
+
+        resultsBySlotIndex.set(crop.slotIndex, {
+          slotIndex: crop.slotIndex,
+          content,
+          extends: extendsSide,
+          classification: vlmItem.classification || (content === 'empty' ? 'empty' : 'unknown'),
+          manufacturer: vlmItem.manufacturer ?? null,
+          model: vlmItem.model ?? null,
+          ratingAmps,
+          ratingText: typeof vlmItem.rating_text === 'string' ? vlmItem.rating_text : null,
+          ratingHallucinationDetected,
+          poles: typeof vlmItem.poles === 'number' ? vlmItem.poles : null,
+          tripCurve: vlmItem.tripCurve ?? null,
+          sensitivity: typeof vlmItem.sensitivity === 'number' ? vlmItem.sensitivity : null,
+          rcdWaveformType: vlmItem.rcdWaveformType ?? null,
+          bsEn: vlmItem.bsEn ?? null,
+          confidence: typeof vlmItem.confidence === 'number' ? vlmItem.confidence : 0,
+          crop: {
+            bbox: crop.bbox,
+            base64: crop.buffer.toString('base64'),
+          },
+        });
+      }
+    })
+  );
 
   // Preserve input order. Fallback defaults mirror the 2026-04-23 schema —
   // content/extends/ratingText included so downstream merger never

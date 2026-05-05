@@ -698,101 +698,108 @@ export async function classifyCarriers(_imageBuffer, slotCrops, opts = {}) {
   const resultsBySlotIndex = new Map();
   const usage = { inputTokens: 0, outputTokens: 0 };
 
-  for (const batch of batches) {
-    const slotIndices = batch.map((b) => b.slotIndex);
-    const base64s = batch.map((b) => b.buffer.toString('base64'));
+  // Batches run in PARALLEL via Promise.all. Disjoint slotIndex ranges
+  // per batch so Map.set never collides; usage += is single-statement
+  // synchronous so atomic in JS's single-threaded execution.
+  await Promise.all(
+    batches.map(async (batch) => {
+      const slotIndices = batch.map((b) => b.slotIndex);
+      const base64s = batch.map((b) => b.buffer.toString('base64'));
 
-    const abortController = new AbortController();
-    const timeoutId = setTimeout(() => abortController.abort(), CCU_REWIREABLE_TIMEOUT_MS);
-    let response;
-    try {
-      response = await anthropic.messages.create(
-        {
-          model,
-          max_tokens: CCU_REWIREABLE_STAGE3_MAX_TOKENS,
-          messages: [
-            {
-              role: 'user',
-              content: [
-                ...base64s.map((data) => ({
-                  type: 'image',
-                  source: { type: 'base64', media_type: 'image/jpeg', data },
-                })),
-                { type: 'text', text: CARRIER_CLASSIFY_PROMPT(slotIndices) },
-              ],
-            },
-          ],
-        },
-        { signal: abortController.signal }
-      );
-    } finally {
-      clearTimeout(timeoutId);
-    }
-
-    const text = (response.content || [])
-      .filter((b) => b.type === 'text')
-      .map((b) => b.text)
-      .join('');
-
-    let arr;
-    try {
-      let jsonStr = text.trim();
-      const fence = jsonStr.match(/```json\s*([\s\S]*?)```/);
-      if (fence) jsonStr = fence[1].trim();
-      const firstBracket = jsonStr.indexOf('[');
-      const lastBracket = jsonStr.lastIndexOf(']');
-      if (firstBracket !== -1 && lastBracket > firstBracket) {
-        jsonStr = jsonStr.slice(firstBracket, lastBracket + 1);
-      }
-      arr = JSON.parse(jsonStr);
-      if (!Array.isArray(arr)) throw new Error('not an array');
-    } catch (err) {
-      throw new Error(`classifyCarriers: failed to parse VLM array response: ${err.message}`);
-    }
-
-    const u = response.usage || {};
-    usage.inputTokens += u.input_tokens || 0;
-    usage.outputTokens += u.output_tokens || 0;
-
-    for (let i = 0; i < batch.length; i++) {
-      const crop = batch[i];
-      const vlmItem = arr.find((x) => x && x.slot_index === crop.slotIndex) || arr[i] || {};
-
-      const rawBodyColour =
-        typeof vlmItem.bodyColour === 'string' ? vlmItem.bodyColour.toLowerCase() : null;
-      const bodyColour =
-        rawBodyColour && Object.prototype.hasOwnProperty.call(BODY_COLOUR_TO_AMPS, rawBodyColour)
-          ? rawBodyColour
-          : rawBodyColour === 'unknown'
-            ? 'unknown'
-            : rawBodyColour
-              ? rawBodyColour
-              : null;
-
-      // If VLM returned a recognised body colour but no rating, derive rating from the
-      // BS 3036 colour code. VLM-returned ratings win (the VLM may have read a printed
-      // number on a cartridge face and we must not overwrite that with colour).
-      let ratingAmps =
-        typeof vlmItem.ratingAmps === 'number' ? vlmItem.ratingAmps : (vlmItem.ratingAmps ?? null);
-      if (ratingAmps == null && bodyColour && BODY_COLOUR_TO_AMPS[bodyColour] != null) {
-        ratingAmps = BODY_COLOUR_TO_AMPS[bodyColour];
+      const abortController = new AbortController();
+      const timeoutId = setTimeout(() => abortController.abort(), CCU_REWIREABLE_TIMEOUT_MS);
+      let response;
+      try {
+        response = await anthropic.messages.create(
+          {
+            model,
+            max_tokens: CCU_REWIREABLE_STAGE3_MAX_TOKENS,
+            messages: [
+              {
+                role: 'user',
+                content: [
+                  ...base64s.map((data) => ({
+                    type: 'image',
+                    source: { type: 'base64', media_type: 'image/jpeg', data },
+                  })),
+                  { type: 'text', text: CARRIER_CLASSIFY_PROMPT(slotIndices) },
+                ],
+              },
+            ],
+          },
+          { signal: abortController.signal }
+        );
+      } finally {
+        clearTimeout(timeoutId);
       }
 
-      resultsBySlotIndex.set(crop.slotIndex, {
-        slotIndex: crop.slotIndex,
-        bbox: crop.bbox,
-        classification: vlmItem.classification || 'unknown',
-        bodyColour,
-        ratingAmps,
-        bsEn: vlmItem.bsEn ?? null,
-        confidence: typeof vlmItem.confidence === 'number' ? vlmItem.confidence : 0,
-        crop: {
+      const text = (response.content || [])
+        .filter((b) => b.type === 'text')
+        .map((b) => b.text)
+        .join('');
+
+      let arr;
+      try {
+        let jsonStr = text.trim();
+        const fence = jsonStr.match(/```json\s*([\s\S]*?)```/);
+        if (fence) jsonStr = fence[1].trim();
+        const firstBracket = jsonStr.indexOf('[');
+        const lastBracket = jsonStr.lastIndexOf(']');
+        if (firstBracket !== -1 && lastBracket > firstBracket) {
+          jsonStr = jsonStr.slice(firstBracket, lastBracket + 1);
+        }
+        arr = JSON.parse(jsonStr);
+        if (!Array.isArray(arr)) throw new Error('not an array');
+      } catch (err) {
+        throw new Error(`classifyCarriers: failed to parse VLM array response: ${err.message}`);
+      }
+
+      const u = response.usage || {};
+      usage.inputTokens += u.input_tokens || 0;
+      usage.outputTokens += u.output_tokens || 0;
+
+      for (let i = 0; i < batch.length; i++) {
+        const crop = batch[i];
+        const vlmItem = arr.find((x) => x && x.slot_index === crop.slotIndex) || arr[i] || {};
+
+        const rawBodyColour =
+          typeof vlmItem.bodyColour === 'string' ? vlmItem.bodyColour.toLowerCase() : null;
+        const bodyColour =
+          rawBodyColour && Object.prototype.hasOwnProperty.call(BODY_COLOUR_TO_AMPS, rawBodyColour)
+            ? rawBodyColour
+            : rawBodyColour === 'unknown'
+              ? 'unknown'
+              : rawBodyColour
+                ? rawBodyColour
+                : null;
+
+        // If VLM returned a recognised body colour but no rating, derive rating from the
+        // BS 3036 colour code. VLM-returned ratings win (the VLM may have read a printed
+        // number on a cartridge face and we must not overwrite that with colour).
+        let ratingAmps =
+          typeof vlmItem.ratingAmps === 'number'
+            ? vlmItem.ratingAmps
+            : (vlmItem.ratingAmps ?? null);
+        if (ratingAmps == null && bodyColour && BODY_COLOUR_TO_AMPS[bodyColour] != null) {
+          ratingAmps = BODY_COLOUR_TO_AMPS[bodyColour];
+        }
+
+        resultsBySlotIndex.set(crop.slotIndex, {
+          slotIndex: crop.slotIndex,
           bbox: crop.bbox,
-          base64: crop.buffer.toString('base64'),
-        },
-      });
-    }
-  }
+          classification: vlmItem.classification || 'unknown',
+          bodyColour,
+          ratingAmps,
+          bsEn: vlmItem.bsEn ?? null,
+          confidence: typeof vlmItem.confidence === 'number' ? vlmItem.confidence : 0,
+          crop: {
+            bbox: crop.bbox,
+            base64: crop.buffer.toString('base64'),
+          },
+        });
+      }
+    })
+  );
 
   // Preserve input order.
   const slots = slotCrops.map(
