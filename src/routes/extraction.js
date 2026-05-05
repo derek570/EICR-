@@ -22,6 +22,8 @@ import {
   classifyRewireableSlots,
 } from '../extraction/ccu-geometric-rewireable.js';
 import { extractSlotLabels } from '../extraction/ccu-label-pass.js';
+import { applyRcdTypeLookup } from '../extraction/rcd-type-lookup.js';
+import { writeRcdPendingEntry } from '../extraction/rcd-pending-writer.js';
 import { withIdempotency } from '../middleware/idempotency.js';
 
 const router = Router();
@@ -2470,10 +2472,86 @@ router.post(
       }
 
       // --- Post-merge enrichment + defaults ---
+      // RCD type lookup table (config/rcd-type-lookup.json) — runs FIRST so
+      // that a high-confidence (manufacturer, model) hit overrides the
+      // per-slot waveform-glyph read, which is unreliable on the sub-mm
+      // BS-EN 61009 symbol. Confidence policy:
+      //   - high   → override every RCD-protected circuit's rcd_type
+      //   - medium → set as default; per-slot read at >=0.95 confidence wins
+      //   - low    → fill nulls only
+      // Anything the table doesn't cover falls through to the existing
+      // gpt-5-search-api passes below.
+      const lookupSummary = applyRcdTypeLookup(analysis, {
+        logger,
+        userId: req.user.id,
+      });
+
+      // Auto-grow: log unknown (manufacturer, model) pairs to S3 so the
+      // promote CLI can review them. `model` hits skip; defaults and
+      // misses get a sighting. Inference signals piggyback on whatever
+      // the per-slot pipeline already computed for this extraction so a
+      // pending entry has enough context for an informed promotion.
+      if (lookupSummary.outcome !== 'hit') {
+        const slots = Array.isArray(analysis.slots) ? analysis.slots : [];
+        const rcdSlots = slots.filter(
+          (s) =>
+            s &&
+            (s.classification === 'rcbo' || s.classification === 'rcd') &&
+            typeof s.rcdWaveformType === 'string'
+        );
+        const typeCounts = new Map();
+        for (const s of rcdSlots) {
+          typeCounts.set(s.rcdWaveformType, (typeCounts.get(s.rcdWaveformType) ?? 0) + 1);
+        }
+        let perSlotMajority = null;
+        let perSlotMajorityCount = 0;
+        for (const [v, c] of typeCounts) {
+          if (c > perSlotMajorityCount) {
+            perSlotMajority = v;
+            perSlotMajorityCount = c;
+          }
+        }
+        const perSlotAvgConfidence =
+          rcdSlots.length > 0
+            ? rcdSlots.reduce(
+                (a, s) => a + (typeof s.confidence === 'number' ? s.confidence : 0),
+                0
+              ) / rcdSlots.length
+            : null;
+        const inferenceSource =
+          rcdSlots.length === 0
+            ? 'classifier_only'
+            : typeCounts.size === 1
+              ? 'per_slot_uniform'
+              : 'per_slot_majority';
+        // fire-and-forget — non-fatal if S3 write fails.
+        writeRcdPendingEntry({
+          manufacturer: analysis.board_manufacturer,
+          model: analysis.board_model,
+          outcome: lookupSummary.outcome === 'miss' ? 'miss' : 'default',
+          inferredType: lookupSummary.rcd_type ?? perSlotMajority,
+          inferredWays: analysis.geometric?.moduleCount ?? null,
+          classifierConfidence: analysis.confidence?.overall ?? null,
+          perSlotAvgConfidence,
+          inferenceSource,
+          // No extractionId is in scope at this point — the geometric
+          // sidecar generates its own further down. The pending writer
+          // accepts null; the userId + last_seen timestamp are sufficient
+          // to correlate sightings against CloudWatch logs.
+          extractionId: null,
+          userId: req.user.id,
+          notes: lookupSummary.ways_warning,
+        }).catch((err) => {
+          logger.warn('RCD pending entry promise rejected (non-fatal)', {
+            userId: req.user.id,
+            error: err?.message,
+          });
+        });
+      }
+
       // RCD type lookup (gpt-5-search-api): fills rcd_type for circuits where
-      // Stage 3 couldn't read the waveform symbol. Skipped if OPENAI_API_KEY
-      // is unset (dev / sandbox). Stage 3 is the authority for waveform-read
-      // RCD types; this only fills gaps from missing/illegible markings.
+      // Stage 3 couldn't read the waveform symbol AND the table didn't have
+      // a hit. Skipped if OPENAI_API_KEY is unset (dev / sandbox).
       const openaiKey = process.env.OPENAI_API_KEY;
       if (openaiKey) {
         const rcdStartMs = Date.now();
