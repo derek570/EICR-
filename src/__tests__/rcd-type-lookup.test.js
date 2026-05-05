@@ -58,10 +58,17 @@ const FIXTURE = {
       verified_by: 'production',
     },
     'wylex/NHRS12SL': {
-      rcd_type: 'A',
+      // Production-shaped: rcd_type:null forces a model-level miss + no
+      // manufacturer fallback. Older NSBS variants of this 12-way Wylex
+      // split-load carry Type AC bank-RCDs; later revisions are Type A.
+      // The Wylex manufacturer default of 'A' (medium) is wrong on the
+      // AC variants, so we block the fallback and let the per-slot face
+      // read or the inspector decide. Field-confirmed AC on extraction
+      // 1778000413993-gqsdld 2026-05-05.
+      rcd_type: null,
       ways: 12,
-      confidence: 'high',
-      verified_by: 'datasheet',
+      confidence: 'low',
+      verified_by: 'production',
     },
     // Pair used to test confusable AMBIGUITY: both end in S/5 so a model
     // 'GR123S' could match either via the 5↔S substitution. We expect the
@@ -390,6 +397,49 @@ describe('applyRcdTypeLookup — miss / no_type outcomes', () => {
     const r = applyRcdTypeLookup(a, { lookupPath });
     expect(r.outcome).toBe('no_type');
     expect(r.applied).toBe(0);
+  });
+
+  test('model entry with null rcd_type BLOCKS the manufacturer fallback (Wylex NHRS12SL)', () => {
+    // Regression guard for Derek's 2026-05-05 Wylex extraction:
+    //   - Wylex manufacturer default = 'A' (medium confidence).
+    //   - But this specific NHRS12SL revision is Type AC.
+    //   - Production fix: model entry with rcd_type:null returns
+    //     outcome='no_type' and short-circuits the manufacturer fallback,
+    //     so circuits with null rcd_type stay null for inspector confirmation
+    //     instead of being auto-filled with the wrong default 'A'.
+    const a = makeAnalysis({
+      board_manufacturer: 'Wylex',
+      board_model: 'NHRS12SL',
+      circuits: [
+        // Two RCD-protected circuits with no Stage-3 waveform read.
+        {
+          circuit_number: 1,
+          rcd_protected: true,
+          rcd_type: null,
+          slot_index: 0,
+        },
+        {
+          circuit_number: 2,
+          rcd_protected: true,
+          rcd_type: null,
+          slot_index: 1,
+        },
+      ],
+    });
+    const r = applyRcdTypeLookup(a, { lookupPath });
+    // outcome is 'hit' (a model entry was found) but applied=0 because
+    // the entry's rcd_type is null — see the early-return in
+    // applyRcdTypeLookup at the `lookup.source === 'miss' || !lookup.rcd_type`
+    // guard. The model match short-circuits before any per-circuit
+    // fill, AND blocks the manufacturer-default fallback.
+    expect(r.outcome).toBe('hit');
+    expect(r.matched_key).toBe('wylex/NHRS12SL');
+    expect(r.rcd_type).toBeNull();
+    expect(r.applied).toBe(0);
+    // Most importantly: the Wylex manufacturer default of 'A' was NOT
+    // applied. Circuits stay null so the inspector picks the right type.
+    expect(a.circuits[0].rcd_type).toBeNull();
+    expect(a.circuits[1].rcd_type).toBeNull();
   });
 });
 

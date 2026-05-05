@@ -135,12 +135,24 @@
       "verified_by": "production",
       "added": "2026-05-05",
       "note": "Confirmed across multiple field extractions (user 82b54893, May 2026). 15-way DIN-rail with SPD."
+    },
+    "wylex/NHRS12SL": {
+      "rcd_type": null,
+      "ways": 12,
+      "confidence": "low",
+      "verified_by": "production",
+      "added": "2026-05-05",
+      "note": "12-way Wylex NHRS split-load. Older NSBS-style boards in this range commonly carry Type AC bank-RCDs; later revisions are Type A — visually indistinguishable at board level. The Wylex manufacturer default of 'A' (medium) is wrong on the AC variants. Setting rcd_type:null forces a model-level miss + no fallback fill, leaving the per-slot face read (or the inspector's manual confirmation) to decide. Field observation: extraction 1778000413993-gqsdld 2026-05-05 was AC; the LCD waveform was clearly visible on the device face."
     }
   },
   "_changelog": [
     {
       "date": "2026-05-05",
       "change": "Initial seed. Elucian default + CU1SPD275 promoted to high (production-confirmed). Other UK majors seeded at medium/low for tester rollout — pending field verification via scripts/promote-rcd-lookup.js."
+    },
+    {
+      "date": "2026-05-05",
+      "change": "Add wylex/NHRS12SL model entry with rcd_type:null. Blocks the medium-confidence Wylex manufacturer default ('A') from auto-applying to NHRS12SL extractions, which can be either Type A or Type AC depending on revision. Inspector confirms after Stage 3 read."
     }
   ]
 }
