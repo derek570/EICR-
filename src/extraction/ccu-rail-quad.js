@@ -548,32 +548,32 @@ export async function tightenAndChunkQuad(imageBuffer, userBox, opts = {}) {
     );
   }
 
-  // 7a. Phase-lock the slot grid to actual device boundaries.
+  // 7. Slot centres at uniform u in [0, 1], v = 0.5 (rail centerline).
   //
-  //     Autocorrelation gave us the period (pitch) but no phase — slot 0
-  //     could equally well start at u=0 or at u=0.3 of a pitch in. The
-  //     line-fitted corners can over-shoot the actual device row by a
-  //     fraction of a pitch (busbar housing, plastic surround, the trim
-  //     strip above the SPD), and a uniform `(i + 0.5) / N` layout puts
-  //     all slot centres at the same incorrect phase — slot 12 lands on
-  //     slot 13's actual centre, etc.
+  //    A phase-lock pass shipped briefly on 2026-05-05 (commit 0356357)
+  //    that snapped slot boundaries to actual gradient peaks via
+  //    `findBoundaryPhase`. It was REVERTED hours later after a tester
+  //    extraction reproduced 22%-of-pitch phase shift on a real Elucian
+  //    photo and dropped the rightmost RCBO (Ovens) out of the schedule.
   //
-  //     Find the offset in [0, pitchSamples) that aligns a comb of
-  //     pitch-spaced positions to the actual gradient peaks in the
-  //     rectified column-sum. That's where module BOUNDARIES are. Slot
-  //     CENTRES are halfway between consecutive boundaries.
+  //    Root-cause: a uniform phase shift assumes the line-fitter's LEFT
+  //    edge is wrong but the RIGHT edge is correct. In reality both
+  //    edges have comparable accuracy, so shifting every slot by the
+  //    LEFT error makes the RIGHT end progressively wronger and
+  //    eventually pushes the rightmost RCBO's wide Stage 3 crop into
+  //    main-switch territory. The proper fix is per-slot peak anchoring
+  //    (not a single global shift) — TODO when we have a wider corpus
+  //    to verify against.
+  //
+  //    `findBoundaryPhase` is still invoked below for diagnostic
+  //    telemetry (phaseOffsetSamples / phaseShiftPx in quadDiag) but
+  //    the result no longer affects slot placement.
   const pitchSamples = waysOverrideApplied ? RECT_SAMPLES / moduleCount : ac.lag;
   const phaseOffset = findBoundaryPhase(rectColSum, pitchSamples);
 
-  // 7b. Lay slot centres at phase-locked u-positions.
-  //     Slot i centre = phaseOffset + (i + 0.5) * pitchSamples (rectified
-  //     samples), then convert to u ∈ [0, 1] for bilinear evaluation.
-  //     Clamp u to [0, 1] for safety; in practice phase shouldn't push
-  //     slot 0 below 0 or slot N-1 above 1 by more than a fraction.
   const slotCentersPx = [];
   for (let i = 0; i < moduleCount; i++) {
-    const sampleX = phaseOffset + (i + 0.5) * pitchSamples;
-    const u = Math.min(1, Math.max(0, sampleX / RECT_SAMPLES));
+    const u = (i + 0.5) / moduleCount;
     const p = bilinearQuad(cropLocalCorners, u, 0.5);
     slotCentersPx.push(cropX0 + p.x);
   }
