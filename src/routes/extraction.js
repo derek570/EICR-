@@ -1602,6 +1602,86 @@ export function promoteLabelMatchedMainSwitch(slots, opts = {}) {
 }
 
 /**
+ * Patterns that identify a slot whose Stage 4 label clearly names it as the
+ * RCD device itself. Conservative — matches phrases that appear ONLY on
+ * an RCD device face / strip header, never on a circuit label.
+ *
+ * Notable exclusions: phrases like "Bathroom RCD" / "Sockets RCD" /
+ * "Kitchen RCD" describe RCD-PROTECTED CIRCUITS, not the RCD device.
+ * The patterns are anchored at start-of-string so they won't match those.
+ */
+const RCD_LABEL_PATTERNS = [
+  /^\s*rcd\s*$/i,
+  /^\s*main\s*rcd\s*$/i,
+  /^\s*rcd\s*main\s*$/i,
+  /^\s*\d+\s*ma\s*rcd\s*$/i, // "30mA RCD"
+  /^\s*rcd\s*\d+\s*ma\s*$/i, // "RCD 30mA"
+  /^\s*type\s*[abcdfs]{1,2}\s*rcd\s*$/i, // "Type AC RCD" / "Type A RCD"
+  /^\s*rcd\s*type\s*[abcdfs]{1,2}\s*$/i,
+  /^\s*\d+\s*a\s*rcd\s*$/i, // "80A RCD"
+  /^\s*rcd\s*\d+\s*a\s*$/i,
+  /^\s*rccb\s*$/i, // residual current circuit breaker — rare but unambiguous
+];
+
+function labelLooksLikeRcd(label) {
+  if (typeof label !== 'string') return false;
+  return RCD_LABEL_PATTERNS.some((p) => p.test(label));
+}
+
+/**
+ * Promote slots whose Stage 4 label identifies them as an RCD device, but
+ * whose Stage 3 classification calls them an MCB / RCBO / unknown.
+ *
+ * Mirrors `promoteLabelMatchedMainSwitch`. Stage 4's per-crop label pass
+ * reads the printed text on or above each slot — that text is the ground
+ * truth. When Stage 3 mis-classifies a 2-module RCD as a pair of MCBs (or
+ * a single RCBO), the slot leaks into the schedule with label "Rcd" and
+ * the phase walk never transitions. The 2026-05-05 Wylex NHRS12SL
+ * extraction (1778000413993-gqsdld) reproduced this — every circuit got
+ * tagged with the manufacturer-default RCD type instead of being driven
+ * by the actual device's face read.
+ *
+ * Runs AFTER labels are attached and AFTER `promoteLabelMatchedMainSwitch`,
+ * but BEFORE `slotsToCircuits`. The promoted slot then drives both the
+ * phase-2 transition and the upstream RCD reference for downstream MCBs.
+ *
+ * Idempotent on slots already classified rcd. Doesn't touch main_switch
+ * (higher-priority classification), spd, blank, or empty (would change
+ * the slot's meaning, not just refine it).
+ */
+export function promoteLabelMatchedRcd(slots, opts = {}) {
+  const { logger, userId } = opts;
+  if (!Array.isArray(slots)) return;
+  let promoted = 0;
+  for (const slot of slots) {
+    if (!slot) continue;
+    const cls = (slot.classification || '').toLowerCase();
+    if (
+      cls === 'rcd' ||
+      cls === 'main_switch' ||
+      cls === 'spd' ||
+      cls === 'blank' ||
+      cls === 'empty'
+    )
+      continue;
+    if (!labelLooksLikeRcd(slot.label) && !labelLooksLikeRcd(slot.labelRaw)) continue;
+    slot._originalClassification = slot.classification ?? null;
+    slot._promotedToRcdByLabel = true;
+    slot.classification = 'rcd';
+    promoted += 1;
+    if (logger) {
+      logger.info('Stage 3 rcd promoted from label', {
+        userId,
+        slotIndex: slot.slotIndex ?? null,
+        previousClassification: slot._originalClassification,
+        label: slot.label ?? null,
+      });
+    }
+  }
+  return promoted;
+}
+
+/**
  * Trim spurious main_switch classifications from oversized contiguous runs.
  *
  * Mutates `slots` in place: any slot demoted from main_switch has its
@@ -2570,6 +2650,17 @@ router.post(
             // inspector has to manually delete it. Run AFTER labels are
             // attached so the promotion sees both pieces of evidence.
             promoteLabelMatchedMainSwitch(analysis.slots, {
+              logger,
+              userId: req.user.id,
+            });
+            // Same pattern for the RCD device. Stage 3 occasionally misses
+            // a 2-module RCD (mis-calls it MCB / RCBO / unknown), even
+            // though Stage 4 reads "Rcd" / "RCD" off the strip header
+            // unambiguously. Without this promotion the missed RCD leaks
+            // into the schedule as an extra circuit AND the phase-2
+            // transition never opens for downstream MCBs (Wylex NHRS12SL
+            // 2026-05-05 extraction reproduced this).
+            promoteLabelMatchedRcd(analysis.slots, {
               logger,
               userId: req.user.id,
             });

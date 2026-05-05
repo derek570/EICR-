@@ -165,6 +165,7 @@ let slotsToCircuits;
 let buildCircuitFromSlot;
 let assembleGeometricResult;
 let adaptTightenerToPrepared;
+let promoteLabelMatchedRcd;
 let classifyModernSlotsMock;
 let prepareModernGeometryMock;
 
@@ -175,6 +176,7 @@ beforeAll(async () => {
   buildCircuitFromSlot = mod.buildCircuitFromSlot;
   assembleGeometricResult = mod.assembleGeometricResult;
   adaptTightenerToPrepared = mod.adaptTightenerToPrepared;
+  promoteLabelMatchedRcd = mod.promoteLabelMatchedRcd;
 
   // Grab references to the mocked prepare/classify functions so the
   // parallel-dispatch test can override their implementations per-test.
@@ -1403,6 +1405,124 @@ describe('buildCircuitFromSlot', () => {
     expect(circuit.ocpd_breaking_capacity_ka).toBeNull();
     expect(circuit.is_rcbo).toBe(false);
     expect(circuit.rcd_protected).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// promoteLabelMatchedRcd
+// ---------------------------------------------------------------------------
+
+describe('promoteLabelMatchedRcd', () => {
+  test('17a. promotes a slot with label "Rcd" classified as mcb', () => {
+    const slots = [
+      makeSlot({ slotIndex: 0, classification: 'mcb', label: 'Lights' }),
+      makeSlot({ slotIndex: 1, classification: 'mcb', label: 'Rcd' }),
+      makeSlot({ slotIndex: 2, classification: 'rcbo', label: 'Sockets' }),
+    ];
+    const promoted = promoteLabelMatchedRcd(slots);
+    expect(promoted).toBe(1);
+    expect(slots[0].classification).toBe('mcb');
+    expect(slots[1].classification).toBe('rcd');
+    expect(slots[1]._originalClassification).toBe('mcb');
+    expect(slots[1]._promotedToRcdByLabel).toBe(true);
+    expect(slots[2].classification).toBe('rcbo');
+  });
+
+  test('17b. promotes "RCD" / "30mA RCD" / "Type AC RCD" but NOT circuit labels like "Bathroom RCD"', () => {
+    const slots = [
+      makeSlot({ slotIndex: 0, classification: 'mcb', label: 'RCD' }),
+      makeSlot({ slotIndex: 1, classification: 'unknown', label: '30mA RCD' }),
+      makeSlot({ slotIndex: 2, classification: 'rcbo', label: 'Type AC RCD' }),
+      makeSlot({ slotIndex: 3, classification: 'mcb', label: '80A RCD' }),
+      // Circuit labels — must NOT be promoted.
+      makeSlot({ slotIndex: 4, classification: 'mcb', label: 'Bathroom RCD' }),
+      makeSlot({ slotIndex: 5, classification: 'mcb', label: 'Sockets RCD' }),
+      makeSlot({ slotIndex: 6, classification: 'mcb', label: 'Kitchen RCD Sockets' }),
+    ];
+    const promoted = promoteLabelMatchedRcd(slots);
+    expect(promoted).toBe(4);
+    expect(slots[0].classification).toBe('rcd');
+    expect(slots[1].classification).toBe('rcd');
+    expect(slots[2].classification).toBe('rcd');
+    expect(slots[3].classification).toBe('rcd');
+    expect(slots[4].classification).toBe('mcb'); // unchanged
+    expect(slots[5].classification).toBe('mcb');
+    expect(slots[6].classification).toBe('mcb');
+  });
+
+  test('17c. is idempotent on slots already classified rcd', () => {
+    const slots = [makeSlot({ slotIndex: 0, classification: 'rcd', label: 'Rcd' })];
+    const promoted = promoteLabelMatchedRcd(slots);
+    expect(promoted).toBe(0);
+    expect(slots[0].classification).toBe('rcd');
+    expect(slots[0]._promotedToRcdByLabel).toBeUndefined();
+  });
+
+  test('17d. does NOT touch main_switch / spd / blank / empty slots', () => {
+    const slots = [
+      makeSlot({ slotIndex: 0, classification: 'main_switch', label: 'RCD' }),
+      makeSlot({ slotIndex: 1, classification: 'spd', label: 'RCD' }),
+      makeSlot({ slotIndex: 2, classification: 'blank', label: 'RCD' }),
+      makeSlot({ slotIndex: 3, classification: 'empty', label: 'RCD' }),
+    ];
+    const promoted = promoteLabelMatchedRcd(slots);
+    expect(promoted).toBe(0);
+    expect(slots[0].classification).toBe('main_switch');
+    expect(slots[1].classification).toBe('spd');
+    expect(slots[2].classification).toBe('blank');
+    expect(slots[3].classification).toBe('empty');
+  });
+
+  test('17e. uses labelRaw when label is missing (falls back gracefully)', () => {
+    const slots = [makeSlot({ slotIndex: 0, classification: 'mcb', label: null, labelRaw: 'Rcd' })];
+    const promoted = promoteLabelMatchedRcd(slots);
+    expect(promoted).toBe(1);
+    expect(slots[0].classification).toBe('rcd');
+  });
+
+  test('17f. end-to-end: promoted slot drives phase-2 transition + reference for downstream MCBs', () => {
+    // Wylex NHRS12SL repro shape: an "Rcd"-labelled slot mid-rail mis-classified
+    // as mcb. After promotion, the slot becomes the upstream RCD reference and
+    // does NOT emit as a schedule row.
+    const slots = [
+      makeSlot({
+        slotIndex: 0,
+        classification: 'mcb',
+        tripCurve: 'B',
+        ratingAmps: 32,
+        label: 'Lights',
+      }),
+      makeSlot({
+        slotIndex: 1,
+        classification: 'mcb', // mis-classified — Stage 4 says "Rcd"
+        tripCurve: 'B',
+        ratingAmps: 80,
+        rcdWaveformType: 'AC',
+        sensitivity: 30,
+        bsEn: 'BS EN 61008-1',
+        label: 'Rcd',
+      }),
+      makeSlot({
+        slotIndex: 2,
+        classification: 'mcb',
+        tripCurve: 'B',
+        ratingAmps: 16,
+        label: 'Sockets',
+      }),
+    ];
+    promoteLabelMatchedRcd(slots);
+    const circuits = slotsToCircuits({ slots, mainSwitchSide: 'left' });
+    // 2 MCBs only — promoted RCD does NOT emit a row.
+    expect(circuits).toHaveLength(2);
+    expect(circuits.some((c) => c.is_rcd_device)).toBe(false);
+    // First MCB (slot 0) — phase 1, unprotected.
+    expect(circuits[0].label).toBe('Lights');
+    expect(circuits[0].rcd_protected).toBe(false);
+    // Second MCB (slot 2) — phase 2 after the promoted RCD, protected.
+    expect(circuits[1].label).toBe('Sockets');
+    expect(circuits[1].rcd_protected).toBe(true);
+    expect(circuits[1].rcd_type).toBe('AC');
+    expect(circuits[1].rcd_rating_ma).toBe('30');
   });
 });
 
