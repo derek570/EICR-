@@ -526,12 +526,21 @@ async function probeBoundary(imageBuffer, W, H, predictedX, stripTop, stripHeigh
 
 /**
  * Fine-tune each edge of the user box, derive an initial pitch from the
- * height-anchor formula, then refine the pitch using same-side-pair
- * median across multi-anchor probes.
+ * height-anchor formula (or from a `waysOverride` when supplied), then
+ * refine the pitch using same-side-pair median across multi-anchor probes.
  *
  * @param {Buffer} imageBuffer
  * @param {{x:number, y:number, w:number, h:number}} userBox in [0,1]
  *        normalised image-coords
+ * @param {{ waysOverride?: number }} [opts]
+ *        When `waysOverride` is a positive integer, the module count is
+ *        FORCED to that value and the pitch is derived as
+ *        `faceWidth / waysOverride`. The height-anchor formula is bypassed
+ *        entirely. Use when an upstream signal (e.g. a manufacturer-model
+ *        datasheet lookup) is more reliable than the per-photo geometry —
+ *        keystone/perspective on off-axis shots routinely flips the
+ *        rounding of the formula's count by ±1, dropping end devices like
+ *        the Hob 32A MCB.
  * @returns {Promise<{
  *   imageWidth: number,
  *   imageHeight: number,
@@ -541,6 +550,7 @@ async function probeBoundary(imageBuffer, W, H, predictedX, stripTop, stripHeigh
  *   pitchPx: number,
  *   slotCentersPx: number[],   // image-px X coords, one per slot
  *   initialPitchPx: number,
+ *   waysOverrideApplied: boolean,
  *   refinement: {
  *     accepted: boolean,
  *     candidatePitchPx: number|null,
@@ -551,7 +561,7 @@ async function probeBoundary(imageBuffer, W, H, predictedX, stripTop, stripHeigh
  *   }
  * }>}
  */
-export async function tightenAndChunk(imageBuffer, userBox) {
+export async function tightenAndChunk(imageBuffer, userBox, opts = {}) {
   const meta = await sharp(imageBuffer).metadata();
   const W = meta.width;
   const H = meta.height;
@@ -576,14 +586,30 @@ export async function tightenAndChunk(imageBuffer, userBox) {
   const faceWidth = rightX - leftX;
   const faceHeight = botY - topY;
 
-  // 2. Initial pitch from height-anchor formula. The two-anchor tiling
-  //    (count from face width, pitch from face_width / count) absorbs any
-  //    sub-pixel rounding error and forces slot 0 to sit half-pitch from
-  //    the rail-left edge and slot N-1 to sit half-pitch from the right.
+  // 2. Initial pitch — either forced by waysOverride or derived from the
+  //    height-anchor formula. The two-anchor tiling (count from face
+  //    width, pitch from face_width / count) absorbs any sub-pixel
+  //    rounding error and forces slot 0 to sit half-pitch from the
+  //    rail-left edge and slot N-1 to sit half-pitch from the right.
+  //
+  //    waysOverride takes precedence: when an upstream signal knows the
+  //    true module count (e.g. from a board-model datasheet), use it.
+  //    The height-anchor formula's biggest failure mode is keystone
+  //    distortion on off-axis shots — a 4 % change in detected face
+  //    height flips the count rounding by ±1 and drops an end device
+  //    (the Hob-disappearing problem). A confident waysOverride
+  //    side-steps that geometry entirely.
   const pxPerMm = faceHeight / MCB_FACE_HEIGHT_MM;
   const modulePxFromHeight = pxPerMm * MODULE_PITCH_MM;
   const moduleCountRaw = faceWidth / modulePxFromHeight;
-  const initialModuleCount = Math.max(1, Math.round(moduleCountRaw));
+  const formulaModuleCount = Math.max(1, Math.round(moduleCountRaw));
+
+  const waysOverride =
+    Number.isFinite(opts.waysOverride) && opts.waysOverride > 0
+      ? Math.round(opts.waysOverride)
+      : null;
+  const waysOverrideApplied = waysOverride != null;
+  const initialModuleCount = waysOverrideApplied ? waysOverride : formulaModuleCount;
   const initialPitchPx = faceWidth / initialModuleCount;
 
   // 3. Multi-anchor refinement. Two paths:
@@ -615,7 +641,12 @@ export async function tightenAndChunk(imageBuffer, userBox) {
       initialPitchPx,
       initialModuleCount,
     });
-    if (result.accepted) {
+    // When waysOverride is in effect, the count is authoritative: refinement
+    // can still nudge anchor positions for the slot-centre layout, but it
+    // must NOT change `moduleCount` (that would defeat the override). We
+    // also keep `pitchPx` locked to faceWidth/ways so the two-anchor tiling
+    // stays consistent.
+    if (result.accepted && !waysOverrideApplied) {
       pitchPx = result.candidatePitchPx;
       moduleCount = Math.max(1, Math.round(faceWidth / pitchPx));
     }
@@ -675,6 +706,7 @@ export async function tightenAndChunk(imageBuffer, userBox) {
       pitchPx: faceWidth / moduleCount,
       slotCentersPx: centres,
       initialPitchPx: Math.round(initialPitchPx * 10) / 10,
+      waysOverrideApplied,
       refinement,
     };
   }
@@ -737,7 +769,7 @@ export async function tightenAndChunk(imageBuffer, userBox) {
     const drift =
       candidatePitch != null ? Math.abs(candidatePitch - initialPitchPx) / initialPitchPx : null;
     const accepted = drift != null && drift <= PAIR_DRIFT_MAX;
-    if (accepted) {
+    if (accepted && !waysOverrideApplied) {
       pitchPx = candidatePitch;
       moduleCount = Math.max(1, Math.round(faceWidth / pitchPx));
     }
@@ -775,6 +807,7 @@ export async function tightenAndChunk(imageBuffer, userBox) {
     pitchPx: tilePitchPx,
     slotCentersPx,
     initialPitchPx: Math.round(initialPitchPx * 10) / 10,
+    waysOverrideApplied,
     refinement,
   };
 }

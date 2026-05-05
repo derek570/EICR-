@@ -105,3 +105,50 @@ describe('ccu-box-tighten — edge cases', () => {
     await expect(tightenAndChunk(Buffer.alloc(0), { x: 0, y: 0, w: 1, h: 1 })).rejects.toThrow();
   });
 });
+
+describeIfCorpus('ccu-box-tighten — waysOverride', () => {
+  // The Wylex corpus board's ground-truth count is 16 modules. Forcing
+  // waysOverride: 18 should produce 18 slot centres — verifying the
+  // override truly bypasses the height-anchor formula and the
+  // refinement-driven count adjustment.
+  test('forces moduleCount and lays down N slot centres', async () => {
+    const { entry, photo } = loadCorpusBoard('1777441303200-92evuu');
+    const result = await tightenAndChunk(photo, entry.userBox, { waysOverride: 18 });
+    expect(result.waysOverrideApplied).toBe(true);
+    expect(result.moduleCount).toBe(18);
+    expect(result.slotCentersPx).toHaveLength(18);
+    // Pitch should be faceWidth / 18 — same as the formula path's tile pitch.
+    const faceWidth = result.railFace.right - result.railFace.left;
+    expect(result.pitchPx).toBeCloseTo(faceWidth / 18, 0);
+    // Slot centres are monotonically increasing and within the rail.
+    for (let i = 1; i < result.slotCentersPx.length; i++) {
+      expect(result.slotCentersPx[i]).toBeGreaterThan(result.slotCentersPx[i - 1]);
+    }
+  }, 30_000);
+
+  test('refinement does NOT alter moduleCount when override active', async () => {
+    const { entry, photo } = loadCorpusBoard('1777441303200-92evuu');
+    // Without override, the formula yields 16 on this board. With the
+    // override forcing 17 and refinement still running, count must stay
+    // at 17 even if refinement's pitch suggests otherwise.
+    const result = await tightenAndChunk(photo, entry.userBox, { waysOverride: 17 });
+    expect(result.moduleCount).toBe(17);
+    expect(result.waysOverrideApplied).toBe(true);
+  }, 30_000);
+
+  test('omitted / null waysOverride preserves formula behaviour', async () => {
+    const { entry, photo } = loadCorpusBoard('1777441303200-92evuu');
+    const a = await tightenAndChunk(photo, entry.userBox);
+    const b = await tightenAndChunk(photo, entry.userBox, {});
+    const c = await tightenAndChunk(photo, entry.userBox, { waysOverride: null });
+    const d = await tightenAndChunk(photo, entry.userBox, { waysOverride: 0 });
+    expect(a.moduleCount).toBe(16);
+    expect(b.moduleCount).toBe(16);
+    expect(c.moduleCount).toBe(16);
+    expect(d.moduleCount).toBe(16);
+    expect(a.waysOverrideApplied).toBe(false);
+    expect(b.waysOverrideApplied).toBe(false);
+    expect(c.waysOverrideApplied).toBe(false);
+    expect(d.waysOverrideApplied).toBe(false);
+  }, 30_000);
+});
