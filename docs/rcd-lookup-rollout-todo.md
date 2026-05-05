@@ -137,12 +137,20 @@ Code:
       Right scope for a follow-up; this lookup feature handles the common case
       first.
 
-- [ ] **Box-tightener homography rewrite (separate sprint).** Discussed
-      separately: replace the single-scalar `pxPerMm` formula with a 4-point
-      quadrilateral rectification so off-axis CCU shots stop dropping end
-      devices. The shipped `waysOverride` mitigates this for boards whose
-      model is identifiable AND has a `ways` entry — but for unknown boards
-      the underlying CV is still fragile. Homography fixes the long tail.
+- [x] **(2026-05-05) Box-tightener perspective-aware rewrite — SHIPPED.**
+      `src/extraction/ccu-rail-quad.js`: line-fitted edges (least-squares
+      with MAD outlier rejection) → 4-corner intersection → bilinear
+      quadrilateral parameterisation → rectified column-sum →
+      autocorrelation pitch detection. Drop-in replacement gated by
+      `CCU_QUAD_GEOMETRY` (default ON), with two-tier fallback
+      (legacy box-tightener → VLM modern geometry) on any error so a
+      regression can never block extraction. Verified counts on all 3
+      annotated corpus boards: Wylex 16, Hager 16, Protek 20.
+      The `waysOverride` from the lookup table is now redundant for
+      count-fixing on identified models — the new geometry handles the
+      Hob-disappearing problem on ANY board, identified or not. Override
+      is kept as a sanity-check / inspector-question safety net but no
+      longer load-bearing.
 
 ---
 
@@ -194,3 +202,14 @@ Code:
         warning data is available.
       - `selfTest()` runs at backend boot from `src/server.js`.
       All 2719 tests green (24 new). Zero ESLint errors.
+
+- [x] **2026-05-05** — Third wave: perspective-aware rail geometry
+      shipped (`src/extraction/ccu-rail-quad.js`). Replaces the
+      single-scalar `pxPerMm` formula with line-fitted edges +
+      bilinear quadrilateral sampling + autocorrelation pitch
+      detection. New module is the default geometry path
+      (`CCU_QUAD_GEOMETRY=true`), with the legacy box-tightener as
+      a kill-switch fallback. Closes the architectural fix that the
+      `waysOverride` workaround was a stopgap for. All 2738 tests
+      green (19 new corpus + unit tests; existing 2719 unaffected).
+      Counts correct on all 3 annotated corpus boards.

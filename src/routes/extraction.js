@@ -16,6 +16,7 @@ import sharp from 'sharp';
 import { createFileFilter, IMAGE_MIMES, handleUploadError } from '../utils/upload.js';
 import { prepareModernGeometry, classifyModernSlots } from '../extraction/ccu-geometric.js';
 import { tightenAndChunk } from '../extraction/ccu-box-tighten.js';
+import { tightenAndChunkQuad } from '../extraction/ccu-rail-quad.js';
 import { inferTechnologyFromModel } from '../extraction/board-model-registry.js';
 import {
   prepareRewireableGeometry,
@@ -2179,13 +2180,18 @@ router.post(
         boardClassification.boardTechnology === 'mixed';
 
       // Feature flag: CCU_BOX_TIGHTEN switches the modern-board geometry
-      // path to the new box-tightener + multi-anchor pitch refinement
-      // (src/extraction/ccu-box-tighten.js). Only fires on the modern
-      // path AND when a railRoiHint is present (algorithm needs the
-      // user box as a starting point). Default ON. Falls back to the
-      // existing prepareModernGeometry on any tightener error so an
-      // algorithm bug can never block extraction.
+      // path to one of two CV implementations (ccu-rail-quad.js or
+      // ccu-box-tighten.js). Default ON. Tries the perspective-aware
+      // quadrilateral path first, falls back to the legacy axis-aligned
+      // box-tightener on quad error, then to the VLM prepareModernGeometry
+      // on box-tightener error. Two layers of fallback because an
+      // algorithm regression must NEVER block an extraction in production.
+      //
+      // CCU_QUAD_GEOMETRY (default true) gates the quadrilateral path.
+      // Set to "false" to skip directly to the legacy box-tightener — the
+      // kill-switch for any future quad regression.
       const boxTightenEnabled = (process.env.CCU_BOX_TIGHTEN ?? 'true').toLowerCase() === 'true';
+      const quadEnabled = (process.env.CCU_QUAD_GEOMETRY ?? 'true').toLowerCase() === 'true';
       let prepared;
       let preparedSource = 'modern-vlm';
       try {
@@ -2193,27 +2199,59 @@ router.post(
           prepared = await prepareRewireableGeometry(imageBytes);
           preparedSource = 'rewireable';
         } else if (boxTightenEnabled && railRoiHint) {
-          try {
-            const tightenerOpts = datasheetWays ? { waysOverride: datasheetWays } : {};
-            const tightened = await tightenAndChunk(imageBytes, railRoiHint, tightenerOpts);
+          const tightenerOpts = datasheetWays ? { waysOverride: datasheetWays } : {};
+          let tightened = null;
+          let tightenedFrom = null;
+
+          if (quadEnabled) {
+            try {
+              tightened = await tightenAndChunkQuad(imageBytes, railRoiHint, tightenerOpts);
+              tightenedFrom = 'quad';
+            } catch (quadErr) {
+              logger.warn('CCU quad geometry failed; falling back to legacy box-tightener', {
+                userId: req.user.id,
+                error: quadErr.message,
+              });
+            }
+          }
+
+          if (!tightened) {
+            try {
+              tightened = await tightenAndChunk(imageBytes, railRoiHint, tightenerOpts);
+              tightenedFrom = 'legacy';
+            } catch (tightenErr) {
+              logger.warn('CCU box-tightener failed; falling back to modern VLM', {
+                userId: req.user.id,
+                error: tightenErr.message,
+              });
+              prepared = await prepareModernGeometry(imageBytes, { railRoiHint });
+              preparedSource = 'modern-vlm-fallback';
+            }
+          }
+
+          if (tightened) {
             prepared = adaptTightenerToPrepared(tightened);
-            preparedSource = tightened.waysOverrideApplied ? 'box-tightener-ways' : 'box-tightener';
+            preparedSource =
+              tightenedFrom === 'quad'
+                ? tightened.waysOverrideApplied
+                  ? 'rail-quad-ways'
+                  : 'rail-quad'
+                : tightened.waysOverrideApplied
+                  ? 'box-tightener-ways'
+                  : 'box-tightener';
             logger.info('CCU box-tightener used', {
               userId: req.user.id,
+              source: tightenedFrom,
               moduleCount: tightened.moduleCount,
               pitchPx: Math.round(tightened.pitchPx * 10) / 10,
               initialPitchPx: tightened.initialPitchPx,
               waysOverrideApplied: tightened.waysOverrideApplied === true,
               datasheetWays,
+              quadrilateral: tightened.quadrilateral ?? null,
+              rectNormCorr: tightened.refinement?.quadDiag?.rectNormCorr ?? null,
               refinementAccepted: tightened.refinement.accepted,
               pairCount: tightened.refinement.pairCount,
             });
-          } catch (tightenErr) {
-            logger.warn('CCU box-tightener failed; falling back to modern VLM', {
-              userId: req.user.id,
-              error: tightenErr.message,
-            });
-            prepared = await prepareModernGeometry(imageBytes, { railRoiHint });
           }
         } else {
           prepared = await prepareModernGeometry(imageBytes, { railRoiHint });
