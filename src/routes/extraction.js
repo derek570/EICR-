@@ -22,7 +22,7 @@ import {
   classifyRewireableSlots,
 } from '../extraction/ccu-geometric-rewireable.js';
 import { extractSlotLabels } from '../extraction/ccu-label-pass.js';
-import { applyRcdTypeLookup } from '../extraction/rcd-type-lookup.js';
+import { applyRcdTypeLookup, lookupRcdType } from '../extraction/rcd-type-lookup.js';
 import { writeRcdPendingEntry } from '../extraction/rcd-pending-writer.js';
 import { withIdempotency } from '../middleware/idempotency.js';
 
@@ -2140,6 +2140,38 @@ router.post(
         });
       }
 
+      // --- Datasheet ways override (lookup BEFORE geometry) ---
+      // When the classifier identifies a board model (or manufacturer +
+      // confusable variant) for which we have a datasheet ways count,
+      // pass that count into the box-tightener so it bypasses the
+      // height-anchor formula. The formula's biggest failure mode is
+      // keystone distortion on off-axis shots — a 4 % change in detected
+      // face height flips the count rounding by ±1 and drops an end
+      // device (the Hob-disappearing problem repeatedly hit on Elucian
+      // CU1SPD275 in production logs 2026-05-05). The ways override
+      // side-steps that geometry entirely.
+      //
+      // The same lookup result is reused later (after circuits are
+      // assembled) by `applyRcdTypeLookup` to apply rcd_type. Calling
+      // it twice is cheap — it's a pure function with mtime-cached
+      // file access.
+      const upfrontLookup = lookupRcdType({
+        manufacturer: boardClassification.boardManufacturer,
+        model: boardClassification.boardModel,
+      });
+      const datasheetWays =
+        Number.isFinite(upfrontLookup.ways) && upfrontLookup.ways > 0 ? upfrontLookup.ways : null;
+      if (upfrontLookup.source !== 'miss') {
+        logger.info('RCD type lookup pre-geometry', {
+          userId: req.user.id,
+          source: upfrontLookup.source,
+          matchedKey: upfrontLookup.matched_key,
+          matchedVia: upfrontLookup.matched_via,
+          readAs: upfrontLookup.read_as ?? null,
+          datasheetWays,
+        });
+      }
+
       // --- Stage 2: prepare geometry (Stage 1 of geometric pipeline + bbox) ---
       const chooseRewireable =
         boardClassification.boardTechnology === 'rewireable_fuse' ||
@@ -2162,14 +2194,17 @@ router.post(
           preparedSource = 'rewireable';
         } else if (boxTightenEnabled && railRoiHint) {
           try {
-            const tightened = await tightenAndChunk(imageBytes, railRoiHint);
+            const tightenerOpts = datasheetWays ? { waysOverride: datasheetWays } : {};
+            const tightened = await tightenAndChunk(imageBytes, railRoiHint, tightenerOpts);
             prepared = adaptTightenerToPrepared(tightened);
-            preparedSource = 'box-tightener';
+            preparedSource = tightened.waysOverrideApplied ? 'box-tightener-ways' : 'box-tightener';
             logger.info('CCU box-tightener used', {
               userId: req.user.id,
               moduleCount: tightened.moduleCount,
               pitchPx: Math.round(tightened.pitchPx * 10) / 10,
               initialPitchPx: tightened.initialPitchPx,
+              waysOverrideApplied: tightened.waysOverrideApplied === true,
+              datasheetWays,
               refinementAccepted: tightened.refinement.accepted,
               pairCount: tightened.refinement.pairCount,
             });

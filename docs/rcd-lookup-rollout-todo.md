@@ -82,25 +82,45 @@ Code:
 
 ## Deferred follow-ups (P2 — improvements, not blockers)
 
-- [ ] **Surface `ways_warning` to the inspector via `questionsForInspector`.**
-      Currently when the box-tightener undercounts modules but the lookup knows
-      the model has more ways (the Hob-disappearing problem), we log it to
-      CloudWatch but the inspector never sees it. Right next iteration: append
-      a question like "Datasheet says 15 ways but only 14 detected — please
-      verify end devices". Held back from this rollout because it interacts
-      with TTS/voice flow and didn't want to bundle the change.
+- [x] **(2026-05-05) Use `ways` to override the box-tightener count.**
+      `tightenAndChunk` now accepts `{ waysOverride }`; route handler looks
+      it up (post-classifier, pre-geometry) and forces the count when the
+      datasheet ways is known. Refinement still runs but cannot change the
+      count when the override is in effect. This is the structural fix for
+      the Hob-disappearing problem on Elucian CU1SPD275.
 
-- [ ] **Add startup self-test for the table.** A typo in the JSON breaks the
-      lookup silently (`loadLookupTable` returns an empty table on parse error).
-      Add a server-startup assertion that at least Elucian resolves — catches
-      the regression before any extraction does.
+- [x] **(2026-05-05) Confusable-pair model matching.** `lookupRcdType`
+      now generates single-character substituted variants (S↔5, O↔0, I↔1,
+      L↔1, B↔8, G↔6, Z↔2) and tries each against the manufacturer's
+      models. Catches Stage 1 OCR errors like `CU1SPD27S` → `CU1SPD275`.
+      Abstains when 2+ variants match (ambiguous → fall through to
+      manufacturer default rather than guess).
 
-- [ ] **Manufacturer alias support.** The classifier might return
-      "BG Electrical" on one photo and "BG" on the next; the normaliser produces
-      `bg_electrical` vs `bg` and they don't match. Add an `aliases` section to
-      the JSON (`{"bg_electrical": "bg", "click_scolmore": "elucian"}`) so the
-      classifier's variants funnel into the same key. Promote CLI should
-      auto-suggest aliases when it sees similar-looking pending entries.
+- [x] **(2026-05-05) Manufacturer alias support.** `manufacturer_aliases`
+      section in the JSON. Seeded with `click_scolmore→elucian`,
+      `bg_electrical→bg`, `crabtree→eaton`, `schneider_electric→schneider`,
+      etc. Cycle-bounded at 8 hops.
+
+- [x] **(2026-05-05) Surface `ways_warning` via `questionsForInspector`.**
+      When the count override didn't fire (e.g. only manufacturer default
+      hit, no `ways`) but the lookup knows the expected count, an inspector
+      question is appended: "Module count check: detected N modules but X
+      datasheet expects M. Please verify all end devices are present."
+      Safety net for the cases the override can't catch.
+
+- [x] **(2026-05-05) Startup self-test for the table.** `selfTest()` runs
+      on backend boot from `src/server.js`. Checks the file loads, the
+      Elucian canary resolves to Type A, the Click Scolmore alias resolves,
+      and the CU1SPD275 confusable matches. Logs at `error` level on fail
+      so CloudWatch can alarm on a malformed JSON deploy.
+
+- [ ] **Plumb `waysOverride` through `prepareModernGeometry` too.** The
+      shipped override only flows through the `tightenAndChunk` path (which
+      is what fires on iOS uploads, since they always include a railRoiHint
+      and `CCU_BOX_TIGHTEN=true`). The legacy `prepareModernGeometry` →
+      `getModuleCount` path still uses the height-anchor formula. Low
+      priority because production traffic doesn't hit it, but worth doing
+      for parity / web-frontend uploads.
 
 - [ ] **Saved CloudWatch Logs Insights query** for promote-time analysis. The
       promote CLI currently only sees S3 sighting payloads. A saved query that
@@ -120,10 +140,9 @@ Code:
 - [ ] **Box-tightener homography rewrite (separate sprint).** Discussed
       separately: replace the single-scalar `pxPerMm` formula with a 4-point
       quadrilateral rectification so off-axis CCU shots stop dropping end
-      devices. This lookup feature partially mitigates that bug whenever the
-      `models{}` entry has a `ways:` field (datasheet count overrules detected
-      count via the `waysWarning` channel above), but the underlying CV is
-      still fragile.
+      devices. The shipped `waysOverride` mitigates this for boards whose
+      model is identifiable AND has a `ways` entry — but for unknown boards
+      the underlying CV is still fragile. Homography fixes the long tail.
 
 ---
 
@@ -159,3 +178,19 @@ Code:
 - [x] **2026-05-05** — Initial scaffolding shipped: seed table + lookup module +
       pending writer + promote CLI + 50 unit tests + route handler integration.
       All 2695 tests in the suite green. Zero ESLint errors.
+
+- [x] **2026-05-05** — Second wave shipped after the first tester extraction
+      reproduced the Hob-disappearing problem under the new lookup
+      (extraction `1777971668353-cu13i3`):
+      - `tightenAndChunk` accepts `{ waysOverride }`; refinement no longer
+        changes the count when override is active.
+      - `lookupRcdType` does confusable-pair model matching (CU1SPD27S →
+        CU1SPD275) and resolves manufacturer aliases (Click Scolmore →
+        Elucian).
+      - Route handler runs the lookup pre-geometry and feeds `ways` into
+        the box-tightener.
+      - `applyRcdTypeLookup` appends a `Module count check` question to
+        `questionsForInspector` when the override didn't fire but the
+        warning data is available.
+      - `selfTest()` runs at backend boot from `src/server.js`.
+      All 2719 tests green (24 new). Zero ESLint errors.

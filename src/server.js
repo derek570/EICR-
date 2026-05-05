@@ -99,6 +99,16 @@ startWorker().catch((err) => {
   logger.warn('Could not start queue worker', { error: err.message });
 });
 
+// Self-test the RCD-type lookup table at boot. Logs pass/fail; never
+// throws — a malformed table degrades gracefully to no-op, which is safer
+// than crashing the API at boot. CloudWatch alarms can target the
+// "RCD type lookup self-test FAILED" error log if a deploy ever ships a
+// broken JSON edit.
+{
+  const { selfTest: rcdLookupSelfTest } = await import('./extraction/rcd-type-lookup.js');
+  rcdLookupSelfTest(logger);
+}
+
 // Start listening
 httpServer.listen(PORT, '0.0.0.0', () => {
   logger.info(`EICR Backend API server running`, {
