@@ -13,7 +13,12 @@ import { sonnetExtractFromAudio } from '../sonnet_extract.js';
 import { getActiveSession } from '../state/recording-sessions.js';
 import logger from '../logger.js';
 import sharp from 'sharp';
-import { createFileFilter, IMAGE_MIMES, handleUploadError } from '../utils/upload.js';
+import {
+  createFileFilter,
+  IMAGE_MIMES,
+  DOCUMENT_MIMES,
+  handleUploadError,
+} from '../utils/upload.js';
 import { prepareModernGeometry, classifyModernSlots } from '../extraction/ccu-geometric.js';
 import { tightenAndChunk } from '../extraction/ccu-box-tighten.js';
 import { tightenAndChunkQuad } from '../extraction/ccu-rail-quad.js';
@@ -162,6 +167,23 @@ const upload = multer({
   }),
   limits: { fileSize: 100 * 1024 * 1024 },
   fileFilter: createFileFilter(IMAGE_MIMES),
+});
+
+// Doc-extract takes either an image (camera-shot of a printed cert) or a
+// PDF (typed cert export). PDFs go straight to Anthropic's native document
+// block — no client-side rendering or downscaling — so we accept the PDF
+// MIME alongside images on this route only. CCU + observation routes
+// remain image-only.
+const documentUpload = multer({
+  storage: multer.diskStorage({
+    destination: os.tmpdir(),
+    filename: (_req, file, cb) => {
+      const ext = path.extname(file.originalname) || '.bin';
+      cb(null, `${file.fieldname}-${Date.now()}${ext}`);
+    },
+  }),
+  limits: { fileSize: 100 * 1024 * 1024 },
+  fileFilter: createFileFilter([...IMAGE_MIMES, ...DOCUMENT_MIMES]),
 });
 
 // Debug audio keyword patterns
@@ -3054,58 +3076,90 @@ router.post(
  *
  * POST /api/analyze-document
  */
-router.post('/analyze-document', auth.requireAuth, upload.single('photo'), async (req, res) => {
-  const tempPath = req.file?.path;
+router.post(
+  '/analyze-document',
+  auth.requireAuth,
+  documentUpload.single('photo'),
+  async (req, res) => {
+    const tempPath = req.file?.path;
 
-  try {
-    if (!req.file) {
-      return res.status(400).json({ error: 'No photo uploaded' });
-    }
+    try {
+      if (!req.file) {
+        return res.status(400).json({ error: 'No photo uploaded' });
+      }
 
-    const anthropicKey = process.env.ANTHROPIC_API_KEY;
-    if (!anthropicKey) {
-      return res.status(500).json({ error: 'Anthropic API key not configured' });
-    }
+      const anthropicKey = process.env.ANTHROPIC_API_KEY;
+      if (!anthropicKey) {
+        return res.status(500).json({ error: 'Anthropic API key not configured' });
+      }
 
-    const model = (process.env.DOC_EXTRACT_MODEL || 'claude-sonnet-4-6').trim();
+      const model = (process.env.DOC_EXTRACT_MODEL || 'claude-sonnet-4-6').trim();
 
-    logger.info('Document extraction requested', {
-      userId: req.user.id,
-      fileSize: req.file.size,
-      model,
-    });
+      // Branch on PDF vs image. Detect via Content-Type with a magic-byte
+      // backstop because some HTTP clients (and our own iOS Alamofire
+      // multipart) can mislabel the part. PDF files start with "%PDF".
+      let fileBytes = await fs.readFile(tempPath);
+      const looksLikePdf =
+        fileBytes.length >= 4 &&
+        fileBytes[0] === 0x25 &&
+        fileBytes[1] === 0x50 &&
+        fileBytes[2] === 0x44 &&
+        fileBytes[3] === 0x46;
+      const isPdf = req.file.mimetype === 'application/pdf' || looksLikePdf;
 
-    // Anthropic's vision API rejects base64 payloads larger than ~5MB. iOS
-    // already scales the image client-side via ImageScaler (max 3072px,
-    // JPEG 0.92), but PDFs rendered to images on the server side and the
-    // web client can still exceed the cap. Mirror the CCU resize pattern.
-    const MAX_BASE64_BYTES = 5 * 1024 * 1024;
-    const MAX_RAW_BYTES = Math.floor(MAX_BASE64_BYTES * 0.74); // ~3.7MB raw → <5MB base64
-    let imageBytes = await fs.readFile(tempPath);
-
-    if (imageBytes.length > MAX_RAW_BYTES) {
-      logger.info('Document image too large for API, resizing with sharp', {
-        originalBytes: imageBytes.length,
-        maxBytes: MAX_RAW_BYTES,
+      logger.info('Document extraction requested', {
+        userId: req.user.id,
+        fileSize: req.file.size,
+        mimetype: req.file.mimetype,
+        isPdf,
+        model,
       });
-      imageBytes = await sharp(imageBytes)
-        .resize(2400, 2400, { fit: 'inside', withoutEnlargement: true })
-        .jpeg({ quality: 85 })
-        .toBuffer();
-      logger.info('Document image resized', { newBytes: imageBytes.length });
-    }
 
-    const base64 = Buffer.from(imageBytes).toString('base64');
+      if (!isPdf) {
+        // Anthropic's image vision rejects base64 payloads larger than ~5MB.
+        // iOS already scales client-side via ImageScaler (max 2048px, JPEG
+        // 0.80) but the web client can still exceed the cap. Mirror the CCU
+        // resize pattern. PDFs do NOT need this — Anthropic accepts up to
+        // 32MB / 100 pages natively in the document content block.
+        const MAX_BASE64_BYTES = 5 * 1024 * 1024;
+        const MAX_RAW_BYTES = Math.floor(MAX_BASE64_BYTES * 0.74); // ~3.7MB raw → <5MB base64
 
-    const prompt = `You are an expert UK electrician extracting structured data from a photographed or scanned electrical document for the CertMate EICR/EIC certificate workflow.
+        if (fileBytes.length > MAX_RAW_BYTES) {
+          logger.info('Document image too large for API, resizing with sharp', {
+            originalBytes: fileBytes.length,
+            maxBytes: MAX_RAW_BYTES,
+          });
+          fileBytes = await sharp(fileBytes)
+            .resize(2400, 2400, { fit: 'inside', withoutEnlargement: true })
+            .jpeg({ quality: 85 })
+            .toBuffer();
+          logger.info('Document image resized', { newBytes: fileBytes.length });
+        }
+      } else {
+        // Anthropic caps PDF uploads at 32MB. This is unlikely for a typical
+        // 4-page EICR (~1-3MB) but enforce it loudly rather than letting
+        // the API surface a generic 400.
+        const MAX_PDF_BYTES = 32 * 1024 * 1024;
+        if (fileBytes.length > MAX_PDF_BYTES) {
+          return res.status(413).json({
+            error: `PDF exceeds Anthropic's 32MB limit (${(fileBytes.length / 1024 / 1024).toFixed(1)}MB). Try a smaller or split file.`,
+          });
+        }
+      }
+
+      const base64 = Buffer.from(fileBytes).toString('base64');
+
+      const prompt = `You are an expert UK electrician extracting structured data from a photographed or scanned electrical document for the CertMate EICR/EIC certificate workflow.
 
 ## INPUT
-The image is one of:
-- A completed EICR (Electrical Installation Condition Report) — periodic inspection
-- A completed EIC (Electrical Installation Certificate) — new installation
-- A test results / circuit schedule sheet
-- Handwritten inspector notes
+The attached document is one of:
+- A multi-page typed PDF EICR (Electrical Installation Condition Report) — periodic inspection
+- A multi-page typed PDF EIC (Electrical Installation Certificate) — new installation
+- A photograph of a printed certificate or test results sheet
+- A photograph of handwritten inspector notes
 - Any document containing electrical installation data
+
+If the input is a PDF, READ EVERY PAGE. EICR PDFs commonly have 3–6 pages: cover / installation details / supply / observations / schedule of test results (often spanning multiple pages with 8–12 circuits per page). The schedule on later pages is just as important as the cover page — DO NOT stop at page 1.
 
 ## TASK
 Extract EVERY legible value into the JSON schema below. The schema field names match the certificate database keys exactly — emit them verbatim so the values land on the correct tab in the iOS app. The inspector is importing a previous certificate to seed a new job, so be thorough: every value you skip is one they have to retype.
@@ -3254,178 +3308,189 @@ Return ONLY this JSON. Omit any key whose value is not legibly present in the im
   ]
 }`;
 
-    // Build the Anthropic SDK client. Reuses the same import pattern as
-    // CCU classifyBoardTechnology — kept inline so this route's failure
-    // surface is independent of the CCU pipeline.
-    const Anthropic = (await import('@anthropic-ai/sdk')).default;
-    const anthropic = new Anthropic({ apiKey: anthropicKey });
+      // Build the Anthropic SDK client. Reuses the same import pattern as
+      // CCU classifyBoardTechnology — kept inline so this route's failure
+      // surface is independent of the CCU pipeline.
+      const Anthropic = (await import('@anthropic-ai/sdk')).default;
+      const anthropic = new Anthropic({ apiKey: anthropicKey });
 
-    const startMs = Date.now();
-    const response = await anthropic.messages.create({
-      model,
-      // 8000 covers a fully-populated 12-circuit EICR with observations and
-      // free-text fields. CCU per-slot uses 400-1500; doc extraction is the
-      // long-form one. Hitting the cap means a real cert with many circuits;
-      // we surface that as a 502 below so the inspector can re-shoot.
-      max_tokens: 8000,
-      messages: [
-        {
-          role: 'user',
-          content: [
-            { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: base64 } },
-            { type: 'text', text: prompt },
-          ],
-        },
-      ],
-    });
+      // PDFs ship as a `document` content block (Anthropic processes every
+      // page natively at full fidelity — the right path for typed cert
+      // exports, which are most "previous EICRs"). Images ship as an
+      // `image` block — for camera-shot photos of a printed cert, scribbled
+      // notes, etc.
+      const documentBlock = isPdf
+        ? {
+            type: 'document',
+            source: { type: 'base64', media_type: 'application/pdf', data: base64 },
+          }
+        : { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: base64 } };
 
-    const textBlocks = (response.content || []).filter((b) => b.type === 'text');
-    const rawContent = textBlocks
-      .map((b) => b.text)
-      .join('')
-      .trim();
+      const startMs = Date.now();
+      const response = await anthropic.messages.create({
+        model,
+        // 8000 covers a fully-populated 12-circuit EICR with observations and
+        // free-text fields. Multi-page PDFs with two boards / 24 circuits
+        // can press against this; if we see truncation in the wild we'll
+        // bump it. Hitting the cap surfaces as a 502 below so the inspector
+        // sees a clear failure rather than a half-populated form.
+        max_tokens: 8000,
+        messages: [
+          {
+            role: 'user',
+            content: [documentBlock, { type: 'text', text: prompt }],
+          },
+        ],
+      });
 
-    const inputTokens = response.usage?.input_tokens || 0;
-    const outputTokens = response.usage?.output_tokens || 0;
-    const stopReason = response.stop_reason || 'unknown';
-    const elapsedMs = Date.now() - startMs;
+      const textBlocks = (response.content || []).filter((b) => b.type === 'text');
+      const rawContent = textBlocks
+        .map((b) => b.text)
+        .join('')
+        .trim();
 
-    logger.info('Document extraction complete', {
-      userId: req.user.id,
-      model,
-      inputTokens,
-      outputTokens,
-      responseLength: rawContent.length,
-      stopReason,
-      elapsedMs,
-    });
+      const inputTokens = response.usage?.input_tokens || 0;
+      const outputTokens = response.usage?.output_tokens || 0;
+      const stopReason = response.stop_reason || 'unknown';
+      const elapsedMs = Date.now() - startMs;
 
-    if (stopReason === 'max_tokens') {
-      logger.error('Document extraction truncated by token limit', {
+      logger.info('Document extraction complete', {
         userId: req.user.id,
         model,
+        inputTokens,
         outputTokens,
+        responseLength: rawContent.length,
+        stopReason,
+        elapsedMs,
       });
-      return res.status(502).json({
-        error: `Response truncated at ${outputTokens} tokens. Try splitting the document or re-shooting the photo.`,
-      });
-    }
 
-    // Strip optional ```json fence; otherwise slice between first { and last }.
-    let jsonStr = rawContent;
-    const fenceMatch = jsonStr.match(/```(?:json)?\s*([\s\S]*?)```/);
-    if (fenceMatch) {
-      jsonStr = fenceMatch[1].trim();
-    } else {
-      const first = jsonStr.indexOf('{');
-      const last = jsonStr.lastIndexOf('}');
-      if (first !== -1 && last > first) {
-        jsonStr = jsonStr.slice(first, last + 1);
+      if (stopReason === 'max_tokens') {
+        logger.error('Document extraction truncated by token limit', {
+          userId: req.user.id,
+          model,
+          outputTokens,
+        });
+        return res.status(502).json({
+          error: `Response truncated at ${outputTokens} tokens. Try splitting the document or re-shooting the photo.`,
+        });
       }
-    }
 
-    let extracted;
-    try {
-      extracted = JSON.parse(jsonStr);
-    } catch (parseErr) {
-      logger.error('Document extraction JSON parse failed', {
+      // Strip optional ```json fence; otherwise slice between first { and last }.
+      let jsonStr = rawContent;
+      const fenceMatch = jsonStr.match(/```(?:json)?\s*([\s\S]*?)```/);
+      if (fenceMatch) {
+        jsonStr = fenceMatch[1].trim();
+      } else {
+        const first = jsonStr.indexOf('{');
+        const last = jsonStr.lastIndexOf('}');
+        if (first !== -1 && last > first) {
+          jsonStr = jsonStr.slice(first, last + 1);
+        }
+      }
+
+      let extracted;
+      try {
+        extracted = JSON.parse(jsonStr);
+      } catch (parseErr) {
+        logger.error('Document extraction JSON parse failed', {
+          userId: req.user.id,
+          model,
+          rawPreview: rawContent.slice(0, 500),
+          parseError: parseErr.message,
+        });
+        return res.status(502).json({
+          error: 'Could not parse extraction response. Try a clearer photo.',
+        });
+      }
+
+      // Coerce a few field types that vision models commonly return in the
+      // wrong shape. iOS decoders are permissive (decodeStringOrNumber) but
+      // booleans-as-tick-marks and number circuit refs are the two we've
+      // seen most often, so fix them up here defensively.
+      if (Array.isArray(extracted.circuits)) {
+        for (const c of extracted.circuits) {
+          if (typeof c.polarity_confirmed === 'boolean') {
+            c.polarity_confirmed = c.polarity_confirmed ? '✓' : '';
+          }
+          if (typeof c.rcd_button_confirmed === 'boolean') {
+            c.rcd_button_confirmed = c.rcd_button_confirmed ? '✓' : '';
+          }
+          if (typeof c.afdd_button_confirmed === 'boolean') {
+            c.afdd_button_confirmed = c.afdd_button_confirmed ? '✓' : '';
+          }
+          if (typeof c.circuit_ref === 'number') {
+            c.circuit_ref = String(c.circuit_ref);
+          }
+        }
+      }
+
+      // Wrap in { success, formData } envelope to match TranscriptExtractionResponse
+      const formData = {
+        circuits: extracted.circuits || [],
+        observations: extracted.observations || [],
+        installation_details: extracted.installation_details || {},
+        supply_characteristics: extracted.supply_characteristics || {},
+        board_info: extracted.board_info || {},
+      };
+
+      // Sonnet 4.6 vision pricing (eu-west-2): $3/MTok input, $15/MTok output.
+      const inputCost = (inputTokens * 3) / 1_000_000;
+      const outputCost = (outputTokens * 15) / 1_000_000;
+
+      logger.info('Document extraction parsed', {
         userId: req.user.id,
         model,
-        rawPreview: rawContent.slice(0, 500),
-        parseError: parseErr.message,
+        circuitCount: formData.circuits.length,
+        observationCount: formData.observations.length,
+        hasInstallation: Object.keys(formData.installation_details).length > 0,
+        hasSupply: Object.keys(formData.supply_characteristics).length > 0,
+        hasBoard: Object.keys(formData.board_info).length > 0,
+        costUsd: parseFloat((inputCost + outputCost).toFixed(6)),
       });
-      return res.status(502).json({
-        error: 'Could not parse extraction response. Try a clearer photo.',
-      });
-    }
 
-    // Coerce a few field types that vision models commonly return in the
-    // wrong shape. iOS decoders are permissive (decodeStringOrNumber) but
-    // booleans-as-tick-marks and number circuit refs are the two we've
-    // seen most often, so fix them up here defensively.
-    if (Array.isArray(extracted.circuits)) {
-      for (const c of extracted.circuits) {
-        if (typeof c.polarity_confirmed === 'boolean') {
-          c.polarity_confirmed = c.polarity_confirmed ? '✓' : '';
-        }
-        if (typeof c.rcd_button_confirmed === 'boolean') {
-          c.rcd_button_confirmed = c.rcd_button_confirmed ? '✓' : '';
-        }
-        if (typeof c.afdd_button_confirmed === 'boolean') {
-          c.afdd_button_confirmed = c.afdd_button_confirmed ? '✓' : '';
-        }
-        if (typeof c.circuit_ref === 'number') {
-          c.circuit_ref = String(c.circuit_ref);
-        }
-      }
-    }
-
-    // Wrap in { success, formData } envelope to match TranscriptExtractionResponse
-    const formData = {
-      circuits: extracted.circuits || [],
-      observations: extracted.observations || [],
-      installation_details: extracted.installation_details || {},
-      supply_characteristics: extracted.supply_characteristics || {},
-      board_info: extracted.board_info || {},
-    };
-
-    // Sonnet 4.6 vision pricing (eu-west-2): $3/MTok input, $15/MTok output.
-    const inputCost = (inputTokens * 3) / 1_000_000;
-    const outputCost = (outputTokens * 15) / 1_000_000;
-
-    logger.info('Document extraction parsed', {
-      userId: req.user.id,
-      model,
-      circuitCount: formData.circuits.length,
-      observationCount: formData.observations.length,
-      hasInstallation: Object.keys(formData.installation_details).length > 0,
-      hasSupply: Object.keys(formData.supply_characteristics).length > 0,
-      hasBoard: Object.keys(formData.board_info).length > 0,
-      costUsd: parseFloat((inputCost + outputCost).toFixed(6)),
-    });
-
-    // Diagnostic dump — captures the parsed JSON so we can audit prompt
-    // accuracy from CloudWatch without round-tripping through the user.
-    // Truncated to keep CloudWatch event size sane (~16KB events). Drops
-    // the per-circuit detail if the response is enormous, but always keeps
-    // installation_details / supply / board / circuit_refs / observations
-    // shape so misrouted-field bugs are visible.
-    try {
-      const refsPreview = (formData.circuits || []).map((c) => ({
-        ref: c?.circuit_ref,
-        designation: c?.circuit_designation,
-      }));
-      logger.info('Document extraction dump', {
-        userId: req.user.id,
-        installation_details: formData.installation_details,
-        supply_characteristics: formData.supply_characteristics,
-        board_info: formData.board_info,
-        circuit_refs_designations: refsPreview,
-        observations: formData.observations,
-        first_circuit_full: formData.circuits?.[0] || null,
-      });
-    } catch {
-      /* logging failure must never affect the response */
-    }
-
-    res.json({ success: true, formData });
-  } catch (error) {
-    logger.error('Document extraction failed', {
-      userId: req.user.id,
-      error: error.message,
-      stack: error.stack,
-    });
-    res.status(500).json({ error: error.message });
-  } finally {
-    if (tempPath) {
+      // Diagnostic dump — captures the parsed JSON so we can audit prompt
+      // accuracy from CloudWatch without round-tripping through the user.
+      // Truncated to keep CloudWatch event size sane (~16KB events). Drops
+      // the per-circuit detail if the response is enormous, but always keeps
+      // installation_details / supply / board / circuit_refs / observations
+      // shape so misrouted-field bugs are visible.
       try {
-        await fs.unlink(tempPath);
+        const refsPreview = (formData.circuits || []).map((c) => ({
+          ref: c?.circuit_ref,
+          designation: c?.circuit_designation,
+        }));
+        logger.info('Document extraction dump', {
+          userId: req.user.id,
+          installation_details: formData.installation_details,
+          supply_characteristics: formData.supply_characteristics,
+          board_info: formData.board_info,
+          circuit_refs_designations: refsPreview,
+          observations: formData.observations,
+          first_circuit_full: formData.circuits?.[0] || null,
+        });
       } catch {
-        /* ignore cleanup errors */
+        /* logging failure must never affect the response */
+      }
+
+      res.json({ success: true, formData });
+    } catch (error) {
+      logger.error('Document extraction failed', {
+        userId: req.user.id,
+        error: error.message,
+        stack: error.stack,
+      });
+      res.status(500).json({ error: error.message });
+    } finally {
+      if (tempPath) {
+        try {
+          await fs.unlink(tempPath);
+        } catch {
+          /* ignore cleanup errors */
+        }
       }
     }
   }
-});
+);
 
 /**
  * Enhance an observation using GPT
