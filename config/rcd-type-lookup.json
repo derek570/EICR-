@@ -1,0 +1,124 @@
+{
+  "schema_version": 1,
+  "_doc": {
+    "purpose": "RCD-type and way-count lookup for UK consumer units. Driven by board manufacturer + model identification from the Stage 1 classifier. The lookup runs BEFORE per-slot waveform reads commit, and a 'high' confidence hit overrides the per-slot VLM (which mis-reads the BS EN 61009 waveform glyph because it's sub-millimetre). Promoted entries from field testers should land here via scripts/promote-rcd-lookup.js.",
+    "confidence_levels": {
+      "high": "Override per-slot reads unconditionally. Use only when verified against the manufacturer datasheet AND/OR cross-confirmed by 5+ field extractions.",
+      "medium": "Use as default. Per-slot reads at confidence >= 0.95 that disagree are honoured (covers the 'older RCBO retrofitted into newer board' case).",
+      "low": "Hint only. Fills nulls but never overrides an existing per-slot read."
+    },
+    "verified_by_values": {
+      "datasheet": "Cross-checked against the manufacturer's published datasheet by a human.",
+      "production": "Confirmed by 5+ successful field extractions (no inspector corrections).",
+      "field": "Confirmed by an inspector after on-device verification.",
+      "literature": "Industry-known default; not yet verified for this exact entry. Treat as a starting point.",
+      "pending": "Auto-promoted from rcd-lookup-pending without human review (avoid in production)."
+    },
+    "manufacturer_key_normalisation": "lowercase, alphanumeric only, '_' separator (see normaliseManufacturer in src/extraction/rcd-type-lookup.js).",
+    "model_key_normalisation": "uppercase, whitespace stripped, '_' / '-' / digits / letters preserved (see normaliseModel)."
+  },
+  "manufacturer_defaults": {
+    "elucian": {
+      "rcd_type": "A",
+      "confidence": "high",
+      "since": 2020,
+      "verified_by": "production",
+      "note": "All current Elucian (Click Scolmore) RCBO consumer units are Type A. Confirmed via production extractions and inspector verification."
+    },
+    "wylex": {
+      "rcd_type": "A",
+      "confidence": "medium",
+      "since": 2018,
+      "verified_by": "literature",
+      "note": "Modern NH-series and AMR RCBOs are Type A. Older NSBS retrofits may be Type AC — keep medium so confident per-slot AC reads are honoured."
+    },
+    "bg": {
+      "rcd_type": "A",
+      "confidence": "medium",
+      "since": 2020,
+      "verified_by": "literature",
+      "note": "BG Fortress current range (CFUDP/CUCRB RCBOs) is Type A. Verify before promoting to high."
+    },
+    "fusebox": {
+      "rcd_type": "A",
+      "confidence": "medium",
+      "since": 2018,
+      "verified_by": "literature",
+      "note": "CPN / Europa Fusebox FB-series RCBOs are Type A across the modern range."
+    },
+    "chint": {
+      "rcd_type": "A",
+      "confidence": "medium",
+      "since": 2020,
+      "verified_by": "literature",
+      "note": "Chint NHB1L RCBO range is Type A."
+    },
+    "schneider": {
+      "rcd_type": "A",
+      "confidence": "medium",
+      "since": 2019,
+      "verified_by": "literature",
+      "note": "Easy9 (EZ9D) and Resi9 RCBO ranges are Type A. Older Acti9 stock may be Type AC."
+    },
+    "mk": {
+      "rcd_type": "A",
+      "confidence": "medium",
+      "since": 2020,
+      "verified_by": "literature",
+      "note": "MK Sentry K/KQ-series RCBOs are Type A. Older Sentry stock may be Type AC."
+    },
+    "hager": {
+      "rcd_type": null,
+      "confidence": "low",
+      "verified_by": "literature",
+      "note": "Series-dependent. VML/VYP/VCL Design 10/30 are Type A; older VKM and some VMS variants are Type AC. Prefer model-level lookup; null default forces fallthrough."
+    },
+    "eaton": {
+      "rcd_type": null,
+      "confidence": "low",
+      "verified_by": "literature",
+      "note": "Memshield 3 RCBOs vary. Crabtree-branded Starbreaker (now Eaton) is mostly Type AC on older stock, Type A on current. Prefer model-level lookup."
+    },
+    "crabtree": {
+      "rcd_type": null,
+      "confidence": "low",
+      "verified_by": "literature",
+      "note": "Mostly migrated to Eaton branding. Starbreaker bank-RCD boards are typically Type AC; newer RCBO modules Type A. Prefer model-level lookup."
+    },
+    "contactum": {
+      "rcd_type": null,
+      "confidence": "low",
+      "verified_by": "literature",
+      "note": "Defender (CPCNR) RCBOs are Type A; older Contactum stock varies. Prefer model-level lookup."
+    },
+    "lewden": {
+      "rcd_type": null,
+      "confidence": "low",
+      "verified_by": "literature",
+      "note": "Range varies. Prefer model-level lookup."
+    },
+    "proteus": {
+      "rcd_type": "A",
+      "confidence": "medium",
+      "since": 2020,
+      "verified_by": "literature",
+      "note": "Geyer Proteus RCBO range is Type A."
+    }
+  },
+  "models": {
+    "elucian/CU1SPD275": {
+      "rcd_type": "A",
+      "ways": 15,
+      "confidence": "high",
+      "verified_by": "production",
+      "added": "2026-05-05",
+      "note": "Confirmed across multiple field extractions (user 82b54893, May 2026). 15-way DIN-rail with SPD."
+    }
+  },
+  "_changelog": [
+    {
+      "date": "2026-05-05",
+      "change": "Initial seed. Elucian default + CU1SPD275 promoted to high (production-confirmed). Other UK majors seeded at medium/low for tester rollout — pending field verification via scripts/promote-rcd-lookup.js."
+    }
+  ]
+}
