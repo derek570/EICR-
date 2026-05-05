@@ -3043,6 +3043,15 @@ router.post(
  * Returns the same { success, formData } shape as /api/recording/extract-transcript
  * so the iOS app can merge results via CertificateMerger.
  *
+ * Uses Claude Sonnet vision via the Anthropic SDK. We previously tried
+ * `gpt-5.2` here and it returned ~50 completion tokens on a 1.9MB EICR
+ * photo (finish_reason "stop", not truncation) — the model just shrugged
+ * at the task. Sonnet handles the dense schema reliably; the CCU pipeline
+ * already uses it for vision and we share the same JSON-extraction
+ * helpers and resize logic. Field names below match the iOS
+ * CertificateMerger 1:1 so the inspector sees every legible value
+ * dropped onto the right tab.
+ *
  * POST /api/analyze-document
  */
 router.post('/analyze-document', auth.requireAuth, upload.single('photo'), async (req, res) => {
@@ -3053,12 +3062,12 @@ router.post('/analyze-document', auth.requireAuth, upload.single('photo'), async
       return res.status(400).json({ error: 'No photo uploaded' });
     }
 
-    const apiKey = process.env.OPENAI_API_KEY;
-    if (!apiKey) {
-      return res.status(500).json({ error: 'OpenAI API key not configured' });
+    const anthropicKey = process.env.ANTHROPIC_API_KEY;
+    if (!anthropicKey) {
+      return res.status(500).json({ error: 'Anthropic API key not configured' });
     }
 
-    const model = (process.env.DOC_EXTRACT_MODEL || process.env.CCU_MODEL || 'gpt-5.2').trim();
+    const model = (process.env.DOC_EXTRACT_MODEL || 'claude-sonnet-4-6').trim();
 
     logger.info('Document extraction requested', {
       userId: req.user.id,
@@ -3066,217 +3075,254 @@ router.post('/analyze-document', auth.requireAuth, upload.single('photo'), async
       model,
     });
 
-    const imageBytes = await fs.readFile(tempPath);
+    // Anthropic's vision API rejects base64 payloads larger than ~5MB. iOS
+    // already scales the image client-side via ImageScaler (max 3072px,
+    // JPEG 0.92), but PDFs rendered to images on the server side and the
+    // web client can still exceed the cap. Mirror the CCU resize pattern.
+    const MAX_BASE64_BYTES = 5 * 1024 * 1024;
+    const MAX_RAW_BYTES = Math.floor(MAX_BASE64_BYTES * 0.74); // ~3.7MB raw → <5MB base64
+    let imageBytes = await fs.readFile(tempPath);
+
+    if (imageBytes.length > MAX_RAW_BYTES) {
+      logger.info('Document image too large for API, resizing with sharp', {
+        originalBytes: imageBytes.length,
+        maxBytes: MAX_RAW_BYTES,
+      });
+      imageBytes = await sharp(imageBytes)
+        .resize(2400, 2400, { fit: 'inside', withoutEnlargement: true })
+        .jpeg({ quality: 85 })
+        .toBuffer();
+      logger.info('Document image resized', { newBytes: imageBytes.length });
+    }
+
     const base64 = Buffer.from(imageBytes).toString('base64');
 
-    const prompt = `You are an expert UK electrician extracting data from a document for an EICR (Electrical Installation Condition Report) or EIC (Electrical Installation Certificate).
+    const prompt = `You are an expert UK electrician extracting structured data from a photographed or scanned electrical document for the CertMate EICR/EIC certificate workflow.
 
-## TASK
-
-The user has uploaded a photo of one of the following:
-- A previous EICR or EIC certificate
-- Handwritten inspection notes
-- A printed or typed test results sheet
+## INPUT
+The image is one of:
+- A completed EICR (Electrical Installation Condition Report) — periodic inspection
+- A completed EIC (Electrical Installation Certificate) — new installation
+- A test results / circuit schedule sheet
+- Handwritten inspector notes
 - Any document containing electrical installation data
 
-Extract ALL readable data and return structured JSON. Be thorough — extract every field you can read.
+## TASK
+Extract EVERY legible value into the JSON schema below. The schema field names match the certificate database keys exactly — emit them verbatim so the values land on the correct tab in the iOS app. The inspector is importing a previous certificate to seed a new job, so be thorough: every value you skip is one they have to retype.
 
-## WHAT TO EXTRACT
+## CRITICAL RULES
+1. ONLY emit values you can actually read in the image. Never guess, infer, or fabricate. If a field is illegible or absent, OMIT the key entirely (do not write null, do not write "").
+2. Use the exact JSON keys shown in the schema. Do not invent new keys, rename, or reorder nested objects.
+3. All numeric values are returned as STRINGS (e.g. "32" not 32, "0.35" not 0.35). The only Int field is "next_inspection_years".
+4. For "≥200", "> 200", ">200 MΩ" etc on insulation resistance, normalise to ">200".
+5. For tick / cross / Y / N fields, emit "✓" for confirmed and "✗" for not confirmed (or omit if blank).
+6. If the image shows multiple boards or multiple pages of circuits, include ALL circuits.
+7. Return ONLY the JSON object. No markdown fences, no commentary, no leading/trailing text.
 
-### Installation Details
-- Client name, address (including postcode, town, county)
-- Description of premises (e.g., "3 bed semi-detached house")
-- Reason for report (e.g., "Periodic inspection", "Change of tenancy")
-- Occupier name
-- Date of previous inspection
-- Previous certificate number
-- Estimated age of installation (years)
-- General condition of installation
-- Next inspection recommended interval (years)
-- Installation records available (yes/no)
-- Evidence of additions/alterations (yes/no)
+## ENUM REFERENCE (use these exact strings)
+- earthing_arrangement: "TN-C-S" | "TN-S" | "TT" | "IT"
+- ocpd_type: "B" | "C" | "D" | "Rew" | "HRC" (Rew = BS 3036 rewireable, HRC = BS 1361/88 cartridge)
+- ocpd_bs_en: "60898" | "60898-1" | "61009" | "61009-1" | "60947-2" | "BS 3036" | "BS 1361" | "BS 88-2" | "BS 88-3"
+- rcd_type: "AC" | "A" | "B" | "F" | "S"
+- rcd_bs_en: "61008" | "61009" | "62423" | "EN 61008-1" | "EN 61009-1"
+- wiring_type: "A" (PVC singles in conduit) | "B" (PVC singles in trunking) | "C" (PVC/PVC flat twin & earth, clipped direct) | "D" (Mineral insulated) | "E" (PVC singles in metal trunking) | "F" (Other)
+- spd_status: "Fitted" | "Not Fitted" | "Not Required"
+- observation code: "C1" (danger present) | "C2" (potentially dangerous) | "C3" (improvement recommended) | "FI" (further investigation required)
+- next_inspection_years: integer 1-10
+- nominal_voltage_u: usually "230"
+- nominal_frequency: usually "50"
 
-### Supply Characteristics
-- Earthing arrangement (TN-C-S, TN-S, TT, IT)
-- Nominal voltage (e.g., "230")
-- Nominal frequency (e.g., "50")
-- Prospective fault current in kA (e.g., "0.88")
-- External earth loop impedance Ze in ohms (e.g., "0.35")
+## DATE FORMATS
+All date fields use UK format DD/MM/YYYY as a string (e.g. "15/03/2024").
 
-### Board Info
-- Manufacturer and model
-- Main switch rating (amps), BS/EN, poles, voltage
-- SPD status (fitted/not fitted), type, rating
+## SCHEMA
+Return ONLY this JSON. Omit any key whose value is not legibly present in the image.
 
-### Circuits (test results)
-For each circuit found, extract:
-- Circuit reference number and designation/description
-- Cable sizes (live and CPC in mm²)
-- Wiring type and reference method
-- Number of points
-- OCPD: type (B/C/D), rating (A), BS/EN, breaking capacity (kA)
-- RCD: type (AC/A/B/F/S), operating current (mA), BS/EN
-- Ring continuity: R1, Rn, R2 (ohms)
-- r1+r2 and r2 values (ohms)
-- Insulation resistance: live-live and live-earth (MΩ) — prefix with > if greater than
-- Earth fault loop impedance Zs (ohms)
-- Polarity confirmed (true/false)
-- RCD trip time (ms)
-- RCD button test confirmed (true/false)
-
-### Observations
-For each observation/defect noted:
-- Classification code: C1 (danger present), C2 (potentially dangerous), C3 (improvement recommended), FI (further investigation)
-- Observation text (the defect description)
-- Item/location
-- Schedule item reference
-- Regulation reference
-
-## RULES
-- Only extract data you can actually read — do NOT guess or fabricate values
-- For illegible fields, omit them (do not set to null)
-- For insulation resistance values shown as ">200" or "≥200", return ">200"
-- Circuit numbers should be integers
-- Amp ratings should be strings (e.g., "32" not 32)
-- Ohm values should be strings (e.g., "0.35")
-- If multiple boards are shown, extract all circuits
-
-## OUTPUT FORMAT
-
-Return ONLY valid JSON matching this exact schema:
 {
   "installation_details": {
-    "client_name": "string or omit",
-    "address": "string or omit",
-    "postcode": "string or omit",
-    "town": "string or omit",
-    "county": "string or omit",
-    "premises_description": "string or omit",
-    "reason_for_report": "string or omit",
-    "occupier_name": "string or omit",
-    "date_of_previous_inspection": "string or omit",
-    "previous_certificate_number": "string or omit",
-    "estimated_age_of_installation": "string or omit",
-    "general_condition_of_installation": "string or omit",
+    "client_name": "Householder or company name",
+    "address": "Full street address WITHOUT postcode/town/county on the same line — e.g. '12 Acacia Avenue'",
+    "postcode": "UK postcode in standard format e.g. 'SL6 4QH'",
+    "town": "Post town",
+    "county": "County",
+    "premises_description": "e.g. '3-bed semi-detached house', 'Retail shop with flat above'",
+    "occupier_name": "If different from client",
+    "client_phone": "Phone number digits only",
+    "client_email": "Email address",
+    "reason_for_report": "e.g. 'Periodic inspection', 'Change of tenancy', 'Insurance request', 'Pre-purchase'",
+    "extent": "Extent of installation covered by the inspection",
+    "agreed_limitations": "Any agreed limitations to the inspection",
+    "agreed_with": "Person agreed-with for limitations",
+    "operational_limitations": "Operational limitations encountered during inspection",
+    "estimated_age_of_installation": "Years as a string e.g. '15'",
+    "general_condition_of_installation": "Free-text condition summary as written on the cert",
+    "date_of_inspection": "DD/MM/YYYY of THIS inspection (use only the inspection date — not the report-issue date if different)",
+    "date_of_previous_inspection": "DD/MM/YYYY of the previous inspection if recorded",
+    "previous_certificate_number": "Cert number string",
     "next_inspection_years": 5,
-    "installation_records_available": "Yes or No or omit",
-    "evidence_of_additions_alterations": "Yes or No or omit"
+    "installation_records_available": "Yes",
+    "evidence_of_additions_alterations": "No"
   },
   "supply_characteristics": {
-    "earthing_arrangement": "TN-C-S or TN-S or TT or IT",
+    "earthing_arrangement": "TN-C-S",
     "nominal_voltage_u": "230",
     "nominal_frequency": "50",
-    "prospective_fault_current": "string kA",
-    "earth_loop_impedance_ze": "string ohms"
+    "prospective_fault_current": "0.88",
+    "earth_loop_impedance_ze": "0.35"
   },
   "board_info": {
-    "manufacturer": "string or omit",
-    "name": "string — board model or omit",
-    "rated_current": "string amps or omit",
-    "main_switch_bs_en": "string or omit",
-    "spd_status": "Fitted or Not Fitted or omit"
+    "manufacturer": "e.g. 'Wylex', 'Hager', 'MK', 'Crabtree', 'Schneider', 'BG', 'Eaton'",
+    "name": "Board model code e.g. 'NHRS12SL', 'VML112'",
+    "location": "Where the board is located e.g. 'Hallway under stairs'",
+    "phases": "Single Phase | Three Phase",
+    "earthing_arrangement": "Repeat from supply characteristics if shown on board section",
+    "ze": "External earth loop impedance in ohms — string",
+    "ze_at_db": "Ze measured at the distribution board if shown — string",
+    "ipf_at_db": "Prospective fault current at the DB in kA — string",
+    "rated_current": "Main switch rating in amps as a string e.g. '100'",
+    "main_switch_bs_en": "BS/EN of main switch e.g. '60947-3'",
+    "voltage_rating": "Main switch voltage rating string",
+    "ipf_rating": "Main switch breaking capacity in kA string",
+    "rcd_rating_ma": "Main RCD rating in mA string if board has a main RCD",
+    "rcd_trip_time": "Main RCD trip time in ms string",
+    "spd_status": "Fitted",
+    "spd_type": "Type 1 | Type 2 | Type 3 | Type 1+2 | Type 2+3"
   },
   "circuits": [
     {
       "circuit_ref": "1",
-      "circuit_designation": "Ring Main",
+      "circuit_designation": "Ring Main Sockets — Ground Floor",
+      "wiring_type": "C",
+      "ref_method": "C",
+      "number_of_points": "8",
       "live_csa_mm2": "2.5",
       "cpc_csa_mm2": "1.5",
-      "wiring_type": "string or omit",
-      "ref_method": "string or omit",
-      "number_of_points": "string or omit",
+      "max_disconnect_time_s": "0.4",
+      "ocpd_bs_en": "60898-1",
       "ocpd_type": "B",
       "ocpd_rating_a": "32",
-      "ocpd_bs_en": "60898-1",
       "ocpd_breaking_capacity_ka": "6",
+      "ocpd_max_zs_ohm": "1.37",
+      "rcd_bs_en": "61009",
       "rcd_type": "A",
       "rcd_operating_current_ma": "30",
-      "rcd_bs_en": "61009",
+      "rcd_rating_a": "32",
       "ring_r1_ohm": "0.88",
       "ring_rn_ohm": "0.91",
       "ring_r2_ohm": "1.11",
       "r1_r2_ohm": "0.89",
       "r2_ohm": "0.45",
+      "ir_test_voltage_v": "500",
       "ir_live_live_mohm": ">200",
       "ir_live_earth_mohm": ">200",
+      "polarity_confirmed": "✓",
       "measured_zs_ohm": "0.45",
-      "polarity_confirmed": "true",
       "rcd_time_ms": "18",
-      "rcd_button_confirmed": "true"
+      "rcd_button_confirmed": "✓",
+      "afdd_button_confirmed": "✓"
     }
   ],
   "observations": [
     {
       "code": "C2",
-      "observation_text": "Description of defect",
-      "item_location": "Distribution board",
-      "schedule_item": "4.2",
-      "regulation": "Reg 421.1.201"
+      "observation_text": "Verbatim description of the defect as written on the cert",
+      "item_location": "Where the defect is — e.g. 'Distribution board', 'Bathroom', 'Outdoor socket'",
+      "schedule_item": "Schedule of inspections item reference if shown — e.g. '4.2'",
+      "regulation": "BS 7671 regulation reference e.g. 'Reg 421.1.201'"
     }
   ]
 }`;
 
-    const OpenAI = (await import('openai')).default;
-    const openai = new OpenAI({ apiKey });
+    // Build the Anthropic SDK client. Reuses the same import pattern as
+    // CCU classifyBoardTechnology — kept inline so this route's failure
+    // surface is independent of the CCU pipeline.
+    const Anthropic = (await import('@anthropic-ai/sdk')).default;
+    const anthropic = new Anthropic({ apiKey: anthropicKey });
 
-    const dataUrl = `data:image/jpeg;base64,${base64}`;
-
-    const response = await openai.chat.completions.create({
+    const startMs = Date.now();
+    const response = await anthropic.messages.create({
       model,
-      max_completion_tokens: 16384,
-      temperature: 0,
-      response_format: { type: 'json_object' },
+      // 8000 covers a fully-populated 12-circuit EICR with observations and
+      // free-text fields. CCU per-slot uses 400-1500; doc extraction is the
+      // long-form one. Hitting the cap means a real cert with many circuits;
+      // we surface that as a 502 below so the inspector can re-shoot.
+      max_tokens: 8000,
       messages: [
         {
           role: 'user',
           content: [
-            { type: 'image_url', image_url: { url: dataUrl, detail: 'high' } },
+            { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: base64 } },
             { type: 'text', text: prompt },
           ],
         },
       ],
     });
 
-    const content = response.choices?.[0]?.message?.content || '';
-    const promptTokens = response.usage?.prompt_tokens || 0;
-    const completionTokens = response.usage?.completion_tokens || 0;
-    const finishReason = response.choices?.[0]?.finish_reason || 'unknown';
+    const textBlocks = (response.content || []).filter((b) => b.type === 'text');
+    const rawContent = textBlocks
+      .map((b) => b.text)
+      .join('')
+      .trim();
+
+    const inputTokens = response.usage?.input_tokens || 0;
+    const outputTokens = response.usage?.output_tokens || 0;
+    const stopReason = response.stop_reason || 'unknown';
+    const elapsedMs = Date.now() - startMs;
 
     logger.info('Document extraction complete', {
       userId: req.user.id,
       model,
-      promptTokens,
-      completionTokens,
-      responseLength: content.length,
-      finishReason,
+      inputTokens,
+      outputTokens,
+      responseLength: rawContent.length,
+      stopReason,
+      elapsedMs,
     });
 
-    if (finishReason === 'length') {
+    if (stopReason === 'max_tokens') {
       logger.error('Document extraction truncated by token limit', {
         userId: req.user.id,
         model,
-        completionTokens,
+        outputTokens,
       });
       return res.status(502).json({
-        error: `Response truncated (${completionTokens} tokens). Try a clearer photo or retry.`,
+        error: `Response truncated at ${outputTokens} tokens. Try splitting the document or re-shooting the photo.`,
       });
     }
 
-    let jsonStr = content;
-    if (jsonStr.startsWith('```json')) {
-      jsonStr = jsonStr.slice(7);
-    } else if (jsonStr.startsWith('```')) {
-      jsonStr = jsonStr.slice(3);
+    // Strip optional ```json fence; otherwise slice between first { and last }.
+    let jsonStr = rawContent;
+    const fenceMatch = jsonStr.match(/```(?:json)?\s*([\s\S]*?)```/);
+    if (fenceMatch) {
+      jsonStr = fenceMatch[1].trim();
+    } else {
+      const first = jsonStr.indexOf('{');
+      const last = jsonStr.lastIndexOf('}');
+      if (first !== -1 && last > first) {
+        jsonStr = jsonStr.slice(first, last + 1);
+      }
     }
-    if (jsonStr.endsWith('```')) {
-      jsonStr = jsonStr.slice(0, -3);
+
+    let extracted;
+    try {
+      extracted = JSON.parse(jsonStr);
+    } catch (parseErr) {
+      logger.error('Document extraction JSON parse failed', {
+        userId: req.user.id,
+        model,
+        rawPreview: rawContent.slice(0, 500),
+        parseError: parseErr.message,
+      });
+      return res.status(502).json({
+        error: 'Could not parse extraction response. Try a clearer photo.',
+      });
     }
-    jsonStr = jsonStr.trim();
 
-    const extracted = JSON.parse(jsonStr);
-
-    // Convert circuits: ensure polarity_confirmed and rcd_button_confirmed are strings
-    if (extracted.circuits) {
+    // Coerce a few field types that vision models commonly return in the
+    // wrong shape. iOS decoders are permissive (decodeStringOrNumber) but
+    // booleans-as-tick-marks and number circuit refs are the two we've
+    // seen most often, so fix them up here defensively.
+    if (Array.isArray(extracted.circuits)) {
       for (const c of extracted.circuits) {
         if (typeof c.polarity_confirmed === 'boolean') {
           c.polarity_confirmed = c.polarity_confirmed ? '✓' : '';
@@ -3284,7 +3330,9 @@ Return ONLY valid JSON matching this exact schema:
         if (typeof c.rcd_button_confirmed === 'boolean') {
           c.rcd_button_confirmed = c.rcd_button_confirmed ? '✓' : '';
         }
-        // Ensure circuit_ref is a string
+        if (typeof c.afdd_button_confirmed === 'boolean') {
+          c.afdd_button_confirmed = c.afdd_button_confirmed ? '✓' : '';
+        }
         if (typeof c.circuit_ref === 'number') {
           c.circuit_ref = String(c.circuit_ref);
         }
@@ -3300,8 +3348,9 @@ Return ONLY valid JSON matching this exact schema:
       board_info: extracted.board_info || {},
     };
 
-    const inputCost = (promptTokens * 0.002) / 1000;
-    const outputCost = (completionTokens * 0.012) / 1000;
+    // Sonnet 4.6 vision pricing (eu-west-2): $3/MTok input, $15/MTok output.
+    const inputCost = (inputTokens * 3) / 1_000_000;
+    const outputCost = (outputTokens * 15) / 1_000_000;
 
     logger.info('Document extraction parsed', {
       userId: req.user.id,
@@ -3319,6 +3368,7 @@ Return ONLY valid JSON matching this exact schema:
     logger.error('Document extraction failed', {
       userId: req.user.id,
       error: error.message,
+      stack: error.stack,
     });
     res.status(500).json({ error: error.message });
   } finally {
