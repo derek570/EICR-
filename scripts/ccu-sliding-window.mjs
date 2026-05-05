@@ -37,6 +37,8 @@ import fs from 'fs';
 import path from 'path';
 import Anthropic from '@anthropic-ai/sdk';
 import { prepareModernGeometry } from '../src/extraction/ccu-geometric.js';
+import { prepareRewireableGeometry } from '../src/extraction/ccu-geometric-rewireable.js';
+import { classifyBoardTechnology } from '../src/routes/extraction.js';
 
 const photoPath = process.argv[2];
 if (!photoPath) {
@@ -90,40 +92,75 @@ const imgW = meta.width;
 const imgH = meta.height;
 console.log(`[harness] image ${imgW}×${imgH}`);
 
-// --- 2. CV — extract rail bbox + pitch ONLY (count is ignored) ----------
-//
-// Coordinate-system note: prepareModernGeometry returns mixed units.
-//   - slotCentersX, railBbox, medianRails: NORMALISED 0..1000
-//   - cvPitchDiag.pitchPx, chunkingDiag.railWidthPx: IMAGE PIXELS
-// Convert everything to image pixels here.
-console.log(`[harness] running prepareModernGeometry…`);
-const tCV0 = Date.now();
-const prepared = await prepareModernGeometry(imageBuffer, { railRoiHint });
-const cvMs = Date.now() - tCV0;
+// --- 2a. Stage 1b — board-technology classifier (route to rewireable path) ---
+const anthropicForCV = dryRun
+  ? null
+  : new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+const MODEL_PRE = (process.env.CCU_MODEL || 'claude-sonnet-4-6').trim();
 
+let boardTech = 'modern';
+let boardClass = null;
+if (!dryRun) {
+  console.log(`[harness] running classifyBoardTechnology…`);
+  const tClass = Date.now();
+  boardClass = await classifyBoardTechnology(
+    imageBuffer.toString('base64'),
+    anthropicForCV,
+    MODEL_PRE
+  );
+  console.log(
+    `[harness] classifier ${(Date.now() - tClass) / 1000}s — boardTechnology=${boardClass.boardTechnology} mfg=${boardClass.boardManufacturer} model=${boardClass.boardModel ?? '-'}`
+  );
+  boardTech = boardClass.boardTechnology;
+}
+
+const isRewireable = ['rewireable_fuse', 'cartridge_fuse', 'mixed'].includes(boardTech);
+console.log(`[harness] pipeline: ${isRewireable ? 'REWIREABLE' : 'MODERN'}`);
+
+// --- 2b. CV — extract rail/panel bbox + pitch (count IGNORED) ----------
 const norm2px = (v, dim) => Math.round((v / 1000) * dim);
+const tCV0 = Date.now();
+let prepared;
+let pitchPx, railLeftPx, railRightPx, railTopPx, railBottomPx;
 
-const pitchPx =
-  prepared.cvPitchDiag?.pitchPx ??
-  (prepared.slotCentersX && prepared.slotCentersX.length >= 2
-    ? norm2px(prepared.slotCentersX[1], imgW) - norm2px(prepared.slotCentersX[0], imgW)
-    : Math.round(imgW * 0.06));
-
-const railLeftPx = norm2px(prepared.railBbox?.left ?? 50, imgW);
-const railRightPx = norm2px(prepared.railBbox?.right ?? 950, imgW);
-const railTopPx = norm2px(
-  prepared.medianRails?.rail_top ?? prepared.railBbox?.top ?? 400,
-  imgH
-);
-const railBottomPx = norm2px(
-  prepared.medianRails?.rail_bottom ?? prepared.railBbox?.bottom ?? 600,
-  imgH
-);
+if (isRewireable) {
+  console.log(`[harness] running prepareRewireableGeometry…`);
+  prepared = await prepareRewireableGeometry(imageBuffer);
+  // Rewireable: slotCentersX is in PIXELS, carrierPitchPx in PIXELS, but
+  // panelBounds is in 0..1000 NORMALISED.
+  pitchPx = prepared.carrierPitchPx;
+  railLeftPx = norm2px(prepared.panelBounds?.left ?? 50, imgW);
+  railRightPx = norm2px(prepared.panelBounds?.right ?? 950, imgW);
+  railTopPx = norm2px(prepared.panelBounds?.top ?? 400, imgH);
+  railBottomPx = norm2px(prepared.panelBounds?.bottom ?? 600, imgH);
+} else {
+  console.log(`[harness] running prepareModernGeometry…`);
+  prepared = await prepareModernGeometry(imageBuffer, { railRoiHint });
+  // Modern: slotCentersX/railBbox/medianRails in NORMALISED 0..1000;
+  // cvPitchDiag.pitchPx in IMAGE PIXELS.
+  pitchPx =
+    prepared.cvPitchDiag?.pitchPx ??
+    (prepared.slotCentersX && prepared.slotCentersX.length >= 2
+      ? norm2px(prepared.slotCentersX[1], imgW) - norm2px(prepared.slotCentersX[0], imgW)
+      : Math.round(imgW * 0.06));
+  railLeftPx = norm2px(prepared.railBbox?.left ?? 50, imgW);
+  railRightPx = norm2px(prepared.railBbox?.right ?? 950, imgW);
+  railTopPx = norm2px(
+    prepared.medianRails?.rail_top ?? prepared.railBbox?.top ?? 400,
+    imgH
+  );
+  railBottomPx = norm2px(
+    prepared.medianRails?.rail_bottom ?? prepared.railBbox?.bottom ?? 600,
+    imgH
+  );
+}
+const cvMs = Date.now() - tCV0;
 const railWidthPx = railRightPx - railLeftPx;
 const railHeightPx = railBottomPx - railTopPx;
 
+const cvSuggestedCount = isRewireable ? prepared.carrierCount : prepared.moduleCount;
 console.log(
-  `[harness] CV done in ${(cvMs / 1000).toFixed(1)}s — pitch=${pitchPx.toFixed(1)}px railWidth=${railWidthPx}px y=${railTopPx}..${railBottomPx}  (CV-suggested ways=${prepared.moduleCount} — IGNORED)`
+  `[harness] CV done in ${(cvMs / 1000).toFixed(1)}s — pitch=${pitchPx.toFixed(1)}px railWidth=${railWidthPx}px y=${railTopPx}..${railBottomPx}  (CV-suggested count=${cvSuggestedCount} — IGNORED)`
 );
 
 // --- 3. Vertical crop band (covers labels above + below rail) ----------
@@ -168,8 +205,8 @@ for (const w of finalWindows) {
   console.log(`  x=${w.x0}..${w.x1} (${w.x1 - w.x0}px ≈ ${((w.x1 - w.x0) / pitchPx).toFixed(1)} modules)`);
 }
 
-// --- 5. VLM prompt — flexible count + position estimate ---------------
-const PROMPT = `You are inspecting a horizontal section of a UK consumer unit's main DIN rail.
+// --- 5. VLM prompts — flexible count, position estimate, two variants -----
+const MODERN_PROMPT = `You are inspecting a horizontal section of a UK consumer unit's main DIN rail.
 
 The image shows circuit-protective devices (MCBs, RCBOs, RCDs, blanking plates, main switches, SPDs) with a label strip above and/or below the rail. Identify EVERY device whose body is FULLY VISIBLE in this crop, in strict left-to-right order. Skip devices clipped at the left or right edge — the next window will capture them.
 
@@ -193,9 +230,34 @@ DEVICE FACE FIELDS (null if not clearly readable — never guess):
 Return STRICT JSON only — no markdown, no commentary:
 {"devices":[{"position_pct":0.1,"width_modules":1,"device_kind":"rcbo",...},...]}`;
 
+const REWIREABLE_PROMPT = `You are inspecting a horizontal section of a UK rewireable (bakelite) consumer unit. This is NOT a DIN-rail board — these are pull-out fuse carriers (BS 3036) or HBC cartridge fuses (BS 1361/BS 88-2) sitting in moulded sockets on a flat panel. Each carrier has a red pull-tab at the top.
+
+Identify EVERY device whose body is FULLY VISIBLE in this crop, in strict left-to-right order. Skip devices clipped at the left or right edge — the next window will capture them.
+
+Return as many devices as you see — could be 3, 4, 5, 6, 7, or more. Don't be constrained by any expected count.
+
+Most rewireable devices are single-module. Some boards have a separate main switch / switch-fuse to one side of the carrier row that may span 2 modules (\`width_modules: 2\`).
+
+For each device:
+- position_pct: NUMBER between 0.0 and 1.0 — fraction of IMAGE WIDTH where this device's CENTRE lies. Be precise.
+- width_modules: 1 normally; 2 for a wide separate main switch.
+- device_kind: one of "rewireable", "cartridge", "main_switch", "blank"
+  • rewireable = BS 3036 pull-out carrier with rewireable fuse wire inside (Wylex/MEM/Crabtree/Bill domestic).
+  • cartridge  = pull-out carrier holding an HBC cartridge fuse (BS 1361 or BS 88-2 commercial).
+  • blank      = empty socket or blanking plate, no carrier fitted.
+- body_colour: colour of the CARRIER BODY *below* the red pull-tab. One of "white","blue","yellow","red","green","unknown". CRITICAL: every Wylex carrier has a RED PULL-TAB — that's the lift handle, NOT the rating. Look at the body below the pull-tab. If the body itself is red below the tab, it IS a 30 A red carrier. null for cartridge / main_switch / blank.
+- ocpd_rating_a: integer amperage. For cartridge fuses, read the rating printed on the carrier face. For rewireable, you may leave this null and we will derive it from body_colour via the Wylex code: white=5A, blue=15A, yellow=20A, red=30A, green=45A.
+- ocpd_bs_en: "BS 3036" for rewireable, "BS 1361" for cartridge domestic, "BS 88-2" for cartridge commercial, "BS EN 60947-3" for main_switch. null if unsure.
+- label: circuit name from the strip / inspector handwriting directly aligned with this carrier's CENTRE — copy VERBATIM. null if blank/unreadable.
+
+Return STRICT JSON only — no markdown, no commentary:
+{"devices":[{"position_pct":0.1,"width_modules":1,"device_kind":"rewireable","body_colour":"red",...},...]}`;
+
+const PROMPT = isRewireable ? REWIREABLE_PROMPT : MODERN_PROMPT;
+
 // --- 6. Run windows in parallel ----------------------------------------
-const anthropic = dryRun ? null : new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-const MODEL = (process.env.CCU_MODEL || 'claude-sonnet-4-6').trim();
+const anthropic = anthropicForCV; // reuse the classifier client
+const MODEL = MODEL_PRE;
 const IN_PER_MTOK = Number(process.env.SONNET_IN_PER_MTOK || 3.0);
 const OUT_PER_MTOK = Number(process.env.SONNET_OUT_PER_MTOK || 15.0);
 
@@ -303,11 +365,13 @@ for (const r of results) {
         bs_en: d.ocpd_bs_en || null,
         rcd_type: d.rcd_type || null,
         rcd_rating_ma: d.rcd_rating_ma ?? null,
+        body_colour: d.body_colour || null,
         label: d.label || null,
       });
     }
+    const colour = d.body_colour ? `bc=${d.body_colour}` : '';
     console.log(
-      `    ${idx + 1}. pct=${validPct ? pct.toFixed(2) : '?'} w=${d.width_modules || 1}m  ${d.device_kind || '?'}  ${d.ocpd_curve || ''}${d.ocpd_rating_a || '?'}A  label="${d.label || ''}"  ${d.rcd_type ? `Type ${d.rcd_type}/${d.rcd_rating_ma}mA` : ''}`
+      `    ${idx + 1}. pct=${validPct ? pct.toFixed(2) : '?'} w=${d.width_modules || 1}m  ${d.device_kind || '?'}  ${d.ocpd_curve || ''}${d.ocpd_rating_a || '?'}A  ${colour}  label="${d.label || ''}"  ${d.rcd_type ? `Type ${d.rcd_type}/${d.rcd_rating_ma}mA` : ''}`
     );
   });
 }
@@ -396,27 +460,42 @@ function bestLabel(labels) {
   return [...counts.entries()].sort((a, b) => b[1] - a[1] || b[0].length - a[0].length)[0][0];
 }
 
+// Wylex BS 3036 colour → amperage lookup (matches production rewireable
+// pipeline). Only used when the VLM left ocpd_rating_a null on a
+// rewireable carrier.
+const COLOUR_TO_AMPS = { white: 5, blue: 15, yellow: 20, red: 30, green: 45 };
+
 const finalDevices = clusters.map((c) => {
   const meanX = c.reads.reduce((s, r) => s + r.xImage, 0) / c.reads.length;
+  let rating = mostCommon(c.reads.map((r) => r.rating));
+  const colour = mostCommon(c.reads.map((r) => r.body_colour));
+  const kind = mostCommon(c.reads.map((r) => r.kind));
+  if (rating == null && kind === 'rewireable' && colour && COLOUR_TO_AMPS[colour]) {
+    rating = COLOUR_TO_AMPS[colour];
+  }
   return {
     xImage: Math.round(meanX),
     relX: Math.round(((meanX - railLeftPx) / Math.max(1, railWidthPx)) * 100) / 100,
     width_modules: mostCommon(c.reads.map((r) => r.widthMod)) || 1,
-    device_kind: mostCommon(c.reads.map((r) => r.kind)),
-    ocpd_rating_a: mostCommon(c.reads.map((r) => r.rating)),
+    device_kind: kind,
+    ocpd_rating_a: rating,
     ocpd_curve: mostCommon(c.reads.map((r) => r.curve)),
     ocpd_bs_en: mostCommon(c.reads.map((r) => r.bs_en)),
     rcd_type: mostCommon(c.reads.map((r) => r.rcd_type)),
     rcd_rating_ma: mostCommon(c.reads.map((r) => r.rcd_rating_ma)),
+    body_colour: colour,
     label: bestLabel(c.reads.map((r) => r.label)),
     votes: c.reads.length,
   };
 });
 
-console.log(`\n[harness] FINAL: ${finalDevices.length} devices (CV-suggested ways=${prepared.moduleCount}, IGNORED)`);
+console.log(
+  `\n[harness] FINAL: ${finalDevices.length} devices  (pipeline=${isRewireable ? 'rewireable' : 'modern'}, CV-suggested count=${cvSuggestedCount} IGNORED)`
+);
 finalDevices.forEach((d, idx) => {
+  const col = d.body_colour ? ` bc=${d.body_colour}` : '';
   console.log(
-    `  ${idx + 1}. x=${d.xImage}px (relX=${(d.relX * 100).toFixed(0)}%) w=${d.width_modules}m votes=${d.votes}  ${d.device_kind || '?'}  ${d.ocpd_curve || ''}${d.ocpd_rating_a ?? '?'}A  label="${d.label || ''}"  ${d.rcd_type ? `Type ${d.rcd_type}/${d.rcd_rating_ma}mA` : ''}`
+    `  ${idx + 1}. x=${d.xImage}px (relX=${(d.relX * 100).toFixed(0)}%) w=${d.width_modules}m votes=${d.votes}  ${d.device_kind || '?'}  ${d.ocpd_curve || ''}${d.ocpd_rating_a ?? '?'}A${col}  label="${d.label || ''}"  ${d.rcd_type ? `Type ${d.rcd_type}/${d.rcd_rating_ma}mA` : ''}`
   );
 });
 
