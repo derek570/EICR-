@@ -1481,6 +1481,75 @@ function scoreMainSwitchPlausibility(slot, expectedRatingDigits) {
 }
 
 /**
+ * Patterns that identify a slot whose Stage 4 label clearly names it as the
+ * main switch / isolator. Conservative — matches phrases that appear ONLY
+ * on a main-switch device face, never on an MCB/RCBO label. The bare word
+ * "isolator" is included because Wylex / Hager / Schneider all label
+ * their isolators that way; the bare word "switch" is NOT included
+ * because circuit labels like "Hot Tub Switch" / "Garage Switch" would
+ * false-positive.
+ */
+const MAIN_SWITCH_LABEL_PATTERNS = [
+  /^\s*main\s*switch\s*$/i,
+  /^\s*main\s*isolator\s*$/i,
+  /^\s*main\s*isol\.?\s*$/i,
+  /^\s*mains\s*switch\s*$/i,
+  /^\s*switch\s*disconnector\s*$/i,
+  /^\s*isolator\s*$/i,
+];
+
+function labelLooksLikeMainSwitch(label) {
+  if (typeof label !== 'string') return false;
+  return MAIN_SWITCH_LABEL_PATTERNS.some((p) => p.test(label));
+}
+
+/**
+ * Promote slots whose Stage 4 label identifies them as the main switch,
+ * but whose Stage 3 classification calls them an RCBO / MCB / RCD / unknown.
+ *
+ * The Stage 4 label pass reads the printed text on the device face — that
+ * text is the ground truth. When Stage 3 mis-classifies a main-switch
+ * slot as RCBO (Elucian CU1SPD275 reproduces this on certain shots —
+ * production extraction `1777975403777-zvdpli` 2026-05-05), the slot
+ * survives `slotsToCircuits` and gets emitted as circuit #1 with label
+ * "Main Switch", which the inspector then has to manually delete from
+ * every schedule.
+ *
+ * This pre-pass runs AFTER labels are attached but BEFORE
+ * `slotsToCircuits`, so the existing `cls === 'main_switch'` filter in
+ * the merger correctly skips the promoted slot. Mutates `slots` in place;
+ * preserves `_originalClassification` for audit.
+ *
+ * Doesn't promote slots already classified as main_switch (idempotent),
+ * spd, blank, or empty (no need / wrong direction).
+ */
+export function promoteLabelMatchedMainSwitch(slots, opts = {}) {
+  const { logger, userId } = opts;
+  if (!Array.isArray(slots)) return;
+  let promoted = 0;
+  for (const slot of slots) {
+    if (!slot) continue;
+    const cls = (slot.classification || '').toLowerCase();
+    // Skip slots that are already classified as a non-circuit.
+    if (cls === 'main_switch' || cls === 'spd' || cls === 'blank' || cls === 'empty') continue;
+    if (!labelLooksLikeMainSwitch(slot.label) && !labelLooksLikeMainSwitch(slot.labelRaw)) continue;
+    slot._originalClassification = slot.classification ?? null;
+    slot._promotedToMainSwitchByLabel = true;
+    slot.classification = 'main_switch';
+    promoted += 1;
+    if (logger) {
+      logger.info('Stage 3 main_switch promoted from label', {
+        userId,
+        slotIndex: slot.slotIndex ?? null,
+        previousClassification: slot._originalClassification,
+        label: slot.label ?? null,
+      });
+    }
+  }
+  return promoted;
+}
+
+/**
  * Trim spurious main_switch classifications from oversized contiguous runs.
  *
  * Mutates `slots` in place: any slot demoted from main_switch has its
@@ -2448,6 +2517,18 @@ router.post(
               vlmMs: labelPassResult.timings?.vlmMs,
               tokensIn: labelPassResult.usage?.inputTokens,
               tokensOut: labelPassResult.usage?.outputTokens,
+            });
+
+            // Promote any slot whose Stage 4 label clearly identifies it as
+            // the main switch (e.g. "Main Switch" / "Isolator") but whose
+            // Stage 3 classification missed it. Without this, a Stage 3
+            // mis-classification of an Elucian main switch as RCBO emits
+            // the device as circuit #1 with label "Main Switch" — the
+            // inspector has to manually delete it. Run AFTER labels are
+            // attached so the promotion sees both pieces of evidence.
+            promoteLabelMatchedMainSwitch(analysis.slots, {
+              logger,
+              userId: req.user.id,
             });
           } else if (labelPassResult && labelPassResult.__error) {
             analysis.label_pass_error = labelPassResult.__error;
