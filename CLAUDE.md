@@ -71,9 +71,9 @@ npm run format                     # Prettier
 
 ### Deploy
 
-Push to `main` → GitHub Actions runs tests, builds ARM64 Docker images, pushes to ECR, deploys to ECS (~30 min end-to-end). Monitor: https://github.com/derek570/EICR-/actions
+**ALWAYS deploy via GitHub Actions.** Push to `main` → CI runs tests, builds ARM64 Docker images, pushes to ECR, deploys to ECS (~30 min end-to-end). Monitor with `gh run watch <run-id> --exit-status` (single long-poll connection — no polling). Run history: https://github.com/derek570/EICR-/actions
 
-Local quick-deploy (bypasses CI): `./deploy.sh` (web) / `./deploy.sh --backend` (web + backend).
+Do **not** use the local `./deploy.sh` quick-deploy script even though it exists in the repo. Docker Desktop is not kept running on the dev Mac, so the script fails immediately, and its `tee`-wrapped invocation masks the failure as exit 0. CI is the only deploy path that works reliably.
 
 iOS TestFlight: `~/Developer/EICR_Automation/CertMateUnified/deploy-testflight.sh`.
 
