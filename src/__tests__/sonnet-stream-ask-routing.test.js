@@ -414,13 +414,24 @@ describe('Group B — inbound ask_user_answered routing', () => {
   // to pass for all circuits" as the answer to an open `rcd_bs_en` ask;
   // the server resolved without validation and the user's intent was lost
   // (Sonnet advanced to rcd_type and never wrote rcdButton on circuits
-  // 8-14). Gate fires when the text starts with an imperative verb (>=4
-  // words) or contains an explicit "for all/every/each circuit(s)" scope
-  // hint. Rejection emits `ask_user_answered_rejected` so iOS can clear
-  // its UI; the registry entry is left pending for the next utterance to
-  // resolve or for the timeout to sweep.
+  // 8-14).
+  //
+  // Two-stage gate (refined per code review):
+  //   Stage 1 — shape-aware short-circuit: classifyOvertake on a single-
+  //             entry registry. yes_no replies in the YES_NO_VOCABULARY
+  //             and circuit_ref replies that extractCircuitRef can parse
+  //             skip the imperative check and resolve normally.
+  //   Stage 2 — imperative-prefix (>=4 words) OR bulk-scope hint
+  //             ("for all circuits") rejection. On match: resolve the
+  //             ask with reason='user_moved_on' to unblock the tool loop
+  //             AND re-inject the text via handleTranscript so the new
+  //             command flows through normal extraction (no longer lost).
   describe('substantive gate (Bug C) — reject obvious new-command utterances', () => {
-    async function seedAskAndSend({ wsUserText, contextField = 'rcd_bs_en' }) {
+    async function seedAskAndSend({
+      wsUserText,
+      contextField = 'rcd_bs_en',
+      expectedAnswerShape = 'free_text',
+    }) {
       const ws = connect(wss, 'user-1');
       await sendFrame(ws, {
         type: 'session_start',
@@ -432,7 +443,7 @@ describe('Group B — inbound ask_user_answered routing', () => {
       entry.pendingAsks.register('toolu_gate', {
         contextField,
         contextCircuit: 1,
-        expectedAnswerShape: 'free_text',
+        expectedAnswerShape,
         resolve: jest.fn(),
         timer: setTimeout(() => {}, 60000),
         askStartedAt: Date.now(),
@@ -446,31 +457,35 @@ describe('Group B — inbound ask_user_answered routing', () => {
       return { ws, entry, resolveSpy };
     }
 
-    test('imperative-prefix new command ("can you set ... for all circuits") rejected; resolve NOT called; ask remains pending', async () => {
+    test('imperative-prefix new command ("can you set ... for all circuits") rejected — resolved with user_moved_on, registry drained, NO iOS-bound rejection envelope', async () => {
       const { ws, entry, resolveSpy } = await seedAskAndSend({
         wsUserText: 'Can you set the RCD test button to pass for all circuits',
       });
-      // Resolve was not called — the ask is still pending.
-      expect(resolveSpy).not.toHaveBeenCalled();
-      expect(entry.pendingAsks.size).toBe(1);
-      // iOS notified with rejection envelope.
-      const rejection = ws._sent.find((m) => m.type === 'ask_user_answered_rejected');
-      expect(rejection).toMatchObject({
-        type: 'ask_user_answered_rejected',
-        tool_call_id: 'toolu_gate',
-        reason: 'looks_like_new_command',
+      // Resolve called with user_moved_on — unblocks the tool loop.
+      expect(resolveSpy).toHaveBeenCalledWith('toolu_gate', {
+        answered: false,
+        reason: 'user_moved_on',
       });
-      expect(rejection.user_text).toBe('Can you set the RCD test button to pass for all circuits');
+      // Registry drained (resolve removes the entry).
+      expect(entry.pendingAsks.size).toBe(0);
+      // iOS-bound `ask_user_answered_rejected` envelope was DROPPED in
+      // the code-review refinement — iOS doesn't have a handler for it
+      // and the UnknownMessageTypeGuard would log noise. The new command
+      // flows through the normal extracted_readings path via the
+      // re-injected transcript instead.
+      const rejection = ws._sent.find((m) => m.type === 'ask_user_answered_rejected');
+      expect(rejection).toBeUndefined();
     });
 
-    test('bulk-scope hint alone ("the value for all circuits is X") rejected even without imperative prefix', async () => {
-      const { resolveSpy, ws } = await seedAskAndSend({
+    test('bulk-scope hint alone ("BS 61008 for all circuits") — same rejection + resolve path', async () => {
+      const { resolveSpy, entry } = await seedAskAndSend({
         wsUserText: 'BS 61008 for all circuits',
       });
-      expect(resolveSpy).not.toHaveBeenCalled();
-      const rejection = ws._sent.find((m) => m.type === 'ask_user_answered_rejected');
-      expect(rejection).toBeDefined();
-      expect(rejection.reason).toBe('looks_like_new_command');
+      expect(resolveSpy).toHaveBeenCalledWith('toolu_gate', {
+        answered: false,
+        reason: 'user_moved_on',
+      });
+      expect(entry.pendingAsks.size).toBe(0);
     });
 
     test('short imperative phrase ("set to pass") under 4-word threshold is NOT rejected — resolves as today', async () => {
@@ -482,12 +497,11 @@ describe('Group B — inbound ask_user_answered routing', () => {
     });
 
     test('plain numeric answer ("61008") is NOT rejected — resolves as today', async () => {
-      const { resolveSpy, ws } = await seedAskAndSend({ wsUserText: '61008' });
+      const { resolveSpy } = await seedAskAndSend({ wsUserText: '61008' });
       expect(resolveSpy).toHaveBeenCalledWith('toolu_gate', {
         answered: true,
         user_text: '61008',
       });
-      expect(ws._sent.find((m) => m.type === 'ask_user_answered_rejected')).toBeUndefined();
     });
 
     test('multi-word free-text answer without imperative prefix or bulk scope ("the BS number is sixty one zero zero eight") is NOT rejected', async () => {
@@ -498,6 +512,109 @@ describe('Group B — inbound ask_user_answered routing', () => {
         answered: true,
         user_text: 'the BS number is sixty one zero zero eight',
       });
+    });
+  });
+
+  // Stage-1 shape-aware short-circuit. classifyOvertake's yes_no /
+  // circuit_ref shape branches accept replies that match the expected
+  // shape EVEN IF those replies have an imperative prefix or look like a
+  // new command on lexical markers. Without this, "Add to circuit 5"
+  // against a circuit_ref ask would be falsely rejected.
+  //
+  // NOTE: classifyOvertake is mocked at the module level in this test
+  // file (see classifyOvertakeSpy declaration above). For shape-aware
+  // tests we explicitly override the mock per test to simulate what the
+  // REAL classifier would return — the integration with the real
+  // classifier is covered in stage6-overtake-classifier.test.js.
+  describe('substantive gate — stage 1 shape-aware short-circuit', () => {
+    async function seedAskAndSend({
+      wsUserText,
+      expectedAnswerShape,
+      contextField = 'ze',
+      mockShapeVerdict, // null = leave the default no_pending_asks; object = mock returns this
+    }) {
+      if (mockShapeVerdict) {
+        classifyOvertakeSpy.mockImplementationOnce(() => mockShapeVerdict);
+      }
+      const ws = connect(wss, 'user-1');
+      await sendFrame(ws, {
+        type: 'session_start',
+        sessionId: 'sess-A',
+        jobState: { certificateType: 'eicr' },
+      });
+      const entry = activeSessions.get('sess-A');
+      const resolveSpy = jest.spyOn(entry.pendingAsks, 'resolve');
+      entry.pendingAsks.register('toolu_shape', {
+        contextField,
+        contextCircuit: 1,
+        expectedAnswerShape,
+        resolve: jest.fn(),
+        timer: setTimeout(() => {}, 60000),
+        askStartedAt: Date.now(),
+      });
+      ws._sent.length = 0;
+      await sendFrame(ws, {
+        type: 'ask_user_answered',
+        tool_call_id: 'toolu_shape',
+        user_text: wsUserText,
+      });
+      return { ws, entry, resolveSpy };
+    }
+
+    test('circuit_ref ask + imperative-prefixed circuit-ref reply ("Add to circuit 5 please") → classifier returns answers → resolves normally (skips imperative gate)', async () => {
+      // Without shape-awareness, "Add to circuit 5 please" (5 words,
+      // "add" prefix) would have hit the imperative gate and been
+      // rejected even though it's a perfectly valid circuit_ref answer.
+      // The classifier is mocked to simulate "shape match" — the real
+      // classifier's circuit_ref branch calls extractCircuitRef which
+      // would return 5 for this text.
+      const { resolveSpy } = await seedAskAndSend({
+        wsUserText: 'Add to circuit 5 please',
+        expectedAnswerShape: 'circuit_ref',
+        mockShapeVerdict: {
+          kind: 'answers',
+          toolCallId: 'toolu_shape',
+          userText: 'Add to circuit 5 please',
+        },
+      });
+      expect(resolveSpy).toHaveBeenCalledWith('toolu_shape', {
+        answered: true,
+        user_text: 'Add to circuit 5 please',
+      });
+      // Classifier was actually invoked from the gate (proves stage-1
+      // ran and the verdict was respected).
+      expect(classifyOvertakeSpy).toHaveBeenCalled();
+    });
+
+    test('yes_no ask + "yes" reply → classifier returns answers → resolves', async () => {
+      const { resolveSpy } = await seedAskAndSend({
+        wsUserText: 'yes',
+        expectedAnswerShape: 'yes_no',
+        mockShapeVerdict: { kind: 'answers', toolCallId: 'toolu_shape', userText: 'yes' },
+      });
+      expect(resolveSpy).toHaveBeenCalledWith('toolu_shape', {
+        answered: true,
+        user_text: 'yes',
+      });
+    });
+
+    test('free_text ask + imperative-prefix reply with bulk scope → classifier returns user_moved_on → falls through to imperative gate → rejected', async () => {
+      // Regression lock: when classifier doesn't match (real classifier
+      // returns user_moved_on for free_text replies without regex hits),
+      // stage 2 (imperative gate) runs and catches the new-command shape.
+      // The bug-trigger case stays caught.
+      const { resolveSpy, entry } = await seedAskAndSend({
+        wsUserText: 'Can you set the RCD test button to pass for all circuits',
+        expectedAnswerShape: 'free_text',
+        // Default mock returns no_pending_asks — equivalent to user_moved_on
+        // for our gate's purposes (both leave resolvePayload unset, so
+        // stage 2 runs).
+      });
+      expect(resolveSpy).toHaveBeenCalledWith('toolu_shape', {
+        answered: false,
+        reason: 'user_moved_on',
+      });
+      expect(entry.pendingAsks.size).toBe(0);
     });
   });
 

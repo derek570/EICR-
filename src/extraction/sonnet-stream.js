@@ -1320,46 +1320,120 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
               // this channel had no gate at all, so the new command was burned
               // as the answer and the user's intent was lost.
               //
-              // We can't blindly call classifyOvertake here — for free_text /
-              // number shapes a valid one-token answer like "61008" produces
-              // no regex hit and would fall through to user_moved_on,
-              // breaking legit answers. The targeted check is: imperative-
-              // verb prefix OR explicit "for all circuits" scope hint, gated
-              // on word count >= 4 to avoid catching short answers like
-              // "set to pass" (which is a marginal answer phrasing).
+              // Two-stage gate (refined per code review):
               //
-              // On rejection: don't resolve the ask, notify iOS so its UI can
-              // clear the "answered" state, and let the question time out (or
-              // the user re-state). The iOS side is expected to follow up by
-              // forwarding the rejected text through the transcript channel
-              // for instant processing — until then the user has to repeat,
-              // which is still strictly better than silently losing the
-              // command.
-              const NEW_COMMAND_PREFIX_RE =
-                /^\s*(?:can|could|would)\s+you\b|^\s*(?:please|set|change|update|make|add|delete|remove|mark|move|rename|skip|what about|how about)\b/i;
-              const BULK_SCOPE_RE = /\bfor (?:all|every|each) (?:the )?circuits?\b/i;
-              const wordCount = sanitised.text.split(/\s+/).filter(Boolean).length;
-              const matchedImperative =
-                wordCount >= 4 && NEW_COMMAND_PREFIX_RE.test(sanitised.text);
-              const matchedBulkScope = BULK_SCOPE_RE.test(sanitised.text);
-              if (matchedImperative || matchedBulkScope) {
-                logger.warn('stage6.ask_user_answered_rejected_new_command', {
-                  sessionId: currentSessionId,
-                  tool_call_id: msg.tool_call_id,
-                  user_text_preview: sanitised.text.slice(0, 80),
-                  matched_imperative: matchedImperative,
-                  matched_bulk_scope: matchedBulkScope,
-                  word_count: wordCount,
-                });
-                ws.send(
-                  JSON.stringify({
-                    type: 'ask_user_answered_rejected',
-                    tool_call_id: msg.tool_call_id,
-                    reason: 'looks_like_new_command',
+              // STAGE 1 — shape-aware short-circuit. For yes_no / circuit_ref
+              // asks, defer to classifyOvertake (single-entry registry). It
+              // accepts replies that match the expected shape — including
+              // imperative-prefixed circuit refs like "Add to circuit 5" —
+              // so the imperative check below doesn't block legit answers.
+              //
+              // STAGE 2 — imperative / bulk-scope check. Only runs when stage
+              // 1 didn't accept. Rejects new-command shapes by their lexical
+              // markers (imperative verb prefix at >=4 words, OR "for all
+              // circuits" scope hint). On rejection: resolve the ask with
+              // user_moved_on so the tool loop unblocks immediately, then
+              // re-inject the text through handleTranscript so the new command
+              // gets processed instead of silently lost. This is what the
+              // transcript-channel user_moved_on path already does — we
+              // mirror it here for the iOS-routed path.
+              //
+              // Find the matching ask entry so we can inspect its
+              // expectedAnswerShape. Iterate pendingAsks.entries() — the
+              // registry has no peek-by-id getter (would be a one-liner add
+              // but iteration is O(n) on a registry that holds at most
+              // single-digit pending entries, so the cost is negligible).
+              let askEntry = null;
+              for (const [id, e] of entry.pendingAsks.entries()) {
+                if (id === msg.tool_call_id) {
+                  askEntry = e;
+                  break;
+                }
+              }
+              if (askEntry) {
+                const singleAskRegistry = {
+                  size: 1,
+                  entries: function* iter() {
+                    yield [msg.tool_call_id, askEntry];
+                  },
+                };
+                const shapeVerdict = classifyOvertake(sanitised.text, [], singleAskRegistry);
+                if (shapeVerdict.kind === 'answers') {
+                  // Shape match — fall through to the resolve path below
+                  // without running the imperative gate. The matched answer
+                  // (yes/no for yes_no asks; extractCircuitRef-parsed integer
+                  // for circuit_ref asks) is what the inspector intended,
+                  // imperative-prefix or not.
+                  resolvePayload = {
+                    answered: true,
                     user_text: sanitised.text,
-                  })
-                );
-                break;
+                  };
+                  if (sanitised.truncated || sanitised.stripped) {
+                    resolvePayload.sanitisation = {
+                      truncated: sanitised.truncated,
+                      stripped: sanitised.stripped,
+                    };
+                  }
+                  // Skip directly to the resolve call by NOT taking the gate
+                  // branch below. We can't goto, so structure the logic so
+                  // the gate only runs when shapeVerdict didn't accept.
+                }
+              }
+
+              // STAGE 2 — only runs if stage 1 didn't already build resolvePayload.
+              if (!resolvePayload) {
+                const NEW_COMMAND_PREFIX_RE =
+                  /^\s*(?:can|could|would)\s+you\b|^\s*(?:please|set|change|update|make|add|delete|remove|mark|move|rename|skip|what about|how about)\b/i;
+                const BULK_SCOPE_RE = /\bfor (?:all|every|each) (?:the )?circuits?\b/i;
+                const wordCount = sanitised.text.split(/\s+/).filter(Boolean).length;
+                const matchedImperative =
+                  wordCount >= 4 && NEW_COMMAND_PREFIX_RE.test(sanitised.text);
+                const matchedBulkScope = BULK_SCOPE_RE.test(sanitised.text);
+                if (matchedImperative || matchedBulkScope) {
+                  logger.warn('stage6.ask_user_answered_rejected_new_command', {
+                    sessionId: currentSessionId,
+                    tool_call_id: msg.tool_call_id,
+                    user_text_preview: sanitised.text.slice(0, 80),
+                    matched_imperative: matchedImperative,
+                    matched_bulk_scope: matchedBulkScope,
+                    word_count: wordCount,
+                    ask_shape: askEntry?.expectedAnswerShape ?? null,
+                  });
+
+                  // Unblock the tool loop with user_moved_on so the dispatcher's
+                  // awaited Promise resolves immediately. Mirrors the transcript
+                  // channel's `verdict.kind === 'user_moved_on'` path. Sonnet
+                  // sees `{answered: false, reason: 'user_moved_on'}` in the
+                  // tool_result and moves on (or re-asks).
+                  entry.pendingAsks.resolve(msg.tool_call_id, {
+                    answered: false,
+                    reason: 'user_moved_on',
+                  });
+
+                  // Re-inject the text as a transcript so the new command flows
+                  // through normal extraction. handleTranscript has its own
+                  // isExtracting / pendingTranscripts queue so calling it here
+                  // is safe — if a turn is in flight (it isn't anymore, we
+                  // just resolved the ask), it queues; otherwise it runs the
+                  // shadow harness. utterance_id passed through so the dedupe
+                  // path (seenTranscriptUtterances) sees the same anchor.
+                  // Fire-and-forget — errors are logged, not propagated, so
+                  // the ws.on('message') return path stays clean.
+                  const syntheticTranscript = {
+                    type: 'transcript',
+                    text: sanitised.text,
+                    utterance_id: msg.consumed_utterance_id ?? null,
+                    confidence: 1.0,
+                  };
+                  handleTranscript(ws, currentSessionId, syntheticTranscript).catch((reErr) => {
+                    logger.error('stage6.ask_user_answered_reinjection_failed', {
+                      sessionId: currentSessionId,
+                      tool_call_id: msg.tool_call_id,
+                      error: reErr?.message || String(reErr),
+                    });
+                  });
+                  break;
+                }
               }
 
               // Thread sanitisation flags through the resolve payload so the
@@ -1367,15 +1441,21 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
               // sanitisation sub-object when at least one flag is true —
               // the common clean-path case (100% of current inspector speech)
               // keeps the log row noise-free.
-              resolvePayload = {
-                answered: true,
-                user_text: sanitised.text,
-              };
-              if (sanitised.truncated || sanitised.stripped) {
-                resolvePayload.sanitisation = {
-                  truncated: sanitised.truncated,
-                  stripped: sanitised.stripped,
+              //
+              // Guarded on `!resolvePayload` so the shape-aware short-circuit
+              // above (which sets resolvePayload when classifyOvertake's
+              // single-ask shape branch matches) doesn't get overwritten.
+              if (!resolvePayload) {
+                resolvePayload = {
+                  answered: true,
+                  user_text: sanitised.text,
                 };
+                if (sanitised.truncated || sanitised.stripped) {
+                  resolvePayload.sanitisation = {
+                    truncated: sanitised.truncated,
+                    stripped: sanitised.stripped,
+                  };
+                }
               }
             }
 
