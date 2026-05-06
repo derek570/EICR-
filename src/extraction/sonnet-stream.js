@@ -1310,6 +1310,58 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
                 break;
               }
 
+              // Bug C remediation (session DC946608, 2026-05-06) — substantive
+              // gate on the ask_user_answered channel. iOS routes a transcript
+              // directly as an answer when its local heuristic decides "this
+              // looks like the answer", but that heuristic mis-fires for
+              // utterances that are clearly new commands ("can you set the RCD
+              // test button to pass for all circuits" against an open BS-EN
+              // ask). The transcript channel has classifyOvertake for this;
+              // this channel had no gate at all, so the new command was burned
+              // as the answer and the user's intent was lost.
+              //
+              // We can't blindly call classifyOvertake here — for free_text /
+              // number shapes a valid one-token answer like "61008" produces
+              // no regex hit and would fall through to user_moved_on,
+              // breaking legit answers. The targeted check is: imperative-
+              // verb prefix OR explicit "for all circuits" scope hint, gated
+              // on word count >= 4 to avoid catching short answers like
+              // "set to pass" (which is a marginal answer phrasing).
+              //
+              // On rejection: don't resolve the ask, notify iOS so its UI can
+              // clear the "answered" state, and let the question time out (or
+              // the user re-state). The iOS side is expected to follow up by
+              // forwarding the rejected text through the transcript channel
+              // for instant processing — until then the user has to repeat,
+              // which is still strictly better than silently losing the
+              // command.
+              const NEW_COMMAND_PREFIX_RE =
+                /^\s*(?:can|could|would)\s+you\b|^\s*(?:please|set|change|update|make|add|delete|remove|mark|move|rename|skip|what about|how about)\b/i;
+              const BULK_SCOPE_RE = /\bfor (?:all|every|each) (?:the )?circuits?\b/i;
+              const wordCount = sanitised.text.split(/\s+/).filter(Boolean).length;
+              const matchedImperative =
+                wordCount >= 4 && NEW_COMMAND_PREFIX_RE.test(sanitised.text);
+              const matchedBulkScope = BULK_SCOPE_RE.test(sanitised.text);
+              if (matchedImperative || matchedBulkScope) {
+                logger.warn('stage6.ask_user_answered_rejected_new_command', {
+                  sessionId: currentSessionId,
+                  tool_call_id: msg.tool_call_id,
+                  user_text_preview: sanitised.text.slice(0, 80),
+                  matched_imperative: matchedImperative,
+                  matched_bulk_scope: matchedBulkScope,
+                  word_count: wordCount,
+                });
+                ws.send(
+                  JSON.stringify({
+                    type: 'ask_user_answered_rejected',
+                    tool_call_id: msg.tool_call_id,
+                    reason: 'looks_like_new_command',
+                    user_text: sanitised.text,
+                  })
+                );
+                break;
+              }
+
               // Thread sanitisation flags through the resolve payload so the
               // dispatcher's logAskUser row carries them. Only emit the
               // sanitisation sub-object when at least one flag is true —

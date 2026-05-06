@@ -409,6 +409,98 @@ describe('Group B — inbound ask_user_answered routing', () => {
     expect(resolveSpy).not.toHaveBeenCalled();
   });
 
+  // 2026-05-06 — substantive gate on ask_user_answered (Bug C from session
+  // DC946608, 8 Branagh Court). iOS routed "Can you set the RCD test button
+  // to pass for all circuits" as the answer to an open `rcd_bs_en` ask;
+  // the server resolved without validation and the user's intent was lost
+  // (Sonnet advanced to rcd_type and never wrote rcdButton on circuits
+  // 8-14). Gate fires when the text starts with an imperative verb (>=4
+  // words) or contains an explicit "for all/every/each circuit(s)" scope
+  // hint. Rejection emits `ask_user_answered_rejected` so iOS can clear
+  // its UI; the registry entry is left pending for the next utterance to
+  // resolve or for the timeout to sweep.
+  describe('substantive gate (Bug C) — reject obvious new-command utterances', () => {
+    async function seedAskAndSend({ wsUserText, contextField = 'rcd_bs_en' }) {
+      const ws = connect(wss, 'user-1');
+      await sendFrame(ws, {
+        type: 'session_start',
+        sessionId: 'sess-A',
+        jobState: { certificateType: 'eicr' },
+      });
+      const entry = activeSessions.get('sess-A');
+      const resolveSpy = jest.spyOn(entry.pendingAsks, 'resolve');
+      entry.pendingAsks.register('toolu_gate', {
+        contextField,
+        contextCircuit: 1,
+        expectedAnswerShape: 'free_text',
+        resolve: jest.fn(),
+        timer: setTimeout(() => {}, 60000),
+        askStartedAt: Date.now(),
+      });
+      ws._sent.length = 0;
+      await sendFrame(ws, {
+        type: 'ask_user_answered',
+        tool_call_id: 'toolu_gate',
+        user_text: wsUserText,
+      });
+      return { ws, entry, resolveSpy };
+    }
+
+    test('imperative-prefix new command ("can you set ... for all circuits") rejected; resolve NOT called; ask remains pending', async () => {
+      const { ws, entry, resolveSpy } = await seedAskAndSend({
+        wsUserText: 'Can you set the RCD test button to pass for all circuits',
+      });
+      // Resolve was not called — the ask is still pending.
+      expect(resolveSpy).not.toHaveBeenCalled();
+      expect(entry.pendingAsks.size).toBe(1);
+      // iOS notified with rejection envelope.
+      const rejection = ws._sent.find((m) => m.type === 'ask_user_answered_rejected');
+      expect(rejection).toMatchObject({
+        type: 'ask_user_answered_rejected',
+        tool_call_id: 'toolu_gate',
+        reason: 'looks_like_new_command',
+      });
+      expect(rejection.user_text).toBe('Can you set the RCD test button to pass for all circuits');
+    });
+
+    test('bulk-scope hint alone ("the value for all circuits is X") rejected even without imperative prefix', async () => {
+      const { resolveSpy, ws } = await seedAskAndSend({
+        wsUserText: 'BS 61008 for all circuits',
+      });
+      expect(resolveSpy).not.toHaveBeenCalled();
+      const rejection = ws._sent.find((m) => m.type === 'ask_user_answered_rejected');
+      expect(rejection).toBeDefined();
+      expect(rejection.reason).toBe('looks_like_new_command');
+    });
+
+    test('short imperative phrase ("set to pass") under 4-word threshold is NOT rejected — resolves as today', async () => {
+      const { resolveSpy } = await seedAskAndSend({ wsUserText: 'set to pass' });
+      expect(resolveSpy).toHaveBeenCalledWith('toolu_gate', {
+        answered: true,
+        user_text: 'set to pass',
+      });
+    });
+
+    test('plain numeric answer ("61008") is NOT rejected — resolves as today', async () => {
+      const { resolveSpy, ws } = await seedAskAndSend({ wsUserText: '61008' });
+      expect(resolveSpy).toHaveBeenCalledWith('toolu_gate', {
+        answered: true,
+        user_text: '61008',
+      });
+      expect(ws._sent.find((m) => m.type === 'ask_user_answered_rejected')).toBeUndefined();
+    });
+
+    test('multi-word free-text answer without imperative prefix or bulk scope ("the BS number is sixty one zero zero eight") is NOT rejected', async () => {
+      const { resolveSpy } = await seedAskAndSend({
+        wsUserText: 'the BS number is sixty one zero zero eight',
+      });
+      expect(resolveSpy).toHaveBeenCalledWith('toolu_gate', {
+        answered: true,
+        user_text: 'the BS number is sixty one zero zero eight',
+      });
+    });
+  });
+
   // 2026-05-01 — bus-level prefix routing for server-emitted dialogue-engine
   // asks. Field repro: session DFA7FDBF-86DB-4E7A-9E4F-70217CF2C028.
   // The dialogue engine emits its "Which circuit is the ring continuity for?"
