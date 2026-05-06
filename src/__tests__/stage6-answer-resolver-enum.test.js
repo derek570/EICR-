@@ -27,6 +27,15 @@ const RCD_SCHEMA = {
       type: 'select',
       options: ['', '61008', '61009', '62423', 'N/A'],
     },
+    // ocpd_bs_en exercises the mixed-format option list (5-digit, 4-digit,
+    // and hyphenated forms). Promoted to select 2026-05-06 alongside
+    // rcd_bs_en — same matcher, different option shape. Pulled from the
+    // production field_schema.json so this test exercises the real shape.
+    ocpd_bs_en: {
+      label: 'OCPD BS/EN',
+      type: 'select',
+      options: ['', '60898', '61009', '88-2', '88-3', '1361', '3036', '60947-2', 'N/A'],
+    },
     rcd_type: {
       label: 'RCD Type',
       type: 'select',
@@ -122,14 +131,10 @@ describe('resolveEnumAnswer — N/A short-circuit', () => {
   });
 });
 
-describe('resolveEnumAnswer — did_you_mean (1-digit-different typo)', () => {
-  test('"68001" (the prod failure from session DC946608) → did_you_mean ["61008"]', () => {
-    // Two-digit difference between 68001 and 61008 — wait, let's check:
-    //   6 8 0 0 1
-    //   6 1 0 0 8
-    // pos 0: same, pos 1: 8 vs 1, pos 2: same, pos 3: same, pos 4: 1 vs 8.
-    // That's TWO digits different → invalid_value, not did_you_mean.
-    // Document the actual prod symptom here for the audit trail.
+describe('resolveEnumAnswer — did_you_mean (Levenshtein-1: substitution / insertion / deletion)', () => {
+  test('"68001" (the prod failure from session DC946608) → invalid_value (two substitutions, beyond Lev-1)', () => {
+    // 68001 vs 61008: positions 1 + 4 differ → distance 2.
+    // Documents the exact prod symptom for the audit trail.
     const verdict = resolveEnumAnswer({
       userText: '68001',
       contextField: 'rcd_bs_en',
@@ -142,7 +147,7 @@ describe('resolveEnumAnswer — did_you_mean (1-digit-different typo)', () => {
     expect(verdict.valid_options).toEqual(['', '61008', '61009', '62423', 'N/A']);
   });
 
-  test('"61018" (1 digit off 61008) → did_you_mean ["61008"]', () => {
+  test('substitution: "61018" (1 digit off 61008) → did_you_mean ["61008"]', () => {
     const verdict = resolveEnumAnswer({
       userText: '61018',
       contextField: 'rcd_bs_en',
@@ -156,7 +161,7 @@ describe('resolveEnumAnswer — did_you_mean (1-digit-different typo)', () => {
     expect(verdict.valid_options).toEqual(['', '61008', '61009', '62423', 'N/A']);
   });
 
-  test('"61029" (1 digit off 61009) → did_you_mean ["61009"]', () => {
+  test('substitution: "61029" (1 digit off 61009) → did_you_mean ["61009"]', () => {
     const verdict = resolveEnumAnswer({
       userText: '61029',
       contextField: 'rcd_bs_en',
@@ -166,6 +171,130 @@ describe('resolveEnumAnswer — did_you_mean (1-digit-different typo)', () => {
     });
     expect(verdict.kind).toBe('did_you_mean');
     expect(verdict.suggestions).toEqual(['61009']);
+  });
+
+  test('deletion: "6100" (1 deletion from 61008) → did_you_mean ["61008"] — Deepgram drift pattern the equal-length helper missed', () => {
+    const verdict = resolveEnumAnswer({
+      userText: '6100',
+      contextField: 'rcd_bs_en',
+      contextCircuit: 1,
+      sourceTurnId: null,
+      fieldSchema: RCD_SCHEMA,
+    });
+    expect(verdict.kind).toBe('did_you_mean');
+    expect(verdict.suggestions).toContain('61008');
+  });
+
+  test('insertion: "610008" (1 insertion in 61008) → did_you_mean ["61008"]', () => {
+    const verdict = resolveEnumAnswer({
+      userText: '610008',
+      contextField: 'rcd_bs_en',
+      contextCircuit: 1,
+      sourceTurnId: null,
+      fieldSchema: RCD_SCHEMA,
+    });
+    expect(verdict.kind).toBe('did_you_mean');
+    expect(verdict.suggestions).toContain('61008');
+  });
+});
+
+describe('resolveEnumAnswer — ocpd_bs_en (mixed-format options: 5-digit, 4-digit, hyphenated)', () => {
+  test('"60898" exactly matches the 5-digit MCB option', () => {
+    const verdict = resolveEnumAnswer({
+      userText: '60898',
+      contextField: 'ocpd_bs_en',
+      contextCircuit: 1,
+      sourceTurnId: 't',
+      fieldSchema: RCD_SCHEMA,
+    });
+    expect(verdict.kind).toBe('auto_resolve');
+    expect(verdict.writes[0].value).toBe('60898');
+  });
+
+  test('"BS 88-2" exactly matches the hyphenated HRC fuse option', () => {
+    const verdict = resolveEnumAnswer({
+      userText: 'BS 88-2',
+      contextField: 'ocpd_bs_en',
+      contextCircuit: 1,
+      sourceTurnId: 't',
+      fieldSchema: RCD_SCHEMA,
+    });
+    expect(verdict.kind).toBe('auto_resolve');
+    expect(verdict.writes[0].value).toBe('88-2');
+  });
+
+  test('"BS EN 1361" matches the 4-digit cartridge fuse option', () => {
+    const verdict = resolveEnumAnswer({
+      userText: 'BS EN 1361',
+      contextField: 'ocpd_bs_en',
+      contextCircuit: 1,
+      sourceTurnId: 't',
+      fieldSchema: RCD_SCHEMA,
+    });
+    expect(verdict.kind).toBe('auto_resolve');
+    expect(verdict.writes[0].value).toBe('1361');
+  });
+
+  test('"60947-2" matches the hyphenated MCCB option exactly', () => {
+    const verdict = resolveEnumAnswer({
+      userText: '60947-2',
+      contextField: 'ocpd_bs_en',
+      contextCircuit: 1,
+      sourceTurnId: 't',
+      fieldSchema: RCD_SCHEMA,
+    });
+    expect(verdict.kind).toBe('auto_resolve');
+    expect(verdict.writes[0].value).toBe('60947-2');
+  });
+
+  test('"60887" (TWO substitutions from 60898) → invalid_value (Lev > 1)', () => {
+    // 60887 vs 60898: positions 3 (8/9) and 4 (7/8) both differ → distance 2.
+    // Documents the Lev-1 boundary — the matcher rejects rather than over-suggesting.
+    const verdict = resolveEnumAnswer({
+      userText: '60887',
+      contextField: 'ocpd_bs_en',
+      contextCircuit: 1,
+      sourceTurnId: 't',
+      fieldSchema: RCD_SCHEMA,
+    });
+    expect(verdict.kind).toBe('invalid_value');
+  });
+
+  test('"60899" (1 substitution from 60898) → did_you_mean ["60898"]', () => {
+    const verdict = resolveEnumAnswer({
+      userText: '60899',
+      contextField: 'ocpd_bs_en',
+      contextCircuit: 1,
+      sourceTurnId: 't',
+      fieldSchema: RCD_SCHEMA,
+    });
+    expect(verdict.kind).toBe('did_you_mean');
+    expect(verdict.suggestions).toContain('60898');
+  });
+
+  test('"banana" against ocpd_bs_en → invalid_value with the OCPD option list', () => {
+    const verdict = resolveEnumAnswer({
+      userText: 'banana',
+      contextField: 'ocpd_bs_en',
+      contextCircuit: 1,
+      sourceTurnId: 't',
+      fieldSchema: RCD_SCHEMA,
+    });
+    expect(verdict.kind).toBe('invalid_value');
+    expect(verdict.valid_options).toContain('60898');
+    expect(verdict.valid_options).toContain('88-2');
+  });
+
+  test('"no OCPD" → auto-resolve to N/A', () => {
+    const verdict = resolveEnumAnswer({
+      userText: 'no OCPD',
+      contextField: 'ocpd_bs_en',
+      contextCircuit: 1,
+      sourceTurnId: 't',
+      fieldSchema: RCD_SCHEMA,
+    });
+    expect(verdict.kind).toBe('auto_resolve');
+    expect(verdict.writes[0].value).toBe('N/A');
   });
 });
 

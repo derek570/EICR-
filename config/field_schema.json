@@ -90,9 +90,10 @@
     },
     "ocpd_bs_en": {
       "label": "OCPD BS/EN",
-      "type": "text",
+      "type": "select",
+      "options": ["", "60898", "61009", "88-2", "88-3", "1361", "3036", "60947-2", "N/A"],
       "description": "OCPD British/European Standard reference",
-      "ai_guidance": "Standard number. Common: 60898 (MCB), 61009 (RCBO), 88-2 (rewireable fuse), 1361 (cartridge fuse)",
+      "ai_guidance": "Inspectors usually dictate digits only. Common: 60898 (MCB), 61009 (RCBO), 88-2 / 88-3 (HRC fuses), 1361 (cartridge fuse), 3036 (rewireable fuse), 60947-2 (MCCB).",
       "pdf_column": "BS(EN)",
       "group": "OCPD"
     },
@@ -508,9 +509,10 @@
     },
     "spd_bs_en": {
       "label": "Supply Protective Device BS/EN",
-      "type": "text",
+      "type": "select",
+      "options": ["", "88-2", "88-3", "1361", "N/A"],
       "description": "Standard number for supply protective device",
-      "ai_guidance": "Standard for DNO supply cutout fuse (NOT the consumer's main switch). Common: 88-2.2 (BS fuse), 1361 (cartridge fuse). Only populate if a separate supply fuse/cutout is identified."
+      "ai_guidance": "Standard for DNO supply cutout fuse (NOT the consumer's main switch). Common: 88-2 / 88-3 (HRC fuses), 1361 (cartridge fuse). Only populate if a separate supply fuse/cutout is identified."
     },
     "spd_type_supply": {
       "label": "Supply Protective Device Type",

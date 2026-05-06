@@ -740,24 +740,80 @@ export function resolveValueAnswer({ userText, contextField, contextCircuit, sou
 
 // Bare-string options that should auto-resolve to N/A. Order matters only
 // for log readability — match is case-insensitive substring.
-const NA_PHRASES = ['n/a', 'na', 'not applicable', 'none', 'no rcd', 'no rcd fitted'];
+//
+// Generalised across BS-EN field families (rcd / ocpd / spd) so a single
+// matcher serves all of them. "no rcd" stays in the list because it's a
+// natural inspector phrase even when the field being asked about isn't
+// rcd_bs_en — a permissive synonym is cheaper than a per-field overlay.
+const NA_PHRASES = [
+  'n/a',
+  'na',
+  'not applicable',
+  'none',
+  'no rcd',
+  'no rcd fitted',
+  'no ocpd',
+  'no spd',
+];
 
 /**
- * Single-digit-edit check for two equal-length strings. O(n) one pass with
- * early exit. Used for "did you mean" suggestions on 5-digit BS-EN codes
- * where Levenshtein-1 reduces to "exactly one position differs".
+ * Levenshtein distance between two strings (substitution / insertion /
+ * deletion all cost 1). Standard O(m*n) DP. Used for "did you mean"
+ * suggestions on BS-EN codes — accepts typo distance up to a caller-set
+ * threshold (currently 1).
+ *
+ * Replaces the earlier `singleDigitDiff` (equal-length only). With
+ * insertions/deletions in scope:
+ *   - "6100"   matches "61008" at distance 1 (deletion)
+ *   - "610008" matches "61008" at distance 1 (insertion)
+ *   - "61018"  matches "61008" at distance 1 (substitution — already
+ *              caught by the old equal-length helper)
+ *
+ * Early exits keep this fast for short codes (the common case is
+ * comparing a 4-7 char digit run against ~5 options).
  */
-function singleDigitDiff(a, b) {
-  if (typeof a !== 'string' || typeof b !== 'string') return false;
-  if (a.length !== b.length) return false;
-  let diffs = 0;
-  for (let i = 0; i < a.length; i++) {
-    if (a[i] !== b[i]) {
-      diffs += 1;
-      if (diffs > 1) return false;
+function levenshteinDistance(a, b) {
+  if (typeof a !== 'string') a = String(a ?? '');
+  if (typeof b !== 'string') b = String(b ?? '');
+  if (a === b) return 0;
+  const m = a.length;
+  const n = b.length;
+  if (m === 0) return n;
+  if (n === 0) return m;
+  // Length-difference lower bound — distance can never be less than the
+  // absolute length difference. Cheap early-exit for callers that only
+  // care about distance <= K.
+  if (Math.abs(m - n) > Math.max(m, n)) return Math.max(m, n);
+  // Two-row DP (rolling) — O(min(m,n)) memory.
+  let prev = new Array(n + 1);
+  let curr = new Array(n + 1);
+  for (let j = 0; j <= n; j += 1) prev[j] = j;
+  for (let i = 1; i <= m; i += 1) {
+    curr[0] = i;
+    for (let j = 1; j <= n; j += 1) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      curr[j] = Math.min(
+        curr[j - 1] + 1, // insertion
+        prev[j] + 1, // deletion
+        prev[j - 1] + cost // substitution / match
+      );
     }
+    [prev, curr] = [curr, prev];
   }
-  return diffs === 1;
+  return prev[n];
+}
+
+/**
+ * Strip everything except digits and hyphens. Used to compare a
+ * user-spoken BS-EN candidate ("BS 88-2", "61008") against the
+ * field-schema option list (which stores values like "60898", "88-2",
+ * "60947-3"). Returning a hyphen-aware digit form lets us compare
+ * "88-2" exactly without losing the hyphen, while still tolerating
+ * "BS EN 60898" → "60898".
+ */
+function normaliseBsEnDigits(s) {
+  if (typeof s !== 'string') return '';
+  return s.replace(/[^\d-]/g, '');
 }
 
 /**
@@ -832,15 +888,20 @@ export function resolveEnumAnswer({
     };
   }
 
-  // Extract the first 5-digit run (the standard BS-EN length). If the
-  // field's options don't follow the BS-EN shape, fall through — this
-  // resolver is currently scoped to digit-anchored enums; extending to
-  // word-anchored enums (e.g. ocpd_type AC|A|F|B) is future work.
-  const allDigit5 = matchableOptions.every((o) => /^\d{5}$/.test(o));
-  if (!allDigit5) {
+  // Word-anchored enums (e.g. rcd_type AC|A|F|B) have no digits in any
+  // option — fall through so the legacy free-text body runs. The matcher
+  // below is scoped to digit-anchored enums (BS-EN families).
+  const anyDigitOption = matchableOptions.some((o) => /\d/.test(o));
+  if (!anyDigitOption) {
     return { kind: 'no_value_context' };
   }
-  const digitMatch = text.match(/\b(\d{5})\b/);
+
+  // Extract a digit-anchored candidate from the user's reply. Pattern
+  // matches a digit run with optional internal hyphens — handles
+  // "BS 60898" → "60898", "BS 88-2" → "88-2", "60947-3" → "60947-3".
+  // The trailing alternation `|\d+` is a fallback for cases where the
+  // first token is just digits with no hyphen.
+  const digitMatch = text.match(/\d[\d-]*\d|\d+/);
   if (!digitMatch) {
     return {
       kind: 'invalid_value',
@@ -848,25 +909,39 @@ export function resolveEnumAnswer({
       valid_options: field.options,
     };
   }
-  const candidate = digitMatch[1];
-  if (matchableOptions.includes(candidate)) {
-    return {
-      kind: 'auto_resolve',
-      writes: [
-        {
-          tool: 'record_reading',
-          field: contextField,
-          circuit: contextCircuit,
-          value: candidate,
-          confidence: 0.95,
-          source_turn_id: sourceTurnId ?? null,
-        },
-      ],
-    };
+  const candidate = digitMatch[0];
+  const candidateDigits = normaliseBsEnDigits(candidate);
+
+  // Exact match against any option (compared on the digit form so
+  // user-spoken "60898" matches option "60898" and user-spoken "88-2"
+  // matches option "88-2"). Preserve the original option string for
+  // the write — it's the canonical wire / PDF / iOS-picker value.
+  for (const opt of matchableOptions) {
+    if (normaliseBsEnDigits(opt) === candidateDigits) {
+      return {
+        kind: 'auto_resolve',
+        writes: [
+          {
+            tool: 'record_reading',
+            field: contextField,
+            circuit: contextCircuit,
+            value: opt,
+            confidence: 0.95,
+            source_turn_id: sourceTurnId ?? null,
+          },
+        ],
+      };
+    }
   }
-  // 1-digit-different suggestions (typical Deepgram drift on dictated
-  // digits — "61008" → "68001" was the prod failure).
-  const suggestions = matchableOptions.filter((o) => singleDigitDiff(candidate, o));
+
+  // Levenshtein-1 suggestions across the whole digit form. Catches
+  // substitution typos ("61018" → "61008"), deletions ("6100" → "61008")
+  // and insertions ("610008" → "61008"). Equal-length-only was the
+  // earlier behaviour (`singleDigitDiff`); the broader Levenshtein
+  // covers Deepgram drift patterns the equal-length check missed.
+  const suggestions = matchableOptions.filter(
+    (opt) => levenshteinDistance(candidateDigits, normaliseBsEnDigits(opt)) === 1
+  );
   if (suggestions.length > 0) {
     return {
       kind: 'did_you_mean',
