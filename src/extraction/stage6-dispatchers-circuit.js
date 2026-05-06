@@ -45,6 +45,7 @@
  *   { tool_use_id: string, content: string (JSON), is_error: boolean }
  */
 
+import { createRequire } from 'node:module';
 import {
   applyReadingToSnapshot,
   clearReadingInSnapshot,
@@ -65,6 +66,14 @@ import {
 } from './stage6-dispatch-validation.js';
 import { logToolCall } from './stage6-dispatcher-logger.js';
 import { checkForPromptLeak, hashPayload } from './stage6-prompt-leak-filter.js';
+
+// Field schema is loaded once at module init (same pattern as
+// stage6-tool-schemas.js). Used by dispatchSetFieldForAllCircuits to
+// validate `field` membership AND value-against-options for select-typed
+// fields — defence in depth against off-enum sampling on a tool whose
+// blast radius is every circuit at once.
+const fieldSchemaRequire = createRequire(import.meta.url);
+const FIELD_SCHEMA = fieldSchemaRequire('../../config/field_schema.json');
 
 /**
  * Format a dispatcher return envelope. `content` is JSON-stringified here so
@@ -916,16 +925,41 @@ export async function dispatchSetFieldForAllCircuits(call, ctx) {
     const bucket = session.stateSnapshot.circuits[ref];
     if (!bucket) continue;
     if (scope === 'non_spare') {
-      const designation = String(bucket.circuit_designation ?? '').toLowerCase();
-      if (designation.includes('spare')) {
+      // Two ways a circuit reads as "spare":
+      //   (a) the designation literally contains the word "spare" — but
+      //       matched as a WHOLE WORD, not a substring. The previous
+      //       `.includes('spare')` falsely flagged "non-spare" (rare in
+      //       practice but a real correctness bug). \bspare\b avoids that.
+      //   (b) the designation is empty / null / whitespace — blank-row
+      //       circuits in the schedule are spares by convention (the
+      //       inspector hasn't named them because there's nothing to
+      //       inspect). The previous filter only caught (a) and would
+      //       have applied the bulk write to every blank slot — a real
+      //       data-quality bug for any real-world dual-RCD board where
+      //       trailing slots are reserved for future use.
+      // The negative lookbehind `(?<!-)` rejects compound forms like
+      // "non-spare" / "anti-spare" — \b alone treats the hyphen as a word
+      // boundary and would falsely flag those as spares. The lookahead
+      // `\b` after `spare` is symmetric in spirit but we don't need a
+      // mirror lookahead because trailing hyphens on "spare-anything"
+      // ARE genuinely spares (e.g. "spare-RCBO"). Asymmetric on purpose.
+      const designation = String(bucket.circuit_designation ?? '').trim();
+      if (designation === '' || /(?<!-)\bspare\b/i.test(designation)) {
         skipped.push({ circuit_ref: ref, reason: 'spare_circuit' });
         continue;
       }
     } else if (scope === 'rcd_protected_only') {
+      // rcd_operating_current_ma is DELIBERATELY excluded from the hasRcd
+      // check: field_schema.json:166 declares its default as "30", which
+      // means non-RCD circuits inherit "30" the moment any code reads
+      // through the default path. Including it would tag every circuit
+      // in the snapshot as RCD-protected and the filter would do nothing.
+      // Verified against session DC946608's snapshot — every circuit had
+      // rcd_operating_current_ma="30" regardless of actual RCD bank
+      // membership.
       const hasRcd =
         (bucket.rcd_bs_en && bucket.rcd_bs_en !== '') ||
-        (bucket.rcd_type && bucket.rcd_type !== '') ||
-        (bucket.rcd_operating_current_ma && bucket.rcd_operating_current_ma !== '');
+        (bucket.rcd_type && bucket.rcd_type !== '');
       if (!hasRcd) {
         skipped.push({ circuit_ref: ref, reason: 'no_rcd' });
         continue;
@@ -966,22 +1000,45 @@ export async function dispatchSetFieldForAllCircuits(call, ctx) {
 // ---- inline validator for set_field_for_all_circuits ----------------------
 //
 // Kept inline (not threaded through stage6-dispatch-validation.js) because the
-// shape is small, the field/scope enums are local concerns of this dispatcher,
-// and adding a new export to dispatch-validation requires a coordinated change
-// across the dispatcher table that doesn't pay for itself for one tool. If
-// other bulk tools land later (set_observation_for_all_circuits etc.), refactor
-// up to the shared validator module.
+// shape is small and the validator's heavy lift is the per-field-schema check
+// against FIELD_SCHEMA, which is already imported here. If other bulk tools
+// land later (set_observation_for_all_circuits etc.), refactor up to the
+// shared validator module.
+//
+// Defence in depth (Bug-E removed strict:true at the API layer per
+// stage6-tool-schemas.js:108, so off-enum sampling can slip through):
+//   - field MUST be a known circuit_fields key — bypassing this would
+//     silently corrupt the snapshot via applyReadingToSnapshot.
+//   - For SELECT-typed fields, value MUST be in the field's option list.
+//     record_reading doesn't enforce this either (legacy gap), but the
+//     blast radius of a bad value here is EVERY circuit at once vs one,
+//     so the cost/benefit on the bulk path tilts toward stricter checks.
+//   - For TEXT-typed fields, accept any string (matches record_reading
+//     behaviour — the schema has no enum to validate against).
 const VALID_SCOPES = new Set(['non_spare', 'all', 'rcd_protected_only']);
 function validateSetFieldForAllCircuits(input) {
   if (typeof input.field !== 'string' || input.field.length === 0) {
     return { code: 'invalid_field', field: 'field' };
   }
-  // Defer the actual circuit_fields enum check to the schema-loaded enum
-  // — the tool definition's `enum` already constrains Anthropic's tool
-  // sampling, and the field schema is the source of truth for what's a
-  // valid circuit field.
+  const fieldDef = FIELD_SCHEMA.circuit_fields?.[input.field];
+  if (!fieldDef) {
+    return { code: 'unknown_field', field: 'field' };
+  }
   if (typeof input.value !== 'string') {
     return { code: 'invalid_value', field: 'value' };
+  }
+  // Per-field option enforcement for select-typed fields. Empty option ""
+  // is valid (it's the dispatcher's clear-equivalent — write empty across
+  // all circuits to wipe the field). N/A is valid only when present in the
+  // option list, which it is for most select fields by convention.
+  if (fieldDef.type === 'select' && Array.isArray(fieldDef.options)) {
+    if (!fieldDef.options.includes(input.value)) {
+      return {
+        code: 'value_not_in_options',
+        field: 'value',
+        valid_options: fieldDef.options,
+      };
+    }
   }
   if (
     typeof input.confidence !== 'number' ||

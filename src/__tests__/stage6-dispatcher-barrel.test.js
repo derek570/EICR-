@@ -136,8 +136,12 @@ describe('barrel re-exports', () => {
       // 2026-05-06 — bulk-set tool. Minimal valid input mirrors record_reading
       // but writes to ALL non-spare circuits in one call. Seeded session has
       // circuit 3 (no spare designation) so applied=[{circuit:3,...}], skipped=[].
+      // Uses a REAL circuit_fields key (`measured_zs_ohm`, type:text) because
+      // the dispatcher's defence-in-depth validator rejects unknown fields —
+      // the barrel test seeded `Ze_ohms` / `Zs_ohms` as scratch field names
+      // which the other dispatchers tolerate but bulk does not.
       set_field_for_all_circuits: {
-        field: 'Zs_ohms',
+        field: 'measured_zs_ohm',
         value: '0.5',
         confidence: 1.0,
         source_turn_id: 't1',
