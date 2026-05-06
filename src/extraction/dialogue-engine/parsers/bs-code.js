@@ -89,6 +89,83 @@ function normaliseBsInput(text) {
   return text;
 }
 
+// Digit-form lookup for fuzzy fallback — derived from PATTERNS above.
+// Each entry maps a canonical BS-code string to the digit run an
+// inspector would actually dictate (with internal hyphen preserved
+// because "60947-2" and "60947-3" are distinct standards). Keep this
+// list in sync with PATTERNS.
+const FUZZY_TARGETS = [
+  { digits: '60947-2', canonical: 'BS EN 60947-2' },
+  { digits: '60947-3', canonical: 'BS EN 60947-3' },
+  { digits: '60898', canonical: 'BS EN 60898' },
+  { digits: '61008', canonical: 'BS EN 61008' },
+  { digits: '61009', canonical: 'BS EN 61009' },
+  { digits: '62606', canonical: 'BS EN 62606' },
+  { digits: '62423', canonical: 'BS EN 62423' },
+  { digits: '88-2', canonical: 'BS 88-2' },
+  { digits: '88-3', canonical: 'BS 88-3' },
+  { digits: '3036', canonical: 'BS 3036' },
+  { digits: '1361', canonical: 'BS 1361' },
+  { digits: '4293', canonical: 'BS 4293' },
+];
+
+/**
+ * Levenshtein distance — substitution, insertion, deletion all cost 1.
+ * Standard O(m*n) DP with rolling two-row memory. Used by the fuzzy
+ * fallback to recover from Deepgram digit drift on BS codes.
+ *
+ * Production failure that motivated this: session C4467E35 (2026-05-06)
+ * inspector said "BS 6898" three times — Deepgram dropped the leading
+ * "0" so the strict `\b60898\b` pattern never matched and the engine
+ * looped re-asking forever. With Lev-1 fallback "6898" → "60898"
+ * (insertion distance 1) → "BS EN 60898".
+ */
+function levenshtein(a, b) {
+  if (a === b) return 0;
+  const m = a.length;
+  const n = b.length;
+  if (m === 0) return n;
+  if (n === 0) return m;
+  let prev = new Array(n + 1);
+  let curr = new Array(n + 1);
+  for (let j = 0; j <= n; j += 1) prev[j] = j;
+  for (let i = 1; i <= m; i += 1) {
+    curr[0] = i;
+    for (let j = 1; j <= n; j += 1) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      curr[j] = Math.min(curr[j - 1] + 1, prev[j] + 1, prev[j - 1] + cost);
+    }
+    [prev, curr] = [curr, prev];
+  }
+  return prev[n];
+}
+
+function digitsOnly(s) {
+  return String(s ?? '').replace(/\D/g, '');
+}
+
+/**
+ * Fuzzy fallback for BS-code recognition. Extracts the longest digit
+ * run from the (already letter-split-normalised) text and compares to
+ * every canonical's digit form via Levenshtein-1. Returns the
+ * canonical string only if EXACTLY ONE target is at distance ≤ 1 —
+ * ambiguity (e.g. "6100" → 61008/61009 tie) falls through so the
+ * engine re-asks rather than guessing.
+ *
+ * Conservative on length: only attempts a match when the candidate
+ * has 4-6 digits, ruling out fragments like "6" or single-digit
+ * answers that aren't BS codes anyway.
+ */
+function fuzzyMatchBsCode(text) {
+  const m = text.match(/\d[\d-]*\d|\d+/);
+  if (!m) return null;
+  const candidate = digitsOnly(m[0]);
+  if (candidate.length < 4 || candidate.length > 6) return null;
+  const matches = FUZZY_TARGETS.filter((t) => levenshtein(candidate, digitsOnly(t.digits)) <= 1);
+  if (matches.length === 1) return matches[0].canonical;
+  return null;
+}
+
 export function parseBsCode(text) {
   if (typeof text !== 'string' || !text) return null;
   const normalised = normaliseBsInput(text);
@@ -98,7 +175,10 @@ export function parseBsCode(text) {
       return p.build ? p.build(m) : p.canonical;
     }
   }
-  return null;
+  // Fuzzy fallback — single-best Lev-1 match against the canonical
+  // digit set. Catches Deepgram digit-drift that the strict patterns
+  // above miss (single insertion, deletion, or substitution).
+  return fuzzyMatchBsCode(normalised);
 }
 
 /**
