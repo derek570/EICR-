@@ -736,6 +736,62 @@ const startDialogueScript = makeTool({
 // start_dialogue_script appends at index 8 so the existing indices for the
 // earlier tools do not shift.
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// 2026-05-06 (Bug A from session DC946608) — set_field_for_all_circuits.
+// "Set the RCD test button to pass for all circuits" produced exactly 7
+// `record_reading` tool calls (circuits 1-7 of 14) instead of 14. Sonnet
+// stopped halfway through the burst — model-behaviour fragility, not a
+// code-level cap. Replacing the 14-tool-call pattern with ONE tool call
+// that the server iterates over is structurally robust: scope is encoded
+// in the input, the dispatcher walks the snapshot, and the per-circuit
+// result is returned in a single envelope.
+//
+// scope semantics (mirrors dispatchCalculateZs's selector model):
+//   non_spare        — every non-supply circuit whose designation isn't "spare"
+//                       (default; matches the inspector's natural meaning of
+//                       "all circuits" — they don't dictate values for spares).
+//   all              — every non-supply circuit regardless of designation.
+//   rcd_protected_only — circuits with any of rcd_bs_en / rcd_type /
+//                        rcd_operating_current_ma populated. Useful for
+//                        bulk-setting RCD-test results without spilling onto
+//                        non-RCD circuits.
+// ---------------------------------------------------------------------------
+const setFieldForAllCircuits = makeTool({
+  name: 'set_field_for_all_circuits',
+  description:
+    'Apply ONE field/value to every active circuit in the schedule. Use when the inspector says "all circuits", "every circuit", "set [field] to [value] for all". The server iterates and returns a per-circuit applied/skipped breakdown — emit ONE call, not one record_reading per circuit. For ranges ("circuits 1 through 4"): keep using one record_reading per circuit.',
+  properties: {
+    field: {
+      type: 'string',
+      enum: Object.keys(fieldSchema.circuit_fields),
+      description:
+        'The circuit_fields key to write across all targeted circuits. Same enum as record_reading.',
+    },
+    value: {
+      type: 'string',
+      description:
+        'Post-normalisation value to write. Same string-coercion contract as record_reading.',
+    },
+    scope: {
+      type: 'string',
+      enum: ['non_spare', 'all', 'rcd_protected_only'],
+      description:
+        'Which circuits to target. non_spare (default): every non-supply circuit whose designation is not "spare". all: every non-supply circuit. rcd_protected_only: only circuits with RCD fields populated.',
+    },
+    confidence: {
+      type: 'number',
+      description:
+        'Model confidence 0.0–1.0 for this bulk capture (dispatcher rejects values outside [0,1]).',
+    },
+    source_turn_id: {
+      type: 'string',
+      description:
+        'Identifier of the user turn this bulk capture came from; used for dedup and correlation.',
+    },
+  },
+  required: ['field', 'value', 'confidence', 'source_turn_id'],
+});
+
 export const TOOL_SCHEMAS = [
   recordReading,
   clearReading,
@@ -754,6 +810,9 @@ export const TOOL_SCHEMAS = [
   deleteCircuit,
   calculateZs,
   calculateR1PlusR2,
+  // 2026-05-06 (session DC946608) — bulk-set tool. Appended last to keep the
+  // earlier TOOL_SCHEMAS indices stable for any consumers that key on them.
+  setFieldForAllCircuits,
 ];
 
 /**

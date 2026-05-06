@@ -61,14 +61,18 @@ const EXPECTED_TOOL_NAMES = [
   'delete_circuit',
   'calculate_zs',
   'calculate_r1_plus_r2',
+  // 2026-05-06 (session DC946608, 8 Branagh Court): bulk-set tool. Replaces
+  // the model's 14-tool-call burst pattern (Sonnet truncated to 7 in prod)
+  // with one server-iterated call.
+  'set_field_for_all_circuits',
 ];
 
 const byName = (name) => TOOL_SCHEMAS.find((t) => t.name === name);
 
 describe('stage6-tool-schemas', () => {
-  test('exports exactly 12 tools with the expected names', () => {
+  test('exports exactly 13 tools with the expected names', () => {
     expect(Array.isArray(TOOL_SCHEMAS)).toBe(true);
-    expect(TOOL_SCHEMAS).toHaveLength(12);
+    expect(TOOL_SCHEMAS).toHaveLength(13);
     const names = TOOL_SCHEMAS.map((t) => t.name).sort();
     expect(names).toEqual([...EXPECTED_TOOL_NAMES].sort());
   });

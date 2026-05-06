@@ -27,7 +27,7 @@ function mockLogger() {
 }
 
 describe('barrel re-exports', () => {
-  test('WRITE_DISPATCHERS has all eleven keys, all async functions', () => {
+  test('WRITE_DISPATCHERS has all twelve keys, all async functions', () => {
     expect(Object.keys(WRITE_DISPATCHERS).sort()).toEqual(
       [
         'clear_reading',
@@ -41,6 +41,9 @@ describe('barrel re-exports', () => {
         'start_dialogue_script',
         'calculate_zs',
         'calculate_r1_plus_r2',
+        // 2026-05-06 (session DC946608) — bulk-set tool. Replaces the
+        // model's 14-tool-call burst pattern with one server-iterated call.
+        'set_field_for_all_circuits',
       ].sort()
     );
     for (const fn of Object.values(WRITE_DISPATCHERS)) {
@@ -60,6 +63,9 @@ describe('barrel re-exports', () => {
     expect(WRITE_DISPATCHERS.delete_circuit).toBe(circuitSibling.dispatchDeleteCircuit);
     expect(WRITE_DISPATCHERS.calculate_zs).toBe(circuitSibling.dispatchCalculateZs);
     expect(WRITE_DISPATCHERS.calculate_r1_plus_r2).toBe(circuitSibling.dispatchCalculateR1PlusR2);
+    expect(WRITE_DISPATCHERS.set_field_for_all_circuits).toBe(
+      circuitSibling.dispatchSetFieldForAllCircuits
+    );
   });
 
   test('every dispatcher returns a well-formed envelope when invoked with valid inputs', async () => {
@@ -127,6 +133,15 @@ describe('barrel re-exports', () => {
       // seeded circuit has no ring values so it'll skip with no_ring_r1; still
       // ok:true overall.
       calculate_r1_plus_r2: { method: 'ring_continuity', all: true },
+      // 2026-05-06 — bulk-set tool. Minimal valid input mirrors record_reading
+      // but writes to ALL non-spare circuits in one call. Seeded session has
+      // circuit 3 (no spare designation) so applied=[{circuit:3,...}], skipped=[].
+      set_field_for_all_circuits: {
+        field: 'Zs_ohms',
+        value: '0.5',
+        confidence: 1.0,
+        source_turn_id: 't1',
+      },
     };
     for (const [name, fn] of Object.entries(WRITE_DISPATCHERS)) {
       // Fresh session per call so create_circuit(99) etc don't collide.

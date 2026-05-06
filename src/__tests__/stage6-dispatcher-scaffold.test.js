@@ -39,7 +39,7 @@ function mockLogger() {
 }
 
 describe('WRITE_DISPATCHERS dispatch table', () => {
-  test('has exactly eleven keys matching REQUIREMENTS STS-01..06 + record_board_reading + start_dialogue_script + delete_circuit + calculate_zs + calculate_r1_plus_r2', () => {
+  test('has exactly twelve keys matching REQUIREMENTS STS-01..06 + record_board_reading + start_dialogue_script + delete_circuit + calculate_zs + calculate_r1_plus_r2 + set_field_for_all_circuits', () => {
     expect(Object.keys(WRITE_DISPATCHERS).sort()).toEqual(
       [
         'clear_reading',
@@ -63,6 +63,10 @@ describe('WRITE_DISPATCHERS dispatch table', () => {
         'delete_circuit',
         'calculate_zs',
         'calculate_r1_plus_r2',
+        // 2026-05-06 (session DC946608) — bulk-set tool. Replaces the model's
+        // 14-tool-call burst pattern (Sonnet truncated to 7 in prod) with one
+        // server-iterated call.
+        'set_field_for_all_circuits',
       ].sort()
     );
   });

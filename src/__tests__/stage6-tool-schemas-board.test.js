@@ -77,13 +77,16 @@ describe('record_board_reading schema', () => {
     // record_board_reading is appended at 7; start_dialogue_script at 8
     // (2026-04-30 Silvertown follow-up). delete_circuit (9), calculate_zs
     // (10), and calculate_r1_plus_r2 (11) appended 2026-05-04.
-    expect(TOOL_SCHEMAS).toHaveLength(12);
+    // set_field_for_all_circuits (12) appended 2026-05-06 (session DC946608
+    // bulk-set bug — Sonnet truncated the model's 14-tool burst to 7).
+    expect(TOOL_SCHEMAS).toHaveLength(13);
     expect(TOOL_SCHEMAS[7]).toBeDefined();
     expect(TOOL_SCHEMAS[7].name).toBe('record_board_reading');
     expect(TOOL_SCHEMAS[8].name).toBe('start_dialogue_script');
     expect(TOOL_SCHEMAS[9].name).toBe('delete_circuit');
     expect(TOOL_SCHEMAS[10].name).toBe('calculate_zs');
     expect(TOOL_SCHEMAS[11].name).toBe('calculate_r1_plus_r2');
+    expect(TOOL_SCHEMAS[12].name).toBe('set_field_for_all_circuits');
     expect(TOOL_SCHEMAS[0].name).toBe('record_reading'); // unchanged
   });
 

@@ -39,6 +39,7 @@ import {
   dispatchDeleteCircuit,
   dispatchCalculateZs,
   dispatchCalculateR1PlusR2,
+  dispatchSetFieldForAllCircuits,
 } from './stage6-dispatchers-circuit.js';
 import {
   dispatchRecordObservation,
@@ -80,6 +81,11 @@ export const WRITE_DISPATCHERS = {
   delete_circuit: dispatchDeleteCircuit,
   calculate_zs: dispatchCalculateZs,
   calculate_r1_plus_r2: dispatchCalculateR1PlusR2,
+  // 2026-05-06 (session DC946608) — bulk-set tool. Replaces the model's
+  // 14-tool-call burst pattern with one server-iterated call. Sonnet
+  // truncated the burst to 7 in production, so the structural fix is to
+  // make "all circuits" atomic on the server side.
+  set_field_for_all_circuits: dispatchSetFieldForAllCircuits,
 };
 
 /**

@@ -847,3 +847,155 @@ export async function dispatchCalculateR1PlusR2(call, ctx) {
   });
   return envelope(call.tool_call_id, { ok: true, computed, skipped }, false);
 }
+
+// ---- set_field_for_all_circuits -------------------------------------------
+
+/**
+ * dispatchSetFieldForAllCircuits — Bug A from session DC946608 (8 Branagh Ct,
+ * 2026-05-06). Replaces the model's 14-tool-call burst pattern (which Sonnet
+ * silently truncated to 7 in production) with one server-iterated tool call.
+ *
+ * Validation:
+ *   - field MUST be a known circuit_fields key (CIRCUIT_FIELD_ENUM membership).
+ *   - value MUST be a non-null string (record_reading's contract — empty is
+ *     allowed: that's how Sonnet writes a clear-equivalent here).
+ *   - confidence MUST be a finite number in [0, 1] (mirrors record_reading).
+ *   - source_turn_id MUST be a non-empty string.
+ *   - scope MUST be one of {'non_spare', 'all', 'rcd_protected_only'} or
+ *     omitted (default 'non_spare').
+ *
+ * Execution:
+ *   - Walks every non-supply circuit (circuit_ref >= 1) in
+ *     session.stateSnapshot.circuits.
+ *   - Filters by scope: 'non_spare' drops circuits whose designation contains
+ *     "spare" (case-insensitive); 'rcd_protected_only' keeps only circuits
+ *     with any of rcd_bs_en / rcd_type / rcd_operating_current_ma populated;
+ *     'all' is the no-filter passthrough.
+ *   - Applies field=value via applyReadingToSnapshot + perTurnWrites.readings,
+ *     same path as dispatchRecordReading. RING / IR write tracking is NOT
+ *     fired — bulk fills aren't live test entries, and stamping every circuit
+ *     with the same timestamp would poison the per-circuit staleness detectors.
+ *
+ * Envelope:
+ *   { ok: true, applied: [{circuit, field, value}], skipped: [{circuit_ref, reason}] }
+ *   where `reason` is 'spare_circuit' | 'no_rcd' depending on the filter.
+ *
+ * Mirrors dispatchCalculateZs's per-circuit applied/skipped breakdown so
+ * Sonnet can read back exactly what was and wasn't written without a
+ * round-trip.
+ */
+export async function dispatchSetFieldForAllCircuits(call, ctx) {
+  const { session, logger, turnId, perTurnWrites, round } = ctx;
+  const input = call.input ?? {};
+
+  const err = validateSetFieldForAllCircuits(input);
+  if (err) {
+    logToolCall(logger, {
+      sessionId: session.sessionId,
+      turnId,
+      tool_use_id: call.tool_call_id,
+      tool: 'set_field_for_all_circuits',
+      round,
+      is_error: true,
+      outcome: 'rejected',
+      validation_error: err,
+      input_summary: { field: input.field, scope: input.scope ?? 'non_spare' },
+    });
+    return envelope(call.tool_call_id, { ok: false, error: err }, true);
+  }
+
+  const scope = input.scope ?? 'non_spare';
+  const allRefs = Object.keys(session.stateSnapshot?.circuits ?? {})
+    .map(Number)
+    .filter((n) => Number.isInteger(n) && n >= 1)
+    .sort((a, b) => a - b);
+
+  const applied = [];
+  const skipped = [];
+  for (const ref of allRefs) {
+    const bucket = session.stateSnapshot.circuits[ref];
+    if (!bucket) continue;
+    if (scope === 'non_spare') {
+      const designation = String(bucket.circuit_designation ?? '').toLowerCase();
+      if (designation.includes('spare')) {
+        skipped.push({ circuit_ref: ref, reason: 'spare_circuit' });
+        continue;
+      }
+    } else if (scope === 'rcd_protected_only') {
+      const hasRcd =
+        (bucket.rcd_bs_en && bucket.rcd_bs_en !== '') ||
+        (bucket.rcd_type && bucket.rcd_type !== '') ||
+        (bucket.rcd_operating_current_ma && bucket.rcd_operating_current_ma !== '');
+      if (!hasRcd) {
+        skipped.push({ circuit_ref: ref, reason: 'no_rcd' });
+        continue;
+      }
+    }
+    applyReadingToSnapshot(session.stateSnapshot, {
+      circuit: ref,
+      field: input.field,
+      value: input.value,
+    });
+    perTurnWrites.readings.set(`${input.field}::${ref}`, {
+      value: input.value,
+      confidence: input.confidence,
+      source_turn_id: input.source_turn_id,
+    });
+    applied.push({ circuit: ref, field: input.field, value: input.value });
+  }
+
+  logToolCall(logger, {
+    sessionId: session.sessionId,
+    turnId,
+    tool_use_id: call.tool_call_id,
+    tool: 'set_field_for_all_circuits',
+    round,
+    is_error: false,
+    outcome: applied.length > 0 ? 'ok' : 'noop',
+    validation_error: null,
+    input_summary: {
+      field: input.field,
+      scope,
+      applied_count: applied.length,
+      skipped_count: skipped.length,
+    },
+  });
+  return envelope(call.tool_call_id, { ok: true, applied, skipped }, false);
+}
+
+// ---- inline validator for set_field_for_all_circuits ----------------------
+//
+// Kept inline (not threaded through stage6-dispatch-validation.js) because the
+// shape is small, the field/scope enums are local concerns of this dispatcher,
+// and adding a new export to dispatch-validation requires a coordinated change
+// across the dispatcher table that doesn't pay for itself for one tool. If
+// other bulk tools land later (set_observation_for_all_circuits etc.), refactor
+// up to the shared validator module.
+const VALID_SCOPES = new Set(['non_spare', 'all', 'rcd_protected_only']);
+function validateSetFieldForAllCircuits(input) {
+  if (typeof input.field !== 'string' || input.field.length === 0) {
+    return { code: 'invalid_field', field: 'field' };
+  }
+  // Defer the actual circuit_fields enum check to the schema-loaded enum
+  // — the tool definition's `enum` already constrains Anthropic's tool
+  // sampling, and the field schema is the source of truth for what's a
+  // valid circuit field.
+  if (typeof input.value !== 'string') {
+    return { code: 'invalid_value', field: 'value' };
+  }
+  if (
+    typeof input.confidence !== 'number' ||
+    !Number.isFinite(input.confidence) ||
+    input.confidence < 0 ||
+    input.confidence > 1
+  ) {
+    return { code: 'invalid_confidence', field: 'confidence' };
+  }
+  if (typeof input.source_turn_id !== 'string' || input.source_turn_id.length === 0) {
+    return { code: 'invalid_source_turn_id', field: 'source_turn_id' };
+  }
+  if (input.scope !== undefined && !VALID_SCOPES.has(input.scope)) {
+    return { code: 'invalid_scope', field: 'scope' };
+  }
+  return null;
+}
