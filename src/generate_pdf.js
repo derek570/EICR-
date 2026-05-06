@@ -23,12 +23,12 @@ function generateHTML(data) {
       <td class="center">${c.live_csa_mm2 || ''}</td>
       <td class="center">${c.cpc_csa_mm2 || ''}</td>
       <td class="center">${c.max_disconnect_time_s || '0.4'}</td>
-      <td class="center">${c.ocpd_bs_en || '61009-1'}</td>
+      <td class="center">${c.ocpd_bs_en || 'BS EN 61009'}</td>
       <td class="center">${c.ocpd_type || 'B'}</td>
       <td class="center">${c.ocpd_rating_a || ''}</td>
       <td class="center">${c.ocpd_breaking_capacity_ka || '6'}</td>
       <td class="center">${c.ocpd_max_zs_ohm || ''}</td>
-      <td class="center">${c.rcd_bs_en || '61009-1'}</td>
+      <td class="center">${c.rcd_bs_en || 'BS EN 61009'}</td>
       <td class="center">${c.rcd_type || 'A'}</td>
       <td class="center">${c.rcd_operating_current_ma || '30'}</td>
       <td class="center">${c.rcd_rating_a || ''}</td>

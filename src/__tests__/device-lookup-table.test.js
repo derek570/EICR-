@@ -27,14 +27,14 @@ describe('lookupDevice', () => {
     const spec = lookupDevice('Hager', 'ADA132');
     expect(spec).not.toBeNull();
     expect(spec.rcdWaveformType).toBe('A');
-    expect(spec.bsEn).toBe('BS EN 61009-1');
+    expect(spec.bsEn).toBe('BS EN 61009');
   });
 
   it('looks up Hager CDA MCB (no RCD waveform)', () => {
     const spec = lookupDevice('Hager', 'CDA132');
     expect(spec).not.toBeNull();
     expect(spec.rcdWaveformType).toBeNull();
-    expect(spec.bsEn).toBe('BS EN 60898-1');
+    expect(spec.bsEn).toBe('BS EN 60898');
   });
 
   it('is case-insensitive and whitespace-tolerant', () => {
@@ -59,7 +59,7 @@ describe('lookupDevice', () => {
   it('matches MK without Sentry suffix', () => {
     const mcb = lookupDevice('MK', 'LN5832');
     expect(mcb).not.toBeNull();
-    expect(mcb.bsEn).toBe('BS EN 60898-1');
+    expect(mcb.bsEn).toBe('BS EN 60898');
   });
 
   it('prefers the longest matching prefix', () => {
@@ -81,7 +81,7 @@ describe('lookupDevice', () => {
   it('recognises Schneider Acti9 iC60', () => {
     const spec = lookupDevice('Schneider Electric', 'iC60N-C32');
     expect(spec).not.toBeNull();
-    expect(spec.bsEn).toBe('BS EN 60898-1');
+    expect(spec.bsEn).toBe('BS EN 60898');
   });
 
   it('recognises BG CUR RCBO as Type A', () => {
@@ -111,7 +111,7 @@ describe('applyDeviceLookup', () => {
     };
     const out = applyDeviceLookup(slot);
     expect(out.rcdWaveformType).toBe('B'); // preserved
-    expect(out.bsEn).toBe('BS EN 61009-1'); // gap-filled
+    expect(out.bsEn).toBe('BS EN 61009'); // gap-filled
   });
 
   it('fills nulls from the lookup table', () => {
@@ -128,7 +128,7 @@ describe('applyDeviceLookup', () => {
     };
     const out = applyDeviceLookup(slot);
     expect(out.rcdWaveformType).toBe('A');
-    expect(out.bsEn).toBe('BS EN 61009-1');
+    expect(out.bsEn).toBe('BS EN 61009');
     expect(out.ratingAmps).toBe(32); // VLM-confirmed, preserved
   });
 
@@ -189,7 +189,7 @@ describe('applyDeviceLookup', () => {
     };
     const out = applyDeviceLookup(slot);
     expect(out.tripCurve).toBe('B');
-    expect(out.bsEn).toBe('BS EN 60898-1');
+    expect(out.bsEn).toBe('BS EN 60898');
   });
 
   it('fills tripCurve from Wylex NHXC prefix → C', () => {
@@ -223,7 +223,7 @@ describe('applyDeviceLookup', () => {
     const out = applyDeviceLookup(slot);
     expect(out.tripCurve).toBe('C');
     // PSB has no prefix curve in the table, so the suffix is the only source.
-    expect(out.bsEn).toBe('BS EN 60898-1');
+    expect(out.bsEn).toBe('BS EN 60898');
   });
 
   it('does not overwrite VLM-confirmed tripCurve', () => {

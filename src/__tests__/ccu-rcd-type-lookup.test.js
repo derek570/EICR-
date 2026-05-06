@@ -109,13 +109,13 @@ function rcboCircuit(num, opts = {}) {
     label: opts.label ?? `Circuit ${num}`,
     ocpd_type: 'B',
     ocpd_rating_a: '32',
-    ocpd_bs_en: 'BS EN 61009-1',
+    ocpd_bs_en: 'BS EN 61009',
     ocpd_breaking_capacity_ka: '6',
     is_rcbo: true,
     rcd_protected: true,
     rcd_type: opts.rcd_type === undefined ? 'AC' : opts.rcd_type,
     rcd_rating_ma: '30',
-    rcd_bs_en: '61009',
+    rcd_bs_en: 'BS EN 61009',
   };
 }
 
@@ -130,7 +130,7 @@ function rcboSlot(opts = {}) {
     tripCurve: 'B',
     sensitivity: 30,
     rcdWaveformType: opts.rcdWaveformType ?? 'AC',
-    bsEn: 'BS EN 61009-1',
+    bsEn: 'BS EN 61009',
     confidence: opts.confidence ?? 0.75,
     label: opts.label ?? null,
   };
@@ -413,7 +413,7 @@ function rcboOutlierSlot(slotIndex, opts = {}) {
     tripCurve: 'B',
     sensitivity: 30,
     rcdWaveformType: opts.rcdWaveformType ?? 'A',
-    bsEn: 'BS EN 61009-1',
+    bsEn: 'BS EN 61009',
     confidence: opts.confidence ?? 0.93,
     label: opts.label ?? null,
   };
@@ -586,12 +586,12 @@ function makeOutlierAnalysis(opts = {}) {
       label: `Circuit ${i + 1}`,
       ocpd_type: 'B',
       ocpd_rating_a: '20',
-      ocpd_bs_en: 'BS EN 61009-1',
+      ocpd_bs_en: 'BS EN 61009',
       is_rcbo: true,
       rcd_protected: true,
       rcd_type: 'A',
       rcd_rating_ma: '30',
-      rcd_bs_en: '61009',
+      rcd_bs_en: 'BS EN 61009',
     });
   }
   slots.push(
@@ -607,12 +607,12 @@ function makeOutlierAnalysis(opts = {}) {
     label: 'Bathroom Underfloor Heating',
     ocpd_type: 'B',
     ocpd_rating_a: '20',
-    ocpd_bs_en: 'BS EN 61009-1',
+    ocpd_bs_en: 'BS EN 61009',
     is_rcbo: true,
     rcd_protected: true,
     rcd_type: 'AC',
     rcd_rating_ma: '30',
-    rcd_bs_en: '61009',
+    rcd_bs_en: 'BS EN 61009',
   });
 
   return {

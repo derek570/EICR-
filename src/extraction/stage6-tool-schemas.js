@@ -719,7 +719,7 @@ const startDialogueScript = makeTool({
           value: {
             type: 'string',
             description:
-              'Post-normalised value as a string (decimals like "0.32", integers like "32", BS-EN codes like "60898-1", etc.). Same shape the record_reading tool would carry.',
+              'Post-normalised value as a string (decimals like "0.32", integers like "32", BS-EN codes like "BS EN 60898", etc.). Same shape the record_reading tool would carry.',
           },
         },
         required: ['field', 'value'],

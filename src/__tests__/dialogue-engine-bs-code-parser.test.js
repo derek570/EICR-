@@ -37,12 +37,47 @@ describe('parseBsCode — exact regex patterns', () => {
     expect(parseBsCode('BS EN 60947-2')).toBe('BS EN 60947-2');
   });
 
+  test('"BS EN 60947-3" → canonical (switch-disconnector)', () => {
+    expect(parseBsCode('BS EN 60947-3')).toBe('BS EN 60947-3');
+  });
+
   test('"BS 3036" → canonical (rewireable fuse)', () => {
     expect(parseBsCode('BS 3036')).toBe('BS 3036');
   });
 
   test('"BS 1361" → canonical (cartridge fuse)', () => {
     expect(parseBsCode('BS 1361')).toBe('BS 1361');
+  });
+
+  // 2026-05-06 BS-EN alignment: BS 88-2 / BS 88-3 (legacy UK
+  // designation for HRC fuses) collapse to the harmonised European
+  // canonical BS EN 60269-2 — the only HRC option in the schema.
+  test('"BS 88-2" → BS EN 60269-2 (legacy UK → harmonised EN)', () => {
+    expect(parseBsCode('BS 88-2')).toBe('BS EN 60269-2');
+  });
+
+  test('"BS 88-3" → BS EN 60269-2 (legacy UK → harmonised EN)', () => {
+    expect(parseBsCode('BS 88-3')).toBe('BS EN 60269-2');
+  });
+
+  test('"88-2" bare → BS EN 60269-2', () => {
+    expect(parseBsCode('88-2')).toBe('BS EN 60269-2');
+  });
+
+  test('"BS EN 60269-2" → canonical (HRC fuse, harmonised)', () => {
+    expect(parseBsCode('BS EN 60269-2')).toBe('BS EN 60269-2');
+  });
+
+  // AFDD (BS EN 62606) and BS 4293 are NOT in the schema option list
+  // and the parser deliberately doesn't recognise them — inspectors
+  // dictating these will be re-asked rather than write a value the
+  // resolver will reject.
+  test('"BS EN 62606" → null (AFDD out of scope)', () => {
+    expect(parseBsCode('BS EN 62606')).toBe(null);
+  });
+
+  test('"BS 4293" → null (legacy non-EN RCD out of scope)', () => {
+    expect(parseBsCode('BS 4293')).toBe(null);
   });
 });
 

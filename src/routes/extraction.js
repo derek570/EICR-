@@ -252,21 +252,26 @@ async function logCcuTrainingData({ userId, sessionId, imageBuffer, analysis, me
 }
 
 /**
- * BS/EN standard number lookup by device type
+ * BS/EN standard number lookup by device type. Canonicals match
+ * `config/field_schema.json` `ocpd_bs_en` / `rcd_bs_en` options and
+ * iOS `Constants.swift` picker options — written form is the prefixed
+ * form ("BS EN 60898", not bare-digit "60898-1") so the iOS picker,
+ * the printed PDF, the resolver enum check, and what inspectors say
+ * aloud all agree.
  */
 const BS_EN_LOOKUP = {
-  MCB: '60898-1',
-  B: '60898-1',
-  C: '60898-1',
-  D: '60898-1',
-  RCBO: '61009',
-  RCD: '61008',
-  RCCB: '61008',
-  MCCB: '60947-2',
-  SWITCH: '60947-3',
-  ISOLATOR: '60947-3',
-  gG: '60269-2',
-  HRC: '60269-2',
+  MCB: 'BS EN 60898',
+  B: 'BS EN 60898',
+  C: 'BS EN 60898',
+  D: 'BS EN 60898',
+  RCBO: 'BS EN 61009',
+  RCD: 'BS EN 61008',
+  RCCB: 'BS EN 61008',
+  MCCB: 'BS EN 60947-2',
+  SWITCH: 'BS EN 60947-3',
+  ISOLATOR: 'BS EN 60947-3',
+  gG: 'BS EN 60269-2',
+  HRC: 'BS EN 60269-2',
   REW: 'BS 3036',
   REWIREABLE: 'BS 3036',
   CARTRIDGE: 'BS 1361',
@@ -2096,7 +2101,7 @@ export function buildCircuitFromSlot(slot, circuit_number, upstreamRcd) {
 
   if (cls === 'mcb' || cls === 'rcbo') {
     ocpd_type = slot.tripCurve || null;
-    if (!ocpd_bs_en) ocpd_bs_en = cls === 'rcbo' ? '61009-1' : '60898-1';
+    if (!ocpd_bs_en) ocpd_bs_en = cls === 'rcbo' ? 'BS EN 61009' : 'BS EN 60898';
     ocpd_breaking_capacity_ka = '6';
   } else if (cls === 'rewireable') {
     ocpd_type = 'Rew';
@@ -2115,7 +2120,7 @@ export function buildCircuitFromSlot(slot, circuit_number, upstreamRcd) {
       ? String(slot.sensitivity)
       : null
     : upstreamRcd?.sensitivity || null;
-  const rcd_bs_en = is_rcbo ? '61009' : upstreamRcd ? '61008' : null;
+  const rcd_bs_en = is_rcbo ? 'BS EN 61009' : upstreamRcd ? 'BS EN 61008' : null;
 
   return {
     circuit_number,
@@ -3290,10 +3295,10 @@ If the cert has a single combined address block like "Mr J Smith, 12 Acacia Aven
 
 ## ENUM REFERENCE (use these exact strings)
 - earthing_arrangement: "TN-C-S" | "TN-S" | "TT" | "IT"
-- ocpd_type: "B" | "C" | "D" | "Rew" | "HRC" (Rew = BS 3036 rewireable, HRC = BS 1361/88 cartridge)
-- ocpd_bs_en: "60898" | "60898-1" | "61009" | "61009-1" | "60947-2" | "BS 3036" | "BS 1361" | "BS 88-2" | "BS 88-3"
+- ocpd_type: "B" | "C" | "D" | "Rew" | "HRC" (Rew = BS 3036 rewireable, HRC = BS 1361 cartridge)
+- ocpd_bs_en: "BS EN 60898" | "BS EN 61009" | "BS EN 60947-2" | "BS EN 60947-3" | "BS EN 60269-2" | "BS 3036" | "BS 1361" | "N/A"
 - rcd_type: "AC" | "A" | "B" | "F" | "S"
-- rcd_bs_en: "61008" | "61009" | "62423" | "EN 61008-1" | "EN 61009-1"
+- rcd_bs_en: "BS EN 61008" | "BS EN 61009" | "BS EN 62423" | "N/A"
 - wiring_type: "A" (PVC singles in conduit) | "B" (PVC singles in trunking) | "C" (PVC/PVC flat twin & earth, clipped direct) | "D" (Mineral insulated) | "E" (PVC singles in metal trunking) | "F" (Other)
 - spd_status: "Fitted" | "Not Fitted" | "Not Required"
 - observation code: "C1" (danger present) | "C2" (potentially dangerous) | "C3" (improvement recommended) | "FI" (further investigation required)
@@ -3367,12 +3372,12 @@ Return ONLY this JSON. Omit any key whose value is not legibly present in the im
       "live_csa_mm2": "2.5",
       "cpc_csa_mm2": "1.5",
       "max_disconnect_time_s": "0.4",
-      "ocpd_bs_en": "60898-1",
+      "ocpd_bs_en": "BS EN 60898",
       "ocpd_type": "B",
       "ocpd_rating_a": "32",
       "ocpd_breaking_capacity_ka": "6",
       "ocpd_max_zs_ohm": "1.37",
-      "rcd_bs_en": "61009",
+      "rcd_bs_en": "BS EN 61009",
       "rcd_type": "A",
       "rcd_operating_current_ma": "30",
       "rcd_rating_a": "32",

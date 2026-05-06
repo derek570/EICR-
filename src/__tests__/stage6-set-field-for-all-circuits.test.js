@@ -223,13 +223,13 @@ describe('dispatchSetFieldForAllCircuits — scope filtering', () => {
     // would have been falsely tagged as RCD-protected.
     const session = build14CircuitSession({
       overrides: {
-        1: { circuit_designation: 'Cooker', rcd_bs_en: '61009' },
+        1: { circuit_designation: 'Cooker', rcd_bs_en: 'BS EN 61009' },
         2: { circuit_designation: 'Sockets', rcd_type: 'AC' },
         3: { circuit_designation: 'Smokes', rcd_operating_current_ma: '30' },
-        4: { circuit_designation: 'Lights', rcd_bs_en: '61009' },
-        5: { circuit_designation: 'Lights 2', rcd_bs_en: '61009' },
-        6: { circuit_designation: 'Heater 1', rcd_bs_en: '61009' },
-        7: { circuit_designation: 'Heater 2', rcd_bs_en: '61009' },
+        4: { circuit_designation: 'Lights', rcd_bs_en: 'BS EN 61009' },
+        5: { circuit_designation: 'Lights 2', rcd_bs_en: 'BS EN 61009' },
+        6: { circuit_designation: 'Heater 1', rcd_bs_en: 'BS EN 61009' },
+        7: { circuit_designation: 'Heater 2', rcd_bs_en: 'BS EN 61009' },
       },
     });
     const logger = mockLogger();

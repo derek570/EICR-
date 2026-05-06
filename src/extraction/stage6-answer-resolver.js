@@ -806,16 +806,20 @@ function levenshteinDistance(a, b) {
 /**
  * Strip everything except digits. Used to compare a user-spoken BS-EN
  * candidate ("BS 88-2", "61008", "60898") against the field-schema
- * option list (which stores values like "60898-1", "88-2", "60947-3",
- * "BS 3036"). Hyphens are dropped so:
- *   - "BS 88-2" → "882"     matches option "88-2"     → "882"   (exact)
- *   - "60898"   → "60898"   matches option "60898-1"  → "608981" (Lev-1 deletion → did_you_mean)
- *   - "61008"   → "61008"   matches option "61008"    → "61008" (exact)
+ * option list (which stores values like "BS EN 60898", "BS EN 60269-2",
+ * "BS 3036") post-2026-05-06 alignment. Comparing on the digit form
+ * lets dictation match regardless of prefix or suffix shape:
+ *   - "BS 88-2" → "882"     matches option "BS EN 60269-2" digit form? No
+ *                            (Lev distance > 1) → invalid; the parseBsCode
+ *                            layer is what folds 88-2 → 60269-2 BEFORE
+ *                            this resolver runs.
+ *   - "60898"   → "60898"   matches option "BS EN 60898" → "60898" (exact)
+ *   - "61008"   → "61008"   matches option "BS EN 61008" → "61008" (exact)
+ *   - "60898-1" → "608981"  matches option "BS EN 60898" → "60898"  (Lev-1
+ *                            deletion → did_you_mean ["BS EN 60898"])
  *
- * The hyphen drop is deliberate. Options like "60898-1" and "60898" share
- * the same BS-EN identity; the suffix is a sub-clause that inspectors
- * routinely omit. Surfacing did_you_mean lets Sonnet either accept the
- * canonical suffixed form or re-confirm with the user.
+ * The hyphen drop is deliberate so a user dictating "60947-2" matches
+ * the option "BS EN 60947-2" exactly on the digit form ("609472").
  */
 function normaliseBsEnDigits(s) {
   if (typeof s !== 'string') return '';

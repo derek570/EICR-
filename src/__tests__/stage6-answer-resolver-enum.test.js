@@ -6,7 +6,7 @@
  *
  * Repro pattern: user said "BS 68001" three times; Sonnet asked
  * "What's the BS number?" identically each time and never wrote the value.
- * `BS 68001` is not a valid RCD standard (real options: 61008/61009/62423).
+ * `BS 68001` is not a valid RCD standard (real options: BS EN 61008/61009/62423).
  * The pre-fix resolver had no enum validation — `resolveValueAnswer` would
  * extract "68001" as a digit and the silent schema rejection downstream
  * looked identical to "ambiguous reply" → re-ask loop.
@@ -16,6 +16,13 @@
  * (`did_you_mean`), or returns `invalid_value` with the full option list.
  * Both rejection verdicts surface in the dispatcher's tool_result body so
  * the prompt's re-ask-once-then-move-on rule can fire.
+ *
+ * Schema canonicals updated 2026-05-06 (BS-EN alignment sprint, Option B):
+ * options now use the prefixed form ('BS EN 60898' etc.) matching iOS
+ * `Constants.swift` ocpdBsEnOptions / rcdBsEnOptions and what `parseBsCode`
+ * writes from dictation. The digit-comparison resolver is form-agnostic
+ * (compares on the digit-only normalised form) so the matching logic is
+ * unchanged — only the WRITTEN canonical changes.
  */
 
 import { resolveEnumAnswer } from '../extraction/stage6-answer-resolver.js';
@@ -25,21 +32,22 @@ const RCD_SCHEMA = {
     rcd_bs_en: {
       label: 'RCD BS/EN',
       type: 'select',
-      options: ['', '61008', '61009', '62423', 'N/A'],
+      options: ['', 'BS EN 61008', 'BS EN 61009', 'BS EN 62423', 'N/A'],
     },
-    // ocpd_bs_en exercises the mixed-format option list (5-digit-with-suffix,
-    // hyphenated, prefixed-string). Options aligned with what the CCU
-    // pipeline writes via BS_EN_LOOKUP at src/routes/extraction.js:257.
+    // ocpd_bs_en exercises the mixed-format option list (BS-EN-prefixed,
+    // hyphenated suffix, bare-BS prefix). Options aligned with what the
+    // CCU pipeline writes via BS_EN_LOOKUP at src/routes/extraction.js:257
+    // and the iOS picker.
     ocpd_bs_en: {
       label: 'OCPD BS/EN',
       type: 'select',
       options: [
         '',
-        '60898-1',
-        '61009',
-        '60947-2',
-        '60947-3',
-        '60269-2',
+        'BS EN 60898',
+        'BS EN 61009',
+        'BS EN 60947-2',
+        'BS EN 60947-3',
+        'BS EN 60269-2',
         'BS 3036',
         'BS 1361',
         'N/A',
@@ -57,8 +65,10 @@ const RCD_SCHEMA = {
   },
 };
 
+const RCD_OPTIONS = ['', 'BS EN 61008', 'BS EN 61009', 'BS EN 62423', 'N/A'];
+
 describe('resolveEnumAnswer — happy path (canonical match)', () => {
-  test('exact 5-digit value "61008" → auto_resolve write of "61008"', () => {
+  test('exact 5-digit value "61008" → auto_resolve write of "BS EN 61008"', () => {
     const verdict = resolveEnumAnswer({
       userText: '61008',
       contextField: 'rcd_bs_en',
@@ -71,7 +81,7 @@ describe('resolveEnumAnswer — happy path (canonical match)', () => {
       tool: 'record_reading',
       field: 'rcd_bs_en',
       circuit: 1,
-      value: '61008',
+      value: 'BS EN 61008',
       confidence: 0.95,
       source_turn_id: 't1',
     });
@@ -86,7 +96,7 @@ describe('resolveEnumAnswer — happy path (canonical match)', () => {
       fieldSchema: RCD_SCHEMA,
     });
     expect(verdict.kind).toBe('auto_resolve');
-    expect(verdict.writes[0].value).toBe('61009');
+    expect(verdict.writes[0].value).toBe('BS EN 61009');
   });
 
   test('"the BS number is 62423" — embedded digit run resolves', () => {
@@ -98,7 +108,7 @@ describe('resolveEnumAnswer — happy path (canonical match)', () => {
       fieldSchema: RCD_SCHEMA,
     });
     expect(verdict.kind).toBe('auto_resolve');
-    expect(verdict.writes[0].value).toBe('62423');
+    expect(verdict.writes[0].value).toBe('BS EN 62423');
   });
 });
 
@@ -153,10 +163,10 @@ describe('resolveEnumAnswer — did_you_mean (Levenshtein-1: substitution / inse
     });
     expect(verdict.kind).toBe('invalid_value');
     expect(verdict.received).toBe('68001');
-    expect(verdict.valid_options).toEqual(['', '61008', '61009', '62423', 'N/A']);
+    expect(verdict.valid_options).toEqual(RCD_OPTIONS);
   });
 
-  test('substitution: "61018" (1 digit off 61008) → did_you_mean ["61008"]', () => {
+  test('substitution: "61018" (1 digit off 61008) → did_you_mean ["BS EN 61008"]', () => {
     const verdict = resolveEnumAnswer({
       userText: '61018',
       contextField: 'rcd_bs_en',
@@ -166,11 +176,11 @@ describe('resolveEnumAnswer — did_you_mean (Levenshtein-1: substitution / inse
     });
     expect(verdict.kind).toBe('did_you_mean');
     expect(verdict.received).toBe('61018');
-    expect(verdict.suggestions).toEqual(['61008']);
-    expect(verdict.valid_options).toEqual(['', '61008', '61009', '62423', 'N/A']);
+    expect(verdict.suggestions).toEqual(['BS EN 61008']);
+    expect(verdict.valid_options).toEqual(RCD_OPTIONS);
   });
 
-  test('substitution: "61029" (1 digit off 61009) → did_you_mean ["61009"]', () => {
+  test('substitution: "61029" (1 digit off 61009) → did_you_mean ["BS EN 61009"]', () => {
     const verdict = resolveEnumAnswer({
       userText: '61029',
       contextField: 'rcd_bs_en',
@@ -179,10 +189,10 @@ describe('resolveEnumAnswer — did_you_mean (Levenshtein-1: substitution / inse
       fieldSchema: RCD_SCHEMA,
     });
     expect(verdict.kind).toBe('did_you_mean');
-    expect(verdict.suggestions).toEqual(['61009']);
+    expect(verdict.suggestions).toEqual(['BS EN 61009']);
   });
 
-  test('deletion: "6100" (1 deletion from 61008) → did_you_mean ["61008"] — Deepgram drift pattern the equal-length helper missed', () => {
+  test('deletion: "6100" (1 deletion from 61008) → did_you_mean contains "BS EN 61008" — Deepgram drift pattern the equal-length helper missed', () => {
     const verdict = resolveEnumAnswer({
       userText: '6100',
       contextField: 'rcd_bs_en',
@@ -191,10 +201,10 @@ describe('resolveEnumAnswer — did_you_mean (Levenshtein-1: substitution / inse
       fieldSchema: RCD_SCHEMA,
     });
     expect(verdict.kind).toBe('did_you_mean');
-    expect(verdict.suggestions).toContain('61008');
+    expect(verdict.suggestions).toContain('BS EN 61008');
   });
 
-  test('insertion: "610008" (1 insertion in 61008) → did_you_mean ["61008"]', () => {
+  test('insertion: "610008" (1 insertion in 61008) → did_you_mean contains "BS EN 61008"', () => {
     const verdict = resolveEnumAnswer({
       userText: '610008',
       contextField: 'rcd_bs_en',
@@ -203,12 +213,39 @@ describe('resolveEnumAnswer — did_you_mean (Levenshtein-1: substitution / inse
       fieldSchema: RCD_SCHEMA,
     });
     expect(verdict.kind).toBe('did_you_mean');
-    expect(verdict.suggestions).toContain('61008');
+    expect(verdict.suggestions).toContain('BS EN 61008');
   });
 });
 
-describe('resolveEnumAnswer — ocpd_bs_en (mixed-format options aligned with BS_EN_LOOKUP)', () => {
-  test('"60898-1" exactly matches the MCB option (matches BS_EN_LOOKUP.MCB)', () => {
+describe('resolveEnumAnswer — ocpd_bs_en (mixed-format options matching BS_EN_LOOKUP + iOS picker)', () => {
+  test('"60898" exactly matches the MCB option (matches BS_EN_LOOKUP.MCB after 2026-05-06 alignment)', () => {
+    const verdict = resolveEnumAnswer({
+      userText: '60898',
+      contextField: 'ocpd_bs_en',
+      contextCircuit: 1,
+      sourceTurnId: 't',
+      fieldSchema: RCD_SCHEMA,
+    });
+    expect(verdict.kind).toBe('auto_resolve');
+    expect(verdict.writes[0].value).toBe('BS EN 60898');
+  });
+
+  test('"BS EN 60898" — surrounding "BS EN " stripped on the digit form, matches MCB exactly', () => {
+    const verdict = resolveEnumAnswer({
+      userText: 'BS EN 60898',
+      contextField: 'ocpd_bs_en',
+      contextCircuit: 1,
+      sourceTurnId: 't',
+      fieldSchema: RCD_SCHEMA,
+    });
+    expect(verdict.kind).toBe('auto_resolve');
+    expect(verdict.writes[0].value).toBe('BS EN 60898');
+  });
+
+  test('"60898-1" (legacy MCB sub-clause form) → did_you_mean ["BS EN 60898"] — Lev-1 deletion of "1"', () => {
+    // Pre-2026-05-06 the schema canonical had the "-1" suffix; post-
+    // alignment "BS EN 60898" without the suffix is the only MCB
+    // option, so dictation of the -1 form surfaces did_you_mean.
     const verdict = resolveEnumAnswer({
       userText: '60898-1',
       contextField: 'ocpd_bs_en',
@@ -216,20 +253,8 @@ describe('resolveEnumAnswer — ocpd_bs_en (mixed-format options aligned with BS
       sourceTurnId: 't',
       fieldSchema: RCD_SCHEMA,
     });
-    expect(verdict.kind).toBe('auto_resolve');
-    expect(verdict.writes[0].value).toBe('60898-1');
-  });
-
-  test('"BS 60898-1" — surrounding "BS " stripped, matches MCB', () => {
-    const verdict = resolveEnumAnswer({
-      userText: 'BS 60898-1',
-      contextField: 'ocpd_bs_en',
-      contextCircuit: 1,
-      sourceTurnId: 't',
-      fieldSchema: RCD_SCHEMA,
-    });
-    expect(verdict.kind).toBe('auto_resolve');
-    expect(verdict.writes[0].value).toBe('60898-1');
+    expect(verdict.kind).toBe('did_you_mean');
+    expect(verdict.suggestions).toContain('BS EN 60898');
   });
 
   test('"BS 1361" exactly matches the cartridge-fuse option (canonical form keeps the BS prefix)', () => {
@@ -265,7 +290,7 @@ describe('resolveEnumAnswer — ocpd_bs_en (mixed-format options aligned with BS
       fieldSchema: RCD_SCHEMA,
     });
     expect(verdict.kind).toBe('auto_resolve');
-    expect(verdict.writes[0].value).toBe('60947-2');
+    expect(verdict.writes[0].value).toBe('BS EN 60947-2');
   });
 
   test('"60269-2" matches the HRC-fuse option', () => {
@@ -277,34 +302,7 @@ describe('resolveEnumAnswer — ocpd_bs_en (mixed-format options aligned with BS
       fieldSchema: RCD_SCHEMA,
     });
     expect(verdict.kind).toBe('auto_resolve');
-    expect(verdict.writes[0].value).toBe('60269-2');
-  });
-
-  test('"60898-2" (1 substitution from 60898-1) → did_you_mean ["60898-1"]', () => {
-    const verdict = resolveEnumAnswer({
-      userText: '60898-2',
-      contextField: 'ocpd_bs_en',
-      contextCircuit: 1,
-      sourceTurnId: 't',
-      fieldSchema: RCD_SCHEMA,
-    });
-    expect(verdict.kind).toBe('did_you_mean');
-    expect(verdict.suggestions).toContain('60898-1');
-  });
-
-  test('"60898" (1 deletion from 60898-1) → did_you_mean ["60898-1"]', () => {
-    // Inspector dictating the bare-digit form for an MCB — the matcher
-    // suggests the canonical form so Sonnet can re-ask once with the
-    // suffix or write the canonical "60898-1".
-    const verdict = resolveEnumAnswer({
-      userText: '60898',
-      contextField: 'ocpd_bs_en',
-      contextCircuit: 1,
-      sourceTurnId: 't',
-      fieldSchema: RCD_SCHEMA,
-    });
-    expect(verdict.kind).toBe('did_you_mean');
-    expect(verdict.suggestions).toContain('60898-1');
+    expect(verdict.writes[0].value).toBe('BS EN 60269-2');
   });
 
   test('"banana" against ocpd_bs_en → invalid_value with the OCPD option list', () => {
@@ -316,7 +314,7 @@ describe('resolveEnumAnswer — ocpd_bs_en (mixed-format options aligned with BS
       fieldSchema: RCD_SCHEMA,
     });
     expect(verdict.kind).toBe('invalid_value');
-    expect(verdict.valid_options).toContain('60898-1');
+    expect(verdict.valid_options).toContain('BS EN 60898');
     expect(verdict.valid_options).toContain('BS 1361');
   });
 
@@ -344,7 +342,7 @@ describe('resolveEnumAnswer — invalid_value (no close match)', () => {
     });
     expect(verdict.kind).toBe('invalid_value');
     expect(verdict.received).toBe('banana');
-    expect(verdict.valid_options).toContain('61008');
+    expect(verdict.valid_options).toContain('BS EN 61008');
   });
 
   test('"99999" (no close match) → invalid_value', () => {

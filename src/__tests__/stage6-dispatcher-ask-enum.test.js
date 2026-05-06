@@ -93,22 +93,22 @@ describe('dispatcher enum-resolve — auto-resolve path', () => {
         tool: 'record_reading',
         field: 'rcd_bs_en',
         circuit: 1,
-        value: '61008',
+        value: 'BS EN 61008',
         ok: true,
       }),
     ]);
     expect(autoResolveWrite).toHaveBeenCalledTimes(1);
   });
 
-  test('"BS EN 62423" — wrapping words ignored, write fires with canonical "62423"', async () => {
+  test('"BS EN 62423" — exact-match write fires with canonical "BS EN 62423"', async () => {
     const { body } = await runDispatcher({ userText: 'BS EN 62423' });
     expect(body.match_status).toBe('enum_resolved');
-    expect(body.resolved_writes[0].value).toBe('62423');
+    expect(body.resolved_writes[0].value).toBe('BS EN 62423');
   });
 });
 
 describe('dispatcher enum-resolve — did_you_mean rejection (1-digit typo)', () => {
-  test('"61018" → did_you_mean body with suggestions=["61008"], NO write dispatched', async () => {
+  test('"61018" → did_you_mean body with suggestions=["BS EN 61008"], NO write dispatched', async () => {
     const { body, autoResolveWrite } = await runDispatcher({ userText: '61018' });
     expect(body).toMatchObject({
       answered: true,
@@ -117,8 +117,8 @@ describe('dispatcher enum-resolve — did_you_mean rejection (1-digit typo)', ()
       field: 'rcd_bs_en',
       circuit: 1,
       received: '61018',
-      suggestions: ['61008'],
-      valid_options: ['', '61008', '61009', '62423', 'N/A'],
+      suggestions: ['BS EN 61008'],
+      valid_options: ['', 'BS EN 61008', 'BS EN 61009', 'BS EN 62423', 'N/A'],
     });
     expect(autoResolveWrite).not.toHaveBeenCalled();
   });
@@ -137,7 +137,7 @@ describe('dispatcher enum-resolve — invalid_value rejection (no close match)',
       field: 'rcd_bs_en',
       circuit: 1,
       received: '68001',
-      valid_options: ['', '61008', '61009', '62423', 'N/A'],
+      valid_options: ['', 'BS EN 61008', 'BS EN 61009', 'BS EN 62423', 'N/A'],
     });
     expect(body.suggestions).toBeUndefined();
     expect(autoResolveWrite).not.toHaveBeenCalled();

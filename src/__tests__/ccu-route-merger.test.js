@@ -213,7 +213,7 @@ function makeSSCircuit(circuit_number, overrides = {}) {
     label: `Circuit ${circuit_number}`,
     ocpd_type: 'B',
     ocpd_rating_a: '32',
-    ocpd_bs_en: '60898-1',
+    ocpd_bs_en: 'BS EN 60898',
     ocpd_breaking_capacity_ka: '6',
     is_rcbo: false,
     rcd_protected: false,
@@ -266,7 +266,7 @@ describe('slotsToCircuits', () => {
 
     // RCBO at slot index 2 → circuit 3
     expect(circuits[2].is_rcbo).toBe(true);
-    expect(circuits[2].ocpd_bs_en).toBe('61009-1');
+    expect(circuits[2].ocpd_bs_en).toBe('BS EN 61009');
 
     // Blank at slot index 3 → circuit 4 "Spare"
     expect(circuits[3].label).toBe('Spare');
@@ -310,7 +310,7 @@ describe('slotsToCircuits', () => {
         rcdWaveformType: 'AC',
         sensitivity: 30,
         ratingAmps: 80,
-        bsEn: 'BS EN 61008-1',
+        bsEn: 'BS EN 61008',
         confidence: 0.9,
       }),
       makeSlot({ classification: 'mcb', tripCurve: 'B', ratingAmps: 16, confidence: 0.9 }),
@@ -337,13 +337,13 @@ describe('slotsToCircuits', () => {
     expect(circuits[1].rcd_protected).toBe(true);
     expect(circuits[1].rcd_type).toBe('AC');
     expect(circuits[1].rcd_rating_ma).toBe('30');
-    expect(circuits[1].rcd_bs_en).toBe('61008');
+    expect(circuits[1].rcd_bs_en).toBe('BS EN 61008');
 
     expect(circuits[2].circuit_number).toBe(3);
     expect(circuits[2].rcd_protected).toBe(true);
     expect(circuits[2].rcd_type).toBe('AC');
     expect(circuits[2].rcd_rating_ma).toBe('30');
-    expect(circuits[2].rcd_bs_en).toBe('61008');
+    expect(circuits[2].rcd_bs_en).toBe('BS EN 61008');
   });
 
   test('4b. two adjacent rcd slots are one physical device; gap-fill applies to phase-2 reference', () => {
@@ -360,7 +360,7 @@ describe('slotsToCircuits', () => {
         rcdWaveformType: 'AC',
         sensitivity: 30,
         ratingAmps: 80,
-        bsEn: 'BS EN 61008-1',
+        bsEn: 'BS EN 61008',
         confidence: 0.9,
       }),
       // Second rcd slot — weaker read with all fields null. Gap-fill must
@@ -707,7 +707,7 @@ describe('slotsToCircuits', () => {
         poles: 1,
         sensitivity: 30,
         rcdWaveformType: 'A',
-        bsEn: 'BS EN 61009-1',
+        bsEn: 'BS EN 61009',
         confidence: 0.92,
         label,
       });
@@ -1170,7 +1170,7 @@ describe('slotsToCircuits', () => {
         rcdWaveformType: 'A',
         sensitivity: 30,
         ratingAmps: 80,
-        bsEn: 'BS EN 61008-1',
+        bsEn: 'BS EN 61008',
         confidence: 0.9,
       }),
       makeSlot({
@@ -1178,7 +1178,7 @@ describe('slotsToCircuits', () => {
         rcdWaveformType: 'A',
         sensitivity: 30,
         ratingAmps: 80,
-        bsEn: 'BS EN 61008-1',
+        bsEn: 'BS EN 61008',
         confidence: 0.9,
       }),
       // Bog-standard MCB downstream of the RCD — should be cascaded.
@@ -1448,7 +1448,7 @@ describe('buildCircuitFromSlot', () => {
     expect(circuit.circuit_number).toBe(1);
     expect(circuit.ocpd_type).toBe('B');
     expect(circuit.ocpd_rating_a).toBe('32');
-    expect(circuit.ocpd_bs_en).toBe('60898-1');
+    expect(circuit.ocpd_bs_en).toBe('BS EN 60898');
     expect(circuit.ocpd_breaking_capacity_ka).toBe('6');
     expect(circuit.is_rcbo).toBe(false);
     expect(circuit.rcd_protected).toBe(false);
@@ -1472,11 +1472,11 @@ describe('buildCircuitFromSlot', () => {
     expect(circuit.rcd_protected).toBe(true);
     expect(circuit.rcd_type).toBe('A');
     expect(circuit.rcd_rating_ma).toBe('30');
-    expect(circuit.rcd_bs_en).toBe('61009');
+    expect(circuit.rcd_bs_en).toBe('BS EN 61009');
     // ocpd fields
     expect(circuit.ocpd_type).toBe('C');
     expect(circuit.ocpd_rating_a).toBe('16');
-    expect(circuit.ocpd_bs_en).toBe('61009-1');
+    expect(circuit.ocpd_bs_en).toBe('BS EN 61009');
     expect(circuit.ocpd_breaking_capacity_ka).toBe('6');
   });
 
@@ -1489,7 +1489,7 @@ describe('buildCircuitFromSlot', () => {
     expect(circuit.rcd_protected).toBe(true);
     expect(circuit.rcd_type).toBe('AC');
     expect(circuit.rcd_rating_ma).toBe('30');
-    expect(circuit.rcd_bs_en).toBe('61008');
+    expect(circuit.rcd_bs_en).toBe('BS EN 61008');
   });
 
   test('16. Rewireable slot 30A → Rew fields, null kA', () => {
@@ -1601,7 +1601,7 @@ describe('promoteLabelMatchedRcd', () => {
         ratingAmps: 80,
         rcdWaveformType: 'AC',
         sensitivity: 30,
-        bsEn: 'BS EN 61008-1',
+        bsEn: 'BS EN 61008',
         label: 'Rcd',
       }),
       makeSlot({

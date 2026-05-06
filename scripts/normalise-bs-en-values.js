@@ -1,19 +1,21 @@
 #!/usr/bin/env node
 /**
  * normalise-bs-en-values.js — One-shot data normalisation for the
- * Phase 2 (8 Branagh Court session DC946608) enum migration.
+ * 2026-05-06 BS-EN alignment sprint (Option B — prefixed canonical).
  *
  * WHAT
  *   Walks every row in `job_versions.data_snapshot` (the JSONB blob that
  *   stores per-circuit fields) and rewrites `rcd_bs_en` + `ocpd_bs_en`
  *   values to the canonical option list defined in
- *   `config/field_schema.json`.
+ *   `config/field_schema.json` (post-alignment) — i.e. the BS-EN-prefixed
+ *   form ('BS EN 60898', 'BS EN 61009', 'BS EN 60269-2', 'BS 3036',
+ *   'BS 1361', 'N/A', etc.).
  *
- *   Pre-Phase-2, both fields were `type: text` so the inspector / Sonnet
- *   could write any string. Production data accumulated variants like
- *   "BS EN 61008", "61008-1", "BS 60898", "MCB", "88-2" etc. that don't
- *   match the new `select` option lists. The iOS picker would render
- *   those rows as empty selection until normalised.
+ *   Mapping table covers (a) the pre-alignment bare-digit canonicals
+ *   that the schema briefly used between commits e5a5bc8 (2026-05-06)
+ *   and the alignment sprint, AND (b) the longer history of free-text
+ *   variants from when both fields were `type: text` ('BS EN 61008',
+ *   '61008-1', 'BS 60898', 'MCB', '88-2', etc.).
  *
  *   Mapping table is conservative — only well-known synonyms are
  *   rewritten; unknown values are LEFT IN PLACE and reported so a human
@@ -58,88 +60,97 @@ import process from 'node:process';
 const RCD_BS_EN_MAP = {
   // No-op rows (canonical → canonical) — listed for documentation.
   '': '',
-  '61008': '61008',
-  '61009': '61009',
-  '62423': '62423',
+  'bs en 61008': 'BS EN 61008',
+  'bs en 61009': 'BS EN 61009',
+  'bs en 62423': 'BS EN 62423',
   'n/a': 'N/A',
 
-  // Common pre-Phase-2 variants observed in production.
-  'bs 61008': '61008',
-  'bs en 61008': '61008',
-  'bs en 61008-1': '61008',
-  'en 61008': '61008',
-  '61008-1': '61008',
-  'bs 61009': '61009',
-  'bs en 61009': '61009',
-  'bs en 61009-1': '61009',
-  'en 61009': '61009',
-  '61009-1': '61009',
-  'bs 62423': '62423',
-  'bs en 62423': '62423',
-  'en 62423': '62423',
+  // Pre-2026-05-06-alignment variants (bare-digit canonical) and other
+  // historical forms observed in production.
+  '61008': 'BS EN 61008',
+  '61008-1': 'BS EN 61008',
+  'bs 61008': 'BS EN 61008',
+  'bs en 61008-1': 'BS EN 61008',
+  'en 61008': 'BS EN 61008',
+  '61009': 'BS EN 61009',
+  '61009-1': 'BS EN 61009',
+  'bs 61009': 'BS EN 61009',
+  'bs en 61009-1': 'BS EN 61009',
+  'en 61009': 'BS EN 61009',
+  '62423': 'BS EN 62423',
+  'bs 62423': 'BS EN 62423',
+  'en 62423': 'BS EN 62423',
+  // BS 4293 is the legacy non-EN RCD standard (replaced by BS EN
+  // 61008/61009). Out of scope for the new option list — existing
+  // values map to BS EN 61008 (closest functional equivalent for a
+  // standalone RCCB). Inspectors dictating "4293" will be re-asked.
+  '4293': 'BS EN 61008',
+  'bs 4293': 'BS EN 61008',
   na: 'N/A',
   none: 'N/A',
   'no rcd': 'N/A',
   'no rcd fitted': 'N/A',
 };
 
-// ocpd_bs_en options match BS_EN_LOOKUP in src/routes/extraction.js:257.
+// ocpd_bs_en options match BS_EN_LOOKUP in src/routes/extraction.js:257
+// and iOS Constants.swift `ocpdBsEnOptions` after the 2026-05-06 BS-EN
+// alignment sprint (Option B — prefixed canonical, no "-1" sub-clause).
 const OCPD_BS_EN_MAP = {
-  // No-op rows.
+  // No-op rows (canonical → canonical).
   '': '',
-  '60898-1': '60898-1',
-  '61009': '61009',
-  '60947-2': '60947-2',
-  '60947-3': '60947-3',
-  '60269-2': '60269-2',
+  'bs en 60898': 'BS EN 60898',
+  'bs en 61009': 'BS EN 61009',
+  'bs en 60947-2': 'BS EN 60947-2',
+  'bs en 60947-3': 'BS EN 60947-3',
+  'bs en 60269-2': 'BS EN 60269-2',
   'bs 3036': 'BS 3036',
   'bs 1361': 'BS 1361',
   'n/a': 'N/A',
 
-  // Common variants. Bare-digit "60898" → "60898-1" is the canonical
-  // form; the BS_EN_LOOKUP already writes "60898-1" for new MCB
-  // detections, so older records carrying just "60898" get aligned here.
-  '60898': '60898-1',
-  'bs 60898': '60898-1',
-  'bs en 60898': '60898-1',
-  'bs en 60898-1': '60898-1',
-  'en 60898': '60898-1',
-  // Sub-variants of 60898 (uncommon in low-voltage residential — they
-  // exist for surge-immune / battery-isolating MCBs but are rare). Map
-  // to the base 60898-1 so the iOS picker renders something rather than
-  // showing empty for these edge values.
-  '60898-2': '60898-1',
-  '60898-3': '60898-1',
-  mcb: '60898-1',
+  // Pre-2026-05-06-alignment bare-digit canonicals and other historical
+  // variants. The bulk of pre-alignment data carries '60898-1' (the
+  // BS_EN_LOOKUP value) or 'BS EN 60898-1' (the device-lookup-table
+  // value). Both fold to the prefixed canonical without the -1
+  // sub-clause for picker / PDF consistency.
+  '60898': 'BS EN 60898',
+  '60898-1': 'BS EN 60898',
+  '60898-2': 'BS EN 60898',
+  '60898-3': 'BS EN 60898',
+  'bs 60898': 'BS EN 60898',
+  'bs en 60898-1': 'BS EN 60898',
+  'en 60898': 'BS EN 60898',
+  mcb: 'BS EN 60898',
 
-  'bs 61009': '61009',
-  'bs en 61009': '61009',
-  'bs en 61009-1': '61009',
-  '61009-1': '61009',
-  rcbo: '61009',
+  '61009': 'BS EN 61009',
+  '61009-1': 'BS EN 61009',
+  'bs 61009': 'BS EN 61009',
+  'bs en 61009-1': 'BS EN 61009',
+  'en 61009': 'BS EN 61009',
+  rcbo: 'BS EN 61009',
 
-  'bs 60947-2': '60947-2',
-  'bs en 60947-2': '60947-2',
-  mccb: '60947-2',
+  '60947-2': 'BS EN 60947-2',
+  'bs 60947-2': 'BS EN 60947-2',
+  mccb: 'BS EN 60947-2',
 
-  'bs 60947-3': '60947-3',
-  'bs en 60947-3': '60947-3',
-  switch: '60947-3',
-  isolator: '60947-3',
+  '60947-3': 'BS EN 60947-3',
+  'bs 60947-3': 'BS EN 60947-3',
+  switch: 'BS EN 60947-3',
+  isolator: 'BS EN 60947-3',
 
   // BS 88-2 / 88-3 are the historical UK designations for HRC fuses;
-  // BS EN 60269-2 is the harmonised European equivalent. Map both to the
-  // EN form (matches BS_EN_LOOKUP.gG and BS_EN_LOOKUP.HRC).
-  'bs 60269-2': '60269-2',
-  'bs en 60269-2': '60269-2',
-  '88-2': '60269-2',
-  '88-3': '60269-2',
-  'bs 88-2': '60269-2',
-  'bs 88-3': '60269-2',
-  'bs 88': '60269-2',
-  '60269': '60269-2',
-  gg: '60269-2',
-  hrc: '60269-2',
+  // BS EN 60269-2 is the harmonised European equivalent and the only
+  // HRC option in the new schema. Inspectors who say "BS 88-2" land
+  // on 'BS EN 60269-2' via parseBsCode → same target here.
+  '60269-2': 'BS EN 60269-2',
+  '60269': 'BS EN 60269-2',
+  'bs 60269-2': 'BS EN 60269-2',
+  '88-2': 'BS EN 60269-2',
+  '88-3': 'BS EN 60269-2',
+  'bs 88-2': 'BS EN 60269-2',
+  'bs 88-3': 'BS EN 60269-2',
+  'bs 88': 'BS EN 60269-2',
+  gg: 'BS EN 60269-2',
+  hrc: 'BS EN 60269-2',
 
   '3036': 'BS 3036',
   'bs en 3036': 'BS 3036',
@@ -151,6 +162,16 @@ const OCPD_BS_EN_MAP = {
   'bs en 1361': 'BS 1361',
   'en 1361': 'BS 1361',
   cartridge: 'BS 1361',
+
+  // BS EN 62606 (AFDD) is out of scope for the OCPD option list. The
+  // closest functional equivalent for an AFDD-only device is to leave
+  // the field blank for human review rather than misclassify; the
+  // mapping below catches the historical writes from older parser
+  // versions (pre-2026-05-06) and folds them to N/A so the picker
+  // renders something rather than empty.
+  '62606': 'N/A',
+  'bs en 62606': 'N/A',
+  'bs 62606': 'N/A',
 
   na: 'N/A',
   none: 'N/A',

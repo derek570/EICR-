@@ -156,9 +156,9 @@ For EACH crop, report THREE things:
    - "both"   — body extends past BOTH edges (very wide device, we see only its middle)
 
 3. CLASSIFICATION (device type):
-   - "mcb"          — single MCB (BS EN 60898-1), trip curve letter + amp rating (e.g. "B32")
-   - "rcbo"         — combined RCD + MCB (BS EN 61009-1), test button + trip curve + amp rating
-   - "rcd"          — RCD (BS EN 61008-1), test button + mA rating, NO trip curve
+   - "mcb"          — single MCB (BS EN 60898), trip curve letter + amp rating (e.g. "B32")
+   - "rcbo"         — combined RCD + MCB (BS EN 61009), test button + trip curve + amp rating
+   - "rcd"          — RCD (BS EN 61008), test button + mA rating, NO trip curve
    - "main_switch"  — 2-module isolator, no test button, no trip curve, no mA rating, typically "100A" or "Main Switch"
    - "spd"          — Surge Protection Device (cartridges / status windows)
    - "blank"        — blanking plate (use when content="blank")
@@ -212,7 +212,7 @@ For RCDs and RCBOs additionally:
 - rcdWaveformType   — "AC", "A", "F", or "B". null if the waveform symbol is not visible or unclear.
 
 For all devices:
-- bsEn              — BS EN standard number printed on the face ("BS EN 60898-1", "BS EN 61009-1", "BS EN 61008-1"). null if not visible.
+- bsEn              — BS EN standard number printed on the face ("BS EN 60898", "BS EN 61009", "BS EN 61008"). null if not visible.
 
 For blanks, SPDs, empties, and main switches: manufacturer / model / ratingAmps / tripCurve / sensitivity / rcdWaveformType / bsEn may all be null. Still return poles (1 for blank/SPD if single-module, 2 for main_switch — null if unsure) and confidence.
 

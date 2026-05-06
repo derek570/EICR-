@@ -74,7 +74,7 @@ For each device:
 DEVICE FACE FIELDS (null if not clearly readable — never guess):
 - ocpd_rating_a: integer amperage from the device face (e.g. 32 for "B32A").
 - ocpd_curve: "B", "C", or "D" for MCBs/RCBOs.
-- ocpd_bs_en: e.g. "BS EN 61009-1", "BS EN 60898-1", "BS EN 61008-1", "BS EN 60947-3".
+- ocpd_bs_en: e.g. "BS EN 61009", "BS EN 60898", "BS EN 61008", "BS EN 60947-3".
 - rcd_type: "AC", "A", "F", or "B" — ONLY if the trip classification is explicitly stated as TEXT on the device. The international AC waveform symbol alone does NOT mean Type AC; many Type A devices show that symbol. If unsure, return null.
 - rcd_rating_ma: 30, 100, 300, or 500.
 
