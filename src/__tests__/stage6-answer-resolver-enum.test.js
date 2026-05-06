@@ -27,14 +27,23 @@ const RCD_SCHEMA = {
       type: 'select',
       options: ['', '61008', '61009', '62423', 'N/A'],
     },
-    // ocpd_bs_en exercises the mixed-format option list (5-digit, 4-digit,
-    // and hyphenated forms). Promoted to select 2026-05-06 alongside
-    // rcd_bs_en — same matcher, different option shape. Pulled from the
-    // production field_schema.json so this test exercises the real shape.
+    // ocpd_bs_en exercises the mixed-format option list (5-digit-with-suffix,
+    // hyphenated, prefixed-string). Options aligned with what the CCU
+    // pipeline writes via BS_EN_LOOKUP at src/routes/extraction.js:257.
     ocpd_bs_en: {
       label: 'OCPD BS/EN',
       type: 'select',
-      options: ['', '60898', '61009', '88-2', '88-3', '1361', '3036', '60947-2', 'N/A'],
+      options: [
+        '',
+        '60898-1',
+        '61009',
+        '60947-2',
+        '60947-3',
+        '60269-2',
+        'BS 3036',
+        'BS 1361',
+        'N/A',
+      ],
     },
     rcd_type: {
       label: 'RCD Type',
@@ -198,41 +207,53 @@ describe('resolveEnumAnswer — did_you_mean (Levenshtein-1: substitution / inse
   });
 });
 
-describe('resolveEnumAnswer — ocpd_bs_en (mixed-format options: 5-digit, 4-digit, hyphenated)', () => {
-  test('"60898" exactly matches the 5-digit MCB option', () => {
+describe('resolveEnumAnswer — ocpd_bs_en (mixed-format options aligned with BS_EN_LOOKUP)', () => {
+  test('"60898-1" exactly matches the MCB option (matches BS_EN_LOOKUP.MCB)', () => {
     const verdict = resolveEnumAnswer({
-      userText: '60898',
+      userText: '60898-1',
       contextField: 'ocpd_bs_en',
       contextCircuit: 1,
       sourceTurnId: 't',
       fieldSchema: RCD_SCHEMA,
     });
     expect(verdict.kind).toBe('auto_resolve');
-    expect(verdict.writes[0].value).toBe('60898');
+    expect(verdict.writes[0].value).toBe('60898-1');
   });
 
-  test('"BS 88-2" exactly matches the hyphenated HRC fuse option', () => {
+  test('"BS 60898-1" — surrounding "BS " stripped, matches MCB', () => {
     const verdict = resolveEnumAnswer({
-      userText: 'BS 88-2',
+      userText: 'BS 60898-1',
       contextField: 'ocpd_bs_en',
       contextCircuit: 1,
       sourceTurnId: 't',
       fieldSchema: RCD_SCHEMA,
     });
     expect(verdict.kind).toBe('auto_resolve');
-    expect(verdict.writes[0].value).toBe('88-2');
+    expect(verdict.writes[0].value).toBe('60898-1');
   });
 
-  test('"BS EN 1361" matches the 4-digit cartridge fuse option', () => {
+  test('"BS 1361" exactly matches the cartridge-fuse option (canonical form keeps the BS prefix)', () => {
     const verdict = resolveEnumAnswer({
-      userText: 'BS EN 1361',
+      userText: 'BS 1361',
       contextField: 'ocpd_bs_en',
       contextCircuit: 1,
       sourceTurnId: 't',
       fieldSchema: RCD_SCHEMA,
     });
     expect(verdict.kind).toBe('auto_resolve');
-    expect(verdict.writes[0].value).toBe('1361');
+    expect(verdict.writes[0].value).toBe('BS 1361');
+  });
+
+  test('"BS 3036" matches the rewireable-fuse option', () => {
+    const verdict = resolveEnumAnswer({
+      userText: 'BS 3036',
+      contextField: 'ocpd_bs_en',
+      contextCircuit: 1,
+      sourceTurnId: 't',
+      fieldSchema: RCD_SCHEMA,
+    });
+    expect(verdict.kind).toBe('auto_resolve');
+    expect(verdict.writes[0].value).toBe('BS 3036');
   });
 
   test('"60947-2" matches the hyphenated MCCB option exactly', () => {
@@ -247,29 +268,43 @@ describe('resolveEnumAnswer — ocpd_bs_en (mixed-format options: 5-digit, 4-dig
     expect(verdict.writes[0].value).toBe('60947-2');
   });
 
-  test('"60887" (TWO substitutions from 60898) → invalid_value (Lev > 1)', () => {
-    // 60887 vs 60898: positions 3 (8/9) and 4 (7/8) both differ → distance 2.
-    // Documents the Lev-1 boundary — the matcher rejects rather than over-suggesting.
+  test('"60269-2" matches the HRC-fuse option', () => {
     const verdict = resolveEnumAnswer({
-      userText: '60887',
+      userText: '60269-2',
       contextField: 'ocpd_bs_en',
       contextCircuit: 1,
       sourceTurnId: 't',
       fieldSchema: RCD_SCHEMA,
     });
-    expect(verdict.kind).toBe('invalid_value');
+    expect(verdict.kind).toBe('auto_resolve');
+    expect(verdict.writes[0].value).toBe('60269-2');
   });
 
-  test('"60899" (1 substitution from 60898) → did_you_mean ["60898"]', () => {
+  test('"60898-2" (1 substitution from 60898-1) → did_you_mean ["60898-1"]', () => {
     const verdict = resolveEnumAnswer({
-      userText: '60899',
+      userText: '60898-2',
       contextField: 'ocpd_bs_en',
       contextCircuit: 1,
       sourceTurnId: 't',
       fieldSchema: RCD_SCHEMA,
     });
     expect(verdict.kind).toBe('did_you_mean');
-    expect(verdict.suggestions).toContain('60898');
+    expect(verdict.suggestions).toContain('60898-1');
+  });
+
+  test('"60898" (1 deletion from 60898-1) → did_you_mean ["60898-1"]', () => {
+    // Inspector dictating the bare-digit form for an MCB — the matcher
+    // suggests the canonical form so Sonnet can re-ask once with the
+    // suffix or write the canonical "60898-1".
+    const verdict = resolveEnumAnswer({
+      userText: '60898',
+      contextField: 'ocpd_bs_en',
+      contextCircuit: 1,
+      sourceTurnId: 't',
+      fieldSchema: RCD_SCHEMA,
+    });
+    expect(verdict.kind).toBe('did_you_mean');
+    expect(verdict.suggestions).toContain('60898-1');
   });
 
   test('"banana" against ocpd_bs_en → invalid_value with the OCPD option list', () => {
@@ -281,8 +316,8 @@ describe('resolveEnumAnswer — ocpd_bs_en (mixed-format options: 5-digit, 4-dig
       fieldSchema: RCD_SCHEMA,
     });
     expect(verdict.kind).toBe('invalid_value');
-    expect(verdict.valid_options).toContain('60898');
-    expect(verdict.valid_options).toContain('88-2');
+    expect(verdict.valid_options).toContain('60898-1');
+    expect(verdict.valid_options).toContain('BS 1361');
   });
 
   test('"no OCPD" → auto-resolve to N/A', () => {

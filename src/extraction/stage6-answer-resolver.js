@@ -804,16 +804,22 @@ function levenshteinDistance(a, b) {
 }
 
 /**
- * Strip everything except digits and hyphens. Used to compare a
- * user-spoken BS-EN candidate ("BS 88-2", "61008") against the
- * field-schema option list (which stores values like "60898", "88-2",
- * "60947-3"). Returning a hyphen-aware digit form lets us compare
- * "88-2" exactly without losing the hyphen, while still tolerating
- * "BS EN 60898" → "60898".
+ * Strip everything except digits. Used to compare a user-spoken BS-EN
+ * candidate ("BS 88-2", "61008", "60898") against the field-schema
+ * option list (which stores values like "60898-1", "88-2", "60947-3",
+ * "BS 3036"). Hyphens are dropped so:
+ *   - "BS 88-2" → "882"     matches option "88-2"     → "882"   (exact)
+ *   - "60898"   → "60898"   matches option "60898-1"  → "608981" (Lev-1 deletion → did_you_mean)
+ *   - "61008"   → "61008"   matches option "61008"    → "61008" (exact)
+ *
+ * The hyphen drop is deliberate. Options like "60898-1" and "60898" share
+ * the same BS-EN identity; the suffix is a sub-clause that inspectors
+ * routinely omit. Surfacing did_you_mean lets Sonnet either accept the
+ * canonical suffixed form or re-confirm with the user.
  */
 function normaliseBsEnDigits(s) {
   if (typeof s !== 'string') return '';
-  return s.replace(/[^\d-]/g, '');
+  return s.replace(/\D/g, '');
 }
 
 /**
