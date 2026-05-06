@@ -1,22 +1,41 @@
 /**
- * Chitchat pause state machine — slice 1.
+ * Chitchat pause state machine — slices 1-3.
  *
  * Counts consecutive Sonnet turns that produced no extraction (no readings,
- * no observations, no question emitted, no active ask_user). When the
- * counter hits CHITCHAT_PAUSE_THRESHOLD, the WS sends a `chitchat_paused`
- * envelope and stops forwarding incoming transcript messages to Sonnet
- * until a wake trigger fires. Deepgram + iOS-side regex remain active
- * throughout — only the Sonnet API leg is suppressed.
+ * no observations, no question emitted, no active ask_user, no iOS regex
+ * hits). When the counter hits CHITCHAT_PAUSE_THRESHOLD, the WS sends a
+ * `chitchat_paused` envelope and stops forwarding incoming transcript
+ * messages to Sonnet until a wake trigger fires. Deepgram + iOS-side
+ * regex remain active throughout — only the Sonnet API leg is suppressed.
  *
- * Wake triggers (server-side):
+ * Wake triggers (server-side, all four):
  *   1. Voice command matched by WAKE_REGEX in any incoming transcript text.
  *   2. Manual `chitchat_resume` WS message (iOS Resume button).
  *   3. Existing `session_resume` WS message — fires when Deepgram reconnects
- *      from doze, so audio coming back also wakes Sonnet (the fourth
- *      trigger Derek asked for).
- *   4. (slice 2) iOS regex hint sent inside a transcript msg — not yet
- *      implemented in this slice. Wired in slice 2 alongside the replay
- *      buffer.
+ *      from doze, so audio coming back also wakes Sonnet.
+ *   4. iOS regex hit (`msg.regexResults` non-empty on a transcript): the
+ *      inspector dictated a value the on-device matcher caught; that's
+ *      strong engagement signal, so wake + replay-buffer-prepend the
+ *      transcript before forwarding to handleTranscript.
+ *
+ * On wake, the replay buffer (paused-session transcripts within the last
+ * 30 s) is drained and prepended to the wake utterance so a value spoken
+ * right at the pause/wake boundary isn't lost.
+ *
+ * Cache keep-alive (slice 3 — DELIVERED BY EXISTING INFRASTRUCTURE):
+ *   The `EICRExtractionSession` already runs a 4-minute prompt-cache
+ *   keepalive (`_sendCacheKeepalive` in eicr-extraction-session.js,
+ *   CACHE_KEEPALIVE_MS = 4 * 60 * 1000). Each tick fires a tiny
+ *   `messages.create` with `cache_control: ephemeral 5m` on the system
+ *   blocks + `max_tokens: 1`, refreshing Anthropic's 5-min cache TTL.
+ *   The keepalive runs for the lifetime of `session.isActive`, which is
+ *   set in startSession() and cleared only in stop(). Critically, the
+ *   chitchat-pause helpers below DO NOT call `session.pause()` (that's
+ *   the Deepgram-doze path, which has its own PAUSE_KEEPALIVE_BUDGET_MS
+ *   cap), so the cache continues to refresh through chitchat pauses with
+ *   no further wiring required. If the chitchat pause logic ever needs
+ *   to interact with the session lifecycle it MUST avoid `pause()` /
+ *   `resume()` — those names are reserved for the Deepgram doze cycle.
  *
  * This module is intentionally framework-agnostic: it operates on a plain
  * `chitchatState` object stamped onto the active-session entry. The host

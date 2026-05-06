@@ -324,6 +324,80 @@ describe('slice 2 — regexHintCount in turnHadEngagement / recordTurn', () => {
   });
 });
 
+describe('slice 3 — cache keep-alive delegated to EICRExtractionSession', () => {
+  // Slice 3 is delivered by the session's existing 4-min keepalive
+  // (`_sendCacheKeepalive`), which runs for the lifetime of
+  // session.isActive. The chitchat helpers must NOT touch any session
+  // lifecycle methods, otherwise they'd accidentally tear down the
+  // keepalive timer that's keeping Anthropic's 5-min cache hot.
+  // This is a guard test — if a future refactor adds a session
+  // dependency to enter/exit, the test will surface the issue.
+
+  // Manual call-counter spy. ESM Jest doesn't expose `jest.fn()` as a
+  // global (pure-ESM tests use plain JS), so build the stub by hand.
+  function makeSessionSpy() {
+    const calls = { pause: 0, resume: 0, stop: 0 };
+    return {
+      session: {
+        pause: () => {
+          calls.pause += 1;
+        },
+        resume: () => {
+          calls.resume += 1;
+        },
+        stop: () => {
+          calls.stop += 1;
+        },
+      },
+      calls,
+    };
+  }
+
+  test('enterChitchatPause does not call session.pause()', () => {
+    const { session, calls } = makeSessionSpy();
+    const entry = { session };
+    const state = ensureChitchatState(entry);
+    const cap = makeCapture();
+    enterChitchatPause({ state, sendEnvelope: cap.sendEnvelope, logger: silentLogger });
+    expect(calls).toEqual({ pause: 0, resume: 0, stop: 0 });
+  });
+
+  test('exitChitchatPause does not call session.resume()', () => {
+    const { session, calls } = makeSessionSpy();
+    const entry = { session };
+    const state = ensureChitchatState(entry);
+    state.paused = true;
+    state.pausedAt = Date.now();
+    const cap = makeCapture();
+    exitChitchatPause({
+      state,
+      sendEnvelope: cap.sendEnvelope,
+      logger: silentLogger,
+      reason: 'wake_word',
+    });
+    expect(calls).toEqual({ pause: 0, resume: 0, stop: 0 });
+  });
+
+  test('chitchatState shape contains no session reference / no timer handles', () => {
+    const state = ensureChitchatState(makeEntry());
+    // The whole state object is data, not behaviour. Should never carry
+    // setTimeout / setInterval handles or session references — those
+    // belong on the session itself, owned by EICRExtractionSession.
+    expect(state).toMatchObject({
+      turnsSinceExtraction: 0,
+      paused: false,
+      pausedAt: null,
+      replayBuffer: [],
+    });
+    expect(Object.keys(state).sort()).toEqual([
+      'paused',
+      'pausedAt',
+      'replayBuffer',
+      'turnsSinceExtraction',
+    ]);
+  });
+});
+
 describe('slice 2 — replay buffer (bufferTranscript / drainReplayBuffer)', () => {
   test('appends in order, drains in chronological order', () => {
     const state = ensureChitchatState(makeEntry());
