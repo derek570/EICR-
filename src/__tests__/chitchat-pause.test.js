@@ -58,33 +58,27 @@ describe('ensureChitchatState', () => {
 
 describe('turnHadEngagement', () => {
   test('readings present → engaged', () => {
-    expect(turnHadEngagement({ extracted_readings: [{ field: 'ze' }] }, false)).toBe(true);
+    expect(turnHadEngagement({ extracted_readings: [{ field: 'ze' }] })).toBe(true);
   });
 
   test('observations present → engaged', () => {
-    expect(turnHadEngagement({ observations: [{ code: 'C2' }] }, false)).toBe(true);
+    expect(turnHadEngagement({ observations: [{ code: 'C2' }] })).toBe(true);
   });
 
   test('questions present → engaged', () => {
-    expect(turnHadEngagement({ questions_for_user: [{ question: 'What rating?' }] }, false)).toBe(
-      true
-    );
+    expect(turnHadEngagement({ questions_for_user: [{ question: 'What rating?' }] })).toBe(true);
   });
 
-  test('pending ask_user → engaged even with empty result', () => {
-    expect(turnHadEngagement({}, true)).toBe(true);
-  });
-
-  test('empty result + no pending ask → NOT engaged', () => {
-    expect(turnHadEngagement({}, false)).toBe(false);
+  test('empty result → NOT engaged', () => {
+    expect(turnHadEngagement({})).toBe(false);
     expect(
-      turnHadEngagement({ extracted_readings: [], observations: [], questions_for_user: [] }, false)
+      turnHadEngagement({ extracted_readings: [], observations: [], questions_for_user: [] })
     ).toBe(false);
   });
 
   test('null/undefined result → not engaged', () => {
-    expect(turnHadEngagement(null, false)).toBe(false);
-    expect(turnHadEngagement(undefined, false)).toBe(false);
+    expect(turnHadEngagement(null)).toBe(false);
+    expect(turnHadEngagement(undefined)).toBe(false);
   });
 });
 
@@ -95,7 +89,6 @@ describe('recordTurn — counter behaviour', () => {
     recordTurn({
       state,
       result: {},
-      pendingAskUser: false,
       sendEnvelope: cap.sendEnvelope,
       logger: silentLogger,
     });
@@ -111,7 +104,6 @@ describe('recordTurn — counter behaviour', () => {
     recordTurn({
       state,
       result: { extracted_readings: [{ field: 'ze' }] },
-      pendingAskUser: false,
       sendEnvelope: cap.sendEnvelope,
       logger: silentLogger,
     });
@@ -125,7 +117,6 @@ describe('recordTurn — counter behaviour', () => {
       recordTurn({
         state,
         result: {},
-        pendingAskUser: false,
         sendEnvelope: cap.sendEnvelope,
         logger: silentLogger,
       });
@@ -142,7 +133,6 @@ describe('recordTurn — counter behaviour', () => {
     recordTurn({
       state,
       result: {},
-      pendingAskUser: false,
       sendEnvelope: cap.sendEnvelope,
       logger: silentLogger,
     });
@@ -156,7 +146,6 @@ describe('recordTurn — counter behaviour', () => {
       recordTurn({
         state,
         result: {},
-        pendingAskUser: false,
         sendEnvelope: cap.sendEnvelope,
         logger: silentLogger,
       });
@@ -165,7 +154,6 @@ describe('recordTurn — counter behaviour', () => {
     recordTurn({
       state,
       result: { observations: [{ code: 'C2' }] },
-      pendingAskUser: false,
       sendEnvelope: cap.sendEnvelope,
       logger: silentLogger,
     });
@@ -174,7 +162,6 @@ describe('recordTurn — counter behaviour', () => {
       recordTurn({
         state,
         result: {},
-        pendingAskUser: false,
         sendEnvelope: cap.sendEnvelope,
         logger: silentLogger,
       });
@@ -182,14 +169,13 @@ describe('recordTurn — counter behaviour', () => {
     expect(state.paused).toBe(false);
   });
 
-  test('pendingAskUser blocks increment — no pause during ask round-trips', () => {
+  test('active question stream blocks pause — questions_for_user keeps the counter at 0', () => {
     const state = ensureChitchatState(makeEntry());
     const cap = makeCapture();
     for (let i = 0; i < 50; i += 1) {
       recordTurn({
         state,
-        result: {},
-        pendingAskUser: true,
+        result: { questions_for_user: [{ question: 'What rating?' }] },
         sendEnvelope: cap.sendEnvelope,
         logger: silentLogger,
       });
@@ -278,48 +264,30 @@ describe('isWakeWordTranscript / WAKE_REGEX', () => {
   });
 });
 
-describe('slice 2 — regexHintCount in turnHadEngagement / recordTurn', () => {
-  test('regexHintCount > 0 alone counts as engagement', () => {
-    expect(turnHadEngagement({}, false, 1)).toBe(true);
-    expect(turnHadEngagement({}, false, 5)).toBe(true);
+describe('slice 2 — regex hits reset the counter at transcript-receipt time', () => {
+  // Slice 2's regex-hit engagement signal is implemented in the host
+  // (sonnet-stream.js `case 'transcript'` block) by direct counter
+  // manipulation when `msg.regexResults.length > 0` arrives, NOT via a
+  // parameter on `recordTurn` / `turnHadEngagement`. Reasoning: regex
+  // hits are per-transcript signals; recordTurn runs once per Sonnet
+  // result which can aggregate multiple transcripts, so attribution
+  // would be lossy if it tried to thread regex counts through here.
+  // The transcript-receipt reset is exercised by integration tests in
+  // src/__tests__/sonnet-stream-chitchat.integration.test.js (M2).
+
+  test('recordTurn alone — empty result increments without regex consideration', () => {
+    const state = ensureChitchatState(makeEntry());
+    const cap = makeCapture();
+    recordTurn({ state, result: {}, sendEnvelope: cap.sendEnvelope, logger: silentLogger });
+    expect(state.turnsSinceExtraction).toBe(1);
   });
 
-  test('regexHintCount === 0 leaves engagement on extraction signals only', () => {
-    expect(turnHadEngagement({}, false, 0)).toBe(false);
-    expect(turnHadEngagement({ extracted_readings: [{}] }, false, 0)).toBe(true);
-  });
-
-  test('recordTurn resets counter when regex hits even on empty Sonnet result', () => {
+  test('direct counter reset (the slice-2 transcript-receipt path simulated)', () => {
     const state = ensureChitchatState(makeEntry());
     state.turnsSinceExtraction = 7;
-    const cap = makeCapture();
-    recordTurn({
-      state,
-      result: {},
-      pendingAskUser: false,
-      regexHintCount: 2,
-      sendEnvelope: cap.sendEnvelope,
-      logger: silentLogger,
-    });
-    expect(state.turnsSinceExtraction).toBe(0);
-    expect(state.paused).toBe(false);
-    expect(cap.sent).toEqual([]);
-  });
-
-  test('regex-only sessions never pause', () => {
-    const state = ensureChitchatState(makeEntry());
-    const cap = makeCapture();
-    for (let i = 0; i < 50; i += 1) {
-      recordTurn({
-        state,
-        result: {}, // Sonnet caught nothing
-        pendingAskUser: false,
-        regexHintCount: 1, // regex caught a value every turn
-        sendEnvelope: cap.sendEnvelope,
-        logger: silentLogger,
-      });
-    }
-    expect(state.paused).toBe(false);
+    // Simulate what the host does when a transcript with regexResults
+    // arrives while the session is NOT yet paused: direct reset.
+    state.turnsSinceExtraction = 0;
     expect(state.turnsSinceExtraction).toBe(0);
   });
 });

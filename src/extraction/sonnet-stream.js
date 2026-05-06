@@ -2153,9 +2153,8 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
           recordChitchatTurn({
             state: ccBatchState,
             result,
-            pendingAskUser: false,
             sendEnvelope: (env) => {
-              if (currentWs?.readyState === currentWs?.OPEN) {
+              if (currentWs && currentWs.readyState === currentWs.OPEN) {
                 currentWs.send(JSON.stringify(env));
               }
             },
@@ -3551,9 +3550,8 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         recordChitchatTurn({
           state: ccSyncState,
           result,
-          pendingAskUser: false,
           sendEnvelope: (env) => {
-            if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(env));
+            if (ws && ws.readyState === ws.OPEN) ws.send(JSON.stringify(env));
           },
           logger,
           sessionId,

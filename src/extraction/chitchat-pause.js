@@ -94,18 +94,20 @@ export function ensureChitchatState(entry) {
  * Engagement = at least one of:
  *   - Sonnet extracted a reading (record_reading / update_field tool call)
  *   - Sonnet captured an observation
- *   - Sonnet emitted a question (legacy-mode JSON OR tool-call ask_user)
- *   - The session has a pending ask_user round-trip (engine working
- *     through a question — must not count as chitchat even if the
- *     turn itself was a quiet "let me re-ask" pass)
- *   - iOS regex (TranscriptFieldMatcher) caught a value on this turn,
- *     even when Sonnet itself extracted nothing. Slice 2: this is
- *     Derek's "if regex extracts everything well, Sonnet would go
- *     offline" risk mitigation — regex-only sessions keep Sonnet warm.
+ *   - Sonnet emitted a question (legacy-mode JSON OR tool-call ask_user
+ *     — both surfaces emit `questions_for_user`; tool-call mode is
+ *     already covered by that array, so no separate "pending ask"
+ *     parameter is needed here)
+ *
+ * iOS regex hits are handled at TRANSCRIPT-RECEIPT time in the host
+ * (sonnet-stream.js `case 'transcript'` block) by direct counter
+ * manipulation, not via this function — the engagement check only sees
+ * Sonnet's own output. Keeping that path separate avoids feeding the
+ * `regexHintCount` parameter through the extraction-result callbacks
+ * which run aggregated over multiple transcripts and can't always
+ * attribute a hint to the right turn.
  */
-export function turnHadEngagement(result, sessionPendingAskUser, regexHintCount = 0) {
-  if (sessionPendingAskUser) return true;
-  if (regexHintCount > 0) return true;
+export function turnHadEngagement(result) {
   if (Array.isArray(result?.extracted_readings) && result.extracted_readings.length > 0) {
     return true;
   }
@@ -115,8 +117,6 @@ export function turnHadEngagement(result, sessionPendingAskUser, regexHintCount 
   if (Array.isArray(result?.questions_for_user) && result.questions_for_user.length > 0) {
     return true;
   }
-  // Tool-call mode emits questions via ask_user tool calls — those land
-  // on the session's pendingAskUser flag, already handled above.
   return false;
 }
 
@@ -127,29 +127,19 @@ export function turnHadEngagement(result, sessionPendingAskUser, regexHintCount 
  * doesn't need to know how to write to the socket.
  *
  * @param {object}   args
- * @param {object}   args.state              chitchatState from ensureChitchatState
- * @param {object}   args.result             Sonnet extraction result
- * @param {boolean}  args.pendingAskUser     truthy if engine has an ask in flight
- * @param {function} args.sendEnvelope       (envelope) => void — JSON.stringified by caller
- * @param {function} [args.logger]           optional structured logger
+ * @param {object}   args.state          chitchatState from ensureChitchatState
+ * @param {object}   args.result         Sonnet extraction result
+ * @param {function} args.sendEnvelope   (envelope) => void — JSON.stringified by caller
+ * @param {function} [args.logger]       optional structured logger
  * @param {string}   [args.sessionId]
  */
-export function recordTurn({
-  state,
-  result,
-  pendingAskUser,
-  regexHintCount = 0,
-  sendEnvelope,
-  logger,
-  sessionId,
-}) {
+export function recordTurn({ state, result, sendEnvelope, logger, sessionId }) {
   if (!state || state.paused) return;
-  if (turnHadEngagement(result, pendingAskUser, regexHintCount)) {
+  if (turnHadEngagement(result)) {
     if (state.turnsSinceExtraction !== 0) {
       logger?.info?.('chitchat.counter_reset', {
         sessionId,
         prev_count: state.turnsSinceExtraction,
-        regex_hint_count: regexHintCount,
       });
     }
     state.turnsSinceExtraction = 0;
