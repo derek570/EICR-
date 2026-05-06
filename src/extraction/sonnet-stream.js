@@ -36,6 +36,20 @@ import { runShadowHarness } from './stage6-shadow-harness.js';
 // for the handoff that drove this wiring.
 import { findExpiredPartial } from './ring-continuity-timeout.js';
 import { findExpiredPartial as findExpiredIrPartial } from './insulation-resistance-timeout.js';
+// Slice 1 of the chitchat-pause feature (2026-05-06). State machine that
+// stops forwarding transcript turns to Sonnet after 10 consecutive turns
+// of zero engagement (no readings, no observations, no questions).
+// Wakes via wake-word regex on incoming transcripts, manual
+// `chitchat_resume` WS message, or the existing `session_resume` (so a
+// Deepgram-reconnect-from-doze also wakes Sonnet — Derek's fourth
+// trigger). Slice 2 will add the replay buffer + iOS regex hint reset;
+// slice 3 the cache keep-alive ping.
+import {
+  ensureChitchatState,
+  recordTurn as recordChitchatTurn,
+  exitChitchatPause,
+  isWakeWordTranscript,
+} from './chitchat-pause.js';
 // 2026-04-29 — server-driven ring continuity script. Bypasses Sonnet for the
 // duration of an R1/Rn/R2 micro-conversation, fixing the Flux-fragmentation
 // loss surfaced by session B107472D (06:23, 2026-04-29) where "Neutrals are."
@@ -926,6 +940,37 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
               ws.close(1008, 'Rate limit exceeded');
               return;
             }
+            // Chitchat pause gate (slice 1). When the session is paused
+            // we suppress forwarding to Sonnet until a wake trigger
+            // fires. A wake-word match on the transcript text wakes the
+            // session and the message proceeds to handleTranscript so
+            // the wake utterance itself isn't lost. Any other transcript
+            // is silently dropped (Deepgram + iOS-side regex still
+            // running — only the Sonnet API leg is gated). Slice 2 will
+            // buffer dropped text for replay-on-resume.
+            if (currentSessionId && activeSessions.has(currentSessionId)) {
+              const ccEntry = activeSessions.get(currentSessionId);
+              const ccState = ensureChitchatState(ccEntry);
+              if (ccState?.paused) {
+                if (isWakeWordTranscript(msg.text)) {
+                  exitChitchatPause({
+                    state: ccState,
+                    sendEnvelope: (env) => ws.send(JSON.stringify(env)),
+                    logger,
+                    sessionId: currentSessionId,
+                    reason: 'wake_word',
+                  });
+                  // fall through to handleTranscript — wake utterance
+                  // is forwarded so Sonnet sees the resume context
+                } else {
+                  logger.info('chitchat.transcript_suppressed', {
+                    sessionId: currentSessionId,
+                    text_preview: typeof msg.text === 'string' ? msg.text.slice(0, 80) : null,
+                  });
+                  break;
+                }
+              }
+            }
             await handleTranscript(ws, currentSessionId, msg, preSessionBuffer);
             break;
 
@@ -1052,6 +1097,39 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
                 turns: resumeEntry.session.turnCount,
               });
               ws.send(JSON.stringify({ type: 'session_ack', status: 'resumed' }));
+              // Chitchat-pause fourth wake trigger: Deepgram coming back
+              // from doze (which is what `session_resume` without a
+              // sessionId means) also wakes Sonnet if it had paused on
+              // chitchat earlier in the session.
+              const ccState = ensureChitchatState(resumeEntry);
+              if (ccState?.paused) {
+                exitChitchatPause({
+                  state: ccState,
+                  sendEnvelope: (env) => ws.send(JSON.stringify(env)),
+                  logger,
+                  sessionId: currentSessionId,
+                  reason: 'session_resume',
+                });
+              }
+            }
+            break;
+
+          // Manual chitchat-pause wake. iOS sends this when the inspector
+          // taps the Resume button on the chitchat banner. Idempotent —
+          // exits the paused state if currently paused, no-op otherwise.
+          case 'chitchat_resume':
+            if (currentSessionId && activeSessions.has(currentSessionId)) {
+              const ccrEntry = activeSessions.get(currentSessionId);
+              const ccrState = ensureChitchatState(ccrEntry);
+              if (ccrState?.paused) {
+                exitChitchatPause({
+                  state: ccrState,
+                  sendEnvelope: (env) => ws.send(JSON.stringify(env)),
+                  logger,
+                  sessionId: currentSessionId,
+                  reason: 'manual',
+                });
+              }
             }
             break;
 
@@ -2022,6 +2100,29 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
               : [],
         });
         if (bypassOnBatch) logBypassOnce(entryRef, sessionId, 'onBatchResult');
+        // Chitchat-pause counter (slice 1). Increment if this turn
+        // produced no engagement signal; reset otherwise. Threshold
+        // crossing fires the chitchat_paused envelope so iOS can show
+        // the wake banner. The targeted entry is `entryRef` (the
+        // batch-flush captured the active entry); the WS to send on is
+        // the live `currentWs` if open, otherwise queue is unnecessary
+        // here — pause envelopes are control-plane and don't need to
+        // survive a disconnect.
+        if (entryRef) {
+          const ccBatchState = ensureChitchatState(entryRef);
+          recordChitchatTurn({
+            state: ccBatchState,
+            result,
+            pendingAskUser: false,
+            sendEnvelope: (env) => {
+              if (currentWs?.readyState === currentWs?.OPEN) {
+                currentWs.send(JSON.stringify(env));
+              }
+            },
+            logger,
+            sessionId,
+          });
+        }
         // Order matters: resolve BEFORE enqueue.
         //
         // resolveByFields clears any PRIOR-turn pending questions whose field
@@ -3399,6 +3500,25 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
             : [],
       });
       if (bypassOnSync) logBypassOnce(entry, sessionId, 'handleTranscript');
+
+      // Chitchat-pause counter (slice 1) — sync path. See the matching
+      // hook in the onBatchResult callback above for the full rationale.
+      // Both extraction-completion paths must increment/reset the
+      // counter or sessions that flow through one path more than the
+      // other would have inconsistent pause behaviour.
+      if (entry) {
+        const ccSyncState = ensureChitchatState(entry);
+        recordChitchatTurn({
+          state: ccSyncState,
+          result,
+          pendingAskUser: false,
+          sendEnvelope: (env) => {
+            if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(env));
+          },
+          logger,
+          sessionId,
+        });
+      }
 
       // Send extraction result (strip questions_for_user — they go through QuestionGate)
       // Rename extracted_readings → readings to match the web client interface
